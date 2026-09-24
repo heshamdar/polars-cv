@@ -187,7 +187,7 @@ rank, or dtype**. Everything else follows from that one invariant.
    `mode`/`method`, label_reduce `reduction`/`region_mode`,
    `apply_mask(invert)`, `area(signed)`, `convolve2d(normalize)`.
 
-**Plan-time probing is why enums need care.** `op_infer_shape` (`lib.rs`) runs
+**Plan-time probing is why enums need care.** `infer_shape` (`lib.rs`) runs
 each op four times with every expression param bound to an *integer* probe. A
 dynamic enum cannot read an integer, so `ParamCtx::probe` marks the context and
 the enum/bool accessors substitute their default. That is sound only because of
@@ -271,9 +271,8 @@ the same mixin unless `.cv` genuinely honours it.
 
    The callback receives the *cloned* pipeline, so `p._track_expr` registers
    per-row expressions on the clone rather than the receiver. `_append_op`
-   then validates the input domain against `op_contract(...)["input_domains"]`
-   and hands off to `_push_op`, which appends and applies **both** halves of
-   the plan-time effect in one `plan_step` call: the schema fold
+   then hands off to `_push_op`, which checks the input domain and applies
+   the whole plan-time effect in one `plan_step` call: the schema fold
    (domain/dtype/ndim) and the shape hints (`infer_shape` for H/W, the channel
    rule for C).
 
@@ -300,8 +299,8 @@ the same mixin unless `.cv` genuinely honours it.
 
 3. **Schema inference**: nothing to add in `_types.py` or the planner. The
    op's domain, dtype, rank and channel effects are read at planning time from
-   its Rust contract via `_lib.plan_step` (and `_lib.op_contract` for the
-   passes' spatial detail), so make sure the op declares the right contract on
+   its Rust contract via `_lib.plan_step`, and the optimisation passes read
+   its spatial and identity rules in Rust (`passes.rs`), so make sure the op declares the right contract on
    the Rust side (next step). Do not add per-op special cases in Python —
    `test_op_schema_authority` and the batch-fold conformance tests in
    `test_sanitation.py` guard this.
@@ -327,12 +326,12 @@ rotation matrix via the `rotation_matrix_2d` FFI) and delegate to
 ### Shape Hints (single authority: view-buffer `infer_shape`)
 
 No per-dimension geometry is derived in Python. `plan_step` runs the op's
-view-buffer `infer_shape` (the probing `infer_shape` in `lib.rs`, also exposed
-as `op_infer_shape`), the same authority execution uses, so the tracked H/W
+view-buffer `infer_shape` (through the probing `infer_shape` in `lib.rs`), the
+same authority execution uses, so the tracked H/W
 cannot disagree with what the op produces.
 
 Not every step *has* an inferable shape: axis reductions, histograms, channel
-merge and the binary ops are graph-level steps `op_infer_shape` rejects. For
+merge and the binary ops are graph-level steps `infer_shape` rejects. For
 those the H/W hints are **invalidated**, not carried forward — several of them
 do change H/W, and keeping the pre-op values is how a pipeline came to publish
 `[100, 200, 2]` for data that executes as `[200, 3, 2]`. Unknown is always safe:

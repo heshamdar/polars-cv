@@ -230,6 +230,15 @@ REMOVED: tuple[Removed, ...] = (
     Removed("_names_nodes", "P7c: GraphStep::reads_other_nodes"),
     Removed("_op_contract_for", "P7c: the passes read contracts in Rust"),
     Removed("_pass_handlers", "P7c: dispatch on the generated LogicalPass"),
+    Removed("op_contract", "P7c: plan_step and the Rust passes read contracts"),
+    Removed("op_identity_rule", "P7c: passes::is_identity"),
+    Removed("op_infer_shape", "P7c: lib.rs infer_shape, called in Rust only"),
+    Removed("rank_rule_name", "P7c: no contract strings cross the FFI"),
+    Removed("channel_rule_name", "P7c: no contract strings cross the FFI"),
+    Removed("spatial_rule_name", "P7c: no contract strings cross the FFI"),
+    Removed("identity_rule_name", "P7c: no contract strings cross the FFI"),
+    Removed("dtype_rule_name", "P7c: no contract strings cross the FFI"),
+    Removed("_CONTRACT_KEYS", "P7c: op_contract deleted"),
 )
 
 

@@ -44,8 +44,9 @@ pub enum MemoryEffect {
 /// what makes the verdict structurally safe across the FFI: an op is resolved
 /// with every expression parameter neutralized to a placeholder, so an `Always`
 /// op whose deciding parameter is actually per-row would otherwise be spoofed by
-/// the placeholder happening to equal the identity value. `op_identity_rule`
-/// forces [`Never`](IdentityRule::Never) whenever any named deciding parameter
+/// the placeholder happening to equal the identity value. The plugin's
+/// identity-elimination pass treats the op as [`Never`](IdentityRule::Never)
+/// whenever any named deciding parameter
 /// was expression-bound, so soundness rests on the declaration rather than on
 /// which placeholder value the resolver used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

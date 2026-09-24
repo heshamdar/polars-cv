@@ -33,7 +33,7 @@ from PIL import Image
 import polars_cv
 from polars_cv import Pipeline
 from polars_cv._graph import GraphNode
-from polars_cv._types import HINT_DIMS, Domain, planning_slots
+from polars_cv._types import HINT_DIMS, Domain
 
 from ._discovery import package_modules
 from ._op_cases import BUFFER, CONTOUR, EXTRA_CASES, OP_CASES, base_pipeline
@@ -325,9 +325,8 @@ def test_python_holds_no_copy_of_the_channel_rule_arithmetic() -> None:
     """The package must not re-implement ``OutputChannelRule::apply``.
 
     A source scan, because the property is "this code does not exist". The
-    rule *strings* still reach Python through ``op_contract`` for the
-    vocabulary checks in ``test_sanitation``; what must not come back is
-    package code reading them to compute a channel count. It scans the
+    rule is applied in Rust (``plan_step``); what must not come back is
+    package code spelling its variants to compute a channel count. It scans the
     whole package, so the arithmetic cannot return under another name.
     Limits: a spelling built at runtime would pass unseen.
     """
@@ -367,7 +366,7 @@ def test_domain_vocabulary_declared_once() -> None:
     assert not leaked, f"Pipeline must not re-declare domain constants: {leaked}"
     assert not hasattr(Pipeline, "_validate_domain"), (
         "_validate_domain re-declared each op's input domain in Python; the "
-        "check now reads op_contract(...)['input_domains']"
+        "check is plan_step's, from the op's Rust input_domains"
     )
     source = Path(polars_cv.pipeline.__file__).read_text()
     assert "_validate_domain" not in source
@@ -404,27 +403,19 @@ def test_wrong_input_domain_is_rejected(build, op, kwargs) -> None:
 
 @plugin_required
 def test_input_domain_matches_the_rust_contract() -> None:
-    """The rejection message names the domain the Rust contract declares.
+    """The rejection names the op and the domains its Rust contract accepts.
 
-    The input-domain mirror of ``test_planner_domain_is_sourced_from_rust``:
-    output domain was already sourced from Rust while input domain stayed a
-    hand-written argument at every builder call site.
+    Input domain used to be a hand-written argument at every builder call
+    site; the check and its message are now ``plan_step``'s. Binary ops and
+    reductions accept two domains, and the message lists both.
     """
-    import json
-
-    from polars_cv._lib import op_contract
-
     contour_pipe = (
         Pipeline().source("image_bytes").grayscale().threshold(128).extract_contours()
     )
-    # A buffer op on a contour pipeline.
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ValueError, match=r"resize\(\) expects buffer input"):
         contour_pipe.resize(height=8, width=8)
-    resize_spec = Pipeline().source("image_bytes").resize(height=8, width=8)._ops[-1]
-    accepted = op_contract(json.dumps(resize_spec.to_dict(planning_slots)))[
-        "input_domains"
-    ]
-    assert f"expects {' or '.join(accepted)} input" in str(excinfo.value)
+    with pytest.raises(ValueError, match=r"reduce_sum\(\) expects buffer or vector"):
+        contour_pipe.reduce_sum()
 
 
 # ---------------------------------------------------------------------------

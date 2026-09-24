@@ -25,7 +25,7 @@ from polars_cv._optimize import (
     resolve_opt_flags,
 )
 from polars_cv._types import SlotTable
-from tests._plan_view import op_json, op_names, source_of
+from tests._plan_view import op_names, source_of
 from tests.conftest import plugin_required
 
 
@@ -392,8 +392,8 @@ def _crop_after_pointwise_pipe() -> Pipeline:
 class TestSpatialWindowPushdown:
     """The crop-hoisting pass: a crop moves earlier past a ``Pointwise`` run.
 
-    The pass reads each op's ``SpatialDependency`` from the ``op_contract`` FFI
-    (``spatial_rule``) — the single authority — and moves a crop to the front of
+    The pass (``passes.rs``) reads each op's ``SpatialDependency`` — the single
+    authority — and moves a crop to the front of
     the contiguous run of ``pointwise`` ops immediately preceding it, within one
     node's op list. ``neighborhood``/``geometric``/``global`` ops and any
     ``assert_shape`` boundary are barriers.
@@ -601,9 +601,9 @@ class TestShapeSubpipelineStaging:
 class TestIdentityElimination:
     """Staging for the identity-elimination pass.
 
-    Needs the compiled plugin: the pass reads ``op_identity_rule`` /
-    ``op_infer_shape`` to classify each op and evaluate its condition against
-    the recorded entering state.
+    Needs the compiled plugin: the pass (``passes.rs``) reads each op's identity
+    rule and evaluates it against the recorded entering state. Its gating on
+    per-row deciding params is unit-tested there.
     """
 
     @plugin_required
@@ -723,43 +723,6 @@ class TestIdentityElimination:
         )
         g.optimize(OptFlags.all())
         assert _node_ops(g) == ["resize", "crop"]
-
-    @plugin_required
-    def test_identity_gate_keys_on_deciding_params_not_placeholder(self) -> None:
-        # The `Always` verdict is structural: `op_identity_rule` forces "never"
-        # when a *deciding* param (a pad amount) is expression-bound, and keeps
-        # "always" when only an *irrelevant* param (the fill value behind zero
-        # amounts) is per-row — independent of the neutralization placeholder.
-
-        from polars_cv._lib import op_identity_rule
-
-        per_row = Pipeline().source("image_bytes").pad(top=pl.col("t"))
-        assert op_identity_rule(op_json(per_row, 0)) == "never"
-
-        zero = (
-            Pipeline()
-            .source("image_bytes")
-            .pad(top=0, bottom=0, left=0, right=0, value=pl.col("v"))
-        )
-        assert op_identity_rule(op_json(zero, 0)) == "always"
-
-    @plugin_required
-    def test_crop_identity_is_gated_on_its_origin(self) -> None:
-        # A crop is a candidate no-op only with a literal (0, 0) origin: a
-        # non-zero origin with a full extent runs past the edge (the engine
-        # clamps it), and a per-row origin cannot be proven zero at plan time.
-
-        from polars_cv._lib import op_identity_rule
-
-        def rule(**origin: object) -> str:
-            pipe = Pipeline().source("image_bytes").crop(height=8, width=8, **origin)
-            return op_identity_rule(op_json(pipe, 0))
-
-        assert rule(top=0, left=0) == "when_shape_preserved"
-        assert rule(top=5, left=0) == "never"
-        assert rule(top=0, left=5) == "never"
-        assert rule(top=pl.col("t"), left=0) == "never"
-        assert rule(top=0, left=pl.col("l")) == "never"
 
     @plugin_required
     def test_offset_crop_with_full_extent_is_kept(self) -> None:
