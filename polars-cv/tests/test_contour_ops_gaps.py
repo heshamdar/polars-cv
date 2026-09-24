@@ -916,8 +916,9 @@ class TestContourEnumParamsResolvePerRow:
     in the same namespace were per-row already.
 
     They now ride ``_ArgBinder`` like ``scale``'s own ``sx``/``sy``: the
-    expression is appended as a plugin input, named in ``input_slots``, and read
-    per row against the same ``NAMED`` table a literal is checked against.
+    expression is appended as a plugin input, its kwarg is ``{"$slot": n}``,
+    and Rust reads it per row as the same typed ``Param<Winding>`` a literal
+    deserializes into.
     """
 
     def test_the_winding_direction_can_vary_by_row(self, ccw_square: dict) -> None:
@@ -968,13 +969,15 @@ class TestContourEnumParamsResolvePerRow:
         """Moving validation to execution must not lose it.
 
         A literal is checked in Python against the enum; an expression cannot
-        be, so Rust checks it per row against `NAMED` — the same authority,
-        naming the same accepted spellings.
+        be, so Rust checks it per row as a typed `Param<T>` — the same `NAMED`
+        authority, naming the same accepted spellings.
         """
         df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
-        with pytest.raises(Exception, match="Unsupported winding direction 'CW'"):
+        with pytest.raises(Exception, match='unknown Winding "CW", expected one of'):
             df.with_columns(x=pl.col("contour").contour.ensure_winding(pl.lit("CW")))
-        with pytest.raises(Exception, match="Unsupported origin 'top_left'"):
+        with pytest.raises(
+            Exception, match='unknown ScaleOrigin "top_left", expected one of'
+        ):
             df.with_columns(
                 x=pl.col("contour").contour.scale(2.0, 2.0, origin=pl.lit("top_left"))
             )

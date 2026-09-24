@@ -466,7 +466,7 @@ macro_rules! contour_accessor {
         $(#[$meta])*
         #[polars_expr(output_type_func=$out_ty)]
         fn $name(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-            let $params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
+            let $params = GeomParams::new(inputs, &kwargs, kwargs.on_null)?;
             let $kwargs = &kwargs;
             let $ity = inputs[0].dtype();
             $crate::geom_arity::map_contours_with_params(

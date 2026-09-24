@@ -203,14 +203,13 @@ a serde error in Rust (`ops::tests::a_slot_in_a_structural_field_is_rejected`).
 Guarded by `TestStructuralParamsRejectExpressions` in
 `test_param_strictness.py`.
 
-**The geometry namespaces use a different mechanism.** `.contour`/`.point`/`.bbox`
-bypass `vb_graph`, so they have no `ParamValue`. Their per-row channel is the
-plugin's *input series*: `_ArgBinder` (`_namespace.py`) appends an
-expression-valued parameter as an extra argument and records it in an
-`input_slots` name→index map, which Rust reads via `GeomParams`
-(`src/geom_params.rs`). Names, not positions, because these functions also take
-*optional* data operands (`scores`, `origin`) whose position would otherwise be
-ambiguous.
+**The geometry namespaces use the same wire form.** `.contour`/`.point`/`.bbox`
+bypass `vb_graph`, but `_ArgBinder` (`_namespace.py`) appends an
+expression-valued parameter or data operand as an extra argument and writes
+`{"$slot": n}` into that kwarg, which Rust reads as a typed `Param<T>` /
+`ColumnRef` via `GeomParams` (`src/geom_params.rs`). Each kwarg names its own
+position, so the optional data operands (`order`, `origin`) cannot be confused
+with an appended parameter.
 
 **Null parameter values are a shared policy, not per-op handling.** A parameter
 column may contain nulls; `Pipeline.on_null_param("raise"|"null")` says whether
@@ -237,8 +236,8 @@ or CSE will merge ops that differ only in policy.
 
 The geometry namespaces have no `Pipeline` to hang a graph-level setting on, so
 the policy lives on the accessor: `on_null(policy)` returns a copy with
-`_on_null` set, and `_ArgBinder.call` injects it into kwargs beside
-`input_slots`. That keeps it out of all 15 geometry method signatures.
+`_on_null` set, and `_ArgBinder.call` injects it into the kwargs. That keeps
+it out of all 15 geometry method signatures.
 
 It lives on `_GeomNullPolicy`, a mixin the three geometry namespaces add
 alongside `_PluginNamespace` — **not** on `_PluginNamespace` itself, which `.cv`
