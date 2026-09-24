@@ -13,12 +13,11 @@ across representative shapes.
 
 from __future__ import annotations
 
-import json
-
 import numpy as np
 import polars as pl
 
 from polars_cv import Pipeline
+from tests._plan_view import op_json
 from tests._schema_parity import assert_plan_equals_exec
 from tests.conftest import plugin_required
 
@@ -95,7 +94,7 @@ class TestOpInferShapeAuthority:
 
     @staticmethod
     def _op_json(pipe: Pipeline) -> str:
-        return json.dumps(pipe._ops[-1].to_dict())
+        return op_json(pipe, -1)
 
     def test_resize_literal_dims_are_known(self) -> None:
         from polars_cv._lib import op_infer_shape

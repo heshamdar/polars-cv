@@ -20,6 +20,7 @@ import polars as pl
 import pytest
 
 from polars_cv import Pipeline
+from tests._plan_view import planned
 
 from ._op_cases import BUFFER, EXTRA_CASES, OP_CASES
 from .conftest import plugin_required
@@ -99,7 +100,7 @@ def test_no_op_panics_on_any_input_shape(
         return (
             pl.col("b")
             .cv.pipe(pipe)
-            .sink("blob" if pipe._current_domain == "buffer" else "native")
+            .sink("blob" if planned(pipe).domain == "buffer" else "native")
         )
 
     panics = [e for e in _row_errors(blob_frame, expr) if PANIC in e]

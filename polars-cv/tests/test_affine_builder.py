@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from polars_cv import Pipeline
+from tests._plan_view import ops_of, planned
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
@@ -34,8 +35,8 @@ class TestWarpAffinePipelineBuilder:
                 output_size=(100, 100),
             )
         )
-        assert len(pipe._ops) == 1
-        assert pipe._ops[0].op == "warp_affine"
+        assert len(ops_of(pipe)) == 1
+        assert ops_of(pipe)[0].op == "warp_affine"
 
     def test_warp_affine_requires_6_elements(self) -> None:
         """Affine matrix must have exactly 6 elements."""
@@ -53,10 +54,10 @@ class TestWarpAffinePipelineBuilder:
                 output_size=(224, 224),
             )
         )
-        op = pipe._ops[0]
-        # Each matrix element is tracked as its own ParamValue dict so it can be
-        # a per-row expression; literal floats round-trip through the value key.
-        assert [m["value"] for m in op.params["matrix"].value] == [
+        op = ops_of(pipe)[0]
+        # Each matrix element is tracked on its own so it can be a per-row
+        # expression; literal floats round-trip element by element.
+        assert op.params["matrix"] == [
             1.0,
             0.0,
             50.0,
@@ -64,8 +65,8 @@ class TestWarpAffinePipelineBuilder:
             1.0,
             30.0,
         ]
-        assert op.params["output_height"].value == 224
-        assert op.params["output_width"].value == 224
+        assert op.params["output_height"] == 224
+        assert op.params["output_width"] == 224
 
     def test_warp_affine_interpolation_default(self) -> None:
         """Default interpolation is bilinear."""
@@ -77,7 +78,7 @@ class TestWarpAffinePipelineBuilder:
                 output_size=(100, 100),
             )
         )
-        assert pipe._ops[0].params["interpolation"].value == "bilinear"
+        assert ops_of(pipe)[0].params["interpolation"] == "bilinear"
 
     def test_warp_affine_nearest_interpolation(self) -> None:
         """Nearest-neighbor interpolation can be specified."""
@@ -90,7 +91,7 @@ class TestWarpAffinePipelineBuilder:
                 interpolation="nearest",
             )
         )
-        assert pipe._ops[0].params["interpolation"].value == "nearest"
+        assert ops_of(pipe)[0].params["interpolation"] == "nearest"
 
     def test_warp_affine_border_value(self) -> None:
         """Custom border value can be specified."""
@@ -103,7 +104,7 @@ class TestWarpAffinePipelineBuilder:
                 border_value=128.0,
             )
         )
-        assert pipe._ops[0].params["border_value"].value == 128.0
+        assert ops_of(pipe)[0].params["border_value"] == 128.0
 
     def test_warp_affine_domain_validation(self) -> None:
         """warp_affine requires buffer domain."""
@@ -125,7 +126,7 @@ class TestWarpAffinePipelineBuilder:
             )
         )
         # auto dtype should remain auto (preserving)
-        assert pipe._output_dtype == "auto"
+        assert planned(pipe).dtype == "auto"
 
     def test_warp_affine_updates_shape_hints(self) -> None:
         """warp_affine updates shape hints to the output_size."""
@@ -137,10 +138,10 @@ class TestWarpAffinePipelineBuilder:
                 output_size=(224, 320),
             )
         )
-        assert pipe._shape_hints.height is not None
-        assert pipe._shape_hints.height.value == 224
-        assert pipe._shape_hints.width is not None
-        assert pipe._shape_hints.width.value == 320
+        assert planned(pipe).height is not None
+        assert planned(pipe).height == 224
+        assert planned(pipe).width is not None
+        assert planned(pipe).width == 320
 
     def test_warp_affine_chaining(self) -> None:
         """warp_affine can be chained with other operations."""
@@ -154,8 +155,8 @@ class TestWarpAffinePipelineBuilder:
             )
             .normalize()
         )
-        assert len(pipe._ops) == 3
-        assert pipe._ops[1].op == "warp_affine"
+        assert len(ops_of(pipe)) == 3
+        assert ops_of(pipe)[1].op == "warp_affine"
 
     def test_warp_affine_immutability(self) -> None:
         """Pipeline is immutable — warp_affine returns a new instance."""
@@ -164,8 +165,8 @@ class TestWarpAffinePipelineBuilder:
             matrix=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             output_size=(100, 100),
         )
-        assert len(pipe1._ops) == 0
-        assert len(pipe2._ops) == 1
+        assert len(ops_of(pipe1)) == 0
+        assert len(ops_of(pipe2)) == 1
 
 
 class TestShearPipelineBuilder:
@@ -178,10 +179,10 @@ class TestShearPipelineBuilder:
             .source("image_bytes")
             .shear(sx=0.2, sy=0.0, output_size=(100, 100))
         )
-        assert len(pipe._ops) == 1
-        assert pipe._ops[0].op == "warp_affine"
-        matrix = pipe._ops[0].params["matrix"].value
-        assert [m["value"] for m in matrix] == [1.0, 0.2, 0.0, 0.0, 1.0, 0.0]
+        assert len(ops_of(pipe)) == 1
+        assert ops_of(pipe)[0].op == "warp_affine"
+        matrix = ops_of(pipe)[0].params["matrix"]
+        assert matrix == [1.0, 0.2, 0.0, 0.0, 1.0, 0.0]
 
     def test_shear_requires_output_size(self) -> None:
         """Shear requires output_size (a required keyword-only argument).
@@ -200,7 +201,7 @@ class TestShearPipelineBuilder:
             .source("image_bytes")
             .shear(sx=0.3, sy=0.1, output_size=(200, 200))
         )
-        matrix = [m["value"] for m in pipe._ops[0].params["matrix"].value]
+        matrix = ops_of(pipe)[0].params["matrix"]
         assert matrix == [1.0, 0.3, 0.0, 0.1, 1.0, 0.0]
 
     def test_shear_domain_validation(self) -> None:
@@ -226,8 +227,8 @@ class TestRotateAndScalePipelineBuilder:
                 output_size=(100, 100),
             )
         )
-        assert len(pipe._ops) == 1
-        assert pipe._ops[0].op == "warp_affine"
+        assert len(ops_of(pipe)) == 1
+        assert ops_of(pipe)[0].op == "warp_affine"
 
     def test_rotate_and_scale_requires_center(self) -> None:
         """rotate_and_scale requires center (a required keyword-only argument)."""
@@ -261,7 +262,7 @@ class TestRotateAndScalePipelineBuilder:
                 output_size=(100, 100),
             )
         )
-        matrix = [m["value"] for m in pipe._ops[0].params["matrix"].value]
+        matrix = ops_of(pipe)[0].params["matrix"]
         rad = math.radians(90.0)
         cos_a = math.cos(rad) * 1.0
         sin_a = math.sin(rad) * 1.0
@@ -285,7 +286,7 @@ class TestRotateAndScalePipelineBuilder:
                 output_size=(200, 200),
             )
         )
-        matrix = [m["value"] for m in pipe._ops[0].params["matrix"].value]
+        matrix = ops_of(pipe)[0].params["matrix"]
         # At angle=0 and scale=2: matrix should be [2, 0, -50, 0, 2, -50]
         assert abs(matrix[0] - 2.0) < 1e-10
         assert abs(matrix[4] - 2.0) < 1e-10
@@ -304,8 +305,8 @@ class TestRotateShapeHintTracking:
             .resize(height=100, width=100)
             .rotate(pl.col("angle"), expand=True)
         )
-        assert pipe._shape_hints.height is None
-        assert pipe._shape_hints.width is None
+        assert planned(pipe).height is None
+        assert planned(pipe).width is None
 
     def test_expr_angle_non_square_clears_hints(self) -> None:
         """Expression angle on a non-square image: 90/270 would swap H/W,
@@ -318,8 +319,8 @@ class TestRotateShapeHintTracking:
             .resize(height=100, width=50)
             .rotate(pl.col("angle"))
         )
-        assert pipe._shape_hints.height is None
-        assert pipe._shape_hints.width is None
+        assert planned(pipe).height is None
+        assert planned(pipe).width is None
 
     def test_expr_angle_square_non_expand_keeps_hints(self) -> None:
         """Square image, no expand: any angle keeps HxW."""
@@ -331,10 +332,10 @@ class TestRotateShapeHintTracking:
             .resize(height=100, width=100)
             .rotate(pl.col("angle"))
         )
-        assert pipe._shape_hints.height is not None
-        assert pipe._shape_hints.height.value == 100
-        assert pipe._shape_hints.width is not None
-        assert pipe._shape_hints.width.value == 100
+        assert planned(pipe).height is not None
+        assert planned(pipe).height == 100
+        assert planned(pipe).width is not None
+        assert planned(pipe).width == 100
 
 
 class TestPerRowAffineParams:
@@ -361,11 +362,11 @@ class TestPerRowAffineParams:
                 output_size=(64, 64),
             )
         )
-        assert pipe._ops[-1].op == "warp_affine"
+        assert ops_of(pipe)[-1].op == "warp_affine"
         # Matrix is serialized as a list of 6 per-element ParamValue dicts.
-        matrix_param = pipe._ops[-1].params["matrix"]
-        assert isinstance(matrix_param.value, list)
-        assert len(matrix_param.value) == 6
+        matrix = ops_of(pipe)[-1].params["matrix"]
+        assert isinstance(matrix, list)
+        assert len(matrix) == 6
 
     def test_warp_affine_mixed_literal_and_expr_matrix(self) -> None:
         import polars as pl
@@ -378,7 +379,7 @@ class TestPerRowAffineParams:
                 output_size=(64, 64),
             )
         )
-        assert len(pipe._ops[-1].params["matrix"].value) == 6
+        assert len(ops_of(pipe)[-1].params["matrix"]) == 6
 
     def test_warp_affine_still_rejects_wrong_length(self) -> None:
         import polars as pl
@@ -396,8 +397,8 @@ class TestPerRowAffineParams:
             .shear(sx=pl.col("shear_x"), output_size=(64, 64))
         )
         # shear delegates to warp_affine; the matrix carries the expr element.
-        assert pipe._ops[-1].op == "warp_affine"
-        assert len(pipe._ops[-1].params["matrix"].value) == 6
+        assert ops_of(pipe)[-1].op == "warp_affine"
+        assert len(ops_of(pipe)[-1].params["matrix"]) == 6
 
 
 @plugin_required

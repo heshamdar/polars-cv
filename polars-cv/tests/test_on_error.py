@@ -9,6 +9,7 @@ import pytest
 
 import polars_cv  # noqa: F401 — registers .cv namespace
 from polars_cv import Pipeline
+from tests._plan_view import source_of
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
@@ -26,14 +27,14 @@ class TestOnErrorValidation:
     def test_default_is_raise(self) -> None:
         """Default on_error is 'raise'."""
         pipe = Pipeline().source("image_bytes")
-        assert pipe._source is not None
-        assert pipe._source.on_error == "raise"
+        assert source_of(pipe) is not None
+        assert source_of(pipe).on_error == "raise"
 
     def test_on_error_null(self) -> None:
         """on_error='null' is accepted."""
         pipe = Pipeline().source("image_bytes", on_error="null")
-        assert pipe._source is not None
-        assert pipe._source.on_error == "null"
+        assert source_of(pipe) is not None
+        assert source_of(pipe).on_error == "null"
 
     def test_invalid_on_error(self) -> None:
         """Invalid on_error value raises ValueError."""
@@ -43,15 +44,15 @@ class TestOnErrorValidation:
     def test_on_error_serialized(self) -> None:
         """on_error='null' is included in serialized dict."""
         pipe = Pipeline().source("image_bytes", on_error="null")
-        assert pipe._source is not None
-        d = pipe._source.to_dict()
+        assert source_of(pipe) is not None
+        d = source_of(pipe).to_dict()
         assert d["on_error"] == "null"
 
     def test_on_error_raise_not_serialized(self) -> None:
         """on_error='raise' (default) is omitted from serialized dict."""
         pipe = Pipeline().source("image_bytes")
-        assert pipe._source is not None
-        d = pipe._source.to_dict()
+        assert source_of(pipe) is not None
+        d = source_of(pipe).to_dict()
         assert "on_error" not in d
 
 

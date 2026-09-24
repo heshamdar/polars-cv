@@ -20,6 +20,7 @@ from PIL import Image
 
 from polars_cv import OptFlags, Pipeline, numpy_from_struct
 from polars_cv._optimize import PASS_NAMES
+from tests._plan_view import op_names, ops_of
 from tests.conftest import plugin_required
 
 
@@ -144,7 +145,7 @@ def _total_ops(graph) -> int:  # type: ignore[no-untyped-def]
     than the same graph with CSE off. This is the 'the pass actually fired'
     signal for the CSE tests.
     """
-    return sum(len(n.pipeline._ops) for n in graph._nodes.values())
+    return sum(len(ops_of(n.pipeline)) for n in graph._nodes.values())
 
 
 def _run_multi(
@@ -368,7 +369,7 @@ class TestSpatialPushdownEquivalence:
                 )
             )
             (node,) = graph._nodes.values()
-            return [op.op for op in node.pipeline._ops]
+            return op_names(node.pipeline)
 
         assert ops(True) == ["crop", "grayscale"]
         assert ops(False) == ["grayscale", "crop"]
