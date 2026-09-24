@@ -1537,13 +1537,6 @@ fn validate_graph_structure(graph: &UnifiedGraph) -> PolarsResult<()> {
                 alias, spec.node
             );
         }
-        match spec.expected_encoding.as_deref() {
-            None | Some("histogram_buckets") => {}
-            Some(other) => polars_bail!(ComputeError:
-                "Output '{}': unknown expected_encoding '{}' (expected 'histogram_buckets')",
-                alias, other
-            ),
-        }
     }
     Ok(())
 }
@@ -1846,7 +1839,7 @@ fn validate_output_schema(
     }
 
     // Rank + per-dim shape, for plain buffer outputs only.
-    if spec.expected_domain.as_str() == "buffer" && spec.expected_encoding.is_none() {
+    if spec.expected_domain.as_str() == "buffer" && !spec.histogram_buckets {
         let actual_shape = buf.shape();
         if let Some(expected_ndim) = spec.expected_ndim {
             if actual_shape.len() != expected_ndim {
@@ -2521,18 +2514,5 @@ mod tests {
             err.contains("unknown source format 'carrier_pigeon'"),
             "{err}"
         );
-    }
-
-    #[test]
-    fn unknown_expected_encoding_is_a_compile_error() {
-        // Previously: silently ignored (treated as plain encoding).
-        let err = compile_err(
-            r#"{
-            "nodes": {"n0": {"source": {"format": "blob"}}},
-            "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}, "expected_encoding": "morse"}},
-            "column_bindings": {"n0": 0}
-        }"#,
-        );
-        assert!(err.contains("unknown expected_encoding 'morse'"), "{err}");
     }
 }
