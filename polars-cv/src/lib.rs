@@ -6,7 +6,6 @@
 mod cloud;
 mod cloud_auth;
 mod contour;
-mod engine_warning;
 mod execute;
 mod ext_types;
 mod fetch;
@@ -16,6 +15,7 @@ mod geom_schema;
 mod graph;
 mod image_metadata;
 mod naming;
+mod ops;
 mod output;
 mod params;
 mod pipeline;
@@ -51,6 +51,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(enum_variants, m)?)?;
     m.add_function(wrap_pyfunction!(enum_names, m)?)?;
     m.add_function(wrap_pyfunction!(known_ops, m)?)?;
+    m.add_function(wrap_pyfunction!(op_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(point_schema, m)?)?;
     m.add_function(wrap_pyfunction!(contour_schema, m)?)?;
     m.add_function(wrap_pyfunction!(bbox_schema, m)?)?;
@@ -186,58 +187,21 @@ pub(crate) fn resolve_op_from_json_probe(
     op_json: &str,
     probe: i64,
 ) -> PyResult<crate::graph::step::GraphStep> {
-    use crate::params::{ParamCtx, ParamValue};
+    use crate::params::ParamCtx;
 
-    let mut op_spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid op json: {e}")))?;
-    // Bind each expression param to a placeholder slot holding `1_i64`,
-    // mirroring what graph compilation does with the real input columns.
-    // `label_reduce.contours` carries the column *name* through the step and
-    // stays unbound, exactly as in `graph::compiled::bind_graph_params`.
-    let keep_named = op_spec.op == "label_reduce";
-    // rasterize-by-shape-reference carries no width/height (they come from
-    // another node's buffer at execution, via the RasterizeShapeRef
-    // resolver). Give introspection placeholder dims so the op resolves; the
-    // structural schema never depends on their values.
-    //
-    // They are *expression* placeholders, not literals, because `op_infer_shape`
-    // does read their values: it reports a dimension as known only when it is
-    // identical across probes, and a literal placeholder would publish a 1x1
-    // canvas as fact for a mask sized by another node.
-    if op_spec.op == "rasterize" && op_spec.params.contains_key("shape_ref") {
-        for dim in ["width", "height"] {
-            op_spec
-                .params
-                .entry(dim.to_string())
-                .or_insert(ParamValue::Expr {
-                    col: Some("__shape_ref__".to_string()),
-                });
+    let op_spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let (op_spec, placeholders) = match op_spec {
+        // Every slot of a typed op reads a placeholder column holding `probe`.
+        crate::pipeline::OpSpec::Typed(op) => {
+            let placeholders = vec![Series::new("".into(), &[probe]); op.min_inputs()];
+            (crate::pipeline::OpSpec::Typed(op), placeholders)
         }
-    }
-    let mut placeholders: Vec<Series> = Vec::new();
-    for (pname, p) in op_spec.params.iter_mut() {
-        if keep_named && pname == "contours" {
-            continue;
+        crate::pipeline::OpSpec::Legacy(spec) => {
+            let (spec, placeholders) = legacy_probe_spec(spec, probe);
+            (crate::pipeline::OpSpec::Legacy(spec), placeholders)
         }
-        if matches!(p, ParamValue::Expr { .. }) {
-            *p = ParamValue::Slot {
-                idx: placeholders.len(),
-            };
-            placeholders.push(Series::new("".into(), &[probe]));
-        } else if let ParamValue::Literal { value } = p {
-            // A literal may itself be a list of ParamValue dicts (reshape's
-            // shape). Neutralize any expression entries the same way so the
-            // op's structural schema (here: the target rank = entry count)
-            // is introspectable regardless of per-row dims.
-            if let Some(arr) = value.as_array_mut() {
-                for entry in arr.iter_mut() {
-                    if entry.get("type").and_then(|t| t.as_str()) == Some("expr") {
-                        *entry = serde_json::json!({"type": "literal", "value": probe});
-                    }
-                }
-            }
-        }
-    }
+    };
     // A *probe* context: placeholders are integers, so a dynamic enum or flag
     // param cannot be read from one. `ParamCtx::probe` tells the enum/bool
     // accessors to substitute their default instead. Sound because only params
@@ -246,6 +210,44 @@ pub(crate) fn resolve_op_from_json_probe(
     let ctx = ParamCtx::probe(&placeholders);
     crate::execute::resolve_op(&op_spec, 0, &ctx)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("resolve_op: {e}")))
+}
+
+/// Point a legacy op's per-row params at placeholder columns holding `probe`.
+fn legacy_probe_spec(
+    mut op_spec: crate::pipeline::LegacyOpSpec,
+    probe: i64,
+) -> (crate::pipeline::LegacyOpSpec, Vec<Series>) {
+    use crate::params::ParamValue;
+    // rasterize-by-shape-reference carries no width/height (they come from
+    // another node's buffer at execution, via the RasterizeShapeRef
+    // resolver). Give introspection placeholder dims so the op resolves; the
+    // structural schema never depends on their values.
+    //
+    // They are *slot* placeholders, not literals, because `op_infer_shape`
+    // does read their values: it reports a dimension as known only when it is
+    // identical across probes, and a literal placeholder would publish a 1x1
+    // canvas as fact for a mask sized by another node.
+    if op_spec.op == "rasterize" && op_spec.params.contains_key("shape_ref") {
+        for dim in ["width", "height"] {
+            op_spec
+                .params
+                .entry(dim.to_string())
+                .or_insert(ParamValue::Slot { idx: 0 });
+        }
+    }
+    // Re-point every per-row param at its own placeholder column holding
+    // `probe`; the slot indices the op arrived with name real inputs that a
+    // plan-time call does not have.
+    let mut placeholders: Vec<Series> = Vec::new();
+    for p in op_spec.params.values_mut() {
+        if matches!(p, ParamValue::Slot { .. }) {
+            *p = ParamValue::Slot {
+                idx: placeholders.len(),
+            };
+            placeholders.push(Series::new("".into(), &[probe]));
+        }
+    }
+    (op_spec, placeholders)
 }
 
 /// Plan-time output shape for a single-buffer op — the single authority for
@@ -261,13 +263,24 @@ pub(crate) fn resolve_op_from_json_probe(
 /// — rotate's zero-copy 90/180/270 fast path swaps H and W — is correctly seen
 /// as unknown for an expression angle over a non-square image, while a literal
 /// angle still resolves to its exact branch.
+///
+/// `None` when the step has no inferable shape (a graph-level step, a
+/// data-dependent output); a `ValueError` when the op's parameters do not fit
+/// the input — the two used to share `ValueError`, and the planner swallowed
+/// both as "not inferable".
 #[pyfunction]
-fn op_infer_shape(op_json: &str, input_dims: Vec<Option<i64>>) -> PyResult<Vec<Option<i64>>> {
+fn op_infer_shape(
+    op_json: &str,
+    input_dims: Vec<Option<i64>>,
+) -> PyResult<Option<Vec<Option<i64>>>> {
     const PROBES: [i64; 4] = [7, 13, 90, 180];
-    let runs: Vec<Vec<i64>> = PROBES
-        .iter()
-        .map(|&p| infer_shape_probe(op_json, &input_dims, p))
-        .collect::<PyResult<_>>()?;
+    let mut runs: Vec<Vec<i64>> = Vec::with_capacity(PROBES.len());
+    for &p in &PROBES {
+        match infer_shape_probe(op_json, &input_dims, p)? {
+            Some(run) => runs.push(run),
+            None => return Ok(None),
+        }
+    }
     let first = &runs[0];
     // Rank is structural (never data-dependent), so it must be stable across
     // probes; a variation signals a contract bug rather than an unknown.
@@ -276,27 +289,29 @@ fn op_infer_shape(op_json: &str, input_dims: Vec<Option<i64>>) -> PyResult<Vec<O
             "op_infer_shape: output rank varied across shape probes",
         ));
     }
-    Ok((0..first.len())
-        .map(|i| {
-            let v = first[i];
-            if runs.iter().all(|r| r[i] == v) {
-                return Some(v);
-            }
-            // An unknown input axis the op carries through unchanged: every
-            // probe's output equals that probe's own input. Its size is still
-            // unknown, but it is provably *the input's* size, which is what
-            // the identity-elimination pass needs to prove a full-frame crop is
-            // a no-op. Reported as `PRESERVED_DIM`; callers that want a size
-            // treat it as unknown. (This used to arrive by accident: a crop's
-            // `usize::MAX` "to the end" extent, cast to i64, was -1.)
-            let unknown_input = matches!(input_dims.get(i), Some(None));
-            let carried = PROBES
-                .iter()
-                .zip(&runs)
-                .all(|(&probe, r)| r[i] == unknown_dim_probe(probe));
-            (unknown_input && carried).then_some(PRESERVED_DIM)
-        })
-        .collect())
+    Ok(Some(
+        (0..first.len())
+            .map(|i| {
+                let v = first[i];
+                if runs.iter().all(|r| r[i] == v) {
+                    return Some(v);
+                }
+                // An unknown input axis the op carries through unchanged: every
+                // probe's output equals that probe's own input. Its size is still
+                // unknown, but it is provably *the input's* size, which is what
+                // the identity-elimination pass needs to prove a full-frame crop is
+                // a no-op. Reported as `PRESERVED_DIM`; callers that want a size
+                // treat it as unknown. (This used to arrive by accident: a crop's
+                // `usize::MAX` "to the end" extent, cast to i64, was -1.)
+                let unknown_input = matches!(input_dims.get(i), Some(None));
+                let carried = PROBES
+                    .iter()
+                    .zip(&runs)
+                    .all(|(&probe, r)| r[i] == unknown_dim_probe(probe));
+                (unknown_input && carried).then_some(PRESERVED_DIM)
+            })
+            .collect(),
+    ))
 }
 
 /// `op_infer_shape`'s "this output axis is the unknown input axis, unchanged".
@@ -338,7 +353,13 @@ fn op_output_channels(op_json: &str, input_channels: Option<usize>) -> PyResult<
 /// One probe of [`op_infer_shape`]: resolve the op with expression params bound
 /// to `probe`, substitute each unknown input dim with `probe`, and run the op's
 /// `infer_shape`.
-fn infer_shape_probe(op_json: &str, input_dims: &[Option<i64>], probe: i64) -> PyResult<Vec<i64>> {
+/// `Ok(None)` when the op has no inferable shape; `Err` when its parameters do
+/// not fit the input (the op's own `validate`).
+fn infer_shape_probe(
+    op_json: &str,
+    input_dims: &[Option<i64>],
+    probe: i64,
+) -> PyResult<Option<Vec<i64>>> {
     use crate::graph::step::GraphStep;
 
     let step = resolve_op_from_json_probe(op_json, probe)?;
@@ -350,40 +371,40 @@ fn infer_shape_probe(op_json: &str, input_dims: &[Option<i64>], probe: i64) -> P
     let op: &dyn view_buffer::Op = match &step {
         GraphStep::Buffer(dto) => dto.as_op(),
         GraphStep::Geometry(geo) => geo,
-        _ => {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "op_infer_shape: only buffer and geometry ops have an inferable shape",
-            ))
-        }
+        // Only buffer and geometry steps carry an inferable shape.
+        _ => return Ok(None),
     };
     let input_shape: Vec<usize> = input_dims
         .iter()
         .map(|d| d.unwrap_or_else(|| unknown_dim_probe(probe)).max(1) as usize)
         .collect();
-    // `infer_shape` implementations index their input shape directly, so an
-    // op whose parameters disagree with the input rank (a transpose carrying
-    // three axes over rank-2 data) panics rather than returning an error.
-    // This is a *planning* call reached from an ordinary Python builder, so a
-    // panic here would escape as a `PanicException` with a Rust backtrace
-    // instead of the ValueError the builder contract promises. Catch it and
-    // report "not inferable"; the builder validates the parameters itself and
-    // raises the actionable message.
-    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    // The op's own `validate` is the authority on which parameters fit the
+    // input: run it against the planned shape. Unknown sizes are placeholders
+    // there, so only a failure that depends on the rank alone is a verdict.
+    // (A size-level failure against fully known dims is still left to
+    // execution, where it has always been a row error; moving it to build time
+    // is a behaviour change for the symbolic-shape phase, P9.)
+    if let Err(e) = op.validate(&[input_shape.as_slice()], &[]) {
+        if e.depends_only_on_rank() {
+            return Err(pyo3::exceptions::PyValueError::new_err(e.to_string()));
+        }
+    }
+    // `infer_shape` implementations index their input shape directly. The
+    // rank-level mismatches that would panic there were rejected by `validate`
+    // above; a size-level one that could not be judged (unknown sizes) may
+    // still panic on placeholder sizes, and is "not inferable" rather than a
+    // `PanicException` escaping into an ordinary builder call.
+    let Ok(out) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         op.infer_shape(&[input_shape.as_slice()])
-    }))
-    .map_err(|_| {
-        pyo3::exceptions::PyValueError::new_err(
-            "op_infer_shape: operation parameters are inconsistent with the input rank",
-        )
-    })?;
+    })) else {
+        return Ok(None);
+    };
     // A step whose output shape is data-dependent (extract_contours) returns
     // an empty shape; report it as "not inferable" rather than as rank 0.
     if out.is_empty() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "op_infer_shape: output shape is not knowable at plan time",
-        ));
+        return Ok(None);
     }
-    Ok(out.iter().map(|&x| x as i64).collect())
+    Ok(Some(out.iter().map(|&x| x as i64).collect()))
 }
 
 /// Shared dtype resolution for `op_schema` (and, transitively, `op_contract`).
@@ -636,15 +657,27 @@ fn rotation_matrix_2d(angle_deg: f64, cx: f64, cy: f64, scale: f64) -> Vec<f64> 
 
 /// Return the names of every operation the executor can resolve.
 ///
-/// This is the registry surfaced from [`crate::execute::KNOWN_OPS`] so Python
-/// can assert that every op a `Pipeline` emits is executable (B1) without
-/// hand-syncing a second list.
+/// The typed catalogue's names plus the not-yet-migrated
+/// [`crate::execute::LEGACY_OPS`], sorted, so Python can assert that every op
+/// a `Pipeline` emits is executable (B1) without hand-syncing a second list.
 #[pyfunction]
 fn known_ops() -> Vec<String> {
-    crate::execute::KNOWN_OPS
+    let mut names: Vec<String> = crate::ops::TypedOp::NAMES
         .iter()
+        .chain(crate::execute::LEGACY_OPS)
         .map(|s| s.to_string())
-        .collect()
+        .collect();
+    names.sort_unstable();
+    names
+}
+
+/// The typed op catalogue as JSON: every typed op's name, Python method name,
+/// visibility, docs and fields. The same text is committed as
+/// `tests/golden/op_catalog.json`, which `scripts/gen_ops.py` reads; Python
+/// tests compare the two so a stale commit cannot pass against a newer build.
+#[pyfunction]
+fn op_catalog() -> String {
+    crate::ops::catalog_json()
 }
 
 /// Return the full contract for a single serialized op spec.
@@ -708,16 +741,22 @@ fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<Py<PyAny>> {
 /// the deciding param was per-row, not on its value.
 #[pyfunction]
 fn op_identity_rule(op_json: &str) -> PyResult<String> {
-    // The names of parameters that are expression-bound in the *original* spec,
+    // The names of parameters that are per-row (slots) in the *original* spec,
     // before `resolve_op_from_json` neutralizes them to a placeholder.
     let spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid op json: {e}")))?;
-    let expr_params: std::collections::HashSet<&str> = spec
-        .params
-        .iter()
-        .filter(|(_, p)| matches!(p, crate::params::ParamValue::Expr { .. }))
-        .map(|(name, _)| name.as_str())
-        .collect();
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let mut expr_params: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    match &spec {
+        crate::pipeline::OpSpec::Typed(op) => op.visit_slots(&mut |name, _| {
+            expr_params.insert(name);
+        }),
+        crate::pipeline::OpSpec::Legacy(spec) => expr_params.extend(
+            spec.params
+                .iter()
+                .filter(|(_, p)| matches!(p, crate::params::ParamValue::Slot { .. }))
+                .map(|(name, _)| name.as_str()),
+        ),
+    }
 
     let rule = resolve_op_from_json(op_json)?.identity_rule();
     // A per-row deciding param means the no-op condition cannot be proven at
@@ -745,11 +784,9 @@ fn op_identity_rule(op_json: &str) -> PyResult<String> {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GraphKwargs {
-    /// JSON-serialized pipeline graph specification.
+    /// JSON-serialized pipeline graph specification. Expression parameters
+    /// in it are positional slots into the call's input series.
     pub graph_json: String,
-    /// Names of expression columns (for resolving dynamic parameters).
-    #[serde(default)]
-    pub expr_column_names: Vec<String>,
 }
 
 /// Shared implementation for graph execution.
@@ -761,10 +798,7 @@ pub struct GraphKwargs {
 /// Everything data-dependent ("auto" dtype resolution, per-row decode/params)
 /// happens inside `CompiledGraph::execute` per call.
 fn execute_graph(inputs: &[Series], kwargs: &GraphKwargs) -> PolarsResult<Series> {
-    let compiled = crate::graph::get_or_compile(&kwargs.graph_json, &kwargs.expr_column_names)?;
-    // Held for the duration of the call so overlapping calls are observed;
-    // warns once if a long call ran alone on one thread. See `engine_warning`.
-    let _call_guard = crate::engine_warning::CallGuard::enter();
+    let compiled = crate::graph::get_or_compile(&kwargs.graph_json)?;
     compiled.execute(inputs)
 }
 
@@ -796,7 +830,7 @@ fn unified_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsRe
     // uses, and `"auto"` sentinels are resolved by the same
     // `resolved_output_specs` — the planned and executed schema are computed
     // by exactly one piece of logic and cannot diverge.
-    let compiled = crate::graph::get_or_compile(&kwargs.graph_json, &kwargs.expr_column_names)?;
+    let compiled = crate::graph::get_or_compile(&kwargs.graph_json)?;
     let graph = compiled.graph();
     let resolved = crate::graph::resolved_output_specs(
         graph,

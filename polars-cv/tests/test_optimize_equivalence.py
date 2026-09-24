@@ -20,6 +20,7 @@ from PIL import Image
 
 from polars_cv import OptFlags, Pipeline, numpy_from_struct
 from polars_cv._optimize import PASS_NAMES
+from tests._plan_view import op_names, ops_of
 from tests.conftest import plugin_required
 
 
@@ -144,7 +145,7 @@ def _total_ops(graph) -> int:  # type: ignore[no-untyped-def]
     than the same graph with CSE off. This is the 'the pass actually fired'
     signal for the CSE tests.
     """
-    return sum(len(n.pipeline._ops) for n in graph._nodes.values())
+    return sum(len(ops_of(n.pipeline)) for n in graph._nodes.values())
 
 
 def _run_multi(
@@ -368,7 +369,7 @@ class TestSpatialPushdownEquivalence:
                 )
             )
             (node,) = graph._nodes.values()
-            return [op.op for op in node.pipeline._ops]
+            return op_names(node.pipeline)
 
         assert ops(True) == ["crop", "grayscale"]
         assert ops(False) == ["grayscale", "crop"]
@@ -617,16 +618,16 @@ class TestOptimizationRegressions:
         self, sample_df: pl.DataFrame
     ) -> None:
         # A crop whose extent equals the input's but whose origin is not (0, 0)
-        # preserves the *planned* shape while running past the edge; the engine
-        # clamps it to a smaller window, so it is not a no-op.
+        # preserves the *planned* shape while its window runs past the edge.
+        # That window is an error (CR-42; it used to be clamped), so it is not
+        # a no-op: were identity elimination to delete it, the error would
+        # turn into a successful, unchanged image under that flag subset.
         pipe = (
             _src().resize(height=20, width=20).crop(top=5, left=5, height=20, width=20)
         )
-        outputs = [
-            _sink_output(sample_df, pipe, f, "numpy") for f in _all_flag_subsets()
-        ]
-        for other in outputs[1:]:
-            assert other == outputs[0], "identity elimination deleted an offset crop"
+        for flags in _all_flag_subsets():
+            with pytest.raises(pl.exceptions.ComputeError, match="outside"):
+                _sink_output(sample_df, pipe, flags, "numpy")
 
     def test_declared_shape_reaching_a_cse_suffix_is_not_trusted(
         self, sample_df: pl.DataFrame

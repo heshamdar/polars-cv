@@ -30,6 +30,9 @@ substantive item still **Open** is **CR-11** (no non-network CI coverage for
 `cloud.rs`/`cloud_auth.rs`); **CR-09** stays *Won't fix (premise corrected)*.
 The 2026-09-23 performance & streaming review opened **CR-31–CR-38** (see
 that section); CR-31 is a silent wrong-answer bug and should go first.
+The 2026-09-24 quality review opened **CR-41–CR-44** (P0: soundness, strict
+input handling, dev-loop and dependency metadata); all four are resolved.
+The typed-op-protocol work is tracked as **CR-45–CR-49** (see `TYPED_OPS_PLAN.md`).
 
 ---
 
@@ -447,9 +450,36 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
   readable name only for error messages. Guard with the repro above as a
   regression test, watched failing first.
 
-### CR-32 — Multi-core execution depends on how Polars happens to chunk the input · `Resolved (re-scoped)` · Low
+### CR-32 — Multi-core execution depends on how Polars happens to chunk the input · `Resolved` · Low
 
-> **Resolved.** `engine_warning.rs` now decides when each call finishes. It
+> **Resolved (P1, 2026-09-24): the call is parallel.** The re-scoping below
+> was reversed by the quality review: eager `with_columns` is the README's
+> first example, so a single-core eager path is the default experience, not a
+> corner. `CompiledGraph::execute` now splits a call's rows into contiguous
+> ranges (a few per thread) that run on the plugin's own `THREAD_POOL`. A
+> plugin links its own polars-core, so it cannot join the host's pool; the
+> plugin's pool is sized by `POLARS_MAX_THREADS` and concurrent calls share
+> it, since callers block while their rows run. Each range has its own
+> `ParamCtx` and scratch; results are concatenated in order; under
+> `on_error="raise"` the earliest failing range's error wins, so the report
+> is the one a sequential run gives. The CR-37 plan cache is now shared across
+> ranges and keyed by layout (up to 16 per segment), so a segment is still
+> planned once per layout per call. Measured on 4 cores (debug build,
+> before → after): 400 PNG rows resize+blur, eager 11.37 s → 2.94 s,
+> streaming 2.90 s → 2.95 s; 200k cheap rows, eager 2.60 s → 0.83 s,
+> streaming 0.74 s → 0.75 s; 8 rows at 1024², eager 3.60 s → 0.96 s,
+> streaming 0.91 s → 0.96 s. Streaming neither gains nor loses. The engine
+> warning, whose advice ("ran on one thread") became false, is deleted.
+> Guards: `compiled.rs::a_call_runs_its_rows_on_several_threads` (watched
+> failing: "256 rows ran on 1 thread(s)"); `tests/test_parallel_rows.py`
+> (order, earliest error, null alignment on a single-chunk 300-row frame —
+> watched failing against two deliberate mutations: reversed range order,
+> last-range error wins); the unchanged plan-count assertions in
+> `static_segments_plan_once_per_source_layout`; and
+> `test_removed_surfaces.py::test_the_single_thread_engine_warning_is_gone`.
+
+> **Previously resolved (re-scoped)** by improving the warning:
+> `engine_warning.rs` now decided when each call finishes. It
 > warns once if that call ran longer than `POLARS_CV_ENGINE_WARN_SECONDS`
 > (default 2 s) and no other plugin call overlapped it. Overlap is tracked per
 > call with a global counter of overlapping starts, so one overlap earlier in
@@ -787,6 +817,198 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
   row's data pointer lies inside the column's own values buffer, for plain,
   sliced, multi-chunk and nested f32 columns. It was watched failing on the
   pointer check first.
+
+---
+
+## Quality review, P0 (2026-09-24)
+
+An independent review against a Polars-plugin quality bar. The P0 items below
+are the small, urgent ones: an unsoundness, silent acceptance of bad input, a
+dev-loop footgun and dependency metadata. Architectural findings from the same
+review (typed op enum, Rust-side planner, symbolic shapes, intra-call
+parallelism) are tracked for later phases, not here.
+
+### CR-41 — A misaligned blob reaches `slice::from_raw_parts` in release builds · `Resolved` · Critical
+
+> **Resolved.** `view_buffer::parse_blob` (`protocol.rs`) is now the one blob
+> parser: bounds, overflow, stride reach and **alignment** (offset and every
+> stride a multiple of the element size). The plugin's zero-copy decode and
+> `ViewBuffer::from_blob` both read through it, so the second parser — which
+> also never checked stored strides, and copied only the logical bytes of a
+> strided blob while keeping its strides (an out-of-bounds read) — is gone.
+> Binary rows are copied into `Vec<u64>`-backed storage so a blob's first byte
+> is 8-aligned by construction, the decode re-checks the absolute address, and
+> `ViewBuffer::as_ptr`'s alignment check is an `assert!` in every build.
+> Guards: `tests/test_blob_protocol.py` (user entry point, watched failing as
+> "the engine panicked: … not aligned") and five `decode.rs` unit tests, four
+> watched failing against the old code. `binary_rows_are_copied_to_an_aligned_address`
+> could not be watched failing — the old `Vec<u8>` copy was aligned by the
+> allocator's choice, which is exactly what it no longer relies on.
+
+- **Location:** `polars-cv/src/graph/decode.rs` `decode_blob_zero_copy`;
+  `view-buffer/src/core/buffer.rs` `as_ptr` / `as_slice`.
+- **What's wrong:** the blob header's `data_offset` and stored strides are
+  bounds-checked but never checked for **alignment**. `as_slice` is a *safe*
+  function whose only alignment check is a `debug_assert!` inside `as_ptr`, so
+  in the release wheels a user-supplied blob with `data_offset` not a multiple
+  of the element size builds a misaligned `&[f32]` — undefined behaviour
+  reachable from column data.
+- **Evidence:** shifting a valid f32 blob's `data_offset` by 1 makes the debug
+  build fail with `engine panicked: ViewBuffer pointer is not aligned for type
+  f32`; the release build compiles that assert out.
+- **Proposed fix:** reject a misaligned offset/stride at decode with a proper
+  error (the `raw` source path too), and make the alignment check in
+  `as_ptr`/`as_slice` unconditional so no other constructor can reintroduce it.
+
+### CR-42 — `crop` and the `raw` source silently accept out-of-range input · `Resolved` · High
+
+> **Resolved.** The `crop` arm rejects a negative bound (so a literal fails
+> while the pipeline is built) and resolves `height`/`width` independently —
+> the review also found that giving only one of them discarded it.
+> `ViewOp::Crop::validate` rejects a window outside the input, so it is a row
+> error under `on_error`. `raw` rejects a byte length that is not a multiple of
+> the element size. Guard: `tests/test_strict_input_bounds.py` (11 cases watched
+> failing). Two existing tests used overrunning crops as fixtures and were
+> updated: `test_offset_crop_with_full_extent_is_not_eliminated` now asserts
+> the offset crop errors under every flag subset (deleting it would turn the
+> error into a success), and `test_a_continuation_carries_its_own_parameter`
+> uses in-bounds heights. `examples/02_image_transforms.py` cropped rows
+> 14..90 of a 72-row image (it silently got 58 rows); its crop now fits. That
+> surfaced only in the slow lane (`test_examples_run`), after the P0 commit,
+> because only the fast lane was run for it.
+
+- **Location:** `polars-cv/src/execute.rs` `"crop"` arm;
+  `polars-cv/src/graph/decode.rs` `decode_binary_zero_copy` (`"raw"`).
+- **What's wrong:**
+  - `crop` clamps a negative `top`/`left` to 0 but keeps the height, so
+    `top=-5, height=10` returns rows 0–9 — a *shifted* window. A window that
+    overruns the image is silently shrunk (`top=15, height=10` on a 20-row
+    image returns 5 rows). The comment claims NumPy/OpenCV conventions; it
+    matches neither.
+  - `raw` computes `len / element_size`, so 10 bytes read as f32 become 2
+    elements and 2 bytes are dropped.
+- **Proposed fix:** both raise. Negative offsets/extents and windows outside
+  the image are errors (a row error, so `on_error` applies); a byte length that
+  is not a multiple of the element size is an error.
+
+### CR-43 — `uv run` builds the release-LTO extension · `Resolved` · Medium
+
+> **Resolved.** `[tool.uv] package = false`: uv treats the project as virtual,
+> so no `uv` command builds it; `maturin develop` remains the one build.
+> Verified: `uv run python …` no longer starts a build and imports the
+> `maturin develop` extension. Guard:
+> `test_build_efficiency.py::test_uv_never_builds_the_project` (watched failing
+> on the old `pyproject.toml`).
+
+- **Location:** `polars-cv/pyproject.toml`; documented commands in `CLAUDE.md`.
+- **What's wrong:** after `uv sync --no-install-project` + `maturin develop`,
+  `uv run <anything>` re-syncs the project and builds it through the maturin
+  backend at `[profile.release]` (fat LTO) — the exact trap `CLAUDE.md` warns
+  about, reached by its own documented `uv run pytest` command. Observed while
+  reviewing.
+- **Proposed fix:** make uv never build/install the project
+  (`[tool.uv] package = false`), so `maturin develop` stays the only extension
+  build, and guard it in `test_build_efficiency.py`.
+
+### CR-44 — Declared dependencies do not describe what the package needs · `Resolved` · Medium
+
+> **Resolved.** Floors measured by running the fast suite against released
+> versions: polars 1.30/1.34/1.35.2 fail at import (no extension-type API),
+> 1.36.1–1.40.1 fail tests (a polars-internal streaming panic in the metrics
+> paths; the engine-warning timing), 1.41.1, 1.41.2 and 1.44.2 are fully
+> green. numpy 2.0.2 is green; 1.26 runs the package but not its reference
+> tests (their scipy/imagehash oracles need numpy 2). Now `polars>=1.41.1,<2.0`,
+> `numpy>=2.0.2`; `networkx`/`graphviz`/`pydot` are the `viz` extra;
+> `pyo3/abi3-py310` matches `requires-python>=3.10`. The `dependency-floors`
+> CI job installs `scripts/dependency_floors.py`'s output (read from
+> `[project] dependencies`) on Python 3.10 — verified locally on 3.10 at those
+> floors (4211 passed). Guards: `tests/test_dependency_metadata.py` (floor
+> parsing with fixtures, viz extra, abi3 parity — watched failing on
+> `abi3-py39` — and a subprocess run with the viz libraries blocked).
+
+- **Location:** `polars-cv/pyproject.toml` `[project] dependencies`.
+- **What's wrong:** `polars>=1.0,<2.0` although the package uses `Expr.ext`
+  (recent polars) and is only tested against the locked version;
+  `networkx`/`graphviz`/`pydot` are hard dependencies of an optional,
+  lazily-imported visualisation feature; `numpy>=2.2.6` excludes NumPy 1.x
+  without a stated reason; `requires-python>=3.10` disagrees with the
+  `abi3-py39` wheel tag.
+- **Proposed fix:** set the polars floor to the oldest version that actually
+  works, move the visualisation libraries to a `viz` extra with a clear
+  ImportError, justify or lower the numpy floor, and align the abi3 tag with
+  `requires-python`.
+
+---
+
+## Typed op protocol (2026-09-24)
+
+The quality review's architectural findings (#6–#9: string-typed op protocol,
+planner split across the FFI, probe-based shape inference, creation-order
+expression keys), planned in [`TYPED_OPS_PLAN.md`](TYPED_OPS_PLAN.md). That file
+carries the phase-by-phase work, the transition discipline and the deletion
+matrix; the entries here track status only.
+
+### CR-45 — Ops cross the boundary as a name plus an untyped param map · `Open` · Medium (design)
+
+- **Location:** `polars-cv/src/pipeline.rs` (`OpSpec`), `execute.rs`
+  (`KNOWN_OPS`, `resolve_op_inner`), `params.rs` (`OpParams`), `pipeline.py`
+  (`OP_NAMES`, hand-written builders), 19 hand-written enum mirrors.
+- **What's wrong:** nothing structural ties Python and Rust together, so
+  agreement is kept by registries, parity tests, source scans and a runtime
+  read-tracker — each a second copy of a fact.
+- **Fix:** one `define_op!` definition per op (typed `Param<T>` / `Literal<T>`
+  fields, serde-enforced), a generated Python builder, and deletion of every
+  check the types make structural. Plan phases P1–P3, P6.
+- **Progress:** P0 (safety net) done — golden corpus, signature snapshot,
+  removed-symbol gate, `tests/_plan_view.py` seam, baselines in
+  `benchmarks/reports/2026-09-24-typed-ops-baseline/`, and the never-read
+  `GraphNode` fields `alias`/`domain`/`output_dtype` deleted. P1 (positional
+  slots) done — expression params are `{"$slot": n}` from a graph-wide
+  `SlotTable` (`Expr.meta.eq` identity); `expr_key`, `expr_column_names` and
+  the Rust name binding are deleted. P2 (catalogue + spike) done — `crop`,
+  `resize`, `warp_affine`, `histogram` are `#[derive(Op)]` structs with
+  generated Python builders; `LEGACY_OPS` holds the remaining 81. P3 in
+  progress: 60 ops typed, 25 legacy left (see the plan's Handover section).
+
+### CR-46 — The planner is split across the FFI and folded twice · `Open` · Medium (design)
+
+- **Location:** `pipeline.py` planner state and `_append_op`/`_push_op`/`_update_*`;
+  `lib.rs` `op_schema`/`op_contract`/`op_infer_shape`/`op_output_channels`/
+  `op_identity_rule`; `graph/compiled.rs` `fold_output_rank`/`fold_output_dtype`.
+- **Fix:** a Rust `Plan` pyclass owns the fold; Python becomes a thin recorder.
+  Plan phase P7.
+
+### CR-47 — Source/sink params are policed by applicability tables · `Open` · Low (design)
+
+- **Location:** `_types.py` `SOURCE_PARAM_APPLIES`/`SINK_PARAM_APPLIES`;
+  `pipeline.rs` `SourceSpec`/`SinkSpec` (`format: String`).
+- **Fix:** tagged enums per format. Plan phase P4.
+
+### CR-48 — Geometry accessors carry a second per-row parameter mechanism · `Open` · Low (design)
+
+- **Location:** `geom_params.rs` (`InputSlots` by name), `contour.rs`/`point.rs`
+  kwargs, `_namespace.py` `_ArgBinder`.
+- **Fix:** the same `Param<T>` + positional slots. Plan phase P5.
+
+### CR-49 — Plan-time shapes are inferred by probing four magic values · `Open` · Low (design)
+
+- **Location:** `lib.rs` `op_infer_shape` (probes 7, 13, 90, 180),
+  `unknown_dim_probe`, `PRESERVED_DIM`, `ParamCtx::probe`.
+- **Fix:** symbolic `Dim` in a required `Op::infer_dims`. Plan phase P9.
+
+### CR-50 — Graph node ids are random, so equal pipelines never share a compiled graph · `Open` · Low (performance)
+
+- **Location:** `lazy.py` `_generate_node_id` (`node_{uuid4}`), `_graph.py`
+  CSE `shared_id` (`_cse_{uuid4}`).
+- **What's wrong:** the graph JSON is the compiled-graph cache key, and every
+  node id in it is random per construction. Two identical pipelines built
+  separately (e.g. once per loop iteration or per request) serialize
+  differently, so each compiles afresh and occupies its own cache slot. Found
+  while pinning P1's JSON determinism (`test_positional_slots.py` normalizes
+  the ids to test the expression encoding alone).
+- **Fix:** derive node ids from content (the node's canonical spec and its
+  upstream ids) rather than `uuid4`; aliases stay user-facing names. Natural
+  home: plan phase P7, where node serialization moves to Rust `Plan`.
 
 ---
 

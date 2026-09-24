@@ -39,10 +39,6 @@ __all__ = ["OPEN_STRUCT_EXEMPT", "all_deserialized_structs", "open_structs"]
 # that happens to reuse it, which is the kind of quiet blanket this module
 # exists to prevent.
 OPEN_STRUCT_EXEMPT = {
-    # Its params ride on `#[serde(flatten)]`, which serde documents as
-    # incompatible with `deny_unknown_fields`. The one documented, permanent
-    # exception on the wire format — not a precedent, see `CLAUDE.md`.
-    "pipeline.rs::OpSpec": "params ride on #[serde(flatten)]",
     # A deliberate *partial* parse of a Google ADC file: it reads only `type`
     # so that `service_account` files, whose bodies differ, do not trip a
     # full-schema parse. Closing it would break that by design. It also reads

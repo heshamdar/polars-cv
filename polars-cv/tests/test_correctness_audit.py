@@ -25,6 +25,7 @@ import polars as pl
 import pytest
 
 from polars_cv import CONTOUR_SCHEMA, Pipeline, numpy_from_struct
+from tests._plan_view import ops_of
 from tests.conftest import plugin_required
 
 # ---------------------------------------------------------------------------
@@ -920,7 +921,7 @@ class TestPipelineValidation:
         """Operations without source is valid (for use with .pipe() composition)."""
         # This is the intended API: pipelines without source for continuation
         pipe = Pipeline().resize(height=100, width=100)
-        assert len(pipe._ops) == 1
+        assert len(ops_of(pipe)) == 1
 
     def test_invalid_source_format(self) -> None:
         """Invalid source format should raise."""

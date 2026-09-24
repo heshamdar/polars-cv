@@ -61,6 +61,22 @@ macro_rules! named_variants {
                 $crate::naming::names(Self::NAMED)
             }
         }
+        impl $crate::naming::WireScalar for $ty {
+            const KIND: $crate::naming::WireKind = $crate::naming::WireKind::Name;
+            const PY_TYPE: &'static str = stringify!($ty);
+            fn from_wire(value: $crate::naming::WireValue<'_>) -> Result<Self, String> {
+                $crate::naming::named_from_wire(stringify!($ty), Self::NAMED, value)
+            }
+            fn to_wire(self) -> $crate::naming::WireValue<'static> {
+                $crate::naming::named_to_wire(Self::NAMED, self)
+            }
+            fn spellings() -> Vec<&'static str> {
+                $crate::naming::names(Self::NAMED)
+            }
+            fn probe_value() -> Self {
+                Self::NAMED[0].1
+            }
+        }
         // Exhaustiveness guard: a new variant fails to compile here until it
         // is added to the NAMED table above.
         const _: fn($ty) = |v: $ty| match v { $($ty::$variant => ()),+ };
@@ -146,17 +162,6 @@ registry!(
     crate::ops::NormalizeMethod,
 );
 
-// `NormalizeMethod::Preset` carries payload, so it has no value table and
-// cannot use `named_variants!`. It is registered by hand off its `NAMES` list
-// (which has its own exhaustiveness guard) rather than left out — being
-// unregistered is what stops an enum from being parity-checked at all.
-impl NamedEnum for crate::ops::NormalizeMethod {
-    const ENUM_NAME: &'static str = "NormalizeMethod";
-    fn variant_names() -> Vec<&'static str> {
-        Self::NAMES.to_vec()
-    }
-}
-
 /// Look up a registered enum's variant names.
 pub fn registered_variants(name: &str) -> Option<Vec<&'static str>> {
     REGISTRY.iter().find_map(|(n, f)| (*n == name).then(f))
@@ -175,6 +180,168 @@ pub fn lookup<T: Copy>(table: &[(&str, T)], name: &str) -> Option<T> {
 /// The canonical names of a `NAMED`-style table (for error messages).
 pub fn names<'a, T>(table: &'a [(&'a str, T)]) -> Vec<&'a str> {
     table.iter().map(|(n, _)| *n).collect()
+}
+
+/// A scalar parameter value as it appears on the wire or in a per-row column.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WireValue<'a> {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Str(&'a str),
+}
+
+/// Which kind of per-row column a [`WireScalar`] reads from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireKind {
+    Int,
+    Float,
+    Bool,
+    /// A named enum, read from a string column through its `NAMED` table.
+    Name,
+}
+
+/// A value an op parameter may hold: how it is spelled on the wire and in a
+/// per-row column, and how the op catalogue names its type.
+///
+/// Implemented here for the primitive types and, by [`named_variants!`], for
+/// every named enum — so an enum's spellings on the wire are its `NAMED`
+/// table and nothing else. (It lives in this crate, beside `NamedEnum`,
+/// because the plugin cannot give a blanket impl over this crate's enums
+/// alongside impls for primitives.)
+pub trait WireScalar: Sized + Copy + PartialEq + core::fmt::Debug {
+    /// The per-row column kind.
+    const KIND: WireKind;
+    /// The Python type: `int`, `float`, `bool`, or the enum's name.
+    const PY_TYPE: &'static str;
+    /// Parse a wire or column value; the error names what was expected.
+    fn from_wire(value: WireValue<'_>) -> Result<Self, String>;
+    /// The canonical wire value.
+    fn to_wire(self) -> WireValue<'static>;
+    /// Every accepted spelling, for a named enum; empty otherwise.
+    fn spellings() -> Vec<&'static str>;
+    /// A valid value to stand in for a per-row one under a plan-time probe.
+    fn probe_value() -> Self;
+}
+
+fn describe_wire(value: WireValue<'_>) -> String {
+    match value {
+        WireValue::Int(i) => format!("the integer {i}"),
+        WireValue::Float(f) => format!("the float {f}"),
+        WireValue::Bool(b) => format!("the boolean {b}"),
+        WireValue::Str(s) => format!("the string {s:?}"),
+    }
+}
+
+macro_rules! wire_int {
+    ($($t:ty),+) => {$(
+        impl WireScalar for $t {
+            const KIND: WireKind = WireKind::Int;
+            const PY_TYPE: &'static str = "int";
+            fn from_wire(value: WireValue<'_>) -> Result<Self, String> {
+                match value {
+                    WireValue::Int(i) => <$t>::try_from(i).map_err(|_| {
+                        if i < 0 {
+                            format!("{i} cannot be negative (expected a {} up to {})",
+                                stringify!($t), <$t>::MAX)
+                        } else {
+                            format!("{i} is out of range for {} ({}..={})",
+                                stringify!($t), <$t>::MIN, <$t>::MAX)
+                        }
+                    }),
+                    other => Err(format!("expected an integer, got {}", describe_wire(other))),
+                }
+            }
+            fn to_wire(self) -> WireValue<'static> {
+                WireValue::Int(i64::from(self))
+            }
+            fn spellings() -> Vec<&'static str> {
+                Vec::new()
+            }
+            fn probe_value() -> Self {
+                0
+            }
+        }
+    )+};
+}
+wire_int!(u8, u32, i32, i64);
+
+macro_rules! wire_float {
+    ($($t:ty),+) => {$(
+        impl WireScalar for $t {
+            const KIND: WireKind = WireKind::Float;
+            const PY_TYPE: &'static str = "float";
+            fn from_wire(value: WireValue<'_>) -> Result<Self, String> {
+                match value {
+                    // An integer is a float the caller did not write a `.0` on.
+                    WireValue::Int(i) => Ok(i as $t),
+                    WireValue::Float(f) => Ok(f as $t),
+                    other => Err(format!("expected a number, got {}", describe_wire(other))),
+                }
+            }
+            fn to_wire(self) -> WireValue<'static> {
+                WireValue::Float(f64::from(self))
+            }
+            fn spellings() -> Vec<&'static str> {
+                Vec::new()
+            }
+            fn probe_value() -> Self {
+                0.0
+            }
+        }
+    )+};
+}
+wire_float!(f32, f64);
+
+impl WireScalar for bool {
+    const KIND: WireKind = WireKind::Bool;
+    const PY_TYPE: &'static str = "bool";
+    fn from_wire(value: WireValue<'_>) -> Result<Self, String> {
+        match value {
+            WireValue::Bool(b) => Ok(b),
+            other => Err(format!("expected a boolean, got {}", describe_wire(other))),
+        }
+    }
+    fn to_wire(self) -> WireValue<'static> {
+        WireValue::Bool(self)
+    }
+    fn spellings() -> Vec<&'static str> {
+        Vec::new()
+    }
+    fn probe_value() -> Self {
+        false
+    }
+}
+
+/// [`WireScalar::from_wire`] for a named enum: a string in its `NAMED` table.
+pub fn named_from_wire<T: Copy>(
+    type_name: &str,
+    table: &[(&'static str, T)],
+    value: WireValue<'_>,
+) -> Result<T, String> {
+    match value {
+        WireValue::Str(s) => lookup(table, s).ok_or_else(|| {
+            format!(
+                "unknown {type_name} {s:?}, expected one of {:?}",
+                names(table)
+            )
+        }),
+        other => Err(format!(
+            "expected a {type_name} name (one of {:?}), got {}",
+            names(table),
+            describe_wire(other)
+        )),
+    }
+}
+
+/// [`WireScalar::to_wire`] for a named enum: the variant's canonical name.
+pub fn named_to_wire<T: Copy + PartialEq>(table: &[(&'static str, T)], v: T) -> WireValue<'static> {
+    let name = table
+        .iter()
+        .find(|(_, candidate)| *candidate == v)
+        .map(|(name, _)| *name)
+        .expect("named_variants! lists every variant");
+    WireValue::Str(name)
 }
 
 #[cfg(test)]
@@ -202,13 +369,6 @@ mod tests {
             }
         }
     }
-
-    /// Enums registered without a `named_variants!` table of their own.
-    ///
-    /// One entry, and it is documented at its `impl NamedEnum` above:
-    /// `NormalizeMethod::Preset` carries payload, so the enum has no value
-    /// table and is registered off its `NAMES` list instead.
-    const REGISTERED_WITHOUT_A_TABLE: &[&str] = &["NormalizeMethod"];
 
     /// Every `named_variants!` enum in this crate, found by scanning `src/`.
     ///
@@ -288,14 +448,7 @@ mod tests {
              private, it makes it unchecked."
         );
 
-        let exempt: std::collections::BTreeSet<String> = REGISTERED_WITHOUT_A_TABLE
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let unbacked: Vec<&String> = registered
-            .difference(&declared)
-            .filter(|n| !exempt.contains(*n))
-            .collect();
+        let unbacked: Vec<&String> = registered.difference(&declared).collect();
         assert!(
             unbacked.is_empty(),
             "these names are in REGISTRY but no named_variants! invocation was \

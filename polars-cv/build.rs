@@ -9,7 +9,7 @@
 //! *existing*. The result was old Rust running against new Python, reporting
 //! pass.
 //!
-//! `POLARS_CV_SOURCE_HASH` is derived from every `.rs` file in both crates plus
+//! `POLARS_CV_SOURCE_HASH` is derived from every `.rs` file in the three crates plus
 //! their manifests and the workspace lockfile, so it moves whenever the built
 //! artifact could differ. `polars_cv.build_info()` compares it against the same
 //! hash recomputed from the working tree.
@@ -22,7 +22,7 @@ fn main() {
     let workspace = manifest.parent().expect("crate sits in a workspace");
 
     let mut contents: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    for crate_dir in ["polars-cv", "view-buffer"] {
+    for crate_dir in ["polars-cv", "polars-cv-macros", "view-buffer"] {
         let root = workspace.join(crate_dir);
         collect_rust_sources(&root.join("src"), &root, crate_dir, &mut contents);
         push_file(
@@ -51,7 +51,7 @@ fn main() {
     // files means adding a `.rs` that nothing already-watched references does
     // not rerun this script, so the baked hash goes stale while the recomputed
     // one moves — a mismatch `maturin develop` could not clear.
-    for crate_dir in ["polars-cv", "view-buffer"] {
+    for crate_dir in ["polars-cv", "polars-cv-macros", "view-buffer"] {
         println!(
             "cargo:rerun-if-changed={}",
             workspace.join(crate_dir).join("src").display()

@@ -39,7 +39,6 @@ several minutes. Reach for `--release` only when benchmarking.
 | `graph/compiled.rs` | `CompiledGraph` — process-wide compiled-graph cache (parsed spec, topo order, slot-bound params) |
 | `graph/decode.rs` | Source decoding, `dtype_for_output` schema inference, reflect/symmetric padding |
 | `graph/encode.rs` | Output encoding, geometry op execution |
-| `engine_warning.rs` | One-time warning when one call runs longer than a threshold with no other call overlapping it; points users to `engine="streaming"` (env: `POLARS_CV_SILENCE_ENGINE_WARNING`, `POLARS_CV_ENGINE_WARN_SECONDS`) |
 | `execute.rs` | `resolve_op()` (op-spec to `GraphStep`), decode/encode helpers shared by graph execution |
 | `graph/step.rs` | `GraphStep` — the plugin-level step vocabulary: `Buffer(ViewDto)` plus graph-only steps (binary, mask, merge, geometry, reduction, histogram, perceptual_hash, extract_shape, label_reduce); contract methods read by the FFI |
 | `pipeline.rs` | `SourceSpec`, `SinkSpec`, `OpSpec` serde types for JSON deserialization |
@@ -82,8 +81,10 @@ Single entry point for all pipeline execution, registered via `#[polars_expr]`:
 
 - `inputs[0..n]` — source column(s)
 - `inputs[n..]` — expression parameter columns (dynamic per-row values)
-- `kwargs.graph_json` — JSON-serialized `UnifiedGraph`
-- `kwargs.expr_column_names` — names mapping expression columns
+- `kwargs.graph_json` — JSON-serialized `UnifiedGraph`; an expression parameter
+  is `{"$slot": i}`, the index of its input column (the Python `SlotTable`
+  assigns them: root columns first, then each distinct expression by
+  `Expr.meta.eq`). No names cross the boundary.
 
 Returns a single `Series` (typed column for single output, Struct for multi-output).
 
@@ -93,10 +94,10 @@ Execution is split into a cacheable **compile** phase and a per-call phase
 (`graph/compiled.rs`):
 
 1. `get_or_compile()` fetches a `CompiledGraph` from a process-wide cache
-   keyed by `(graph_json, expr_column_names)` — hash plus full string
-   equality, never the hash alone. On miss, `CompiledGraph::compile()`
-   parses the JSON, computes the topological order, binds every
-   `ParamValue::Expr` to an input slot (`ParamValue::Slot`), and resolves
+   keyed by `graph_json` — hash plus full string equality, never the hash
+   alone. On miss, `CompiledGraph::compile()` parses the JSON, computes the
+   topological order, records the highest slot any param reads (each call
+   checks it against the inputs supplied), and resolves
    all-literal ops once (`OpResolver::Static`); ops with dynamic params
    re-resolve per row through typed slot reads (`OpResolver::Dynamic`).
 2. Per call: build `ParamCtx` (typed accessors over the input series) and

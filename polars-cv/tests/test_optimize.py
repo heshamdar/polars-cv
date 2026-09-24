@@ -24,6 +24,8 @@ from polars_cv._optimize import (
     PassSpec,
     resolve_opt_flags,
 )
+from polars_cv._types import SlotTable
+from tests._plan_view import op_json, op_names, source_of
 from tests.conftest import plugin_required
 
 
@@ -51,7 +53,7 @@ def _graph_of(pipe: Pipeline) -> PipelineGraph:
 
 
 def _node_ops(graph: PipelineGraph) -> list[str]:
-    return [op.op for op in graph._nodes["n"].pipeline._ops]
+    return op_names(graph._nodes["n"].pipeline)
 
 
 class TestRegistry:
@@ -217,7 +219,7 @@ class TestStaging:
 
     def test_serialization_is_verbatim(self) -> None:
         # _to_spec_dict never optimizes; it serializes the ops as written.
-        spec = _removable_op_pipe()._to_spec_dict()
+        spec = _removable_op_pipe()._to_spec_dict(SlotTable().index)
         assert [op["op"] for op in spec["ops"]] == ["resize", "crop"]
 
     def test_optimize_none_changes_nothing(self) -> None:
@@ -253,7 +255,7 @@ class TestImmutability:
         graph = _graph_of(pipe)
         graph.optimize(OptFlags.all())
         # The graph optimized its own copy; the caller's pipeline is untouched.
-        assert [op.op for op in pipe._ops] == ["resize", "crop"]
+        assert op_names(pipe) == ["resize", "crop"]
         assert _node_ops(graph) == ["resize"]
 
 
@@ -280,7 +282,7 @@ class TestExplain:
     def test_explain_does_not_mutate(self) -> None:
         pipe = _removable_op_pipe()
         pipe.explain(optimized=False)
-        assert [op.op for op in pipe._ops] == ["resize", "crop"]
+        assert op_names(pipe) == ["resize", "crop"]
 
     @plugin_required
     def test_optimized_reflects_identity_elimination(self) -> None:
@@ -323,7 +325,7 @@ def _shape_ref() -> "pl.Expr":
 
 
 def _shape_node_ops(graph: PipelineGraph, node_id: str) -> list[str]:
-    return [op.op for op in graph._nodes[node_id].pipeline._ops]
+    return op_names(graph._nodes[node_id].pipeline)
 
 
 class TestToExprRequiresOptimization:
@@ -366,7 +368,7 @@ class TestToExprRequiresOptimization:
         assert graph._optimized is True
         # sink() auto-generates the node id, so read the sole node generically.
         (only_node,) = graph._nodes.values()
-        assert [op.op for op in only_node.pipeline._ops] == ["resize"]
+        assert op_names(only_node.pipeline) == ["resize"]
 
 
 def _crop_after_pointwise_pipe() -> Pipeline:
@@ -431,7 +433,7 @@ class TestSpatialWindowPushdown:
         pipe = _crop_after_pointwise_pipe()
         graph = _graph_of(pipe)
         graph.optimize(OptFlags.all())
-        assert [op.op for op in pipe._ops] == [
+        assert op_names(pipe) == [
             "cast",
             "scale",
             "grayscale",
@@ -501,7 +503,7 @@ class TestSpatialWindowPushdown:
             .pipe(Pipeline().crop(top=0, left=0, height=8, width=8))
             .sink("numpy", return_expr=False, opt_flags=OptFlags.all())
         )
-        op_lists = [[op.op for op in n.pipeline._ops] for n in graph._nodes.values()]
+        op_lists = [op_names(n.pipeline) for n in graph._nodes.values()]
         assert ["crop"] in op_lists
         assert ["grayscale"] in op_lists
 
@@ -516,11 +518,13 @@ class TestShapeSubpipelineStaging:
     """
 
     def test_construction_leaves_shape_subpipeline_logical(self) -> None:
-        # No plugin: pure construction. The embedded shape spec must be the
-        # verbatim logical op chain, NOT a construction-time rewrite.
-        pipe = Pipeline().source("contour", shape=_shape_ref())
-        embedded = pipe._source.shape_pipeline["pipeline"]["ops"]
-        assert [op["op"] for op in embedded] == ["resize", "crop"]
+        # No plugin: pure construction. The source references the shape node
+        # by id only, and that node's ops stay the verbatim logical chain, NOT
+        # a construction-time rewrite.
+        shape = _shape_ref()
+        pipe = Pipeline().source("contour", shape=shape)
+        assert source_of(pipe).shape_node == shape._node_id
+        assert op_names(shape) == ["resize", "crop"]
 
     @plugin_required
     def test_shape_subpipeline_optimization_respects_opt_flags(self) -> None:
@@ -724,32 +728,30 @@ class TestIdentityElimination:
         # when a *deciding* param (a pad amount) is expression-bound, and keeps
         # "always" when only an *irrelevant* param (the fill value behind zero
         # amounts) is per-row — independent of the neutralization placeholder.
-        import json
 
         from polars_cv._lib import op_identity_rule
 
         per_row = Pipeline().source("image_bytes").pad(top=pl.col("t"))
-        assert op_identity_rule(json.dumps(per_row._ops[0].to_dict())) == "never"
+        assert op_identity_rule(op_json(per_row, 0)) == "never"
 
         zero = (
             Pipeline()
             .source("image_bytes")
             .pad(top=0, bottom=0, left=0, right=0, value=pl.col("v"))
         )
-        assert op_identity_rule(json.dumps(zero._ops[0].to_dict())) == "always"
+        assert op_identity_rule(op_json(zero, 0)) == "always"
 
     @plugin_required
     def test_crop_identity_is_gated_on_its_origin(self) -> None:
         # A crop is a candidate no-op only with a literal (0, 0) origin: a
         # non-zero origin with a full extent runs past the edge (the engine
         # clamps it), and a per-row origin cannot be proven zero at plan time.
-        import json
 
         from polars_cv._lib import op_identity_rule
 
         def rule(**origin: object) -> str:
             pipe = Pipeline().source("image_bytes").crop(height=8, width=8, **origin)
-            return op_identity_rule(json.dumps(pipe._ops[0].to_dict()))
+            return op_identity_rule(op_json(pipe, 0))
 
         assert rule(top=0, left=0) == "when_shape_preserved"
         assert rule(top=5, left=0) == "never"
@@ -784,7 +786,7 @@ class TestIdentityElimination:
             .pad(top=0, bottom=0, left=0, right=0)
             .crop(top=0, left=0, height=10, width=10)
         ).sink("numpy", return_expr=False, opt_flags=OptFlags.all())
-        ops = [[o.op for o in n.pipeline._ops] for n in graph._nodes.values()]
+        ops = [op_names(n.pipeline) for n in graph._nodes.values()]
         assert ["crop"] in ops
 
     @plugin_required
@@ -800,7 +802,7 @@ class TestIdentityElimination:
         graph = upstream.pipe(Pipeline().crop(top=0, left=0, height=10, width=10)).sink(
             "numpy", return_expr=False, opt_flags=OptFlags.all()
         )
-        ops = [[o.op for o in n.pipeline._ops] for n in graph._nodes.values()]
+        ops = [op_names(n.pipeline) for n in graph._nodes.values()]
         assert ["resize"] in ops and ["crop"] not in ops
 
 
@@ -820,11 +822,11 @@ class TestSpatialPushdownGuard:
         pipe = Pipeline().source("image_bytes").grayscale()
         pipe._add_binary_op("apply_mask", "mask_node", invert=False)
         pipe = pipe.crop(top=0, left=0, height=8, width=8)
-        assert [op.op for op in pipe._ops] == ["grayscale", "apply_mask", "crop"]
+        assert op_names(pipe) == ["grayscale", "apply_mask", "crop"]
 
         pipe._hoist_spatial_windows_inplace()
         # The crop stays put: apply_mask reads a sibling node, so it is a barrier.
-        assert [op.op for op in pipe._ops] == ["grayscale", "apply_mask", "crop"]
+        assert op_names(pipe) == ["grayscale", "apply_mask", "crop"]
 
     @plugin_required
     def test_control_crop_crosses_a_pointwise_run(self) -> None:
@@ -833,4 +835,4 @@ class TestSpatialPushdownGuard:
         pipe = Pipeline().source("image_bytes").grayscale().invert()
         pipe = pipe.crop(top=1, left=1, height=8, width=8)
         pipe._hoist_spatial_windows_inplace()
-        assert [op.op for op in pipe._ops] == ["crop", "grayscale", "invert"]
+        assert op_names(pipe) == ["crop", "grayscale", "invert"]

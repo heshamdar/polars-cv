@@ -14,45 +14,37 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
+from polars_cv._ops_generated import OP_FIELDS, _OpsMixin
 from polars_cv._types import (
     HINT_DIMS,
     SOURCE_PARAM_APPLIES,
     ApproxMethod,
     BoolOrExpr,
-    BorderMode,
     CloudOptions,
-    ColorSpace,
     Domain,
     DType,
     ExtractMode,
     FetchErrorPolicy,
-    FilterType,
     FloatOrExpr,
     HashAlgorithm,
-    HistogramClosed,
-    HistogramOutput,
-    InterpolationType,
     IntOrExpr,
     LabelReduction,
     LabelRegionMode,
-    NormalizeMethod,
     NullParamPolicy,
     OpSpec,
-    PadMode,
-    PadPosition,
     ParamValue,
     RowErrorPolicy,
     ScaleOrigin,
     ShapeAssertion,
     ShapeHints,
+    SlotTable,
     SourceFormat,
     SourceSpec,
-    StrOrExpr,
     _reject_expr,
     _validate_enum,
-    expr_key,
     is_supplied,
     normalize_cloud_options,
+    planning_slots,
     reject_inapplicable_params,
 )
 
@@ -61,6 +53,7 @@ if TYPE_CHECKING:
 
     from polars_cv._graph import PipelineGraph
     from polars_cv._optimize import OptFlags
+    from polars_cv._types import SlotOf
     from polars_cv.lazy import LazyPipelineExpr
 
 
@@ -120,28 +113,7 @@ def _matrix_param_from_floats(values: "list[float]") -> "ParamValue":
     """
     return ParamValue(
         is_expr=False,
-        value=[{"type": "literal", "value": float(v)} for v in values],
-    )
-
-
-def _param_list(
-    values: "Sequence[Any]",
-    track: "Callable[[Any], ParamValue]",
-) -> "ParamValue":
-    """Serialize a fixed-length parameter list element by element.
-
-    Each element becomes its own ``ParamValue`` dict, so any of them may be a
-    per-row expression while the list *length* stays structural — it fixes the
-    kernel size, channel count, or target rank at planning time. This is the
-    encoding ``reshape`` and ``warp_affine`` already use; Rust reads it back
-    with ``resolve_f32_list`` / ``resolve_usize_list``.
-
-    ``track`` is the owning pipeline's ``_track_expr``, so expression elements
-    are registered as plugin inputs.
-    """
-    return ParamValue(
-        is_expr=False,
-        value=[track(v).to_dict() for v in values],
+        value=[ParamValue(is_expr=False, value=float(v)) for v in values],
     )
 
 
@@ -186,7 +158,7 @@ def _op_contract_for(spec: "OpSpec") -> dict:
     """
     from polars_cv._lib import op_contract
 
-    return op_contract(json.dumps(spec.to_dict()))
+    return op_contract(json.dumps(spec.to_dict(planning_slots)))
 
 
 def _op_reads_sibling_nodes(op: "OpSpec") -> bool:
@@ -238,18 +210,6 @@ def _output_shape_equals_input(
 #: not cross an op — a hard stop, distinct from "crosses unchanged" (the window
 #: itself). See :meth:`Pipeline._spatial_transfer`.
 _SPATIAL_BARRIER = object()
-
-
-def _literal_axes(axes: "Sequence[int]", label: str) -> "ParamValue":
-    """Build an axis-list parameter, rejecting expressions element-wise.
-
-    Axis lists reorder or select dimensions, so they fix the output rank at
-    planning time — unlike value-carrying lists (``convolve2d``'s kernel, a
-    ``normalize`` mean/std pair), whose elements may be per-row.
-    """
-    for axis in axes:
-        _reject_expr(axis, f"'{label}'")
-    return ParamValue(is_expr=False, value=list(axes))
 
 
 def _asserted_rank(dims: "Sequence[int | None]") -> int:
@@ -385,7 +345,46 @@ _STATE_COPIERS: "dict[str, Callable[[Any], Any]]" = {
 _POSITION_KEYED_FIELDS: "tuple[str, ...]" = ("_hint_snapshots", "_assertions")
 
 
-class Pipeline:
+def _encode_field(
+    p: "Pipeline", value: Any, ty: "dict[str, Any]", where: str
+) -> "ParamValue | None":
+    """Encode one typed-op argument per its catalogue type (``OP_FIELDS``).
+
+    ``None`` for an absent optional field. A sequence field is encoded element
+    by element, so each element may be an expression; anything else in its
+    place is passed through for the Rust definition to reject. An expression
+    for a structural (literal-only) field is refused by ``ParamValue``.
+    """
+    kind = ty["kind"]
+    if kind == "optional":
+        return None if value is None else _encode_field(p, value, ty["inner"], where)
+    if kind == "one_of":
+        # The options differ in shape: a sequence picks the sequence option.
+        wants_seq = _is_sequence(value)
+        for option in ty["options"]:
+            if (option["kind"] in ("array", "list")) == wants_seq:
+                return _encode_field(p, value, option, where)
+        msg = f"{where}: no catalogue option takes {type(value).__name__}"
+        raise TypeError(msg)
+    if kind in ("array", "list") and _is_sequence(value):
+        return ParamValue(
+            is_expr=False,
+            value=[
+                _encode_field(p, v, ty["inner"], f"{where}[{i}]")
+                for i, v in enumerate(value)
+            ],
+        )
+    if kind == "scalar" and ty["per_row"]:
+        return p._track_expr(value)
+    return ParamValue(is_expr=False, value=value)
+
+
+def _is_sequence(value: Any) -> bool:
+    """A list-like argument (list, tuple, numpy array), not a string or expr."""
+    return not isinstance(value, (str, bytes, pl.Expr)) and hasattr(value, "__iter__")
+
+
+class Pipeline(_OpsMixin):
     """
     Modular pipeline builder for image and array operations.
 
@@ -435,12 +434,13 @@ class Pipeline:
 
     # Registry of every operation name a pipeline can emit (via builder methods
     # here and the binary-op helpers in lazy.py). It must be *equal* to the Rust
-    # executor's registry (``_lib.known_ops()`` / ``KNOWN_OPS``), not merely a
+    # executor's registry (``_lib.known_ops()``: the typed catalogue plus
+    # ``LEGACY_OPS``), not merely a
     # subset: an op here that Rust cannot resolve fails at execution, and an op
     # Rust knows that is missing here cannot be built at all. Both directions
     # are enforced by ``test_registry_parity_*``, and by
     # ``test_op_names_matches_rust_known_ops_without_the_plugin``, which reads
-    # KNOWN_OPS from the Rust source so the check still runs when the extension
+    # both halves from source so the check still runs when the extension
     # is stale or unbuilt (when the other two quietly skip).
     #
     # It is a hand-written mirror on purpose — deriving it from ``known_ops()``
@@ -614,7 +614,7 @@ class Pipeline:
         domain, dtype, ndim = initial_domain, initial_dtype, initial_ndim
         for op_spec in ops:
             domain, dtype, ndim = op_schema(
-                json.dumps(op_spec.to_dict()), domain, dtype, ndim
+                json.dumps(op_spec.to_dict(planning_slots)), domain, dtype, ndim
             )
         return domain, dtype, ndim
 
@@ -630,9 +630,8 @@ class Pipeline:
         """
         param = ParamValue.from_arg(value)
         if param.is_expr and isinstance(value, pl.Expr):
-            # Check if we already track this expression
-            key = expr_key(value)
-            if not any(expr_key(e) == key for e in self._expr_refs):
+            # Track each distinct expression once (by meta.eq, never by text).
+            if not any(e is value or e.meta.eq(value) for e in self._expr_refs):
                 self._expr_refs.append(value)
         return param
 
@@ -819,6 +818,28 @@ class Pipeline:
         # rule, so an append still costs a constant number of FFI calls.
         new._push_op(spec)
         return new
+
+    def _append_typed(self, op_name: str, values: "dict[str, Any]") -> "Pipeline":
+        """Append a typed op (one in the generated catalogue).
+
+        The generated builder methods (``_ops_generated._OpsMixin``) call this
+        with their arguments as given; each field is encoded by the one rule
+        its catalogue type names. Values are *not* validated here: the op's
+        Rust definition rejects a wrong type, a value out of range, an unknown
+        enum name or a wrong length when :meth:`_push_op` plans the op, so
+        there is no second copy of any of those rules.
+        """
+        fields = OP_FIELDS[op_name]
+
+        def _params(p: "Pipeline") -> dict[str, ParamValue]:
+            params: dict[str, ParamValue] = {}
+            for name, value in values.items():
+                encoded = _encode_field(p, value, fields[name], f"{op_name}({name}=)")
+                if encoded is not None:
+                    params[name] = encoded
+            return params
+
+        return self._append_op(op_name, _params)
 
     def _push_op(
         self,
@@ -1034,32 +1055,6 @@ class Pipeline:
             },
         )
 
-    def _require_axes_within_rank(self, axes: "Sequence[int]", label: str) -> None:
-        """Reject an axis list that does not address the tracked rank.
-
-        The rank is only known some of the time (an ``auto`` source leaves it
-        ``None``), so this is a check that fires when it can rather than a
-        guarantee. It has to exist because ``infer_shape`` indexes the input
-        shape directly: a ``transpose`` carrying three axes over rank-2 data
-        would otherwise reach the engine and abort, and the planner calls
-        ``infer_shape`` from an ordinary builder where a clean ValueError is
-        the contract.
-        """
-        ndim = self._expected_ndim
-        if ndim is None:
-            return
-        # Only range-check plain integers. A Polars expression here is a
-        # *structural* violation with its own error, raised by `_literal_axes`
-        # further down; pre-empting it with a range message would bury the
-        # real problem.
-        bad = [a for a in axes if isinstance(a, int) and not -ndim <= a < ndim]
-        if bad:
-            msg = (
-                f"{label} {list(axes)} is out of range for a {ndim}-dimensional "
-                f"input (valid axes: 0..{ndim - 1})."
-            )
-            raise ValueError(msg)
-
     def _require_input_domain(self, spec: "OpSpec", contract: dict) -> None:
         """Reject an operation whose input domain is not the current domain.
 
@@ -1103,7 +1098,7 @@ class Pipeline:
         from polars_cv._lib import op_schema
 
         domain, dtype, ndim = op_schema(
-            json.dumps(spec.to_dict()),
+            json.dumps(spec.to_dict(planning_slots)),
             self._current_domain,
             self._output_dtype,
             self._expected_ndim,
@@ -1221,7 +1216,9 @@ class Pipeline:
         input_channels = (
             None if current is None or current.is_expr else int(current.value)
         )
-        out = op_output_channels(json.dumps(spec.to_dict()), input_channels)
+        out = op_output_channels(
+            json.dumps(spec.to_dict(planning_slots)), input_channels
+        )
         self._shape_hints.channels = (
             None if out is None else ParamValue(is_expr=False, value=out)
         )
@@ -1295,12 +1292,12 @@ class Pipeline:
             return
         from polars_cv._lib import op_infer_shape
 
-        try:
-            out = op_infer_shape(json.dumps(spec.to_dict()), dims)
-        except ValueError:
+        # A ValueError here is the op's parameters not fitting the input (its
+        # Rust `validate`), raised to the builder's caller as is.
+        out = op_infer_shape(json.dumps(spec.to_dict(planning_slots)), dims)
+        if out is None:
             # No inferable shape for this step — an axis reduction, a
-            # histogram, a channel merge, a binary op, or an op whose params
-            # disagree with the input rank.
+            # histogram, a channel merge, a binary op.
             #
             # Invalidate rather than keep the pre-op values. Several of these
             # steps *do* change H/W (an axis reduction drops a dimension), so
@@ -1612,27 +1609,15 @@ class Pipeline:
             width_param = new._track_expr(width) if width is not None else None
             height_param = new._track_expr(height) if height is not None else None
 
-            # Serialize shape pipeline if provided
-            shape_pipeline_dict = None
+            # The canvas node, by id: Rust takes that node's already-computed
+            # buffer. (The whole shape sub-pipeline used to be embedded here as
+            # well; Rust never read it.)
+            shape_node = None
             if shape is not None:
                 if not isinstance(shape, LazyPipelineExpr):
                     msg = "'shape' must be a LazyPipelineExpr"
                     raise TypeError(msg)
-                # Serialize the shape sub-pipeline's LOGICAL ops verbatim —
-                # construction never optimizes. This embedded dict only carries
-                # the shape node's `node_id`; Rust reads that and fetches the
-                # node's already-computed output (graph/compiled.rs), never these
-                # ops. The real shape node is a normal graph node (added via
-                # `_shape_refs` below), so `PipelineGraph.optimize()` fuses it
-                # like any other node, honoring `opt_flags`. Keeping the embedded
-                # spec logical also makes SourceSpec identity independent of
-                # fusion state.
-                shape_pipeline_dict = {
-                    "node_id": shape._node_id,
-                    "column": str(shape._column),
-                    "pipeline": shape._pipeline._to_spec_dict(),
-                    "upstream": [u._node_id for u in shape._upstream],
-                }
+                shape_node = shape._node_id
                 # Referencing a node by id is not enough to get it executed:
                 # `_shape_refs` is what `cv.pipe` / `LazyPipelineExpr.pipe`
                 # turn into upstream edges, and only an upstream edge puts a
@@ -1649,7 +1634,7 @@ class Pipeline:
                 height=height_param,
                 fill_value=new._track_expr(fill_value),
                 background=new._track_expr(background),
-                shape_pipeline=shape_pipeline_dict,
+                shape_node=shape_node,
                 on_error=on_error,
             )
             new._seed_from_contour_rasterize(shape=shape)
@@ -1900,62 +1885,6 @@ class Pipeline:
 
     # --- View Operations (zero-copy where possible) ---
 
-    def transpose(self, axes: list[int]) -> "Pipeline":
-        """
-        Transpose dimensions.
-
-        Args:
-            axes: New order of axes.
-
-        Returns:
-            Self for chaining.
-        """
-        # Axes are always literals (list of ints)
-        self._require_axes_within_rank(axes, "transpose axes")
-        if (
-            self._expected_ndim is not None
-            and all(isinstance(a, int) for a in axes)
-            and len(axes) != self._expected_ndim
-        ):
-            msg = (
-                f"transpose axes {list(axes)} must name every one of the "
-                f"{self._expected_ndim} input dimensions exactly once."
-            )
-            raise ValueError(msg)
-        return self._append_op(
-            "transpose", lambda p: {"axes": _literal_axes(axes, "axes")}
-        )
-
-    def reshape(self, shape: list[int | pl.Expr]) -> "Pipeline":
-        """
-        Reshape array to new dimensions.
-
-        Args:
-            shape: New shape (list of ints or expressions).
-
-        Returns:
-            Self for chaining.
-        """
-        # Mixed literal/expr shapes: each entry is tracked independently, so
-        # the entry *count* stays structural while any element may be per-row.
-        return self._append_op(
-            "reshape",
-            lambda p: {"shape": _param_list(shape, p._track_expr)},
-        )
-
-    def flip(self, axes: list[int]) -> "Pipeline":
-        """
-        Flip along specified axes.
-
-        Args:
-            axes: Axes to flip.
-
-        Returns:
-            Self for chaining.
-        """
-        self._require_axes_within_rank(axes, "flip axes")
-        return self._append_op("flip", lambda p: {"axes": _literal_axes(axes, "axes")})
-
     def flip_h(self) -> "Pipeline":
         """
         Flip horizontally (along width axis).
@@ -1974,57 +1903,7 @@ class Pipeline:
         """
         return self.flip(axes=[0])
 
-    def crop(
-        self,
-        *,
-        top: IntOrExpr = 0,
-        left: IntOrExpr = 0,
-        height: IntOrExpr | None = None,
-        width: IntOrExpr | None = None,
-    ) -> "Pipeline":
-        """
-        Extract a rectangular region.
-
-        Args:
-            top: Top offset.
-            left: Left offset.
-            height: Crop height (None = to end).
-            width: Crop width (None = to end).
-        """
-
-        def _params(p: "Pipeline") -> dict[str, ParamValue]:
-            params: dict[str, ParamValue] = {
-                "top": p._track_expr(top),
-                "left": p._track_expr(left),
-            }
-            if height is not None:
-                params["height"] = p._track_expr(height)
-            if width is not None:
-                params["width"] = p._track_expr(width)
-            return params
-
-        return self._append_op("crop", _params)
-
     # --- Compute Operations ---
-
-    def cast(self, dtype: str) -> "Pipeline":
-        """
-        Cast to a different data type.
-
-        Args:
-            dtype: Target data type (e.g., "f32", "u8").
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If dtype is invalid or domain is not buffer.
-        """
-        dtype_enum = _validate_enum(dtype, DType, "dtype")
-        return self._append_op(
-            "cast",
-            lambda p: {"dtype": ParamValue(is_expr=False, value=dtype_enum.value)},
-        )
 
     def _out_dtype_target(
         self, op_name: str, out_dtype: str | None, preserve_dtype: bool
@@ -2114,96 +1993,8 @@ class Pipeline:
                 ``preserve_dtype``, or both keywords at once).
         """
         target = self._out_dtype_target("scale", out_dtype, preserve_dtype)
-        new = self._append_op("scale", lambda p: {"factor": p._track_expr(factor)})
+        new = self._scale(factor)
         return self._apply_out_dtype(new, target)
-
-    def normalize(
-        self,
-        method: str = "minmax",
-        mean: list[FloatOrExpr] | None = None,
-        std: list[FloatOrExpr] | None = None,
-        out_dtype: str | None = None,
-    ) -> "Pipeline":
-        """
-        Normalize values to a standard range.
-
-        Args:
-            method: Normalization method. One of:
-                - ``"minmax"``: Scale values to [0, 1] range using per-element
-                  min/max. Output dtype is f32 by default.
-                - ``"zscore"``: Standardize to mean=0, std=1 using per-element
-                  statistics. Output dtype is f32 by default.
-                - ``"preset"``: Apply ImageNet-style channel-wise normalization
-                  using provided ``mean`` and ``std`` values. Each channel is
-                  normalized as ``(x - mean[c]) / std[c]``.
-            mean: Per-channel mean values. Required when ``method="preset"``.
-                Common preset: ``[0.485, 0.456, 0.406]`` (ImageNet). **Each
-                element may be a literal float or a Polars expression**, so
-                per-row statistics can be joined in as columns; the list
-                *length* is the channel count and must be literal.
-            std: Per-channel standard deviation values. Required when
-                ``method="preset"``. Common preset: ``[0.229, 0.224, 0.225]``
-                (ImageNet). Each element accepts an expression, as with
-                ``mean``.
-            out_dtype: Output dtype (default f32). Normalization always computes
-                in f32; the result is then cast to this dtype at execution, so
-                the produced dtype always matches the planned dtype. Accepts any
-                :class:`DType` name. For half precision use the sink dtype
-                instead — ``.sink("numpy", dtype="f16")`` — since the engine has
-                no native f16 type.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If method is invalid or preset is missing mean/std.
-
-        Example:
-            >>> Pipeline().source().normalize(method="minmax")
-            >>> Pipeline().source().normalize(
-            ...     method="preset",
-            ...     mean=[0.485, 0.456, 0.406],
-            ...     std=[0.229, 0.224, 0.225],
-            ... )
-        """
-        method_enum = _validate_enum(method, NormalizeMethod, "normalize method")
-
-        def _params(p: "Pipeline") -> dict[str, ParamValue]:
-            params: dict[str, ParamValue] = {
-                "method": ParamValue(is_expr=False, value=method_enum.value),
-            }
-
-            # Handle preset method with mean/std
-            if method_enum == NormalizeMethod.PRESET:
-                if mean is None or std is None:
-                    msg = "method='preset' requires both 'mean' and 'std' parameters"
-                    raise ValueError(msg)
-                if len(mean) != len(std):
-                    msg = (
-                        f"mean length ({len(mean)}) must match std length ({len(std)})"
-                    )
-                    raise ValueError(msg)
-                params["mean"] = _param_list(mean, p._track_expr)
-                params["std"] = _param_list(std, p._track_expr)
-            elif mean is not None or std is not None:
-                msg = "mean/std parameters are only valid for method='preset'"
-                raise ValueError(msg)
-
-            # Add out_dtype if specified. Normalization computes in f32 and
-            # casts the result to this dtype at execution (so plan ==
-            # production). Unlike `scale`/`clamp`, this one rides on the op:
-            # `out_dtype` is folded into `Normalize`'s `Fixed(out_dtype)` dtype
-            # rule (defaulting to f32), so the planner resolves the right dtype
-            # straight from `output_dtype_rule()`, and the runner's
-            # `apply_normalize` performs the cast.
-            if out_dtype is not None:
-                out_dtype_enum = _validate_enum(out_dtype, DType, "out_dtype")
-                params["out_dtype"] = ParamValue(
-                    is_expr=False, value=out_dtype_enum.value
-                )
-            return params
-
-        return self._append_op("normalize", _params)
 
     def clamp(
         self,
@@ -2242,34 +2033,8 @@ class Pipeline:
         """
         target = self._out_dtype_target("clamp", out_dtype, preserve_dtype)
 
-        new = self._append_op(
-            "clamp",
-            lambda p: {
-                "min": p._track_expr(min_val),
-                "max": p._track_expr(max_val),
-            },
-        )
+        new = self._clamp(min_val, max_val)
         return self._apply_out_dtype(new, target)
-
-    def relu(self) -> "Pipeline":
-        """
-        Apply ReLU activation (max(0, x)).
-
-        All negative values are set to zero, positive values are unchanged.
-        Works on any numeric dtype.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If domain is not buffer.
-
-        Example:
-            ```python
-            >>> pipe = Pipeline().source("image_bytes").relu()
-            ```
-        """
-        return self._append_op("relu", lambda p: {})
 
     # --- Core math primitives ---
     #
@@ -2277,183 +2042,9 @@ class Pipeline:
     # preserved) like ``scale``/``relu`` and fuses automatically with adjacent
     # scalar ops into a single kernel pass — the user never manages fusion.
 
-    def neg(self) -> "Pipeline":
-        """Negate every value (``-x``). Domain: buffer → buffer."""
-        return self._append_op("neg", lambda p: {})
-
-    def abs(self) -> "Pipeline":
-        """Absolute value (``|x|``). Domain: buffer → buffer."""
-        return self._append_op("abs", lambda p: {})
-
-    def sqrt(self) -> "Pipeline":
-        """Square root (``sqrt(x)``; NaN for negative input). Domain: buffer → buffer."""
-        return self._append_op("sqrt", lambda p: {})
-
-    def square(self) -> "Pipeline":
-        """Square (``x * x``). Domain: buffer → buffer."""
-        return self._append_op("square", lambda p: {})
-
-    def reciprocal(self) -> "Pipeline":
-        """Reciprocal (``1 / x``; ±inf at zero). Domain: buffer → buffer."""
-        return self._append_op("reciprocal", lambda p: {})
-
-    def sign(self) -> "Pipeline":
-        """Sign: ``-1``/``0``/``+1`` (``0`` for ±0, NaN for NaN). Domain: buffer → buffer."""
-        return self._append_op("sign", lambda p: {})
-
-    def floor(self) -> "Pipeline":
-        """Round toward negative infinity. Domain: buffer → buffer."""
-        return self._append_op("floor", lambda p: {})
-
-    def ceil(self) -> "Pipeline":
-        """Round toward positive infinity. Domain: buffer → buffer."""
-        return self._append_op("ceil", lambda p: {})
-
-    def round(self) -> "Pipeline":
-        """Round to nearest, ties to even (matches Polars/numpy). Domain: buffer → buffer."""
-        return self._append_op("round", lambda p: {})
-
-    def trunc(self) -> "Pipeline":
-        """Round toward zero (drop the fractional part). Domain: buffer → buffer."""
-        return self._append_op("trunc", lambda p: {})
-
-    def clamp_min(self, value: FloatOrExpr) -> "Pipeline":
-        """
-        Floor values at ``value`` (``max(x, value)``); one-sided clamp.
-
-        Args:
-            value: Lower bound (literal or per-row expression).
-        """
-        return self._append_op("clamp_min", lambda p: {"value": p._track_expr(value)})
-
-    def clamp_max(self, value: FloatOrExpr) -> "Pipeline":
-        """
-        Cap values at ``value`` (``min(x, value)``); one-sided clamp.
-
-        Args:
-            value: Upper bound (literal or per-row expression).
-        """
-        return self._append_op("clamp_max", lambda p: {"value": p._track_expr(value)})
-
-    def add_constant(self, value: FloatOrExpr) -> "Pipeline":
-        """
-        Add a constant to every value (``x + value``).
-
-        Args:
-            value: Constant addend (literal or per-row expression).
-        """
-        return self._append_op(
-            "add_constant", lambda p: {"value": p._track_expr(value)}
-        )
-
-    def subtract_constant(self, value: FloatOrExpr) -> "Pipeline":
-        """
-        Subtract a constant from every value (``x - value``).
-
-        Args:
-            value: Constant subtrahend (literal or per-row expression).
-        """
-        return self._append_op(
-            "subtract_constant", lambda p: {"value": p._track_expr(value)}
-        )
-
     # --- Channel Operations ---
 
-    def channel_select(self, *, index: IntOrExpr) -> "Pipeline":
-        """
-        Extract a single channel from a multi-channel image.
-
-        Produces a 2D [H, W] buffer from a [H, W, C] input.
-
-        Domain: buffer → buffer
-
-        Args:
-            index: Channel index to extract (0-based). Accepts a Polars
-                expression for per-row dynamic selection.
-
-        Returns:
-            Self for chaining.
-
-        Example:
-            ```python
-            >>> pipe = Pipeline().source("image_bytes").channel_select(index=0)  # Red channel
-            ```
-        """
-        return self._append_op(
-            "channel_select", lambda p: {"index": p._track_expr(index)}
-        )
-
-    def channel_swap(self, *, order: list[IntOrExpr]) -> "Pipeline":
-        """
-        Reorder channels in a multi-channel image.
-
-        Domain: buffer → buffer
-
-        Args:
-            order: New channel ordering, e.g. [2, 1, 0] for RGB-to-BGR.
-                **Each index may be a literal or a Polars expression**, so the
-                permutation can vary per row. The list *length* is the channel
-                count and must be literal.
-
-        Returns:
-            Self for chaining.
-
-        Example:
-            ```python
-            >>> pipe = Pipeline().source("image_bytes").channel_swap(order=[2, 1, 0])
-            ```
-        """
-        return self._append_op(
-            "channel_swap", lambda p: {"order": _param_list(order, p._track_expr)}
-        )
-
     # --- Intensity Adjustments ---
-
-    def adjust_contrast(self, *, factor: FloatOrExpr) -> "Pipeline":
-        """
-        Adjust image contrast.
-
-        Scales pixel deviation from the mean: ``(pixel - mean) * factor + mean``.
-
-        Domain: buffer → buffer
-
-        Args:
-            factor: Contrast factor. 1.0 = no change, >1 = more contrast, <1 = less.
-
-        Returns:
-            Self for chaining.
-
-        Example:
-            ```python
-            >>> pipe = Pipeline().source("image_bytes").adjust_contrast(factor=1.5)
-            ```
-        """
-        return self._append_op(
-            "adjust_contrast", lambda p: {"factor": p._track_expr(factor)}
-        )
-
-    def adjust_gamma(self, *, gamma: FloatOrExpr) -> "Pipeline":
-        """
-        Apply gamma (power-law) correction.
-
-        Normalizes to [0,1], applies ``pixel^gamma``, then denormalizes.
-
-        Domain: buffer → buffer
-
-        Args:
-            gamma: Gamma value. <1 = brighter, >1 = darker, 1.0 = no change.
-
-        Returns:
-            Self for chaining.
-
-        Example:
-            ```python
-            >>> pipe = Pipeline().source("image_bytes").adjust_gamma(gamma=0.5)
-            ```
-        """
-        return self._append_op(
-            "adjust_gamma", lambda p: {"gamma": p._track_expr(gamma)}
-        )
 
     def adjust_brightness(
         self, *, factor: FloatOrExpr, preserve_dtype: bool = False
@@ -2484,54 +2075,7 @@ class Pipeline:
         new = self.scale(factor=factor).clamp(min_val=0.0, max_val=255.0)
         return self._apply_out_dtype(new, target)
 
-    def invert(self) -> "Pipeline":
-        """
-        Invert pixel values.
-
-        For u8: ``255 - pixel``. For float [0,1]: ``1.0 - pixel``.
-
-        Domain: buffer → buffer
-
-        Returns:
-            Self for chaining.
-
-        Example:
-            ```python
-            >>> pipe = Pipeline().source("image_bytes").invert()
-            ```
-        """
-        return self._append_op("invert", lambda p: {})
-
     # --- Color Space Conversion ---
-
-    def convert_color(self, from_space: str, to_space: str) -> "Pipeline":
-        """
-        Convert between color spaces.
-
-        Domain: buffer → buffer
-
-        Args:
-            from_space: Source color space (rgb, bgr, hsv, lab, ycbcr, gray).
-            to_space: Target color space (rgb, bgr, hsv, lab, ycbcr, gray).
-
-        Returns:
-            Self for chaining.
-
-        Example:
-            ```python
-            >>> pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
-            ```
-        """
-        # Validate enum values
-        ColorSpace(from_space)
-        ColorSpace(to_space)
-        return self._append_op(
-            "cvt_color",
-            lambda p: {
-                "from_space": ParamValue(is_expr=False, value=from_space),
-                "to_space": ParamValue(is_expr=False, value=to_space),
-            },
-        )
 
     def to_hsv(self) -> "Pipeline":
         """Convert from RGB to HSV color space.
@@ -2568,72 +2112,6 @@ class Pipeline:
         return self.convert_color("rgb", "ycbcr")
 
     # --- Convolution / Filtering ---
-
-    def convolve2d(
-        self,
-        kernel: list[FloatOrExpr],
-        ksize: IntOrExpr,
-        *,
-        normalize: BoolOrExpr = False,
-        border: StrOrExpr = "replicate",
-    ) -> "Pipeline":
-        """
-        Apply generic 2D convolution with an arbitrary kernel.
-
-        Domain: buffer → buffer
-
-        Args:
-            kernel: Flattened kernel values (row-major, ``ksize × ksize``).
-                **Each coefficient may be a literal float or a Polars
-                expression**, so a batch can convolve with a different kernel
-                per row. The kernel *length* is structural and must be a
-                literal odd square.
-            ksize: Kernel dimension (must be odd; kernel is ``ksize × ksize``).
-                Accepts a Polars expression for per-row dynamic values.
-            normalize: If True, divide output by the sum of absolute kernel values.
-            border: Border handling mode (``"replicate"``, ``"zero"``, ``"reflect"``).
-
-        Returns:
-            Self for chaining.
-
-        Example:
-            ```python
-            >>> edge = Pipeline().source("image_bytes").convolve2d(
-            ...     kernel=[-1, -1, -1, -1, 8, -1, -1, -1, -1],
-            ...     ksize=3,
-            ... )
-            ```
-        """
-        if isinstance(ksize, pl.Expr):
-            # `ksize` is only known per row, but the kernel *length* is
-            # structural and still checkable: it must be an odd perfect square.
-            # Previously an expression `ksize` skipped every check, letting a
-            # mismatched kernel reach Rust unvalidated.
-            side = math.isqrt(len(kernel))
-            if side * side != len(kernel) or side % 2 == 0:
-                msg = (
-                    f"convolve2d kernel length {len(kernel)} must be the square "
-                    "of an odd number (9 for 3x3, 25 for 5x5, ...)"
-                )
-                raise ValueError(msg)
-        else:
-            if ksize % 2 == 0:
-                msg = f"convolve2d ksize must be odd, got {ksize}"
-                raise ValueError(msg)
-            if len(kernel) != ksize * ksize:
-                msg = (
-                    f"kernel length {len(kernel)} doesn't match ksize²={ksize * ksize}"
-                )
-                raise ValueError(msg)
-        return self._append_op(
-            "convolve2d",
-            lambda p: {
-                "kernel": _param_list(kernel, p._track_expr),
-                "ksize": p._track_expr(ksize),
-                "normalize": p._track_expr(normalize),
-                "border": _enum_param(border, BorderMode, "border mode", p._track_expr),
-            },
-        )
 
     def sobel(self, *, axis: str = "x", ksize: int = 3) -> "Pipeline":
         """
@@ -2730,106 +2208,7 @@ class Pipeline:
 
     # --- Edge Detection ---
 
-    def canny(
-        self,
-        *,
-        low_threshold: FloatOrExpr = 50.0,
-        high_threshold: FloatOrExpr = 150.0,
-    ) -> "Pipeline":
-        """
-        Canny edge detection.
-
-        Applies Gaussian blur, computes Sobel gradients, performs non-maximum
-        suppression, and applies double-threshold hysteresis. Output is a U8
-        binary edge map (0 or 255).
-
-        Domain: buffer → buffer
-
-        Args:
-            low_threshold: Lower hysteresis threshold.
-            high_threshold: Upper hysteresis threshold.
-
-        Returns:
-            Self for chaining.
-
-        Example:
-            ```python
-            >>> edges = Pipeline().source("image_bytes").canny(low_threshold=50, high_threshold=150)
-            ```
-        """
-        return self._append_op(
-            "canny",
-            lambda p: {
-                "low_threshold": p._track_expr(low_threshold),
-                "high_threshold": p._track_expr(high_threshold),
-            },
-        )
-
     # --- Morphological Operations ---
-
-    def erode(self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1) -> "Pipeline":
-        """
-        Morphological erosion (local minimum filter).
-
-        Shrinks bright regions / grows dark regions by computing the minimum
-        value in a ``ksize × ksize`` rectangular neighborhood.  Requires
-        single-channel input (e.g., after ``.grayscale()`` or ``.threshold()``).
-
-        Domain: buffer → buffer
-
-        Args:
-            ksize: Size of the square structuring element. Must be odd and >= 1.
-                Accepts a Polars expression for per-row dynamic values.
-            iterations: Number of times the erosion is applied.
-                Accepts a Polars expression for per-row dynamic values.
-
-        Returns:
-            New Pipeline with erosion applied.
-
-        Example:
-            ```python
-            >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
-            ```
-        """
-        return self._append_op(
-            "erode",
-            lambda p: {
-                "ksize": p._track_expr(ksize),
-                "iterations": p._track_expr(iterations),
-            },
-        )
-
-    def dilate(self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1) -> "Pipeline":
-        """
-        Morphological dilation (local maximum filter).
-
-        Grows bright regions / shrinks dark regions by computing the maximum
-        value in a ``ksize × ksize`` rectangular neighborhood.  Requires
-        single-channel input (e.g., after ``.grayscale()`` or ``.threshold()``).
-
-        Domain: buffer → buffer
-
-        Args:
-            ksize: Size of the square structuring element. Must be odd and >= 1.
-                Accepts a Polars expression for per-row dynamic values.
-            iterations: Number of times the dilation is applied.
-                Accepts a Polars expression for per-row dynamic values.
-
-        Returns:
-            New Pipeline with dilation applied.
-
-        Example:
-            ```python
-            >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3)
-            ```
-        """
-        return self._append_op(
-            "dilate",
-            lambda p: {
-                "ksize": p._track_expr(ksize),
-                "iterations": p._track_expr(iterations),
-            },
-        )
 
     def morphology_open(self, *, ksize: IntOrExpr = 3) -> "Pipeline":
         """
@@ -2877,85 +2256,9 @@ class Pipeline:
         """
         return self.dilate(ksize=ksize).erode(ksize=ksize)
 
-    def morphology_gradient(self, *, ksize: IntOrExpr = 3) -> "Pipeline":
-        """
-        Morphological gradient (dilate - erode).
-
-        Produces an edge outline by computing the difference between dilation
-        and erosion on the same input.  Requires single-channel input.
-
-        Domain: buffer → buffer
-
-        Args:
-            ksize: Size of the square structuring element. Must be odd and >= 1.
-                Accepts a Polars expression for per-row dynamic values.
-
-        Returns:
-            New Pipeline with morphological gradient applied.
-
-        Example:
-            ```python
-            >>> edges = Pipeline().source("image_bytes").grayscale().threshold(128).morphology_gradient(ksize=3)
-            ```
-        """
-        return self._append_op(
-            "morphology_gradient",
-            lambda p: {
-                "ksize": p._track_expr(ksize),
-            },
-        )
-
     # --- Histogram Equalization ---
 
-    def equalize_histogram(self) -> "Pipeline":
-        """
-        Apply histogram equalization for contrast enhancement.
-
-        Computes the cumulative histogram and maps each pixel through the
-        normalized CDF. Operates per-channel on multi-channel images.
-        Output is U8.
-
-        Domain: buffer → buffer
-
-        Returns:
-            Self for chaining.
-
-        Example:
-            ```python
-            >>> eq = Pipeline().source("image_bytes").grayscale().equalize_histogram()
-            ```
-        """
-        return self._append_op("equalize_histogram", lambda p: {})
-
     # --- Image Operations ---
-
-    def resize(
-        self,
-        *,
-        height: IntOrExpr,
-        width: IntOrExpr,
-        filter: str | pl.Expr = "lanczos3",
-    ) -> "Pipeline":
-        """
-        Resize image to specified dimensions.
-
-        Args:
-            height: Target height.
-            width: Target width.
-            filter: Interpolation: "nearest", "bilinear", "lanczos3" (default).
-
-        Example:
-            >>> Pipeline().source("image_bytes").resize(height=224, width=224)
-        """
-
-        return self._append_op(
-            "resize",
-            lambda p: {
-                "height": p._track_expr(height),
-                "width": p._track_expr(width),
-                "filter": _enum_param(filter, FilterType, "filter", p._track_expr),
-            },
-        )
 
     def resize_scale(
         self,
@@ -3012,489 +2315,13 @@ class Pipeline:
             msg = "Must specify both scale factors or use 'scale' for uniform scaling"
             raise ValueError(msg)
 
-        return self._append_op(
-            "resize_scale",
-            lambda p: {
-                "scale_x": p._track_expr(actual_scale_x),
-                "scale_y": p._track_expr(actual_scale_y),
-                "filter": _enum_param(filter, FilterType, "filter", p._track_expr),
-            },
-        )
-
-    def resize_to_height(
-        self,
-        height: IntOrExpr,
-        *,
-        filter: str | pl.Expr = "lanczos3",
-    ) -> "Pipeline":
-        """
-        Resize image to target height, preserving aspect ratio.
-
-        Width is computed at runtime as: new_width = height * (input_width / input_height)
-
-        Domain: buffer → buffer
-
-        Args:
-            height: Target height (literal or expression).
-            filter: Resize filter ("nearest", "bilinear", "lanczos3").
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If filter is invalid or current domain is not buffer.
-
-        Example:
-            ```python
-            >>> pipe = Pipeline().source("image_bytes").resize_to_height(224)
-            ```
-        """
-
-        return self._append_op(
-            "resize_to_height",
-            lambda p: {
-                "height": p._track_expr(height),
-                "filter": _enum_param(filter, FilterType, "filter", p._track_expr),
-            },
-        )
-
-    def resize_to_width(
-        self,
-        width: IntOrExpr,
-        *,
-        filter: str | pl.Expr = "lanczos3",
-    ) -> "Pipeline":
-        """
-        Resize image to target width, preserving aspect ratio.
-
-        Height is computed at runtime as: new_height = width * (input_height / input_width)
-
-        Domain: buffer → buffer
-
-        Args:
-            width: Target width (literal or expression).
-            filter: Resize filter ("nearest", "bilinear", "lanczos3").
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If filter is invalid or current domain is not buffer.
-
-        Example:
-            ```python
-            >>> pipe = Pipeline().source("image_bytes").resize_to_width(224)
-            ```
-        """
-
-        return self._append_op(
-            "resize_to_width",
-            lambda p: {
-                "width": p._track_expr(width),
-                "filter": _enum_param(filter, FilterType, "filter", p._track_expr),
-            },
-        )
-
-    def resize_max(
-        self,
-        max_size: IntOrExpr,
-        *,
-        filter: str | pl.Expr = "lanczos3",
-    ) -> "Pipeline":
-        """
-        Resize image so the maximum dimension equals target, preserving aspect ratio.
-
-        If input is 200x100 and max_size=50, output is 50x25 (width was max, now 50).
-
-        Domain: buffer → buffer
-
-        Args:
-            max_size: Target for the maximum dimension (literal or expression).
-            filter: Resize filter ("nearest", "bilinear", "lanczos3").
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If filter is invalid or current domain is not buffer.
-
-        Example:
-            ```python
-            >>> # Ensure no dimension exceeds 224
-            >>> pipe = Pipeline().source("image_bytes").resize_max(224)
-            ```
-        """
-
-        return self._append_op(
-            "resize_max",
-            lambda p: {
-                "max_size": p._track_expr(max_size),
-                "filter": _enum_param(filter, FilterType, "filter", p._track_expr),
-            },
-        )
-
-    def resize_min(
-        self,
-        min_size: IntOrExpr,
-        *,
-        filter: str | pl.Expr = "lanczos3",
-    ) -> "Pipeline":
-        """
-        Resize image so the minimum dimension equals target, preserving aspect ratio.
-
-        If input is 200x100 and min_size=50, output is 100x50 (height was min, now 50).
-
-        Domain: buffer → buffer
-
-        Args:
-            min_size: Target for the minimum dimension (literal or expression).
-            filter: Resize filter ("nearest", "bilinear", "lanczos3").
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If filter is invalid or current domain is not buffer.
-
-        Example:
-            ```python
-            >>> # Ensure min dimension is at least 224
-            >>> pipe = Pipeline().source("image_bytes").resize_min(224)
-            ```
-        """
-
-        return self._append_op(
-            "resize_min",
-            lambda p: {
-                "min_size": p._track_expr(min_size),
-                "filter": _enum_param(filter, FilterType, "filter", p._track_expr),
-            },
+        return self._resize_scale(
+            scale_x=actual_scale_x, scale_y=actual_scale_y, filter=filter
         )
 
     # --- Padding Operations ---
 
-    def pad(
-        self,
-        *,
-        top: IntOrExpr = 0,
-        bottom: IntOrExpr = 0,
-        left: IntOrExpr = 0,
-        right: IntOrExpr = 0,
-        value: FloatOrExpr = 0.0,
-        mode: str | pl.Expr = "constant",
-    ) -> "Pipeline":
-        """
-        Add padding to the image.
-
-        Domain: buffer → buffer
-
-        Args:
-            top: Padding on top edge.
-            bottom: Padding on bottom edge.
-            left: Padding on left edge.
-            right: Padding on right edge.
-            value: Fill value for "constant" mode (default 0). Accepts a
-                Polars expression for per-row dynamic values.
-            mode: Padding mode - "constant", "edge", "reflect", "symmetric".
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If mode is invalid or current domain is not buffer.
-
-        Example:
-            ```python
-            >>> pipe = Pipeline().source("image_bytes").pad(top=10, bottom=10)
-            >>> pipe = Pipeline().source("image_bytes").pad(left=20, right=20, value=128)
-            ```
-        """
-
-        return self._append_op(
-            "pad",
-            lambda p: {
-                "top": p._track_expr(top),
-                "bottom": p._track_expr(bottom),
-                "left": p._track_expr(left),
-                "right": p._track_expr(right),
-                "value": p._track_expr(value),
-                "mode": _enum_param(mode, PadMode, "pad mode", p._track_expr),
-            },
-        )
-
-    def pad_to_size(
-        self,
-        *,
-        height: IntOrExpr,
-        width: IntOrExpr,
-        position: str | pl.Expr = "center",
-        value: FloatOrExpr = 0.0,
-    ) -> "Pipeline":
-        """
-        Pad image to exact target size.
-
-        Dimensions are computed at runtime. If image is larger than target,
-        it will NOT be cropped - use resize first if needed.
-
-        Domain: buffer → buffer
-
-        Args:
-            height: Target height.
-            width: Target width.
-            position: Where to place original content:
-                - "center": Center content in padded area (default)
-                - "top-left": Place at top-left corner
-                - "bottom-right": Place at bottom-right corner
-            value: Fill value for padding (default 0). Accepts a Polars
-                expression for per-row dynamic values.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If position is invalid or current domain is not buffer.
-
-        Example:
-            ```python
-            >>> # Pad 50x100 image to 100x200, centered
-            >>> pipe = Pipeline().source("image_bytes").pad_to_size(height=100, width=200)
-            ```
-        """
-
-        return self._append_op(
-            "pad_to_size",
-            lambda p: {
-                "height": p._track_expr(height),
-                "width": p._track_expr(width),
-                "position": _enum_param(
-                    position, PadPosition, "position", p._track_expr
-                ),
-                "value": p._track_expr(value),
-            },
-        )
-
-    def letterbox(
-        self,
-        *,
-        height: IntOrExpr,
-        width: IntOrExpr,
-        value: FloatOrExpr = 0.0,
-        filter: str | pl.Expr = "lanczos3",
-    ) -> "Pipeline":
-        """
-        Resize image maintaining aspect ratio and pad to exact target size.
-
-        This is a composed operation that:
-        1. Resizes the image so it fits within the target dimensions
-        2. Pads to reach exact target size with centered positioning
-
-        Domain: buffer → buffer
-
-        Args:
-            height: Target height (literal or expression).
-            width: Target width (literal or expression).
-            value: Fill value for padding (default 0, typically black). Accepts a
-                Polars expression for per-row dynamic values.
-            filter: Resampling filter for the resize step. Defaults to
-                ``"lanczos3"``, which is what letterbox has always used.
-
-        Returns:
-            Self for chaining.
-
-        Example:
-            ```python
-            >>> # Letterbox any image to 224x224 for VLM input
-            >>> pipe = Pipeline().source("image_bytes").letterbox(height=224, width=224)
-            ```
-        """
-
-        return self._append_op(
-            "letterbox",
-            lambda p: {
-                "height": p._track_expr(height),
-                "width": p._track_expr(width),
-                "value": p._track_expr(value),
-                "filter": _enum_param(filter, FilterType, "filter", p._track_expr),
-            },
-        )
-
-    def grayscale(self) -> "Pipeline":
-        """
-        Convert to grayscale.
-
-        Uses standard luminance formula: 0.299R + 0.587G + 0.114B.
-        """
-        return self._append_op("grayscale", lambda p: {})
-
-    def threshold(self, value: "IntOrExpr | FloatOrExpr") -> "Pipeline":
-        """
-        Apply binary threshold.
-
-        Each element is compared against the threshold; the output is a
-        U8 binary mask (255 if element > value, 0 otherwise).
-
-        The threshold value range depends on the input dtype:
-        - For u8 input: typically 0-255.
-        - For float input (e.g., normalized [0, 1]): use a float value like 0.5.
-
-        Args:
-            value: Threshold value (int or float, or Polars expression).
-        """
-        return self._append_op("threshold", lambda p: {"value": p._track_expr(value)})
-
-    def blur(self, sigma: FloatOrExpr) -> "Pipeline":
-        """
-        Apply Gaussian blur.
-
-        Args:
-            sigma: Standard deviation for Gaussian kernel.
-        """
-        return self._append_op("blur", lambda p: {"sigma": p._track_expr(sigma)})
-
-    def rotate(
-        self,
-        angle: FloatOrExpr,
-        *,
-        expand: bool = False,
-        interpolation: str | pl.Expr = "bilinear",
-        border_value: FloatOrExpr = 0.0,
-    ) -> "Pipeline":
-        """
-        Rotate image by specified angle.
-
-        For angles of 90, 180, or 270 degrees, this uses zero-copy view
-        operations (``interpolation`` and ``border_value`` are ignored).
-        For arbitrary angles, the rotation is performed via an affine
-        transformation using the specified interpolation and border value.
-
-        This is a convenience wrapper around the affine transform family.
-        For more control (e.g., combined rotation + scale, or explicit
-        output sizing), use :meth:`rotate_and_scale` or :meth:`warp_affine`.
-
-        Domain: buffer -> buffer
-
-        Args:
-            angle: Rotation angle in degrees (positive = clockwise).
-                Can be a literal float or Polars expression.
-            expand: If True, expand output dimensions to fit rotated image.
-                If False (default), keep original dimensions (corners may
-                be cropped).
-            interpolation: Interpolation method for arbitrary angles --
-                ``"bilinear"`` (default) or ``"nearest"``. Ignored for
-                90/180/270 degree rotations.
-            border_value: Fill value for out-of-bounds pixels (default 0).
-                Ignored for 90/180/270 degree rotations.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
-
-        Example:
-            ```python
-            >>> # Zero-copy 90-degree rotation
-            >>> pipe = Pipeline().source("image_bytes").rotate(90)
-            >>>
-            >>> # Arbitrary angle with expansion
-            >>> pipe = Pipeline().source("image_bytes").rotate(45, expand=True)
-            >>>
-            >>> # Dynamic angle from column
-            >>> pipe = Pipeline().source("image_bytes").rotate(pl.col("angle"))
-            >>>
-            >>> # Nearest-neighbor interpolation for pixel-art
-            >>> pipe = Pipeline().source("image_bytes").rotate(30, interpolation="nearest")
-            ```
-        """
-        return self._append_op(
-            "rotate",
-            lambda p: {
-                "angle": p._track_expr(angle),
-                "expand": ParamValue(is_expr=False, value=expand),
-                "interpolation": _enum_param(
-                    interpolation, InterpolationType, "interpolation", p._track_expr
-                ),
-                "border_value": p._track_expr(border_value),
-            },
-        )
-
     # --- Affine Transform Operations ---
-
-    def warp_affine(
-        self,
-        matrix: list[FloatOrExpr],
-        output_size: tuple[IntOrExpr, IntOrExpr],
-        *,
-        interpolation: str | pl.Expr = "bilinear",
-        border_value: FloatOrExpr = 0.0,
-    ) -> "Pipeline":
-        """
-        Apply a 2x3 affine transformation matrix.
-
-        The matrix ``[a, b, tx, c, d, ty]`` is a **forward** mapping from
-        source to destination (same convention as OpenCV ``warpAffine``)::
-
-            x_dst = a * x_src + b * y_src + tx
-            y_dst = c * x_src + d * y_src + ty
-
-        The kernel inverts this matrix internally for interpolation.
-
-        Domain: buffer → buffer
-
-        Args:
-            matrix: Six-element sequence representing the 2x3 affine matrix
-                ``[a, b, tx, c, d, ty]`` (forward mapping). **Each element may be
-                a literal float or a Polars expression**, so a batch can apply a
-                different (e.g. random) affine per row in one call — the matrix is
-                resolved per row at execution.
-            output_size: ``(height, width)`` of the output image. Each element
-                accepts a Polars expression for per-row dynamic values.
-            interpolation: Interpolation method -- ``"bilinear"`` (default)
-                or ``"nearest"``.
-            border_value: Pixel value for out-of-bounds regions (default 0).
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If *matrix* does not have 6 elements or domain is wrong.
-
-        Example:
-            ```python
-            >>> # Translate image by (50, 30)
-            >>> pipe = Pipeline().source("image_bytes").warp_affine(
-            ...     matrix=[1.0, 0.0, 50.0, 0.0, 1.0, 30.0],
-            ...     output_size=(224, 224),
-            ... )
-            >>>
-            >>> # Per-sample random affine: each row uses its own matrix columns
-            >>> pipe = Pipeline().source("image_bytes").warp_affine(
-            ...     matrix=[pl.col("a"), pl.col("b"), pl.col("tx"),
-            ...             pl.col("c"), pl.col("d"), pl.col("ty")],
-            ...     output_size=(224, 224),
-            ... )
-            ```
-        """
-        matrix = list(matrix)
-        if len(matrix) != 6:
-            msg = f"Affine matrix must have 6 elements, got {len(matrix)}"
-            raise ValueError(msg)
-        h, w = output_size
-        # Each matrix element is tracked independently so any of them may be a
-        # per-row expression (resolved element-by-element in Rust via
-        # as_param_list); the element *count* stays structural.
-        return self._append_op(
-            "warp_affine",
-            lambda p: {
-                "matrix": _param_list(matrix, p._track_expr),
-                "output_height": p._track_expr(h),
-                "output_width": p._track_expr(w),
-                "interpolation": _enum_param(
-                    interpolation, InterpolationType, "interpolation", p._track_expr
-                ),
-                "border_value": p._track_expr(border_value),
-            },
-        )
 
     def shear(
         self,
@@ -3598,33 +2425,10 @@ class Pipeline:
             >>> Pipeline().source("image_bytes").perceptual_hash()
         """
 
-        # `algorithm` is paired with the structural `hash_size` and stays
-        # literal; reject an expression here rather than letting it fall past
-        # the isinstance check and explode on `.value`.
-        _reject_expr(algorithm, "perceptual_hash 'algorithm'")
-        if isinstance(algorithm, str):
-            algorithm = _validate_enum(algorithm, HashAlgorithm, "algorithm")
-
-        if isinstance(hash_size, pl.Expr):
-            msg = (
-                "hash_size is structural (it fixes the output vector length at "
-                "planning time) and must be a literal, not a Polars expression."
-            )
-            raise TypeError(msg)
-        if hash_size <= 0:
-            msg = "hash_size must be a positive integer"
-            raise ValueError(msg)
-
-        # Transitions to the vector domain (fixed-length 1-D u8 fingerprint).
-        # The domain comes from the op's Rust contract (GraphStep::PerceptualHash
-        # → Domain::Vector), read via op_schema — not assigned here.
-        return self._append_op(
-            "perceptual_hash",
-            lambda p: {
-                "algorithm": ParamValue(is_expr=False, value=algorithm.value),
-                "hash_size": ParamValue(is_expr=False, value=hash_size),
-            },
-        )
+        # The Rust definition validates both (an unknown algorithm, a
+        # non-positive or per-row `hash_size`); this method only keeps the
+        # signature, whose default is the Python enum member.
+        return self._perceptual_hash(algorithm=algorithm, hash_size=hash_size)
 
     # --- Contour/Geometry Operations ---
 
@@ -3770,241 +2574,6 @@ class Pipeline:
 
     # --- Buffer Reduction Operations (buffer → scalar) ---
 
-    def reduce_sum(self) -> "Pipeline":
-        """
-        Sum all elements in the buffer.
-
-        Domain transition: buffer → scalar
-        """
-        return self._append_op("reduce_sum", lambda p: {})
-
-    def reduce_percentile(self, q: FloatOrExpr) -> "Pipeline":
-        """
-        Compute the q-th percentile of all values.
-
-        Uses linear interpolation matching numpy.percentile default behavior.
-
-        Args:
-            q: Percentile to compute, in [0, 100]. Accepts a Polars expression
-                for per-row dynamic values.
-
-        Domain transition: buffer -> scalar
-        """
-        return self._append_op("reduce_percentile", lambda p: {"q": p._track_expr(q)})
-
-    def reduce_popcount(self) -> "Pipeline":
-        """
-        Count set bits (1s) in the buffer.
-
-        Domain transition: buffer → scalar
-        """
-        return self._append_op("reduce_popcount", lambda p: {})
-
-    def reduce_max(self, axis: int | None = None) -> "Pipeline":
-        """
-        Reduce buffer by computing the maximum value.
-
-        When axis is None, computes the global maximum across all elements,
-        returning a single scalar. When axis is specified, reduces along that
-        axis, returning a buffer with one fewer dimension.
-
-        Domain transition:
-            - axis=None: buffer → scalar
-            - axis=N: buffer → buffer (reduced shape)
-
-        Args:
-            axis: Axis to reduce along. None for global reduction.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
-
-        Example:
-            ```python
-            >>> # Global maximum
-            >>> pipe = Pipeline().source("image_bytes").grayscale().reduce_max()
-            >>> df.with_columns(max_val=pl.col("image").cv.pipe(pipe).sink("native"))
-            >>>
-            >>> # Maximum along height axis (returns 1D array per column)
-            >>> pipe = Pipeline().source("image_bytes").reduce_max(axis=0)
-            ```
-        """
-
-        def _params(p: "Pipeline") -> dict[str, ParamValue]:
-            params: dict[str, ParamValue] = {}
-            if axis is not None:
-                params["axis"] = ParamValue(is_expr=False, value=axis)
-            return params
-
-        return self._append_op("reduce_max", _params)
-
-    def reduce_min(self, axis: int | None = None) -> "Pipeline":
-        """
-        Reduce buffer by computing the minimum value.
-
-        When axis is None, computes the global minimum across all elements,
-        returning a single scalar. When axis is specified, reduces along that
-        axis, returning a buffer with one fewer dimension.
-
-        Domain transition:
-            - axis=None: buffer → scalar
-            - axis=N: buffer → buffer (reduced shape)
-
-        Args:
-            axis: Axis to reduce along. None for global reduction.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
-
-        Example:
-            ```python
-            >>> # Global minimum
-            >>> pipe = Pipeline().source("image_bytes").grayscale().reduce_min()
-            >>> df.with_columns(min_val=pl.col("image").cv.pipe(pipe).sink("native"))
-            >>>
-            >>> # Minimum along width axis
-            >>> pipe = Pipeline().source("image_bytes").reduce_min(axis=1)
-            ```
-        """
-
-        def _params(p: "Pipeline") -> dict[str, ParamValue]:
-            params: dict[str, ParamValue] = {}
-            if axis is not None:
-                params["axis"] = ParamValue(is_expr=False, value=axis)
-            return params
-
-        return self._append_op("reduce_min", _params)
-
-    def reduce_mean(self, axis: int | None = None) -> "Pipeline":
-        """
-        Compute arithmetic mean.
-
-        Args:
-            axis: Axis to reduce along. If None, computes global mean.
-
-        Domain transition:
-            - axis=None: buffer → scalar
-            - axis=N: buffer → buffer (reduced shape)
-        """
-
-        def _params(p: "Pipeline") -> dict[str, ParamValue]:
-            params: dict[str, ParamValue] = {}
-            if axis is not None:
-                params["axis"] = ParamValue(is_expr=False, value=axis)
-            return params
-
-        return self._append_op("reduce_mean", _params)
-
-    def reduce_std(self, axis: int | None = None, ddof: IntOrExpr = 0) -> "Pipeline":
-        """
-        Reduce buffer by computing the standard deviation.
-
-        When axis is None, computes the global standard deviation across all
-        elements, returning a single scalar. When axis is specified, reduces
-        along that axis, returning a buffer with one fewer dimension.
-
-        Domain transition:
-            - axis=None: buffer -> scalar
-            - axis=N: buffer -> buffer (reduced shape)
-
-        Args:
-            axis: Axis to reduce along. None for global reduction.
-            ddof: Delta degrees of freedom. 0 for population std (default),
-                1 for sample std. Accepts a Polars expression for per-row
-                dynamic values.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
-
-        Example:
-            ```python
-            >>> # Global standard deviation
-            >>> pipe = Pipeline().source("image_bytes").grayscale().reduce_std()
-            >>> df.with_columns(std=pl.col("image").cv.pipe(pipe).sink("native"))
-            >>>
-            >>> # Sample std (ddof=1)
-            >>> pipe = Pipeline().source("image_bytes").reduce_std(ddof=1)
-            ```
-        """
-
-        def _params(p: "Pipeline") -> dict[str, ParamValue]:
-            params: dict[str, ParamValue] = {"ddof": p._track_expr(ddof)}
-            if axis is not None:
-                params["axis"] = ParamValue(is_expr=False, value=axis)
-            return params
-
-        return self._append_op("reduce_std", _params)
-
-    def reduce_argmax(self, axis: int) -> "Pipeline":
-        """
-        Reduce buffer by finding the index of the maximum value along an axis.
-
-        Unlike other reductions, argmax always requires an axis since the global
-        argmax would be ambiguous for multi-dimensional arrays.
-
-        Domain transition: buffer → buffer (reduced shape, i64 dtype)
-
-        Args:
-            axis: Axis along which to find the maximum index.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
-
-        Example:
-            ```python
-            >>> # Find column with max value per row
-            >>> pipe = Pipeline().source("image_bytes").grayscale().reduce_argmax(axis=1)
-            >>> df.with_columns(max_col=pl.col("image").cv.pipe(pipe).sink("list"))
-            ```
-        """
-        # argmax always returns a buffer with reduced shape (indices)
-        return self._append_op(
-            "reduce_argmax",
-            lambda p: {"axis": ParamValue(is_expr=False, value=axis)},
-        )
-
-    def reduce_argmin(self, axis: int) -> "Pipeline":
-        """
-        Reduce buffer by finding the index of the minimum value along an axis.
-
-        Unlike other reductions, argmin always requires an axis since the global
-        argmin would be ambiguous for multi-dimensional arrays.
-
-        Domain transition: buffer → buffer (reduced shape, i64 dtype)
-
-        Args:
-            axis: Axis along which to find the minimum index.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
-
-        Example:
-            ```python
-            >>> # Find column with min value per row
-            >>> pipe = Pipeline().source("image_bytes").grayscale().reduce_argmin(axis=1)
-            >>> df.with_columns(min_col=pl.col("image").cv.pipe(pipe).sink("list"))
-            ```
-        """
-        # argmin always returns a buffer with reduced shape (indices)
-        return self._append_op(
-            "reduce_argmin",
-            lambda p: {"axis": ParamValue(is_expr=False, value=axis)},
-        )
-
     def extract_shape(self) -> "Pipeline":
         """
         Extract buffer shape as a struct {height, width, channels}.
@@ -4059,52 +2628,6 @@ class Pipeline:
                 ),
             },
         )
-
-    def histogram(
-        self,
-        bins: IntOrExpr | list[float] = 256,
-        range: tuple[FloatOrExpr, FloatOrExpr] | None = None,
-        closed: str = "left",
-        output: str = "buckets",
-    ) -> "Pipeline":
-        """
-        Compute pixel value histogram.
-
-        Args:
-            bins: Number of bins (default 256), a Polars expression for
-                per-row dynamic bin count, or an explicit list of bin edges.
-            range: (min, max) tuple. Auto-detected if None.
-            closed: "left" or "right" interval inclusiveness (default "left").
-            output: "buckets" (list of structs), "counts" (bin counts),
-                    "normalized" (sum to 1.0), "quantized" (pixel indices),
-                    "edges" (bin edges).
-
-        Example:
-            >>> Pipeline().source("image_bytes").grayscale().histogram(bins=8)
-        """
-
-        # Validate output mode
-        output_mode = _validate_enum(output, HistogramOutput, "histogram output mode")
-        closed_mode = _validate_enum(closed, HistogramClosed, "closed mode")
-
-        def _params(p: "Pipeline") -> dict[str, ParamValue]:
-            bins_param: ParamValue
-            if isinstance(bins, list):
-                bins_param = ParamValue(is_expr=False, value=bins)
-            else:
-                bins_param = p._track_expr(bins)
-
-            params: dict[str, ParamValue] = {
-                "bins": bins_param,
-                "closed": ParamValue(is_expr=False, value=closed_mode.value),
-                "output": ParamValue(is_expr=False, value=output_mode.value),
-            }
-            if range is not None:
-                params["range_min"] = p._track_expr(range[0])
-                params["range_max"] = p._track_expr(range[1])
-            return params
-
-        return self._append_op("histogram", _params)
 
     # --- Contour Measure Operations (contour → scalar/vector) ---
 
@@ -4651,7 +3174,7 @@ class Pipeline:
         for op in self._ops:
             entering.append((dtype, ndim))
             domain, dtype, ndim = op_schema(
-                json.dumps(op.to_dict()), domain, dtype, ndim
+                json.dumps(op.to_dict(planning_slots)), domain, dtype, ndim
             )
         survivors = [
             i
@@ -4680,7 +3203,7 @@ class Pipeline:
         """
         from polars_cv._lib import op_identity_rule, op_infer_shape, op_schema
 
-        op_json = json.dumps(spec.to_dict())
+        op_json = json.dumps(spec.to_dict(planning_slots))
         rule = op_identity_rule(op_json)
         if rule == "never":
             return False
@@ -4704,9 +3227,8 @@ class Pipeline:
             entering_dims = self._entering_dims_at(index, entering_ndim)
             if entering_dims is None:
                 return False
-            try:
-                out_dims = op_infer_shape(op_json, entering_dims)
-            except ValueError:
+            out_dims = op_infer_shape(op_json, entering_dims)
+            if out_dims is None:
                 return False
             return _output_shape_equals_input(out_dims, entering_dims)
         return False
@@ -4766,18 +3288,11 @@ class Pipeline:
             },
         )
 
-    def _to_spec_dict(self) -> dict:
+    def _to_spec_dict(self, slot_of: "SlotOf") -> dict:
         """
         Convert pipeline to specification dictionary (without sink).
 
         Used for graph serialization where sink is handled separately.
-
-        The node-level ``domain``/``output_dtype`` are Python-side
-        visualization metadata (consumed by ``_graph_viz.parse_logical_graph``
-        for intermediate nodes, which the terminal-only ``OutputSpec`` cannot
-        supply). Rust's ``GraphNode`` declares but ignores them, computing its
-        own schema from the ops; both are derived from the same ``op_schema``
-        authority, so they cannot drift.
 
         Serialization only serializes: it emits ``self._ops`` verbatim and runs
         no optimization — every pass is applied by ``PipelineGraph.optimize``
@@ -4789,17 +3304,17 @@ class Pipeline:
         separate cache entries. Plan-time shape still crosses the boundary as
         ``expected_shape`` on the output spec, which Rust does read.
 
-        Returns:
-            Dictionary with source, ops, domain, and output_dtype.
-        """
-        spec: dict = {
-            "source": self._source.to_dict() if self._source else None,
-            "ops": [op.to_dict() for op in self._ops],
-            "domain": self._current_domain,
-            "output_dtype": self._output_dtype,
-        }
+        Args:
+            slot_of: The graph's slot resolver (``SlotTable.index``), mapping
+                each expression parameter to its plugin input position.
 
-        return spec
+        Returns:
+            Dictionary with source and ops.
+        """
+        return {
+            "source": self._source.to_dict(slot_of) if self._source else None,
+            "ops": [op.to_dict(slot_of) for op in self._ops],
+        }
 
     # --- Serialization ---
 
@@ -4815,11 +3330,12 @@ class Pipeline:
         """
         self.validate()
 
-        spec: dict = {
-            "source": self._source.to_dict() if self._source else None,
-            "ops": [op.to_dict() for op in self._ops],
-        }
-        return json.dumps(spec)
+        # A lone pipeline's inputs: its column at 0, then its expressions.
+        table = SlotTable()
+        table.add(pl.col("__input__"))
+        for expr in self._expr_refs:
+            table.add(expr)
+        return json.dumps(self._to_spec_dict(table.index))
 
     def _get_expr_columns(self) -> list[pl.Expr]:
         """

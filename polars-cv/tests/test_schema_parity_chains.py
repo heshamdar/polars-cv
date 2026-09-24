@@ -23,6 +23,7 @@ import polars as pl
 import pytest
 
 from polars_cv import Pipeline
+from tests._plan_view import planned
 from tests._schema_parity import (
     assert_not_vacuous,
     assert_plan_equals_exec,
@@ -111,7 +112,7 @@ def test_strip_process_restore_channel_count(channels: int, expected: int) -> No
     ``test_alpha_channel.py`` and never against data until now.
     """
     pipe = _base(channels=channels).convert_color(from_space="rgb", to_space="gray")
-    assert pipe._shape_hints.channels.value == expected
+    assert planned(pipe).channels == expected
 
     df = _df("null_first", channels=channels)
     series = assert_plan_equals_exec(df, pl.col("img").cv.pipe(pipe).sink("list"))
@@ -131,7 +132,7 @@ def test_strip_process_restore_channel_count(channels: int, expected: int) -> No
 def test_grayscale_is_fixed_one_channel_and_drops_alpha(channels: int) -> None:
     """The sibling rule: ``grayscale`` is ``fixed:1`` whatever the input."""
     pipe = _base(channels=channels).grayscale()
-    assert pipe._shape_hints.channels.value == 1
+    assert planned(pipe).channels == 1
 
     df = _df("null_first", channels=channels)
     series = assert_plan_equals_exec(df, pl.col("img").cv.pipe(pipe).sink("list"))

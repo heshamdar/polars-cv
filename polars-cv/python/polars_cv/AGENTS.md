@@ -101,7 +101,7 @@ graph at all. Record the id without the edge and the reference dangles at
 execution — invisibly, for as long as some other consumer happens to pull the
 same node in (masking with the same image, which every example does). The
 appended edge does not disturb the referenced node's own input:
-`_build_column_bindings` keys on the node having a column, and the executor
+`PipelineGraph._to_dict`'s column bindings key on the node having a column, and the executor
 picks the decode path from `has_column_binding`, using upstream only for
 ordering.
 
@@ -170,13 +170,14 @@ rank, or dtype**. Everything else follows from that one invariant.
    thresholds, contrast/gamma/brightness/sharpen factors, morphology
    ksize/iterations, channel_select index, convolve2d ksize, rasterize and
    contour-source `width`/`height`/`fill_value`/`background`, histogram
-   `range_min`/`range_max`, extract_contours `min_area`, reduce_percentile q,
+   `range` (both ends), extract_contours `min_area`, reduce_percentile q,
    reduce_std ddof.
-2. *Per-element lists*, via `_param_list` — the list **length** stays structural
-   while each element may be an expression: warp_affine `matrix`, `reshape`
-   shape, convolve2d `kernel` (which is what makes `sharpen(strength)` dynamic),
-   normalize `mean`/`std`, channel_swap `order`. Rust reads these with
-   `resolve_f32_list` / `resolve_usize_list`.
+2. *Per-element lists* — the list **length** stays structural while each
+   element may be an expression: warp_affine `matrix`, `reshape` shape,
+   convolve2d `kernel` (which is what makes `sharpen(strength)` dynamic),
+   normalize `mean`/`std`, channel_swap `order`. On a typed op these are
+   `Vec<Param<T>>` (or `[Param<T>; N]`) fields, encoded element by element by
+   `_encode_field`.
 3. *Non-structural enums and flags*, via `_enum_param` and `get::opt_bool_dyn`:
    resize/letterbox `filter`, rotate/warp_affine `interpolation`, `pad(mode)`,
    `pad_to_size(position)`, `convolve2d(border)`, extract_contours
@@ -195,14 +196,12 @@ execution strict: routing an integer column into an enum param still errors.
 lists, reduction `axis`, `perceptual_hash(hash_size)`, `reshape` arity,
 `rotate(expand)`, and the dtype-bearing enums `cast(dtype)`,
 `normalize(method`/`out_dtype)`, `histogram(closed`/`output)` fix the plan-time
-schema, so they must be literals. A literal `ParamValue` can never hold a
-`pl.Expr` — `ParamValue.__post_init__` (`_types.py`) rejects it with a clear
-"structural" error, and the Rust resolvers (`params::get::maybe_usize_literal` /
-`opt_u32_literal` / `req_enum_literal`, and `ParamValue::resolve_string`) reject
-a bound expression slot as defense-in-depth. Guarded by
-`TestStructuralParamsRejectExpressions` / `TestFillRangeParamsAcceptExpressions`
-in `test_param_strictness.py` and `test_structural_literal_resolvers_reject_bound_slots`
-in `params.rs`.
+schema, so they must be literals. On a typed op the field is a `Literal<T>`: a
+literal `ParamValue` can never hold a `pl.Expr` (`ParamValue.__post_init__`
+raises the "structural" error in Python), and `{"$slot": n}` in a `Literal` is
+a serde error in Rust (`ops::tests::a_slot_in_a_structural_field_is_rejected`).
+Guarded by `TestStructuralParamsRejectExpressions` in
+`test_param_strictness.py`.
 
 **The geometry namespaces use a different mechanism.** `.contour`/`.point`/`.bbox`
 bypass `vb_graph`, so they have no `ParamValue`. Their per-row channel is the

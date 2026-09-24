@@ -31,7 +31,7 @@ def op_contract(spec_json: str) -> dict[str, Any]:
 def op_output_channels(spec_json: str, input_channels: int | None) -> int | None:
     """Plan-time output channel count for a single op."""
 
-def op_infer_shape(spec_json: str, dims: list[int | None]) -> list[int | None]:
+def op_infer_shape(spec_json: str, dims: list[int | None]) -> list[int | None] | None:
     """Plan-time output shape for a single-buffer op. Raises ``ValueError`` when
     no shape is inferable."""
 
@@ -51,6 +51,9 @@ def rotation_matrix_2d(
 
 def known_ops() -> list[str]:
     """Return the names of every operation the executor can resolve."""
+
+def op_catalog() -> str:
+    """Return the typed op catalogue as JSON (see ``tests/golden/op_catalog.json``)."""
 
 def enum_variants(name: str) -> list[str]:
     """Return the string variants of a Rust enum, for Python<->Rust parity checks."""

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from polars_cv._graph_viz import get_graphviz_out
-from polars_cv._types import expr_key
+from polars_cv._types import SlotTable
 
 if TYPE_CHECKING:
     import pydot
@@ -160,7 +160,6 @@ class PipelineGraph:
         self._nodes: dict[str, GraphNode] = {}
         self._output: GraphOutput | None = None
         self._multi_output: MultiGraphOutput | None = None
-        self._column_bindings: dict[str, int] = {}
         # Mapping from alias names to node IDs
         self._alias_to_node: dict[str, str] = {}
         # Set by ``optimize()``. Serialization (``to_expr``) refuses to run on a
@@ -411,6 +410,7 @@ class PipelineGraph:
             Dict mapping group keys to lists of nodes in that group.
         """
         groups: dict[str, list[GraphNode]] = {}
+        table = self._slot_table()
 
         for node in self._nodes.values():
             # Only consider root nodes (those with column bindings)
@@ -421,12 +421,14 @@ class PipelineGraph:
             # canonical serialization, not ``hash(source)``: a hash collision
             # would bucket two *different* sources together and fuse a shared
             # prefix node with the wrong source. String equality cannot collide.
-            col_str = expr_key(node.column)
+            col_key = table.index(node.column)
             source = node.pipeline._source
             source_key = (
-                json.dumps(source.to_dict(), sort_keys=True) if source else "none"
+                json.dumps(source.to_dict(table.index), sort_keys=True)
+                if source
+                else "none"
             )
-            group_key = f"{col_str}:{source_key}"
+            group_key = f"{col_key}:{source_key}"
 
             if group_key not in groups:
                 groups[group_key] = []
@@ -598,115 +600,47 @@ class PipelineGraph:
                 )
                 raise ValueError(msg)
 
-        # Build column bindings (assign index to each unique column)
-        self._build_column_bindings()
-
-        # Collect all column expressions in order (source columns first)
-        columns = self._get_ordered_columns()
-
-        # Collect expression columns from all nodes' pipelines
-        expr_columns, expr_column_names = self._get_expr_columns()
-
-        # Add expression columns to args (after source columns)
-        all_args = columns + expr_columns
-
-        # Serialize graph to JSON
-        graph_json = self._to_json()
+        # One positional table for the plugin's inputs: root columns first,
+        # then every expression parameter. Serialization reads the same table,
+        # so positions and arguments cannot disagree.
+        table = self._slot_table()
 
         # Unified graph execution handles both single and multi-output
         return _plugin.call(
             "vb_graph",
-            args=all_args,
-            kwargs={
-                "graph_json": graph_json,
-                "expr_column_names": expr_column_names,
-            },
+            args=table.columns,
+            kwargs={"graph_json": self._to_json()},
             is_elementwise=True,
         )
 
-    def _build_column_bindings(self) -> None:
-        """Build mapping from node IDs to column indices.
+    def _slot_table(self) -> SlotTable:
+        """The plugin's inputs, in order: each distinct root column, then each
+        distinct expression parameter (identity by ``Expr.meta.eq``).
 
-        Only root nodes (those with columns) get bindings.
-        Non-root nodes receive data from upstream nodes.
+        Derived from the nodes on demand, so it always describes the current
+        graph (CSE rewrites nodes) and every reader gets the same positions.
         """
-        seen_columns: dict[str, int] = {}
-        idx = 0
-
-        for node_id, node in self._nodes.items():
-            if node.column is not None:
-                # Get a string representation of the column for deduplication
-                col_str = expr_key(node.column)
-                if col_str not in seen_columns:
-                    seen_columns[col_str] = idx
-                    idx += 1
-                self._column_bindings[node_id] = seen_columns[col_str]
-            # Non-root nodes don't have column bindings - they receive from upstream
-
-    def _get_ordered_columns(self) -> list[pl.Expr]:
-        """Get unique column expressions in order.
-
-        Only includes columns from root nodes (nodes with column expressions).
-        """
-        seen: set[str] = set()
-        columns: list[pl.Expr] = []
-
+        table = SlotTable()
         for node in self._nodes.values():
             if node.column is not None:
-                col_str = expr_key(node.column)
-                if col_str not in seen:
-                    seen.add(col_str)
-                    columns.append(node.column)
-
-        return columns
-
-    def _get_expr_columns(self) -> tuple[list[pl.Expr], list[str]]:
-        """Get expression columns from all node pipelines.
-
-        Collects expression parameters (like pl.col("height")) from all
-        pipeline operations in the graph, deduplicating by string representation.
-
-        Returns:
-            Tuple of (expression_list, column_names_list).
-            The expressions and names are in the same order.
-
-        Note:
-            Uses the expression's string representation as the identifier name.
-            This matches the key used in ParamValue.to_dict() to ensure expression
-            values can be correctly looked up on the Rust side. This avoids
-            collisions when multiple expressions share the same root column
-            (e.g., col("x").list.get(0).max() and col("x").list.get(1).max()).
-        """
-        seen: set[str] = set()
-        expr_columns: list[pl.Expr] = []
-        expr_names: list[str] = []
-
+                table.add(node.column)
         for node in self._nodes.values():
-            # Get expression columns from this node's pipeline
             for expr in node.pipeline._get_expr_columns():
-                expr_str = expr_key(expr)
-                if expr_str not in seen:
-                    seen.add(expr_str)
-                    expr_columns.append(expr)
-                    # Use the expression's string representation as the identifier.
-                    # This matches the key used in ParamValue.to_dict() for lookups.
-                    expr_names.append(expr_str)
-
-        return expr_columns, expr_names
+                table.add(expr)
+        return table
 
     def _to_dict(self) -> dict[str, Any]:
         if self._output is None and self._multi_output is None:
             raise ValueError("No output set")
 
         # Build nodes dict
+        table = self._slot_table()
         nodes_dict: dict[str, Any] = {}
         for node_id, node in self._nodes.items():
             # Get the pipeline's JSON representation without sink
             # We'll add sink info to the output specification
-            node_spec = node.pipeline._to_spec_dict()
+            node_spec = node.pipeline._to_spec_dict(table.index)
             node_spec["upstream"] = node.upstream
-            if node.alias is not None:
-                node_spec["alias"] = node.alias
             nodes_dict[node_id] = node_spec
 
         # Build unified outputs dict (always use "outputs" format)
@@ -755,7 +689,11 @@ class PipelineGraph:
             "version": 1,
             "nodes": nodes_dict,
             "outputs": outputs_spec,
-            "column_bindings": self._column_bindings,
+            "column_bindings": {
+                node_id: table.index(node.column)
+                for node_id, node in self._nodes.items()
+                if node.column is not None
+            },
             # Engine-tier optimization toggles → Rust `OptConfig`. Keys are the
             # `OptConfig` field names; missing keys default on. Distinct opt
             # settings key distinct compiled-graph cache entries, so a per-query

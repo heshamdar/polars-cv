@@ -49,12 +49,9 @@ impl Op for ViewOp {
                 if is_permutation {
                     Ok(())
                 } else {
-                    Err(ValidationError::InvalidParameter {
-                        param: "axes".to_string(),
-                        reason: format!(
-                            "{perm:?} is not a permutation of the {} axes of {shape:?}",
-                            shape.len()
-                        ),
+                    Err(ValidationError::NotAPermutation {
+                        axes: perm.clone(),
+                        ndim: shape.len(),
                     })
                 }
             }
@@ -78,14 +75,34 @@ impl Op for ViewOp {
             }
             ViewOp::Flip(axes) => require_axes(shape, axes),
             ViewOp::Crop { start, end } => {
-                if start.len() >= shape.len() && end.len() >= shape.len() {
-                    Ok(())
-                } else {
-                    Err(ValidationError::ShapeRequirement {
+                if start.len() < shape.len() || end.len() < shape.len() {
+                    return Err(ValidationError::ShapeRequirement {
                         requirement: "crop bounds for every axis of the input",
                         got: shape.to_vec(),
-                    })
+                    });
                 }
+                // An `end` of `usize::MAX` is "to the end of this axis". Any
+                // other bound past the axis is a window outside the input:
+                // rejected rather than clamped, since clamping returns a
+                // smaller region than the caller asked for (CR-42).
+                for (axis, &dim) in shape.iter().enumerate() {
+                    let (s, e) = (start[axis], end[axis]);
+                    if s > dim || (e != usize::MAX && e > dim) {
+                        let end_text = if e == usize::MAX {
+                            "end".to_string()
+                        } else {
+                            e.to_string()
+                        };
+                        return Err(ValidationError::InvalidParameter {
+                            param: "window".to_string(),
+                            reason: format!(
+                                "crop window {s}..{end_text} on axis {axis} lies outside the \
+                                 input of shape {shape:?}"
+                            ),
+                        });
+                    }
+                }
+                Ok(())
             }
             // Image rotations: a [H, W] or [H, W, C] buffer. Anything else was
             // returned unchanged or rotated over the wrong axes.
@@ -211,8 +228,7 @@ impl Op for ViewOp {
             // equals the input shape (a full-frame crop). The origin must be
             // literal zero: a crop's inferred shape ignores `top`/`left`, so an
             // offset crop with a full extent "preserves shape" at plan time
-            // while running past the edge, where the engine clamps it to a
-            // smaller window. `top`/`left` are therefore deciding params — a
+            // while its window runs past the edge (which `validate` rejects). `top`/`left` are therefore deciding params — a
             // per-row origin resolves to a placeholder and proves nothing.
             ViewOp::Crop { start, .. } if start.iter().all(|&s| s == 0) => {
                 IdentityRule::WhenShapePreserved {

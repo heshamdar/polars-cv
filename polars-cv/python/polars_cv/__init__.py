@@ -113,7 +113,7 @@ def _source_hash_from_tree() -> str | None:
         except OSError:  # pragma: no cover  # unreadable source file; defensive
             pass
 
-    for crate in ("polars-cv", "view-buffer"):
+    for crate in ("polars-cv", "polars-cv-macros", "view-buffer"):
         crate_root = root / crate
         for rs in sorted((crate_root / "src").rglob("*.rs")):
             _push(rs, f"{crate}/{rs.relative_to(crate_root).as_posix()}")

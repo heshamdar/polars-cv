@@ -2,8 +2,8 @@
 
 A parameter is *expression-eligible* iff its value has no effect on the output
 shape, rank or dtype — the rule stated in the root ``CLAUDE.md`` — and the way
-a parameter opts in is ``Pipeline._track_expr`` (directly, or via
-``_param_list``/``_enum_param``, which take it as a callback). The visible
+a parameter opts in is ``Pipeline._track_expr`` (directly, via
+``_enum_param``, or — for a typed op — ``_encode_field`` on a ``Param`` field). The visible
 consequence of opting in is the annotation: ``IntOrExpr``, ``FloatOrExpr``,
 ``BoolOrExpr``, ``StrOrExpr`` or a bare ``pl.Expr`` union.
 
@@ -19,7 +19,7 @@ eligible parameters are *elements* of a list or tuple argument — a
 ``warp_affine`` matrix coefficient, an ``output_size`` half, a ``normalize``
 mean — and a kwargs table cannot express "this one element is an expression
 while its siblings stay literal", which is precisely the case the
-element-by-element ``_param_list`` lowering exists to serve.
+element-by-element encoding of a typed list field exists to serve.
 """
 
 from __future__ import annotations

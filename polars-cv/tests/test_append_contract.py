@@ -33,7 +33,7 @@ from PIL import Image
 import polars_cv
 from polars_cv import Pipeline
 from polars_cv._graph import GraphNode
-from polars_cv._types import HINT_DIMS, Domain
+from polars_cv._types import HINT_DIMS, Domain, planning_slots
 
 from ._discovery import package_modules
 from ._op_cases import BUFFER, CONTOUR, EXTRA_CASES, OP_CASES, base_pipeline
@@ -427,7 +427,9 @@ def test_input_domain_matches_the_rust_contract() -> None:
     with pytest.raises(ValueError) as excinfo:
         contour_pipe.resize(height=8, width=8)
     resize_spec = Pipeline().source("image_bytes").resize(height=8, width=8)._ops[-1]
-    accepted = op_contract(json.dumps(resize_spec.to_dict()))["input_domains"]
+    accepted = op_contract(json.dumps(resize_spec.to_dict(planning_slots)))[
+        "input_domains"
+    ]
     assert f"expects {' or '.join(accepted)} input" in str(excinfo.value)
 
 

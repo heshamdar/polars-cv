@@ -304,7 +304,7 @@ class TestComposedPipelines:
     def test_a_continuation_carries_its_own_parameter(self) -> None:
         df = _frame().with_columns(
             crop=pl.Series([4, 4, 4, 4], dtype=pl.Int32),
-            side=pl.Series([6, 8, 10, 12], dtype=pl.Int32),
+            side=pl.Series([6, 8, 5, 7], dtype=pl.Int32),
         )
         first = pl.col("image").cv.pipe(_decode().resize(height=12, width=12))
         # A `Pipeline` with no `source()` continues from the upstream node.
@@ -314,7 +314,7 @@ class TestComposedPipelines:
         out = (
             df.lazy().with_columns(out=second.sink("list")).collect(engine="streaming")
         )
-        assert _heights(out["out"].to_list()) == [6, 8, 8, 8]
+        assert _heights(out["out"].to_list()) == [6, 8, 5, 7]
 
     def test_two_sinks_sharing_one_parameter_agree(self) -> None:
         """Common subexpression elimination must not merge different values."""

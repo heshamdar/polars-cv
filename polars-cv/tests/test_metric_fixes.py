@@ -59,6 +59,7 @@ from polars_cv.metrics._types import (
     DEFAULT_CLASS,
 )
 from tests._metric_refs import ref_froc_auc
+from tests._plan_view import source_of
 
 
 def _froc_curve_df(det_df: pl.DataFrame, meta_df: pl.DataFrame) -> pl.DataFrame:
@@ -768,8 +769,8 @@ class TestSourceFormatDetection:
     def test_the_source_it_builds_is_auto(self) -> None:
         """The format is never named here -- naming it is the defect."""
         source = _detect_source_info({"col": pl.Binary}, "col").build_source()
-        assert source._source is not None
-        assert source._source.format.value == "auto"
+        assert source_of(source) is not None
+        assert source_of(source).format.value == "auto"
 
 
 class TestElevenPointApDenominator:

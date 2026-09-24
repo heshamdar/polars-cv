@@ -81,6 +81,58 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **`crop`, `resize`, `warp_affine` and `histogram` are typed ops.** Each is one
+  Rust definition (`polars-cv/src/ops/`) from which the Python builder method is
+  generated; call signatures are unchanged. Their wire form is the value itself
+  (`"height": 224`, `"filter": "bilinear"`) or `{"$slot": n}`, and the Rust
+  definition is now the only validator, so errors are reported by it — naming
+  the op, the field and the valid values (`operation 'resize': 'filter':
+  unknown FilterType "bogus", expected one of [...]`, `'top': -5 cannot be
+  negative`). A misspelled or extra field in a hand-built graph is rejected by
+  name. On the wire, `warp_affine`'s `output_height`/`output_width` are one
+  `output_size` field and `histogram`'s `range_min`/`range_max` one `range`
+  field, matching the Python signatures; a `range_min` without `range_max` used
+  to be silently ignored. (Typed-op plan P2.)
+- **Expression parameters cross the plugin boundary as positional slots.** A
+  parameter given as a `pl.Expr` serializes as `{"$slot": n}`, the index of the
+  plugin input column that carries it; the graph assigns each distinct
+  expression (by `Expr.meta.eq`) one input, root columns first. The
+  `expr_column_names` kwarg, which bound expressions to inputs by their display
+  text, is gone and `vb_graph` rejects it; each call checks that the inputs it
+  receives cover every slot the graph reads. The graph JSON (the compiled-graph
+  cache key) no longer depends on which other expressions are alive in the
+  process, and carries no expression text. A contour source's `shape=`
+  reference is the referenced node's id (`shape_node`) instead of an embedded
+  copy of that pipeline nothing read. (Typed-op plan P1.)
+- **Graph nodes no longer serialize `alias`, `domain` or `output_dtype`.** The
+  plugin declared them only to stay closed under `deny_unknown_fields` and read
+  none of them; they only served the graph visualizer, which now reads them
+  from the Python graph. A graph JSON still carrying them is rejected.
+  (Typed-op plan P0.)
+- **Every `.cv.pipe(...)` call runs its rows in parallel.** Rows are split
+  into ranges on the plugin's thread pool (sized by `POLARS_MAX_THREADS`) and
+  reassembled in order, so eager `with_columns`/`select` on a single-chunk
+  column is multi-core: 3–4× faster on 4 cores in the measured cases, with
+  streaming unchanged. Under `on_error="raise"` the reported error is still the
+  earliest failing row's. The one-time "ran on one thread" warning and its
+  `POLARS_CV_ENGINE_WARN_SECONDS` / `POLARS_CV_SILENCE_ENGINE_WARNING`
+  variables are removed. (CR-32)
+- **`crop` rejects windows it cannot honour.** A negative `top`/`left`/`height`/
+  `width` is an error (a literal when the pipeline is built, a per-row value as
+  a row error), and so is a window that runs past the image. Previously a
+  negative offset was clamped to 0 while the extent was kept — returning a
+  *shifted* window — and an overrunning window was silently shrunk. `height`
+  and `width` are now independent: giving only one used to discard it. Row
+  errors follow `on_error`. (CR-42)
+- **`source("raw")` rejects a byte length that is not a whole number of
+  elements** instead of dropping the remainder. (CR-42)
+- **Dependency metadata.** Requires `polars>=1.41.1` (was `>=1.0`, which could
+  not import below 1.36.1 and failed the suite below 1.41.1) and `numpy>=2.0.2`
+  (was `>=2.2.6`). `networkx`/`graphviz`/`pydot` move to a `viz` extra
+  (`pip install 'polars-cv[viz]'`), needed only by `show_graph()`. Wheels are
+  tagged `cp310-abi3` to match `requires-python>=3.10`. A new CI job tests the
+  declared floors on Python 3.10. (CR-44)
+
 - **Inputs an op cannot handle are row errors, and some silent wrong results
   are now errors.** Every operation now checks its input shape before running,
   so a shape the plan could not see (e.g. from a `blob` source) is an ordinary
@@ -133,6 +185,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Removed
 
+- **The resize family's `filter=` no longer accepts `"triangle"` from a
+  per-row column.** It was a parser-only alias for `"bilinear"`
+  (`FilterType::ALIASES`, now deleted) that the Python builder already
+  rejected as a literal, so only a column value could reach it. Use
+  `"bilinear"`. Likewise `convert_color` no longer has the unreachable
+  `"grey"`/`"grayscale"` spellings (`ColorSpace::ALIASES`); use `"gray"`.
 - **The `affine_fusion` optimization pass, and the `rotate_affine_params` FFI it
   used.** Collapsing a run of warps into one composed warp folds several
   interpolation passes into one (and drops the intermediate clip of an
@@ -143,6 +201,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   gone. Guarded by `test_removed_surfaces.py`.
 
 ### Fixed
+
+- **`transpose` with a repeated axis is rejected when the pipeline is built.**
+  `transpose([0, 0, 1])` passed the builder (which checked only count and
+  range) and failed per row. Axis lists for `transpose`/`flip` are now checked
+  at build time by the engine op's own `validate`, whenever the rank is known.
+  `transpose`, `reshape` and `flip` are typed ops (typed-op P3).
+- **A malformed VIEW blob can no longer cause undefined behaviour.** A blob
+  whose `data_offset` or strides were not multiples of the element size built a
+  misaligned typed slice in release builds (debug builds panicked). Both blob
+  decoders now read through one validated parser (`view_buffer::parse_blob`)
+  that rejects it as a row error; binary rows are copied to 8-byte-aligned
+  storage; and `ViewBuffer::as_ptr` checks alignment in every build.
+  `ViewBuffer::from_blob` also no longer reads past its own copy for a strided
+  blob. (CR-41)
+- **`uv run` no longer builds the extension at release LTO**
+  (`[tool.uv] package = false`). (CR-43)
 
 - **`blur()` uses AVX2 when the CPU has it, in the published wheels too.**
   The wheels target baseline x86-64; blur now dispatches at runtime to an AVX2
@@ -208,6 +282,24 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Internal
 
+- **Typed-op migration, P0 (safety net).** See `TYPED_OPS_PLAN.md`. A golden
+  behaviour corpus (`tests/golden/op_corpus.json`, 214 cases), a frozen builder
+  call surface (`tests/golden/signatures.json`), a pickle/copy pin, the
+  removed-symbol gate (`scripts/check_removed_symbols.py`), a single test seam
+  for planner state (`tests/_plan_view.py`, 30 files migrated, guarded), and
+  performance baselines (`benchmarks/reports/2026-09-24-typed-ops-baseline/`,
+  new `benchmarks/plan_build.py`).
+- **Typed-op migration, P2 (catalogue).** New crate `polars-cv-macros`
+  (`#[derive(Op)]`) and module `polars-cv/src/ops/`: `Param<T>`/`Literal<T>`
+  fields, the `typed_ops!` registry, and `op_catalog.json` →
+  `scripts/gen_ops.py` → `python/polars_cv/_ops_generated.py`, which `Pipeline`
+  inherits. `OpSpec` deserialization dispatches by name to the typed or the
+  legacy (`LEGACY_OPS`, was `KNOWN_OPS`) path with no fallback between them.
+  The API docs render inherited members.
+- **Typed-op migration, P1 (positional slots).** `_types.SlotTable` is the one
+  expression-identity authority; the process-wide `expr_key` registry, Rust's
+  name->slot binding and the planning probe re-serializers are deleted and
+  listed in `check_removed_symbols.py`.
 - `scripts/verify.sh` and the pre-commit clippy hook run cargo under the PyO3
   environment `maturin develop` sets (`scripts/with-pyo3-env.sh`). Without it the
   two invalidated each other's builds, costing ~2 minutes of polars-stack

@@ -58,9 +58,9 @@ _MUST_NOT_FLAG = {
         pub struct Kwargs { pub a: Option<f64> }
     """,
     # keyed to its real file — see OPEN_STRUCT_EXEMPT
-    "the documented OpSpec exemption": """
+    "the documented Probe exemption": """
         #[derive(Debug, Deserialize)]
-        pub struct OpSpec { #[serde(flatten)] pub params: Map }
+        pub struct Probe { pub r#type: String }
     """,
     "serialize-only struct never crosses inbound": """
         #[derive(Debug, Serialize)]
@@ -72,18 +72,18 @@ _MUST_NOT_FLAG = {
 # Cases whose exemption is keyed to a specific file. Anything absent uses a
 # neutral name, so an exemption that leaked across files would show up as a
 # known-bad case silently passing.
-_FIXTURE_FILE = {"the documented OpSpec exemption": "pipeline.rs"}
+_FIXTURE_FILE = {"the documented Probe exemption": "cloud_auth.rs"}
 
 
 def test_an_exemption_does_not_leak_to_another_file() -> None:
-    """`OpSpec` is exempt in pipeline.rs only, not wherever the name appears.
+    """`Probe` is exempt in cloud_auth.rs only, not wherever the name appears.
 
     Bare-name exemptions are how a blanket quietly widens: an unrelated struct
     reusing a generic name inherits a pass nobody granted it.
     """
-    snippet = _MUST_NOT_FLAG["the documented OpSpec exemption"]
-    assert open_structs(snippet, "pipeline.rs") == []
-    assert open_structs(snippet, "somewhere_else.rs") == ["OpSpec"]
+    snippet = _MUST_NOT_FLAG["the documented Probe exemption"]
+    assert open_structs(snippet, "cloud_auth.rs") == []
+    assert open_structs(snippet, "somewhere_else.rs") == ["Probe"]
 
 
 @pytest.mark.parametrize("label", sorted(_MUST_FLAG))
