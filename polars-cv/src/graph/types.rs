@@ -12,8 +12,8 @@ use view_buffer::geometry::Contour;
 use view_buffer::ViewBuffer;
 
 use crate::formats::sink::Sink;
+use crate::formats::source::Source;
 use crate::params::NullParamPolicy;
-use crate::pipeline::SourceSpec;
 
 use super::encode::{default_domain, default_dtype};
 
@@ -385,7 +385,7 @@ pub(crate) enum OutputValue {
 #[serde(deny_unknown_fields)]
 pub struct GraphNode {
     /// Source specification for this node's input.
-    pub source: SourceSpec,
+    pub source: Source,
     /// Operations to apply.
     #[serde(default)]
     pub ops: Vec<crate::pipeline::OpSpec>,

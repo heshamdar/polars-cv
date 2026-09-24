@@ -17,11 +17,9 @@ import polars as pl
 from polars_cv._ops_generated import OP_FIELDS, _OpsMixin
 from polars_cv._types import (
     HINT_DIMS,
-    SOURCE_PARAM_APPLIES,
     CloudOptions,
     Domain,
     DType,
-    FetchErrorPolicy,
     FloatOrExpr,
     HashAlgorithm,
     IntOrExpr,
@@ -40,7 +38,6 @@ from polars_cv._types import (
     is_supplied,
     normalize_cloud_options,
     planning_slots,
-    reject_inapplicable_params,
 )
 
 if TYPE_CHECKING:
@@ -1534,30 +1531,21 @@ class Pipeline(_OpsMixin):
             ```
         """
         # Taken before anything else binds a name: these *are* the parameters,
-        # so the applicability check below cannot be given a stale or partial
-        # list of them (`test_source_applicability_reads_every_parameter`).
+        # so what is sent below cannot be a stale or partial list of them
+        # (`test_source_applicability_reads_every_parameter`).
         passed = dict(locals())
 
+        from polars_cv._lib import io_check
         from polars_cv.lazy import LazyPipelineExpr
 
         new = self._clone()
         fmt = _validate_enum(format, SourceFormat, "source format")
-        reject_inapplicable_params(
-            kind="source",
-            fmt=fmt,
-            supplied={
-                name: value
-                for name, value in passed.items()
-                if name not in ("self", "format")
-                and is_supplied(value, _source_param_defaults()[name])
-            },
-            applies=SOURCE_PARAM_APPLIES,
-        )
-
-        fetch_policies = tuple(p.value for p in FetchErrorPolicy)
-        if on_error not in fetch_policies:
-            msg = f"on_error must be one of {fetch_policies}, got '{on_error}'"
-            raise ValueError(msg)
+        defaults = _source_param_defaults()
+        supplied = {
+            name
+            for name, value in passed.items()
+            if name not in ("self", "format") and is_supplied(value, defaults[name])
+        }
 
         if decode_max_size is not None and (
             not isinstance(decode_max_size, int) or decode_max_size <= 0
@@ -1569,13 +1557,6 @@ class Pipeline(_OpsMixin):
         if dtype is not None:
             dtype_enum = _validate_enum(dtype, DType, "dtype")
 
-        # RAW format always requires dtype (no type metadata in raw bytes)
-        # LIST and ARRAY can auto-infer dtype from Polars column type
-        if fmt == SourceFormat.RAW and dtype_enum is None:
-            msg = "dtype is required for 'raw' source format (raw bytes have no type metadata)"
-            raise ValueError(msg)
-
-        # Handle contour source format
         if fmt == SourceFormat.CONTOUR:
             has_explicit_dims = width is not None or height is not None
             has_shape = shape is not None
@@ -1598,60 +1579,58 @@ class Pipeline(_OpsMixin):
                 msg = "Both 'width' and 'height' must be specified together"
                 raise ValueError(msg)
 
-            # Track expressions for width/height if they are expressions
-            width_param = new._track_expr(width) if width is not None else None
-            height_param = new._track_expr(height) if height is not None else None
+        # The canvas node, by id: Rust takes that node's already-computed
+        # buffer.
+        shape_node = None
+        if shape is not None:
+            if not isinstance(shape, LazyPipelineExpr):
+                msg = "'shape' must be a LazyPipelineExpr"
+                raise TypeError(msg)
+            shape_node = shape._node_id
+            # Referencing a node by id is not enough to get it executed:
+            # `_shape_refs` is what `cv.pipe` / `LazyPipelineExpr.pipe` turn
+            # into upstream edges, and only an upstream edge puts a node into
+            # the dependency graph. Mirrors `rasterize(shape=...)`.
+            new._shape_refs.append(shape)
 
-            # The canvas node, by id: Rust takes that node's already-computed
-            # buffer. (The whole shape sub-pipeline used to be embedded here as
-            # well; Rust never read it.)
-            shape_node = None
-            if shape is not None:
-                if not isinstance(shape, LazyPipelineExpr):
-                    msg = "'shape' must be a LazyPipelineExpr"
-                    raise TypeError(msg)
-                shape_node = shape._node_id
-                # Referencing a node by id is not enough to get it executed:
-                # `_shape_refs` is what `cv.pipe` / `LazyPipelineExpr.pipe`
-                # turn into upstream edges, and only an upstream edge puts a
-                # node into the dependency graph. Without this the reference
-                # dangles unless the node happens to be reachable some other
-                # way (e.g. it is also the image being masked). Mirrors
-                # `rasterize(shape=...)` below.
-                new._shape_refs.append(shape)
+        def _given(name: str, value: Any) -> Any:
+            """The value when the caller passed it, else ``None`` (absent)."""
+            return value if name in supplied else None
 
-            new._source = SourceSpec(
-                format=fmt,
-                dtype=dtype_enum,
-                width=width_param,
-                height=height_param,
-                fill_value=new._track_expr(fill_value),
-                background=new._track_expr(background),
-                shape_node=shape_node,
-                on_error=on_error,
-            )
+        # Every setting the caller passed goes into the spec, whichever format
+        # it is for: the format's Rust definition refuses one it does not
+        # read, naming where it does apply (`io_check` below). The contour
+        # colours always go — that decode reads them.
+        is_contour = fmt == SourceFormat.CONTOUR
+        new._source = SourceSpec(
+            format=fmt,
+            dtype=dtype_enum,
+            width=new._track_expr(width) if width is not None else None,
+            height=new._track_expr(height) if height is not None else None,
+            fill_value=new._track_expr(fill_value)
+            if is_contour or "fill_value" in supplied
+            else None,
+            background=new._track_expr(background)
+            if is_contour or "background" in supplied
+            else None,
+            shape_node=shape_node,
+            cloud_options=normalize_cloud_options(
+                _given("cloud_options", cloud_options)
+            ),
+            require_contiguous=require_contiguous,
+            on_error=on_error,
+            decode_max_size=decode_max_size,
+            allowed_roots=tuple(allowed_roots) if allowed_roots is not None else None,
+        )
+        io_check("source", json.dumps(new._source.to_dict(planning_slots)))
+
+        if is_contour:
             new._seed_from_contour_rasterize(shape=shape)
         else:
-            # Reaching here at all means the format accepts them: the
-            # applicability check rejected every other format above, so the
-            # `fmt in (FILE_PATH, AUTO)` test that used to guard this — and the
-            # warn-and-drop branch beside it — are gone rather than restated.
-            cloud_opts = normalize_cloud_options(cloud_options)
-
-            new._source = SourceSpec(
-                format=fmt,
-                dtype=dtype_enum,
-                cloud_options=cloud_opts,
-                require_contiguous=require_contiguous,
-                on_error=on_error,
-                decode_max_size=decode_max_size,
-                allowed_roots=tuple(allowed_roots)
-                if allowed_roots is not None
-                else None,
-            )
             # Set dtype and ndim based on source format
             if fmt == SourceFormat.RAW:
-                # Raw bytes always require explicit dtype (validated above).
+                # Raw bytes always carry a dtype: the typed raw source requires
+                # one, so `io_check` above refused a spec without it.
                 # Raw decodes to a flat 1-D buffer (decode.rs), so rank 1 is a
                 # true known value — never guess 3. reshape()/assert_shape()
                 # lifts the rank when the caller needs a higher-rank sink.
@@ -1753,25 +1732,24 @@ class Pipeline(_OpsMixin):
         if self._source is None:
             msg = "thumbnail() requires a source; call .source(...) first"
             raise ValueError(msg)
-        # `thumbnail()` writes `decode_max_size`, so it applies exactly where
-        # that parameter does — read from the table rather than restated, which
-        # is how the two came to disagree about `auto` (`source()` accepted it,
-        # `thumbnail()` refused it, for the same field on the same spec).
-        applies = SOURCE_PARAM_APPLIES["decode_max_size"]
-        if self._source.format not in applies:
-            spelled = ", ".join(sorted(f.value for f in applies))
-            msg = (
-                f"thumbnail() only applies to {spelled} sources, "
-                f"got '{self._source.format.value}'"
-            )
-            raise ValueError(msg)
         if not isinstance(max_size, int) or isinstance(max_size, bool) or max_size <= 0:
             msg = f"max_size must be a positive int, got {max_size!r}"
             raise ValueError(msg)
 
+        from polars_cv._lib import io_check
+
         new = self._clone()
-        assert new._source is not None  # guaranteed: self._source.format read above
+        assert new._source is not None  # guaranteed: checked on self above
         new._source = dataclasses.replace(new._source, decode_max_size=max_size)
+        # `thumbnail()` writes `decode_max_size`, so it applies exactly where
+        # that field does: the source format's own definition decides, as it
+        # does for `source(decode_max_size=)`. The two used to disagree about
+        # `auto` when each kept its own list.
+        try:
+            io_check("source", json.dumps(new._source.to_dict(planning_slots)))
+        except ValueError as e:
+            msg = f"thumbnail() only applies where decode_max_size does: {e}"
+            raise ValueError(msg) from None
         return new
 
     # --- Shape Assertions (optional, helps planner) ---

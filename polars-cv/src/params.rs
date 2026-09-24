@@ -130,35 +130,6 @@ impl ParamValue {
             ParamValue::Slot { .. } => false,
         }
     }
-
-    /// Look up this param's bound column in the context.
-    fn slot_col<'c, 'a>(&self, ctx: &'c ParamCtx<'a>) -> PolarsResult<&'c ParamCol<'a>> {
-        match self {
-            ParamValue::Slot { idx } => ctx.col(*idx),
-            ParamValue::Literal { .. } => {
-                unreachable!("slot_col called on literal")
-            }
-        }
-    }
-
-    /// Resolve this parameter to a concrete i64 value.
-    pub fn resolve_i64(&self, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<i64> {
-        match self {
-            ParamValue::Literal { value } => value.as_i64().ok_or_else(
-                || polars_err!(ComputeError: "Expected integer literal, got {:?}", value),
-            ),
-            _ => self.slot_col(ctx)?.get_i64(row_idx, ctx),
-        }
-    }
-
-    /// Resolve this parameter to a concrete usize value.
-    pub fn resolve_usize(&self, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<usize> {
-        let value = self.resolve_i64(row_idx, ctx)?;
-        if value < 0 {
-            return Err(polars_err!(ComputeError: "Value {} cannot be negative", value));
-        }
-        Ok(value as usize)
-    }
 }
 
 // ============================================================================
@@ -497,50 +468,6 @@ impl<'a> ParamCtx<'a> {
     }
 }
 
-/// Per-row parameter readers shared by the untyped source spec.
-///
-/// One failure policy: an *absent* optional parameter takes its documented
-/// default, while one that is *present but invalid* — wrong type, out of range,
-/// or a per-row expression that fails to resolve — is always an error, never
-/// swallowed into the default.
-///
-/// A **null** per-row value is not a matter of validity: it is governed by
-/// [`NullParamPolicy`] at [`ParamCol::on_null`], the layer below. No helper
-/// here may turn a null into its default — that would silently compute a wrong
-/// result for a missing input.
-///
-/// Every op reads typed `Param<T>` fields now (`crate::ops`); what is left
-/// serves `SourceSpec`, until typed sources (typed-op plan P4) replace it.
-pub mod get {
-    use super::{ParamCtx, ParamValue};
-    use polars::prelude::*;
-
-    fn named(name: &str, e: PolarsError) -> PolarsError {
-        polars_err!(ComputeError: "parameter '{}': {}", name, e)
-    }
-
-    /// Optional u8 with a default for absence; range-checked so 300 errors
-    /// instead of silently truncating.
-    pub fn opt_u8_value(
-        param: Option<&ParamValue>,
-        name: &str,
-        default: u8,
-        row_idx: usize,
-        ctx: &ParamCtx,
-    ) -> PolarsResult<u8> {
-        match param {
-            None => Ok(default),
-            Some(p) => {
-                let v = p.resolve_i64(row_idx, ctx).map_err(|e| named(name, e))?;
-                u8::try_from(v).map_err(|_| {
-                    polars_err!(ComputeError:
-                        "parameter '{}' must be in 0..=255, got {}", name, v)
-                })
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,15 +498,6 @@ mod tests {
     }
 
     #[test]
-    fn test_literal_i64() {
-        let param = ParamValue::Literal {
-            value: serde_json::json!(42),
-        };
-        assert!(param.is_literal());
-        assert_eq!(param.resolve_i64(0, &ParamCtx::empty()).unwrap(), 42);
-    }
-
-    #[test]
     fn plain_literal_array_is_literal() {
         // A normalize mean/std or flip-axes array of plain scalars is literal.
         let param = ParamValue::Literal {
@@ -593,9 +511,9 @@ mod tests {
         let s = Series::new("h".into(), &[10i64, 20, 30]);
         let inputs = vec![s];
         let ctx = ParamCtx::with_null_policy(&inputs, NullParamPolicy::Raise);
-        let param = ParamValue::Slot { idx: 0 };
-        assert_eq!(param.resolve_i64(2, &ctx).unwrap(), 30);
-        assert_eq!(param.resolve_i64(1, &ctx).unwrap(), 20);
+        let param = ctx.col(0).unwrap();
+        assert_eq!(param.get_i64(2, &ctx).unwrap(), 30);
+        assert_eq!(param.get_i64(1, &ctx).unwrap(), 20);
     }
 
     #[test]
@@ -604,9 +522,9 @@ mod tests {
         let s = Series::new("h".into(), &[7i32]);
         let inputs = vec![s];
         let ctx = ParamCtx::with_null_policy(&inputs, NullParamPolicy::Raise);
-        let param = ParamValue::Slot { idx: 0 };
-        assert_eq!(param.resolve_i64(0, &ctx).unwrap(), 7);
-        assert_eq!(param.resolve_i64(99, &ctx).unwrap(), 7);
+        let param = ctx.col(0).unwrap();
+        assert_eq!(param.get_i64(0, &ctx).unwrap(), 7);
+        assert_eq!(param.get_i64(99, &ctx).unwrap(), 7);
     }
 
     #[test]
@@ -614,9 +532,9 @@ mod tests {
         let s = Series::new("h".into(), &[Some(1i64), None]);
         let inputs = vec![s];
         let ctx = ParamCtx::with_null_policy(&inputs, NullParamPolicy::Raise);
-        let param = ParamValue::Slot { idx: 0 };
-        assert_eq!(param.resolve_i64(0, &ctx).unwrap(), 1);
-        assert!(param.resolve_i64(1, &ctx).is_err());
+        let param = ctx.col(0).unwrap();
+        assert_eq!(param.get_i64(0, &ctx).unwrap(), 1);
+        assert!(param.get_i64(1, &ctx).is_err());
         // Under `Raise` the context is never flagged, so callers cannot
         // mistake a genuine failure for a null-parameter row.
         assert!(!ctx.took_null());
@@ -630,14 +548,14 @@ mod tests {
         let s = Series::new("h".into(), &[Some(1i64), None]);
         let inputs = vec![s];
         let ctx = ParamCtx::with_null_policy(&inputs, NullParamPolicy::Null);
-        let param = ParamValue::Slot { idx: 0 };
+        let param = ctx.col(0).unwrap();
 
         ctx.clear_null();
-        assert_eq!(param.resolve_i64(0, &ctx).unwrap(), 1);
+        assert_eq!(param.get_i64(0, &ctx).unwrap(), 1);
         assert!(!ctx.took_null());
 
         ctx.clear_null();
-        assert!(param.resolve_i64(1, &ctx).is_err());
+        assert!(param.get_i64(1, &ctx).is_err());
         assert!(ctx.took_null());
     }
 
@@ -648,10 +566,10 @@ mod tests {
         let s = Series::new("h".into(), &["not-a-number"]);
         let inputs = vec![s];
         let ctx = ParamCtx::with_null_policy(&inputs, NullParamPolicy::Null);
-        let param = ParamValue::Slot { idx: 0 };
+        let param = ctx.col(0).unwrap();
 
         ctx.clear_null();
-        assert!(param.resolve_i64(0, &ctx).is_err());
+        assert!(param.get_i64(0, &ctx).is_err());
         assert!(!ctx.took_null());
     }
 
@@ -666,10 +584,9 @@ mod tests {
         let ctx = ParamCtx::with_null_policy(&inputs, NullParamPolicy::Null);
 
         for idx in 0..4 {
-            let param = ParamValue::Slot { idx };
             ctx.clear_null();
             let result: PolarsResult<()> = match idx {
-                0 => param.resolve_i64(0, &ctx).map(|_| ()),
+                0 => ctx.col(idx).and_then(|c| c.get_i64(0, &ctx)).map(|_| ()),
                 1 => ctx.col(idx).and_then(|c| c.get_f64(0, &ctx)).map(|_| ()),
                 2 => ctx.col(idx).and_then(|c| c.get_str(0, &ctx)).map(|_| ()),
                 _ => ctx.col(idx).and_then(|c| c.get_bool(0, &ctx)).map(|_| ()),
@@ -688,10 +605,10 @@ mod tests {
             .unwrap();
         let inputs = vec![s];
         let ctx = ParamCtx::with_null_policy(&inputs, NullParamPolicy::Null);
-        let param = ParamValue::Slot { idx: 0 };
+        let param = ctx.col(0).unwrap();
 
         ctx.clear_null();
-        assert!(param.resolve_i64(0, &ctx).is_err());
+        assert!(param.get_i64(0, &ctx).is_err());
         assert!(ctx.took_null());
     }
 
@@ -700,9 +617,9 @@ mod tests {
         let s = Series::new("h".into(), &[3.9f64, -2.7]);
         let inputs = vec![s];
         let ctx = ParamCtx::with_null_policy(&inputs, NullParamPolicy::Raise);
-        let param = ParamValue::Slot { idx: 0 };
-        assert_eq!(param.resolve_i64(0, &ctx).unwrap(), 3);
-        assert_eq!(param.resolve_i64(1, &ctx).unwrap(), -2);
+        let param = ctx.col(0).unwrap();
+        assert_eq!(param.get_i64(0, &ctx).unwrap(), 3);
+        assert_eq!(param.get_i64(1, &ctx).unwrap(), -2);
     }
 
     #[test]

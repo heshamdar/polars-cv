@@ -153,6 +153,15 @@ REMOVED: tuple[Removed, ...] = (
     Removed("SINK_PARAM_APPLIES", "P4: the typed sink formats"),
     Removed("from_sink_format", "P4: Sink::image_codec"),
     Removed("image_codec_format", "P4: SinkKind::image_codec"),
+    # Typed-op P4 (sources): each source format is a typed struct
+    # (`src/formats/source.rs`) and `SourceFormat` is generated from it.
+    Removed("SOURCE_PARAM_APPLIES", "P4: the typed source formats"),
+    Removed("PARAM_HINTS", "P4: the typed formats name where a field applies"),
+    Removed("reject_inapplicable_params", "P4: io_check"),
+    Removed("KNOWN_SOURCE_FORMATS", "P4: the typed source formats"),
+    Removed("resolve_fill", "P4: ContourSource::fill"),
+    Removed("opt_u8_value", "P4: Param<u8> fill_value/background"),
+    Removed("resolve_usize", "P4: Param<u32> contour size"),
 )
 
 

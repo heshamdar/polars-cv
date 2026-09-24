@@ -650,7 +650,7 @@ fn io_catalog() -> String {
     crate::formats::io_catalog_json()
 }
 
-/// Validate one serialized sink (`kind="sink"`) against its typed format, so
+/// Validate one serialized source or sink (`kind`) against its typed format, so
 /// the builder refuses it when it is written rather than at `collect()`.
 ///
 /// The same deserializer the graph uses; there is no second validator.
@@ -658,6 +658,7 @@ fn io_catalog() -> String {
 fn io_check(kind: &str, spec_json: &str) -> PyResult<()> {
     let result = match kind {
         "sink" => serde_json::from_str::<crate::formats::sink::Sink>(spec_json).map(|_| ()),
+        "source" => serde_json::from_str::<crate::formats::source::Source>(spec_json).map(|_| ()),
         other => {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "io_check: unknown kind '{other}'"

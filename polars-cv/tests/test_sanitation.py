@@ -1057,60 +1057,9 @@ def test_binary_ops_match_rust():
     )
 
 
-# SourceFormat/SinkFormat have no Rust *enum* to be checked against: the graph
-# boundary carries them as plain strings, and view-buffer's shadowing copies
-# were deleted along with its unreachable pipeline-composition layer. That is
-# not the same as having nothing to pin them to, which an earlier note here
-# claimed. Source formats do have a Rust vocabulary — `KNOWN_SOURCE_FORMATS` in
-# graph/compiled.rs, which the graph validator rejects unknown formats against
-# — so the two lists must be equal, and the test below pins them.
-#
-# Sink formats are typed (`src/formats/sink.rs`): `SinkFormat` is generated from
-# that registry, and `SinkKind::resolve` matches on the typed sink, so there is
-# no second list to pin.
-
-
-@requires_checkout
-def test_source_formats_match_the_rust_vocabulary() -> None:
-    """``SourceFormat`` must equal Rust's ``KNOWN_SOURCE_FORMATS``.
-
-    Both are hand-written lists of the same vocabulary, one per side of the
-    FFI. A Python-only format builds a graph the validator rejects at
-    execution, with an error naming a format the user did pass; a Rust-only
-    one is a decode path nothing can reach. Neither shows up until someone
-    runs the query.
-
-    Read from the Rust source rather than over the FFI so this runs in the
-    plugin-free lane too — the drift is introduced by editing Python, which is
-    exactly when the extension is stale.
-    """
-    src = rust_src_dir()
-
-    text = (src / "graph" / "compiled.rs").read_text()
-    m = re.search(r"const KNOWN_SOURCE_FORMATS: &\[&str\] = &\[(.*?)\n\];", text, re.S)
-    assert m, (
-        "could not find KNOWN_SOURCE_FORMATS in graph/compiled.rs — the scan is "
-        "out of date, and a scan that matches nothing passes vacuously"
-    )
-    body = re.sub(r"(?m)//.*$", "", m.group(1))
-    rust_formats = set(re.findall(r'"([a-z0-9_]+)"', body))
-    assert len(rust_formats) > 3, (
-        f"KNOWN_SOURCE_FORMATS scan found only {sorted(rust_formats)}"
-    )
-
-    from polars_cv._types import SourceFormat
-
-    declared = {m.value for m in SourceFormat}
-    assert declared == rust_formats, (
-        "SourceFormat has drifted from Rust KNOWN_SOURCE_FORMATS: "
-        f"python-only={sorted(declared - rust_formats)}, "
-        f"rust-only={sorted(rust_formats - declared)}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# 4. No duplicate enums (A4 / "no repeated enums")
-# ---------------------------------------------------------------------------
+# SourceFormat/SinkFormat are generated from the typed Rust formats
+# (`src/formats/`, via `io_catalog.json`), and the graph deserializes the same
+# types, so there is no second list of either to pin.
 
 
 def test_no_duplicate_expected_dtype_enum():

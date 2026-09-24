@@ -30,7 +30,7 @@ class TestPipelineSource:
 
     def test_source_raw_without_dtype_raises(self) -> None:
         """Raw source without dtype raises an error."""
-        with pytest.raises(ValueError, match="dtype is required"):
+        with pytest.raises(ValueError, match="missing field `dtype`"):
             Pipeline().source("raw")
 
 

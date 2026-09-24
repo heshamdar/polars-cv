@@ -351,14 +351,15 @@ it a fully determined mask published no shape, and `sink("array")` demanded an
 explicit one.
 
 A `source()` or `.sink()` parameter that the chosen format never reads is
-rejected. Sinks are typed per format in Rust (`src/formats/sink.rs`, each a
-`deny_unknown_fields` struct), and `.sink()` validates its keywords against
-that definition over `io_check`, so an unknown or misspelled keyword — what an
-open `**kwargs` used to accept — is refused while the pipeline is built, naming
-the formats it does apply to. Source keywords are still checked against
-`SOURCE_PARAM_APPLIES` in `_types.py` by `reject_inapplicable_params`. `source()` passes the check its own `locals()`, so the validated set is
-the parameter set, and `thumbnail()` reads the table since it writes
-`decode_max_size`. Do not add a per-parameter check beside it — that is what
+rejected. Each source and sink format is a typed Rust struct carrying exactly
+the fields its decode or encode reads (`src/formats/`, each
+`deny_unknown_fields`), and the builder validates what the caller passed
+against that definition over `io_check` — the deserializer the graph itself
+uses — so an unknown, misspelled or inapplicable keyword is refused while the
+pipeline is built, naming the formats it does apply to. `source()` sends
+exactly the keywords the caller passed (read from its own `locals()`, told
+apart from defaults by `is_supplied` until P8 drops the value defaults), and
+`thumbnail()` validates the spec it writes the same way. Do not add a per-parameter check beside it — that is what
 produced one raise, one warning and five silent drops on the source side, and an
 open keyword surface on the sink side.
 
