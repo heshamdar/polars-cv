@@ -39,6 +39,7 @@ HISTORY_FILES: frozenset[str] = frozenset(
     {
         "CHANGELOG.md",
         "CODE_REVIEW_FINDINGS.md",
+        "EXTENSION_TYPES_PLAN.md",
         "TYPED_OPS_PLAN.md",
         "polars-cv/docs/changelog.md",
         "polars-cv/scripts/check_removed_symbols.py",
@@ -91,6 +92,13 @@ REMOVED: tuple[Removed, ...] = (
     Removed("param_probe_json", "P1: probe re-serialization; `op_json` is serde"),
     Removed("_build_column_bindings", "P1: bindings come from the SlotTable"),
     Removed("_get_ordered_columns", "P1: input columns come from the SlotTable"),
+    # Typed-op P2: the typed catalogue (`src/ops/`) plus the shrinking
+    # `LEGACY_OPS` replace the one name registry; ops migrate out of it.
+    Removed("KNOWN_OPS", "P2: split into the typed catalogue and LEGACY_OPS"),
+    Removed("is_all_literal", "P2: OpSpec::is_static (typed ops visit slots)"),
+    Removed("as_f64_vec", "P2: histogram edges are a typed Bins::Edges"),
+    Removed("range_min", "P2: histogram `range` is one two-element field"),
+    Removed("range_max", "P2: histogram `range` is one two-element field"),
 )
 
 

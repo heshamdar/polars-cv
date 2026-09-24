@@ -121,6 +121,19 @@ def build_dag(graph: LogicalGraph) -> nx.DiGraph:
 ## Visualization
 
 
+def _wire_label(value: Any) -> Any:
+    """A field's display value: ``Expr`` for a slot, the literal otherwise.
+
+    Typed ops carry bare values (lists element by element); legacy ops wrap a
+    literal as ``{"type": "literal", "value": ...}``.
+    """
+    if isinstance(value, dict):
+        return "Expr" if "$slot" in value else _wire_label(value.get("value"))
+    if isinstance(value, list):
+        return [_wire_label(v) for v in value]
+    return value
+
+
 def style_node(payload: BaseNode) -> Dict[str, Any]:
     if payload.kind == NodeKind.SOURCE:
         assert isinstance(payload, ComputeNode)
@@ -140,9 +153,7 @@ def style_node(payload: BaseNode) -> Dict[str, Any]:
 
         ops = ""
         for op in payload.ops:
-            op_dict = {
-                k: v.get("value", "Expr") for k, v in op.items() if k != "op"
-            }  # if not a value must be an expression
+            op_dict = {k: _wire_label(v) for k, v in op.items() if k != "op"}
             ops_string = op["op"] + str(op_dict)
             ops += ops_string + "\n"
 

@@ -965,7 +965,9 @@ matrix; the entries here track status only.
   `GraphNode` fields `alias`/`domain`/`output_dtype` deleted. P1 (positional
   slots) done — expression params are `{"$slot": n}` from a graph-wide
   `SlotTable` (`Expr.meta.eq` identity); `expr_key`, `expr_column_names` and
-  the Rust name binding are deleted.
+  the Rust name binding are deleted. P2 (catalogue + spike) done — `crop`,
+  `resize`, `warp_affine`, `histogram` are `#[derive(Op)]` structs with
+  generated Python builders; `LEGACY_OPS` holds the remaining 81.
 
 ### CR-46 — The planner is split across the FFI and folded twice · `Open` · Medium (design)
 

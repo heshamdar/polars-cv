@@ -48,6 +48,9 @@ plugins:
             show_root_full_path: false
             heading_level: 2
             members_order: source
+            # The typed-op builder methods are generated into `_OpsMixin`,
+            # which `Pipeline` inherits; without this they vanish from the API.
+            inherited_members: true
             show_signature_annotations: true
             separate_signature: true
 

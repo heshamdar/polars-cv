@@ -15,6 +15,7 @@ mod geom_schema;
 mod graph;
 mod image_metadata;
 mod naming;
+mod ops;
 mod output;
 mod params;
 mod pipeline;
@@ -50,6 +51,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(enum_variants, m)?)?;
     m.add_function(wrap_pyfunction!(enum_names, m)?)?;
     m.add_function(wrap_pyfunction!(known_ops, m)?)?;
+    m.add_function(wrap_pyfunction!(op_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(point_schema, m)?)?;
     m.add_function(wrap_pyfunction!(contour_schema, m)?)?;
     m.add_function(wrap_pyfunction!(bbox_schema, m)?)?;
@@ -185,10 +187,37 @@ pub(crate) fn resolve_op_from_json_probe(
     op_json: &str,
     probe: i64,
 ) -> PyResult<crate::graph::step::GraphStep> {
-    use crate::params::{ParamCtx, ParamValue};
+    use crate::params::ParamCtx;
 
-    let mut op_spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid op json: {e}")))?;
+    let op_spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let (op_spec, placeholders) = match op_spec {
+        // Every slot of a typed op reads a placeholder column holding `probe`.
+        crate::pipeline::OpSpec::Typed(op) => {
+            let placeholders = vec![Series::new("".into(), &[probe]); op.min_inputs()];
+            (crate::pipeline::OpSpec::Typed(op), placeholders)
+        }
+        crate::pipeline::OpSpec::Legacy(spec) => {
+            let (spec, placeholders) = legacy_probe_spec(spec, probe);
+            (crate::pipeline::OpSpec::Legacy(spec), placeholders)
+        }
+    };
+    // A *probe* context: placeholders are integers, so a dynamic enum or flag
+    // param cannot be read from one. `ParamCtx::probe` tells the enum/bool
+    // accessors to substitute their default instead. Sound because only params
+    // with no shape/rank/dtype effect are allowed to be dynamic, so the variant
+    // probing picks cannot change the inferred schema.
+    let ctx = ParamCtx::probe(&placeholders);
+    crate::execute::resolve_op(&op_spec, 0, &ctx)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("resolve_op: {e}")))
+}
+
+/// Point a legacy op's per-row params at placeholder columns holding `probe`.
+fn legacy_probe_spec(
+    mut op_spec: crate::pipeline::LegacyOpSpec,
+    probe: i64,
+) -> (crate::pipeline::LegacyOpSpec, Vec<Series>) {
+    use crate::params::ParamValue;
     // rasterize-by-shape-reference carries no width/height (they come from
     // another node's buffer at execution, via the RasterizeShapeRef
     // resolver). Give introspection placeholder dims so the op resolves; the
@@ -230,14 +259,7 @@ pub(crate) fn resolve_op_from_json_probe(
             }
         }
     }
-    // A *probe* context: placeholders are integers, so a dynamic enum or flag
-    // param cannot be read from one. `ParamCtx::probe` tells the enum/bool
-    // accessors to substitute their default instead. Sound because only params
-    // with no shape/rank/dtype effect are allowed to be dynamic, so the variant
-    // probing picks cannot change the inferred schema.
-    let ctx = ParamCtx::probe(&placeholders);
-    crate::execute::resolve_op(&op_spec, 0, &ctx)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("resolve_op: {e}")))
+    (op_spec, placeholders)
 }
 
 /// Plan-time output shape for a single-buffer op — the single authority for
@@ -628,15 +650,27 @@ fn rotation_matrix_2d(angle_deg: f64, cx: f64, cy: f64, scale: f64) -> Vec<f64> 
 
 /// Return the names of every operation the executor can resolve.
 ///
-/// This is the registry surfaced from [`crate::execute::KNOWN_OPS`] so Python
-/// can assert that every op a `Pipeline` emits is executable (B1) without
-/// hand-syncing a second list.
+/// The typed catalogue's names plus the not-yet-migrated
+/// [`crate::execute::LEGACY_OPS`], sorted, so Python can assert that every op
+/// a `Pipeline` emits is executable (B1) without hand-syncing a second list.
 #[pyfunction]
 fn known_ops() -> Vec<String> {
-    crate::execute::KNOWN_OPS
+    let mut names: Vec<String> = crate::ops::TypedOp::NAMES
         .iter()
+        .chain(crate::execute::LEGACY_OPS)
         .map(|s| s.to_string())
-        .collect()
+        .collect();
+    names.sort_unstable();
+    names
+}
+
+/// The typed op catalogue as JSON: every typed op's name, Python method name,
+/// visibility, docs and fields. The same text is committed as
+/// `tests/golden/op_catalog.json`, which `scripts/gen_ops.py` reads; Python
+/// tests compare the two so a stale commit cannot pass against a newer build.
+#[pyfunction]
+fn op_catalog() -> String {
+    crate::ops::catalog_json()
 }
 
 /// Return the full contract for a single serialized op spec.
@@ -703,13 +737,19 @@ fn op_identity_rule(op_json: &str) -> PyResult<String> {
     // The names of parameters that are per-row (slots) in the *original* spec,
     // before `resolve_op_from_json` neutralizes them to a placeholder.
     let spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid op json: {e}")))?;
-    let expr_params: std::collections::HashSet<&str> = spec
-        .params
-        .iter()
-        .filter(|(_, p)| matches!(p, crate::params::ParamValue::Slot { .. }))
-        .map(|(name, _)| name.as_str())
-        .collect();
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let mut expr_params: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    match &spec {
+        crate::pipeline::OpSpec::Typed(op) => op.visit_slots(&mut |name, _| {
+            expr_params.insert(name);
+        }),
+        crate::pipeline::OpSpec::Legacy(spec) => expr_params.extend(
+            spec.params
+                .iter()
+                .filter(|(_, p)| matches!(p, crate::params::ParamValue::Slot { .. }))
+                .map(|(name, _)| name.as_str()),
+        ),
+    }
 
     let rule = resolve_op_from_json(op_json)?.identity_rule();
     // A per-row deciding param means the no-op condition cannot be proven at

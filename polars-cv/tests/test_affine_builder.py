@@ -41,7 +41,7 @@ class TestWarpAffinePipelineBuilder:
     def test_warp_affine_requires_6_elements(self) -> None:
         """Affine matrix must have exactly 6 elements."""
         pipe = Pipeline().source("image_bytes")
-        with pytest.raises(ValueError, match="6 elements"):
+        with pytest.raises(ValueError, match="length 6"):
             pipe.warp_affine(matrix=[1.0, 0.0], output_size=(100, 100))
 
     def test_warp_affine_translation(self) -> None:
@@ -65,8 +65,8 @@ class TestWarpAffinePipelineBuilder:
             1.0,
             30.0,
         ]
-        assert op.params["output_height"] == 224
-        assert op.params["output_width"] == 224
+        # `output_size` is one field on the wire, as it is in the signature.
+        assert op.params["output_size"] == [224, 224]
 
     def test_warp_affine_interpolation_default(self) -> None:
         """Default interpolation is bilinear."""
@@ -385,7 +385,7 @@ class TestPerRowAffineParams:
         import polars as pl
 
         pipe = Pipeline().source("image_bytes")
-        with pytest.raises(ValueError, match="6 elements"):
+        with pytest.raises(ValueError, match="length 6"):
             pipe.warp_affine(matrix=[pl.col("a"), 1.0], output_size=(10, 10))
 
     def test_shear_accepts_expr_factors(self) -> None:

@@ -12,8 +12,8 @@
 > |---|---|
 > | P0 — Safety net and seams | **done** — corpus (214 cases), signature snapshot, pickle pin, removed-symbol gate, `_plan_view` seam (30 files), baselines, dead `GraphNode` fields |
 > | P1 — Positional expression slots | **done** — `{"$slot": n}` wire form from a graph-wide `SlotTable`; `expr_key`/`expr_column_names`/name binding deleted; per-call slot bound check; `shape_node` id; CR-50 logged |
-> | P2 — Catalogue foundation + spike | next |
-> | P3 — Migrate every op | pending |
+> | P2 — Catalogue foundation + spike | **done, one gate item over** — `#[derive(Op)]`/`typed_ops!`, `Param`/`Literal`, name-keyed dispatcher (`LEGACY_OPS` 81), `crop`/`resize`/`warp_affine`/`histogram` typed with generated builders, catalogue ↔ `.so` ↔ generated-module checks, mkdocs inherited members. Gate: corpus ✓, signatures ✓, `mkdocs --strict` ✓ (generated `Args:` render), release `.so` 32,192,392 B (+58 KB, +0.2%), release build 839 s cold (baseline 819 s). Plan build µs/append (release; P0 → P1 → P2): `mixed` 82.8 → 80.7 → **78.0**; `chain` 49.8 → 51.7 → **53.7**; `lazy_continuation` 83.5 → 86.6 → **90.7**. The two legacy-only scenarios are over baseline (~2 µs each from P1's slot table and P2's dispatcher map on the legacy path); both paths shrink in P3 and go in P6/P7 |
+> | P3 — Migrate every op | next |
 > | P4 — Typed sources and sinks | pending |
 > | P5 — Geometry namespaces | pending |
 > | P6 — Delete the legacy protocol | pending |
@@ -21,6 +21,37 @@
 > | P8 — API reshaping | pending |
 > | P9 — Symbolic shapes | pending |
 > | P10 — Final sweep | pending |
+
+## Deviations recorded during execution
+
+Where the implementation departs from the text below, and why. The text is left
+as planned so the deviation stays visible.
+
+- **P2 — `#[derive(Op)]` (crate `polars-cv-macros`) instead of a `define_op!`
+  `macro_rules!`.** A declarative macro cannot take doc comments plus per-field
+  markers (`#[param(positional)]`, defaults) without a local-ambiguity error,
+  and cannot emit a precise error for a missing doc or a forbidden
+  `#[serde(...)]`. The derive also *refuses* a struct without
+  `#[serde(deny_unknown_fields)]`. The registry half (`OpSpec`-variant list,
+  `NAMES`, dispatch, samples) is still one `typed_ops!` line per op.
+- **P2 — static vs per-row is computed by the derived slot visitor**
+  (`TypedOp::is_static`), not by resolving under `RowCtx::static_only()`. Same
+  property (no per-op flag to forget; the visitor is generated from the field
+  list), no sentinel error path. `OpDef::resolve` takes `(row, &ParamCtx)`;
+  `RowCtx` is not needed yet.
+- **P2 — the wire field shape follows the frozen Python signature**, so a
+  signature tuple is one field: `warp_affine(output_size=[h, w])` (was
+  `output_height`/`output_width`), `histogram(range=[min, max])` (was
+  `range_min`/`range_max`, where one without the other was silently ignored).
+- **P2 — named enums get their wire form from a `WireScalar` trait** in
+  `view_buffer::naming` (emitted by `named_variants!`), not from serde derives:
+  the engine enums already derive serde for `ViewDto` with different
+  spellings. `NAMED` is the only wire vocabulary, so parser-only side tables
+  (`FilterType::ALIASES`' `"triangle"`) are not accepted on typed ops; they go
+  with the last legacy op that reads them (P3).
+- **P2 — no per-op `plan()` yet.** `OpDef` has `resolve` only; the plan-time
+  schema still comes from the existing `op_*` FFIs over the typed op. `plan()`
+  arrives with the Rust planner (P7).
 
 ## Context
 

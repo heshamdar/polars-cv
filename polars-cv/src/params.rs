@@ -379,17 +379,6 @@ impl ParamValue {
             }
         }
     }
-
-    /// Get literal value as a Vec<f64> (for histogram bins).
-    pub fn as_f64_vec(&self) -> Option<Vec<f64>> {
-        match self {
-            ParamValue::Literal { value } => {
-                let arr = value.as_array()?;
-                arr.iter().map(|v| v.as_f64()).collect::<Option<Vec<f64>>>()
-            }
-            ParamValue::Slot { .. } | ParamValue::List(_) => None,
-        }
-    }
 }
 
 // ============================================================================
@@ -452,6 +441,11 @@ impl<'a> ParamCol<'a> {
             typed,
             broadcast: series.len() == 1,
         }
+    }
+
+    /// The input column's name, for error messages.
+    pub fn name(&self) -> &str {
+        self.series.name()
     }
 
     /// The effective row index after scalar broadcasting.
@@ -714,9 +708,9 @@ impl<'a> ParamCtx<'a> {
 
 /// One op's parameter map, plus the record of which names were looked up.
 ///
-/// `OpSpec` is the documented exception to this crate's `deny_unknown_fields`
-/// rule — its params ride on `#[serde(flatten)]`, which serde cannot combine
-/// with unknown-field rejection — so the wire format cannot refuse a parameter
+/// A legacy op (`LegacyOpSpec`, the not-yet-typed half of `OpSpec`) is the
+/// exception to this crate's `deny_unknown_fields` rule — its params are a
+/// free map — so the wire format cannot refuse a parameter
 /// no operation understands. Nothing else refused one either: `scale` and
 /// `clamp` both accepted an `out_dtype` that entered the op's identity (and so
 /// the CSE and compiled-graph cache keys) and was then read by no `resolve_op`

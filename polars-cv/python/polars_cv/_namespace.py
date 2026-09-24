@@ -11,7 +11,7 @@ collapses to a single ``self._plugin(...)`` call, which goes through
 from __future__ import annotations
 
 import copy
-from typing import Any, Callable
+from typing import Any, Callable, TypeVar
 
 import polars as pl
 
@@ -60,6 +60,10 @@ class _PluginNamespace:
         )
 
 
+#: The concrete namespace type, so `on_null` chains keep their accessor methods.
+_Policy = TypeVar("_Policy", bound="_GeomNullPolicy")
+
+
 class _GeomNullPolicy:
     """Adds ``on_null`` to the geometry accessors — and only to those.
 
@@ -74,7 +78,7 @@ class _GeomNullPolicy:
 
     _on_null: str = "raise"
 
-    def on_null(self, policy: str):
+    def on_null(self: _Policy, policy: str) -> _Policy:
         """Set what a null in a per-row expression parameter means.
 
         These namespaces have no ``Pipeline`` object to hang a graph-level

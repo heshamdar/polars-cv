@@ -24,6 +24,11 @@ view-buffer = { path = "../view-buffer", default-features = false, features = [
     "serde",
 ] }
 
+# `#[derive(Op)]` for the typed op catalogue (`src/ops/`).
+polars-cv-macros = { path = "../polars-cv-macros" }
+# Names the field in a typed op's deserialization error ("'top': ...").
+serde_path_to_error = "0.1"
+
 # Polars plugin essentials - use pyo3 0.28 which is compatible with pyo3-polars 0.27
 # Note: dtype-i8/dtype-u8/dtype-i16/dtype-u16 required for Int8/UInt8/Int16/UInt16 Series
 # See: https://github.com/pola-rs/polars/issues/24171

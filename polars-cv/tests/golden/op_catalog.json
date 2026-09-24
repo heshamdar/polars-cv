@@ -1,0 +1,248 @@
+[
+  {
+    "name": "crop",
+    "python": "crop",
+    "visibility": "public",
+    "doc": "Extract a rectangular region.",
+    "fields": [
+      {
+        "name": "top",
+        "doc": "Top offset.",
+        "positional": false,
+        "default": 0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "left",
+        "doc": "Left offset.",
+        "positional": false,
+        "default": 0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "height",
+        "doc": "Crop height (None = to end).",
+        "positional": false,
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "int"
+          }
+        }
+      },
+      {
+        "name": "width",
+        "doc": "Crop width (None = to end).",
+        "positional": false,
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "int"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "histogram",
+    "python": "histogram",
+    "visibility": "public",
+    "doc": "Compute pixel value histogram.\n\nExample:\n    >>> Pipeline().source(\"image_bytes\").grayscale().histogram(bins=8)",
+    "fields": [
+      {
+        "name": "bins",
+        "doc": "Number of bins (default 256), a Polars expression for per-row dynamic\nbin count, or an explicit list of bin edges.",
+        "positional": true,
+        "default": 256,
+        "type": {
+          "kind": "one_of",
+          "options": [
+            {
+              "kind": "scalar",
+              "per_row": true,
+              "py": "int"
+            },
+            {
+              "kind": "list",
+              "inner": {
+                "kind": "scalar",
+                "per_row": false,
+                "py": "float"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "range",
+        "doc": "(min, max) tuple. Auto-detected if None.",
+        "positional": true,
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "array",
+            "len": 2,
+            "inner": {
+              "kind": "scalar",
+              "per_row": true,
+              "py": "float"
+            }
+          }
+        }
+      },
+      {
+        "name": "closed",
+        "doc": "\"left\" or \"right\" interval inclusiveness (default \"left\").",
+        "positional": true,
+        "default": "left",
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "HistogramClosed",
+          "variants": [
+            "left",
+            "right"
+          ]
+        }
+      },
+      {
+        "name": "output",
+        "doc": "\"buckets\" (list of structs), \"counts\" (bin counts), \"normalized\" (sum to\n1.0), \"quantized\" (pixel indices), \"edges\" (bin edges).",
+        "positional": true,
+        "default": "buckets",
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "HistogramOutput",
+          "variants": [
+            "counts",
+            "normalized",
+            "quantized",
+            "edges",
+            "buckets"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "resize",
+    "python": "resize",
+    "visibility": "public",
+    "doc": "Resize image to specified dimensions.\n\nExample:\n    >>> Pipeline().source(\"image_bytes\").resize(height=224, width=224)",
+    "fields": [
+      {
+        "name": "height",
+        "doc": "Target height.",
+        "positional": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "width",
+        "doc": "Target width.",
+        "positional": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "filter",
+        "doc": "Interpolation: \"nearest\", \"bilinear\", \"lanczos3\" (default).",
+        "positional": false,
+        "default": "lanczos3",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "FilterType",
+          "variants": [
+            "nearest",
+            "bilinear",
+            "catmullrom",
+            "gaussian",
+            "lanczos3"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "warp_affine",
+    "python": "warp_affine",
+    "visibility": "public",
+    "doc": "Apply a 2x3 affine transformation matrix.\n\nThe matrix ``[a, b, tx, c, d, ty]`` is a **forward** mapping from\nsource to destination (same convention as OpenCV ``warpAffine``)::\n\n    x_dst = a * x_src + b * y_src + tx\n    y_dst = c * x_src + d * y_src + ty\n\nThe kernel inverts this matrix internally for interpolation.\n\nDomain: buffer → buffer\n\nExample:\n    ```python\n    >>> # Translate image by (50, 30)\n    >>> pipe = Pipeline().source(\"image_bytes\").warp_affine(\n    ...     matrix=[1.0, 0.0, 50.0, 0.0, 1.0, 30.0],\n    ...     output_size=(224, 224),\n    ... )\n    >>>\n    >>> # Per-sample random affine: each row uses its own matrix columns\n    >>> pipe = Pipeline().source(\"image_bytes\").warp_affine(\n    ...     matrix=[pl.col(\"a\"), pl.col(\"b\"), pl.col(\"tx\"),\n    ...             pl.col(\"c\"), pl.col(\"d\"), pl.col(\"ty\")],\n    ...     output_size=(224, 224),\n    ... )\n    ```",
+    "fields": [
+      {
+        "name": "matrix",
+        "doc": "Six-element sequence representing the 2x3 affine matrix\n``[a, b, tx, c, d, ty]`` (forward mapping). **Each element may be a\nliteral float or a Polars expression**, so a batch can apply a\ndifferent (e.g. random) affine per row in one call — the matrix is\nresolved per row at execution.",
+        "positional": true,
+        "type": {
+          "kind": "array",
+          "len": 6,
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
+          }
+        }
+      },
+      {
+        "name": "output_size",
+        "doc": "``(height, width)`` of the output image. Each element accepts a Polars\nexpression for per-row dynamic values.",
+        "positional": true,
+        "type": {
+          "kind": "array",
+          "len": 2,
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "int"
+          }
+        }
+      },
+      {
+        "name": "interpolation",
+        "doc": "Interpolation method -- ``\"bilinear\"`` (default) or ``\"nearest\"``.",
+        "positional": false,
+        "default": "bilinear",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "InterpolationType",
+          "variants": [
+            "nearest",
+            "bilinear"
+          ]
+        }
+      },
+      {
+        "name": "border_value",
+        "doc": "Pixel value for out-of-bounds regions (default 0).",
+        "positional": false,
+        "default": 0.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  }
+]

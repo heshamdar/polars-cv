@@ -38,7 +38,7 @@ use crate::execute::{
     decode_contour_source, decode_contour_source_with_dims, decode_image_bytes, resolve_op,
 };
 use crate::params::{ParamCtx, ParamValue};
-use crate::pipeline::OpSpec;
+use crate::pipeline::{LegacyOpSpec, OpSpec};
 
 use super::step::GraphStep;
 
@@ -66,14 +66,17 @@ pub(crate) enum OpResolver {
     /// buffer at execution time (the referenced node is an upstream
     /// dependency, so it has already run); the remaining params resolve from
     /// the spec like any dynamic op.
-    RasterizeShapeRef { spec: OpSpec, shape_node: String },
+    RasterizeShapeRef {
+        spec: LegacyOpSpec,
+        shape_node: String,
+    },
 }
 
 /// One op of a node's chain, resolved for the current row.
 enum ResolvedStep<'a> {
     Step(Cow<'a, GraphStep>),
     RasterizeShapeRef {
-        spec: &'a OpSpec,
+        spec: &'a LegacyOpSpec,
         shape_node: &'a str,
     },
 }
@@ -191,8 +194,12 @@ impl CompiledGraph {
                 // rasterize(shape=<node>) carries a shape_ref instead of
                 // width/height; it gets a dedicated resolver because its
                 // dimensions come from another node's output, not a param.
-                if spec.op == "rasterize" {
-                    if let Some(shape_ref) = spec.params.get("shape_ref") {
+                if let OpSpec::Legacy(legacy) = spec {
+                    if let Some(shape_ref) = legacy
+                        .params
+                        .get("shape_ref")
+                        .filter(|_| legacy.op == "rasterize")
+                    {
                         let shape_node = shape_ref.resolve_string()?.to_string();
                         if !graph.nodes.contains_key(&shape_node) {
                             return Err(polars_err!(ComputeError:
@@ -201,13 +208,13 @@ impl CompiledGraph {
                             ));
                         }
                         resolvers.push(OpResolver::RasterizeShapeRef {
-                            spec: spec.clone(),
+                            spec: legacy.clone(),
                             shape_node,
                         });
                         continue;
                     }
                 }
-                if spec.is_all_literal() {
+                if spec.is_static() {
                     resolvers.push(OpResolver::Static(resolve_op(spec, 0, &empty_ctx)?));
                 } else {
                     resolvers.push(OpResolver::Dynamic(spec.clone()));
@@ -1640,8 +1647,20 @@ fn prepare_graph_params(graph: &mut UnifiedGraph) -> PolarsResult<usize> {
             node.source.fill_value.as_mut(),
             node.source.background.as_mut(),
         ];
-        let op_params = node.ops.iter_mut().flat_map(|op| op.params.values_mut());
-        for p in source_params.into_iter().flatten().chain(op_params) {
+        for op in &node.ops {
+            if let OpSpec::Typed(op) = op {
+                inputs = inputs.max(op.min_inputs());
+            }
+        }
+        let op_params = node.ops.iter_mut().flat_map(|op| match op {
+            OpSpec::Legacy(spec) => Some(spec.params.values_mut()),
+            OpSpec::Typed(_) => None,
+        });
+        for p in source_params
+            .into_iter()
+            .flatten()
+            .chain(op_params.flatten())
+        {
             prepare_param(p, &mut inputs)?;
         }
     }
@@ -2067,7 +2086,7 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::BTreeSet;
 
-    use crate::execute::KNOWN_OPS;
+    use crate::execute::LEGACY_OPS;
 
     /// The variant a step belongs to.
     ///
@@ -2077,7 +2096,7 @@ mod tests {
     /// `assert_step_covered` was called exactly once — with a `Buffer` step —
     /// so nothing checked that the other nine had a graph. Two tests close
     /// that now: `every_graph_step_variant_is_reachable_from_a_known_op`
-    /// against `KNOWN_OPS`, the same way `every_graph_geometry_op_executes`
+    /// against `LEGACY_OPS`, the same way `every_graph_geometry_op_executes`
     /// does in `encode.rs`, and the coverage assertion at the end of
     /// `every_graph_step_variant_executes`, which records what that test
     /// actually ran.
@@ -2126,7 +2145,7 @@ mod tests {
     /// A variant no op produces is dead vocabulary that every match still has
     /// to answer for; a variant that exists but is unreachable is also one the
     /// execution graphs below cannot really be covering. Driven from
-    /// `KNOWN_OPS` rather than a probe list, so the axis is the op registry.
+    /// `LEGACY_OPS` rather than a probe list, so the axis is the op registry.
     #[test]
     fn every_graph_step_variant_is_reachable_from_a_known_op() {
         fn probe_params(op: &str) -> Vec<(&'static str, ParamValue)> {
@@ -2144,11 +2163,6 @@ mod tests {
                 "apply_mask" => vec![("other_node", lit(json!("n0")))],
                 "channel_merge" => vec![("other_nodes", lit(json!(["n0"])))],
                 "label_reduce" => vec![("contours", col("c"))],
-                "histogram" => vec![
-                    ("bins", lit(json!(8))),
-                    ("closed", lit(json!("left"))),
-                    ("output", lit(json!("counts"))),
-                ],
                 "rasterize" => vec![("width", lit(json!(8))), ("height", lit(json!(8)))],
                 "reduce_percentile" => vec![("q", lit(json!(0.5)))],
                 "threshold" => vec![("value", lit(json!(128.0)))],
@@ -2157,18 +2171,23 @@ mod tests {
         }
 
         let mut reachable: BTreeSet<&'static str> = BTreeSet::new();
-        for &op_name in KNOWN_OPS {
+        for &op_name in LEGACY_OPS {
             let params: HashMap<String, ParamValue> = probe_params(op_name)
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v))
                 .collect();
-            let spec = OpSpec {
+            let spec = OpSpec::Legacy(crate::pipeline::LegacyOpSpec {
                 op: op_name.to_string(),
                 params,
-            };
+            });
             if let Ok(step) = resolve_op(&spec, 0, &ParamCtx::empty()) {
                 reachable.insert(step_name(&step));
             }
+        }
+        for op in crate::ops::TypedOp::samples() {
+            let step = resolve_op(&OpSpec::Typed(op), 0, &ParamCtx::empty())
+                .expect("a registered sample resolves");
+            reachable.insert(step_name(&step));
         }
 
         let missing: Vec<String> = acknowledged_steps()
@@ -2177,7 +2196,7 @@ mod tests {
             .collect();
         assert!(
             missing.is_empty(),
-            "these GraphStep variants are acknowledged but no KNOWN_OPS entry \
+            "these GraphStep variants are acknowledged but no registered op \
              produces them: {missing:?}"
         );
     }
@@ -2206,8 +2225,13 @@ mod tests {
                 // the graph runs.
                 let step = match resolver {
                     OpResolver::Static(step) => Some(Cow::Borrowed(step)),
-                    OpResolver::Dynamic(spec) | OpResolver::RasterizeShapeRef { spec, .. } => {
+                    OpResolver::Dynamic(spec) => {
                         resolve_op(spec, 0, &ParamCtx::empty()).ok().map(Cow::Owned)
+                    }
+                    OpResolver::RasterizeShapeRef { spec, .. } => {
+                        resolve_op(&OpSpec::Legacy(spec.clone()), 0, &ParamCtx::empty())
+                            .ok()
+                            .map(Cow::Owned)
                     }
                 };
                 if let Some(step) = step {
@@ -2327,10 +2351,8 @@ mod tests {
         let out = exec(
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
-                                  "ops": [{"op": "histogram",
-                                           "bins": {"type": "literal", "value": 4},
-                                           "closed": {"type": "literal", "value": "left"},
-                                           "output": {"type": "literal", "value": "counts"}}]}},
+                                  "ops": [{"op": "histogram", "bins": 4, "range": null,
+                                           "closed": "left", "output": "counts"}]}},
                 "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
             }"#,
@@ -2593,7 +2615,7 @@ mod tests {
         // The dynamic op's expr param must have been bound to a slot:
         // 1 source column + position 0 → absolute slot 1.
         match &compiled.node_plan("n0").resolvers[0] {
-            OpResolver::Dynamic(spec) => match spec.params.get("factor").unwrap() {
+            OpResolver::Dynamic(OpSpec::Legacy(spec)) => match spec.params.get("factor").unwrap() {
                 ParamValue::Slot { idx } => assert_eq!(*idx, 1),
                 other => panic!("expected bound slot, got {other:?}"),
             },
