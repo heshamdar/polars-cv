@@ -20,16 +20,13 @@ from polars_cv._types import (
     SOURCE_PARAM_APPLIES,
     ApproxMethod,
     BoolOrExpr,
-    BorderMode,
     CloudOptions,
-    ColorSpace,
     Domain,
     DType,
     ExtractMode,
     FetchErrorPolicy,
     FloatOrExpr,
     HashAlgorithm,
-    InterpolationType,
     IntOrExpr,
     LabelReduction,
     LabelRegionMode,
@@ -43,7 +40,6 @@ from polars_cv._types import (
     SlotTable,
     SourceFormat,
     SourceSpec,
-    StrOrExpr,
     _reject_expr,
     _validate_enum,
     is_supplied,
@@ -118,27 +114,6 @@ def _matrix_param_from_floats(values: "list[float]") -> "ParamValue":
     return ParamValue(
         is_expr=False,
         value=[ParamValue(is_expr=False, value=float(v)) for v in values],
-    )
-
-
-def _param_list(
-    values: "Sequence[Any]",
-    track: "Callable[[Any], ParamValue]",
-) -> "ParamValue":
-    """Serialize a fixed-length parameter list element by element.
-
-    Each element becomes its own ``ParamValue`` dict, so any of them may be a
-    per-row expression while the list *length* stays structural — it fixes the
-    kernel size, channel count, or target rank at planning time. This is the
-    encoding ``reshape`` and ``warp_affine`` already use; Rust reads it back
-    with ``resolve_f32_list`` / ``resolve_usize_list``.
-
-    ``track`` is the owning pipeline's ``_track_expr``, so expression elements
-    are registered as plugin inputs.
-    """
-    return ParamValue(
-        is_expr=False,
-        value=[track(v) for v in values],
     )
 
 
@@ -2069,54 +2044,6 @@ class Pipeline(_OpsMixin):
 
     # --- Channel Operations ---
 
-    def channel_select(self, *, index: IntOrExpr) -> "Pipeline":
-        """
-        Extract a single channel from a multi-channel image.
-
-        Produces a 2D [H, W] buffer from a [H, W, C] input.
-
-        Domain: buffer → buffer
-
-        Args:
-            index: Channel index to extract (0-based). Accepts a Polars
-                expression for per-row dynamic selection.
-
-        Returns:
-            Self for chaining.
-
-        Example:
-            ```python
-            >>> pipe = Pipeline().source("image_bytes").channel_select(index=0)  # Red channel
-            ```
-        """
-        return self._append_op(
-            "channel_select", lambda p: {"index": p._track_expr(index)}
-        )
-
-    def channel_swap(self, *, order: list[IntOrExpr]) -> "Pipeline":
-        """
-        Reorder channels in a multi-channel image.
-
-        Domain: buffer → buffer
-
-        Args:
-            order: New channel ordering, e.g. [2, 1, 0] for RGB-to-BGR.
-                **Each index may be a literal or a Polars expression**, so the
-                permutation can vary per row. The list *length* is the channel
-                count and must be literal.
-
-        Returns:
-            Self for chaining.
-
-        Example:
-            ```python
-            >>> pipe = Pipeline().source("image_bytes").channel_swap(order=[2, 1, 0])
-            ```
-        """
-        return self._append_op(
-            "channel_swap", lambda p: {"order": _param_list(order, p._track_expr)}
-        )
-
     # --- Intensity Adjustments ---
 
     def adjust_brightness(
@@ -2149,35 +2076,6 @@ class Pipeline(_OpsMixin):
         return self._apply_out_dtype(new, target)
 
     # --- Color Space Conversion ---
-
-    def convert_color(self, from_space: str, to_space: str) -> "Pipeline":
-        """
-        Convert between color spaces.
-
-        Domain: buffer → buffer
-
-        Args:
-            from_space: Source color space (rgb, bgr, hsv, lab, ycbcr, gray).
-            to_space: Target color space (rgb, bgr, hsv, lab, ycbcr, gray).
-
-        Returns:
-            Self for chaining.
-
-        Example:
-            ```python
-            >>> pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
-            ```
-        """
-        # Validate enum values
-        ColorSpace(from_space)
-        ColorSpace(to_space)
-        return self._append_op(
-            "cvt_color",
-            lambda p: {
-                "from_space": ParamValue(is_expr=False, value=from_space),
-                "to_space": ParamValue(is_expr=False, value=to_space),
-            },
-        )
 
     def to_hsv(self) -> "Pipeline":
         """Convert from RGB to HSV color space.
@@ -2214,72 +2112,6 @@ class Pipeline(_OpsMixin):
         return self.convert_color("rgb", "ycbcr")
 
     # --- Convolution / Filtering ---
-
-    def convolve2d(
-        self,
-        kernel: list[FloatOrExpr],
-        ksize: IntOrExpr,
-        *,
-        normalize: BoolOrExpr = False,
-        border: StrOrExpr = "replicate",
-    ) -> "Pipeline":
-        """
-        Apply generic 2D convolution with an arbitrary kernel.
-
-        Domain: buffer → buffer
-
-        Args:
-            kernel: Flattened kernel values (row-major, ``ksize × ksize``).
-                **Each coefficient may be a literal float or a Polars
-                expression**, so a batch can convolve with a different kernel
-                per row. The kernel *length* is structural and must be a
-                literal odd square.
-            ksize: Kernel dimension (must be odd; kernel is ``ksize × ksize``).
-                Accepts a Polars expression for per-row dynamic values.
-            normalize: If True, divide output by the sum of absolute kernel values.
-            border: Border handling mode (``"replicate"``, ``"zero"``, ``"reflect"``).
-
-        Returns:
-            Self for chaining.
-
-        Example:
-            ```python
-            >>> edge = Pipeline().source("image_bytes").convolve2d(
-            ...     kernel=[-1, -1, -1, -1, 8, -1, -1, -1, -1],
-            ...     ksize=3,
-            ... )
-            ```
-        """
-        if isinstance(ksize, pl.Expr):
-            # `ksize` is only known per row, but the kernel *length* is
-            # structural and still checkable: it must be an odd perfect square.
-            # Previously an expression `ksize` skipped every check, letting a
-            # mismatched kernel reach Rust unvalidated.
-            side = math.isqrt(len(kernel))
-            if side * side != len(kernel) or side % 2 == 0:
-                msg = (
-                    f"convolve2d kernel length {len(kernel)} must be the square "
-                    "of an odd number (9 for 3x3, 25 for 5x5, ...)"
-                )
-                raise ValueError(msg)
-        else:
-            if ksize % 2 == 0:
-                msg = f"convolve2d ksize must be odd, got {ksize}"
-                raise ValueError(msg)
-            if len(kernel) != ksize * ksize:
-                msg = (
-                    f"kernel length {len(kernel)} doesn't match ksize²={ksize * ksize}"
-                )
-                raise ValueError(msg)
-        return self._append_op(
-            "convolve2d",
-            lambda p: {
-                "kernel": _param_list(kernel, p._track_expr),
-                "ksize": p._track_expr(ksize),
-                "normalize": p._track_expr(normalize),
-                "border": _enum_param(border, BorderMode, "border mode", p._track_expr),
-            },
-        )
 
     def sobel(self, *, axis: str = "x", ksize: int = 3) -> "Pipeline":
         """
@@ -2489,73 +2321,6 @@ class Pipeline(_OpsMixin):
 
     # --- Padding Operations ---
 
-    def rotate(
-        self,
-        angle: FloatOrExpr,
-        *,
-        expand: bool = False,
-        interpolation: str | pl.Expr = "bilinear",
-        border_value: FloatOrExpr = 0.0,
-    ) -> "Pipeline":
-        """
-        Rotate image by specified angle.
-
-        For angles of 90, 180, or 270 degrees, this uses zero-copy view
-        operations (``interpolation`` and ``border_value`` are ignored).
-        For arbitrary angles, the rotation is performed via an affine
-        transformation using the specified interpolation and border value.
-
-        This is a convenience wrapper around the affine transform family.
-        For more control (e.g., combined rotation + scale, or explicit
-        output sizing), use :meth:`rotate_and_scale` or :meth:`warp_affine`.
-
-        Domain: buffer -> buffer
-
-        Args:
-            angle: Rotation angle in degrees (positive = clockwise).
-                Can be a literal float or Polars expression.
-            expand: If True, expand output dimensions to fit rotated image.
-                If False (default), keep original dimensions (corners may
-                be cropped).
-            interpolation: Interpolation method for arbitrary angles --
-                ``"bilinear"`` (default) or ``"nearest"``. Ignored for
-                90/180/270 degree rotations.
-            border_value: Fill value for out-of-bounds pixels (default 0).
-                Ignored for 90/180/270 degree rotations.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
-
-        Example:
-            ```python
-            >>> # Zero-copy 90-degree rotation
-            >>> pipe = Pipeline().source("image_bytes").rotate(90)
-            >>>
-            >>> # Arbitrary angle with expansion
-            >>> pipe = Pipeline().source("image_bytes").rotate(45, expand=True)
-            >>>
-            >>> # Dynamic angle from column
-            >>> pipe = Pipeline().source("image_bytes").rotate(pl.col("angle"))
-            >>>
-            >>> # Nearest-neighbor interpolation for pixel-art
-            >>> pipe = Pipeline().source("image_bytes").rotate(30, interpolation="nearest")
-            ```
-        """
-        return self._append_op(
-            "rotate",
-            lambda p: {
-                "angle": p._track_expr(angle),
-                "expand": ParamValue(is_expr=False, value=expand),
-                "interpolation": _enum_param(
-                    interpolation, InterpolationType, "interpolation", p._track_expr
-                ),
-                "border_value": p._track_expr(border_value),
-            },
-        )
-
     # --- Affine Transform Operations ---
 
     def shear(
@@ -2660,33 +2425,10 @@ class Pipeline(_OpsMixin):
             >>> Pipeline().source("image_bytes").perceptual_hash()
         """
 
-        # `algorithm` is paired with the structural `hash_size` and stays
-        # literal; reject an expression here rather than letting it fall past
-        # the isinstance check and explode on `.value`.
-        _reject_expr(algorithm, "perceptual_hash 'algorithm'")
-        if isinstance(algorithm, str):
-            algorithm = _validate_enum(algorithm, HashAlgorithm, "algorithm")
-
-        if isinstance(hash_size, pl.Expr):
-            msg = (
-                "hash_size is structural (it fixes the output vector length at "
-                "planning time) and must be a literal, not a Polars expression."
-            )
-            raise TypeError(msg)
-        if hash_size <= 0:
-            msg = "hash_size must be a positive integer"
-            raise ValueError(msg)
-
-        # Transitions to the vector domain (fixed-length 1-D u8 fingerprint).
-        # The domain comes from the op's Rust contract (GraphStep::PerceptualHash
-        # → Domain::Vector), read via op_schema — not assigned here.
-        return self._append_op(
-            "perceptual_hash",
-            lambda p: {
-                "algorithm": ParamValue(is_expr=False, value=algorithm.value),
-                "hash_size": ParamValue(is_expr=False, value=hash_size),
-            },
-        )
+        # The Rust definition validates both (an unknown algorithm, a
+        # non-positive or per-row `hash_size`); this method only keeps the
+        # signature, whose default is the Python enum member.
+        return self._perceptual_hash(algorithm=algorithm, hash_size=hash_size)
 
     # --- Contour/Geometry Operations ---
 
@@ -2831,241 +2573,6 @@ class Pipeline(_OpsMixin):
         return self._append_op("extract_contours", _params)
 
     # --- Buffer Reduction Operations (buffer → scalar) ---
-
-    def reduce_sum(self) -> "Pipeline":
-        """
-        Sum all elements in the buffer.
-
-        Domain transition: buffer → scalar
-        """
-        return self._append_op("reduce_sum", lambda p: {})
-
-    def reduce_percentile(self, q: FloatOrExpr) -> "Pipeline":
-        """
-        Compute the q-th percentile of all values.
-
-        Uses linear interpolation matching numpy.percentile default behavior.
-
-        Args:
-            q: Percentile to compute, in [0, 100]. Accepts a Polars expression
-                for per-row dynamic values.
-
-        Domain transition: buffer -> scalar
-        """
-        return self._append_op("reduce_percentile", lambda p: {"q": p._track_expr(q)})
-
-    def reduce_popcount(self) -> "Pipeline":
-        """
-        Count set bits (1s) in the buffer.
-
-        Domain transition: buffer → scalar
-        """
-        return self._append_op("reduce_popcount", lambda p: {})
-
-    def reduce_max(self, axis: int | None = None) -> "Pipeline":
-        """
-        Reduce buffer by computing the maximum value.
-
-        When axis is None, computes the global maximum across all elements,
-        returning a single scalar. When axis is specified, reduces along that
-        axis, returning a buffer with one fewer dimension.
-
-        Domain transition:
-            - axis=None: buffer → scalar
-            - axis=N: buffer → buffer (reduced shape)
-
-        Args:
-            axis: Axis to reduce along. None for global reduction.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
-
-        Example:
-            ```python
-            >>> # Global maximum
-            >>> pipe = Pipeline().source("image_bytes").grayscale().reduce_max()
-            >>> df.with_columns(max_val=pl.col("image").cv.pipe(pipe).sink("native"))
-            >>>
-            >>> # Maximum along height axis (returns 1D array per column)
-            >>> pipe = Pipeline().source("image_bytes").reduce_max(axis=0)
-            ```
-        """
-
-        def _params(p: "Pipeline") -> dict[str, ParamValue]:
-            params: dict[str, ParamValue] = {}
-            if axis is not None:
-                params["axis"] = ParamValue(is_expr=False, value=axis)
-            return params
-
-        return self._append_op("reduce_max", _params)
-
-    def reduce_min(self, axis: int | None = None) -> "Pipeline":
-        """
-        Reduce buffer by computing the minimum value.
-
-        When axis is None, computes the global minimum across all elements,
-        returning a single scalar. When axis is specified, reduces along that
-        axis, returning a buffer with one fewer dimension.
-
-        Domain transition:
-            - axis=None: buffer → scalar
-            - axis=N: buffer → buffer (reduced shape)
-
-        Args:
-            axis: Axis to reduce along. None for global reduction.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
-
-        Example:
-            ```python
-            >>> # Global minimum
-            >>> pipe = Pipeline().source("image_bytes").grayscale().reduce_min()
-            >>> df.with_columns(min_val=pl.col("image").cv.pipe(pipe).sink("native"))
-            >>>
-            >>> # Minimum along width axis
-            >>> pipe = Pipeline().source("image_bytes").reduce_min(axis=1)
-            ```
-        """
-
-        def _params(p: "Pipeline") -> dict[str, ParamValue]:
-            params: dict[str, ParamValue] = {}
-            if axis is not None:
-                params["axis"] = ParamValue(is_expr=False, value=axis)
-            return params
-
-        return self._append_op("reduce_min", _params)
-
-    def reduce_mean(self, axis: int | None = None) -> "Pipeline":
-        """
-        Compute arithmetic mean.
-
-        Args:
-            axis: Axis to reduce along. If None, computes global mean.
-
-        Domain transition:
-            - axis=None: buffer → scalar
-            - axis=N: buffer → buffer (reduced shape)
-        """
-
-        def _params(p: "Pipeline") -> dict[str, ParamValue]:
-            params: dict[str, ParamValue] = {}
-            if axis is not None:
-                params["axis"] = ParamValue(is_expr=False, value=axis)
-            return params
-
-        return self._append_op("reduce_mean", _params)
-
-    def reduce_std(self, axis: int | None = None, ddof: IntOrExpr = 0) -> "Pipeline":
-        """
-        Reduce buffer by computing the standard deviation.
-
-        When axis is None, computes the global standard deviation across all
-        elements, returning a single scalar. When axis is specified, reduces
-        along that axis, returning a buffer with one fewer dimension.
-
-        Domain transition:
-            - axis=None: buffer -> scalar
-            - axis=N: buffer -> buffer (reduced shape)
-
-        Args:
-            axis: Axis to reduce along. None for global reduction.
-            ddof: Delta degrees of freedom. 0 for population std (default),
-                1 for sample std. Accepts a Polars expression for per-row
-                dynamic values.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
-
-        Example:
-            ```python
-            >>> # Global standard deviation
-            >>> pipe = Pipeline().source("image_bytes").grayscale().reduce_std()
-            >>> df.with_columns(std=pl.col("image").cv.pipe(pipe).sink("native"))
-            >>>
-            >>> # Sample std (ddof=1)
-            >>> pipe = Pipeline().source("image_bytes").reduce_std(ddof=1)
-            ```
-        """
-
-        def _params(p: "Pipeline") -> dict[str, ParamValue]:
-            params: dict[str, ParamValue] = {"ddof": p._track_expr(ddof)}
-            if axis is not None:
-                params["axis"] = ParamValue(is_expr=False, value=axis)
-            return params
-
-        return self._append_op("reduce_std", _params)
-
-    def reduce_argmax(self, axis: int) -> "Pipeline":
-        """
-        Reduce buffer by finding the index of the maximum value along an axis.
-
-        Unlike other reductions, argmax always requires an axis since the global
-        argmax would be ambiguous for multi-dimensional arrays.
-
-        Domain transition: buffer → buffer (reduced shape, i64 dtype)
-
-        Args:
-            axis: Axis along which to find the maximum index.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
-
-        Example:
-            ```python
-            >>> # Find column with max value per row
-            >>> pipe = Pipeline().source("image_bytes").grayscale().reduce_argmax(axis=1)
-            >>> df.with_columns(max_col=pl.col("image").cv.pipe(pipe).sink("list"))
-            ```
-        """
-        # argmax always returns a buffer with reduced shape (indices)
-        return self._append_op(
-            "reduce_argmax",
-            lambda p: {"axis": ParamValue(is_expr=False, value=axis)},
-        )
-
-    def reduce_argmin(self, axis: int) -> "Pipeline":
-        """
-        Reduce buffer by finding the index of the minimum value along an axis.
-
-        Unlike other reductions, argmin always requires an axis since the global
-        argmin would be ambiguous for multi-dimensional arrays.
-
-        Domain transition: buffer → buffer (reduced shape, i64 dtype)
-
-        Args:
-            axis: Axis along which to find the minimum index.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
-
-        Example:
-            ```python
-            >>> # Find column with min value per row
-            >>> pipe = Pipeline().source("image_bytes").grayscale().reduce_argmin(axis=1)
-            >>> df.with_columns(min_col=pl.col("image").cv.pipe(pipe).sink("list"))
-            ```
-        """
-        # argmin always returns a buffer with reduced shape (indices)
-        return self._append_op(
-            "reduce_argmin",
-            lambda p: {"axis": ParamValue(is_expr=False, value=axis)},
-        )
 
     def extract_shape(self) -> "Pipeline":
         """

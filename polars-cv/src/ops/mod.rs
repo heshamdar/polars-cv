@@ -19,10 +19,15 @@
 //! name in neither set is an error.
 
 pub mod affine;
+pub mod channel;
+pub mod color;
 pub mod compute;
+pub mod filter;
 pub mod histogram;
 pub mod image;
 pub mod param;
+pub mod phash;
+pub mod reduce;
 pub mod view;
 
 use polars::prelude::*;
@@ -184,10 +189,15 @@ typed_ops! {
     "canny" => Canny(image::Canny) {"low_threshold": 50.0, "high_threshold": 150.0},
     "cast" => Cast(compute::Cast) {"dtype": "f32"},
     "ceil" => Ceil(compute::Ceil) {},
+    "channel_select" => ChannelSelect(channel::ChannelSelect) {"index": 0},
+    "channel_swap" => ChannelSwap(channel::ChannelSwap) {"order": [2, 1, 0]},
     "clamp" => Clamp(compute::Clamp) {"min": 0.0, "max": 1.0},
     "clamp_max" => ClampMax(compute::ClampMax) {"value": 1.0},
     "clamp_min" => ClampMin(compute::ClampMin) {"value": 0.0},
+    "convolve2d" => Convolve2d(filter::Convolve2d)
+        {"kernel": [0, 0, 0, 0, 1, 0, 0, 0, 0], "ksize": 3, "normalize": false, "border": "replicate"},
     "crop" => Crop(view::Crop) {"top": 1, "left": 1, "height": 2, "width": 2},
+    "cvt_color" => CvtColor(color::CvtColor) {"from_space": "rgb", "to_space": "hsv"},
     "dilate" => Dilate(image::Dilate) {"ksize": 3, "iterations": 1},
     "equalize_histogram" => EqualizeHistogram(image::EqualizeHistogram) {},
     "erode" => Erode(image::Erode) {"ksize": 3, "iterations": 1},
@@ -207,7 +217,17 @@ typed_ops! {
         {"top": 1, "bottom": 1, "left": 1, "right": 1, "value": 0.0, "mode": "constant"},
     "pad_to_size" => PadToSize(image::PadToSize)
         {"height": 4, "width": 4, "position": "center", "value": 0.0},
+    "perceptual_hash" => PerceptualHash(phash::PerceptualHash) {"algorithm": "perceptual", "hash_size": 64},
     "reciprocal" => Reciprocal(compute::Reciprocal) {},
+    "reduce_argmax" => ReduceArgmax(reduce::ReduceArgmax) {"axis": 0},
+    "reduce_argmin" => ReduceArgmin(reduce::ReduceArgmin) {"axis": 0},
+    "reduce_max" => ReduceMax(reduce::ReduceMax) {"axis": null},
+    "reduce_mean" => ReduceMean(reduce::ReduceMean) {"axis": 1},
+    "reduce_min" => ReduceMin(reduce::ReduceMin) {"axis": null},
+    "reduce_percentile" => ReducePercentile(reduce::ReducePercentile) {"q": 50.0},
+    "reduce_popcount" => ReducePopcount(reduce::ReducePopcount) {},
+    "reduce_std" => ReduceStd(reduce::ReduceStd) {"axis": null, "ddof": 1},
+    "reduce_sum" => ReduceSum(reduce::ReduceSum) {},
     "relu" => Relu(compute::Relu) {},
     "reshape" => Reshape(view::Reshape) {"shape": [2, 2, 1]},
     "resize" => Resize(image::Resize) {"height": 4, "width": 4, "filter": "bilinear"},
@@ -216,6 +236,8 @@ typed_ops! {
     "resize_scale" => ResizeScale(image::ResizeScale) {"scale_x": 0.5, "scale_y": 0.5, "filter": "bilinear"},
     "resize_to_height" => ResizeToHeight(image::ResizeToHeight) {"height": 4, "filter": "bilinear"},
     "resize_to_width" => ResizeToWidth(image::ResizeToWidth) {"width": 4, "filter": "bilinear"},
+    "rotate" => Rotate(affine::Rotate)
+        {"angle": 30.0, "expand": true, "interpolation": "nearest", "border_value": 0.0},
     "round" => Round(compute::Round) {},
     "scale" => Scale(compute::Scale) {"factor": 2.0},
     "sign" => Sign(compute::Sign) {},
@@ -470,6 +492,64 @@ mod tests {
         let err = parse_err(json!({"op": "resize", "height": 4, "width": 4,
                                    "filter": "triangle"}));
         assert!(err.contains("'filter'"), "{err}");
+    }
+
+    /// A present but invalid value is an error naming the field — never read
+    /// as a default. Ported from the legacy `strict_param_tests` as each op
+    /// migrated; the serde error is now what enforces it.
+    #[test]
+    fn an_invalid_value_is_rejected_naming_its_field() {
+        let cases = [
+            (
+                json!({"op": "perceptual_hash", "algorithm": "phash", "hash_size": 64}),
+                "'algorithm'",
+                "perceptual",
+            ),
+            (
+                json!({"op": "perceptual_hash", "algorithm": "average", "hash_size": "large"}),
+                "'hash_size'",
+                "",
+            ),
+            (json!({"op": "reduce_max", "axis": "rows"}), "'axis'", ""),
+            (json!({"op": "reduce_min", "axis": "rows"}), "'axis'", ""),
+            (json!({"op": "reduce_mean", "axis": "rows"}), "'axis'", ""),
+            (
+                json!({"op": "reduce_std", "axis": null, "ddof": "one"}),
+                "'ddof'",
+                "",
+            ),
+            (
+                json!({"op": "reduce_std", "axis": null, "ddof": 300}),
+                "'ddof'",
+                "out of range",
+            ),
+            (
+                json!({"op": "rotate", "angle": 45.0, "expand": "yes",
+                    "interpolation": "bilinear", "border_value": 0.0}),
+                "'expand'",
+                "",
+            ),
+            (
+                json!({"op": "rotate", "angle": 45.0, "expand": false,
+                    "interpolation": "cubic", "border_value": 0.0}),
+                "'interpolation'",
+                "nearest",
+            ),
+            (
+                json!({"op": "convolve2d", "kernel": [0, 0, 0, 0, 1, 0, 0, 0, 0], "ksize": 3,
+                    "normalize": "yes", "border": "replicate"}),
+                "'normalize'",
+                "",
+            ),
+        ];
+        for (spec, field, also) in cases {
+            let err = parse_err(spec.clone());
+            assert!(err.contains(field) && err.contains(also), "{spec}: {err}");
+        }
+        // An absent (null) axis is a global reduction, not an error.
+        for op in ["reduce_max", "reduce_min", "reduce_mean"] {
+            parse(json!({"op": op, "axis": null})).unwrap();
+        }
     }
 
     #[test]

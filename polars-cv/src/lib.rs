@@ -245,18 +245,6 @@ fn legacy_probe_spec(
                 idx: placeholders.len(),
             };
             placeholders.push(Series::new("".into(), &[probe]));
-        } else if let ParamValue::Literal { value } = p {
-            // A literal may itself be a list of wire params (reshape's shape).
-            // Neutralize any slot entries the same way so the op's structural
-            // schema (here: the target rank = entry count) is introspectable
-            // regardless of per-row dims.
-            if let Some(arr) = value.as_array_mut() {
-                for entry in arr.iter_mut() {
-                    if matches!(ParamValue::from_wire(entry), Ok(ParamValue::Slot { .. })) {
-                        *entry = serde_json::json!({"type": "literal", "value": probe});
-                    }
-                }
-            }
         }
     }
     (op_spec, placeholders)

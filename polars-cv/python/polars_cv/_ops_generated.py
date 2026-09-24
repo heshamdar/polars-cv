@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import polars as pl
 
-    from polars_cv._types import FloatOrExpr, IntOrExpr
+    from polars_cv._types import BoolOrExpr, FloatOrExpr, IntOrExpr
     from polars_cv.pipeline import Pipeline
 
 #: Ops whose wire form is typed (bare values and slots).
@@ -26,10 +26,14 @@ TYPED_OPS: frozenset[str] = frozenset(
         "canny",
         "cast",
         "ceil",
+        "channel_select",
+        "channel_swap",
         "clamp",
         "clamp_max",
         "clamp_min",
+        "convolve2d",
         "crop",
+        "cvt_color",
         "dilate",
         "equalize_histogram",
         "erode",
@@ -44,7 +48,17 @@ TYPED_OPS: frozenset[str] = frozenset(
         "normalize",
         "pad",
         "pad_to_size",
+        "perceptual_hash",
         "reciprocal",
+        "reduce_argmax",
+        "reduce_argmin",
+        "reduce_max",
+        "reduce_mean",
+        "reduce_min",
+        "reduce_percentile",
+        "reduce_popcount",
+        "reduce_std",
+        "reduce_sum",
         "relu",
         "reshape",
         "resize",
@@ -53,6 +67,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "resize_scale",
         "resize_to_height",
         "resize_to_width",
+        "rotate",
         "round",
         "scale",
         "sign",
@@ -97,12 +112,33 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         }
     },
     "ceil": {},
+    "channel_select": {"index": {"kind": "scalar", "per_row": True, "py": "int"}},
+    "channel_swap": {
+        "order": {
+            "kind": "list",
+            "inner": {"kind": "scalar", "per_row": True, "py": "int"},
+        }
+    },
     "clamp": {
         "min": {"kind": "scalar", "per_row": True, "py": "float"},
         "max": {"kind": "scalar", "per_row": True, "py": "float"},
     },
     "clamp_max": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "clamp_min": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "convolve2d": {
+        "kernel": {
+            "kind": "list",
+            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+        },
+        "ksize": {"kind": "scalar", "per_row": True, "py": "int"},
+        "normalize": {"kind": "scalar", "per_row": True, "py": "bool"},
+        "border": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "BorderMode",
+            "variants": ["replicate", "zero", "reflect"],
+        },
+    },
     "crop": {
         "top": {"kind": "scalar", "per_row": True, "py": "int"},
         "left": {"kind": "scalar", "per_row": True, "py": "int"},
@@ -113,6 +149,20 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         "width": {
             "kind": "optional",
             "inner": {"kind": "scalar", "per_row": True, "py": "int"},
+        },
+    },
+    "cvt_color": {
+        "from_space": {
+            "kind": "scalar",
+            "per_row": False,
+            "py": "ColorSpace",
+            "variants": ["rgb", "bgr", "hsv", "lab", "ycbcr", "gray"],
+        },
+        "to_space": {
+            "kind": "scalar",
+            "per_row": False,
+            "py": "ColorSpace",
+            "variants": ["rgb", "bgr", "hsv", "lab", "ycbcr", "gray"],
         },
     },
     "dilate": {
@@ -244,7 +294,46 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         },
         "value": {"kind": "scalar", "per_row": True, "py": "float"},
     },
+    "perceptual_hash": {
+        "algorithm": {
+            "kind": "scalar",
+            "per_row": False,
+            "py": "HashAlgorithm",
+            "variants": ["average", "difference", "perceptual", "blockhash"],
+        },
+        "hash_size": {"kind": "scalar", "per_row": False, "py": "int"},
+    },
     "reciprocal": {},
+    "reduce_argmax": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
+    "reduce_argmin": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
+    "reduce_max": {
+        "axis": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
+        }
+    },
+    "reduce_mean": {
+        "axis": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
+        }
+    },
+    "reduce_min": {
+        "axis": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
+        }
+    },
+    "reduce_percentile": {"q": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "reduce_popcount": {},
+    "reduce_std": {
+        "axis": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
+        },
+        "ddof": {"kind": "scalar", "per_row": True, "py": "int"},
+    },
+    "reduce_sum": {},
     "relu": {},
     "reshape": {
         "shape": {
@@ -307,6 +396,17 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "py": "FilterType",
             "variants": ["nearest", "bilinear", "catmullrom", "gaussian", "lanczos3"],
         },
+    },
+    "rotate": {
+        "angle": {"kind": "scalar", "per_row": True, "py": "float"},
+        "expand": {"kind": "scalar", "per_row": False, "py": "bool"},
+        "interpolation": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "InterpolationType",
+            "variants": ["nearest", "bilinear"],
+        },
+        "border_value": {"kind": "scalar", "per_row": True, "py": "float"},
     },
     "round": {},
     "scale": {"factor": {"kind": "scalar", "per_row": True, "py": "float"}},
@@ -424,6 +524,32 @@ class _OpsMixin:
         """Round toward positive infinity. Domain: buffer → buffer."""
         return self._append_typed("ceil", {})
 
+    def channel_select(self, *, index: IntOrExpr) -> Pipeline:
+        """Extract a single channel from a multi-channel image: a 2D [H, W] buffer
+        from a [H, W, C] input.
+
+        Args:
+            index: Channel index to extract (0-based). Accepts a Polars expression for
+                per-row dynamic selection.
+
+        Example:
+            >>> pipe = Pipeline().source("image_bytes").channel_select(index=0)  # Red channel
+        """
+        return self._append_typed("channel_select", {"index": index})
+
+    def channel_swap(self, *, order: Sequence[IntOrExpr]) -> Pipeline:
+        """Reorder channels in a multi-channel image.
+
+        Args:
+            order: New channel ordering, e.g. [2, 1, 0] for RGB-to-BGR. **Each index may
+                be a literal or a Polars expression**, so the permutation can vary per
+                row. The list *length* is the channel count and must be literal.
+
+        Example:
+            >>> pipe = Pipeline().source("image_bytes").channel_swap(order=[2, 1, 0])
+        """
+        return self._append_typed("channel_swap", {"order": order})
+
     def _clamp(self, min: FloatOrExpr, max: FloatOrExpr) -> Pipeline:
         """Clamp values to a range.
 
@@ -452,6 +578,46 @@ class _OpsMixin:
         """
         return self._append_typed("clamp_min", {"value": value})
 
+    def convolve2d(
+        self,
+        kernel: Sequence[FloatOrExpr],
+        ksize: IntOrExpr,
+        *,
+        normalize: BoolOrExpr = False,
+        border: str | pl.Expr = "replicate",
+    ) -> Pipeline:
+        """Apply generic 2D convolution with an arbitrary kernel.
+
+        Domain: buffer → buffer
+
+        Args:
+            kernel: Flattened kernel values (row-major, ``ksize × ksize``). **Each
+                coefficient may be a literal float or a Polars expression**, so a batch
+                can convolve with a different kernel per row. The kernel *length* is
+                structural and must be a literal odd square.
+            ksize: Kernel dimension (must be odd; kernel is ``ksize × ksize``). Accepts
+                a Polars expression for per-row dynamic values.
+            normalize: If True, divide output by the sum of absolute kernel values.
+            border: Border handling mode (``"replicate"``, ``"zero"``, ``"reflect"``).
+
+        Example:
+            ```python
+            >>> edge = Pipeline().source("image_bytes").convolve2d(
+            ...     kernel=[-1, -1, -1, -1, 8, -1, -1, -1, -1],
+            ...     ksize=3,
+            ... )
+            ```
+        """
+        return self._append_typed(
+            "convolve2d",
+            {
+                "kernel": kernel,
+                "ksize": ksize,
+                "normalize": normalize,
+                "border": border,
+            },
+        )
+
     def crop(
         self,
         *,
@@ -470,6 +636,22 @@ class _OpsMixin:
         """
         return self._append_typed(
             "crop", {"top": top, "left": left, "height": height, "width": width}
+        )
+
+    def convert_color(self, from_space: str, to_space: str) -> Pipeline:
+        """Convert between color spaces.
+
+        Domain: buffer → buffer
+
+        Args:
+            from_space: Source color space (rgb, bgr, hsv, lab, ycbcr, gray).
+            to_space: Target color space (rgb, bgr, hsv, lab, ycbcr, gray).
+
+        Example:
+            >>> pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
+        """
+        return self._append_typed(
+            "cvt_color", {"from_space": from_space, "to_space": to_space}
         )
 
     def dilate(self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1) -> Pipeline:
@@ -701,9 +883,128 @@ class _OpsMixin:
             {"height": height, "width": width, "position": position, "value": value},
         )
 
+    def _perceptual_hash(
+        self, *, algorithm: str = "perceptual", hash_size: int = 64
+    ) -> Pipeline:
+        """Compute a perceptual hash fingerprint.
+
+        The public `Pipeline.perceptual_hash` is sugar over this op (its signature
+        default is the Python `HashAlgorithm` member).
+
+        Args:
+            algorithm: "perceptual" (pHash), "average" (aHash), "difference" (dHash).
+            hash_size: Number of bits in the hash (must be power of 2). It fixes the
+                output vector length, so it is literal-only.
+        """
+        return self._append_typed(
+            "perceptual_hash", {"algorithm": algorithm, "hash_size": hash_size}
+        )
+
     def reciprocal(self) -> Pipeline:
         """Reciprocal (`1 / x`; ±inf at zero). Domain: buffer → buffer."""
         return self._append_typed("reciprocal", {})
+
+    def reduce_argmax(self, axis: int) -> Pipeline:
+        """Index of the maximum value along an axis.
+
+        Unlike other reductions it always requires an axis: a global index
+        is ambiguous for a multi-dimensional array. Domain transition:
+        buffer → buffer (reduced shape, i64 dtype).
+
+        Args:
+            axis: Axis along which to find the index.
+        """
+        return self._append_typed("reduce_argmax", {"axis": axis})
+
+    def reduce_argmin(self, axis: int) -> Pipeline:
+        """Index of the minimum value along an axis.
+
+        Unlike other reductions it always requires an axis: a global index
+        is ambiguous for a multi-dimensional array. Domain transition:
+        buffer → buffer (reduced shape, i64 dtype).
+
+        Args:
+            axis: Axis along which to find the index.
+        """
+        return self._append_typed("reduce_argmin", {"axis": axis})
+
+    def reduce_max(self, axis: int | None = None) -> Pipeline:
+        """Reduce buffer by computing the maximum value.
+
+        Domain transition: axis=None: buffer → scalar; axis=N: buffer →
+        buffer (reduced shape).
+
+        Args:
+            axis: Axis to reduce along. None for global reduction. It fixes the output
+                rank, so it is literal-only.
+        """
+        return self._append_typed("reduce_max", {"axis": axis})
+
+    def reduce_mean(self, axis: int | None = None) -> Pipeline:
+        """Compute arithmetic mean.
+
+        Domain transition: axis=None: buffer → scalar; axis=N: buffer →
+        buffer (reduced shape).
+
+        Args:
+            axis: Axis to reduce along. None for global reduction. It fixes the output
+                rank, so it is literal-only.
+        """
+        return self._append_typed("reduce_mean", {"axis": axis})
+
+    def reduce_min(self, axis: int | None = None) -> Pipeline:
+        """Reduce buffer by computing the minimum value.
+
+        Domain transition: axis=None: buffer → scalar; axis=N: buffer →
+        buffer (reduced shape).
+
+        Args:
+            axis: Axis to reduce along. None for global reduction. It fixes the output
+                rank, so it is literal-only.
+        """
+        return self._append_typed("reduce_min", {"axis": axis})
+
+    def reduce_percentile(self, q: FloatOrExpr) -> Pipeline:
+        """Compute the q-th percentile of all values (linear interpolation, as numpy's
+        default).
+
+        Domain transition: buffer -> scalar
+
+        Args:
+            q: Percentile to compute, in [0, 100]. Accepts a Polars expression for per-
+                row dynamic values.
+        """
+        return self._append_typed("reduce_percentile", {"q": q})
+
+    def reduce_popcount(self) -> Pipeline:
+        """Count set bits (1s) in the buffer.
+
+        Domain transition: buffer → scalar
+        """
+        return self._append_typed("reduce_popcount", {})
+
+    def reduce_std(self, axis: int | None = None, ddof: IntOrExpr = 0) -> Pipeline:
+        """Reduce buffer by computing the standard deviation.
+
+        Domain transition: axis=None: buffer -> scalar; axis=N: buffer -> buffer
+        (reduced shape).
+
+        Args:
+            axis: Axis to reduce along. None for global reduction.
+            ddof: Delta degrees of freedom. 0 for population std (default), 1 for sample
+                std. Accepts a Polars expression for per-row dynamic values.
+
+        Example:
+            >>> pipe = Pipeline().source("image_bytes").reduce_std(ddof=1)
+        """
+        return self._append_typed("reduce_std", {"axis": axis, "ddof": ddof})
+
+    def reduce_sum(self) -> Pipeline:
+        """Sum all elements in the buffer.
+
+        Domain transition: buffer → scalar
+        """
+        return self._append_typed("reduce_sum", {})
 
     def relu(self) -> Pipeline:
         """Apply ReLU activation (max(0, x)): negative values become zero."""
@@ -818,6 +1119,54 @@ class _OpsMixin:
            >>> pipe = Pipeline().source("image_bytes").resize_to_width(224)
         """
         return self._append_typed("resize_to_width", {"width": width, "filter": filter})
+
+    def rotate(
+        self,
+        angle: FloatOrExpr,
+        *,
+        expand: bool = False,
+        interpolation: str | pl.Expr = "bilinear",
+        border_value: FloatOrExpr = 0.0,
+    ) -> Pipeline:
+        """Rotate image by specified angle.
+
+        For angles of 90, 180, or 270 degrees, this uses zero-copy view operations
+        (``interpolation`` and ``border_value`` do not apply: nothing is resampled
+        and no out-of-bounds region is exposed). For arbitrary angles, the rotation
+        is performed via an affine transformation using the specified
+        interpolation and border value. For combined rotation + scale or explicit
+        output sizing, use :meth:`rotate_and_scale` or :meth:`warp_affine`.
+
+        Domain: buffer -> buffer
+
+        Args:
+            angle: Rotation angle in degrees (positive = clockwise). Can be a literal
+                float or Polars expression.
+            expand: If True, expand output dimensions to fit rotated image. If False
+                (default), keep original dimensions (corners may be cropped).
+            interpolation: Interpolation method for arbitrary angles -- ``"bilinear"``
+                (default) or ``"nearest"``. Not applicable to 90/180/270 degree
+                rotations.
+            border_value: Fill value for out-of-bounds pixels (default 0). Not
+                applicable to 90/180/270 degree rotations.
+
+        Example:
+            ```python
+            >>> pipe = Pipeline().source("image_bytes").rotate(90)
+            >>> pipe = Pipeline().source("image_bytes").rotate(45, expand=True)
+            >>> pipe = Pipeline().source("image_bytes").rotate(pl.col("angle"))
+            >>> pipe = Pipeline().source("image_bytes").rotate(30, interpolation="nearest")
+            ```
+        """
+        return self._append_typed(
+            "rotate",
+            {
+                "angle": angle,
+                "expand": expand,
+                "interpolation": interpolation,
+                "border_value": border_value,
+            },
+        )
 
     def round(self) -> Pipeline:
         """Round to nearest, ties to even (matches Polars/numpy). Domain: buffer → buffer."""

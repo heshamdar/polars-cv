@@ -342,7 +342,7 @@ class TestEdgeCases:
 
     def test_invalid_color_space(self) -> None:
         """Verify invalid color space name raises ValueError."""
-        with pytest.raises(ValueError, match="not a valid ColorSpace"):
+        with pytest.raises(ValueError, match="unknown ColorSpace"):
             Pipeline().source("image_bytes").convert_color("rgb", "xyz")
 
     def test_pipeline_dtype_tracking_lab(self) -> None:

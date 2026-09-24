@@ -1626,13 +1626,8 @@ fn validate_graph_structure(graph: &UnifiedGraph) -> PolarsResult<()> {
 /// Prepare every parameter in the graph for execution, returning how many
 /// plugin inputs the graph reads (one past the highest slot or column binding).
 ///
-/// Slots arrive already positional, so nothing is bound by name. What remains
-/// is hoisting nested parameter lists: a `Literal` whose JSON value is an array
-/// of wire parameters (a `warp_affine` matrix, a `reshape` shape, a
-/// `convolve2d` kernel, `normalize` mean/std, a `channel_swap` order) is parsed
-/// once into a [`ParamValue::List`], so per-row resolution reads the parsed
-/// elements directly instead of re-deserializing JSON every row. Plain literal
-/// arrays (flip/transpose axes, histogram bin edges) are left as-is.
+/// Slots arrive already positional, so nothing is bound by name; this only
+/// finds the highest one.
 fn prepare_graph_params(graph: &mut UnifiedGraph) -> PolarsResult<usize> {
     let mut inputs = graph
         .column_bindings
@@ -1667,36 +1662,10 @@ fn prepare_graph_params(graph: &mut UnifiedGraph) -> PolarsResult<usize> {
     Ok(inputs)
 }
 
-/// Hoist one nested param list (see [`prepare_graph_params`]) and raise
-/// `inputs` to cover every slot it references.
+/// Raise `inputs` to cover the slot `p` reads, if any.
 fn prepare_param(p: &mut ParamValue, inputs: &mut usize) -> PolarsResult<()> {
-    match p {
-        ParamValue::Slot { idx } => *inputs = (*inputs).max(*idx + 1),
-        ParamValue::Literal { value } => {
-            let is_nested_param_list = value
-                .as_array()
-                .is_some_and(|arr| !arr.is_empty() && arr.iter().all(ParamValue::is_wire_param));
-            if is_nested_param_list {
-                let mut items: Vec<ParamValue> = value
-                    .as_array()
-                    .expect("checked is_array above")
-                    .iter()
-                    .map(|elem| {
-                        ParamValue::from_wire(elem)
-                            .map_err(|e| polars_err!(ComputeError: "invalid nested param: {e}"))
-                    })
-                    .collect::<PolarsResult<_>>()?;
-                for item in items.iter_mut() {
-                    prepare_param(item, inputs)?;
-                }
-                *p = ParamValue::List(items);
-            }
-        }
-        ParamValue::List(items) => {
-            for item in items.iter_mut() {
-                prepare_param(item, inputs)?;
-            }
-        }
+    if let ParamValue::Slot { idx } = p {
+        *inputs = (*inputs).max(*idx + 1);
     }
     Ok(())
 }
@@ -2368,8 +2337,7 @@ mod tests {
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "perceptual_hash",
-                                           "algorithm": {"type": "literal", "value": "average"},
-                                           "hash_size": {"type": "literal", "value": 64}}]}},
+                                           "algorithm": "average", "hash_size": 64}]}},
                 "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
             }"#,
@@ -2439,7 +2407,7 @@ mod tests {
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "reduce_max",
-                                           "axis": {"type": "literal", "value": 0}}]}},
+                                           "axis": 0}]}},
                 "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
             }"#,
@@ -2459,7 +2427,7 @@ mod tests {
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "reduce_percentile",
-                                           "q": {"type": "literal", "value": 50.0}}]}},
+                                           "q": 50.0}]}},
                 "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "scalar"}},
                 "column_bindings": {"n0": 0}
             }"#,
