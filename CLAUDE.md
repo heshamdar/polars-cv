@@ -50,8 +50,8 @@ The enforcement standard is stricter than "prefer the shared path":
   however convenient.
 - **One authority per fact, named once.** A dtype's spellings live in
   `dtype_table!`; enum variant names live in `named_variants!` + the
-  `naming::REGISTRY`; op names live in the typed catalogue (`ops::TypedOp`)
-  plus the shrinking `LEGACY_OPS`; an op's input domain lives
+  `naming::REGISTRY`; op names live in the typed catalogue (`ops::TypedOp`),
+  which Python's `TYPED_OPS` is generated from; an op's input domain lives
   in its Rust contract. If you find yourself writing a `match` that
   re-enumerates one of those, you are creating the second copy — read from the
   authority instead.
@@ -343,8 +343,10 @@ Rust: view-buffer (the engine)
 ### Key Rust Modules
 
 **polars-cv/src/**
-- `lib.rs` — PyO3 module entry, `vb_graph` polars expression function, dtype inference, and the `op_schema`/`op_contract`/`op_output_dtype`/`enum_variants`/`known_ops` FFI the Python planner reads
-- `execute.rs` — `resolve_op()` dispatcher mapping `OpSpec`s to `GraphStep`s (`graph/step.rs`: buffer ops wrap view-buffer's `ViewDto`; graph-only steps are their own variants); dispatches typed ops to `ops::TypedOp` and still owns the not-yet-migrated `LEGACY_OPS` arms
+- `lib.rs` — PyO3 module entry, `vb_graph` polars expression function, dtype inference, and the `op_schema`/`op_contract`/`op_output_dtype`/`enum_variants`/`op_catalog`/`io_catalog`/`io_check` FFI the Python planner reads
+- `ops/` — the typed op catalogue: one `#[derive(Op)]` struct per op, registered in `typed_ops!`; `TypedOp` is the wire op and `OpDef::resolve` maps it to a `GraphStep` (`graph/step.rs`: buffer ops wrap view-buffer's `ViewDto`; graph-only steps are their own variants)
+- `formats/` — the typed sources and sinks, one struct per format in a `formats!` registry
+- `execute.rs` — source decoding helpers (image bytes, contours) and byte-sink encoding
 - `ops/` — the typed op catalogue (typed-op migration, `TYPED_OPS_PLAN.md`): one `#[derive(Op)]` struct + `OpDef` impl per op, `Param<T>`/`Literal<T>` fields, the `typed_ops!` registry and `catalog_json()`
 - `graph/` — `UnifiedGraph` execution engine: `types.rs` (`UnifiedGraph`, `GraphNode`, `OutputSpec`, `RowErrorPolicy`), `compiled.rs` (process-wide compiled-graph cache), `step.rs` (`GraphStep` — the plugin-level step vocabulary), source decoding (`decode.rs`), sink encoding (`encode.rs`)
 - `params.rs` — `ParamValue` resolving literals vs per-row Polars column values
@@ -423,9 +425,8 @@ rejects a second declaration — lives in
 [`AGENTS.md`](AGENTS.md#canonical-paths). It is reference material you reach for
 when adding an op, enum, dtype spelling, source/sink parameter or optimization
 pass, so it loads on demand there rather than in every session's context. The
-former exceptions (`OpSpec`'s `#[serde(flatten)]` params, now shrinking to the
-not-yet-typed `LegacyOpSpec`, and the `BinaryOp` arm that has since been
-removed) are documented alongside it.
+former exceptions (`OpSpec`'s `#[serde(flatten)]` params, and the `BinaryOp`
+arm, both since removed) are documented alongside it.
 
 ### Test Structure
 
@@ -465,13 +466,13 @@ removed) are documented alongside it.
    effect through the `op_schema` FFI — no Python-side schema special cases.
 3. Re-bless the catalogue (`POLARS_CV_BLESS=1 scripts/with-pyo3-env.sh cargo
    test -p polars-cv catalog_matches`), regenerate the builder (`python
-   scripts/gen_ops.py`), `maturin develop`, and add the name to
-   `Pipeline.OP_NAMES` (until P6 deletes it). The generated method appends
+   scripts/gen_ops.py`) and `maturin develop`. The generated method appends
    through `Pipeline._append_typed` → `_append_op` → `_push_op`, the only way
    in. The matching `LazyPipelineExpr` method is generated automatically from
    `Pipeline` at import time (`python/polars_cv/lazy.py`) — do **not**
    hand-mirror it. Hand-written `Pipeline` methods are for sugar over generated
-   ones (`flip_h`, `thumbnail`, …) and ops still in `LEGACY_OPS`.
+   ones (`flip_h`, `thumbnail`, …) and the `lazy_only` ops on
+   `LazyPipelineExpr`.
 4. Regenerate the type stub: `python scripts/gen_lazy_stub.py` (CI guards it via
    `test_lazy_stub_is_current`).
 5. Write tests covering both unit (builder validation) and integration (actual execution) cases.
@@ -480,9 +481,8 @@ removed) are documented alongside it.
 reachability.** The registries above are what make an op resolvable, planned,
 and surfaced to Python. An op that skips one of them does not get a degraded
 experience — it gets rejected: no `Op` contract means no compile, no
-`typed_ops!` line means the wire rejects it as "Unknown operation" *and* the
-parity tests fail, no `OP_NAMES` entry means the Python builder cannot name it,
-and a shape effect the contract does not describe invalidates the hints rather
+`typed_ops!` line means the wire rejects it as "Unknown operation" and no
+builder is generated for it, and a shape effect the contract does not describe invalidates the hints rather
 than publishing a schema execution cannot produce. If you are tempted to add a
 Python-side special case for an op's schema, that is the signal the op's Rust
 contract is incomplete — fix the contract.

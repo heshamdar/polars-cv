@@ -11,10 +11,8 @@ use view_buffer::{
 
 use crate::formats::sink::Sink;
 use crate::formats::source::{ContourSource, Source};
-use crate::graph::step::GraphStep;
 use crate::ops::geometry::RasterSize;
 use crate::params::ParamCtx;
-use crate::pipeline::OpSpec;
 
 /// Decode a contour source by parsing the geometry and rasterizing to ViewBuffer.
 ///
@@ -159,30 +157,5 @@ pub fn encode_sink(buffer: &ViewBuffer, sink: &Sink) -> PolarsResult<Vec<u8>> {
             .map_err(|e| polars_err!(ComputeError: "Failed to encode WebP: {:?}", e)),
         ImageCodec::Tiff => ImageAdapter::encode_tiff(buffer)
             .map_err(|e| polars_err!(ComputeError: "Failed to encode TIFF: {:?}", e)),
-    }
-}
-
-/// The operations resolved by name through the untyped legacy protocol.
-///
-/// Empty: every op is typed (`crate::ops::TypedOp`, typed-op plan P3). The
-/// dispatcher in `pipeline.rs` still consults it, so a name in neither set is
-/// an error; P6 deletes it with the rest of the legacy protocol.
-pub const LEGACY_OPS: &[&str] = &[];
-
-/// Resolve an operation specification to a [`GraphStep`].
-///
-/// Single-buffer ops become `GraphStep::Buffer(ViewDto)` (executed via the
-/// engine's `ViewExpr`); multi-input and domain-changing ops become typed
-/// graph-level steps. Node references and expression column names enter the
-/// step here — they never reach the engine's `ViewDto`.
-///
-/// Serde has already rejected any field an op does not declare, and each op's
-/// `OpDef` destructures every one it does.
-pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
-    match op_spec {
-        OpSpec::Typed(op) => op.resolve(row_idx, ctx),
-        // Unreachable from the wire (`LEGACY_OPS` is empty), and refused
-        // rather than guessed at if a spec is built by hand.
-        OpSpec::Legacy(spec) => polars_bail!(ComputeError: "Unknown operation: {}", spec.op),
     }
 }

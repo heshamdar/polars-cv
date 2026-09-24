@@ -31,7 +31,7 @@ several minutes. Reach for `--release` only when benchmarking.
 
 | File | Responsibility |
 |------|---------------|
-| `lib.rs` | PyO3 module entry, `vb_graph` expression function, `unified_output_dtype`, and the planner-facing FFI (`op_schema`, `op_contract`, `binary_output_dtype`, `enum_variants`, `known_ops`) |
+| `lib.rs` | PyO3 module entry, `vb_graph` expression function, `unified_output_dtype`, and the planner-facing FFI (`op_schema`, `op_contract`, `binary_output_dtype`, `enum_variants`, `op_catalog`, `io_catalog`, `io_check`) |
 | `image_metadata.rs` | Header-only metadata plugin functions (`image_width`, `image_height`, `image_channels`, `image_dtype`) |
 | `fetch.rs` | Stage one of every path-based read: path column → bytes (`prefetch`, `row_bytes`, `parse_on_error`). Shared by the `file_path` source and `read_bytes.rs`; owns `PathPolicy`, the `allowed_roots` sandbox both of them check against. Fetch concurrency is **not** a knob here — it is polars' process-wide `POLARS_CONCURRENCY_BUDGET` semaphore, taken one permit per request in `cloud.rs` |
 | `read_bytes.rs` | `read_file_bytes` plugin function — `fetch.rs` with the decode omitted, for byte-identical passthrough |
@@ -39,10 +39,11 @@ several minutes. Reach for `--release` only when benchmarking.
 | `graph/compiled.rs` | `CompiledGraph` — process-wide compiled-graph cache (parsed spec, topo order, slot-bound params) |
 | `graph/decode.rs` | Source decoding, `dtype_for_output` schema inference, reflect/symmetric padding |
 | `graph/encode.rs` | Output encoding, geometry op execution |
-| `execute.rs` | `resolve_op()` (op-spec to `GraphStep`), decode/encode helpers shared by graph execution |
+| `ops/` | The typed op catalogue: one `#[derive(Op)]` struct per op (`typed_ops!` registry); `TypedOp` is the wire op and `OpDef::resolve` maps it to a `GraphStep`; `op_catalog.json` is generated from it |
+| `formats/` | Typed sources and sinks, one struct per format (`formats!` registry, `io_catalog.json`) |
+| `execute.rs` | Decode/encode helpers shared by graph execution |
 | `graph/step.rs` | `GraphStep` — the plugin-level step vocabulary: `Buffer(ViewDto)` plus graph-only steps (binary, mask, merge, geometry, reduction, histogram, perceptual_hash, extract_shape, label_reduce); contract methods read by the FFI |
-| `pipeline.rs` | `SourceSpec`, `SinkSpec`, `OpSpec` serde types for JSON deserialization |
-| `params.rs` | `ParamCtx`/`ParamCol` — the per-call view of expression-parameter columns every typed `Param<T>` reads through, with the null policy. `ParamValue` survives only for the untyped `SourceSpec` (typed-op plan P4). `ParamCtx::probe` marks the plan-time shape probe, where every expression param is bound to an integer placeholder and enum/flag params fall back to a valid value; real execution stays strict |
+| `params.rs` | `ParamCtx`/`ParamCol` — the per-call view of expression-parameter columns every typed `Param<T>` reads through, with the null policy. `ParamCtx::probe` marks the plan-time shape probe, where every expression param is bound to an integer placeholder and enum/flag params fall back to a valid value; real execution stays strict |
 | `output.rs` | Numpy/torch zero-copy struct output (`NumpyRowOutput`, `build_numpy_series`) |
 | `ext_types.rs` | `ExtType`: the polars-cv Arrow extension types. Builds tagged *outputs* only (`ExtType::tag` / `dtype`, e.g. `SinkKind::NdArray`); inputs never arrive tagged because `polars_cv._plugin.call` passes `.ext.storage()`, so nothing registers with polars-core's extension registry |
 | `cloud.rs` | Cloud storage and HTTP file reads via `object_store` + `reqwest` |
@@ -52,8 +53,9 @@ several minutes. Reach for `--release` only when benchmarking.
 | `geom_params.rs` | `GeomParams` — per-row resolution of those namespace functions' typed kwargs (`Param<T>` fields, `ColumnRef` operands), with the shared null policy and the check that every extra input is read exactly once |
 
 **The graph wire format is closed, struct by struct.** `GraphNode`,
-`UnifiedGraph`, `OutputSpec`, `SourceSpec`, `SinkSpec` and `GraphKwargs` each
-carry `#[serde(deny_unknown_fields)]`, so anything Python sends must be declared
+`UnifiedGraph`, `OutputSpec`, `GraphKwargs`, every op struct (`ops/`) and
+every source/sink format struct (`formats/`) carry
+`#[serde(deny_unknown_fields)]` (the `#[derive(Op)]` refuses a struct without it), so anything Python sends must be declared
 on the Rust struct — including `domain`/`output_dtype`, which only the Python
 visualizer consumes. It was permissive before, which is how node-level
 `shape_hints` went on being serialized long after the last reader was removed,
@@ -62,15 +64,13 @@ identically (`graph_json` is the cache key).
 
 **Each of them needs its own attribute**: serde's `deny_unknown_fields` does not
 descend into nested types. Closing `GraphNode` alone left everything it holds
-wide open, which mattered most for `SourceSpec` — it carries `allowed_roots`, so
+wide open, which mattered most for the source spec — it carries `allowed_roots`, so
 a misspelled key deserialized to `None`, i.e. no path sandbox, silently. Adding
 a struct to the wire format means adding the attribute to it too; the node's
 being closed says nothing about its children.
 
-`OpSpec` cannot be closed the same way: its parameters ride on
-`#[serde(flatten)]`, which serde documents as incompatible with
-`deny_unknown_fields`. Op names are guarded by the registry-parity tests and
-`resolve_op`'s catch-all instead.
+Op and format names are closed too: `TypedOp`'s and `formats!`' hand-written
+deserializers dispatch by name and reject one no struct registers.
 
 
 ## Core Architecture
@@ -111,30 +111,15 @@ the data (no input dtypes, shapes, row counts, or null masks) — one cached
 graph must behave identically across heterogeneous inputs. See the module
 docs in `graph/compiled.rs` and `tests/test_graph_cache.py`.
 
-### `resolve_op` — Operation Dispatcher
+### Op resolution
 
-Located in `execute.rs`. Maps operation name strings to `GraphStep` values
-(`graph/step.rs`). Buffer ops wrap a view-buffer `ViewDto`
+Each op is a typed struct in `ops/` whose `OpDef::resolve` returns its
+`GraphStep` (`graph/step.rs`). Buffer ops wrap a view-buffer `ViewDto`
 (`GraphStep::Buffer`); steps that involve graph topology (node references,
 per-row expression columns) or non-buffer outputs are their own `GraphStep`
-variants and never enter view-buffer's vocabulary:
-
-```rust
-match op_spec.op.as_str() {
-    "resize" => ViewDto::Image(ImageOp { kind: Resize { ... } }).into(),
-    "grayscale" | "normalize" | "threshold" => /* ... */,
-    "channel_select" | "channel_swap" => /* ... */,
-    "cvt_color" => ViewDto::Color(ColorConvertOp { ... }),
-    "convolve2d" => ViewDto::Filter(ConvolveOp { ... }),
-    "canny" | "equalize_histogram" => /* ... */,
-    "erode" | "dilate" | "morphology_gradient" => /* ... */,
-    "rotate" => /* 90/180/270 → ViewOp::Rotate{N}, arbitrary → ComputeOp::RotateAffine */,
-    "warp_affine" => ViewDto::Compute(ComputeOp::Affine(AffineParams { ... })),
-    // ... all supported operations
-}
-```
-
-**Rotation dispatch:** `rotate` uses zero-copy `ViewOp::Rotate90/180/270` for exact multiples of 90 degrees. All other angles (including 0/360) are routed through `ComputeOp::RotateAffine`, which constructs `AffineParams` at execution time via `AffineParams::from_rotation()` and delegates to `apply_affine_warp()`. The separate `ImageOpKind::Rotate` variant has been removed.
+variants and never enter view-buffer's vocabulary. An op with no per-row
+field resolves once at compile time (`OpResolver::Static`); the rest resolve
+per row.
 
 ### Source Decoding (`graph/decode.rs`)
 
@@ -181,7 +166,7 @@ Key functions in `contour.rs`:
   intersection, so these stay analytic (`pairwise::bbox_iou`) rather than going
   through general polygon boolean ops. Both share `match_from_matrix` with the
   contour matcher, so the greedy matching policy lives in one place.
-- Graph-side `label_reduce` in `resolve_op` (buffer + contour expression parameter → vector)
+- Graph-side `label_reduce` (`ops/label.rs`: buffer + contour column operand → vector)
 
 `contour_label_reduce` and the graph-side `label_reduce` are two entry points onto
 **one** implementation: both call `view_buffer::geometry::label::score_contours_on_buffer`
@@ -194,16 +179,13 @@ the one mode where the two happened to agree.
 
 ### `execute.rs`
 
-Current responsibilities: `resolve_op()` (returns `GraphStep`), `decode_source()`, `decode_contour_source()`, `encode_sink()`. These are shared utilities used by `graph/types.rs` and `graph/encode.rs`.
-
-### `pipeline.rs`
-
-Contains serde types (`SourceSpec`, `SinkSpec`, `OpSpec`) for JSON deserialization. The graph system uses them via `GraphNode`/`OutputSpec`; the decode/encode helpers take `&SourceSpec`/`&SinkSpec` directly (the old `PipelineSpec` wrapper was removed).
+Source decoding (`decode_image_bytes`, `decode_contour_source`) and byte-sink
+encoding (`encode_sink`), shared by the graph executor.
 
 ## Adding a New Operation (Rust Side)
 
 1. **`view-buffer`**: Implement the op — see [`view-buffer/AGENTS.md`](../../view-buffer/AGENTS.md)
-2. **`execute.rs` → `resolve_op()`**: Add a match arm mapping the operation name to a `GraphStep` (`GraphStep::Buffer(dto)` for engine ops)
+2. **`ops/`**: Add the op's `#[derive(Op)]` struct and `OpDef` impl (returning `GraphStep::Buffer(dto)` for an engine op) and its `typed_ops!` line, then re-bless the catalogue and run `scripts/gen_ops.py`
 3. **Test**: Ensure the operation works end-to-end via Python tests
 
 ## Error Handling

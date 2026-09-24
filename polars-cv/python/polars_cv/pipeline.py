@@ -422,110 +422,6 @@ class Pipeline(_OpsMixin):
     - vector: Multiple numeric values (e.g., bounding boxes)
     """
 
-    # Registry of every operation name a pipeline can emit (via builder methods
-    # here and the binary-op helpers in lazy.py). It must be *equal* to the Rust
-    # executor's registry (``_lib.known_ops()``: the typed catalogue plus
-    # ``LEGACY_OPS``), not merely a
-    # subset: an op here that Rust cannot resolve fails at execution, and an op
-    # Rust knows that is missing here cannot be built at all. Both directions
-    # are enforced by ``test_registry_parity_*``, and by
-    # ``test_op_names_matches_rust_known_ops_without_the_plugin``, which reads
-    # both halves from source so the check still runs when the extension
-    # is stale or unbuilt (when the other two quietly skip).
-    #
-    # It is a hand-written mirror on purpose — deriving it from ``known_ops()``
-    # would make importing the builder require the compiled plugin, which the
-    # plan-time test lane deliberately does without.
-    OP_NAMES: frozenset[str] = frozenset(
-        {
-            "abs",
-            "add",
-            "add_constant",
-            "adjust_contrast",
-            "adjust_gamma",
-            "apply_mask",
-            "bitwise_and",
-            "bitwise_or",
-            "bitwise_xor",
-            "blend",
-            "blur",
-            "canny",
-            "cast",
-            "ceil",
-            "channel_merge",
-            "channel_select",
-            "channel_swap",
-            "clamp",
-            "clamp_max",
-            "clamp_min",
-            "contour_area",
-            "contour_bounding_box",
-            "contour_centroid",
-            "contour_convex_hull",
-            "contour_perimeter",
-            "contour_scale",
-            "contour_simplify",
-            "contour_translate",
-            "convolve2d",
-            "crop",
-            "cvt_color",
-            "dilate",
-            "divide",
-            "equalize_histogram",
-            "erode",
-            "extract_contours",
-            "extract_shape",
-            "flip",
-            "floor",
-            "grayscale",
-            "histogram",
-            "invert",
-            "label_reduce",
-            "letterbox",
-            "maximum",
-            "minimum",
-            "morphology_gradient",
-            "multiply",
-            "neg",
-            "normalize",
-            "pad",
-            "pad_to_size",
-            "perceptual_hash",
-            "rasterize",
-            "ratio",
-            "reciprocal",
-            "reduce_argmax",
-            "reduce_argmin",
-            "reduce_max",
-            "reduce_mean",
-            "reduce_min",
-            "reduce_percentile",
-            "reduce_popcount",
-            "reduce_std",
-            "reduce_sum",
-            "relu",
-            "reshape",
-            "resize",
-            "resize_max",
-            "resize_min",
-            "resize_scale",
-            "resize_to_height",
-            "resize_to_width",
-            "rotate",
-            "round",
-            "scale",
-            "sign",
-            "sqrt",
-            "square",
-            "subtract",
-            "subtract_constant",
-            "threshold",
-            "transpose",
-            "trunc",
-            "warp_affine",
-        }
-    )
-
     def __init__(self) -> None:
         """Initialize an empty pipeline."""
         self._source: SourceSpec | None = None
@@ -792,7 +688,7 @@ class Pipeline(_OpsMixin):
         unskippable is the fix.
 
         Args:
-            op_name: The operation name (must be in :attr:`OP_NAMES`).
+            op_name: The operation's wire name (an op in the generated catalogue).
             build_params: Callable receiving the *cloned* pipeline and
                 returning the op's parameters. It runs after the clone so it
                 can register per-row expressions via that clone's

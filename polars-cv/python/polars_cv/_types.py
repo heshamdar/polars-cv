@@ -19,7 +19,7 @@ except ImportError:
 
 import polars as pl
 
-from polars_cv._ops_generated import TYPED_OPS, SinkFormat, SourceFormat
+from polars_cv._ops_generated import SinkFormat, SourceFormat
 
 from ._dtype_names import NUMPY_TO_SHORT
 
@@ -536,15 +536,6 @@ def _to_python(value: Any) -> Any:
     return value
 
 
-def _encode_literal(value: Any, slot_of: SlotOf) -> Any:
-    """A literal's wire value; nested ``ParamValue`` elements serialize too."""
-    if isinstance(value, ParamValue):
-        return value.to_dict(slot_of)
-    if isinstance(value, list):
-        return [_encode_literal(v, slot_of) for v in value]
-    return value
-
-
 @dataclass
 class ParamValue:
     """
@@ -610,21 +601,10 @@ class ParamValue:
             return cls(is_expr=True, value=arg)
         return cls(is_expr=False, value=arg)
 
-    def to_dict(self, slot_of: SlotOf) -> dict[str, Any]:
-        """Serialize for the plugin wire.
-
-        An expression is ``{"$slot": n}``, its position among the plugin's
-        inputs as *slot_of* assigns it; a literal is ``{"type": "literal",
-        "value": ...}`` (element lists serialize element by element).
-        """
-        if self.is_expr:
-            return {"$slot": slot_of(self.value)}
-        return {"type": "literal", "value": _encode_literal(self.value, slot_of)}
-
     def to_wire(self, slot_of: SlotOf) -> Any:
-        """Serialize as a field of a *typed* op (``TYPED_OPS``).
+        """Serialize as a field of an op, source or sink.
 
-        A typed op's field is the value itself — ``224``, ``"bilinear"``, a
+        A field is the value itself — ``224``, ``"bilinear"``, a
         list of elements — or ``{"$slot": n}`` for an expression; the Rust
         struct it deserializes into decides what is valid.
         """
@@ -1086,14 +1066,13 @@ class OpSpec:
         return hash((self.op, param_hashes))
 
     def to_dict(self, slot_of: SlotOf) -> dict[str, Any]:
-        """Serialize for the plugin wire.
+        """Serialize for the plugin wire: ``{"op": name, field: value, ...}``.
 
-        A typed op (one in the generated catalogue) carries its fields as bare
-        values (:meth:`ParamValue.to_wire`); a legacy op wraps each literal
-        (:meth:`ParamValue.to_dict`). Rust picks its parser by the same name.
+        Each field is its bare value or ``{"$slot": n}``
+        (:meth:`ParamValue.to_wire`); the op's Rust definition decides what is
+        valid.
         """
         result: dict[str, Any] = {"op": self.op}
-        typed = self.op in TYPED_OPS
         for key, value in self.params.items():
-            result[key] = value.to_wire(slot_of) if typed else value.to_dict(slot_of)
+            result[key] = value.to_wire(slot_of)
         return result
