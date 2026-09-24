@@ -22,28 +22,44 @@ TYPED_OPS: frozenset[str] = frozenset(
         "add_constant",
         "adjust_contrast",
         "adjust_gamma",
+        "blur",
+        "canny",
         "cast",
         "ceil",
         "clamp",
         "clamp_max",
         "clamp_min",
         "crop",
+        "dilate",
+        "equalize_histogram",
+        "erode",
         "flip",
         "floor",
+        "grayscale",
         "histogram",
         "invert",
+        "letterbox",
+        "morphology_gradient",
         "neg",
         "normalize",
+        "pad",
+        "pad_to_size",
         "reciprocal",
         "relu",
         "reshape",
         "resize",
+        "resize_max",
+        "resize_min",
+        "resize_scale",
+        "resize_to_height",
+        "resize_to_width",
         "round",
         "scale",
         "sign",
         "sqrt",
         "square",
         "subtract_constant",
+        "threshold",
         "transpose",
         "trunc",
         "warp_affine",
@@ -56,6 +72,11 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "add_constant": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "adjust_contrast": {"factor": {"kind": "scalar", "per_row": True, "py": "float"}},
     "adjust_gamma": {"gamma": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "blur": {"sigma": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "canny": {
+        "low_threshold": {"kind": "scalar", "per_row": True, "py": "float"},
+        "high_threshold": {"kind": "scalar", "per_row": True, "py": "float"},
+    },
     "cast": {
         "dtype": {
             "kind": "scalar",
@@ -94,6 +115,15 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "inner": {"kind": "scalar", "per_row": True, "py": "int"},
         },
     },
+    "dilate": {
+        "ksize": {"kind": "scalar", "per_row": True, "py": "int"},
+        "iterations": {"kind": "scalar", "per_row": True, "py": "int"},
+    },
+    "equalize_histogram": {},
+    "erode": {
+        "ksize": {"kind": "scalar", "per_row": True, "py": "int"},
+        "iterations": {"kind": "scalar", "per_row": True, "py": "int"},
+    },
     "flip": {
         "axes": {
             "kind": "list",
@@ -101,6 +131,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         }
     },
     "floor": {},
+    "grayscale": {},
     "histogram": {
         "bins": {
             "kind": "one_of",
@@ -134,6 +165,18 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         },
     },
     "invert": {},
+    "letterbox": {
+        "height": {"kind": "scalar", "per_row": True, "py": "int"},
+        "width": {"kind": "scalar", "per_row": True, "py": "int"},
+        "value": {"kind": "scalar", "per_row": True, "py": "float"},
+        "filter": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "FilterType",
+            "variants": ["nearest", "bilinear", "catmullrom", "gaussian", "lanczos3"],
+        },
+    },
+    "morphology_gradient": {"ksize": {"kind": "scalar", "per_row": True, "py": "int"}},
     "neg": {},
     "normalize": {
         "method": {
@@ -177,6 +220,30 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             },
         },
     },
+    "pad": {
+        "top": {"kind": "scalar", "per_row": True, "py": "int"},
+        "bottom": {"kind": "scalar", "per_row": True, "py": "int"},
+        "left": {"kind": "scalar", "per_row": True, "py": "int"},
+        "right": {"kind": "scalar", "per_row": True, "py": "int"},
+        "value": {"kind": "scalar", "per_row": True, "py": "float"},
+        "mode": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "PadMode",
+            "variants": ["constant", "edge", "reflect", "symmetric"],
+        },
+    },
+    "pad_to_size": {
+        "height": {"kind": "scalar", "per_row": True, "py": "int"},
+        "width": {"kind": "scalar", "per_row": True, "py": "int"},
+        "position": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "PadPosition",
+            "variants": ["center", "top-left", "bottom-right"],
+        },
+        "value": {"kind": "scalar", "per_row": True, "py": "float"},
+    },
     "reciprocal": {},
     "relu": {},
     "reshape": {
@@ -195,12 +262,59 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "variants": ["nearest", "bilinear", "catmullrom", "gaussian", "lanczos3"],
         },
     },
+    "resize_max": {
+        "max_size": {"kind": "scalar", "per_row": True, "py": "int"},
+        "filter": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "FilterType",
+            "variants": ["nearest", "bilinear", "catmullrom", "gaussian", "lanczos3"],
+        },
+    },
+    "resize_min": {
+        "min_size": {"kind": "scalar", "per_row": True, "py": "int"},
+        "filter": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "FilterType",
+            "variants": ["nearest", "bilinear", "catmullrom", "gaussian", "lanczos3"],
+        },
+    },
+    "resize_scale": {
+        "scale_x": {"kind": "scalar", "per_row": True, "py": "float"},
+        "scale_y": {"kind": "scalar", "per_row": True, "py": "float"},
+        "filter": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "FilterType",
+            "variants": ["nearest", "bilinear", "catmullrom", "gaussian", "lanczos3"],
+        },
+    },
+    "resize_to_height": {
+        "height": {"kind": "scalar", "per_row": True, "py": "int"},
+        "filter": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "FilterType",
+            "variants": ["nearest", "bilinear", "catmullrom", "gaussian", "lanczos3"],
+        },
+    },
+    "resize_to_width": {
+        "width": {"kind": "scalar", "per_row": True, "py": "int"},
+        "filter": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "FilterType",
+            "variants": ["nearest", "bilinear", "catmullrom", "gaussian", "lanczos3"],
+        },
+    },
     "round": {},
     "scale": {"factor": {"kind": "scalar", "per_row": True, "py": "float"}},
     "sign": {},
     "sqrt": {},
     "square": {},
     "subtract_constant": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "threshold": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "transpose": {
         "axes": {
             "kind": "list",
@@ -272,6 +386,32 @@ class _OpsMixin:
         """
         return self._append_typed("adjust_gamma", {"gamma": gamma})
 
+    def blur(self, sigma: FloatOrExpr) -> Pipeline:
+        """Apply Gaussian blur.
+
+        Args:
+            sigma: Standard deviation for Gaussian kernel.
+        """
+        return self._append_typed("blur", {"sigma": sigma})
+
+    def canny(
+        self, *, low_threshold: FloatOrExpr = 50.0, high_threshold: FloatOrExpr = 150.0
+    ) -> Pipeline:
+        """Canny edge detection: Gaussian blur, Sobel gradients, non-maximum
+        suppression and double-threshold hysteresis. Output is a U8 binary edge
+        map (0 or 255).
+
+        Args:
+            low_threshold: Lower hysteresis threshold.
+            high_threshold: Upper hysteresis threshold.
+
+        Example:
+            >>> edges = Pipeline().source("image_bytes").canny(low_threshold=50, high_threshold=150)
+        """
+        return self._append_typed(
+            "canny", {"low_threshold": low_threshold, "high_threshold": high_threshold}
+        )
+
     def cast(self, dtype: str) -> Pipeline:
         """Cast to a different data type.
 
@@ -332,6 +472,44 @@ class _OpsMixin:
             "crop", {"top": top, "left": left, "height": height, "width": width}
         )
 
+    def dilate(self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1) -> Pipeline:
+        """Morphological dilation (local maximum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).
+
+        Args:
+            ksize: Size of the square structuring element. Must be odd and >= 1. Accepts
+                a Polars expression for per-row dynamic values.
+            iterations: Number of times the operation is applied. Accepts a Polars
+                expression for per-row dynamic values.
+
+        Example:
+           >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3)
+        """
+        return self._append_typed("dilate", {"ksize": ksize, "iterations": iterations})
+
+    def equalize_histogram(self) -> Pipeline:
+        """Apply histogram equalization for contrast enhancement: map each pixel
+        through the normalized CDF, per channel. Output is U8.
+
+
+        Example:
+            >>> eq = Pipeline().source("image_bytes").grayscale().equalize_histogram()
+        """
+        return self._append_typed("equalize_histogram", {})
+
+    def erode(self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1) -> Pipeline:
+        """Morphological erosion (local minimum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).
+
+        Args:
+            ksize: Size of the square structuring element. Must be odd and >= 1. Accepts
+                a Polars expression for per-row dynamic values.
+            iterations: Number of times the operation is applied. Accepts a Polars
+                expression for per-row dynamic values.
+
+        Example:
+           >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
+        """
+        return self._append_typed("erode", {"ksize": ksize, "iterations": iterations})
+
     def flip(self, axes: Sequence[int]) -> Pipeline:
         """Flip along specified axes.
 
@@ -343,6 +521,10 @@ class _OpsMixin:
     def floor(self) -> Pipeline:
         """Round toward negative infinity. Domain: buffer → buffer."""
         return self._append_typed("floor", {})
+
+    def grayscale(self) -> Pipeline:
+        """Convert to grayscale (luminance 0.299R + 0.587G + 0.114B)."""
+        return self._append_typed("grayscale", {})
 
     def histogram(
         self,
@@ -372,6 +554,45 @@ class _OpsMixin:
     def invert(self) -> Pipeline:
         """Invert pixel values: `255 - pixel` for u8, `1.0 - pixel` for float [0,1]."""
         return self._append_typed("invert", {})
+
+    def letterbox(
+        self,
+        *,
+        height: IntOrExpr,
+        width: IntOrExpr,
+        value: FloatOrExpr = 0.0,
+        filter: str | pl.Expr = "lanczos3",
+    ) -> Pipeline:
+        """Resize image maintaining aspect ratio and pad to exact target size: fit
+        within the target, then pad with centered positioning.
+
+        Args:
+            height: Target height (literal or expression).
+            width: Target width (literal or expression).
+            value: Fill value for padding (default 0, typically black). Accepts a Polars
+                expression for per-row dynamic values.
+            filter: Resampling filter for the resize step (default "lanczos3").
+
+        Example:
+            >>> pipe = Pipeline().source("image_bytes").letterbox(height=224, width=224)
+        """
+        return self._append_typed(
+            "letterbox",
+            {"height": height, "width": width, "value": value, "filter": filter},
+        )
+
+    def morphology_gradient(self, *, ksize: IntOrExpr = 3) -> Pipeline:
+        """Morphological gradient (dilate - erode): an edge outline. Requires
+        single-channel input.
+
+        Args:
+            ksize: Size of the square structuring element. Must be odd and >= 1. Accepts
+                a Polars expression for per-row dynamic values.
+
+        Example:
+            >>> edges = Pipeline().source("image_bytes").grayscale().threshold(128).morphology_gradient(ksize=3)
+        """
+        return self._append_typed("morphology_gradient", {"ksize": ksize})
 
     def neg(self) -> Pipeline:
         """Negate every value (`-x`). Domain: buffer → buffer."""
@@ -416,6 +637,70 @@ class _OpsMixin:
             {"method": method, "mean": mean, "std": std, "out_dtype": out_dtype},
         )
 
+    def pad(
+        self,
+        *,
+        top: IntOrExpr = 0,
+        bottom: IntOrExpr = 0,
+        left: IntOrExpr = 0,
+        right: IntOrExpr = 0,
+        value: FloatOrExpr = 0.0,
+        mode: str | pl.Expr = "constant",
+    ) -> Pipeline:
+        """Add padding to the image.
+
+        Args:
+            top: Padding on top edge.
+            bottom: Padding on bottom edge.
+            left: Padding on left edge.
+            right: Padding on right edge.
+            value: Fill value for "constant" mode (default 0). Accepts a Polars
+                expression for per-row dynamic values.
+            mode: Padding mode - "constant", "edge", "reflect", "symmetric".
+
+        Example:
+            >>> pipe = Pipeline().source("image_bytes").pad(top=10, bottom=10)
+            >>> pipe = Pipeline().source("image_bytes").pad(left=20, right=20, value=128)
+        """
+        return self._append_typed(
+            "pad",
+            {
+                "top": top,
+                "bottom": bottom,
+                "left": left,
+                "right": right,
+                "value": value,
+                "mode": mode,
+            },
+        )
+
+    def pad_to_size(
+        self,
+        *,
+        height: IntOrExpr,
+        width: IntOrExpr,
+        position: str | pl.Expr = "center",
+        value: FloatOrExpr = 0.0,
+    ) -> Pipeline:
+        """Pad image to exact target size (computed at runtime). A larger image is
+        not cropped - resize first if needed.
+
+        Args:
+            height: Target height.
+            width: Target width.
+            position: Where to place original content: "center" (default), "top-left" or
+                "bottom-right".
+            value: Fill value for padding (default 0). Accepts a Polars expression for
+                per-row dynamic values.
+
+        Example:
+            >>> pipe = Pipeline().source("image_bytes").pad_to_size(height=100, width=200)
+        """
+        return self._append_typed(
+            "pad_to_size",
+            {"height": height, "width": width, "position": position, "value": value},
+        )
+
     def reciprocal(self) -> Pipeline:
         """Reciprocal (`1 / x`; ±inf at zero). Domain: buffer → buffer."""
         return self._append_typed("reciprocal", {})
@@ -449,6 +734,90 @@ class _OpsMixin:
         return self._append_typed(
             "resize", {"height": height, "width": width, "filter": filter}
         )
+
+    def resize_max(
+        self, max_size: IntOrExpr, *, filter: str | pl.Expr = "lanczos3"
+    ) -> Pipeline:
+        """Resize image so the maximum dimension equals target, preserving aspect ratio (200x100 with max_size=50 gives 50x25).
+
+        Args:
+            max_size: Target for the maximum dimension (literal or expression).
+            filter: Resize filter ("nearest", "bilinear", "lanczos3").
+
+        Example:
+           >>> pipe = Pipeline().source("image_bytes").resize_max(224)
+        """
+        return self._append_typed(
+            "resize_max", {"max_size": max_size, "filter": filter}
+        )
+
+    def resize_min(
+        self, min_size: IntOrExpr, *, filter: str | pl.Expr = "lanczos3"
+    ) -> Pipeline:
+        """Resize image so the minimum dimension equals target, preserving aspect ratio (200x100 with min_size=50 gives 100x50).
+
+        Args:
+            min_size: Target for the minimum dimension (literal or expression).
+            filter: Resize filter ("nearest", "bilinear", "lanczos3").
+
+        Example:
+           >>> pipe = Pipeline().source("image_bytes").resize_min(224)
+        """
+        return self._append_typed(
+            "resize_min", {"min_size": min_size, "filter": filter}
+        )
+
+    def _resize_scale(
+        self,
+        *,
+        scale_x: FloatOrExpr,
+        scale_y: FloatOrExpr,
+        filter: str | pl.Expr = "lanczos3",
+    ) -> Pipeline:
+        """Resize image by scale factor: `new_width = input_width * scale_x`,
+        `new_height = input_height * scale_y`, computed at runtime.
+
+        The public `Pipeline.resize_scale` is sugar over this op that also accepts
+        one uniform `scale`.
+
+        Args:
+            scale_x: X (width) scale factor.
+            scale_y: Y (height) scale factor.
+            filter: Resize filter ("nearest", "bilinear", "lanczos3").
+        """
+        return self._append_typed(
+            "resize_scale", {"scale_x": scale_x, "scale_y": scale_y, "filter": filter}
+        )
+
+    def resize_to_height(
+        self, height: IntOrExpr, *, filter: str | pl.Expr = "lanczos3"
+    ) -> Pipeline:
+        """Resize image to target height, preserving aspect ratio (width is computed at runtime).
+
+        Args:
+            height: Target height (literal or expression).
+            filter: Resize filter ("nearest", "bilinear", "lanczos3").
+
+        Example:
+           >>> pipe = Pipeline().source("image_bytes").resize_to_height(224)
+        """
+        return self._append_typed(
+            "resize_to_height", {"height": height, "filter": filter}
+        )
+
+    def resize_to_width(
+        self, width: IntOrExpr, *, filter: str | pl.Expr = "lanczos3"
+    ) -> Pipeline:
+        """Resize image to target width, preserving aspect ratio (height is computed at runtime).
+
+        Args:
+            width: Target width (literal or expression).
+            filter: Resize filter ("nearest", "bilinear", "lanczos3").
+
+        Example:
+           >>> pipe = Pipeline().source("image_bytes").resize_to_width(224)
+        """
+        return self._append_typed("resize_to_width", {"width": width, "filter": filter})
 
     def round(self) -> Pipeline:
         """Round to nearest, ties to even (matches Polars/numpy). Domain: buffer → buffer."""
@@ -484,6 +853,15 @@ class _OpsMixin:
             value: Constant subtrahend (literal or per-row expression).
         """
         return self._append_typed("subtract_constant", {"value": value})
+
+    def threshold(self, value: FloatOrExpr) -> Pipeline:
+        """Apply binary threshold: a U8 mask, 255 where the element exceeds `value`
+        and 0 elsewhere (for u8 input typically 0-255; for [0, 1] floats e.g. 0.5).
+
+        Args:
+            value: Threshold value (int or float, or Polars expression).
+        """
+        return self._append_typed("threshold", {"value": value})
 
     def transpose(self, axes: Sequence[int]) -> Pipeline:
         """Transpose dimensions.

@@ -185,10 +185,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Removed
 
-- **`resize(filter=)` no longer accepts `"triangle"` from a per-row column.**
-  It was a parser-only alias for `"bilinear"` that the Python builder already
+- **The resize family's `filter=` no longer accepts `"triangle"` from a
+  per-row column.** It was a parser-only alias for `"bilinear"`
+  (`FilterType::ALIASES`, now deleted) that the Python builder already
   rejected as a literal, so only a column value could reach it. Use
-  `"bilinear"`. (The legacy resize variants keep it until they are migrated.)
+  `"bilinear"`.
 - **The `affine_fusion` optimization pass, and the `rotate_affine_params` FFI it
   used.** Collapsing a run of warps into one composed warp folds several
   interpolation passes into one (and drops the intermediate clip of an

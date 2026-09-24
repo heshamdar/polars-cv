@@ -6,9 +6,8 @@
 use polars::prelude::*;
 
 use view_buffer::{
-    geometry::rasterize::rasterize, BinaryOp, ComputeOp, DType, FilterType, GeometryOp,
-    ImageAdapter, ImageCodec, ImageOp, ImageOpKind, InterpolationType, PlannedDType, ViewBuffer,
-    ViewDto, ViewOp,
+    geometry::rasterize::rasterize, BinaryOp, ComputeOp, DType, GeometryOp, ImageAdapter,
+    ImageCodec, ImageOp, ImageOpKind, InterpolationType, PlannedDType, ViewBuffer, ViewDto, ViewOp,
 };
 
 use crate::graph::step::GraphStep;
@@ -43,32 +42,6 @@ fn resolve_interpolation(
         InterpolationType::NAMED,
         &[],
         InterpolationType::Bilinear,
-        row_idx,
-        ctx,
-    )
-}
-
-/// Parse the `filter` parameter shared by every resize variant.
-///
-/// Resolved per row — a resampling filter changes pixel values, never the
-/// output geometry, which the resize dimensions alone determine.
-///
-/// Required, not defaulted: every builder path emits `filter`, so an absent one
-/// means the spec was built wrong and must error rather than silently resample
-/// with some other filter. The `Lanczos3` argument is only consumed under a
-/// plan-time probe context, where no concrete value exists yet and the choice
-/// cannot affect the inferred schema.
-fn resolve_filter(
-    params: &OpParams<'_>,
-    row_idx: usize,
-    ctx: &ParamCtx,
-) -> PolarsResult<FilterType> {
-    get::req_enum(
-        params,
-        "filter",
-        FilterType::NAMED,
-        FilterType::ALIASES,
-        FilterType::Lanczos3,
         row_idx,
         ctx,
     )
@@ -287,8 +260,6 @@ pub const LEGACY_OPS: &[&str] = &[
     "bitwise_or",
     "bitwise_xor",
     "blend",
-    "blur",
-    "canny",
     "channel_merge",
     "channel_select",
     "channel_swap",
@@ -302,21 +273,13 @@ pub const LEGACY_OPS: &[&str] = &[
     "contour_translate",
     "convolve2d",
     "cvt_color",
-    "dilate",
     "divide",
-    "equalize_histogram",
-    "erode",
     "extract_contours",
     "extract_shape",
-    "grayscale",
     "label_reduce",
-    "letterbox",
     "maximum",
     "minimum",
-    "morphology_gradient",
     "multiply",
-    "pad",
-    "pad_to_size",
     "perceptual_hash",
     "rasterize",
     "ratio",
@@ -329,14 +292,8 @@ pub const LEGACY_OPS: &[&str] = &[
     "reduce_popcount",
     "reduce_std",
     "reduce_sum",
-    "resize_max",
-    "resize_min",
-    "resize_scale",
-    "resize_to_height",
-    "resize_to_width",
     "rotate",
     "subtract",
-    "threshold",
 ];
 
 /// A fusable single-buffer engine op, as a resolved step.
@@ -403,141 +360,6 @@ fn resolve_op_inner(
     ctx: &ParamCtx,
 ) -> PolarsResult<GraphStep> {
     match op_name {
-        // Image operations
-        "resize_scale" => {
-            let scale_x = get_param(params, "scale_x")?.resolve_f32(row_idx, ctx)?;
-            let scale_y = get_param(params, "scale_y")?.resolve_f32(row_idx, ctx)?;
-            let filter = resolve_filter(params, row_idx, ctx)?;
-
-            buffer_step(ViewDto::Image(ImageOp {
-                kind: ImageOpKind::ResizeScale {
-                    scale_x,
-                    scale_y,
-                    filter,
-                },
-            }))
-        }
-        "resize_to_height" => {
-            let height = get_param(params, "height")?.resolve_u32(row_idx, ctx)?;
-            let filter = resolve_filter(params, row_idx, ctx)?;
-
-            buffer_step(ViewDto::Image(ImageOp {
-                kind: ImageOpKind::ResizeToHeight { height, filter },
-            }))
-        }
-        "resize_to_width" => {
-            let width = get_param(params, "width")?.resolve_u32(row_idx, ctx)?;
-            let filter = resolve_filter(params, row_idx, ctx)?;
-
-            buffer_step(ViewDto::Image(ImageOp {
-                kind: ImageOpKind::ResizeToWidth { width, filter },
-            }))
-        }
-        "resize_max" => {
-            let max_size = get_param(params, "max_size")?.resolve_u32(row_idx, ctx)?;
-            let filter = resolve_filter(params, row_idx, ctx)?;
-
-            buffer_step(ViewDto::Image(ImageOp {
-                kind: ImageOpKind::ResizeMax { max_size, filter },
-            }))
-        }
-        "resize_min" => {
-            let min_size = get_param(params, "min_size")?.resolve_u32(row_idx, ctx)?;
-            let filter = resolve_filter(params, row_idx, ctx)?;
-
-            buffer_step(ViewDto::Image(ImageOp {
-                kind: ImageOpKind::ResizeMin { min_size, filter },
-            }))
-        }
-
-        // Padding operations
-        "pad" => {
-            use view_buffer::ops::dto::PadMode;
-
-            let top = get_param(params, "top")?.resolve_u32(row_idx, ctx)?;
-            let bottom = get_param(params, "bottom")?.resolve_u32(row_idx, ctx)?;
-            let left = get_param(params, "left")?.resolve_u32(row_idx, ctx)?;
-            let right = get_param(params, "right")?.resolve_u32(row_idx, ctx)?;
-            let value = get_param(params, "value")?.resolve_f32(row_idx, ctx)?;
-            let mode = get::req_enum(
-                params,
-                "mode",
-                PadMode::NAMED,
-                &[],
-                PadMode::Constant,
-                row_idx,
-                ctx,
-            )?;
-
-            buffer_step(ViewDto::Image(ImageOp {
-                kind: ImageOpKind::Pad {
-                    top,
-                    bottom,
-                    left,
-                    right,
-                    value,
-                    mode,
-                },
-            }))
-        }
-        "pad_to_size" => {
-            use view_buffer::ops::dto::PadPosition;
-
-            let height = get_param(params, "height")?.resolve_u32(row_idx, ctx)?;
-            let width = get_param(params, "width")?.resolve_u32(row_idx, ctx)?;
-            let value = get_param(params, "value")?.resolve_f32(row_idx, ctx)?;
-            let position = get::req_enum(
-                params,
-                "position",
-                PadPosition::NAMED,
-                &[],
-                PadPosition::Center,
-                row_idx,
-                ctx,
-            )?;
-
-            buffer_step(ViewDto::Image(ImageOp {
-                kind: ImageOpKind::PadToSize {
-                    height,
-                    width,
-                    position,
-                    value,
-                },
-            }))
-        }
-        "letterbox" => {
-            let height = get_param(params, "height")?.resolve_u32(row_idx, ctx)?;
-            let width = get_param(params, "width")?.resolve_u32(row_idx, ctx)?;
-            let value = get_param(params, "value")?.resolve_f32(row_idx, ctx)?;
-
-            // Letterbox has always resized with lanczos3, so that stays the
-            // default; the builder now exposes it, per row like every other
-            // resize variant's filter.
-            let filter = resolve_filter(params, row_idx, ctx)?;
-            buffer_step(ViewDto::Image(ImageOp {
-                kind: ImageOpKind::Letterbox {
-                    height,
-                    width,
-                    value,
-                    filter,
-                },
-            }))
-        }
-        "grayscale" => buffer_step(ViewDto::Image(ImageOp {
-            kind: ImageOpKind::Grayscale,
-        })),
-        "threshold" => {
-            let value = get_param(params, "value")?.resolve_f64(row_idx, ctx)?;
-            buffer_step(ViewDto::Image(ImageOp {
-                kind: ImageOpKind::Threshold(value),
-            }))
-        }
-        "blur" => {
-            let sigma = get_param(params, "sigma")?.resolve_f32(row_idx, ctx)?;
-            buffer_step(ViewDto::Image(ImageOp {
-                kind: ImageOpKind::Blur { sigma },
-            }))
-        }
         "rotate" => {
             let angle = get_param(params, "angle")?.resolve_f32(row_idx, ctx)?;
             let expand = get::opt_bool(params, "expand", false)?;
@@ -893,41 +715,6 @@ fn resolve_op_inner(
                 border,
             }))
         }
-        "erode" => {
-            let ksize = get_param(params, "ksize")?.resolve_u32(row_idx, ctx)?;
-            let iterations = get::opt_u32(params, "iterations", 1, row_idx, ctx)?;
-            buffer_step(ViewDto::Image(ImageOp {
-                kind: ImageOpKind::Erode { ksize, iterations },
-            }))
-        }
-        "dilate" => {
-            let ksize = get_param(params, "ksize")?.resolve_u32(row_idx, ctx)?;
-            let iterations = get::opt_u32(params, "iterations", 1, row_idx, ctx)?;
-            buffer_step(ViewDto::Image(ImageOp {
-                kind: ImageOpKind::Dilate { ksize, iterations },
-            }))
-        }
-        "morphology_gradient" => {
-            let ksize = get_param(params, "ksize")?.resolve_u32(row_idx, ctx)?;
-            buffer_step(ViewDto::Image(ImageOp {
-                kind: ImageOpKind::MorphGradient { ksize },
-            }))
-        }
-
-        "canny" => {
-            let low_threshold = get_param(params, "low_threshold")?.resolve_f32(row_idx, ctx)?;
-            let high_threshold = get_param(params, "high_threshold")?.resolve_f32(row_idx, ctx)?;
-            buffer_step(ViewDto::Image(ImageOp {
-                kind: ImageOpKind::Canny {
-                    low_threshold,
-                    high_threshold,
-                },
-            }))
-        }
-        "equalize_histogram" => buffer_step(ViewDto::Image(ImageOp {
-            kind: ImageOpKind::HistogramEqualize,
-        })),
-
         // Mask operation
         "apply_mask" => {
             let mask_node_id = get_param(params, "other_node")?
@@ -1352,7 +1139,7 @@ mod unread_param_tests {
     /// This keeps the legacy tracker honest until its last op migrates.
     #[test]
     fn a_parameter_no_arm_reads_is_rejected() {
-        let cases: &[UnreadCase<'_>] = &[("grayscale", &[], "sigma")];
+        let cases: &[UnreadCase<'_>] = &[("contour_perimeter", &[], "sigma")];
         for (op, base, stray) in cases {
             let mut params = base.to_vec();
             params.push((stray, json!("u8")));
