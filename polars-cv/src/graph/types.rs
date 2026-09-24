@@ -388,7 +388,7 @@ pub struct GraphNode {
     pub source: Source,
     /// Operations to apply.
     #[serde(default)]
-    pub ops: Vec<crate::pipeline::OpSpec>,
+    pub ops: Vec<crate::ops::TypedOp>,
     /// Upstream node IDs this node depends on.
     #[serde(default)]
     pub upstream: Vec<String>,

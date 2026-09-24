@@ -88,7 +88,7 @@ class TestParamValueIdentity:
         table = SlotTable()
         table.add(a.value)
         table.add(b.value)
-        assert a.to_dict(table.index) != b.to_dict(table.index)
+        assert a.to_wire(table.index) != b.to_wire(table.index)
 
 
 @plugin_required

@@ -13,10 +13,8 @@
 //!   `tests/golden/op_catalog.json`) is what `scripts/gen_ops.py` generates
 //!   the Python builder methods from.
 //!
-//! Migration (typed-op plan P2–P6): ops not yet listed here are still resolved
-//! by name through `execute::resolve_op`'s legacy table (`LEGACY_OPS`).
-//! [`crate::pipeline::OpSpec`]'s deserializer picks the path by name, and a
-//! name in neither set is an error.
+//! [`TypedOp`] *is* the wire op: `{"op": <name>, <field>: <value>, ...}`,
+//! deserialized strictly by name. A name no op registers is an error.
 
 pub mod affine;
 pub mod binary;
@@ -117,7 +115,9 @@ macro_rules! typed_ops {
         }
 
         impl TypedOp {
-            /// Every typed op's wire name, sorted.
+            /// Every typed op's wire name, sorted (the tests' view of the
+            /// registry; the wire dispatches through `from_fields`).
+            #[cfg(test)]
             pub const NAMES: &'static [&'static str] = &[$($wire),+];
 
             /// The op's wire name.
@@ -285,6 +285,33 @@ typed_ops! {
     },
 }
 
+impl Serialize for TypedOp {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut value = self.fields_json();
+        value
+            .as_object_mut()
+            .expect("an op struct serializes to a JSON object")
+            .insert("op".into(), self.name().into());
+        value.serialize(s)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for TypedOp {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        // One parse into a map, consumed without a second copy: this runs
+        // several times per builder append, via the planning FFIs.
+        let mut fields = serde_json::Map::<String, serde_json::Value>::deserialize(d)?;
+        let name = match fields.remove("op") {
+            Some(serde_json::Value::String(name)) => name,
+            _ => return Err(D::Error::custom("an operation needs a string \"op\" name")),
+        };
+        TypedOp::from_fields(&name, serde_json::Value::Object(fields))
+            .ok_or_else(|| D::Error::custom(format!("Unknown operation: '{name}'")))?
+            .map_err(|e| D::Error::custom(format!("operation '{name}': {e}")))
+    }
+}
+
 impl TypedOp {
     /// Whether any field is per-row. An op with none resolves once.
     pub fn is_static(&self) -> bool {
@@ -321,14 +348,12 @@ pub fn catalog_json() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execute::LEGACY_OPS;
-    use crate::pipeline::OpSpec;
     use polars_cv_macros::Op;
     use serde::Deserialize;
     use serde_json::json;
     use std::collections::BTreeSet;
 
-    fn parse(v: serde_json::Value) -> Result<OpSpec, String> {
+    fn parse(v: serde_json::Value) -> Result<TypedOp, String> {
         serde_json::from_value(v).map_err(|e| e.to_string())
     }
 
@@ -336,10 +361,9 @@ mod tests {
         parse(v).expect_err("expected the spec to be rejected")
     }
 
-    /// The ops executable before the migration (P0's name registry). Typed and
-    /// legacy must partition exactly this set, so migrating an op moves it
-    /// rather than dropping or duplicating it. An op added on purpose is
-    /// added here too.
+    /// The ops executable before the migration (P0's name registry). The typed
+    /// catalogue must be exactly this set, so no op was dropped on the way. An
+    /// op added on purpose is added here too.
     const OP_SET: &[&str] = &[
         "abs",
         "add",
@@ -429,14 +453,10 @@ mod tests {
     ];
 
     #[test]
-    fn typed_and_legacy_ops_partition_the_op_set() {
+    fn the_catalogue_is_the_op_set() {
         let typed: BTreeSet<&str> = TypedOp::NAMES.iter().copied().collect();
-        let legacy: BTreeSet<&str> = LEGACY_OPS.iter().copied().collect();
-        let both: Vec<_> = typed.intersection(&legacy).collect();
-        assert!(both.is_empty(), "ops both typed and legacy: {both:?}");
-        let all: BTreeSet<&str> = typed.union(&legacy).copied().collect();
         let expected: BTreeSet<&str> = OP_SET.iter().copied().collect();
-        assert_eq!(all, expected, "typed ∪ legacy must be the op set");
+        assert_eq!(typed, expected, "the typed catalogue must be the op set");
     }
 
     #[test]
@@ -458,6 +478,7 @@ mod tests {
     fn the_op_tag_is_not_an_unknown_field() {
         let op = parse(json!({"op": "crop", "top": 0, "left": 0})).unwrap();
         assert_eq!(op.name(), "crop");
+        assert!(op.is_static(), "an all-literal op resolves once");
     }
 
     #[test]
@@ -744,10 +765,8 @@ mod tests {
 
     #[test]
     fn normalize_statistics_belong_to_the_preset_only() {
-        let resolve = |v: serde_json::Value| match parse(v).unwrap() {
-            OpSpec::Typed(op) => op.resolve(0, &ParamCtx::empty()).map(|_| ()),
-            OpSpec::Legacy(_) => unreachable!(),
-        };
+        let resolve =
+            |v: serde_json::Value| parse(v).unwrap().resolve(0, &ParamCtx::empty()).map(|_| ());
         let err = resolve(json!({"op": "normalize", "method": "minmax",
                                  "mean": [0.5], "std": [0.5]}))
         .unwrap_err()
@@ -767,6 +786,21 @@ mod tests {
                                    "top": {"type": "literal", "value": 0},
                                    "left": {"type": "literal", "value": 0}}));
         assert!(err.contains("operation 'crop'"), "{err}");
+    }
+
+    /// A slot is exactly `{"$slot": n}` with `n >= 0`; the removed name-keyed
+    /// and legacy literal forms are not values of any field.
+    #[test]
+    fn a_malformed_slot_is_rejected() {
+        for (top, expected) in [
+            (json!({"$slot": -1}), "slot index"),
+            (json!({"$slot": 1, "type": "literal"}), "a slot is exactly"),
+            (json!({"type": "expr", "col": "h"}), "'top'"),
+            (json!({"type": "literal", "value": 1}), "'top'"),
+        ] {
+            let err = parse_err(json!({"op": "crop", "top": top, "left": 0}));
+            assert!(err.contains(expected), "{top}: {err}");
+        }
     }
 
     #[test]
@@ -789,12 +823,9 @@ mod tests {
     #[test]
     fn samples_round_trip_through_the_wire() {
         for op in TypedOp::samples() {
-            let wire = serde_json::to_value(OpSpec::Typed(op.clone())).unwrap();
+            let wire = serde_json::to_value(&op).unwrap();
             assert_eq!(wire["op"], op.name());
-            match parse(wire).unwrap() {
-                OpSpec::Typed(back) => assert_eq!(back, op),
-                OpSpec::Legacy(_) => panic!("{} came back legacy", op.name()),
-            }
+            assert_eq!(parse(wire).unwrap(), op);
         }
     }
 
@@ -820,15 +851,11 @@ mod tests {
 
     #[test]
     fn slots_are_visited_by_field_name() {
-        let op = match parse(json!({"op": "warp_affine",
+        let op = parse(json!({"op": "warp_affine",
                                     "matrix": [1, 0, {"$slot": 3}, 0, 1, 0],
                                     "output_size": [{"$slot": 1}, 4],
                                     "interpolation": "bilinear", "border_value": 0}))
-        .unwrap()
-        {
-            OpSpec::Typed(op) => op,
-            OpSpec::Legacy(_) => unreachable!(),
-        };
+        .unwrap();
         let mut seen = Vec::new();
         op.visit_slots(&mut |name, slot| seen.push((name, slot)));
         assert_eq!(seen, [("matrix", 3), ("output_size", 1)]);
@@ -838,13 +865,9 @@ mod tests {
 
     #[test]
     fn per_row_values_resolve_from_their_column() {
-        let op = match parse(json!({"op": "resize", "height": {"$slot": 1}, "width": 4,
+        let op = parse(json!({"op": "resize", "height": {"$slot": 1}, "width": 4,
                                     "filter": {"$slot": 2}}))
-        .unwrap()
-        {
-            OpSpec::Typed(op) => op,
-            OpSpec::Legacy(_) => unreachable!(),
-        };
+        .unwrap();
         let inputs = [
             Series::new("img".into(), &[0i32, 0]),
             Series::new("h".into(), &[6i64, -1]),
@@ -865,15 +888,11 @@ mod tests {
         // The runner used to substitute the identity for a singular matrix, so
         // a degenerate transform returned the input with no signal.
         let warp = |m: [f64; 6]| {
-            let op = match parse(json!({"op": "warp_affine", "matrix": m,
+            let op = parse(json!({"op": "warp_affine", "matrix": m,
                                         "output_size": [8, 8],
                                         "interpolation": "bilinear",
                                         "border_value": 0.0}))
-            .unwrap()
-            {
-                OpSpec::Typed(op) => op,
-                OpSpec::Legacy(_) => unreachable!(),
-            };
+            .unwrap();
             op.resolve(0, &ParamCtx::empty())
         };
         let err = warp([0.0, 0.0, 0.0, 0.0, 1.0, 0.0])

@@ -168,6 +168,12 @@ REMOVED: tuple[Removed, ...] = (
     Removed("parse_named", "P5: Param<Enum> kwargs"),
     Removed("require_named", "P5: Param<Enum> kwargs"),
     Removed("required_f64", "P5: GeomParams::required"),
+    # Typed-op P6: every op is typed, so the untyped legacy protocol is gone.
+    Removed("LegacyOpSpec", "P6: every op deserializes as a TypedOp"),
+    Removed("LEGACY_OPS", "P6: the catalogue is the op set"),
+    Removed("OP_NAMES", "P6: TYPED_OPS is generated from the catalogue"),
+    Removed("known_ops", "P6: TYPED_OPS is generated from the catalogue"),
+    Removed("_encode_literal", "P6: ParamValue.to_wire"),
 )
 
 

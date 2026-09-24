@@ -15,16 +15,14 @@ class TestParamValueSerialization:
 
     def test_literal_int_serialization(self) -> None:
         """Integer literals serialize correctly."""
-        d = ParamValue.from_arg(42).to_dict(SlotTable().index)
-        assert d["type"] == "literal"
-        assert d["value"] == 42
+        assert ParamValue.from_arg(42).to_wire(SlotTable().index) == 42
 
     def test_expr_column_serialization(self) -> None:
         """An expression serializes as its position among the plugin inputs."""
         table = SlotTable()
         table.add(pl.col("image"))
         table.add(pl.col("my_column"))
-        d = ParamValue.from_arg(pl.col("my_column")).to_dict(table.index)
+        d = ParamValue.from_arg(pl.col("my_column")).to_wire(table.index)
         assert d == {"$slot": 1}
 
 

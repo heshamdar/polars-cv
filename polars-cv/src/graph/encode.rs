@@ -624,7 +624,7 @@ mod tests {
     use super::execute_geometry_op;
 
     /// Structural coverage: every geometry op the graph builder can construct
-    /// via `resolve_op` must actually execute. This is the geometry analog of
+    /// by resolving must actually execute. This is the geometry analog of
     /// view-buffer's `apply_op_coverage` probe.
     ///
     /// `GeometryOp` carries only variants the graph routes, so a variant
@@ -635,10 +635,8 @@ mod tests {
     /// registering it.
     #[test]
     fn every_graph_geometry_op_executes() {
-        use crate::execute::resolve_op;
         use crate::graph::step::GraphStep;
         use crate::params::ParamCtx;
-        use crate::pipeline::OpSpec;
         use view_buffer::geometry::Contour;
         use view_buffer::ops::{Domain, NodeOutput};
         use view_buffer::ViewBuffer;
@@ -661,7 +659,8 @@ mod tests {
         let mut executed = 0;
         for op in crate::ops::TypedOp::samples() {
             let name = op.name();
-            let step = resolve_op(&OpSpec::Typed(op), 0, &ParamCtx::empty())
+            let step = op
+                .resolve(0, &ParamCtx::empty())
                 .expect("a registered sample resolves");
             if let GraphStep::Geometry(geo) = step {
                 let input = if geo.input_domain() == Domain::Buffer {

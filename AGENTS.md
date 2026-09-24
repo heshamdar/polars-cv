@@ -255,7 +255,7 @@ side channel.
 | An op's rank / channel / dtype / memory / spatial / identity contract | `Op` trait methods, **no defaults** | Compile error: a new op that omits one does not build |
 | An op's accepted input domains | `op_contract(...)["input_domains"]` (Rust `GraphStep::input_domains`, exhaustive — no catch-all arm) | `test_domain_vocabulary_declared_once` — `Pipeline` may not carry `DOMAIN_*` constants or a `_validate_domain`; execution reads the same contract via `step_buffer_operand` rather than restating it per arm |
 | An op's H/W effect | view-buffer `infer_shape`, read via `op_infer_shape` | No inferable shape ⇒ hints invalidated, never carried forward |
-| Which ops exist | Rust `ops::TypedOp` (`typed_ops!` registry; `LEGACY_OPS` is empty until P6 deletes it) ↔ Python `OP_NAMES` | `typed_and_legacy_ops_partition_the_op_set` (disjoint, and together the frozen op set), `test_op_names_matches_rust_known_ops_without_the_plugin` (works with no `.so`); a name in neither set fails deserialization |
+| Which ops exist | Rust `ops::TypedOp` (`typed_ops!` registry) → generated Python `TYPED_OPS` | `the_catalogue_is_the_op_set` (the frozen op set), `test_every_op_is_emitted_by_a_builder` (works with no `.so`); an unregistered name fails deserialization |
 | A typed op's fields, types, defaults, docs and Python signature | Its struct in `polars-cv/src/ops/` (`#[derive(Op)]`), via `tests/golden/op_catalog.json` → `scripts/gen_ops.py` → `_ops_generated.py` | serde (`deny_unknown_fields`, required by the derive) rejects an unknown/missing/mistyped field; `catalog_matches_the_committed_file` (Rust) and `test_the_committed_catalog_is_the_built_one` (built `.so` + generated module) |
 | Every spelling of a dtype (short / VIEW wire code / numpy) | `dtype_table!` in `view-buffer/src/core/dtype.rs` | `dtype_single_authority.rs` + `test_no_second_dtype_spelling_table` (a partial dispatch is reported) |
 | Enum variant names crossing the FFI | `named_variants!` + `naming::REGISTRY` (engine) chained with `naming::PLUGIN_REGISTRY` (plugin-owned enums: `RowErrorPolicy`, `NullParamPolicy`, `FetchErrorPolicy`) | `every_named_enum_is_registered` (a `NAMED` table not in the registry fails), `registered_enums_have_unique_names`, `plugin_enums_have_unique_names`, `plugin_enums_do_not_shadow_engine_enums`, `test_every_rust_enum_is_parity_checked` (iterates `enum_names()`, both directions) |
@@ -276,9 +276,8 @@ side channel.
 
 The former exception — `OpSpec` riding its params on `#[serde(flatten)]`, which
 cannot refuse an unknown key — is gone: every op is a closed struct (its
-`#[derive(Op)]` refuses to compile without `deny_unknown_fields`). The
-`LegacyOpSpec` variant survives only until P6 deletes it; nothing on the wire
-reaches it (`LEGACY_OPS` is empty), and `resolve_op` refuses one built by hand.
+`#[derive(Op)]` refuses to compile without `deny_unknown_fields`), and the
+untyped legacy spec was deleted in typed-op P6.
 
 `BinaryOp` used to be a second exception — its name table sat in the plugin
 crate, so it needed a hand-written arm in `enum_variants` and a by-name
@@ -310,7 +309,8 @@ current instead.
    `rasterize(anti_alias=)`, node-level `shape_hints`, the geometry validation
    module. Guarded by `tests/test_removed_surfaces.py`.
 3. *One declaration per fact.* `dtype_table!`, the `naming::REGISTRY`,
-   op-registry ↔ `OP_NAMES` parity, input domains read from the Rust contract.
+   the op registry (now the typed catalogue), input domains read from the
+   Rust contract.
    Two planned items were examined and dropped as not real (a table-driven
    `resolve_op`, a `node_outputs` newtype) — recorded here so they are not
    re-proposed.

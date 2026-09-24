@@ -163,7 +163,7 @@ def test_documented_methods_exist(page: str) -> None:
 
     The operations pages name operations in prose headings ("Warp Affine",
     "Channel Select"), not in a table — so there is no list to diff, and a
-    guard written as "the table's rows are a subset of ``OP_NAMES``" would
+    guard written as "the table's rows are a subset of the op names" would
     match nothing and pass forever. What a reader actually copies is the code
     blocks, so those are what this reads.
 

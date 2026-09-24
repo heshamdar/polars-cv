@@ -34,14 +34,11 @@ use view_buffer::ops::{Domain, NodeOutput};
 use view_buffer::{Op, PlannedDType, ViewBuffer, ViewDto, ViewExpr};
 
 use crate::contour::parse_contour_list;
-use crate::execute::{
-    decode_contour_source, decode_contour_source_with_dims, decode_image_bytes, resolve_op,
-};
+use crate::execute::{decode_contour_source, decode_contour_source_with_dims, decode_image_bytes};
 use crate::formats::source::Source;
 use crate::ops::geometry::RasterSize;
 use crate::ops::{NodeRef, TypedOp};
-use crate::params::{ParamCtx, ParamValue};
-use crate::pipeline::OpSpec;
+use crate::params::ParamCtx;
 
 use super::step::GraphStep;
 
@@ -64,7 +61,7 @@ pub(crate) enum OpResolver {
     Static(GraphStep),
     /// Has at least one dynamic (slot-bound) param: re-resolved per row with
     /// direct typed slot reads (no string-keyed lookups, no `AnyValue`).
-    Dynamic(OpSpec),
+    Dynamic(TypedOp),
     /// `rasterize(shape=<node>)`: output dimensions come from another node's
     /// buffer at execution time (the referenced node is an upstream
     /// dependency, so it has already run); the remaining params resolve from
@@ -196,7 +193,7 @@ impl CompiledGraph {
             for spec in &node.ops {
                 // rasterize(shape=<node>) takes its canvas from another
                 // node's output, not a param, so it gets a dedicated resolver.
-                if let OpSpec::Typed(TypedOp::Rasterize(op)) = spec {
+                if let TypedOp::Rasterize(op) = spec {
                     if let RasterSize::FromNode(NodeRef(shape_node)) = &op.size {
                         if !graph.nodes.contains_key(shape_node) {
                             return Err(polars_err!(ComputeError:
@@ -212,7 +209,7 @@ impl CompiledGraph {
                     }
                 }
                 if spec.is_static() {
-                    resolvers.push(OpResolver::Static(resolve_op(spec, 0, &empty_ctx)?));
+                    resolvers.push(OpResolver::Static(spec.resolve(0, &empty_ctx)?));
                 } else {
                     resolvers.push(OpResolver::Dynamic(spec.clone()));
                 }
@@ -911,7 +908,7 @@ impl CompiledGraph {
                                 }
                                 OpResolver::Dynamic(spec) => {
                                     ctx.clear_null();
-                                    match resolve_op(spec, row_idx, ctx) {
+                                    match spec.resolve(row_idx, ctx) {
                                         Ok(step) => {
                                             dto_scratch.push(ResolvedStep::Step(Cow::Owned(step)))
                                         }
@@ -1567,27 +1564,10 @@ fn prepare_graph_params(graph: &mut UnifiedGraph) -> PolarsResult<usize> {
         node.source
             .visit_slots(&mut |_, slot| inputs = inputs.max(slot + 1));
         for op in &node.ops {
-            if let OpSpec::Typed(op) = op {
-                inputs = inputs.max(op.min_inputs());
-            }
-        }
-        let op_params = node.ops.iter_mut().flat_map(|op| match op {
-            OpSpec::Legacy(spec) => Some(spec.params.values_mut()),
-            OpSpec::Typed(_) => None,
-        });
-        for p in op_params.flatten() {
-            prepare_param(p, &mut inputs)?;
+            inputs = inputs.max(op.min_inputs());
         }
     }
     Ok(inputs)
-}
-
-/// Raise `inputs` to cover the slot `p` reads, if any.
-fn prepare_param(p: &mut ParamValue, inputs: &mut usize) -> PolarsResult<()> {
-    if let ParamValue::Slot { idx } = p {
-        *inputs = (*inputs).max(*idx + 1);
-    }
-    Ok(())
 }
 
 /// Resolve `"auto"` dtype and missing ndim on the graph's output specs from
@@ -1688,10 +1668,9 @@ fn resolve_one_output_spec(graph: &UnifiedGraph, spec: &mut OutputSpec, dt: &Dat
 }
 
 /// A compiled op as wire JSON, for the introspection entry points
-/// (`resolve_op_from_json`). Every `ParamValue` variant serializes, so this is
-/// just the op's serde form.
-fn op_json(op: &OpSpec) -> String {
-    serde_json::to_string(op).expect("an OpSpec always serializes")
+/// (`resolve_op_from_json`): just the op's serde form.
+fn op_json(op: &TypedOp) -> String {
+    serde_json::to_string(op).expect("an op always serializes")
 }
 
 /// Derive a node's output rank by folding each op's `OutputRankRule` from a
@@ -1983,7 +1962,7 @@ mod tests {
     /// `assert_step_covered` was called exactly once — with a `Buffer` step —
     /// so nothing checked that the other nine had a graph. Two tests close
     /// that now: `every_graph_step_variant_is_reachable_from_a_known_op`
-    /// against `LEGACY_OPS`, the same way `every_graph_geometry_op_executes`
+    /// over the catalogue's samples, the same way `every_graph_geometry_op_executes`
     /// does in `encode.rs`, and the coverage assertion at the end of
     /// `every_graph_step_variant_executes`, which records what that test
     /// actually ran.
@@ -2038,7 +2017,8 @@ mod tests {
     fn every_graph_step_variant_is_reachable_from_a_known_op() {
         let mut reachable: BTreeSet<&'static str> = BTreeSet::new();
         for op in crate::ops::TypedOp::samples() {
-            let step = resolve_op(&OpSpec::Typed(op), 0, &ParamCtx::empty())
+            let step = op
+                .resolve(0, &ParamCtx::empty())
                 .expect("a registered sample resolves");
             reachable.insert(step_name(&step));
         }
@@ -2079,7 +2059,7 @@ mod tests {
                 let step = match resolver {
                     OpResolver::Static(step) => Some(Cow::Borrowed(step)),
                     OpResolver::Dynamic(spec) => {
-                        resolve_op(spec, 0, &ParamCtx::empty()).ok().map(Cow::Owned)
+                        spec.resolve(0, &ParamCtx::empty()).ok().map(Cow::Owned)
                     }
                     OpResolver::RasterizeShapeRef { op, .. } => op
                         .with_size(1, 1, 0, &ParamCtx::empty())
@@ -2449,7 +2429,7 @@ mod tests {
         // The dynamic op's expr param must have been bound to a slot:
         // 1 source column + position 0 → absolute slot 1.
         match &compiled.node_plan("n0").resolvers[0] {
-            OpResolver::Dynamic(OpSpec::Typed(op)) => {
+            OpResolver::Dynamic(op) => {
                 let mut slots = Vec::new();
                 op.visit_slots(&mut |name, slot| slots.push((name, slot)));
                 assert_eq!(slots, [("factor", 1)]);

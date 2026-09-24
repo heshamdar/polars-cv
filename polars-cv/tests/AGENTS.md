@@ -224,9 +224,9 @@ be selected on: `-k "not plugin_required"` matches test *names* and deselects
 nothing, and `-m` sees no such marker. None is needed — the tests skip
 themselves when the extension is absent. Because skips are quiet, a builder
 change that should have failed a parity test can look clean against an unbuilt
-or stale plugin; the parity guards that can run without one
-(`test_op_names_matches_rust_known_ops_without_the_plugin`,
-`test_op_names_covers_all_emitted_ops`) exist to cover that window.
+or stale plugin; the guards that can run without one
+(`test_every_op_is_emitted_by_a_builder`, which reads the generated catalogue,
+and `test_lazy_stub_is_current`) exist to cover that window.
 
 ### Shared Fixtures (`conftest.py`)
 

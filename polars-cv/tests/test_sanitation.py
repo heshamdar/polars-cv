@@ -351,60 +351,13 @@ def test_plan_equals_exec_shape(label, build, mode):
 # ---------------------------------------------------------------------------
 
 
-def _known_ops_from_rust():
-    """Op names the Rust executor accepts, or None if the hook isn't built yet."""
-    lib = _lib()
-    fn = getattr(lib, "known_ops", None) if lib is not None else None
-    return set(fn()) if callable(fn) else None
-
-
-@plugin_required
-def test_registry_parity_pipeline_ops_are_executable():
-    """Every op a Pipeline can emit must be known to the Rust executor (B1)."""
-    # These used to `pytest.skip` on the symbols being "not implemented yet
-    # (Phase 3)". All three have existed for releases, so the skips were dead
-    # guards: had the FFI regressed, this parity check would have gone quiet
-    # instead of failing. Assert them instead.
-    rust_ops = _known_ops_from_rust()
-    assert rust_ops is not None, "_lib.known_ops() is missing from the compiled plugin"
-    pipeline_ops = getattr(Pipeline, "OP_NAMES", None)
-    assert pipeline_ops is not None, "Pipeline.OP_NAMES is missing"
-    missing = set(pipeline_ops) - rust_ops
-    assert not missing, f"Pipeline ops with no Rust executor arm: {sorted(missing)}"
-
-
-@plugin_required
-def test_registry_parity_all_rust_ops_are_reachable():
-    """Every op the Rust executor knows must be reachable from the Python API.
-
-    The forward test guards ``OP_NAMES ⊆ known_ops()``. This is the reverse
-    direction: ``known_ops() ⊆ OP_NAMES``. Together they pin an exact equality,
-    so a Rust op registered in ``known_ops()`` cannot sit
-    unreachable from any ``Pipeline``/lazy builder (the gap that hid
-    ``channel_merge`` and the graph-path contour ops before this suite existed).
-
-    Graph geometry ops are exposed via the ``Pipeline`` builders; the separate
-    ``.contour``/``.point``/``.bbox`` namespace plugins do NOT go through
-    ``vb_graph``/``known_ops()`` and so are (correctly) not part of this set.
-    """
-    rust_ops = _known_ops_from_rust()
-    assert rust_ops is not None, "_lib.known_ops() is missing from the compiled plugin"
-    pipeline_ops = set(Pipeline.OP_NAMES)
-    unreachable = rust_ops - pipeline_ops
-    assert not unreachable, (
-        "Rust ops in known_ops() with no Python builder that emits them "
-        f"(dead or unconnected graph path): {sorted(unreachable)}"
-    )
-
-
 @requires_checkout
 def test_namespace_plugin_symbols_match_registrations():
     """The namespace plugin surface is connected in BOTH directions.
 
     The ``.contour``/``.point``/``.bbox``/``.cv`` namespace accessors call
     individually-registered ``#[polars_expr]`` functions by name (bypassing the
-    ``vb_graph``/``known_ops()`` graph path, so the registry-parity tests don't
-    cover them). Both directions are pinned, mirroring the graph-path guarantee:
+    the ``vb_graph`` graph path, so the op-catalogue tests don't cover them). Both directions are pinned, mirroring the graph-path guarantee:
 
     - Forward: every ``_plugin("name")`` call resolves to a registered Rust
       symbol — a typo or rename (e.g. ``contour_bbox`` vs
@@ -520,59 +473,22 @@ def _emitted_op_names_from_source():
     return names
 
 
-def test_op_names_covers_all_emitted_ops():
-    """Pipeline.OP_NAMES must list exactly the ops the builders actually emit.
+def test_every_op_is_emitted_by_a_builder():
+    """The builders emit exactly the ops the Rust catalogue defines.
 
-    Guards against OP_NAMES silently under-listing (a new builder op missing
-    from the registry) or over-listing (a stale entry no builder emits).
+    ``TYPED_OPS`` is generated from the catalogue, so an op here is one Rust
+    resolves; the scan pins the other direction too — a Rust op with no
+    builder that emits it is dead or unconnected (the gap that once hid
+    ``channel_merge`` and the graph-path contour ops), and a builder emitting a
+    name the catalogue lacks would fail only at execution.
     """
+    from polars_cv._ops_generated import TYPED_OPS
+
     emitted = _emitted_op_names_from_source()
-    declared = set(Pipeline.OP_NAMES)
-    assert emitted == declared, (
-        f"OP_NAMES out of sync with builders: "
-        f"missing={sorted(emitted - declared)} stale={sorted(declared - emitted)}"
-    )
-
-
-@requires_checkout
-def test_op_names_matches_rust_known_ops_without_the_plugin() -> None:
-    """``Pipeline.OP_NAMES`` must equal Rust's op registry, checked from source.
-
-    The two ``test_registry_parity_*`` tests already pin this equality in both
-    directions, but both are ``@plugin_required`` and skip when the extension
-    is not built. That is not a hypothetical lane: the editable install leaves
-    the compiled ``.so`` at its last ``maturin develop`` while Python sources
-    track the working tree, so a contributor adding a builder op and running
-    the suite before rebuilding gets two skips where they expect two failures.
-
-    Reading the registry out of the Rust source needs no plugin, so the drift
-    is caught in that window too. Source-scanning is the weaker technique and
-    is used here only because the stronger one is unavailable by construction;
-    it asserts it parsed a plausible registry rather than matching nothing.
-    """
-    src = rust_src_dir()
-
-    text = (src / "execute.rs").read_text()
-    # One line or one name per line: rustfmt picks by length.
-    m = re.search(r"pub const LEGACY_OPS: &\[&str\] = &\[(.*?)\];", text, re.S)
-    assert m, "could not find LEGACY_OPS in execute.rs — scan is out of date"
-    # Strip comments first: this codebase explains absences inline (`// "sobel"
-    # is deliberately absent`), and a quoted name in one would read as an op.
-    body = re.sub(r"(?m)//.*$", "", m.group(1))
-    rust_ops = set(re.findall(r'"([a-z0-9_]+)"', body))
-    # The typed half of the registry: the committed catalogue, which the Rust
-    # test `catalog_matches_the_committed_file` pins to the definitions.
-    catalog = json.loads(
-        (src.parent / "tests" / "golden" / "op_catalog.json").read_text()
-    )
-    rust_ops |= {op["name"] for op in catalog}
-    assert len(rust_ops) > 50, f"op registry scan found only {len(rust_ops)} ops"
-
-    declared = set(Pipeline.OP_NAMES)
-    assert declared == rust_ops, (
-        "Pipeline.OP_NAMES has drifted from the Rust op registry: "
-        f"python-only={sorted(declared - rust_ops)}, "
-        f"rust-only={sorted(rust_ops - declared)}"
+    assert emitted == set(TYPED_OPS), (
+        f"builders out of sync with the catalogue: "
+        f"unbuilt={sorted(set(TYPED_OPS) - emitted)} "
+        f"unknown={sorted(emitted - set(TYPED_OPS))}"
     )
 
 
@@ -601,7 +517,6 @@ _REQUIRED_LIB_HOOKS = (
     "op_infer_shape",
     "op_output_channels",
     "binary_output_dtype",
-    "known_ops",
     "enum_variants",
     "enum_names",
     # The 2x3 rotation+scale matrix about an arbitrary centre, read by the
@@ -2916,4 +2831,6 @@ def test_every_lazy_only_op_is_a_lazy_method_with_its_fields() -> None:
         assert params == [f["name"] for f in op["fields"]], (
             f"{name}: signature {params} is not the catalogue's fields"
         )
-        assert op["name"] in Pipeline.OP_NAMES
+        from polars_cv._ops_generated import TYPED_OPS
+
+        assert op["name"] in TYPED_OPS

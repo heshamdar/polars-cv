@@ -1,12 +1,11 @@
-//! Parameter value types for expression resolution.
+//! The per-call view of expression-parameter columns.
 //!
-//! This module handles the resolution of parameter values that can be either
-//! literals (known at planning time) or expressions (resolved per-row).
-//!
-//! An expression parameter arrives as a [`ParamValue::Slot`]: the absolute
-//! index of its column among the plugin's input series, assigned by the Python
-//! `SlotTable`. Per-row resolution is a direct indexed read through a typed
-//! accessor ([`ParamCol`]); no names are involved.
+//! A per-row parameter arrives as `{"$slot": n}` (a typed
+//! [`Param<T>`](crate::ops::Param)): the absolute index of its column among the
+//! plugin's input series, assigned by the Python `SlotTable`. Per-row
+//! resolution is a direct indexed read through a typed accessor ([`ParamCol`]);
+//! no names are involved. [`NullParamPolicy`] says what a null in such a column
+//! means.
 
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -42,95 +41,6 @@ view_buffer::naming::named_variants!(NullParamPolicy {
     "raise" => Raise,
     "null" => Null,
 });
-
-/// A parameter value: a literal, or a per-row input column by position.
-///
-/// Wire form (hand-written (de)serialization below — see its docs):
-/// `{"type": "literal", "value": …}` or `{"$slot": n}`.
-#[derive(Debug, Clone)]
-pub enum ParamValue {
-    /// A literal value known at planning time.
-    Literal {
-        /// The literal value.
-        value: serde_json::Value,
-    },
-
-    /// A per-row value: the plugin input column at this absolute index
-    /// (root columns first, expression parameters after — the Python
-    /// `SlotTable` assigns the positions).
-    Slot {
-        /// Absolute index into the plugin input series.
-        idx: usize,
-    },
-}
-
-/// The key that marks a slot reference on the wire.
-const SLOT_KEY: &str = "$slot";
-
-impl Serialize for ParamValue {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(Some(2))?;
-        match self {
-            ParamValue::Literal { value } => {
-                map.serialize_entry("type", "literal")?;
-                map.serialize_entry("value", value)?;
-            }
-            ParamValue::Slot { idx } => map.serialize_entry(SLOT_KEY, idx)?,
-        }
-        map.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for ParamValue {
-    /// Exactly two shapes are accepted, each closed: `{"type": "literal",
-    /// "value": v}` and `{"$slot": n}`. Anything else — including the removed
-    /// name-keyed `{"type": "expr", "col": …}` form — is an error naming both.
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::de::Error;
-        let value = serde_json::Value::deserialize(deserializer)?;
-        ParamValue::from_wire(&value).map_err(D::Error::custom)
-    }
-}
-
-impl ParamValue {
-    /// Parse one wire parameter (see the `Deserialize` impl).
-    pub fn from_wire(value: &serde_json::Value) -> Result<Self, String> {
-        let expected = || {
-            format!(
-                "expected a parameter {{\"type\": \"literal\", \"value\": …}} or \
-                 {{\"{SLOT_KEY}\": n}}, got {value}"
-            )
-        };
-        let obj = value.as_object().ok_or_else(expected)?;
-        match (
-            obj.len(),
-            obj.get(SLOT_KEY),
-            obj.get("type"),
-            obj.get("value"),
-        ) {
-            (1, Some(idx), None, None) => idx
-                .as_u64()
-                .map(|idx| ParamValue::Slot { idx: idx as usize })
-                .ok_or_else(|| format!("slot index must be a non-negative integer, got {idx}")),
-            (2, None, Some(t), Some(v)) if t == "literal" => {
-                Ok(ParamValue::Literal { value: v.clone() })
-            }
-            _ => Err(expected()),
-        }
-    }
-}
-
-impl ParamValue {
-    /// Whether this parameter is a literal (statically resolvable at compile
-    /// time with an empty context).
-    pub fn is_literal(&self) -> bool {
-        match self {
-            ParamValue::Literal { .. } => true,
-            ParamValue::Slot { .. } => false,
-        }
-    }
-}
 
 // ============================================================================
 // Per-call parameter context
@@ -331,8 +241,7 @@ impl<'a> ParamCol<'a> {
 
     /// Read the value at `row_idx` as an `AnyValue`, for columns carrying
     /// *data* rather than a parameter value — currently only `label_reduce`'s
-    /// contour operand, which travels by column name instead of as a
-    /// `ParamValue`.
+    /// contour operand (a `ColumnRef`).
     ///
     /// Deliberately outside [`NullParamPolicy`]: it returns `AnyValue::Null`
     /// rather than routing through [`on_null`](Self::on_null), and its caller
@@ -355,8 +264,8 @@ fn float_to_i64(v: f64) -> Option<i64> {
 
 /// Per-call parameter context: typed accessors over the plugin's input series.
 ///
-/// Indexed by the absolute input position that [`ParamValue::Slot`] was bound
-/// to at graph-compile time. Built once per plugin call (per morsel).
+/// Indexed by the absolute input position a `{"$slot": n}` names (see
+/// [`Param`](crate::ops::Param)). Built once per plugin call (per morsel).
 #[derive(Default)]
 pub struct ParamCtx<'a> {
     cols: Vec<ParamCol<'a>>,
@@ -498,15 +407,6 @@ mod tests {
     }
 
     #[test]
-    fn plain_literal_array_is_literal() {
-        // A normalize mean/std or flip-axes array of plain scalars is literal.
-        let param = ParamValue::Literal {
-            value: serde_json::json!([0.485, 0.456, 0.406]),
-        };
-        assert!(param.is_literal());
-    }
-
-    #[test]
     fn test_slot_typed_read() {
         let s = Series::new("h".into(), &[10i64, 20, 30]);
         let inputs = vec![s];
@@ -620,39 +520,5 @@ mod tests {
         let param = ctx.col(0).unwrap();
         assert_eq!(param.get_i64(0, &ctx).unwrap(), 3);
         assert_eq!(param.get_i64(1, &ctx).unwrap(), -2);
-    }
-
-    #[test]
-    fn the_wire_form_is_a_literal_or_a_slot() {
-        let lit: ParamValue = serde_json::from_str(r#"{"type": "literal", "value": 7}"#).unwrap();
-        assert!(matches!(lit, ParamValue::Literal { ref value } if value == &serde_json::json!(7)));
-        let slot: ParamValue = serde_json::from_str(r#"{"$slot": 3}"#).unwrap();
-        assert!(matches!(slot, ParamValue::Slot { idx: 3 }));
-        for (param, wire) in [
-            (lit, serde_json::json!({"type": "literal", "value": 7})),
-            (slot, serde_json::json!({"$slot": 3})),
-        ] {
-            assert_eq!(serde_json::to_value(&param).unwrap(), wire);
-        }
-    }
-
-    #[test]
-    fn anything_else_on_the_wire_is_rejected() {
-        for bad in [
-            // The removed name-keyed expression form.
-            r#"{"type": "expr", "col": "h"}"#,
-            r#"{"$slot": -1}"#,
-            r#"{"$slot": 1, "type": "literal"}"#,
-            r#"{"type": "literal", "value": 1, "extra": 2}"#,
-            r#"{"type": "literal"}"#,
-            r#"7"#,
-        ] {
-            let err = serde_json::from_str::<ParamValue>(bad).unwrap_err();
-            assert!(
-                err.to_string().contains("expected a parameter")
-                    || err.to_string().contains("slot index"),
-                "{bad}: {err}"
-            );
-        }
     }
 }

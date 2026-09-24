@@ -49,9 +49,6 @@ def rotation_matrix_2d(
 ) -> Any:
     """The affine parameters a ``rotate`` executes as, for a known input shape."""
 
-def known_ops() -> list[str]:
-    """Return the names of every operation the executor can resolve."""
-
 def op_catalog() -> str:
     """Return the typed op catalogue as JSON (see ``tests/golden/op_catalog.json``)."""
 
