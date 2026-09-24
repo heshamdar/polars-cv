@@ -962,7 +962,10 @@ matrix; the entries here track status only.
 - **Progress:** P0 (safety net) done — golden corpus, signature snapshot,
   removed-symbol gate, `tests/_plan_view.py` seam, baselines in
   `benchmarks/reports/2026-09-24-typed-ops-baseline/`, and the never-read
-  `GraphNode` fields `alias`/`domain`/`output_dtype` deleted.
+  `GraphNode` fields `alias`/`domain`/`output_dtype` deleted. P1 (positional
+  slots) done — expression params are `{"$slot": n}` from a graph-wide
+  `SlotTable` (`Expr.meta.eq` identity); `expr_key`, `expr_column_names` and
+  the Rust name binding are deleted.
 
 ### CR-46 — The planner is split across the FFI and folded twice · `Open` · Medium (design)
 
@@ -989,6 +992,20 @@ matrix; the entries here track status only.
 - **Location:** `lib.rs` `op_infer_shape` (probes 7, 13, 90, 180),
   `unknown_dim_probe`, `PRESERVED_DIM`, `ParamCtx::probe`.
 - **Fix:** symbolic `Dim` in a required `Op::infer_dims`. Plan phase P9.
+
+### CR-50 — Graph node ids are random, so equal pipelines never share a compiled graph · `Open` · Low (performance)
+
+- **Location:** `lazy.py` `_generate_node_id` (`node_{uuid4}`), `_graph.py`
+  CSE `shared_id` (`_cse_{uuid4}`).
+- **What's wrong:** the graph JSON is the compiled-graph cache key, and every
+  node id in it is random per construction. Two identical pipelines built
+  separately (e.g. once per loop iteration or per request) serialize
+  differently, so each compiles afresh and occupies its own cache slot. Found
+  while pinning P1's JSON determinism (`test_positional_slots.py` normalizes
+  the ids to test the expression encoding alone).
+- **Fix:** derive node ids from content (the node's canonical spec and its
+  upstream ids) rather than `uuid4`; aliases stay user-facing names. Natural
+  home: plan phase P7, where node serialization moves to Rust `Plan`.
 
 ---
 

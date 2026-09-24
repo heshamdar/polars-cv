@@ -3,12 +3,10 @@
 //! This module handles the resolution of parameter values that can be either
 //! literals (known at planning time) or expressions (resolved per-row).
 //!
-//! Expression parameters are referenced by column name in the serialized graph
-//! JSON. At graph **compile** time (see `graph::compiled`) every `Expr` param
-//! is bound to a [`ParamValue::Slot`] — an integer index into the plugin's
-//! input series — so per-row resolution is a direct indexed read through a
-//! typed accessor ([`ParamCol`]) instead of a string-keyed map lookup plus
-//! `AnyValue` extraction.
+//! An expression parameter arrives as a [`ParamValue::Slot`]: the absolute
+//! index of its column among the plugin's input series, assigned by the Python
+//! `SlotTable`. Per-row resolution is a direct indexed read through a typed
+//! accessor ([`ParamCol`]); no names are involved.
 
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -46,50 +44,104 @@ view_buffer::naming::named_variants!(NullParamPolicy {
     "null" => Null,
 });
 
-/// A parameter value that can be either a literal or an expression reference.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+/// A parameter value: a literal, or a per-row input column by position.
+///
+/// Wire form (hand-written (de)serialization below — see its docs):
+/// `{"type": "literal", "value": …}` or `{"$slot": n}`.
+#[derive(Debug, Clone)]
 pub enum ParamValue {
     /// A literal value known at planning time.
-    #[serde(rename = "literal")]
     Literal {
         /// The literal value.
         value: serde_json::Value,
     },
 
-    /// A reference to a column expression, resolved at execution time.
-    ///
-    /// This is the wire form. It must be bound to a [`ParamValue::Slot`]
-    /// during graph compilation before per-row resolution.
-    #[serde(rename = "expr")]
-    Expr {
-        /// Column name to resolve.
-        #[serde(default)]
-        col: Option<String>,
-    },
-
-    /// A compile-time-bound reference to an input column by index.
-    ///
-    /// Never serialized — produced from `Expr` by graph compilation
-    /// (`graph::compiled::CompiledGraph`). The index points into the plugin's
-    /// input series slice (source columns first, expression columns after).
-    #[serde(skip)]
+    /// A per-row value: the plugin input column at this absolute index
+    /// (root columns first, expression parameters after — the Python
+    /// `SlotTable` assigns the positions).
     Slot {
         /// Absolute index into the plugin input series.
         idx: usize,
     },
 
-    /// A pre-parsed, already-bound nested parameter list.
+    /// A pre-parsed nested parameter list.
     ///
-    /// Never serialized — produced by graph compilation from a `Literal` whose
-    /// JSON value is an array of `ParamValue` dicts (a `warp_affine` matrix, a
-    /// `reshape` shape). Parsing and slot-binding happen once at compile time so
-    /// per-row resolution reads the already-bound elements directly (via
-    /// [`ParamValue::as_param_slice`]) instead of re-deserializing the JSON every
-    /// row. The introspection path (`op_schema`) does not compile the graph and
-    /// keeps the `Literal` JSON form, so `as_param_list` handles both.
-    #[serde(skip)]
+    /// Produced by graph compilation from a `Literal` whose JSON value is an
+    /// array of `ParamValue` dicts (a `warp_affine` matrix, a `reshape`
+    /// shape), so per-row resolution reads the parsed elements directly (via
+    /// [`ParamValue::as_param_slice`]) instead of re-deserializing the JSON
+    /// every row. The introspection path (`op_schema`) does not compile the
+    /// graph and keeps the `Literal` JSON form, so `as_param_list` handles
+    /// both. Serializes back to the `Literal` form.
     List(Vec<ParamValue>),
+}
+
+/// The key that marks a slot reference on the wire.
+const SLOT_KEY: &str = "$slot";
+
+impl Serialize for ParamValue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(2))?;
+        match self {
+            ParamValue::Literal { value } => {
+                map.serialize_entry("type", "literal")?;
+                map.serialize_entry("value", value)?;
+            }
+            ParamValue::Slot { idx } => map.serialize_entry(SLOT_KEY, idx)?,
+            ParamValue::List(items) => {
+                map.serialize_entry("type", "literal")?;
+                map.serialize_entry("value", items)?;
+            }
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for ParamValue {
+    /// Exactly two shapes are accepted, each closed: `{"type": "literal",
+    /// "value": v}` and `{"$slot": n}`. Anything else — including the removed
+    /// name-keyed `{"type": "expr", "col": …}` form — is an error naming both.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let value = serde_json::Value::deserialize(deserializer)?;
+        ParamValue::from_wire(&value).map_err(D::Error::custom)
+    }
+}
+
+impl ParamValue {
+    /// Parse one wire parameter (see the `Deserialize` impl).
+    pub fn from_wire(value: &serde_json::Value) -> Result<Self, String> {
+        let expected = || {
+            format!(
+                "expected a parameter {{\"type\": \"literal\", \"value\": …}} or \
+                 {{\"{SLOT_KEY}\": n}}, got {value}"
+            )
+        };
+        let obj = value.as_object().ok_or_else(expected)?;
+        match (
+            obj.len(),
+            obj.get(SLOT_KEY),
+            obj.get("type"),
+            obj.get("value"),
+        ) {
+            (1, Some(idx), None, None) => idx
+                .as_u64()
+                .map(|idx| ParamValue::Slot { idx: idx as usize })
+                .ok_or_else(|| format!("slot index must be a non-negative integer, got {idx}")),
+            (2, None, Some(t), Some(v)) if t == "literal" => {
+                Ok(ParamValue::Literal { value: v.clone() })
+            }
+            _ => Err(expected()),
+        }
+    }
+
+    /// Whether a JSON value is a wire parameter (either accepted shape).
+    pub fn is_wire_param(value: &serde_json::Value) -> bool {
+        value.as_object().is_some_and(|obj| {
+            obj.contains_key(SLOT_KEY) || obj.get("type").is_some_and(|t| t == "literal")
+        })
+    }
 }
 
 impl ParamValue {
@@ -100,13 +152,13 @@ impl ParamValue {
     /// hoisted into [`ParamValue::List`] by graph compilation
     /// (`graph::compiled::bind_param`) *before* this classification runs, so a
     /// bare `Literal` never holds nested sub-params and is always fully literal;
-    /// a `List` is literal iff every element is (a bound `Slot`/`Expr` element
+    /// a `List` is literal iff every element is (a `Slot` element
     /// makes the whole op dynamic, so it re-resolves per row).
     pub fn is_literal(&self) -> bool {
         match self {
             ParamValue::Literal { .. } => true,
             ParamValue::List(items) => items.iter().all(ParamValue::is_literal),
-            ParamValue::Expr { .. } | ParamValue::Slot { .. } => false,
+            ParamValue::Slot { .. } => false,
         }
     }
 
@@ -114,11 +166,6 @@ impl ParamValue {
     fn slot_col<'c, 'a>(&self, ctx: &'c ParamCtx<'a>) -> PolarsResult<&'c ParamCol<'a>> {
         match self {
             ParamValue::Slot { idx } => ctx.col(*idx),
-            ParamValue::Expr { col, .. } => Err(polars_err!(ComputeError:
-                "Internal error: unbound expression parameter (col: {:?}); \
-                 the graph must be compiled before execution",
-                col
-            )),
             ParamValue::List(_) => Err(polars_err!(ComputeError:
                 "Internal error: a nested list parameter cannot be resolved as a scalar"
             )),
@@ -183,11 +230,9 @@ impl ParamValue {
             ParamValue::Literal { value } => value.as_str().ok_or_else(
                 || polars_err!(ComputeError: "Expected string literal, got {:?}", value),
             ),
-            ParamValue::Expr { .. } | ParamValue::Slot { .. } | ParamValue::List(_) => {
-                Err(polars_err!(ComputeError:
+            ParamValue::Slot { .. } | ParamValue::List(_) => Err(polars_err!(ComputeError:
                     "This string parameter is structural (it fixes the output \
-                     dtype at planning time) and cannot be an expression"))
-            }
+                     dtype at planning time) and cannot be an expression")),
         }
     }
 
@@ -258,7 +303,7 @@ impl ParamValue {
                     })
                     .collect()
             }
-            ParamValue::Expr { .. } | ParamValue::Slot { .. } => {
+            ParamValue::Slot { .. } => {
                 Err(polars_err!(ComputeError: "Array parameters cannot be expressions"))
             }
         }
@@ -329,7 +374,7 @@ impl ParamValue {
                     })
                     .collect()
             }
-            ParamValue::Expr { .. } | ParamValue::Slot { .. } | ParamValue::List(_) => {
+            ParamValue::Slot { .. } | ParamValue::List(_) => {
                 Err(polars_err!(ComputeError: "Axes parameters cannot be expressions"))
             }
         }
@@ -342,7 +387,7 @@ impl ParamValue {
                 let arr = value.as_array()?;
                 arr.iter().map(|v| v.as_f64()).collect::<Option<Vec<f64>>>()
             }
-            ParamValue::Expr { .. } | ParamValue::Slot { .. } | ParamValue::List(_) => None,
+            ParamValue::Slot { .. } | ParamValue::List(_) => None,
         }
     }
 }
@@ -1261,33 +1306,23 @@ mod tests {
     }
 
     #[test]
-    fn test_unbound_expr_is_internal_error() {
-        let param = ParamValue::Expr {
-            col: Some("h".to_string()),
-        };
-        let err = param.resolve_i64(0, &ParamCtx::empty()).unwrap_err();
-        assert!(err.to_string().contains("unbound expression parameter"));
-    }
-
-    #[test]
     fn test_structural_literal_resolvers_reject_bound_slots() {
         use super::get;
         use std::collections::HashMap;
 
-        // A structural param that reached the resolver as a bound expression
-        // slot (or the wire `Expr` form) must error — letting it vary per row
-        // would desync the plan-time schema from the data.
-        for bad in [ParamValue::Slot { idx: 0 }, ParamValue::Expr { col: None }] {
-            let mut params: HashMap<String, ParamValue> = HashMap::new();
-            params.insert("axis".into(), bad.clone());
-            let err = get::maybe_usize_literal(&OpParams::new(&params), "axis").unwrap_err();
-            assert!(err.to_string().contains("structural"), "got: {err}");
+        // A structural param that reached the resolver as a per-row slot must
+        // error — letting it vary per row would desync the plan-time schema
+        // from the data.
+        let bad = ParamValue::Slot { idx: 0 };
+        let mut params: HashMap<String, ParamValue> = HashMap::new();
+        params.insert("axis".into(), bad.clone());
+        let err = get::maybe_usize_literal(&OpParams::new(&params), "axis").unwrap_err();
+        assert!(err.to_string().contains("structural"), "got: {err}");
 
-            let mut params2: HashMap<String, ParamValue> = HashMap::new();
-            params2.insert("hash_size".into(), bad);
-            let err = get::opt_u32_literal(&OpParams::new(&params2), "hash_size", 64).unwrap_err();
-            assert!(err.to_string().contains("structural"), "got: {err}");
-        }
+        let mut params2: HashMap<String, ParamValue> = HashMap::new();
+        params2.insert("hash_size".into(), bad);
+        let err = get::opt_u32_literal(&OpParams::new(&params2), "hash_size", 64).unwrap_err();
+        assert!(err.to_string().contains("structural"), "got: {err}");
 
         // A literal still resolves normally, and absence yields the default.
         let mut lit: HashMap<String, ParamValue> = HashMap::new();
@@ -1309,27 +1344,53 @@ mod tests {
     }
 
     #[test]
-    fn test_expr_wire_form_is_exactly_type_and_col() {
-        // The `Expr` wire form carries only `col` — vestigial serialization
-        // fields (expr_serialized/expr_str) were removed. Pin the shape so they
-        // cannot silently return and desync the Python `to_dict` emitter.
-        let json = serde_json::to_value(&ParamValue::Expr {
-            col: Some("h".to_string()),
-        })
-        .unwrap();
-        let obj = json.as_object().unwrap();
-        assert_eq!(obj.get("type").and_then(|v| v.as_str()), Some("expr"));
-        assert_eq!(obj.get("col").and_then(|v| v.as_str()), Some("h"));
-        assert_eq!(obj.len(), 2, "expr wire form must be exactly {{type, col}}");
+    fn the_wire_form_is_a_literal_or_a_slot() {
+        let lit: ParamValue = serde_json::from_str(r#"{"type": "literal", "value": 7}"#).unwrap();
+        assert!(matches!(lit, ParamValue::Literal { ref value } if value == &serde_json::json!(7)));
+        let slot: ParamValue = serde_json::from_str(r#"{"$slot": 3}"#).unwrap();
+        assert!(matches!(slot, ParamValue::Slot { idx: 3 }));
+        for (param, wire) in [
+            (lit, serde_json::json!({"type": "literal", "value": 7})),
+            (slot, serde_json::json!({"$slot": 3})),
+        ] {
+            assert_eq!(serde_json::to_value(&param).unwrap(), wire);
+        }
     }
 
     #[test]
-    fn test_slot_and_list_are_not_serialized() {
-        // Slot and List are compile-time-only forms produced by graph
-        // compilation; they never appear in the wire format and must not
-        // serialize into something that round-trips as a resolvable param.
-        assert!(serde_json::to_string(&ParamValue::Slot { idx: 3 }).is_err());
-        assert!(serde_json::to_string(&ParamValue::List(vec![])).is_err());
+    fn a_nested_list_serializes_as_its_literal_form() {
+        let list = ParamValue::List(vec![
+            ParamValue::Literal {
+                value: serde_json::json!(1.0),
+            },
+            ParamValue::Slot { idx: 2 },
+        ]);
+        assert_eq!(
+            serde_json::to_value(&list).unwrap(),
+            serde_json::json!({"type": "literal", "value": [
+                {"type": "literal", "value": 1.0}, {"$slot": 2}
+            ]})
+        );
+    }
+
+    #[test]
+    fn anything_else_on_the_wire_is_rejected() {
+        for bad in [
+            // The removed name-keyed expression form.
+            r#"{"type": "expr", "col": "h"}"#,
+            r#"{"$slot": -1}"#,
+            r#"{"$slot": 1, "type": "literal"}"#,
+            r#"{"type": "literal", "value": 1, "extra": 2}"#,
+            r#"{"type": "literal"}"#,
+            r#"7"#,
+        ] {
+            let err = serde_json::from_str::<ParamValue>(bad).unwrap_err();
+            assert!(
+                err.to_string().contains("expected a parameter")
+                    || err.to_string().contains("slot index"),
+                "{bad}: {err}"
+            );
+        }
     }
 
     #[test]

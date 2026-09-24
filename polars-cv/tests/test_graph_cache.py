@@ -288,7 +288,7 @@ class TestGraphVersionField:
         expr = _plugin.call(
             "vb_graph",
             args=[pl.col("img")],
-            kwargs={"graph_json": json.dumps(spec), "expr_column_names": []},
+            kwargs={"graph_json": json.dumps(spec)},
             is_elementwise=True,
         )
         df = pl.DataFrame({"img": [_png(4, 4)]})
@@ -317,7 +317,7 @@ class TestGraphStructureValidation:
         expr = _plugin.call(
             "vb_graph",
             args=[pl.col("img")],
-            kwargs={"graph_json": json.dumps(spec), "expr_column_names": []},
+            kwargs={"graph_json": json.dumps(spec)},
             is_elementwise=True,
         )
         df = pl.DataFrame({"img": [_png(4, 4)]})

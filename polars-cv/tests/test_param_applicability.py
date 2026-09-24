@@ -259,7 +259,7 @@ def test_the_sink_wire_rejects_an_unknown_field() -> None:
 
     expr = pl.col("i").cv._plugin(  # type: ignore[attr-defined]
         "vb_graph",
-        kwargs={"graph_json": json.dumps(spec), "expr_column_names": []},
+        kwargs={"graph_json": json.dumps(spec)},
     )
     with pytest.raises(Exception, match="definitely_not_a_field|unknown field"):
         df.lazy().select(out=expr).collect()
@@ -304,7 +304,7 @@ def test_the_quality_declaration_matches_what_the_encoders_do() -> None:
             output["sink"]["quality"] = quality
         expr = pl.col("i").cv._plugin(  # type: ignore[attr-defined]
             "vb_graph",
-            kwargs={"graph_json": json.dumps(spec), "expr_column_names": []},
+            kwargs={"graph_json": json.dumps(spec)},
         )
         return df.lazy().select(out=expr).collect()["out"][0]
 

@@ -81,6 +81,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **Expression parameters cross the plugin boundary as positional slots.** A
+  parameter given as a `pl.Expr` serializes as `{"$slot": n}`, the index of the
+  plugin input column that carries it; the graph assigns each distinct
+  expression (by `Expr.meta.eq`) one input, root columns first. The
+  `expr_column_names` kwarg, which bound expressions to inputs by their display
+  text, is gone and `vb_graph` rejects it; each call checks that the inputs it
+  receives cover every slot the graph reads. The graph JSON (the compiled-graph
+  cache key) no longer depends on which other expressions are alive in the
+  process, and carries no expression text. A contour source's `shape=`
+  reference is the referenced node's id (`shape_node`) instead of an embedded
+  copy of that pipeline nothing read. (Typed-op plan P1.)
 - **Graph nodes no longer serialize `alias`, `domain` or `output_dtype`.** The
   plugin declared them only to stay closed under `deny_unknown_fields` and read
   none of them; they only served the graph visualizer, which now reads them
@@ -255,6 +266,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   for planner state (`tests/_plan_view.py`, 30 files migrated, guarded), and
   performance baselines (`benchmarks/reports/2026-09-24-typed-ops-baseline/`,
   new `benchmarks/plan_build.py`).
+- **Typed-op migration, P1 (positional slots).** `_types.SlotTable` is the one
+  expression-identity authority; the process-wide `expr_key` registry, Rust's
+  name->slot binding and the planning probe re-serializers are deleted and
+  listed in `check_removed_symbols.py`.
 - `scripts/verify.sh` and the pre-commit clippy hook run cargo under the PyO3
   environment `maturin develop` sets (`scripts/with-pyo3-env.sh`). Without it the
   two invalidated each other's builds, costing ~2 minutes of polars-stack

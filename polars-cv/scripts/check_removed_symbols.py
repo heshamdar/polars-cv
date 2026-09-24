@@ -75,6 +75,22 @@ REMOVED: tuple[Removed, ...] = (
         # The tombstone sets the old trigger threshold to prove nothing prints.
         allowed_in=frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
     ),
+    # Typed-op P1: expression parameters cross the boundary as positional
+    # `{"$slot": n}` indices assigned by `SlotTable`; no text, no names.
+    Removed("expr_key", "P1: display-text expression identity (CR-31)"),
+    Removed("_EXPR_KEYS", "P1: the process-wide expr_key registry"),
+    Removed(
+        "expr_column_names",
+        "P1: the name list that bound expression params to input columns",
+        # The tombstone sends it to prove the kwargs struct rejects it.
+        allowed_in=frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
+    ),
+    Removed("name_to_slot", "P1: Rust name->slot binding"),
+    Removed("shape_pipeline", "P1: replaced by the `shape_node` id"),
+    Removed("op_probe_json", "P1: probe re-serialization; `op_json` is serde"),
+    Removed("param_probe_json", "P1: probe re-serialization; `op_json` is serde"),
+    Removed("_build_column_bindings", "P1: bindings come from the SlotTable"),
+    Removed("_get_ordered_columns", "P1: input columns come from the SlotTable"),
 )
 
 

@@ -160,7 +160,7 @@ def test_graph_node_rejects_unknown_fields() -> None:
 
     expr = pl.col("img").cv._plugin(  # type: ignore[attr-defined]
         "vb_graph",
-        kwargs={"graph_json": tampered, "expr_column_names": []},
+        kwargs={"graph_json": tampered},
     )
     with pytest.raises(pl.exceptions.ComputeError) as excinfo:
         df.lazy().select(out=expr).collect()
@@ -1025,3 +1025,31 @@ def test_the_single_thread_engine_warning_is_gone() -> None:
         cwd=Path(__file__).resolve().parents[1],
     )
     assert "polars-cv:" not in proc.stderr, proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# expr_column_names: expression params bound to inputs by display text
+# ---------------------------------------------------------------------------
+
+
+@plugin_required
+def test_vb_graph_rejects_the_expr_column_names_kwarg() -> None:
+    """Expression params are ``{"$slot": n}``; no name list binds them.
+
+    ``expr_column_names`` paired each expression's display text with an input
+    column. Text is not identity (CR-31), and the list made the cache key
+    depend on which expressions happened to be alive. ``GraphKwargs`` is
+    ``deny_unknown_fields``, so a caller still sending it must fail rather
+    than have it silently ignored.
+    """
+    graph = (
+        pl.col("img")
+        .cv.pipe(Pipeline().source("image_bytes", dtype="u8").grayscale())
+        .sink("png", return_expr=False)
+    )
+    expr = pl.col("img").cv._plugin(  # type: ignore[attr-defined]
+        "vb_graph",
+        kwargs={"graph_json": graph._to_json(), "expr_column_names": []},
+    )
+    with pytest.raises(pl.exceptions.ComputeError, match="expr_column_names"):
+        pl.DataFrame({"img": [b""]}).lazy().select(out=expr).collect()

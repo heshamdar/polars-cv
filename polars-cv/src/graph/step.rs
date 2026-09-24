@@ -43,7 +43,8 @@ pub(crate) enum GraphStep {
     ExtractShape,
     /// Score contour regions (from an expression column) over the buffer.
     LabelReduce {
-        contours_col: String,
+        /// Input position of the contour-list column.
+        contours_slot: usize,
         reduction: LabelReduction,
         region_mode: LabelRegionMode,
     },

@@ -69,7 +69,7 @@ This is a **pre-release, largely AI-developed project**. Fix inconsistencies whe
 ```
 Python Pipeline spec
   → JSON graph serialization (PipelineGraph)
-  → _plugin.call("vb_graph", graph_json, expr_column_names)   # the one route to register_plugin_function
+  → _plugin.call("vb_graph", graph_json, input columns)   # the one route to register_plugin_function
   → Polars calls Rust vb_graph(inputs, kwargs)
   → UnifiedGraph::from_json() → topological execution
   → Per-row: decode source → apply ops (ViewExpr/ViewBuffer) → encode sink

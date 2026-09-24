@@ -146,7 +146,7 @@ fn resolve_contour_dimensions(
     source: &SourceSpec,
     ctx: &ParamCtx,
 ) -> PolarsResult<(u32, u32)> {
-    // shape_pipeline sources never reach this function: the graph executor
+    // shape_node sources never reach this function: the graph executor
     // resolves the referenced node's dimensions and calls
     // `decode_contour_source_with_dims` instead (see compiled.rs).
 
@@ -1005,19 +1005,11 @@ fn resolve_op_inner(
             Ok(GraphStep::ExtractShape)
         }
         "label_reduce" => {
-            let contours_param = get_param(params, "contours")?;
-            // The contour column is referenced by *name* inside the step, so
-            // graph compilation deliberately leaves this param unbound; the
-            // executor maps the name to its input slot via
-            // `CompiledGraph::name_to_slot`.
-            let contours_col = match contours_param {
-                ParamValue::Expr { col: Some(col), .. } => col.clone(),
-                ParamValue::Expr { col: None, .. } => {
-                    return Err(polars_err!(
-                        ComputeError: "label_reduce requires a contour expression with a column key"
-                    ))
-                }
-                ParamValue::Literal { .. } | ParamValue::Slot { .. } | ParamValue::List(_) => {
+            // The contour set is an operand column, not a value: the step
+            // keeps its input position and reads the whole row's list itself.
+            let contours_slot = match get_param(params, "contours")? {
+                ParamValue::Slot { idx } => *idx,
+                ParamValue::Literal { .. } | ParamValue::List(_) => {
                     return Err(polars_err!(
                         ComputeError: "label_reduce contours parameter must be a Polars expression"
                     ))
@@ -1042,7 +1034,7 @@ fn resolve_op_inner(
                 ctx,
             )?;
             Ok(GraphStep::LabelReduce {
-                contours_col,
+                contours_slot,
                 reduction,
                 region_mode,
             })

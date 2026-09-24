@@ -306,11 +306,9 @@ class TestPipelineGraphSerialization:
         graph.add_node("node2", pipe, pl.col("col_b"))
         graph.set_output("node2", "numpy")
 
-        # Build bindings
-        graph._build_column_bindings()
-
-        assert graph._column_bindings["node1"] == 0
-        assert graph._column_bindings["node2"] == 1
+        bindings = graph._to_dict()["column_bindings"]
+        assert bindings["node1"] == 0
+        assert bindings["node2"] == 1
 
     def test_graph_deduplicates_same_column(self) -> None:
         """Same column used by multiple nodes should be deduplicated."""
@@ -323,13 +321,11 @@ class TestPipelineGraphSerialization:
         graph.add_node("node2", pipe, pl.col("same_col"))
         graph.set_output("node2", "numpy")
 
-        graph._build_column_bindings()
-        columns = graph._get_ordered_columns()
-
-        # Only one unique column
-        assert len(columns) == 1
+        # Only one unique input column
+        assert len(graph._slot_table()) == 1
         # Both nodes should point to same index
-        assert graph._column_bindings["node1"] == graph._column_bindings["node2"]
+        bindings = graph._to_dict()["column_bindings"]
+        assert bindings["node1"] == bindings["node2"]
 
 
 @plugin_required

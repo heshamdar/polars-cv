@@ -42,9 +42,9 @@ pub struct SourceSpec {
     /// matching the identical parameter on the `rasterize` op.
     #[serde(default)]
     pub background: Option<crate::params::ParamValue>,
-    /// Serialized shape pipeline for dimension inference.
+    /// Contour source only: the graph node whose buffer fixes the canvas.
     #[serde(default)]
-    pub shape_pipeline: Option<serde_json::Value>,
+    pub shape_node: Option<String>,
     /// Cloud-storage credentials/options for `file_path` sources
     /// (string key/value pairs matching `cloud::CloudOptions::from_map`).
     #[serde(default)]
@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn test_parse_op_spec_with_expression() {
-        let json = r#"{"op": "resize", "height": {"type": "expr", "col": "target_h"}, "width": {"type": "literal", "value": 224}}"#;
+        let json = r#"{"op": "resize", "height": {"$slot": 1}, "width": {"type": "literal", "value": 224}}"#;
         let op: OpSpec = serde_json::from_str(json).unwrap();
         assert!(!op.is_all_literal());
     }

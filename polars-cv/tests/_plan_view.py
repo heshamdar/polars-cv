@@ -117,4 +117,6 @@ def op_json(p: "Pipeline | LazyPipelineExpr", index: int) -> str:
     """
     import json
 
-    return json.dumps(_pipeline(p)._ops[index].to_dict())
+    from polars_cv._types import planning_slots
+
+    return json.dumps(_pipeline(p)._ops[index].to_dict(planning_slots))

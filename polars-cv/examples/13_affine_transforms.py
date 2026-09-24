@@ -4,7 +4,7 @@ Demonstrates:
 - warp_affine with a raw 2x3 matrix (translation, rotation)
 - shear convenience method
 - rotate_and_scale convenience method
-- Pipeline fusion: consecutive affine ops are combined into one
+- Chaining affine ops (each warp resamples in turn; they are not fused into one)
 
 Run:
     uv run python polars-cv/examples/13_affine_transforms.py
@@ -112,19 +112,16 @@ def main() -> None:
     res = df.with_columns(out=pl.col("image").cv.pipe(pipe_rs).sink("numpy"))
     rot_scaled = numpy_from_struct(res["out"][0])
 
-    # --- 5. Pipeline fusion (two affines → one kernel call) ---
-    pipe_fused = (
+    # --- 5. Chained affines (each warp runs in turn, with its own resample) ---
+    pipe_chained = (
         Pipeline()
         .source("image_bytes")
         .warp_affine(matrix=[1, 0, 50, 0, 1, 0], output_size=(h, w))
         .warp_affine(matrix=[1, 0, 0, 0, 1, 30], output_size=(h, w))
     )
-    spec = pipe_fused._to_spec_dict()
-    affine_count = sum(1 for op in spec["ops"] if op["op"] == "warp_affine")
-    print(f"Two warp_affine calls fused into {affine_count} op(s)")
 
-    res = df.with_columns(out=pl.col("image").cv.pipe(pipe_fused).sink("numpy"))
-    fused = numpy_from_struct(res["out"][0])
+    res = df.with_columns(out=pl.col("image").cv.pipe(pipe_chained).sink("numpy"))
+    chained = numpy_from_struct(res["out"][0])
 
     # --- Plot ---
     fig, axes = plt.subplots(2, 3, figsize=(14, 9))
@@ -134,9 +131,9 @@ def main() -> None:
         "Rotate 45°",
         "Shear (sx=0.3)",
         "Rotate 30° + Scale 0.8",
-        "Fused translate (50,30)",
+        "Chained translate (50,30)",
     ]
-    images = [img, translated, rotated, sheared, rot_scaled, fused]
+    images = [img, translated, rotated, sheared, rot_scaled, chained]
     for ax, title, im in zip(axes.flat, titles, images, strict=False):
         ax.imshow(im)
         ax.set_title(title)

@@ -1,8 +1,8 @@
 //! Compiled, cacheable form of a pipeline graph.
 //!
-//! [`CompiledGraph`] is a pure function of the plugin kwargs
-//! (`graph_json` + `expr_column_names`): JSON parsing, topological ordering,
-//! expression-parameter slot binding, and static (all-literal) op resolution
+//! [`CompiledGraph`] is a pure function of the plugin kwargs (`graph_json`):
+//! JSON parsing, topological ordering, nested-parameter hoisting, and static
+//! (all-literal) op resolution
 //! all happen once at compile time. Because the plugin is registered as
 //! elementwise, the streaming engine invokes it once **per morsel** — the
 //! process-wide cache ([`get_or_compile`]) makes repeat invocations pay only
@@ -49,11 +49,10 @@ use super::decode::{
 use super::encode::{encode_node_output, execute_geometry_op};
 use super::types::{OutputSpec, OutputValue, RowErrorPolicy, RowResult, UnifiedGraph};
 
-/// The exact kwargs a graph was compiled from. Stored on the compiled graph
-/// so cache hits can be validated by full equality, never by hash alone.
+/// The exact graph JSON a graph was compiled from. Stored on the compiled
+/// graph so cache hits are validated by full equality, never by hash alone.
 struct GraphKwargsKey {
     graph_json: String,
-    expr_column_names: Vec<String>,
 }
 
 /// A per-op resolver, fixed at graph-compile time.
@@ -117,9 +116,9 @@ pub struct CompiledGraph {
     /// Node id → position in `plan`, for cross-node operand reads (`Binary`,
     /// `ApplyMask`, `ChannelMerge`, shape references), which name a node.
     node_index: HashMap<String, usize>,
-    /// Expression column name → absolute input slot (for steps that carry
-    /// the column *name*, e.g. `label_reduce`).
-    name_to_slot: HashMap<String, usize>,
+    /// How many plugin inputs this graph reads: one past the highest slot or
+    /// column binding. Checked against each call's inputs.
+    min_inputs: usize,
     /// The exact kwargs this graph was compiled from, kept for exact-match
     /// cache validation.
     key: GraphKwargsKey,
@@ -162,29 +161,10 @@ struct ExecState<'a> {
 
 impl CompiledGraph {
     /// Compile a graph from the plugin kwargs.
-    pub fn compile(graph_json: &str, expr_column_names: &[String]) -> PolarsResult<Self> {
+    pub fn compile(graph_json: &str) -> PolarsResult<Self> {
         let mut graph = UnifiedGraph::from_json(graph_json)?;
         validate_graph_structure(&graph)?;
-
-        // Expression columns are appended to the plugin inputs after the
-        // source columns; bind each referenced name to its absolute index.
-        // Several root nodes may share one input column (one binding entry
-        // each, same column index), so the offset is the number of *distinct*
-        // columns — counting entries would shift every expression slot.
-        let num_source_columns = graph
-            .column_bindings
-            .values()
-            .copied()
-            .max()
-            .map(|max_idx| max_idx + 1)
-            .unwrap_or(1);
-        let name_to_slot: HashMap<String, usize> = expr_column_names
-            .iter()
-            .enumerate()
-            .map(|(i, name)| (name.clone(), num_source_columns + i))
-            .collect();
-
-        bind_graph_params(&mut graph, &name_to_slot)?;
+        let min_inputs = prepare_graph_params(&mut graph)?;
 
         // `_error` is reserved for the error-message field of the
         // null_with_message policy; an output alias would collide with it.
@@ -287,10 +267,9 @@ impl CompiledGraph {
             graph,
             plan,
             node_index,
-            name_to_slot,
+            min_inputs,
             key: GraphKwargsKey {
                 graph_json: graph_json.to_string(),
-                expr_column_names: expr_column_names.to_vec(),
             },
             #[cfg(test)]
             row_threads: Mutex::default(),
@@ -325,15 +304,13 @@ impl CompiledGraph {
         } else {
             return Err(polars_err!(ComputeError : "No input columns provided"));
         };
-        // Column bindings are compile-time data but their bounds depend on
-        // this call's inputs: check once here instead of per row.
-        for (node_id, col_idx) in &self.graph.column_bindings {
-            if *col_idx >= inputs.len() {
-                return Err(polars_err!(ComputeError:
-                    "Column index {} out of bounds for node '{}' ({} input columns)",
-                    col_idx, node_id, inputs.len()
-                ));
-            }
+        // Slots and column bindings are compile-time data but their bounds
+        // depend on this call's inputs: check once here instead of per row.
+        if inputs.len() < self.min_inputs {
+            return Err(polars_err!(ComputeError:
+                "graph reads {} input columns but the call supplied {}",
+                self.min_inputs, inputs.len()
+            ));
         }
         let resolved_outputs = resolved_output_specs(
             &self.graph,
@@ -749,13 +726,7 @@ impl CompiledGraph {
                         if source_format == SourceFormat::Contour {
                             match input_series.get(row_idx) {
                                 Ok(value) if !value.is_null() => {
-                                    if let Some(ref shape_pipeline) = source.shape_pipeline {
-                                        let shape_node_id = shape_pipeline
-                                            .get("node_id")
-                                            .and_then(|v| v.as_str())
-                                            .ok_or_else(|| {
-                                                "shape_pipeline missing 'node_id'".to_string()
-                                            })?;
+                                    if let Some(shape_node_id) = source.shape_node.as_deref() {
                                         // The fifth cross-node operand read.
                                         // `Ok(None)` (rather than `continue
                                         // 'nodes`) because this sits inside the
@@ -1181,7 +1152,7 @@ impl CompiledGraph {
                                 current_output = NodeOutput::from_vector(shape_vec);
                             }
                             GraphStep::LabelReduce {
-                                contours_col,
+                                contours_slot,
                                 reduction,
                                 region_mode,
                             } => {
@@ -1192,13 +1163,8 @@ impl CompiledGraph {
                                     graph_step.as_ref(),
                                     "LabelReduce",
                                 )?;
-                                let slot =
-                                    self.name_to_slot.get(contours_col).ok_or_else(|| {
-                                        format!(
-                                            "LabelReduce contour column '{contours_col}' not found in expression inputs"
-                                        )
-                                    })?;
-                                let contour_col = ctx.col(*slot).map_err(|e| e.to_string())?;
+                                let contour_col =
+                                    ctx.col(*contours_slot).map_err(|e| e.to_string())?;
                                 let contour_value = contour_col.get_any(row_idx).map_err(|e| {
                                     format!(
                                         "LabelReduce failed to read contours at row {row_idx}: {e}"
@@ -1650,93 +1616,68 @@ fn validate_graph_structure(graph: &UnifiedGraph) -> PolarsResult<()> {
     Ok(())
 }
 
-/// Bind every expression parameter in the graph to its input slot.
+/// Prepare every parameter in the graph for execution, returning how many
+/// plugin inputs the graph reads (one past the highest slot or column binding).
 ///
-/// `label_reduce`'s `contours` param is deliberately left as `Expr` — the
-/// column *name* travels through the view-buffer DTO and is mapped to a slot
-/// by the executor (see the `LabelReduce` arm in `execute_rows`).
-fn bind_graph_params(
-    graph: &mut UnifiedGraph,
-    name_to_slot: &HashMap<String, usize>,
-) -> PolarsResult<()> {
+/// Slots arrive already positional, so nothing is bound by name. What remains
+/// is hoisting nested parameter lists: a `Literal` whose JSON value is an array
+/// of wire parameters (a `warp_affine` matrix, a `reshape` shape, a
+/// `convolve2d` kernel, `normalize` mean/std, a `channel_swap` order) is parsed
+/// once into a [`ParamValue::List`], so per-row resolution reads the parsed
+/// elements directly instead of re-deserializing JSON every row. Plain literal
+/// arrays (flip/transpose axes, histogram bin edges) are left as-is.
+fn prepare_graph_params(graph: &mut UnifiedGraph) -> PolarsResult<usize> {
+    let mut inputs = graph
+        .column_bindings
+        .values()
+        .map(|&idx| idx + 1)
+        .max()
+        .unwrap_or(1);
     for node in graph.nodes.values_mut() {
-        if let Some(w) = node.source.width.as_mut() {
-            bind_param(w, name_to_slot)?;
-        }
-        if let Some(h) = node.source.height.as_mut() {
-            bind_param(h, name_to_slot)?;
-        }
-        if let Some(f) = node.source.fill_value.as_mut() {
-            bind_param(f, name_to_slot)?;
-        }
-        if let Some(b) = node.source.background.as_mut() {
-            bind_param(b, name_to_slot)?;
-        }
-        for op in node.ops.iter_mut() {
-            let keep_named = op.op == "label_reduce";
-            for (pname, p) in op.params.iter_mut() {
-                if keep_named && pname == "contours" {
-                    continue;
-                }
-                bind_param(p, name_to_slot)?;
-            }
+        let source_params = [
+            node.source.width.as_mut(),
+            node.source.height.as_mut(),
+            node.source.fill_value.as_mut(),
+            node.source.background.as_mut(),
+        ];
+        let op_params = node.ops.iter_mut().flat_map(|op| op.params.values_mut());
+        for p in source_params.into_iter().flatten().chain(op_params) {
+            prepare_param(p, &mut inputs)?;
         }
     }
-    Ok(())
+    Ok(inputs)
 }
 
-/// Bind one parameter for execution: an `Expr` becomes its input `Slot`, and a
-/// nested param list becomes a pre-parsed, bound `List`. Scalar literals and
-/// plain scalar arrays are left untouched.
-///
-/// A `Literal` whose JSON value is an array of serialized `ParamValue`s (a
-/// `warp_affine` matrix, a `reshape` shape, a `convolve2d` kernel, `normalize`
-/// mean/std, a `channel_swap` order) is parsed once here into a
-/// [`ParamValue::List`] with each element bound — so per-row resolution reads the
-/// already-bound elements directly instead of re-deserializing the JSON every
-/// row. Plain literal arrays (flip/transpose axes, histogram bin edges) are
-/// left as-is.
-fn bind_param(p: &mut ParamValue, name_to_slot: &HashMap<String, usize>) -> PolarsResult<()> {
+/// Hoist one nested param list (see [`prepare_graph_params`]) and raise
+/// `inputs` to cover every slot it references.
+fn prepare_param(p: &mut ParamValue, inputs: &mut usize) -> PolarsResult<()> {
     match p {
-        ParamValue::Expr { col, .. } => {
-            let name = col.as_deref().ok_or_else(
-                || polars_err!(ComputeError: "Expression parameter missing column name"),
-            )?;
-            let idx = name_to_slot.get(name).ok_or_else(|| {
-                polars_err!(ComputeError:
-                    "Column '{}' not found in expression inputs", name
-                )
-            })?;
-            *p = ParamValue::Slot { idx: *idx };
-        }
+        ParamValue::Slot { idx } => *inputs = (*inputs).max(*idx + 1),
         ParamValue::Literal { value } => {
-            // A nested param list serializes its elements as ParamValue dicts
-            // (a `type` tag). Detect that shape (not a plain scalar array) and
-            // hoist it into a pre-parsed, bound `List`.
-            let is_nested_param_list = value.as_array().is_some_and(|arr| {
-                arr.iter().any(|e| e.get("type").is_some())
-                    && arr.iter().all(|e| {
-                        e.get("type")
-                            .and_then(|t| t.as_str())
-                            .is_some_and(|t| matches!(t, "literal" | "expr" | "slot"))
-                    })
-            });
+            let is_nested_param_list = value
+                .as_array()
+                .is_some_and(|arr| !arr.is_empty() && arr.iter().all(ParamValue::is_wire_param));
             if is_nested_param_list {
-                let arr = value.as_array().expect("checked is_array above");
-                let mut items: Vec<ParamValue> = arr
+                let mut items: Vec<ParamValue> = value
+                    .as_array()
+                    .expect("checked is_array above")
                     .iter()
                     .map(|elem| {
-                        serde_json::from_value(elem.clone())
+                        ParamValue::from_wire(elem)
                             .map_err(|e| polars_err!(ComputeError: "invalid nested param: {e}"))
                     })
                     .collect::<PolarsResult<_>>()?;
                 for item in items.iter_mut() {
-                    bind_param(item, name_to_slot)?;
+                    prepare_param(item, inputs)?;
                 }
                 *p = ParamValue::List(items);
             }
         }
-        ParamValue::Slot { .. } | ParamValue::List(_) => {}
+        ParamValue::List(items) => {
+            for item in items.iter_mut() {
+                prepare_param(item, inputs)?;
+            }
+        }
     }
     Ok(())
 }
@@ -1838,40 +1779,11 @@ fn resolve_one_output_spec(graph: &UnifiedGraph, spec: &mut OutputSpec, dt: &Dat
     }
 }
 
-/// Re-serialize one compiled param into a form `resolve_op_from_json` accepts.
-///
-/// The ops walked by [`fold_output_rank`] have already been through
-/// [`bind_graph_params`], so their expression params are `Slot`s and their
-/// nested lists are `List`s — both `#[serde(skip)]`, and therefore *dropped* by
-/// a plain `serde_json::to_string`. The op would then fail to resolve for a
-/// missing parameter, which the caller's `.ok()?` silently turns into "rank
-/// unknown" — collapsing a planned `List(List(List(f32)))` to `List(f32)` and
-/// desyncing the lazy schema from the produced data.
-///
-/// A `Slot` goes back to the wire `Expr` form rather than to a literal, so the
-/// probe context binds it and substitutes defaults for dynamic enums; a literal
-/// integer would fail an enum lookup. None of these values can affect the
-/// result: a rank rule is structural and never reads a parameter's value.
-fn param_probe_json(param: &ParamValue) -> serde_json::Value {
-    match param {
-        ParamValue::Literal { value } => serde_json::json!({"type": "literal", "value": value}),
-        ParamValue::Expr { col } => serde_json::json!({"type": "expr", "col": col}),
-        ParamValue::Slot { .. } => serde_json::json!({"type": "expr", "col": "__probe__"}),
-        ParamValue::List(items) => serde_json::json!({
-            "type": "literal",
-            "value": items.iter().map(param_probe_json).collect::<Vec<_>>(),
-        }),
-    }
-}
-
-/// Render a compiled [`OpSpec`] as introspectable JSON. See [`param_probe_json`].
-fn op_probe_json(op: &OpSpec) -> String {
-    let mut map = serde_json::Map::new();
-    map.insert("op".into(), serde_json::Value::String(op.op.clone()));
-    for (name, param) in &op.params {
-        map.insert(name.clone(), param_probe_json(param));
-    }
-    serde_json::Value::Object(map).to_string()
+/// A compiled op as wire JSON, for the introspection entry points
+/// (`resolve_op_from_json`). Every `ParamValue` variant serializes, so this is
+/// just the op's serde form.
+fn op_json(op: &OpSpec) -> String {
+    serde_json::to_string(op).expect("an OpSpec always serializes")
 }
 
 /// Derive a node's output rank by folding each op's `OutputRankRule` from a
@@ -1891,7 +1803,7 @@ fn fold_output_rank(graph: &UnifiedGraph, node_id: &str, source_rank: usize) -> 
         None => source_rank,
     };
     for op in &node.ops {
-        let step = crate::resolve_op_from_json(&op_probe_json(op)).ok()?;
+        let step = crate::resolve_op_from_json(&op_json(op)).ok()?;
         rank = match step.output_rank_rule() {
             OutputRankRule::PreserveRank => rank,
             OutputRankRule::ReduceByOne => rank.saturating_sub(1).max(1),
@@ -1928,9 +1840,9 @@ fn fold_output_dtype(
         None => source_dtype,
     };
     for op in &node.ops {
-        let step = crate::resolve_op_from_json(&op_probe_json(op)).ok()?;
+        let step = crate::resolve_op_from_json(&op_json(op)).ok()?;
         // `out_dtype` overrides ride on the op's own params, which
-        // `op_probe_json` preserves, so the step's rule already reflects them.
+        // `op_json` preserves, so the step's rule already reflects them.
         dtype = step.output_dtype_rule().resolve_planned(dtype);
     }
     Some(dtype)
@@ -1967,11 +1879,10 @@ fn graph_cache() -> &'static Mutex<CacheEntries> {
     CACHE.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-fn cache_key_hash(graph_json: &str, expr_column_names: &[String]) -> u64 {
+fn cache_key_hash(graph_json: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     graph_json.hash(&mut hasher);
-    expr_column_names.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -1980,19 +1891,15 @@ fn cache_key_hash(graph_json: &str, expr_column_names: &[String]) -> u64 {
 /// A hit requires both the hash **and** full equality of the kwargs against
 /// the stored copy — the hash alone is never trusted. Most-recently-used
 /// entries are kept at the front; the lock is never held during compilation.
-pub(crate) fn get_or_compile(
-    graph_json: &str,
-    expr_column_names: &[String],
-) -> PolarsResult<Arc<CompiledGraph>> {
-    let hash = cache_key_hash(graph_json, expr_column_names);
+pub(crate) fn get_or_compile(graph_json: &str) -> PolarsResult<Arc<CompiledGraph>> {
+    let hash = cache_key_hash(graph_json);
 
     {
         let mut cache = graph_cache().lock().unwrap();
-        if let Some(pos) = cache.iter().position(|(h, compiled)| {
-            *h == hash
-                && compiled.key.graph_json == graph_json
-                && compiled.key.expr_column_names == expr_column_names
-        }) {
+        if let Some(pos) = cache
+            .iter()
+            .position(|(h, compiled)| *h == hash && compiled.key.graph_json == graph_json)
+        {
             let entry = cache.remove(pos);
             let compiled = entry.1.clone();
             cache.insert(0, entry);
@@ -2002,12 +1909,12 @@ pub(crate) fn get_or_compile(
 
     // Compile outside the lock; concurrent misses may compile the same graph
     // twice, which is harmless (the result is deterministic).
-    let compiled = Arc::new(CompiledGraph::compile(graph_json, expr_column_names)?);
+    let compiled = Arc::new(CompiledGraph::compile(graph_json)?);
 
     let mut cache = graph_cache().lock().unwrap();
-    let already_present = cache.iter().any(|(h, c)| {
-        *h == hash && c.key.graph_json == graph_json && c.key.expr_column_names == expr_column_names
-    });
+    let already_present = cache
+        .iter()
+        .any(|(h, c)| *h == hash && c.key.graph_json == graph_json);
     if !already_present {
         cache.insert(0, (hash, compiled.clone()));
         cache.truncate(GRAPH_CACHE_CAP);
@@ -2110,7 +2017,7 @@ mod tests {
         "nodes": {
             "n0": {
                 "source": {"format": "blob"},
-                "ops": [{"op": "scale", "factor": {"type": "expr", "col": "f"}}]
+                "ops": [{"op": "scale", "factor": {"$slot": 1}}]
             }
         },
         "outputs": {
@@ -2129,7 +2036,7 @@ mod tests {
         // blob: f32 buffer round-trips through source(blob) → relu → sink(blob).
         let buf = ViewBuffer::from_vec_with_shape(vec![1.0f32, -2.0, 3.0], vec![3]);
         let input = Series::new("b".into(), &[buf.to_blob()]);
-        let compiled = CompiledGraph::compile(SIMPLE_GRAPH, &[]).unwrap();
+        let compiled = CompiledGraph::compile(SIMPLE_GRAPH).unwrap();
         let out = compiled.execute(&[input]).unwrap();
         let out_bytes = out.binary().unwrap().get(0).unwrap();
         let decoded = ViewBuffer::from_blob(out_bytes).unwrap();
@@ -2150,7 +2057,7 @@ mod tests {
             "column_bindings": {"n0": 0}
         }"#;
         let input = Series::new("r".into(), &[vec![1u8, 2, 3]]);
-        let compiled = CompiledGraph::compile(RAW_GRAPH, &[]).unwrap();
+        let compiled = CompiledGraph::compile(RAW_GRAPH).unwrap();
         let out = compiled.execute(&[input]).unwrap();
         let out_bytes = out.binary().unwrap().get(0).unwrap();
         let decoded = ViewBuffer::from_blob(out_bytes).unwrap();
@@ -2227,12 +2134,9 @@ mod tests {
             fn lit(v: serde_json::Value) -> ParamValue {
                 ParamValue::Literal { value: v }
             }
-            // `label_reduce` names its contour column rather than taking a
-            // value, so its probe is an `Expr` — the wire form graph
-            // compilation binds to an input slot.
-            let col = |name: &str| ParamValue::Expr {
-                col: Some(name.to_string()),
-            };
+            // `label_reduce` takes its contour set as an operand column, so
+            // its probe is a slot.
+            let col = |_name: &str| ParamValue::Slot { idx: 1 };
             match op {
                 "add" | "subtract" | "multiply" | "divide" | "minimum" | "maximum" | "ratio" => {
                     vec![("other_node", lit(json!("n0")))]
@@ -2289,8 +2193,8 @@ mod tests {
             const { RefCell::new(BTreeSet::new()) };
     }
 
-    fn exec(graph: &str, names: &[String], inputs: &[Series]) -> Series {
-        let compiled = CompiledGraph::compile(graph, names).expect("graph must compile");
+    fn exec(graph: &str, inputs: &[Series]) -> Series {
+        let compiled = CompiledGraph::compile(graph).expect("graph must compile");
         EXECUTED_STEPS.with(|seen| {
             let mut seen = seen.borrow_mut();
             for resolver in compiled.plan.iter().flat_map(|np| &np.resolvers) {
@@ -2339,12 +2243,10 @@ mod tests {
     fn every_graph_step_variant_executes() {
         let f32_blob =
             ViewBuffer::from_vec_with_shape(vec![1.0f32, -2.0, 3.0, 4.0], vec![2, 2]).to_blob();
-        let no_names: Vec<String> = vec![];
 
         // Buffer (relu executes via the fused ViewExpr run).
         let out = exec(
             SIMPLE_GRAPH,
-            &no_names,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
         assert_eq!(out.null_count(), 0);
@@ -2360,7 +2262,6 @@ mod tests {
                 "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
         let doubled = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
@@ -2377,7 +2278,6 @@ mod tests {
                 "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), &[mask_blob()])],
         );
         assert_eq!(out.null_count(), 0);
@@ -2394,7 +2294,6 @@ mod tests {
                 "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), &[single])],
         );
         let merged = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
@@ -2408,7 +2307,6 @@ mod tests {
                 "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "contour"}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), &[mask_blob()])],
         );
         assert_eq!(out.null_count(), 0);
@@ -2421,7 +2319,6 @@ mod tests {
                 "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "scalar"}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
         assert_eq!(out.f64().unwrap().get(0), Some(6.0));
@@ -2437,7 +2334,6 @@ mod tests {
                 "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
         let counts = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
@@ -2455,7 +2351,6 @@ mod tests {
                 "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
         let hash_buf = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
@@ -2470,7 +2365,6 @@ mod tests {
                 "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "vector"}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
         assert_eq!(out.null_count(), 0);
@@ -2490,12 +2384,11 @@ mod tests {
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "label_reduce",
-                                           "contours": {"type": "expr", "col": "cont"},
+                                           "contours": {"$slot": 1},
                                            "reduction": {"type": "literal", "value": "max"}}]}},
                 "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "vector"}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &["cont".to_string()],
             &[Series::new("b".into(), &[mask_blob()]), cont_col],
         );
         assert_eq!(out.null_count(), 0);
@@ -2520,7 +2413,6 @@ mod tests {
     #[test]
     fn axis_reduction_of_1d_buffer_stays_buffer() {
         let blob = ViewBuffer::from_vec_with_shape(vec![1.0f32, 5.0, 3.0], vec![3]).to_blob();
-        let no_names: Vec<String> = vec![];
         let out = exec(
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
@@ -2529,7 +2421,6 @@ mod tests {
                 "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), &[blob])],
         );
         let buf = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
@@ -2542,7 +2433,6 @@ mod tests {
     #[test]
     fn percentile_reduction_is_scalar() {
         let blob = ViewBuffer::from_vec_with_shape(vec![1.0f32, 2.0, 3.0, 4.0], vec![4]).to_blob();
-        let no_names: Vec<String> = vec![];
         let out = exec(
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
@@ -2551,7 +2441,6 @@ mod tests {
                 "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "scalar"}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), &[blob])],
         );
         assert_eq!(out.dtype(), &DataType::Float64);
@@ -2560,22 +2449,11 @@ mod tests {
 
     #[test]
     fn cache_hit_returns_same_compilation() {
-        let names: Vec<String> = vec![];
-        let a = get_or_compile(SIMPLE_GRAPH, &names).unwrap();
-        let b = get_or_compile(SIMPLE_GRAPH, &names).unwrap();
+        let a = get_or_compile(SIMPLE_GRAPH).unwrap();
+        let b = get_or_compile(SIMPLE_GRAPH).unwrap();
         assert!(
             Arc::ptr_eq(&a, &b),
             "identical kwargs must hit the cache, not recompile"
-        );
-    }
-
-    #[test]
-    fn different_expr_names_do_not_collide() {
-        let a = get_or_compile(DYNAMIC_GRAPH, &["f".to_string()]).unwrap();
-        let b = get_or_compile(DYNAMIC_GRAPH, &["f".to_string(), "g".to_string()]).unwrap();
-        assert!(
-            !Arc::ptr_eq(&a, &b),
-            "same JSON with different expr columns must compile separately"
         );
     }
 
@@ -2608,7 +2486,7 @@ mod tests {
             vec![2, 12, 22, 32],
             vec![5, 6, 7, 8, 9, 10],
         ];
-        let compiled = CompiledGraph::compile(RAW_CHAIN_GRAPH, &[]).unwrap();
+        let compiled = CompiledGraph::compile(RAW_CHAIN_GRAPH).unwrap();
         let input = Series::new("r".into(), &rows);
         let mut out = None;
         let plans = plans_during(&compiled, || {
@@ -2644,7 +2522,7 @@ mod tests {
             return;
         }
         let rows: Vec<Vec<u8>> = (0..256u32).map(|i| vec![i as u8; 64]).collect();
-        let compiled = CompiledGraph::compile(RAW_CHAIN_GRAPH, &[]).unwrap();
+        let compiled = CompiledGraph::compile(RAW_CHAIN_GRAPH).unwrap();
         // The first row waits (up to 5 s) for a second thread to run a row:
         // a parallel call gets one at once, a sequential call times out.
         compiled.rendezvous.store(true, Ordering::Relaxed);
@@ -2667,7 +2545,7 @@ mod tests {
     /// A segment with a per-row parameter is planned every row.
     #[test]
     fn dynamic_segments_are_not_cached() {
-        let compiled = CompiledGraph::compile(DYNAMIC_GRAPH, &["f".to_string()]).unwrap();
+        let compiled = CompiledGraph::compile(DYNAMIC_GRAPH).unwrap();
         let buf = ViewBuffer::from_vec_with_shape(vec![1.0f32, 2.0], vec![2]);
         let blobs = Series::new("b".into(), &[buf.to_blob(), buf.to_blob(), buf.to_blob()]);
         let factors = Series::new("f".into(), &[1.0f64, 2.0, 3.0]);
@@ -2701,13 +2579,13 @@ mod tests {
 
     #[test]
     fn static_ops_are_precompiled_and_dynamic_are_not() {
-        let compiled = CompiledGraph::compile(SIMPLE_GRAPH, &[]).unwrap();
+        let compiled = CompiledGraph::compile(SIMPLE_GRAPH).unwrap();
         assert!(matches!(
             compiled.node_plan("n0").resolvers[0],
             OpResolver::Static(_)
         ));
 
-        let compiled = CompiledGraph::compile(DYNAMIC_GRAPH, &["f".to_string()]).unwrap();
+        let compiled = CompiledGraph::compile(DYNAMIC_GRAPH).unwrap();
         assert!(matches!(
             compiled.node_plan("n0").resolvers[0],
             OpResolver::Dynamic(_)
@@ -2724,11 +2602,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_expr_column_fails_at_compile_time() {
-        let err = CompiledGraph::compile(DYNAMIC_GRAPH, &[])
-            .err()
-            .expect("compiling with a missing expr column must fail");
-        assert!(err.to_string().contains("not found in expression inputs"));
+    fn a_slot_beyond_the_call_inputs_is_an_error() {
+        // DYNAMIC_GRAPH reads its factor from input 1; a call with only the
+        // image column must fail up front, not index past the inputs per row.
+        let compiled = CompiledGraph::compile(DYNAMIC_GRAPH).unwrap();
+        let buf = ViewBuffer::from_vec_with_shape(vec![1.0f32], vec![1]);
+        let err = compiled
+            .execute(&[Series::new("b".into(), &[buf.to_blob()])])
+            .unwrap_err();
+        assert!(err.to_string().contains("reads 2 input columns"), "{err}");
     }
     // --- Compile-time structural validation ---
     //
@@ -2736,7 +2618,7 @@ mod tests {
     // output), or with a panic. They must now be clear compile errors.
 
     fn compile_err(graph_json: &str) -> String {
-        CompiledGraph::compile(graph_json, &[])
+        CompiledGraph::compile(graph_json)
             .err()
             .expect("malformed graph must fail to compile")
             .to_string()
