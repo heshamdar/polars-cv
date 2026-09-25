@@ -13,7 +13,7 @@ import numpy as np
 import polars as pl
 
 from polars_cv import Pipeline
-from tests._plan_view import op_json, planned
+from tests._plan_view import planned
 from tests.conftest import plugin_required
 
 
@@ -537,19 +537,3 @@ class TestChannelRuleHasOneAuthority:
             assert planned(pipe).channels is None, (
                 f"{output}: a bin vector has no channel count"
             )
-
-    def test_the_ffi_agrees_with_the_planner(self) -> None:
-        """Two ways to the same fact must give the same answer.
-
-        The planner folds the rule per appended op; this asks the FFI directly
-        for the same op. A divergence here is the class of bug this whole change
-        is about.
-        """
-
-        from polars_cv._lib import plan_step
-        from polars_cv.pipeline import PlanState
-
-        pipe = Pipeline().source("image_bytes").assert_shape(channels=4).grayscale()
-        rgba = PlanState(domain="buffer", dtype="u8", ndim=3, dims=(None, None, 4))
-        assert plan_step(op_json(pipe, -1), rgba)["dims"][2] == 1
-        assert planned(pipe).channels == 1

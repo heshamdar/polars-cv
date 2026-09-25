@@ -17,10 +17,34 @@ from typing import Any
 __version__: str
 __source_hash__: str
 
+class PlanState:
+    """The planner's state at one op boundary (``src/plan.rs``'s ``State``).
+
+    Built only by Rust (``plan_source``/``plan_step``/``plan_assert``); frozen.
+    """
+
+    DIM_NAMES: tuple[str, str, str]
+    def __init__(self) -> None:
+        """The state of a pipeline with no source yet."""
+
+    @property
+    def domain(self) -> str: ...
+    @property
+    def dtype(self) -> str: ...
+    @property
+    def ndim(self) -> int | None: ...
+    @property
+    def dims(self) -> tuple[int | None, int | None, int | None]: ...
+    @property
+    def asserted(self) -> tuple[bool, bool, bool]: ...
+    @property
+    def declared(self) -> bool: ...
+    def _wire(self) -> str: ...
+
 def node_pass(
     pass_name: str,
     ops: list[str],
-    states: list[Any],
+    states: list[PlanState],
     assertions: list[int],
 ) -> list[int] | None:
     """Run a node-scope logical pass; the node's new op order, or ``None``."""
@@ -29,13 +53,14 @@ def pass_catalog() -> str:
     """Return the optimisation-pass catalogue as JSON (see ``tests/golden/pass_catalog.json``)."""
 
 def plan_step(
-    op_json: str, state: Any, other_dtype: str | None = None
-) -> dict[str, Any]:
-    """The planned state (a ``PlanState``'s fields) after appending ``op_json``."""
+    op_json: str, state: PlanState, other: PlanState | None = None
+) -> PlanState:
+    """The planned state after appending ``op_json``; ``other`` is a binary
+    op's other operand's state."""
 
 def plan_assert(
-    state: Any, assertion_json: str, after_op: str | None = None
-) -> dict[str, Any]:
+    state: PlanState, assertion_json: str, after_op: str | None = None
+) -> PlanState:
     """The planned state after a shape declaration; ``ValueError`` if it contradicts."""
 
 def rotation_matrix_2d(
@@ -57,13 +82,12 @@ def enum_catalog() -> str:
 
 def plan_sink(
     sink_json: str,
-    state: Any,
+    state: PlanState,
     source_json: str | None = None,
     alias: str | None = None,
 ) -> None:
     """Validate a serialized sink against its typed format and the output's
     planned state; raise ``ValueError``."""
 
-def plan_source(source_json: str) -> dict[str, Any]:
-    """Validate a serialized source and return its planned state (a
-    ``PlanState``'s fields)."""
+def plan_source(source_json: str) -> PlanState:
+    """Validate a serialized source and return its planned state."""

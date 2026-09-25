@@ -72,6 +72,15 @@ class DType(str, Enum):
     F64 = "f64"
 
 
+class Domain(str, Enum):
+    """The kind of data a pipeline carries at one point: ``buffer`` (an image or array), ``contour`` (geometry), ``scalar`` or ``vector``."""
+
+    BUFFER = "buffer"
+    CONTOUR = "contour"
+    SCALAR = "scalar"
+    VECTOR = "vector"
+
+
 class ExtractMode(str, Enum):
     """Contour retrieval mode for ``extract_contours``.
 

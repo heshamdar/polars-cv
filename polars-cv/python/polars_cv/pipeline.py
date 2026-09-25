@@ -10,14 +10,12 @@ from __future__ import annotations
 import copy
 import json
 import math
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import polars as pl
 
 from polars_cv._ops_generated import OP_FIELDS, LogicalPass, _OpsMixin
 from polars_cv._types import (
-    HINT_DIMS,
     CloudOptions,
     DType,
     FloatOrExpr,
@@ -40,6 +38,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from polars_cv._graph import PipelineGraph
+    from polars_cv._lib import PlanState
     from polars_cv._optimize import OptFlags
     from polars_cv._types import SlotOf
     from polars_cv.lazy import LazyPipelineExpr
@@ -100,11 +99,13 @@ def _asserted_rank(dims: "Sequence[int | None]") -> int:
     schema, and a per-row size is not a plan-time fact — ``height=`` remains
     available for a per-row dimension, where it correctly publishes nothing.
 
-    Rank is capped at ``len(HINT_DIMS)`` because that is how many dimensions
+    Rank is capped at ``len(PlanState.DIM_NAMES)`` because that is how many dimensions
     :class:`PlanState` tracks. Accepting a longer list would silently file
     dimension 0 under ``height`` and drop everything past dimension 2, which is
     a mis-assignment rather than a missing feature — so it is refused here.
     """
+    from polars_cv._lib import PlanState
+
     if not isinstance(dims, (list, tuple)):
         msg = f"assert_shape(dims=...) must be a list of ints, got {dims!r}"
         raise ValueError(msg)
@@ -112,10 +113,10 @@ def _asserted_rank(dims: "Sequence[int | None]") -> int:
     if not dims:
         msg = "assert_shape(dims=[]) declares a rank-0 output, which no sink produces."
         raise ValueError(msg)
-    if len(dims) > len(HINT_DIMS):
+    if len(dims) > len(PlanState.DIM_NAMES):
         msg = (
-            f"assert_shape(dims=...) supports up to {len(HINT_DIMS)} dimensions "
-            f"({', '.join(HINT_DIMS)}), got {len(dims)}. Higher-rank shapes are "
+            f"assert_shape(dims=...) supports up to {len(PlanState.DIM_NAMES)} dimensions "
+            f"({', '.join(PlanState.DIM_NAMES)}), got {len(dims)}. Higher-rank shapes are "
             f"not tracked by the planner; pass the shape to the sink instead "
             f"(.sink('array', shape=[...]))."
         )
@@ -170,61 +171,12 @@ _STATE_COPIERS: "dict[str, Callable[[Any], Any]]" = {
 }
 
 
-@dataclass(frozen=True)
-class PlanState:
-    """The planner's state at one op boundary.
-
-    Computed in Rust (``src/plan.rs``'s ``State``, whose field names these
-    are): :meth:`Pipeline._push_op` hands the current one to ``plan_step`` and
-    keeps what comes back; a source's comes from ``plan_source`` and an
-    assertion's from ``plan_assert``. Python never edits one.
-
-    Attributes:
-        domain: ``buffer`` / ``contour`` / ``scalar`` / ``vector``.
-        dtype: The element dtype, or ``"auto"`` when not known until decode.
-        ndim: The rank, or ``None`` when not known at plan time.
-        dims: Known sizes of dimensions 0, 1, 2 (``[H, W, C]`` for an image,
-            named by :data:`HINT_DIMS`); ``None`` is unknown or per-row.
-        asserted: Which of ``dims`` the user asserted rather than an op
-            inferred — a divergence at execution is then theirs.
-        declared: A shape declaration reached this lineage, so ``dims`` may
-            rest on a claim rather than a fact.
-    """
-
-    domain: str = "buffer"
-    dtype: str = "auto"
-    ndim: "int | None" = None
-    dims: "tuple[int | None, int | None, int | None]" = (None, None, None)
-    asserted: "tuple[bool, bool, bool]" = (False, False, False)
-    declared: bool = False
-
-    @classmethod
-    def of(cls, planned: "dict[str, Any]") -> "PlanState":
-        """The record for a state Rust returned (a dict of the fields)."""
-        return cls(
-            domain=planned["domain"],
-            dtype=planned["dtype"],
-            ndim=planned["ndim"],
-            dims=tuple(planned["dims"]),
-            asserted=tuple(planned["asserted"]),
-            declared=planned["declared"],
-        )
-
-    def dim(self, name: str) -> "int | None":
-        """The known size of the dimension *name* (one of :data:`HINT_DIMS`)."""
-        return self.dims[HINT_DIMS.index(name)]
-
-    def has_all_dims(self) -> bool:
-        """Are H, W and C all known?"""
-        return all(size is not None for size in self.dims)
-
-
 class _Position(NamedTuple):
     """What the planner keeps for one op: the state entering it, and a binary
-    op's other operand dtype (its two-input dtype rule reads it on replay)."""
+    op's other operand's state (its two-input rules read it on replay)."""
 
-    state: PlanState
-    other_dtype: "str | None"
+    state: "PlanState"
+    other: "PlanState | None"
 
 
 #: A shape declaration at one op boundary, in the wire form ``plan_assert``
@@ -254,6 +206,7 @@ def _assertion_window(
 
 def _render_assertion(assertion: Assertion) -> str:
     """An ``assert_shape(...)`` call as the user wrote it."""
+    from polars_cv._lib import PlanState
 
     def size(declared: Any) -> str:
         return "expr" if declared == "per_row" else str(declared["size"])
@@ -266,7 +219,7 @@ def _render_assertion(assertion: Assertion) -> str:
         return f"assert_shape(dims=[{', '.join(dims)}])"
     named = [
         f"{name}={size(d)}"
-        for name, d in zip(HINT_DIMS, assertion["dims"])
+        for name, d in zip(PlanState.DIM_NAMES, assertion["dims"])
         if d is not None
     ]
     return f"assert_shape({', '.join(named)})"
@@ -382,6 +335,8 @@ class Pipeline(_OpsMixin):
         # The planned state after the last op (see `PlanState`): domain,
         # dtype, rank, known sizes, which of them the user asserted, and
         # whether a declaration reached this lineage.
+        from polars_cv._lib import PlanState
+
         self._state: PlanState = PlanState()
         # The state entering each op, in step with `_ops`. A slice, a
         # reorder or a deletion of the ops replays them from one of these
@@ -605,7 +560,7 @@ class Pipeline(_OpsMixin):
 
         return self._append_op(op_name, _params)
 
-    def _push_op(self, spec: "OpSpec", *, other_dtype: "str | None" = None) -> None:
+    def _push_op(self, spec: "OpSpec", *, other: "PlanState | None" = None) -> None:
         """Append ``spec`` **in place** and apply its full plan-time effect.
 
         **The single mutator of ``_ops`` in the package.** :meth:`_append_op`
@@ -621,18 +576,16 @@ class Pipeline(_OpsMixin):
 
         Args:
             spec: The operation to append.
-            other_dtype: A binary op's other operand's dtype, which its
-                two-input dtype rule reads. Rust refuses it for any other op,
-                and refuses a binary op without it.
+            other: A binary op's other operand's state, which its two-input
+                rules read. Rust refuses it for any other op, and refuses a
+                binary op without it.
         """
         from polars_cv._lib import plan_step
 
-        planned = PlanState.of(
-            plan_step(
-                json.dumps(spec.to_dict(planning_slots)), self._state, other_dtype
-            )
+        planned = plan_step(
+            json.dumps(spec.to_dict(planning_slots)), self._state, other
         )
-        self._entering.append(_Position(self._state, other_dtype))
+        self._entering.append(_Position(self._state, other))
         self._ops.append(spec)
         self._state = planned
         # An assertion recorded *after* this op outranks what the contract
@@ -659,14 +612,14 @@ class Pipeline(_OpsMixin):
         rewrite used to carry is where the CSE path once forgot the
         assertions. ``assertions`` is required, and keyed for the new list.
         """
-        steps = [(self._ops[i], self._entering[i].other_dtype) for i in positions]
+        steps = [(self._ops[i], self._entering[i].other) for i in positions]
         self._ops = []
         self._entering = []
         self._assertions = assertions
         self._state = start
         self._apply_assertions_at(0)
-        for spec, other_dtype in steps:
-            self._push_op(spec, other_dtype=other_dtype)
+        for spec, other in steps:
+            self._push_op(spec, other=other)
 
     def _state_at(self, position: int) -> PlanState:
         """The state at op boundary ``position``: entering op ``position``, or
@@ -695,9 +648,7 @@ class Pipeline(_OpsMixin):
         from polars_cv._lib import plan_assert
 
         after_op = self._ops[-1].op if self._ops else None
-        self._state = PlanState.of(
-            plan_assert(self._state, json.dumps(assertion), after_op)
-        )
+        self._state = plan_assert(self._state, json.dumps(assertion), after_op)
 
     @staticmethod
     def _canvas_of(shape: "LazyPipelineExpr") -> "list[Any]":
@@ -938,9 +889,7 @@ class Pipeline(_OpsMixin):
         # The format's Rust definition validates the spec (refusing a setting
         # it does not read, naming where it applies) and says what state the
         # decode starts the pipeline in.
-        new._state = PlanState.of(
-            plan_source(json.dumps(new._source.to_dict(planning_slots)))
-        )
+        new._state = plan_source(json.dumps(new._source.to_dict(planning_slots)))
         if shape is not None:
             # A contour canvas taken from another node is a declaration, as it
             # is for `rasterize(shape=)`: recorded and applied through the one
@@ -1088,6 +1037,8 @@ class Pipeline(_OpsMixin):
             df.with_columns(pl.col("arr").cv.pipe(pipe).sink("array"))
             ```
         """
+        from polars_cv._lib import PlanState
+
         named = {"height": height, "width": width, "channels": channels}
         given = {dim: value for dim, value in named.items() if value is not None}
         if dims is not None and given:
@@ -1118,7 +1069,7 @@ class Pipeline(_OpsMixin):
         else:
             for dim, value in given.items():
                 # A per-row size is declared but is no plan-time fact.
-                assertion["dims"][HINT_DIMS.index(dim)] = (
+                assertion["dims"][PlanState.DIM_NAMES.index(dim)] = (
                     "per_row" if isinstance(value, pl.Expr) else {"size": value}
                 )
         # Applied (and checked) through the one path the lazy replay also uses,
@@ -1881,7 +1832,7 @@ class Pipeline(_OpsMixin):
         op_name: str,
         values: "dict[str, Any]",
         *,
-        other_dtype: "str | None" = None,
+        other: "PlanState | None" = None,
     ) -> None:
         """Append a ``lazy_only`` op — one reading other graph nodes — in place.
 
@@ -1894,7 +1845,7 @@ class Pipeline(_OpsMixin):
         Args:
             op_name: The op's wire name.
             values: Its arguments, by catalogue field name.
-            other_dtype: A binary op's other operand's dtype (see
+            other: A binary op's other operand's state (see
                 :meth:`_push_op`).
         """
         fields = OP_FIELDS[op_name]
@@ -1906,7 +1857,7 @@ class Pipeline(_OpsMixin):
         # Binary ops are elementwise, so H/W pass through unchanged — but the
         # append still routes through `_push_op`, which records the
         # entering-hints snapshot and applies the channel rule.
-        self._push_op(OpSpec(op=op_name, params=params), other_dtype=other_dtype)
+        self._push_op(OpSpec(op=op_name, params=params), other=other)
 
     # --- Node-scope optimisation passes ---
 

@@ -109,7 +109,7 @@ ordering.
 
 Every operation's schema effect — output domain, dtype, rank (ndim), H/W and
 channel count — comes from the op's Rust contract, applied in Rust by one call
-per appended op: `_lib.plan_step(op_json, state, other_dtype=None)`
+per appended op: `_lib.plan_step(op_json, state, other=None)`
 (`src/plan.rs`). The pipeline's whole tracked state is one `PlanState`
 (`Pipeline._state`: domain, dtype, rank, known sizes, which of them the user
 asserted, whether a declaration reached the lineage), computed only in Rust —

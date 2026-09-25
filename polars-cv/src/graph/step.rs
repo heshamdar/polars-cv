@@ -62,8 +62,8 @@ impl GraphStep {
     ///
     /// Declaring a single `Buffer` read as "images only" and was wrong; it went
     /// unnoticed because nothing enforced input domains from this contract
-    /// until the planner started to. Widening those two to `Domain::Any`
-    /// instead would have been wrong in the other direction — it would stop
+    /// until the planner started to. Accepting every domain instead
+    /// would have been wrong in the other direction — it would stop
     /// rejecting `extract_contours().reduce_sum()`, which the suite pins.
     ///
     /// Exhaustive on purpose. This was the one contract method on `GraphStep`
@@ -104,8 +104,8 @@ impl GraphStep {
         }
     }
 
-    /// The domain this step produces.
-    pub fn output_domain(&self) -> Domain {
+    /// The domain this step produces from an `input` in its accepted domains.
+    pub fn output_domain(&self, input: Domain) -> Domain {
         match self {
             GraphStep::Buffer(dto) => dto.output_domain(),
             GraphStep::Geometry(op) => op.output_domain(),
@@ -113,7 +113,7 @@ impl GraphStep {
             GraphStep::Histogram(op) => op.output_domain(),
             // Same container as its operands: `hash_a ^ hash_b` stays a
             // vector, two images stay a buffer.
-            GraphStep::Binary { .. } => Domain::Any,
+            GraphStep::Binary { .. } => input,
             GraphStep::ApplyMask { .. } | GraphStep::ChannelMerge { .. } => Domain::Buffer,
             // Perceptual hash produces a fixed-length 1-D fingerprint.
             GraphStep::PerceptualHash(_)

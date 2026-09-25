@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
@@ -550,7 +550,7 @@ class PipelineGraph:
         return {
             "node": node_id,
             "sink": {"format": fmt, **params},
-            "planned": asdict(self._nodes[node_id].pipeline._state),
+            "planned": json.loads(self._nodes[node_id].pipeline._state._wire()),
         }
 
     def _to_dict(self) -> dict[str, Any]:

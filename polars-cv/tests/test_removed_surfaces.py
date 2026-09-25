@@ -178,7 +178,7 @@ def test_assert_shape_has_no_batch_parameter() -> None:
     """``assert_shape(batch=...)`` must raise, not be silently recorded.
 
     It reached a ``batch`` shape hint and stopped there. Nothing read it: not
-    ``has_all_dims``, not ``expected_shape``, not the planner's shape input, and
+    the planner's all-dims check, not ``expected_shape``, not the planner's shape input, and
     not Rust — the node-level ``shape_hints`` wire field it was serialized into
     had already lost its last reader, and then the field itself. So a caller who
     declared a batch dimension got exactly the same plan as one who did not,
@@ -194,7 +194,7 @@ def test_assert_shape_has_no_batch_parameter() -> None:
 
     # The planner's state (Rust's, held as `PlanState`) tracks exactly three
     # positional sizes; the hints class that carried `batch` is gone with it.
-    from polars_cv.pipeline import PlanState
+    from polars_cv._lib import PlanState
 
     assert len(PlanState().dims) == 3
     assert not hasattr(PlanState(), "batch"), (
@@ -314,7 +314,7 @@ def test_out_dtype_does_not_reach_the_op_params(op: str) -> None:
     """``scale``/``clamp`` must not carry ``out_dtype`` on the wire.
 
     They have no configurable output dtype — their rule is ``PromoteToFloat``,
-    which ``output_dtype_for`` does not honour an override for, and neither
+    which the planner's dtype rule does not honour an override for, and neither
     ``resolve_op`` arm ever read the parameter. It rode in the op's identity
     (so two pipelines that behave identically hashed differently for CSE) and
     was discarded at execution.

@@ -8,7 +8,6 @@ lazy pipeline operations that are fused into a single plugin call when
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -204,12 +203,10 @@ class LazyPipelineExpr(_LazyOpsMixin):
             # rank-changing op must infer against its own input rank, not the
             # chain's final one.
             #
-            # Its sizes are the upstream's, but none is this node's user's
-            # assertion; whether a declaration reached the lineage carries
-            # over (see `PlanState.declared`).
-            new_pipeline._state = dataclasses.replace(
-                self._pipeline._state, asserted=(False, False, False)
-            )
+            # The state is the upstream's as Rust planned it, unedited: the
+            # first op's plan step makes every size its own inference, and with
+            # no ops the output *is* the upstream's (asserted sizes included).
+            new_pipeline._state = self._pipeline._state
             new_pipeline._assertions = _copy.deepcopy(pipeline._assertions)
             # An assert_shape() written before the first op has no preceding
             # append to apply it; every later position is applied by the
@@ -654,29 +651,24 @@ class LazyPipelineExpr(_LazyOpsMixin):
         return nodes[0] if len(nodes) == 1 else nodes[0].merge_pipe(*nodes[1:])
 
     def _continuation(self) -> "Pipeline":
-        """A sourceless Pipeline seeded with this expression's planner state.
+        """A sourceless Pipeline that starts from this expression's planned state.
 
-        Domain-sensitive builders (contour measures, reductions) validate
-        their input domain at construction time; a bare ``Pipeline()`` starts
-        in the buffer domain and would reject e.g. ``.area()`` after
-        ``.extract_contours()``. ``pipe()`` recomputes the continuation
-        node's state from upstream regardless — this seed only exists so the
-        builder-time validation sees the truth.
+        Builders validate against the state they append to (domain, rank, a
+        fully known shape), so a continuation starts from the upstream node's
+        state as it is: ``.area()`` after ``.extract_contours()`` is accepted
+        and ``.channel_select(2)`` after ``.grayscale()`` is refused.
+        ``pipe()`` then plans the continuation node from upstream.
         """
-        from polars_cv.pipeline import Pipeline, PlanState
+        from polars_cv.pipeline import Pipeline
 
         inner = Pipeline()
-        upstream = self._pipeline._state
-        inner._state = PlanState(
-            domain=upstream.domain, dtype=upstream.dtype, ndim=upstream.ndim
-        )
+        inner._state = self._pipeline._state
         return inner
 
     def _binary_op(self, op: str, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
         """Create a binary operation between this and another LazyPipelineExpr."""
         from polars_cv._types import SourceFormat, SourceSpec
         from polars_cv.pipeline import Pipeline as PipelineClass
-        from polars_cv.pipeline import PlanState
 
         # Create a new pipeline that receives from upstream (BLOB source)
         # and only applies the binary op - don't clone self's ops as they're
@@ -684,15 +676,10 @@ class LazyPipelineExpr(_LazyOpsMixin):
         new_pipeline = PipelineClass()
         new_pipeline._source = SourceSpec(format=SourceFormat.BLOB)
         # The op applies to the left operand's output, so it starts from that
-        # state; its dtype rule reads both operands (true division of two u8
-        # is f32), so the other operand's dtype goes with it.
-        left = self._pipeline._state
-        new_pipeline._state = PlanState(
-            domain=left.domain, dtype=left.dtype, ndim=left.ndim
-        )
-        new_pipeline._add_node_op(
-            op, {"other": other}, other_dtype=other._pipeline._state.dtype
-        )
+        # state; its rules read both operands (true division of two u8 is f32,
+        # the shapes broadcast), so the other operand's state goes with it.
+        new_pipeline._state = self._pipeline._state
+        new_pipeline._add_node_op(op, {"other": other}, other=other._pipeline._state)
 
         return LazyPipelineExpr(
             column=None,  # No direct column - receives from upstream

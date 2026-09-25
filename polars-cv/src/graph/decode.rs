@@ -184,14 +184,6 @@ fn dtype_from_polars_datatype(dt: &DataType) -> Option<view_buffer::DType> {
         other => dtype_from_polars_leaf(other),
     }
 }
-/// Parse dtype string to view-buffer DType.
-///
-/// The names come from `dtype_table!` via `from_short_name`; this wrapper adds
-/// the graph layer's error string.
-pub(super) fn parse_dtype_str(dtype_str: &str) -> Result<view_buffer::DType, String> {
-    view_buffer::DType::from_short_name(dtype_str)
-        .ok_or_else(|| format!("Unknown dtype: {dtype_str}"))
-}
 /// Decode a Polars List or Array value at a specific row into a ViewBuffer.
 ///
 /// Uses zero-copy when the data is contiguous (FixedSizeList/Array types),
@@ -560,54 +552,25 @@ pub fn polars_dtype_for(dt: view_buffer::DType) -> DataType {
     }
 }
 
-/// Convert a dtype string to a Polars `DataType`.
+/// The Polars element type of a typed `list`/`array` sink.
 ///
-/// Used for static type inference at planning time. The name is parsed through
-/// `DType::from_short_name` — the `dtype_table!` authority — so an unresolved
-/// sentinel (`"auto"`, `"auto_float"`) or a genuine typo is an **error**, not a
-/// `u8` column that execution will contradict.
-///
-/// Note: requires the dtype-i8/dtype-u8/dtype-i16/dtype-u16 polars features for
-/// the narrow integer Series types.
-pub fn dtype_str_to_polars(dtype: &str) -> PolarsResult<DataType> {
-    view_buffer::DType::from_short_name(dtype)
-        .map(polars_dtype_for)
-        .ok_or_else(|| {
-            polars_err!(ComputeError:
-                "cannot map dtype '{dtype}' to a Polars type. Expected one of \
-                 the engine's concrete dtypes; '{dtype}' is either an \
-                 unresolved planning sentinel (\"auto\"/\"auto_float\") that \
-                 should have been resolved before this point, or not a dtype \
-                 at all."
-            )
-        })
-}
-
-/// Resolve the inner element dtype for a typed list/array sink.
-///
-/// Refuses the unresolved `"auto"` sentinel: it means the decoded dtype was
-/// never pinned down at planning time. The Python sink builder rejects this for
-/// list/array sinks up front (requiring an explicit dtype), so reaching here
-/// with `"auto"` is an internal error — fail loudly rather than silently
-/// materialize a `u8` column that may disagree with execution.
-fn list_array_inner_dtype(dtype: &str, sink: &str) -> PolarsResult<DataType> {
-    // Asked of `PlannedDType`, not compared against `"auto"` by hand: there is
-    // now more than one way to be unresolved (`"auto_float"` means "a float,
-    // but which one depends on the decode"), and a hand-written comparison
-    // would let the new one through to `dtype_str_to_polars`'s UInt8 arm.
-    if !PlannedDType::parse(dtype).is_some_and(|d| d.is_concrete()) {
+/// Refuses a dtype the planner never pinned down (`auto`, `auto_float`): a
+/// typed column cannot be planned from it, and mapping it to anything would be
+/// a column execution may contradict.
+pub(crate) fn list_array_inner_dtype(dtype: PlannedDType, sink: &str) -> PolarsResult<DataType> {
+    match dtype {
+        PlannedDType::Known(dtype) => Ok(polars_dtype_for(dtype)),
         // Not labelled an internal error: the common way to get here is a
         // source column whose element type the planner cannot map to a buffer
         // dtype (a boolean or decimal list), which is the user's input, not a
         // bug. The fix is the same either way — say what it is.
-        polars_bail!(ComputeError:
+        PlannedDType::SomeFloat | PlannedDType::Unknown => polars_bail!(ComputeError:
             "the '{sink}' sink needs to know the element dtype at planning \
              time, and it could not be inferred from the input column. \
              Supply it explicitly, e.g. source(..., dtype=\"u16\") or \
              .cast(...) before the sink."
-        );
+        ),
     }
-    dtype_str_to_polars(dtype)
 }
 /// Get the Polars DataType for a given output specification.
 ///
@@ -631,14 +594,14 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
             let codec = kind
                 .image_codec(spec)
                 .expect("EncodedImage carries a codec");
-            let dtype = PlannedDType::parse(&spec.expected_dtype).unwrap_or(PlannedDType::Unknown);
+            let dtype = spec.expected_dtype;
             codec
                 .check_shape(dtype, spec.expected_shape.as_deref(), spec.expected_ndim)
                 .map_err(|msg| polars_err!(ComputeError: "{}", msg))?;
             Ok(DataType::Binary)
         }
         SinkKind::BufferList => {
-            let inner = list_array_inner_dtype(&spec.expected_dtype, "list")?;
+            let inner = list_array_inner_dtype(spec.expected_dtype, "list")?;
             let ndim = spec
                 .expected_shape
                 .as_ref()
@@ -670,7 +633,7 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
             Ok(dtype)
         }
         SinkKind::BufferArray => {
-            let inner = list_array_inner_dtype(&spec.expected_dtype, "array")?;
+            let inner = list_array_inner_dtype(spec.expected_dtype, "array")?;
             let sink_shape = spec.sink.shape();
             let shape = sink_shape.as_ref().or(spec.expected_shape.as_ref());
             if let Some(shape) = shape {
@@ -704,7 +667,7 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
             // buffer/list and array arms do, instead of silently mapping it to
             // U8 — a plan/data divergence if a vector output ever reached the
             // sink still "auto". (Today vector dtypes are always concrete.)
-            let inner = list_array_inner_dtype(&spec.expected_dtype, "list")?;
+            let inner = list_array_inner_dtype(spec.expected_dtype, "list")?;
             if let Some(ref shape) = spec.expected_shape {
                 let mut dtype = inner;
                 for _ in 0..shape.len() {
@@ -725,7 +688,7 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
         // This pair used to ride the silent Binary fallthrough: execution
         // produced an Array while lazy schema claimed Binary.
         SinkKind::VectorArray => {
-            let inner = list_array_inner_dtype(&spec.expected_dtype, "array")?;
+            let inner = list_array_inner_dtype(spec.expected_dtype, "array")?;
             let sink_shape = spec.sink.shape();
             let shape = sink_shape.as_ref().or(spec.expected_shape.as_ref());
             if let Some(shape) = shape {
@@ -805,7 +768,7 @@ pub(crate) fn build_series_from_spec(
     spec: &OutputSpec,
     data: Vec<RowResult>,
 ) -> PolarsResult<Series> {
-    let dtype = &spec.expected_dtype;
+    let dtype = spec.expected_dtype;
     let kind = SinkKind::resolve(spec)?;
     match kind {
         // Every arm below is keyed on the resolved kind, so a new one is a

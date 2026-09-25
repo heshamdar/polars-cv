@@ -7,36 +7,42 @@
 //! four FFI calls sequenced by eight Python helpers, any of which a caller
 //! could skip; one call cannot be half-applied.
 //!
-//! A two-input op's dtype depends on both operands, so a binary op takes the
-//! other operand's dtype, and only a binary op may: passing one to any other
-//! op, or omitting it for a binary op, is an error rather than a fallback to
-//! the one-input rule.
+//! A two-input op plans over both operands, so a binary op takes the other
+//! operand's state, and only a binary op may: passing one to any other op, or
+//! omitting it for a binary op, is an error rather than a fallback to the
+//! one-input rule.
 
 use pyo3::prelude::*;
 
 use crate::py_value_error;
 use view_buffer::ops::{Dim, Domain, HistogramOutput, OutputRankRule};
+use view_buffer::PlannedDType;
 
 use crate::graph::step::GraphStep;
 
 /// The planner's state at one op boundary — the one representation of it.
 ///
-/// Python holds it as `PlanState` (same attribute names, read by
-/// `FromPyObject`) and gets every new one from here as a dict. Each graph
-/// output carries its node's final state on the wire as `planned`
+/// Typed throughout: a [`Domain`], a [`PlannedDType`] (the dtype lattice the
+/// execution side resolves with too), and sizes. Python holds these objects
+/// as they are (`polars_cv._lib.PlanState`) and reads the wire spellings
+/// through its getters; it never builds or edits one. Each graph output
+/// carries its node's final state on the wire as `planned`
 /// ([`OutputSpec`](crate::graph::types::OutputSpec)); a field left out there is
 /// unknown, never guessed.
-#[derive(Debug, Clone, PartialEq, FromPyObject, IntoPyObject, serde::Deserialize)]
+#[pyclass(frozen, from_py_object, module = "polars_cv._lib", name = "PlanState")]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct State {
-    pub domain: String,
-    pub dtype: String,
+    #[serde(deserialize_with = "wire_domain")]
+    pub domain: Domain,
+    #[serde(deserialize_with = "wire_dtype")]
+    pub dtype: PlannedDType,
     #[serde(default)]
     pub ndim: Option<usize>,
     /// Known sizes of dimensions 0..3 (`[H, W, C]` for an image); `None` is
     /// unknown (a per-row size is unknown at plan time).
     #[serde(default)]
-    pub dims: [Option<i64>; 3],
+    pub dims: [Option<usize>; 3],
     /// Which of `dims` the user asserted (`assert_shape`) rather than an op
     /// inferred: a divergence at execution is then theirs to fix.
     #[serde(default)]
@@ -47,9 +53,127 @@ pub(crate) struct State {
     pub declared: bool,
 }
 
+fn wire_domain<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Domain, D::Error> {
+    crate::ops::param::literal_field(d)
+}
+
+fn wire_dtype<'de, D: serde::Deserializer<'de>>(d: D) -> Result<PlannedDType, D::Error> {
+    use serde::de::Error;
+    let name = <String as serde::Deserialize>::deserialize(d)?;
+    PlannedDType::parse(&name).ok_or_else(|| D::Error::custom(format!("unknown dtype {name:?}")))
+}
+
+#[pymethods]
+impl State {
+    /// The state of a pipeline with no source yet: a buffer, nothing known.
+    #[new]
+    fn unsourced() -> Self {
+        State::new(Domain::Buffer, PlannedDType::Unknown, None)
+    }
+
+    /// The names `assert_shape` gives dimensions 0, 1 and 2.
+    #[classattr]
+    #[allow(non_snake_case)]
+    fn DIM_NAMES() -> (&'static str, &'static str, &'static str) {
+        let [h, w, c] = DIM_NAMES;
+        (h, w, c)
+    }
+
+    /// ``buffer``, ``contour``, ``scalar`` or ``vector``.
+    #[getter(domain)]
+    fn py_domain(&self) -> &'static str {
+        self.domain.name()
+    }
+
+    /// The element dtype (``u8``, ``f32``, …), ``auto_float`` when only known
+    /// to be a float, or ``auto`` when not known until decode.
+    #[getter(dtype)]
+    fn py_dtype(&self) -> &'static str {
+        self.dtype.as_str()
+    }
+
+    /// The rank, or ``None`` when not known at plan time.
+    #[getter(ndim)]
+    fn py_ndim(&self) -> Option<usize> {
+        self.ndim
+    }
+
+    /// Known sizes of dimensions 0, 1, 2; ``None`` is unknown or per-row.
+    #[getter(dims)]
+    fn py_dims(&self) -> (Option<usize>, Option<usize>, Option<usize>) {
+        let [h, w, c] = self.dims;
+        (h, w, c)
+    }
+
+    /// Which of ``dims`` the user asserted rather than an op inferred.
+    #[getter(asserted)]
+    fn py_asserted(&self) -> (bool, bool, bool) {
+        let [h, w, c] = self.asserted;
+        (h, w, c)
+    }
+
+    /// Whether a shape declaration reached this lineage.
+    #[getter(declared)]
+    fn py_declared(&self) -> bool {
+        self.declared
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self == other
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PlanState(domain={:?}, dtype={:?}, ndim={:?}, dims={:?}, asserted={:?}, declared={})",
+            self.domain.name(),
+            self.dtype.as_str(),
+            self.ndim,
+            self.dims,
+            self.asserted,
+            self.declared
+        )
+    }
+
+    fn __copy__(slf: Py<Self>) -> Py<Self> {
+        slf
+    }
+
+    fn __deepcopy__(slf: Py<Self>, _memo: &Bound<'_, PyAny>) -> Py<Self> {
+        slf
+    }
+
+    /// The wire form (JSON) a graph output's `planned` carries.
+    fn _wire(&self) -> String {
+        serde_json::json!({
+            "domain": self.domain.name(),
+            "dtype": self.dtype.as_str(),
+            "ndim": self.ndim,
+            "dims": self.dims,
+            "asserted": self.asserted,
+            "declared": self.declared,
+        })
+        .to_string()
+    }
+
+    /// Pickled by value, through the wire form.
+    fn __reduce__(slf: &Bound<'_, Self>) -> PyResult<(Py<PyAny>, (String,))> {
+        let restore = slf
+            .py()
+            .import("polars_cv._lib")?
+            .getattr("_plan_state_from_json")?;
+        Ok((restore.unbind(), (slf.get()._wire(),)))
+    }
+}
+
+/// Unpickle a [`State`] (see `State::__reduce__`).
+#[pyfunction]
+pub(crate) fn _plan_state_from_json(wire: &str) -> PyResult<State> {
+    serde_json::from_str(wire).map_err(|e| py_value_error(e.to_string()))
+}
+
 /// The name of dimension `axis` in the `[H, W, C]` spelling `assert_shape`'s
 /// keywords use.
-const DIM_NAMES: [&str; 3] = ["height", "width", "channels"];
+pub(crate) const DIM_NAMES: [&str; 3] = ["height", "width", "channels"];
 
 /// One declared dimension of an [`Assertion`].
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
@@ -118,7 +242,7 @@ pub(crate) fn assert_shape(
             ));
         }
         let size = match declared {
-            Declared::Size(size) => Some(i64::from(size.get())),
+            Declared::Size(size) => Some(size.get() as usize),
             Declared::PerRow | Declared::Unknown => None,
         };
         if let (Some(known), Some(size)) = (state.dims[axis], size) {
@@ -146,26 +270,21 @@ pub(crate) fn assert_shape(
 /// nothing about H/W, which may hold a user's per-row assertion.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Step {
-    pub domain: String,
-    pub dtype: String,
+    pub domain: Domain,
+    pub dtype: PlannedDType,
     pub ndim: Option<usize>,
-    pub dims: [Option<Option<i64>>; 3],
+    pub dims: [Option<Option<usize>>; 3],
 }
 
-/// Apply one op to `state`. See the module docs.
-pub(crate) fn step(
-    op_json: &str,
-    state: &State,
-    other_dtype: Option<&str>,
-) -> Result<Step, String> {
+/// Apply one op to `state`. See the module docs. `other` is a binary op's
+/// other operand.
+pub(crate) fn step(op_json: &str, state: &State, other: Option<&State>) -> Result<Step, String> {
     let op: crate::ops::TypedOp = serde_json::from_str(op_json).map_err(|e| e.to_string())?;
     let step = crate::resolve_op_from_json(op_json)?;
 
     // Input domain, from the step's own contract.
-    let current = view_buffer::naming::lookup(Domain::NAMED, &state.domain)
-        .ok_or_else(|| format!("unknown domain {:?}", state.domain))?;
     let accepted = step.input_domains();
-    if !accepted.iter().any(|d| *d == Domain::Any || *d == current) {
+    if !accepted.contains(&state.domain) {
         let expected: Vec<&str> = accepted.iter().map(|d| d.name()).collect();
         return Err(format!(
             "{}() expects {} input but pipeline is currently in {} domain. Add a \
@@ -173,48 +292,52 @@ pub(crate) fn step(
              extract_contours() for buffer→contour).",
             op.name(),
             expected.join(" or "),
-            state.domain
+            state.domain.name()
         ));
     }
 
-    let (out_domain, ndim) = fold(&step, &state.domain, state.ndim);
-    let dtype = match (&step, other_dtype) {
-        (GraphStep::Binary { op, .. }, Some(other)) => binary_dtype(*op, &state.dtype, other)?,
+    let (out_domain, ndim) = fold(&step, state.domain, state.ndim);
+    let dtype = match (&step, other) {
+        (GraphStep::Binary { op, .. }, Some(other)) => binary_dtype(*op, state.dtype, other.dtype),
         (GraphStep::Binary { .. }, None) => {
             return Err(format!(
-                "{}() combines two operands: its dtype needs the other operand's",
+                "{}() combines two operands: it needs the other operand's state",
                 op.name()
             ))
         }
         (_, Some(_)) => {
             return Err(format!(
-                "{}() has one operand; only a binary op takes another's dtype",
+                "{}() has one operand; only a binary op takes another's state",
                 op.name()
             ))
         }
-        (_, None) => single_input_dtype(&step, &state.dtype)?,
+        (_, None) => single_input_dtype(&step, state.dtype),
     };
 
-    // H/W: the op's own shape over the shape it consumes, symbolically — a
+    // H/W: the op's own shape over the shapes it consumes, symbolically — a
     // per-row parameter or an unknown input size leaves its axis unknown.
-    let mut dims: [Option<Option<i64>>; 3] = [None; 3];
+    let mut dims: [Option<Option<usize>>; 3] = [None; 3];
     if let Some(input) = input_dims(&step, state) {
         check_rank(&step, &input)?;
-        let out = op.shape().and_then(|shape| shape.dims(&[&input]));
+        let other_input = other.and_then(|o| input_dims(&step, o));
+        let inputs: Vec<&[Dim]> = std::iter::once(input.as_slice())
+            .chain(other_input.as_deref())
+            .collect();
+        // A binary op whose other operand has no known rank has no shape to
+        // broadcast against: unknown, never the left operand's shape alone.
+        let out = match (other, &other_input) {
+            (Some(_), None) => None,
+            _ => op.shape().and_then(|shape| shape.dims(&inputs)),
+        };
         let size = |axis: usize| {
             let dim = out.as_ref().and_then(|out| out.get(axis).copied());
-            dim.and_then(Dim::known).and_then(|n| i64::try_from(n).ok())
+            dim.and_then(Dim::known)
         };
         dims[0] = Some(size(0));
         dims[1] = Some(size(1));
     }
     // Channels: the op's channel rule over the incoming count.
-    let channels_in = state.dims[2].and_then(|c| usize::try_from(c).ok());
-    dims[2] = Some(
-        step.output_channel_rule()
-            .apply(channels_in)
-            .map(|c| c as i64),
-    );
+    dims[2] = Some(step.output_channel_rule().apply(state.dims[2]));
     // A dimension the output rank does not have has no size.
     if let Some(n) = ndim {
         for (axis, dim) in dims.iter_mut().enumerate() {
@@ -233,11 +356,8 @@ pub(crate) fn step(
 }
 
 /// An op's output domain and rank over the incoming ones.
-fn fold(step: &GraphStep, domain: &str, ndim: Option<usize>) -> (String, Option<usize>) {
-    let out_domain = match step.output_domain() {
-        Domain::Any => domain.to_string(),
-        d => d.name().to_string(),
-    };
+fn fold(step: &GraphStep, domain: Domain, ndim: Option<usize>) -> (Domain, Option<usize>) {
+    let out_domain = step.output_domain(domain);
     let ndim = match step.output_rank_rule() {
         OutputRankRule::Fixed(n) => Some(n),
         OutputRankRule::PreserveRank => ndim,
@@ -245,22 +365,25 @@ fn fold(step: &GraphStep, domain: &str, ndim: Option<usize>) -> (String, Option<
         OutputRankRule::Unknown => None,
     };
     // Scalar and vector domains pin the rank whatever the rule says.
-    let ndim = match out_domain.as_str() {
-        "scalar" => Some(0),
-        "vector" => Some(1),
-        _ => ndim,
+    let ndim = match out_domain {
+        Domain::Scalar => Some(0),
+        Domain::Vector => Some(1),
+        Domain::Buffer | Domain::Contour => ndim,
     };
     (out_domain, ndim)
 }
 
-/// An op's output dtype from its own one-input rule.
+/// An op's output dtype from its own one-input rule, over the planned input
+/// dtype — the one dtype lattice ([`OutputDTypeRule::resolve_planned`]).
 ///
 /// Histogram buckets are struct-encoded by the sink, so their element dtype is
-/// an encoding concern, not a schema one: `"auto"`.
-fn single_input_dtype(step: &GraphStep, dtype: &str) -> Result<String, String> {
+/// an encoding concern, not a schema one: unknown.
+///
+/// [`OutputDTypeRule::resolve_planned`]: view_buffer::OutputDTypeRule::resolve_planned
+fn single_input_dtype(step: &GraphStep, dtype: PlannedDType) -> PlannedDType {
     match step {
-        GraphStep::Histogram(h) if h.output == HistogramOutput::Buckets => Ok("auto".to_string()),
-        _ => crate::output_dtype_for(step, dtype),
+        GraphStep::Histogram(h) if h.output == HistogramOutput::Buckets => PlannedDType::Unknown,
+        _ => step.output_dtype_rule().resolve_planned(dtype),
     }
 }
 
@@ -282,10 +405,10 @@ impl State {
     }
 
     /// A fresh state: nothing known about the sizes, nothing declared.
-    pub(crate) fn new(domain: &str, dtype: &str, ndim: Option<usize>) -> State {
+    pub(crate) fn new(domain: Domain, dtype: PlannedDType, ndim: Option<usize>) -> State {
         State {
-            domain: domain.to_string(),
-            dtype: dtype.to_string(),
+            domain,
+            dtype,
             ndim,
             dims: [None; 3],
             asserted: [false; 3],
@@ -304,7 +427,8 @@ pub(crate) fn source_state(source: &crate::formats::source::Source) -> Result<St
     use crate::formats::source::Source;
 
     let buffer = |dtype: Option<view_buffer::DType>, ndim: Option<usize>| {
-        State::new("buffer", dtype.map_or("auto", |d| d.short_name()), ndim)
+        let dtype = dtype.map_or(PlannedDType::Unknown, PlannedDType::Known);
+        State::new(Domain::Buffer, dtype, ndim)
     };
     let dtype = source.dtype();
     Ok(match source {
@@ -325,7 +449,7 @@ pub(crate) fn source_state(source: &crate::formats::source::Source) -> Result<St
                 background: s.background.unwrap_or(crate::ops::Param::Lit(0)),
             });
             let op_json = serde_json::to_string(&rasterize).map_err(|e| e.to_string())?;
-            let contours = State::new("contour", "auto", None);
+            let contours = State::new(Domain::Contour, PlannedDType::Unknown, None);
             let planned = step(&op_json, &contours, None)?;
             contours.after(planned)
         }
@@ -373,7 +497,7 @@ pub(crate) fn check_sink(
     let from_column = source.is_some_and(|s| s.resolves_from_column());
     let where_ = alias.map_or(String::new(), |a| format!(" (alias '{a}')"));
     let name = sink.name();
-    if sink.has_typed_elements() && state.dtype == "auto" && !from_column {
+    if sink.has_typed_elements() && !state.dtype.is_concrete() && !from_column {
         return Err(format!(
             "Element dtype is unknown for the '{name}' sink{where_}: the decoded dtype of an \
              image/blob source is only known at runtime, so a typed Polars '{name}' output \
@@ -441,13 +565,13 @@ pub(crate) fn input_dims(step: &GraphStep, state: &State) -> Option<Vec<Dim>> {
         Some(n) if n >= 1 => Some(
             (0..n)
                 .map(|axis| match state.dims.get(axis).copied().flatten() {
-                    Some(size) => usize::try_from(size).map_or(Dim::Unknown, Dim::Known),
+                    Some(size) => Dim::Known(size),
                     None => Dim::Input(axis),
                 })
                 .collect(),
         ),
         _ if !step.input_domains().contains(&Domain::Buffer)
-            && step.output_domain() == Domain::Buffer =>
+            && step.output_domain(state.domain) == Domain::Buffer =>
         {
             Some(Vec::new())
         }
@@ -478,20 +602,27 @@ fn check_rank(step: &GraphStep, input: &[Dim]) -> Result<(), String> {
     }
 }
 
-/// A binary op's output dtype over both operands; `"auto"` if either is.
-fn binary_dtype(op: view_buffer::BinaryOp, left: &str, right: &str) -> Result<String, String> {
-    if left == "auto" || right == "auto" {
-        return Ok("auto".to_string());
+/// A binary op's output dtype over both operands; unknown unless both are
+/// known.
+fn binary_dtype(
+    op: view_buffer::BinaryOp,
+    left: PlannedDType,
+    right: PlannedDType,
+) -> PlannedDType {
+    match (left, right) {
+        (PlannedDType::Known(l), PlannedDType::Known(r)) => {
+            PlannedDType::Known(op.output_dtype(l, r))
+        }
+        _ => PlannedDType::Unknown,
     }
-    let dtype = op.output_dtype(crate::parse_dtype(left)?, crate::parse_dtype(right)?);
-    Ok(dtype.short_name().to_string())
 }
 
-/// Python entry point for [`step`]: the state after appending `op_json`.
+/// Python entry point for [`step`]: the state after appending `op_json`;
+/// `other` is a binary op's other operand's state.
 #[pyfunction]
-#[pyo3(signature = (op_json, state, other_dtype=None))]
-pub(crate) fn plan_step(op_json: &str, state: State, other_dtype: Option<&str>) -> PyResult<State> {
-    let planned = step(op_json, &state, other_dtype).map_err(py_value_error)?;
+#[pyo3(signature = (op_json, state, other=None))]
+pub(crate) fn plan_step(op_json: &str, state: State, other: Option<State>) -> PyResult<State> {
+    let planned = step(op_json, &state, other.as_ref()).map_err(py_value_error)?;
     Ok(state.after(planned))
 }
 
@@ -500,10 +631,14 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn state(domain: &str, dtype: &str, ndim: Option<usize>, dims: [Option<i64>; 3]) -> State {
+    fn state(domain: &str, dtype: &str, ndim: Option<usize>, dims: [Option<usize>; 3]) -> State {
         State {
             dims,
-            ..State::new(domain, dtype, ndim)
+            ..State::new(
+                view_buffer::naming::lookup(Domain::NAMED, domain).unwrap(),
+                PlannedDType::parse(dtype).unwrap(),
+                ndim,
+            )
         }
     }
 
@@ -511,7 +646,7 @@ mod tests {
         state("buffer", "u8", Some(3), [Some(100), Some(50), Some(3)])
     }
 
-    fn run(op: serde_json::Value, s: &State, other: Option<&str>) -> Result<Step, String> {
+    fn run(op: serde_json::Value, s: &State, other: Option<&State>) -> Result<Step, String> {
         step(&op.to_string(), s, other)
     }
 
@@ -525,7 +660,7 @@ mod tests {
         .unwrap();
         assert_eq!(out.dims, [Some(Some(4)), Some(Some(6)), Some(Some(3))]);
         assert_eq!(
-            (out.domain.as_str(), out.dtype.as_str(), out.ndim),
+            (out.domain.name(), out.dtype.as_str(), out.ndim),
             ("buffer", "u8", Some(3))
         );
     }
@@ -552,11 +687,16 @@ mod tests {
     }
 
     #[test]
-    fn a_binary_op_needs_and_uses_the_other_dtype() {
+    fn a_binary_op_needs_and_uses_the_other_operand() {
         let add = json!({"op": "divide", "other": "n0"});
         assert!(run(add.clone(), &image(), None).is_err());
-        assert_eq!(run(add, &image(), Some("u8")).unwrap().dtype, "f32");
-        let err = run(json!({"op": "grayscale"}), &image(), Some("u8")).unwrap_err();
+        let out = run(add.clone(), &image(), Some(&image())).unwrap();
+        assert_eq!(out.dtype.as_str(), "f32");
+        // An operand of unknown rank leaves the broadcast shape unknown.
+        let unranked = state("buffer", "u8", None, [None; 3]);
+        let out = run(add, &image(), Some(&unranked)).unwrap();
+        assert_eq!(out.dims[..2], [Some(None), Some(None)]);
+        let err = run(json!({"op": "grayscale"}), &image(), Some(&image())).unwrap_err();
         assert!(err.contains("only a binary op"), "{err}");
     }
 
@@ -566,10 +706,10 @@ mod tests {
         let out = run(
             json!({"op": "bitwise_xor", "other": "n0"}),
             &hash,
-            Some("u8"),
+            Some(&hash),
         )
         .unwrap();
-        assert_eq!((out.domain.as_str(), out.ndim), ("vector", Some(1)));
+        assert_eq!((out.domain, out.ndim), (Domain::Vector, Some(1)));
     }
 
     #[test]
@@ -581,7 +721,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(out.domain, "buffer");
+        assert_eq!(out.domain, Domain::Buffer);
         assert_eq!(out.dims, [Some(Some(8)), Some(Some(6)), Some(Some(1))]);
     }
 
@@ -699,9 +839,9 @@ mod tests {
         let plan = |v: serde_json::Value| {
             let source = serde_json::from_value(v).unwrap();
             let s = source_state(&source).unwrap();
-            (s.domain, s.dtype, s.ndim, s.dims)
+            (s.domain.name(), s.dtype.as_str(), s.ndim, s.dims)
         };
-        let buffer = |dtype: &str, ndim| ("buffer".to_string(), dtype.to_string(), ndim, [None; 3]);
+        let buffer = |dtype, ndim| ("buffer", dtype, ndim, [None; 3]);
         assert_eq!(
             plan(json!({"format": "raw", "dtype": "u16"})),
             buffer("u16", Some(1))
@@ -722,12 +862,7 @@ mod tests {
         let contour = |size: serde_json::Value| json!({"format": "contour", "size": size, "fill_value": 255, "background": 0});
         assert_eq!(
             plan(contour(json!([10, 12]))),
-            (
-                "buffer".to_string(),
-                "u8".to_string(),
-                Some(3),
-                [Some(10), Some(12), Some(1)]
-            )
+            ("buffer", "u8", Some(3), [Some(10), Some(12), Some(1)])
         );
         // A canvas from another node is not a fact about this source.
         assert_eq!(plan(contour(json!("n0"))).3, [None, None, Some(1)]);
@@ -760,7 +895,7 @@ mod tests {
         );
         // A contour input has no shape: the canvas is rasterize's own, or
         // unknown when it comes from another node.
-        let contours = State::new("contour", "auto", None);
+        let contours = state("contour", "auto", None, [None; 3]);
         let rasterize = |size: serde_json::Value| json!({"op": "rasterize", "size": size, "fill_value": 255, "background": 0});
         assert_eq!(
             hw(rasterize(json!([10, 12])), &contours),
