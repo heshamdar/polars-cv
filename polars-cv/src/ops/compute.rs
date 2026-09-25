@@ -1,5 +1,7 @@
 //! Compute ops: element-wise arithmetic, casts and normalization.
 
+#[allow(unused_imports)]
+use crate::ops::ParamExt as _;
 use polars::prelude::*;
 use polars_cv_macros::Op;
 use serde::{Deserialize, Serialize};

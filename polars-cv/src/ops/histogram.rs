@@ -1,5 +1,7 @@
 //! Histogram: a buffer → vector op.
 
+#[allow(unused_imports)]
+use crate::ops::ParamExt as _;
 use polars::prelude::*;
 use polars_cv_macros::Op;
 use serde::de::Error as _;

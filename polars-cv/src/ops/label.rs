@@ -1,5 +1,7 @@
 //! Label reduction: score contour regions against the current buffer.
 
+#[allow(unused_imports)]
+use crate::ops::ParamExt as _;
 use polars::prelude::*;
 use polars_cv_macros::Op;
 use serde::{Deserialize, Serialize};

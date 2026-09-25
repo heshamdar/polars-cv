@@ -1,6 +1,3 @@
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
 use crate::ops::color::ColorConvertOp;
 use crate::ops::compute::ComputeOp;
 use crate::ops::filter::ConvolveOp;
@@ -18,7 +15,6 @@ use crate::ops::Domain;
 /// concerns — multi-input operations, node references, expression columns,
 /// domain transitions — live in the polars-cv plugin's `GraphStep`, not here.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ViewDto {
     /// Zero-copy layout operation (transpose, reshape, flip, crop, …).
     View(ViewOp),

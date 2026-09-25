@@ -1,5 +1,7 @@
 //! Reductions: buffer → scalar (global) or buffer (along an axis).
 
+#[allow(unused_imports)]
+use crate::ops::ParamExt as _;
 use polars::prelude::*;
 use polars_cv_macros::Op;
 use serde::{Deserialize, Serialize};

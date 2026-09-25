@@ -1,5 +1,7 @@
 //! Declarations: facts about the data the planner cannot work out itself.
 
+#[allow(unused_imports)]
+use crate::ops::ParamExt as _;
 use polars::prelude::*;
 use polars_cv_macros::Op;
 use serde::{Deserialize, Serialize};

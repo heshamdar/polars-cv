@@ -14,11 +14,15 @@
 //! - [`interop`] - External library integrations (optional)
 //! - [`naming`] - Canonical name tables for user-facing enums
 
+// Lets `#[derive(Ops)]` output name `::view_buffer::…` here as in polars-cv.
+extern crate self as view_buffer;
+
 pub mod core;
 pub mod execution;
 pub mod expr;
 pub mod geometry;
 pub mod interop;
+pub mod mode;
 pub mod naming;
 pub mod ops;
 pub mod protocol;

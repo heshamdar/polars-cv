@@ -198,11 +198,33 @@ values), which the planner reads and execution resolves per row.
 | `rotate`'s `Rotation` split into three engine steps chosen from a value | `ops/affine.rs` | one engine `Rotate<M>` whose shape is `MaybeSwapHw`/`RotateExpand` from its own fields |
 | `ImageOpKind::shape`-style per-family shape functions that restate the typed shape | `view-buffer/src/ops/*.rs` | the generic `shape()` of each op struct |
 
-Recipe per family: move the typed struct into view-buffer as the variant's
-payload (wire field names and types win), make it generic, implement its
-rules generically, port the kernels' patterns, delete the polars-cv struct and
-its `OpDef`; the build stays green between families because `TypedOp` holds
-either kind until the last family moves.
+**Shape of the combine (settled at the start of C4b).** The engine enums are
+the catalogue. Each wire op is one variant of its engine family enum
+(`ImageOpKind<M>`, `ComputeOp<M>`, `ViewOp<M>`, …, and a polars-cv `GraphOp<M>`
+for the graph-only ops: binary, mask, merge, declare, label), with the wire
+field names and types, its doc comment as the Python docstring, and
+`#[op(name = "resize", sample = {...})]`. `#[derive(Ops)]` on the enum
+generates, per variant, the strict wire (de)serialization (unknown key and
+missing required field refused, `Param`/`Literal` per field), the catalogue
+entry, the slot visitor and `Resolve` (`Wire` → `Exec`). Kernels keep matching
+`ImageOpKind::Resize { width, .. }` unchanged: `M` defaults to `Exec`, where
+`M::V<u32>` *is* `u32`. `TypedOp` becomes `GraphStep<Wire>`: the planner reads
+its rules directly and execution resolves it per row (static ops once), so no
+per-op `OpDef` remains.
+
+Additional deletions this adds:
+
+| What | Where | Replaced by |
+|---|---|---|
+| The engine op enums' serde derives (a second, unused wire spelling of every op, by Rust variant name) and `test_fused_op_serialization` | `view-buffer/src/ops/*.rs`, `geometry/ops.rs`, `tests/integration_plan.rs` | the one wire (`#[derive(Ops)]`) |
+| `polars-cv/src/ops/{image,compute,view,color,filter,affine,channel,geometry,reduce,histogram,phash}.rs` typed structs and their `OpDef` impls | polars-cv | the engine variants |
+| `OpDef`, `OpFields`-per-struct, `TypedOp`'s per-op variants and `typed_ops!` lines | `ops/mod.rs` | the families' derives; `typed_ops!` lists families |
+| Tuple/derived engine fields that are not the wire's (`Threshold(f64)`, precomputed histogram `edges`, …) | view-buffer | the wire fields, computed from at execution |
+
+Transition: one family at a time; `TypedOp` holds a migrated family as one
+variant (`Image(ImageOpKind<Wire>)`) beside the remaining per-op variants, so
+the build is green between families. `GraphStep<M>` and the planner switch
+come after the last family.
 
 ---
 

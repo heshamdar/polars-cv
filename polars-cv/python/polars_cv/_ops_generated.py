@@ -1258,7 +1258,7 @@ class _OpsMixin:
                 expression for per-row dynamic values.
 
         Example:
-           >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3)
+            >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3)
         """
         return self._append_typed("dilate", {"ksize": ksize, "iterations": iterations})
 
@@ -1282,7 +1282,7 @@ class _OpsMixin:
                 expression for per-row dynamic values.
 
         Example:
-           >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
+            >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
         """
         return self._append_typed("erode", {"ksize": ksize, "iterations": iterations})
 
@@ -1737,7 +1737,7 @@ class _OpsMixin:
             filter: Resize filter ("nearest", "bilinear", "lanczos3").
 
         Example:
-           >>> pipe = Pipeline().source("image_bytes").resize_max(224)
+            >>> pipe = Pipeline().source("image_bytes").resize_max(224)
         """
         return self._append_typed(
             "resize_max", {"max_size": max_size, "filter": filter}
@@ -1753,7 +1753,7 @@ class _OpsMixin:
             filter: Resize filter ("nearest", "bilinear", "lanczos3").
 
         Example:
-           >>> pipe = Pipeline().source("image_bytes").resize_min(224)
+            >>> pipe = Pipeline().source("image_bytes").resize_min(224)
         """
         return self._append_typed(
             "resize_min", {"min_size": min_size, "filter": filter}
@@ -1791,7 +1791,7 @@ class _OpsMixin:
             filter: Resize filter ("nearest", "bilinear", "lanczos3").
 
         Example:
-           >>> pipe = Pipeline().source("image_bytes").resize_to_height(224)
+            >>> pipe = Pipeline().source("image_bytes").resize_to_height(224)
         """
         return self._append_typed(
             "resize_to_height", {"height": height, "filter": filter}
@@ -1807,7 +1807,7 @@ class _OpsMixin:
             filter: Resize filter ("nearest", "bilinear", "lanczos3").
 
         Example:
-           >>> pipe = Pipeline().source("image_bytes").resize_to_width(224)
+            >>> pipe = Pipeline().source("image_bytes").resize_to_width(224)
         """
         return self._append_typed("resize_to_width", {"width": width, "filter": filter})
 

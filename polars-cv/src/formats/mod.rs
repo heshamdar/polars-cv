@@ -94,7 +94,7 @@ macro_rules! formats {
 
             /// Every format's description, in `NAMES` order.
             pub fn catalog() -> Vec<crate::ops::OpDesc> {
-                vec![$(crate::ops::OpDesc::of::<$ty>($wire)),+]
+                vec![$(crate::ops::op_desc::<$ty>($wire)),+]
             }
 
             /// See [`crate::ops::OpFields::visit_slots`].

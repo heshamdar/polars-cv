@@ -456,7 +456,7 @@ impl ViewExpr {
 
     pub fn threshold(self: &Arc<Self>, value: f64) -> Arc<Self> {
         self.apply_op(ViewDto::Image(ImageOp {
-            kind: ImageOpKind::Threshold(value),
+            kind: ImageOpKind::Threshold { value },
         }))
     }
 
@@ -872,7 +872,7 @@ mod dtype_contract_tests {
             // dtype; `grayscale()` hardcoded `U8`, diverging from the contract
             // on non-u8 input. They now route through the same canonical block.
             ImageOpKind::Grayscale,
-            ImageOpKind::Threshold(128.0),
+            ImageOpKind::Threshold { value: 128.0 },
             ImageOpKind::Blur { sigma: 1.0 },
             ImageOpKind::Resize {
                 width: 4,
@@ -911,7 +911,10 @@ mod dtype_contract_tests {
 
             let cases: [(Arc<ViewExpr>, ImageOpKind); 4] = [
                 (source.grayscale(), ImageOpKind::Grayscale),
-                (source.threshold(128.0), ImageOpKind::Threshold(128.0)),
+                (
+                    source.threshold(128.0),
+                    ImageOpKind::Threshold { value: 128.0 },
+                ),
                 (
                     source.resize(4, 4, FilterType::Triangle),
                     ImageOpKind::Resize {

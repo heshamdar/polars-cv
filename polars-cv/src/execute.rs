@@ -3,6 +3,8 @@
 //! This module handles the execution of vision pipelines on Polars Series,
 //! including parameter resolution and view-buffer integration.
 
+#[allow(unused_imports)]
+use crate::ops::ParamExt as _;
 use polars::prelude::*;
 
 use view_buffer::{

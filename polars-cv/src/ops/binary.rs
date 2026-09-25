@@ -4,6 +4,8 @@
 //! the graph wiring (a new node, its upstreams); the op carries the operand
 //! nodes by id ([`NodeRef`]).
 
+#[allow(unused_imports)]
+use crate::ops::ParamExt as _;
 use polars::prelude::*;
 use polars_cv_macros::Op;
 use serde::{Deserialize, Serialize};
