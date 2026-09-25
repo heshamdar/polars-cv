@@ -357,6 +357,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   on `LazyPipelineExpr`) and `ColumnRef` (`label_reduce`'s contour column).
   `ParamCtx` carries the plan-time probe value, which a node-sized `rasterize`
   reads so its canvas plans as unknown.
+- **Typed-op migration, P10 (final sweep).** The contributor docs describe the
+  finished protocol (adding an op is a `#[derive(Op)]` struct, one `OpDef`
+  impl with `resolve` and `shape`, a `typed_ops!` line and `gen_ops.py`);
+  dead helpers found by `vulture` are deleted; CR-45…CR-49 are closed.
 - **Typed-op migration, P9 (symbolic shapes).** Each view-buffer op declares
   its shape transform as data, `Op::shape() -> OpShape` (required, replacing
   `infer_shape`): one authority that execution evaluates on known sizes and

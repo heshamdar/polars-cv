@@ -43,10 +43,11 @@ The enforcement standard is stricter than "prefer the shared path":
   they must remember.** A ratchet enumerating "you must also call X" fails the
   day someone adds Y. Make the sequence unskippable instead: one entry point
   that does the whole thing.
-- **No defaulted contract methods on op traits.** `Op::output_rank_rule`,
-  `output_channel_rule`, `output_dtype_rule`, `memory_effect`,
-  `spatial_dependency` and `identity_rule` are required with no default so a new
-  op cannot inherit a lie. Adding a default to any of them is a regression,
+- **No defaulted contract methods on op traits.** `Op::shape`,
+  `output_rank_rule`, `output_channel_rule`, `output_dtype_rule`,
+  `memory_effect`, `spatial_dependency` and `identity_rule`, and the typed op's
+  `OpDef::shape`, are required with no default so a new op cannot inherit a
+  lie. Adding a default to any of them is a regression,
   however convenient.
 - **One authority per fact, named once.** A dtype's spellings live in
   `dtype_table!`; enum variant names live in `named_variants!` + the
@@ -330,7 +331,7 @@ Rust: view-buffer (the engine)
 | `pipeline.py` | `Pipeline` builder — all image/array operations as chainable methods |
 | `lazy.py` | `LazyPipelineExpr` — lazy `.pipe()`, `.merge_pipe()`, `.sink()`, binary ops |
 | `expressions.py` | `CvNamespace` — the `.cv` accessor registered on Polars expressions (`.pipe()`, `.read_bytes()`, header-only metadata) |
-| `_types.py` | Core type definitions: `OpSpec`, `ParamValue`, `SourceSpec`, `Domain`, `DType`, and the source/sink parameter-applicability tables |
+| `_types.py` | Core type definitions: `OpSpec`, `ParamValue` (the builder's record of an argument, literal or expression), `SourceSpec`, `SlotTable`, `Domain`; the other enums are generated into `_ops_generated.py` |
 | `_graph.py` | `PipelineGraph` / `GraphNode` — DAG construction, JSON serialization, CSE, plugin registration |
 | `_namespace.py` | Shared base for the `.cv`/`.point`/`.contour`/`.bbox` expression namespaces (plugin-registration boilerplate) |
 | `_plugin.py` | `call()` — the one way into the compiled plugin: pins polars to the imported `.so`, passes every argument as `.ext.storage()` |
@@ -344,13 +345,11 @@ Rust: view-buffer (the engine)
 
 **polars-cv/src/**
 - `lib.rs` — PyO3 module entry, `vb_graph` polars expression function, dtype inference, and the `plan_step`/`node_pass`/`enum_catalog`/`op_catalog`/`io_catalog`/`plan_source`/`plan_sink` FFI the Python planner reads (`plan.rs` holds `plan_step`, one call per appended op; `passes.rs` the node-scope optimisation passes)
-- `ops/` — the typed op catalogue: one `#[derive(Op)]` struct per op, registered in `typed_ops!`; `TypedOp` is the wire op and `OpDef::resolve` maps it to a `GraphStep` (`graph/step.rs`: buffer ops wrap view-buffer's `ViewDto`; graph-only steps are their own variants)
+- `ops/` — the typed op catalogue: one `#[derive(Op)]` struct per op (`Param<T>`/`Literal<T>` fields), registered in `typed_ops!`; `TypedOp` is the wire op, `OpDef::resolve` maps it to a `GraphStep` (`graph/step.rs`: buffer ops wrap view-buffer's `ViewDto`; graph-only steps are their own variants) and `OpDef::shape` gives its symbolic `OpShape`; `catalog_json()` feeds `scripts/gen_ops.py`
 - `formats/` — the typed sources and sinks, one struct per format in a `formats!` registry
 - `execute.rs` — source decoding helpers (image bytes, contours) and byte-sink encoding
-- `ops/` — the typed op catalogue (typed-op migration, `TYPED_OPS_PLAN.md`): one `#[derive(Op)]` struct + `OpDef` impl per op, `Param<T>`/`Literal<T>` fields, the `typed_ops!` registry and `catalog_json()`
 - `graph/` — `UnifiedGraph` execution engine: `types.rs` (`UnifiedGraph`, `GraphNode`, `OutputSpec`, `RowErrorPolicy`), `compiled.rs` (process-wide compiled-graph cache), `step.rs` (`GraphStep` — the plugin-level step vocabulary), source decoding (`decode.rs`), sink encoding (`encode.rs`)
-- `params.rs` — `ParamValue` resolving literals vs per-row Polars column values
-- `pipeline.rs` — serde types for the JSON graph spec crossing the plugin boundary
+- `params.rs` — `ParamCtx`/`ParamCol`: the per-call view of the expression-parameter columns every `Param<T>` reads, with the null policy; `ParamCtx::planning` resolves an op with no row, for its rules
 - `cloud.rs` — remote/cloud transport (`object_store` backends, `cloud_options`, bounded-concurrency reads)
 - `fetch.rs` — stage one of every path-based read: path column → bytes (`prefetch`, `row_bytes`, `parse_on_error`), shared by the `file_path` source and `read_bytes.rs`; owns `PathPolicy` (the `allowed_roots` sandbox)
 - `read_bytes.rs` — `read_file_bytes` plugin function (`.cv.read_bytes()`) — `fetch.rs` with the decode omitted, for byte-identical passthrough
@@ -362,7 +361,7 @@ Rust: view-buffer (the engine)
 
 **view-buffer/src/** (see `view-buffer/AGENTS.md` for the full module tree)
 - `core/` — `ViewBuffer` (strided N-D array), `DType`, `Layout`
-- `ops/` — operation definitions by category (`image.rs`, `color.rs`, `compute.rs`, `scalar.rs`, `filter.rs`, `affine.rs`, `view.rs`, `binary.rs`, `reduction.rs`, `histogram.rs`, `phash.rs`, `pad.rs`, `mask.rs`), plus `shape_rule.rs` (the plan-time rank/channel authority), `validation.rs`, `traits.rs`, `util.rs`
+- `ops/` — operation definitions by category (`image.rs`, `color.rs`, `compute.rs`, `scalar.rs`, `filter.rs`, `affine.rs`, `view.rs`, `binary.rs`, `reduction.rs`, `histogram.rs`, `phash.rs`, `pad.rs`, `mask.rs`), plus `shape_rule.rs` (the rank/channel rules and `OpShape`, the shape authority evaluated on known sizes at execution and symbolically at plan time), `validation.rs`, `traits.rs`, `util.rs`
 - `ops/dto.rs` — `ViewDto` enum: the serializable bridge between JSON and Rust op code
 - `expr.rs` — `ViewExpr` lazy builder with `.plan()` / `.execute()`
 - `execution/` — `ExecutionPlan`, runner, kernel fusion
@@ -459,9 +458,12 @@ arm, both since removed) are documented alongside it.
    whose fields are `Param<T>` (may be per-row) or `Literal<T>` (structural),
    each with a doc comment (the generated `Args:` entry) and, where Python has
    one, `#[param(default = ...)]` (an op's only required field is generated
-   positional-or-keyword, every other keyword-only); an `OpDef` impl
-   that opens with an exhaustive destructure and returns the `GraphStep`; and
-   one line with a valid sample in `typed_ops!` (`ops/mod.rs`). A parameter
+   positional-or-keyword, every other keyword-only); an `OpDef` impl whose
+   `resolve` opens with an exhaustive destructure and returns the `GraphStep`,
+   and whose `shape` builds the step's `OpShape` from the fields (`Param::size`
+   / `sym` make a per-row field `Sym::PerRow`; `None` for a graph-level step);
+   and one line with a valid sample in `typed_ops!` (`ops/mod.rs`) —
+   `typed_shape_is_the_resolved_steps` then holds `shape` to the step's. A parameter
    read only under some branch becomes an enum variant, never an optional
    field that can be ignored. The Python planner picks up the op's schema
    effect through `plan_step` — no Python-side schema special cases.
@@ -470,8 +472,9 @@ arm, both since removed) are documented alongside it.
    scripts/gen_ops.py`) and `maturin develop`. The generated method appends
    through `Pipeline._append_typed` → `_append_op` → `_push_op`, the only way
    in. The matching `LazyPipelineExpr` method is generated automatically from
-   `Pipeline` at import time (`python/polars_cv/lazy.py`) — do **not**
-   hand-mirror it. Hand-written `Pipeline` methods are for sugar over generated
+   `Pipeline` at import time (`python/polars_cv/lazy.py`), and a `lazy_only`
+   binary op's is generated into `_LazyOpsMixin` — do **not** hand-mirror
+   either. Hand-written `Pipeline` methods are for sugar over generated
    ones (`flip_h`, `thumbnail`, …) and the `lazy_only` ops on
    `LazyPipelineExpr`.
 4. Regenerate the type stub: `python scripts/gen_lazy_stub.py` (CI guards it via

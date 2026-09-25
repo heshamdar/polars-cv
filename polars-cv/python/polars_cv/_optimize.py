@@ -29,7 +29,7 @@ removed for changing pixels — see the CHANGELOG.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 
 from polars_cv._ops_generated import PASS_CATALOG, _OptFlagFields
 
@@ -182,8 +182,3 @@ def resolve_opt_flags(value: "OptFlags | bool | None") -> OptFlags:
         return value
     msg = f"opt_flags must be an OptFlags, bool, or None; got {type(value).__name__}."
     raise TypeError(msg)
-
-
-def _field_names() -> tuple[str, ...]:
-    """OptFlags boolean field names — used by the parity guard."""
-    return tuple(f.name for f in fields(OptFlags))

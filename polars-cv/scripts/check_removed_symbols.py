@@ -281,6 +281,10 @@ REMOVED: tuple[Removed, ...] = (
     Removed("is_probe", "P9: ParamCtx::is_planning"),
     Removed("probe_value", "P9: WireScalar::planning_value"),
     Removed("output_hw", "P9: ImageOpKind::shape"),
+    Removed("_matrix_param_from_floats", "P10: dead (no caller since warp_affine is generated)"),
+    Removed("get_output_nodes", "P10: dead (no caller)"),
+    Removed("is_multi_output", "P10: dead (no caller)"),
+    Removed("_field_names", "P10: dead (OptFlags fields come from PASS_CATALOG)"),
     Removed(
         "output_encoding",
         "P8: Rust reads histogram buckets off the ops (OutputSpec.histogram_buckets)",

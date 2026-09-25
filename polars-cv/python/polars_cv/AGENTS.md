@@ -255,28 +255,21 @@ the same mixin unless `.cv` genuinely honours it.
 
 ## Adding a New Operation (Python Side)
 
-1. **`pipeline.py`**: Add a method to `Pipeline` that returns
-   `self._append_op("<op_name>", lambda p: {...params...})`. That is the whole
-   builder — there is no sequence to get right:
+1. **Nothing, for an ordinary op.** The builder is generated from the op's Rust
+   definition (`src/ops/`, see the root `CLAUDE.md`): `scripts/gen_ops.py`
+   writes it into `_ops_generated.py` — signature (the positional rule is
+   derived, `gen_ops.positional`), defaults, docstring — and `Pipeline`
+   inherits it from `_OpsMixin`. Every generated method appends through
+   `Pipeline._append_typed` → `_append_op` → `_push_op`, which checks the
+   input domain and applies the whole plan-time effect in one `plan_step`
+   call: the schema fold (domain/dtype/ndim) and the shape hints (the op's
+   symbolic `shape` for H/W, the channel rule for C).
 
-   ```python
-   def erode(self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1) -> "Pipeline":
-       """..."""
-       return self._append_op(
-           "erode",
-           lambda p: {
-               "ksize": p._track_expr(ksize),
-               "iterations": p._track_expr(iterations),
-           },
-       )
-   ```
-
-   The callback receives the *cloned* pipeline, so `p._track_expr` registers
-   per-row expressions on the clone rather than the receiver. `_append_op`
-   then hands off to `_push_op`, which checks the input domain and applies
-   the whole plan-time effect in one `plan_step` call: the schema fold
-   (domain/dtype/ndim) and the shape hints (the op's symbolic `shape` for
-   H/W, the channel rule for C).
+   Hand-write a `Pipeline` method only as *sugar* over a generated one: an
+   `internal` op (`#[op(visibility = "internal")]`) generates `_<name>`, and
+   the sugar (`scale`'s `out_dtype`, `rasterize`'s `shape=`, `flip_h`) calls
+   it. Validation that must precede the op goes before that call; work after
+   the append (a `preserve_dtype` cast-back) reads the returned pipeline.
 
    **Do not touch `_ops` directly.** `_push_op` is the only function permitted
    to mutate it, enforced by `test_op_append_is_structurally_exclusive` in
@@ -286,18 +279,13 @@ the same mixin unless `.cv` genuinely honours it.
    could not produce. Never build or edit a `PlanState` by hand either; it
    follows from the op's Rust contract (`plan_step`).
 
-   Validation that must happen before the op is built (a kernel-size check, an
-   enum parse) goes in the method body before the `return`; work that must
-   happen *after* the append (e.g. `scale`'s `preserve_dtype` cast-back) reads
-   the returned pipeline. Both compose without bypassing the append path.
-
-2. **`lazy.py`**: Nothing to add for an ordinary op. `LazyPipelineExpr` generates a
-   forwarder for every chainable `Pipeline` method at import time
+2. **`lazy.py`**: Nothing to add. `LazyPipelineExpr` generates a forwarder for
+   every chainable `Pipeline` method at import time
    (`_install_pipeline_forwarders`), copying the signature so `inspect`/IDEs/the
-   parity test see the real parameters. Only define a method explicitly here if it
-   needs bespoke lazy behaviour (e.g. a binary op taking another
-   `LazyPipelineExpr`); the generator skips names already defined. After changing
-   `Pipeline`, regenerate the type stub with `python scripts/gen_lazy_stub.py`.
+   parity test see the real parameters, and a binary `lazy_only` op's method is
+   generated into `_LazyOpsMixin`. Only the multi-operand `lazy_only` ops
+   (`apply_mask`, `channel_merge`) are hand-written here. After changing the
+   surface, regenerate the type stub with `python scripts/gen_lazy_stub.py`.
 
 3. **Schema inference**: nothing to add in `_types.py` or the planner. The
    op's domain, dtype, rank and channel effects are read at planning time from
