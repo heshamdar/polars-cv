@@ -352,6 +352,80 @@ pub(crate) fn plan_assert(
     assert_shape(state, &assertion, after_op).map_err(py_value_error)
 }
 
+/// Refuse a sink the planned `state` cannot give a Polars schema: a typed
+/// `list`/`array` element with no known dtype, an `array` with no shape, a
+/// `list` with no rank — unless the `source` resolves them from the input
+/// column when the query is planned. `alias` names the output in a message.
+pub(crate) fn check_sink(
+    sink: &crate::formats::sink::Sink,
+    state: &State,
+    source: Option<&crate::formats::source::Source>,
+    alias: Option<&str>,
+) -> Result<(), String> {
+    use crate::formats::sink::Sink;
+
+    let from_column = source.is_some_and(|s| s.resolves_from_column());
+    let where_ = alias.map_or(String::new(), |a| format!(" (alias '{a}')"));
+    let name = sink.name();
+    if sink.has_typed_elements() && state.dtype == "auto" && !from_column {
+        return Err(format!(
+            "Element dtype is unknown for the '{name}' sink{where_}: the decoded dtype of an \
+             image/blob source is only known at runtime, so a typed Polars '{name}' output \
+             cannot be planned. Supply an explicit dtype — e.g. source(..., dtype=\"u16\") or \
+             a .cast(\"u16\") before the sink."
+        ));
+    }
+    match sink {
+        Sink::Array(a) if a.shape.is_none() && state.dims.iter().any(Option::is_none) => {
+            let missing: Vec<&str> = DIM_NAMES
+                .iter()
+                .zip(state.dims)
+                .filter(|(_, d)| d.is_none())
+                .map(|(n, _)| *n)
+                .collect();
+            let unknown = if missing.is_empty() {
+                "the output rank".to_string()
+            } else {
+                missing.join(", ")
+            };
+            Err(format!(
+                "an 'array' sink{where_} needs the full output shape at planning time, and this \
+                 pipeline's is not known: {unknown}. Three ways to supply it:\n  \
+                 .sink('array', shape=[8, 8, 3])   — always works; the shape belongs to the \
+                 sink\n  .assert_shape(dims=[8, 8, 3])     — when you know it and the source \
+                 does not (a list/array column's shape is only settled during execution)\n  \
+                 .resize(height=8, width=8)        — supplies height and width only"
+            ))
+        }
+        Sink::List(_) if state.ndim.is_none() && !from_column => Err(
+            "Number of dimensions (ndim) is unknown for 'list' sink. This should not happen for \
+             standard sources."
+                .to_string(),
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// Python entry point for [`check_sink`]: validate a serialized sink against
+/// its typed format, then against the output node's planned `state` and its
+/// source (`None` for a source-less pipeline).
+#[pyfunction]
+#[pyo3(signature = (sink_json, state, source_json=None, alias=None))]
+pub(crate) fn plan_sink(
+    sink_json: &str,
+    state: State,
+    source_json: Option<&str>,
+    alias: Option<&str>,
+) -> PyResult<()> {
+    let sink: crate::formats::sink::Sink =
+        serde_json::from_str(sink_json).map_err(|e| py_value_error(e.to_string()))?;
+    let source: Option<crate::formats::source::Source> = source_json
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|e| py_value_error(e.to_string()))?;
+    check_sink(&sink, &state, source.as_ref(), alias).map_err(py_value_error)
+}
+
 /// The input shape to hand `infer_shape`, or `None` to not ask.
 ///
 /// Unknown input rank normally means "do not ask" — `infer_shape` indexes its
@@ -551,6 +625,43 @@ mod tests {
             (ok.dims, ok.asserted),
             ([Some(10), None, Some(3)], [false; 3])
         );
+    }
+
+    #[test]
+    fn a_sink_the_plan_cannot_type_is_refused_unless_the_column_will() {
+        let sink = |v: serde_json::Value| -> crate::formats::sink::Sink {
+            serde_json::from_value(v).unwrap()
+        };
+        let source = |v: serde_json::Value| -> crate::formats::source::Source {
+            serde_json::from_value(v).unwrap()
+        };
+        let image = state("buffer", "auto", Some(3), [None; 3]);
+        let bytes = source(json!({"format": "image_bytes"}));
+        let column = source(json!({"format": "list"}));
+        let check = |k, s: &State, src| check_sink(&sink(k), s, Some(src), None);
+
+        let err = check(json!({"format": "list"}), &image, &bytes).unwrap_err();
+        assert!(
+            err.contains("Element dtype is unknown for the 'list' sink"),
+            "{err}"
+        );
+        assert!(check(json!({"format": "list"}), &image, &column).is_ok());
+        assert!(check(json!({"format": "png"}), &image, &bytes).is_ok());
+
+        let typed = state("buffer", "u8", Some(3), [Some(4), None, Some(3)]);
+        let err = check(json!({"format": "array"}), &typed, &bytes).unwrap_err();
+        assert!(err.contains("not known: width."), "{err}");
+        assert!(check(
+            json!({"format": "array", "shape": [4, 4, 3]}),
+            &typed,
+            &bytes
+        )
+        .is_ok());
+
+        let unranked = state("buffer", "u8", None, [None; 3]);
+        let err = check(json!({"format": "list"}), &unranked, &bytes).unwrap_err();
+        assert!(err.contains("ndim) is unknown for 'list' sink"), "{err}");
+        assert!(check(json!({"format": "list"}), &unranked, &column).is_ok());
     }
 
     #[test]

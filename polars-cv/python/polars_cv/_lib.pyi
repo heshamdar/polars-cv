@@ -55,8 +55,14 @@ def io_catalog() -> str:
 def enum_catalog() -> str:
     """Return the registered-enum catalogue as JSON (see ``tests/golden/enum_catalog.json``)."""
 
-def sink_check(spec_json: str) -> None:
-    """Validate one serialized sink against its typed format; raise ``ValueError``."""
+def plan_sink(
+    sink_json: str,
+    state: Any,
+    source_json: str | None = None,
+    alias: str | None = None,
+) -> None:
+    """Validate a serialized sink against its typed format and the output's
+    planned state; raise ``ValueError``."""
 
 def plan_source(source_json: str) -> dict[str, Any]:
     """Validate a serialized source and return its planned state (a

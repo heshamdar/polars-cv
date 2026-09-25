@@ -664,29 +664,6 @@ def is_supplied(value: Any, default: Any) -> bool:
     return bool(value != default)
 
 
-#: The sources whose element dtype and rank are resolved from the Polars column
-#: at plan-time-with-input (Rust ``resolved_output_specs``) rather than at build
-#: time. The typed ``list``/``array`` sinks defer to that instead of demanding
-#: an explicit dtype; spelled once because three separate checks in `lazy.py`
-#: carried their own copy of the tuple.
-SOURCES_RESOLVED_FROM_COLUMN: "frozenset[SourceFormat]" = frozenset(
-    {SourceFormat.LIST, SourceFormat.ARRAY, SourceFormat.AUTO}
-)
-
-#: Sinks whose Polars dtype carries a *typed element* — ``List(inner)`` and
-#: ``Array(inner, n)`` — and which therefore need a concrete element dtype at
-#: plan time. The binary/blob sinks and the numpy/torch struct sinks describe
-#: their contents in the data instead, so they never need one.
-#:
-#: The counterpart to :data:`SOURCES_RESOLVED_FROM_COLUMN`, and named for the
-#: same reason: ``_require_concrete_sink_dtype`` spelled this as a bare
-#: ``("list", "array")`` tuple, one format vocabulary written out by hand
-#: beside a check that already read the other one from here.
-SINKS_WITH_TYPED_ELEMENTS: "frozenset[SinkFormat]" = frozenset(
-    {SinkFormat.LIST, SinkFormat.ARRAY}
-)
-
-
 #: The dimension a shape hint names, by position. The hints are **positional**:
 #: ``height`` is dimension 0, ``width`` dimension 1, ``channels`` dimension 2,
 #: whatever the data means by them. Every reader agrees on that order —

@@ -359,7 +359,7 @@ A `source()` or `.sink()` parameter that the chosen format never reads is
 rejected. Each source and sink format is a typed Rust struct carrying exactly
 the fields its decode or encode reads (`src/formats/`, each
 `deny_unknown_fields`), and the builder validates what the caller passed
-against that definition (`plan_source`, `sink_check`) — the deserializer the graph itself
+against that definition (`plan_source`, `plan_sink`) — the deserializer the graph itself
 uses — so an unknown, misspelled or inapplicable keyword is refused while the
 pipeline is built, naming the formats it does apply to. `source()` sends
 exactly the keywords the caller passed (read from its own `locals()`, told

@@ -137,6 +137,20 @@ formats! {
 }
 
 impl Source {
+    /// Whether the element dtype and rank are resolved from the input column's
+    /// Polars type when the query is planned with its input (a `list`/`array`
+    /// column, or `auto` routing to one), rather than at build time.
+    pub fn resolves_from_column(&self) -> bool {
+        match self {
+            Source::List(_) | Source::Array(_) | Source::Auto(_) => true,
+            Source::Blob(_)
+            | Source::Contour(_)
+            | Source::FilePath(_)
+            | Source::ImageBytes(_)
+            | Source::Raw(_) => false,
+        }
+    }
+
     /// Whether a row that cannot be decoded is nulled rather than failing the
     /// query.
     pub fn nulls_on_error(&self) -> bool {
