@@ -18,7 +18,7 @@
 > | P5 — Geometry namespaces | **done** — `ContourKwargs`/`PointKwargs` are typed (`Param<T>`, `ColumnRef`, `#[derive(Op)]`); `input_slots`, `InputSlots`, `parse_named`/`require_named` deleted. Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `f3d7d94` (slow lane, `cargo deny`, `mkdocs --strict` included) |
 > | P6 — Delete the legacy protocol | **done** — `pipeline.rs` (`OpSpec`/`LegacyOpSpec`/dispatcher), `LEGACY_OPS`, `resolve_op`, the untyped `ParamValue`, `known_ops`, `OP_NAMES` (P6a); 20 Python enums generated from the registries via `enum_catalog.json` and their parity tests deleted (P6b); `enum_variants`/`enum_names` and the serde-name tests deleted, graph policies parse through `NAMED` (P6c). Python `OpSpec`/`ParamValue` deferred to P7, enum helpers kept (see deviations). Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `2ae7651` (slow lane, `cargo deny`, `mkdocs --strict` included) |
 > | P7 — Planner into Rust | **done, targets missed (see deviations)** — P7a `a6f0aa1`: `plan_step`, one FFI per append. P7b `98d7592`: per-op entering state and one rewrite primitive, `_replay`. P7c `66ff9bb`, `0df1790`, `9e3b6af`: identity elimination and the spatial pushdown in Rust (`node_pass`, generated `LogicalPass`), the pass catalogue (`OptFlags`/`OptConfig` from one list), `bit_exact` deleted. P7d `2ae8eaf`, `8f7f8fa`: `plan_source`; histogram buckets read off the ops. P7e `cc383db` … `0cef576`: `PlanState` is Rust's `State`, assertions applied by `plan_assert`, sinks checked by `plan_sink`, outputs carry `planned` (the `expected_*` wire fields deleted), binary lazy methods generated, one lineage fold. Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `0cef576` |
-> | P8 — API reshaping | pending |
+> | P8 — API reshaping | **done, no version bump (see deviations)** — P8a `65bc3d6`: one signature rule, derived by `gen_ops.positional` (the `#[param(positional)]` marker deleted; 15 ops change kind). P8b `ab13385`: `source()` keywords default to `None` (`is_supplied`, `_source_param_defaults` deleted; contour colour defaults in Rust), `perceptual_hash` generated, `output_encoding()` deleted. P8 exit `6a571ce`: documented `Pipeline()` calls bind against the real signatures, migration page. `signatures.json` re-recorded in P8a/P8b. Gate: full `scripts/verify.sh` PASS at `6a571ce` |
 > | P9 — Symbolic shapes | pending |
 > | P10 — Final sweep | pending |
 
@@ -55,11 +55,11 @@ Read this section, then the phase text for P7 onwards below.
   from `node_pass`; Python keeps the op list and immutable `PlanState`
   records, rewriting only through `_replay`. Outputs carry `planned`, the
   node's final state. No `Plan` pyclass (see deviations).
-- Next: **P8**, the signature phase. It is where the remaining Python
-  machinery goes, because each piece exists only to keep a frozen signature:
-  `is_supplied` and `_source_param_defaults` (value defaults on `source()`),
-  enum-member defaults (`perceptual_hash`'s wrapper), `output_encoding()`,
-  and the `out_dtype`/`preserve_dtype` sugar on `scale`/`clamp`.
+- P8 is done (`6a571ce`): generated methods follow one derived signature
+  rule, `source()` keywords default to `None`, and the docs' `Pipeline()`
+  calls are bound against the real signatures.
+- Next: **P9**, symbolic shapes (`infer_dims` replacing the four-probe
+  `infer_shape`).
 
 ### Line counts per phase
 
@@ -76,6 +76,7 @@ stands (lines, by area; `py-gen` is `_ops_generated.py`, generated):
 | P7c `9e3b6af` | 18,333 | 209 | 20,969 | 12,985 | 1,930 | 54,890 |
 | P7d (part) `8f7f8fa` | 18,479 | 209 | 20,969 | 12,895 | 1,930 | 54,892 |
 | P7 exit `0cef576` | 18,967 | 209 | 20,969 | 12,183 | 2,125 | 54,930 |
+| P8 `6a571ce` | 18,936 | 197 | 20,969 | 12,062 | 2,127 | 55,140 |
 
 So far the phases have *moved* definitions into typed Rust (each carrying the
 docs, defaults and validation Python used to hold) more than they have
@@ -199,6 +200,16 @@ as planned so the deviation stays visible.
   validate literals against the *generated* enums (no second vocabulary) for
   `source()`, `out_dtype=` and the geometry accessors, which have no build-time
   Rust check; deleting them would move those errors from build to execution.
+
+- **P8 — no version bump.** The breaking changes are in the CHANGELOG's
+  Unreleased section with a migration page; the version moves when that
+  section is released, which is a release decision, not a migration step.
+- **P8 — hand-written sugar keeps its signatures.** The rule is applied to
+  generated methods. `clamp(min_val, max_val)`, `scale(factor, out_dtype=)`,
+  `resize_scale` and `rasterize` keep theirs; no renames were agreed.
+- **P8 — the binding check reads `Pipeline()`-rooted chains only.** A bare
+  `.name(...)` in a doc block may be Polars', so only chains that start at
+  `Pipeline()` are bound (396 calls, floor 300).
 
 - **P7 — no `Plan` pyclass; the state is a Rust-computed value instead.**
   What P7 set out to delete, the Python *planning logic*, is gone: every
