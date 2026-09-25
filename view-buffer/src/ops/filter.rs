@@ -105,7 +105,7 @@ impl<M: Mode> ConvolveOp<M> {
     }
 }
 
-impl Op for ConvolveOp {
+impl<M: Mode> Op for ConvolveOp<M> {
     fn validate(
         &self,
         input_shapes: &[&[usize]],

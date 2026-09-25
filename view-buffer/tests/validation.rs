@@ -141,7 +141,7 @@ fn test_normalize_dtype_promotion_behavior() {
 
 #[test]
 fn test_other_compute_ops_have_no_validation() {
-    let ops = [
+    let ops: [ComputeOp; 4] = [
         ComputeOp::Cast { dtype: DType::U8 },
         ComputeOp::Scale { factor: 2.0 },
         ComputeOp::Relu,

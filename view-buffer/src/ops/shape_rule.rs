@@ -48,13 +48,21 @@ impl Dim {
 
 /// A shape-determining parameter at plan time: its value, or `PerRow` when a
 /// per-row expression supplies it (known only once a row executes).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sym<T> {
     Known(T),
     PerRow,
 }
 
 impl<T> Sym<T> {
+    /// The value transformed, or still per-row.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Sym<U> {
+        match self {
+            Sym::Known(v) => Sym::Known(f(v)),
+            Sym::PerRow => Sym::PerRow,
+        }
+    }
+
     /// The value, when known.
     pub fn known(self) -> Option<T> {
         match self {

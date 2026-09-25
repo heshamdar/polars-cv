@@ -42,8 +42,8 @@ several minutes. Reach for `--release` only when benchmarking.
 | `ops/` | The typed op catalogue: `typed_ops!` lists the op families (view-buffer's engine enums, and `ops/graph.rs`'s `GraphOp` for graph-only ops), each generic over `Mode` and deriving `Ops`/`Resolve`; `TypedOp` holds the `Wire` op, resolved per row to the `Exec` op and wrapped as a `GraphStep`; `op_catalog.json` is generated from it |
 | `formats/` | Typed sources and sinks, one struct per format (`formats!` registry, `io_catalog.json`) |
 | `execute.rs` | Decode/encode helpers shared by graph execution |
-| `graph/step.rs` | `GraphStep` — the plugin-level step vocabulary: `Buffer(ViewDto)` plus graph-only steps (binary, mask, merge, geometry, reduction, histogram, perceptual_hash, extract_shape, label_reduce); contract methods read by the FFI |
-| `params.rs` | `ParamCtx`/`ParamCol` — the per-call view of expression-parameter columns every typed `Param<T>` reads through, with the null policy. `ParamCtx::planning` resolves an op with no row, for its value-independent rules: every per-row param takes `WireScalar::planning_value`. Shapes never go through it — they are symbolic (`TypedOp::shape`) |
+| `graph/step.rs` | `GraphStep<M>` — a node's operation, generic over the mode: `Buffer(ViewDto)`, the domain-changing engine families (geometry, reduction, histogram, perceptual hash) and `Graph(GraphOp)`. `GraphStep<Wire>` is the typed op; its rule methods are what the planner and the FFI read |
+| `params.rs` | `ParamCtx`/`ParamCol` — the per-call view of expression-parameter columns every typed `Param<T>` reads through, with the null policy. The planner never resolves an op: it reads the `Wire` op's rules, where a per-row value is unknown |
 | `output.rs` | Numpy/torch zero-copy struct output (`NumpyRowOutput`, `build_numpy_series`) |
 | `ext_types.rs` | `ExtType`: the polars-cv Arrow extension types. Builds tagged *outputs* only (`ExtType::tag` / `dtype`, e.g. `SinkKind::NdArray`); inputs never arrive tagged because `polars_cv._plugin.call` passes `.ext.storage()`, so nothing registers with polars-core's extension registry |
 | `cloud.rs` | Cloud storage and HTTP file reads via `object_store` + `reqwest` |
@@ -113,14 +113,15 @@ docs in `graph/compiled.rs` and `tests/test_graph_cache.py`.
 
 ### Op resolution
 
-Each op is a `Wire` variant of its family; resolving it (derived: each
-per-row field read from its column) gives the `Exec` variant, which its
-family's `typed_ops!` wrap turns into the `GraphStep` (`graph/step.rs`). Buffer ops wrap a view-buffer `ViewDto`
-(`GraphStep::Buffer`); steps that involve graph topology (node references,
-per-row expression columns) or non-buffer outputs are their own `GraphStep`
-variants and never enter view-buffer's vocabulary. An op with no per-row
-field resolves once at compile time (`OpResolver::Static`); the rest resolve
-per row.
+The typed op is a `GraphStep<Wire>`; resolving it (derived: each per-row
+field read from its column, then `check()` with every value known) gives the
+`GraphStep<Exec>` that runs. Buffer ops are a view-buffer `ViewDto`
+(`GraphStep::Buffer`), executed through `ViewExpr::apply_op`, which lowers an
+op that runs as another (`ComputeOp::lowered`); ops that involve graph
+topology (node references, per-row expression columns) are `GraphOp`s
+(`GraphStep::Graph`) and never enter view-buffer's vocabulary — the executor
+dispatches on their `Role`. An op with no per-row field resolves once at
+compile time (`OpResolver::Static`); the rest resolve per row.
 
 ### Source Decoding (`graph/decode.rs`)
 

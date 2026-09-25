@@ -2638,11 +2638,14 @@ mod blur_radius_tests {
     use crate::ops::traits::Op;
 
     fn declared_radius(sigma: f32) -> usize {
-        let op = ImageOp {
+        let op: ImageOp = ImageOp {
             kind: ImageOpKind::Blur { sigma },
         };
         match op.spatial_dependency() {
-            SpatialDependency::Neighborhood(support) => support.radius,
+            SpatialDependency::Neighborhood(support) => support
+                .radius
+                .known()
+                .expect("an executed blur's radius is known"),
             other => panic!("blur must be a Neighborhood dependency, got {other:?}"),
         }
     }

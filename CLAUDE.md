@@ -45,9 +45,9 @@ The enforcement standard is stricter than "prefer the shared path":
   that does the whole thing.
 - **No defaulted contract methods on op traits.** `Op::shape`,
   `output_dtype_rule`,
-  `memory_effect`, `spatial_dependency` and `identity_rule`, and the typed op
-  family's `Family::planned_shape`, are required with no default so a new op
-  cannot inherit a lie. Adding a default to any of them is a regression,
+  `memory_effect`, `spatial_dependency` and `identity_rule` are required with
+  no default so a new op cannot inherit a lie (a graph op's rules are
+  exhaustive matches over its `Role`). Adding a default to any of them is a regression,
   however convenient.
 - **One authority per fact, named once.** A dtype's spellings live in
   `dtype_table!`; enum variant names live in `named_variants!` + the
@@ -345,11 +345,11 @@ Rust: view-buffer (the engine)
 
 **polars-cv/src/**
 - `lib.rs` — PyO3 module entry, `vb_graph` polars expression function, dtype inference, and the `Plan`/`PlanState` classes and `enum_catalog`/`op_catalog`/`io_catalog`/`check_graph` FFI the Python builder reads (`plan.rs` holds `Plan` — a pipeline's source, typed ops and the state at every op boundary — and `plan::step`, run once per appended op; `passes.rs` the node-scope optimisation passes)
-- `ops/` — the typed op catalogue: `typed_ops!` lists the op *families* — view-buffer's engine enums (`ImageOpKind`, `ComputeOp`, `ViewOp`, …) and `ops/graph.rs`'s `GraphOp` for the graph-only ops — each generic over a `Mode` (`Wire`: `Param<T>`/`Literal<T>` fields; `Exec`: plain values) and deriving `Ops`/`Resolve`. `TypedOp` holds the `Wire` op; resolving it (derived, per row) gives the `Exec` op, wrapped as a `GraphStep` (`graph/step.rs`); each family's one generic `shape()` is its symbolic `OpShape`; `catalog_json()` feeds `scripts/gen_ops.py`
+- `ops/` — the typed op catalogue: `typed_ops!` lists the op *families* — view-buffer's engine enums (`ImageOpKind`, `ComputeOp`, `ViewOp`, …) and `ops/graph.rs`'s `GraphOp` for the graph-only ops — each generic over a `Mode` (`Wire`: `Param<T>`/`Literal<T>` fields; `Exec`: plain values), deriving `Ops`/`Resolve`, with the position it takes in a `GraphStep` (`graph/step.rs`). `TypedOp` is `GraphStep<Wire>`: the planner reads its rules (generic `Op` impls, `GraphOp`'s own) directly, and resolving it per row gives the `GraphStep<Exec>` that runs; `catalog_json()` feeds `scripts/gen_ops.py`
 - `formats/` — the typed sources and sinks, one struct per format in a `formats!` registry
 - `execute.rs` — source decoding helpers (image bytes, contours) and byte-sink encoding
 - `graph/` — `UnifiedGraph` execution engine: `types.rs` (`UnifiedGraph`, `GraphNode`, `OutputSpec`, `RowErrorPolicy`), `compiled.rs` (process-wide compiled-graph cache), `step.rs` (`GraphStep` — the plugin-level step vocabulary), source decoding (`decode.rs`), sink encoding (`encode.rs`)
-- `params.rs` — `ParamCtx`/`ParamCol`: the per-call view of the expression-parameter columns every `Param<T>` reads, with the null policy; `ParamCtx::planning` resolves an op with no row, for its rules
+- `params.rs` — `ParamCtx`/`ParamCol`: the per-call view of the expression-parameter columns every `Param<T>` reads, with the null policy
 - `cloud.rs` — remote/cloud transport (`object_store` backends, `cloud_options`, bounded-concurrency reads)
 - `fetch.rs` — stage one of every path-based read: path column → bytes (`prefetch`, `row_bytes`, `parse_on_error`), shared by the `file_path` source and `read_bytes.rs`; owns `PathPolicy` (the `allowed_roots` sandbox)
 - `read_bytes.rs` — `read_file_bytes` plugin function (`.cv.read_bytes()`) — `fetch.rs` with the decode omitted, for byte-identical passthrough
@@ -390,7 +390,7 @@ Domain constraints are enforced at pipeline-build time. Operations that don't ma
 
 Most operation parameters accept either a literal (`224`) or a Polars expression (`pl.col("target_height")`). The builder encodes an expression as `{"$slot": i}` over the pipeline's own expression table (`Pipeline._slot`), renumbered onto the graph's inputs at serialization. Per-row expression params are resolved in Rust via `params.rs` (each op through its typed `Param<T>` fields), and by `geom_params.rs` for the `.contour`/`.point`/`.bbox` namespaces, which bypass `vb_graph` but carry their expression params the same way: extra plugin inputs, each named by its kwarg's `{"$slot": n}`.
 
-The rule for whether a parameter may be per-row is *not* its type: **a parameter is eligible iff its value has no effect on the output shape, rank or dtype**, because the lazy schema is computed at plan time and must match what executes. So non-structural enums and flags (`filter`, `interpolation`, `pad(mode=)`, `convolve2d(border=, normalize=)`, …) are per-row, while structural parameters are literal-only: `cast(dtype=)`, `normalize(method=, out_dtype=)`, reduction `axis`, `perceptual_hash(hash_size=, algorithm=)`, `rotate(expand=)`, `histogram(closed=, output=)`, the `transpose`/`flip` axis lists and `reshape`'s element count. For a list-valued parameter the *length* is structural while the elements are not — a `convolve2d` kernel keeps a literal element count but each coefficient may be an expression. Plan-time shapes are symbolic (a per-row param is `Sym::PerRow` in the op's `OpShape`), but the planner still resolves each op once without a row to read its rules, where every per-row param takes a placeholder (`ParamCtx::planning`); that is sound only because of the eligibility rule.
+The rule for whether a parameter may be per-row is *not* its type: **a parameter is eligible iff its value has no effect on the output shape, rank or dtype**, because the lazy schema is computed at plan time and must match what executes. So non-structural enums and flags (`filter`, `interpolation`, `pad(mode=)`, `convolve2d(border=, normalize=)`, …) are per-row, while structural parameters are literal-only: `cast(dtype=)`, `normalize(method=, out_dtype=)`, reduction `axis`, `perceptual_hash(hash_size=, algorithm=)`, `rotate(expand=)`, `histogram(closed=, output=)`, the `transpose`/`flip` axis lists and `reshape`'s element count. For a list-valued parameter the *length* is structural while the elements are not — a `convolve2d` kernel keeps a literal element count but each coefficient may be an expression. The planner reads every rule from the op as written (`TypedOp` is `GraphStep<Wire>`, and every rule is generic over the mode): a per-row value is unknown there — `Sym::PerRow` in a shape, a neighbourhood radius or a check it skips — and is never stood in for; it is checked when its row runs.
 
 A parameter column may contain **nulls**. `Pipeline.on_null_param("raise"|"null")` (and `on_null(...)` on the geometry accessors) chooses between failing the query and nulling just the affected rows. This is one shared mechanism, never per-op handling: a `NullParamPolicy` rides on `ParamCtx` and every null reaches `ParamCol::on_null`, which flags the context so `graph/compiled.rs` skips the node for that row — reusing the same null-propagation path a null input image already takes, so nulling is node-scoped rather than row-scoped. Do not add per-op or per-parameter null keywords: a fallback value is already `pl.col("h").fill_null(224)`, and a per-parameter policy would have to enter every op's wire form (or CSE, which compares that form, would merge ops differing only in policy).
 
@@ -450,8 +450,8 @@ arm, both since removed) are documented alongside it.
    engine op — add to the appropriate module, give it truthful `Op` contracts
    (shape/dtype/domain/channel rules), and register it in `ViewDto`
    (`tests/apply_op_coverage.rs` requires a probe per variant). Graph-level
-   steps (node references, non-buffer outputs) become `GraphStep` variants in
-   `polars-cv/src/graph/step.rs` instead.
+   steps (node references, input columns) become `GraphOp` variants in
+   `polars-cv/src/ops/graph.rs` instead, each given a `Role`.
 2. Define it in the **typed catalogue**: a variant of its family enum —
    the engine enum in view-buffer (`ImageOpKind<M>`, `ComputeOp<M>`, …) for an
    engine op, `GraphOp<M>` in `polars-cv/src/ops/graph.rs` for a graph-level
@@ -465,8 +465,10 @@ arm, both since removed) are documented alongside it.
    `Sym::PerRow` via `M::sym`/`size`), and its `check()` refuses any
    parameter combination no row can run. Kernels match the `Exec` variant,
    where `M::V<u32>` *is* `u32`. A new family is one `typed_ops!` line.
-   `typed_shape_is_the_resolved_steps` holds the planned shape to the
-   executed step's where an op lowers to another (`ComputeOp::lowered`). A
+   Every `Op` rule is generic over the mode, reading a per-row field through
+   `M::sym`/`known` and saying nothing about one it does not know. An op
+   that executes as another (`ComputeOp::lowered`, inside
+   `ViewExpr::apply_op`) keeps its shape (`a_lowered_op_keeps_its_shape`). A
    parameter read only under some branch becomes an enum variant, never an
    optional field that can be ignored. The Python planner picks up the op's
    schema effect through `Plan.push` — no Python-side schema special cases.

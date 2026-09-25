@@ -181,7 +181,7 @@ impl Default for PerceptualHashOp {
     }
 }
 
-impl Op for PerceptualHashOp {
+impl<M: Mode> Op for PerceptualHashOp<M> {
     fn name(&self) -> &'static str {
         "PerceptualHash"
     }
@@ -240,10 +240,11 @@ impl Op for PerceptualHashOp {
         }
 
         // Validate hash_size is a power of 2 and reasonable
-        if !self.hash_size.is_power_of_two() {
+        let hash_size = M::lit(&self.hash_size);
+        if !hash_size.is_power_of_two() {
             return Err(ValidationError::InvalidParameter {
                 param: "hash_size".to_string(),
-                reason: format!("hash_size must be a power of 2, got {}", self.hash_size),
+                reason: format!("hash_size must be a power of 2, got {hash_size}"),
             });
         }
 

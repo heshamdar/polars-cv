@@ -265,8 +265,6 @@ fn float_to_i64(v: f64) -> Option<i64> {
 #[derive(Default)]
 pub struct ParamCtx<'a> {
     cols: Vec<ParamCol<'a>>,
-    /// Resolving an op at plan time, for its rules (see [`planning`](Self::planning)).
-    planning: bool,
     null_policy: NullParamPolicy,
     /// Set by [`ParamCol::on_null`] when a null was read under
     /// [`NullParamPolicy::Null`]. `Cell` because resolvers take `&ParamCtx`;
@@ -284,34 +282,9 @@ impl<'a> ParamCtx<'a> {
     pub fn with_null_policy(inputs: &'a [Series], policy: NullParamPolicy) -> Self {
         ParamCtx {
             cols: inputs.iter().map(ParamCol::new).collect(),
-            planning: false,
             null_policy: policy,
             null_hit: Cell::new(false),
         }
-    }
-
-    /// A *plan-time* context: an op is resolved without any row to read its
-    /// rules (domain, dtype, rank, channels, identity), which is sound because
-    /// a parameter may be per-row exclusively when it has **no effect on
-    /// output shape, rank, or dtype** (a `Literal<T>` field cannot hold a
-    /// slot). Every per-row parameter therefore resolves to
-    /// [`WireScalar::planning_value`](view_buffer::naming::WireScalar::planning_value).
-    /// The shape is not read this way: it is symbolic
-    /// ([`TypedOp::shape`](crate::ops::TypedOp::shape)).
-    pub fn planning() -> Self {
-        ParamCtx {
-            cols: Vec::new(),
-            planning: true,
-            // No column is read, so the policy is unreachable; `Raise` keeps
-            // planning strict.
-            null_policy: NullParamPolicy::Raise,
-            null_hit: Cell::new(false),
-        }
-    }
-
-    /// Whether this resolves an op at plan time rather than for a row.
-    pub fn is_planning(&self) -> bool {
-        self.planning
     }
 
     /// The policy this context applies to null parameter values.

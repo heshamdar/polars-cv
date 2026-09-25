@@ -74,15 +74,6 @@ pub(crate) fn py_value_error(msg: String) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(msg)
 }
 
-/// Resolve a typed op at plan time, for its rules (see
-/// [`ParamCtx::planning`](crate::params::ParamCtx::planning)).
-pub(crate) fn planning_step(
-    op: &crate::ops::TypedOp,
-) -> Result<crate::graph::step::GraphStep, String> {
-    op.resolve(0, &crate::params::ParamCtx::planning())
-        .map_err(|e| format!("resolve_op: {e}"))
-}
-
 /// The field names of the `{x, y}` point struct the geometry surfaces publish.
 ///
 /// A runtime accessor plus a Python parity test, rather than a generated module. That

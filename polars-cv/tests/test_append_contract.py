@@ -368,3 +368,23 @@ def test_an_unknown_input_is_not_planned_as_square() -> None:
     assert plan.dims[:2] == (None, None)
     plan = Pipeline().source("image_bytes").resize_to_height(7, filter=per_row)._state
     assert plan.dims[:2] == (7, None)
+
+
+@plugin_required
+def test_a_per_row_parameter_is_not_validated_as_a_placeholder() -> None:
+    """A per-row value is unknown at plan time, so no plan-time check reads it.
+
+    The planner used to resolve each op with a stand-in value for every
+    per-row parameter (``1`` for an integer) and validate that: a per-row
+    ``channel_select`` on a known ``[4, 4]`` buffer was refused as "channel 1"
+    though every row selects channel 0. A literal index is still checked
+    while the pipeline is built.
+    """
+    base = Pipeline().source("array").assert_shape(dims=[4, 4])
+    pipe = base.channel_select(index=pl.col("i"))
+    arr = np.arange(16, dtype=np.uint8).reshape(4, 4)
+    df = pl.DataFrame({"a": [arr.tolist()], "i": [0]})
+    out = df.select(pl.col("a").cv.pipe(pipe).sink("list").alias("o"))["o"]
+    assert out.to_list() == [arr.tolist()]
+    with pytest.raises(ValueError, match="channel 1"):
+        base.channel_select(index=1)

@@ -572,7 +572,7 @@ impl ReductionOp {
     }
 }
 
-impl Op for ReductionOp {
+impl<M: Mode> Op for ReductionOp<M> {
     fn name(&self) -> &'static str {
         match self {
             ReductionOp::Max { .. } => "Max",

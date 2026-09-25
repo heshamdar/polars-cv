@@ -349,9 +349,9 @@ impl UnifiedGraph {
         };
         match node.ops.last() {
             Some(op) => matches!(
-                crate::planning_step(op),
-                Ok(crate::graph::step::GraphStep::Histogram(h))
-                    if h.output == view_buffer::ops::HistogramOutput::Buckets
+                op,
+                crate::graph::step::GraphStep::Histogram(h)
+                    if h.output.get() == view_buffer::ops::HistogramOutput::Buckets
             ),
             None => node
                 .upstream

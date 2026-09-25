@@ -23,11 +23,6 @@ impl Values for RowValues<'_> {
 
     fn value<T: WireScalar>(&self, slot: usize) -> PolarsResult<T> {
         let (row, ctx) = (self.row, self.ctx);
-        // The planner resolves an op for its rules with no row to read; see
-        // `ParamCtx::planning`.
-        if ctx.is_planning() {
-            return Ok(T::planning_value());
-        }
         let col = ctx.col(slot)?;
         let value = match T::KIND {
             WireKind::Int => WireValue::Int(col.get_i64(row, ctx)?),

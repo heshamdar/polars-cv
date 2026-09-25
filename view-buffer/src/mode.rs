@@ -84,6 +84,13 @@ pub fn size<M: Mode>(value: &M::V<u32>) -> Sym<usize> {
     }
 }
 
+/// A per-row-capable parameter's value, when it is known (always, for an
+/// `Exec` op; for a `Wire` op, when it is a literal). A rule that reads a
+/// value reads it through this and says nothing about one it does not know.
+pub fn known<M: Mode, T: WireScalar>(value: &M::V<T>) -> Option<T> {
+    M::sym(value).known()
+}
+
 /// The wire key marking a per-row parameter.
 pub const SLOT_KEY: &str = "$slot";
 
@@ -146,6 +153,16 @@ pub trait Values {
     type Error;
     /// The value slot `slot` holds for this row.
     fn value<T: WireScalar>(&self, slot: usize) -> Result<T, Self::Error>;
+}
+
+/// No per-row values: resolves an all-literal op, and refuses a slot.
+pub struct Literals;
+
+impl Values for Literals {
+    type Error = String;
+    fn value<T: WireScalar>(&self, slot: usize) -> Result<T, String> {
+        Err(format!("slot {slot} read where only literals resolve"))
+    }
 }
 
 /// A `Wire` value's executed form for one row.

@@ -1,7 +1,7 @@
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::mode::{size, Exec, Mode};
+use crate::mode::{known, size, Exec, Mode};
 use crate::ops::pad::{PadMode, PadPosition};
-use crate::ops::shape_rule::OpShape;
+use crate::ops::shape_rule::{OpShape, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use polars_cv_macros::{Ops, Resolve};
@@ -346,7 +346,7 @@ pub struct ImageOp<M: Mode = Exec> {
     pub kind: ImageOpKind<M>,
 }
 
-impl Op for ImageOp {
+impl<M: Mode> Op for ImageOp<M> {
     fn validate(
         &self,
         input_shapes: &[&[usize]],
@@ -385,8 +385,14 @@ impl Op for ImageOp {
                     _ => Ok(()),
                 }
             }
+            // A per-row index is checked per row.
             ImageOpKind::ChannelSwap { order } => match shape {
-                [_, _, c] if order.len() == *c && order.iter().all(|&i| (i as usize) < *c) => {
+                [_, _, c]
+                    if order.len() == *c
+                        && order
+                            .iter()
+                            .all(|i| known::<M, u32>(i).is_none_or(|i| (i as usize) < *c)) =>
+                {
                     Ok(())
                 }
                 _ => Err(ValidationError::ShapeRequirement {
@@ -495,18 +501,21 @@ impl Op for ImageOp {
             | ImageOpKind::ChannelSwap { .. } => SpatialDependency::Pointwise,
             // Separable Gaussian of radius ceil(3σ) — the radius
             // `gaussian_kernel_1d` builds in the runner.
-            ImageOpKind::Blur { sigma } => {
-                SpatialDependency::neighborhood((sigma * 3.0).ceil() as usize)
-            }
+            ImageOpKind::Blur { sigma } => SpatialDependency::neighborhood_of(
+                M::sym(sigma).map(|sigma| (sigma * 3.0).ceil() as usize),
+            ),
             // A ksize×ksize structuring element applied `iterations` times
             // reaches (ksize / 2) * iterations pixels out.
             ImageOpKind::Erode { ksize, iterations }
             | ImageOpKind::Dilate { ksize, iterations } => {
-                SpatialDependency::neighborhood((*ksize as usize / 2) * *iterations as usize)
+                SpatialDependency::neighborhood_of(match (M::sym(ksize), M::sym(iterations)) {
+                    (Sym::Known(k), Sym::Known(n)) => Sym::Known((k as usize / 2) * n as usize),
+                    _ => Sym::PerRow,
+                })
             }
             // Gradient = one dilate − one erode, each of half-extent ksize / 2.
             ImageOpKind::MorphGradient { ksize } => {
-                SpatialDependency::neighborhood(*ksize as usize / 2)
+                SpatialDependency::neighborhood_of(M::sym(ksize).map(|k| k as usize / 2))
             }
             // Canny's hysteresis links edges via connectivity that can span the
             // whole image, so its support is not bounded — treat as global.
@@ -610,5 +619,27 @@ impl Op for ImageOp {
             | ImageOpKind::Letterbox { .. }
             | ImageOpKind::ChannelSwap { .. } => OutputDTypeRule::PreserveInput,
         }
+    }
+}
+
+#[cfg(test)]
+mod rule_tests {
+    use super::*;
+    use crate::mode::{Param, Wire};
+    use crate::ops::spatial_rule::NeighborhoodSupport;
+
+    /// A rule that reads a per-row value says so rather than reading a
+    /// stand-in: a blur whose sigma is per-row has a per-row radius.
+    #[test]
+    fn a_per_row_sigma_plans_a_per_row_radius() {
+        let blur = |sigma| ImageOp::<Wire> {
+            kind: ImageOpKind::Blur { sigma },
+        };
+        let radius = |op: ImageOp<Wire>| match op.spatial_dependency() {
+            SpatialDependency::Neighborhood(NeighborhoodSupport { radius }) => radius,
+            other => panic!("a blur is a neighborhood, got {other:?}"),
+        };
+        assert_eq!(radius(blur(Param::Slot(1))), Sym::PerRow);
+        assert_eq!(radius(blur(Param::Lit(1.0))), Sym::Known(3));
     }
 }

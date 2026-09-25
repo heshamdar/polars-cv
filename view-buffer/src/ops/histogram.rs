@@ -218,9 +218,9 @@ impl HistogramOp {
 
     /// The equal-width bin count (edges: one fewer than their number).
     fn bin_count(&self) -> usize {
-        match &self.bins {
-            Bins::Count(n) => *n as usize,
-            Bins::Edges(edges) => edges.len().saturating_sub(1),
+        match self.num_bins() {
+            Sym::Known(n) => n,
+            Sym::PerRow => unreachable!("an executed op's values are known"),
         }
     }
 
@@ -425,7 +425,7 @@ impl HistogramOp {
     }
 }
 
-impl Op for HistogramOp {
+impl<M: Mode> Op for HistogramOp<M> {
     fn name(&self) -> &'static str {
         "Histogram"
     }
@@ -465,14 +465,15 @@ impl Op for HistogramOp {
         _input_shapes: &[&[usize]],
         _input_dtypes: &[DType],
     ) -> Result<(), ValidationError> {
-        if let Some(edges) = self.explicit_edges() {
+        // A per-row bin count is checked per row.
+        if let Bins::Edges(edges) = &self.bins {
             if edges.len() < 2 {
                 return Err(ValidationError::InvalidParameter {
                     param: "edges".to_string(),
                     reason: "edges must contain at least 2 values".to_string(),
                 });
             }
-        } else if self.bin_count() == 0 {
+        } else if self.num_bins() == Sym::Known(0) {
             return Err(ValidationError::InvalidParameter {
                 param: "bins".to_string(),
                 reason: "bins must be > 0".to_string(),
@@ -490,7 +491,7 @@ impl Op for HistogramOp {
     }
 
     fn output_dtype_rule(&self) -> OutputDTypeRule {
-        match self.output {
+        match M::lit(&self.output) {
             HistogramOutput::Counts => OutputDTypeRule::ForceU64,
             HistogramOutput::Normalized | HistogramOutput::Edges | HistogramOutput::Buckets => {
                 OutputDTypeRule::ForceF64

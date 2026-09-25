@@ -543,13 +543,24 @@ impl ComputeOp {
     }
 }
 
-impl Op for ComputeOp {
+impl<M: Mode> Op for ComputeOp<M> {
     fn name(&self) -> &'static str {
-        // A scalar op is named by the one arithmetic authority it lowers to.
-        if let Some(s) = self.scalar() {
-            return s.name();
-        }
+        // A scalar op is named by the one arithmetic authority it lowers to
+        // (`scalar()`; `wire_scalars_are_named_as_their_scalar_op` pins it).
         match self {
+            ComputeOp::Scalar(s) => s.name(),
+            ComputeOp::Neg => "Neg",
+            ComputeOp::Abs => "Abs",
+            ComputeOp::Sqrt => "Sqrt",
+            ComputeOp::Square => "Square",
+            ComputeOp::Reciprocal => "Recip",
+            ComputeOp::Sign => "Sign",
+            ComputeOp::Floor => "Floor",
+            ComputeOp::Ceil => "Ceil",
+            ComputeOp::Round => "Round",
+            ComputeOp::Trunc => "Trunc",
+            ComputeOp::ClampMin { .. } => "Max",
+            ComputeOp::ClampMax { .. } => "Min",
             ComputeOp::Cast { .. } => "Cast",
             ComputeOp::Affine(_) => "Affine",
             ComputeOp::Scale { .. } => "Scale",
@@ -563,7 +574,8 @@ impl Op for ComputeOp {
             ComputeOp::RotateAffine { .. } => "RotateAffine",
             ComputeOp::WarpAffine { .. } => "WarpAffine",
             ComputeOp::Rotate { .. } => "Rotate",
-            _ => unreachable!("every other variant is a scalar op"),
+            ComputeOp::AddConstant { .. } => "Add",
+            ComputeOp::SubtractConstant { .. } => "Sub",
         }
     }
 
@@ -648,7 +660,9 @@ impl Op for ComputeOp {
                 self.check()
                     .map_err(|message| ValidationError::Generic { message })?;
                 let shape = input_shapes[0];
-                if let (NormalizeMethod::Preset, Some(mean), Some(std)) = (method, mean, std) {
+                if let (NormalizeMethod::Preset, Some(mean), Some(std)) =
+                    (M::lit(method), mean, std)
+                {
                     if shape.len() < 2 || shape.len() > 3 {
                         return Err(ValidationError::ShapeRequirement {
                             requirement: "2D (HW) or 3D (HWC)",
@@ -718,9 +732,9 @@ impl Op for ComputeOp {
         match self {
             // Computation happens in f32; the result is cast to `out_dtype`.
             ComputeOp::Normalize { out_dtype, .. } => {
-                OutputDTypeRule::Fixed(out_dtype.unwrap_or(DType::F32))
+                OutputDTypeRule::Fixed(out_dtype.as_ref().map_or(DType::F32, M::lit))
             }
-            ComputeOp::Cast { dtype } => OutputDTypeRule::Fixed(*dtype),
+            ComputeOp::Cast { dtype } => OutputDTypeRule::Fixed(M::lit(dtype)),
             ComputeOp::Fused(k) => OutputDTypeRule::Fixed(k.out_dtype),
             ComputeOp::Invert
             | ComputeOp::Affine(_)
@@ -728,6 +742,60 @@ impl Op for ComputeOp {
             | ComputeOp::WarpAffine { .. }
             | ComputeOp::Rotate { .. } => OutputDTypeRule::PreserveInput,
             _ => OutputDTypeRule::PromoteToFloat,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mode::{Literals, Resolve, Wire};
+
+    /// The generic `name()` spells each wire scalar op's `ScalarOp` name
+    /// (a per-row value cannot build the `ScalarOp`); the executed op's
+    /// `scalar()` is the authority it must match.
+    #[test]
+    fn wire_scalars_are_named_as_their_scalar_op() {
+        let mut scalars = 0;
+        for wire in ComputeOp::<Wire>::samples() {
+            let exec: ComputeOp = wire.resolve(&Literals).unwrap();
+            assert_eq!(wire.name(), exec.name());
+            if let Some(scalar) = exec.scalar() {
+                assert_eq!(exec.name(), scalar.name(), "{exec:?}");
+                scalars += 1;
+            }
+        }
+        assert!(scalars >= 14, "only {scalars} scalar ops compared");
+    }
+
+    /// An op executes as the step it lowers to — `rotate` by a lattice angle
+    /// as a zero-copy view, `warp_affine` as `Affine` — whose shape is that
+    /// step's own; the plan reads the op's. The two must agree.
+    #[test]
+    fn a_lowered_op_keeps_its_shape() {
+        let mut ops: Vec<ComputeOp> = ComputeOp::<Wire>::samples()
+            .iter()
+            .map(|op| op.resolve(&Literals).unwrap())
+            .collect();
+        // Every rotation class: the lattice angles, the identity, a resample.
+        for angle in [0.0, 90.0, 180.0, 270.0, -90.0, 30.0] {
+            for expand in [false, true] {
+                ops.push(ComputeOp::Rotate {
+                    angle,
+                    expand,
+                    interpolation: InterpolationType::Bilinear,
+                    border_value: 0.0,
+                });
+            }
+        }
+        let input = [7usize, 5, 3];
+        for op in ops {
+            let lowered = op.clone().lowered();
+            assert_eq!(
+                op.shape().concrete(&[&input]),
+                lowered.as_op().shape().concrete(&[&input]),
+                "{op:?} lowers to {lowered:?}"
+            );
         }
     }
 }

@@ -1,7 +1,7 @@
 //! View operations that perform zero-copy transformations.
 
 use crate::core::dtype::OutputDTypeRule;
-use crate::mode::{size, Exec, Mode};
+use crate::mode::{known, size, Exec, Mode};
 use crate::ops::shape_rule::{OpShape, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
@@ -117,10 +117,14 @@ impl<M: Mode> ViewOp<M> {
     }
 }
 
-impl ViewOp {
+/// A crop's `(start, end)` bounds, one per axis.
+pub type Window = (Vec<Sym<usize>>, Vec<Sym<usize>>);
+
+impl<M: Mode> ViewOp<M> {
     /// The window a crop or slice keeps: `start..end` per axis, `usize::MAX`
-    /// running to the end of that axis.
-    pub fn window(&self) -> Option<(Vec<usize>, Vec<usize>)> {
+    /// running to the end of that axis; a bound a per-row value sets is
+    /// `PerRow`.
+    pub fn window_of(&self) -> Option<Window> {
         match self {
             ViewOp::Crop {
                 top,
@@ -128,16 +132,27 @@ impl ViewOp {
                 height,
                 width,
             } => {
-                let (top, left) = (*top as usize, *left as usize);
-                let end_of = |origin: usize, extent: &Option<u32>| {
-                    extent.map_or(usize::MAX, |e| origin + e as usize)
+                let (top, left) = (size::<M>(top), size::<M>(left));
+                let end_of = |origin: Sym<usize>, extent: &Option<M::V<u32>>| match extent {
+                    None => Sym::Known(usize::MAX),
+                    Some(extent) => match (origin, size::<M>(extent)) {
+                        (Sym::Known(o), Sym::Known(e)) => Sym::Known(o + e),
+                        _ => Sym::PerRow,
+                    },
                 };
                 Some((
-                    vec![top, left, 0],
-                    vec![end_of(top, height), end_of(left, width), usize::MAX],
+                    vec![top, left, Sym::Known(0)],
+                    vec![
+                        end_of(top, height),
+                        end_of(left, width),
+                        Sym::Known(usize::MAX),
+                    ],
                 ))
             }
-            ViewOp::Slice { start, end } => Some((start.clone(), end.clone())),
+            ViewOp::Slice { start, end } => Some((
+                start.iter().map(|&s| Sym::Known(s)).collect(),
+                end.iter().map(|&e| Sym::Known(e)).collect(),
+            )),
             _ => None,
         }
     }
@@ -145,11 +160,22 @@ impl ViewOp {
     /// The axes of a transpose or flip, as the kernels index them.
     pub fn axes(&self) -> Vec<usize> {
         match self {
-            ViewOp::Transpose { axes } | ViewOp::Flip { axes } => {
-                axes.iter().map(|&a| a as usize).collect()
-            }
+            ViewOp::Transpose { axes } | ViewOp::Flip { axes } => axes_of::<M>(axes),
             _ => Vec::new(),
         }
+    }
+}
+
+impl ViewOp {
+    /// The window a crop or slice keeps (every bound known at execution).
+    pub fn window(&self) -> Option<(Vec<usize>, Vec<usize>)> {
+        let (start, end) = self.window_of()?;
+        let known = |v: Vec<Sym<usize>>| -> Vec<usize> {
+            v.into_iter()
+                .map(|s| s.known().expect("an executed op's values are known"))
+                .collect()
+        };
+        Some((known(start), known(end)))
     }
 
     /// A transpose by `perm`.
@@ -167,7 +193,7 @@ impl ViewOp {
     }
 }
 
-impl Op for ViewOp {
+impl<M: Mode> Op for ViewOp<M> {
     fn validate(
         &self,
         input_shapes: &[&[usize]],
@@ -195,7 +221,14 @@ impl Op for ViewOp {
             // A reshape that changes the element count would describe memory
             // the buffer does not own.
             ViewOp::Reshape { shape: new } => {
-                let new: Vec<usize> = new.iter().map(|&d| d as usize).collect();
+                // A per-row dimension is checked per row.
+                let Some(new) = new
+                    .iter()
+                    .map(|d| known::<M, u32>(d).map(|d| d as usize))
+                    .collect::<Option<Vec<usize>>>()
+                else {
+                    return Ok(());
+                };
                 let (have, want) = (
                     shape.iter().product::<usize>(),
                     new.iter().product::<usize>(),
@@ -213,7 +246,7 @@ impl Op for ViewOp {
             }
             ViewOp::Flip { .. } => require_axes(shape, &self.axes()),
             ViewOp::Crop { .. } | ViewOp::Slice { .. } => {
-                let (start, end) = self.window().expect("a crop or slice has a window");
+                let (start, end) = self.window_of().expect("a crop or slice has a window");
                 if start.len() < shape.len() || end.len() < shape.len() {
                     return Err(ValidationError::ShapeRequirement {
                         requirement: "crop bounds for every axis of the input",
@@ -224,14 +257,17 @@ impl Op for ViewOp {
                 // other bound past the axis is a window outside the input:
                 // rejected rather than clamped, since clamping returns a
                 // smaller region than the caller asked for (CR-42).
+                // A bound a per-row value sets is checked per row.
                 for (axis, &dim) in shape.iter().enumerate() {
-                    let (s, e) = (start[axis], end[axis]);
-                    if s > dim || (e != usize::MAX && e > dim) {
-                        let end_text = if e == usize::MAX {
-                            "end".to_string()
-                        } else {
-                            e.to_string()
+                    let (s, e) = (start[axis].known(), end[axis].known());
+                    let past_end = |e: usize| e != usize::MAX && e > dim;
+                    if s.is_some_and(|s| s > dim) || e.is_some_and(past_end) {
+                        let text = |b: Option<usize>| match b {
+                            Some(usize::MAX) => "end".to_string(),
+                            Some(b) => b.to_string(),
+                            None => "<per-row>".to_string(),
                         };
+                        let (s, end_text) = (text(s), text(e));
                         return Err(ValidationError::InvalidParameter {
                             param: "window".to_string(),
                             reason: format!(
@@ -248,12 +284,16 @@ impl Op for ViewOp {
             ViewOp::Rotate90 | ViewOp::Rotate180 | ViewOp::Rotate270 => {
                 crate::ops::validation::require_hw_or_hwc(shape)
             }
-            ViewOp::ChannelSelect { index } => match shape {
-                [_, _, c] if (*index as usize) < *c => Ok(()),
-                [_, _] if *index == 0 => Ok(()),
-                _ => Err(ValidationError::InvalidParameter {
+            // A per-row index is checked per row; the rank is checked now.
+            ViewOp::ChannelSelect { index } => match (known::<M, u32>(index), shape) {
+                (Some(index), [_, _, c]) if (index as usize) < *c => Ok(()),
+                (Some(0), [_, _]) | (None, [_, _] | [_, _, _]) => Ok(()),
+                (index, _) => Err(ValidationError::InvalidParameter {
                     param: "index".to_string(),
-                    reason: format!("channel {index} of a buffer of shape {shape:?}"),
+                    reason: match index {
+                        Some(index) => format!("channel {index} of a buffer of shape {shape:?}"),
+                        None => format!("a channel of a buffer of shape {shape:?}"),
+                    },
                 }),
             },
         }
