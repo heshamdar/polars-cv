@@ -118,9 +118,18 @@ pub(crate) fn resolve_op_from_json_probe(
     op_json: &str,
     probe: i64,
 ) -> Result<crate::graph::step::GraphStep, String> {
+    let op: crate::ops::TypedOp = serde_json::from_str(op_json).map_err(|e| e.to_string())?;
+    probe_step(&op, probe)
+}
+
+/// Resolve a typed op with every expression param bound to `probe` (see
+/// [`resolve_op_from_json_probe`]).
+pub(crate) fn probe_step(
+    op: &crate::ops::TypedOp,
+    probe: i64,
+) -> Result<crate::graph::step::GraphStep, String> {
     use crate::params::ParamCtx;
 
-    let op: crate::ops::TypedOp = serde_json::from_str(op_json).map_err(|e| e.to_string())?;
     // Every slot reads a placeholder column holding `probe`.
     let placeholders = vec![Series::new("".into(), &[probe]); op.min_inputs()];
     // A *probe* context: placeholders are integers, so a dynamic enum or flag
