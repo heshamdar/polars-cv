@@ -1,0 +1,1997 @@
+[
+  {
+    "name": "abs",
+    "python": "abs",
+    "visibility": "public",
+    "doc": "Absolute value (`|x|`). Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "add",
+    "python": "add",
+    "visibility": "lazy_only",
+    "doc": "Element-wise addition with another array.\n\nFor u8/u16: saturating addition (clamps to the maximum, e.g. 255 for\nu8). For f32/f64: standard addition.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.add(b).sink(\"numpy\")\n    ```",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The expression to combine with, element-wise.",
+        "type": {
+          "kind": "node"
+        }
+      }
+    ]
+  },
+  {
+    "name": "add_constant",
+    "python": "add_constant",
+    "visibility": "public",
+    "doc": "Add a constant to every value (`x + value`).",
+    "fields": [
+      {
+        "name": "value",
+        "doc": "Constant addend (literal or per-row expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "adjust_contrast",
+    "python": "adjust_contrast",
+    "visibility": "public",
+    "doc": "Adjust image contrast: `(pixel - mean) * factor + mean`.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").adjust_contrast(factor=1.5)",
+    "fields": [
+      {
+        "name": "factor",
+        "doc": "Contrast factor. 1.0 = no change, >1 = more contrast, <1 = less.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "adjust_gamma",
+    "python": "adjust_gamma",
+    "visibility": "public",
+    "doc": "Apply gamma (power-law) correction: normalize to [0,1], raise to `gamma`,\ndenormalize.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").adjust_gamma(gamma=0.5)",
+    "fields": [
+      {
+        "name": "gamma",
+        "doc": "Gamma value. <1 = brighter, >1 = darker, 1.0 = no change.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "apply_mask",
+    "python": "apply_mask",
+    "visibility": "lazy_only",
+    "doc": "Apply a binary mask to this image.\n\nDomain: buffer → buffer",
+    "fields": [
+      {
+        "name": "mask",
+        "doc": "The mask's node.",
+        "type": {
+          "kind": "node"
+        }
+      },
+      {
+        "name": "invert",
+        "doc": "If True, invert the mask (keep exterior, zero interior).",
+        "default": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "bool"
+        }
+      }
+    ]
+  },
+  {
+    "name": "bitwise_and",
+    "python": "bitwise_and",
+    "visibility": "lazy_only",
+    "doc": "Element-wise bitwise AND: for binary masks (0/255), the intersection.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.bitwise_and(b).sink(\"numpy\")\n    ```",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The expression to combine with, element-wise.",
+        "type": {
+          "kind": "node"
+        }
+      }
+    ]
+  },
+  {
+    "name": "bitwise_or",
+    "python": "bitwise_or",
+    "visibility": "lazy_only",
+    "doc": "Element-wise bitwise OR: for binary masks (0/255), the union.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.bitwise_or(b).sink(\"numpy\")\n    ```",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The expression to combine with, element-wise.",
+        "type": {
+          "kind": "node"
+        }
+      }
+    ]
+  },
+  {
+    "name": "bitwise_xor",
+    "python": "bitwise_xor",
+    "visibility": "lazy_only",
+    "doc": "Element-wise bitwise XOR: for binary masks (0/255), the symmetric\ndifference.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.bitwise_xor(b).sink(\"numpy\")\n    ```",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The expression to combine with, element-wise.",
+        "type": {
+          "kind": "node"
+        }
+      }
+    ]
+  },
+  {
+    "name": "blend",
+    "python": "blend",
+    "visibility": "lazy_only",
+    "doc": "Normalized blend (element-wise), for image blending/compositing.\n\nFor u8: (a/255) * (b/255) * 255. For u16: (a/65535) * (b/65535) *\n65535. For f32/f64: standard multiplication.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.blend(b).sink(\"numpy\")\n    ```",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The expression to combine with, element-wise.",
+        "type": {
+          "kind": "node"
+        }
+      }
+    ]
+  },
+  {
+    "name": "blur",
+    "python": "blur",
+    "visibility": "public",
+    "doc": "Apply Gaussian blur.",
+    "fields": [
+      {
+        "name": "sigma",
+        "doc": "Standard deviation for Gaussian kernel.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "canny",
+    "python": "canny",
+    "visibility": "public",
+    "doc": "Canny edge detection: Gaussian blur, Sobel gradients, non-maximum\nsuppression and double-threshold hysteresis. Output is a U8 binary edge\nmap (0 or 255).\n\nExample:\n    >>> edges = Pipeline().source(\"image_bytes\").canny(low_threshold=50, high_threshold=150)",
+    "fields": [
+      {
+        "name": "low_threshold",
+        "doc": "Lower hysteresis threshold.",
+        "default": 50.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "high_threshold",
+        "doc": "Upper hysteresis threshold.",
+        "default": 150.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "cast",
+    "python": "cast",
+    "visibility": "public",
+    "doc": "Cast to a different data type.",
+    "fields": [
+      {
+        "name": "dtype",
+        "doc": "Target data type (e.g., \"f32\", \"u8\").",
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "DType",
+          "variants": [
+            "u8",
+            "i8",
+            "u16",
+            "i16",
+            "u32",
+            "i32",
+            "u64",
+            "i64",
+            "f32",
+            "f64"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "ceil",
+    "python": "ceil",
+    "visibility": "public",
+    "doc": "Round toward positive infinity. Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "channel_merge",
+    "python": "channel_merge",
+    "visibility": "lazy_only",
+    "doc": "Merge single-channel buffers into one multi-channel image.\n\nDomain: buffer → buffer ([H, W] → [H, W, C])",
+    "fields": [
+      {
+        "name": "others",
+        "doc": "The other single-channel operands' nodes, in channel order after this\none.",
+        "type": {
+          "kind": "list",
+          "inner": {
+            "kind": "node"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "channel_select",
+    "python": "channel_select",
+    "visibility": "public",
+    "doc": "Extract a single channel from a multi-channel image: a 2D [H, W] buffer\nfrom a [H, W, C] input.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").channel_select(index=0)  # Red channel",
+    "fields": [
+      {
+        "name": "index",
+        "doc": "Channel index to extract (0-based). Accepts a Polars expression for\nper-row dynamic selection.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "name": "channel_swap",
+    "python": "channel_swap",
+    "visibility": "public",
+    "doc": "Reorder channels in a multi-channel image.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").channel_swap(order=[2, 1, 0])",
+    "fields": [
+      {
+        "name": "order",
+        "doc": "New channel ordering, e.g. [2, 1, 0] for RGB-to-BGR. **Each index may be\na literal or a Polars expression**, so the permutation can vary per row.\nThe list *length* is the channel count and must be literal.",
+        "type": {
+          "kind": "list",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "int"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "clamp",
+    "python": "clamp",
+    "visibility": "internal",
+    "doc": "Clamp values to a range.\n\nThe public `Pipeline.clamp` is sugar over this op that adds\n`out_dtype`/`preserve_dtype` (a trailing cast).",
+    "fields": [
+      {
+        "name": "min",
+        "doc": "Minimum value (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "max",
+        "doc": "Maximum value (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "clamp_max",
+    "python": "clamp_max",
+    "visibility": "public",
+    "doc": "Cap values at `value` (`min(x, value)`); one-sided clamp.",
+    "fields": [
+      {
+        "name": "value",
+        "doc": "Upper bound (literal or per-row expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "clamp_min",
+    "python": "clamp_min",
+    "visibility": "public",
+    "doc": "Floor values at `value` (`max(x, value)`); one-sided clamp.",
+    "fields": [
+      {
+        "name": "value",
+        "doc": "Lower bound (literal or per-row expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "contour_area",
+    "python": "area",
+    "visibility": "public",
+    "doc": "Compute the area of the contour using the Shoelace formula.\n\nDomain transition: contour → scalar",
+    "fields": [
+      {
+        "name": "signed",
+        "doc": "If True, return signed area (negative for CW winding).",
+        "default": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "bool"
+        }
+      }
+    ]
+  },
+  {
+    "name": "contour_bounding_box",
+    "python": "bounding_box",
+    "visibility": "public",
+    "doc": "Compute the axis-aligned bounding box of the contour.\n\nDomain transition: contour → vector (returns [x, y, width, height])",
+    "fields": []
+  },
+  {
+    "name": "contour_centroid",
+    "python": "centroid",
+    "visibility": "public",
+    "doc": "Compute the centroid (center of mass) of the contour.\n\nDomain transition: contour → vector (returns [x, y])",
+    "fields": []
+  },
+  {
+    "name": "contour_convex_hull",
+    "python": "convex_hull",
+    "visibility": "public",
+    "doc": "Compute the convex hull of the contour.\n\nDomain: contour → contour",
+    "fields": []
+  },
+  {
+    "name": "contour_perimeter",
+    "python": "perimeter",
+    "visibility": "public",
+    "doc": "Compute the perimeter (arc length) of the contour.\n\nDomain transition: contour → scalar",
+    "fields": []
+  },
+  {
+    "name": "contour_scale",
+    "python": "scale_contour",
+    "visibility": "internal",
+    "doc": "Scale the contour about *origin*.\n\nDomain: contour → contour\n\nNote:\n    The default is ``\"centroid\"``, which is what this method has always\n    done — it previously hardcoded it with no way to choose. The\n    ``.contour.scale`` accessor defaults to ``\"origin\"`` instead; pass\n    *origin* explicitly if you need the two to agree.",
+    "fields": [
+      {
+        "name": "sx",
+        "doc": "X scale factor.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "sy",
+        "doc": "Y scale factor.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "origin",
+        "doc": "Point to scale about — ``\"centroid\"`` (the default), ``\"bbox_center\"``\nor ``\"origin\"``. Accepts an expression for a per-row choice: which\npoint the scale is measured from changes no output shape, rank or\ndtype, so it meets the eligibility rule for a per-row parameter.",
+        "default": "centroid",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "ScaleOrigin",
+          "variants": [
+            "centroid",
+            "bbox_center",
+            "origin"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "contour_simplify",
+    "python": "simplify",
+    "visibility": "public",
+    "doc": "Simplify the contour using the Douglas-Peucker algorithm.\n\nDomain: contour → contour",
+    "fields": [
+      {
+        "name": "tolerance",
+        "doc": "Maximum distance from the original contour.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "contour_translate",
+    "python": "translate",
+    "visibility": "public",
+    "doc": "Translate the contour by an offset.\n\nDomain: contour → contour",
+    "fields": [
+      {
+        "name": "dx",
+        "doc": "X offset (horizontal translation).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "dy",
+        "doc": "Y offset (vertical translation).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "convolve2d",
+    "python": "convolve2d",
+    "visibility": "public",
+    "doc": "Apply generic 2D convolution with an arbitrary kernel.\n\nDomain: buffer → buffer\n\nExample:\n    ```python\n    >>> edge = Pipeline().source(\"image_bytes\").convolve2d(\n    ...     kernel=[-1, -1, -1, -1, 8, -1, -1, -1, -1],\n    ...     ksize=3,\n    ... )\n    ```",
+    "fields": [
+      {
+        "name": "kernel",
+        "doc": "Flattened kernel values (row-major, ``ksize × ksize``). **Each\ncoefficient may be a literal float or a Polars expression**, so a batch\ncan convolve with a different kernel per row. The kernel *length* is\nstructural and must be a literal odd square.",
+        "type": {
+          "kind": "list",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
+          }
+        }
+      },
+      {
+        "name": "ksize",
+        "doc": "Kernel dimension (must be odd; kernel is ``ksize × ksize``). Accepts a\nPolars expression for per-row dynamic values.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "normalize",
+        "doc": "If True, divide output by the sum of absolute kernel values.",
+        "default": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "bool"
+        }
+      },
+      {
+        "name": "border",
+        "doc": "Border handling mode (``\"replicate\"``, ``\"zero\"``, ``\"reflect\"``).",
+        "default": "replicate",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "BorderMode",
+          "variants": [
+            "replicate",
+            "zero",
+            "reflect"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "crop",
+    "python": "crop",
+    "visibility": "public",
+    "doc": "Extract a rectangular region.",
+    "fields": [
+      {
+        "name": "top",
+        "doc": "Top offset.",
+        "default": 0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "left",
+        "doc": "Left offset.",
+        "default": 0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "height",
+        "doc": "Crop height (None = to end).",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "int"
+          }
+        }
+      },
+      {
+        "name": "width",
+        "doc": "Crop width (None = to end).",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "int"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "cvt_color",
+    "python": "convert_color",
+    "visibility": "public",
+    "doc": "Convert between color spaces.\n\nDomain: buffer → buffer\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").convert_color(\"rgb\", \"hsv\")",
+    "fields": [
+      {
+        "name": "from_space",
+        "doc": "Source color space (rgb, bgr, hsv, lab, ycbcr, gray).",
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "ColorSpace",
+          "variants": [
+            "rgb",
+            "bgr",
+            "hsv",
+            "lab",
+            "ycbcr",
+            "gray"
+          ]
+        }
+      },
+      {
+        "name": "to_space",
+        "doc": "Target color space (rgb, bgr, hsv, lab, ycbcr, gray).",
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "ColorSpace",
+          "variants": [
+            "rgb",
+            "bgr",
+            "hsv",
+            "lab",
+            "ycbcr",
+            "gray"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "dilate",
+    "python": "dilate",
+    "visibility": "public",
+    "doc": "Morphological dilation (local maximum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).\n\nExample:\n   >>> mask = Pipeline().source(\"image_bytes\").grayscale().threshold(128).dilate(ksize=3)",
+    "fields": [
+      {
+        "name": "ksize",
+        "doc": "Size of the square structuring element. Must be odd and >= 1.\nAccepts a Polars expression for per-row dynamic values.",
+        "default": 3,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "iterations",
+        "doc": "Number of times the operation is applied. Accepts a Polars\nexpression for per-row dynamic values.",
+        "default": 1,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "name": "divide",
+    "python": "divide",
+    "visibility": "lazy_only",
+    "doc": "Element-wise division.\n\nFor u8/u16: integer division, with division by zero yielding 0. For\nf32/f64: standard division.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.divide(b).sink(\"numpy\")\n    ```",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The expression to combine with, element-wise.",
+        "type": {
+          "kind": "node"
+        }
+      }
+    ]
+  },
+  {
+    "name": "equalize_histogram",
+    "python": "equalize_histogram",
+    "visibility": "public",
+    "doc": "Apply histogram equalization for contrast enhancement: map each pixel\nthrough the normalized CDF, per channel. Output is U8.\n\nExample:\n    >>> eq = Pipeline().source(\"image_bytes\").grayscale().equalize_histogram()",
+    "fields": []
+  },
+  {
+    "name": "erode",
+    "python": "erode",
+    "visibility": "public",
+    "doc": "Morphological erosion (local minimum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).\n\nExample:\n   >>> mask = Pipeline().source(\"image_bytes\").grayscale().threshold(128).erode(ksize=3)",
+    "fields": [
+      {
+        "name": "ksize",
+        "doc": "Size of the square structuring element. Must be odd and >= 1.\nAccepts a Polars expression for per-row dynamic values.",
+        "default": 3,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "iterations",
+        "doc": "Number of times the operation is applied. Accepts a Polars\nexpression for per-row dynamic values.",
+        "default": 1,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extract_contours",
+    "python": "extract_contours",
+    "visibility": "public",
+    "doc": "Extract contours from binary mask.\n\nThe traced outline passes through the **centres** of the boundary pixels,\nso it sits half a pixel inside the region it describes: a blob filling\n``w x h`` pixels comes back bounding ``(w-1) x (h-1)``. Rasterizing the\nresult therefore erodes it by a pixel per round trip.\n\nBorders come back as a flat list with no hierarchy. ``mode=\"all\"`` yields\nthe exterior plus one border for each enclosed background region — holes\nthat touch or nest enclose one region between them — and reassembling a\nholed contour from those is the caller's job. ``mode=\"external\"`` keeps\nonly the outermost, discarding hole borders.\n\nDomain transition: buffer → contour",
+    "fields": [
+      {
+        "name": "mode",
+        "doc": "\"external\" (outer only), \"tree\" (full hierarchy), \"all\".",
+        "default": "external",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "ExtractMode",
+          "variants": [
+            "external",
+            "tree",
+            "all"
+          ]
+        }
+      },
+      {
+        "name": "method",
+        "doc": "\"simple\" (remove redundant), \"none\" (all points), \"approx\".",
+        "default": "simple",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "ApproxMethod",
+          "variants": [
+            "none",
+            "simple",
+            "approx"
+          ]
+        }
+      },
+      {
+        "name": "min_area",
+        "doc": "Filter small contours. Accepts a Polars expression for per-row dynamic\nthresholds.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "extract_shape",
+    "python": "extract_shape",
+    "visibility": "public",
+    "doc": "Extract buffer shape as a struct {height, width, channels}.\n\nDomain transition: buffer → vector",
+    "fields": []
+  },
+  {
+    "name": "flip",
+    "python": "flip",
+    "visibility": "public",
+    "doc": "Flip along specified axes.",
+    "fields": [
+      {
+        "name": "axes",
+        "doc": "Axes to flip.",
+        "type": {
+          "kind": "list",
+          "inner": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "int"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "floor",
+    "python": "floor",
+    "visibility": "public",
+    "doc": "Round toward negative infinity. Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "grayscale",
+    "python": "grayscale",
+    "visibility": "public",
+    "doc": "Convert to grayscale (luminance 0.299R + 0.587G + 0.114B).",
+    "fields": []
+  },
+  {
+    "name": "histogram",
+    "python": "histogram",
+    "visibility": "public",
+    "doc": "Compute pixel value histogram.\n\nExample:\n    >>> Pipeline().source(\"image_bytes\").grayscale().histogram(bins=8)",
+    "fields": [
+      {
+        "name": "bins",
+        "doc": "Number of bins (default 256), a Polars expression for per-row dynamic\nbin count, or an explicit list of bin edges.",
+        "default": 256,
+        "type": {
+          "kind": "one_of",
+          "options": [
+            {
+              "kind": "scalar",
+              "per_row": true,
+              "py": "int"
+            },
+            {
+              "kind": "list",
+              "inner": {
+                "kind": "scalar",
+                "per_row": false,
+                "py": "float"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "range",
+        "doc": "(min, max) tuple. Auto-detected if None.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "array",
+            "len": 2,
+            "inner": {
+              "kind": "scalar",
+              "per_row": true,
+              "py": "float"
+            }
+          }
+        }
+      },
+      {
+        "name": "closed",
+        "doc": "\"left\" or \"right\" interval inclusiveness (default \"left\").",
+        "default": "left",
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "HistogramClosed",
+          "variants": [
+            "left",
+            "right"
+          ]
+        }
+      },
+      {
+        "name": "output",
+        "doc": "\"buckets\" (list of structs), \"counts\" (bin counts), \"normalized\" (sum to\n1.0), \"quantized\" (pixel indices), \"edges\" (bin edges).",
+        "default": "buckets",
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "HistogramOutput",
+          "variants": [
+            "counts",
+            "normalized",
+            "quantized",
+            "edges",
+            "buckets"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "invert",
+    "python": "invert",
+    "visibility": "public",
+    "doc": "Invert pixel values: `255 - pixel` for u8, `1.0 - pixel` for float [0,1].",
+    "fields": []
+  },
+  {
+    "name": "label_reduce",
+    "python": "label_reduce",
+    "visibility": "public",
+    "doc": "Score contour regions against the current buffer values.\n\nThis is the buffer-space variant of label reduction. It accepts contours\nvia a Polars expression and returns one score per contour.\n\nDomain transition: buffer -> vector",
+    "fields": [
+      {
+        "name": "contours",
+        "doc": "Contour-set expression (`List[Contour]`) to score.",
+        "type": {
+          "kind": "column"
+        }
+      },
+      {
+        "name": "reduction",
+        "doc": "Reduction over contour region values (`\"max\"`, `\"mean\"`, `\"sum\"`).",
+        "default": "max",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "LabelReduction",
+          "variants": [
+            "max",
+            "mean",
+            "sum"
+          ]
+        }
+      },
+      {
+        "name": "region_mode",
+        "doc": "Region selection mode. ``\"interior\"`` — only pixels strictly inside the\ncontour polygon. ``\"boundary\"`` — interior pixels *plus* pixels on the\ncontour boundary (avoids zero-score artifacts for sub-pixel contours).\n``\"bbox\"`` — all pixels within the bounding box.",
+        "default": "interior",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "LabelRegionMode",
+          "variants": [
+            "interior",
+            "boundary",
+            "bbox"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "letterbox",
+    "python": "letterbox",
+    "visibility": "public",
+    "doc": "Resize image maintaining aspect ratio and pad to exact target size: fit\nwithin the target, then pad with centered positioning.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").letterbox(height=224, width=224)",
+    "fields": [
+      {
+        "name": "height",
+        "doc": "Target height (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "width",
+        "doc": "Target width (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "value",
+        "doc": "Fill value for padding (default 0, typically black). Accepts a Polars\nexpression for per-row dynamic values.",
+        "default": 0.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "filter",
+        "doc": "Resampling filter for the resize step (default \"lanczos3\").",
+        "default": "lanczos3",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "FilterType",
+          "variants": [
+            "nearest",
+            "bilinear",
+            "catmullrom",
+            "gaussian",
+            "lanczos3"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "maximum",
+    "python": "maximum",
+    "visibility": "lazy_only",
+    "doc": "Element-wise maximum of two arrays, for compositing, clamping and\nnon-linear image processing.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.maximum(b).sink(\"numpy\")\n    ```",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The expression to combine with, element-wise.",
+        "type": {
+          "kind": "node"
+        }
+      }
+    ]
+  },
+  {
+    "name": "minimum",
+    "python": "minimum",
+    "visibility": "lazy_only",
+    "doc": "Element-wise minimum of two arrays, for compositing, clamping and\nnon-linear image processing.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.minimum(b).sink(\"numpy\")\n    ```",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The expression to combine with, element-wise.",
+        "type": {
+          "kind": "node"
+        }
+      }
+    ]
+  },
+  {
+    "name": "morphology_gradient",
+    "python": "morphology_gradient",
+    "visibility": "public",
+    "doc": "Morphological gradient (dilate - erode): an edge outline. Requires\nsingle-channel input.\n\nExample:\n    >>> edges = Pipeline().source(\"image_bytes\").grayscale().threshold(128).morphology_gradient(ksize=3)",
+    "fields": [
+      {
+        "name": "ksize",
+        "doc": "Size of the square structuring element. Must be odd and >= 1. Accepts a\nPolars expression for per-row dynamic values.",
+        "default": 3,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "name": "multiply",
+    "python": "multiply",
+    "visibility": "lazy_only",
+    "doc": "Element-wise multiplication.\n\nFor u8/u16: saturating multiplication (clamps to the maximum). For\nf32/f64: standard multiplication. For normalized image blending\n(values treated as [0, 1]), use ``blend`` instead.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.multiply(b).sink(\"numpy\")\n    ```",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The expression to combine with, element-wise.",
+        "type": {
+          "kind": "node"
+        }
+      }
+    ]
+  },
+  {
+    "name": "neg",
+    "python": "neg",
+    "visibility": "public",
+    "doc": "Negate every value (`-x`). Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "normalize",
+    "python": "normalize",
+    "visibility": "public",
+    "doc": "Normalize values to a standard range.\n\nExample:\n    >>> Pipeline().source().normalize(method=\"minmax\")\n    >>> Pipeline().source().normalize(\n    ...     method=\"preset\",\n    ...     mean=[0.485, 0.456, 0.406],\n    ...     std=[0.229, 0.224, 0.225],\n    ... )",
+    "fields": [
+      {
+        "name": "method",
+        "doc": "Normalization method: \"minmax\" scales values to [0, 1] using\nper-element min/max; \"zscore\" standardizes to mean=0, std=1 using\nper-element statistics; \"preset\" applies ImageNet-style channel-wise\nnormalization, `(x - mean[c]) / std[c]`, with the given `mean` and `std`.",
+        "default": "minmax",
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "NormalizeMethod",
+          "variants": [
+            "minmax",
+            "zscore",
+            "preset"
+          ]
+        }
+      },
+      {
+        "name": "mean",
+        "doc": "Per-channel mean values; required for, and only valid with,\nmethod=\"preset\" (e.g. ImageNet `[0.485, 0.456, 0.406]`). Each element may\nbe a literal float or a Polars expression; the list length is the channel\ncount.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "list",
+            "inner": {
+              "kind": "scalar",
+              "per_row": true,
+              "py": "float"
+            }
+          }
+        }
+      },
+      {
+        "name": "std",
+        "doc": "Per-channel standard deviation values; required for, and only valid\nwith, method=\"preset\" (e.g. ImageNet `[0.229, 0.224, 0.225]`). Each\nelement accepts an expression, as with `mean`.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "list",
+            "inner": {
+              "kind": "scalar",
+              "per_row": true,
+              "py": "float"
+            }
+          }
+        }
+      },
+      {
+        "name": "out_dtype",
+        "doc": "Output dtype (default f32). Normalization computes in f32 and the result\nis cast to this dtype at execution. For half precision use the sink\ndtype instead (`.sink(\"numpy\", dtype=\"f16\")`).",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "DType",
+            "variants": [
+              "u8",
+              "i8",
+              "u16",
+              "i16",
+              "u32",
+              "i32",
+              "u64",
+              "i64",
+              "f32",
+              "f64"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "pad",
+    "python": "pad",
+    "visibility": "public",
+    "doc": "Add padding to the image.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").pad(top=10, bottom=10)\n    >>> pipe = Pipeline().source(\"image_bytes\").pad(left=20, right=20, value=128)",
+    "fields": [
+      {
+        "name": "top",
+        "doc": "Padding on top edge.",
+        "default": 0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "bottom",
+        "doc": "Padding on bottom edge.",
+        "default": 0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "left",
+        "doc": "Padding on left edge.",
+        "default": 0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "right",
+        "doc": "Padding on right edge.",
+        "default": 0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "value",
+        "doc": "Fill value for \"constant\" mode (default 0). Accepts a Polars expression\nfor per-row dynamic values.",
+        "default": 0.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "mode",
+        "doc": "Padding mode - \"constant\", \"edge\", \"reflect\", \"symmetric\".",
+        "default": "constant",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "PadMode",
+          "variants": [
+            "constant",
+            "edge",
+            "reflect",
+            "symmetric"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "pad_to_size",
+    "python": "pad_to_size",
+    "visibility": "public",
+    "doc": "Pad image to exact target size (computed at runtime). A larger image is\nnot cropped - resize first if needed.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").pad_to_size(height=100, width=200)",
+    "fields": [
+      {
+        "name": "height",
+        "doc": "Target height.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "width",
+        "doc": "Target width.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "position",
+        "doc": "Where to place original content: \"center\" (default), \"top-left\" or\n\"bottom-right\".",
+        "default": "center",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "PadPosition",
+          "variants": [
+            "center",
+            "top-left",
+            "bottom-right"
+          ]
+        }
+      },
+      {
+        "name": "value",
+        "doc": "Fill value for padding (default 0). Accepts a Polars expression for\nper-row dynamic values.",
+        "default": 0.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "perceptual_hash",
+    "python": "perceptual_hash",
+    "visibility": "public",
+    "doc": "Compute a perceptual hash fingerprint.\n\nExample:\n    >>> Pipeline().source(\"image_bytes\").perceptual_hash()",
+    "fields": [
+      {
+        "name": "algorithm",
+        "doc": "\"perceptual\" (pHash), \"average\" (aHash), \"difference\" (dHash).",
+        "default": "perceptual",
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "HashAlgorithm",
+          "variants": [
+            "average",
+            "difference",
+            "perceptual",
+            "blockhash"
+          ]
+        }
+      },
+      {
+        "name": "hash_size",
+        "doc": "Number of bits in the hash (must be power of 2). It fixes the output\nvector length, so it is literal-only.",
+        "default": 64,
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "name": "rasterize",
+    "python": "rasterize",
+    "visibility": "internal",
+    "doc": "Rasterize contours to a mask.\n\nThe builder is ``Pipeline.rasterize``, whose ``width``/``height`` or\n``shape`` arguments become ``size``; it also records the shape reference's\ngraph dependency and its canvas assertion.\n\nDomain transition: contour → buffer",
+    "fields": [
+      {
+        "name": "size",
+        "doc": "``[height, width]`` of the mask (each may be a Polars expression), or\nanother node whose buffer's height and width the mask takes.",
+        "type": {
+          "kind": "one_of",
+          "options": [
+            {
+              "kind": "array",
+              "len": 2,
+              "inner": {
+                "kind": "scalar",
+                "per_row": true,
+                "py": "int"
+              }
+            },
+            {
+              "kind": "node"
+            }
+          ]
+        }
+      },
+      {
+        "name": "fill_value",
+        "doc": "Inside value (default 255). Accepts a Polars expression for per-row\ndynamic values.",
+        "default": 255,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "background",
+        "doc": "Outside value (default 0). Accepts a Polars expression for per-row\ndynamic values.",
+        "default": 0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "name": "ratio",
+    "python": "ratio",
+    "visibility": "lazy_only",
+    "doc": "Scaled ratio: a/b scaled to the full range of the dtype.\n\nFor u8: (a/b) * 255, clamped to [0, 255]. For u16: (a/b) * 65535,\nclamped to [0, 65535]. For f32/f64: standard division.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.ratio(b).sink(\"numpy\")\n    ```",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The expression to combine with, element-wise.",
+        "type": {
+          "kind": "node"
+        }
+      }
+    ]
+  },
+  {
+    "name": "reciprocal",
+    "python": "reciprocal",
+    "visibility": "public",
+    "doc": "Reciprocal (`1 / x`; ±inf at zero). Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "reduce_argmax",
+    "python": "reduce_argmax",
+    "visibility": "public",
+    "doc": "Index of the maximum value along an axis.\n\nUnlike other reductions it always requires an axis: a global index\nis ambiguous for a multi-dimensional array. Domain transition:\nbuffer → buffer (reduced shape, i64 dtype).",
+    "fields": [
+      {
+        "name": "axis",
+        "doc": "Axis along which to find the index.",
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "name": "reduce_argmin",
+    "python": "reduce_argmin",
+    "visibility": "public",
+    "doc": "Index of the minimum value along an axis.\n\nUnlike other reductions it always requires an axis: a global index\nis ambiguous for a multi-dimensional array. Domain transition:\nbuffer → buffer (reduced shape, i64 dtype).",
+    "fields": [
+      {
+        "name": "axis",
+        "doc": "Axis along which to find the index.",
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "name": "reduce_max",
+    "python": "reduce_max",
+    "visibility": "public",
+    "doc": "Reduce buffer by computing the maximum value.\n\nDomain transition: axis=None: buffer → scalar; axis=N: buffer →\nbuffer (reduced shape).",
+    "fields": [
+      {
+        "name": "axis",
+        "doc": "Axis to reduce along. None for global reduction. It fixes the\noutput rank, so it is literal-only.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "int"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "reduce_mean",
+    "python": "reduce_mean",
+    "visibility": "public",
+    "doc": "Compute arithmetic mean.\n\nDomain transition: axis=None: buffer → scalar; axis=N: buffer →\nbuffer (reduced shape).",
+    "fields": [
+      {
+        "name": "axis",
+        "doc": "Axis to reduce along. None for global reduction. It fixes the\noutput rank, so it is literal-only.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "int"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "reduce_min",
+    "python": "reduce_min",
+    "visibility": "public",
+    "doc": "Reduce buffer by computing the minimum value.\n\nDomain transition: axis=None: buffer → scalar; axis=N: buffer →\nbuffer (reduced shape).",
+    "fields": [
+      {
+        "name": "axis",
+        "doc": "Axis to reduce along. None for global reduction. It fixes the\noutput rank, so it is literal-only.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "int"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "reduce_percentile",
+    "python": "reduce_percentile",
+    "visibility": "public",
+    "doc": "Compute the q-th percentile of all values (linear interpolation, as numpy's\ndefault).\n\nDomain transition: buffer -> scalar",
+    "fields": [
+      {
+        "name": "q",
+        "doc": "Percentile to compute, in [0, 100]. Accepts a Polars expression for\nper-row dynamic values.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "reduce_popcount",
+    "python": "reduce_popcount",
+    "visibility": "public",
+    "doc": "Count set bits (1s) in the buffer.\n\nDomain transition: buffer → scalar",
+    "fields": []
+  },
+  {
+    "name": "reduce_std",
+    "python": "reduce_std",
+    "visibility": "public",
+    "doc": "Reduce buffer by computing the standard deviation.\n\nDomain transition: axis=None: buffer -> scalar; axis=N: buffer -> buffer\n(reduced shape).\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").reduce_std(ddof=1)",
+    "fields": [
+      {
+        "name": "axis",
+        "doc": "Axis to reduce along. None for global reduction.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "int"
+          }
+        }
+      },
+      {
+        "name": "ddof",
+        "doc": "Delta degrees of freedom. 0 for population std (default), 1 for sample\nstd. Accepts a Polars expression for per-row dynamic values.",
+        "default": 0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "name": "reduce_sum",
+    "python": "reduce_sum",
+    "visibility": "public",
+    "doc": "Sum all elements in the buffer.\n\nDomain transition: buffer → scalar",
+    "fields": []
+  },
+  {
+    "name": "relu",
+    "python": "relu",
+    "visibility": "public",
+    "doc": "Apply ReLU activation (max(0, x)): negative values become zero.",
+    "fields": []
+  },
+  {
+    "name": "reshape",
+    "python": "reshape",
+    "visibility": "public",
+    "doc": "Reshape array to new dimensions.",
+    "fields": [
+      {
+        "name": "shape",
+        "doc": "New shape. The number of entries fixes the output rank; each entry may\nbe a Polars expression.",
+        "type": {
+          "kind": "list",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "int"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "resize",
+    "python": "resize",
+    "visibility": "public",
+    "doc": "Resize image to specified dimensions.\n\nExample:\n    >>> Pipeline().source(\"image_bytes\").resize(height=224, width=224)",
+    "fields": [
+      {
+        "name": "height",
+        "doc": "Target height.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "width",
+        "doc": "Target width.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "filter",
+        "doc": "Interpolation: \"nearest\", \"bilinear\", \"lanczos3\" (default).",
+        "default": "lanczos3",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "FilterType",
+          "variants": [
+            "nearest",
+            "bilinear",
+            "catmullrom",
+            "gaussian",
+            "lanczos3"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "resize_max",
+    "python": "resize_max",
+    "visibility": "public",
+    "doc": "Resize image so the maximum dimension equals target, preserving aspect ratio (200x100 with max_size=50 gives 50x25).\n\nExample:\n   >>> pipe = Pipeline().source(\"image_bytes\").resize_max(224)",
+    "fields": [
+      {
+        "name": "max_size",
+        "doc": "Target for the maximum dimension (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "filter",
+        "doc": "Resize filter (\"nearest\", \"bilinear\", \"lanczos3\").",
+        "default": "lanczos3",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "FilterType",
+          "variants": [
+            "nearest",
+            "bilinear",
+            "catmullrom",
+            "gaussian",
+            "lanczos3"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "resize_min",
+    "python": "resize_min",
+    "visibility": "public",
+    "doc": "Resize image so the minimum dimension equals target, preserving aspect ratio (200x100 with min_size=50 gives 100x50).\n\nExample:\n   >>> pipe = Pipeline().source(\"image_bytes\").resize_min(224)",
+    "fields": [
+      {
+        "name": "min_size",
+        "doc": "Target for the minimum dimension (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "filter",
+        "doc": "Resize filter (\"nearest\", \"bilinear\", \"lanczos3\").",
+        "default": "lanczos3",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "FilterType",
+          "variants": [
+            "nearest",
+            "bilinear",
+            "catmullrom",
+            "gaussian",
+            "lanczos3"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "resize_scale",
+    "python": "resize_scale",
+    "visibility": "internal",
+    "doc": "Resize image by scale factor: `new_width = input_width * scale_x`,\n`new_height = input_height * scale_y`, computed at runtime.\n\nThe public `Pipeline.resize_scale` is sugar over this op that also accepts\none uniform `scale`.",
+    "fields": [
+      {
+        "name": "scale_x",
+        "doc": "X (width) scale factor.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "scale_y",
+        "doc": "Y (height) scale factor.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "filter",
+        "doc": "Resize filter (\"nearest\", \"bilinear\", \"lanczos3\").",
+        "default": "lanczos3",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "FilterType",
+          "variants": [
+            "nearest",
+            "bilinear",
+            "catmullrom",
+            "gaussian",
+            "lanczos3"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "resize_to_height",
+    "python": "resize_to_height",
+    "visibility": "public",
+    "doc": "Resize image to target height, preserving aspect ratio (width is computed at runtime).\n\nExample:\n   >>> pipe = Pipeline().source(\"image_bytes\").resize_to_height(224)",
+    "fields": [
+      {
+        "name": "height",
+        "doc": "Target height (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "filter",
+        "doc": "Resize filter (\"nearest\", \"bilinear\", \"lanczos3\").",
+        "default": "lanczos3",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "FilterType",
+          "variants": [
+            "nearest",
+            "bilinear",
+            "catmullrom",
+            "gaussian",
+            "lanczos3"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "resize_to_width",
+    "python": "resize_to_width",
+    "visibility": "public",
+    "doc": "Resize image to target width, preserving aspect ratio (height is computed at runtime).\n\nExample:\n   >>> pipe = Pipeline().source(\"image_bytes\").resize_to_width(224)",
+    "fields": [
+      {
+        "name": "width",
+        "doc": "Target width (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "filter",
+        "doc": "Resize filter (\"nearest\", \"bilinear\", \"lanczos3\").",
+        "default": "lanczos3",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "FilterType",
+          "variants": [
+            "nearest",
+            "bilinear",
+            "catmullrom",
+            "gaussian",
+            "lanczos3"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "rotate",
+    "python": "rotate",
+    "visibility": "public",
+    "doc": "Rotate image by specified angle.\n\nFor angles of 90, 180, or 270 degrees, this uses zero-copy view operations\n(``interpolation`` and ``border_value`` do not apply: nothing is resampled\nand no out-of-bounds region is exposed). For arbitrary angles, the rotation\nis performed via an affine transformation using the specified\ninterpolation and border value. For combined rotation + scale or explicit\noutput sizing, use :meth:`rotate_and_scale` or :meth:`warp_affine`.\n\nDomain: buffer -> buffer\n\nExample:\n    ```python\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate(90)\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate(45, expand=True)\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate(pl.col(\"angle\"))\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate(30, interpolation=\"nearest\")\n    ```",
+    "fields": [
+      {
+        "name": "angle",
+        "doc": "Rotation angle in degrees (positive = clockwise). Can be a literal float\nor Polars expression.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "expand",
+        "doc": "If True, expand output dimensions to fit rotated image. If False\n(default), keep original dimensions (corners may be cropped).",
+        "default": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "bool"
+        }
+      },
+      {
+        "name": "interpolation",
+        "doc": "Interpolation method for arbitrary angles -- ``\"bilinear\"`` (default) or\n``\"nearest\"``. Not applicable to 90/180/270 degree rotations.",
+        "default": "bilinear",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "InterpolationType",
+          "variants": [
+            "nearest",
+            "bilinear"
+          ]
+        }
+      },
+      {
+        "name": "border_value",
+        "doc": "Fill value for out-of-bounds pixels (default 0). Not applicable to\n90/180/270 degree rotations.",
+        "default": 0.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "round",
+    "python": "round",
+    "visibility": "public",
+    "doc": "Round to nearest, ties to even (matches Polars/numpy). Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "scale",
+    "python": "scale",
+    "visibility": "internal",
+    "doc": "Multiply all values by a factor.\n\nThe public `Pipeline.scale` is sugar over this op that adds\n`out_dtype`/`preserve_dtype` (a trailing cast).",
+    "fields": [
+      {
+        "name": "factor",
+        "doc": "Scale factor.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "sign",
+    "python": "sign",
+    "visibility": "public",
+    "doc": "Sign: `-1`/`0`/`+1` (`0` for ±0, NaN for NaN). Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "sqrt",
+    "python": "sqrt",
+    "visibility": "public",
+    "doc": "Square root (`sqrt(x)`; NaN for negative input). Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "square",
+    "python": "square",
+    "visibility": "public",
+    "doc": "Square (`x * x`). Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "subtract",
+    "python": "subtract",
+    "visibility": "lazy_only",
+    "doc": "Element-wise subtraction.\n\nFor u8/u16: saturating subtraction (clamps to 0). For f32/f64:\nstandard subtraction.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.subtract(b).sink(\"numpy\")\n    ```",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The expression to combine with, element-wise.",
+        "type": {
+          "kind": "node"
+        }
+      }
+    ]
+  },
+  {
+    "name": "subtract_constant",
+    "python": "subtract_constant",
+    "visibility": "public",
+    "doc": "Subtract a constant from every value (`x - value`).",
+    "fields": [
+      {
+        "name": "value",
+        "doc": "Constant subtrahend (literal or per-row expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "threshold",
+    "python": "threshold",
+    "visibility": "public",
+    "doc": "Apply binary threshold: a U8 mask, 255 where the element exceeds `value`\nand 0 elsewhere (for u8 input typically 0-255; for [0, 1] floats e.g. 0.5).",
+    "fields": [
+      {
+        "name": "value",
+        "doc": "Threshold value (int or float, or Polars expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "transpose",
+    "python": "transpose",
+    "visibility": "public",
+    "doc": "Transpose dimensions.",
+    "fields": [
+      {
+        "name": "axes",
+        "doc": "New order of axes: a permutation of every input axis.",
+        "type": {
+          "kind": "list",
+          "inner": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "int"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "trunc",
+    "python": "trunc",
+    "visibility": "public",
+    "doc": "Round toward zero (drop the fractional part). Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "warp_affine",
+    "python": "warp_affine",
+    "visibility": "public",
+    "doc": "Apply a 2x3 affine transformation matrix.\n\nThe matrix ``[a, b, tx, c, d, ty]`` is a **forward** mapping from\nsource to destination (same convention as OpenCV ``warpAffine``)::\n\n    x_dst = a * x_src + b * y_src + tx\n    y_dst = c * x_src + d * y_src + ty\n\nThe kernel inverts this matrix internally for interpolation.\n\nDomain: buffer → buffer\n\nExample:\n    ```python\n    >>> # Translate image by (50, 30)\n    >>> pipe = Pipeline().source(\"image_bytes\").warp_affine(\n    ...     matrix=[1.0, 0.0, 50.0, 0.0, 1.0, 30.0],\n    ...     output_size=(224, 224),\n    ... )\n    >>>\n    >>> # Per-sample random affine: each row uses its own matrix columns\n    >>> pipe = Pipeline().source(\"image_bytes\").warp_affine(\n    ...     matrix=[pl.col(\"a\"), pl.col(\"b\"), pl.col(\"tx\"),\n    ...             pl.col(\"c\"), pl.col(\"d\"), pl.col(\"ty\")],\n    ...     output_size=(224, 224),\n    ... )\n    ```",
+    "fields": [
+      {
+        "name": "matrix",
+        "doc": "Six-element sequence representing the 2x3 affine matrix\n``[a, b, tx, c, d, ty]`` (forward mapping). **Each element may be a\nliteral float or a Polars expression**, so a batch can apply a\ndifferent (e.g. random) affine per row in one call — the matrix is\nresolved per row at execution.",
+        "type": {
+          "kind": "array",
+          "len": 6,
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
+          }
+        }
+      },
+      {
+        "name": "output_size",
+        "doc": "``(height, width)`` of the output image. Each element accepts a Polars\nexpression for per-row dynamic values.",
+        "type": {
+          "kind": "array",
+          "len": 2,
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "int"
+          }
+        }
+      },
+      {
+        "name": "interpolation",
+        "doc": "Interpolation method -- ``\"bilinear\"`` (default) or ``\"nearest\"``.",
+        "default": "bilinear",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "InterpolationType",
+          "variants": [
+            "nearest",
+            "bilinear"
+          ]
+        }
+      },
+      {
+        "name": "border_value",
+        "doc": "Pixel value for out-of-bounds regions (default 0).",
+        "default": 0.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  }
+]

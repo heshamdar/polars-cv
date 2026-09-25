@@ -14,6 +14,7 @@ import polars as pl
 import pytest
 
 from polars_cv import Pipeline
+from tests._plan_view import planned
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
@@ -450,9 +451,9 @@ def test_stat_reducers_are_all_pipeline_methods() -> None:
             f"Pipeline method."
         )
         produced = getattr(Pipeline().source("image_bytes").grayscale(), method)()
-        assert produced._current_domain == "scalar", (
+        assert planned(produced).domain == "scalar", (
             f"'{method}' leaves the pipeline in domain "
-            f"'{produced._current_domain}', so '{stat}' is not a statistic."
+            f"'{planned(produced).domain}', so '{stat}' is not a statistic."
         )
 
     unknown = set(_DEFAULT_STATS) - set(_STAT_REDUCERS)

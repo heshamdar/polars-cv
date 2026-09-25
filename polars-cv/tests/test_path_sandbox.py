@@ -29,6 +29,7 @@ import pytest
 from PIL import Image
 
 from polars_cv import Pipeline
+from tests._plan_view import source_of
 
 from .conftest import plugin_required
 
@@ -225,9 +226,9 @@ def test_allowed_roots_participates_in_source_identity() -> None:
     `__hash__`, a restricted and an unrestricted source would collapse into one
     node and one of them would silently get the other's policy.
     """
-    a = Pipeline().source("file_path", allowed_roots=["/srv/a"])._source
-    b = Pipeline().source("file_path", allowed_roots=["/srv/b"])._source
-    unrestricted = Pipeline().source("file_path")._source
+    a = source_of(Pipeline().source("file_path", allowed_roots=["/srv/a"]))
+    b = source_of(Pipeline().source("file_path", allowed_roots=["/srv/b"]))
+    unrestricted = source_of(Pipeline().source("file_path"))
 
     assert a != b
     assert a != unrestricted

@@ -8,10 +8,14 @@ lazy pipeline operations that are fused into a single plugin call when
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import uuid
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
+
+from polars_cv._ops_generated import _LazyOpsMixin
 
 if TYPE_CHECKING:
     from polars_cv._graph import PipelineGraph
@@ -49,139 +53,32 @@ _STAT_REDUCERS: "dict[str, str]" = {
 _DEFAULT_STATS: "tuple[str, ...]" = ("mean", "std", "min", "max")
 
 
-def _array_sink_needs_shape(pipeline: Any, alias: str | None = None) -> str:
-    """The message for an ``array`` sink whose shape the planner cannot name.
-
-    Written once and used by both the single-output and the multi-output check,
-    and deliberately naming *what each remedy actually supplies*. The advice it
-    replaces was circular for the case that hits it most: it told the user to
-    call ``.assert_shape()`` or ``.resize()``, and a list/array source — whose
-    shape genuinely is not knowable until execution, and which is therefore the
-    source that lands here — got the same message back after doing so.
-    ``.resize()`` fixes H and W but never the channel count, and
-    ``.assert_shape()`` only reaches the schema now that ``dims=`` pins the rank
-    alongside the sizes.
-    """
-    from polars_cv._types import HINT_DIMS
-
-    hints = pipeline._shape_hints
-    missing = [dim for dim in HINT_DIMS if not _is_known(hints.get(dim))]
-    if pipeline._expected_ndim != 3 and not missing:
-        unknown = "the output rank"
-    else:
-        unknown = ", ".join(missing) if missing else "the output rank"
-    where = f" (alias '{alias}')" if alias else ""
-    return (
-        f"an 'array' sink{where} needs the full output shape at planning time, "
-        f"and this pipeline's is not known: {unknown}. Three ways to supply it:\n"
-        f"  .sink('array', shape=[8, 8, 3])   — always works; the shape belongs "
-        f"to the sink\n"
-        f"  .assert_shape(dims=[8, 8, 3])     — when you know it and the source "
-        f"does not (a list/array column's shape is only settled during "
-        f"execution)\n"
-        f"  .resize(height=8, width=8)        — supplies height and width only"
-    )
-
-
-def _is_known(hint: Any) -> bool:
-    """Is a shape hint a plan-time integer (rather than absent or per-row)?"""
-    return hint is not None and not hint.is_expr
-
-
-def _require_concrete_sink_dtype(
-    pipeline: Any, fmt: str, alias: str | None = None
+def _check_sink(
+    fmt: str, kwargs: "dict[str, Any]", pipeline: Any, alias: str | None = None
 ) -> None:
-    """Enforce that a typed ``list``/``array`` sink knows its element dtype.
+    """Check one output's sink against its Rust definition and the plan.
 
-    A Polars ``List``/``Array`` column needs a concrete inner dtype at planning
-    time. For image/blob sources the decoded dtype is only known at runtime, so a
-    plan-time guess (it would silently fall back to ``u8``) can diverge from what
-    execution produces (e.g. a 16-bit image). Rather than guess, require the user
-    to supply the dtype.
-
-    A ``list``/``array`` *source* is exempt: its element dtype is carried in the
-    input column's schema and resolved at planning time (not by sampling rows).
-    Binary/blob sinks and the numpy/torch struct sinks never need a static
-    element dtype, so they are not checked here.
+    ``plan_sink`` validates the format and its keywords (a keyword the format
+    does not read, a misspelled one, a ``dtype`` other than half precision) and
+    then refuses a sink the output's planned state cannot give a Polars
+    schema: a typed ``list``/``array`` element with no known dtype, an
+    ``array`` with no shape, a ``list`` with no rank — unless the source
+    resolves them from the input column. All of it raises here, while the
+    pipeline is built, rather than at ``collect()``.
     """
-    from polars_cv._types import (
-        SINKS_WITH_TYPED_ELEMENTS,
-        SOURCES_RESOLVED_FROM_COLUMN,
+    from polars_cv._lib import plan_sink
+    from polars_cv._types import planning_slots
+
+    source = pipeline._source
+    plan_sink(
+        json.dumps({"format": fmt, **kwargs}, default=list),
+        pipeline._state,
+        None if source is None else json.dumps(source.to_dict(planning_slots)),
+        alias,
     )
 
-    if fmt not in SINKS_WITH_TYPED_ELEMENTS:
-        return
-    if pipeline._output_dtype != "auto":
-        return
 
-    # These sources resolve their leaf dtype from the Polars column at
-    # plan-time-with-input (Rust `resolved_output_specs`). "auto" may resolve to
-    # a List/Array column the same way, so defer to that runtime resolution — a
-    # Binary/image column under "auto" still surfaces a clear error there
-    # (`list_array_inner_dtype`) rather than here.
-    if (
-        pipeline._source is not None
-        and pipeline._source.format in SOURCES_RESOLVED_FROM_COLUMN
-    ):
-        return
-
-    where = f" (alias '{alias}')" if alias else ""
-    msg = (
-        f"Element dtype is unknown for the '{fmt}' sink{where}: the decoded dtype "
-        "of an image/blob source is only known at runtime, so a typed Polars "
-        f"'{fmt}' output cannot be planned. Supply an explicit dtype — e.g. "
-        'source(..., dtype="u16") or a .cast("u16") before the sink.'
-    )
-    raise ValueError(msg)
-
-
-def _validate_sink_params(fmt: str, kwargs: "dict[str, Any]") -> None:
-    """Check one sink's keywords: which apply to *fmt*, then their values.
-
-    Applicability comes from `SINK_PARAM_APPLIES` — the same table and the same
-    checker the source end uses — so an unknown keyword and one that does not
-    apply to this format both raise here rather than riding into the graph. An
-    unparseable format is left to the encoder's own error: the parameters are
-    not silently accepted, the query simply fails on the format instead.
-
-    Only ``dtype`` has a value constraint: half precision alone is accepted,
-    spelled either ``"f16"`` or ``"float16"``. The engine has no native f16
-    dtype, so f16 is produced purely as an encode-time downcast at the sink
-    boundary (halving the output-tensor bytes / H2D
-    transfer). Every other output dtype is expressible with a pipeline
-    ``.cast()``, which runs through the real cast op so the planned and produced
-    dtypes stay identical — the sink dtype deliberately does *not* duplicate
-    that path.
-    """
-    from polars_cv._types import (
-        SINK_PARAM_APPLIES,
-        SinkFormat,
-        reject_inapplicable_params,
-    )
-
-    try:
-        sink_format = SinkFormat(fmt)
-    except ValueError:
-        return
-    reject_inapplicable_params(
-        kind="sink",
-        fmt=sink_format,
-        supplied=kwargs,
-        applies=SINK_PARAM_APPLIES,
-    )
-
-    dtype = kwargs.get("dtype")
-    if dtype is None:
-        return
-    if dtype not in ("f16", "float16"):
-        msg = (
-            f"numpy/torch/ndarray sink dtype only supports 'f16' (got '{dtype}'). "
-            "Use .cast(...) in the pipeline for other output dtypes."
-        )
-        raise ValueError(msg)
-
-
-class LazyPipelineExpr:
+class LazyPipelineExpr(_LazyOpsMixin):
     """
     Lazy pipeline expression for composed operations.
 
@@ -300,26 +197,20 @@ class LazyPipelineExpr:
             # op at a time.
             #
             # Folding per-op is the point: the previous code replayed only the
-            # hints and assigned `_expected_ndim` afterwards, so every replayed
-            # op saw `ndim = None` and `_update_hw_from_infer_shape` returned
-            # at its opening guard — the H/W half of the replay never ran. It
+            # hints and assigned the rank afterwards, so every replayed
+            # op saw `ndim = None` and the H/W update was skipped at its
+            # opening guard — the H/W half of the replay never ran. It
             # cannot be fixed by hoisting that assignment, either: a
             # rank-changing op must infer against its own input rank, not the
-            # chain's final one. Batch re-folds (CSE prefixes) seed from the
-            # same pre-op state.
-            upstream_dtype = self._pipeline._output_dtype
-            upstream_ndim = self._pipeline._expected_ndim
-            new_pipeline._shape_hints = _copy.deepcopy(self._pipeline._shape_hints)
-            new_pipeline._current_domain = self._pipeline._current_domain
-            new_pipeline._output_dtype = upstream_dtype
-            new_pipeline._expected_ndim = upstream_ndim
-            new_pipeline._initial_output_dtype = upstream_dtype
-            new_pipeline._initial_expected_ndim = upstream_ndim
+            # chain's final one.
+            #
+            # Its sizes are the upstream's, but none is this node's user's
+            # assertion; whether a declaration reached the lineage carries
+            # over (see `PlanState.declared`).
+            new_pipeline._state = dataclasses.replace(
+                self._pipeline._state, asserted=(False, False, False)
+            )
             new_pipeline._assertions = _copy.deepcopy(pipeline._assertions)
-            # The seeded hints may carry the upstream's declared H/W while its
-            # assertions stay behind, so the "a declaration reached here" fact
-            # must travel with them (see `Pipeline._shape_declared`).
-            new_pipeline._shape_declared = self._pipeline._shape_declared
             # An assert_shape() written before the first op has no preceding
             # append to apply it; every later position is applied by the
             # `_push_op` that lands on it, so the replay is just the append
@@ -387,7 +278,6 @@ class LazyPipelineExpr:
             A Polars expression (or PipelineGraph if return_expr=False).
         """
         from polars_cv._graph import PipelineGraph
-        from polars_cv._types import SOURCES_RESOLVED_FROM_COLUMN
 
         # Validate no cycles
         self._validate_no_cycles()
@@ -407,66 +297,18 @@ class LazyPipelineExpr:
             )
 
         if isinstance(format, dict):
-            # Multi-output mode
-            # Validate array sinks in multi-output
-
+            # Multi-output: the shared kwargs apply to every alias's sink.
             for alias, fmt_str in format.items():
-                # A sink dtype (f16) in multi-output applies to the shared kwargs;
-                # validate it against each alias's format.
-                _validate_sink_params(fmt_str, kwargs)
-                # Typed list/array sinks must know their element dtype at plan time.
                 node = self._find_node_by_alias(alias, all_nodes)
-                if node is not None:
-                    _require_concrete_sink_dtype(node._pipeline, fmt_str, alias)
-
-                # Validate list sink ndim — allow None when Rust can resolve
-                # it from the Polars column type (list/array sources).
-                if fmt_str == "list":
-                    node = self._find_node_by_alias(alias, all_nodes)
-                    if node and node._pipeline._expected_ndim is None:
-                        if (
-                            node._pipeline._source is None
-                            or node._pipeline._source.format
-                            not in SOURCES_RESOLVED_FROM_COLUMN
-                        ):
-                            msg = "Number of dimensions (ndim) is unknown for 'list' sink. This should not happen for standard sources."
-                            raise ValueError(msg)
-
-                if fmt_str == "array":
-                    # For multi-output, we don't have a simple way to pass per-alias shape yet
-                    # but we can check if the node has deterministic shape
-                    node = self._find_node_by_alias(alias, all_nodes)
-                    if node and not node._pipeline._shape_hints.has_all_dims():
-                        raise ValueError(_array_sink_needs_shape(node._pipeline, alias))
+                _check_sink(
+                    fmt_str,
+                    kwargs,
+                    (node or self)._pipeline,
+                    alias,
+                )
             graph.set_multi_output(format, **kwargs)
         else:
-            # Single output mode
-            _validate_sink_params(format, kwargs)
-            # Typed list/array sinks must know their element dtype at plan time.
-            _require_concrete_sink_dtype(self._pipeline, format)
-
-            # Validate array sink
-
-            if format == "array" and "shape" not in kwargs:
-                if not self._pipeline._shape_hints.has_all_dims():
-                    raise ValueError(_array_sink_needs_shape(self._pipeline))
-
-            # Validate list sink ndim — allow None when Rust can resolve
-            # it from the Polars column type (list/array sources).
-            if format == "list":
-                if self._pipeline._expected_ndim is None:
-                    # LIST/ARRAY sources resolve ndim from the Polars column at
-                    # plan-time-with-input; "auto" defers to that same runtime
-                    # resolution (a Binary/image column then errors on its
-                    # unresolved element dtype rather than on ndim).
-                    if (
-                        self._pipeline._source is None
-                        or self._pipeline._source.format
-                        not in SOURCES_RESOLVED_FROM_COLUMN
-                    ):
-                        msg = "Number of dimensions (ndim) is unknown for 'list' sink. This should not happen for standard sources."
-                        raise ValueError(msg)
-
+            _check_sink(format, kwargs, self._pipeline)
             graph.set_output(self._node_id, format, **kwargs)
 
         # The explicit optimization phase: rewrite the logical graph into its
@@ -507,7 +349,7 @@ class LazyPipelineExpr:
 
         # Create a new pipeline that references the mask
         new_pipeline = self._pipeline._clone()
-        new_pipeline._add_binary_op("apply_mask", mask._node_id, invert=invert)
+        new_pipeline._add_node_op("apply_mask", {"mask": mask, "invert": invert})
 
         return LazyPipelineExpr(
             column=self._column,
@@ -541,13 +383,9 @@ class LazyPipelineExpr:
             >>> merged = sel(2).channel_merge(sel(1), sel(0))  # RGB -> BGR
             ```
         """
-        if not others:
-            raise ValueError(
-                "channel_merge requires at least one other channel expression"
-            )
-
+        # The op's Rust definition rejects an empty `others`.
         new_pipeline = self._pipeline._clone()
-        new_pipeline._add_channel_merge([o._node_id for o in others])
+        new_pipeline._add_node_op("channel_merge", {"others": list(others)})
 
         return LazyPipelineExpr(
             column=self._column,
@@ -562,252 +400,6 @@ class LazyPipelineExpr:
     # generated by `_install_pipeline_forwarders` like every other ordinary op.
     # A hand-written copy drifted its docstring in the past — the generation
     # scheme exists precisely to prevent that.
-
-    def add(self, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
-        """
-        Element-wise addition with another array.
-
-        For u8/u16: Saturating addition (clamps to max value, e.g., 255 for u8).
-        For f32/f64: Standard addition.
-
-        Args:
-            other: LazyPipelineExpr to add.
-
-        Returns:
-            New LazyPipelineExpr with the add operation composed.
-
-        Example:
-            ```python
-            >>> img1 = pl.col("image1").cv.pipe(pipe1)
-            >>> img2 = pl.col("image2").cv.pipe(pipe2)
-            >>> result = img1.add(img2).sink("numpy")  # 200 + 100 = 255 (saturated)
-            ```
-        """
-        return self._binary_op("add", other)
-
-    def subtract(self, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
-        """
-        Element-wise subtraction.
-
-        For u8/u16: Saturating subtraction (clamps to 0).
-        For f32/f64: Standard subtraction.
-
-        Args:
-            other: LazyPipelineExpr to subtract.
-
-        Returns:
-            New LazyPipelineExpr with the subtract operation composed.
-
-        Example:
-            ```python
-            >>> img1 = pl.col("image1").cv.pipe(pipe1)
-            >>> img2 = pl.col("image2").cv.pipe(pipe2)
-            >>> result = img1.subtract(img2).sink("numpy")  # 50 - 100 = 0 (saturated)
-            ```
-        """
-        return self._binary_op("subtract", other)
-
-    def multiply(self, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
-        """
-        Element-wise multiplication.
-
-        For u8/u16: Saturating multiplication (clamps to max value).
-        For f32/f64: Standard multiplication.
-
-        For normalized image blending (treating values as [0,1] range),
-        use blend() instead.
-
-        Args:
-            other: LazyPipelineExpr to multiply by.
-
-        Returns:
-            New LazyPipelineExpr with the multiply operation composed.
-
-        Example:
-            ```python
-            >>> img1 = pl.col("image1").cv.pipe(pipe1)
-            >>> img2 = pl.col("image2").cv.pipe(pipe2)
-            >>> result = img1.multiply(img2).sink("numpy")  # 16 * 16 = 255 (saturated)
-            ```
-
-        See Also:
-            blend: For normalized multiplication ((a/255) * (b/255) * 255)
-        """
-        return self._binary_op("multiply", other)
-
-    def divide(self, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
-        """
-        Element-wise division.
-
-        For u8/u16: Integer division with zero protection (returns 0 for divide by 0).
-        For f32/f64: Standard division.
-
-        Args:
-            other: LazyPipelineExpr to divide by.
-
-        Returns:
-            New LazyPipelineExpr with the divide operation composed.
-        """
-        return self._binary_op("divide", other)
-
-    def blend(self, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
-        """
-        Normalized blend (element-wise).
-
-        Performs normalized multiplication useful for image blending/compositing.
-
-        For u8: (a/255) * (b/255) * 255
-        For u16: (a/65535) * (b/65535) * 65535
-        For f32/f64: Standard multiplication.
-
-        Args:
-            other: LazyPipelineExpr to blend with.
-
-        Returns:
-            New LazyPipelineExpr with the blend operation composed.
-
-        Example:
-            Blend two images together with proper normalization:
-
-            >>> img1 = pl.col("image1").cv.pipe(pipe1)
-            >>> img2 = pl.col("image2").cv.pipe(pipe2)
-            >>> blended = img1.blend(img2).sink("numpy")
-        """
-        return self._binary_op("blend", other)
-
-    def ratio(self, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
-        """
-        Scaled ratio division.
-
-        Computes a/b scaled to the full range of the data type.
-
-        For u8: (a/b) * 255, clamped to [0, 255]
-        For u16: (a/b) * 65535, clamped to [0, 65535]
-        For f32/f64: Standard division.
-
-        Args:
-            other: LazyPipelineExpr to divide by.
-
-        Returns:
-            New LazyPipelineExpr with the ratio operation composed.
-
-        Example:
-            Compute normalized ratio between two images:
-
-            >>> img1 = pl.col("image1").cv.pipe(pipe1)
-            >>> img2 = pl.col("image2").cv.pipe(pipe2)
-            >>> result = img1.ratio(img2).sink("numpy")
-        """
-        return self._binary_op("ratio", other)
-
-    def bitwise_and(self, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
-        """
-        Element-wise bitwise AND.
-
-        For binary masks (0/255 values), this computes the intersection.
-
-        Args:
-            other: LazyPipelineExpr to AND with.
-
-        Returns:
-            New LazyPipelineExpr with the bitwise AND operation composed.
-
-        Example:
-            Compute intersection of two binary masks:
-
-            >>> mask1 = pl.col("pred_mask").cv.pipe(mask_pipe)
-            >>> mask2 = pl.col("gt_mask").cv.pipe(mask_pipe)
-            >>> intersection = mask1.bitwise_and(mask2).sink("list")
-        """
-        return self._binary_op("bitwise_and", other)
-
-    def bitwise_or(self, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
-        """
-        Element-wise bitwise OR.
-
-        For binary masks (0/255 values), this computes the union.
-
-        Args:
-            other: LazyPipelineExpr to OR with.
-
-        Returns:
-            New LazyPipelineExpr with the bitwise OR operation composed.
-
-        Example:
-            Compute union of two binary masks:
-
-            >>> mask1 = pl.col("pred_mask").cv.pipe(mask_pipe)
-            >>> mask2 = pl.col("gt_mask").cv.pipe(mask_pipe)
-            >>> union = mask1.bitwise_or(mask2).sink("list")
-        """
-        return self._binary_op("bitwise_or", other)
-
-    def bitwise_xor(self, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
-        """
-        Element-wise bitwise XOR.
-
-        For binary masks (0/255 values), this computes the symmetric difference.
-
-        Args:
-            other: LazyPipelineExpr to XOR with.
-
-        Returns:
-            New LazyPipelineExpr with the bitwise XOR operation composed.
-
-        Example:
-            Compute symmetric difference of two binary masks:
-
-            >>> mask1 = pl.col("pred_mask").cv.pipe(mask_pipe)
-            >>> mask2 = pl.col("gt_mask").cv.pipe(mask_pipe)
-            >>> diff = mask1.bitwise_xor(mask2).sink("list")
-        """
-        return self._binary_op("bitwise_xor", other)
-
-    def maximum(self, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
-        """
-        Element-wise maximum of two arrays.
-
-        Returns the maximum value at each position between this and another array.
-        Useful for operations like image compositing, clamping, and non-linear
-        image processing.
-
-        Args:
-            other: LazyPipelineExpr to compare with.
-
-        Returns:
-            New LazyPipelineExpr with the maximum operation composed.
-
-        Example:
-            Compute element-wise maximum of two images:
-
-            >>> img1 = pl.col("image1").cv.pipe(pipe1)
-            >>> img2 = pl.col("image2").cv.pipe(pipe2)
-            >>> result = img1.maximum(img2).sink("numpy")
-        """
-        return self._binary_op("maximum", other)
-
-    def minimum(self, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
-        """
-        Element-wise minimum of two arrays.
-
-        Returns the minimum value at each position between this and another array.
-        Useful for operations like image compositing, clamping, and non-linear
-        image processing.
-
-        Args:
-            other: LazyPipelineExpr to compare with.
-
-        Returns:
-            New LazyPipelineExpr with the minimum operation composed.
-
-        Example:
-            Compute element-wise minimum of two images:
-
-            >>> img1 = pl.col("image1").cv.pipe(pipe1)
-            >>> img2 = pl.col("image2").cv.pipe(pipe2)
-            >>> result = img1.minimum(img2).sink("numpy")
-        """
-        return self._binary_op("minimum", other)
 
     def apply_contour_mask(
         self,
@@ -841,7 +433,7 @@ class LazyPipelineExpr:
         orig_source = contour._pipeline._source
 
         def _unwrap(name: str, default: int) -> int | pl.Expr:
-            param = getattr(orig_source, name, None)
+            param = orig_source.params.get(name) if orig_source else None
             return default if param is None else param.value
 
         fill_value = _unwrap("fill_value", 255)
@@ -1071,39 +663,36 @@ class LazyPipelineExpr:
         node's state from upstream regardless — this seed only exists so the
         builder-time validation sees the truth.
         """
-        from polars_cv.pipeline import Pipeline
+        from polars_cv.pipeline import Pipeline, PlanState
 
         inner = Pipeline()
-        inner._current_domain = self._pipeline._current_domain
-        inner._output_dtype = self._pipeline._output_dtype
-        inner._expected_ndim = self._pipeline._expected_ndim
+        upstream = self._pipeline._state
+        inner._state = PlanState(
+            domain=upstream.domain, dtype=upstream.dtype, ndim=upstream.ndim
+        )
         return inner
 
     def _binary_op(self, op: str, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
         """Create a binary operation between this and another LazyPipelineExpr."""
         from polars_cv._types import SourceFormat, SourceSpec
         from polars_cv.pipeline import Pipeline as PipelineClass
+        from polars_cv.pipeline import PlanState
 
         # Create a new pipeline that receives from upstream (BLOB source)
         # and only applies the binary op - don't clone self's ops as they're
         # already applied by the upstream node
         new_pipeline = PipelineClass()
         new_pipeline._source = SourceSpec(format=SourceFormat.BLOB)
-        # Copy the domain; the dtype comes from view-buffer's two-input authority
-        # (binary_output_dtype) so the planned dtype reflects the operator's
-        # promotion across BOTH operands (e.g. true division of two u8 -> f32),
-        # not just the left operand. "auto" operands propagate "auto".
-        from polars_cv._lib import binary_output_dtype
-
-        new_pipeline._current_domain = self._pipeline._current_domain
-        new_pipeline._output_dtype = binary_output_dtype(
-            op, self._pipeline._output_dtype, other._pipeline._output_dtype
+        # The op applies to the left operand's output, so it starts from that
+        # state; its dtype rule reads both operands (true division of two u8
+        # is f32), so the other operand's dtype goes with it.
+        left = self._pipeline._state
+        new_pipeline._state = PlanState(
+            domain=left.domain, dtype=left.dtype, ndim=left.ndim
         )
-        # A binary op broadcasts two equal-rank buffers, so the rank is preserved.
-        # Carry it from the left operand so a downstream list/array sink knows the
-        # nesting depth at plan time.
-        new_pipeline._expected_ndim = self._pipeline._expected_ndim
-        new_pipeline._add_binary_op(op, other._node_id)
+        new_pipeline._add_node_op(
+            op, {"other": other}, other_dtype=other._pipeline._state.dtype
+        )
 
         return LazyPipelineExpr(
             column=None,  # No direct column - receives from upstream
@@ -1226,7 +815,6 @@ PIPELINE_ONLY_METHODS = frozenset(
         "to_graph",
         "current_domain",
         "output_dtype",
-        "output_encoding",
         # Introspection, not a chainable op: returns a str rendering, and
         # optimization is a graph-level phase a single lazy expr cannot stand in
         # for, so it is not forwarded onto LazyPipelineExpr.

@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
@@ -109,19 +109,19 @@ pub enum ApproxMethod {
     Approx,
 }
 
-crate::naming::named_variants!(ScaleOrigin {
+crate::naming::named_variants!(ScaleOrigin: "Point a contour scale operation is measured from (``.contour.scale``)." {
     "centroid" => Centroid,
     "bbox_center" => BBoxCenter,
     "origin" => Origin,
 });
 
-crate::naming::named_variants!(ExtractMode {
+crate::naming::named_variants!(ExtractMode: "Contour retrieval mode for ``extract_contours``.\n\n- EXTERNAL: Outermost contours only (default).\n- TREE: Full nesting hierarchy.\n- ALL: Every contour, without hierarchy." {
     "external" => External,
     "tree" => Tree,
     "all" => All,
 });
 
-crate::naming::named_variants!(ApproxMethod {
+crate::naming::named_variants!(ApproxMethod: "Contour point-approximation method for ``extract_contours``.\n\n- NONE: Keep every boundary point.\n- SIMPLE: Drop redundant collinear points (default).\n- APPROX: Douglas-Peucker style approximation." {
     "none" => None,
     "simple" => Simple,
     "approx" => Approx,
@@ -143,41 +143,28 @@ impl Op for GeometryOp {
         }
     }
 
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
+    fn shape(&self) -> OpShape {
+        let fixed = |dims: &[usize]| OpShape::Fixed(dims.iter().map(|&n| Sym::Known(n)).collect());
         match self {
             // Scalar outputs
-            GeometryOp::Area { .. } | GeometryOp::Perimeter => vec![1],
-
+            GeometryOp::Area { .. } | GeometryOp::Perimeter => fixed(&[1]),
             // Centroid returns (x, y)
-            GeometryOp::Centroid => vec![2],
-
+            GeometryOp::Centroid => fixed(&[2]),
             // BoundingBox returns (x, y, width, height)
-            GeometryOp::BoundingBox => vec![4],
-
+            GeometryOp::BoundingBox => fixed(&[4]),
             // Contour transforms preserve the point list; `Simplify` and
             // `ConvexHull` may shorten it, which is not knowable statically, so
             // the input shape stands in for both.
             GeometryOp::Translate { .. }
             | GeometryOp::Scale { .. }
             | GeometryOp::Simplify { .. }
-            | GeometryOp::ConvexHull => {
-                if !inputs.is_empty() {
-                    inputs[0].to_vec()
-                } else {
-                    vec![]
-                }
-            }
-
+            | GeometryOp::ConvexHull => OpShape::Preserve,
             // Rasterize produces an image
             GeometryOp::Rasterize { width, height, .. } => {
-                vec![*height as usize, *width as usize, 1]
+                fixed(&[*height as usize, *width as usize, 1])
             }
-
-            // ExtractContours output shape is dynamic
-            GeometryOp::ExtractContours { .. } => {
-                // Variable-length output, placeholder
-                vec![]
-            }
+            // ExtractContours output shape is data-dependent
+            GeometryOp::ExtractContours { .. } => OpShape::Dynamic,
         }
     }
 
@@ -380,7 +367,7 @@ mod tests {
             fill_value: 255,
             background: 0,
         };
-        let shape = op.infer_shape(&[]);
+        let shape = op.shape().concrete(&[]);
         assert_eq!(shape, vec![100, 200, 1]);
     }
 

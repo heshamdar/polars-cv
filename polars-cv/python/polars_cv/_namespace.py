@@ -11,17 +11,16 @@ collapses to a single ``self._plugin(...)`` call, which goes through
 from __future__ import annotations
 
 import copy
-from typing import Any, Callable
+from typing import Any, Callable, TypeVar
 
 import polars as pl
 
 from polars_cv import _plugin
 from polars_cv._types import NullParamPolicy
 
-#: Accepted ``on_null(...)`` values, read from the Rust enum's Python mirror
-#: rather than spelled here. ``NullParamPolicy`` is registered in
-#: ``PLUGIN_REGISTRY``, so ``test_every_rust_enum_is_parity_checked`` holds the
-#: mirror to what ``enum_variants("NullParamPolicy")`` reports.
+#: Accepted ``on_null(...)`` values, read from ``NullParamPolicy`` — a class
+#: generated from the Rust enum (``PLUGIN_REGISTRY`` → ``enum_catalog.json``)
+#: rather than spelled here.
 _NULL_PARAM_POLICIES = tuple(p.value for p in NullParamPolicy)
 
 
@@ -60,6 +59,10 @@ class _PluginNamespace:
         )
 
 
+#: The concrete namespace type, so `on_null` chains keep their accessor methods.
+_Policy = TypeVar("_Policy", bound="_GeomNullPolicy")
+
+
 class _GeomNullPolicy:
     """Adds ``on_null`` to the geometry accessors — and only to those.
 
@@ -74,7 +77,7 @@ class _GeomNullPolicy:
 
     _on_null: str = "raise"
 
-    def on_null(self, policy: str):
+    def on_null(self: _Policy, policy: str) -> _Policy:
         """Set what a null in a per-row expression parameter means.
 
         These namespaces have no ``Pipeline`` object to hang a graph-level
@@ -111,18 +114,14 @@ class _GeomNullPolicy:
 class _ArgBinder:
     """Builds a plugin call whose parameters may be literals or expressions.
 
-    The geometry namespaces bypass the ``vb_graph`` graph engine, so they have
-    no ``ParamValue`` machinery. Their per-row channel is instead the plugin's
-    *input series*: an expression-valued parameter is appended as an extra
-    argument and Rust reads it at the current row.
-
-    Position alone cannot identify those inputs. Several of these functions
-    already read *optional* data operands positionally (``point.rotate``'s
-    ``origin``, ``correspond``' ``order``), so an appended parameter
-    would be indistinguishable from an omitted operand. Every variable
-    argument — data operand and dynamic parameter alike — is therefore
-    registered in ``input_slots``, a ``name -> index`` map passed as a kwarg,
-    and Rust looks inputs up by name rather than by position.
+    The geometry namespaces bypass the ``vb_graph`` graph engine but use its
+    per-row wire form: a kwarg is either the literal value or ``{"$slot": n}``,
+    where ``n`` is the position of the plugin input holding the value per row
+    (the Rust side reads it as a typed ``Param<T>``; a data operand is a
+    ``ColumnRef``). Each expression is appended as an input and its position is
+    written into its own kwarg, so no input is identified by name or by an
+    assumed position — optional operands (``point.rotate``'s ``origin``,
+    ``correspond``'s ``order``) cannot be confused with an appended parameter.
 
     Index 0 is always the namespace's own expression (``_plugin`` prepends it),
     so the first appended argument lands at index 1.
@@ -131,11 +130,10 @@ class _ArgBinder:
     def __init__(self) -> None:
         self._args: list[pl.Expr] = []
         self._kwargs: dict[str, Any] = {}
-        self._slots: dict[str, int] = {}
 
     def _append(self, name: str, expr: pl.Expr) -> None:
         # +1 leaves room for the namespace's own expression at index 0.
-        self._slots[name] = len(self._args) + 1
+        self._kwargs[name] = {"$slot": len(self._args) + 1}
         self._args.append(expr)
 
     def add_data(self, name: str, expr: pl.Expr | None) -> None:
@@ -150,11 +148,11 @@ class _ArgBinder:
         *,
         cast: Callable[[Any], Any] = float,
     ) -> None:
-        """Register a parameter as either a per-row input or a scalar kwarg.
+        """Register a parameter as either a per-row input or a literal kwarg.
 
-        A scalar rides in ``_kwargs`` under ``cast`` (``float`` by default, but
-        ``str`` / ``int`` / ``bool`` for enum and flag parameters); a ``pl.Expr``
-        becomes a per-row input.
+        A literal rides in the kwargs under ``cast`` (``float`` by default, but
+        ``str`` / ``int`` / ``bool`` for enum and flag parameters); a
+        ``pl.Expr`` becomes a per-row input.
         """
         if value is None:
             return
@@ -169,14 +167,13 @@ class _ArgBinder:
         function_name: str,
         **kwargs: Any,
     ) -> pl.Expr:
-        """Invoke ``function_name`` with the collected args, kwargs and slots."""
+        """Invoke ``function_name`` with the collected args and kwargs."""
         return namespace._plugin(
             function_name,
             args=self._args,
             kwargs={
                 **self._kwargs,
                 **kwargs,
-                "input_slots": self._slots,
                 # Injected centrally so no geometry method has to declare it;
                 # Rust reads it in `GeomParams::new`.
                 "on_null": namespace._on_null,  # ty: ignore[unresolved-attribute]

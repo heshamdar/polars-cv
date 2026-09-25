@@ -7,7 +7,7 @@ import json
 import polars as pl
 
 from polars_cv import Pipeline
-from polars_cv._types import ParamValue
+from polars_cv._types import ParamValue, SlotTable
 
 
 class TestParamValueSerialization:
@@ -15,15 +15,15 @@ class TestParamValueSerialization:
 
     def test_literal_int_serialization(self) -> None:
         """Integer literals serialize correctly."""
-        d = ParamValue.from_arg(42).to_dict()
-        assert d["type"] == "literal"
-        assert d["value"] == 42
+        assert ParamValue.from_arg(42).to_wire(SlotTable().index) == 42
 
     def test_expr_column_serialization(self) -> None:
-        """Expression columns serialize as expr param refs."""
-        d = ParamValue.from_arg(pl.col("my_column")).to_dict()
-        assert d["type"] == "expr"
-        assert d["col"] == 'col("my_column")'
+        """An expression serializes as its position among the plugin inputs."""
+        table = SlotTable()
+        table.add(pl.col("image"))
+        table.add(pl.col("my_column"))
+        d = ParamValue.from_arg(pl.col("my_column")).to_wire(table.index)
+        assert d == {"$slot": 1}
 
 
 class TestPipelineJsonFormat:
@@ -65,10 +65,11 @@ class TestExpressionReferencesJson:
             .crop(top=pl.col("y"), left=pl.col("x"))
         )
         data = json.loads(pipe._to_json())
-        assert data["ops"][0]["height"]["col"] == 'col("h")'
-        assert data["ops"][0]["width"]["col"] == 'col("w")'
-        assert data["ops"][1]["top"]["col"] == 'col("y")'
-        assert data["ops"][1]["left"]["col"] == 'col("x")'
+        # Input 0 is the pipeline's column; each distinct expression follows.
+        assert data["ops"][0]["height"] == {"$slot": 1}
+        assert data["ops"][0]["width"] == {"$slot": 2}
+        assert data["ops"][1]["top"] == {"$slot": 3}
+        assert data["ops"][1]["left"] == {"$slot": 4}
 
 
 class TestJsonRustCompatibility:
@@ -77,13 +78,10 @@ class TestJsonRustCompatibility:
     def test_flip_axes_list(self) -> None:
         """Flip axes are serialized as int lists."""
         data = json.loads(Pipeline().source().flip([0, 1])._to_json())
-        axes = data["ops"][0]["axes"]
-        assert axes["type"] == "literal"
-        assert axes["value"] == [0, 1]
+        # A typed op's field is the value itself.
+        assert data["ops"][0]["axes"] == [0, 1]
 
     def test_transpose_axes_list(self) -> None:
         """Transpose axes are serialized as int lists."""
         data = json.loads(Pipeline().source().transpose([2, 0, 1])._to_json())
-        axes = data["ops"][0]["axes"]
-        assert axes["type"] == "literal"
-        assert axes["value"] == [2, 0, 1]
+        assert data["ops"][0]["axes"] == [2, 0, 1]

@@ -13,6 +13,7 @@ import numpy as np
 import polars as pl
 
 from polars_cv import Pipeline
+from tests._plan_view import op_json, planned
 from tests.conftest import plugin_required
 
 
@@ -84,24 +85,24 @@ class TestChannelInferencePlanning:
     def test_image_source_channels_unknown(self) -> None:
         """Image sources should have unknown channels at planning time."""
         pipe = Pipeline().source("image_bytes")
-        assert pipe._shape_hints.channels is None
+        assert planned(pipe).channels is None
 
     def test_grayscale_drops_to_1(self) -> None:
         """Grayscale (DROP) always sets channels to 1."""
         pipe = Pipeline().source("image_bytes").grayscale()
-        assert pipe._shape_hints.channels is not None
-        assert pipe._shape_hints.channels.value == 1
+        assert planned(pipe).channels is not None
+        assert planned(pipe).channels == 1
 
     def test_canny_drops_to_1(self) -> None:
         """Canny (DROP) always sets channels to 1."""
         pipe = Pipeline().source("image_bytes").canny()
-        assert pipe._shape_hints.channels is not None
-        assert pipe._shape_hints.channels.value == 1
+        assert planned(pipe).channels is not None
+        assert planned(pipe).channels == 1
 
     def test_passthrough_preserves_unknown(self) -> None:
         """PASSTHROUGH ops preserve unknown channels."""
         pipe = Pipeline().source("image_bytes").resize(height=224, width=224)
-        assert pipe._shape_hints.channels is None
+        assert planned(pipe).channels is None
 
     def test_passthrough_preserves_known(self) -> None:
         """PASSTHROUGH ops preserve known channel count."""
@@ -111,8 +112,8 @@ class TestChannelInferencePlanning:
             .assert_shape(channels=4)
             .resize(height=224, width=224)
         )
-        assert pipe._shape_hints.channels is not None
-        assert pipe._shape_hints.channels.value == 4
+        assert planned(pipe).channels is not None
+        assert planned(pipe).channels == 4
 
     def test_cvt_color_with_known_rgba(self) -> None:
         """cvt_color (STRIP_PROCESS_RESTORE) on known RGBA input."""
@@ -120,10 +121,10 @@ class TestChannelInferencePlanning:
             Pipeline()
             .source("image_bytes")
             .assert_shape(channels=4)
-            .convert_color("rgb", "hsv")
+            .convert_color(from_space="rgb", to_space="hsv")
         )
-        assert pipe._shape_hints.channels is not None
-        assert pipe._shape_hints.channels.value == 4
+        assert planned(pipe).channels is not None
+        assert planned(pipe).channels == 4
 
     def test_cvt_color_to_gray_with_known_rgba(self) -> None:
         """cvt_color to gray on RGBA produces GrayA (2ch)."""
@@ -131,21 +132,25 @@ class TestChannelInferencePlanning:
             Pipeline()
             .source("image_bytes")
             .assert_shape(channels=4)
-            .convert_color("rgb", "gray")
+            .convert_color(from_space="rgb", to_space="gray")
         )
-        assert pipe._shape_hints.channels is not None
-        assert pipe._shape_hints.channels.value == 2
+        assert planned(pipe).channels is not None
+        assert planned(pipe).channels == 2
 
     def test_cvt_color_with_unknown_channels(self) -> None:
         """cvt_color with unknown input channels produces unknown output."""
-        pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
-        assert pipe._shape_hints.channels is None
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .convert_color(from_space="rgb", to_space="hsv")
+        )
+        assert planned(pipe).channels is None
 
     def test_blur_with_known_rgba(self) -> None:
         """Blur (STRIP_PROCESS_RESTORE) on known 4ch preserves 4ch."""
         pipe = Pipeline().source("image_bytes").assert_shape(channels=4).blur(sigma=1.0)
-        assert pipe._shape_hints.channels is not None
-        assert pipe._shape_hints.channels.value == 4
+        assert planned(pipe).channels is not None
+        assert planned(pipe).channels == 4
 
     def test_cvt_color_rgb_no_alpha(self) -> None:
         """cvt_color on 3ch (no alpha) produces 3ch."""
@@ -153,32 +158,32 @@ class TestChannelInferencePlanning:
             Pipeline()
             .source("image_bytes")
             .assert_shape(channels=3)
-            .convert_color("rgb", "hsv")
+            .convert_color(from_space="rgb", to_space="hsv")
         )
-        assert pipe._shape_hints.channels is not None
-        assert pipe._shape_hints.channels.value == 3
+        assert planned(pipe).channels is not None
+        assert planned(pipe).channels == 3
 
     def test_threshold_drops_to_1(self) -> None:
         """Threshold (DROP + PRESERVE ndim) should set channels to 1."""
         pipe = Pipeline().source("image_bytes").grayscale().threshold(128)
-        assert pipe._shape_hints.channels is not None
-        assert pipe._shape_hints.channels.value == 1
+        assert planned(pipe).channels is not None
+        assert planned(pipe).channels == 1
 
     def test_erode_drops_to_1(self) -> None:
         """Erode (DROP + PRESERVE ndim) should set channels to 1."""
         pipe = (
             Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
         )
-        assert pipe._shape_hints.channels is not None
-        assert pipe._shape_hints.channels.value == 1
+        assert planned(pipe).channels is not None
+        assert planned(pipe).channels == 1
 
     def test_dilate_drops_to_1(self) -> None:
         """Dilate (DROP + PRESERVE ndim) should set channels to 1."""
         pipe = (
             Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3)
         )
-        assert pipe._shape_hints.channels is not None
-        assert pipe._shape_hints.channels.value == 1
+        assert planned(pipe).channels is not None
+        assert planned(pipe).channels == 1
 
     def test_morphology_gradient_drops_to_1(self) -> None:
         """Morphology gradient (DROP + PRESERVE ndim) should set channels to 1."""
@@ -189,8 +194,8 @@ class TestChannelInferencePlanning:
             .threshold(128)
             .morphology_gradient(ksize=3)
         )
-        assert pipe._shape_hints.channels is not None
-        assert pipe._shape_hints.channels.value == 1
+        assert planned(pipe).channels is not None
+        assert planned(pipe).channels == 1
 
     def test_threshold_erode_dilate_chain_channels(self) -> None:
         """Chained DROP ops should all report channels=1."""
@@ -202,8 +207,8 @@ class TestChannelInferencePlanning:
             .erode(ksize=3)
             .dilate(ksize=3)
         )
-        assert pipe._shape_hints.channels is not None
-        assert pipe._shape_hints.channels.value == 1
+        assert planned(pipe).channels is not None
+        assert planned(pipe).channels == 1
 
     def test_rotate_expand_true_shape_hints(self) -> None:
         """rotate(expand=True) should compute correct output dimensions."""
@@ -213,12 +218,12 @@ class TestChannelInferencePlanning:
             .assert_shape(height=100, width=200)
             .rotate(45, expand=True)
         )
-        h = pipe._shape_hints.height
-        w = pipe._shape_hints.width
+        h = planned(pipe).height
+        w = planned(pipe).width
         assert h is not None
         assert w is not None
-        assert h.value > 100
-        assert w.value > 200
+        assert h > 100
+        assert w > 200
 
     def test_rotate_expand_true_90_swaps(self) -> None:
         """rotate(90, expand=True) should swap height and width."""
@@ -228,10 +233,10 @@ class TestChannelInferencePlanning:
             .assert_shape(height=100, width=200)
             .rotate(90, expand=True)
         )
-        assert pipe._shape_hints.height is not None
-        assert pipe._shape_hints.width is not None
-        assert pipe._shape_hints.height.value == 200
-        assert pipe._shape_hints.width.value == 100
+        assert planned(pipe).height is not None
+        assert planned(pipe).width is not None
+        assert planned(pipe).height == 200
+        assert planned(pipe).width == 100
 
     def test_rotate_expand_false_90_swaps(self) -> None:
         """rotate(90, expand=False) should swap height and width."""
@@ -241,10 +246,10 @@ class TestChannelInferencePlanning:
             .assert_shape(height=100, width=200)
             .rotate(90)
         )
-        assert pipe._shape_hints.height is not None
-        assert pipe._shape_hints.width is not None
-        assert pipe._shape_hints.height.value == 200
-        assert pipe._shape_hints.width.value == 100
+        assert planned(pipe).height is not None
+        assert planned(pipe).width is not None
+        assert planned(pipe).height == 200
+        assert planned(pipe).width == 100
 
     def test_rotate_expand_false_arbitrary_preserves_size(self) -> None:
         """rotate(45, expand=False) should keep original dimensions."""
@@ -254,18 +259,18 @@ class TestChannelInferencePlanning:
             .assert_shape(height=100, width=200)
             .rotate(45)
         )
-        assert pipe._shape_hints.height is not None
-        assert pipe._shape_hints.width is not None
-        assert pipe._shape_hints.height.value == 100
-        assert pipe._shape_hints.width.value == 200
+        assert planned(pipe).height is not None
+        assert planned(pipe).width is not None
+        assert planned(pipe).height == 100
+        assert planned(pipe).width == 200
 
     def test_expected_shape_none_when_channels_unknown(self) -> None:
         """expected_shape returns None when channels are unknown."""
         pipe = Pipeline().source("image_bytes").resize(height=224, width=224)
-        assert pipe._shape_hints.channels is None
+        assert planned(pipe).channels is None
         # H and W are known but channels are not, so expected_shape is None
-        assert pipe._shape_hints.height is not None
-        assert pipe._shape_hints.width is not None
+        assert planned(pipe).height is not None
+        assert planned(pipe).width is not None
 
 
 # ---------------------------------------------------------------------------
@@ -409,7 +414,11 @@ class TestAlphaStripProcessRestore:
         """cvt_color RGB->HSV on RGBA should produce 4 channels."""
         png_bytes = _make_rgba_png(10, 10)
         df = pl.DataFrame({"image": [png_bytes]})
-        pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .convert_color(from_space="rgb", to_space="hsv")
+        )
         result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
         shape = _extract_shape(result)
         assert shape == [10, 10, 4]
@@ -418,7 +427,11 @@ class TestAlphaStripProcessRestore:
         """cvt_color RGB->Gray on RGBA should produce 2 channels (GrayA)."""
         png_bytes = _make_rgba_png(10, 10)
         df = pl.DataFrame({"image": [png_bytes]})
-        pipe = Pipeline().source("image_bytes").convert_color("rgb", "gray")
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .convert_color(from_space="rgb", to_space="gray")
+        )
         result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
         shape = _extract_shape(result)
         assert shape == [10, 10, 2]
@@ -429,7 +442,11 @@ class TestAlphaStripProcessRestore:
 
         png_bytes = _make_rgba_png(4, 4)
         df = pl.DataFrame({"image": [png_bytes]})
-        pipe = Pipeline().source("image_bytes").convert_color("rgb", "bgr")
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .convert_color(from_space="rgb", to_space="bgr")
+        )
         result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
         arr = numpy_from_struct(result["output"][0])
         assert arr.shape[2] == 4
@@ -475,17 +492,17 @@ class TestAlphaEncoding:
 class TestChannelRuleHasOneAuthority:
     """The channel hint comes from view-buffer's rule, not a Python copy of it.
 
-    ``_update_channels_from_rule`` used to re-derive the answer by parsing the
+    The Python planner used to re-derive the answer by parsing the
     stringified rule, and disagreed with ``OutputChannelRule::apply`` on
     ``NotApplicable``: ``apply`` says "no channel count", Python left the hint
     untouched. It stayed invisible because every ``NotApplicable`` op also drops
-    below rank 3 — where ``_drop_hints_below_rank`` clears channels anyway —
+    below rank 3 — where the rank clipping clears channels anyway —
     except ``histogram(output="quantized")``, which preserves rank *and* was
     mislabelled ``NotApplicable`` while actually preserving channels. The two
     errors cancelled.
 
-    Both have been fixed: quantized declares ``PreserveChannels``, and Python
-    reads ``apply`` through ``op_output_channels``. These pin the outcome so a
+    Both have been fixed: quantized declares ``PreserveChannels``, and the
+    planner's one Rust call (``plan_step``) applies the rule. These pin the outcome so a
     future change to either cannot quietly re-introduce the pair.
     """
 
@@ -503,10 +520,10 @@ class TestChannelRuleHasOneAuthority:
                 .assert_shape(channels=channels)
                 .histogram(bins=8, output="quantized")
             )
-            assert pipe._shape_hints.channels is not None, (
+            assert planned(pipe).channels is not None, (
                 f"{channels}ch: quantized histogram preserves the channel axis"
             )
-            assert pipe._shape_hints.channels.value == channels
+            assert planned(pipe).channels == channels
 
     def test_vector_histogram_modes_have_no_channel_count(self) -> None:
         """The other four modes produce bin vectors/tables, not images."""
@@ -517,28 +534,8 @@ class TestChannelRuleHasOneAuthority:
                 .assert_shape(channels=3)
                 .histogram(bins=8, output=output)
             )
-            assert pipe._shape_hints.channels is None, (
+            assert planned(pipe).channels is None, (
                 f"{output}: a bin vector has no channel count"
-            )
-
-    def test_python_holds_no_copy_of_the_rule_arithmetic(self) -> None:
-        """The planner must not re-implement ``OutputChannelRule::apply``.
-
-        A source scan, because the property is "this code does not exist". The
-        rule *strings* still reach Python through ``op_contract`` for the
-        vocabulary checks in ``test_sanitation``; what must not come back is
-        Python branching on them to compute a channel count.
-        """
-        import inspect
-
-        from polars_cv.pipeline import Pipeline as P
-
-        src = inspect.getsource(P._update_channels_from_rule)
-        for spelling in ("strip_restore", "fixed:", '"preserve"', '"n/a"'):
-            assert spelling not in src, (
-                f"{spelling!r} is back in _update_channels_from_rule: the "
-                f"channel arithmetic belongs to OutputChannelRule::apply, "
-                f"reached via op_output_channels"
             )
 
     def test_the_ffi_agrees_with_the_planner(self) -> None:
@@ -548,11 +545,11 @@ class TestChannelRuleHasOneAuthority:
         for the same op. A divergence here is the class of bug this whole change
         is about.
         """
-        import json
 
-        from polars_cv._lib import op_output_channels
+        from polars_cv._lib import plan_step
+        from polars_cv.pipeline import PlanState
 
         pipe = Pipeline().source("image_bytes").assert_shape(channels=4).grayscale()
-        spec = pipe._ops[-1]
-        assert op_output_channels(json.dumps(spec.to_dict()), 4) == 1
-        assert pipe._shape_hints.channels.value == 1
+        rgba = PlanState(domain="buffer", dtype="u8", ndim=3, dims=(None, None, 4))
+        assert plan_step(op_json(pipe, -1), rgba)["dims"][2] == 1
+        assert planned(pipe).channels == 1

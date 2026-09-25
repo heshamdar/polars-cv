@@ -23,7 +23,9 @@ Limits, stated because a source scan has them:
 
 from __future__ import annotations
 
+import ast
 import re
+import textwrap
 
 #: A fenced block opening with ```python (or ```py), captured to its closing
 #: fence. Non-greedy so consecutive blocks do not merge into one.
@@ -136,3 +138,32 @@ def fenced_python_method_calls(markdown: str) -> set[str]:
     for block in _PYTHON_FENCE.findall(markdown):
         names.update(_METHOD_CALL.findall(block))
     return names
+
+
+def pipeline_chain_calls(markdown: str) -> list[ast.Call]:
+    """Every call on a chain rooted at ``Pipeline()`` inside a ```python fence.
+
+    Such a call is unambiguously a ``Pipeline`` method, so it can be bound
+    against the real signature; a bare ``.name`` elsewhere may be Polars'. A
+    fence that is not valid Python raises rather than being skipped, so a block
+    cannot drop out of the check unnoticed. Chains through a variable
+    (``pipe.resize(...)``) are not followed.
+    """
+    calls: list[ast.Call] = []
+    for block in _PYTHON_FENCE.findall(markdown):
+        for node in ast.walk(ast.parse(textwrap.dedent(block))):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and _rooted_at_pipeline(node.func.value)
+            ):
+                calls.append(node)
+    return calls
+
+
+def _rooted_at_pipeline(node: ast.expr) -> bool:
+    while isinstance(node, (ast.Call, ast.Attribute)):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            return node.func.id == "Pipeline"
+        node = node.func if isinstance(node, ast.Call) else node.value
+    return False

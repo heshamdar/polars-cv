@@ -1,7 +1,7 @@
 //! View operations that perform zero-copy transformations.
 
 use crate::core::dtype::OutputDTypeRule;
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 
@@ -49,12 +49,9 @@ impl Op for ViewOp {
                 if is_permutation {
                     Ok(())
                 } else {
-                    Err(ValidationError::InvalidParameter {
-                        param: "axes".to_string(),
-                        reason: format!(
-                            "{perm:?} is not a permutation of the {} axes of {shape:?}",
-                            shape.len()
-                        ),
+                    Err(ValidationError::NotAPermutation {
+                        axes: perm.clone(),
+                        ndim: shape.len(),
                     })
                 }
             }
@@ -78,14 +75,34 @@ impl Op for ViewOp {
             }
             ViewOp::Flip(axes) => require_axes(shape, axes),
             ViewOp::Crop { start, end } => {
-                if start.len() >= shape.len() && end.len() >= shape.len() {
-                    Ok(())
-                } else {
-                    Err(ValidationError::ShapeRequirement {
+                if start.len() < shape.len() || end.len() < shape.len() {
+                    return Err(ValidationError::ShapeRequirement {
                         requirement: "crop bounds for every axis of the input",
                         got: shape.to_vec(),
-                    })
+                    });
                 }
+                // An `end` of `usize::MAX` is "to the end of this axis". Any
+                // other bound past the axis is a window outside the input:
+                // rejected rather than clamped, since clamping returns a
+                // smaller region than the caller asked for (CR-42).
+                for (axis, &dim) in shape.iter().enumerate() {
+                    let (s, e) = (start[axis], end[axis]);
+                    if s > dim || (e != usize::MAX && e > dim) {
+                        let end_text = if e == usize::MAX {
+                            "end".to_string()
+                        } else {
+                            e.to_string()
+                        };
+                        return Err(ValidationError::InvalidParameter {
+                            param: "window".to_string(),
+                            reason: format!(
+                                "crop window {s}..{end_text} on axis {axis} lies outside the \
+                                 input of shape {shape:?}"
+                            ),
+                        });
+                    }
+                }
+                Ok(())
             }
             // Image rotations: a [H, W] or [H, W, C] buffer. Anything else was
             // returned unchanged or rotated over the wrong axes.
@@ -116,48 +133,25 @@ impl Op for ViewOp {
         }
     }
 
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
-        let input_shape = inputs[0];
+    fn shape(&self) -> OpShape {
+        let known = |v: &[usize]| v.iter().map(|&n| Sym::Known(n)).collect();
         match self {
-            ViewOp::Transpose(perm) => perm.iter().map(|&i| input_shape[i]).collect(),
-            ViewOp::Reshape(new_shape) => new_shape.clone(),
-            ViewOp::Flip(_) => input_shape.to_vec(),
+            ViewOp::Transpose(perm) => OpShape::Transpose(perm.clone()),
+            ViewOp::Reshape(new_shape) => OpShape::Fixed(known(new_shape)),
+            ViewOp::Flip(_) | ViewOp::Rotate180 => OpShape::Preserve,
             // One entry per input axis, as `ViewBuffer::slice` produces. An
             // `end` of `usize::MAX` is the crop builder's "to the end of this
-            // axis" sentinel and resolves to the axis length; it used to be
-            // subtracted as a number, so a tracked channel count came out as
-            // `usize::MAX` and the tracked rank followed `start.len()` rather
-            // than the input. Explicit extents keep their planned meaning.
-            ViewOp::Crop { start, end } => input_shape
-                .iter()
-                .enumerate()
-                .map(|(i, &dim)| {
-                    let s = start.get(i).copied().unwrap_or(0);
-                    match end.get(i).copied().unwrap_or(usize::MAX) {
-                        usize::MAX => dim.saturating_sub(s),
-                        e => e.saturating_sub(s),
-                    }
-                })
-                .collect(),
-            ViewOp::Rotate90 | ViewOp::Rotate270 => {
-                // For 2D images [H, W] or [H, W, C], swap H and W
-                if input_shape.len() >= 2 {
-                    let mut new_shape = input_shape.to_vec();
-                    new_shape.swap(0, 1);
-                    new_shape
-                } else {
-                    input_shape.to_vec()
-                }
-            }
-            ViewOp::Rotate180 => input_shape.to_vec(),
-            ViewOp::ChannelSelect { .. } => {
-                // [H, W, C] → [H, W]
-                if input_shape.len() == 3 {
-                    vec![input_shape[0], input_shape[1]]
-                } else {
-                    input_shape.to_vec()
-                }
-            }
+            // axis" sentinel.
+            ViewOp::Crop { start, end } => OpShape::Crop {
+                start: known(start),
+                len: start
+                    .iter()
+                    .zip(end)
+                    .map(|(&s, &e)| (e != usize::MAX).then(|| Sym::Known(e.saturating_sub(s))))
+                    .collect(),
+            },
+            ViewOp::Rotate90 | ViewOp::Rotate270 => OpShape::SwapHw,
+            ViewOp::ChannelSelect { .. } => OpShape::DropChannelAxis,
         }
     }
 
@@ -207,24 +201,10 @@ impl Op for ViewOp {
 
     fn identity_rule(&self) -> IdentityRule {
         match self {
-            // A crop anchored at the origin moved no data when its output shape
-            // equals the input shape (a full-frame crop). The origin must be
-            // literal zero: a crop's inferred shape ignores `top`/`left`, so an
-            // offset crop with a full extent "preserves shape" at plan time
-            // while running past the edge, where the engine clamps it to a
-            // smaller window. `top`/`left` are therefore deciding params — a
-            // per-row origin resolves to a placeholder and proves nothing.
-            ViewOp::Crop { start, .. } if start.iter().all(|&s| s == 0) => {
-                IdentityRule::WhenShapePreserved {
-                    deciding_params: &["top", "left"],
-                }
-            }
-            ViewOp::Crop { .. } => IdentityRule::Never,
-            // A same-shape reshape is a row-major no-op. A real reshape changes
-            // shape, which the planner's shape check catches.
-            ViewOp::Reshape(_) => IdentityRule::WhenShapePreserved {
-                deciding_params: &[],
-            },
+            // A full-frame crop at the origin, or a same-shape reshape (a
+            // row-major no-op), moves no data; `OpShape::preserves` decides
+            // whether this one is.
+            ViewOp::Crop { .. } | ViewOp::Reshape(_) => IdentityRule::WhenShapePreserved,
             // Flip/transpose/rotate/channel-select move pixels or drop an axis
             // even when the shape is preserved (a square transpose, a 180°
             // rotate), so none is ever a no-op.

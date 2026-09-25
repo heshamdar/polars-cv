@@ -471,7 +471,7 @@ pub(crate) fn encode_node_output(
     spec: &OutputSpec,
 ) -> Result<OutputValue, String> {
     let sink = &spec.sink;
-    let format = sink.format.as_str();
+    let format = sink.name();
     let domain = spec.expected_domain.as_str();
     let kind = SinkKind::resolve(spec).map_err(|e| e.to_string())?;
 
@@ -491,9 +491,10 @@ pub(crate) fn encode_node_output(
                 .map_err(|e| format!("Encode error: {e}"))
         }
         SinkKind::BufferList => Ok(typed_list_of(require_buffer(output, domain, format)?)),
-        SinkKind::BufferArray => {
-            typed_array_of(require_buffer(output, domain, format)?, sink.shape.as_ref())
-        }
+        SinkKind::BufferArray => typed_array_of(
+            require_buffer(output, domain, format)?,
+            sink.shape().as_ref(),
+        ),
         // A vector arrives either as a real `Vector` or as the 1-D buffer a
         // hash/histogram produces. Both are the same domain to the planner, so
         // both encode the same way here.
@@ -504,7 +505,7 @@ pub(crate) fn encode_node_output(
         SinkKind::VectorArray => match output {
             NodeOutput::Vector(vals) => {
                 let values = vals.as_ref().clone();
-                let shape = sink.shape.clone().unwrap_or_else(|| vec![values.len()]);
+                let shape = sink.shape().unwrap_or_else(|| vec![values.len()]);
                 let planned: usize = shape.iter().product();
                 if planned != values.len() {
                     return Err(format!(
@@ -518,7 +519,10 @@ pub(crate) fn encode_node_output(
                     shape,
                 })
             }
-            _ => typed_array_of(require_buffer(output, domain, format)?, sink.shape.as_ref()),
+            _ => typed_array_of(
+                require_buffer(output, domain, format)?,
+                sink.shape().as_ref(),
+            ),
         },
         SinkKind::Scalar => match output {
             NodeOutput::Scalar(val) => Ok(OutputValue::Scalar(*val)),
@@ -608,60 +612,28 @@ pub(super) fn histogram_struct_dtype() -> DataType {
     ])
 }
 
-pub(crate) fn default_domain() -> String {
-    "buffer".to_string()
-}
-pub(crate) fn default_dtype() -> String {
-    "auto".to_string()
-}
 #[cfg(test)]
 mod tests {
     use super::super::types::UnifiedGraph;
     use super::execute_geometry_op;
 
     /// Structural coverage: every geometry op the graph builder can construct
-    /// via `resolve_op` must actually execute. This is the geometry analog of
+    /// by resolving must actually execute. This is the geometry analog of
     /// view-buffer's `apply_op_coverage` probe.
     ///
-    /// `GeometryOp` now carries only variants the graph routes, so a variant
+    /// `GeometryOp` carries only variants the graph routes, so a variant
     /// `execute_geometry_op` cannot handle is a non-exhaustive-match compile
     /// error rather than a runtime string. What remains for this test is the
-    /// other direction: that resolving and running each op *works*, and that the
-    /// `probe_params` table lists exactly the geometry ops `resolve_op` produces,
-    /// so registering a new one without a probe fails here rather than silently
-    /// escaping coverage.
+    /// other direction: that resolving and running each op *works*. Every
+    /// registered op carries a sample, so a new geometry op is covered by
+    /// registering it.
     #[test]
     fn every_graph_geometry_op_executes() {
-        use crate::execute::{resolve_op, KNOWN_OPS};
         use crate::graph::step::GraphStep;
-        use crate::params::{ParamCtx, ParamValue};
-        use crate::pipeline::OpSpec;
-        use serde_json::json;
-        use std::collections::{BTreeSet, HashMap};
+        use crate::params::ParamCtx;
         use view_buffer::geometry::Contour;
         use view_buffer::ops::{Domain, NodeOutput};
         use view_buffer::ViewBuffer;
-
-        // Representative params for every geometry-producing op.
-        fn probe_params(op: &str) -> Option<Vec<(&'static str, serde_json::Value)>> {
-            Some(match op {
-                "contour_area" => vec![],
-                "contour_perimeter" => vec![],
-                "contour_centroid" => vec![],
-                "contour_bounding_box" => vec![],
-                "contour_convex_hull" => vec![],
-                "contour_translate" => vec![("dx", json!(1.0)), ("dy", json!(2.0))],
-                "contour_scale" => vec![
-                    ("sx", json!(2.0)),
-                    ("sy", json!(2.0)),
-                    ("origin", json!("centroid")),
-                ],
-                "contour_simplify" => vec![("tolerance", json!(0.5))],
-                "extract_contours" => vec![],
-                "rasterize" => vec![("width", json!(8)), ("height", json!(8))],
-                _ => return None,
-            })
-        }
 
         let sample_contours = || {
             NodeOutput::from_contours(vec![Contour::from_tuples(&[
@@ -678,53 +650,26 @@ mod tests {
             ))
         };
 
-        let mut executed: BTreeSet<&str> = BTreeSet::new();
-        for &op_name in KNOWN_OPS {
-            let params: HashMap<String, ParamValue> = probe_params(op_name)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), ParamValue::Literal { value: v }))
-                .collect();
-            let spec = OpSpec {
-                op: op_name.to_string(),
-                params,
-            };
-            // Non-geometry ops may need params we didn't supply — not our concern.
-            let step = match resolve_op(&spec, 0, &ParamCtx::empty()) {
-                Ok(step) => step,
-                Err(_) => continue,
-            };
-            let GraphStep::Geometry(geo) = step else {
-                continue;
-            };
-            executed.insert(op_name);
-
-            let input = if geo.input_domain() == Domain::Buffer {
-                sample_buffer()
-            } else {
-                sample_contours()
-            };
-            if let Err(err) = execute_geometry_op(input, &geo) {
-                panic!(
-                    "graph op '{op_name}' resolves to GeometryOp::{geo:?} but does \
-                     not execute: {err}"
-                );
+        let mut executed = 0;
+        for op in crate::ops::TypedOp::samples() {
+            let name = op.name();
+            let step = op
+                .resolve(0, &ParamCtx::empty())
+                .expect("a registered sample resolves");
+            if let GraphStep::Geometry(geo) = step {
+                let input = if geo.input_domain() == Domain::Buffer {
+                    sample_buffer()
+                } else {
+                    sample_contours()
+                };
+                if let Err(err) = execute_geometry_op(input, &geo) {
+                    panic!("op '{name}' resolves to {geo:?} but does not execute: {err}");
+                }
+                executed += 1;
             }
         }
-
-        // Ratchet: the probe table must match exactly the geometry ops that
-        // `resolve_op` actually produces, so a newly-registered graph geometry
-        // op cannot be added without a probe (and a removed one cannot leave a
-        // stale probe behind).
-        let probed: BTreeSet<&str> = KNOWN_OPS
-            .iter()
-            .copied()
-            .filter(|n| probe_params(n).is_some())
-            .collect();
-        assert_eq!(
-            probed, executed,
-            "geometry probe table out of sync with the graph's geometry ops"
-        );
+        // extract_contours, rasterize, four measures, four transforms.
+        assert!(executed >= 10, "only {executed} geometry ops executed");
     }
 
     #[test]
@@ -737,7 +682,7 @@ mod tests {
                 }
             },
             "outputs": {
-                "_output": {"node": "_node_0", "sink": {"format": "numpy"}}
+                "_output": {"node": "_node_0", "sink": {"format": "numpy"}, "planned": {"domain": "buffer", "dtype": "auto"}}
             },
             "column_bindings": {"_node_0": 0}
         }"#;
@@ -752,19 +697,17 @@ mod tests {
             "nodes": {
                 "_node_0": {
                     "source": {"format": "image_bytes"},
-                    "ops": [],
-                    "alias": "original"
+                    "ops": []
                 },
                 "_node_1": {
                     "source": {"format": "blob"},
                     "ops": [],
-                    "upstream": ["_node_0"],
-                    "alias": "processed"
+                    "upstream": ["_node_0"]
                 }
             },
             "outputs": {
-                "original": {"node": "_node_0", "sink": {"format": "png"}},
-                "processed": {"node": "_node_1", "sink": {"format": "numpy"}}
+                "original": {"node": "_node_0", "sink": {"format": "png"}, "planned": {"domain": "buffer", "dtype": "auto"}},
+                "processed": {"node": "_node_1", "sink": {"format": "numpy"}, "planned": {"domain": "buffer", "dtype": "auto"}}
             },
             "column_bindings": {"_node_0": 0}
         }"#;
@@ -778,12 +721,12 @@ mod tests {
     fn test_unified_topological_order() {
         let json = r#"{
             "nodes": {
-                "a": {"source": {"format": "image_bytes"}, "ops": [], "alias": "out_a"},
-                "b": {"source": {"format": "blob"}, "ops": [], "upstream": ["a"], "alias": "out_b"}
+                "a": {"source": {"format": "image_bytes"}, "ops": []},
+                "b": {"source": {"format": "blob"}, "ops": [], "upstream": ["a"]}
             },
             "outputs": {
-                "out_a": {"node": "a", "sink": {"format": "numpy"}},
-                "out_b": {"node": "b", "sink": {"format": "png"}}
+                "out_a": {"node": "a", "sink": {"format": "numpy"}, "planned": {"domain": "buffer", "dtype": "auto"}},
+                "out_b": {"node": "b", "sink": {"format": "png"}, "planned": {"domain": "buffer", "dtype": "auto"}}
             },
             "column_bindings": {"a": 0}
         }"#;
@@ -997,25 +940,19 @@ mod tensor_sink_tests {
 mod contour_sink_tests {
     use crate::graph::decode::build_series_from_spec;
     use crate::graph::types::{OutputSpec, RowResult};
-    use crate::pipeline::SinkSpec;
     use polars::prelude::*;
     use view_buffer::geometry::{Contour, Point};
 
     fn spec() -> OutputSpec {
         OutputSpec {
             node: "n".to_string(),
-            sink: SinkSpec {
-                format: "native".to_string(),
-                quality: 85,
-                shape: None,
-                out_dtype: None,
-            },
+            sink: serde_json::from_value(serde_json::json!({"format": "native"})).unwrap(),
             expected_domain: "contour".to_string(),
             expected_dtype: "auto".to_string(),
             expected_shape: None,
             shape_asserted: false,
             expected_ndim: None,
-            expected_encoding: None,
+            histogram_buckets: false,
         }
     }
 

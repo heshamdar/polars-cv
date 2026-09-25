@@ -6,7 +6,7 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 
@@ -25,7 +25,7 @@ pub enum BorderMode {
     Reflect,
 }
 
-crate::naming::named_variants!(BorderMode {
+crate::naming::named_variants!(BorderMode: "Border-handling mode for 2D convolution (``convolve2d``).\n\n- REPLICATE: Replicate the nearest edge pixel.\n- ZERO: Treat out-of-bounds pixels as zero.\n- REFLECT: Reflect pixels around the edge (dcba|abcd|dcba)." {
     "replicate" => Replicate,
     "zero" => Zero,
     "reflect" => Reflect,
@@ -58,9 +58,9 @@ impl Op for ConvolveOp {
         "Convolve2D"
     }
 
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
+    fn shape(&self) -> OpShape {
         // Same-size convolution (zero-padded to maintain dimensions)
-        inputs[0].to_vec()
+        OpShape::Preserve
     }
 
     fn memory_effect(&self) -> MemoryEffect {

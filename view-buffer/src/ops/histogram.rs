@@ -5,7 +5,7 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule, ViewType};
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
@@ -41,7 +41,7 @@ pub enum HistogramClosed {
     Right,
 }
 
-crate::naming::named_variants!(HistogramOutput {
+crate::naming::named_variants!(HistogramOutput: "Histogram output mode selection.\n\nControls what the histogram operation returns:\n- COUNTS: Bin counts as a 1D array\n- NORMALIZED: Histogram normalized to sum to 1.0\n- QUANTIZED: Input array with pixels replaced by bin indices\n- EDGES: Bin edge values\n- BUCKETS: List of bucket structs (lower_edge, upper_edge, count, normalized)" {
     "counts" => Counts,
     "normalized" => Normalized,
     "quantized" => Quantized,
@@ -49,7 +49,7 @@ crate::naming::named_variants!(HistogramOutput {
     "buckets" => Buckets,
 });
 
-crate::naming::named_variants!(HistogramClosed {
+crate::naming::named_variants!(HistogramClosed: "Interval inclusiveness for histogram binning.\n\n- LEFT: Intervals are left-closed ``[a, b)``.\n- RIGHT: Intervals are right-closed ``(a, b]``." {
     "left" => Left,
     "right" => Right,
 });
@@ -320,17 +320,18 @@ impl Op for HistogramOp {
         "Histogram"
     }
 
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
+    fn shape(&self) -> OpShape {
         let num_bins = if let Some(ref edges) = self.edges {
             edges.len().saturating_sub(1)
         } else {
             self.bins
         };
+        let fixed = |dims: &[usize]| OpShape::Fixed(dims.iter().map(|&n| Sym::Known(n)).collect());
         match self.output {
-            HistogramOutput::Counts | HistogramOutput::Normalized => vec![num_bins],
-            HistogramOutput::Quantized => inputs[0].to_vec(),
-            HistogramOutput::Edges => vec![num_bins + 1],
-            HistogramOutput::Buckets => vec![num_bins, 4],
+            HistogramOutput::Counts | HistogramOutput::Normalized => fixed(&[num_bins]),
+            HistogramOutput::Quantized => OpShape::Preserve,
+            HistogramOutput::Edges => fixed(&[num_bins + 1]),
+            HistogramOutput::Buckets => fixed(&[num_bins, 4]),
         }
     }
 

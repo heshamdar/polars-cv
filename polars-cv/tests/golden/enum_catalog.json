@@ -1,0 +1,240 @@
+[
+  {
+    "name": "ApproxMethod",
+    "doc": "Contour point-approximation method for ``extract_contours``.\n\n- NONE: Keep every boundary point.\n- SIMPLE: Drop redundant collinear points (default).\n- APPROX: Douglas-Peucker style approximation.",
+    "variants": [
+      "none",
+      "simple",
+      "approx"
+    ]
+  },
+  {
+    "name": "BinaryOp",
+    "doc": "",
+    "variants": [
+      "add",
+      "subtract",
+      "multiply",
+      "divide",
+      "blend",
+      "ratio",
+      "maximum",
+      "minimum",
+      "bitwise_and",
+      "bitwise_or",
+      "bitwise_xor"
+    ]
+  },
+  {
+    "name": "BorderMode",
+    "doc": "Border-handling mode for 2D convolution (``convolve2d``).\n\n- REPLICATE: Replicate the nearest edge pixel.\n- ZERO: Treat out-of-bounds pixels as zero.\n- REFLECT: Reflect pixels around the edge (dcba|abcd|dcba).",
+    "variants": [
+      "replicate",
+      "zero",
+      "reflect"
+    ]
+  },
+  {
+    "name": "ColorSpace",
+    "doc": "Supported color spaces for ``convert_color``.",
+    "variants": [
+      "rgb",
+      "bgr",
+      "hsv",
+      "lab",
+      "ycbcr",
+      "gray"
+    ]
+  },
+  {
+    "name": "DType",
+    "doc": "Supported data types.",
+    "variants": [
+      "u8",
+      "i8",
+      "u16",
+      "i16",
+      "u32",
+      "i32",
+      "u64",
+      "i64",
+      "f32",
+      "f64"
+    ]
+  },
+  {
+    "name": "Domain",
+    "doc": "",
+    "variants": [
+      "buffer",
+      "contour",
+      "scalar",
+      "vector",
+      "any"
+    ]
+  },
+  {
+    "name": "ExtractMode",
+    "doc": "Contour retrieval mode for ``extract_contours``.\n\n- EXTERNAL: Outermost contours only (default).\n- TREE: Full nesting hierarchy.\n- ALL: Every contour, without hierarchy.",
+    "variants": [
+      "external",
+      "tree",
+      "all"
+    ]
+  },
+  {
+    "name": "FetchErrorPolicy",
+    "doc": "What an unreadable path does to the query.\n\nSettled at fetch time, before any graph node runs, which is why it is not\n:class:`RowErrorPolicy`: ``.cv.read_bytes()`` has no graph at all, and\n``source(\"file_path\")`` resolves its bytes before the graph starts.\n- RAISE: an unreadable path fails the whole query.\n- NULL: an unreadable path yields null for that row only.",
+    "variants": [
+      "raise",
+      "null"
+    ]
+  },
+  {
+    "name": "FilterType",
+    "doc": "Image resize filter types.",
+    "variants": [
+      "nearest",
+      "bilinear",
+      "catmullrom",
+      "gaussian",
+      "lanczos3"
+    ]
+  },
+  {
+    "name": "HashAlgorithm",
+    "doc": "Perceptual hash algorithm selection.\n\nDifferent algorithms trade off speed vs robustness to transformations:\n- AVERAGE: Fastest, least robust. Good for exact/near-exact matches.\n- DIFFERENCE: Gradient-based, good balance of speed and robustness.\n- PERCEPTUAL: DCT-based, most robust to resize/compression. Recommended default.\n- BLOCKHASH: Block-based, good resistance to cropping.",
+    "variants": [
+      "average",
+      "difference",
+      "perceptual",
+      "blockhash"
+    ]
+  },
+  {
+    "name": "HistogramClosed",
+    "doc": "Interval inclusiveness for histogram binning.\n\n- LEFT: Intervals are left-closed ``[a, b)``.\n- RIGHT: Intervals are right-closed ``(a, b]``.",
+    "variants": [
+      "left",
+      "right"
+    ]
+  },
+  {
+    "name": "HistogramOutput",
+    "doc": "Histogram output mode selection.\n\nControls what the histogram operation returns:\n- COUNTS: Bin counts as a 1D array\n- NORMALIZED: Histogram normalized to sum to 1.0\n- QUANTIZED: Input array with pixels replaced by bin indices\n- EDGES: Bin edge values\n- BUCKETS: List of bucket structs (lower_edge, upper_edge, count, normalized)",
+    "variants": [
+      "counts",
+      "normalized",
+      "quantized",
+      "edges",
+      "buckets"
+    ]
+  },
+  {
+    "name": "InterpolationType",
+    "doc": "Interpolation used when sampling an affine warp (``rotate``,\n``warp_affine``, ``shear``, ``rotate_and_scale``).\n\n- NEAREST: Nearest-neighbour sampling (preserves hard edges/pixel art).\n- BILINEAR: Bilinear sampling (default).",
+    "variants": [
+      "nearest",
+      "bilinear"
+    ]
+  },
+  {
+    "name": "LabelReduction",
+    "doc": "Reduction over a contour region's pixel values (``label_reduce``).",
+    "variants": [
+      "max",
+      "mean",
+      "sum"
+    ]
+  },
+  {
+    "name": "LabelRegionMode",
+    "doc": "Region selection for ``label_reduce``.\n\n- INTERIOR: Pixels strictly inside the contour polygon.\n- BOUNDARY: Interior pixels plus pixels on the contour boundary.\n- BBOX: All pixels within the bounding box.",
+    "variants": [
+      "interior",
+      "boundary",
+      "bbox"
+    ]
+  },
+  {
+    "name": "LogicalPass",
+    "doc": "A logical optimisation pass (``OptFlags`` field names).",
+    "variants": [
+      "common_subexpression_elimination",
+      "identity_elimination",
+      "spatial_window_pushdown"
+    ]
+  },
+  {
+    "name": "NormalizeMethod",
+    "doc": "Normalization methods (``PRESET``: channel-wise with preset mean/std values).",
+    "variants": [
+      "minmax",
+      "zscore",
+      "preset"
+    ]
+  },
+  {
+    "name": "NullParamPolicy",
+    "doc": "What a null in a per-row expression parameter means.\n\nDeliberately separate from :class:`RowErrorPolicy`: under ``NULL`` a null\nparameter is not an error, so it records no ``_error`` message and does not\nweaken reporting for genuine decode/encode/operation failures.\n- RAISE: a null parameter fails the expression.\n- NULL: the affected node produces no output for that row.",
+    "variants": [
+      "raise",
+      "null"
+    ]
+  },
+  {
+    "name": "PadMode",
+    "doc": "Padding mode selection.\n\nControls how padding values are determined:\n- CONSTANT: Fill with a constant value (default)\n- EDGE: Replicate edge values\n- REFLECT: Reflect values at edge (not including edge)\n- SYMMETRIC: Reflect values at edge (including edge)",
+    "variants": [
+      "constant",
+      "edge",
+      "reflect",
+      "symmetric"
+    ]
+  },
+  {
+    "name": "PadPosition",
+    "doc": "Position for pad_to_size.\n\nControls where the original content is placed:\n- CENTER: Center content in padded area (default)\n- TOP_LEFT: Place content at top-left corner\n- BOTTOM_RIGHT: Place content at bottom-right corner",
+    "variants": [
+      "center",
+      "top-left",
+      "bottom-right"
+    ]
+  },
+  {
+    "name": "RowErrorPolicy",
+    "doc": "What a failing row does to a graph query.\n\nApplies to errors raised while producing a row — source decode, op\nexecution, output encode:\n- RAISE: propagate the first error, failing the whole expression.\n- NULL: a failing row yields null; other rows proceed.\n- NULL_WITH_MESSAGE: as NULL, plus an `_error` field.",
+    "variants": [
+      "raise",
+      "null",
+      "null_with_message"
+    ]
+  },
+  {
+    "name": "ScaleOrigin",
+    "doc": "Point a contour scale operation is measured from (``.contour.scale``).",
+    "variants": [
+      "centroid",
+      "bbox_center",
+      "origin"
+    ]
+  },
+  {
+    "name": "SinkDType",
+    "doc": "",
+    "variants": [
+      "f16",
+      "float16"
+    ]
+  },
+  {
+    "name": "Winding",
+    "doc": "Winding direction of a contour ring (``.contour.ensure_winding``).\n\nLong spellings included: the plugin has always accepted\n``\"clockwise\"``/``\"counterclockwise\"`` alongside the short forms.",
+    "variants": [
+      "ccw",
+      "counterclockwise",
+      "cw",
+      "clockwise"
+    ]
+  }
+]

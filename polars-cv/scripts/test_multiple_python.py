@@ -70,7 +70,7 @@ def _test_python_version(version: str, project_root: Path) -> Tuple[bool, str, s
             "--release",
             "--no-default-features",
             "--features",
-            "pyo3/extension-module,pyo3/abi3-py39",
+            "pyo3/extension-module,pyo3/abi3-py310",
         ]
         exit_code, stdout, stderr = run_command(build_cmd, cwd=project_root)
         if exit_code != 0:
@@ -138,7 +138,7 @@ def _test_python_version(version: str, project_root: Path) -> Tuple[bool, str, s
             "--release",
             "--no-default-features",
             "--features",
-            "pyo3/extension-module,pyo3/abi3-py39",
+            "pyo3/extension-module,pyo3/abi3-py310",
         ]
         exit_code, stdout, stderr = run_command(build_cmd, cwd=project_root)
         if exit_code != 0:

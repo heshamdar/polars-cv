@@ -79,9 +79,10 @@ def _types_referenced(body: str) -> list[str]:
 
     import polars_cv._types as types_module
 
-    # Names `_types` *defines*, read from its source -- not `dir()`, which also
-    # answers with everything it imports (`pl`, `Any`, ...) and would emit an
-    # import block that re-exports them from the wrong module.
+    # Names `_types` *defines* or explicitly re-exports (PEP 484's `X as X`
+    # form, which is how the generated enums reach it), read from its source --
+    # not `dir()`, which also answers with everything it merely imports (`pl`,
+    # `Any`, ...) and would emit an import block naming the wrong module.
     tree = ast.parse(Path(types_module.__file__).read_text())
     defined: set[str] = set()
     for node in tree.body:
@@ -91,6 +92,8 @@ def _types_referenced(body: str) -> list[str]:
             defined.add(node.target.id)
         elif isinstance(node, ast.Assign):
             defined.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.ImportFrom):
+            defined.update(a.name for a in node.names if a.asname == a.name)
 
     referenced = sorted(
         name
@@ -176,7 +179,12 @@ def _instance_attrs() -> str:
 
 def generate_stub() -> str:
     body: list[str] = [_instance_attrs()]
-    for name, member in vars(LazyPipelineExpr).items():
+    # The class's own members, then the generated binary ops it inherits: the
+    # stub declares a flat class, so an inherited method must be restated here.
+    members = {**vars(LazyPipelineExpr)}
+    for base in LazyPipelineExpr.__mro__[1:-1]:
+        members.update({k: v for k, v in vars(base).items() if k not in members})
+    for name, member in members.items():
         if name.startswith("__") and name not in ("__init__", "__repr__", "__str__"):
             continue
         rendered = _render_member(name, member)

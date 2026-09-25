@@ -89,16 +89,16 @@ Registered on `pl.Expr` for columns matching `POINT_SCHEMA`. Each method calls `
 
 Point and contour namespace operations go directly through `_plugin.call` to dedicated Rust functions. Every accessor also accepts the `PointType`/`ContourType`/`BBoxType` extension types: `_plugin.call` hands the plugin `.ext.storage()`, so a tagged column computes exactly as its plain struct (`test_accessors_accept_tagged_inputs`). Accessors that work on the struct in Python (`.point.x`/`.y`) must read `.ext.storage()` themselves. They do **not** go through the `vb_graph` pipeline path. This is a design distinction — they operate on Struct columns directly rather than on binary image data.
 
-### Parameter policy: per-row via input slots, not `ParamValue`
+### Parameter policy: the typed `Param<T>`, like every op
 
-Because these bypass `vb_graph`, they have none of `ParamValue`'s literal-vs-
-expression machinery. Their per-row channel is instead the plugin's **input
-series**: `_ArgBinder` (`_namespace.py`) appends an expression-valued parameter
-as an extra plugin argument and records it in an `input_slots` name→index map
-passed as a kwarg. Rust reads it back through `GeomParams`
-(`polars-cv/src/geom_params.rs`), which delegates to `params::ParamCol` — so
-these namespaces inherit the graph engine's dtype coverage, scalar broadcasting
-and null-as-error policy for free.
+These bypass `vb_graph` but use its per-row wire form. `_ArgBinder`
+(`_namespace.py`) appends an expression-valued parameter or data operand as an
+extra plugin argument and writes `{"$slot": n}` — its position — into that
+kwarg; a literal is the value itself. Rust deserializes the kwargs into typed
+structs (`ContourKwargs`/`PointKwargs`: `Param<T>` fields, `ColumnRef`
+operands) and resolves them through `GeomParams`
+(`polars-cv/src/geom_params.rs`) and `params::ParamCol` — so these namespaces
+share the graph engine's dtype coverage, scalar broadcasting and null policy.
 
 **Look inputs up by name, never by position.** Several of these functions take
 *optional* data operands (`correspond`'s `order`, `point.rotate`'s

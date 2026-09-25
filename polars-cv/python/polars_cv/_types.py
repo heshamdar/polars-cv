@@ -7,11 +7,9 @@ including ParamValue for handling literal vs expression parameters.
 
 from __future__ import annotations
 
-import threading
-import weakref
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, ClassVar, Union
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Union
 
 try:
     from typing import TypeAlias
@@ -21,10 +19,79 @@ except ImportError:
 
 import polars as pl
 
+# The enums are generated from the Rust registries (`scripts/gen_ops.py`);
+# re-exported here, where the rest of the package imports them from.
+from polars_cv._ops_generated import (
+    ApproxMethod as ApproxMethod,
+)
+from polars_cv._ops_generated import (
+    BorderMode as BorderMode,
+)
+from polars_cv._ops_generated import (
+    ColorSpace as ColorSpace,
+)
+from polars_cv._ops_generated import (
+    DType as DType,
+)
+from polars_cv._ops_generated import (
+    ExtractMode as ExtractMode,
+)
+from polars_cv._ops_generated import (
+    FetchErrorPolicy as FetchErrorPolicy,
+)
+from polars_cv._ops_generated import (
+    FilterType as FilterType,
+)
+from polars_cv._ops_generated import (
+    HashAlgorithm as HashAlgorithm,
+)
+from polars_cv._ops_generated import (
+    HistogramClosed as HistogramClosed,
+)
+from polars_cv._ops_generated import (
+    HistogramOutput as HistogramOutput,
+)
+from polars_cv._ops_generated import (
+    InterpolationType as InterpolationType,
+)
+from polars_cv._ops_generated import (
+    LabelReduction as LabelReduction,
+)
+from polars_cv._ops_generated import (
+    LabelRegionMode as LabelRegionMode,
+)
+from polars_cv._ops_generated import (
+    NormalizeMethod as NormalizeMethod,
+)
+from polars_cv._ops_generated import (
+    NullParamPolicy as NullParamPolicy,
+)
+from polars_cv._ops_generated import (
+    PadMode as PadMode,
+)
+from polars_cv._ops_generated import (
+    PadPosition as PadPosition,
+)
+from polars_cv._ops_generated import (
+    RowErrorPolicy as RowErrorPolicy,
+)
+from polars_cv._ops_generated import (
+    ScaleOrigin as ScaleOrigin,
+)
+from polars_cv._ops_generated import (
+    SinkFormat as SinkFormat,
+)
+from polars_cv._ops_generated import (
+    SourceFormat as SourceFormat,
+)
+from polars_cv._ops_generated import (
+    Winding as Winding,
+)
+
 from ._dtype_names import NUMPY_TO_SHORT
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    pass
 
 # Type alias for values that can be either literals or expressions
 LiteralOrExpr: TypeAlias = Union[int, float, str, pl.Expr]
@@ -34,92 +101,6 @@ FloatOrExpr: TypeAlias = Union[float, pl.Expr]
 # ``rotate(expand)`` — stays a plain ``bool``.
 BoolOrExpr: TypeAlias = Union[bool, pl.Expr]
 StrOrExpr: TypeAlias = Union[str, pl.Expr]
-
-
-class SourceFormat(str, Enum):
-    """Supported input source formats."""
-
-    AUTO = "auto"  # Infer decode path from the column dtype (the default)
-    IMAGE_BYTES = "image_bytes"  # Decode PNG/JPEG (auto-detect)
-    BLOB = "blob"  # VIEW protocol binary
-    RAW = "raw"  # Raw bytes (requires dtype and shape)
-    FILE_PATH = "file_path"  # Read from file path (local, cloud, or HTTP URL)
-    CONTOUR = "contour"  # Contour struct data
-    LIST = "list"  # Polars nested List column (requires dtype)
-    ARRAY = "array"  # Polars fixed-size Array column (requires dtype)
-
-
-class SinkFormat(str, Enum):
-    """Supported output sink formats."""
-
-    NUMPY = "numpy"  # NumPy-compatible bytes
-    TORCH = "torch"  # PyTorch-compatible bytes
-    NDARRAY = "ndarray"  # The numpy struct, tagged `polars_cv.ndarray`
-    PNG = "png"  # Re-encode as PNG
-    JPEG = "jpeg"  # Re-encode as JPEG
-    WEBP = "webp"  # Re-encode as WebP
-    TIFF = "tiff"  # Re-encode as TIFF with LZW compression (supports floating-point)
-    BLOB = "blob"  # VIEW protocol (for chaining)
-    ARRAY = "array"  # Polars Array type (fixed shape)
-    LIST = "list"  # Polars nested List (variable shape)
-    NATIVE = "native"  # Returns Polars-native type based on output domain
-    #                   - Buffer → error (use explicit format)
-    #                   - Contour → Struct matching CONTOUR_SCHEMA
-    #                   - Scalar → Float64
-    #                   - Vector → List[Float64]
-
-
-class RowErrorPolicy(str, Enum):
-    """What a failing row does to a graph query.
-
-    Mirrors ``RowErrorPolicy`` in ``src/graph/types.rs``. Applies to errors
-    raised while producing a row — source decode, op execution, output encode.
-    """
-
-    RAISE = "raise"  # Propagate the first error, failing the whole expression
-    NULL = "null"  # A failing row yields null; other rows proceed
-    NULL_WITH_MESSAGE = "null_with_message"  # As NULL, plus an `_error` field
-
-
-class NullParamPolicy(str, Enum):
-    """What a null in a per-row expression parameter means.
-
-    Mirrors ``NullParamPolicy`` in ``src/params.rs``. Deliberately separate from
-    :class:`RowErrorPolicy`: under ``NULL`` a null parameter is not an error, so
-    it records no ``_error`` message and does not weaken reporting for genuine
-    decode/encode/operation failures.
-    """
-
-    RAISE = "raise"  # A null parameter fails the expression
-    NULL = "null"  # The affected node produces no output for that row
-
-
-class FetchErrorPolicy(str, Enum):
-    """What an unreadable path does to the query.
-
-    Mirrors ``FetchErrorPolicy`` in ``src/fetch.rs``. Settled at fetch time,
-    before any graph node runs, which is why it is not :class:`RowErrorPolicy`:
-    ``.cv.read_bytes()`` has no graph at all, and ``source("file_path")``
-    resolves its bytes before the graph starts.
-    """
-
-    RAISE = "raise"  # An unreadable path fails the whole query
-    NULL = "null"  # An unreadable path yields null for that row only
-
-
-class DType(str, Enum):
-    """Supported data types."""
-
-    U8 = "u8"
-    I8 = "i8"
-    U16 = "u16"
-    I16 = "i16"
-    U32 = "u32"
-    I32 = "i32"
-    U64 = "u64"
-    I64 = "i64"
-    F32 = "f32"
-    F64 = "f64"
 
 
 #: Polars types that reach a buffer through a *cast* rather than a numpy name.
@@ -176,240 +157,11 @@ def dtype_name_for(dtype: pl.DataType) -> str:
         ) from None
 
 
-class NormalizeMethod(str, Enum):
-    """Normalization methods."""
-
-    MINMAX = "minmax"
-    ZSCORE = "zscore"
-    PRESET = "preset"  # Channel-wise with preset mean/std values
-
-
 # ImageNet normalization constants
 # These are the standard normalization values computed from the ImageNet dataset.
 # Use with: normalize(method="preset", mean=IMAGENET_MEAN, std=IMAGENET_STD)
 IMAGENET_MEAN: list[float] = [0.485, 0.456, 0.406]
 IMAGENET_STD: list[float] = [0.229, 0.224, 0.225]
-
-
-class ColorSpace(str, Enum):
-    """Supported color spaces for ``convert_color``."""
-
-    RGB = "rgb"
-    BGR = "bgr"
-    HSV = "hsv"
-    LAB = "lab"
-    YCBCR = "ycbcr"
-    GRAY = "gray"
-
-
-class FilterType(str, Enum):
-    """Image resize filter types.
-
-    Full parity with view-buffer's ``FilterType`` authority. ``BILINEAR`` is the
-    API name for view-buffer's ``Triangle`` variant; the parser also accepts
-    ``"triangle"`` as a backwards-compatible alias.
-    """
-
-    NEAREST = "nearest"
-    BILINEAR = "bilinear"
-    CATMULLROM = "catmullrom"
-    GAUSSIAN = "gaussian"
-    LANCZOS3 = "lanczos3"
-
-
-class HashAlgorithm(str, Enum):
-    """
-    Perceptual hash algorithm selection.
-
-    Different algorithms trade off speed vs robustness to transformations:
-    - AVERAGE: Fastest, least robust. Good for exact/near-exact matches.
-    - DIFFERENCE: Gradient-based, good balance of speed and robustness.
-    - PERCEPTUAL: DCT-based, most robust to resize/compression. Recommended default.
-    - BLOCKHASH: Block-based, good resistance to cropping.
-    """
-
-    AVERAGE = "average"
-    DIFFERENCE = "difference"
-    PERCEPTUAL = "perceptual"
-    BLOCKHASH = "blockhash"
-
-
-class HistogramOutput(str, Enum):
-    """
-    Histogram output mode selection.
-
-    Controls what the histogram operation returns:
-    - COUNTS: Bin counts as a 1D array
-    - NORMALIZED: Histogram normalized to sum to 1.0
-    - QUANTIZED: Input array with pixels replaced by bin indices
-    - EDGES: Bin edge values
-    - BUCKETS: List of bucket structs (lower_edge, upper_edge, count, normalized)
-    """
-
-    COUNTS = "counts"
-    NORMALIZED = "normalized"
-    QUANTIZED = "quantized"
-    EDGES = "edges"
-    BUCKETS = "buckets"
-
-
-class PadMode(str, Enum):
-    """
-    Padding mode selection.
-
-    Controls how padding values are determined:
-    - CONSTANT: Fill with a constant value (default)
-    - EDGE: Replicate edge values
-    - REFLECT: Reflect values at edge (not including edge)
-    - SYMMETRIC: Reflect values at edge (including edge)
-    """
-
-    CONSTANT = "constant"
-    EDGE = "edge"
-    REFLECT = "reflect"
-    SYMMETRIC = "symmetric"
-
-
-class ExtractMode(str, Enum):
-    """
-    Contour retrieval mode for ``extract_contours``.
-
-    Mirrors view-buffer's ``ExtractMode`` authority:
-    - EXTERNAL: Outermost contours only (default).
-    - TREE: Full nesting hierarchy.
-    - ALL: Every contour, without hierarchy.
-    """
-
-    EXTERNAL = "external"
-    TREE = "tree"
-    ALL = "all"
-
-
-class ApproxMethod(str, Enum):
-    """
-    Contour point-approximation method for ``extract_contours``.
-
-    Mirrors view-buffer's ``ApproxMethod`` authority:
-    - NONE: Keep every boundary point.
-    - SIMPLE: Drop redundant collinear points (default).
-    - APPROX: Douglas-Peucker style approximation.
-    """
-
-    NONE = "none"
-    SIMPLE = "simple"
-    APPROX = "approx"
-
-
-class InterpolationType(str, Enum):
-    """
-    Interpolation used when sampling an affine warp (``rotate``,
-    ``warp_affine``, ``shear``, ``rotate_and_scale``).
-
-    Mirrors view-buffer's ``InterpolationType`` authority:
-    - NEAREST: Nearest-neighbour sampling (preserves hard edges/pixel art).
-    - BILINEAR: Bilinear sampling (default).
-    """
-
-    NEAREST = "nearest"
-    BILINEAR = "bilinear"
-
-
-class PadPosition(str, Enum):
-    """
-    Position for pad_to_size.
-
-    Controls where the original content is placed:
-    - CENTER: Center content in padded area (default)
-    - TOP_LEFT: Place content at top-left corner
-    - BOTTOM_RIGHT: Place content at bottom-right corner
-    """
-
-    CENTER = "center"
-    TOP_LEFT = "top-left"
-    BOTTOM_RIGHT = "bottom-right"
-
-
-class BorderMode(str, Enum):
-    """
-    Border-handling mode for 2D convolution (``convolve2d``).
-
-    Mirrors view-buffer's ``BorderMode`` authority:
-    - REPLICATE: Replicate the nearest edge pixel.
-    - ZERO: Treat out-of-bounds pixels as zero.
-    - REFLECT: Reflect pixels around the edge (dcba|abcd|dcba).
-    """
-
-    REPLICATE = "replicate"
-    ZERO = "zero"
-    REFLECT = "reflect"
-
-
-class HistogramClosed(str, Enum):
-    """
-    Interval inclusiveness for histogram binning.
-
-    Mirrors view-buffer's ``HistogramClosed`` authority:
-    - LEFT: Intervals are left-closed ``[a, b)``.
-    - RIGHT: Intervals are right-closed ``(a, b]``.
-    """
-
-    LEFT = "left"
-    RIGHT = "right"
-
-
-class LabelReduction(str, Enum):
-    """
-    Reduction over a contour region's pixel values (``label_reduce``).
-
-    Mirrors view-buffer's ``LabelReduction`` authority.
-    """
-
-    MAX = "max"
-    MEAN = "mean"
-    SUM = "sum"
-
-
-class LabelRegionMode(str, Enum):
-    """
-    Region selection for ``label_reduce``.
-
-    Mirrors view-buffer's ``LabelRegionMode`` authority:
-    - INTERIOR: Pixels strictly inside the contour polygon.
-    - BOUNDARY: Interior pixels plus pixels on the contour boundary.
-    - BBOX: All pixels within the bounding box.
-    """
-
-    INTERIOR = "interior"
-    BOUNDARY = "boundary"
-    BBOX = "bbox"
-
-
-class ScaleOrigin(str, Enum):
-    """
-    Point a contour scale operation is measured from (``.contour.scale``).
-
-    Mirrors view-buffer's ``ScaleOrigin`` authority.
-    """
-
-    CENTROID = "centroid"
-    BBOX_CENTER = "bbox_center"
-    ORIGIN = "origin"
-
-
-class Winding(str, Enum):
-    """
-    Winding direction of a contour ring (``.contour.ensure_winding``).
-
-    Mirrors view-buffer's ``Winding`` authority, long spellings included: the
-    plugin has always accepted ``"clockwise"``/``"counterclockwise"`` alongside
-    the short forms, and the annotation that named only the short ones was the
-    reason nobody noticed the parser silently ignored everything else.
-    """
-
-    CCW = "ccw"
-    COUNTERCLOCKWISE = "counterclockwise"
-    CW = "cw"
-    CLOCKWISE = "clockwise"
 
 
 class Domain(str, Enum):
@@ -449,9 +201,10 @@ def _validate_enum(value: str, enum_cls: type, label: str):
     """Validate a *literal* string against a user-facing enum.
 
     The single validation shape for every literal enum-valued parameter:
-    ``Invalid <label> '<value>'. Valid: [...]``. Enums that may vary per row go
-    through ``pipeline._enum_param`` instead, so reaching here with an
-    expression means the parameter is structural.
+    ``Invalid <label> '<value>'. Valid: [...]``. An op's enum parameters are
+    typed in its Rust definition and validated there; this serves the
+    geometry accessors and sources, so reaching here with an expression means
+    the parameter is structural.
 
     Lives beside the enums rather than in ``pipeline.py`` because the geometry
     accessors need the same check and importing it from the builder module
@@ -470,7 +223,7 @@ def _validate_enum(value: str, enum_cls: type, label: str):
 def _enum_or_expr(value: "Any", enum_cls: type, label: str) -> "Any":
     """Validate a literal enum value, or pass an expression through untouched.
 
-    The geometry accessors' counterpart to ``pipeline._enum_param``: a literal
+    The geometry accessors' counterpart to a typed op's ``Param<Enum>`` field: a literal
     is checked here and fails at build time naming the accepted spellings; an
     expression cannot be checked until the row exists, so it is handed to
     ``_ArgBinder``, which appends it as a per-row plugin input. Rust then reads
@@ -489,58 +242,83 @@ def _enum_or_expr(value: "Any", enum_cls: type, label: str) -> "Any":
     return _validate_enum(value, enum_cls, label).value
 
 
-#: Expressions that have been given a key, bucketed by display text:
-#: ``text -> [(weakref to expr, key)]``. Weak so a long-lived process that
-#: builds many pipelines does not keep their (possibly large ``lit(Series)``)
-#: expressions alive; a bucket is dropped once all its expressions have died.
-_EXPR_KEYS: dict[str, list[tuple[weakref.ref[pl.Expr], str]]] = {}
-_EXPR_KEYS_LOCK = threading.Lock()
+#: Maps an expression parameter to the plugin input it binds to.
+SlotOf = Callable[[pl.Expr], int]
 
 
-def expr_key(expr: pl.Expr) -> str:
-    """The identity of an expression parameter: the one authority for it.
+class SlotTable:
+    """The plugin's input columns, in order: the one authority for which input
+    an expression parameter binds to.
 
-    Everything that asks "is this the same expression?" reads this key — the
-    plugin input slot an expression binds to (``ParamValue.to_dict`` and
-    ``PipelineGraph._get_expr_columns``), ``ParamValue`` equality and hashing
-    (and therefore CSE), and root-column deduplication.
-
-    ``str(expr)`` alone is not an identity: it is a display form, so every
-    ``pl.lit(pl.Series("f", ...))`` prints ``Series[f]`` and two different
-    Python UDFs print the same ``python_udf`` text. Using it made distinct
-    expressions share one plugin slot, silently (CR-31).
-
-    The key is the display text while that is unambiguous, which keeps the
-    graph JSON readable (``col("h")``). An expression whose text matches a
-    *different* live expression (by ``Expr.meta.eq``) gets ``text#n`` instead.
-    ``meta.serialize`` would be a context-free alternative but raises for
-    Python UDFs without ``cloudpickle``.
-
-    Limits: keys are unique among expressions alive at the same time, which is
-    what a graph needs — every expression a pipeline references is held by it
-    until serialization. After an expression dies its key may be reused; that
-    is harmless because a compiled graph binds slots by position and holds no
-    data. Expressions that are ``meta.eq``-equal but print differently get
-    different keys (a missed deduplication, never a wrong merge).
+    Expressions are identified by ``Expr.meta.eq``, never by display text:
+    ``str(expr)`` is not an identity (every ``pl.lit(pl.Series(...))`` prints
+    alike, as do two Python UDFs — CR-31), and the text-keyed registry that
+    papered over that made the graph JSON depend on which *other* expressions
+    were alive. A graph builds one table (root columns first, then every
+    expression parameter) and serializes each parameter as its position.
     """
-    text = str(expr)
-    with _EXPR_KEYS_LOCK:
-        live = [
-            (ref, key) for ref, key in _EXPR_KEYS.get(text, []) if ref() is not None
-        ]
-        for ref, key in live:
-            other = ref()
-            if other is expr or (other is not None and other.meta.eq(expr)):
-                _EXPR_KEYS[text] = live
-                return key
-        taken = {key for _, key in live}
-        key, n = text, 0
-        while key in taken:
-            n += 1
-            key = f"{text}#{n}"
-        live.append((weakref.ref(expr), key))
-        _EXPR_KEYS[text] = live
-        return key
+
+    def __init__(self) -> None:
+        self._exprs: list[pl.Expr] = []
+
+    def _find(self, expr: pl.Expr) -> int | None:
+        for i, known in enumerate(self._exprs):
+            if known is expr or known.meta.eq(expr):
+                return i
+        return None
+
+    def add(self, expr: pl.Expr) -> int:
+        """Register *expr* (once, by ``meta.eq``) and return its position."""
+        found = self._find(expr)
+        if found is not None:
+            return found
+        self._exprs.append(expr)
+        return len(self._exprs) - 1
+
+    def index(self, expr: pl.Expr) -> int:
+        """The position of an already-registered *expr*.
+
+        Raises rather than appending: an expression parameter that was never
+        registered as a plugin input is a builder bug, and binding it to some
+        other column would be a silent wrong answer.
+        """
+        found = self._find(expr)
+        if found is None:
+            msg = (
+                f"expression {expr} is not a registered plugin input; builders "
+                "must register expression parameters via Pipeline._track_expr"
+            )
+            raise KeyError(msg)
+        return found
+
+    @property
+    def columns(self) -> list[pl.Expr]:
+        return list(self._exprs)
+
+    def __len__(self) -> int:
+        return len(self._exprs)
+
+
+def planning_slots(expr: pl.Expr) -> int:  # noqa: ARG001 - deliberately ignored
+    """The slot resolver for plan-time FFI calls (``plan_step`` and friends).
+
+    Planning never reads a slot's data: the Rust planner replaces every slot
+    with a probe placeholder. So any index is sound here — and only here. A
+    graph that executes serializes through its own :class:`SlotTable`.
+    """
+    return 0
+
+
+def _to_python(value: Any) -> Any:
+    """A numpy scalar as the Python number it holds; anything else unchanged.
+
+    ``json`` cannot serialize ``np.int64`` (and would silently accept
+    ``np.float64`` only because it subclasses ``float``), so a typed field
+    converts at the one place values reach the wire.
+    """
+    if type(value).__module__ == "numpy" and callable(getattr(value, "item", None)):
+        return value.item()
+    return value
 
 
 @dataclass
@@ -577,13 +355,15 @@ class ParamValue:
         if self.is_expr != other.is_expr:
             return False
         if self.is_expr:
-            return expr_key(self.value) == expr_key(other.value)
+            return self.value is other.value or self.value.meta.eq(other.value)
         return self.value == other.value
 
     def __hash__(self) -> int:
         """Hash for use in sets and dicts."""
         if self.is_expr:
-            return hash((True, expr_key(self.value)))
+            # meta.eq-equal expressions may print differently, so no text is a
+            # sound hash; equal objects need only share a bucket.
+            return hash(True)
         # For literals, hash the value directly (works for immutable types)
         try:
             return hash((False, self.value))
@@ -606,43 +386,21 @@ class ParamValue:
             return cls(is_expr=True, value=arg)
         return cls(is_expr=False, value=arg)
 
-    def to_dict(self) -> dict[str, Any]:
-        """
-        Serialize to dictionary for JSON encoding.
+    def to_wire(self, slot_of: SlotOf) -> Any:
+        """Serialize as a field of an op, source or sink.
 
-        Returns:
-            Dictionary with type and value/expr fields.
-
-        Note:
-            For expression parameters, we use the expression's string representation
-            as the identifier. This ensures unique keys even when multiple expressions
-            share the same root column (e.g., col("x").max() and col("x").min()).
-            The same string representation is used in _get_expr_columns() to ensure
-            the keys match when looking up expression values on the Rust side.
+        A field is the value itself — ``224``, ``"bilinear"``, a
+        list of elements — or ``{"$slot": n}`` for an expression; the Rust
+        struct it deserializes into decides what is valid.
         """
         if self.is_expr:
-            # Use the expression's string representation as a unique identifier.
-            # This avoids collisions when multiple expressions share the same root
-            # (e.g., height_expr.max() and width_expr.max() from the same source).
-            return {"type": "expr", "col": expr_key(self.value)}
-        return {"type": "literal", "value": self.value}
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "ParamValue":
-        """
-        Deserialize from dictionary.
-
-        Args:
-            d: Dictionary with type and value/expr fields.
-
-        Returns:
-            ParamValue instance.
-        """
-        if d["type"] == "literal":
-            return cls(is_expr=False, value=d["value"])
-        # For expressions, we store the serialized form
-        # Actual expression is reconstructed on the Rust side
-        return cls(is_expr=True, value=d)
+            return {"$slot": slot_of(self.value)}
+        if isinstance(self.value, list):
+            return [
+                v.to_wire(slot_of) if isinstance(v, ParamValue) else _to_python(v)
+                for v in self.value
+            ]
+        return _to_python(self.value)
 
 
 @dataclass
@@ -853,335 +611,47 @@ def normalize_cloud_options(
 
 @dataclass
 class SourceSpec:
-    """Specification for pipeline input source."""
+    """A pipeline's input source: its format and the settings passed for it.
+
+    Shaped like :class:`OpSpec`: the settings are ``ParamValue``\\ s by field
+    name, and the format's Rust definition (``src/formats/source.rs``) is the
+    only statement of which fields exist and which formats read them — it
+    refuses the rest when ``plan_source`` validates the spec.
+    """
 
     format: SourceFormat
-    dtype: DType | None = None  # For "raw" format
-    # Contour source parameters
-    width: "ParamValue | None" = None
-    height: "ParamValue | None" = None
-    fill_value: "ParamValue | None" = None
-    background: "ParamValue | None" = None
-    shape_pipeline: dict | None = (
-        None  # Serialized LazyPipelineExpr for shape inference
-    )
-    # Cloud options for file_path sources
-    cloud_options: CloudOptions | None = None
-    # Contiguity requirement for list/array sources
-    # When True, requires data to be contiguous for zero-copy; errors on jagged data
-    # When False (default), allows jagged data with copy-based flattening
-    require_contiguous: bool = False
-    # Error handling for source decoding:
-    #   "raise" (default): propagate decode errors (fails the entire batch)
-    #   "null": treat decode errors as null output for that row
-    on_error: str = "raise"
-    # Explicit decode-scale assertion: the pipeline only needs this many
-    # pixels on the decoded image's long side (JPEG uses IDCT scaling).
-    decode_max_size: int | None = None
-    # Locations this source's path column may read from. None (default) is
-    # unrestricted; a tuple restricts reads to those roots. A tuple rather than
-    # a list because SourceSpec is hashed for CSE.
-    allowed_roots: tuple[str, ...] | None = None
+    params: dict[str, ParamValue] = field(default_factory=dict)
 
     def __eq__(self, other: object) -> bool:
-        """Compare two SourceSpecs for equality."""
+        """Compare two SourceSpecs (same format and settings)."""
         if not isinstance(other, SourceSpec):
             return NotImplemented
-        return (
-            self.format == other.format
-            and self.dtype == other.dtype
-            and self.width == other.width
-            and self.height == other.height
-            and self.fill_value == other.fill_value
-            and self.background == other.background
-            and self.shape_pipeline == other.shape_pipeline
-            and self.cloud_options == other.cloud_options
-            and self.require_contiguous == other.require_contiguous
-            and self.on_error == other.on_error
-            and self.decode_max_size == other.decode_max_size
-            and self.allowed_roots == other.allowed_roots
-        )
+        return self.format == other.format and self.params == other.params
 
     def __hash__(self) -> int:
-        """Hash for use in sets and dicts."""
+        """Hash for use in sets and dicts (CSE groups nodes by source)."""
         return hash(
-            (
-                self.format,
-                self.dtype,
-                self.width,
-                self.height,
-                self.fill_value,
-                self.background,
-                str(self.shape_pipeline) if self.shape_pipeline else None,
-                str(self.cloud_options) if self.cloud_options else None,
-                self.require_contiguous,
-                self.on_error,
-                self.decode_max_size,
-                self.allowed_roots,
-            )
+            (self.format, tuple(sorted((k, hash(v)) for k, v in self.params.items())))
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to dictionary."""
+    def to_dict(self, slot_of: SlotOf) -> dict[str, Any]:
+        """Serialize for the plugin wire: ``{"format": name, field: value, ...}``."""
         result: dict[str, Any] = {"format": self.format.value}
-        if self.dtype is not None:
-            result["dtype"] = self.dtype.value
-        # Include contour-specific parameters if source is contour
-        if self.format == SourceFormat.CONTOUR:
-            if self.width is not None:
-                result["width"] = self.width.to_dict()
-            if self.height is not None:
-                result["height"] = self.height.to_dict()
-            if self.fill_value is not None:
-                result["fill_value"] = self.fill_value.to_dict()
-            if self.background is not None:
-                result["background"] = self.background.to_dict()
-            if self.shape_pipeline is not None:
-                result["shape_pipeline"] = self.shape_pipeline
-        # Include require_contiguous for list/array sources ("auto" may resolve
-        # to a list/array column at runtime).
-        if self.format in (SourceFormat.LIST, SourceFormat.ARRAY, SourceFormat.AUTO):
-            result["require_contiguous"] = self.require_contiguous
-        # Cloud credentials must round-trip for file_path sources so graph
-        # execution can authenticate remote reads ("auto" may resolve to
-        # file_path from a String column at runtime).
-        if (
-            self.format in (SourceFormat.FILE_PATH, SourceFormat.AUTO)
-            and self.cloud_options is not None
-        ):
-            result["cloud_options"] = self.cloud_options.to_dict()
-        if self.decode_max_size is not None:
-            result["decode_max_size"] = self.decode_max_size
-        if self.on_error != "raise":
-            result["on_error"] = self.on_error
-        # A path allowlist rides for the source formats that read paths.
-        # Emitted only when set, so an unrestricted source's spec — and the
-        # graph-cache key built from it — is byte-identical to before.
-        if (
-            self.format in (SourceFormat.FILE_PATH, SourceFormat.AUTO)
-            and self.allowed_roots is not None
-        ):
-            result["allowed_roots"] = list(self.allowed_roots)
+        for key, value in self.params.items():
+            result[key] = value.to_wire(slot_of)
         return result
-
-
-# ---------------------------------------------------------------------------
-# Which format each spec parameter applies to
-# ---------------------------------------------------------------------------
-
-#: Which source formats each :meth:`Pipeline.source` keyword applies to.
-#:
-#: Each parameter is listed against exactly the formats whose decode path reads
-#: it. Set arithmetic where the fact is genuinely "all of them" or "all but
-#: one", so a new format does not silently fall outside a parameter that should
-#: cover it.
-SOURCE_PARAM_APPLIES: "dict[str, frozenset[SourceFormat]]" = {
-    # Every source carries an element dtype except the contour one, whose
-    # rasterize fixes u8 (`OutputDTypeRule::Fixed(U8)`).
-    "dtype": frozenset(SourceFormat) - {SourceFormat.CONTOUR},
-    # The canvas and its colours: read only by the contour decode's rasterize.
-    "width": frozenset({SourceFormat.CONTOUR}),
-    "height": frozenset({SourceFormat.CONTOUR}),
-    "shape": frozenset({SourceFormat.CONTOUR}),
-    "fill_value": frozenset({SourceFormat.CONTOUR}),
-    "background": frozenset({SourceFormat.CONTOUR}),
-    # Path reads: `file_path`, and `auto` when a String column resolves to one.
-    "cloud_options": frozenset({SourceFormat.FILE_PATH, SourceFormat.AUTO}),
-    "allowed_roots": frozenset({SourceFormat.FILE_PATH, SourceFormat.AUTO}),
-    # Zero-copy contiguity applies to the nested-column decode.
-    "require_contiguous": frozenset(
-        {SourceFormat.LIST, SourceFormat.ARRAY, SourceFormat.AUTO}
-    ),
-    # JPEG IDCT scaling, applied where bytes are decoded as an image.
-    "decode_max_size": frozenset(
-        {SourceFormat.AUTO, SourceFormat.IMAGE_BYTES, SourceFormat.FILE_PATH}
-    ),
-    # Every source can fail to decode, including a contour that will not parse.
-    "on_error": frozenset(SourceFormat),
-}
-
-#: Which sink formats each ``.sink()`` keyword applies to.
-#:
-#: The same fact for the other end of the pipeline, read from the same place:
-#: the Rust encoder's use of the `SinkSpec` field.
-#:
-#: `quality` is **jpeg only**. `SinkSpec` documents it as "JPEG and WebP" and
-#: the sink docstring said "jpeg/webp", but `encode_image` passes it to
-#: `encode_jpeg` alone — the WebP arm calls `ImageAdapter::encode`, which has no
-#: quality argument. A webp quality is therefore rejected rather than accepted
-#: and dropped; supporting it is an encoder change, not a parameter change.
-SINK_PARAM_APPLIES: "dict[str, frozenset[SinkFormat]]" = {
-    "quality": frozenset({SinkFormat.JPEG}),
-    "shape": frozenset({SinkFormat.ARRAY}),
-    "dtype": frozenset({SinkFormat.NUMPY, SinkFormat.TORCH, SinkFormat.NDARRAY}),
-}
-
-#: What to do instead, for the parameters where a caller has a real
-#: alternative. Keyed by ``(kind, parameter)``.
-PARAM_HINTS: "dict[tuple[str, str], str]" = {
-    ("source", "dtype"): (
-        "rasterizing always produces u8 — use .cast(...) after the source"
-    ),
-    ("sink", "dtype"): "cast inside the pipeline with .cast(...) instead",
-    ("sink", "quality"): (
-        "only the JPEG encoder takes a quality; the others encode at their "
-        "own fixed settings"
-    ),
-}
-
-
-def reject_inapplicable_params(
-    *,
-    kind: str,
-    fmt: "SourceFormat | SinkFormat",
-    supplied: "Mapping[str, Any]",
-    applies: "Mapping[str, frozenset[Any]]",
-) -> None:
-    """Reject spec parameters the chosen format never reads.
-
-    **The single answer to "does this parameter do anything here?"**, for both
-    ends of the pipeline. Each surface used to answer it per parameter and
-    differently: of the source's seven scoped keywords one raised, one warned
-    and five were dropped silently, while every scoped sink keyword but
-    ``dtype`` was dropped silently. A parameter that does nothing is not a
-    harmless no-op — ``source("image_bytes", width=224)`` reads as a decode
-    size, and ``sink("png", quality=50)`` reads as compression.
-
-    A name absent from *applies* is rejected as well as one that is present but
-    inapplicable. That is what closes an open ``**kwargs`` surface: ``.sink()``
-    took any keyword at all and serialized it into the graph, so
-    ``sink("jpeg", qualtiy=50)`` silently encoded at the default quality.
-
-    Args:
-        kind: ``"source"`` or ``"sink"``, for the message and the hint lookup.
-        fmt: The chosen format.
-        supplied: Parameter name → value, for what the caller actually passed.
-        applies: The authority for this kind (:data:`SOURCE_PARAM_APPLIES` or
-            :data:`SINK_PARAM_APPLIES`).
-    """
-    for name in sorted(supplied):
-        formats = applies.get(name)
-        if formats is None:
-            known = ", ".join(sorted(applies))
-            raise ValueError(f"{name} is not a {kind} parameter (known: {known}).")
-        if fmt in formats:
-            continue
-        spelled = ", ".join(sorted(f.value for f in formats))
-        hint = PARAM_HINTS.get((kind, name))
-        msg = (
-            f"{name} does not apply to the '{fmt.value}' {kind} "
-            f"(it applies to: {spelled})"
-        )
-        raise ValueError(f"{msg}; {hint}." if hint else f"{msg}.")
-
-
-def is_supplied(value: Any, default: Any) -> bool:
-    """Did the caller pass ``value``, or is it the parameter's default?
-
-    Identity first so ``None``/``False`` defaults are exact, then equality for
-    value defaults (``fill_value=255``). A Polars expression short-circuits: no
-    default is an expression, and ``Expr.__ne__`` builds an expression rather
-    than answering, so comparing one would raise "the truth value of an Expr is
-    ambiguous" instead of reporting it as supplied.
-
-    Only needed where a parameter surface has defaults to compare against —
-    ``.sink()`` takes ``**kwargs``, where every key present was passed.
-    """
-    if value is default:
-        return False
-    if isinstance(value, pl.Expr):
-        return True
-    return bool(value != default)
-
-
-#: The sources whose element dtype and rank are resolved from the Polars column
-#: at plan-time-with-input (Rust ``resolved_output_specs``) rather than at build
-#: time. The typed ``list``/``array`` sinks defer to that instead of demanding
-#: an explicit dtype; spelled once because three separate checks in `lazy.py`
-#: carried their own copy of the tuple.
-SOURCES_RESOLVED_FROM_COLUMN: "frozenset[SourceFormat]" = frozenset(
-    {SourceFormat.LIST, SourceFormat.ARRAY, SourceFormat.AUTO}
-)
-
-#: Sinks whose Polars dtype carries a *typed element* — ``List(inner)`` and
-#: ``Array(inner, n)`` — and which therefore need a concrete element dtype at
-#: plan time. The binary/blob sinks and the numpy/torch struct sinks describe
-#: their contents in the data instead, so they never need one.
-#:
-#: The counterpart to :data:`SOURCES_RESOLVED_FROM_COLUMN`, and named for the
-#: same reason: ``_require_concrete_sink_dtype`` spelled this as a bare
-#: ``("list", "array")`` tuple, one format vocabulary written out by hand
-#: beside a check that already read the other one from here.
-SINKS_WITH_TYPED_ELEMENTS: "frozenset[SinkFormat]" = frozenset(
-    {SinkFormat.LIST, SinkFormat.ARRAY}
-)
 
 
 #: The dimension a shape hint names, by position. The hints are **positional**:
 #: ``height`` is dimension 0, ``width`` dimension 1, ``channels`` dimension 2,
 #: whatever the data means by them. Every reader agrees on that order —
-#: ``Pipeline._current_input_dims`` builds ``op_infer_shape``'s input from it
-#: and ``GraphNode.expected_shape`` publishes ``[H, W, C]`` from it — so the
+#: ``PlanState.dims`` holds the sizes in it and the output's ``[H, W, C]`` shape (read off it in Rust) follows it — so the
 #: order is named once here rather than re-spelled at each site.
 #:
 #: This is why ``assert_shape`` rejects ``height=``/``width=``/``channels=``
 #: once the rank is known to be anything but 3: outside an ``[H, W, C]``
 #: buffer the names describe nothing, and ``dims=`` is the honest spelling.
 HINT_DIMS: "tuple[str, ...]" = ("height", "width", "channels")
-
-
-@dataclass
-class ShapeHints:
-    """Per-dimension sizes the planner knows, indexed by :data:`HINT_DIMS`."""
-
-    height: ParamValue | None = None
-    width: ParamValue | None = None
-    channels: ParamValue | None = None
-
-    def get(self, dim: str) -> "ParamValue | None":
-        """The hint for *dim*, which must be one of :data:`HINT_DIMS`."""
-        if dim not in HINT_DIMS:
-            msg = f"{dim!r} is not a tracked shape dimension {HINT_DIMS}"
-            raise ValueError(msg)
-        return getattr(self, dim)
-
-    def has_any(self) -> bool:
-        """Check if any hints are provided."""
-        return any(self.get(dim) is not None for dim in HINT_DIMS)
-
-    def has_all_dims(self) -> bool:
-        """Check if all image dimensions (H, W, C) are provided."""
-        return all(
-            (hint := self.get(dim)) is not None and not hint.is_expr
-            for dim in HINT_DIMS
-        )
-
-
-@dataclass
-class ShapeAssertion:
-    """One shape declaration, recorded at the op position it was written at.
-
-    Replayed positionally by ``Pipeline._apply_assertions_at`` so a lazy
-    continuation applies it where the user wrote it, rather than at the end of
-    the chain where it would override ops that legitimately change the shape.
-
-    ``source`` names who declared it, and decides who is blamed when execution
-    disagrees with the plan:
-
-    - ``"assert_shape"`` — the user said so. A divergence is theirs, and
-      ``validate_output_schema`` says so instead of reporting a plugin bug.
-    - ``"shape_ref"`` — ``rasterize(shape=<node>)`` / ``source("contour",
-      shape=)`` took the canvas from another node's *inferred* hints. A
-      divergence there really is a contract bug, so it keeps the original
-      wording.
-    """
-
-    #: Declared size per dimension name. ``None`` declares it *unknown* — the
-    #: ``shape_ref`` answer when the referenced node's own hint is per-row.
-    dims: "dict[str, ParamValue | None]" = field(default_factory=dict)
-    #: Rank asserted alongside the dims (``assert_shape(dims=[...])`` only).
-    ndim: int | None = None
-    source: str = "assert_shape"
 
 
 @dataclass
@@ -1207,9 +677,14 @@ class OpSpec:
         param_hashes = tuple((k, hash(v)) for k, v in sorted(self.params.items()))
         return hash((self.op, param_hashes))
 
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to dictionary."""
+    def to_dict(self, slot_of: SlotOf) -> dict[str, Any]:
+        """Serialize for the plugin wire: ``{"op": name, field: value, ...}``.
+
+        Each field is its bare value or ``{"$slot": n}``
+        (:meth:`ParamValue.to_wire`); the op's Rust definition decides what is
+        valid.
+        """
         result: dict[str, Any] = {"op": self.op}
         for key, value in self.params.items():
-            result[key] = value.to_dict()
+            result[key] = value.to_wire(slot_of)
         return result

@@ -3,7 +3,7 @@
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::affine::{AffineParams, InterpolationType};
 use crate::ops::scalar::{FusedKernel, ScalarOp};
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
@@ -11,10 +11,10 @@ use crate::ops::validation::ValidationError;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// Method for normalizing data.
+/// A normalization, with the per-channel statistics a preset carries.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum NormalizeMethod {
+pub enum Normalization {
     /// Scale to [0.0, 1.0] range using min/max.
     MinMax,
     /// Standardize using (x - mean) / std (computed per-image).
@@ -37,19 +37,34 @@ pub enum NormalizeMethod {
     },
 }
 
-impl NormalizeMethod {
-    /// Canonical Python-facing method names.
-    ///
-    /// `Preset` carries payload, so this enum cannot use the `named_variants!`
-    /// value table; the parser handles `preset` structurally (it needs the
-    /// `mean`/`std` parameters). The exhaustive match below still forces this
-    /// list to be revisited when a variant is added.
-    pub const NAMES: &'static [&'static str] = &["minmax", "zscore", "preset"];
+/// Which normalization: the user-facing method name, without its payload.
+///
+/// `Normalization::Preset` carries statistics, so it cannot hold a
+/// `named_variants!` table; this fieldless twin does, and
+/// [`Normalization::method`] ties the two together exhaustively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NormalizeMethod {
+    MinMax,
+    ZScore,
+    Preset,
 }
 
-const _: fn(&NormalizeMethod) = |m| match m {
-    NormalizeMethod::MinMax | NormalizeMethod::ZScore | NormalizeMethod::Preset { .. } => (),
-};
+crate::naming::named_variants!(NormalizeMethod: "Normalization methods (``PRESET``: channel-wise with preset mean/std values)." {
+    "minmax" => MinMax,
+    "zscore" => ZScore,
+    "preset" => Preset,
+});
+
+impl Normalization {
+    /// The method this normalization is.
+    pub fn method(&self) -> NormalizeMethod {
+        match self {
+            Normalization::MinMax => NormalizeMethod::MinMax,
+            Normalization::ZScore => NormalizeMethod::ZScore,
+            Normalization::Preset { .. } => NormalizeMethod::Preset,
+        }
+    }
+}
 
 /// Compute operations that process data element-wise or globally.
 #[derive(Debug, Clone, PartialEq)]
@@ -83,7 +98,7 @@ pub enum ComputeOp {
     /// `output_dtype_rule().resolve(input)` already yields it; execution casts
     /// the f32 result to it so the produced dtype matches — see the
     /// dtype-contract tests.
-    Normalize(NormalizeMethod, DType),
+    Normalize(Normalization, DType),
     /// Clamp values to [min, max] range.
     Clamp { min: f32, max: f32 },
     /// Adjust contrast: `(pixel - mean) * factor + mean`.
@@ -122,37 +137,18 @@ impl Op for ComputeOp {
         }
     }
 
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
+    fn shape(&self) -> OpShape {
         match self {
-            ComputeOp::Affine(params) => {
-                let input_shape = inputs[0];
-                let mut s = input_shape.to_vec();
-                if s.len() >= 2 {
-                    s[0] = params.output_height as usize;
-                    s[1] = params.output_width as usize;
-                }
-                s
-            }
+            ComputeOp::Affine(params) => OpShape::SetHw {
+                h: Sym::Known(params.output_height as usize),
+                w: Sym::Known(params.output_width as usize),
+            },
             ComputeOp::RotateAffine {
-                angle_deg, expand, ..
-            } => {
-                let input_shape = inputs[0];
-                if !expand || input_shape.len() < 2 {
-                    return input_shape.to_vec();
-                }
-                let ih = input_shape[0] as f64;
-                let iw = input_shape[1] as f64;
-                let rad = (*angle_deg as f64) * std::f64::consts::PI / 180.0;
-                let abs_cos = rad.cos().abs();
-                let abs_sin = rad.sin().abs();
-                let new_w = (iw * abs_cos + ih * abs_sin).round() as usize;
-                let new_h = (ih * abs_cos + iw * abs_sin).round() as usize;
-                let mut s = input_shape.to_vec();
-                s[0] = new_h;
-                s[1] = new_w;
-                s
-            }
-            _ => inputs[0].to_vec(),
+                angle_deg,
+                expand: true,
+                ..
+            } => OpShape::RotateExpand(Sym::Known(*angle_deg)),
+            _ => OpShape::Preserve,
         }
     }
 
@@ -248,8 +244,8 @@ impl Op for ComputeOp {
 
                 match method {
                     // Global statistics over every element: any shape.
-                    NormalizeMethod::MinMax | NormalizeMethod::ZScore => {}
-                    NormalizeMethod::Preset { mean, std } => {
+                    Normalization::MinMax | Normalization::ZScore => {}
+                    Normalization::Preset { mean, std } => {
                         if shape.len() < 2 || shape.len() > 3 {
                             return Err(ValidationError::ShapeRequirement {
                                 requirement: "2D (HW) or 3D (HWC)",
@@ -266,11 +262,14 @@ impl Op for ComputeOp {
                     }
                 }
 
-                if !self.accepted_input_dtypes().accepts(input_dtypes[0]) {
-                    return Err(ValidationError::DTypeRequirement {
-                        expected: vec![DType::F32, DType::F64],
-                        got: input_dtypes[0],
-                    });
+                // A shape-only caller (plan-time validation) passes no dtype.
+                if let Some(&dtype) = input_dtypes.first() {
+                    if !self.accepted_input_dtypes().accepts(dtype) {
+                        return Err(ValidationError::DTypeRequirement {
+                            expected: vec![DType::F32, DType::F64],
+                            got: dtype,
+                        });
+                    }
                 }
                 Ok(())
             }

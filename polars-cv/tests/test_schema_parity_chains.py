@@ -4,11 +4,11 @@ A single-op sweep cannot reach these. What is checked here:
 
 * chains that stack an H/W change on a rank change on a channel change on a
   dtype change, asserted after every prefix as well as at the end;
-* the steps ``op_infer_shape`` refuses, which wipe the H/W hints — the
+* the steps with no ``OpShape`` (graph-level), which wipe the H/W hints — the
   requirement there is that a shape-dependent sink is *rejected while
   planning*, never accepted and then wrong;
-* every binary op, with the operand axis read from Rust's ``BINARY_OPS``
-  registry rather than a list written here;
+* every binary op, with the operand axis read from Rust's ``BinaryOp::NAMED``
+  table rather than a list written here;
 * the two spellings of a continuation (``.pipe(p.op())`` vs ``.pipe(p).op()``)
   against each other *and* against the data — ``test_append_contract`` pins
   the first pair to each other but never to execution;
@@ -19,10 +19,13 @@ A single-op sweep cannot reach these. What is checked here:
 
 from __future__ import annotations
 
+import json
+
 import polars as pl
 import pytest
 
 from polars_cv import Pipeline
+from tests._plan_view import planned
 from tests._schema_parity import (
     assert_not_vacuous,
     assert_plan_equals_exec,
@@ -39,13 +42,14 @@ H, W = 20, 32
 def _binary_op_names() -> list[str]:
     """The binary-op vocabulary, read from the Rust registry.
 
-    ``BINARY_OPS`` in ``src/execute.rs`` is the single authority and it is
-    surfaced as the ``BinaryOp`` enum over ``enum_variants``. Reading it here
+    ``BinaryOp::NAMED`` in view-buffer is the single authority and it is
+    surfaced as the ``BinaryOp`` entry of the enum catalogue. Reading it here
     means a new binary op joins this sweep automatically.
     """
-    from polars_cv._lib import enum_variants
+    from polars_cv._lib import enum_catalog
 
-    return sorted(enum_variants("BinaryOp"))
+    (desc,) = [e for e in json.loads(enum_catalog()) if e["name"] == "BinaryOp"]
+    return sorted(desc["variants"])
 
 
 def _df(pattern: str = "single", *, channels: int = 3) -> pl.DataFrame:
@@ -111,7 +115,7 @@ def test_strip_process_restore_channel_count(channels: int, expected: int) -> No
     ``test_alpha_channel.py`` and never against data until now.
     """
     pipe = _base(channels=channels).convert_color(from_space="rgb", to_space="gray")
-    assert pipe._shape_hints.channels.value == expected
+    assert planned(pipe).channels == expected
 
     df = _df("null_first", channels=channels)
     series = assert_plan_equals_exec(df, pl.col("img").cv.pipe(pipe).sink("list"))
@@ -131,7 +135,7 @@ def test_strip_process_restore_channel_count(channels: int, expected: int) -> No
 def test_grayscale_is_fixed_one_channel_and_drops_alpha(channels: int) -> None:
     """The sibling rule: ``grayscale`` is ``fixed:1`` whatever the input."""
     pipe = _base(channels=channels).grayscale()
-    assert pipe._shape_hints.channels.value == 1
+    assert planned(pipe).channels == 1
 
     df = _df("null_first", channels=channels)
     series = assert_plan_equals_exec(df, pl.col("img").cv.pipe(pipe).sink("list"))
@@ -143,7 +147,7 @@ def test_grayscale_is_fixed_one_channel_and_drops_alpha(channels: int) -> None:
 # Hint-invalidating steps
 # ---------------------------------------------------------------------------
 
-#: Steps ``op_infer_shape`` rejects (lib.rs:250-258), which wipe the H/W hints.
+#: Steps with no ``OpShape`` (graph-level), which wipe the H/W hints.
 #: After one of these the array sink has no shape to plan and must refuse.
 _HINT_INVALIDATING = {
     "reduce_sum": lambda p: p.reduce_sum(),
@@ -219,10 +223,9 @@ def test_binary_op_axis_is_the_rust_registry() -> None:
 def test_binary_ops_plan_what_they_execute(op: str) -> None:
     """Only ``divide`` had a plan-vs-exec test; here is the whole family.
 
-    Binary ops are also the one place the planner assigns ``_output_dtype`` and
-    ``_expected_ndim`` by hand (``lazy.py`` ``_binary_op``) instead of folding
-    through ``op_schema``, so their dtype promotion — u8 x u8 -> f32 for
-    ``divide``/``ratio`` — is computed by a separate code path.
+    Binary ops are the one two-input dtype rule: ``plan_step`` reads the other
+    operand's dtype for them (``other_dtype``), so their promotion — u8 x u8 ->
+    f32 for ``divide``/``ratio`` — is a separate branch of the fold.
     """
     df = _df("null_first")
     left = pl.col("img").cv.pipe(_base())

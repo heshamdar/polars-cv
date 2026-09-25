@@ -40,7 +40,7 @@ The **user-facing Python layer**. Responsible for:
 ```python
 pipe = Pipeline().source("image_bytes").resize(height=224, width=224).grayscale()
 pipe = Pipeline().source("image_bytes").channel_select(index=0)
-pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
+pipe = Pipeline().source("image_bytes").convert_color(from_space="rgb", to_space="hsv")
 pipe = Pipeline().source("image_bytes").sobel(axis="x")
 pipe = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
 pipe = Pipeline().source(
@@ -101,23 +101,31 @@ graph at all. Record the id without the edge and the reference dangles at
 execution — invisibly, for as long as some other consumer happens to pull the
 same node in (masking with the same image, which every example does). The
 appended edge does not disturb the referenced node's own input:
-`_build_column_bindings` keys on the node having a column, and the executor
+`PipelineGraph._to_dict`'s column bindings key on the node having a column, and the executor
 picks the decode path from `has_column_binding`, using upstream only for
 ordering.
 
 ### Operation Contracts (view-buffer is the authority)
 
-Every operation's schema effect — output domain, dtype, rank (ndim) and channel
-count — comes from view-buffer's per-op `ViewDto` contract, surfaced to Python
-through `_lib.op_contract(op_json)` and `_lib.op_schema(op_json, domain, dtype, ndim)`.
-The Python planner (`_compute_output_domain_dtype_ndim` / `_update_channels_from_rule`)
-**reads** these rules; it does not re-declare them. There is no Python contract
+Every operation's schema effect — output domain, dtype, rank (ndim), H/W and
+channel count — comes from the op's Rust contract, applied in Rust by one call
+per appended op: `_lib.plan_step(op_json, state, other_dtype=None)`
+(`src/plan.rs`). The pipeline's whole tracked state is one `PlanState`
+(`Pipeline._state`: domain, dtype, rank, known sizes, which of them the user
+asserted, whether a declaration reached the lineage), computed only in Rust —
+`plan_source` for a source, `plan_step` per op, `plan_assert` for a shape
+declaration — and never edited in Python. `_push_op` records the state entering
+each op (`_entering`). A slice, reorder or
+deletion of the ops goes through `_replay`, which appends the kept ops again
+from a recorded state, so no per-position fact is ever re-keyed by hand.
+Python **reads** these rules; it
+does not re-declare them. There is no Python contract
 table to keep in sync.
 
 The contract fields read by the planner are:
 - `output_domain` — buffer / scalar / vector / contour (`any` = identity, leaves
   the domain unchanged)
-- `dtype_rule` — resolved to a concrete dtype by `op_schema`
+- `dtype_rule` — resolved to a concrete dtype by `plan_step`
 - `rank_rule` — `fixed:N`, `reduce_one`, `preserve`, or `unknown`
 - `channel_rule` — drives planning-time channel inference
 
@@ -127,7 +135,7 @@ execution-time schema.** If an op's dtype cannot be determined at planning time
 
 An `auto` **source** (the `source()` default) is treated like `blob` here: its
 decode path is chosen from the column dtype in Rust at execution time, so
-`_expected_ndim` is `None` and the dtype stays `auto` unless the caller asserts
+the rank is `None` and the dtype stays `auto` unless the caller asserts
 one. The `list`/`array` sink guards in `lazy.py` let `auto` through alongside
 `list`/`array` because Rust's `resolved_output_specs` resolves a `List`/`Array`
 column's leaf dtype and rank when the plan sees the input; a Binary/image column
@@ -137,14 +145,12 @@ under `auto` then surfaces the error there instead.
 
 Alpha channels are **always preserved** during image decoding. Image sources
 (`image_bytes`, `file_path`) produce unknown channel count at planning time
-(`_shape_hints.channels = None`). Users can assert known channels via
+(`PlanState.dims[2]` is `None`). Users can assert known channels via
 `.assert_shape(channels=4)`.
 
 Each op's alpha/channel behaviour is described by its view-buffer `channel_rule`
-(e.g. passthrough, drop-to-fixed, color-conversion). Channel inference is
-implemented in `Pipeline._update_channels_from_rule()`, called at the end of
-`_update_shape_hints()`, which reads `op_contract(...)["channel_rule"]` and
-applies it to the tracked channel count. Rust implements the matching behaviour
+(e.g. passthrough, drop-to-fixed, color-conversion). `plan_step` applies it
+(`OutputChannelRule::apply`) to the tracked channel count. Rust implements the matching behaviour
 based on the buffer's actual channel count.
 
 ### ParamValue — Literal vs Expression Parameters
@@ -170,48 +176,45 @@ rank, or dtype**. Everything else follows from that one invariant.
    thresholds, contrast/gamma/brightness/sharpen factors, morphology
    ksize/iterations, channel_select index, convolve2d ksize, rasterize and
    contour-source `width`/`height`/`fill_value`/`background`, histogram
-   `range_min`/`range_max`, extract_contours `min_area`, reduce_percentile q,
+   `range` (both ends), extract_contours `min_area`, reduce_percentile q,
    reduce_std ddof.
-2. *Per-element lists*, via `_param_list` — the list **length** stays structural
-   while each element may be an expression: warp_affine `matrix`, `reshape`
-   shape, convolve2d `kernel` (which is what makes `sharpen(strength)` dynamic),
-   normalize `mean`/`std`, channel_swap `order`. Rust reads these with
-   `resolve_f32_list` / `resolve_usize_list`.
-3. *Non-structural enums and flags*, via `_enum_param` and `get::opt_bool_dyn`:
+2. *Per-element lists* — the list **length** stays structural while each
+   element may be an expression: warp_affine `matrix`, `reshape` shape,
+   convolve2d `kernel` (which is what makes `sharpen(strength)` dynamic),
+   normalize `mean`/`std`, channel_swap `order`. On a typed op these are
+   `Vec<Param<T>>` (or `[Param<T>; N]`) fields, encoded element by element by
+   `_encode_field`.
+3. *Non-structural enums and flags*, typed `Param<Enum>`/`Param<bool>` fields:
    resize/letterbox `filter`, rotate/warp_affine `interpolation`, `pad(mode)`,
    `pad_to_size(position)`, `convolve2d(border)`, extract_contours
    `mode`/`method`, label_reduce `reduction`/`region_mode`,
    `apply_mask(invert)`, `area(signed)`, `convolve2d(normalize)`.
 
-**Plan-time probing is why enums need care.** `op_infer_shape` (`lib.rs`) runs
-each op four times with every expression param bound to an *integer* probe. A
-dynamic enum cannot read an integer, so `ParamCtx::probe` marks the context and
-the enum/bool accessors substitute their default. That is sound only because of
-the rule above — the variant probing picks cannot change the inferred schema.
-Signalling it explicitly (rather than sniffing the column's dtype) keeps real
-execution strict: routing an integer column into an enum param still errors.
+**Plan-time resolution is why the rule matters.** The planner resolves each
+op once, with no row, to read its rules (domain, dtype, rank, channels,
+identity): `ParamCtx::planning` hands every per-row parameter a placeholder
+(`WireScalar::planning_value`). That is sound only because of the rule above —
+no per-row-eligible value can change those rules. Shapes are not read this
+way: they are symbolic (below), so no placeholder ever reaches a size.
 
 **Structural parameters are literal-only and enforced on both sides.** Axis
 lists, reduction `axis`, `perceptual_hash(hash_size)`, `reshape` arity,
 `rotate(expand)`, and the dtype-bearing enums `cast(dtype)`,
 `normalize(method`/`out_dtype)`, `histogram(closed`/`output)` fix the plan-time
-schema, so they must be literals. A literal `ParamValue` can never hold a
-`pl.Expr` — `ParamValue.__post_init__` (`_types.py`) rejects it with a clear
-"structural" error, and the Rust resolvers (`params::get::maybe_usize_literal` /
-`opt_u32_literal` / `req_enum_literal`, and `ParamValue::resolve_string`) reject
-a bound expression slot as defense-in-depth. Guarded by
-`TestStructuralParamsRejectExpressions` / `TestFillRangeParamsAcceptExpressions`
-in `test_param_strictness.py` and `test_structural_literal_resolvers_reject_bound_slots`
-in `params.rs`.
+schema, so they must be literals. On a typed op the field is a `Literal<T>`: a
+literal `ParamValue` can never hold a `pl.Expr` (`ParamValue.__post_init__`
+raises the "structural" error in Python), and `{"$slot": n}` in a `Literal` is
+a serde error in Rust (`ops::tests::a_slot_in_a_structural_field_is_rejected`).
+Guarded by `TestStructuralParamsRejectExpressions` in
+`test_param_strictness.py`.
 
-**The geometry namespaces use a different mechanism.** `.contour`/`.point`/`.bbox`
-bypass `vb_graph`, so they have no `ParamValue`. Their per-row channel is the
-plugin's *input series*: `_ArgBinder` (`_namespace.py`) appends an
-expression-valued parameter as an extra argument and records it in an
-`input_slots` name→index map, which Rust reads via `GeomParams`
-(`src/geom_params.rs`). Names, not positions, because these functions also take
-*optional* data operands (`scores`, `origin`) whose position would otherwise be
-ambiguous.
+**The geometry namespaces use the same wire form.** `.contour`/`.point`/`.bbox`
+bypass `vb_graph`, but `_ArgBinder` (`_namespace.py`) appends an
+expression-valued parameter or data operand as an extra argument and writes
+`{"$slot": n}` into that kwarg, which Rust reads as a typed `Param<T>` /
+`ColumnRef` via `GeomParams` (`src/geom_params.rs`). Each kwarg names its own
+position, so the optional data operands (`order`, `origin`) cannot be confused
+with an appended parameter.
 
 **Null parameter values are a shared policy, not per-op handling.** A parameter
 column may contain nulls; `Pipeline.on_null_param("raise"|"null")` says whether
@@ -238,8 +241,8 @@ or CSE will merge ops that differ only in policy.
 
 The geometry namespaces have no `Pipeline` to hang a graph-level setting on, so
 the policy lives on the accessor: `on_null(policy)` returns a copy with
-`_on_null` set, and `_ArgBinder.call` injects it into kwargs beside
-`input_slots`. That keeps it out of all 15 geometry method signatures.
+`_on_null` set, and `_ArgBinder.call` injects it into the kwargs. That keeps
+it out of all 15 geometry method signatures.
 
 It lives on `_GeomNullPolicy`, a mixin the three geometry namespaces add
 alongside `_PluginNamespace` — **not** on `_PluginNamespace` itself, which `.cv`
@@ -252,54 +255,42 @@ the same mixin unless `.cv` genuinely honours it.
 
 ## Adding a New Operation (Python Side)
 
-1. **`pipeline.py`**: Add a method to `Pipeline` that returns
-   `self._append_op("<op_name>", lambda p: {...params...})`. That is the whole
-   builder — there is no sequence to get right:
+1. **Nothing, for an ordinary op.** The builder is generated from the op's Rust
+   definition (`src/ops/`, see the root `CLAUDE.md`): `scripts/gen_ops.py`
+   writes it into `_ops_generated.py` — signature (the positional rule is
+   derived, `gen_ops.positional`), defaults, docstring — and `Pipeline`
+   inherits it from `_OpsMixin`. Every generated method appends through
+   `Pipeline._append_typed` → `_append_op` → `_push_op`, which checks the
+   input domain and applies the whole plan-time effect in one `plan_step`
+   call: the schema fold (domain/dtype/ndim) and the shape hints (the op's
+   symbolic `shape` for H/W, the channel rule for C).
 
-   ```python
-   def erode(self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1) -> "Pipeline":
-       """..."""
-       return self._append_op(
-           "erode",
-           lambda p: {
-               "ksize": p._track_expr(ksize),
-               "iterations": p._track_expr(iterations),
-           },
-       )
-   ```
-
-   The callback receives the *cloned* pipeline, so `p._track_expr` registers
-   per-row expressions on the clone rather than the receiver. `_append_op`
-   then validates the input domain against `op_contract(...)["input_domains"]`
-   and hands off to `_push_op`, which appends and applies **both** halves of
-   the plan-time effect: the `op_schema` fold (domain/dtype/ndim) and the
-   shape hints (`op_infer_shape` for H/W, the channel rule for C).
+   Hand-write a `Pipeline` method only as *sugar* over a generated one: an
+   `internal` op (`#[op(visibility = "internal")]`) generates `_<name>`, and
+   the sugar (`scale`'s `out_dtype`, `rasterize`'s `shape=`, `flip_h`) calls
+   it. Validation that must precede the op goes before that call; work after
+   the append (a `preserve_dtype` cast-back) reads the returned pipeline.
 
    **Do not touch `_ops` directly.** `_push_op` is the only function permitted
    to mutate it, enforced by `test_op_append_is_structurally_exclusive` in
    `tests/test_append_contract.py`. That guard exists because the previous
    convention — each builder calling the update methods by hand — let 41 of 60
    builders skip the shape-hint half and publish a planned schema execution
-   could not produce. Never assign `_current_domain` / `_output_dtype` /
-   `_shape_hints` by hand either; they follow from the op's Rust contract.
+   could not produce. Never build or edit a `PlanState` by hand either; it
+   follows from the op's Rust contract (`plan_step`).
 
-   Validation that must happen before the op is built (a kernel-size check, an
-   enum parse) goes in the method body before the `return`; work that must
-   happen *after* the append (e.g. `scale`'s `preserve_dtype` cast-back) reads
-   the returned pipeline. Both compose without bypassing the append path.
-
-2. **`lazy.py`**: Nothing to add for an ordinary op. `LazyPipelineExpr` generates a
-   forwarder for every chainable `Pipeline` method at import time
+2. **`lazy.py`**: Nothing to add. `LazyPipelineExpr` generates a forwarder for
+   every chainable `Pipeline` method at import time
    (`_install_pipeline_forwarders`), copying the signature so `inspect`/IDEs/the
-   parity test see the real parameters. Only define a method explicitly here if it
-   needs bespoke lazy behaviour (e.g. a binary op taking another
-   `LazyPipelineExpr`); the generator skips names already defined. After changing
-   `Pipeline`, regenerate the type stub with `python scripts/gen_lazy_stub.py`.
+   parity test see the real parameters, and a binary `lazy_only` op's method is
+   generated into `_LazyOpsMixin`. Only the multi-operand `lazy_only` ops
+   (`apply_mask`, `channel_merge`) are hand-written here. After changing the
+   surface, regenerate the type stub with `python scripts/gen_lazy_stub.py`.
 
 3. **Schema inference**: nothing to add in `_types.py` or the planner. The
    op's domain, dtype, rank and channel effects are read at planning time from
-   its Rust contract via `_lib.op_schema` (and `_lib.op_contract` for
-   channels/rank detail), so make sure the op declares the right contract on
+   its Rust contract via `_lib.plan_step`, and the optimisation passes read
+   its spatial and identity rules in Rust (`passes.rs`), so make sure the op declares the right contract on
    the Rust side (next step). Do not add per-op special cases in Python —
    `test_op_schema_authority` and the batch-fold conformance tests in
    `test_sanitation.py` guard this.
@@ -322,51 +313,56 @@ them. `shear()` and `rotate_and_scale()` build their matrix (the literal
 rotation matrix via the `rotation_matrix_2d` FFI) and delegate to
 `warp_affine()`; `_to_spec_dict()` emits ops verbatim.
 
-### Shape Hints (single authority: view-buffer `infer_shape`)
+### Shape Hints (single authority: view-buffer `OpShape`)
 
-`_update_shape_hints()` no longer re-derives any per-dimension geometry in
-Python. It reads the op's view-buffer `infer_shape` through the `op_infer_shape`
-FFI (`_update_hw_from_infer_shape`), the same authority execution uses, so the
-tracked H/W cannot disagree with what the op produces.
+No per-dimension geometry is derived in Python. Every op's shape arithmetic is
+one view-buffer `OpShape`, which execution evaluates on known sizes and
+`plan_step` evaluates symbolically: each typed op builds its `OpShape` from its
+own fields (`OpDef::shape`), a per-row field as `Sym::PerRow` and an unknown
+input size as `Dim::Input(k)`. So the tracked H/W cannot disagree with what
+the op produces, and no placeholder value stands in for a per-row one
+(`typed_shape_is_the_resolved_steps` holds the typed shape to the engine op's).
 
 Not every step *has* an inferable shape: axis reductions, histograms, channel
-merge and the binary ops are graph-level steps `op_infer_shape` rejects. For
-those the H/W hints are **invalidated**, not carried forward — several of them
-do change H/W, and keeping the pre-op values is how a pipeline came to publish
-`[100, 200, 2]` for data that executes as `[200, 3, 2]`. Unknown is always safe:
-`expected_shape` reports `None` and a typed sink asks for an explicit shape. Unknowns
-propagate automatically: an unknown input dim or a per-row expression param
-yields a `None` output dim. This covers every op uniformly — including rotation
-(static 90/270 swap, static-angle expand bounding box, and expression-angle
-"unknown", all computed by the Rust `RotateAffine`/`Rotate90` `infer_shape`).
-Channels stay with `_update_channels_from_rule` (the channel rule); rank stays
-with `op_schema`. The three fold together in `_apply_shape_contract`.
+merge and the binary ops are graph-level steps with no `OpShape`. For those
+the H/W hints are **invalidated**, not carried forward — several of them do
+change H/W, and keeping the pre-op values is how a pipeline came to publish
+`[100, 200, 2]` for data that executes as `[200, 3, 2]`. Unknown is always
+safe: the output publishes no shape and a typed sink asks for an explicit
+shape. A per-row parameter leaves unknown exactly the axes it decides
+(`resize(height=pl.col("h"), width=100)` plans `[?, 100]`); a per-row rotation
+angle is known only for a square input.
+Channels come from the channel rule and rank from `plan::fold`; `plan_step`
+applies all three and clips the hints to the output rank.
 
-An unknown input rank normally means "do not ask": `infer_shape` indexes the
-input shape, so a fabricated one publishes a fabricated result. The exception is
+An unknown input rank normally means "do not ask": there is no shape to reason
+about, and a fabricated one publishes a fabricated result. The exception is
 a step that *builds* a buffer out of a non-buffer domain — `input_domains`
 excludes buffer, `output_domain` is buffer — whose output geometry comes from
 its own params and reads no input at all. `rasterize` is the case, and
-`_input_dims_for` recognises it from the contract rather than by name. Without
+`plan::input_dims` recognises it from the contract rather than by name. Without
 it a fully determined mask published no shape, and `sink("array")` demanded an
 explicit one.
 
 A `source()` or `.sink()` parameter that the chosen format never reads is
-rejected, from one table per surface (`SOURCE_PARAM_APPLIES`,
-`SINK_PARAM_APPLIES` in `_types.py`) read by one `reject_inapplicable_params`.
-A name absent from the table is rejected too, which is what closes `.sink()`'s
-open `**kwargs`; Rust's `SinkSpec` is `deny_unknown_fields` so the wire is shut
-as well. `source()` passes the check its own `locals()`, so the validated set is
-the parameter set, and `thumbnail()` reads the table since it writes
-`decode_max_size`. Do not add a per-parameter check beside it — that is what
+rejected. Each source and sink format is a typed Rust struct carrying exactly
+the fields its decode or encode reads (`src/formats/`, each
+`deny_unknown_fields`), and the builder validates what the caller passed
+against that definition (`plan_source`, `plan_sink`) — the deserializer the graph itself
+uses — so an unknown, misspelled or inapplicable keyword is refused while the
+pipeline is built, naming the formats it does apply to. `source()` sends
+exactly the keywords the caller passed (read from its own `locals()`; every
+keyword defaults to `None`, so passed means not `None`), and
+`thumbnail()` validates the spec it writes the same way. Do not add a per-parameter check beside it — that is what
 produced one raise, one warning and five silent drops on the source side, and an
 open keyword surface on the sink side.
 
 `source("contour")` publishes that same contract: its decode *is* a rasterize,
-so `_seed_from_contour_rasterize` folds `GeometryOp::Rasterize`'s rules (rank 3,
-u8, one channel, the canvas) through the same FFI instead of the source hand-
-writing a rank. The spec it builds is never appended to `_ops` — the rasterize
-already happens inside the decode. Whatever the two routes to a mask publish,
+so its planned state (`plan_source` → `plan::source_state`) is the
+`rasterize` op's over the contour domain (rank 3, u8, one channel, the canvas),
+computed by the same `plan::step`, instead of the source hand-writing a rank.
+No op is appended to `_ops` — the rasterize already happens inside the
+decode. Whatever the two routes to a mask publish,
 they publish it identically (`TestContourSourcePlanTimeContract`).
 
 ## Common Pitfalls

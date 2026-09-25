@@ -29,7 +29,9 @@ deleted and re-added later.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import io
+import json
 import os
 import re
 from pathlib import Path
@@ -39,6 +41,7 @@ import pytest
 
 import polars_cv
 from polars_cv import Pipeline
+from polars_cv._types import planning_slots
 from tests._discovery import (
     package_modules,
     requires_checkout,
@@ -49,7 +52,6 @@ from tests._discovery import (
 )
 from tests._dtype_ratchet import dispatch_offenders
 from tests._kwargs_scan import all_deserialized_structs, open_structs
-from tests._op_cases import build_case, comparable_ops
 from tests._schema_parity import assert_plan_equals_exec, leaf_dtype
 from tests.conftest import plugin_required
 
@@ -262,14 +264,17 @@ def test_plan_equals_exec_binary_promote():
     assert _leaf_dtype(realized) == pl.Float32
 
 
+def _plan_state(domain: str, dtype: str, ndim: "int | None") -> object:
+    """A ``PlanState`` with nothing known about the sizes."""
+    from polars_cv.pipeline import PlanState
+
+    return PlanState(domain=domain, dtype=dtype, ndim=ndim)
+
+
 def _planned_shape(pipe):
     """The pipeline's plan-time [H, W, C], using None for unknown/expr dims."""
 
-    def known(p):
-        return p.value if (p is not None and not p.is_expr) else None
-
-    sh = pipe._shape_hints
-    return [known(sh.height), known(sh.width), known(sh.channels)]
+    return list(pipe._state.dims)
 
 
 # (label, build-pipeline, png-mode) exercising the rank/channel rules end-to-end.
@@ -301,7 +306,7 @@ _SHAPE_PIPELINES = [
             .source("image_bytes")
             .assert_shape(channels=4)
             .resize(height=6, width=6)
-            .convert_color("rgb", "gray")
+            .convert_color(from_space="rgb", to_space="gray")
         ),
         "RGBA",
     ),
@@ -312,7 +317,7 @@ _SHAPE_PIPELINES = [
             .source("image_bytes")
             .assert_shape(channels=4)
             .resize(height=6, width=6)
-            .convert_color("rgb", "hsv")
+            .convert_color(from_space="rgb", to_space="hsv")
         ),
         "RGBA",
     ),
@@ -349,60 +354,13 @@ def test_plan_equals_exec_shape(label, build, mode):
 # ---------------------------------------------------------------------------
 
 
-def _known_ops_from_rust():
-    """Op names the Rust executor accepts, or None if the hook isn't built yet."""
-    lib = _lib()
-    fn = getattr(lib, "known_ops", None) if lib is not None else None
-    return set(fn()) if callable(fn) else None
-
-
-@plugin_required
-def test_registry_parity_pipeline_ops_are_executable():
-    """Every op a Pipeline can emit must be known to the Rust executor (B1)."""
-    # These used to `pytest.skip` on the symbols being "not implemented yet
-    # (Phase 3)". All three have existed for releases, so the skips were dead
-    # guards: had the FFI regressed, this parity check would have gone quiet
-    # instead of failing. Assert them instead.
-    rust_ops = _known_ops_from_rust()
-    assert rust_ops is not None, "_lib.known_ops() is missing from the compiled plugin"
-    pipeline_ops = getattr(Pipeline, "OP_NAMES", None)
-    assert pipeline_ops is not None, "Pipeline.OP_NAMES is missing"
-    missing = set(pipeline_ops) - rust_ops
-    assert not missing, f"Pipeline ops with no Rust executor arm: {sorted(missing)}"
-
-
-@plugin_required
-def test_registry_parity_all_rust_ops_are_reachable():
-    """Every op the Rust executor knows must be reachable from the Python API.
-
-    The forward test guards ``OP_NAMES ⊆ known_ops()``. This is the reverse
-    direction: ``known_ops() ⊆ OP_NAMES``. Together they pin an exact equality,
-    so a Rust ``resolve_op`` arm registered in ``KNOWN_OPS`` cannot sit
-    unreachable from any ``Pipeline``/lazy builder (the gap that hid
-    ``channel_merge`` and the graph-path contour ops before this suite existed).
-
-    Graph geometry ops are exposed via the ``Pipeline`` builders; the separate
-    ``.contour``/``.point``/``.bbox`` namespace plugins do NOT go through
-    ``vb_graph``/``known_ops()`` and so are (correctly) not part of this set.
-    """
-    rust_ops = _known_ops_from_rust()
-    assert rust_ops is not None, "_lib.known_ops() is missing from the compiled plugin"
-    pipeline_ops = set(Pipeline.OP_NAMES)
-    unreachable = rust_ops - pipeline_ops
-    assert not unreachable, (
-        "Rust ops in KNOWN_OPS with no Python builder that emits them "
-        f"(dead or unconnected graph path): {sorted(unreachable)}"
-    )
-
-
 @requires_checkout
 def test_namespace_plugin_symbols_match_registrations():
     """The namespace plugin surface is connected in BOTH directions.
 
     The ``.contour``/``.point``/``.bbox``/``.cv`` namespace accessors call
     individually-registered ``#[polars_expr]`` functions by name (bypassing the
-    ``vb_graph``/``known_ops()`` graph path, so the registry-parity tests don't
-    cover them). Both directions are pinned, mirroring the graph-path guarantee:
+    the ``vb_graph`` graph path, so the op-catalogue tests don't cover them). Both directions are pinned, mirroring the graph-path guarantee:
 
     - Forward: every ``_plugin("name")`` call resolves to a registered Rust
       symbol — a typo or rename (e.g. ``contour_bbox`` vs
@@ -498,9 +456,9 @@ def test_lib_module_registration_matches_required_hooks():
 def _emitted_op_names_from_source():
     """Op names actually emitted by the Python builders, scanned from source.
 
-    Pipeline builders emit ``op="<name>"`` literals (pipeline.py) and the binary
-    helpers emit ``_binary_op("<name>")`` / ``_add_binary_op("<name>")``
-    (lazy.py). Scanning the source keeps the comparison drift-proof without a
+    Pipeline builders emit ``op="<name>"`` literals (pipeline.py), the node
+    helpers ``_add_node_op("<name>")`` (lazy.py) and the generated methods
+    ``_append_typed("<name>")`` / ``_binary_op("<name>")``. Scanning the source keeps the comparison drift-proof without a
     second hand-maintained list.
     """
     import re
@@ -512,56 +470,29 @@ def _emitted_op_names_from_source():
     names |= set(re.findall(r'op="([a-z_0-9]+)"', text))
     names |= set(re.findall(r'_append_op\(\s*"([a-z_0-9]+)"', text))
     lazy = (pkg / "lazy.py").read_text()
-    names |= set(re.findall(r'_(?:add_)?binary_op\("([a-z_]+)"', lazy))
+    names |= set(re.findall(r'_(?:binary_op|add_node_op)\("([a-z_]+)"', lazy))
+    generated = (pkg / "_ops_generated.py").read_text()
+    names |= set(re.findall(r'_append_typed\(\s*"([a-z_0-9]+)"', generated))
+    names |= _binary_op_names_from_source()
     return names
 
 
-def test_op_names_covers_all_emitted_ops():
-    """Pipeline.OP_NAMES must list exactly the ops the builders actually emit.
+def test_every_op_is_emitted_by_a_builder():
+    """The builders emit exactly the ops the Rust catalogue defines.
 
-    Guards against OP_NAMES silently under-listing (a new builder op missing
-    from the registry) or over-listing (a stale entry no builder emits).
+    ``TYPED_OPS`` is generated from the catalogue, so an op here is one Rust
+    resolves; the scan pins the other direction too — a Rust op with no
+    builder that emits it is dead or unconnected (the gap that once hid
+    ``channel_merge`` and the graph-path contour ops), and a builder emitting a
+    name the catalogue lacks would fail only at execution.
     """
+    from polars_cv._ops_generated import TYPED_OPS
+
     emitted = _emitted_op_names_from_source()
-    declared = set(Pipeline.OP_NAMES)
-    assert emitted == declared, (
-        f"OP_NAMES out of sync with builders: "
-        f"missing={sorted(emitted - declared)} stale={sorted(declared - emitted)}"
-    )
-
-
-@requires_checkout
-def test_op_names_matches_rust_known_ops_without_the_plugin() -> None:
-    """``Pipeline.OP_NAMES`` must equal Rust's ``KNOWN_OPS``, checked from source.
-
-    The two ``test_registry_parity_*`` tests already pin this equality in both
-    directions, but both are ``@plugin_required`` and skip when the extension
-    is not built. That is not a hypothetical lane: the editable install leaves
-    the compiled ``.so`` at its last ``maturin develop`` while Python sources
-    track the working tree, so a contributor adding a builder op and running
-    the suite before rebuilding gets two skips where they expect two failures.
-
-    Reading ``KNOWN_OPS`` out of the Rust source needs no plugin, so the drift
-    is caught in that window too. Source-scanning is the weaker technique and
-    is used here only because the stronger one is unavailable by construction;
-    it asserts it parsed a plausible registry rather than matching nothing.
-    """
-    src = rust_src_dir()
-
-    text = (src / "execute.rs").read_text()
-    m = re.search(r"pub const KNOWN_OPS: &\[&str\] = &\[(.*?)\n\];", text, re.S)
-    assert m, "could not find KNOWN_OPS in execute.rs — scan is out of date"
-    # Strip comments first: this codebase explains absences inline (`// "sobel"
-    # is deliberately absent`), and a quoted name in one would read as an op.
-    body = re.sub(r"(?m)//.*$", "", m.group(1))
-    rust_ops = set(re.findall(r'"([a-z0-9_]+)"', body))
-    assert len(rust_ops) > 50, f"KNOWN_OPS scan found only {len(rust_ops)} ops"
-
-    declared = set(Pipeline.OP_NAMES)
-    assert declared == rust_ops, (
-        "Pipeline.OP_NAMES has drifted from Rust KNOWN_OPS: "
-        f"python-only={sorted(declared - rust_ops)}, "
-        f"rust-only={sorted(rust_ops - declared)}"
+    assert emitted == set(TYPED_OPS), (
+        f"builders out of sync with the catalogue: "
+        f"unbuilt={sorted(set(TYPED_OPS) - emitted)} "
+        f"unknown={sorted(emitted - set(TYPED_OPS))}"
     )
 
 
@@ -570,29 +501,25 @@ def test_registry_parity_no_dead_contracts():
     """Ops the Pipeline never emits are not executable (B2: sobel/laplacian/sharpen)."""
     import json
 
-    lib = _lib()
-    contract_fn = getattr(lib, "op_contract", None) if lib is not None else None
-    assert callable(contract_fn), "_lib.op_contract() is missing from the plugin"
+    from polars_cv._lib import plan_step
+
     # sobel/laplacian/sharpen lower to convolve2d; they are not real executable
-    # ops, so resolving them must fail (their standalone contracts are dead, B2).
+    # ops, so planning them must fail (their standalone contracts are dead, B2).
     for lowered in ("sobel", "laplacian", "sharpen"):
         with pytest.raises(ValueError, match="Unknown operation"):
-            contract_fn(json.dumps({"op": lowered}))
+            plan_step(json.dumps({"op": lowered}), _plan_state("buffer", "u8", 3))
 
 
 _REQUIRED_LIB_HOOKS = (
-    "op_contract",
-    # The op's identity rule, read by the identity-elimination pass to decide
-    # whether an op is a removable no-op. Separate from `op_contract` because its
-    # `Always` verdict depends on literal parameter values.
-    "op_identity_rule",
-    "op_schema",
-    "op_infer_shape",
-    "op_output_channels",
-    "binary_output_dtype",
-    "known_ops",
-    "enum_variants",
-    "enum_names",
+    # One appended op's whole plan-time effect (domain check, schema, H/W,
+    # channels, rank clipping), the builder's one call per append.
+    "plan_step",
+    # The node-scope optimisation passes (identity elimination, spatial-window
+    # pushdown), which answer with the node's new op order.
+    "node_pass",
+    # Every optimisation pass (logical and engine), which OptFlags and
+    # OPTIMIZATION_PASSES are generated from.
+    "pass_catalog",
     # The 2x3 rotation+scale matrix about an arbitrary centre, read by the
     # planner's literal `rotate_and_scale` so `_rotation_matrix` does not
     # recompute the trig.
@@ -609,6 +536,21 @@ _REQUIRED_LIB_HOOKS = (
     # `test_python_types_match_the_rust_declaration` so Python's
     # `EXTENSION_TYPES` cannot drift from `ext_types::ExtType::ALL`.
     "extension_types",
+    # The typed op catalogue, read by `test_the_committed_catalog_is_the_built_one`
+    # so the committed JSON the Python builder is generated from cannot lag the
+    # built extension.
+    "op_catalog",
+    # The source/sink catalogue, the same check's sibling for `io_catalog.json`.
+    "io_catalog",
+    # The enum catalogue the Python enum classes are generated from.
+    "enum_catalog",
+    # Validate a serialized source (planning its state) or sink against its
+    # typed format, so the builder refuses an inapplicable keyword while it is
+    # written.
+    "plan_source",
+    "plan_sink",
+    # Apply a shape declaration to a planned state (the checks included).
+    "plan_assert",
 )
 
 
@@ -663,50 +605,78 @@ def test_plugin_is_present_when_required() -> None:
 
 
 def _binary_op_names_from_source() -> set[str]:
-    """Binary op names the lazy API emits via ``self._binary_op("<name>")``."""
+    """Binary op names the lazy API emits via ``self._binary_op("<name>")``.
+
+    The methods are generated into ``_LazyOpsMixin``; ``lazy.py`` is scanned
+    too, so a hand-written binary method would be counted rather than missed.
+    """
     import re
     from pathlib import Path
 
-    lazy = (Path(polars_cv.__file__).parent / "lazy.py").read_text()
-    return set(re.findall(r'self\._binary_op\("([a-z_]+)"', lazy))
+    pkg = Path(polars_cv.__file__).parent
+    return {
+        name
+        for module in ("lazy.py", "_ops_generated.py")
+        for name in re.findall(
+            r'self\._binary_op\("([a-z_]+)"', (pkg / module).read_text()
+        )
+    }
+
+
+def _binary_dtype(op: str, left: str, right: str) -> str:
+    """A binary op's planned dtype over two operand dtypes, via ``plan_step``."""
+    from polars_cv._lib import plan_step
+
+    op_json = json.dumps({"op": op, "other": "n0"})
+    return plan_step(op_json, _plan_state("buffer", left, 3), right)["dtype"]
 
 
 @plugin_required
-def test_binary_output_dtype_authority():
-    """The two-input dtype FFI resolves every binary op and encodes true division.
+def test_binary_dtype_authority():
+    """The planner resolves every binary op's two-input dtype, true division included.
 
-    Guards both the new ``binary_output_dtype`` hook and its op-name mapping
-    against the binary ops the Python API actually emits (drift-proof: the names
-    are scanned from source).
+    Checked against the binary ops the Python API actually emits (drift-proof:
+    the names are scanned from source).
     """
-    from polars_cv._lib import binary_output_dtype
-
     emitted = _binary_op_names_from_source()
-    assert emitted, "no binary ops scanned from lazy.py — scan regex out of date?"
+    assert emitted, "no binary ops scanned from source — scan regex out of date?"
     for op in emitted:
-        # Every emitted binary op must resolve through the FFI without error.
-        result = binary_output_dtype(op, "u8", "u8")
+        result = _binary_dtype(op, "u8", "u8")
         assert result in {"u8", "f32"}, f"{op}: unexpected dtype {result}"
 
     # True division promotes integers to float; other ops use plain promotion.
-    assert binary_output_dtype("divide", "u8", "u8") == "f32"
-    assert binary_output_dtype("ratio", "u16", "u16") == "f32"
-    assert binary_output_dtype("divide", "f64", "f64") == "f64"
-    assert binary_output_dtype("add", "u8", "u8") == "u8"
-    assert binary_output_dtype("add", "u8", "u16") == "u16"
-    assert binary_output_dtype("add", "u8", "f32") == "f32"
+    assert _binary_dtype("divide", "u8", "u8") == "f32"
+    assert _binary_dtype("ratio", "u16", "u16") == "f32"
+    assert _binary_dtype("divide", "f64", "f64") == "f64"
+    assert _binary_dtype("add", "u8", "u8") == "u8"
+    assert _binary_dtype("add", "u8", "u16") == "u16"
+    assert _binary_dtype("add", "u8", "f32") == "f32"
     # An unknown operand dtype keeps the result unknown (handled by the sink).
-    assert binary_output_dtype("divide", "auto", "u8") == "auto"
-    assert binary_output_dtype("add", "u8", "auto") == "auto"
+    assert _binary_dtype("divide", "auto", "u8") == "auto"
+    assert _binary_dtype("add", "u8", "auto") == "auto"
+
+
+@plugin_required
+def test_the_other_operand_dtype_is_for_binary_ops_only():
+    """A binary op without its other operand's dtype, or any other op with one,
+    is refused rather than planned with the one-input rule."""
+    from polars_cv._lib import plan_step
+
+    add = json.dumps({"op": "add", "other": "n0"})
+    with pytest.raises(ValueError, match="needs the other operand"):
+        plan_step(add, _plan_state("buffer", "u8", 3))
+    with pytest.raises(ValueError, match="only a binary op"):
+        plan_step(json.dumps({"op": "grayscale"}), _plan_state("buffer", "u8", 3), "u8")
 
 
 @requires_checkout
 def test_op_schema_rules_are_required_not_defaulted():
-    """The three structural schema rules are REQUIRED trait methods (no default
+    """The structural schema rules are REQUIRED trait methods (no default
     body). An op that omits one is a compile error, so a new op cannot silently
-    inherit ``PreserveRank``/``PreserveChannels``/``PreserveInput`` and lie about
-    its structure — contract by the type system, not convention. This ratchets
-    against re-adding a default body to ``view-buffer``'s ``Op`` trait.
+    inherit ``PreserveRank``/``PreserveChannels``/``PreserveInput``/``Preserve``
+    and lie about its structure — contract by the type system, not convention.
+    This ratchets against re-adding a default body to ``view-buffer``'s ``Op``
+    trait, or to the typed op's symbolic ``OpDef::shape``.
     """
     import re
 
@@ -719,6 +689,7 @@ def test_op_schema_rules_are_required_not_defaulted():
         ("output_rank_rule", "OutputRankRule"),
         ("output_channel_rule", "OutputChannelRule"),
         ("output_dtype_rule", "OutputDTypeRule"),
+        ("shape", "OpShape"),
     ):
         required = re.search(rf"fn {rule}\(&self\) -> {ret};", text)
         defaulted = re.search(rf"fn {rule}\(&self\) -> {ret}\s*\{{", text)
@@ -726,122 +697,11 @@ def test_op_schema_rules_are_required_not_defaulted():
             f"Op::{rule} must be a required trait method with no default body "
             "so ops cannot inherit a silent, possibly-wrong structural default"
         )
-
-
-# ---------------------------------------------------------------------------
-# 2b. Contract authority (A1/A10) — the planner reads view-buffer's per-op
-# contract (dtype, domain, rank, channel) instead of re-declaring it in Python.
-# ---------------------------------------------------------------------------
-#
-# view-buffer's ViewDto is the single authority; the Python planner no longer
-# keeps a parallel dtype/ndim/alpha table. These tests pin the planner to that
-# authority so a Python special-case can't silently drift from execution (the
-# class of bug that made the old blur contract say u8 while execution produced
-# f32).
-
-# Every op with a callable case, driven from `tests/_op_cases.py` — the table
-# `test_op_case_table_is_complete` pins to `_chainable_pipeline_ops()` in both
-# directions. This replaced a local op -> builder map that named 22 of the ~90
-# ops, so the other ~70 never had their domain or rank/channel rule checked
-# against the Rust contract at all: the failure mode of every hand-maintained
-# list in this repo, sitting inside the file that polices them.
-
-
-@plugin_required
-@pytest.mark.parametrize("op_name", comparable_ops())
-def test_planner_domain_is_sourced_from_rust(op_name):
-    """The planner derives each op's output domain from the view-buffer
-    contract (ViewDto::output_domain) rather than a Python domain table (A10).
-
-    The former Pipeline._OPERATION_OUTPUT_DOMAIN dict is gone; this guards
-    against a special-case in _compute_output_domain_dtype_ndim diverging from
-    the Rust authority for buffer-producing ops.
-    """
-    import json
-
-    contract_fn = getattr(_lib(), "op_contract", None)
-    if not callable(contract_fn):
-        pytest.skip("_lib.op_contract() not built")
-
-    pipe = build_case(op_name)
-    rust_domain = contract_fn(json.dumps(pipe._ops[-1].to_dict()))["output_domain"]
-    planned_domain, _, _ = Pipeline._compute_output_domain_dtype_ndim(
-        pipe._ops, initial_domain="buffer", initial_dtype="u8"
-    )
-    assert planned_domain == rust_domain, (
-        f"{op_name}: planner domain {planned_domain!r} != Rust authority "
-        f"{rust_domain!r}"
-    )
-
-
-@plugin_required
-@pytest.mark.parametrize("op_name", comparable_ops())
-def test_contract_exposes_rank_and_channel_rules(op_name):
-    """Every op's contract exposes a rank_rule and channel_rule in the known
-    vocabulary — the single authority the Python planner reads instead of
-    re-declaring its own ndim/alpha rules."""
-    import json
-
-    contract_fn = getattr(_lib(), "op_contract", None)
-    if not callable(contract_fn):
-        pytest.skip("_lib.op_contract() not built")
-
-    contract = contract_fn(json.dumps(build_case(op_name)._ops[-1].to_dict()))
-    rank, channel = contract["rank_rule"], contract["channel_rule"]
-
-    assert rank in ("preserve", "reduce_one", "unknown") or (
-        rank.startswith("fixed:") and rank.split(":", 1)[1].isdigit()
-    ), f"{op_name}: unexpected rank_rule {rank!r}"
-    assert channel in ("preserve", "n/a", "unknown") or (
-        channel.startswith(("fixed:", "strip_restore:"))
-        and channel.split(":", 1)[1].isdigit()
-    ), f"{op_name}: unexpected channel_rule {channel!r}"
-
-
-#: Exactly the keys ``op_contract`` publishes. Pinned as a set, in both
-#: directions, so the boundary cannot grow a second spelling of a fact it
-#: already carries.
-#:
-#: ``spatial_rule`` is the op's declared spatial dependency (pointwise /
-#: neighborhood / global / geometric) — a distinct structural fact, not a second
-#: spelling of dtype/rank/channel. It is surfaced for plan-time spatial-window
-#: reordering and introspection; its round-trip is pinned by
-#: ``test_spatial_rule.py``.
-_CONTRACT_KEYS = frozenset(
-    {
-        "dtype_rule",
-        "rank_rule",
-        "channel_rule",
-        "spatial_rule",
-        "is_spatial_window",
-        "input_domains",
-        "output_domain",
-    }
-)
-
-
-@plugin_required
-def test_contract_publishes_no_second_spelling():
-    """``op_contract`` publishes each fact once.
-
-    It used to carry both ``input_domain`` (a single ``Domain``) and
-    ``input_domains`` (the accepted set). Only the set was read, and the two
-    were free to disagree the moment a step accepted more than one domain —
-    which binary ops and reductions do. An unread key on an FFI boundary is not
-    inert: it is the next author's authority.
-    """
-    import json
-
-    contract_fn = getattr(_lib(), "op_contract", None)
-    if not callable(contract_fn):
-        pytest.skip("_lib.op_contract() not built")
-
-    spec = Pipeline().source("image_bytes").grayscale()._ops[-1]
-    keys = set(contract_fn(json.dumps(spec.to_dict())))
-    assert keys == _CONTRACT_KEYS, (
-        f"op_contract's key set changed: added {sorted(keys - _CONTRACT_KEYS)}, "
-        f"removed {sorted(_CONTRACT_KEYS - keys)}. Every key here is read by "
-        f"the Python planner; add one only with the reader that needs it."
+    op_def = (src / "ops" / "mod.rs").read_text()
+    trait = op_def.split("pub trait OpDef: OpFields {", 1)[1].split("\n}", 1)[0]
+    assert re.search(r"fn shape\(&self\) -> Option<[\w:]*OpShape>;", trait), (
+        "OpDef::shape must be required: a typed op that inherited a shape would "
+        "plan a schema its fields do not describe"
     )
 
 
@@ -851,20 +711,12 @@ def test_contract_publishes_no_second_spelling():
 
 
 def _rust_enum_variants(enum_name):
-    fn = getattr(_lib(), "enum_variants", None)
-    return set(fn(enum_name)) if callable(fn) else None
-
-
-@plugin_required
-def test_enum_parity_dtype():
-    """Python DType values must equal the Rust DType variant set (A4)."""
-    rust = _rust_enum_variants("DType")
-    if rust is None:
-        pytest.skip("_lib.enum_variants() not built")
-    import polars_cv._types as t
-
-    py = {m.value for m in t.DType}
-    assert py == rust, f"DType: python {py} != rust {rust}"
+    """``enum_name``'s variant spellings, read from the built enum catalogue."""
+    fn = getattr(_lib(), "enum_catalog", None)
+    if not callable(fn):
+        return None
+    (desc,) = [e for e in json.loads(fn()) if e["name"] == enum_name]
+    return set(desc["variants"])
 
 
 # view-buffer's `any` Domain is an internal identity domain (materialize) that is
@@ -883,7 +735,7 @@ def test_enum_parity_domain():
     """
     rust = _rust_enum_variants("Domain")
     if rust is None:
-        pytest.skip("_lib.enum_variants() not built")
+        pytest.skip("_lib.enum_catalog() not built")
     import polars_cv._types as t
 
     surfaced = rust - _RUST_INTERNAL_DOMAINS
@@ -891,123 +743,37 @@ def test_enum_parity_domain():
     assert py == surfaced, f"Domain: python {py} != surfaced rust {surfaced}"
 
 
-# Enums whose Python mirror is a plain `_types` enum of the same name, checked
-# uniformly below. `test_every_rust_enum_is_parity_checked` asserts this list
-# plus the bespoke cases account for every enum Rust surfaces, so adding one in
-# Rust fails here until it is either mirrored or explicitly excused.
-_UNIFORM_PARITY_ENUMS = [
-    "NormalizeMethod",
-    "ColorSpace",
-    "HashAlgorithm",
-    "HistogramOutput",
-    "PadMode",
-    "PadPosition",
-    "BorderMode",
-    "HistogramClosed",
-    "LabelReduction",
-    "LabelRegionMode",
-    "FilterType",
-    "ExtractMode",
-    "ApproxMethod",
-    "InterpolationType",
-    "ScaleOrigin",
-    "Winding",
-    # Owned by the plugin crate rather than the engine (PLUGIN_REGISTRY), which
-    # `enum_variants` chains onto the engine's. Nothing about checking them
-    # differs — that is the point of chaining rather than special-casing.
-    "RowErrorPolicy",
-    "NullParamPolicy",
-    "FetchErrorPolicy",
-]
-
-# Checked, but not by the uniform test: their Python side needs special
-# handling (a subtracted internal variant, an extra sub-assertion).
-_BESPOKE_PARITY_ENUMS = {"DType", "Domain"}
-
-# Surfaced by `enum_variants` with no Python enum to compare against.
-_NO_PYTHON_MIRROR = {
-    # Binary ops are Python *methods* (`.add()`, `.blend()`), not an enum, so
-    # there is no member set to diff. `test_binary_ops_match_rust` pins the
-    # names against the Rust table instead.
-    #
-    # This is now the *only* reason it is here. It used to be exempt for a
-    # second reason as well — its name table lived in the plugin crate, so
-    # `enum_variants` answered for it through a hand-written arm rather than a
-    # registry. The table has moved beside the enum in view-buffer, so it is
-    # registered and name-checked like everything else.
-    "BinaryOp",
-}
+# Every other registered enum's Python class is generated from the enum
+# catalogue (`scripts/gen_ops.py`, `tests/golden/enum_catalog.json`), so there is
+# no second copy to compare; `test_the_committed_catalog_is_the_built_one` holds
+# the catalogue to the built extension and the module to the catalogue.
 
 
-@plugin_required
-@pytest.mark.parametrize("enum_name", _UNIFORM_PARITY_ENUMS)
-def test_enum_parity_api_enums(enum_name):
-    """Each user-facing API enum must equal its view-buffer authority set (A4)."""
-    rust = _rust_enum_variants(enum_name)
-    if rust is None:
-        pytest.skip("_lib.enum_variants() not built")
-    import polars_cv._types as t
+def test_every_enum_exclusion_names_a_registered_enum() -> None:
+    """``gen_ops.NOT_GENERATED`` may only excuse enums the catalogue holds.
 
-    py = {m.value for m in getattr(t, enum_name)}
-    assert py == rust, f"{enum_name}: python {py} != rust {rust}"
-
-
-@plugin_required
-def test_filter_type_exposes_every_rust_variant():
-    """`FilterType` is full parity, not a subset.
-
-    It was previously a deliberate subset (nearest/bilinear/lanczos3). Making
-    `filter` a per-row parameter broke that: the literal path validated against
-    the Python enum while a column value went straight to Rust's larger table,
-    so an expression could reach a filter a literal could not. Rather than
-    validate the same restriction twice, the subset was dropped — checked here
-    alongside the other API enums via `test_enum_parity_api_enums`, with this
-    test pinning the specific variants that used to be Rust-only.
+    A registered enum gets a Python class by being registered; the exclusions
+    are the stated exceptions. One naming an enum that no longer exists would
+    read as coverage while excusing nothing.
     """
-    rust = _rust_enum_variants("FilterType")
-    if rust is None:
-        pytest.skip("_lib.enum_variants() not built")
-    import polars_cv._types as t
+    import importlib.util
+    from pathlib import Path
 
-    py = {m.value for m in t.FilterType}
-    assert {"catmullrom", "gaussian"} <= py, (
-        "catmullrom/gaussian must stay reachable from Python; a subset here "
-        "would be bypassable through a per-row `filter` expression"
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "gen_ops", root / "scripts" / "gen_ops.py"
     )
-    assert py == rust, f"FilterType: python {py} != rust {rust}"
-
-
-@plugin_required
-def test_every_rust_enum_is_parity_checked():
-    """Every enum ``enum_variants`` answers for must be checked by some test.
-
-    The list of enums to check used to be hand-written, and had drifted:
-    ``LabelReduction`` and ``LabelRegionMode`` both had authoritative Rust
-    tables and neither appeared in any parity test, so a Python/Rust
-    divergence in either would have shipped. Reading the enum names from Rust
-    closes that: a newly registered enum lands in ``enum_names()`` and fails
-    here until it is mirrored in ``_types`` or explicitly excused above.
-    """
-    fn = getattr(_lib(), "enum_names", None)
-    if not callable(fn):
-        pytest.skip("_lib.enum_names() not built")
-
-    surfaced = set(fn())
-    accounted = set(_UNIFORM_PARITY_ENUMS) | _BESPOKE_PARITY_ENUMS | _NO_PYTHON_MIRROR
-    unchecked = surfaced - accounted
-    assert not unchecked, (
-        f"these Rust enums are surfaced to Python but no parity test covers "
-        f"them: {sorted(unchecked)}. Add each to _UNIFORM_PARITY_ENUMS (with a "
-        f"matching polars_cv._types enum), or to _NO_PYTHON_MIRROR with a "
-        f"reason."
-    )
-
-    # The reverse direction: an excused or bespoke name that Rust no longer
-    # surfaces is a stale entry that would quietly stop checking anything.
-    stale = accounted - surfaced
-    assert not stale, (
-        f"these names are listed as parity-checked but Rust does not surface "
-        f"them: {sorted(stale)}"
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    registered = {
+        e["name"]
+        for e in json.loads(
+            (root / "tests" / "golden" / "enum_catalog.json").read_text()
+        )
+    }
+    assert set(module.NOT_GENERATED) <= registered, (
+        f"stale exclusions: {sorted(set(module.NOT_GENERATED) - registered)}"
     )
 
 
@@ -1016,80 +782,22 @@ def test_binary_ops_match_rust():
     """``BinaryOp`` has no Python enum, so pin the method names instead."""
     rust = _rust_enum_variants("BinaryOp")
     if rust is None:
-        pytest.skip("_lib.enum_variants() not built")
+        pytest.skip("_lib.enum_catalog() not built")
     # `hasattr(LazyPipelineExpr, name)` would be a weak proxy: the class
     # generates methods from Pipeline, so a Rust op whose name collided with an
     # unrelated generated method would pass. Compare against the names the lazy
     # API actually emits as binary ops.
     emitted = _binary_op_names_from_source()
-    assert emitted, "no binary ops scanned from lazy.py — scan regex out of date?"
+    assert emitted, "no binary ops scanned from source — scan regex out of date?"
     assert emitted == rust, (
-        f"BinaryOp drift between Rust and lazy.py: "
+        f"BinaryOp drift between Rust and the lazy API: "
         f"rust-only={sorted(rust - emitted)}, python-only={sorted(emitted - rust)}"
     )
 
 
-# SourceFormat/SinkFormat have no Rust *enum* to be checked against: the graph
-# boundary carries them as plain strings, and view-buffer's shadowing copies
-# were deleted along with its unreachable pipeline-composition layer. That is
-# not the same as having nothing to pin them to, which an earlier note here
-# claimed. Source formats do have a Rust vocabulary — `KNOWN_SOURCE_FORMATS` in
-# graph/compiled.rs, which the graph validator rejects unknown formats against
-# — so the two lists must be equal, and the test below pins them.
-#
-# Sink formats genuinely have no list: `SinkKind::resolve` (graph/sink_kind.rs)
-# is the one place a (domain, format) pair is interpreted, and it errors on the
-# fall-through, so an unhandled sink is rejected rather than enumerated. The
-# four halves of the sink contract match on the resolved *kind*, so they cannot
-# disagree about which pairs exist.
-#
-# This note used to say the pair was matched in two places that "error on the
-# fall-through, so there is no second declaration to drift from". Both halves
-# of that were false: there were four such matches, and two of them ended in
-# `_ => Binary` rather than an error.
-
-
-@requires_checkout
-def test_source_formats_match_the_rust_vocabulary() -> None:
-    """``SourceFormat`` must equal Rust's ``KNOWN_SOURCE_FORMATS``.
-
-    Both are hand-written lists of the same vocabulary, one per side of the
-    FFI. A Python-only format builds a graph the validator rejects at
-    execution, with an error naming a format the user did pass; a Rust-only
-    one is a decode path nothing can reach. Neither shows up until someone
-    runs the query.
-
-    Read from the Rust source rather than over the FFI so this runs in the
-    plugin-free lane too — the drift is introduced by editing Python, which is
-    exactly when the extension is stale.
-    """
-    src = rust_src_dir()
-
-    text = (src / "graph" / "compiled.rs").read_text()
-    m = re.search(r"const KNOWN_SOURCE_FORMATS: &\[&str\] = &\[(.*?)\n\];", text, re.S)
-    assert m, (
-        "could not find KNOWN_SOURCE_FORMATS in graph/compiled.rs — the scan is "
-        "out of date, and a scan that matches nothing passes vacuously"
-    )
-    body = re.sub(r"(?m)//.*$", "", m.group(1))
-    rust_formats = set(re.findall(r'"([a-z0-9_]+)"', body))
-    assert len(rust_formats) > 3, (
-        f"KNOWN_SOURCE_FORMATS scan found only {sorted(rust_formats)}"
-    )
-
-    from polars_cv._types import SourceFormat
-
-    declared = {m.value for m in SourceFormat}
-    assert declared == rust_formats, (
-        "SourceFormat has drifted from Rust KNOWN_SOURCE_FORMATS: "
-        f"python-only={sorted(declared - rust_formats)}, "
-        f"rust-only={sorted(rust_formats - declared)}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# 4. No duplicate enums (A4 / "no repeated enums")
-# ---------------------------------------------------------------------------
+# SourceFormat/SinkFormat are generated from the typed Rust formats
+# (`src/formats/`, via `io_catalog.json`), and the graph deserializes the same
+# types, so there is no second list of either to pin.
 
 
 def test_no_duplicate_expected_dtype_enum():
@@ -1278,17 +986,19 @@ def test_explicit_lazy_methods_take_a_lazy_operand():
 
 
 # ---------------------------------------------------------------------------
-# op_schema: the single per-op schema authority (domain, dtype, ndim)
+# plan_step: the single per-op schema authority (domain, dtype, ndim)
 # ---------------------------------------------------------------------------
 
 
 def _op_json(op: str, **params: object) -> str:
-    import json
+    """An all-literal op's wire JSON, in whichever form (typed or legacy) the
+    op crosses the boundary in — ``OpSpec.to_dict`` decides, not this helper."""
+    from polars_cv._types import OpSpec, ParamValue
 
-    spec: dict = {"op": op}
-    for k, v in params.items():
-        spec[k] = {"type": "literal", "value": v}
-    return json.dumps(spec)
+    spec = OpSpec(
+        op, {k: ParamValue(is_expr=False, value=v) for k, v in params.items()}
+    )
+    return json.dumps(spec.to_dict(planning_slots))
 
 
 @plugin_required
@@ -1301,27 +1011,31 @@ def _op_json(op: str, **params: object) -> str:
         # (dtype is an encoding concern -> "auto"); counts/normalized/edges are
         # typed vectors.
         (
-            _op_json("histogram", bins=8, closed="left", output="quantized"),
+            _op_json(
+                "histogram", bins=8, range=None, closed="left", output="quantized"
+            ),
             ("buffer", "u8", 3),
             ("buffer", "u32", 3),
         ),
         (
-            _op_json("histogram", bins=8, closed="left", output="buckets"),
+            _op_json("histogram", bins=8, range=None, closed="left", output="buckets"),
             ("buffer", "u8", 3),
             ("vector", "auto", 1),
         ),
         (
-            _op_json("histogram", bins=8, closed="left", output="counts"),
+            _op_json("histogram", bins=8, range=None, closed="left", output="counts"),
             ("buffer", "u8", 3),
             ("vector", "u64", 1),
         ),
         (
-            _op_json("histogram", bins=8, closed="left", output="normalized"),
+            _op_json(
+                "histogram", bins=8, range=None, closed="left", output="normalized"
+            ),
             ("buffer", "u8", 3),
             ("vector", "f64", 1),
         ),
         (
-            _op_json("histogram", bins=8, closed="left", output="edges"),
+            _op_json("histogram", bins=8, range=None, closed="left", output="edges"),
             ("buffer", "u8", 3),
             ("vector", "f64", 1),
         ),
@@ -1332,9 +1046,13 @@ def _op_json(op: str, **params: object) -> str:
         # domain transitions.
         (_op_json("extract_shape"), ("buffer", "u8", 3), ("vector", "f64", 1)),
         # extract_contours: contour coordinates are f64 by the geometry contract.
-        (_op_json("extract_contours"), ("buffer", "u8", 3), ("contour", "f64", None)),
         (
-            _op_json("rasterize", width=8, height=8),
+            _op_json("extract_contours", mode="external", method="simple"),
+            ("buffer", "u8", 3),
+            ("contour", "f64", None),
+        ),
+        (
+            _op_json("rasterize", size=[8, 8], fill_value=255, background=0),
             ("contour", "u8", None),
             ("buffer", "u8", 3),
         ),
@@ -1343,17 +1061,19 @@ def _op_json(op: str, **params: object) -> str:
     ],
 )
 def test_op_schema_authority(op_json, state_in, expected) -> None:
-    """``op_schema`` resolves the param-dependent schema cases in Rust —
+    """``plan_step`` resolves the param-dependent schema cases in Rust —
     including everything the Python planner used to special-case."""
     import polars_cv._lib as lib
 
-    assert tuple(lib.op_schema(op_json, *state_in)) == expected
+    step = lib.plan_step(op_json, _plan_state(*state_in))
+    assert (step["domain"], step["dtype"], step["ndim"]) == expected
 
 
 @plugin_required
-def test_pipeline_state_matches_batch_fold() -> None:
-    """Incrementally tracked builder state equals the fold over op_schema
-    from the initial state — the two mechanisms share one authority."""
+def test_replay_reproduces_the_tracked_state() -> None:
+    """Replaying a pipeline's ops from its first entering state (what every
+    slice, reorder and deletion does) reproduces the state its builders
+    tracked, at every position — so a rewrite cannot shift the plan."""
     corpus = [
         Pipeline().source("blob", dtype="u8").grayscale().threshold(128),
         Pipeline().source("blob", dtype="u8").cast("f32").scale(2.0),
@@ -1387,26 +1107,30 @@ def test_pipeline_state_matches_batch_fold() -> None:
         .convex_hull(),
     ]
     for pipe in corpus:
-        folded = Pipeline._compute_output_domain_dtype_ndim(
-            pipe._ops, initial_domain="buffer", initial_dtype="u8", initial_ndim=None
+        replayed = pipe._clone()
+        replayed._replay(
+            range(len(pipe._ops)),
+            start=pipe._state_at(0),
+            assertions=pipe._assertions,
         )
-        tracked = (pipe._current_domain, pipe._output_dtype, pipe._expected_ndim)
-        assert tracked == folded, f"state drift for {[o.op for o in pipe._ops]}"
+        ops = [o.op for o in pipe._ops]
+        assert replayed._state == pipe._state, f"final state drift for {ops}"
+        assert replayed._entering == pipe._entering, f"entering drift for {ops}"
 
 
 @plugin_required
 def test_append_cost_is_linear(monkeypatch) -> None:
-    """Appending N ops makes exactly N op_schema calls (no full replay)."""
+    """Appending N ops makes exactly N plan_step calls (no full replay)."""
     import polars_cv._lib as lib
 
     calls = {"n": 0}
-    real = lib.op_schema
+    real = lib.plan_step
 
     def counting(*args, **kwargs):
         calls["n"] += 1
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(lib, "op_schema", counting)
+    monkeypatch.setattr(lib, "plan_step", counting)
 
     pipe = Pipeline().source("blob", dtype="u8")
     n_ops = 6
@@ -1414,7 +1138,7 @@ def test_append_cost_is_linear(monkeypatch) -> None:
         pipe = pipe.scale(2.0).relu()
     assert len(pipe._ops) == n_ops
     assert calls["n"] == n_ops, (
-        f"expected exactly {n_ops} op_schema calls, got {calls['n']} — "
+        f"expected exactly {n_ops} plan_step calls, got {calls['n']} — "
         "per-append tracking must not replay prior ops"
     )
 
@@ -1424,11 +1148,11 @@ def test_axis_reduction_ndim_decrements_exactly_once() -> None:
     """Regression: the old full-replay tracking re-subtracted axis
     reductions' ndim on every subsequent append."""
     pipe = Pipeline().source("blob", dtype="u8")
-    pipe._expected_ndim = 3  # white-box: seed a known rank
+    pipe._state = dataclasses.replace(pipe._state, ndim=3)  # white-box: seed a rank
     pipe = pipe.reduce_max(axis=0)
-    assert pipe._expected_ndim == 2
+    assert pipe._state.ndim == 2
     pipe = pipe.reduce_min(axis=0)
-    assert pipe._expected_ndim == 1
+    assert pipe._state.ndim == 1
 
 
 @plugin_required
@@ -1438,17 +1162,17 @@ def test_reshape_rank_tracked_eagerly() -> None:
     saw the op — eager and lazy tracking disagreed. Reshape's rank is
     structural (= len(shape)), so both paths now report it exactly."""
     pipe = Pipeline().source("blob", dtype="u8")
-    pipe._expected_ndim = 3  # white-box: seed a known rank
+    pipe._state = dataclasses.replace(pipe._state, ndim=3)  # white-box: seed a rank
 
     flat = pipe.reshape([16])
-    assert flat._expected_ndim == 1
+    assert flat._state.ndim == 1
 
     grid = pipe.reshape([2, 2, 2, 2])
-    assert grid._expected_ndim == 4
+    assert grid._state.ndim == 4
 
     # Per-row expression entries do not hide the rank: it is the entry count.
     dyn = pipe.reshape([pl.col("n"), 4])
-    assert dyn._expected_ndim == 2
+    assert dyn._state.ndim == 2
 
 
 def test_histogram_schema_declared_once() -> None:
@@ -1528,14 +1252,19 @@ def test_enum_validation_uniform(build, label: str, enum_name: str, good: str) -
     and asserts that variant is one the Rust enum actually publishes rather
     than a name hard-coded here that both sides might have dropped.
     """
-    with pytest.raises(ValueError, match=rf"Invalid {label} '__bogus__'"):
+    # Legacy ops raise `_validate_enum`'s message; typed ops (typed-op P2+) the
+    # Rust definition's, naming the enum and its valid values. P6 replaces
+    # this with one catalogue-driven check.
+    with pytest.raises(
+        ValueError, match=rf"Invalid {label} '__bogus__'|unknown \w+ \"__bogus__\""
+    ):
         build("__bogus__")
 
     build(good)  # must not raise
 
     rust = _rust_enum_variants(enum_name)
     if rust is None:
-        pytest.skip("_lib.enum_variants() not built")
+        pytest.skip("_lib.enum_catalog() not built")
     assert good in rust, (
         f"'{good}' is used here as a known-good {enum_name}, but Rust publishes "
         f"{sorted(rust)}. The positive half of this test is checking a value "
@@ -1578,7 +1307,7 @@ def test_non_structural_geometry_enums_accept_an_expression() -> None:
     from polars_cv.geometry.contours import ContourNamespace
     from polars_cv.geometry.points import PointNamespace
 
-    enum_names = {
+    geom_enum_names = {
         cls.__name__ for cls in (Winding, ScaleOrigin, LabelReduction, LabelRegionMode)
     }
     found: dict[str, str] = {}
@@ -1588,7 +1317,7 @@ def test_non_structural_geometry_enums_accept_an_expression() -> None:
                 continue
             for param_name, param in inspect.signature(method).parameters.items():
                 annotation = str(param.annotation)
-                if any(enum in annotation for enum in enum_names):
+                if any(enum in annotation for enum in geom_enum_names):
                     found[f"{namespace.__name__}.{name}.{param_name}"] = annotation
 
     # Non-vacuity: an import rename or a signature-scan bug must fail here
@@ -1833,12 +1562,11 @@ def _dtype_table_rows() -> list[tuple[str, str, int, str]]:
 def test_engine_dtype_names_match_the_generated_table() -> None:
     """``_types.DType`` must spell exactly what ``dtype_table!`` spells.
 
-    ``DType`` is in view-buffer's ``naming::REGISTRY``, so
-    ``test_every_rust_enum_is_parity_checked`` already compares it to the Rust
-    variants — but only through ``enum_variants``, which needs the compiled
-    extension. Editing Python is exactly when the extension is stale, so the
-    check that matters most runs in the plugin-free lane, against the generated
-    module. This is also what gives ``SHORT_NAMES`` a reader: a generated
+    ``DType`` is generated from view-buffer's ``naming::REGISTRY`` (via
+    ``enum_catalog.json``), and the catalogue is checked against the built
+    extension — which needs the extension. Editing Python is exactly when the
+    extension is stale, so the check that matters most runs in the plugin-free
+    lane, against the generated module. This is also what gives ``SHORT_NAMES`` a reader: a generated
     constant nothing reads is a fourth dtype table with extra steps.
     """
     from polars_cv._dtype_names import SHORT_NAMES, WIRE_CODES
@@ -1953,6 +1681,10 @@ def test_no_second_dtype_spelling_table() -> None:
         root / "view-buffer" / "src" / "core" / "dtype.rs",
         # Pins the frozen VIEW codes literally, on purpose.
         root / "view-buffer" / "tests" / "dtype_single_authority.rs",
+        # `SinkDType`: half precision exists only as the tensor sinks'
+        # encode-time downcast (the engine has no f16), so its name is
+        # deliberately outside `dtype_table!`. The file holds nothing else.
+        root / "polars-cv" / "src" / "formats" / "sink_dtype.rs",
     }
     expected_pairs = {
         (variant, short) for variant, short, _code, _numpy in _dtype_table_rows()
@@ -2863,3 +2595,79 @@ class TestContourAndBboxSchemaHaveOneDeclaration:
             f"polars-cv/src/geom_schema.rs is the authority -- call "
             f"point_fields()/point_struct_dtype() instead of respelling it."
         )
+
+
+@plugin_required
+def test_the_committed_catalog_is_the_built_one() -> None:
+    """``tests/golden/op_catalog.json`` must be what the built extension emits.
+
+    The Rust test ``catalog_matches_the_committed_file`` pins the file to the
+    definitions; this pins it to the ``.so`` actually loaded, and the generated
+    module to the file, so the builder Python runs is the one Rust accepts.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    from polars_cv._lib import enum_catalog, io_catalog, op_catalog, pass_catalog
+
+    root = Path(__file__).resolve().parent.parent
+    for name, built in (
+        ("op_catalog", op_catalog),
+        ("io_catalog", io_catalog),
+        ("enum_catalog", enum_catalog),
+        ("pass_catalog", pass_catalog),
+    ):
+        committed = (root / "tests" / "golden" / f"{name}.json").read_text()
+        assert built() == committed, (
+            f"{name}.json differs from the built extension: rebuild (maturin "
+            "develop) or re-bless (POLARS_CV_BLESS=1 cargo test -p polars-cv "
+            "catalog_matches)"
+        )
+    spec = importlib.util.spec_from_file_location(
+        "gen_ops", root / "scripts" / "gen_ops.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.OUTPUT.read_text() == module.generate(), (
+        "_ops_generated.py is out of date. Run: python scripts/gen_ops.py"
+    )
+
+
+def test_every_lazy_only_op_is_a_lazy_method_with_its_fields() -> None:
+    """A ``lazy_only`` op's builder is a ``LazyPipelineExpr`` method.
+
+    Such an op combines this expression with other graph nodes (a binary op,
+    ``apply_mask``, ``channel_merge``), so ``gen_ops.py`` emits no ``Pipeline``
+    method for it. The catalogue still owns its fields: the lazy method must
+    exist — generated into ``_LazyOpsMixin`` for the binary ops, hand-written
+    for the rest — never be a forwarder from a ``Pipeline`` method, and take
+    exactly the catalogue's fields, in order — the wire follows the signature,
+    as for every generated method.
+    """
+    import inspect
+    from pathlib import Path
+
+    from polars_cv.lazy import LazyPipelineExpr
+
+    root = Path(__file__).resolve().parent.parent
+    catalog = json.loads((root / "tests" / "golden" / "op_catalog.json").read_text())
+    lazy_only = [op for op in catalog if op["visibility"] == "lazy_only"]
+    assert lazy_only, "no lazy_only op in the catalogue — the scan matched nothing"
+    for op in lazy_only:
+        name = op["python"]
+        method = getattr(LazyPipelineExpr, name, None)
+        assert callable(method), f"lazy_only op {op['name']!r} has no lazy method"
+        assert not getattr(method, "__polars_cv_generated__", False), (
+            f"lazy_only op {op['name']!r} is a forwarder, not a lazy method"
+        )
+        assert not hasattr(Pipeline, name), (
+            f"lazy_only op {op['name']!r} must not be a Pipeline method"
+        )
+        params = list(inspect.signature(method).parameters)[1:]
+        assert params == [f["name"] for f in op["fields"]], (
+            f"{name}: signature {params} is not the catalogue's fields"
+        )
+        from polars_cv._ops_generated import TYPED_OPS
+
+        assert op["name"] in TYPED_OPS

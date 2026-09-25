@@ -43,7 +43,8 @@ pub(crate) enum GraphStep {
     ExtractShape,
     /// Score contour regions (from an expression column) over the buffer.
     LabelReduce {
-        contours_col: String,
+        /// Input position of the contour-list column.
+        contours_slot: usize,
         reduction: LabelReduction,
         region_mode: LabelRegionMode,
     },
@@ -110,9 +111,10 @@ impl GraphStep {
             GraphStep::Geometry(op) => op.output_domain(),
             GraphStep::Reduction(op) => op.output_domain(),
             GraphStep::Histogram(op) => op.output_domain(),
-            GraphStep::Binary { .. }
-            | GraphStep::ApplyMask { .. }
-            | GraphStep::ChannelMerge { .. } => Domain::Buffer,
+            // Same container as its operands: `hash_a ^ hash_b` stays a
+            // vector, two images stay a buffer.
+            GraphStep::Binary { .. } => Domain::Any,
+            GraphStep::ApplyMask { .. } | GraphStep::ChannelMerge { .. } => Domain::Buffer,
             // Perceptual hash produces a fixed-length 1-D fingerprint.
             GraphStep::PerceptualHash(_)
             | GraphStep::ExtractShape
@@ -211,6 +213,46 @@ impl GraphStep {
             | GraphStep::ChannelMerge { .. }
             | GraphStep::ExtractShape
             | GraphStep::LabelReduce { .. } => IdentityRule::Never,
+        }
+    }
+
+    /// Whether this step reads another graph node's buffer, so a spatial
+    /// window hoisted past it would crop only this operand. Exhaustive: a new
+    /// multi-input step must say so.
+    pub fn reads_other_nodes(&self) -> bool {
+        match self {
+            GraphStep::Binary { .. }
+            | GraphStep::ApplyMask { .. }
+            | GraphStep::ChannelMerge { .. } => true,
+            GraphStep::Buffer(_)
+            | GraphStep::Geometry(_)
+            | GraphStep::Reduction(_)
+            | GraphStep::Histogram(_)
+            | GraphStep::PerceptualHash(_)
+            | GraphStep::ExtractShape
+            | GraphStep::LabelReduce { .. } => false,
+        }
+    }
+
+    /// How the step's output shape follows from its input, for the buffer and
+    /// geometry steps that have one; `None` for a graph-level step (binary,
+    /// reduction, histogram, …), whose output the planner does not size. The
+    /// engine's side of `typed_shape_is_the_resolved_steps`: the planner reads
+    /// the typed op's symbolic `OpDef::shape`, never a resolved step's.
+    #[cfg(test)]
+    pub fn shape(&self) -> Option<view_buffer::ops::OpShape> {
+        use view_buffer::ops::Op;
+        match self {
+            GraphStep::Buffer(dto) => Some(dto.as_op().shape()),
+            GraphStep::Geometry(op) => Some(op.shape()),
+            GraphStep::Binary { .. }
+            | GraphStep::ApplyMask { .. }
+            | GraphStep::ChannelMerge { .. }
+            | GraphStep::Reduction(_)
+            | GraphStep::Histogram(_)
+            | GraphStep::PerceptualHash(_)
+            | GraphStep::ExtractShape
+            | GraphStep::LabelReduce { .. } => None,
         }
     }
 

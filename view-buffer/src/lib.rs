@@ -35,18 +35,18 @@ pub use execution::{
 };
 
 // Re-exports - Expression
-pub use expr::{OptConfig, ViewExpr};
+pub use expr::{OptConfig, ViewExpr, ENGINE_PASSES};
 
 // Re-exports - Ops
 pub use ops::{
     apply_mask, validate_mask, BinaryOp, ColorConvertOp, ColorSpace, ComputeOp, FilterType,
-    GeometricEffect, IdentityRule, ImageOp, ImageOpKind, NeighborhoodSupport, NormalizeMethod, Op,
-    OutputChannelRule, OutputRankRule, ScalarOp, SpatialDependency, ValidationError, ViewDto,
-    ViewOp,
+    GeometricEffect, IdentityRule, ImageOp, ImageOpKind, NeighborhoodSupport, Normalization,
+    NormalizeMethod, Op, OutputChannelRule, OutputRankRule, ScalarOp, SpatialDependency,
+    ValidationError, ViewDto, ViewOp,
 };
 
 // Re-exports - Protocol
-pub use protocol::{dtype_to_u8, u8_to_dtype, ViewHeader};
+pub use protocol::{dtype_to_u8, parse_blob, u8_to_dtype, BlobLayout, ViewHeader};
 
 // Re-exports - Interop
 pub use interop::{validate_layout, ExternalView};

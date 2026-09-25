@@ -21,6 +21,7 @@ import pytest
 
 from polars_cv import Pipeline, numpy_from_struct
 from polars_cv.geometry import CONTOUR_SCHEMA, CONTOUR_SET_SCHEMA
+from tests._plan_view import EXPR, planned
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
@@ -586,12 +587,12 @@ def _contract(pipe: Pipeline) -> dict:
     """The plan-time buffer contract a pipeline publishes."""
 
     def dim(value) -> "int | None":
-        return None if value is None or value.is_expr else value.value
+        return None if value is None or value == EXPR else value
 
-    hints = pipe._shape_hints
+    hints = planned(pipe)
     return {
         "domain": pipe.current_domain(),
-        "ndim": pipe._expected_ndim,
+        "ndim": planned(pipe).ndim,
         "dtype": pipe.output_dtype(),
         "height": dim(hints.height),
         "width": dim(hints.width),
@@ -688,7 +689,7 @@ class TestContourSourcePlanTimeContract:
     def test_the_rasterize_op_publishes_a_sinkable_shape(self) -> None:
         """The op half of the same fix: `rasterize().sink("array")` needs no shape.
 
-        `GeometryOp::Rasterize::infer_shape` always described this canvas, and
+        `GeometryOp::Rasterize`'s `shape` always described this canvas, and
         the op's docstring said so, but the planner declined to ask for it
         because the contour domain has no input rank — so a fully determined
         mask still demanded an explicit `shape=` at the sink.

@@ -5,7 +5,7 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 
@@ -24,7 +24,7 @@ pub enum ColorSpace {
     Gray,
 }
 
-crate::naming::named_variants!(ColorSpace {
+crate::naming::named_variants!(ColorSpace: "Supported color spaces for ``convert_color``." {
     "rgb" => Rgb,
     "bgr" => Bgr,
     "hsv" => Hsv,
@@ -34,17 +34,6 @@ crate::naming::named_variants!(ColorSpace {
 });
 
 impl ColorSpace {
-    /// Additional parser-accepted spellings, not surfaced as canonical names.
-    pub const ALIASES: &'static [(&'static str, ColorSpace)] =
-        &[("grey", ColorSpace::Gray), ("grayscale", ColorSpace::Gray)];
-
-    /// Parse a color space from a string (case-insensitive; accepts aliases).
-    pub fn from_str_name(s: &str) -> Option<Self> {
-        let lower = s.to_lowercase();
-        crate::naming::lookup(Self::NAMED, &lower)
-            .or_else(|| crate::naming::lookup(Self::ALIASES, &lower))
-    }
-
     /// Number of channels for this color space.
     pub fn channels(&self) -> usize {
         match self {
@@ -63,25 +52,6 @@ pub struct ColorConvertOp {
 }
 
 impl ColorConvertOp {
-    /// Infer the output shape given an input shape.
-    ///
-    /// Alpha channels are preserved: RGBA (4ch) through a non-gray conversion
-    /// stays 4ch; RGBA through gray conversion becomes GrayA (2ch).
-    pub fn infer_shape(&self, input: &[usize]) -> Vec<usize> {
-        let out_color_c = self.to.channels();
-        match input.len() {
-            2 if self.to == ColorSpace::Gray => input.to_vec(),
-            2 => vec![input[0], input[1], out_color_c],
-            3 => {
-                let in_c = input[2];
-                let has_alpha = matches!(in_c, 2 | 4);
-                let out_c = out_color_c + if has_alpha { 1 } else { 0 };
-                vec![input[0], input[1], out_c]
-            }
-            _ => input.to_vec(),
-        }
-    }
-
     /// Whether the conversion promotes dtype to f32.
     ///
     /// LAB conversions require float math and output f32.
@@ -123,8 +93,11 @@ impl Op for ColorConvertOp {
         "ColorConvert"
     }
 
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
-        ColorConvertOp::infer_shape(self, inputs[0])
+    fn shape(&self) -> OpShape {
+        OpShape::ColorChannels {
+            channels: self.to.channels(),
+            to_gray: self.to == ColorSpace::Gray,
+        }
     }
 
     fn output_rank_rule(&self) -> OutputRankRule {

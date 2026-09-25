@@ -9,6 +9,7 @@ import pytest
 
 from polars_cv import Pipeline
 from polars_cv._types import DType, SourceFormat
+from tests._plan_view import EXPR, op_names, ops_of, planned, source_of
 
 
 class TestPipelineSource:
@@ -17,19 +18,19 @@ class TestPipelineSource:
     def test_source_default_format(self) -> None:
         """Default source format is auto (inferred from the column dtype)."""
         pipe = Pipeline().source()
-        assert pipe._source is not None
-        assert pipe._source.format == SourceFormat.AUTO
+        assert source_of(pipe) is not None
+        assert source_of(pipe).format == SourceFormat.AUTO
 
     def test_source_raw_with_dtype(self) -> None:
         """Raw source requires dtype and stores it."""
         pipe = Pipeline().source("raw", dtype="f32")
-        assert pipe._source is not None
-        assert pipe._source.format == SourceFormat.RAW
-        assert pipe._source.dtype == DType.F32
+        assert source_of(pipe) is not None
+        assert source_of(pipe).format == SourceFormat.RAW
+        assert source_of(pipe).dtype == DType.F32
 
     def test_source_raw_without_dtype_raises(self) -> None:
         """Raw source without dtype raises an error."""
-        with pytest.raises(ValueError, match="dtype is required"):
+        with pytest.raises(ValueError, match="missing field `dtype`"):
             Pipeline().source("raw")
 
 
@@ -39,18 +40,18 @@ class TestPipelineOps:
     def test_resize_tracks_op(self) -> None:
         """Resize appends one resize op."""
         pipe = Pipeline().source().resize(height=224, width=224)
-        assert len(pipe._ops) == 1
-        assert pipe._ops[0].op == "resize"
+        assert len(ops_of(pipe)) == 1
+        assert ops_of(pipe)[0].op == "resize"
 
     def test_compute_ops(self) -> None:
         """Compute operations append expected op specs."""
         pipe = Pipeline().source().cast("f32").scale(2.5).clamp(0.0, 1.0)
-        assert [op.op for op in pipe._ops] == ["cast", "scale", "clamp"]
+        assert op_names(pipe) == ["cast", "scale", "clamp"]
 
     def test_domain_conversion_ops(self) -> None:
         """Contour conversions preserve expected op ordering."""
         pipe = Pipeline().source().grayscale().threshold(128).extract_contours()
-        assert [op.op for op in pipe._ops][-1] == "extract_contours"
+        assert op_names(pipe)[-1] == "extract_contours"
 
 
 class TestExpressionTracking:
@@ -59,8 +60,8 @@ class TestExpressionTracking:
     def test_resize_with_expr(self) -> None:
         """Expression params are stored and tracked."""
         pipe = Pipeline().source().resize(height=pl.col("h"), width=pl.col("w"))
-        assert pipe._ops[0].params["height"].is_expr
-        assert pipe._ops[0].params["width"].is_expr
+        assert ops_of(pipe)[0].params["height"] == EXPR
+        assert ops_of(pipe)[0].params["width"] == EXPR
         assert len(pipe._expr_refs) == 2
 
     def test_no_duplicate_expr_tracking(self) -> None:
@@ -128,13 +129,13 @@ class TestToGraphPreservesPlannedState:
     def test_axis_reduction_ndim_preserved(self) -> None:
         """A single axis reduction: ndim 3 -> 2 must survive to_graph."""
         pipe = Pipeline().source("image_bytes", dtype="u8").reduce_max(axis=0)
-        assert pipe._expected_ndim == 2
+        assert planned(pipe).ndim == 2
 
         graph = pipe.to_graph(pl.col("img"))
         node = graph._nodes["_node_0"]
-        assert node.pipeline._expected_ndim == pipe._expected_ndim
-        assert node.pipeline._output_dtype == pipe._output_dtype
-        assert node.pipeline._current_domain == pipe._current_domain
+        assert planned(node.pipeline).ndim == planned(pipe).ndim
+        assert planned(node.pipeline).dtype == planned(pipe).dtype
+        assert planned(node.pipeline).domain == planned(pipe).domain
 
     def test_double_axis_reduction_ndim_preserved(self) -> None:
         """Two axis reductions: ndim 3 -> 2 -> 1; re-folding from the final
@@ -145,19 +146,19 @@ class TestToGraphPreservesPlannedState:
             .reduce_max(axis=0)
             .reduce_max(axis=0)
         )
-        assert pipe._expected_ndim == 1
+        assert planned(pipe).ndim == 1
 
         graph = pipe.to_graph(pl.col("img"))
         node = graph._nodes["_node_0"]
-        assert node.pipeline._expected_ndim == pipe._expected_ndim
-        assert node.pipeline._output_dtype == pipe._output_dtype
-        assert node.pipeline._current_domain == pipe._current_domain
+        assert planned(node.pipeline).ndim == planned(pipe).ndim
+        assert planned(node.pipeline).dtype == planned(pipe).dtype
+        assert planned(node.pipeline).domain == planned(pipe).domain
 
     def test_plain_image_pipeline_state_preserved(self) -> None:
         """Non-reducing pipeline: state must match exactly too."""
         pipe = Pipeline().source("image_bytes").resize(height=32, width=32).grayscale()
         graph = pipe.to_graph(pl.col("img"))
         node = graph._nodes["_node_0"]
-        assert node.pipeline._expected_ndim == pipe._expected_ndim
-        assert node.pipeline._output_dtype == pipe._output_dtype
-        assert node.pipeline._current_domain == pipe._current_domain
+        assert planned(node.pipeline).ndim == planned(pipe).ndim
+        assert planned(node.pipeline).dtype == planned(pipe).dtype
+        assert planned(node.pipeline).domain == planned(pipe).domain

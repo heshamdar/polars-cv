@@ -8,48 +8,60 @@ use crate::ops::affine::AffineParams;
 use crate::ops::scalar::{FusedKernel, ScalarOp};
 use crate::ops::traits::MemoryEffect;
 use crate::ops::{
-    ColorConvertOp, ComputeOp, ConvolveOp, FilterType, ImageOp, ImageOpKind, NormalizeMethod, Op,
+    ColorConvertOp, ComputeOp, ConvolveOp, FilterType, ImageOp, ImageOpKind, Normalization, Op,
     ViewDto, ViewOp,
 };
 
-/// Which engine-tier (Tier-2) optimizations [`ViewExpr::optimize_with`] applies.
-///
-/// Each field toggles one output-preserving rewrite so it can be A/B differential
-/// tested (output-on == output-off). Every field defaults to `true`, and the
-/// struct is `#[serde(default)]`, so a direct view-buffer caller, an older graph
-/// spec, or a spec omitting individual keys gets the full set enabled — the
-/// historical behavior. Mandatory correctness lowering (materialization,
-/// stride-preserving views, the f64 fusion exclusion) is *not* represented here:
-/// it is not optional, so it has no toggle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
-pub struct OptConfig {
-    /// Cancel `flip(a) ∘ flip(a)` (involution).
-    pub view_flip_involution: bool,
-    /// Merge `transpose(p1) ∘ transpose(p2)` into one (or identity).
-    pub view_transpose_merge: bool,
-    /// Drop a `cast(T)` whose child is already dtype `T`.
-    pub cast_identity: bool,
+/// Declares [`OptConfig`] and [`ENGINE_PASSES`] from one list, so a toggle
+/// cannot exist without its catalogue entry or the other way round.
+macro_rules! engine_passes {
+    ($($(#[doc = $doc:literal])* $name:ident: $summary:literal),+ $(,)?) => {
+        /// Which engine-tier (Tier-2) optimizations [`ViewExpr::optimize_with`]
+        /// applies.
+        ///
+        /// Each field toggles one output-preserving rewrite so it can be A/B
+        /// differential tested (output-on == output-off). Every field defaults
+        /// to `true`, and the struct is `#[serde(default)]`, so a direct
+        /// view-buffer caller, an older graph spec, or a spec omitting
+        /// individual keys gets the full set enabled — the historical behavior.
+        /// An unknown key is refused: a toggle Python names and Rust does not
+        /// have would otherwise be silently ignored. Mandatory correctness
+        /// lowering (materialization, stride-preserving views, the f64 fusion
+        /// exclusion) is *not* represented here: it is not optional, so it has
+        /// no toggle.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+        #[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
+        pub struct OptConfig {
+            $($(#[doc = $doc])* pub $name: bool,)+
+        }
+
+        impl Default for OptConfig {
+            fn default() -> Self {
+                Self { $($name: true,)+ }
+            }
+        }
+
+        /// Every engine-tier pass: its [`OptConfig`] field name (the
+        /// `OptFlags` field Python generates from it) and a one-line summary.
+        pub const ENGINE_PASSES: &[(&str, &str)] = &[$((stringify!($name), $summary)),+];
+    };
+}
+
+engine_passes! {
     /// Collapse `cast(inner) ∘ cast(target)` when `inner` losslessly contains the
     /// grandchild dtype and dropping it keeps the final cast on the same
     /// conversion path (a narrowing intermediate, or a float intermediate between
     /// integer input and integer target, is kept).
-    pub cast_chain_collapse: bool,
+    cast_chain_collapse: "Drop a redundant intermediate cast from a cast chain when the intermediate dtype losslessly holds the input and dropping it keeps the final cast's conversion (a narrowing intermediate quantizes, and a float between an integer input and an integer target saturates, so both are kept).",
+    /// Drop a `cast(T)` whose child is already dtype `T`.
+    cast_identity: "Drop a cast whose target dtype already equals its input dtype.",
+    /// Cancel `flip(a) ∘ flip(a)` (involution).
+    view_flip_involution: "Cancel two adjacent flips over the same axes (flip∘flip = id).",
+    /// Merge `transpose(p1) ∘ transpose(p2)` into one (or identity).
+    view_transpose_merge: "Merge two adjacent transposes into one (or into the identity).",
     /// Fuse adjacent scalar/compute ops into a single kernel.
-    pub scalar_fusion: bool,
-}
-
-impl Default for OptConfig {
-    fn default() -> Self {
-        Self {
-            view_flip_involution: true,
-            view_transpose_merge: true,
-            cast_identity: true,
-            cast_chain_collapse: true,
-            scalar_fusion: true,
-        }
-    }
+    scalar_fusion: "Fuse adjacent scalar/compute ops into one kernel (f64 chains stay unfused — a mandatory precision guard, not this toggle).",
 }
 
 /// A node in the expression graph.
@@ -180,7 +192,7 @@ impl ViewExpr {
             ViewDto::Image(img) => {
                 // The one construction path for every image op. Output metadata
                 // is derived from the op's own contract and never restated
-                // here: shape from `infer_shape`, strides from `calc_strides`
+                // here: shape from `shape()`, strides from `calc_strides`
                 // (which honours the op's declared `MemoryEffect`), dtype from
                 // its `OutputDTypeRule`. The typed builders (`grayscale`,
                 // `threshold`, `resize`, `blur`, the morphology ops) are thin
@@ -195,7 +207,7 @@ impl ViewExpr {
                 // poisoning downstream kernel fusion (a fused `invert` read the
                 // mistracked `U8` and computed `255 - x` instead of `1 - x`).
                 // One arm, one authority, removes that whole class.
-                let new_shape = img.infer_shape(&[&self.shape]);
+                let new_shape = img.shape().concrete(&[&self.shape]);
                 let new_strides = self.calc_strides(&img, &new_shape);
                 let new_dtype = img.resolve_output_dtype(self.dtype);
                 Arc::new(Self {
@@ -206,7 +218,7 @@ impl ViewExpr {
                 })
             }
             ViewDto::Filter(op) => {
-                let new_shape = Op::infer_shape(&op, &[&self.shape]);
+                let new_shape = op.shape().concrete(&[&self.shape]);
                 let new_strides = self.calc_strides(&op, &new_shape);
                 let new_dtype = op.resolve_output_dtype(self.dtype);
                 Arc::new(Self {
@@ -217,7 +229,7 @@ impl ViewExpr {
                 })
             }
             ViewDto::Color(op) => {
-                let new_shape = ColorConvertOp::infer_shape(&op, &self.shape);
+                let new_shape = op.shape().concrete(&[&self.shape]);
                 let new_dtype = Op::resolve_output_dtype(&op, self.dtype);
                 Arc::new(Self {
                     shape: new_shape,
@@ -258,7 +270,7 @@ impl ViewExpr {
     }
 
     /// Build a `Compute` node whose metadata comes entirely from the op's own
-    /// contract: shape from `infer_shape`, strides from `calc_strides` (which
+    /// contract: shape from `shape()`, strides from `calc_strides` (which
     /// honours the op's declared `MemoryEffect`), dtype from its
     /// `OutputDTypeRule`. The compute analogue of `apply_op`'s `Image` arm and
     /// the single construction authority the compute builders share, so none of
@@ -268,7 +280,7 @@ impl ViewExpr {
     /// through untouched, which this generic contiguous-or-inferred path cannot
     /// express.
     fn compute_node(self: &Arc<Self>, op: ComputeOp) -> Arc<Self> {
-        let new_shape = op.infer_shape(&[&self.shape]);
+        let new_shape = op.shape().concrete(&[&self.shape]);
         let new_strides = self.calc_strides(&op, &new_shape);
         let new_dtype = op.resolve_output_dtype(self.dtype);
         Arc::new(Self {
@@ -279,14 +291,14 @@ impl ViewExpr {
         })
     }
 
-    /// Build a `View` node from the op's contract (shape via `infer_shape`,
+    /// Build a `View` node from the op's contract (shape via `shape()`,
     /// strides via `calc_strides`); a view never changes dtype, so it is
     /// preserved. The view analogue of [`compute_node`](Self::compute_node).
     ///
     /// `reshape` keeps its own builder because it must reject a non-contiguous
     /// input (its bespoke panic) rather than route through here.
     fn view_node(self: &Arc<Self>, op: ViewOp) -> Arc<Self> {
-        let new_shape = op.infer_shape(&[&self.shape]);
+        let new_shape = op.shape().concrete(&[&self.shape]);
         let new_strides = self.calc_strides(&op, &new_shape);
         Arc::new(Self {
             node: ExprNode::View(op, self.clone()),
@@ -345,7 +357,7 @@ impl ViewExpr {
 
     pub fn cast(self: &Arc<Self>, target: DType) -> Arc<Self> {
         let op = ComputeOp::Cast(target);
-        let new_shape = op.infer_shape(&[&self.shape]);
+        let new_shape = op.shape().concrete(&[&self.shape]);
 
         // A same-dtype cast is an identity clone: the buffer (and its
         // strides) pass through untouched. Any real cast materializes a
@@ -389,7 +401,7 @@ impl ViewExpr {
     /// f32; pass `DType::F32` for the default float output, or another dtype to
     /// have the normalized result cast to it (folded into the op's `Fixed`
     /// output rule).
-    pub fn normalize(self: &Arc<Self>, method: NormalizeMethod, out_dtype: DType) -> Arc<Self> {
+    pub fn normalize(self: &Arc<Self>, method: Normalization, out_dtype: DType) -> Arc<Self> {
         self.compute_node(ComputeOp::Normalize(method, out_dtype))
     }
 

@@ -323,7 +323,7 @@ pub enum FetchErrorPolicy {
     Null,
 }
 
-view_buffer::naming::named_variants!(FetchErrorPolicy {
+view_buffer::naming::named_variants!(FetchErrorPolicy: "What an unreadable path does to the query.\n\nSettled at fetch time, before any graph node runs, which is why it is not\n:class:`RowErrorPolicy`: ``.cv.read_bytes()`` has no graph at all, and\n``source(\"file_path\")`` resolves its bytes before the graph starts.\n- RAISE: an unreadable path fails the whole query.\n- NULL: an unreadable path yields null for that row only." {
     "raise" => Raise,
     "null" => Null,
 });
@@ -342,8 +342,8 @@ impl FetchErrorPolicy {
 /// `context` names what is being configured, e.g. `node 'src'`.
 ///
 /// Reads [`FetchErrorPolicy::NAMED`] rather than matching on string literals,
-/// so the values accepted here are exactly the ones `enum_variants` surfaces to
-/// Python — the expected-values half of the message included. Spelling them by
+/// so the values accepted here are exactly the generated Python enum's — the
+/// expected-values half of the message included. Spelling them by
 /// hand is how the two Python call sites came to carry their own copies of the
 /// list.
 pub fn parse_on_error(value: &str, context: &str) -> PolarsResult<bool> {

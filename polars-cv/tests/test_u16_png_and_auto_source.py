@@ -19,6 +19,7 @@ import pytest
 
 from polars_cv import Pipeline
 from polars_cv._types import SourceFormat
+from tests._plan_view import source_of
 from tests.conftest import make_test_png as create_test_png
 from tests.conftest import plugin_required
 
@@ -114,7 +115,7 @@ class TestAutoSource:
 
     def test_auto_is_the_default_source_format(self) -> None:
         # source() with no format argument defaults to "auto".
-        assert Pipeline().source()._source.format == SourceFormat.AUTO
+        assert source_of(Pipeline().source()).format == SourceFormat.AUTO
 
     def test_auto_default_routes_binary_image(self) -> None:
         png = create_test_png(8, 8)

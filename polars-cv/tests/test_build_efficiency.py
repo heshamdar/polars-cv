@@ -19,12 +19,18 @@ fixture-backed parser in ``test_sanitation`` rather than a second regex.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
 
 from tests._discovery import workflow_files
 from tests.test_sanitation import _ci_run_commands
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # Python 3.10: `tomllib` is 3.11+ stdlib; `tomli` is its exact predecessor.
+    import tomli as tomllib
 
 pytestmark = pytest.mark.structural
 
@@ -214,4 +220,20 @@ def test_dev_profile_is_tuned_for_iteration() -> None:
     assert "debug = 1" in cargo, (
         "the dev profile should carry line-table debuginfo (`debug = 1`): full "
         "`debug = 2` DWARF for the polars stack is the bulk of target/debug"
+    )
+
+
+def test_uv_never_builds_the_project() -> None:
+    """`uv run` must not build the extension (CR-43).
+
+    `--no-install-project` protects only the commands that pass it; every
+    `uv run` re-syncs the project and, for a maturin-backed package, compiles
+    it at the release profile (fat LTO) — observed from the documented
+    `uv run pytest`. `package = false` makes uv treat the project as virtual,
+    so no invocation can build it and `maturin develop` stays the one build.
+    """
+    config = tomllib.loads((_ROOT / "polars-cv" / "pyproject.toml").read_text())
+    assert config.get("tool", {}).get("uv", {}).get("package") is False, (
+        "polars-cv/pyproject.toml needs `[tool.uv] package = false`: without it "
+        "`uv run` builds the extension at release LTO"
     )

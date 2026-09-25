@@ -90,7 +90,7 @@ _KNOWN_SHAPE = {
 }
 
 #: Pipelines whose dimensions the planner *has* — they are sitting in
-#: ``_shape_hints`` — but cannot publish, because ``expected_shape`` is gated
+#: the plan's known sizes — but cannot publish, because ``expected_shape`` is gated
 #: on rank 3. These must refuse the array sink without an explicit ``shape=``
 #: and be exact with one.
 #:

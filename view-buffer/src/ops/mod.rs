@@ -46,7 +46,7 @@ pub mod view;
 
 pub use binary::BinaryOp;
 pub use color::{ColorConvertOp, ColorSpace};
-pub use compute::{ComputeOp, NormalizeMethod};
+pub use compute::{ComputeOp, Normalization, NormalizeMethod};
 pub use dto::ViewDto;
 pub use filter::{BorderMode, ConvolveOp};
 pub use histogram::{HistogramOp, HistogramOutput};
@@ -56,7 +56,7 @@ pub use pad::{PadMode, PadPosition};
 pub use phash::{HashAlgorithm, PerceptualHashOp};
 pub use reduction::ReductionOp;
 pub use scalar::{FusedKernel, ScalarOp};
-pub use shape_rule::{OutputChannelRule, OutputRankRule};
+pub use shape_rule::{Dim, OpShape, OutputChannelRule, OutputRankRule, Sym};
 pub use spatial_rule::{GeometricEffect, NeighborhoodSupport, SpatialDependency};
 pub use traits::{IdentityRule, MemoryEffect, Op};
 pub use validation::ValidationError;

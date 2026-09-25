@@ -36,7 +36,7 @@
 //! # No independent authority — how this is kept honest
 //!
 //! Unlike the rank/channel/dtype rules, a spatial dependency has *no* second
-//! source of truth (no `infer_shape` analog) to parity-check against: it is a
+//! source of truth (no `shape` analog) to parity-check against: it is a
 //! new primary declaration. Its correctness is therefore pinned by (1) the
 //! compiler — [`Op::spatial_dependency`](crate::ops::Op::spatial_dependency) is
 //! required with no default, *and every impl matches its enum exhaustively
@@ -140,7 +140,7 @@ impl SpatialDependency {
 #[cfg(test)]
 mod tests {
     //! Expected-value coverage: pin the declared spatial dependency of each op
-    //! enumerated here. There is no `infer_shape`-style authority to
+    //! enumerated here. There is no `shape`-style authority to
     //! parity-check against (see the module docs), so these hand-written
     //! expectations — together with the compiler's requiredness and the
     //! now-exhaustive matches in every `spatial_dependency` impl (no blanket
@@ -155,7 +155,7 @@ mod tests {
     use super::*;
     use crate::ops::binary::BinaryOp;
     use crate::ops::color::{ColorConvertOp, ColorSpace};
-    use crate::ops::compute::{ComputeOp, NormalizeMethod};
+    use crate::ops::compute::{ComputeOp, Normalization};
     use crate::ops::filter::{BorderMode, ConvolveOp};
     use crate::ops::histogram::HistogramOp;
     use crate::ops::image::{FilterType, ImageOp, ImageOpKind};
@@ -214,7 +214,7 @@ mod tests {
     fn global_ops() {
         let g = SpatialDependency::Global;
         assert_eq!(
-            ComputeOp::Normalize(NormalizeMethod::MinMax, crate::core::dtype::DType::F32)
+            ComputeOp::Normalize(Normalization::MinMax, crate::core::dtype::DType::F32)
                 .spatial_dependency(),
             g
         );

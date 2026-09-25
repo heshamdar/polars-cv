@@ -39,16 +39,17 @@ __all__ = ["OPEN_STRUCT_EXEMPT", "all_deserialized_structs", "open_structs"]
 # that happens to reuse it, which is the kind of quiet blanket this module
 # exists to prevent.
 OPEN_STRUCT_EXEMPT = {
-    # Its params ride on `#[serde(flatten)]`, which serde documents as
-    # incompatible with `deny_unknown_fields`. The one documented, permanent
-    # exception on the wire format — not a precedent, see `CLAUDE.md`.
-    "pipeline.rs::OpSpec": "params ride on #[serde(flatten)]",
     # A deliberate *partial* parse of a Google ADC file: it reads only `type`
     # so that `service_account` files, whose bodies differ, do not trip a
     # full-schema parse. Closing it would break that by design. It also reads
     # a file on disk rather than a kwarg from Python, so it is not a
     # plugin-boundary struct at all.
     "cloud_auth.rs::Probe": "intentional partial parse of an ADC file",
+    # Deserialized only through `#[serde(from = "WireOutput")]`, so its own
+    # attributes never see the wire: `WireOutput` (same file, closed) does, and
+    # `an_output_without_its_planned_state_is_refused` pins that it refuses an
+    # unknown field.
+    "types.rs::OutputSpec": "deserialized via its closed WireOutput",
 }
 
 _DESERIALIZED_STRUCT = re.compile(

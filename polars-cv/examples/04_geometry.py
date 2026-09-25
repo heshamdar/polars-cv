@@ -108,8 +108,8 @@ def contour_demo(df: pl.DataFrame) -> None:
             pl.col("contour_set_gt"),
             threshold=0.4,
             order=pl.col("pred_scores").list.eval(
-            pl.element().rank(method="ordinal", descending=True).arg_sort()
-        ),
+                pl.element().rank(method="ordinal", descending=True).arg_sort()
+            ),
         ),
     )
     print("\nContour ops:")
@@ -124,8 +124,8 @@ def bbox_demo(df: pl.DataFrame) -> None:
             pl.col("bbox_set_gt"),
             threshold=0.4,
             order=pl.col("pred_scores").list.eval(
-            pl.element().rank(method="ordinal", descending=True).arg_sort()
-        ),
+                pl.element().rank(method="ordinal", descending=True).arg_sort()
+            ),
         ),
     )
     print("\nBBox ops:")

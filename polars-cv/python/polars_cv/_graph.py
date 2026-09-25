@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
 from polars_cv._graph_viz import get_graphviz_out
-from polars_cv._types import expr_key
+from polars_cv._ops_generated import LogicalPass
+from polars_cv._types import SlotTable
 
 if TYPE_CHECKING:
     import pydot
@@ -43,61 +44,6 @@ class GraphNode:
     column: pl.Expr | None  # None for non-root nodes that receive from upstream
     upstream: list[str] = field(default_factory=list)
     alias: str | None = None
-
-    @property
-    def domain(self) -> str:
-        """Get the output domain of this node's pipeline."""
-        return self.pipeline.current_domain()
-
-    @property
-    def output_dtype(self) -> str:
-        """Get the expected output dtype of this node's pipeline."""
-        return self.pipeline.output_dtype()
-
-    @property
-    def output_encoding(self) -> str | None:
-        """Get the sink encoding selector of this node's pipeline, if any."""
-        return self.pipeline.output_encoding()
-
-    @property
-    def expected_ndim(self) -> int | None:
-        """Get the expected number of dimensions of this node's pipeline."""
-        return self.pipeline._expected_ndim
-
-    @property
-    def expected_shape(self) -> list[int] | None:
-        """Get the expected output shape of this node's pipeline if deterministic.
-
-        Only reported for a rank-3 ``[H, W, C]`` output. The hints track H/W/C
-        specifically, so at any other rank they cannot describe the shape —
-        publishing ``[H, W, C]`` for a rank-2 output is exactly how
-        ``channel_select`` used to declare a schema execution could not produce.
-        """
-        if self.pipeline._expected_ndim != 3:
-            return None
-        hints = self.pipeline._shape_hints
-        if (
-            hints.height
-            and not hints.height.is_expr
-            and hints.width
-            and not hints.width.is_expr
-        ):
-            if not hints.channels or hints.channels.is_expr:
-                return None
-            return [hints.height.value, hints.width.value, hints.channels.value]
-        return None
-
-    @property
-    def shape_asserted(self) -> bool:
-        """Did any dimension of :attr:`expected_shape` come from ``assert_shape``?
-
-        Decides *who* a plan/exec divergence is reported against. A shape the
-        ops' contracts inferred and execution then contradicted is a contract
-        bug, and ``validate_output_schema`` says so. A shape the user asserted
-        is a claim about their data, and blaming "the Rust implementation" for
-        it — which is what happened — sends them to the wrong file.
-        """
-        return bool(self.pipeline._asserted_dims)
 
 
 @dataclass
@@ -160,7 +106,6 @@ class PipelineGraph:
         self._nodes: dict[str, GraphNode] = {}
         self._output: GraphOutput | None = None
         self._multi_output: MultiGraphOutput | None = None
-        self._column_bindings: dict[str, int] = {}
         # Mapping from alias names to node IDs
         self._alias_to_node: dict[str, str] = {}
         # Set by ``optimize()``. Serialization (``to_expr``) refuses to run on a
@@ -272,10 +217,6 @@ class PipelineGraph:
         self._multi_output = multi
         self._output = None
 
-    def is_multi_output(self) -> bool:
-        """Check if the graph uses multi-output mode."""
-        return self._multi_output is not None
-
     # --- Optimization phase ---
 
     def optimize(self, flags: "OptFlags") -> "PipelineGraph":
@@ -302,7 +243,7 @@ class PipelineGraph:
         crop only past ``Pointwise`` ops.
 
         Every pass is output-preserving and byte-identical when toggled (see
-        ``polars_cv._optimize.PassSpec.bit_exact``).
+        ``tests/test_optimize_equivalence.py``).
 
         The passes rewrite node pipelines in place, so the graph first takes its
         own clone of each one: ``cv.pipe(p)`` holds the caller's ``Pipeline`` by
@@ -313,49 +254,23 @@ class PipelineGraph:
 
         for node in self._nodes.values():
             node.pipeline = node.pipeline._clone()
-        handlers = self._pass_handlers()
         for spec in OPTIMIZATION_PASSES:
-            if spec.tier != "logical":
+            if spec.tier != "logical" or not flags.enabled(spec.name):
                 continue
-            if not flags.enabled(spec.name):
-                continue
-            scope, run = handlers[spec.name]
-            if scope == "graph":
-                run(self)
-            else:  # "node": rewrite each node's ops in place
+            if spec.name == LogicalPass.COMMON_SUBEXPRESSION_ELIMINATION:
+                # Graph scope: it needs the expressions' identities, which
+                # only Python holds.
+                self._optimize_common_subexpressions()
+            else:
+                # Node scope: Rust (`node_pass`) decides, and refuses a name
+                # that is not a `LogicalPass`.
                 for node in self._nodes.values():
-                    run(node.pipeline)
+                    node.pipeline._run_node_pass(spec.name)
         # Engine-tier flags do not rewrite the Python graph; they ride to Rust in
         # the serialized `opt` object, keyed by the Rust `OptConfig` field names.
         self._opt_config = flags.engine_opt()
         self._optimized = True
         return self
-
-    @staticmethod
-    def _pass_handlers() -> "dict[str, tuple[str, Any]]":
-        """Each **logical**-tier pass's applicator, keyed by name.
-
-        A ``"graph"`` handler takes the whole :class:`PipelineGraph` and may
-        rewrite topology (CSE splits siblings onto a shared prefix node); a
-        ``"node"`` handler takes one node :class:`Pipeline` and rewrites its ops
-        in place. This map's keys must equal :data:`LOGICAL_PASS_NAMES` (engine
-        passes have no Python handler) — a logical pass without a handler, or a
-        handler without a logical pass, fails
-        ``test_pass_handlers_cover_every_logical_pass``.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return {
-            "common_subexpression_elimination": (
-                "graph",
-                PipelineGraph._optimize_common_subexpressions,
-            ),
-            "identity_elimination": ("node", Pipeline._eliminate_identities_inplace),
-            "spatial_window_pushdown": (
-                "node",
-                Pipeline._hoist_spatial_windows_inplace,
-            ),
-        }
 
     # --- CSE Optimization ---
 
@@ -411,6 +326,7 @@ class PipelineGraph:
             Dict mapping group keys to lists of nodes in that group.
         """
         groups: dict[str, list[GraphNode]] = {}
+        table = self._slot_table()
 
         for node in self._nodes.values():
             # Only consider root nodes (those with column bindings)
@@ -421,12 +337,14 @@ class PipelineGraph:
             # canonical serialization, not ``hash(source)``: a hash collision
             # would bucket two *different* sources together and fuse a shared
             # prefix node with the wrong source. String equality cannot collide.
-            col_str = expr_key(node.column)
+            col_key = table.index(node.column)
             source = node.pipeline._source
             source_key = (
-                json.dumps(source.to_dict(), sort_keys=True) if source else "none"
+                json.dumps(source.to_dict(table.index), sort_keys=True)
+                if source
+                else "none"
             )
-            group_key = f"{col_str}:{source_key}"
+            group_key = f"{col_key}:{source_key}"
 
             if group_key not in groups:
                 groups[group_key] = []
@@ -476,7 +394,7 @@ class PipelineGraph:
         Returns:
             The node_id of the newly created shared node.
         """
-        from polars_cv.pipeline import Pipeline
+        from polars_cv.pipeline import Pipeline, _assertion_window
 
         shared_id = f"_cse_{uuid.uuid4().hex[:8]}"
 
@@ -488,24 +406,17 @@ class PipelineGraph:
         # spec today: `_to_dict` hoists the *set* of non-default policies
         # across all nodes, and the template node keeps its own. Copying them
         # is what keeps that true if the hoist ever reads one node.
+        template = template_node.pipeline
         shared_pipeline = Pipeline()
-        shared_pipeline._copy_state_from(template_node.pipeline)
-        # The prefix ops keep their original indices, so everything keyed by
-        # op position carries over unshifted (identity elimination reads the
-        # entering-hints snapshots).
-        shared_pipeline._set_ops_slice(prefix_ops, shift=0)
-
-        # Compute the correct domain and dtype for the prefix operations.
-        # The fold starts at op 0, so it is seeded with the template's
-        # post-source (pre-op) state, not its final tracked state.
-        domain, dtype, ndim = Pipeline._compute_output_domain_dtype_ndim(
-            prefix_ops,
-            initial_dtype=template_node.pipeline._initial_output_dtype,
-            initial_ndim=template_node.pipeline._initial_expected_ndim,
+        shared_pipeline._copy_state_from(template)
+        # The template's leading ops *are* the prefix (CSE matched them), so
+        # the shared node replays them from the template's entering state.
+        prefix_len = len(prefix_ops)
+        shared_pipeline._replay(
+            range(prefix_len),
+            start=template._state_at(0),
+            assertions=_assertion_window(template._assertions, 0, prefix_len),
         )
-        shared_pipeline._current_domain = domain
-        shared_pipeline._output_dtype = dtype
-        shared_pipeline._expected_ndim = ndim
 
         # Create the shared node
         shared_node = GraphNode(
@@ -531,14 +442,18 @@ class PipelineGraph:
             shared_id: The ID of the shared node to use as upstream.
             prefix_len: Number of operations that are now in the shared node.
         """
-        # Remove the prefix operations from this node's pipeline. Everything
-        # keyed by op index (entering-hints snapshots, assert_shape positions)
-        # shifts with them.
-        node.pipeline._set_ops_slice(node.pipeline._ops[prefix_len:], shift=prefix_len)
-        # The node's pre-op state is now the shared node's output state.
-        shared_pipeline = self._nodes[shared_id].pipeline
-        node.pipeline._initial_output_dtype = shared_pipeline._output_dtype
-        node.pipeline._initial_expected_ndim = shared_pipeline._expected_ndim
+        from polars_cv.pipeline import _assertion_window
+
+        # Keep only the suffix, replayed from the state entering it (the
+        # shared node's output state); assert_shape positions shift with it.
+        pipeline = node.pipeline
+        pipeline._replay(
+            range(prefix_len, len(pipeline._ops)),
+            start=pipeline._state_at(prefix_len),
+            assertions=_assertion_window(
+                pipeline._assertions, prefix_len, len(pipeline._ops)
+            ),
+        )
 
         # Set the shared node as upstream
         if not node.upstream:
@@ -598,115 +513,58 @@ class PipelineGraph:
                 )
                 raise ValueError(msg)
 
-        # Build column bindings (assign index to each unique column)
-        self._build_column_bindings()
-
-        # Collect all column expressions in order (source columns first)
-        columns = self._get_ordered_columns()
-
-        # Collect expression columns from all nodes' pipelines
-        expr_columns, expr_column_names = self._get_expr_columns()
-
-        # Add expression columns to args (after source columns)
-        all_args = columns + expr_columns
-
-        # Serialize graph to JSON
-        graph_json = self._to_json()
+        # One positional table for the plugin's inputs: root columns first,
+        # then every expression parameter. Serialization reads the same table,
+        # so positions and arguments cannot disagree.
+        table = self._slot_table()
 
         # Unified graph execution handles both single and multi-output
         return _plugin.call(
             "vb_graph",
-            args=all_args,
-            kwargs={
-                "graph_json": graph_json,
-                "expr_column_names": expr_column_names,
-            },
+            args=table.columns,
+            kwargs={"graph_json": self._to_json()},
             is_elementwise=True,
         )
 
-    def _build_column_bindings(self) -> None:
-        """Build mapping from node IDs to column indices.
+    def _slot_table(self) -> SlotTable:
+        """The plugin's inputs, in order: each distinct root column, then each
+        distinct expression parameter (identity by ``Expr.meta.eq``).
 
-        Only root nodes (those with columns) get bindings.
-        Non-root nodes receive data from upstream nodes.
+        Derived from the nodes on demand, so it always describes the current
+        graph (CSE rewrites nodes) and every reader gets the same positions.
         """
-        seen_columns: dict[str, int] = {}
-        idx = 0
-
-        for node_id, node in self._nodes.items():
-            if node.column is not None:
-                # Get a string representation of the column for deduplication
-                col_str = expr_key(node.column)
-                if col_str not in seen_columns:
-                    seen_columns[col_str] = idx
-                    idx += 1
-                self._column_bindings[node_id] = seen_columns[col_str]
-            # Non-root nodes don't have column bindings - they receive from upstream
-
-    def _get_ordered_columns(self) -> list[pl.Expr]:
-        """Get unique column expressions in order.
-
-        Only includes columns from root nodes (nodes with column expressions).
-        """
-        seen: set[str] = set()
-        columns: list[pl.Expr] = []
-
+        table = SlotTable()
         for node in self._nodes.values():
             if node.column is not None:
-                col_str = expr_key(node.column)
-                if col_str not in seen:
-                    seen.add(col_str)
-                    columns.append(node.column)
-
-        return columns
-
-    def _get_expr_columns(self) -> tuple[list[pl.Expr], list[str]]:
-        """Get expression columns from all node pipelines.
-
-        Collects expression parameters (like pl.col("height")) from all
-        pipeline operations in the graph, deduplicating by string representation.
-
-        Returns:
-            Tuple of (expression_list, column_names_list).
-            The expressions and names are in the same order.
-
-        Note:
-            Uses the expression's string representation as the identifier name.
-            This matches the key used in ParamValue.to_dict() to ensure expression
-            values can be correctly looked up on the Rust side. This avoids
-            collisions when multiple expressions share the same root column
-            (e.g., col("x").list.get(0).max() and col("x").list.get(1).max()).
-        """
-        seen: set[str] = set()
-        expr_columns: list[pl.Expr] = []
-        expr_names: list[str] = []
-
+                table.add(node.column)
         for node in self._nodes.values():
-            # Get expression columns from this node's pipeline
             for expr in node.pipeline._get_expr_columns():
-                expr_str = expr_key(expr)
-                if expr_str not in seen:
-                    seen.add(expr_str)
-                    expr_columns.append(expr)
-                    # Use the expression's string representation as the identifier.
-                    # This matches the key used in ParamValue.to_dict() for lookups.
-                    expr_names.append(expr_str)
+                table.add(expr)
+        return table
 
-        return expr_columns, expr_names
+    def _output_spec(
+        self, node_id: str, fmt: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """One output on the wire: its node, sink, and the node's final planned
+        state, from which Rust reads the output's schema facts."""
+        return {
+            "node": node_id,
+            "sink": {"format": fmt, **params},
+            "planned": asdict(self._nodes[node_id].pipeline._state),
+        }
 
     def _to_dict(self) -> dict[str, Any]:
         if self._output is None and self._multi_output is None:
             raise ValueError("No output set")
 
         # Build nodes dict
+        table = self._slot_table()
         nodes_dict: dict[str, Any] = {}
         for node_id, node in self._nodes.items():
             # Get the pipeline's JSON representation without sink
             # We'll add sink info to the output specification
-            node_spec = node.pipeline._to_spec_dict()
+            node_spec = node.pipeline._to_spec_dict(table.index)
             node_spec["upstream"] = node.upstream
-            if node.alias is not None:
-                node_spec["alias"] = node.alias
             nodes_dict[node_id] = node_spec
 
         # Build unified outputs dict (always use "outputs" format)
@@ -715,39 +573,13 @@ class PipelineGraph:
         if self._multi_output is not None:
             # Multi-output mode
             for alias, (node_id, fmt, params) in self._multi_output.outputs.items():
-                node = self._nodes.get(node_id)
-                outputs_spec[alias] = {
-                    "node": node_id,
-                    "sink": {
-                        "format": fmt,
-                        **params,
-                    },
-                    # Add domain and dtype for static type inference
-                    "expected_domain": node.domain if node else "buffer",
-                    "expected_dtype": node.output_dtype if node else "u8",
-                    "expected_shape": node.expected_shape if node else None,
-                    "shape_asserted": node.shape_asserted if node else False,
-                    "expected_ndim": node.expected_ndim if node else None,
-                    "expected_encoding": node.output_encoding if node else None,
-                }
+                outputs_spec[alias] = self._output_spec(node_id, fmt, params)
         else:
             # Single output mode - use "_output" as the key
             assert self._output is not None
-            node = self._nodes.get(self._output.node_id)
-            outputs_spec["_output"] = {
-                "node": self._output.node_id,
-                "sink": {
-                    "format": self._output.format,
-                    **self._output.params,
-                },
-                # Add domain and dtype for static type inference
-                "expected_domain": node.domain if node else "buffer",
-                "expected_dtype": node.output_dtype if node else "u8",
-                "expected_shape": node.expected_shape if node else None,
-                "shape_asserted": node.shape_asserted if node else False,
-                "expected_ndim": node.expected_ndim if node else None,
-                "expected_encoding": node.output_encoding if node else None,
-            }
+            outputs_spec["_output"] = self._output_spec(
+                self._output.node_id, self._output.format, self._output.params
+            )
 
         graph_spec = {
             # Wire-format version; the Rust side rejects versions newer than
@@ -755,7 +587,11 @@ class PipelineGraph:
             "version": 1,
             "nodes": nodes_dict,
             "outputs": outputs_spec,
-            "column_bindings": self._column_bindings,
+            "column_bindings": {
+                node_id: table.index(node.column)
+                for node_id, node in self._nodes.items()
+                if node.column is not None
+            },
             # Engine-tier optimization toggles → Rust `OptConfig`. Keys are the
             # `OptConfig` field names; missing keys default on. Distinct opt
             # settings key distinct compiled-graph cache entries, so a per-query
@@ -837,24 +673,6 @@ class PipelineGraph:
             dfs(node_id)
 
         return order
-
-    def get_output_nodes(self) -> set[str]:
-        """
-        Get the set of node IDs that are output targets.
-
-        This is useful for optimization - these nodes should not be
-        optimized away or fused past.
-
-        Returns:
-            Set of node IDs that are designated as outputs.
-        """
-        output_nodes: set[str] = set()
-        if self._output:
-            output_nodes.add(self._output.node_id)
-        if self._multi_output:
-            for node_id, _, _ in self._multi_output.outputs.values():
-                output_nodes.add(node_id)
-        return output_nodes
 
     def show_graph(self) -> pydot.Dot:
         """Build dot representation of graph."""

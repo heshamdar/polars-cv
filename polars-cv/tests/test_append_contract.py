@@ -13,7 +13,7 @@ rather than conventional:
   its op table is completeness-asserted against the real chainable-op list, so
   a new operation cannot join without a case.
 
-The predecessor of the first test ratcheted only ``_update_output_dtype`` while
+The predecessor of the first test ratcheted only the dtype update while
 naming this exact failure mode ("the eager/lazy drift class of bug"); an
 enumerated guard that lists one of two required calls is how the transpose and
 pad shape bugs shipped underneath it.
@@ -32,8 +32,7 @@ from PIL import Image
 
 import polars_cv
 from polars_cv import Pipeline
-from polars_cv._graph import GraphNode
-from polars_cv._types import HINT_DIMS, Domain
+from polars_cv._types import Domain
 
 from ._discovery import package_modules
 from ._op_cases import BUFFER, CONTOUR, EXTRA_CASES, OP_CASES, base_pipeline
@@ -54,20 +53,17 @@ pytestmark = pytest.mark.structural
 
 #: The only functions permitted to touch ``Pipeline._ops``.
 #:
-#: There are exactly two ways ``_ops`` is assigned, and both maintain the state
-#: that rides alongside it:
+#: There are exactly two ways ``_ops`` (and ``_entering``, the state entering
+#: each op, kept in step with it) is assigned:
 #:
-#: * ``_push_op`` appends one op at the end and advances the tracked state.
-#:   Appending never disturbs existing op indices, so it re-keys nothing.
-#: * ``_rewrite_ops`` is the single wholesale-rewrite primitive. It is the *only*
-#:   place ``_ops`` is reassigned for a rewrite, and it refuses to run unless the
-#:   caller supplies a re-keyed replacement for every field in
-#:   ``_POSITION_KEYED_FIELDS``. The three rewrite passes (CSE's
-#:   ``_set_ops_slice``, the pushdown's ``_commit_reordered_ops``, identity
-#:   elimination's ``_commit_eliminated_ops``) each compute their own re-key and
-#:   route through it — so none of them touches ``_ops`` directly, and none can
-#:   forget a position-keyed table the way the CSE path once forgot
-#:   ``_assertions``.
+#: * ``_push_op`` appends one op at the end, records the state entering it and
+#:   advances the tracked state.
+#: * ``_replay`` is the single wholesale rewrite. A slice (CSE, a
+#:   sub-pipeline), a reorder (the pushdown) and a deletion (identity
+#:   elimination) name the ops they keep and the state to start from, and it
+#:   appends them again through ``_push_op`` — so every per-position fact is
+#:   recomputed, and no rewrite carries re-key arithmetic of its own (which is
+#:   how the CSE path once forgot ``_assertions``).
 #:
 #: ``_clone`` is listed because it is the copy constructor: it duplicates every
 #: field including all the side tables (via ``_copy_state_from`` /
@@ -75,10 +71,13 @@ pytestmark = pytest.mark.structural
 _OPS_MUTATORS = frozenset(
     {
         "_push_op",
-        "_rewrite_ops",
+        "_replay",
         "_clone",
     }
 )
+
+#: The per-position fields only the mutators above may write.
+_POSITIONAL = frozenset({"_ops", "_entering"})
 
 
 def _pipeline_ast() -> ast.ClassDef:
@@ -90,7 +89,8 @@ def _pipeline_ast() -> ast.ClassDef:
 
 
 def _mutates_ops(node: ast.AST) -> bool:
-    """True if *node* appends to, assigns into, replaces or aliases ``*._ops``.
+    """True if *node* appends to, assigns into, replaces or aliases ``*._ops``
+    (or ``*._entering``, which is kept in step with it).
 
     Aliasing counts (``ops = self._ops`` then ``ops.append(...)``) because it
     is the obvious way around a guard that only looks for ``._ops.append``.
@@ -98,7 +98,7 @@ def _mutates_ops(node: ast.AST) -> bool:
     for sub in ast.walk(node):
         # ops = x._ops  — an alias the mutation can then happen through
         if isinstance(sub, ast.Assign) and isinstance(sub.value, ast.Attribute):
-            if sub.value.attr == "_ops":
+            if sub.value.attr in _POSITIONAL:
                 return True
         # x._ops.append(...) / .extend(...) / .insert(...) / .clear(...)
         if (
@@ -106,7 +106,7 @@ def _mutates_ops(node: ast.AST) -> bool:
             and isinstance(sub.func, ast.Attribute)
             and sub.func.attr in {"append", "extend", "insert", "clear", "pop"}
             and isinstance(sub.func.value, ast.Attribute)
-            and sub.func.value.attr == "_ops"
+            and sub.func.value.attr in _POSITIONAL
         ):
             return True
         # x._ops[i] = ... and x._ops += ...
@@ -117,9 +117,9 @@ def _mutates_ops(node: ast.AST) -> bool:
             targets = [sub.target]
         for t in targets:
             if isinstance(t, ast.Subscript) and isinstance(t.value, ast.Attribute):
-                if t.value.attr == "_ops":
+                if t.value.attr in _POSITIONAL:
                     return True
-            if isinstance(t, ast.Attribute) and t.attr == "_ops":
+            if isinstance(t, ast.Attribute) and t.attr in _POSITIONAL:
                 return True
     return False
 
@@ -149,9 +149,8 @@ def test_op_append_is_structurally_exclusive() -> None:
     assert not offenders, (
         f"only {sorted(_OPS_MUTATORS)} may touch Pipeline._ops, but these also "
         f"do: {sorted(set(offenders))}. Route appends through _append_op() / "
-        f"_push_op() and wholesale rewrites through _rewrite_ops() so the "
-        f"plan-time state and the position-keyed side tables cannot be updated "
-        f"by halves."
+        f"_push_op() and wholesale rewrites through _replay() so the ops and "
+        f"the state entering each cannot be updated by halves."
     )
 
 
@@ -199,20 +198,13 @@ def test_every_pipeline_field_survives_a_copy() -> None:
     # A value distinguishable from every `__init__` default, per field type.
     sentinels = {
         "_source": object(),
-        "_current_domain": "contour",
-        "_output_dtype": "f64",
-        "_expected_ndim": 7,
-        "_initial_output_dtype": "i16",
-        "_initial_expected_ndim": 5,
         "_on_error": "null",
         "_on_null_param": "null",
-        "_shape_declared": True,
         "_ops": ["sentinel-op"],
         "_expr_refs": ["sentinel-expr"],
-        "_asserted_dims": {"height"},
-        "_hint_snapshots": {3: ("h", "w")},
+        "_entering": ["sentinel-position"],
         "_shape_refs": ["sentinel-ref"],
-        "_shape_hints": None,
+        "_state": object(),
         "_assertions": {2: None},
     }
     assert set(sentinels) == set(_STATE_COPIERS), (
@@ -248,108 +240,108 @@ def test_every_pipeline_field_survives_a_copy() -> None:
     )
 
 
-def test_position_keyed_fields_are_real_pipeline_state() -> None:
-    """``_POSITION_KEYED_FIELDS`` must name actual ``Pipeline`` fields.
+def test_replay_takes_its_assertions_explicitly() -> None:
+    """``_replay`` cannot be called without saying where the assertions go.
 
-    The registry is the single authority for "which fields are keyed by op
-    position and so must be re-keyed on every ``_ops`` rewrite". A typo'd or
-    stale name would make ``_rewrite_ops`` demand a key no rewrite can sensibly
-    supply, or (worse) let a real position-keyed field slip out of the set. Every
-    entry must be a genuine field, which is exactly the set ``_STATE_COPIERS``
-    enumerates.
+    The one re-key a rewrite still owns is the assertions' (a slice shifts
+    them); a keyword-only parameter with no default makes forgetting it a
+    ``TypeError`` rather than an assertion silently kept at the wrong place.
     """
-    from polars_cv.pipeline import _POSITION_KEYED_FIELDS, _STATE_COPIERS
+    import inspect
 
-    unknown = set(_POSITION_KEYED_FIELDS) - set(_STATE_COPIERS)
-    assert not unknown, (
-        f"_POSITION_KEYED_FIELDS names fields that are not Pipeline state: "
-        f"{sorted(unknown)}"
+    params = inspect.signature(Pipeline._replay).parameters
+    for name in ("start", "assertions"):
+        assert params[name].kind is inspect.Parameter.KEYWORD_ONLY, name
+        assert params[name].default is inspect.Parameter.empty, name
+
+
+@plugin_required
+def test_a_slice_replays_the_states_it_keeps() -> None:
+    """A sub-pipeline over ``[start, end)`` has exactly the states the whole
+    pipeline had there — entering each kept op, and at ``end``."""
+    pipe = (
+        Pipeline()
+        .source("blob", dtype="u8")
+        .assert_shape(dims=[10, 20, 3])
+        .resize(height=4, width=6)
+        .grayscale()
+        .pad(top=1, bottom=1, left=1, right=1)
     )
+    for start, end in [(0, 3), (1, 3), (1, 2), (0, 1)]:
+        sub = pipe._create_sub_pipeline(start, end)
+        assert sub._entering == pipe._entering[start:end], (start, end)
+        assert sub._state == pipe._state_at(end), (start, end)
 
 
-def test_rewrite_ops_enforces_exact_position_keyed_coverage() -> None:
-    """``_rewrite_ops`` is the unskippable op-index rewrite primitive.
+def test_push_op_applies_the_whole_plan_step_unconditionally() -> None:
+    """``_push_op`` must apply the op's whole plan-time effect, every time.
 
-    It is the op-index counterpart to ``_STATE_COPIERS`` +
-    ``test_pipeline_state_copy_is_complete``: the *only* place ``_ops`` is
-    reassigned for a rewrite, and it refuses to run unless the caller supplies a
-    re-keyed replacement for **every** position-keyed field and no others. That
-    is what makes a new position-keyed field a hard failure at every rewrite
-    caller at once, instead of the silent omission that let CSE re-key
-    ``_hint_snapshots`` but forget ``_assertions``.
-    """
-    from polars_cv.pipeline import _POSITION_KEYED_FIELDS
-
-    full = {name: {} for name in _POSITION_KEYED_FIELDS}
-
-    # Missing a required field -> raise (the drift this guard exists to prevent).
-    for missing in _POSITION_KEYED_FIELDS:
-        partial = {k: v for k, v in full.items() if k != missing}
-        with pytest.raises(ValueError, match=missing):
-            Pipeline()._rewrite_ops([], position_keyed=partial)
-
-    # An unknown field -> raise (a stale/typo'd remap must not pass silently).
-    with pytest.raises(ValueError, match="_not_a_field"):
-        Pipeline()._rewrite_ops([], position_keyed={**full, "_not_a_field": {}})
-
-    # Exact coverage -> the ops and every position-keyed field are replaced.
-    p = Pipeline()
-    new_ops = ["sentinel-op"]
-    keyed = {name: {7: object()} for name in _POSITION_KEYED_FIELDS}
-    p._rewrite_ops(new_ops, position_keyed=keyed)
-    assert p._ops == new_ops
-    for name, value in keyed.items():
-        assert getattr(p, name) is value
-
-
-def test_push_op_updates_dtype_and_hints_unconditionally() -> None:
-    """``_push_op`` must apply *both* halves of the plan-time effect.
-
-    Guards the body of the sole mutator itself: it is no longer enough that
-    callers route through it if it were to become selective about what it
-    updates. ``update_dtype=False`` exists only for the two-input binary rule
-    and is asserted to be the sole opt-out, with the hint update outside any
-    conditional.
+    Guards the body of the sole mutator itself: it is not enough that callers
+    route through it if it were to become selective. The effect is one Rust
+    call (``plan_step``: domain check, schema, H/W, channels, rank clipping)
+    whose result becomes ``self._state``; neither may sit inside a compound
+    statement, and the only parameter besides the op is the binary operand's
+    dtype, which Rust itself requires for exactly the binary ops.
     """
     fn = next(
         m
         for m in _pipeline_ast().body
         if isinstance(m, ast.FunctionDef) and m.name == "_push_op"
     )
-    called = {
-        sub.func.attr
-        for sub in ast.walk(fn)
-        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
-    }
-    assert "_update_output_dtype" in called
-    assert "_update_shape_hints" in called
-    assert "_require_input_domain" in called, (
-        "_push_op must validate the input domain, so every append path gets "
-        "the check — not just the builder path through _append_op"
-    )
 
-    # `update_dtype` is the only opt-out, and it opts out of exactly one thing.
+    def effects(tree: ast.AST) -> set[str]:
+        """The Rust call made and the state assigned, anywhere under *tree*."""
+        found = set()
+        for sub in ast.walk(tree):
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
+                if sub.func.id == "plan_step":
+                    found.add("plan_step")
+            if isinstance(sub, ast.Assign) and any(
+                isinstance(t, ast.Attribute) and t.attr == "_state" for t in sub.targets
+            ):
+                found.add("_state =")
+        return found
+
+    assert effects(fn) == {"plan_step", "_state ="}, effects(fn)
+
     args = [a.arg for a in fn.args.kwonlyargs] + [a.arg for a in fn.args.args]
-    flags = [a for a in args if a not in {"self", "spec", "contract"}]
-    assert flags == ["update_dtype"], (
-        f"_push_op grew a new opt-out: {flags}. Every additional flag is a way "
-        f"to append an op while skipping part of its plan-time effect."
+    flags = [a for a in args if a not in {"self", "spec"}]
+    assert flags == ["other_dtype"], (
+        f"_push_op grew a new parameter: {flags}. Every additional flag is a "
+        f"way to append an op while skipping part of its plan-time effect."
     )
 
-    # The hint update must not sit inside *any* compound statement: it applies
-    # to every op unconditionally. Checking only `ast.If` left try/for/while/with
-    # as ways to make it conditional while still passing.
     compound = (ast.If, ast.Try, ast.For, ast.While, ast.With)
-    guarded = {
-        sub.func.attr
-        for branch in ast.walk(fn)
-        if isinstance(branch, compound)
-        for sub in ast.walk(branch)
-        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
-    }
-    assert "_update_shape_hints" not in guarded, (
-        "_update_shape_hints must run for every appended op, not conditionally"
+    guarded = set().union(
+        *(effects(branch) for branch in ast.walk(fn) if isinstance(branch, compound))
     )
+    assert not guarded, (
+        "the plan step must run for every appended op, not conditionally"
+    )
+
+
+def test_python_holds_no_copy_of_the_channel_rule_arithmetic() -> None:
+    """The package must not re-implement ``OutputChannelRule::apply``.
+
+    A source scan, because the property is "this code does not exist". The
+    rule is applied in Rust (``plan_step``); what must not come back is
+    package code spelling its variants to compute a channel count. It scans the
+    whole package, so the arithmetic cannot return under another name.
+    Limits: a spelling built at runtime would pass unseen.
+    """
+    sources = {p: p.read_text() for p in package_modules()}
+    for path, src in sources.items():
+        for spelling in (
+            "strip_restore",
+            '"fixed:',
+            '"preserve"',
+            '"n/a"',
+            '"channel_rule"',
+        ):
+            assert spelling not in src, (
+                f"{spelling!r} is in {path.name}: the channel arithmetic "
+                f"belongs to OutputChannelRule::apply, reached via plan_step"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +365,7 @@ def test_domain_vocabulary_declared_once() -> None:
     assert not leaked, f"Pipeline must not re-declare domain constants: {leaked}"
     assert not hasattr(Pipeline, "_validate_domain"), (
         "_validate_domain re-declared each op's input domain in Python; the "
-        "check now reads op_contract(...)['input_domains']"
+        "check is plan_step's, from the op's Rust input_domains"
     )
     source = Path(polars_cv.pipeline.__file__).read_text()
     assert "_validate_domain" not in source
@@ -381,8 +373,8 @@ def test_domain_vocabulary_declared_once() -> None:
 
     # The domain a pipeline reports must be a member of the one vocabulary...
     pipe = Pipeline().source("blob", dtype="u8")
-    assert pipe._current_domain in {d.value for d in Domain}, (
-        f"Pipeline reports domain {pipe._current_domain!r}, which is not in "
+    assert pipe._state.domain in {d.value for d in Domain}, (
+        f"Pipeline reports domain {pipe._state.domain!r}, which is not in "
         f"_types.Domain — the vocabulary this test claims is the only one."
     )
     # ...and the check that reads it must still reject a mismatch. Without
@@ -410,25 +402,19 @@ def test_wrong_input_domain_is_rejected(build, op, kwargs) -> None:
 
 @plugin_required
 def test_input_domain_matches_the_rust_contract() -> None:
-    """The rejection message names the domain the Rust contract declares.
+    """The rejection names the op and the domains its Rust contract accepts.
 
-    The input-domain mirror of ``test_planner_domain_is_sourced_from_rust``:
-    output domain was already sourced from Rust while input domain stayed a
-    hand-written argument at every builder call site.
+    Input domain used to be a hand-written argument at every builder call
+    site; the check and its message are now ``plan_step``'s. Binary ops and
+    reductions accept two domains, and the message lists both.
     """
-    import json
-
-    from polars_cv._lib import op_contract
-
     contour_pipe = (
         Pipeline().source("image_bytes").grayscale().threshold(128).extract_contours()
     )
-    # A buffer op on a contour pipeline.
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ValueError, match=r"resize\(\) expects buffer input"):
         contour_pipe.resize(height=8, width=8)
-    resize_spec = Pipeline().source("image_bytes").resize(height=8, width=8)._ops[-1]
-    accepted = op_contract(json.dumps(resize_spec.to_dict()))["input_domains"]
-    assert f"expects {' or '.join(accepted)} input" in str(excinfo.value)
+    with pytest.raises(ValueError, match=r"reduce_sum\(\) expects buffer or vector"):
+        contour_pipe.reduce_sum()
 
 
 # ---------------------------------------------------------------------------
@@ -447,12 +433,8 @@ _OP_CASES = OP_CASES
 
 
 def _state(pipe: Pipeline) -> tuple:
-    hints = pipe._shape_hints
-    dims = tuple(
-        None if (p := hints.get(dim)) is None or p.is_expr else p.value
-        for dim in HINT_DIMS
-    )
-    return (dims, pipe._expected_ndim, pipe._output_dtype, pipe._current_domain)
+    s = pipe._state
+    return (s.dims, s.ndim, s.dtype, s.domain)
 
 
 def test_op_case_table_is_complete() -> None:
@@ -500,7 +482,7 @@ def test_eager_and_lazy_agree_on_shape_state(op) -> None:
     """``.pipe(p.op())`` and ``.pipe(p).op()`` must plan identically.
 
     The lazy continuation re-applies each op over the upstream state. It used
-    to replay only the shape hints, and to assign ``_expected_ndim`` *after*
+    to replay only the shape hints, and to assign the rank *after*
     that loop — so every replayed op saw ``ndim = None`` and the H/W half of
     the replay returned at its opening guard. Six of ten sampled ops disagreed
     with their eager spelling, ``pad`` and ``rotate`` among them.
@@ -529,24 +511,23 @@ def test_assert_shape_survives_a_continuation() -> None:
     lazy = (
         pl.col("img").cv.pipe(base).resize(height=6, width=5).assert_shape(channels=3)
     )
-    hints = lazy._pipeline._shape_hints
-    assert (hints.height.value, hints.width.value, hints.channels.value) == (6, 5, 3)
+    assert lazy._pipeline._state.dims == (6, 5, 3)
 
     # Asserted before an op that changes the same dimension: the op wins.
     # Checked on both spellings — the positional replay is what makes the lazy
     # side work, and an end-of-chain overlay would pass the eager case alone.
     base_u8 = Pipeline().source("image_bytes", dtype="u8")
     eager = base_u8.assert_shape(channels=3).grayscale()
-    assert eager._shape_hints.channels.value == 1
+    assert eager._state.dims[2] == 1
 
     lazy = pl.col("img").cv.pipe(base_u8).assert_shape(channels=3).grayscale()._pipeline
-    assert lazy._shape_hints.channels.value == 1
+    assert lazy._state.dims[2] == 1
 
     # And an assertion mid-chain in a single continuation pipeline.
     mid = (
         pl.col("img").cv.pipe(Pipeline().assert_shape(channels=3).grayscale())._pipeline
     )
-    assert mid._shape_hints.channels.value == 1
+    assert mid._state.dims[2] == 1
 
 
 def test_a_contradicting_assertion_is_rejected_where_it_is_written() -> None:
@@ -578,32 +559,30 @@ def test_a_contradicting_assertion_is_rejected_where_it_is_written() -> None:
 def test_an_assertion_may_not_name_a_dimension_the_rank_lacks() -> None:
     """The hints are positional, so the H/W/C names only fit a rank-3 buffer."""
     flat = Pipeline().source("raw", dtype="u8")  # rank 1
-    assert flat._expected_ndim == 1
+    assert flat._state.ndim == 1
     with pytest.raises(ValueError, match="does not have"):
         flat.assert_shape(channels=3)
     # `dims=` is the spelling that does fit, and it pins the rank with it.
     lifted = flat.assert_shape(dims=[64])
-    assert lifted._expected_ndim == 1
+    assert lifted._state.ndim == 1
 
 
 def test_dims_pins_the_rank_a_list_source_could_not_supply() -> None:
     """``dims=`` is what makes ``.assert_shape()`` reach an ``array`` sink.
 
-    A list/array source leaves the rank unknown, and ``expected_shape`` only
+    A list/array source leaves the rank unknown, and an output's shape only
     publishes at rank 3 — so the H/W/C spelling set the hints and changed
     nothing, and the sink's advice to "use .assert_shape()" was circular.
+    The output facts Rust reads off this state (the rank-3 gate, "asserted")
+    are pinned by ``output_facts_are_read_off_the_planned_state``.
     """
     pipe = Pipeline().source("list", dtype="f32").assert_shape(dims=[8, 8, 3])
-    assert pipe._expected_ndim == 3
-    node = GraphNode(node_id="n", pipeline=pipe, column=None)
-    assert node.expected_shape == [8, 8, 3]
-    assert node.shape_asserted is True
+    assert (pipe._state.ndim, pipe._state.dims) == (3, (8, 8, 3))
+    assert all(pipe._state.asserted)
 
     # An inferred shape is not attributed to the caller.
     inferred = Pipeline().source("image_bytes", dtype="u8").resize(height=8, width=8)
-    assert (
-        GraphNode(node_id="n", pipeline=inferred, column=None).shape_asserted is False
-    )
+    assert not any(inferred._state.asserted)
 
 
 def test_dims_rejects_what_it_cannot_track() -> None:
@@ -677,3 +656,19 @@ def test_lazy_plan_equals_exec(non_square_png, label, chain, sink) -> None:
         .cast("u8")
     )
     _assert_plan_equals_exec(df, chain(pl.col("img").cv.pipe(base)).sink(sink))
+
+
+def test_an_unknown_input_is_not_planned_as_square() -> None:
+    """An aspect-preserving resize of an image of unknown size has unknown H/W.
+
+    The retired shape prober stood the *same* placeholder in for every unknown
+    input axis, so it planned every unknown image as square: with a per-row
+    ``filter`` making the op per-row, ``resize_max(7)`` published ``[7, 7]``
+    for a 100x50 image that executes as 7x4. Shapes are now symbolic, so only
+    what the op fixes is known.
+    """
+    per_row = pl.col("filter")
+    plan = Pipeline().source("image_bytes").resize_max(7, filter=per_row)._state
+    assert plan.dims[:2] == (None, None)
+    plan = Pipeline().source("image_bytes").resize_to_height(7, filter=per_row)._state
+    assert plan.dims[:2] == (7, None)

@@ -1,6 +1,6 @@
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::pad::{PadMode, PadPosition};
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 
@@ -45,7 +45,7 @@ pub enum ImageOpKind {
         ksize: u32,
     },
     /// Resize by scale factors — output dimensions derive from the input
-    /// shape via [`ImageOpKind::output_hw`].
+    /// shape via [`ImageOpKind::shape`].
     ResizeScale {
         scale_x: f32,
         scale_y: f32,
@@ -103,61 +103,51 @@ pub enum ImageOpKind {
 }
 
 impl ImageOpKind {
-    /// The output `(height, width)` this op produces for an `in_h × in_w`
-    /// input.
-    ///
-    /// The **single authority** for geometric output dimensions, shared by
-    /// [`Op::infer_shape`] (planning) and the execution runner, so planned
-    /// and executed dimensions cannot diverge. Returns `None` for kinds that
-    /// preserve the input dimensions.
-    pub fn output_hw(&self, in_h: usize, in_w: usize) -> Option<(usize, usize)> {
-        match self {
-            ImageOpKind::Resize { width, height, .. } => Some((*height as usize, *width as usize)),
+    /// How this kind's output shape follows from its input: the one
+    /// authority the runner executes the deferred resizes with and the
+    /// planner reads.
+    pub fn shape(&self) -> OpShape {
+        let k = |n: u32| Sym::Known(n as usize);
+        match *self {
+            ImageOpKind::Grayscale | ImageOpKind::Canny { .. } => OpShape::SingleChannel,
+            ImageOpKind::Threshold(_)
+            | ImageOpKind::Blur { .. }
+            | ImageOpKind::ChannelSwap { .. }
+            | ImageOpKind::HistogramEqualize
+            | ImageOpKind::Erode { .. }
+            | ImageOpKind::Dilate { .. }
+            | ImageOpKind::MorphGradient { .. } => OpShape::Preserve,
+            ImageOpKind::Resize { width, height, .. }
+            | ImageOpKind::Letterbox { height, width, .. } => OpShape::SetHw {
+                h: k(height),
+                w: k(width),
+            },
             ImageOpKind::ResizeScale {
                 scale_x, scale_y, ..
-            } => Some((
-                (in_h as f32 * scale_y).round() as usize,
-                (in_w as f32 * scale_x).round() as usize,
-            )),
-            ImageOpKind::ResizeToHeight { height, .. } => {
-                let aspect = in_w as f32 / in_h as f32;
-                Some((*height as usize, (*height as f32 * aspect).round() as usize))
-            }
-            ImageOpKind::ResizeToWidth { width, .. } => {
-                let aspect = in_h as f32 / in_w as f32;
-                Some(((*width as f32 * aspect).round() as usize, *width as usize))
-            }
-            ImageOpKind::ResizeMax { max_size, .. } => {
-                let scale = *max_size as f32 / in_h.max(in_w) as f32;
-                Some((
-                    (in_h as f32 * scale).round() as usize,
-                    (in_w as f32 * scale).round() as usize,
-                ))
-            }
-            ImageOpKind::ResizeMin { min_size, .. } => {
-                let scale = *min_size as f32 / in_h.min(in_w) as f32;
-                Some((
-                    (in_h as f32 * scale).round() as usize,
-                    (in_w as f32 * scale).round() as usize,
-                ))
-            }
+            } => OpShape::ScaleHw {
+                sy: Sym::Known(scale_y),
+                sx: Sym::Known(scale_x),
+            },
+            ImageOpKind::ResizeToHeight { height, .. } => OpShape::HeightTo(k(height)),
+            ImageOpKind::ResizeToWidth { width, .. } => OpShape::WidthTo(k(width)),
+            ImageOpKind::ResizeMax { max_size, .. } => OpShape::LongSideTo(k(max_size)),
+            ImageOpKind::ResizeMin { min_size, .. } => OpShape::ShortSideTo(k(min_size)),
             ImageOpKind::Pad {
                 top,
                 bottom,
                 left,
                 right,
                 ..
-            } => Some((
-                in_h + *top as usize + *bottom as usize,
-                in_w + *left as usize + *right as usize,
-            )),
-            ImageOpKind::PadToSize { height, width, .. } => {
-                Some((in_h.max(*height as usize), in_w.max(*width as usize)))
-            }
-            ImageOpKind::Letterbox { height, width, .. } => {
-                Some((*height as usize, *width as usize))
-            }
-            _ => None,
+            } => OpShape::Pad {
+                top: k(top),
+                bottom: k(bottom),
+                left: k(left),
+                right: k(right),
+            },
+            ImageOpKind::PadToSize { height, width, .. } => OpShape::AtLeastHw {
+                h: k(height),
+                w: k(width),
+            },
         }
     }
 }
@@ -184,21 +174,14 @@ pub enum FilterType {
     Lanczos3,
 }
 
-// `Triangle` is surfaced under its API name "bilinear"; the parser-only
-// alias "triangle" is kept for backwards compatibility (see `ALIASES`).
-crate::naming::named_variants!(FilterType {
+// `Triangle` is surfaced under its API name "bilinear".
+crate::naming::named_variants!(FilterType: "Image resize filter types." {
     "nearest" => Nearest,
     "bilinear" => Triangle,
     "catmullrom" => CatmullRom,
     "gaussian" => Gaussian,
     "lanczos3" => Lanczos3,
 });
-
-impl FilterType {
-    /// Additional parser-accepted spellings, not surfaced as canonical names.
-    pub const ALIASES: &'static [(&'static str, FilterType)] =
-        &[("triangle", FilterType::Triangle)];
-}
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -285,53 +268,8 @@ impl Op for ImageOp {
         OutputRankRule::PreserveRank
     }
 
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
-        let input_shape = inputs[0];
-        match &self.kind {
-            ImageOpKind::Threshold(_) => input_shape.to_vec(),
-            ImageOpKind::Blur { .. } => input_shape.to_vec(),
-            ImageOpKind::Grayscale => {
-                let mut s = input_shape.to_vec();
-                if s.len() == 3 {
-                    s[2] = 1;
-                }
-                // 2D input stays 2D (already single-channel by definition)
-                s
-            }
-            // Every geometric kind takes its output H/W from output_hw — the
-            // same authority the runner executes with.
-            ImageOpKind::Resize { .. }
-            | ImageOpKind::ResizeScale { .. }
-            | ImageOpKind::ResizeToHeight { .. }
-            | ImageOpKind::ResizeToWidth { .. }
-            | ImageOpKind::ResizeMax { .. }
-            | ImageOpKind::ResizeMin { .. }
-            | ImageOpKind::Pad { .. }
-            | ImageOpKind::PadToSize { .. }
-            | ImageOpKind::Letterbox { .. } => {
-                let mut s = input_shape.to_vec();
-                if s.len() >= 2 {
-                    if let Some((h, w)) = self.kind.output_hw(s[0], s[1]) {
-                        s[0] = h;
-                        s[1] = w;
-                    }
-                }
-                s
-            }
-            ImageOpKind::ChannelSwap { .. } => input_shape.to_vec(),
-            ImageOpKind::Canny { .. } => {
-                // Output is single-channel binary edge map
-                if input_shape.len() == 3 {
-                    vec![input_shape[0], input_shape[1], 1]
-                } else {
-                    input_shape.to_vec()
-                }
-            }
-            ImageOpKind::HistogramEqualize => input_shape.to_vec(),
-            ImageOpKind::Erode { .. } => input_shape.to_vec(),
-            ImageOpKind::Dilate { .. } => input_shape.to_vec(),
-            ImageOpKind::MorphGradient { .. } => input_shape.to_vec(),
-        }
+    fn shape(&self) -> OpShape {
+        self.kind.shape()
     }
 
     fn output_channel_rule(&self) -> OutputChannelRule {
@@ -386,27 +324,17 @@ impl Op for ImageOp {
 
     fn identity_rule(&self) -> IdentityRule {
         match &self.kind {
-            // Zero padding on every side copies the input unchanged.
-            ImageOpKind::Pad {
-                top: 0,
-                bottom: 0,
-                left: 0,
-                right: 0,
-                ..
-            } => IdentityRule::Always {
-                deciding_params: &["top", "bottom", "left", "right"],
-            },
-            // Padding to the current size adds nothing: if the output shape is
-            // preserved, no pixels were added. (Letterbox resamples first, so
-            // shape preservation does *not* imply a no-op — it stays Never.)
-            ImageOpKind::PadToSize { .. } => IdentityRule::WhenShapePreserved {
-                deciding_params: &[],
-            },
+            // A pad that adds nothing, or padding to the current size, copies
+            // the input unchanged: `OpShape::preserves` decides whether this
+            // one does. (Letterbox resamples first, so shape preservation does
+            // *not* imply a no-op — it stays Never.)
+            ImageOpKind::Pad { .. } | ImageOpKind::PadToSize { .. } => {
+                IdentityRule::WhenShapePreserved
+            }
             // Everything else transforms values or coordinates: resamples,
             // reduces/reorders channels, thresholds, filters, or smooths (a
             // blur with sigma 0 is a degenerate NaN kernel, not an identity).
-            ImageOpKind::Pad { .. }
-            | ImageOpKind::Letterbox { .. }
+            ImageOpKind::Letterbox { .. }
             | ImageOpKind::Resize { .. }
             | ImageOpKind::ResizeScale { .. }
             | ImageOpKind::ResizeToHeight { .. }

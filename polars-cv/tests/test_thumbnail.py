@@ -10,23 +10,24 @@ from __future__ import annotations
 import pytest
 
 from polars_cv import Pipeline
+from tests._plan_view import source_of
 
 
 class TestThumbnailBuilder:
     def test_sets_decode_max_size_on_source(self) -> None:
         pipe = Pipeline().source("image_bytes").thumbnail(64)
-        assert pipe._source is not None
-        assert pipe._source.decode_max_size == 64
+        assert source_of(pipe) is not None
+        assert source_of(pipe).decode_max_size == 64
 
     def test_works_on_file_path_source(self) -> None:
         pipe = Pipeline().source("file_path").thumbnail(128)
-        assert pipe._source.decode_max_size == 128
+        assert source_of(pipe).decode_max_size == 128
 
     def test_is_immutable(self) -> None:
         base = Pipeline().source("image_bytes")
         thumb = base.thumbnail(32)
-        assert base._source.decode_max_size is None
-        assert thumb._source.decode_max_size == 32
+        assert source_of(base).decode_max_size is None
+        assert source_of(thumb).decode_max_size == 32
 
     def test_requires_source_first(self) -> None:
         with pytest.raises(ValueError, match="requires a source"):
@@ -44,8 +45,8 @@ class TestThumbnailBuilder:
         while `source("auto").thumbnail(64)`, writing the same field on the same
         spec, was refused."""
         pipe = Pipeline().source("auto").thumbnail(64)
-        assert pipe._source is not None
-        assert pipe._source.decode_max_size == 64
+        assert source_of(pipe) is not None
+        assert source_of(pipe).decode_max_size == 64
 
     @pytest.mark.parametrize("bad", [0, -5, 3.5, "64", True])
     def test_rejects_bad_max_size(self, bad: object) -> None:
@@ -56,4 +57,4 @@ class TestThumbnailBuilder:
     def test_composes_with_downstream_ops(self) -> None:
         # The curation pattern: cheap thumbnail decode -> cheap feature.
         pipe = Pipeline().source("image_bytes").thumbnail(64).perceptual_hash()
-        assert pipe._source.decode_max_size == 64
+        assert source_of(pipe).decode_max_size == 64

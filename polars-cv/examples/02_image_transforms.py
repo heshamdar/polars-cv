@@ -134,7 +134,7 @@ def run_dynamic_parameter_demo(df: pl.DataFrame) -> None:
         crop_x=pl.lit(10),
         crop_y=pl.lit(14),
         crop_w=pl.lit(90),
-        crop_h=pl.lit(76),
+        crop_h=pl.lit(52),  # rows 14..66 of the 72-row resize
     )
 
     dynamic_pipe = (

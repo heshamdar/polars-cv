@@ -48,6 +48,9 @@ plugins:
             show_root_full_path: false
             heading_level: 2
             members_order: source
+            # The typed-op builder methods are generated into `_OpsMixin`,
+            # which `Pipeline` inherits; without this they vanish from the API.
+            inherited_members: true
             show_signature_annotations: true
             separate_signature: true
 
@@ -96,6 +99,7 @@ nav:
       - Chaining: user-guide/composition/chaining.md
       - Multi-Output: user-guide/composition/multi-output.md
       - Binary Operations: user-guide/composition/binary-ops.md
+    - Migrating to the Typed-Op API: user-guide/migration.md
   - API Reference:
     - Pipeline: api/pipeline.md
     - LazyPipelineExpr: api/lazy.md

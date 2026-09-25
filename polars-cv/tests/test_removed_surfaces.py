@@ -43,7 +43,7 @@ def test_rasterize_has_no_anti_alias_parameter() -> None:
     """``rasterize`` must not accept ``anti_alias``.
 
     It was threaded from the builder through the op spec, the JSON graph,
-    ``resolve_rasterize_style``, ``GeometryOp::Rasterize`` and into
+    the op's style resolver, ``GeometryOp::Rasterize`` and into
     ``geometry::rasterize``, whose signature named it ``_anti_alias`` and
     ignored it. Beyond being a documented no-op it was not free: it entered the
     op's identity, so two pipelines that behave identically hashed differently
@@ -109,6 +109,24 @@ def test_graph_json_carries_no_shape_hints() -> None:
         )
 
 
+@plugin_required
+def test_graph_json_carries_no_visualization_metadata() -> None:
+    """Nodes must not serialize ``alias``, ``domain`` or ``output_dtype``.
+
+    Rust declared all three on ``GraphNode`` only so the node stayed closed
+    under ``deny_unknown_fields`` — the executor read none of them, and they
+    entered the compiled-graph cache key. They existed for the graph
+    visualizer, which now reads them from the Python graph it already holds.
+    """
+    pipe = Pipeline().source("image_bytes", dtype="u8").resize(height=8, width=8)
+    graph = pl.col("img").cv.pipe(pipe).sink("png", return_expr=False)
+    spec = json.loads(graph._to_json())
+
+    for node_id, node in spec["nodes"].items():
+        for key in ("alias", "domain", "output_dtype"):
+            assert key not in node, f"node {node_id} still serializes {key!r}"
+
+
 # ---------------------------------------------------------------------------
 # The graph wire format is closed in both directions
 # ---------------------------------------------------------------------------
@@ -142,7 +160,7 @@ def test_graph_node_rejects_unknown_fields() -> None:
 
     expr = pl.col("img").cv._plugin(  # type: ignore[attr-defined]
         "vb_graph",
-        kwargs={"graph_json": tampered, "expr_column_names": []},
+        kwargs={"graph_json": tampered},
     )
     with pytest.raises(pl.exceptions.ComputeError) as excinfo:
         df.lazy().select(out=expr).collect()
@@ -159,12 +177,12 @@ def test_graph_node_rejects_unknown_fields() -> None:
 def test_assert_shape_has_no_batch_parameter() -> None:
     """``assert_shape(batch=...)`` must raise, not be silently recorded.
 
-    It reached ``ShapeHints.batch`` and stopped there. Nothing read it: not
-    ``has_all_dims``, not ``expected_shape``, not ``_current_input_dims``, and
+    It reached a ``batch`` shape hint and stopped there. Nothing read it: not
+    ``has_all_dims``, not ``expected_shape``, not the planner's shape input, and
     not Rust — the node-level ``shape_hints`` wire field it was serialized into
     had already lost its last reader, and then the field itself. So a caller who
     declared a batch dimension got exactly the same plan as one who did not,
-    while ``ShapeHints.to_dict`` went on emitting it.
+    while the hints' ``to_dict`` went on emitting it.
 
     The hints are positional and track three dimensions; a fourth had no
     position to occupy. ``assert_shape(dims=[...])`` is the spelling for a shape
@@ -174,14 +192,13 @@ def test_assert_shape_has_no_batch_parameter() -> None:
     with pytest.raises(TypeError, match="batch"):
         Pipeline().source("image_bytes").assert_shape(batch=4)
 
-    from polars_cv._types import ShapeHints
+    # The planner's state (Rust's, held as `PlanState`) tracks exactly three
+    # positional sizes; the hints class that carried `batch` is gone with it.
+    from polars_cv.pipeline import PlanState
 
-    assert not hasattr(ShapeHints(), "batch"), (
-        "ShapeHints.batch is back; it was removed because nothing read it"
-    )
-    assert not hasattr(ShapeHints, "to_dict"), (
-        "ShapeHints.to_dict is back; it serialized the node-level `shape_hints` "
-        "wire field, which no longer exists"
+    assert len(PlanState().dims) == 3
+    assert not hasattr(PlanState(), "batch"), (
+        "a `batch` size is back; it was removed because nothing read it"
     )
 
 
@@ -202,12 +219,14 @@ def test_contour_source_rejects_a_dtype_assertion() -> None:
 
     The dtype is now published from the rasterize contract instead, so the
     parameter has nothing left to say. ``.cast(...)`` after the source is the
-    supported way to change it, and it runs through the real cast op.
+    supported way to change it, and it runs through the real cast op. The
+    typed contour source has no ``dtype`` field, so the rejection names the
+    formats that do take one (the ``.cast`` hint went with the hand-kept hint
+    table, typed-op P4).
     """
-    with pytest.raises(ValueError, match="dtype does not apply"):
-        Pipeline().source("contour", width=8, height=8, dtype="f32")
-    with pytest.raises(ValueError, match="use .cast"):
-        Pipeline().source("contour", width=8, height=8, dtype="u8")
+    for dtype in ("f32", "u8"):
+        with pytest.raises(ValueError, match="'dtype' does not apply to the 'contour'"):
+            Pipeline().source("contour", width=8, height=8, dtype=dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -225,14 +244,15 @@ def test_the_python_sink_spec_dataclasses_are_gone() -> None:
     They were not inert. Each held a copy of which sink parameters apply to
     which format (``if format == JPEG or WEBP: result["quality"]``), and that
     copy was wrong in the same way the docstrings were — the WebP encoder takes
-    no quality. `SINK_PARAM_APPLIES` is the one place that fact now lives.
+    no quality. The typed sinks (`src/formats/sink.rs`) are the one place that
+    fact now lives.
     """
     import polars_cv._types as types_module
 
     for name in ("SinkSpec", "OutputSpec", "MultiSinkSpec"):
         assert not hasattr(types_module, name), (
             f"{name} was deleted as unreachable; the sink's wire format is "
-            f"Rust's SinkSpec and its parameter table is SINK_PARAM_APPLIES"
+            f"the typed Rust `Sink` (src/formats/sink.rs)"
         )
 
 
@@ -560,8 +580,8 @@ def test_affine_fusion_pass_is_gone() -> None:
     ):
         assert gone not in source, (
             f"{gone} was restored -- affine fusion is removed; if a new "
-            f"interpolation-fusing pass is added it must declare bit_exact=False "
-            f"and be tested within a tolerance, not silently."
+            f"interpolation-fusing pass is added it must be tested within a "
+            f"tolerance explicitly, not slipped past the byte-equality guard."
         )
 
 
@@ -964,27 +984,74 @@ def test_no_module_carries_its_own_plugin_path() -> None:
 
 
 # ---------------------------------------------------------------------------
-# POLARS_CV_ENGINE_WARN_ROWS: a row threshold for a cost that is not row-shaped
+# The single-thread engine warning: its premise is gone
 # ---------------------------------------------------------------------------
 
 
-def test_the_engine_warning_reads_no_row_threshold() -> None:
-    """The single-thread warning must not go back to counting rows (CR-32).
+@plugin_required
+def test_the_single_thread_engine_warning_is_gone() -> None:
+    """A long in-memory call prints nothing about threads (CR-32).
 
-    ``POLARS_CV_ENGINE_WARN_ROWS`` fired at 50 000 rows in one call, but an
-    image row costs milliseconds, so a single-threaded run could take tens of
-    seconds without firing. The warning is now based on how long one call ran
-    with no other call alongside it (``POLARS_CV_ENGINE_WARN_SECONDS``). The
-    old name survives only in the notice telling a user who still sets it that
-    it is no longer read.
+    The warning told eager users their call "ran on one thread" and sent them
+    to the streaming engine. A call now runs its rows on the plugin's thread
+    pool, so the advice is false and the warning, with its
+    ``POLARS_CV_ENGINE_WARN_SECONDS`` / ``POLARS_CV_SILENCE_ENGINE_WARNING``
+    knobs, was deleted. Run with the threshold that used to fire on any call.
     """
-    source = next(p for p in rust_sources() if p.name == "engine_warning.rs")
-    text = source.read_text()
-    assert "POLARS_CV_ENGINE_WARN_SECONDS" in text, (
-        "probe is broken: engine_warning.rs no longer reads the seconds "
-        "threshold, so the absence check below proves nothing"
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(
+        """
+        import polars as pl
+        from polars_cv import Pipeline
+        from tests.conftest import make_test_png
+
+        df = pl.DataFrame({"img": [make_test_png(32, 32)] * 16})
+        pipe = Pipeline().source("image_bytes", dtype="u8").blur(sigma=1.0)
+        df.lazy().select(o=pl.col("img").cv.pipe(pipe).sink("numpy")).collect(
+            engine="in-memory"
+        )
+        """
     )
-    assert 'var("POLARS_CV_ENGINE_WARN_ROWS")' not in text, (
-        "the row threshold is being read again"
+    env = {**os.environ, "POLARS_CV_ENGINE_WARN_SECONDS": "0.000001"}
+    env.pop("POLARS_CV_SILENCE_ENGINE_WARNING", None)
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=Path(__file__).resolve().parents[1],
     )
-    assert "DEFAULT_WARN_ROWS" not in text, "the row threshold constant is back"
+    assert "polars-cv:" not in proc.stderr, proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# expr_column_names: expression params bound to inputs by display text
+# ---------------------------------------------------------------------------
+
+
+@plugin_required
+def test_vb_graph_rejects_the_expr_column_names_kwarg() -> None:
+    """Expression params are ``{"$slot": n}``; no name list binds them.
+
+    ``expr_column_names`` paired each expression's display text with an input
+    column. Text is not identity (CR-31), and the list made the cache key
+    depend on which expressions happened to be alive. ``GraphKwargs`` is
+    ``deny_unknown_fields``, so a caller still sending it must fail rather
+    than have it silently ignored.
+    """
+    graph = (
+        pl.col("img")
+        .cv.pipe(Pipeline().source("image_bytes", dtype="u8").grayscale())
+        .sink("png", return_expr=False)
+    )
+    expr = pl.col("img").cv._plugin(  # type: ignore[attr-defined]
+        "vb_graph",
+        kwargs={"graph_json": graph._to_json(), "expr_column_names": []},
+    )
+    with pytest.raises(pl.exceptions.ComputeError, match="expr_column_names"):
+        pl.DataFrame({"img": [b""]}).lazy().select(out=expr).collect()

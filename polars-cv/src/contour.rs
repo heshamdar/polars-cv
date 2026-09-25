@@ -21,15 +21,17 @@ use view_buffer::geometry::{
     ops::ScaleOrigin,
     pairwise, predicates, transforms,
 };
-use view_buffer::{naming, ViewBuffer};
+use view_buffer::ViewBuffer;
 
 // `contour_accessor!` is `#[macro_export]`ed, so it lives at the crate root
 // regardless of module order; importing it by name avoids depending on
 // `geom_arity` being declared before `contour` in lib.rs.
 use crate::contour_accessor;
 use crate::geom_arity::{elementwise_field, row_contours, Arity, ContourOutput};
-use crate::geom_params::{check_range, GeomParams, InputSlots};
+use crate::geom_params::{check_range, GeomParams};
+use crate::ops::{ColumnRef, Literal, Param};
 use crate::params::NullParamPolicy;
+use polars_cv_macros::Op;
 
 // ============================================================================
 // Contour Serialization Helpers
@@ -117,62 +119,46 @@ pub fn contour_to_anyvalue(contour: &Contour) -> AnyValue<'static> {
 /// Closed for the same reason as [`GraphKwargs`]: this is a plugin-boundary
 /// struct, so a kwarg Python emits and Rust does not declare is drift, not a
 /// value to discard in silence.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Op)]
 #[serde(deny_unknown_fields)]
 pub struct ContourKwargs {
     /// Whether to compute signed area (for area operation).
-    #[serde(default)]
-    pub signed: bool,
+    pub signed: Option<Param<bool>>,
     /// Reference width for coordinate operations.
-    #[serde(default)]
-    pub ref_width: Option<f64>,
+    pub ref_width: Option<Param<f64>>,
     /// Reference height for coordinate operations.
-    #[serde(default)]
-    pub ref_height: Option<f64>,
+    pub ref_height: Option<Param<f64>>,
     /// X offset for translation.
-    #[serde(default)]
-    pub dx: Option<f64>,
+    pub dx: Option<Param<f64>>,
     /// Y offset for translation.
-    #[serde(default)]
-    pub dy: Option<f64>,
+    pub dy: Option<Param<f64>>,
     /// X scale factor.
-    #[serde(default)]
-    pub sx: Option<f64>,
+    pub sx: Option<Param<f64>>,
     /// Y scale factor.
-    #[serde(default)]
-    pub sy: Option<f64>,
+    pub sy: Option<Param<f64>>,
     /// Tolerance for simplification.
-    #[serde(default)]
-    pub tolerance: Option<f64>,
+    pub tolerance: Option<Param<f64>>,
     /// Winding direction for ensure_winding.
-    #[serde(default)]
-    pub direction: Option<String>,
+    pub direction: Option<Param<Winding>>,
     /// Origin for scale operations: "origin", "centroid", or "bbox_center".
-    #[serde(default)]
-    pub origin: Option<String>,
+    pub origin: Option<Param<ScaleOrigin>>,
     /// IoU threshold for detection matching.
-    #[serde(default)]
-    pub threshold: Option<f64>,
+    pub threshold: Option<Param<f64>>,
     /// Reduction method for label scoring.
-    #[serde(default)]
-    pub reduction: Option<String>,
+    pub reduction: Option<Param<LabelReduction>>,
     /// Region mode for label scoring.
-    #[serde(default)]
-    pub region_mode: Option<String>,
-    /// Maps a named input — data operand or per-row parameter — to its index
-    /// in `inputs`. A parameter absent from the map is literal, read from the
-    /// scalar fields above. Every input beyond the namespace's own column at
-    /// index 0 must appear here; `GeomParams::new` rejects a map that does not
-    /// account for all of them, so a stale caller fails loudly instead of
-    /// silently dropping an operand.
-    #[serde(default)]
-    pub input_slots: InputSlots,
+    pub region_mode: Option<Param<LabelRegionMode>>,
+    /// The other geometry column of a correspondence.
+    pub other: Option<ColumnRef>,
+    /// A correspondence's optional priority order column.
+    pub order: Option<ColumnRef>,
+    /// The image column label reduction scores against.
+    pub image: Option<ColumnRef>,
     /// What a null in a per-row parameter column means for that row: `raise`
     /// (default) fails the expression, `null` yields a null result for the
-    /// affected rows. Set from Python by `_PluginNamespace.on_null` and applied
+    /// affected rows. Set from Python by `_GeomNullPolicy.on_null` and applied
     /// by `GeomParams::row`.
-    #[serde(default)]
-    pub on_null: NullParamPolicy,
+    pub on_null: Option<Literal<NullParamPolicy>>,
 }
 
 /// Parse a contour from a Polars value.
@@ -485,38 +471,6 @@ fn extract_points_from_series(series: &Series) -> PolarsResult<Vec<Point>> {
     Ok(points)
 }
 
-/// Resolve a string parameter against an enum's canonical `NAMED` table.
-///
-/// The same table the graph path and the `enum_variants` FFI read, so the two
-/// `label_reduce` entry points cannot drift apart on accepted names.
-fn parse_named<T: Copy>(
-    table: &[(&str, T)],
-    param: &str,
-    value: Option<&str>,
-    default: T,
-) -> PolarsResult<T> {
-    let Some(name) = value else {
-        return Ok(default);
-    };
-    require_named(table, param, name)
-}
-
-/// Resolve a string parameter that has no default, rejecting anything the
-/// table does not name.
-///
-/// Split from [`parse_named`] rather than given a sentinel default: a
-/// parameter the caller must supply has no correct value to fall back to, and
-/// the two silent `_ => <default>` arms this replaced are exactly what an
-/// invented fallback looks like once it ships.
-fn require_named<T: Copy>(table: &[(&str, T)], param: &str, name: &str) -> PolarsResult<T> {
-    naming::lookup(table, name).ok_or_else(|| {
-        polars_err!(
-            ComputeError: "Unsupported {} '{}'. Expected one of: {}",
-            param, name, naming::names(table).join(", ")
-        )
-    })
-}
-
 fn parse_numeric_series(series: &Series) -> PolarsResult<Vec<f64>> {
     let mut values = Vec::with_capacity(series.len());
     for i in 0..series.len() {
@@ -787,15 +741,12 @@ fn correspond_rows<T>(
     parse: impl Fn(&AnyValue) -> PolarsResult<Vec<T>>,
     build_matrix: impl Fn(&[T], &[T]) -> Vec<Vec<f64>>,
 ) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
+    let params = GeomParams::new(inputs, kwargs, kwargs.on_null)?;
     let left_series = &inputs[0];
     // Both operands are looked up by name: `order` is optional, so nothing
     // here may read a fixed position.
-    let right_series = params
-        .slot("other")
-        .map(|idx| &inputs[idx])
-        .ok_or_else(|| polars_err!(ComputeError: "missing required input 'other'"))?;
-    let order_series = params.slot("order").map(|idx| &inputs[idx]);
+    let right_series = params.required_column(&kwargs.other, "other")?;
+    let order_series = params.column(&kwargs.order);
     let len = left_series.len();
     let dtype = DataType::Struct(correspondence_fields());
 
@@ -812,7 +763,7 @@ fn correspond_rows<T>(
         // check moves into the loop and names the offending row. A null
         // `threshold` under `on_null="null"` nulls this row instead.
         let Some(threshold) = params.row(|| {
-            let threshold = params.f64("threshold", kwargs.threshold, 0.5, i)?;
+            let threshold = params.get(&kwargs.threshold, 0.5, i)?;
             check_range("threshold", threshold, 0.0, 1.0, i)?;
             Ok(threshold)
         })?
@@ -867,7 +818,7 @@ contour_accessor! {
     /// Compute contour area.
     map_params fn contour_area / contour_area_output_type -> |_input| DataType::Float64;
     |contour, params, kwargs, row| {
-        let signed = params.bool("signed", kwargs.signed, row)?;
+        let signed = params.get(&kwargs.signed, false, row)?;
         Ok(AnyValue::Float64(measures::area(contour, signed)))
     }
 }
@@ -1054,12 +1005,9 @@ fn contour_correspond(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<
 /// share their region modes, their reductions and their empty-region fallback.
 #[polars_expr(output_type_func=label_reduce_output_type)]
 fn contour_label_reduce(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
+    let params = GeomParams::new(inputs, &kwargs, kwargs.on_null)?;
     let contour_series = &inputs[0];
-    let heatmap_series = params
-        .slot("image")
-        .map(|idx| &inputs[idx])
-        .ok_or_else(|| polars_err!(ComputeError: "missing required input 'image'"))?;
+    let heatmap_series = params.required_column(&kwargs.image, "image")?;
     let len = contour_series.len();
     let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
 
@@ -1074,18 +1022,8 @@ fn contour_label_reduce(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResul
         // Per-row capable, matching `Pipeline.label_reduce`: neither choice
         // affects the output's shape or dtype.
         let Some((reduction, region_mode)) = params.row(|| {
-            let reduction = parse_named(
-                LabelReduction::NAMED,
-                "reduction",
-                params.str_opt("reduction", kwargs.reduction.as_deref(), i)?,
-                LabelReduction::Max,
-            )?;
-            let region_mode = parse_named(
-                LabelRegionMode::NAMED,
-                "region_mode",
-                params.str_opt("region_mode", kwargs.region_mode.as_deref(), i)?,
-                LabelRegionMode::Interior,
-            )?;
+            let reduction = params.get(&kwargs.reduction, LabelReduction::Max, i)?;
+            let region_mode = params.get(&kwargs.region_mode, LabelRegionMode::Interior, i)?;
             Ok((reduction, region_mode))
         })?
         else {
@@ -1140,8 +1078,8 @@ contour_accessor! {
     map_params fn contour_translate / contour_translate_output_type
         -> |input| Arity::elem_dtype(input);
     |contour, params, kwargs, row| {
-        let dx = params.f64("dx", kwargs.dx, 0.0, row)?;
-        let dy = params.f64("dy", kwargs.dy, 0.0, row)?;
+        let dx = params.get(&kwargs.dx, 0.0, row)?;
+        let dy = params.get(&kwargs.dy, 0.0, row)?;
         Ok(transforms::translate(contour, dx, dy))
     }
 }
@@ -1151,22 +1089,17 @@ contour_accessor! {
     map_params fn contour_scale / contour_scale_output_type
         -> |input| Arity::elem_dtype(input);
     |contour, params, kwargs, row| {
-        let sx = params.f64("sx", kwargs.sx, 1.0, row)?;
-        let sy = params.f64("sy", kwargs.sy, 1.0, row)?;
+        let sx = params.get(&kwargs.sx, 1.0, row)?;
+        let sy = params.get(&kwargs.sy, 1.0, row)?;
         // Per-row capable, like `sx`/`sy` beside it: which point the scale
         // is measured from does not change the output's shape, rank or
         // dtype, so it meets the eligibility rule for a per-row parameter.
-        // Resolved against `ScaleOrigin::NAMED` — the hand-written match
-        // this replaced ended in a silent default, so `origin="top_left"`
-        // scaled about the centroid and said nothing. The no-value default
-        // is `Origin` because that is what the Python signature declares;
-        // the two used to disagree.
-        let scale_origin = parse_named(
-            ScaleOrigin::NAMED,
-            "origin",
-            params.str_opt("origin", kwargs.origin.as_deref(), row)?,
-            ScaleOrigin::Origin,
-        )?;
+        // A typed `Param<ScaleOrigin>` — the hand-written match this
+        // replaced ended in a silent default, so `origin="top_left"` scaled
+        // about the centroid and said nothing. The no-value default is
+        // `Origin` because that is what the Python signature declares; the
+        // two used to disagree.
+        let scale_origin = params.get(&kwargs.origin, ScaleOrigin::Origin, row)?;
         Ok(transforms::scale(contour, sx, sy, scale_origin))
     }
 }
@@ -1176,7 +1109,7 @@ contour_accessor! {
     map_params fn contour_simplify / contour_simplify_output_type
         -> |input| Arity::elem_dtype(input);
     |contour, params, kwargs, row| {
-        let tolerance = params.f64("tolerance", kwargs.tolerance, 1.0, row)?;
+        let tolerance = params.get(&kwargs.tolerance, 1.0, row)?;
         Ok(transforms::simplify(contour, tolerance))
     }
 }
@@ -1199,8 +1132,8 @@ contour_accessor! {
     map_params fn contour_normalize / contour_normalize_output_type
         -> |input| Arity::elem_dtype(input);
     |contour, params, kwargs, row| {
-        let ref_width = params.f64("ref_width", kwargs.ref_width, 1.0, row)?;
-        let ref_height = params.f64("ref_height", kwargs.ref_height, 1.0, row)?;
+        let ref_width = params.get(&kwargs.ref_width, 1.0, row)?;
+        let ref_height = params.get(&kwargs.ref_height, 1.0, row)?;
         Ok(transforms::normalize(contour, ref_width, ref_height))
     }
 }
@@ -1210,8 +1143,8 @@ contour_accessor! {
     map_params fn contour_to_absolute / contour_to_absolute_output_type
         -> |input| Arity::elem_dtype(input);
     |contour, params, kwargs, row| {
-        let ref_width = params.f64("ref_width", kwargs.ref_width, 1.0, row)?;
-        let ref_height = params.f64("ref_height", kwargs.ref_height, 1.0, row)?;
+        let ref_width = params.get(&kwargs.ref_width, 1.0, row)?;
+        let ref_height = params.get(&kwargs.ref_height, 1.0, row)?;
         Ok(transforms::to_absolute(contour, ref_width, ref_height))
     }
 }
@@ -1228,15 +1161,7 @@ contour_accessor! {
         // The match this replaced fell back to counter-clockwise for
         // anything it did not recognise, which meant `ensure_winding("CW")`
         // returned the *opposite* of what was asked for, silently.
-        let direction = require_named(
-            Winding::NAMED,
-            "winding direction",
-            params
-                .str_opt("direction", kwargs.direction.as_deref(), row)?
-                .ok_or_else(
-                    || polars_err!(ComputeError: "ensure_winding requires a 'direction'"),
-                )?,
-        )?;
+        let direction = params.required(&kwargs.direction, "ensure_winding's 'direction'", row)?;
         Ok(transforms::ensure_winding(contour, direction))
     }
 }
@@ -1508,11 +1433,14 @@ mod named_param_tests {
 
     use super::*;
 
+    fn kwargs(v: serde_json::Value) -> Result<ContourKwargs, String> {
+        serde_json::from_value(v).map_err(|e| e.to_string())
+    }
+
     #[test]
     fn a_required_parameter_rejects_a_name_the_table_does_not_hold() {
-        let err = require_named(Winding::NAMED, "winding direction", "CW")
-            .expect_err("a miscased spelling must be rejected, not guessed")
-            .to_string();
+        let err = kwargs(serde_json::json!({"direction": "CW"}))
+            .expect_err("a miscased spelling must be rejected, not guessed");
         assert!(err.contains("CW"), "the value must be named: {err}");
         assert!(
             err.contains("ccw") && err.contains("cw"),
@@ -1522,14 +1450,10 @@ mod named_param_tests {
 
     #[test]
     fn a_required_parameter_has_no_default_to_fall_back_to() {
-        // The distinction `require_named` exists for: `parse_named` answers
-        // "not supplied" with a default, and a parameter the caller must
-        // supply has no correct one.
-        assert_eq!(
-            parse_named(Winding::NAMED, "d", None, Winding::Clockwise).unwrap(),
-            Winding::Clockwise
-        );
-        assert!(require_named(Winding::NAMED, "d", "").is_err());
+        let inputs = [Series::new("c".into(), &[0i32])];
+        let k = kwargs(serde_json::json!({})).unwrap();
+        let params = GeomParams::new(&inputs, &k, None).unwrap();
+        assert!(params.required(&k.direction, "direction", 0).is_err());
     }
 
     #[test]
@@ -1543,11 +1467,8 @@ mod named_param_tests {
             ("cw", Winding::Clockwise),
             ("clockwise", Winding::Clockwise),
         ] {
-            assert_eq!(
-                require_named(Winding::NAMED, "winding direction", name).unwrap(),
-                expected,
-                "{name}"
-            );
+            let k = kwargs(serde_json::json!({"direction": name})).unwrap();
+            assert_eq!(k.direction, Some(Param::Lit(expected)), "{name}");
         }
     }
 
@@ -1558,26 +1479,11 @@ mod named_param_tests {
             ("bbox_center", ScaleOrigin::BBoxCenter),
             ("origin", ScaleOrigin::Origin),
         ] {
-            assert_eq!(
-                parse_named(
-                    ScaleOrigin::NAMED,
-                    "origin",
-                    Some(name),
-                    ScaleOrigin::Origin
-                )
-                .unwrap(),
-                expected,
-                "{name}"
-            );
+            let k = kwargs(serde_json::json!({"origin": name})).unwrap();
+            assert_eq!(k.origin, Some(Param::Lit(expected)), "{name}");
         }
-        let err = parse_named(
-            ScaleOrigin::NAMED,
-            "origin",
-            Some("top_left"),
-            ScaleOrigin::Origin,
-        )
-        .expect_err("a plausible name from another library must be rejected")
-        .to_string();
+        let err = kwargs(serde_json::json!({"origin": "top_left"}))
+            .expect_err("a plausible name from another library must be rejected");
         assert!(
             err.contains("top_left") && err.contains("bbox_center"),
             "{err}"
@@ -1588,9 +1494,36 @@ mod named_param_tests {
     fn an_absent_origin_takes_the_default_python_declares() {
         // `Origin`, not `Centroid`: the Rust `None` arm and the Python
         // signature used to disagree about this.
+        let inputs = [Series::new("c".into(), &[0i32])];
+        let k = kwargs(serde_json::json!({})).unwrap();
+        let params = GeomParams::new(&inputs, &k, None).unwrap();
         assert_eq!(
-            parse_named(ScaleOrigin::NAMED, "origin", None, ScaleOrigin::Origin).unwrap(),
+            params.get(&k.origin, ScaleOrigin::Origin, 0).unwrap(),
             ScaleOrigin::Origin
         );
+    }
+
+    /// Every input past the namespace's own column must be read by exactly
+    /// one kwarg: an unclaimed one is an operand that was dropped.
+    #[test]
+    fn every_extra_input_must_be_claimed_by_a_kwarg() {
+        let inputs = [
+            Series::new("c".into(), &[0i32]),
+            Series::new("w".into(), &[2.0f64]),
+        ];
+        let k = kwargs(serde_json::json!({"ref_width": {"$slot": 1}})).unwrap();
+        assert!(GeomParams::new(&inputs, &k, None).is_ok());
+        let k = kwargs(serde_json::json!({})).unwrap();
+        let err = GeomParams::new(&inputs, &k, None)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("exactly once"), "{err}");
+        let k = kwargs(serde_json::json!({"ref_width": {"$slot": 2}})).unwrap();
+        let err = GeomParams::new(&inputs, &k, None)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("'ref_width' reads input 2"), "{err}");
     }
 }

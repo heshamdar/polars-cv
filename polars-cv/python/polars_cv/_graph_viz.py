@@ -53,21 +53,26 @@ class LogicalGraph:
 OUTPUT_NODE_ID = "__output__"
 
 
-def parse_logical_graph(spec: Dict[str, Any]) -> LogicalGraph:
+def parse_logical_graph(pipeline_graph: PipelineGraph) -> LogicalGraph:
+    """The display graph: ops and wiring from the serialized spec, and each
+    node's alias and planned domain/dtype from the Python graph itself (the
+    plugin wire format carries no display metadata)."""
+    spec = pipeline_graph._to_dict()
     graph = LogicalGraph()
 
     # Parse compute + source nodes
     for node_id, payload in spec["nodes"].items():
         upstream = payload.get("upstream", [])
         is_source = len(upstream) == 0
+        node = pipeline_graph._nodes[node_id]
 
         graph.nodes[node_id] = ComputeNode(
             node_id=node_id,
             kind=NodeKind.SOURCE if is_source else NodeKind.COMPUTE,
-            alias=payload.get("alias"),
+            alias=node.alias,
             ops=payload.get("ops", []),
-            domain=payload["domain"],
-            dtype=payload["output_dtype"],
+            domain=node.pipeline.current_domain(),
+            dtype=node.pipeline.output_dtype(),
             upstream=upstream,
             source_format=payload["source"]["format"] if is_source else None,
         )
@@ -116,6 +121,19 @@ def build_dag(graph: LogicalGraph) -> nx.DiGraph:
 ## Visualization
 
 
+def _wire_label(value: Any) -> Any:
+    """A field's display value: ``Expr`` for a slot, the literal otherwise.
+
+    Typed ops carry bare values (lists element by element); legacy ops wrap a
+    literal as ``{"type": "literal", "value": ...}``.
+    """
+    if isinstance(value, dict):
+        return "Expr" if "$slot" in value else _wire_label(value.get("value"))
+    if isinstance(value, list):
+        return [_wire_label(v) for v in value]
+    return value
+
+
 def style_node(payload: BaseNode) -> Dict[str, Any]:
     if payload.kind == NodeKind.SOURCE:
         assert isinstance(payload, ComputeNode)
@@ -135,9 +153,7 @@ def style_node(payload: BaseNode) -> Dict[str, Any]:
 
         ops = ""
         for op in payload.ops:
-            op_dict = {
-                k: v.get("value", "Expr") for k, v in op.items() if k != "op"
-            }  # if not a value must be an expression
+            op_dict = {k: _wire_label(v) for k, v in op.items() if k != "op"}
             ops_string = op["op"] + str(op_dict)
             ops += ops_string + "\n"
 
@@ -174,12 +190,10 @@ def get_graphviz_out(graph: PipelineGraph) -> Source:
     """
     if not _VIZ_AVAILABLE:
         raise ImportError(
-            "Graph visualization requires 'networkx', 'graphviz', and 'pydot' packages. "
-            "Install them with: pip install networkx graphviz pydot"
+            "Graph visualization requires 'networkx', 'graphviz', and 'pydot'. "
+            "Install them with: pip install 'polars-cv[viz]'"
         )
-    spec = graph._to_dict()
-
-    logical = parse_logical_graph(spec)
+    logical = parse_logical_graph(graph)
     dag = build_dag(logical)
     dot = visualize_dag(dag)
 

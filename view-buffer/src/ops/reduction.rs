@@ -5,7 +5,7 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule, ViewType};
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
@@ -548,9 +548,7 @@ impl Op for ReductionOp {
         }
     }
 
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
-        let input_shape = inputs[0];
-
+    fn shape(&self) -> OpShape {
         let axis = match self {
             ReductionOp::Max { axis }
             | ReductionOp::Min { axis }
@@ -561,20 +559,7 @@ impl Op for ReductionOp {
             // PopCount and Percentile are always global reductions
             ReductionOp::PopCount | ReductionOp::Percentile { .. } => None,
         };
-
-        match axis {
-            None => vec![1], // Global reduction
-            Some(ax) => {
-                let mut out_shape: Vec<usize> = input_shape.to_vec();
-                if ax < out_shape.len() {
-                    out_shape.remove(ax);
-                }
-                if out_shape.is_empty() {
-                    out_shape.push(1);
-                }
-                out_shape
-            }
-        }
+        OpShape::Reduce { axis }
     }
 
     fn output_rank_rule(&self) -> OutputRankRule {
