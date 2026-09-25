@@ -338,7 +338,7 @@ merge and the binary ops are graph-level steps `infer_shape` rejects. For
 those the H/W hints are **invalidated**, not carried forward — several of them
 do change H/W, and keeping the pre-op values is how a pipeline came to publish
 `[100, 200, 2]` for data that executes as `[200, 3, 2]`. Unknown is always safe:
-`expected_shape` reports `None` and a typed sink asks for an explicit shape. Unknowns
+the output publishes no shape and a typed sink asks for an explicit shape. Unknowns
 propagate automatically: an unknown input dim or a per-row expression param
 yields a `None` output dim. This covers every op uniformly — including rotation
 (static 90/270 swap, static-angle expand bounding box, and expression-angle

@@ -15,29 +15,27 @@ use crate::formats::sink::Sink;
 use crate::formats::source::Source;
 use crate::params::NullParamPolicy;
 
-use super::encode::{default_domain, default_dtype};
+use crate::plan::State;
 
 /// Output specification for a single output in the graph.
 ///
-/// Closed like `GraphNode`: `deny_unknown_fields` does not descend, so this
-/// sibling of the node needed its own.
+/// Deserialized from [`WireOutput`]: the wire carries the output node's final
+/// planned [`State`], and the `expected_*` facts below are read off it here,
+/// in one place, rather than each projected by the Python planner.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "WireOutput")]
 pub struct OutputSpec {
     /// The node ID to output.
     pub node: String,
     /// Sink specification.
     pub sink: Sink,
     /// Expected output domain for validation and type inference.
-    #[serde(default = "default_domain")]
     pub expected_domain: String,
     /// Expected output dtype for list/array sinks.
-    #[serde(default = "default_dtype")]
     pub expected_dtype: String,
     /// Expected output shape for list/array sinks.
-    #[serde(default)]
     pub expected_shape: Option<Vec<usize>>,
-    /// Did any dimension of `expected_shape` come from a user `assert_shape`?
+    /// Did any dimension of the plan come from a user `assert_shape`?
     ///
     /// Decides who [`validate_output_schema`](super::compiled) reports a
     /// plan/exec divergence against. An inferred shape that execution
@@ -45,17 +43,59 @@ pub struct OutputSpec {
     /// *asserted* one is a claim about the caller's data, and reporting it as
     /// "the planner's shape contract disagrees with the Rust implementation"
     /// sent people to read plugin source over their own typo.
-    #[serde(default)]
     pub shape_asserted: bool,
     /// Expected number of dimensions for list sinks.
-    #[serde(default)]
     pub expected_ndim: Option<usize>,
     /// The output is histogram buckets: a `vector`-domain output encoded as
     /// `List(Struct[lower_edge, upper_edge, count, normalized])` rather than by
     /// its (domain, format) pair. Read off the output node's ops at load
     /// ([`UnifiedGraph::from_json`]), never sent on the wire.
-    #[serde(skip)]
     pub histogram_buckets: bool,
+}
+
+/// An output as it crosses the wire. Closed like `GraphNode`:
+/// `deny_unknown_fields` does not descend, so this sibling needed its own.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireOutput {
+    node: String,
+    sink: Sink,
+    /// The output node's final planned state.
+    planned: State,
+}
+
+impl From<WireOutput> for OutputSpec {
+    fn from(wire: WireOutput) -> Self {
+        let WireOutput {
+            node,
+            sink,
+            planned,
+        } = wire;
+        // A shape is published only for a rank-3 `[H, W, C]` output whose three
+        // sizes are all known: the state tracks H/W/C, so at any other rank it
+        // cannot describe the shape — publishing `[H, W, C]` for a rank-2
+        // output is how `channel_select` once declared a schema execution
+        // could not produce.
+        let expected_shape = (planned.ndim == Some(3))
+            .then(|| {
+                planned
+                    .dims
+                    .iter()
+                    .map(|d| d.and_then(|n| usize::try_from(n).ok()))
+                    .collect::<Option<Vec<_>>>()
+            })
+            .flatten();
+        OutputSpec {
+            node,
+            sink,
+            expected_domain: planned.domain,
+            expected_dtype: planned.dtype,
+            expected_shape,
+            shape_asserted: planned.asserted.iter().any(|a| *a),
+            expected_ndim: planned.ndim,
+            histogram_buckets: false,
+        }
+    }
 }
 /// Result type for individual row execution.
 ///
@@ -122,7 +162,7 @@ view_buffer::naming::named_variants!(RowErrorPolicy: "What a failing row does to
 
 #[cfg(test)]
 mod row_error_policy_tests {
-    use super::UnifiedGraph;
+    use super::{OutputSpec, UnifiedGraph};
 
     fn graph_with(field: &str, value: &str) -> String {
         UnifiedGraph::from_json(&format!(
@@ -132,17 +172,69 @@ mod row_error_policy_tests {
         .unwrap_or_else(|e| e.to_string())
     }
 
+    /// One output over a single `image_bytes` node, planned as `planned`.
+    fn output(planned: &str) -> Result<OutputSpec, String> {
+        UnifiedGraph::from_json(&format!(
+            r#"{{"nodes": {{"n0": {{"source": {{"format": "image_bytes"}}, "ops": []}}}},
+                "outputs": {{"_output": {{"node": "n0", "sink": {{"format": "numpy"}}{planned}}}}}}}"#
+        ))
+        .map(|g| g.outputs["_output"].clone())
+        .map_err(|e| e.to_string())
+    }
+
+    /// The output facts are read off the node's planned state: a shape only
+    /// for rank 3 with all three sizes known, "asserted" if any dimension was.
+    #[test]
+    fn output_facts_are_read_off_the_planned_state() {
+        let spec = |state: &str| output(&format!(r#", "planned": {state}"#)).unwrap();
+        let full = spec(r#"{"domain": "buffer", "dtype": "u8", "ndim": 3, "dims": [4, 5, 3]}"#);
+        assert_eq!(
+            (full.expected_domain.as_str(), full.expected_dtype.as_str()),
+            ("buffer", "u8")
+        );
+        assert_eq!(full.expected_shape, Some(vec![4, 5, 3]));
+        assert_eq!(full.expected_ndim, Some(3));
+        assert!(!full.shape_asserted);
+        // Channels unknown: no shape, though H and W are known.
+        let partial =
+            spec(r#"{"domain": "buffer", "dtype": "u8", "ndim": 3, "dims": [4, 5, null]}"#);
+        assert_eq!(partial.expected_shape, None);
+        // Rank 2: the H/W/C state cannot describe the shape.
+        let rank2 = spec(r#"{"domain": "buffer", "dtype": "u8", "ndim": 2, "dims": [4, 5, 3]}"#);
+        assert_eq!((rank2.expected_shape, rank2.expected_ndim), (None, Some(2)));
+        let asserted = spec(
+            r#"{"domain": "buffer", "dtype": "f32", "ndim": 3, "dims": [8, 8, 3],
+                "asserted": [false, true, false], "declared": true}"#,
+        );
+        assert!(asserted.shape_asserted);
+    }
+
+    /// An output without its planned state is refused rather than defaulted
+    /// (the Python side once fell back to `"buffer"`/`"u8"` for it).
+    #[test]
+    fn an_output_without_its_planned_state_is_refused() {
+        let err = output("").unwrap_err();
+        assert!(err.contains("missing field `planned`"), "{err}");
+        let err = output(r#", "planned": {"dtype": "u8"}"#).unwrap_err();
+        assert!(err.contains("missing field `domain`"), "{err}");
+        let err =
+            output(r#", "planned": {"domain": "buffer", "dtype": "u8"}, "expected_dtype": "u8""#)
+                .unwrap_err();
+        assert!(err.contains("unknown field `expected_dtype`"), "{err}");
+    }
+
     /// Histogram buckets are recognised from the node's own last step (or its
     /// lineage's, through an op-less node), not from a wire field Python had to
     /// remember to set.
     #[test]
     fn histogram_buckets_are_read_off_the_ops() {
+        let planned = r#""planned": {"domain": "vector", "dtype": "f64"}"#;
         let graph = |ops: &str, extra: &str| {
             UnifiedGraph::from_json(&format!(
                 r#"{{"nodes": {{"n0": {{"source": {{"format": "image_bytes"}}, "ops": {ops}}},
                      "n1": {{"source": {{"format": "blob"}}, "ops": [], "upstream": ["n0"]}}}},
-                    "outputs": {{"a": {{"node": "n0", "sink": {{"format": "native"}}{extra}}},
-                                 "b": {{"node": "n1", "sink": {{"format": "native"}}}}}}}}"#
+                    "outputs": {{"a": {{"node": "n0", "sink": {{"format": "native"}}, {planned}{extra}}},
+                                 "b": {{"node": "n1", "sink": {{"format": "native"}}, {planned}}}}}}}"#
             ))
         };
         let buckets = r#"[{"op": "histogram", "bins": 4, "range": null, "closed": "left", "output": "buckets"}]"#;

@@ -108,16 +108,6 @@ def _matrix_param_from_floats(values: "list[float]") -> "ParamValue":
     )
 
 
-#: view-buffer's identity domain (`Domain::Any`): a step declaring it accepts
-#: whatever it is handed, mirroring `Domain::accepts` on the Rust side. It is
-#: deliberately *not* a member of the user-facing `Domain` enum — no pipeline is
-#: ever *in* this domain, so `test_enum_parity_domain` excludes it from the
-#: surfaced variant set. No step currently declares it — binary ops and
-#: reductions list `["buffer", "vector"]` explicitly rather than opting out of
-#: the check entirely — but the contract may return it, so the reader honours it.
-_DOMAIN_ANY = "any"
-
-
 def _source_param_defaults() -> "dict[str, Any]":
     """Each ``Pipeline.source`` keyword's default, read from its signature.
 
@@ -2056,8 +2046,8 @@ class Pipeline(_OpsMixin):
         Shape hints are deliberately *not* emitted: no Rust code ever read the
         key, and because ``graph_json`` is the compiled-graph cache key, two
         pipelines that execute identically but carry different hints occupied
-        separate cache entries. Plan-time shape still crosses the boundary as
-        ``expected_shape`` on the output spec, which Rust does read.
+        separate cache entries. Plan-time shape still crosses the boundary in
+        each output's ``planned`` state, which Rust does read.
 
         Args:
             slot_of: The graph's slot resolver (``SlotTable.index``), mapping

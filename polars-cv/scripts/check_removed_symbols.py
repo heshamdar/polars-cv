@@ -269,6 +269,19 @@ REMOVED: tuple[Removed, ...] = (
     Removed("_current_domain", "P7e: PlanState.domain"),
     Removed("_expected_ndim", "P7e: PlanState.ndim"),
     Removed("ShapeHints", "P7e: PlanState.dims"),
+    Removed(
+        "shape_asserted",
+        "P7e: an output carries its planned state; Rust reads the facts off it",
+        # The Rust OutputSpec field it is read into, and the graph's reporting.
+        allowed_in=frozenset(
+            {
+                "polars-cv/src/graph/types.rs",
+                "polars-cv/src/graph/compiled.rs",
+                "polars-cv/src/graph/encode.rs",
+                "polars-cv/src/graph/sink_kind.rs",
+            }
+        ),
+    ),
     Removed("ShapeAssertion", "P7e: an assertion is plan_assert's wire dict"),
     Removed("_plan_step", "P7e: _push_op calls plan_step and keeps its state"),
     Removed("_apply_step", "P7e: _push_op calls plan_step and keeps its state"),

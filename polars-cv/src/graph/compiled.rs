@@ -1888,7 +1888,7 @@ mod tests {
             }
         },
         "outputs": {
-            "_output": {"node": "n0", "sink": {"format": "blob"}}
+            "_output": {"node": "n0", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}
         },
         "column_bindings": {"n0": 0}
     }"#;
@@ -1901,7 +1901,7 @@ mod tests {
             }
         },
         "outputs": {
-            "_output": {"node": "n0", "sink": {"format": "blob"}}
+            "_output": {"node": "n0", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}
         },
         "column_bindings": {"n0": 0}
     }"#;
@@ -1932,7 +1932,7 @@ mod tests {
                 }
             },
             "outputs": {
-                "_output": {"node": "n0", "sink": {"format": "blob"}}
+                "_output": {"node": "n0", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}
             },
             "column_bindings": {"n0": 0}
         }"#;
@@ -2108,7 +2108,7 @@ mod tests {
                     "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
                            "ops": [{"op": "add", "other": "n0"}]}
                 },
-                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
+                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
@@ -2124,7 +2124,7 @@ mod tests {
                     "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
                            "ops": [{"op": "apply_mask", "mask": "n0", "invert": false}]}
                 },
-                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
+                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), &[mask_blob()])],
@@ -2140,7 +2140,7 @@ mod tests {
                     "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
                            "ops": [{"op": "channel_merge", "others": ["n0"]}]}
                 },
-                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
+                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), &[single])],
@@ -2153,7 +2153,7 @@ mod tests {
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "extract_contours", "mode": "external", "method": "simple"}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "contour"}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "planned": {"domain": "contour", "dtype": "auto"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), &[mask_blob()])],
@@ -2165,7 +2165,7 @@ mod tests {
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "reduce_sum"}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "scalar"}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "planned": {"domain": "scalar", "dtype": "auto"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
@@ -2178,7 +2178,7 @@ mod tests {
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "histogram", "bins": 4, "range": null,
                                            "closed": "left", "output": "counts"}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
@@ -2194,7 +2194,7 @@ mod tests {
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "perceptual_hash",
                                            "algorithm": "average", "hash_size": 64}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
@@ -2208,7 +2208,7 @@ mod tests {
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "extract_shape"}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "vector"}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "planned": {"domain": "vector", "dtype": "auto"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
@@ -2233,7 +2233,7 @@ mod tests {
                                            "contours": {"$slot": 1},
                                            "reduction": "max",
                                            "region_mode": "interior"}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "vector"}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "planned": {"domain": "vector", "dtype": "auto"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), &[mask_blob()]), cont_col],
@@ -2265,7 +2265,7 @@ mod tests {
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "reduce_max",
                                            "axis": 0}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), &[blob])],
@@ -2285,7 +2285,7 @@ mod tests {
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "reduce_percentile",
                                            "q": 50.0}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "scalar"}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "planned": {"domain": "scalar", "dtype": "auto"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), &[blob])],
@@ -2312,7 +2312,7 @@ mod tests {
             }
         },
         "outputs": {
-            "_output": {"node": "n0", "sink": {"format": "blob"}}
+            "_output": {"node": "n0", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}
         },
         "column_bindings": {"n0": 0}
     }"#;
@@ -2460,7 +2460,7 @@ mod tests {
         let err = compile_err(
             r#"{
             "nodes": {"n0": {"source": {"format": "blob"}}},
-            "outputs": {"_output": {"node": "nope", "sink": {"format": "blob"}}},
+            "outputs": {"_output": {"node": "nope", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
             "column_bindings": {"n0": 0}
         }"#,
         );
@@ -2476,7 +2476,7 @@ mod tests {
                 "n0": {"source": {"format": "blob"}},
                 "orphan": {"source": {"format": "blob"}}
             },
-            "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
+            "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
             "column_bindings": {"n0": 0}
         }"#,
         );
@@ -2494,7 +2494,7 @@ mod tests {
                 "n0": {"source": {"format": "blob"}},
                 "n1": {"source": {"format": "blob"}, "upstream": ["ghost"]}
             },
-            "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
+            "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
             "column_bindings": {"n0": 0}
         }"#,
         );
@@ -2506,7 +2506,7 @@ mod tests {
         let err = compile_err(
             r#"{
             "nodes": {"n0": {"source": {"format": "carrier_pigeon"}}},
-            "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
+            "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
             "column_bindings": {"n0": 0}
         }"#,
         );

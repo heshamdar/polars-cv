@@ -612,12 +612,6 @@ pub(super) fn histogram_struct_dtype() -> DataType {
     ])
 }
 
-pub(crate) fn default_domain() -> String {
-    "buffer".to_string()
-}
-pub(crate) fn default_dtype() -> String {
-    "auto".to_string()
-}
 #[cfg(test)]
 mod tests {
     use super::super::types::UnifiedGraph;
@@ -688,7 +682,7 @@ mod tests {
                 }
             },
             "outputs": {
-                "_output": {"node": "_node_0", "sink": {"format": "numpy"}}
+                "_output": {"node": "_node_0", "sink": {"format": "numpy"}, "planned": {"domain": "buffer", "dtype": "auto"}}
             },
             "column_bindings": {"_node_0": 0}
         }"#;
@@ -712,8 +706,8 @@ mod tests {
                 }
             },
             "outputs": {
-                "original": {"node": "_node_0", "sink": {"format": "png"}},
-                "processed": {"node": "_node_1", "sink": {"format": "numpy"}}
+                "original": {"node": "_node_0", "sink": {"format": "png"}, "planned": {"domain": "buffer", "dtype": "auto"}},
+                "processed": {"node": "_node_1", "sink": {"format": "numpy"}, "planned": {"domain": "buffer", "dtype": "auto"}}
             },
             "column_bindings": {"_node_0": 0}
         }"#;
@@ -731,8 +725,8 @@ mod tests {
                 "b": {"source": {"format": "blob"}, "ops": [], "upstream": ["a"]}
             },
             "outputs": {
-                "out_a": {"node": "a", "sink": {"format": "numpy"}},
-                "out_b": {"node": "b", "sink": {"format": "png"}}
+                "out_a": {"node": "a", "sink": {"format": "numpy"}, "planned": {"domain": "buffer", "dtype": "auto"}},
+                "out_b": {"node": "b", "sink": {"format": "png"}, "planned": {"domain": "buffer", "dtype": "auto"}}
             },
             "column_bindings": {"a": 0}
         }"#;

@@ -667,7 +667,7 @@ def is_supplied(value: Any, default: Any) -> bool:
 #: The dimension a shape hint names, by position. The hints are **positional**:
 #: ``height`` is dimension 0, ``width`` dimension 1, ``channels`` dimension 2,
 #: whatever the data means by them. Every reader agrees on that order —
-#: ``PlanState.dims`` holds the sizes in it and ``GraphNode.expected_shape`` publishes ``[H, W, C]`` from it — so the
+#: ``PlanState.dims`` holds the sizes in it and the output's ``[H, W, C]`` shape (read off it in Rust) follows it — so the
 #: order is named once here rather than re-spelled at each site.
 #:
 #: This is why ``assert_shape`` rejects ``height=``/``width=``/``channels=``
