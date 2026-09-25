@@ -1353,7 +1353,7 @@ class Pipeline(_OpsMixin):
         """
         target = self._out_dtype_target("clamp", out_dtype, preserve_dtype)
 
-        new = self._clamp(min_val, max_val)
+        new = self._clamp(min=min_val, max=max_val)
         return self._apply_out_dtype(new, target)
 
     # --- Core math primitives ---
@@ -1403,7 +1403,7 @@ class Pipeline(_OpsMixin):
         Returns:
             Self for chaining.
         """
-        return self.convert_color("rgb", "hsv")
+        return self.convert_color(from_space="rgb", to_space="hsv")
 
     def to_lab(self) -> "Pipeline":
         """Convert from RGB to CIE LAB color space.
@@ -1413,7 +1413,7 @@ class Pipeline(_OpsMixin):
         Returns:
             Self for chaining.
         """
-        return self.convert_color("rgb", "lab")
+        return self.convert_color(from_space="rgb", to_space="lab")
 
     def to_bgr(self) -> "Pipeline":
         """Convert from RGB to BGR channel order.
@@ -1421,7 +1421,7 @@ class Pipeline(_OpsMixin):
         Returns:
             Self for chaining.
         """
-        return self.convert_color("rgb", "bgr")
+        return self.convert_color(from_space="rgb", to_space="bgr")
 
     def to_ycbcr(self) -> "Pipeline":
         """Convert from RGB to YCbCr color space.
@@ -1429,7 +1429,7 @@ class Pipeline(_OpsMixin):
         Returns:
             Self for chaining.
         """
-        return self.convert_color("rgb", "ycbcr")
+        return self.convert_color(from_space="rgb", to_space="ycbcr")
 
     # --- Convolution / Filtering ---
 
@@ -1461,7 +1461,7 @@ class Pipeline(_OpsMixin):
         sobel_x_3: list[FloatOrExpr] = [-1.0, 0.0, 1.0, -2.0, 0.0, 2.0, -1.0, 0.0, 1.0]
         sobel_y_3: list[FloatOrExpr] = [-1.0, -2.0, -1.0, 0.0, 0.0, 0.0, 1.0, 2.0, 1.0]
         kernel = sobel_x_3 if axis == "x" else sobel_y_3
-        return self.convolve2d(kernel, ksize, normalize=False)
+        return self.convolve2d(kernel=kernel, ksize=ksize, normalize=False)
 
     def laplacian(self, *, ksize: int = 3) -> "Pipeline":
         """
@@ -1488,7 +1488,7 @@ class Pipeline(_OpsMixin):
             raise ValueError(msg)
 
         laplacian_3 = [0.0, 1.0, 0.0, 1.0, -4.0, 1.0, 0.0, 1.0, 0.0]
-        return self.convolve2d(laplacian_3, ksize, normalize=False)
+        return self.convolve2d(kernel=laplacian_3, ksize=ksize, normalize=False)
 
     def sharpen(self, *, strength: FloatOrExpr = 1.0) -> "Pipeline":
         """
@@ -1524,7 +1524,7 @@ class Pipeline(_OpsMixin):
         center = 1.0 + 8.0 * s
         neg = -s
         k = [neg, neg, neg, neg, center, neg, neg, neg, neg]
-        return self.convolve2d(k, 3, normalize=False)
+        return self.convolve2d(kernel=k, ksize=3, normalize=False)
 
     # --- Edge Detection ---
 
@@ -1682,7 +1682,7 @@ class Pipeline(_OpsMixin):
         # sx/sy may be per-row expressions; warp_affine tracks each matrix
         # element independently, so the shear matrix passes them through.
         matrix: list[FloatOrExpr] = [1.0, sx, 0.0, sy, 1.0, 0.0]
-        return self.warp_affine(matrix, output_size)
+        return self.warp_affine(matrix=matrix, output_size=output_size)
 
     def rotate_and_scale(
         self,
@@ -1727,7 +1727,7 @@ class Pipeline(_OpsMixin):
             ```
         """
         matrix = _rotation_matrix(angle, center, scale)
-        return self.warp_affine(matrix, output_size)
+        return self.warp_affine(matrix=matrix, output_size=output_size)
 
     def perceptual_hash(
         self,

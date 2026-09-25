@@ -28,11 +28,9 @@ pub struct Convolve2d {
     /// coefficient may be a literal float or a Polars expression**, so a batch
     /// can convolve with a different kernel per row. The kernel *length* is
     /// structural and must be a literal odd square.
-    #[param(positional)]
     pub kernel: Vec<Param<f32>>,
     /// Kernel dimension (must be odd; kernel is ``ksize × ksize``). Accepts a
     /// Polars expression for per-row dynamic values.
-    #[param(positional)]
     pub ksize: Param<u32>,
     /// If True, divide output by the sum of absolute kernel values.
     #[param(default = false)]

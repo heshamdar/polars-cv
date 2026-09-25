@@ -202,7 +202,11 @@ class TestEnumValuesExecutable:
         "to_space", [c.value for c in ColorSpace if c.value != "rgb"]
     )
     def test_color_spaces(self, image_bytes: bytes, to_space: str) -> None:
-        pipe = Pipeline().source("image_bytes").convert_color("rgb", to_space)
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .convert_color(from_space="rgb", to_space=to_space)
+        )
         _run(pipe, "numpy", image_bytes)
 
     @pytest.mark.parametrize("dtype", [d.value for d in DType])
@@ -370,7 +374,7 @@ class TestListParamElementsAcceptExpressions:
             lambda k: (
                 Pipeline()
                 .source("image_bytes")
-                .convolve2d([k] * 4 + [1.0] + [k] * 4, 3)
+                .convolve2d(kernel=[k] * 4 + [1.0] + [k] * 4, ksize=3)
             ),
             [0.0, 1.0, 0.5],
             column="k",
@@ -408,7 +412,9 @@ class TestListParamElementsAcceptExpressions:
     def test_convolve2d_rejects_a_non_square_kernel(self) -> None:
         """The kernel *length* is checkable even when ``ksize`` is dynamic."""
         with pytest.raises(ValueError, match="square of an odd number"):
-            Pipeline().source("image_bytes").convolve2d([1.0] * 8, pl.col("k"))
+            Pipeline().source("image_bytes").convolve2d(
+                kernel=[1.0] * 8, ksize=pl.col("k")
+            )
 
 
 @plugin_required
@@ -450,7 +456,9 @@ class TestEnumParamsAcceptExpressions:
         _assert_matches_per_row_literals(
             image_bytes,
             lambda b: (
-                Pipeline().source("image_bytes").convolve2d([1.0] * 9, 3, border=b)
+                Pipeline()
+                .source("image_bytes")
+                .convolve2d(kernel=[1.0] * 9, ksize=3, border=b)
             ),
             ["replicate", "zero", "reflect"],
             column="b",
@@ -663,7 +671,9 @@ class TestFlagParamsAcceptExpressions:
         _assert_matches_per_row_literals(
             image_bytes,
             lambda n: (
-                Pipeline().source("image_bytes").convolve2d([1.0] * 9, 3, normalize=n)
+                Pipeline()
+                .source("image_bytes")
+                .convolve2d(kernel=[1.0] * 9, ksize=3, normalize=n)
             ),
             [True, False],
             column="n",

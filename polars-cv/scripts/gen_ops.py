@@ -171,19 +171,34 @@ def method_name(op: dict[str, Any]) -> str:
     raise ValueError(msg)
 
 
+def positional(op: dict[str, Any]) -> str | None:
+    """The op's positional-or-keyword parameter, if it has one.
+
+    The signature rule: an op with exactly one required field takes it
+    positional-or-keyword (``.cast("f32")``, ``.threshold(128)``); every other
+    parameter is keyword-only. Derived, never declared, so no op can opt out.
+    """
+    required = [
+        f["name"]
+        for f in op["fields"]
+        if "default" not in f and f["type"]["kind"] != "optional"
+    ]
+    return required[0] if len(required) == 1 else None
+
+
 def method(op: dict[str, Any]) -> str:
     """Render one builder method."""
-    params = ["self"]
-    keyword_only = False
-    for field in op["fields"]:
-        if not field["positional"] and not keyword_only:
-            params.append("*")
-            keyword_only = True
+    first = positional(op)
+    fields = sorted(op["fields"], key=lambda f: f["name"] != first)
+    params = ["self", *(["*"] if first is None and fields else [])]
+    for field in fields:
         text = f"{field['name']}: {annotation(field['type'])}"
         default = _default(field)
         if default is not None:
             text += f" = {default}"
         params.append(text)
+        if field["name"] == first and len(fields) > 1:
+            params.append("*")
     values = ", ".join(f'"{f["name"]}": {f["name"]}' for f in op["fields"])
     doc = _indent(docstring(op), "        ").lstrip()
     return (
@@ -199,7 +214,6 @@ def is_binary(op: dict[str, Any]) -> bool:
     return (
         op["visibility"] == "lazy_only"
         and len(fields) == 1
-        and fields[0]["positional"]
         and fields[0]["type"]["kind"] == "node"
     )
 

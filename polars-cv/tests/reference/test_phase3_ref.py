@@ -101,7 +101,12 @@ class TestConvolveIdentity:
     ) -> None:
         """An identity kernel (center=1, rest=0) should preserve the image."""
         identity = [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
-        pipe = Pipeline().source("image_bytes").grayscale().convolve2d(identity, 3)
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .convolve2d(kernel=identity, ksize=3)
+        )
         result = _run_pipe(pipe, gray_png)
 
         # Result is f32 (promote_to_float), input was u8
@@ -129,7 +134,7 @@ class TestConvolveBoxBlur:
             Pipeline()
             .source("image_bytes")
             .grayscale()
-            .convolve2d(box_kernel, 3, normalize=True, border="replicate")
+            .convolve2d(kernel=box_kernel, ksize=3, normalize=True, border="replicate")
         )
         result = _run_pipe(pipe, gray_png)
         if result.ndim == 3 and result.shape[2] == 1:
@@ -471,7 +476,7 @@ class TestConvolveBorderModes:
             Pipeline()
             .source("image_bytes")
             .grayscale()
-            .convolve2d(kernel, 3, border="zero")
+            .convolve2d(kernel=kernel, ksize=3, border="zero")
         )
         result = _run_pipe(pipe, gray_png)
         assert result is not None
@@ -483,7 +488,7 @@ class TestConvolveBorderModes:
             Pipeline()
             .source("image_bytes")
             .grayscale()
-            .convolve2d(kernel, 3, normalize=True, border="reflect")
+            .convolve2d(kernel=kernel, ksize=3, normalize=True, border="reflect")
         )
         result = _run_pipe(pipe, gray_png)
         assert result is not None
@@ -500,12 +505,12 @@ class TestConvolveValidation:
     def test_even_ksize_rejected(self) -> None:
         """Even ksize should raise ValueError."""
         with pytest.raises(ValueError, match="odd"):
-            Pipeline().source("image_bytes").convolve2d([1.0] * 4, 2)
+            Pipeline().source("image_bytes").convolve2d(kernel=[1.0] * 4, ksize=2)
 
     def test_kernel_size_mismatch(self) -> None:
         """Kernel length not matching ksize² should raise ValueError."""
         with pytest.raises(ValueError, match="doesn't match"):
-            Pipeline().source("image_bytes").convolve2d([1.0, 2.0], 3)
+            Pipeline().source("image_bytes").convolve2d(kernel=[1.0, 2.0], ksize=3)
 
     def test_invalid_border_mode(self) -> None:
         """Invalid border mode should raise ValueError.
@@ -514,7 +519,9 @@ class TestConvolveValidation:
         validates ``border`` against the view-buffer ``BorderMode`` authority
         (matching every other enum-valued parameter)."""
         with pytest.raises(ValueError, match="unknown BorderMode"):
-            Pipeline().source("image_bytes").convolve2d([1.0] * 9, 3, border="invalid")
+            Pipeline().source("image_bytes").convolve2d(
+                kernel=[1.0] * 9, ksize=3, border="invalid"
+            )
 
     def test_sobel_invalid_ksize(self) -> None:
         """Sobel with ksize != 3 should raise ValueError."""
@@ -539,7 +546,7 @@ class TestConvolveMultiChannel:
     def test_rgb_convolve(self, rgb_png: bytes, rgb_image: np.ndarray) -> None:
         """Convolution should work on RGB images (per-channel)."""
         identity = [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
-        pipe = Pipeline().source("image_bytes").convolve2d(identity, 3)
+        pipe = Pipeline().source("image_bytes").convolve2d(kernel=identity, ksize=3)
         result = _run_pipe(pipe, rgb_png)
 
         assert result.ndim == 3

@@ -15,7 +15,6 @@
       {
         "name": "other",
         "doc": "The expression to combine with, element-wise.",
-        "positional": true,
         "type": {
           "kind": "node"
         }
@@ -31,7 +30,6 @@
       {
         "name": "value",
         "doc": "Constant addend (literal or per-row expression).",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -49,7 +47,6 @@
       {
         "name": "factor",
         "doc": "Contrast factor. 1.0 = no change, >1 = more contrast, <1 = less.",
-        "positional": false,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -67,7 +64,6 @@
       {
         "name": "gamma",
         "doc": "Gamma value. <1 = brighter, >1 = darker, 1.0 = no change.",
-        "positional": false,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -85,7 +81,6 @@
       {
         "name": "mask",
         "doc": "The mask's node.",
-        "positional": true,
         "type": {
           "kind": "node"
         }
@@ -93,7 +88,6 @@
       {
         "name": "invert",
         "doc": "If True, invert the mask (keep exterior, zero interior).",
-        "positional": false,
         "default": false,
         "type": {
           "kind": "scalar",
@@ -112,7 +106,6 @@
       {
         "name": "other",
         "doc": "The expression to combine with, element-wise.",
-        "positional": true,
         "type": {
           "kind": "node"
         }
@@ -128,7 +121,6 @@
       {
         "name": "other",
         "doc": "The expression to combine with, element-wise.",
-        "positional": true,
         "type": {
           "kind": "node"
         }
@@ -144,7 +136,6 @@
       {
         "name": "other",
         "doc": "The expression to combine with, element-wise.",
-        "positional": true,
         "type": {
           "kind": "node"
         }
@@ -160,7 +151,6 @@
       {
         "name": "other",
         "doc": "The expression to combine with, element-wise.",
-        "positional": true,
         "type": {
           "kind": "node"
         }
@@ -176,7 +166,6 @@
       {
         "name": "sigma",
         "doc": "Standard deviation for Gaussian kernel.",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -194,7 +183,6 @@
       {
         "name": "low_threshold",
         "doc": "Lower hysteresis threshold.",
-        "positional": false,
         "default": 50.0,
         "type": {
           "kind": "scalar",
@@ -205,7 +193,6 @@
       {
         "name": "high_threshold",
         "doc": "Upper hysteresis threshold.",
-        "positional": false,
         "default": 150.0,
         "type": {
           "kind": "scalar",
@@ -224,7 +211,6 @@
       {
         "name": "dtype",
         "doc": "Target data type (e.g., \"f32\", \"u8\").",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": false,
@@ -261,7 +247,6 @@
       {
         "name": "others",
         "doc": "The other single-channel operands' nodes, in channel order after this\none.",
-        "positional": true,
         "type": {
           "kind": "list",
           "inner": {
@@ -280,7 +265,6 @@
       {
         "name": "index",
         "doc": "Channel index to extract (0-based). Accepts a Polars expression for\nper-row dynamic selection.",
-        "positional": false,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -298,7 +282,6 @@
       {
         "name": "order",
         "doc": "New channel ordering, e.g. [2, 1, 0] for RGB-to-BGR. **Each index may be\na literal or a Polars expression**, so the permutation can vary per row.\nThe list *length* is the channel count and must be literal.",
-        "positional": false,
         "type": {
           "kind": "list",
           "inner": {
@@ -319,7 +302,6 @@
       {
         "name": "min",
         "doc": "Minimum value (literal or expression).",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -329,7 +311,6 @@
       {
         "name": "max",
         "doc": "Maximum value (literal or expression).",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -347,7 +328,6 @@
       {
         "name": "value",
         "doc": "Upper bound (literal or per-row expression).",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -365,7 +345,6 @@
       {
         "name": "value",
         "doc": "Lower bound (literal or per-row expression).",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -383,7 +362,6 @@
       {
         "name": "signed",
         "doc": "If True, return signed area (negative for CW winding).",
-        "positional": false,
         "default": false,
         "type": {
           "kind": "scalar",
@@ -430,7 +408,6 @@
       {
         "name": "sx",
         "doc": "X scale factor.",
-        "positional": false,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -440,7 +417,6 @@
       {
         "name": "sy",
         "doc": "Y scale factor.",
-        "positional": false,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -450,7 +426,6 @@
       {
         "name": "origin",
         "doc": "Point to scale about — ``\"centroid\"`` (the default), ``\"bbox_center\"``\nor ``\"origin\"``. Accepts an expression for a per-row choice: which\npoint the scale is measured from changes no output shape, rank or\ndtype, so it meets the eligibility rule for a per-row parameter.",
-        "positional": false,
         "default": "centroid",
         "type": {
           "kind": "scalar",
@@ -474,7 +449,6 @@
       {
         "name": "tolerance",
         "doc": "Maximum distance from the original contour.",
-        "positional": false,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -492,7 +466,6 @@
       {
         "name": "dx",
         "doc": "X offset (horizontal translation).",
-        "positional": false,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -502,7 +475,6 @@
       {
         "name": "dy",
         "doc": "Y offset (vertical translation).",
-        "positional": false,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -520,7 +492,6 @@
       {
         "name": "kernel",
         "doc": "Flattened kernel values (row-major, ``ksize × ksize``). **Each\ncoefficient may be a literal float or a Polars expression**, so a batch\ncan convolve with a different kernel per row. The kernel *length* is\nstructural and must be a literal odd square.",
-        "positional": true,
         "type": {
           "kind": "list",
           "inner": {
@@ -533,7 +504,6 @@
       {
         "name": "ksize",
         "doc": "Kernel dimension (must be odd; kernel is ``ksize × ksize``). Accepts a\nPolars expression for per-row dynamic values.",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -543,7 +513,6 @@
       {
         "name": "normalize",
         "doc": "If True, divide output by the sum of absolute kernel values.",
-        "positional": false,
         "default": false,
         "type": {
           "kind": "scalar",
@@ -554,7 +523,6 @@
       {
         "name": "border",
         "doc": "Border handling mode (``\"replicate\"``, ``\"zero\"``, ``\"reflect\"``).",
-        "positional": false,
         "default": "replicate",
         "type": {
           "kind": "scalar",
@@ -578,7 +546,6 @@
       {
         "name": "top",
         "doc": "Top offset.",
-        "positional": false,
         "default": 0,
         "type": {
           "kind": "scalar",
@@ -589,7 +556,6 @@
       {
         "name": "left",
         "doc": "Left offset.",
-        "positional": false,
         "default": 0,
         "type": {
           "kind": "scalar",
@@ -600,7 +566,6 @@
       {
         "name": "height",
         "doc": "Crop height (None = to end).",
-        "positional": false,
         "type": {
           "kind": "optional",
           "inner": {
@@ -613,7 +578,6 @@
       {
         "name": "width",
         "doc": "Crop width (None = to end).",
-        "positional": false,
         "type": {
           "kind": "optional",
           "inner": {
@@ -634,7 +598,6 @@
       {
         "name": "from_space",
         "doc": "Source color space (rgb, bgr, hsv, lab, ycbcr, gray).",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": false,
@@ -652,7 +615,6 @@
       {
         "name": "to_space",
         "doc": "Target color space (rgb, bgr, hsv, lab, ycbcr, gray).",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": false,
@@ -678,7 +640,6 @@
       {
         "name": "ksize",
         "doc": "Size of the square structuring element. Must be odd and >= 1.\nAccepts a Polars expression for per-row dynamic values.",
-        "positional": false,
         "default": 3,
         "type": {
           "kind": "scalar",
@@ -689,7 +650,6 @@
       {
         "name": "iterations",
         "doc": "Number of times the operation is applied. Accepts a Polars\nexpression for per-row dynamic values.",
-        "positional": false,
         "default": 1,
         "type": {
           "kind": "scalar",
@@ -708,7 +668,6 @@
       {
         "name": "other",
         "doc": "The expression to combine with, element-wise.",
-        "positional": true,
         "type": {
           "kind": "node"
         }
@@ -731,7 +690,6 @@
       {
         "name": "ksize",
         "doc": "Size of the square structuring element. Must be odd and >= 1.\nAccepts a Polars expression for per-row dynamic values.",
-        "positional": false,
         "default": 3,
         "type": {
           "kind": "scalar",
@@ -742,7 +700,6 @@
       {
         "name": "iterations",
         "doc": "Number of times the operation is applied. Accepts a Polars\nexpression for per-row dynamic values.",
-        "positional": false,
         "default": 1,
         "type": {
           "kind": "scalar",
@@ -761,7 +718,6 @@
       {
         "name": "mode",
         "doc": "\"external\" (outer only), \"tree\" (full hierarchy), \"all\".",
-        "positional": false,
         "default": "external",
         "type": {
           "kind": "scalar",
@@ -777,7 +733,6 @@
       {
         "name": "method",
         "doc": "\"simple\" (remove redundant), \"none\" (all points), \"approx\".",
-        "positional": false,
         "default": "simple",
         "type": {
           "kind": "scalar",
@@ -793,7 +748,6 @@
       {
         "name": "min_area",
         "doc": "Filter small contours. Accepts a Polars expression for per-row dynamic\nthresholds.",
-        "positional": false,
         "type": {
           "kind": "optional",
           "inner": {
@@ -821,7 +775,6 @@
       {
         "name": "axes",
         "doc": "Axes to flip.",
-        "positional": true,
         "type": {
           "kind": "list",
           "inner": {
@@ -856,7 +809,6 @@
       {
         "name": "bins",
         "doc": "Number of bins (default 256), a Polars expression for per-row dynamic\nbin count, or an explicit list of bin edges.",
-        "positional": true,
         "default": 256,
         "type": {
           "kind": "one_of",
@@ -880,7 +832,6 @@
       {
         "name": "range",
         "doc": "(min, max) tuple. Auto-detected if None.",
-        "positional": true,
         "type": {
           "kind": "optional",
           "inner": {
@@ -897,7 +848,6 @@
       {
         "name": "closed",
         "doc": "\"left\" or \"right\" interval inclusiveness (default \"left\").",
-        "positional": true,
         "default": "left",
         "type": {
           "kind": "scalar",
@@ -912,7 +862,6 @@
       {
         "name": "output",
         "doc": "\"buckets\" (list of structs), \"counts\" (bin counts), \"normalized\" (sum to\n1.0), \"quantized\" (pixel indices), \"edges\" (bin edges).",
-        "positional": true,
         "default": "buckets",
         "type": {
           "kind": "scalar",
@@ -945,7 +894,6 @@
       {
         "name": "contours",
         "doc": "Contour-set expression (`List[Contour]`) to score.",
-        "positional": false,
         "type": {
           "kind": "column"
         }
@@ -953,7 +901,6 @@
       {
         "name": "reduction",
         "doc": "Reduction over contour region values (`\"max\"`, `\"mean\"`, `\"sum\"`).",
-        "positional": false,
         "default": "max",
         "type": {
           "kind": "scalar",
@@ -969,7 +916,6 @@
       {
         "name": "region_mode",
         "doc": "Region selection mode. ``\"interior\"`` — only pixels strictly inside the\ncontour polygon. ``\"boundary\"`` — interior pixels *plus* pixels on the\ncontour boundary (avoids zero-score artifacts for sub-pixel contours).\n``\"bbox\"`` — all pixels within the bounding box.",
-        "positional": false,
         "default": "interior",
         "type": {
           "kind": "scalar",
@@ -993,7 +939,6 @@
       {
         "name": "height",
         "doc": "Target height (literal or expression).",
-        "positional": false,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -1003,7 +948,6 @@
       {
         "name": "width",
         "doc": "Target width (literal or expression).",
-        "positional": false,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -1013,7 +957,6 @@
       {
         "name": "value",
         "doc": "Fill value for padding (default 0, typically black). Accepts a Polars\nexpression for per-row dynamic values.",
-        "positional": false,
         "default": 0.0,
         "type": {
           "kind": "scalar",
@@ -1024,7 +967,6 @@
       {
         "name": "filter",
         "doc": "Resampling filter for the resize step (default \"lanczos3\").",
-        "positional": false,
         "default": "lanczos3",
         "type": {
           "kind": "scalar",
@@ -1050,7 +992,6 @@
       {
         "name": "other",
         "doc": "The expression to combine with, element-wise.",
-        "positional": true,
         "type": {
           "kind": "node"
         }
@@ -1066,7 +1007,6 @@
       {
         "name": "other",
         "doc": "The expression to combine with, element-wise.",
-        "positional": true,
         "type": {
           "kind": "node"
         }
@@ -1082,7 +1022,6 @@
       {
         "name": "ksize",
         "doc": "Size of the square structuring element. Must be odd and >= 1. Accepts a\nPolars expression for per-row dynamic values.",
-        "positional": false,
         "default": 3,
         "type": {
           "kind": "scalar",
@@ -1101,7 +1040,6 @@
       {
         "name": "other",
         "doc": "The expression to combine with, element-wise.",
-        "positional": true,
         "type": {
           "kind": "node"
         }
@@ -1124,7 +1062,6 @@
       {
         "name": "method",
         "doc": "Normalization method: \"minmax\" scales values to [0, 1] using\nper-element min/max; \"zscore\" standardizes to mean=0, std=1 using\nper-element statistics; \"preset\" applies ImageNet-style channel-wise\nnormalization, `(x - mean[c]) / std[c]`, with the given `mean` and `std`.",
-        "positional": true,
         "default": "minmax",
         "type": {
           "kind": "scalar",
@@ -1140,7 +1077,6 @@
       {
         "name": "mean",
         "doc": "Per-channel mean values; required for, and only valid with,\nmethod=\"preset\" (e.g. ImageNet `[0.485, 0.456, 0.406]`). Each element may\nbe a literal float or a Polars expression; the list length is the channel\ncount.",
-        "positional": true,
         "type": {
           "kind": "optional",
           "inner": {
@@ -1156,7 +1092,6 @@
       {
         "name": "std",
         "doc": "Per-channel standard deviation values; required for, and only valid\nwith, method=\"preset\" (e.g. ImageNet `[0.229, 0.224, 0.225]`). Each\nelement accepts an expression, as with `mean`.",
-        "positional": true,
         "type": {
           "kind": "optional",
           "inner": {
@@ -1172,7 +1107,6 @@
       {
         "name": "out_dtype",
         "doc": "Output dtype (default f32). Normalization computes in f32 and the result\nis cast to this dtype at execution. For half precision use the sink\ndtype instead (`.sink(\"numpy\", dtype=\"f16\")`).",
-        "positional": true,
         "type": {
           "kind": "optional",
           "inner": {
@@ -1205,7 +1139,6 @@
       {
         "name": "top",
         "doc": "Padding on top edge.",
-        "positional": false,
         "default": 0,
         "type": {
           "kind": "scalar",
@@ -1216,7 +1149,6 @@
       {
         "name": "bottom",
         "doc": "Padding on bottom edge.",
-        "positional": false,
         "default": 0,
         "type": {
           "kind": "scalar",
@@ -1227,7 +1159,6 @@
       {
         "name": "left",
         "doc": "Padding on left edge.",
-        "positional": false,
         "default": 0,
         "type": {
           "kind": "scalar",
@@ -1238,7 +1169,6 @@
       {
         "name": "right",
         "doc": "Padding on right edge.",
-        "positional": false,
         "default": 0,
         "type": {
           "kind": "scalar",
@@ -1249,7 +1179,6 @@
       {
         "name": "value",
         "doc": "Fill value for \"constant\" mode (default 0). Accepts a Polars expression\nfor per-row dynamic values.",
-        "positional": false,
         "default": 0.0,
         "type": {
           "kind": "scalar",
@@ -1260,7 +1189,6 @@
       {
         "name": "mode",
         "doc": "Padding mode - \"constant\", \"edge\", \"reflect\", \"symmetric\".",
-        "positional": false,
         "default": "constant",
         "type": {
           "kind": "scalar",
@@ -1285,7 +1213,6 @@
       {
         "name": "height",
         "doc": "Target height.",
-        "positional": false,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -1295,7 +1222,6 @@
       {
         "name": "width",
         "doc": "Target width.",
-        "positional": false,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -1305,7 +1231,6 @@
       {
         "name": "position",
         "doc": "Where to place original content: \"center\" (default), \"top-left\" or\n\"bottom-right\".",
-        "positional": false,
         "default": "center",
         "type": {
           "kind": "scalar",
@@ -1321,7 +1246,6 @@
       {
         "name": "value",
         "doc": "Fill value for padding (default 0). Accepts a Polars expression for\nper-row dynamic values.",
-        "positional": false,
         "default": 0.0,
         "type": {
           "kind": "scalar",
@@ -1340,7 +1264,6 @@
       {
         "name": "algorithm",
         "doc": "\"perceptual\" (pHash), \"average\" (aHash), \"difference\" (dHash).",
-        "positional": false,
         "default": "perceptual",
         "type": {
           "kind": "scalar",
@@ -1357,7 +1280,6 @@
       {
         "name": "hash_size",
         "doc": "Number of bits in the hash (must be power of 2). It fixes the output\nvector length, so it is literal-only.",
-        "positional": false,
         "default": 64,
         "type": {
           "kind": "scalar",
@@ -1376,7 +1298,6 @@
       {
         "name": "size",
         "doc": "``[height, width]`` of the mask (each may be a Polars expression), or\nanother node whose buffer's height and width the mask takes.",
-        "positional": false,
         "type": {
           "kind": "one_of",
           "options": [
@@ -1398,7 +1319,6 @@
       {
         "name": "fill_value",
         "doc": "Inside value (default 255). Accepts a Polars expression for per-row\ndynamic values.",
-        "positional": false,
         "default": 255,
         "type": {
           "kind": "scalar",
@@ -1409,7 +1329,6 @@
       {
         "name": "background",
         "doc": "Outside value (default 0). Accepts a Polars expression for per-row\ndynamic values.",
-        "positional": false,
         "default": 0,
         "type": {
           "kind": "scalar",
@@ -1428,7 +1347,6 @@
       {
         "name": "other",
         "doc": "The expression to combine with, element-wise.",
-        "positional": true,
         "type": {
           "kind": "node"
         }
@@ -1451,7 +1369,6 @@
       {
         "name": "axis",
         "doc": "Axis along which to find the index.",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": false,
@@ -1469,7 +1386,6 @@
       {
         "name": "axis",
         "doc": "Axis along which to find the index.",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": false,
@@ -1487,7 +1403,6 @@
       {
         "name": "axis",
         "doc": "Axis to reduce along. None for global reduction. It fixes the\noutput rank, so it is literal-only.",
-        "positional": true,
         "type": {
           "kind": "optional",
           "inner": {
@@ -1508,7 +1423,6 @@
       {
         "name": "axis",
         "doc": "Axis to reduce along. None for global reduction. It fixes the\noutput rank, so it is literal-only.",
-        "positional": true,
         "type": {
           "kind": "optional",
           "inner": {
@@ -1529,7 +1443,6 @@
       {
         "name": "axis",
         "doc": "Axis to reduce along. None for global reduction. It fixes the\noutput rank, so it is literal-only.",
-        "positional": true,
         "type": {
           "kind": "optional",
           "inner": {
@@ -1550,7 +1463,6 @@
       {
         "name": "q",
         "doc": "Percentile to compute, in [0, 100]. Accepts a Polars expression for\nper-row dynamic values.",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -1575,7 +1487,6 @@
       {
         "name": "axis",
         "doc": "Axis to reduce along. None for global reduction.",
-        "positional": true,
         "type": {
           "kind": "optional",
           "inner": {
@@ -1588,7 +1499,6 @@
       {
         "name": "ddof",
         "doc": "Delta degrees of freedom. 0 for population std (default), 1 for sample\nstd. Accepts a Polars expression for per-row dynamic values.",
-        "positional": true,
         "default": 0,
         "type": {
           "kind": "scalar",
@@ -1621,7 +1531,6 @@
       {
         "name": "shape",
         "doc": "New shape. The number of entries fixes the output rank; each entry may\nbe a Polars expression.",
-        "positional": true,
         "type": {
           "kind": "list",
           "inner": {
@@ -1642,7 +1551,6 @@
       {
         "name": "height",
         "doc": "Target height.",
-        "positional": false,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -1652,7 +1560,6 @@
       {
         "name": "width",
         "doc": "Target width.",
-        "positional": false,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -1662,7 +1569,6 @@
       {
         "name": "filter",
         "doc": "Interpolation: \"nearest\", \"bilinear\", \"lanczos3\" (default).",
-        "positional": false,
         "default": "lanczos3",
         "type": {
           "kind": "scalar",
@@ -1688,7 +1594,6 @@
       {
         "name": "max_size",
         "doc": "Target for the maximum dimension (literal or expression).",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -1698,7 +1603,6 @@
       {
         "name": "filter",
         "doc": "Resize filter (\"nearest\", \"bilinear\", \"lanczos3\").",
-        "positional": false,
         "default": "lanczos3",
         "type": {
           "kind": "scalar",
@@ -1724,7 +1628,6 @@
       {
         "name": "min_size",
         "doc": "Target for the minimum dimension (literal or expression).",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -1734,7 +1637,6 @@
       {
         "name": "filter",
         "doc": "Resize filter (\"nearest\", \"bilinear\", \"lanczos3\").",
-        "positional": false,
         "default": "lanczos3",
         "type": {
           "kind": "scalar",
@@ -1760,7 +1662,6 @@
       {
         "name": "scale_x",
         "doc": "X (width) scale factor.",
-        "positional": false,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -1770,7 +1671,6 @@
       {
         "name": "scale_y",
         "doc": "Y (height) scale factor.",
-        "positional": false,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -1780,7 +1680,6 @@
       {
         "name": "filter",
         "doc": "Resize filter (\"nearest\", \"bilinear\", \"lanczos3\").",
-        "positional": false,
         "default": "lanczos3",
         "type": {
           "kind": "scalar",
@@ -1806,7 +1705,6 @@
       {
         "name": "height",
         "doc": "Target height (literal or expression).",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -1816,7 +1714,6 @@
       {
         "name": "filter",
         "doc": "Resize filter (\"nearest\", \"bilinear\", \"lanczos3\").",
-        "positional": false,
         "default": "lanczos3",
         "type": {
           "kind": "scalar",
@@ -1842,7 +1739,6 @@
       {
         "name": "width",
         "doc": "Target width (literal or expression).",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -1852,7 +1748,6 @@
       {
         "name": "filter",
         "doc": "Resize filter (\"nearest\", \"bilinear\", \"lanczos3\").",
-        "positional": false,
         "default": "lanczos3",
         "type": {
           "kind": "scalar",
@@ -1878,7 +1773,6 @@
       {
         "name": "angle",
         "doc": "Rotation angle in degrees (positive = clockwise). Can be a literal float\nor Polars expression.",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -1888,7 +1782,6 @@
       {
         "name": "expand",
         "doc": "If True, expand output dimensions to fit rotated image. If False\n(default), keep original dimensions (corners may be cropped).",
-        "positional": false,
         "default": false,
         "type": {
           "kind": "scalar",
@@ -1899,7 +1792,6 @@
       {
         "name": "interpolation",
         "doc": "Interpolation method for arbitrary angles -- ``\"bilinear\"`` (default) or\n``\"nearest\"``. Not applicable to 90/180/270 degree rotations.",
-        "positional": false,
         "default": "bilinear",
         "type": {
           "kind": "scalar",
@@ -1914,7 +1806,6 @@
       {
         "name": "border_value",
         "doc": "Fill value for out-of-bounds pixels (default 0). Not applicable to\n90/180/270 degree rotations.",
-        "positional": false,
         "default": 0.0,
         "type": {
           "kind": "scalar",
@@ -1940,7 +1831,6 @@
       {
         "name": "factor",
         "doc": "Scale factor.",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -1979,7 +1869,6 @@
       {
         "name": "other",
         "doc": "The expression to combine with, element-wise.",
-        "positional": true,
         "type": {
           "kind": "node"
         }
@@ -1995,7 +1884,6 @@
       {
         "name": "value",
         "doc": "Constant subtrahend (literal or per-row expression).",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -2013,7 +1901,6 @@
       {
         "name": "value",
         "doc": "Threshold value (int or float, or Polars expression).",
-        "positional": true,
         "type": {
           "kind": "scalar",
           "per_row": true,
@@ -2031,7 +1918,6 @@
       {
         "name": "axes",
         "doc": "New order of axes: a permutation of every input axis.",
-        "positional": true,
         "type": {
           "kind": "list",
           "inner": {
@@ -2059,7 +1945,6 @@
       {
         "name": "matrix",
         "doc": "Six-element sequence representing the 2x3 affine matrix\n``[a, b, tx, c, d, ty]`` (forward mapping). **Each element may be a\nliteral float or a Polars expression**, so a batch can apply a\ndifferent (e.g. random) affine per row in one call — the matrix is\nresolved per row at execution.",
-        "positional": true,
         "type": {
           "kind": "array",
           "len": 6,
@@ -2073,7 +1958,6 @@
       {
         "name": "output_size",
         "doc": "``(height, width)`` of the output image. Each element accepts a Polars\nexpression for per-row dynamic values.",
-        "positional": true,
         "type": {
           "kind": "array",
           "len": 2,
@@ -2087,7 +1971,6 @@
       {
         "name": "interpolation",
         "doc": "Interpolation method -- ``\"bilinear\"`` (default) or ``\"nearest\"``.",
-        "positional": false,
         "default": "bilinear",
         "type": {
           "kind": "scalar",
@@ -2102,7 +1985,6 @@
       {
         "name": "border_value",
         "doc": "Pixel value for out-of-bounds regions (default 0).",
-        "positional": false,
         "default": 0.0,
         "type": {
           "kind": "scalar",

@@ -1,11 +1,13 @@
-"""The builder call surface is frozen through the typed-op migration.
+"""The builder call surface is pinned: a change to how a method is called is
+deliberate or it is a bug.
 
-``TYPED_OPS_PLAN.md`` generates the builder methods from Rust definitions but
-allows no change to how they are called until its API phase (P8): every public
-method of ``Pipeline`` and ``LazyPipelineExpr`` keeps its parameter names,
-kinds and defaults (``tests/golden/signatures.json``). Pipelines also keep
-surviving pickle and copy, which today's plain-Python objects do and a
-compiled planner object would not by default.
+Every public method of ``Pipeline`` and ``LazyPipelineExpr`` keeps the
+parameter names, kinds and defaults recorded in ``tests/golden/signatures.json``.
+The generated methods follow one rule (``gen_ops.positional``: an op's only
+required parameter is positional-or-keyword, everything else keyword-only), so
+a catalogue change that moves a parameter's kind shows up here as a diff to
+review. Pipelines also keep surviving pickle and copy, which today's
+plain-Python objects do and a compiled planner object would not by default.
 """
 
 from __future__ import annotations

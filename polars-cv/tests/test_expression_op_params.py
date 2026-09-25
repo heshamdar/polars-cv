@@ -271,7 +271,7 @@ class TestParameterColumnDtypes:
         pipe = (
             Pipeline()
             .source("image_bytes", dtype="u8")
-            .convolve2d([1.0] * 9, 3, normalize=pl.col("norm"))
+            .convolve2d(kernel=[1.0] * 9, ksize=3, normalize=pl.col("norm"))
         )
         out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("list"))["r"]
         assert out.to_list()[0] != out.to_list()[1]
@@ -385,7 +385,7 @@ class TestConvolveKsizeExpression:
         pipe = (
             Pipeline()
             .source("image_bytes", dtype="u8")
-            .convolve2d([0.0] * 4 + [1.0] + [0.0] * 4, pl.col("k"))
+            .convolve2d(kernel=[0.0] * 4 + [1.0] + [0.0] * 4, ksize=pl.col("k"))
         )
         out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("list"))
         assert out["r"].null_count() == 0
@@ -395,7 +395,7 @@ class TestConvolveKsizeExpression:
         pipe = (
             Pipeline()
             .source("image_bytes", dtype="u8")
-            .convolve2d([0.0] * 4 + [1.0] + [0.0] * 4, pl.col("k"))
+            .convolve2d(kernel=[0.0] * 4 + [1.0] + [0.0] * 4, ksize=pl.col("k"))
         )
         with pytest.raises(pl.exceptions.ComputeError):
             df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("list"))

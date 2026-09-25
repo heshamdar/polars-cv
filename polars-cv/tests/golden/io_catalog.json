@@ -9,7 +9,6 @@
         {
           "name": "dtype",
           "doc": "Element dtype; inferred from the column when absent.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -34,7 +33,6 @@
         {
           "name": "require_contiguous",
           "doc": "Require rectangular data (zero-copy); jagged rows are then an error.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -47,7 +45,6 @@
         {
           "name": "on_error",
           "doc": "\"raise\" (default) or \"null\": what a row that cannot be decoded does.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -72,7 +69,6 @@
         {
           "name": "dtype",
           "doc": "Asserted element dtype (a decoded image is cast to it).",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -97,7 +93,6 @@
         {
           "name": "require_contiguous",
           "doc": "Require rectangular data when the column is a List/Array.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -110,7 +105,6 @@
         {
           "name": "cloud_options",
           "doc": "Cloud-storage credentials when the column is a path.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -121,7 +115,6 @@
         {
           "name": "allowed_roots",
           "doc": "Locations a path column may read from (unrestricted when absent).",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -137,7 +130,6 @@
         {
           "name": "decode_max_size",
           "doc": "Decode only enough pixels for this long side (JPEG IDCT scaling).",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -150,7 +142,6 @@
         {
           "name": "on_error",
           "doc": "\"raise\" (default) or \"null\": what a row that cannot be decoded does.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -175,7 +166,6 @@
         {
           "name": "dtype",
           "doc": "Asserted element dtype, for the planner: a blob carries its own.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -200,7 +190,6 @@
         {
           "name": "on_error",
           "doc": "\"raise\" (default) or \"null\": what a row that cannot be decoded does.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -225,7 +214,6 @@
         {
           "name": "size",
           "doc": "``[height, width]`` of the mask (each may be a Polars expression), or\nthe node whose buffer's height and width the mask takes.",
-          "positional": false,
           "type": {
             "kind": "one_of",
             "options": [
@@ -247,7 +235,6 @@
         {
           "name": "fill_value",
           "doc": "Inside value. Accepts a Polars expression for per-row values.",
-          "positional": false,
           "type": {
             "kind": "scalar",
             "per_row": true,
@@ -257,7 +244,6 @@
         {
           "name": "background",
           "doc": "Outside value. Accepts a Polars expression for per-row values.",
-          "positional": false,
           "type": {
             "kind": "scalar",
             "per_row": true,
@@ -267,7 +253,6 @@
         {
           "name": "on_error",
           "doc": "\"raise\" (default) or \"null\": what a row that cannot be decoded does.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -292,7 +277,6 @@
         {
           "name": "dtype",
           "doc": "Asserted element dtype: a decoded image with another dtype is cast.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -317,7 +301,6 @@
         {
           "name": "cloud_options",
           "doc": "Cloud-storage credentials (see `cloud::CloudOptions::from_map`).",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -328,7 +311,6 @@
         {
           "name": "allowed_roots",
           "doc": "Locations the path column may read from (unrestricted when absent).",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -344,7 +326,6 @@
         {
           "name": "decode_max_size",
           "doc": "Decode only enough pixels for this long side (JPEG IDCT scaling).",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -357,7 +338,6 @@
         {
           "name": "on_error",
           "doc": "\"raise\" (default) or \"null\": what a row that cannot be read or decoded\ndoes.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -382,7 +362,6 @@
         {
           "name": "dtype",
           "doc": "Asserted element dtype: a decoded image with another dtype is cast.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -407,7 +386,6 @@
         {
           "name": "decode_max_size",
           "doc": "Decode only enough pixels for this long side (JPEG IDCT scaling).",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -420,7 +398,6 @@
         {
           "name": "on_error",
           "doc": "\"raise\" (default) or \"null\": what a row that cannot be decoded does.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -445,7 +422,6 @@
         {
           "name": "dtype",
           "doc": "Element dtype; inferred from the column when absent.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -470,7 +446,6 @@
         {
           "name": "require_contiguous",
           "doc": "Require rectangular data (zero-copy); jagged rows are then an error.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -483,7 +458,6 @@
         {
           "name": "on_error",
           "doc": "\"raise\" (default) or \"null\": what a row that cannot be decoded does.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -508,7 +482,6 @@
         {
           "name": "dtype",
           "doc": "The element dtype: raw bytes carry no type metadata, so it is required.",
-          "positional": false,
           "type": {
             "kind": "scalar",
             "per_row": false,
@@ -530,7 +503,6 @@
         {
           "name": "on_error",
           "doc": "\"raise\" (default) or \"null\": what a row that cannot be decoded does.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -557,7 +529,6 @@
         {
           "name": "shape",
           "doc": "The output shape; inferred from the planned shape when absent.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -588,7 +559,6 @@
         {
           "name": "quality",
           "doc": "JPEG quality, 1-100 (default 85). Only the JPEG encoder takes one.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -623,7 +593,6 @@
         {
           "name": "dtype",
           "doc": "Downcast the elements to this dtype at encode time: only half precision\n(``\"f16\"``/``\"float16\"``); use ``.cast(...)`` for any other dtype.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -648,7 +617,6 @@
         {
           "name": "dtype",
           "doc": "Downcast the elements to this dtype at encode time: only half precision\n(``\"f16\"``/``\"float16\"``); use ``.cast(...)`` for any other dtype.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {
@@ -687,7 +655,6 @@
         {
           "name": "dtype",
           "doc": "Downcast the elements to this dtype at encode time: only half precision\n(``\"f16\"``/``\"float16\"``); use ``.cast(...)`` for any other dtype.",
-          "positional": false,
           "type": {
             "kind": "optional",
             "inner": {

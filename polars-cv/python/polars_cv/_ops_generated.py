@@ -931,7 +931,7 @@ class _OpsMixin:
         """
         return self._append_typed("add_constant", {"value": value})
 
-    def adjust_contrast(self, *, factor: FloatOrExpr) -> Pipeline:
+    def adjust_contrast(self, factor: FloatOrExpr) -> Pipeline:
         """Adjust image contrast: `(pixel - mean) * factor + mean`.
 
         Args:
@@ -942,7 +942,7 @@ class _OpsMixin:
         """
         return self._append_typed("adjust_contrast", {"factor": factor})
 
-    def adjust_gamma(self, *, gamma: FloatOrExpr) -> Pipeline:
+    def adjust_gamma(self, gamma: FloatOrExpr) -> Pipeline:
         """Apply gamma (power-law) correction: normalize to [0,1], raise to `gamma`,
         denormalize.
 
@@ -992,7 +992,7 @@ class _OpsMixin:
         """Round toward positive infinity. Domain: buffer → buffer."""
         return self._append_typed("ceil", {})
 
-    def channel_select(self, *, index: IntOrExpr) -> Pipeline:
+    def channel_select(self, index: IntOrExpr) -> Pipeline:
         """Extract a single channel from a multi-channel image: a 2D [H, W] buffer
         from a [H, W, C] input.
 
@@ -1005,7 +1005,7 @@ class _OpsMixin:
         """
         return self._append_typed("channel_select", {"index": index})
 
-    def channel_swap(self, *, order: Sequence[IntOrExpr]) -> Pipeline:
+    def channel_swap(self, order: Sequence[IntOrExpr]) -> Pipeline:
         """Reorder channels in a multi-channel image.
 
         Args:
@@ -1018,7 +1018,7 @@ class _OpsMixin:
         """
         return self._append_typed("channel_swap", {"order": order})
 
-    def _clamp(self, min: FloatOrExpr, max: FloatOrExpr) -> Pipeline:
+    def _clamp(self, *, min: FloatOrExpr, max: FloatOrExpr) -> Pipeline:
         """Clamp values to a range.
 
         The public `Pipeline.clamp` is sugar over this op that adds
@@ -1109,7 +1109,7 @@ class _OpsMixin:
             "contour_scale", {"sx": sx, "sy": sy, "origin": origin}
         )
 
-    def simplify(self, *, tolerance: FloatOrExpr) -> Pipeline:
+    def simplify(self, tolerance: FloatOrExpr) -> Pipeline:
         """Simplify the contour using the Douglas-Peucker algorithm.
 
         Domain: contour → contour
@@ -1132,9 +1132,9 @@ class _OpsMixin:
 
     def convolve2d(
         self,
+        *,
         kernel: Sequence[FloatOrExpr],
         ksize: IntOrExpr,
-        *,
         normalize: BoolOrExpr = False,
         border: str | pl.Expr = "replicate",
     ) -> Pipeline:
@@ -1190,7 +1190,7 @@ class _OpsMixin:
             "crop", {"top": top, "left": left, "height": height, "width": width}
         )
 
-    def convert_color(self, from_space: str, to_space: str) -> Pipeline:
+    def convert_color(self, *, from_space: str, to_space: str) -> Pipeline:
         """Convert between color spaces.
 
         Domain: buffer → buffer
@@ -1301,6 +1301,7 @@ class _OpsMixin:
 
     def histogram(
         self,
+        *,
         bins: IntOrExpr | Sequence[float] = 256,
         range: Sequence[FloatOrExpr] | None = None,
         closed: str = "left",
@@ -1330,8 +1331,8 @@ class _OpsMixin:
 
     def label_reduce(
         self,
-        *,
         contours: pl.Expr,
+        *,
         reduction: str | pl.Expr = "max",
         region_mode: str | pl.Expr = "interior",
     ) -> Pipeline:
@@ -1401,6 +1402,7 @@ class _OpsMixin:
 
     def normalize(
         self,
+        *,
         method: str = "minmax",
         mean: Sequence[FloatOrExpr] | None = None,
         std: Sequence[FloatOrExpr] | None = None,
@@ -1521,8 +1523,8 @@ class _OpsMixin:
 
     def _rasterize(
         self,
-        *,
         size: Sequence[IntOrExpr] | LazyPipelineExpr,
+        *,
         fill_value: IntOrExpr = 255,
         background: IntOrExpr = 0,
     ) -> Pipeline:
@@ -1575,7 +1577,7 @@ class _OpsMixin:
         """
         return self._append_typed("reduce_argmin", {"axis": axis})
 
-    def reduce_max(self, axis: int | None = None) -> Pipeline:
+    def reduce_max(self, *, axis: int | None = None) -> Pipeline:
         """Reduce buffer by computing the maximum value.
 
         Domain transition: axis=None: buffer → scalar; axis=N: buffer →
@@ -1587,7 +1589,7 @@ class _OpsMixin:
         """
         return self._append_typed("reduce_max", {"axis": axis})
 
-    def reduce_mean(self, axis: int | None = None) -> Pipeline:
+    def reduce_mean(self, *, axis: int | None = None) -> Pipeline:
         """Compute arithmetic mean.
 
         Domain transition: axis=None: buffer → scalar; axis=N: buffer →
@@ -1599,7 +1601,7 @@ class _OpsMixin:
         """
         return self._append_typed("reduce_mean", {"axis": axis})
 
-    def reduce_min(self, axis: int | None = None) -> Pipeline:
+    def reduce_min(self, *, axis: int | None = None) -> Pipeline:
         """Reduce buffer by computing the minimum value.
 
         Domain transition: axis=None: buffer → scalar; axis=N: buffer →
@@ -1630,7 +1632,7 @@ class _OpsMixin:
         """
         return self._append_typed("reduce_popcount", {})
 
-    def reduce_std(self, axis: int | None = None, ddof: IntOrExpr = 0) -> Pipeline:
+    def reduce_std(self, *, axis: int | None = None, ddof: IntOrExpr = 0) -> Pipeline:
         """Reduce buffer by computing the standard deviation.
 
         Domain transition: axis=None: buffer -> scalar; axis=N: buffer -> buffer
@@ -1873,9 +1875,9 @@ class _OpsMixin:
 
     def warp_affine(
         self,
+        *,
         matrix: Sequence[FloatOrExpr],
         output_size: Sequence[IntOrExpr],
-        *,
         interpolation: str | pl.Expr = "bilinear",
         border_value: FloatOrExpr = 0.0,
     ) -> Pipeline:

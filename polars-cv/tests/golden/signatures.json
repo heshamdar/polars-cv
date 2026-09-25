@@ -56,7 +56,7 @@
    ],
    [
     "factor",
-    "KEYWORD_ONLY",
+    "POSITIONAL_OR_KEYWORD",
     ""
    ]
   ],
@@ -68,7 +68,7 @@
    ],
    [
     "gamma",
-    "KEYWORD_ONLY",
+    "POSITIONAL_OR_KEYWORD",
     ""
    ]
   ],
@@ -287,7 +287,7 @@
    ],
    [
     "index",
-    "KEYWORD_ONLY",
+    "POSITIONAL_OR_KEYWORD",
     ""
    ]
   ],
@@ -299,7 +299,7 @@
    ],
    [
     "order",
-    "KEYWORD_ONLY",
+    "POSITIONAL_OR_KEYWORD",
     ""
    ]
   ],
@@ -362,12 +362,12 @@
    ],
    [
     "from_space",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     ""
    ],
    [
     "to_space",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     ""
    ]
   ],
@@ -386,12 +386,12 @@
    ],
    [
     "kernel",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     ""
    ],
    [
     "ksize",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     ""
    ],
    [
@@ -562,22 +562,22 @@
    ],
    [
     "bins",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "256"
    ],
    [
     "range",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "None"
    ],
    [
     "closed",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "'left'"
    ],
    [
     "output",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "'buckets'"
    ]
   ],
@@ -596,7 +596,7 @@
    ],
    [
     "contours",
-    "KEYWORD_ONLY",
+    "POSITIONAL_OR_KEYWORD",
     ""
    ],
    [
@@ -748,22 +748,22 @@
    ],
    [
     "method",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "'minmax'"
    ],
    [
     "mean",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "None"
    ],
    [
     "std",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "None"
    ],
    [
     "out_dtype",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "None"
    ]
   ],
@@ -974,7 +974,7 @@
    ],
    [
     "axis",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "None"
    ]
   ],
@@ -986,7 +986,7 @@
    ],
    [
     "axis",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "None"
    ]
   ],
@@ -998,7 +998,7 @@
    ],
    [
     "axis",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "None"
    ]
   ],
@@ -1029,12 +1029,12 @@
    ],
    [
     "axis",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "None"
    ],
    [
     "ddof",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "0"
    ]
   ],
@@ -1335,7 +1335,7 @@
    ],
    [
     "tolerance",
-    "KEYWORD_ONLY",
+    "POSITIONAL_OR_KEYWORD",
     ""
    ]
   ],
@@ -1529,12 +1529,12 @@
    ],
    [
     "matrix",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     ""
    ],
    [
     "output_size",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     ""
    ],
    [
@@ -1594,7 +1594,7 @@
    ],
    [
     "factor",
-    "KEYWORD_ONLY",
+    "POSITIONAL_OR_KEYWORD",
     ""
    ]
   ],
@@ -1606,7 +1606,7 @@
    ],
    [
     "gamma",
-    "KEYWORD_ONLY",
+    "POSITIONAL_OR_KEYWORD",
     ""
    ]
   ],
@@ -1719,7 +1719,7 @@
    ],
    [
     "index",
-    "KEYWORD_ONLY",
+    "POSITIONAL_OR_KEYWORD",
     ""
    ]
   ],
@@ -1731,7 +1731,7 @@
    ],
    [
     "order",
-    "KEYWORD_ONLY",
+    "POSITIONAL_OR_KEYWORD",
     ""
    ]
   ],
@@ -1794,12 +1794,12 @@
    ],
    [
     "from_space",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     ""
    ],
    [
     "to_space",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     ""
    ]
   ],
@@ -1818,12 +1818,12 @@
    ],
    [
     "kernel",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     ""
    ],
    [
     "ksize",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     ""
    ],
    [
@@ -2013,22 +2013,22 @@
    ],
    [
     "bins",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "256"
    ],
    [
     "range",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "None"
    ],
    [
     "closed",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "'left'"
    ],
    [
     "output",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "'buckets'"
    ]
   ],
@@ -2047,7 +2047,7 @@
    ],
    [
     "contours",
-    "KEYWORD_ONLY",
+    "POSITIONAL_OR_KEYWORD",
     ""
    ],
    [
@@ -2151,22 +2151,22 @@
    ],
    [
     "method",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "'minmax'"
    ],
    [
     "mean",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "None"
    ],
    [
     "std",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "None"
    ],
    [
     "out_dtype",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "None"
    ]
   ],
@@ -2367,7 +2367,7 @@
    ],
    [
     "axis",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "None"
    ]
   ],
@@ -2379,7 +2379,7 @@
    ],
    [
     "axis",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "None"
    ]
   ],
@@ -2391,7 +2391,7 @@
    ],
    [
     "axis",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "None"
    ]
   ],
@@ -2422,12 +2422,12 @@
    ],
    [
     "axis",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "None"
    ],
    [
     "ddof",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "0"
    ]
   ],
@@ -2728,7 +2728,7 @@
    ],
    [
     "tolerance",
-    "KEYWORD_ONLY",
+    "POSITIONAL_OR_KEYWORD",
     ""
    ]
   ],
@@ -2957,12 +2957,12 @@
    ],
    [
     "matrix",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     ""
    ],
    [
     "output_size",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     ""
    ],
    [

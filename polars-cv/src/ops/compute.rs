@@ -18,7 +18,6 @@ fn compute(op: ComputeOp) -> PolarsResult<GraphStep> {
 #[serde(deny_unknown_fields)]
 pub struct Cast {
     /// Target data type (e.g., "f32", "u8").
-    #[param(positional)]
     pub dtype: Literal<DType>,
 }
 
@@ -38,7 +37,6 @@ impl OpDef for Cast {
 #[op(visibility = "internal")]
 pub struct Scale {
     /// Scale factor.
-    #[param(positional)]
     pub factor: Param<f32>,
 }
 
@@ -58,10 +56,8 @@ impl OpDef for Scale {
 #[op(visibility = "internal")]
 pub struct Clamp {
     /// Minimum value (literal or expression).
-    #[param(positional)]
     pub min: Param<f32>,
     /// Maximum value (literal or expression).
-    #[param(positional)]
     pub max: Param<f32>,
 }
 
@@ -91,23 +87,20 @@ pub struct Normalize {
     /// per-element min/max; "zscore" standardizes to mean=0, std=1 using
     /// per-element statistics; "preset" applies ImageNet-style channel-wise
     /// normalization, `(x - mean[c]) / std[c]`, with the given `mean` and `std`.
-    #[param(positional, default = "minmax")]
+    #[param(default = "minmax")]
     pub method: Literal<NormalizeMethod>,
     /// Per-channel mean values; required for, and only valid with,
     /// method="preset" (e.g. ImageNet `[0.485, 0.456, 0.406]`). Each element may
     /// be a literal float or a Polars expression; the list length is the channel
     /// count.
-    #[param(positional)]
     pub mean: Option<Vec<Param<f32>>>,
     /// Per-channel standard deviation values; required for, and only valid
     /// with, method="preset" (e.g. ImageNet `[0.229, 0.224, 0.225]`). Each
     /// element accepts an expression, as with `mean`.
-    #[param(positional)]
     pub std: Option<Vec<Param<f32>>>,
     /// Output dtype (default f32). Normalization computes in f32 and the result
     /// is cast to this dtype at execution. For half precision use the sink
     /// dtype instead (`.sink("numpy", dtype="f16")`).
-    #[param(positional)]
     pub out_dtype: Option<Literal<DType>>,
 }
 
@@ -208,7 +201,6 @@ macro_rules! value_ops {
         #[serde(deny_unknown_fields)]
         pub struct $ty {
             #[doc = $value_doc]
-            #[param(positional)]
             pub value: Param<f32>,
         }
 

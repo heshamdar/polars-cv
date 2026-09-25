@@ -84,8 +84,12 @@ _OP_FAMILY_CASES: list[tuple[str, object, str]] = [
     ("grayscale", lambda p: p.grayscale(), "numpy"),
     ("threshold", lambda p: p.grayscale().threshold(128), "numpy"),
     ("blur", lambda p: p.blur(1.0), "numpy"),
-    ("convolve2d", lambda p: p.convolve2d([1.0 / 9] * 9, 3), "numpy"),
-    ("convert_color", lambda p: p.convert_color("rgb", "hsv"), "numpy"),
+    ("convolve2d", lambda p: p.convolve2d(kernel=[1.0 / 9] * 9, ksize=3), "numpy"),
+    (
+        "convert_color",
+        lambda p: p.convert_color(from_space="rgb", to_space="hsv"),
+        "numpy",
+    ),
     ("cast", lambda p: p.cast("f32"), "numpy"),
     ("scale", lambda p: p.cast("f32").scale(0.5), "numpy"),
     ("clamp", lambda p: p.cast("f32").clamp(0.0, 128.0), "numpy"),
@@ -310,7 +314,9 @@ _POINTWISE_CROP_CASES: list[tuple[str, object]] = [
     ),
     (
         "convert_color",
-        lambda p: p.convert_color("rgb", "hsv").crop(top=0, left=0, height=8, width=8),
+        lambda p: p.convert_color(from_space="rgb", to_space="hsv").crop(
+            top=0, left=0, height=8, width=8
+        ),
     ),
     (
         "cast_clamp",

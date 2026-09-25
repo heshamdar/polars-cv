@@ -11,16 +11,16 @@
 //! The derive also *rejects* what would let the wire and the definition drift:
 //! a struct without `#[serde(deny_unknown_fields)]`, a field carrying its own
 //! `#[serde(...)]` (a rename, default or skip would make the wire differ from
-//! the catalogue), a missing doc comment (it is the generated docstring), and
-//! a positional parameter after a keyword one.
+//! the catalogue) and a missing doc comment (it is the generated docstring).
 //!
 //! Attributes:
 //!
 //! - struct: `#[op(python = "name")]` — the Python method name when it differs
 //!   from the wire name; `#[op(visibility = "lazy_only" | "internal")]` —
 //!   default `public`.
-//! - field: `#[param(positional)]`; `#[param(default = <literal>)]` — the
-//!   Python signature default. An `Option<_>` field defaults to `None`.
+//! - field: `#[param(default = <literal>)]` — the Python signature default. An
+//!   `Option<_>` field defaults to `None`. Which parameters are positional is
+//!   not declared: `gen_ops.py` derives it from which fields are required.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -124,7 +124,6 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let mut descs = Vec::new();
     let mut visits = Vec::new();
     let mut idents = Vec::new();
-    let mut seen_keyword = false;
     for field in &fields.named {
         let ident = field.ident.as_ref().expect("named field");
         let fname = ident.to_string();
@@ -143,27 +142,17 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 format!("field `{fname}` needs a doc comment: it is the generated Args: entry"),
             ));
         }
-        let mut positional = false;
         let mut default: Option<Expr> = None;
         for attr in field.attrs.iter().filter(|a| a.path().is_ident("param")) {
             attr.parse_nested_meta(|m| {
-                if m.path.is_ident("positional") {
-                    positional = true;
-                } else if m.path.is_ident("default") {
+                if m.path.is_ident("default") {
                     default = Some(m.value()?.parse()?);
                 } else {
-                    return Err(m.error("unknown #[param] key (positional, default)"));
+                    return Err(m.error("unknown #[param] key (default)"));
                 }
                 Ok(())
             })?;
         }
-        if positional && seen_keyword {
-            return Err(syn::Error::new(
-                field.span(),
-                format!("positional field `{fname}` follows a keyword-only one"),
-            ));
-        }
-        seen_keyword |= !positional;
         let default_tokens = match default {
             Some(expr) => quote! { ::core::option::Option::Some(::serde_json::Value::from(#expr)) },
             None => quote! { ::core::option::Option::None },
@@ -172,7 +161,6 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             crate::ops::FieldDesc {
                 name: #fname,
                 doc: #fdoc,
-                positional: #positional,
                 default: #default_tokens,
                 ty: <#ty as crate::ops::FieldType>::describe(),
             }

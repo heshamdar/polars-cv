@@ -44,11 +44,9 @@ pub struct WarpAffine {
     /// literal float or a Polars expression**, so a batch can apply a
     /// different (e.g. random) affine per row in one call — the matrix is
     /// resolved per row at execution.
-    #[param(positional)]
     pub matrix: [Param<f64>; 6],
     /// ``(height, width)`` of the output image. Each element accepts a Polars
     /// expression for per-row dynamic values.
-    #[param(positional)]
     pub output_size: [Param<u32>; 2],
     /// Interpolation method -- ``"bilinear"`` (default) or ``"nearest"``.
     #[param(default = "bilinear")]
@@ -123,7 +121,6 @@ impl OpDef for WarpAffine {
 pub struct Rotate {
     /// Rotation angle in degrees (positive = clockwise). Can be a literal float
     /// or Polars expression.
-    #[param(positional)]
     pub angle: Param<f32>,
     /// If True, expand output dimensions to fit rotated image. If False
     /// (default), keep original dimensions (corners may be cropped).

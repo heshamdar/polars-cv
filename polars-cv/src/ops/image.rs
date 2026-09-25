@@ -91,7 +91,6 @@ macro_rules! aspect_resizes {
         #[serde(deny_unknown_fields)]
         pub struct $ty {
             #[doc = $field_doc]
-            #[param(positional)]
             pub $field: Param<u32>,
             /// Resize filter ("nearest", "bilinear", "lanczos3").
             #[param(default = "lanczos3")]
@@ -290,7 +289,6 @@ impl OpDef for EqualizeHistogram {
 #[serde(deny_unknown_fields)]
 pub struct Threshold {
     /// Threshold value (int or float, or Polars expression).
-    #[param(positional)]
     pub value: Param<f64>,
 }
 
@@ -306,7 +304,6 @@ impl OpDef for Threshold {
 #[serde(deny_unknown_fields)]
 pub struct Blur {
     /// Standard deviation for Gaussian kernel.
-    #[param(positional)]
     pub sigma: Param<f32>,
 }
 

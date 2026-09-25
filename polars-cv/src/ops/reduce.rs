@@ -54,7 +54,6 @@ impl OpDef for ReducePopcount {
 pub struct ReducePercentile {
     /// Percentile to compute, in [0, 100]. Accepts a Polars expression for
     /// per-row dynamic values.
-    #[param(positional)]
     pub q: Param<f64>,
 }
 
@@ -79,7 +78,6 @@ macro_rules! axis_reductions {
         pub struct $ty {
             /// Axis to reduce along. None for global reduction. It fixes the
             /// output rank, so it is literal-only.
-            #[param(positional)]
             pub axis: Option<Literal<u32>>,
         }
 
@@ -109,11 +107,10 @@ axis_reductions! {
 #[serde(deny_unknown_fields)]
 pub struct ReduceStd {
     /// Axis to reduce along. None for global reduction.
-    #[param(positional)]
     pub axis: Option<Literal<u32>>,
     /// Delta degrees of freedom. 0 for population std (default), 1 for sample
     /// std. Accepts a Polars expression for per-row dynamic values.
-    #[param(positional, default = 0)]
+    #[param(default = 0)]
     pub ddof: Param<u8>,
 }
 
@@ -139,7 +136,6 @@ macro_rules! arg_reductions {
         #[serde(deny_unknown_fields)]
         pub struct $ty {
             /// Axis along which to find the index.
-            #[param(positional)]
             pub axis: Literal<u32>,
         }
 
