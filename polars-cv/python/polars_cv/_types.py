@@ -611,107 +611,34 @@ def normalize_cloud_options(
 
 @dataclass
 class SourceSpec:
-    """Specification for pipeline input source."""
+    """A pipeline's input source: its format and the settings passed for it.
+
+    Shaped like :class:`OpSpec`: the settings are ``ParamValue``\\ s by field
+    name, and the format's Rust definition (``src/formats/source.rs``) is the
+    only statement of which fields exist and which formats read them — it
+    refuses the rest when ``plan_source`` validates the spec.
+    """
 
     format: SourceFormat
-    dtype: DType | None = None  # For "raw" format
-    # Contour source parameters
-    width: "ParamValue | None" = None
-    height: "ParamValue | None" = None
-    fill_value: "ParamValue | None" = None
-    background: "ParamValue | None" = None
-    # Contour source only: the graph node whose buffer fixes the canvas. Rust
-    # reads the id and takes that node's already-computed output.
-    shape_node: str | None = None
-    # Cloud options for file_path sources
-    cloud_options: CloudOptions | None = None
-    # Contiguity requirement for list/array sources
-    # When True, requires data to be contiguous for zero-copy; errors on jagged data
-    # When False (default), allows jagged data with copy-based flattening
-    require_contiguous: bool = False
-    # Error handling for source decoding:
-    #   "raise" (default): propagate decode errors (fails the entire batch)
-    #   "null": treat decode errors as null output for that row
-    on_error: str = "raise"
-    # Explicit decode-scale assertion: the pipeline only needs this many
-    # pixels on the decoded image's long side (JPEG uses IDCT scaling).
-    decode_max_size: int | None = None
-    # Locations this source's path column may read from. None (default) is
-    # unrestricted; a tuple restricts reads to those roots. A tuple rather than
-    # a list because SourceSpec is hashed for CSE.
-    allowed_roots: tuple[str, ...] | None = None
+    params: dict[str, ParamValue] = field(default_factory=dict)
 
     def __eq__(self, other: object) -> bool:
-        """Compare two SourceSpecs for equality."""
+        """Compare two SourceSpecs (same format and settings)."""
         if not isinstance(other, SourceSpec):
             return NotImplemented
-        return (
-            self.format == other.format
-            and self.dtype == other.dtype
-            and self.width == other.width
-            and self.height == other.height
-            and self.fill_value == other.fill_value
-            and self.background == other.background
-            and self.shape_node == other.shape_node
-            and self.cloud_options == other.cloud_options
-            and self.require_contiguous == other.require_contiguous
-            and self.on_error == other.on_error
-            and self.decode_max_size == other.decode_max_size
-            and self.allowed_roots == other.allowed_roots
-        )
+        return self.format == other.format and self.params == other.params
 
     def __hash__(self) -> int:
-        """Hash for use in sets and dicts."""
+        """Hash for use in sets and dicts (CSE groups nodes by source)."""
         return hash(
-            (
-                self.format,
-                self.dtype,
-                self.width,
-                self.height,
-                self.fill_value,
-                self.background,
-                self.shape_node,
-                str(self.cloud_options) if self.cloud_options else None,
-                self.require_contiguous,
-                self.on_error,
-                self.decode_max_size,
-                self.allowed_roots,
-            )
+            (self.format, tuple(sorted((k, hash(v)) for k, v in self.params.items())))
         )
 
     def to_dict(self, slot_of: SlotOf) -> dict[str, Any]:
-        """Serialize for the plugin wire: the typed source of its format.
-
-        Every setting the caller gave is emitted, whichever format it is for;
-        the format's Rust definition (``src/formats/source.rs``) refuses one it
-        does not read, naming the formats it applies to. An absent setting is
-        its default. A contour canvas is one ``size`` field: ``[height,
-        width]`` or the id of the node whose buffer fixes it.
-        """
+        """Serialize for the plugin wire: ``{"format": name, field: value, ...}``."""
         result: dict[str, Any] = {"format": self.format.value}
-        if self.dtype is not None:
-            result["dtype"] = self.dtype.value
-        if self.shape_node is not None:
-            result["size"] = self.shape_node
-        elif self.width is not None or self.height is not None:
-            result["size"] = [
-                None if p is None else p.to_wire(slot_of)
-                for p in (self.height, self.width)
-            ]
-        if self.fill_value is not None:
-            result["fill_value"] = self.fill_value.to_wire(slot_of)
-        if self.background is not None:
-            result["background"] = self.background.to_wire(slot_of)
-        if self.cloud_options is not None:
-            result["cloud_options"] = self.cloud_options.to_dict()
-        if self.require_contiguous:
-            result["require_contiguous"] = True
-        if self.decode_max_size is not None:
-            result["decode_max_size"] = self.decode_max_size
-        if self.on_error != "raise":
-            result["on_error"] = self.on_error
-        if self.allowed_roots is not None:
-            result["allowed_roots"] = list(self.allowed_roots)
+        for key, value in self.params.items():
+            result[key] = value.to_wire(slot_of)
         return result
 
 

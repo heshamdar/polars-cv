@@ -93,12 +93,40 @@ def op_names(p: "Pipeline | LazyPipelineExpr") -> list[str]:
     return [op.op for op in ops_of(p)]
 
 
-def source_of(p: "Pipeline | LazyPipelineExpr") -> Any:
-    """*p*'s source specification (``None`` for a continuation pipeline).
+class SourceView:
+    """A source's settings by name, independent of how the spec stores them.
 
-    Returned as-is until the typed-source phase (P4) gives it a stable view.
+    An absent setting reads as its default (``on_error`` is ``"raise"``,
+    everything else ``None``); a contour canvas taken from another node reads
+    as ``shape_node``, and ``cloud_options`` as a ``CloudOptions``.
     """
-    return _pipeline(p)._source
+
+    def __init__(self, spec: Any) -> None:
+        self._spec = spec
+
+    @property
+    def format(self) -> Any:
+        return self._spec.format
+
+    def to_dict(self, slot_of: Any) -> dict[str, Any]:
+        return self._spec.to_dict(slot_of)
+
+    def __getattr__(self, name: str) -> Any:
+        from polars_cv._types import normalize_cloud_options
+
+        settings = {key: param.value for key, param in self._spec.params.items()}
+        if name == "shape_node":
+            size = settings.get("size")
+            return size if isinstance(size, str) else None
+        if name == "cloud_options":
+            return normalize_cloud_options(settings.get("cloud_options"))
+        return settings.get(name, "raise" if name == "on_error" else None)
+
+
+def source_of(p: "Pipeline | LazyPipelineExpr") -> "SourceView | None":
+    """*p*'s source settings (``None`` for a continuation pipeline)."""
+    spec = _pipeline(p)._source
+    return None if spec is None else SourceView(spec)
 
 
 def op_json(p: "Pipeline | LazyPipelineExpr", index: int) -> str:
