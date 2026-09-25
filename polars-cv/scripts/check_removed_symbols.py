@@ -263,6 +263,20 @@ REMOVED: tuple[Removed, ...] = (
         "unknown_expected_encoding_is_a_compile_error",
         "P7d: expected_encoding is no longer a wire field",
     ),
+    Removed("_shape_hints", "P7e: Pipeline._state (a Rust-computed PlanState)"),
+    Removed("_asserted_dims", "P7e: PlanState.asserted"),
+    Removed("_shape_declared", "P7e: PlanState.declared"),
+    Removed("_current_domain", "P7e: PlanState.domain"),
+    Removed("_expected_ndim", "P7e: PlanState.ndim"),
+    Removed("ShapeHints", "P7e: PlanState.dims"),
+    Removed("ShapeAssertion", "P7e: an assertion is plan_assert's wire dict"),
+    Removed("_plan_step", "P7e: _push_op calls plan_step and keeps its state"),
+    Removed("_apply_step", "P7e: _push_op calls plan_step and keeps its state"),
+    Removed("_restore", "P7e: _replay assigns the start state"),
+    Removed("_require_ndim_is_consistent", "P7e: plan::assert_shape"),
+    Removed("_require_dim_is_assertable", "P7e: plan::assert_shape"),
+    Removed("_shape_ref_dims", "P7e: Pipeline._canvas_of"),
+    Removed("_is_known", "P7e: PlanState.dim"),
 )
 
 

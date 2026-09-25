@@ -25,7 +25,7 @@ pytestmark = pytest.mark.structural
 #: a test to the Python planner that P7 deletes.
 _PRIVATE = re.compile(
     r"\._(shape_hints|ops|source|output_dtype|expected_ndim|current_domain|"
-    r"entering|state_at|assertions|asserted_dims|shape_declared)\b"
+    r"state|entering|state_at|assertions)\b"
 )
 
 #: Files allowed to read those fields, and why.
@@ -56,7 +56,7 @@ class TestFixtures:
     @pytest.mark.parametrize(
         "line",
         [
-            "assert pipe._shape_hints.height.value == 7",
+            "assert pipe._state.dims[0] == 7",
             "n = len(p._ops)",
             "fmt = pipe._source.format",
             "assert lazy._pipeline._output_dtype == 'f32'",

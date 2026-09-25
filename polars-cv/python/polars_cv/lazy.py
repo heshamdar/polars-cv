@@ -8,6 +8,7 @@ lazy pipeline operations that are fused into a single plugin call when
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -65,9 +66,9 @@ def _array_sink_needs_shape(pipeline: Any, alias: str | None = None) -> str:
     """
     from polars_cv._types import HINT_DIMS
 
-    hints = pipeline._shape_hints
-    missing = [dim for dim in HINT_DIMS if not _is_known(hints.get(dim))]
-    if pipeline._expected_ndim != 3 and not missing:
+    state = pipeline._state
+    missing = [dim for dim in HINT_DIMS if state.dim(dim) is None]
+    if state.ndim != 3 and not missing:
         unknown = "the output rank"
     else:
         unknown = ", ".join(missing) if missing else "the output rank"
@@ -82,11 +83,6 @@ def _array_sink_needs_shape(pipeline: Any, alias: str | None = None) -> str:
         f"execution)\n"
         f"  .resize(height=8, width=8)        — supplies height and width only"
     )
-
-
-def _is_known(hint: Any) -> bool:
-    """Is a shape hint a plan-time integer (rather than absent or per-row)?"""
-    return hint is not None and not hint.is_expr
 
 
 def _require_concrete_sink_dtype(
@@ -112,7 +108,7 @@ def _require_concrete_sink_dtype(
 
     if fmt not in SINKS_WITH_TYPED_ELEMENTS:
         return
-    if pipeline._output_dtype != "auto":
+    if pipeline._state.dtype != "auto":
         return
 
     # These sources resolve their leaf dtype from the Polars column at
@@ -270,23 +266,20 @@ class LazyPipelineExpr:
             # op at a time.
             #
             # Folding per-op is the point: the previous code replayed only the
-            # hints and assigned `_expected_ndim` afterwards, so every replayed
+            # hints and assigned the rank afterwards, so every replayed
             # op saw `ndim = None` and the H/W update was skipped at its
             # opening guard — the H/W half of the replay never ran. It
             # cannot be fixed by hoisting that assignment, either: a
             # rank-changing op must infer against its own input rank, not the
             # chain's final one.
-            upstream_dtype = self._pipeline._output_dtype
-            upstream_ndim = self._pipeline._expected_ndim
-            new_pipeline._shape_hints = _copy.deepcopy(self._pipeline._shape_hints)
-            new_pipeline._current_domain = self._pipeline._current_domain
-            new_pipeline._output_dtype = upstream_dtype
-            new_pipeline._expected_ndim = upstream_ndim
+            #
+            # Its sizes are the upstream's, but none is this node's user's
+            # assertion; whether a declaration reached the lineage carries
+            # over (see `PlanState.declared`).
+            new_pipeline._state = dataclasses.replace(
+                self._pipeline._state, asserted=(False, False, False)
+            )
             new_pipeline._assertions = _copy.deepcopy(pipeline._assertions)
-            # The seeded hints may carry the upstream's declared H/W while its
-            # assertions stay behind, so the "a declaration reached here" fact
-            # must travel with them (see `Pipeline._shape_declared`).
-            new_pipeline._shape_declared = self._pipeline._shape_declared
             # An assert_shape() written before the first op has no preceding
             # append to apply it; every later position is applied by the
             # `_push_op` that lands on it, so the replay is just the append
@@ -390,7 +383,7 @@ class LazyPipelineExpr:
                 # it from the Polars column type (list/array sources).
                 if fmt_str == "list":
                     node = self._find_node_by_alias(alias, all_nodes)
-                    if node and node._pipeline._expected_ndim is None:
+                    if node and node._pipeline._state.ndim is None:
                         if (
                             node._pipeline._source is None
                             or node._pipeline._source.format
@@ -403,7 +396,7 @@ class LazyPipelineExpr:
                     # For multi-output, we don't have a simple way to pass per-alias shape yet
                     # but we can check if the node has deterministic shape
                     node = self._find_node_by_alias(alias, all_nodes)
-                    if node and not node._pipeline._shape_hints.has_all_dims():
+                    if node and not node._pipeline._state.has_all_dims():
                         raise ValueError(_array_sink_needs_shape(node._pipeline, alias))
             graph.set_multi_output(format, **kwargs)
         else:
@@ -415,13 +408,13 @@ class LazyPipelineExpr:
             # Validate array sink
 
             if format == "array" and "shape" not in kwargs:
-                if not self._pipeline._shape_hints.has_all_dims():
+                if not self._pipeline._state.has_all_dims():
                     raise ValueError(_array_sink_needs_shape(self._pipeline))
 
             # Validate list sink ndim — allow None when Rust can resolve
             # it from the Polars column type (list/array sources).
             if format == "list":
-                if self._pipeline._expected_ndim is None:
+                if self._pipeline._state.ndim is None:
                     # LIST/ARRAY sources resolve ndim from the Polars column at
                     # plan-time-with-input; "auto" defers to that same runtime
                     # resolution (a Binary/image column then errors on its
@@ -1034,18 +1027,20 @@ class LazyPipelineExpr:
         node's state from upstream regardless — this seed only exists so the
         builder-time validation sees the truth.
         """
-        from polars_cv.pipeline import Pipeline
+        from polars_cv.pipeline import Pipeline, PlanState
 
         inner = Pipeline()
-        inner._current_domain = self._pipeline._current_domain
-        inner._output_dtype = self._pipeline._output_dtype
-        inner._expected_ndim = self._pipeline._expected_ndim
+        upstream = self._pipeline._state
+        inner._state = PlanState(
+            domain=upstream.domain, dtype=upstream.dtype, ndim=upstream.ndim
+        )
         return inner
 
     def _binary_op(self, op: str, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
         """Create a binary operation between this and another LazyPipelineExpr."""
         from polars_cv._types import SourceFormat, SourceSpec
         from polars_cv.pipeline import Pipeline as PipelineClass
+        from polars_cv.pipeline import PlanState
 
         # Create a new pipeline that receives from upstream (BLOB source)
         # and only applies the binary op - don't clone self's ops as they're
@@ -1055,11 +1050,12 @@ class LazyPipelineExpr:
         # The op applies to the left operand's output, so it starts from that
         # state; its dtype rule reads both operands (true division of two u8
         # is f32), so the other operand's dtype goes with it.
-        new_pipeline._current_domain = self._pipeline._current_domain
-        new_pipeline._output_dtype = self._pipeline._output_dtype
-        new_pipeline._expected_ndim = self._pipeline._expected_ndim
+        left = self._pipeline._state
+        new_pipeline._state = PlanState(
+            domain=left.domain, dtype=left.dtype, ndim=left.ndim
+        )
         new_pipeline._add_node_op(
-            op, {"other": other}, other_dtype=other._pipeline._output_dtype
+            op, {"other": other}, other_dtype=other._pipeline._state.dtype
         )
 
         return LazyPipelineExpr(

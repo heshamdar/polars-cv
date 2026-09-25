@@ -531,8 +531,9 @@ class TestChannelRuleHasOneAuthority:
         """
 
         from polars_cv._lib import plan_step
+        from polars_cv.pipeline import PlanState
 
         pipe = Pipeline().source("image_bytes").assert_shape(channels=4).grayscale()
-        step = plan_step(op_json(pipe, -1), "buffer", "u8", 3, [None, None, 4])
-        assert (2, 1) in step["dims"]
+        rgba = PlanState(domain="buffer", dtype="u8", ndim=3, dims=(None, None, 4))
+        assert plan_step(op_json(pipe, -1), rgba)["dims"][2] == 1
         assert planned(pipe).channels == 1

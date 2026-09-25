@@ -13,6 +13,7 @@ use pyo3::prelude::*;
 use view_buffer::{IdentityRule, SpatialDependency};
 
 use crate::graph::step::GraphStep;
+use crate::plan::State;
 use crate::py_value_error;
 
 /// Every logical optimisation pass, by the name `OptFlags` knows it by.
@@ -88,24 +89,13 @@ pub(crate) fn pass_catalog() -> String {
     pass_catalog_json()
 }
 
-/// The planner's state at one op boundary, as a pass reads it.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Boundary {
-    pub dtype: String,
-    pub ndim: Option<usize>,
-    /// Known H/W sizes (`None` unknown or per-row).
-    pub hw: [Option<i64>; 2],
-}
-
 /// One node's ops and what the planner knows about them.
 pub(crate) struct Node<'a> {
     pub ops: &'a [String],
     /// `ops.len() + 1` states: entering each op, then the final one.
-    pub states: &'a [Boundary],
-    /// Op boundaries carrying a user `assert_shape`.
+    pub states: &'a [State],
+    /// Op boundaries carrying a shape declaration.
     pub assertions: &'a [usize],
-    /// A shape declaration reached this node, so its hints may be a claim.
-    pub shape_declared: bool,
 }
 
 /// Run a node-scope pass. `Err` for a graph-scope pass.
@@ -172,11 +162,14 @@ fn is_identity(node: &Node<'_>, i: usize) -> Result<bool, String> {
         }
         IdentityRule::WhenShapePreserved { .. } => {
             // Hints that may rest on a declaration are a claim, not a fact.
-            let Some(ndim) = entering.ndim.filter(|_| !node.shape_declared) else {
+            // A declaration anywhere in the node's lineage makes its sizes
+            // possibly a claim; the final state records whether one did.
+            let declared = node.states.last().is_some_and(|s| s.declared);
+            let Some(ndim) = entering.ndim.filter(|_| !declared) else {
                 return Ok(false);
             };
             let dims: Vec<Option<i64>> = (0..ndim)
-                .map(|axis| entering.hw.get(axis).copied().flatten())
+                .map(|axis| if axis < 2 { entering.dims[axis] } else { None })
                 .collect();
             match crate::infer_shape(op_json, &dims)? {
                 Some(out) => shape_preserved(&out, &dims),
@@ -238,29 +231,23 @@ fn hoist_spatial_windows(node: &Node<'_>) -> Result<Vec<usize>, String> {
 
 /// Python entry point: run the node-scope pass `pass_name`.
 ///
-/// `states` are `(dtype, ndim, [h, w])` per boundary (`len(ops) + 1`). Returns
-/// the new order, or `None` when the pass changes nothing.
+/// `states` are the planner's `PlanState` at each boundary (`len(ops) + 1`).
+/// Returns the new order, or `None` when the pass changes nothing.
 #[pyfunction]
 pub(crate) fn node_pass(
     pass_name: &str,
     ops: Vec<String>,
-    states: Vec<(String, Option<usize>, [Option<i64>; 2])>,
+    states: Vec<State>,
     assertions: Vec<usize>,
-    shape_declared: bool,
 ) -> PyResult<Option<Vec<usize>>> {
     let pass = view_buffer::naming::lookup(LogicalPass::NAMED, pass_name)
         .ok_or_else(|| py_value_error(format!("unknown pass {pass_name:?}")))?;
-    let states: Vec<Boundary> = states
-        .into_iter()
-        .map(|(dtype, ndim, hw)| Boundary { dtype, ndim, hw })
-        .collect();
     run(
         pass,
         &Node {
             ops: &ops,
             states: &states,
             assertions: &assertions,
-            shape_declared,
         },
     )
     .map_err(py_value_error)
@@ -271,11 +258,10 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn image(h: i64, w: i64) -> Boundary {
-        Boundary {
-            dtype: "u8".into(),
-            ndim: Some(3),
-            hw: [Some(h), Some(w)],
+    fn image(h: i64, w: i64) -> State {
+        State {
+            dims: [Some(h), Some(w), Some(3)],
+            ..State::new("buffer", "u8", Some(3))
         }
     }
 
@@ -283,12 +269,11 @@ mod tests {
         values.iter().map(|v| v.to_string()).collect()
     }
 
-    fn node<'a>(ops: &'a [String], states: &'a [Boundary], assertions: &'a [usize]) -> Node<'a> {
+    fn node<'a>(ops: &'a [String], states: &'a [State], assertions: &'a [usize]) -> Node<'a> {
         Node {
             ops,
             states,
             assertions,
-            shape_declared: false,
         }
     }
 

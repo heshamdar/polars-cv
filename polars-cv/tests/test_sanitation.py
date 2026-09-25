@@ -29,6 +29,7 @@ deleted and re-added later.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import io
 import json
 import os
@@ -263,14 +264,17 @@ def test_plan_equals_exec_binary_promote():
     assert _leaf_dtype(realized) == pl.Float32
 
 
+def _plan_state(domain: str, dtype: str, ndim: "int | None") -> object:
+    """A ``PlanState`` with nothing known about the sizes."""
+    from polars_cv.pipeline import PlanState
+
+    return PlanState(domain=domain, dtype=dtype, ndim=ndim)
+
+
 def _planned_shape(pipe):
     """The pipeline's plan-time [H, W, C], using None for unknown/expr dims."""
 
-    def known(p):
-        return p.value if (p is not None and not p.is_expr) else None
-
-    sh = pipe._shape_hints
-    return [known(sh.height), known(sh.width), known(sh.channels)]
+    return list(pipe._state.dims)
 
 
 # (label, build-pipeline, png-mode) exercising the rank/channel rules end-to-end.
@@ -502,7 +506,7 @@ def test_registry_parity_no_dead_contracts():
     # ops, so planning them must fail (their standalone contracts are dead, B2).
     for lowered in ("sobel", "laplacian", "sharpen"):
         with pytest.raises(ValueError, match="Unknown operation"):
-            plan_step(json.dumps({"op": lowered}), "buffer", "u8", 3, [None] * 3)
+            plan_step(json.dumps({"op": lowered}), _plan_state("buffer", "u8", 3))
 
 
 _REQUIRED_LIB_HOOKS = (
@@ -544,6 +548,8 @@ _REQUIRED_LIB_HOOKS = (
     # written.
     "plan_source",
     "sink_check",
+    # Apply a shape declaration to a planned state (the checks included).
+    "plan_assert",
 )
 
 
@@ -611,7 +617,7 @@ def _binary_dtype(op: str, left: str, right: str) -> str:
     from polars_cv._lib import plan_step
 
     op_json = json.dumps({"op": op, "other": "n0"})
-    return plan_step(op_json, "buffer", left, 3, [None] * 3, right)["dtype"]
+    return plan_step(op_json, _plan_state("buffer", left, 3), right)["dtype"]
 
 
 @plugin_required
@@ -647,9 +653,9 @@ def test_the_other_operand_dtype_is_for_binary_ops_only():
 
     add = json.dumps({"op": "add", "other": "n0"})
     with pytest.raises(ValueError, match="needs the other operand"):
-        plan_step(add, "buffer", "u8", 3, [None] * 3)
+        plan_step(add, _plan_state("buffer", "u8", 3))
     with pytest.raises(ValueError, match="only a binary op"):
-        plan_step(json.dumps({"op": "grayscale"}), "buffer", "u8", 3, [None] * 3, "u8")
+        plan_step(json.dumps({"op": "grayscale"}), _plan_state("buffer", "u8", 3), "u8")
 
 
 @requires_checkout
@@ -1040,7 +1046,7 @@ def test_op_schema_authority(op_json, state_in, expected) -> None:
     including everything the Python planner used to special-case."""
     import polars_cv._lib as lib
 
-    step = lib.plan_step(op_json, *state_in, [None] * 3)
+    step = lib.plan_step(op_json, _plan_state(*state_in))
     assert (step["domain"], step["dtype"], step["ndim"]) == expected
 
 
@@ -1089,7 +1095,7 @@ def test_replay_reproduces_the_tracked_state() -> None:
             assertions=pipe._assertions,
         )
         ops = [o.op for o in pipe._ops]
-        assert replayed._state() == pipe._state(), f"final state drift for {ops}"
+        assert replayed._state == pipe._state, f"final state drift for {ops}"
         assert replayed._entering == pipe._entering, f"entering drift for {ops}"
 
 
@@ -1123,11 +1129,11 @@ def test_axis_reduction_ndim_decrements_exactly_once() -> None:
     """Regression: the old full-replay tracking re-subtracted axis
     reductions' ndim on every subsequent append."""
     pipe = Pipeline().source("blob", dtype="u8")
-    pipe._expected_ndim = 3  # white-box: seed a known rank
+    pipe._state = dataclasses.replace(pipe._state, ndim=3)  # white-box: seed a rank
     pipe = pipe.reduce_max(axis=0)
-    assert pipe._expected_ndim == 2
+    assert pipe._state.ndim == 2
     pipe = pipe.reduce_min(axis=0)
-    assert pipe._expected_ndim == 1
+    assert pipe._state.ndim == 1
 
 
 @plugin_required
@@ -1137,17 +1143,17 @@ def test_reshape_rank_tracked_eagerly() -> None:
     saw the op — eager and lazy tracking disagreed. Reshape's rank is
     structural (= len(shape)), so both paths now report it exactly."""
     pipe = Pipeline().source("blob", dtype="u8")
-    pipe._expected_ndim = 3  # white-box: seed a known rank
+    pipe._state = dataclasses.replace(pipe._state, ndim=3)  # white-box: seed a rank
 
     flat = pipe.reshape([16])
-    assert flat._expected_ndim == 1
+    assert flat._state.ndim == 1
 
     grid = pipe.reshape([2, 2, 2, 2])
-    assert grid._expected_ndim == 4
+    assert grid._state.ndim == 4
 
     # Per-row expression entries do not hide the rank: it is the entry count.
     dyn = pipe.reshape([pl.col("n"), 4])
-    assert dyn._expected_ndim == 2
+    assert dyn._state.ndim == 2
 
 
 def test_histogram_schema_declared_once() -> None:

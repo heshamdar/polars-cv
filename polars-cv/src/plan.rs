@@ -13,22 +13,124 @@
 //! the one-input rule.
 
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
 
 use crate::py_value_error;
 use view_buffer::ops::{Domain, HistogramOutput, OutputRankRule};
 
 use crate::graph::step::GraphStep;
 
-/// The tracked plan-time state an op is appended to.
-#[derive(Debug, Clone, PartialEq)]
+/// The planner's state at one op boundary — the one representation of it.
+///
+/// Python holds it as `PlanState` (same attribute names, read by
+/// `FromPyObject`) and gets every new one from here as a dict.
+#[derive(Debug, Clone, PartialEq, FromPyObject, IntoPyObject)]
 pub(crate) struct State {
     pub domain: String,
     pub dtype: String,
     pub ndim: Option<usize>,
-    /// Known H/W/C sizes; `None` is unknown (or per-row, which is unknown at
-    /// plan time).
+    /// Known sizes of dimensions 0..3 (`[H, W, C]` for an image); `None` is
+    /// unknown (a per-row size is unknown at plan time).
     pub dims: [Option<i64>; 3],
+    /// Which of `dims` the user asserted (`assert_shape`) rather than an op
+    /// inferred: a divergence at execution is then theirs to fix.
+    pub asserted: [bool; 3],
+    /// A shape declaration (`assert_shape`, a canvas taken from another node)
+    /// reached this lineage, so the sizes may rest on a claim.
+    pub declared: bool,
+}
+
+/// The name of dimension `axis` in the `[H, W, C]` spelling `assert_shape`'s
+/// keywords use.
+const DIM_NAMES: [&str; 3] = ["height", "width", "channels"];
+
+/// One declared dimension of an [`Assertion`].
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Declared {
+    /// A literal size.
+    Size(i64),
+    /// A per-row size: declared, but no plan-time fact.
+    PerRow,
+    /// Declared unknown (a canvas whose source node's size is itself unknown).
+    Unknown,
+}
+
+/// A shape declaration at one op boundary.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Assertion {
+    /// The rank `assert_shape(dims=[...])` pins, if given.
+    #[serde(default)]
+    pub ndim: Option<usize>,
+    /// What each of dimensions 0..3 is declared as; `None` leaves it alone.
+    pub dims: [Option<Declared>; 3],
+    /// The user's `assert_shape` (`true`), or a canvas taken from another
+    /// node's inferred size (`false`) — which decides who a divergence at
+    /// execution is reported against.
+    pub by_user: bool,
+}
+
+/// Apply `assertion` to `state`, refusing one the state contradicts: a rank
+/// that is already known differently, a dimension the rank does not have, or
+/// a size that disagrees with a known one. `after_op` names the op the
+/// assertion follows, for the message.
+pub(crate) fn assert_shape(
+    mut state: State,
+    assertion: &Assertion,
+    after_op: Option<&str>,
+) -> Result<State, String> {
+    state.declared = true;
+    if let Some(ndim) = assertion.ndim {
+        if let Some(current) = state.ndim.filter(|c| *c != ndim) {
+            return Err(format!(
+                "assert_shape(dims=...) declares a rank-{ndim} output, but this pipeline is \
+                 already known to produce rank {current}. Drop the assertion, or correct its \
+                 length."
+            ));
+        }
+        state.ndim = Some(ndim);
+    }
+    for (axis, declared) in assertion.dims.iter().enumerate() {
+        let Some(declared) = declared else {
+            continue;
+        };
+        let name = DIM_NAMES[axis];
+        if *declared == Declared::Unknown {
+            state.dims[axis] = None;
+            state.asserted[axis] = false;
+            continue;
+        }
+        if let Some(ndim) = state.ndim.filter(|n| axis >= *n) {
+            return Err(format!(
+                "assert_shape({name}=...) names dimension {axis}, which a rank-{ndim} output \
+                 does not have. The shape hints are positional — {} are dimensions 0, 1 and \
+                 2 — so use assert_shape(dims=[...]) for anything that is not an [H, W, C] \
+                 image.",
+                DIM_NAMES.join(", ")
+            ));
+        }
+        let size = match declared {
+            Declared::Size(size) => Some(*size),
+            Declared::PerRow | Declared::Unknown => None,
+        };
+        if let (Some(known), Some(size)) = (state.dims[axis], size) {
+            if known != size {
+                let source = after_op.map_or("the source".to_string(), |op| {
+                    format!("the {op}() before it")
+                });
+                return Err(format!(
+                    "assert_shape({name}={size}) contradicts the {name} {known} that {source} \
+                     already establishes. An assertion cannot change what the data is — \
+                     remove it, or fix the value."
+                ));
+            }
+        }
+        state.dims[axis] = size;
+        if assertion.by_user {
+            state.asserted[axis] = true;
+        }
+    }
+    Ok(state)
 }
 
 /// The state after one op. A hint is replaced where `dims[i]` is `Some`, and
@@ -160,7 +262,9 @@ fn single_input_dtype(step: &GraphStep, dtype: &str) -> Result<String, String> {
 }
 
 impl State {
-    /// This state with `step` applied.
+    /// This state with `step` applied. Every size is now the ops' inference,
+    /// so none is the user's any more; whether a declaration reached the
+    /// lineage stays.
     fn after(mut self, step: Step) -> State {
         self.domain = step.domain;
         self.dtype = step.dtype;
@@ -170,7 +274,20 @@ impl State {
                 *dim = size;
             }
         }
+        self.asserted = [false; 3];
         self
+    }
+
+    /// A fresh state: nothing known about the sizes, nothing declared.
+    pub(crate) fn new(domain: &str, dtype: &str, ndim: Option<usize>) -> State {
+        State {
+            domain: domain.to_string(),
+            dtype: dtype.to_string(),
+            ndim,
+            dims: [None; 3],
+            asserted: [false; 3],
+            declared: false,
+        }
     }
 }
 
@@ -183,11 +300,8 @@ impl State {
 pub(crate) fn source_state(source: &crate::formats::source::Source) -> Result<State, String> {
     use crate::formats::source::Source;
 
-    let buffer = |dtype: Option<view_buffer::DType>, ndim: Option<usize>| State {
-        domain: "buffer".to_string(),
-        dtype: dtype.map_or("auto", |d| d.short_name()).to_string(),
-        ndim,
-        dims: [None; 3],
+    let buffer = |dtype: Option<view_buffer::DType>, ndim: Option<usize>| {
+        State::new("buffer", dtype.map_or("auto", |d| d.short_name()), ndim)
     };
     let dtype = source.dtype();
     Ok(match source {
@@ -208,12 +322,7 @@ pub(crate) fn source_state(source: &crate::formats::source::Source) -> Result<St
                 background: s.background,
             });
             let op_json = serde_json::to_string(&rasterize).map_err(|e| e.to_string())?;
-            let contours = State {
-                domain: "contour".to_string(),
-                dtype: "auto".to_string(),
-                ndim: None,
-                dims: [None; 3],
-            };
+            let contours = State::new("contour", "auto", None);
             let planned = step(&op_json, &contours, None)?;
             contours.after(planned)
         }
@@ -221,19 +330,26 @@ pub(crate) fn source_state(source: &crate::formats::source::Source) -> Result<St
 }
 
 /// Python entry point for [`source_state`]: validate a serialized source
-/// against its typed format, and return the state it starts a pipeline in,
-/// `{"domain", "dtype", "ndim", "dims"}` with `dims` all three hints.
+/// against its typed format, and return the state it starts a pipeline in.
 #[pyfunction]
-pub(crate) fn plan_source<'py>(py: Python<'py>, source_json: &str) -> PyResult<Bound<'py, PyDict>> {
+pub(crate) fn plan_source(source_json: &str) -> PyResult<State> {
     let source: crate::formats::source::Source =
         serde_json::from_str(source_json).map_err(|e| py_value_error(e.to_string()))?;
-    let state = source_state(&source).map_err(py_value_error)?;
-    let result = PyDict::new(py);
-    result.set_item("domain", state.domain)?;
-    result.set_item("dtype", state.dtype)?;
-    result.set_item("ndim", state.ndim)?;
-    result.set_item("dims", state.dims)?;
-    Ok(result)
+    source_state(&source).map_err(py_value_error)
+}
+
+/// Python entry point for [`assert_shape`]: `assertion_json` is an
+/// [`Assertion`]; `after_op` names the op it follows, if any.
+#[pyfunction]
+#[pyo3(signature = (state, assertion_json, after_op=None))]
+pub(crate) fn plan_assert(
+    state: State,
+    assertion_json: &str,
+    after_op: Option<&str>,
+) -> PyResult<State> {
+    let assertion: Assertion =
+        serde_json::from_str(assertion_json).map_err(|e| py_value_error(e.to_string()))?;
+    assert_shape(state, &assertion, after_op).map_err(py_value_error)
 }
 
 /// The input shape to hand `infer_shape`, or `None` to not ask.
@@ -267,41 +383,12 @@ fn binary_dtype(op: view_buffer::BinaryOp, left: &str, right: &str) -> Result<St
     Ok(dtype.short_name().to_string())
 }
 
-/// Python entry point for [`step`].
-///
-/// Returns `{"domain", "dtype", "ndim", "dims"}`, where `dims` lists
-/// `(axis, size)` for exactly the hints the op replaces (`size` `None` for
-/// unknown); Python names the axes (`HINT_DIMS`).
+/// Python entry point for [`step`]: the state after appending `op_json`.
 #[pyfunction]
-#[pyo3(signature = (op_json, domain, dtype, ndim, dims, other_dtype=None))]
-pub(crate) fn plan_step<'py>(
-    py: Python<'py>,
-    op_json: &str,
-    domain: String,
-    dtype: String,
-    ndim: Option<usize>,
-    dims: [Option<i64>; 3],
-    other_dtype: Option<&str>,
-) -> PyResult<Bound<'py, PyDict>> {
-    let state = State {
-        domain,
-        dtype,
-        ndim,
-        dims,
-    };
-    let out = step(op_json, &state, other_dtype).map_err(py_value_error)?;
-    let result = PyDict::new(py);
-    result.set_item("domain", out.domain)?;
-    result.set_item("dtype", out.dtype)?;
-    result.set_item("ndim", out.ndim)?;
-    let replaced: Vec<(usize, Option<i64>)> = out
-        .dims
-        .iter()
-        .enumerate()
-        .filter_map(|(axis, dim)| dim.map(|size| (axis, size)))
-        .collect();
-    result.set_item("dims", replaced)?;
-    Ok(result)
+#[pyo3(signature = (op_json, state, other_dtype=None))]
+pub(crate) fn plan_step(op_json: &str, state: State, other_dtype: Option<&str>) -> PyResult<State> {
+    let planned = step(op_json, &state, other_dtype).map_err(py_value_error)?;
+    Ok(state.after(planned))
 }
 
 #[cfg(test)]
@@ -311,10 +398,8 @@ mod tests {
 
     fn state(domain: &str, dtype: &str, ndim: Option<usize>, dims: [Option<i64>; 3]) -> State {
         State {
-            domain: domain.into(),
-            dtype: dtype.into(),
-            ndim,
             dims,
+            ..State::new(domain, dtype, ndim)
         }
     }
 
@@ -394,6 +479,78 @@ mod tests {
         .unwrap();
         assert_eq!(out.domain, "buffer");
         assert_eq!(out.dims, [Some(Some(8)), Some(Some(6)), Some(Some(1))]);
+    }
+
+    fn assertion(v: serde_json::Value) -> Assertion {
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn an_assertion_declares_what_is_unknown_and_marks_it_the_users() {
+        let s = state("buffer", "u8", None, [None; 3]);
+        let a =
+            assertion(json!({"ndim": 3, "dims": [{"size": 8}, null, "per_row"], "by_user": true}));
+        let out = assert_shape(s, &a, None).unwrap();
+        assert_eq!(out.ndim, Some(3));
+        assert_eq!(out.dims, [Some(8), None, None]);
+        assert_eq!(out.asserted, [true, false, true]);
+        assert!(out.declared);
+        // The next op's inference is not the user's.
+        let op = json!({"op": "invert"}).to_string();
+        let planned = step(&op, &out, None).unwrap();
+        assert_eq!(out.after(planned).asserted, [false; 3]);
+    }
+
+    #[test]
+    fn an_assertion_the_state_contradicts_is_refused() {
+        let image = state("buffer", "u8", Some(3), [Some(10), Some(20), Some(3)]);
+        let a = |v| assertion(v);
+        let err = assert_shape(
+            image.clone(),
+            &a(json!({"dims": [{"size": 11}, null, null], "by_user": true})),
+            Some("resize"),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains(
+                "assert_shape(height=11) contradicts the height 10 that the resize() before it"
+            ),
+            "{err}"
+        );
+        let err = assert_shape(
+            image.clone(),
+            &a(json!({"ndim": 2, "dims": [null, null, null], "by_user": true})),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains(
+                "declares a rank-2 output, but this pipeline is already known to produce rank 3"
+            ),
+            "{err}"
+        );
+        let flat = state("buffer", "u8", Some(2), [None; 3]);
+        let err = assert_shape(
+            flat,
+            &a(json!({"dims": [null, null, {"size": 3}], "by_user": true})),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("assert_shape(channels=...) names dimension 2, which a rank-2 output"),
+            "{err}"
+        );
+        // Agreeing, or declaring a canvas unknown, is fine; a canvas is not the user's.
+        let ok = assert_shape(
+            image,
+            &a(json!({"dims": [{"size": 10}, "unknown", null], "by_user": false})),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            (ok.dims, ok.asserted),
+            ([Some(10), None, Some(3)], [false; 3])
+        );
     }
 
     #[test]

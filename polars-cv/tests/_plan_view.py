@@ -43,25 +43,17 @@ def _pipeline(p: "Pipeline | LazyPipelineExpr") -> "Pipeline":
     return inner if inner is not None else p  # type: ignore[return-value]
 
 
-def _hint(value: Any) -> int | str | None:
-    if value is None:
-        return None
-    if value.is_expr:
-        return EXPR
-    return value.value
-
-
 def planned(p: "Pipeline | LazyPipelineExpr") -> PlanView:
     """The planned output state of *p* (a ``Pipeline`` or lazy node)."""
-    pipe = _pipeline(p)
-    hints = pipe._shape_hints
+    state = _pipeline(p)._state
+    height, width, channels = state.dims
     return PlanView(
-        domain=pipe._current_domain,
-        dtype=pipe._output_dtype,
-        ndim=pipe._expected_ndim,
-        height=_hint(hints.height),
-        width=_hint(hints.width),
-        channels=_hint(hints.channels),
+        domain=state.domain,
+        dtype=state.dtype,
+        ndim=state.ndim,
+        height=height,
+        width=width,
+        channels=channels,
     )
 
 
