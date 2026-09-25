@@ -285,14 +285,24 @@ fn param_default(attrs: &[Attribute]) -> syn::Result<Option<Expr>> {
 /// no wire form, and the wire never produces it.
 pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let mode = mode_param(input)?;
-    let Data::Enum(data) = &input.data else {
-        return Err(syn::Error::new(
-            input.span(),
-            "#[derive(Ops)] needs an enum",
-        ));
-    };
     let name = &input.ident;
     let wire = with_mode(input, quote!(::view_buffer::mode::Wire));
+    // A struct is one op: the same generation over a single "variant" whose
+    // attributes are the struct's and whose constructor is the struct itself.
+    let variants: Vec<(Option<&Ident>, &[Attribute], &Fields)> = match &input.data {
+        Data::Enum(data) => data
+            .variants
+            .iter()
+            .map(|v| (Some(&v.ident), v.attrs.as_slice(), &v.fields))
+            .collect(),
+        Data::Struct(data) => vec![(None, input.attrs.as_slice(), &data.fields)],
+        Data::Union(_) => {
+            return Err(syn::Error::new(
+                input.span(),
+                "#[derive(Ops)] needs an enum or struct",
+            ))
+        }
+    };
 
     let mut names = Vec::new();
     let mut from_arms = Vec::new();
@@ -302,46 +312,51 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let mut descs = Vec::new();
     let mut samples = Vec::new();
 
-    for v in &data.variants {
-        let ident = &v.ident;
-        let attrs = op_attrs(&v.attrs)?;
+    for &(ident, v_attrs, v_fields) in &variants {
+        // `Name::Variant` for an enum, `Name` for a struct.
+        let path = match ident {
+            Some(ident) => quote!(#name::#ident),
+            None => quote!(#name),
+        };
+        let span = ident.map_or_else(|| input.span(), |i| i.span());
+        let attrs = op_attrs(v_attrs)?;
         let Some(wire_name) = attrs.name else {
-            if attrs.sample.is_some() || attrs.python.is_some() {
+            if attrs.sample.is_some() || attrs.python.is_some() || ident.is_none() {
                 return Err(syn::Error::new(
-                    v.span(),
+                    span,
                     "#[op(...)] keys need a `name`: a variant without one is engine-internal",
                 ));
             }
-            let pat = match &v.fields {
-                Fields::Unit => quote!(#name::#ident),
-                Fields::Named(_) => quote!(#name::#ident { .. }),
-                Fields::Unnamed(_) => quote!(#name::#ident(..)),
+            let pat = match v_fields {
+                Fields::Unit => quote!(#path),
+                Fields::Named(_) => quote!(#path { .. }),
+                Fields::Unnamed(_) => quote!(#path(..)),
             };
             name_arms.push(quote! { #pat => ::core::option::Option::None, });
             fields_arms.push(quote! { #pat => ::core::option::Option::None, });
             visit_arms.push(quote! { #pat => {} });
             continue;
         };
-        let doc = doc_of(&v.attrs);
+        let doc = doc_of(v_attrs);
         if doc.is_empty() {
             return Err(syn::Error::new(
-                v.span(),
+                span,
                 "a wire op needs a doc comment: it is the generated Python docstring",
             ));
         }
         let Some(sample) = attrs.sample else {
             return Err(syn::Error::new(
-                v.span(),
+                span,
                 "a wire op needs `#[op(sample = {...})]`: one valid instance, which the \
                  registry-driven tests cover it with",
             ));
         };
-        let named: Vec<&syn::Field> = match &v.fields {
+        let named: Vec<&syn::Field> = match v_fields {
             Fields::Unit => Vec::new(),
             Fields::Named(n) => n.named.iter().collect(),
             Fields::Unnamed(_) => {
                 return Err(syn::Error::new(
-                    v.span(),
+                    span,
                     "a wire op has named fields: the wire names each parameter",
                 ))
             }
@@ -409,20 +424,17 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }
 
         let (pat, ctor) = if named.is_empty() {
-            match &v.fields {
-                Fields::Unit => (quote!(#name::#ident), quote!(#name::#ident)),
-                _ => (quote!(#name::#ident {}), quote!(#name::#ident {})),
+            match v_fields {
+                Fields::Unit => (quote!(#path), quote!(#path)),
+                _ => (quote!(#path {}), quote!(#path {})),
             }
         } else {
-            (
-                quote!(#name::#ident { #(#ids),* }),
-                quote!(#name::#ident { #(#ids),* }),
-            )
+            (quote!(#path { #(#ids),* }), quote!(#path { #(#ids),* }))
         };
 
-        let rest = match &v.fields {
-            Fields::Unit => quote!(#name::#ident),
-            _ => quote!(#name::#ident { .. }),
+        let rest = match v_fields {
+            Fields::Unit => quote!(#path),
+            _ => quote!(#path { .. }),
         };
         names.push(wire_name.clone());
         from_arms.push(quote! {

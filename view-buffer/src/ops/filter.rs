@@ -10,12 +10,12 @@ use crate::ops::shape_rule::OpShape;
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use crate::mode::{Exec, Mode};
+use crate::ops::Sym;
+use polars_cv_macros::{Ops, Resolve};
 
 /// Border handling mode for convolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum BorderMode {
     /// Replicate the nearest edge pixel.
     Replicate,
@@ -31,18 +31,78 @@ crate::naming::named_variants!(BorderMode: "Border-handling mode for 2D convolut
     "reflect" => Reflect,
 });
 
-/// Generic 2D convolution operation.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct ConvolveOp {
-    /// Flattened kernel values (row-major, ksize×ksize).
-    pub kernel: Vec<f32>,
-    /// Kernel size (kernel is ksize×ksize, must be odd).
-    pub ksize: usize,
-    /// If true, divide output by the sum of absolute kernel values.
-    pub normalize: bool,
-    /// Border handling mode.
-    pub border: BorderMode,
+/// Apply generic 2D convolution with an arbitrary kernel.
+///
+/// Domain: buffer → buffer
+///
+/// Example:
+///     ```python
+///     >>> edge = Pipeline().source("image_bytes").convolve2d(
+///     ...     kernel=[-1, -1, -1, -1, 8, -1, -1, -1, -1],
+///     ...     ksize=3,
+///     ... )
+///     ```
+#[derive(Debug, Clone, PartialEq, Ops, Resolve)]
+#[op(name = "convolve2d", sample = {"kernel": [0, 0, 0, 0, 1, 0, 0, 0, 0], "ksize": 3,
+                                    "normalize": false, "border": "replicate"})]
+pub struct ConvolveOp<M: Mode = Exec> {
+    /// Flattened kernel values (row-major, ``ksize × ksize``). **Each
+    /// coefficient may be a literal float or a Polars expression**, so a batch
+    /// can convolve with a different kernel per row. The kernel *length* is
+    /// structural and must be a literal odd square.
+    pub kernel: Vec<M::V<f32>>,
+    /// Kernel dimension (must be odd; kernel is ``ksize × ksize``). Accepts a
+    /// Polars expression for per-row dynamic values.
+    pub ksize: M::V<u32>,
+    /// If True, divide output by the sum of absolute kernel values.
+    #[param(default = false)]
+    pub normalize: M::V<bool>,
+    /// Border handling mode (``"replicate"``, ``"zero"``, ``"reflect"``).
+    #[param(default = "replicate")]
+    pub border: M::V<BorderMode>,
+}
+
+impl<M: Mode> ConvolveOp<M> {
+    /// The kernel's side, from its length — structural, so known at plan
+    /// time whatever `ksize` is.
+    pub fn side(&self) -> usize {
+        self.kernel.len().isqrt()
+    }
+
+    /// Refuse a kernel no row can run: its length must be the square of an
+    /// odd side, and a known `ksize` must be that side.
+    pub fn check(&self) -> Result<(), String> {
+        let len = self.kernel.len();
+        match M::sym(&self.ksize) {
+            Sym::Known(k) => {
+                if k.is_multiple_of(2) {
+                    return Err(format!("convolve2d ksize must be odd, got {k}"));
+                }
+                let k = k as usize;
+                if len != k * k {
+                    return Err(format!(
+                        "kernel length {len} doesn't match ksize²={}",
+                        k * k
+                    ));
+                }
+            }
+            Sym::PerRow => {
+                let side = self.side();
+                if side * side != len || side.is_multiple_of(2) {
+                    return Err(format!(
+                        "convolve2d kernel length {len} must be the square of an odd \
+                         number (9 for 3x3, 25 for 5x5, ...)"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Same-size convolution (padded to keep the dimensions).
+    pub fn shape(&self) -> OpShape {
+        OpShape::Preserve
+    }
 }
 
 impl Op for ConvolveOp {
@@ -51,6 +111,8 @@ impl Op for ConvolveOp {
         input_shapes: &[&[usize]],
         _input_dtypes: &[DType],
     ) -> Result<(), crate::ops::validation::ValidationError> {
+        self.check()
+            .map_err(|message| crate::ops::validation::ValidationError::Generic { message })?;
         crate::ops::validation::require_hw_or_hwc(input_shapes[0])
     }
 
@@ -59,8 +121,7 @@ impl Op for ConvolveOp {
     }
 
     fn shape(&self) -> OpShape {
-        // Same-size convolution (zero-padded to maintain dimensions)
-        OpShape::Preserve
+        ConvolveOp::shape(self)
     }
 
     fn memory_effect(&self) -> MemoryEffect {
@@ -77,9 +138,9 @@ impl Op for ConvolveOp {
     }
 
     fn spatial_dependency(&self) -> SpatialDependency {
-        // A ksize×ksize kernel: output at (y, x) depends on input within
-        // ksize / 2 pixels of (y, x).
-        SpatialDependency::neighborhood(self.ksize / 2)
+        // A side×side kernel: output at (y, x) depends on input within
+        // side / 2 pixels of (y, x).
+        SpatialDependency::neighborhood(self.side() / 2)
     }
 
     fn infer_strides(
@@ -136,7 +197,7 @@ pub fn apply_convolve2d(buf: &ViewBuffer, op: &ConvolveOp) -> ViewBuffer {
     let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
 
     let kernel = &op.kernel;
-    let ksize = op.ksize;
+    let ksize = op.ksize as usize;
     let half = ksize / 2;
 
     let norm_factor = if op.normalize {
@@ -239,7 +300,7 @@ fn convolve_border_ring(
     op: &ConvolveOp,
     norm_factor: f32,
 ) {
-    let half = op.ksize / 2;
+    let half = op.ksize as usize / 2;
     // Top and bottom rows.
     convolve_gather_rect(src, out, h, w, c, op, norm_factor, 0, half, 0, w);
     convolve_gather_rect(src, out, h, w, c, op, norm_factor, h - half, h, 0, w);
@@ -277,7 +338,7 @@ fn convolve_gather_rect(
     x1: usize,
 ) {
     let half = (op.ksize / 2) as i64;
-    let ksize = op.ksize;
+    let ksize = op.ksize as usize;
     let kernel = &op.kernel;
 
     for ch in 0..c {
