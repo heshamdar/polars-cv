@@ -161,6 +161,32 @@ def pipeline_chain_calls(markdown: str) -> list[ast.Call]:
     return calls
 
 
+def docstring_pipeline_calls(docstring: str) -> list[ast.Call]:
+    """Every call on a ``Pipeline()`` chain in a docstring's ``>>>`` examples.
+
+    A doctest statement is a ``>>>`` line plus its ``...`` continuations. A
+    statement that is not valid Python raises rather than being skipped, so an
+    example cannot drop out of the check unnoticed.
+    """
+    statements: list[str] = []
+    for line in docstring.splitlines():
+        text = line.strip()
+        if text.startswith(">>> ") or text == ">>>":
+            statements.append(text[4:])
+        elif (text.startswith("... ") or text == "...") and statements:
+            statements[-1] += "\n" + text[4:]
+    calls: list[ast.Call] = []
+    for statement in statements:
+        for node in ast.walk(ast.parse(statement)):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and _rooted_at_pipeline(node.func.value)
+            ):
+                calls.append(node)
+    return calls
+
+
 def _rooted_at_pipeline(node: ast.expr) -> bool:
     while isinstance(node, (ast.Call, ast.Attribute)):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):

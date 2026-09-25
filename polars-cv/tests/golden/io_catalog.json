@@ -165,7 +165,7 @@
       "fields": [
         {
           "name": "dtype",
-          "doc": "Asserted element dtype, for the planner: a blob carries its own.",
+          "doc": "Declared element dtype. A blob carries its own, so a declaration is\nchecked at decode: a blob of another dtype is a row error.",
           "type": {
             "kind": "optional",
             "inner": {

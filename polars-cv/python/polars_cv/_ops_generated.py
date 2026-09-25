@@ -1200,7 +1200,7 @@ class _OpsMixin:
             to_space: Target color space (rgb, bgr, hsv, lab, ycbcr, gray).
 
         Example:
-            >>> pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
+            >>> pipe = Pipeline().source("image_bytes").convert_color(from_space="rgb", to_space="hsv")
         """
         return self._append_typed(
             "cvt_color", {"from_space": from_space, "to_space": to_space}

@@ -66,7 +66,8 @@ pub struct FilePathSource {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
 #[serde(deny_unknown_fields)]
 pub struct BlobSource {
-    /// Asserted element dtype, for the planner: a blob carries its own.
+    /// Declared element dtype. A blob carries its own, so a declaration is
+    /// checked at decode: a blob of another dtype is a row error.
     pub dtype: Option<Literal<DType>>,
     /// "raise" (default) or "null": what a row that cannot be decoded does.
     pub on_error: Option<Literal<FetchErrorPolicy>>,

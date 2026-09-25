@@ -850,13 +850,28 @@ impl CompiledGraph {
                                     get_binary_row_buffer(input_ca, row_idx)
                                 {
                                     // Raw bytes take the declared dtype; a blob
-                                    // carries its own.
+                                    // carries its own, which a declared one must
+                                    // match: the planner (and identity
+                                    // elimination) takes the declaration as fact.
                                     let raw_dtype = match source_format {
                                         SourceFormat::Raw => source.dtype(),
                                         _ => None,
                                     };
                                     match decode_binary_zero_copy(buffer, offset, len, raw_dtype) {
-                                        Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
+                                        Ok(buf) => match source.dtype() {
+                                            Some(declared) if declared != buf.dtype() => {
+                                                Err(format!(
+                                                    "the blob holds {} elements, but the source \
+                                                     declares dtype=\"{}\". A blob carries its own \
+                                                     dtype: drop the declaration, correct it, or \
+                                                     .cast(\"{}\") after the source.",
+                                                    buf.dtype().short_name(),
+                                                    declared.short_name(),
+                                                    declared.short_name()
+                                                ))
+                                            }
+                                            _ => Ok(Some(NodeOutput::from_buffer(buf))),
+                                        },
                                         Err(e) => Err(format!("Zero-copy decode error: {e}")),
                                     }
                                 } else {

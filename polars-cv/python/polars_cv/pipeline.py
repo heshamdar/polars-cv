@@ -8,7 +8,6 @@ processing pipelines that can be applied to Polars DataFrame columns.
 from __future__ import annotations
 
 import copy
-import dataclasses
 import json
 import math
 from dataclasses import dataclass
@@ -122,15 +121,9 @@ def _asserted_rank(dims: "Sequence[int | None]") -> int:
         )
         raise ValueError(msg)
     for axis, size in enumerate(dims):
-        if size is None:
-            continue
-        _reject_expr(size, f"'dims[{axis}]'")
-        if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
-            msg = (
-                f"assert_shape(dims=...) entry {axis} must be a positive int "
-                f"or None, got {size!r}"
-            )
-            raise ValueError(msg)
+        if size is not None:
+            # Sizes are checked by `plan_assert` (Rust `Declared::Size`).
+            _reject_expr(size, f"'dims[{axis}]'")
     return len(dims)
 
 
@@ -257,6 +250,26 @@ def _assertion_window(
     return {
         i - start: copy.deepcopy(a) for i, a in assertions.items() if start <= i <= end
     }
+
+
+def _render_assertion(assertion: Assertion) -> str:
+    """An ``assert_shape(...)`` call as the user wrote it."""
+
+    def size(declared: Any) -> str:
+        return "expr" if declared == "per_row" else str(declared["size"])
+
+    if assertion["ndim"] is not None:
+        dims = [
+            "None" if d is None or d == "unknown" else size(d)
+            for d in assertion["dims"][: assertion["ndim"]]
+        ]
+        return f"assert_shape(dims=[{', '.join(dims)}])"
+    named = [
+        f"{name}={size(d)}"
+        for name, d in zip(HINT_DIMS, assertion["dims"])
+        if d is not None
+    ]
+    return f"assert_shape({', '.join(named)})"
 
 
 def _encode_field(
@@ -929,12 +942,12 @@ class Pipeline(_OpsMixin):
             plan_source(json.dumps(new._source.to_dict(planning_slots)))
         )
         if shape is not None:
-            # A contour canvas taken from another node: that node's planned
-            # H/W, which no definition of this source can know.
-            height, width, _ = shape._pipeline._state.dims
-            new._state = dataclasses.replace(
-                new._state, dims=(height, width, new._state.dims[2])
-            )
+            # A contour canvas taken from another node is a declaration, as it
+            # is for `rasterize(shape=)`: recorded and applied through the one
+            # assertion path, so the plan knows its sizes may rest on a claim.
+            canvas = new._assertions.setdefault(0, _new_assertion(by_user=False))
+            canvas["dims"] = Pipeline._canvas_of(shape)
+            new._apply_assertions_at(0)
 
         return new
 
@@ -1983,20 +1996,23 @@ class Pipeline(_OpsMixin):
     # --- Repr ---
 
     def __repr__(self) -> str:
-        """Return string representation of pipeline."""
+        """Return string representation of pipeline.
+
+        Renders the chain as written: each ``assert_shape`` the user wrote
+        appears where they wrote it. Sizes the ops inferred are not
+        declarations and are not rendered as one.
+        """
         parts = []
         if self._source:
             parts.append(f"source({self._source.format.value!r})")
-        known = [
-            f"{dim}={size}"
-            for dim, size in zip(HINT_DIMS, self._state.dims)
-            if size is not None
-        ]
-        if known:
-            parts.append(f"assert_shape({', '.join(known)})")
-        for op in self._ops:
-            params_str = ", ".join(f"{k}={v.value}" for k, v in op.params.items())
-            parts.append(f"{op.op}({params_str})")
+        for position in range(len(self._ops) + 1):
+            assertion = self._assertions.get(position)
+            if assertion is not None and assertion["by_user"]:
+                parts.append(_render_assertion(assertion))
+            if position < len(self._ops):
+                op = self._ops[position]
+                params_str = ", ".join(f"{k}={v.value}" for k, v in op.params.items())
+                parts.append(f"{op.op}({params_str})")
 
         return f"Pipeline().{'.'.join(parts)}" if parts else "Pipeline()"
 

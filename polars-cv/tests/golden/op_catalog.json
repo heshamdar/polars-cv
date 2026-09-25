@@ -593,7 +593,7 @@
     "name": "cvt_color",
     "python": "convert_color",
     "visibility": "public",
-    "doc": "Convert between color spaces.\n\nDomain: buffer → buffer\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").convert_color(\"rgb\", \"hsv\")",
+    "doc": "Convert between color spaces.\n\nDomain: buffer → buffer\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").convert_color(from_space=\"rgb\", to_space=\"hsv\")",
     "fields": [
       {
         "name": "from_space",

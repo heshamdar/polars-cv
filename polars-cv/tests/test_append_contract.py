@@ -35,7 +35,14 @@ from polars_cv import Pipeline
 from polars_cv._types import Domain
 
 from ._discovery import package_modules
-from ._op_cases import BUFFER, CONTOUR, EXTRA_CASES, OP_CASES, base_pipeline
+from ._op_cases import (
+    BUFFER,
+    CONTOUR,
+    EXTRA_CASES,
+    OP_CASES,
+    base_pipeline,
+    case_base,
+)
 from ._schema_parity import assert_plan_equals_exec
 from .conftest import plugin_required
 
@@ -488,7 +495,7 @@ def test_eager_and_lazy_agree_on_shape_state(op) -> None:
     with their eager spelling, ``pad`` and ``rotate`` among them.
     """
     domain, kwargs = _OP_CASES[op]
-    base = base_pipeline(domain)
+    base = case_base(op, domain)
 
     eager = getattr(base, op)(**kwargs)
     lazy = getattr(pl.col("img").cv.pipe(base), op)(**kwargs)._pipeline
