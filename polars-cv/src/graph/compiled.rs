@@ -36,9 +36,9 @@ use view_buffer::{Op, PlannedDType, ViewBuffer, ViewDto, ViewExpr};
 use crate::contour::parse_contour_list;
 use crate::execute::{decode_contour_source, decode_contour_source_with_dims, decode_image_bytes};
 use crate::formats::source::Source;
-use crate::ops::geometry::RasterSize;
 use crate::ops::{NodeRef, TypedOp};
 use crate::params::ParamCtx;
+use view_buffer::geometry::ops::RasterSize;
 
 use super::step::GraphStep;
 
@@ -68,7 +68,7 @@ pub(crate) enum OpResolver {
     /// dependency, so it has already run); the remaining params resolve from
     /// the spec like any dynamic op.
     RasterizeShapeRef {
-        op: crate::ops::geometry::Rasterize,
+        op: view_buffer::GeometryOp<view_buffer::mode::Wire>,
         shape_node: String,
     },
 }
@@ -77,7 +77,7 @@ pub(crate) enum OpResolver {
 enum ResolvedStep<'a> {
     Step(Cow<'a, GraphStep>),
     RasterizeShapeRef {
-        op: &'a crate::ops::geometry::Rasterize,
+        op: &'a view_buffer::GeometryOp<view_buffer::mode::Wire>,
         shape_node: &'a str,
     },
 }
@@ -196,8 +196,14 @@ impl CompiledGraph {
             for spec in &node.ops {
                 // rasterize(shape=<node>) takes its canvas from another
                 // node's output, not a param, so it gets a dedicated resolver.
-                if let TypedOp::Rasterize(op) = spec {
-                    if let RasterSize::FromNode(NodeRef(shape_node)) = &op.size {
+                if let TypedOp::Geometry(
+                    op @ view_buffer::GeometryOp::Rasterize {
+                        size: RasterSize::FromNode(NodeRef(shape_node)),
+                        ..
+                    },
+                ) = spec
+                {
+                    {
                         if !graph.nodes.contains_key(shape_node) {
                             return Err(polars_err!(ComputeError:
                                 "Node '{}': rasterize shape reference '{}' is not a node in the graph",
@@ -1000,8 +1006,12 @@ impl CompiledGraph {
                                 let height = dims[0] as u32;
                                 let width = dims[1] as u32;
                                 ctx.clear_null();
-                                let geo_op = match op.with_size(width, height, row_idx, ctx) {
-                                    Ok(geo_op) => geo_op,
+                                let resolved = view_buffer::mode::Resolve::resolve(
+                                    *op,
+                                    &crate::ops::param::RowValues { row: row_idx, ctx },
+                                );
+                                let geo_op = match resolved {
+                                    Ok(geo_op) => geo_op.with_canvas(height, width),
                                     Err(_) if ctx.took_null() => continue 'nodes,
                                     Err(e) => return Err(e.to_string()),
                                 };
@@ -2029,10 +2039,17 @@ mod tests {
                     OpResolver::Dynamic(spec) => {
                         spec.resolve(0, &ParamCtx::empty()).ok().map(Cow::Owned)
                     }
-                    OpResolver::RasterizeShapeRef { op, .. } => op
-                        .with_size(1, 1, 0, &ParamCtx::empty())
+                    OpResolver::RasterizeShapeRef { op, .. } => {
+                        view_buffer::mode::Resolve::resolve(
+                            op,
+                            &crate::ops::param::RowValues {
+                                row: 0,
+                                ctx: &ParamCtx::empty(),
+                            },
+                        )
                         .ok()
-                        .map(|geo| Cow::Owned(GraphStep::Geometry(geo))),
+                        .map(|geo| Cow::Owned(GraphStep::Geometry(geo.with_canvas(1, 1))))
+                    }
                 };
                 if let Some(step) = step {
                     seen.insert(step_name(&step));

@@ -229,8 +229,8 @@ fn declare(mut state: State, op: &crate::ops::declare::AssertShape) -> Result<St
 
 /// The state after appending `op` to `state`. See the module docs.
 pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Result<State, String> {
-    use crate::ops::geometry::RasterSize;
     use crate::ops::{NodeRef, TypedOp};
+    use view_buffer::geometry::ops::RasterSize;
 
     let step = crate::planning_step(op)?;
 
@@ -305,12 +305,14 @@ pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Resu
         dims.iter_mut().skip(n).for_each(|d| *d = None);
     }
     // A canvas taken from another node has that node's planned H/W.
-    if let TypedOp::Rasterize(r) = op {
-        if let RasterSize::FromNode(NodeRef(node)) = &r.size {
-            let canvas = referenced(refs, op.name(), node)?;
-            dims[0] = canvas.dims[0];
-            dims[1] = canvas.dims[1];
-        }
+    if let TypedOp::Geometry(view_buffer::GeometryOp::Rasterize {
+        size: RasterSize::FromNode(NodeRef(node)),
+        ..
+    }) = op
+    {
+        let canvas = referenced(refs, op.name(), node)?;
+        dims[0] = canvas.dims[0];
+        dims[1] = canvas.dims[1];
     }
 
     Ok(State {
@@ -404,7 +406,7 @@ pub(crate) fn source_state(
             buffer(dtype, None)
         }
         Source::Contour(s) => {
-            let rasterize = crate::ops::TypedOp::Rasterize(crate::ops::geometry::Rasterize {
+            let rasterize = crate::ops::TypedOp::Geometry(view_buffer::GeometryOp::Rasterize {
                 size: s.size.clone(),
                 fill_value: s.fill_value.unwrap_or(crate::ops::Param::Lit(255)),
                 background: s.background.unwrap_or(crate::ops::Param::Lit(0)),

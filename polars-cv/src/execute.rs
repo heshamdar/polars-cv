@@ -13,8 +13,8 @@ use view_buffer::{
 
 use crate::formats::sink::Sink;
 use crate::formats::source::{ContourSource, Source};
-use crate::ops::geometry::RasterSize;
 use crate::params::ParamCtx;
+use view_buffer::geometry::ops::RasterSize;
 
 /// Decode a contour source by parsing the geometry and rasterizing to ViewBuffer.
 ///

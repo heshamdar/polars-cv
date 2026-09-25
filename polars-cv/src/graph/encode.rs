@@ -50,11 +50,13 @@ pub(crate) fn execute_geometry_op(
             Ok(NodeOutput::from_contours(contours))
         }
         GeometryOp::Rasterize {
-            width,
-            height,
             fill_value,
             background,
+            ..
         } => {
+            let (height, width) = op
+                .canvas()
+                .ok_or_else(|| "rasterize reached execution without its canvas".to_string())?;
             let contours = input
                 .as_contours()
                 .ok_or_else(|| "Rasterize requires Contour input".to_string())?;
@@ -63,8 +65,8 @@ pub(crate) fn execute_geometry_op(
             // Folding per-contour masks with `max` here did neither.
             Ok(NodeOutput::from_buffer(rasterize(
                 contours,
-                *width,
-                *height,
+                width,
+                height,
                 *fill_value,
                 *background,
             )))

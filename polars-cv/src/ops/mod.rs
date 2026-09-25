@@ -18,11 +18,8 @@
 
 pub mod binary;
 pub mod declare;
-pub mod geometry;
-pub mod histogram;
 pub mod label;
 pub mod param;
-pub mod phash;
 pub mod reduce;
 
 use polars::prelude::*;
@@ -30,7 +27,7 @@ use serde::Serialize;
 
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
-pub use param::{ColumnRef, FieldType, Literal, NodeRef, Param, ParamExt, TypeDesc};
+pub use param::{ColumnRef, FieldType, Literal, NodeRef, Param, ParamExt};
 pub use view_buffer::mode::{FieldDesc, OpDesc};
 
 /// What `#[derive(Op)]` emits for an op struct.
@@ -221,6 +218,22 @@ impl Family for view_buffer::ViewOp {
     type Wire = view_buffer::ViewOp<view_buffer::mode::Wire>;
 }
 
+impl Family for view_buffer::GeometryOp {
+    type Wire = view_buffer::GeometryOp<view_buffer::mode::Wire>;
+}
+
+impl Family for view_buffer::ops::ReductionOp {
+    type Wire = view_buffer::ops::ReductionOp<view_buffer::mode::Wire>;
+}
+
+impl Family for view_buffer::ops::histogram::HistogramOp {
+    type Wire = view_buffer::ops::histogram::HistogramOp<view_buffer::mode::Wire>;
+}
+
+impl Family for view_buffer::ops::phash::PerceptualHashOp {
+    type Wire = view_buffer::ops::phash::PerceptualHashOp<view_buffer::mode::Wire>;
+}
+
 impl Family for view_buffer::ColorConvertOp {
     type Wire = view_buffer::ColorConvertOp<view_buffer::mode::Wire>;
 }
@@ -236,6 +249,10 @@ typed_ops! {
         );
         Compute(view_buffer::ComputeOp) => |op: view_buffer::ComputeOp| GraphStep::Buffer(op.lowered());
         View(view_buffer::ViewOp) => |op| GraphStep::Buffer(view_buffer::ViewDto::View(op));
+        Geometry(view_buffer::GeometryOp) => GraphStep::Geometry;
+        Reduction(view_buffer::ops::ReductionOp) => GraphStep::Reduction;
+        Histogram(view_buffer::ops::histogram::HistogramOp) => GraphStep::Histogram;
+        PerceptualHash(view_buffer::ops::phash::PerceptualHashOp) => GraphStep::PerceptualHash;
         Color(view_buffer::ColorConvertOp) => |op| GraphStep::Buffer(view_buffer::ViewDto::Color(op));
         Filter(view_buffer::ops::filter::ConvolveOp) => |op| GraphStep::Buffer(
             view_buffer::ViewDto::Filter(op)
@@ -249,37 +266,14 @@ typed_ops! {
     "bitwise_xor" => BitwiseXor(binary::BitwiseXor) {"other": "n0"},
     "blend" => Blend(binary::Blend) {"other": "n0"},
     "channel_merge" => ChannelMerge(binary::ChannelMerge) {"others": ["n0", "n1"]},
-    "contour_area" => ContourArea(geometry::ContourArea) {"signed": false},
-    "contour_bounding_box" => ContourBoundingBox(geometry::ContourBoundingBox) {},
-    "contour_centroid" => ContourCentroid(geometry::ContourCentroid) {},
-    "contour_convex_hull" => ContourConvexHull(geometry::ContourConvexHull) {},
-    "contour_perimeter" => ContourPerimeter(geometry::ContourPerimeter) {},
-    "contour_scale" => ContourScale(geometry::ContourScale) {"sx": 2.0, "sy": 0.5, "origin": "bbox_center"},
-    "contour_simplify" => ContourSimplify(geometry::ContourSimplify) {"tolerance": 1.5},
-    "contour_translate" => ContourTranslate(geometry::ContourTranslate) {"dx": 1.0, "dy": -2.0},
     "divide" => Divide(binary::Divide) {"other": "n0"},
-    "extract_contours" => ExtractContours(geometry::ExtractContours)
-        {"mode": "tree", "method": "none", "min_area": 2.0},
     "extract_shape" => ExtractShape(reduce::ExtractShape) {},
-    "histogram" => Histogram(histogram::Histogram)
-        {"bins": 8, "range": null, "closed": "left", "output": "counts"},
     "label_reduce" => LabelReduce(label::LabelReduce)
         {"contours": {"$slot": 1}, "reduction": "mean", "region_mode": "bbox"},
     "maximum" => Maximum(binary::Maximum) {"other": "n0"},
     "minimum" => Minimum(binary::Minimum) {"other": "n0"},
     "multiply" => Multiply(binary::Multiply) {"other": "n0"},
-    "perceptual_hash" => PerceptualHash(phash::PerceptualHash) {"algorithm": "perceptual", "hash_size": 64},
-    "rasterize" => Rasterize(geometry::Rasterize) {"size": [8, 6], "fill_value": 1, "background": 0},
     "ratio" => Ratio(binary::Ratio) {"other": "n0"},
-    "reduce_argmax" => ReduceArgmax(reduce::ReduceArgmax) {"axis": 0},
-    "reduce_argmin" => ReduceArgmin(reduce::ReduceArgmin) {"axis": 0},
-    "reduce_max" => ReduceMax(reduce::ReduceMax) {"axis": null},
-    "reduce_mean" => ReduceMean(reduce::ReduceMean) {"axis": 1},
-    "reduce_min" => ReduceMin(reduce::ReduceMin) {"axis": null},
-    "reduce_percentile" => ReducePercentile(reduce::ReducePercentile) {"q": 50.0},
-    "reduce_popcount" => ReducePopcount(reduce::ReducePopcount) {},
-    "reduce_std" => ReduceStd(reduce::ReduceStd) {"axis": null, "ddof": 1},
-    "reduce_sum" => ReduceSum(reduce::ReduceSum) {},
     "subtract" => Subtract(binary::Subtract) {"other": "n0"},
 }
 
@@ -599,21 +593,33 @@ mod tests {
     }
 
     /// `rasterize(shape=<node>)` takes its canvas from another node's buffer,
-    /// which only the graph executor has. Plan-time resolution (for rules) may
-    /// stand any canvas in, since the size is symbolic; any other resolution
-    /// is a compile path that skipped the executor's special case, and must
-    /// fail rather than invent a size.
+    /// which only the graph executor has. Resolving it invents no size: the
+    /// node reference survives, and the op is refused wherever it would run
+    /// without the executor having set the canvas.
     #[test]
-    fn a_node_sized_rasterize_resolves_only_at_plan_time() {
+    fn a_node_sized_rasterize_is_never_given_an_invented_canvas() {
+        use view_buffer::geometry::ops::RasterSize;
         let op = TypedOp::from_fields(
             "rasterize",
             json!({"size": "n0", "fill_value": 255, "background": 0}),
         )
         .unwrap()
         .unwrap();
-        let err = op.resolve(0, &ParamCtx::empty()).unwrap_err().to_string();
-        assert!(err.contains("graph executor"), "{err}");
-        assert!(op.resolve(0, &ParamCtx::planning()).is_ok());
+        let GraphStep::Geometry(geo) = op.resolve(0, &ParamCtx::empty()).unwrap() else {
+            panic!("rasterize resolves to a geometry step");
+        };
+        assert!(matches!(
+            &geo,
+            view_buffer::GeometryOp::Rasterize {
+                size: RasterSize::FromNode(_),
+                ..
+            }
+        ));
+        let err = view_buffer::Op::validate(&geo, &[&[]], &[])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("canvas"), "{err}");
+        assert_eq!(geo.with_canvas(4, 6).canvas(), Some((4, 6)));
     }
 
     #[test]
