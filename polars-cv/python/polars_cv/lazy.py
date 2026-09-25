@@ -797,7 +797,7 @@ class LazyPipelineExpr:
         orig_source = contour._pipeline._source
 
         def _unwrap(name: str, default: int) -> int | pl.Expr:
-            param = getattr(orig_source, name, None)
+            param = orig_source.params.get(name) if orig_source else None
             return default if param is None else param.value
 
         fill_value = _unwrap("fill_value", 255)

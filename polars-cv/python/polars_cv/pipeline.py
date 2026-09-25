@@ -990,26 +990,38 @@ class Pipeline(_OpsMixin):
         # read, naming where it does apply (`plan_source` below). The contour
         # colours always go — that decode reads them.
         is_contour = fmt == SourceFormat.CONTOUR
-        new._source = SourceSpec(
-            format=fmt,
-            dtype=dtype_enum,
-            width=new._track_expr(width) if width is not None else None,
-            height=new._track_expr(height) if height is not None else None,
-            fill_value=new._track_expr(fill_value)
-            if is_contour or "fill_value" in supplied
-            else None,
-            background=new._track_expr(background)
-            if is_contour or "background" in supplied
-            else None,
-            shape_node=shape_node,
-            cloud_options=normalize_cloud_options(
-                _given("cloud_options", cloud_options)
-            ),
-            require_contiguous=require_contiguous,
-            on_error=on_error,
-            decode_max_size=decode_max_size,
-            allowed_roots=tuple(allowed_roots) if allowed_roots is not None else None,
-        )
+
+        def literal(value: Any) -> ParamValue:
+            return ParamValue(is_expr=False, value=value)
+
+        params: dict[str, ParamValue] = {}
+        if dtype_enum is not None:
+            params["dtype"] = literal(dtype_enum.value)
+        if shape_node is not None:
+            params["size"] = literal(shape_node)
+        elif width is not None or height is not None:
+            params["size"] = literal(
+                [
+                    literal(None) if d is None else new._track_expr(d)
+                    for d in (height, width)
+                ]
+            )
+        if is_contour or "fill_value" in supplied:
+            params["fill_value"] = new._track_expr(fill_value)
+        if is_contour or "background" in supplied:
+            params["background"] = new._track_expr(background)
+        options = normalize_cloud_options(_given("cloud_options", cloud_options))
+        if options is not None:
+            params["cloud_options"] = literal(options.to_dict())
+        if require_contiguous:
+            params["require_contiguous"] = literal(True)
+        if on_error != "raise":
+            params["on_error"] = literal(on_error)
+        if decode_max_size is not None:
+            params["decode_max_size"] = literal(decode_max_size)
+        if allowed_roots is not None:
+            params["allowed_roots"] = literal(list(allowed_roots))
+        new._source = SourceSpec(format=fmt, params=params)
         # The format's Rust definition validates the spec (refusing a setting
         # it does not read, naming where it applies) and says what state the
         # decode starts the pipeline in.
@@ -1080,7 +1092,13 @@ class Pipeline(_OpsMixin):
 
         new = self._clone()
         assert new._source is not None  # guaranteed: checked on self above
-        new._source = dataclasses.replace(new._source, decode_max_size=max_size)
+        new._source = SourceSpec(
+            format=new._source.format,
+            params={
+                **new._source.params,
+                "decode_max_size": ParamValue(is_expr=False, value=max_size),
+            },
+        )
         # `thumbnail()` writes `decode_max_size`, so it applies exactly where
         # that field does: the source format's own definition decides, as it
         # does for `source(decode_max_size=)`. The two used to disagree about
