@@ -16,11 +16,8 @@
 //! [`TypedOp`] *is* the wire op: `{"op": <name>, <field>: <value>, ...}`,
 //! deserialized strictly by name. A name no op registers is an error.
 
-pub mod affine;
 pub mod binary;
-pub mod color;
 pub mod declare;
-pub mod filter;
 pub mod geometry;
 pub mod histogram;
 pub mod label;
@@ -224,13 +221,25 @@ impl Family for view_buffer::ViewOp {
     type Wire = view_buffer::ViewOp<view_buffer::mode::Wire>;
 }
 
+impl Family for view_buffer::ColorConvertOp {
+    type Wire = view_buffer::ColorConvertOp<view_buffer::mode::Wire>;
+}
+
+impl Family for view_buffer::ops::filter::ConvolveOp {
+    type Wire = view_buffer::ops::filter::ConvolveOp<view_buffer::mode::Wire>;
+}
+
 typed_ops! {
     families {
         Image(view_buffer::ImageOpKind) => |kind| GraphStep::Buffer(
             view_buffer::ViewDto::Image(view_buffer::ImageOp { kind })
         );
-        Compute(view_buffer::ComputeOp) => |op| GraphStep::Buffer(view_buffer::ViewDto::Compute(op));
+        Compute(view_buffer::ComputeOp) => |op: view_buffer::ComputeOp| GraphStep::Buffer(op.lowered());
         View(view_buffer::ViewOp) => |op| GraphStep::Buffer(view_buffer::ViewDto::View(op));
+        Color(view_buffer::ColorConvertOp) => |op| GraphStep::Buffer(view_buffer::ViewDto::Color(op));
+        Filter(view_buffer::ops::filter::ConvolveOp) => |op| GraphStep::Buffer(
+            view_buffer::ViewDto::Filter(op)
+        );
     }
     "add" => Add(binary::Add) {"other": "n0"},
     "apply_mask" => ApplyMask(binary::ApplyMask) {"mask": "n0", "invert": true},
@@ -248,9 +257,6 @@ typed_ops! {
     "contour_scale" => ContourScale(geometry::ContourScale) {"sx": 2.0, "sy": 0.5, "origin": "bbox_center"},
     "contour_simplify" => ContourSimplify(geometry::ContourSimplify) {"tolerance": 1.5},
     "contour_translate" => ContourTranslate(geometry::ContourTranslate) {"dx": 1.0, "dy": -2.0},
-    "convolve2d" => Convolve2d(filter::Convolve2d)
-        {"kernel": [0, 0, 0, 0, 1, 0, 0, 0, 0], "ksize": 3, "normalize": false, "border": "replicate"},
-    "cvt_color" => CvtColor(color::CvtColor) {"from_space": "rgb", "to_space": "hsv"},
     "divide" => Divide(binary::Divide) {"other": "n0"},
     "extract_contours" => ExtractContours(geometry::ExtractContours)
         {"mode": "tree", "method": "none", "min_area": 2.0},
@@ -274,15 +280,7 @@ typed_ops! {
     "reduce_popcount" => ReducePopcount(reduce::ReducePopcount) {},
     "reduce_std" => ReduceStd(reduce::ReduceStd) {"axis": null, "ddof": 1},
     "reduce_sum" => ReduceSum(reduce::ReduceSum) {},
-    "rotate" => Rotate(affine::Rotate)
-        {"angle": 30.0, "expand": true, "interpolation": "nearest", "border_value": 0.0},
     "subtract" => Subtract(binary::Subtract) {"other": "n0"},
-    "warp_affine" => WarpAffine(affine::WarpAffine) {
-        "matrix": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-        "output_size": [4, 4],
-        "interpolation": "bilinear",
-        "border_value": 0.0
-    },
 }
 
 impl Serialize for TypedOp {

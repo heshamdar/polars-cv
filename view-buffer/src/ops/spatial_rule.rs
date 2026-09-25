@@ -194,8 +194,8 @@ mod tests {
         assert_eq!(ComputeOp::Scalar(ScalarOp::Relu).spatial_dependency(), pw);
         assert_eq!(
             ColorConvertOp {
-                from: ColorSpace::Rgb,
-                to: ColorSpace::Hsv
+                from_space: ColorSpace::Rgb,
+                to_space: ColorSpace::Hsv
             }
             .spatial_dependency(),
             pw

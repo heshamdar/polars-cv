@@ -180,11 +180,13 @@ impl ViewExpr {
                 }
                 ViewOp::ChannelSelect { index } => self.channel_select(index as usize),
             },
-            ViewDto::Compute(compute) => match compute {
+            ViewDto::Compute(compute) => match compute.lowered() {
                 // A cast's strides depend on its source dtype; every other
                 // compute op is one node.
-                ComputeOp::Cast { dtype } => self.cast(dtype),
-                other => self.compute_node(other),
+                ViewDto::Compute(ComputeOp::Cast { dtype }) => self.cast(dtype),
+                ViewDto::Compute(other) => self.compute_node(other),
+                // A lattice rotation lowers to a view.
+                lowered => self.apply_op(lowered),
             },
             ViewDto::Image(img) => {
                 // The one construction path for every image op. Output metadata

@@ -1926,10 +1926,12 @@ class _OpsMixin:
         """Apply a 2x3 affine transformation matrix.
 
         The matrix ``[a, b, tx, c, d, ty]`` is a **forward** mapping from
-        source to destination (same convention as OpenCV ``warpAffine``)::
+        source to destination (same convention as OpenCV ``warpAffine``):
 
-            x_dst = a * x_src + b * y_src + tx
-            y_dst = c * x_src + d * y_src + ty
+        ```text
+        x_dst = a * x_src + b * y_src + tx
+        y_dst = c * x_src + d * y_src + ty
+        ```
 
         The kernel inverts this matrix internally for interpolation.
 

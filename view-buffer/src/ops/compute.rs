@@ -8,7 +8,8 @@ use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
 
-use crate::mode::{Exec, Mode};
+use crate::mode::{size, Exec, Mode};
+use crate::ops::view::ViewOp;
 use polars_cv_macros::{Ops, Resolve};
 
 /// A normalization, with the per-channel statistics a preset carries.
@@ -207,6 +208,93 @@ pub enum ComputeOp<M: Mode = Exec> {
         /// Constant subtrahend (literal or per-row expression).
         value: M::V<f32>,
     },
+    /// Apply a 2x3 affine transformation matrix.
+    ///
+    /// The matrix ``[a, b, tx, c, d, ty]`` is a **forward** mapping from
+    /// source to destination (same convention as OpenCV ``warpAffine``):
+    ///
+    /// ```text
+    /// x_dst = a * x_src + b * y_src + tx
+    /// y_dst = c * x_src + d * y_src + ty
+    /// ```
+    ///
+    /// The kernel inverts this matrix internally for interpolation.
+    ///
+    /// Domain: buffer → buffer
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> # Translate image by (50, 30)
+    ///     >>> pipe = Pipeline().source("image_bytes").warp_affine(
+    ///     ...     matrix=[1.0, 0.0, 50.0, 0.0, 1.0, 30.0],
+    ///     ...     output_size=(224, 224),
+    ///     ... )
+    ///     >>>
+    ///     >>> # Per-sample random affine: each row uses its own matrix columns
+    ///     >>> pipe = Pipeline().source("image_bytes").warp_affine(
+    ///     ...     matrix=[pl.col("a"), pl.col("b"), pl.col("tx"),
+    ///     ...             pl.col("c"), pl.col("d"), pl.col("ty")],
+    ///     ...     output_size=(224, 224),
+    ///     ... )
+    ///     ```
+    #[op(name = "warp_affine", sample = {"matrix": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                                         "output_size": [4, 4],
+                                         "interpolation": "bilinear",
+                                         "border_value": 0.0})]
+    WarpAffine {
+        /// Six-element sequence representing the 2x3 affine matrix
+        /// ``[a, b, tx, c, d, ty]`` (forward mapping). **Each element may be a
+        /// literal float or a Polars expression**, so a batch can apply a
+        /// different (e.g. random) affine per row in one call — the matrix is
+        /// resolved per row at execution.
+        matrix: [M::V<f64>; 6],
+        /// ``(height, width)`` of the output image. Each element accepts a Polars
+        /// expression for per-row dynamic values.
+        output_size: [M::V<u32>; 2],
+        /// Interpolation method -- ``"bilinear"`` (default) or ``"nearest"``.
+        #[param(default = "bilinear")]
+        interpolation: M::V<InterpolationType>,
+        /// Pixel value for out-of-bounds regions (default 0).
+        #[param(default = 0.0)]
+        border_value: M::V<f64>,
+    },
+    /// Rotate image by specified angle.
+    ///
+    /// For angles of 90, 180, or 270 degrees, this uses zero-copy view operations
+    /// (``interpolation`` and ``border_value`` do not apply: nothing is resampled
+    /// and no out-of-bounds region is exposed). For arbitrary angles, the rotation
+    /// is performed via an affine transformation using the specified
+    /// interpolation and border value. For combined rotation + scale or explicit
+    /// output sizing, use :meth:`rotate_and_scale` or :meth:`warp_affine`.
+    ///
+    /// Domain: buffer -> buffer
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> pipe = Pipeline().source("image_bytes").rotate(90)
+    ///     >>> pipe = Pipeline().source("image_bytes").rotate(45, expand=True)
+    ///     >>> pipe = Pipeline().source("image_bytes").rotate(pl.col("angle"))
+    ///     >>> pipe = Pipeline().source("image_bytes").rotate(30, interpolation="nearest")
+    ///     ```
+    #[op(name = "rotate", sample = {"angle": 30.0, "expand": true, "interpolation": "nearest",
+                                    "border_value": 0.0})]
+    Rotate {
+        /// Rotation angle in degrees (positive = clockwise). Can be a literal float
+        /// or Polars expression.
+        angle: M::V<f32>,
+        /// If True, expand output dimensions to fit rotated image. If False
+        /// (default), keep original dimensions (corners may be cropped).
+        #[param(default = false)]
+        expand: M::L<bool>,
+        /// Interpolation method for arbitrary angles -- ``"bilinear"`` (default) or
+        /// ``"nearest"``. Not applicable to 90/180/270 degree rotations.
+        #[param(default = "bilinear")]
+        interpolation: M::V<InterpolationType>,
+        /// Fill value for out-of-bounds pixels (default 0). Not applicable to
+        /// 90/180/270 degree rotations.
+        #[param(default = 0.0)]
+        border_value: M::V<f64>,
+    },
     // --- Engine-internal: produced by lowering and fusion, never on the wire.
     /// Apply an affine transformation.
     Affine(AffineParams),
@@ -231,9 +319,29 @@ pub enum ComputeOp<M: Mode = Exec> {
 
 impl<M: Mode> ComputeOp<M> {
     /// How this op's output shape follows from its input — the one
-    /// definition: every wire compute op is element-wise or a global rescale.
+    /// definition, read on the `Wire` op at plan time and on the `Exec` op
+    /// at execution.
     pub fn shape(&self) -> OpShape {
         match self {
+            ComputeOp::WarpAffine {
+                output_size: [h, w],
+                ..
+            } => OpShape::SetHw {
+                h: size::<M>(h),
+                w: size::<M>(w),
+            },
+            ComputeOp::Rotate { angle, expand, .. } => match (M::sym(angle), M::lit(expand)) {
+                // A per-row angle is a lattice rotation (swapping H/W) on some
+                // rows and a resampling on others.
+                (Sym::PerRow, false) => OpShape::MaybeSwapHw,
+                (Sym::PerRow, true) => OpShape::RotateExpand(Sym::PerRow),
+                (Sym::Known(angle), expand) => match Rotation::of(angle) {
+                    Rotation::Lattice(view) => view.shape(),
+                    Rotation::Identity => OpShape::Preserve,
+                    Rotation::Resample(angle) if expand => OpShape::RotateExpand(Sym::Known(angle)),
+                    Rotation::Resample(_) => OpShape::Preserve,
+                },
+            },
             ComputeOp::Affine(params) => OpShape::SetHw {
                 h: Sym::Known(params.output_height as usize),
                 w: Sym::Known(params.output_width as usize),
@@ -251,6 +359,27 @@ impl<M: Mode> ComputeOp<M> {
     /// parameters alone: `mean`/`std` belong to `method="preset"` only, and
     /// it needs both, of one length. Checked when the op is planned.
     pub fn check(&self) -> Result<(), String> {
+        // Warping is inverse mapping — for each output pixel, ask where it
+        // came from — so a matrix that collapses the plane onto a line or a
+        // point has no answer. Refused where every coefficient is known: at
+        // plan time for a literal matrix, per row for a per-row one.
+        if let ComputeOp::WarpAffine { matrix, .. } = self {
+            let known: Option<Vec<f64>> = matrix.iter().map(|c| M::sym(c).known()).collect();
+            if let Some(known) = known {
+                let [a, b, _, c, d, _] =
+                    [known[0], known[1], known[2], known[3], known[4], known[5]];
+                let determinant = a * d - b * c;
+                if determinant.abs() < AffineParams::SINGULAR_EPSILON {
+                    return Err(format!(
+                        "warp_affine: matrix {known:?} is singular (determinant \
+                         {determinant}), so it has no inverse and the warp is undefined. \
+                         A row of zeros, a zero scale factor on an axis, or two \
+                         proportional rows will do this."
+                    ));
+                }
+            }
+            return Ok(());
+        }
         let ComputeOp::Normalize {
             method, mean, std, ..
         } = self
@@ -280,7 +409,84 @@ impl<M: Mode> ComputeOp<M> {
     }
 }
 
+/// What a rotation by `angle` degrees is: the one classification the
+/// planner's shape and execution's lowering both read.
+enum Rotation {
+    /// A multiple of 90° other than 0: a zero-copy view.
+    Lattice(ViewOp),
+    /// 0° (mod 360): nothing moves.
+    Identity,
+    /// Any other angle (normalized to `[0, 360)`): resampled.
+    Resample(f32),
+}
+
+impl Rotation {
+    fn of(angle: f32) -> Rotation {
+        const EPSILON: f32 = 0.001;
+        let angle = angle.rem_euclid(360.0);
+        let near = |target: f32| (angle - target).abs() < EPSILON;
+        if near(90.0) {
+            Rotation::Lattice(ViewOp::Rotate90)
+        } else if near(180.0) {
+            Rotation::Lattice(ViewOp::Rotate180)
+        } else if near(270.0) {
+            Rotation::Lattice(ViewOp::Rotate270)
+        } else if near(0.0) || near(360.0) {
+            Rotation::Identity
+        } else {
+            Rotation::Resample(angle)
+        }
+    }
+}
+
 impl ComputeOp {
+    /// The engine step this op executes as. A rotation by a lattice angle is
+    /// a zero-copy view and any other a resampling warp, chosen from the
+    /// (resolved) angle; a warp's matrix becomes its `AffineParams`. Every
+    /// other op executes as itself.
+    pub fn lowered(self) -> crate::ops::dto::ViewDto {
+        use crate::ops::dto::ViewDto;
+        match self {
+            ComputeOp::Rotate {
+                angle,
+                expand,
+                interpolation,
+                border_value,
+            } => match Rotation::of(angle) {
+                Rotation::Lattice(view) => ViewDto::View(view),
+                // The lattice rotations and the 0° no-op are exact
+                // permutations of the input pixels; `interpolation` and
+                // `border_value` apply only to the resampling branch.
+                Rotation::Identity => ViewDto::Compute(ComputeOp::RotateAffine {
+                    angle_deg: 0.0,
+                    expand: false,
+                    interpolation: InterpolationType::Bilinear,
+                    border_value: 0.0,
+                }),
+                // The matrix is built at execution from the buffer's size.
+                Rotation::Resample(angle) => ViewDto::Compute(ComputeOp::RotateAffine {
+                    angle_deg: angle,
+                    expand,
+                    interpolation,
+                    border_value,
+                }),
+            },
+            ComputeOp::WarpAffine {
+                matrix,
+                output_size: [output_height, output_width],
+                interpolation,
+                border_value,
+            } => ViewDto::Compute(ComputeOp::Affine(AffineParams {
+                matrix,
+                output_height,
+                output_width,
+                interpolation,
+                border_value,
+            })),
+            other => ViewDto::Compute(other),
+        }
+    }
+
     /// The pure-elementwise scalar op this is, when it is one: the one
     /// arithmetic authority fusion and the unfused path both run.
     pub fn scalar(&self) -> Option<ScalarOp> {
@@ -355,6 +561,8 @@ impl Op for ComputeOp {
             ComputeOp::AdjustGamma { .. } => "AdjustGamma",
             ComputeOp::Invert => "Invert",
             ComputeOp::RotateAffine { .. } => "RotateAffine",
+            ComputeOp::WarpAffine { .. } => "WarpAffine",
+            ComputeOp::Rotate { .. } => "Rotate",
             _ => unreachable!("every other variant is a scalar op"),
         }
     }
@@ -365,9 +573,10 @@ impl Op for ComputeOp {
 
     fn memory_effect(&self) -> MemoryEffect {
         match self {
-            ComputeOp::Affine(_) | ComputeOp::RotateAffine { .. } => {
-                MemoryEffect::RequiresContiguous
-            }
+            ComputeOp::Affine(_)
+            | ComputeOp::RotateAffine { .. }
+            | ComputeOp::WarpAffine { .. }
+            | ComputeOp::Rotate { .. } => MemoryEffect::RequiresContiguous,
             ComputeOp::Normalize { .. } | ComputeOp::AdjustContrast { .. } => {
                 MemoryEffect::RequiresContiguous
             }
@@ -396,7 +605,10 @@ impl Op for ComputeOp {
                 SpatialDependency::Global
             }
             // Resample onto a transformed coordinate grid.
-            ComputeOp::Affine(_) | ComputeOp::RotateAffine { .. } => SpatialDependency::geometric(),
+            ComputeOp::Affine(_)
+            | ComputeOp::RotateAffine { .. }
+            | ComputeOp::WarpAffine { .. }
+            | ComputeOp::Rotate { .. } => SpatialDependency::geometric(),
             // Per-element: output at (y, x) depends only on input at (y, x).
             _ => SpatialDependency::Pointwise,
         }
@@ -463,7 +675,12 @@ impl Op for ComputeOp {
                 }
                 Ok(())
             }
-            ComputeOp::Affine(_) | ComputeOp::RotateAffine { .. } => {
+            ComputeOp::WarpAffine { .. } => {
+                self.check()
+                    .map_err(|message| ValidationError::Generic { message })?;
+                crate::ops::validation::require_hw_or_hwc(input_shapes[0])
+            }
+            ComputeOp::Affine(_) | ComputeOp::RotateAffine { .. } | ComputeOp::Rotate { .. } => {
                 crate::ops::validation::require_hw_or_hwc(input_shapes[0])
             }
             _ => Ok(()),
@@ -475,6 +692,8 @@ impl Op for ComputeOp {
             ComputeOp::Cast { .. }
             | ComputeOp::Affine(_)
             | ComputeOp::RotateAffine { .. }
+            | ComputeOp::WarpAffine { .. }
+            | ComputeOp::Rotate { .. }
             | ComputeOp::Fused(_) => DTypeCategory::Any,
             _ => DTypeCategory::Numeric,
         }
@@ -503,9 +722,11 @@ impl Op for ComputeOp {
             }
             ComputeOp::Cast { dtype } => OutputDTypeRule::Fixed(*dtype),
             ComputeOp::Fused(k) => OutputDTypeRule::Fixed(k.out_dtype),
-            ComputeOp::Invert | ComputeOp::Affine(_) | ComputeOp::RotateAffine { .. } => {
-                OutputDTypeRule::PreserveInput
-            }
+            ComputeOp::Invert
+            | ComputeOp::Affine(_)
+            | ComputeOp::RotateAffine { .. }
+            | ComputeOp::WarpAffine { .. }
+            | ComputeOp::Rotate { .. } => OutputDTypeRule::PreserveInput,
             _ => OutputDTypeRule::PromoteToFloat,
         }
     }
