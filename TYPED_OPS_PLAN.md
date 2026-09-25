@@ -17,7 +17,7 @@
 > | P4 — Typed sources and sinks | **done** — `src/formats/` (`formats!` registry, `io_catalog.json`, `io_check`); both applicability tables, `PARAM_HINTS`, `KNOWN_SOURCE_FORMATS`, `SourceSpec`/`SinkSpec` and the last untyped param readers deleted. Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `910afb2` (slow lane, `cargo deny`, `mkdocs --strict` included) |
 > | P5 — Geometry namespaces | **done** — `ContourKwargs`/`PointKwargs` are typed (`Param<T>`, `ColumnRef`, `#[derive(Op)]`); `input_slots`, `InputSlots`, `parse_named`/`require_named` deleted. Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `f3d7d94` (slow lane, `cargo deny`, `mkdocs --strict` included) |
 > | P6 — Delete the legacy protocol | **done** — `pipeline.rs` (`OpSpec`/`LegacyOpSpec`/dispatcher), `LEGACY_OPS`, `resolve_op`, the untyped `ParamValue`, `known_ops`, `OP_NAMES` (P6a); 20 Python enums generated from the registries via `enum_catalog.json` and their parity tests deleted (P6b); `enum_variants`/`enum_names` and the serde-name tests deleted, graph policies parse through `NAMED` (P6c). Python `OpSpec`/`ParamValue` deferred to P7, enum helpers kept (see deviations). Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `2ae7651` (slow lane, `cargo deny`, `mkdocs --strict` included) |
-> | P7 — Planner into Rust | **in progress** — P7a `a6f0aa1`: one `plan_step` FFI per append (`src/plan.rs`: domain check, schema fold, H/W, channels, rank clipping; binary dtype via `other_dtype`); `op_output_channels`, `binary_output_dtype` and eight Python helpers deleted. P7b `98d7592`: per-op entering state (`PlanState` in `_entering`) and one rewrite primitive, `_replay`, for CSE, sub-pipelines, pushdown and identity elimination; `op_schema`, the batch folds, `_hint_snapshots`, `_rewrite_ops` and the three commit helpers deleted. P7c `66ff9bb`, `0df1790`, `9e3b6af`: identity elimination and the spatial pushdown run in Rust (`src/passes.rs`, `node_pass`, dispatched on a generated `LogicalPass`); `op_contract`, `op_identity_rule`, `op_infer_shape` and their string vocabularies deleted (tests ported to Rust); the pass list is a Rust catalogue (`pass_catalog.json` → generated `OptFlags` fields), `OptConfig` refuses unknown keys, `bit_exact` deleted. P7d (in progress) `2ae8eaf`: `plan_source` plans a source's state from its typed format (the per-format ladder and the contour seed deleted; `io_check` → `sink_check`); `8f7f8fa`: Rust reads histogram buckets off the ops (`expected_encoding` wire field deleted). Next: Rust computes each output's planned schema (the remaining `expected_*` wire fields), then `OpSpec`/`ParamValue` |
+> | P7 — Planner into Rust | **done, targets missed (see deviations)** — P7a `a6f0aa1`: `plan_step`, one FFI per append. P7b `98d7592`: per-op entering state and one rewrite primitive, `_replay`. P7c `66ff9bb`, `0df1790`, `9e3b6af`: identity elimination and the spatial pushdown in Rust (`node_pass`, generated `LogicalPass`), the pass catalogue (`OptFlags`/`OptConfig` from one list), `bit_exact` deleted. P7d `2ae8eaf`, `8f7f8fa`: `plan_source`; histogram buckets read off the ops. P7e `cc383db` … `0cef576`: `PlanState` is Rust's `State`, assertions applied by `plan_assert`, sinks checked by `plan_sink`, outputs carry `planned` (the `expected_*` wire fields deleted), binary lazy methods generated, one lineage fold. Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `0cef576` |
 > | P8 — API reshaping | pending |
 > | P9 — Symbolic shapes | pending |
 > | P10 — Final sweep | pending |
@@ -50,26 +50,16 @@ Read this section, then the phase text for P7 onwards below.
 - The geometry namespaces' kwargs are typed the same way (P5): `Param<T>`
   fields and `ColumnRef` operands, `{"$slot": n}` on the wire, checked by
   `GeomParams` against the derived slots.
-- P7a is in (`a6f0aa1`): `Pipeline._push_op` → `_plan_step` (the
-  `plan_step` FFI) → `_apply_step`. `op_schema` remains only for the batch
-  folds, sharing `plan::fold`.
-- P7b is in (`98d7592`): `_entering` holds each op's entering `PlanState`;
-  every rewrite of the op list is `_replay` (re-append from a recorded
-  state). The state still lives in Python; the Rust `Plan` pyclass takes it
-  over with the passes.
-- P7c is in (`66ff9bb`, `0df1790`, `9e3b6af`): `node_pass` runs the
-  node-scope passes in Rust; the pass list, `OptConfig` and the generated
-  `OptFlags` fields come from one Rust catalogue.
-- P7d so far: `plan_source` (`2ae8eaf`), histogram buckets read off the ops
-  in Rust (`8f7f8fa`). `Pipeline.output_encoding()` is now unused internally
-  and is deleted with the P8 signature changes.
-- Next: **Rust computes each output's planned schema** from the node's source
-  and ops (`plan::source_state` + `plan::step`, assertions on the wire), so the
-  `expected_domain/dtype/shape/ndim` and `shape_asserted` output fields and
-  their Python publishers go; then the Python `OpSpec`/`ParamValue`. The P7 line-count
-  target is in the ledger; P7 also takes the Python `OpSpec`/`ParamValue`
-  (the planner's own op representation, which P6 could not delete without
-  it).
+- P7 is done (`0cef576`): every schema fact comes from `src/plan.rs`
+  (`plan_step`/`plan_source`/`plan_assert`/`plan_sink`) and the node passes
+  from `node_pass`; Python keeps the op list and immutable `PlanState`
+  records, rewriting only through `_replay`. Outputs carry `planned`, the
+  node's final state. No `Plan` pyclass (see deviations).
+- Next: **P8**, the signature phase. It is where the remaining Python
+  machinery goes, because each piece exists only to keep a frozen signature:
+  `is_supplied` and `_source_param_defaults` (value defaults on `source()`),
+  enum-member defaults (`perceptual_hash`'s wrapper), `output_encoding()`,
+  and the `out_dtype`/`preserve_dtype` sugar on `scale`/`clamp`.
 
 ### Line counts per phase
 
@@ -85,6 +75,7 @@ stands (lines, by area; `py-gen` is `_ops_generated.py`, generated):
 | P6 `2ae7651` | 17,728 | 209 | 20,956 | 13,752 | 1,862 | 55,266 |
 | P7c `9e3b6af` | 18,333 | 209 | 20,969 | 12,985 | 1,930 | 54,890 |
 | P7d (part) `8f7f8fa` | 18,479 | 209 | 20,969 | 12,895 | 1,930 | 54,892 |
+| P7 exit `0cef576` | 18,967 | 209 | 20,969 | 12,183 | 2,125 | 54,930 |
 
 So far the phases have *moved* definitions into typed Rust (each carrying the
 docs, defaults and validation Python used to hold) more than they have
@@ -208,6 +199,29 @@ as planned so the deviation stays visible.
   validate literals against the *generated* enums (no second vocabulary) for
   `source()`, `out_dtype=` and the geometry accessors, which have no build-time
   Rust check; deleting them would move those errors from build to execution.
+
+- **P7 — no `Plan` pyclass; the state is a Rust-computed value instead.**
+  What P7 set out to delete, the Python *planning logic*, is gone: every
+  schema fact comes from `src/plan.rs` and `node_pass`. What remains in
+  Python is bookkeeping — the op list, the entering state per op, the
+  assertion map, `_replay` — held as immutable `PlanState` records Rust
+  returns. Moving that into a `Plan` pyclass would re-express about as many
+  lines in Rust plus a PyO3 surface, a net increase, so it is not done;
+  CSE stays in Python over those records, as planned.
+- **P7 — Python `OpSpec`/`ParamValue` stay** (deferred from P6). They are
+  the builder's record of an op's arguments (literal or expression) until the
+  graph assigns slots; with no Python planner left they carry no schema
+  logic, and replacing them needs the `Plan` pyclass above.
+- **P7 — the line targets are missed.** Hand-written Python is 12,183
+  (target ≤ 11,800) and the plugin 18,967 (target ≤ 18,900), because the
+  planner moved without the `Plan` pyclass deletions the targets assumed and
+  the binary ops' docs moved into Rust doc comments. The remaining reduction
+  is P8's: `is_supplied` and the source-default machinery, the
+  enum-default wrappers (`perceptual_hash`), `output_encoding` and the
+  `out_dtype` sugar all exist to keep signatures P8 is allowed to change.
+- **P3 deviation superseded (P7e):** the eleven binary ops' lazy methods
+  *are* generated now (`_LazyOpsMixin`, all built by `_binary_op`);
+  `apply_mask` and `channel_merge` stay hand-written.
 
 - **P3 — the binary family's lazy methods are not generated.** Each
   `lazy_only` builder constructs a new graph node its own way (a binary op
