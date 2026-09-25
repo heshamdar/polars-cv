@@ -22,20 +22,28 @@ use crate::graph::step::GraphStep;
 /// The planner's state at one op boundary — the one representation of it.
 ///
 /// Python holds it as `PlanState` (same attribute names, read by
-/// `FromPyObject`) and gets every new one from here as a dict.
-#[derive(Debug, Clone, PartialEq, FromPyObject, IntoPyObject)]
+/// `FromPyObject`) and gets every new one from here as a dict. Each graph
+/// output carries its node's final state on the wire as `planned`
+/// ([`OutputSpec`](crate::graph::types::OutputSpec)); a field left out there is
+/// unknown, never guessed.
+#[derive(Debug, Clone, PartialEq, FromPyObject, IntoPyObject, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct State {
     pub domain: String,
     pub dtype: String,
+    #[serde(default)]
     pub ndim: Option<usize>,
     /// Known sizes of dimensions 0..3 (`[H, W, C]` for an image); `None` is
     /// unknown (a per-row size is unknown at plan time).
+    #[serde(default)]
     pub dims: [Option<i64>; 3],
     /// Which of `dims` the user asserted (`assert_shape`) rather than an op
     /// inferred: a divergence at execution is then theirs to fix.
+    #[serde(default)]
     pub asserted: [bool; 3],
     /// A shape declaration (`assert_shape`, a canvas taken from another node)
     /// reached this lineage, so the sizes may rest on a claim.
+    #[serde(default)]
     pub declared: bool,
 }
 

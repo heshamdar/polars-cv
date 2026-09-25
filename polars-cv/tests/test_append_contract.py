@@ -32,7 +32,6 @@ from PIL import Image
 
 import polars_cv
 from polars_cv import Pipeline
-from polars_cv._graph import GraphNode
 from polars_cv._types import Domain
 
 from ._discovery import package_modules
@@ -571,21 +570,19 @@ def test_an_assertion_may_not_name_a_dimension_the_rank_lacks() -> None:
 def test_dims_pins_the_rank_a_list_source_could_not_supply() -> None:
     """``dims=`` is what makes ``.assert_shape()`` reach an ``array`` sink.
 
-    A list/array source leaves the rank unknown, and ``expected_shape`` only
+    A list/array source leaves the rank unknown, and an output's shape only
     publishes at rank 3 — so the H/W/C spelling set the hints and changed
     nothing, and the sink's advice to "use .assert_shape()" was circular.
+    The output facts Rust reads off this state (the rank-3 gate, "asserted")
+    are pinned by ``output_facts_are_read_off_the_planned_state``.
     """
     pipe = Pipeline().source("list", dtype="f32").assert_shape(dims=[8, 8, 3])
-    assert pipe._state.ndim == 3
-    node = GraphNode(node_id="n", pipeline=pipe, column=None)
-    assert node.expected_shape == [8, 8, 3]
-    assert node.shape_asserted is True
+    assert (pipe._state.ndim, pipe._state.dims) == (3, (8, 8, 3))
+    assert all(pipe._state.asserted)
 
     # An inferred shape is not attributed to the caller.
     inferred = Pipeline().source("image_bytes", dtype="u8").resize(height=8, width=8)
-    assert (
-        GraphNode(node_id="n", pipeline=inferred, column=None).shape_asserted is False
-    )
+    assert not any(inferred._state.asserted)
 
 
 def test_dims_rejects_what_it_cannot_track() -> None:

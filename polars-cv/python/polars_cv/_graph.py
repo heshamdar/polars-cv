@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
@@ -44,48 +44,6 @@ class GraphNode:
     column: pl.Expr | None  # None for non-root nodes that receive from upstream
     upstream: list[str] = field(default_factory=list)
     alias: str | None = None
-
-    @property
-    def domain(self) -> str:
-        """Get the output domain of this node's pipeline."""
-        return self.pipeline.current_domain()
-
-    @property
-    def output_dtype(self) -> str:
-        """Get the expected output dtype of this node's pipeline."""
-        return self.pipeline.output_dtype()
-
-    @property
-    def expected_ndim(self) -> int | None:
-        """Get the expected number of dimensions of this node's pipeline."""
-        return self.pipeline._state.ndim
-
-    @property
-    def expected_shape(self) -> list[int] | None:
-        """Get the expected output shape of this node's pipeline if deterministic.
-
-        Only reported for a rank-3 ``[H, W, C]`` output. The hints track H/W/C
-        specifically, so at any other rank they cannot describe the shape —
-        publishing ``[H, W, C]`` for a rank-2 output is exactly how
-        ``channel_select`` used to declare a schema execution could not produce.
-        """
-        state = self.pipeline._state
-        if state.ndim != 3:
-            return None
-        known = [size for size in state.dims if size is not None]
-        return known if len(known) == 3 else None
-
-    @property
-    def shape_asserted(self) -> bool:
-        """Did any dimension of :attr:`expected_shape` come from ``assert_shape``?
-
-        Decides *who* a plan/exec divergence is reported against. A shape the
-        ops' contracts inferred and execution then contradicted is a contract
-        bug, and ``validate_output_schema`` says so. A shape the user asserted
-        is a claim about their data, and blaming "the Rust implementation" for
-        it — which is what happened — sends them to the wrong file.
-        """
-        return any(self.pipeline._state.asserted)
 
 
 @dataclass
@@ -588,6 +546,17 @@ class PipelineGraph:
                 table.add(expr)
         return table
 
+    def _output_spec(
+        self, node_id: str, fmt: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """One output on the wire: its node, sink, and the node's final planned
+        state, from which Rust reads the output's schema facts."""
+        return {
+            "node": node_id,
+            "sink": {"format": fmt, **params},
+            "planned": asdict(self._nodes[node_id].pipeline._state),
+        }
+
     def _to_dict(self) -> dict[str, Any]:
         if self._output is None and self._multi_output is None:
             raise ValueError("No output set")
@@ -608,37 +577,13 @@ class PipelineGraph:
         if self._multi_output is not None:
             # Multi-output mode
             for alias, (node_id, fmt, params) in self._multi_output.outputs.items():
-                node = self._nodes.get(node_id)
-                outputs_spec[alias] = {
-                    "node": node_id,
-                    "sink": {
-                        "format": fmt,
-                        **params,
-                    },
-                    # Add domain and dtype for static type inference
-                    "expected_domain": node.domain if node else "buffer",
-                    "expected_dtype": node.output_dtype if node else "u8",
-                    "expected_shape": node.expected_shape if node else None,
-                    "shape_asserted": node.shape_asserted if node else False,
-                    "expected_ndim": node.expected_ndim if node else None,
-                }
+                outputs_spec[alias] = self._output_spec(node_id, fmt, params)
         else:
             # Single output mode - use "_output" as the key
             assert self._output is not None
-            node = self._nodes.get(self._output.node_id)
-            outputs_spec["_output"] = {
-                "node": self._output.node_id,
-                "sink": {
-                    "format": self._output.format,
-                    **self._output.params,
-                },
-                # Add domain and dtype for static type inference
-                "expected_domain": node.domain if node else "buffer",
-                "expected_dtype": node.output_dtype if node else "u8",
-                "expected_shape": node.expected_shape if node else None,
-                "shape_asserted": node.shape_asserted if node else False,
-                "expected_ndim": node.expected_ndim if node else None,
-            }
+            outputs_spec["_output"] = self._output_spec(
+                self._output.node_id, self._output.format, self._output.params
+            )
 
         graph_spec = {
             # Wire-format version; the Rust side rejects versions newer than
