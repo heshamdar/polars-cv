@@ -196,12 +196,13 @@ rank, or dtype**. Everything else follows from that one invariant.
    `mode`/`method`, label_reduce `reduction`/`region_mode`,
    `apply_mask(invert)`, `area(signed)`, `convolve2d(normalize)`.
 
-**Plan-time resolution is why the rule matters.** The planner resolves each
-op once, with no row, to read its rules (domain, dtype, rank, channels,
-identity): `ParamCtx::planning` hands every per-row parameter a placeholder
-(`WireScalar::planning_value`). That is sound only because of the rule above —
-no per-row-eligible value can change those rules. Shapes are not read this
-way: they are symbolic (below), so no placeholder ever reaches a size.
+**The plan reads the op as written, which is why the rule matters.** The
+planner reads every rule (domain, dtype, rank, channels, identity) from the
+`Wire` op, where a per-row value is unknown: never a placeholder. It can
+publish a schema only because of the rule above — no per-row-eligible value
+changes those rules; a rule that does read a value (a neighbourhood radius, a
+`validate` check) says nothing about one it does not know, and the row checks
+it.
 
 **Structural parameters are literal-only and enforced on both sides.** Axis
 lists, reduction `axis`, `perceptual_hash(hash_size)`, `reshape` arity,
@@ -323,7 +324,7 @@ one view-buffer `OpShape`, which execution evaluates on known sizes and `plan::s
 own fields (its family's generic `shape()` on the `Wire` op), a per-row field as `Sym::PerRow` and an unknown
 input size as `Dim::Input(k)`. So the tracked H/W cannot disagree with what
 the op produces, and no placeholder value stands in for a per-row one
-(`typed_shape_is_the_resolved_steps` holds it to the executed step's where an op lowers).
+(`a_lowered_op_keeps_its_shape` holds it to the executed step's where an op lowers).
 
 Not every step *has* an inferable shape: axis reductions, histograms, channel
 merge and the binary ops are graph-level steps with no `OpShape`. For those

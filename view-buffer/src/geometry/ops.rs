@@ -1,6 +1,6 @@
 //! Geometry operation enum for pipeline integration.
 
-use crate::mode::{Exec, FieldType, Mode, NodeRef, Param, TypeDesc, Wire};
+use crate::mode::{known, Exec, FieldType, Mode, NodeRef, Param, TypeDesc, Wire};
 use polars_cv_macros::{Ops, Resolve};
 
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
@@ -318,7 +318,7 @@ crate::naming::named_variants!(ApproxMethod: "Contour point-approximation method
     "approx" => Approx,
 });
 
-impl Op for GeometryOp {
+impl<M: Mode> Op for GeometryOp<M> {
     fn name(&self) -> &'static str {
         match self {
             GeometryOp::Area { .. } => "Area",
@@ -391,13 +391,15 @@ impl Op for GeometryOp {
         _input_dtypes: &[DType],
     ) -> Result<(), ValidationError> {
         match self {
-            GeometryOp::Rasterize { .. } => {
-                let (height, width) = self.canvas().ok_or_else(|| ValidationError::Generic {
-                    message: "rasterize(shape=<node>) reached execution without the \
-                              node's canvas"
-                        .to_string(),
-                })?;
-                if width == 0 || height == 0 {
+            // A canvas another node sets is known only once that node has
+            // run (the executor sets it, and refuses a rasterize without
+            // one); a per-row size is checked per row.
+            GeometryOp::Rasterize {
+                size: RasterSize::Fixed([h, w]),
+                ..
+            } => {
+                let zero = |d: &M::V<u32>| known::<M, u32>(d) == Some(0);
+                if zero(h) || zero(w) {
                     return Err(ValidationError::InvalidParameter {
                         param: "width/height".to_string(),
                         reason: "Dimensions must be > 0".to_string(),
@@ -407,7 +409,7 @@ impl Op for GeometryOp {
             }
 
             GeometryOp::Simplify { tolerance } => {
-                if *tolerance < 0.0 {
+                if known::<M, f64>(tolerance).is_some_and(|t| t < 0.0) {
                     return Err(ValidationError::InvalidParameter {
                         param: "tolerance".to_string(),
                         reason: "Tolerance must be >= 0".to_string(),
@@ -436,7 +438,7 @@ impl Op for GeometryOp {
     }
 }
 
-impl GeometryOp {
+impl<M: Mode> GeometryOp<M> {
     /// Get the input domain this geometry operation expects.
     pub fn input_domain(&self) -> Domain {
         match self {
@@ -489,6 +491,9 @@ impl GeometryOp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The rules are generic over the mode; these tests read executed ops.
+    type GeometryOp = super::GeometryOp<Exec>;
 
     #[test]
     fn test_op_names() {

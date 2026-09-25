@@ -236,7 +236,10 @@ pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Resu
     use crate::ops::{NodeRef, TypedOp};
     use view_buffer::geometry::ops::RasterSize;
 
-    let step = crate::planning_step(op)?;
+    // The op is read as it is: every rule below is the step's own, over its
+    // literal values, and a per-row value is unknown — never stood in for.
+    op.check().map_err(|e| format!("{}: {e}", op.name()))?;
+    let step = op;
 
     // Input domain, from the step's own contract.
     let accepted = step.input_domains();
@@ -256,27 +259,25 @@ pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Resu
         return declare(state.clone(), rank, dims);
     }
 
-    let other = match &step {
-        GraphStep::Binary { other, .. } => Some(referenced(refs, op.name(), other)?),
+    let binary = match step {
+        GraphStep::Graph(graph) => graph.binary(),
         _ => None,
     };
-    let dtype = match (&step, other) {
-        (GraphStep::Binary { op, .. }, Some(other)) => binary_dtype(*op, state.dtype, other.dtype),
-        _ => single_input_dtype(&step, state.dtype),
+    let other = match binary {
+        Some((_, other)) => Some(referenced(refs, op.name(), &other.0)?),
+        None => None,
+    };
+    let dtype = match (binary, other) {
+        (Some((op, _)), Some(other)) => binary_dtype(op, state.dtype, other.dtype),
+        _ => single_input_dtype(step, state.dtype),
     };
 
-    // The shape: the typed op's own, symbolic over its per-row fields, or —
-    // for a graph-level step — the resolved step's. A resolved step carries
-    // planning placeholders for per-row values, and a geometry measure's shape
-    // is per contour where the step runs over a set, so only the rank and the
-    // channel axis are read from it; its H and W stay unknown.
-    let typed = op.shape();
-    let sized = typed.is_some();
-    let shape = typed.unwrap_or_else(|| step.shape());
-    let input = input_dims(&step, state);
-    let other_input = other.and_then(|o| input_dims(&step, o));
+    // The shape, symbolic over the op's per-row fields.
+    let shape = step.shape();
+    let input = input_dims(step, state);
+    let other_input = other.and_then(|o| input_dims(step, o));
     if let Some(input) = &input {
-        check_rank(&step, input)?;
+        check_rank(step, input)?;
     }
     let mut ranks = vec![input.as_ref().map(Vec::len)];
     if other.is_some() {
@@ -299,10 +300,6 @@ pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Resu
         // H; a resize replaces it).
         (None, false, _) => sizes_over_any_rank(&shape, &state.dims),
     };
-    if !sized {
-        dims[0] = None;
-        dims[1] = None;
-    }
     // A dimension the output rank does not have has no size (a scalar's
     // single slot, a vector's pinned rank).
     if let Some(n) = ndim {
@@ -362,9 +359,11 @@ fn sizes_over_any_rank(shape: &OpShape, sizes: &[Option<usize>; 3]) -> [Option<u
 /// an encoding concern, not a schema one: unknown.
 ///
 /// [`OutputDTypeRule::resolve_planned`]: view_buffer::OutputDTypeRule::resolve_planned
-fn single_input_dtype(step: &GraphStep, dtype: PlannedDType) -> PlannedDType {
+fn single_input_dtype(step: &crate::ops::TypedOp, dtype: PlannedDType) -> PlannedDType {
     match step {
-        GraphStep::Histogram(h) if h.output == HistogramOutput::Buckets => PlannedDType::Unknown,
+        GraphStep::Histogram(h) if h.output.get() == HistogramOutput::Buckets => {
+            PlannedDType::Unknown
+        }
         _ => step.output_dtype_rule().resolve_planned(dtype),
     }
 }
@@ -425,7 +424,7 @@ pub(crate) fn source_state(
 /// for an unknown one. `None` when the rank is unknown, so there is no shape
 /// to reason about — except for a step that *builds* a buffer from another
 /// domain (`rasterize`), which consumes no buffer at all.
-pub(crate) fn input_dims(step: &GraphStep, state: &State) -> Option<Vec<Dim>> {
+pub(crate) fn input_dims(step: &crate::ops::TypedOp, state: &State) -> Option<Vec<Dim>> {
     match state.ndim {
         Some(n) if n >= 1 => Some(
             (0..n)
@@ -449,7 +448,7 @@ pub(crate) fn input_dims(step: &GraphStep, state: &State) -> Option<Vec<Dim>> {
 /// only the verdicts that depend on the rank alone (a channel op on a rank-2
 /// buffer) otherwise. Sizes the plan does not know are passed as 1, which no
 /// rank-level verdict reads; a size-level failure then stays a row error.
-fn check_rank(step: &GraphStep, input: &[Dim]) -> Result<(), String> {
+fn check_rank(step: &crate::ops::TypedOp, input: &[Dim]) -> Result<(), String> {
     let op: &dyn view_buffer::Op = match step {
         GraphStep::Buffer(dto) => dto.as_op(),
         GraphStep::Geometry(geo) => geo,

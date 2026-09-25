@@ -12,7 +12,6 @@
 use pyo3::prelude::*;
 use view_buffer::{IdentityRule, SpatialDependency};
 
-use crate::graph::step::GraphStep;
 use crate::plan::State;
 
 /// Every logical optimisation pass, by the name `OptFlags` knows it by.
@@ -136,19 +135,15 @@ fn eliminate_identities(node: &Node<'_>) -> Result<Vec<usize>, String> {
 /// state entering it and the one it leaves. Any unknown keeps the op.
 fn is_identity(node: &Node<'_>, i: usize) -> Result<bool, String> {
     let op = &node.ops[i];
-    let step = crate::planning_step(op)?;
     let (entering, leaving) = (&node.states[i], &node.states[i + 1]);
-    Ok(match step.identity_rule() {
+    Ok(match op.identity_rule() {
         IdentityRule::Never => false,
         IdentityRule::WhenDtypePreserved => {
             entering.dtype.is_concrete() && leaving.dtype == entering.dtype
         }
         IdentityRule::WhenShapePreserved => {
-            let Some(shape) = op.shape() else {
-                return Ok(false);
-            };
-            let input = crate::plan::input_dims(&step, entering);
-            shape.preserves(input.as_deref())
+            let input = crate::plan::input_dims(op, entering);
+            op.shape().preserves(input.as_deref())
         }
     })
 }
@@ -161,12 +156,8 @@ fn is_identity(node: &Node<'_>, i: usize) -> Result<bool, String> {
 /// never moves across a declaration. Two crops never contend — a crop is itself not `Pointwise` — so, left to right, a crop's
 /// run is always the tail of the order built so far.
 fn hoist_spatial_windows(node: &Node<'_>) -> Result<Vec<usize>, String> {
-    let steps = node
-        .ops
-        .iter()
-        .map(crate::planning_step)
-        .collect::<Result<Vec<GraphStep>, String>>()?;
-    let crossable = |step: &GraphStep| {
+    let steps = node.ops;
+    let crossable = |step: &crate::ops::TypedOp| {
         !step.reads_other_nodes() && step.spatial_dependency() == SpatialDependency::Pointwise
     };
     let mut order: Vec<usize> = Vec::with_capacity(steps.len());
@@ -337,14 +328,15 @@ mod tests {
     #[test]
     fn representative_ops_have_their_true_spatial_rule() {
         let rule = |op: serde_json::Value| -> String {
-            match crate::planning_step(&serde_json::from_value(op).unwrap())
+            match serde_json::from_value::<crate::ops::TypedOp>(op)
                 .unwrap()
                 .spatial_dependency()
             {
                 SpatialDependency::Pointwise => "pointwise".into(),
-                SpatialDependency::Neighborhood(support) => {
-                    format!("neighborhood:{}", support.radius)
-                }
+                SpatialDependency::Neighborhood(support) => match support.radius.known() {
+                    Some(radius) => format!("neighborhood:{radius}"),
+                    None => "neighborhood:per-row".into(),
+                },
                 SpatialDependency::Global => "global".into(),
                 SpatialDependency::Geometric(_) => "geometric".into(),
             }

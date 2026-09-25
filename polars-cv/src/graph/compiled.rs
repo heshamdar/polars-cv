@@ -36,6 +36,7 @@ use view_buffer::{Op, PlannedDType, ViewBuffer, ViewDto, ViewExpr};
 use crate::contour::parse_contour_list;
 use crate::execute::{decode_contour_source, decode_contour_source_with_dims, decode_image_bytes};
 use crate::formats::source::Source;
+use crate::ops::graph::Role;
 use crate::ops::{NodeRef, TypedOp};
 use crate::params::ParamCtx;
 use view_buffer::geometry::ops::RasterSize;
@@ -612,16 +613,18 @@ impl CompiledGraph {
     fn vector_reads_as_buffer(step: &GraphStep) -> bool {
         match step {
             GraphStep::Reduction(_) => true,
-            GraphStep::Binary { .. }
-            | GraphStep::Buffer(_)
+            GraphStep::Buffer(_)
             | GraphStep::Geometry(_)
-            | GraphStep::ApplyMask { .. }
-            | GraphStep::ChannelMerge { .. }
             | GraphStep::Histogram(_)
-            | GraphStep::PerceptualHash(_)
-            | GraphStep::ExtractShape
-            | GraphStep::AssertShape { .. }
-            | GraphStep::LabelReduce { .. } => false,
+            | GraphStep::PerceptualHash(_) => false,
+            GraphStep::Graph(graph) => match graph.role() {
+                Role::Binary(..)
+                | Role::ApplyMask { .. }
+                | Role::ChannelMerge { .. }
+                | Role::ExtractShape
+                | Role::AssertShape { .. }
+                | Role::LabelReduce { .. } => false,
+            },
         }
     }
 
@@ -1026,56 +1029,6 @@ impl CompiledGraph {
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
                                 current_output = execute_geometry_op(current_output, geo_op)?;
                             }
-                            GraphStep::Binary { op, other } => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = Self::step_buffer_operand(
-                                    &current_output,
-                                    graph_step.as_ref(),
-                                    "Binary op",
-                                )?;
-                                let Some(other_output) =
-                                    self.operand(node_outputs, other, "Binary op")?
-                                else {
-                                    continue 'nodes;
-                                };
-                                let other_buf = Self::step_buffer_operand(
-                                    other_output,
-                                    graph_step.as_ref(),
-                                    "Binary op other operand",
-                                )?;
-                                op.validate(
-                                    &[current_buf.shape(), other_buf.shape()],
-                                    &[current_buf.dtype(), other_buf.dtype()],
-                                )
-                                .map_err(|e| format!("{}: {e}", op.name()))?;
-                                let result = op.execute(&current_buf, &other_buf);
-                                current_output = NodeOutput::from_buffer(result);
-                            }
-                            GraphStep::ApplyMask { mask, invert } => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = Self::step_buffer_operand(
-                                    &current_output,
-                                    graph_step.as_ref(),
-                                    "ApplyMask",
-                                )?;
-                                let Some(mask_output) =
-                                    self.operand(node_outputs, mask, "ApplyMask")?
-                                else {
-                                    continue 'nodes;
-                                };
-                                let mask_buf = Self::step_buffer_operand(
-                                    mask_output,
-                                    graph_step.as_ref(),
-                                    "ApplyMask mask",
-                                )?;
-                                view_buffer::validate_mask(current_buf.shape(), mask_buf.shape())
-                                    .map_err(|e| format!("apply_mask: {e}"))?;
-                                let result =
-                                    view_buffer::apply_mask(&current_buf, &mask_buf, *invert);
-                                current_output = NodeOutput::from_buffer(result);
-                            }
                             GraphStep::Reduction(reduction_op) => {
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
@@ -1142,108 +1095,172 @@ impl CompiledGraph {
                                 );
                                 current_output = NodeOutput::from_buffer(result);
                             }
-                            GraphStep::AssertShape { rank, dims } => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let shape: Vec<usize> = match &current_output {
-                                    NodeOutput::Buffer(buf) => buf.shape().to_vec(),
-                                    NodeOutput::Vector(vals) => vec![vals.len()],
-                                    other => {
-                                        return Err(format!(
-                                            "assert_shape() declares a shape, but the data here \
-                                             is {}",
-                                            other.domain().name()
-                                        ))
-                                    }
-                                };
-                                check_declared_shape(&shape, *rank, dims)?;
-                            }
-                            GraphStep::ExtractShape => {
-                                // Extract shape from buffer and return as vector
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = Self::step_buffer_operand(
-                                    &current_output,
-                                    graph_step.as_ref(),
-                                    "ExtractShape",
-                                )?;
-                                let shape = current_buf.shape();
-                                // Return shape as f64 vector [height, width, channels]
-                                let shape_vec: Vec<f64> = shape.iter().map(|&d| d as f64).collect();
-                                current_output = NodeOutput::from_vector(shape_vec);
-                            }
-                            GraphStep::LabelReduce {
-                                contours_slot,
-                                reduction,
-                                region_mode,
-                            } => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = Self::step_buffer_operand(
-                                    &current_output,
-                                    graph_step.as_ref(),
-                                    "LabelReduce",
-                                )?;
-                                let contour_col =
-                                    ctx.col(*contours_slot).map_err(|e| e.to_string())?;
-                                let contour_value = contour_col.get_any(row_idx).map_err(|e| {
-                                    format!(
-                                        "LabelReduce failed to read contours at row {row_idx}: {e}"
-                                    )
-                                })?;
-                                if contour_value.is_null() {
-                                    current_output = NodeOutput::from_vector(Vec::new());
-                                    continue;
-                                }
-                                let contours = parse_contour_list(&contour_value).map_err(|e| {
-                                    format!("LabelReduce contour parsing failed: {e}")
-                                })?;
-                                let scores = score_contours_on_buffer(
-                                    &current_buf,
-                                    &contours,
-                                    *reduction,
-                                    *region_mode,
-                                )?;
-                                current_output = NodeOutput::from_vector(scores);
-                            }
-                            GraphStep::ChannelMerge { others } => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = Self::step_buffer_operand(
-                                    &current_output,
-                                    graph_step.as_ref(),
-                                    "ChannelMerge",
-                                )?;
-                                // Owned first: `step_buffer_operand` hands back an
-                                // `Arc`, which must outlive the borrow the merge
-                                // call takes.
-                                let mut owned: Vec<Arc<ViewBuffer>> = vec![current_buf];
-                                for other_id in others {
+                            GraphStep::Graph(graph) => match graph.role() {
+                                Role::Binary(op, other) => {
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf = Self::step_buffer_operand(
+                                        &current_output,
+                                        graph_step.as_ref(),
+                                        "Binary op",
+                                    )?;
                                     let Some(other_output) =
-                                        self.operand(node_outputs, other_id, "ChannelMerge")?
+                                        self.operand(node_outputs, &other.0, "Binary op")?
                                     else {
                                         continue 'nodes;
                                     };
-                                    // Same contract read as the current operand
-                                    // above -- ChannelMerge declares `[Buffer]`, so
-                                    // this refuses a vector, but it refuses it by
-                                    // reading the contract rather than restating it.
-                                    owned.push(Self::step_buffer_operand(
+                                    let other_buf = Self::step_buffer_operand(
                                         other_output,
                                         graph_step.as_ref(),
-                                        &format!("ChannelMerge operand '{other_id}'"),
-                                    )?);
+                                        "Binary op other operand",
+                                    )?;
+                                    op.validate(
+                                        &[current_buf.shape(), other_buf.shape()],
+                                        &[current_buf.dtype(), other_buf.dtype()],
+                                    )
+                                    .map_err(|e| format!("{}: {e}", op.name()))?;
+                                    let result = op.execute(&current_buf, &other_buf);
+                                    current_output = NodeOutput::from_buffer(result);
                                 }
-                                let all_bufs: Vec<&ViewBuffer> =
-                                    owned.iter().map(|b| b.as_ref()).collect();
-                                view_buffer::validate_channel_merge(
-                                    &all_bufs.iter().map(|b| b.shape()).collect::<Vec<_>>(),
-                                    &all_bufs.iter().map(|b| b.dtype()).collect::<Vec<_>>(),
-                                )
-                                .map_err(|e| format!("channel_merge: {e}"))?;
-                                let result = view_buffer::apply_channel_merge(&all_bufs);
-                                current_output = NodeOutput::from_buffer(result);
-                            }
+                                Role::ApplyMask { mask, invert } => {
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf = Self::step_buffer_operand(
+                                        &current_output,
+                                        graph_step.as_ref(),
+                                        "ApplyMask",
+                                    )?;
+                                    let Some(mask_output) =
+                                        self.operand(node_outputs, &mask.0, "ApplyMask")?
+                                    else {
+                                        continue 'nodes;
+                                    };
+                                    let mask_buf = Self::step_buffer_operand(
+                                        mask_output,
+                                        graph_step.as_ref(),
+                                        "ApplyMask mask",
+                                    )?;
+                                    view_buffer::validate_mask(
+                                        current_buf.shape(),
+                                        mask_buf.shape(),
+                                    )
+                                    .map_err(|e| format!("apply_mask: {e}"))?;
+                                    let result =
+                                        view_buffer::apply_mask(&current_buf, &mask_buf, *invert);
+                                    current_output = NodeOutput::from_buffer(result);
+                                }
+                                Role::AssertShape { rank, dims } => {
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let shape: Vec<usize> = match &current_output {
+                                        NodeOutput::Buffer(buf) => buf.shape().to_vec(),
+                                        NodeOutput::Vector(vals) => vec![vals.len()],
+                                        other => {
+                                            return Err(format!(
+                                            "assert_shape() declares a shape, but the data here \
+                                                 is {}",
+                                            other.domain().name()
+                                        ))
+                                        }
+                                    };
+                                    check_declared_shape(
+                                        &shape,
+                                        rank.map(|r| r as usize),
+                                        &dims.map(|d| d.map(|d| d as usize)),
+                                    )?;
+                                }
+                                Role::ExtractShape => {
+                                    // Extract shape from buffer and return as vector
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf = Self::step_buffer_operand(
+                                        &current_output,
+                                        graph_step.as_ref(),
+                                        "ExtractShape",
+                                    )?;
+                                    let shape = current_buf.shape();
+                                    // Return shape as f64 vector [height, width, channels]
+                                    let shape_vec: Vec<f64> =
+                                        shape.iter().map(|&d| d as f64).collect();
+                                    current_output = NodeOutput::from_vector(shape_vec);
+                                }
+                                Role::LabelReduce {
+                                    contours,
+                                    reduction,
+                                    region_mode,
+                                } => {
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf = Self::step_buffer_operand(
+                                        &current_output,
+                                        graph_step.as_ref(),
+                                        "LabelReduce",
+                                    )?;
+                                    let contour_col =
+                                        ctx.col(contours.0).map_err(|e| e.to_string())?;
+                                    let contour_value = contour_col.get_any(row_idx).map_err(|e| {
+                                        format!(
+                                            "LabelReduce failed to read contours at row {row_idx}: {e}"
+                                        )
+                                    })?;
+                                    if contour_value.is_null() {
+                                        current_output = NodeOutput::from_vector(Vec::new());
+                                        continue;
+                                    }
+                                    let contours =
+                                        parse_contour_list(&contour_value).map_err(|e| {
+                                            format!("LabelReduce contour parsing failed: {e}")
+                                        })?;
+                                    let scores = score_contours_on_buffer(
+                                        &current_buf,
+                                        &contours,
+                                        *reduction,
+                                        *region_mode,
+                                    )?;
+                                    current_output = NodeOutput::from_vector(scores);
+                                }
+                                Role::ChannelMerge { others } => {
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf = Self::step_buffer_operand(
+                                        &current_output,
+                                        graph_step.as_ref(),
+                                        "ChannelMerge",
+                                    )?;
+                                    // Owned first: `step_buffer_operand` hands back an
+                                    // `Arc`, which must outlive the borrow the merge
+                                    // call takes.
+                                    let mut owned: Vec<Arc<ViewBuffer>> = vec![current_buf];
+                                    for other_id in others {
+                                        let Some(other_output) = self.operand(
+                                            node_outputs,
+                                            &other_id.0,
+                                            "ChannelMerge",
+                                        )?
+                                        else {
+                                            continue 'nodes;
+                                        };
+                                        // Same contract read as the current operand
+                                        // above -- ChannelMerge declares `[Buffer]`, so
+                                        // this refuses a vector, but it refuses it by
+                                        // reading the contract rather than restating it.
+                                        owned.push(Self::step_buffer_operand(
+                                            other_output,
+                                            graph_step.as_ref(),
+                                            &format!("ChannelMerge operand '{}'", other_id.0),
+                                        )?);
+                                    }
+                                    let all_bufs: Vec<&ViewBuffer> =
+                                        owned.iter().map(|b| b.as_ref()).collect();
+                                    view_buffer::validate_channel_merge(
+                                        &all_bufs.iter().map(|b| b.shape()).collect::<Vec<_>>(),
+                                        &all_bufs.iter().map(|b| b.dtype()).collect::<Vec<_>>(),
+                                    )
+                                    .map_err(|e| format!("channel_merge: {e}"))?;
+                                    let result = view_buffer::apply_channel_merge(&all_bufs);
+                                    current_output = NodeOutput::from_buffer(result);
+                                }
+                            },
                             // Fusable single-buffer engine ops accumulate and
                             // run as one ViewExpr chain at the next flush.
                             GraphStep::Buffer(dto) => {
@@ -1946,16 +1963,19 @@ mod tests {
     fn step_name(step: &GraphStep) -> &'static str {
         match step {
             GraphStep::Buffer(_) => "Buffer",
-            GraphStep::Binary { .. } => "Binary",
-            GraphStep::ApplyMask { .. } => "ApplyMask",
-            GraphStep::ChannelMerge { .. } => "ChannelMerge",
             GraphStep::Geometry(_) => "Geometry",
             GraphStep::Reduction(_) => "Reduction",
             GraphStep::Histogram(_) => "Histogram",
             GraphStep::PerceptualHash(_) => "PerceptualHash",
-            GraphStep::ExtractShape => "ExtractShape",
-            GraphStep::AssertShape { .. } => "AssertShape",
-            GraphStep::LabelReduce { .. } => "LabelReduce",
+            // A graph op is named by its role: each executes differently.
+            GraphStep::Graph(graph) => match graph.role() {
+                Role::Binary(..) => "Binary",
+                Role::ApplyMask { .. } => "ApplyMask",
+                Role::ChannelMerge { .. } => "ChannelMerge",
+                Role::ExtractShape => "ExtractShape",
+                Role::AssertShape { .. } => "AssertShape",
+                Role::LabelReduce { .. } => "LabelReduce",
+            },
         }
     }
 
@@ -1970,10 +1990,17 @@ mod tests {
             .split("\n    }")
             .next()
             .expect("step_name's body has no closing brace");
+        // An engine step's variant, or a graph op's role; `Graph` itself is
+        // only the role's container.
         let names: Vec<String> = body
             .lines()
-            .filter_map(|line| line.trim().strip_prefix("GraphStep::"))
+            .filter_map(|line| {
+                let line = line.trim();
+                line.strip_prefix("GraphStep::")
+                    .or_else(|| line.strip_prefix("Role::"))
+            })
             .filter_map(|rest| rest.split([' ', '(']).next())
+            .filter(|name| *name != "Graph")
             .map(str::to_string)
             .collect();
         assert!(

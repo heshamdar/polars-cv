@@ -74,17 +74,17 @@ impl<M: Mode> ColorConvertOp<M> {
     }
 }
 
-impl ColorConvertOp {
+impl<M: Mode> ColorConvertOp<M> {
     /// Whether the conversion promotes dtype to f32.
     ///
     /// LAB conversions require float math and output f32.
     /// All other conversions preserve the input dtype.
     pub fn promotes_to_float(&self) -> bool {
-        matches!(self.from_space, ColorSpace::Lab) || matches!(self.to_space, ColorSpace::Lab)
+        M::lit(&self.from_space) == ColorSpace::Lab || M::lit(&self.to_space) == ColorSpace::Lab
     }
 }
 
-impl Op for ColorConvertOp {
+impl<M: Mode> Op for ColorConvertOp<M> {
     fn validate(
         &self,
         input_shapes: &[&[usize]],
@@ -94,7 +94,7 @@ impl Op for ColorConvertOp {
         crate::ops::validation::require_hw_or_hwc(shape)?;
         crate::ops::validation::require_channels_at_least(
             shape,
-            self.from_space.channels(),
+            M::lit(&self.from_space).channels(),
             "[H, W, C] with at least the source color space's channels",
         )
     }

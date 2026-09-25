@@ -54,31 +54,29 @@ pub(crate) fn op_desc<T: OpFields>(name: &'static str) -> OpDesc {
     }
 }
 
-/// Register the typed ops.
+/// Register the typed op families.
 ///
-/// `families` are engine enums that *are* typed ops (`#[derive(Ops)]`): each
-/// is one `TypedOp` variant holding its `Wire` form, with the wrap that makes
-/// its executed form a `GraphStep`. The remaining lines are per-op structs
-/// still defined here: wire name, `TypedOp` variant, struct, and a valid
-/// sample of its wire fields.
-///
-/// Registering is the whole act: the line is what makes the op
-/// deserializable, resolvable, described and — through the sample — covered by
-/// the registry-driven tests, so there is no second list.
+/// Each line is a family — an enum deriving `Ops`/`Resolve`, generic over
+/// the [`Mode`](view_buffer::mode::Mode) — and the position its ops take in a
+/// [`GraphStep`], written once and used both to build and to match one. The
+/// typed op is `GraphStep<Wire>`: registering is the whole act, since the
+/// line is what makes the family's ops deserializable, described and — through
+/// the samples — covered by the registry-driven tests; resolving and every
+/// plan-time rule are `GraphStep`'s own, generic over the mode.
 macro_rules! typed_ops {
-    ($($family:ident($fty:ty) => $wrap:expr;)*) => {
-        /// A typed operation (see the module docs).
-        #[derive(Debug, Clone, PartialEq)]
-        pub enum TypedOp {
-            $($family(<$fty as Family>::Wire),)*
-        }
+    ($($($family:ident)::+ => |$op:ident| $($at:tt)::+ ($($inner:tt)*);)*) => {
+        /// The typed op: a graph step whose parameters are literals or
+        /// per-row slots (see the module docs).
+        pub type TypedOp = GraphStep<view_buffer::mode::Wire>;
 
         impl TypedOp {
             /// Every typed op's wire name, sorted.
             #[cfg(test)]
             pub fn names() -> Vec<&'static str> {
                 let mut names: Vec<&'static str> = Vec::new();
-                $(names.extend_from_slice(<<$fty as Family>::Wire>::WIRE_NAMES);)*
+                $(names.extend_from_slice(
+                    <$($family)::+<view_buffer::mode::Wire>>::WIRE_NAMES,
+                );)*
                 names.sort_unstable();
                 names
             }
@@ -86,7 +84,9 @@ macro_rules! typed_ops {
             /// The op's wire name.
             pub fn name(&self) -> &'static str {
                 match self {
-                    $(TypedOp::$family(op) => op.wire_name().expect("a typed op has a wire name"),)*
+                    $($($at)::+($($inner)*) => {
+                        $op.wire_name().expect("a typed op has a wire name")
+                    })*
                 }
             }
 
@@ -97,9 +97,9 @@ macro_rules! typed_ops {
                 fields: serde_json::Value,
             ) -> Option<Result<Self, String>> {
                 $(
-                    if <<$fty as Family>::Wire>::WIRE_NAMES.contains(&name) {
-                        return <<$fty as Family>::Wire>::from_wire(name, fields)
-                            .map(|r| r.map(TypedOp::$family));
+                    if <$($family)::+<view_buffer::mode::Wire>>::WIRE_NAMES.contains(&name) {
+                        return <$($family)::+<view_buffer::mode::Wire>>::from_wire(name, fields)
+                            .map(|r| r.map(|$op| $($at)::+($($inner)*)));
                     }
                 )*
                 let _ = fields;
@@ -109,40 +109,16 @@ macro_rules! typed_ops {
             /// The op's fields as a wire object (without `"op"`).
             pub fn fields_json(&self) -> serde_json::Value {
                 match self {
-                    $(TypedOp::$family(op) => serde_json::Value::Object(
-                        op.wire_fields().expect("a typed op has wire fields"),
+                    $($($at)::+($($inner)*) => serde_json::Value::Object(
+                        $op.wire_fields().expect("a typed op has wire fields"),
                     ),)*
-                }
-            }
-
-            /// The step for `row`. Per-row parameters read their column here;
-            /// an op with none is resolved once at graph compile time.
-            pub fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
-                match self {
-                    $(TypedOp::$family(op) => {
-                        op.check().map_err(|e| polars_err!(ComputeError: "{}", e))?;
-                        Ok(($wrap)(view_buffer::mode::Resolve::resolve(
-                            op,
-                            &param::RowValues { row, ctx },
-                        )?))
-                    })*
-                }
-            }
-
-            /// How the step's output shape follows from its input, read from
-            /// the op's own fields without resolving any: a per-row field is
-            /// [`Sym::PerRow`](view_buffer::ops::Sym). `None` exactly for a
-            /// graph-level op ([`Family::planned_shape`]).
-            pub fn shape(&self) -> Option<view_buffer::ops::OpShape> {
-                match self {
-                    $(TypedOp::$family(op) => <$fty as Family>::planned_shape(op),)*
                 }
             }
 
             /// See [`OpFields::visit_slots`].
             pub fn visit_slots(&self, f: &mut dyn FnMut(&'static str, usize)) {
                 match self {
-                    $(TypedOp::$family(op) => op.visit_slots(f),)*
+                    $($($at)::+($($inner)*) => $op.visit_slots(f),)*
                 }
             }
 
@@ -151,7 +127,9 @@ macro_rules! typed_ops {
             pub fn samples() -> Vec<TypedOp> {
                 let mut samples: Vec<TypedOp> = Vec::new();
                 $(samples.extend(
-                    <<$fty as Family>::Wire>::samples().into_iter().map(TypedOp::$family),
+                    <$($family)::+<view_buffer::mode::Wire>>::samples()
+                        .into_iter()
+                        .map(|$op| $($at)::+($($inner)*)),
                 );)*
                 samples.sort_by_key(TypedOp::name);
                 samples
@@ -160,7 +138,7 @@ macro_rules! typed_ops {
             /// Every typed op's description, in `names()` order.
             pub fn catalog() -> Vec<OpDesc> {
                 let mut catalog = Vec::new();
-                $(catalog.extend(<<$fty as Family>::Wire>::catalog());)*
+                $(catalog.extend(<$($family)::+<view_buffer::mode::Wire>>::catalog());)*
                 catalog.sort_by_key(|d| d.name);
                 catalog
             }
@@ -168,65 +146,19 @@ macro_rules! typed_ops {
     };
 }
 
-/// A family of typed ops: an enum (or struct) deriving `Ops`/`Resolve`,
-/// whose `Wire` form is the `TypedOp` variant and whose `Exec` form (`Self`)
-/// executes.
-pub trait Family {
-    type Wire;
-    /// The op's symbolic output shape, `None` for a graph-level op.
-    fn planned_shape(op: &Self::Wire) -> Option<view_buffer::ops::OpShape>;
-}
-
-/// An engine family: its one generic `shape()` is the planned shape.
-macro_rules! engine_families {
-    ($($ty:ident)::+ ; $($rest:tt)*) => {
-        impl Family for $($ty)::+ {
-            type Wire = $($ty)::+<view_buffer::mode::Wire>;
-            fn planned_shape(op: &Self::Wire) -> Option<view_buffer::ops::OpShape> {
-                Some(op.shape())
-            }
-        }
-        engine_families!($($rest)*);
-    };
-    () => {};
-}
-
-engine_families! {
-    view_buffer::ImageOpKind;
-    view_buffer::ComputeOp;
-    view_buffer::ViewOp;
-    view_buffer::GeometryOp;
-    view_buffer::ops::ReductionOp;
-    view_buffer::ops::histogram::HistogramOp;
-    view_buffer::ops::phash::PerceptualHashOp;
-    view_buffer::ColorConvertOp;
-    view_buffer::ops::filter::ConvolveOp;
-}
-
-impl Family for graph::GraphOp {
-    type Wire = graph::GraphOp<view_buffer::mode::Wire>;
-    /// A graph-level op's effect is the planner's own rules (a node's
-    /// operand, a declaration), not an engine shape.
-    fn planned_shape(_op: &Self::Wire) -> Option<view_buffer::ops::OpShape> {
-        None
-    }
-}
-
 typed_ops! {
-    Image(view_buffer::ImageOpKind) => |kind| GraphStep::Buffer(
-        view_buffer::ViewDto::Image(view_buffer::ImageOp { kind })
+    view_buffer::ImageOpKind => |op| GraphStep::Buffer(
+        view_buffer::ViewDto::Image(view_buffer::ImageOp { kind: op })
     );
-    Compute(view_buffer::ComputeOp) => |op: view_buffer::ComputeOp| GraphStep::Buffer(op.lowered());
-    View(view_buffer::ViewOp) => |op| GraphStep::Buffer(view_buffer::ViewDto::View(op));
-    Geometry(view_buffer::GeometryOp) => GraphStep::Geometry;
-    Reduction(view_buffer::ops::ReductionOp) => GraphStep::Reduction;
-    Histogram(view_buffer::ops::histogram::HistogramOp) => GraphStep::Histogram;
-    PerceptualHash(view_buffer::ops::phash::PerceptualHashOp) => GraphStep::PerceptualHash;
-    Color(view_buffer::ColorConvertOp) => |op| GraphStep::Buffer(view_buffer::ViewDto::Color(op));
-    Filter(view_buffer::ops::filter::ConvolveOp) => |op| GraphStep::Buffer(
-        view_buffer::ViewDto::Filter(op)
-    );
-    Graph(graph::GraphOp) => graph::GraphOp::step;
+    view_buffer::ComputeOp => |op| GraphStep::Buffer(view_buffer::ViewDto::Compute(op));
+    view_buffer::ViewOp => |op| GraphStep::Buffer(view_buffer::ViewDto::View(op));
+    view_buffer::ColorConvertOp => |op| GraphStep::Buffer(view_buffer::ViewDto::Color(op));
+    view_buffer::ops::filter::ConvolveOp => |op| GraphStep::Buffer(view_buffer::ViewDto::Filter(op));
+    view_buffer::GeometryOp => |op| GraphStep::Geometry(op);
+    view_buffer::ops::ReductionOp => |op| GraphStep::Reduction(op);
+    view_buffer::ops::histogram::HistogramOp => |op| GraphStep::Histogram(op);
+    view_buffer::ops::phash::PerceptualHashOp => |op| GraphStep::PerceptualHash(op);
+    graph::GraphOp => |op| GraphStep::Graph(op);
 }
 
 impl Serialize for TypedOp {
@@ -257,6 +189,17 @@ impl<'de> serde::Deserialize<'de> for TypedOp {
 }
 
 impl TypedOp {
+    /// The step for `row`: each per-row parameter read from its column, then
+    /// checked with every value known. An op with no per-row parameter is
+    /// resolved once at graph compile time.
+    pub fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
+        let step: GraphStep =
+            view_buffer::mode::Resolve::resolve(self, &param::RowValues { row, ctx })?;
+        step.check()
+            .map_err(|e| polars_err!(ComputeError: "{}", e))?;
+        Ok(step)
+    }
+
     /// Whether any field is per-row. An op with none resolves once.
     pub fn is_static(&self) -> bool {
         let mut any = false;
@@ -525,10 +468,14 @@ mod tests {
             let typed = TypedOp::from_fields(name, json!({"other": "n0"}))
                 .unwrap_or_else(|| panic!("BinaryOp '{name}' is not a typed op"))
                 .unwrap();
-            match typed.resolve(0, &ParamCtx::empty()).unwrap() {
-                GraphStep::Binary { op: got, other } => {
-                    assert_eq!((got, other.as_str()), (*op, "n0"), "{name}")
-                }
+            let step = typed.resolve(0, &ParamCtx::empty()).unwrap();
+            match &step {
+                GraphStep::Graph(graph) => match graph.binary() {
+                    Some((got, other)) => {
+                        assert_eq!((got, other.0.as_str()), (*op, "n0"), "{name}")
+                    }
+                    None => panic!("'{name}' resolves to {step:?}"),
+                },
                 step => panic!("'{name}' resolves to {step:?}"),
             }
         }
@@ -537,7 +484,7 @@ mod tests {
             .filter(|op| {
                 matches!(
                     op.resolve(0, &ParamCtx::empty()),
-                    Ok(GraphStep::Binary { .. })
+                    Ok(GraphStep::Graph(graph)) if graph.binary().is_some()
                 )
             })
             .count();
@@ -546,8 +493,8 @@ mod tests {
 
     /// `rasterize(shape=<node>)` takes its canvas from another node's buffer,
     /// which only the graph executor has. Resolving it invents no size: the
-    /// node reference survives, and the op is refused wherever it would run
-    /// without the executor having set the canvas.
+    /// node reference survives, and executing the op without the canvas the
+    /// executor sets from that node is refused.
     #[test]
     fn a_node_sized_rasterize_is_never_given_an_invented_canvas() {
         use view_buffer::geometry::ops::RasterSize;
@@ -567,9 +514,10 @@ mod tests {
                 ..
             }
         ));
-        let err = view_buffer::Op::validate(&geo, &[&[]], &[])
-            .unwrap_err()
-            .to_string();
+        // The executor sets the canvas from the node it names; run without
+        // one, the op is refused rather than given a size.
+        let contours = view_buffer::ops::NodeOutput::from_contours(Vec::new());
+        let err = crate::graph::encode::execute_geometry_op(contours, &geo).unwrap_err();
         assert!(err.contains("canvas"), "{err}");
         assert_eq!(geo.with_canvas(4, 6).canvas(), Some((4, 6)));
     }
@@ -669,33 +617,6 @@ mod tests {
         assert!(serde_json::from_value::<NoFields>(json!({})).is_ok());
         assert!(serde_json::from_value::<NoFields>(json!({"x": 1})).is_err());
         assert!(NoFields::fields().is_empty());
-    }
-
-    /// Each op's shape is one generic definition, but an op may execute as
-    /// a different engine step than itself — `rotate` by a lattice angle as a
-    /// zero-copy view, `warp_affine` as `Affine` — whose shape is its own. So
-    /// for every all-literal sample the planned shape must be the executed
-    /// step's (a graph-level op plans none).
-    #[test]
-    fn typed_shape_is_the_resolved_steps() {
-        let mut compared = 0;
-        for op in TypedOp::samples() {
-            if !op.is_static() {
-                continue;
-            }
-            let step = op.resolve(0, &ParamCtx::empty()).unwrap();
-            let Some(typed) = op.shape() else {
-                continue;
-            };
-            assert_eq!(
-                typed,
-                step.shape(),
-                "{}: typed shape vs the resolved step's",
-                op.name()
-            );
-            compared += 1;
-        }
-        assert!(compared > 40, "only {compared} shapes compared");
     }
 
     #[test]

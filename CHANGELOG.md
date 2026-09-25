@@ -293,6 +293,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   as fact and removed a `.cast()` the user wrote. `source("contour", shape=…)`
   records its canvas as a declaration, as `rasterize(shape=…)` does, so a size
   resting on an upstream `assert_shape` is not treated as known.
+- **A per-row parameter is no longer validated as a stand-in value.** The
+  planner resolved each op with a placeholder for every expression parameter
+  (`1` for an integer) to read its rules, so
+  `channel_select(index=pl.col("i"))` on a known `[H, W]` buffer was refused
+  while building as "channel 1", though every row selected channel 0. The plan
+  now reads each op as written: a literal is checked when the pipeline is
+  built, a per-row value when its row runs, and nothing is invented. A per-row
+  blur `sigma` or morphology `ksize` likewise plans a per-row neighbourhood
+  radius rather than the placeholder's.
 - **A fully known input shape is validated at build time**: e.g.
   `grayscale().channel_select(2)` after `assert_shape(channels=3)` raises when
   written, not per row.

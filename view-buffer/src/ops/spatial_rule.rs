@@ -60,8 +60,7 @@
 //! remap) without changing the enum — match arms reading `Neighborhood(_)` or
 //! `Geometric(_)` keep compiling.
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use crate::ops::shape_rule::Sym;
 
 /// The bounded spatial support of a [`Neighborhood`](SpatialDependency::Neighborhood)
 /// op.
@@ -70,18 +69,18 @@ use serde::{Deserialize, Serialize};
 /// distance) of `(y, x)`, in the input's own coordinate system. A crop of the
 /// output therefore corresponds to a crop of the input dilated by `radius`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct NeighborhoodSupport {
     /// Half-extent of the dependency window, in input pixels (a `ksize×ksize`
-    /// kernel has `radius = ksize / 2`).
-    pub radius: usize,
+    /// kernel has `radius = ksize / 2`); `PerRow` when a per-row parameter
+    /// sets it, known only once a row executes.
+    pub radius: Sym<usize>,
     // Future enrichment — separable/anisotropic radii — extends this struct,
     // not the `SpatialDependency` enum.
 }
 
 impl NeighborhoodSupport {
     /// A symmetric neighborhood of the given half-extent.
-    pub fn new(radius: usize) -> Self {
+    pub fn new(radius: Sym<usize>) -> Self {
         Self { radius }
     }
 }
@@ -94,7 +93,6 @@ impl NeighborhoodSupport {
 /// window can be transformed through) extends this struct; the enum and every
 /// `Geometric(_)` match arm are unaffected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct GeometricEffect {
     // Intentionally empty for now — see the struct docs.
 }
@@ -111,7 +109,6 @@ impl GeometricEffect {
 /// See the [module docs](self) for the precise, closed definition of each
 /// variant and why there is no `Unknown`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum SpatialDependency {
     /// Output at `(y, x)` depends only on input at `(y, x)`. Radius 0.
     Pointwise,
@@ -128,6 +125,11 @@ impl SpatialDependency {
     /// A symmetric neighborhood dependency of the given radius — the common
     /// constructor for kernel ops (`radius = ksize / 2`).
     pub fn neighborhood(radius: usize) -> Self {
+        SpatialDependency::neighborhood_of(Sym::Known(radius))
+    }
+
+    /// A neighborhood whose radius may be per-row.
+    pub fn neighborhood_of(radius: Sym<usize>) -> Self {
         SpatialDependency::Neighborhood(NeighborhoodSupport::new(radius))
     }
 
@@ -153,18 +155,24 @@ mod tests {
     //! kernel in `execution::runner`'s `blur_radius_tests`.
 
     use super::*;
+    use crate::mode::Exec;
     use crate::ops::binary::BinaryOp;
-    use crate::ops::color::{ColorConvertOp, ColorSpace};
-    use crate::ops::compute::ComputeOp;
-    use crate::ops::filter::{BorderMode, ConvolveOp};
-    use crate::ops::histogram::HistogramOp;
+    use crate::ops::color::ColorSpace;
+    use crate::ops::filter::BorderMode;
     use crate::ops::image::{FilterType, ImageOp, ImageOpKind};
     use crate::ops::pad::{PadMode, PadPosition};
-    use crate::ops::phash::{HashAlgorithm, PerceptualHashOp};
-    use crate::ops::reduction::ReductionOp;
+    use crate::ops::phash::HashAlgorithm;
     use crate::ops::scalar::ScalarOp;
     use crate::ops::traits::Op;
-    use crate::ops::view::ViewOp;
+
+    // The rules are generic over the mode; these tests read executed ops.
+    type ColorConvertOp = crate::ops::color::ColorConvertOp<Exec>;
+    type ComputeOp = crate::ops::compute::ComputeOp<Exec>;
+    type ConvolveOp = crate::ops::filter::ConvolveOp<Exec>;
+    type HistogramOp = crate::ops::histogram::HistogramOp<Exec>;
+    type PerceptualHashOp = crate::ops::phash::PerceptualHashOp<Exec>;
+    type ReductionOp = crate::ops::reduction::ReductionOp<Exec>;
+    type ViewOp = crate::ops::view::ViewOp<Exec>;
 
     fn img(kind: ImageOpKind) -> ImageOp {
         ImageOp { kind }
