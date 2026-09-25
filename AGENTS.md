@@ -89,12 +89,12 @@ Pipelines track data domain through operations:
 
 ### Alpha Channel Handling
 
-Alpha channels are **always preserved** during image decoding (RGBA → 4ch, GrayA → 2ch). How each operation treats channels (and therefore alpha) is declared by its `OutputChannelRule` in view-buffer (`view-buffer/src/ops/shape_rule.rs`), which the Python planner reads via `channel_rule`:
+Alpha channels are **always preserved** during image decoding (RGBA → 4ch, GrayA → 2ch). How each operation treats channels (and therefore alpha) is its `OpShape` (`view-buffer/src/ops/shape_rule.rs`); the planner reads the channel count as the shape's axis 2 and the rank as its length:
 
-- **`PreserveChannels`** — all channels processed uniformly (resize, normalize, flip, etc.)
-- **`StripProcessRestore { color_channels }`** — alpha separated, op applied to color channels, alpha restored (blur, cvt_color, sobel)
-- **`Fixed(n)`** — alpha discarded, output channels fixed by the op (grayscale → 1, canny → 1)
-- **`NotApplicable` / `Unknown`** — non-image-buffer ops (reductions, geometry) or not knowable at plan time
+- **`Preserve`** and the H/W-only shapes — all channels processed uniformly (resize, normalize, flip, etc.)
+- **`ColorChannels { channels, .. }`** — alpha separated, op applied to color channels, alpha restored (cvt_color)
+- **`SingleChannel`** — alpha discarded, one output channel (grayscale, canny)
+- **`Dynamic`**, or an unknown input channel count — not knowable at plan time
 
 Image sources have unknown channel count at planning time. Users can assert known channels with `.assert_shape(channels=4)`.
 
@@ -194,8 +194,8 @@ changes; they explain *why* the code is shaped the way it is.
 
 - **Single schema authority (view-buffer).** Each op's schema effect — output
   domain, dtype, rank, and channel count — is declared once, on the op itself in
-  Rust (`OutputRankRule`/`OutputChannelRule` in
-  `view-buffer/src/ops/shape_rule.rs`), and applied in Rust by `plan::step` (once per appended op,
+  Rust (`OpShape` in `view-buffer/src/ops/shape_rule.rs`: rank is its length,
+  channels its axis 2; `OutputDTypeRule` for dtype), and applied in Rust by `plan::step` (once per appended op,
   `polars-cv/src/plan.rs`). A pipeline's ops live in its Rust `Plan`, with the
   state at every op boundary; the node-scope passes run on it in Rust too
   (`Plan.run_pass`, `polars-cv/src/passes.rs`). The planner contains no per-op

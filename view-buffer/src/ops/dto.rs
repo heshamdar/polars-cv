@@ -5,7 +5,6 @@ use crate::ops::color::ColorConvertOp;
 use crate::ops::compute::ComputeOp;
 use crate::ops::filter::ConvolveOp;
 use crate::ops::image::ImageOp;
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::{IdentityRule, Op};
 use crate::ops::view::ViewOp;
 use crate::ops::Domain;
@@ -65,17 +64,6 @@ impl ViewDto {
     /// The rule that determines this operation's output dtype.
     pub fn output_dtype_rule(&self) -> crate::core::dtype::OutputDTypeRule {
         self.as_op().output_dtype_rule()
-    }
-
-    /// The rule that determines how this operation transforms the input rank.
-    pub fn output_rank_rule(&self) -> OutputRankRule {
-        self.as_op().output_rank_rule()
-    }
-
-    /// The rule that determines how this operation transforms the channel
-    /// count (the trailing dimension of an `[H, W, C]` buffer).
-    pub fn output_channel_rule(&self) -> OutputChannelRule {
-        self.as_op().output_channel_rule()
     }
 
     /// How this operation's output depends on the spatial extent of its input.

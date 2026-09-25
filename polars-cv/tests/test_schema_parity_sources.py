@@ -11,7 +11,7 @@ Three axes that the existing coverage barely touched:
   compared plan-vs-exec, leaving ``i8 i16 u32 i32 u64 i64`` — and with them
   every dtype rule that can produce them — unchecked against data.
 * **Channel count.** 1, 2, 3 and 4 all reach different arms of the alpha
-  rules. Two channels (``GrayA``, what ``StripProcessRestore`` yields from
+  rules. Two channels (``GrayA``, what the ``ColorChannels`` shape yields from
   RGBA) had never been fed through a sink.
 
 Both vocabularies are completeness-asserted against the enums in

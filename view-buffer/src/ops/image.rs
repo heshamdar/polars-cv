@@ -1,6 +1,6 @@
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::pad::{PadMode, PadPosition};
-use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule, Sym};
+use crate::ops::shape_rule::{OpShape, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 
@@ -261,40 +261,8 @@ impl Op for ImageOp {
         }
     }
 
-    fn output_rank_rule(&self) -> OutputRankRule {
-        // Every image kind preserves rank: resize/blur/pad/threshold/morph keep
-        // [H, W, C]; grayscale/canny keep the rank and set the channel dim via
-        // the channel rule; channel_swap permutes within the channel dim.
-        OutputRankRule::PreserveRank
-    }
-
     fn shape(&self) -> OpShape {
         self.kind.shape()
-    }
-
-    fn output_channel_rule(&self) -> OutputChannelRule {
-        match &self.kind {
-            // Grayscale and Canny collapse to a single channel.
-            ImageOpKind::Grayscale | ImageOpKind::Canny { .. } => OutputChannelRule::Fixed(1),
-            // Threshold, Resize, Blur, HistogramEqualize and the morphological
-            // operations are applied per-channel and preserve the channel count.
-            ImageOpKind::Threshold(_)
-            | ImageOpKind::Resize { .. }
-            | ImageOpKind::Blur { .. }
-            | ImageOpKind::HistogramEqualize
-            | ImageOpKind::Erode { .. }
-            | ImageOpKind::Dilate { .. }
-            | ImageOpKind::MorphGradient { .. }
-            | ImageOpKind::ResizeScale { .. }
-            | ImageOpKind::ResizeToHeight { .. }
-            | ImageOpKind::ResizeToWidth { .. }
-            | ImageOpKind::ResizeMax { .. }
-            | ImageOpKind::ResizeMin { .. }
-            | ImageOpKind::Pad { .. }
-            | ImageOpKind::PadToSize { .. }
-            | ImageOpKind::Letterbox { .. }
-            | ImageOpKind::ChannelSwap { .. } => OutputChannelRule::PreserveChannels,
-        }
     }
 
     fn memory_effect(&self) -> MemoryEffect {

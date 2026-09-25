@@ -44,7 +44,7 @@ The enforcement standard is stricter than "prefer the shared path":
   day someone adds Y. Make the sequence unskippable instead: one entry point
   that does the whole thing.
 - **No defaulted contract methods on op traits.** `Op::shape`,
-  `output_rank_rule`, `output_channel_rule`, `output_dtype_rule`,
+  `output_dtype_rule`,
   `memory_effect`, `spatial_dependency` and `identity_rule`, and the typed op's
   `OpDef::shape`, are required with no default so a new op cannot inherit a
   lie. Adding a default to any of them is a regression,
@@ -401,16 +401,16 @@ Every operation on `Pipeline` returns a new clone. Do not mutate an existing pip
 ### Alpha Channel Handling
 
 Image sources always preserve alpha. How each operation treats channels (and
-therefore alpha) is declared by its `OutputChannelRule` in
-`view-buffer/src/ops/shape_rule.rs`, the single authority the Python planner
-reads via `channel_rule`:
-- `PreserveChannels` — channel count is unchanged (alpha passes through).
-- `StripProcessRestore { color_channels }` — alpha is split off, the op runs on
-  the color channels, then alpha is re-attached (e.g. `RGBA`→gray yields `GrayA`).
-- `Fixed(n)` — output has exactly `n` channels regardless of input (e.g.
-  `grayscale`/`canny` → 1), dropping any alpha.
-- `NotApplicable` / `Unknown` — no `[H, W, C]` image result, or not knowable at
-  plan time.
+therefore alpha) is its `OpShape` (`view-buffer/src/ops/shape_rule.rs`), the
+one authority for shape: the planner reads the channel count as the shape's
+axis 2 and the rank as its length, so neither is declared twice.
+- `Preserve` (and the H/W-only shapes: resize, pad, crop, …) — the channel axis
+  passes through (alpha included).
+- `ColorChannels { channels, .. }` — alpha is split off, the op runs on the
+  color channels, then alpha is re-attached (e.g. `RGBA`→gray yields `GrayA`).
+- `SingleChannel` — `[H, W, C]` → `[H, W, 1]` (`grayscale`/`canny`), dropping
+  any alpha.
+- `Dynamic` / an unknown input channel count — not knowable at plan time.
 
 ### Canonical Paths
 

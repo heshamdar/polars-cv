@@ -398,7 +398,7 @@ class TestAlphaDropOps:
 
 
 @plugin_required
-class TestAlphaStripProcessRestore:
+class TestAlphaColorChannels:
     """Test STRIP_PROCESS_RESTORE operations preserve alpha through processing."""
 
     def test_blur_preserves_rgba(self) -> None:
@@ -490,10 +490,10 @@ class TestAlphaEncoding:
 
 @plugin_required
 class TestChannelRuleHasOneAuthority:
-    """The channel hint comes from view-buffer's rule, not a Python copy of it.
+    """The channel count comes from view-buffer's OpShape, not a Python copy.
 
     The Python planner used to re-derive the answer by parsing the
-    stringified rule, and disagreed with ``OutputChannelRule::apply`` on
+    stringified rule, and disagreed with the (since deleted) channel rule on
     ``NotApplicable``: ``apply`` says "no channel count", Python left the hint
     untouched. It stayed invisible because every ``NotApplicable`` op also drops
     below rank 3 — where the rank clipping clears channels anyway —
@@ -501,8 +501,8 @@ class TestChannelRuleHasOneAuthority:
     mislabelled ``NotApplicable`` while actually preserving channels. The two
     errors cancelled.
 
-    Both have been fixed: quantized declares ``PreserveChannels``, and the
-    planner's one Rust call (``Plan.push``) applies the rule. These pin the outcome so a
+    Both have been fixed: quantized's shape is ``Preserve``, and the
+    planner's one Rust call (``Plan.push``) reads the channel count off it. These pin the outcome so a
     future change to either cannot quietly re-introduce the pair.
     """
 

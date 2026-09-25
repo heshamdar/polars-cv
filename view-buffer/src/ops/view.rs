@@ -1,7 +1,7 @@
 //! View operations that perform zero-copy transformations.
 
 use crate::core::dtype::OutputDTypeRule;
-use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule, Sym};
+use crate::ops::shape_rule::{OpShape, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 
@@ -152,40 +152,6 @@ impl Op for ViewOp {
             },
             ViewOp::Rotate90 | ViewOp::Rotate270 => OpShape::SwapHw,
             ViewOp::ChannelSelect { .. } => OpShape::DropChannelAxis,
-        }
-    }
-
-    fn output_rank_rule(&self) -> OutputRankRule {
-        match self {
-            // Selecting a channel drops the trailing channel dimension.
-            ViewOp::ChannelSelect { .. } => OutputRankRule::ReduceByOne,
-            // Reshape's rank is structural: the *count* of target dims is
-            // known at plan time even when individual entries are per-row
-            // expressions (bound to placeholder values for introspection).
-            ViewOp::Reshape(shape) => OutputRankRule::Fixed(shape.len()),
-            // Transpose/flip/crop/rotate all keep the rank.
-            ViewOp::Transpose(_)
-            | ViewOp::Flip(_)
-            | ViewOp::Crop { .. }
-            | ViewOp::Rotate90
-            | ViewOp::Rotate180
-            | ViewOp::Rotate270 => OutputRankRule::PreserveRank,
-        }
-    }
-
-    fn output_channel_rule(&self) -> OutputChannelRule {
-        match self {
-            // ChannelSelect collapses to a single 2-D plane (no channel dim).
-            ViewOp::ChannelSelect { .. } => OutputChannelRule::NotApplicable,
-            // Transpose can move the channel axis; reshape is arbitrary; crop can
-            // slice the channel dimension itself — none are declarable up front.
-            ViewOp::Transpose(_) | ViewOp::Reshape(_) | ViewOp::Crop { .. } => {
-                OutputChannelRule::Unknown
-            }
-            // Flip/rotate preserve the channel dimension.
-            ViewOp::Flip(_) | ViewOp::Rotate90 | ViewOp::Rotate180 | ViewOp::Rotate270 => {
-                OutputChannelRule::PreserveChannels
-            }
         }
     }
 

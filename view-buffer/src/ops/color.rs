@@ -5,7 +5,7 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::OpShape;
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 
@@ -59,19 +59,6 @@ impl ColorConvertOp {
     pub fn promotes_to_float(&self) -> bool {
         matches!(self.from, ColorSpace::Lab) || matches!(self.to, ColorSpace::Lab)
     }
-
-    /// Declared rank effect: color conversion never changes the rank.
-    pub fn output_rank_rule(&self) -> OutputRankRule {
-        OutputRankRule::PreserveRank
-    }
-
-    /// Declared channel effect: the color channels become the target color
-    /// space's channel count, with any input alpha channel preserved.
-    pub fn output_channel_rule(&self) -> OutputChannelRule {
-        OutputChannelRule::StripProcessRestore {
-            color_channels: self.to.channels(),
-        }
-    }
 }
 
 impl Op for ColorConvertOp {
@@ -98,14 +85,6 @@ impl Op for ColorConvertOp {
             channels: self.to.channels(),
             to_gray: self.to == ColorSpace::Gray,
         }
-    }
-
-    fn output_rank_rule(&self) -> OutputRankRule {
-        ColorConvertOp::output_rank_rule(self)
-    }
-
-    fn output_channel_rule(&self) -> OutputChannelRule {
-        ColorConvertOp::output_channel_rule(self)
     }
 
     fn memory_effect(&self) -> MemoryEffect {

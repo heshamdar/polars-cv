@@ -445,6 +445,13 @@ REMOVED: tuple[Removed, ...] = (
     Removed("TestOpSpecEquality", "C3: TestCSEPrefixKey"),
     Removed("TestParamValueIdentity", "C3: TestPipelineSlots"),
     Removed("TestParamValueSerialization", "C3: TestParameterSerialization"),
+    # Consolidation C4a: rank and channels are read off OpShape.
+    Removed("OutputRankRule", "C4a: OpShape::rank (the shape's length)"),
+    Removed("OutputChannelRule", "C4a: axis 2 of OpShape::dims"),
+    Removed("output_rank_rule", "C4a: OpShape::rank (the shape's length)"),
+    Removed("output_channel_rule", "C4a: axis 2 of OpShape::dims"),
+    Removed("StripProcessRestore", "C4a: OpShape::ColorChannels"),
+    Removed("PreserveChannels", "C4a: OpShape::Preserve and the H/W-only shapes"),
 )
 
 

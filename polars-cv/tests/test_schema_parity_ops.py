@@ -170,7 +170,7 @@ def test_histogram_output_modes_plan_what_they_execute(output: str) -> None:
 @plugin_required
 @pytest.mark.parametrize("to_space", COLOR_SPACES)
 def test_color_conversions_plan_what_they_execute(to_space: str) -> None:
-    """``convert_color`` is the ``StripProcessRestore`` channel rule's only user.
+    """``convert_color`` is the ``ColorChannels`` shape's only user.
 
     Its output channel count comes from the target space, and Lab additionally
     forces the dtype to f32 — two schema effects from one parameter, neither

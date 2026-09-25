@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule, Sym};
+use crate::ops::shape_rule::{OpShape, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
@@ -146,12 +146,13 @@ impl Op for GeometryOp {
     fn shape(&self) -> OpShape {
         let fixed = |dims: &[usize]| OpShape::Fixed(dims.iter().map(|&n| Sym::Known(n)).collect());
         match self {
-            // Scalar outputs
-            GeometryOp::Area { .. } | GeometryOp::Perimeter => fixed(&[1]),
-            // Centroid returns (x, y)
-            GeometryOp::Centroid => fixed(&[2]),
-            // BoundingBox returns (x, y, width, height)
-            GeometryOp::BoundingBox => fixed(&[4]),
+            // A measure runs over the row's contour set: one value (a
+            // centroid's two, a box's four) per member, so the length is the
+            // set's size — known only with the data.
+            GeometryOp::Area { .. }
+            | GeometryOp::Perimeter
+            | GeometryOp::Centroid
+            | GeometryOp::BoundingBox => OpShape::Dynamic,
             // Contour transforms preserve the point list; `Simplify` and
             // `ConvexHull` may shorten it, which is not knowable statically, so
             // the input shape stands in for both.
@@ -165,34 +166,6 @@ impl Op for GeometryOp {
             }
             // ExtractContours output shape is data-dependent
             GeometryOp::ExtractContours { .. } => OpShape::Dynamic,
-        }
-    }
-
-    fn output_rank_rule(&self) -> OutputRankRule {
-        match self {
-            // Scalar/vector measures emit a fixed-length 1-D result.
-            GeometryOp::Area { .. }
-            | GeometryOp::Perimeter
-            | GeometryOp::Centroid
-            | GeometryOp::BoundingBox => OutputRankRule::Fixed(1),
-            // Contour→contour transforms preserve the point-list rank.
-            GeometryOp::Translate { .. }
-            | GeometryOp::Scale { .. }
-            | GeometryOp::Simplify { .. }
-            | GeometryOp::ConvexHull => OutputRankRule::PreserveRank,
-            // Rasterize emits an [H, W, 1] image.
-            GeometryOp::Rasterize { .. } => OutputRankRule::Fixed(3),
-            // Extraction produces a variable-length contour set.
-            GeometryOp::ExtractContours { .. } => OutputRankRule::Unknown,
-        }
-    }
-
-    fn output_channel_rule(&self) -> OutputChannelRule {
-        match self {
-            // Rasterize produces a single-channel mask.
-            GeometryOp::Rasterize { .. } => OutputChannelRule::Fixed(1),
-            // Everything else is scalar/vector/contour data, not an image.
-            _ => OutputChannelRule::NotApplicable,
         }
     }
 

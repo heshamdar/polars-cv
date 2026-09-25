@@ -11,7 +11,7 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule, Sym};
+use crate::ops::shape_rule::{OpShape, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
@@ -190,15 +190,6 @@ impl Op for PerceptualHashOp {
     fn shape(&self) -> OpShape {
         // Output is always a 1D array of hash bytes
         OpShape::Fixed(vec![Sym::Known(self.hash_bytes())])
-    }
-
-    fn output_rank_rule(&self) -> OutputRankRule {
-        // Always a 1-D byte vector regardless of input rank.
-        OutputRankRule::Fixed(1)
-    }
-
-    fn output_channel_rule(&self) -> OutputChannelRule {
-        OutputChannelRule::NotApplicable
     }
 
     fn memory_effect(&self) -> MemoryEffect {

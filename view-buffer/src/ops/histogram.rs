@@ -5,7 +5,7 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule, ViewType};
-use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule, Sym};
+use crate::ops::shape_rule::{OpShape, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
@@ -332,35 +332,6 @@ impl Op for HistogramOp {
             HistogramOutput::Quantized => OpShape::Preserve,
             HistogramOutput::Edges => fixed(&[num_bins + 1]),
             HistogramOutput::Buckets => fixed(&[num_bins, 4]),
-        }
-    }
-
-    fn output_rank_rule(&self) -> OutputRankRule {
-        match self.output {
-            // 1-D bin vectors.
-            HistogramOutput::Counts | HistogramOutput::Normalized | HistogramOutput::Edges => {
-                OutputRankRule::Fixed(1)
-            }
-            // [num_bins, 4] bucket table.
-            HistogramOutput::Buckets => OutputRankRule::Fixed(2),
-            // Quantized relabels in place, preserving the input rank.
-            HistogramOutput::Quantized => OutputRankRule::PreserveRank,
-        }
-    }
-
-    fn output_channel_rule(&self) -> OutputChannelRule {
-        match self.output {
-            // Quantized relabels each element in place, so the buffer keeps
-            // every dimension it had — channels included. Declaring this
-            // `NotApplicable` was a mislabelling: it is the one histogram mode
-            // that still produces an `[H, W, C]` image, and the rank rule above
-            // already says so by preserving the rank.
-            HistogramOutput::Quantized => OutputChannelRule::PreserveChannels,
-            // Bin vectors and the bucket table have no channel concept.
-            HistogramOutput::Counts
-            | HistogramOutput::Normalized
-            | HistogramOutput::Edges
-            | HistogramOutput::Buckets => OutputChannelRule::NotApplicable,
         }
     }
 

@@ -20,7 +20,7 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule, ViewType};
-use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::OpShape;
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
@@ -588,16 +588,6 @@ impl Op for BinaryOp {
 
     fn output_dtype_rule(&self) -> OutputDTypeRule {
         OutputDTypeRule::PreserveInput
-    }
-
-    fn output_rank_rule(&self) -> OutputRankRule {
-        // Element-wise between two broadcast-compatible buffers of equal rank.
-        OutputRankRule::PreserveRank
-    }
-
-    fn output_channel_rule(&self) -> OutputChannelRule {
-        // Element-wise: the channel count is that of the operands, unchanged.
-        OutputChannelRule::PreserveChannels
     }
 }
 
