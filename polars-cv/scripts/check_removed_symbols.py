@@ -41,6 +41,7 @@ HISTORY_FILES: frozenset[str] = frozenset(
         "CODE_REVIEW_FINDINGS.md",
         "EXTENSION_TYPES_PLAN.md",
         "TYPED_OPS_PLAN.md",
+        "TYPED_OPS_CONSOLIDATION_PLAN.md",
         "polars-cv/docs/changelog.md",
         "polars-cv/docs/user-guide/migration.md",
         "polars-cv/scripts/check_removed_symbols.py",
