@@ -1,7 +1,7 @@
 //! Core operation traits and types.
 
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::OpShape;
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::validation::ValidationError;
 
@@ -85,29 +85,6 @@ pub trait Op {
     /// every shape it changes.
     fn shape(&self) -> OpShape;
 
-    /// Declares how this operation transforms the input *rank* (number of
-    /// dimensions).
-    ///
-    /// This is the plan-time-inspectable, structural counterpart to
-    /// [`shape`](Op::shape): it states the rank effect abstractly
-    /// (and can say [`Unknown`](OutputRankRule::Unknown)) without a concrete
-    /// input shape. `shape` stays the concrete authority; the two are
-    /// bound by a parity test so they cannot diverge.
-    ///
-    /// Required (no default): every op must state its rank transform so a new
-    /// op cannot silently inherit `PreserveRank` and lie about its structure.
-    fn output_rank_rule(&self) -> OutputRankRule;
-
-    /// Declares how this operation transforms the input *channel count* (the
-    /// trailing dimension of an `[H, W, C]` buffer).
-    ///
-    /// The plan-time-inspectable, structural counterpart to
-    /// [`shape`](Op::shape) for the channel dimension. Replaces the
-    /// Python-side alpha/channel contract as the single authority.
-    ///
-    /// Required (no default): every op must state its channel transform.
-    fn output_channel_rule(&self) -> OutputChannelRule;
-
     /// Declares what this operation needs from its input's memory layout.
     ///
     /// Required (no default): an op that allocates but claims `View` would be
@@ -119,12 +96,11 @@ pub trait Op {
     /// / ROI) may commute with the op.
     ///
     /// The structural, plan-time-inspectable counterpart to
-    /// [`shape`](Op::shape) for spatial locality, in the same spirit
-    /// as [`output_channel_rule`](Op::output_channel_rule) is for the channel
-    /// dimension. See [`SpatialDependency`] for the four closed variants.
+    /// [`shape`](Op::shape) for spatial locality. See [`SpatialDependency`]
+    /// for the four closed variants.
     ///
     /// Required (no default): an op that omits it would silently inherit a
-    /// dependency it does not have. Unlike the rank/channel/dtype rules there is
+    /// dependency it does not have. Unlike the shape and dtype rules there is
     /// no `shape`-style authority to parity-check this against, so the
     /// conservative, always-correct answer for any op whose dependence cannot be
     /// reasoned about is [`SpatialDependency::Global`] (it permits no reorder).

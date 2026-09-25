@@ -129,8 +129,8 @@ The contract fields read by the planner are:
 - `output_domain` — buffer / scalar / vector / contour (`any` = identity, leaves
   the domain unchanged)
 - `dtype_rule` — resolved to a concrete dtype by `plan::step`
-- `rank_rule` — `fixed:N`, `reduce_one`, `preserve`, or `unknown`
-- `channel_rule` — drives planning-time channel inference
+- `shape` (`OpShape`) — the output shape over the input's; the rank is its
+  length and the channel count its axis 2
 
 These drive schema inference at planning time. **Planning-time schema must match
 execution-time schema.** If an op's dtype cannot be determined at planning time
@@ -151,9 +151,9 @@ Alpha channels are **always preserved** during image decoding. Image sources
 (`PlanState.dims[2]` is `None`). Users can assert known channels via
 `.assert_shape(channels=4)`.
 
-Each op's alpha/channel behaviour is described by its view-buffer `channel_rule`
-(e.g. passthrough, drop-to-fixed, color-conversion). `plan::step` applies it
-(`OutputChannelRule::apply`) to the tracked channel count. Rust implements the matching behaviour
+Each op's alpha/channel behaviour is its view-buffer `OpShape` (passthrough,
+`SingleChannel`, `ColorChannels`); `plan::step` reads the channel count off the
+shape's axis 2. Rust implements the matching behaviour
 based on the buffer's actual channel count.
 
 ### Literal vs Expression Parameters

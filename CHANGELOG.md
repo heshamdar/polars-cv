@@ -99,7 +99,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   records (`OpSpec`, `ParamValue`, `SourceSpec`) and the per-step FFI
   (`plan_step`, `plan_source`, `node_pass`) are gone. `repr(pipeline)` shows
   enum arguments by their wire name (`origin=centroid`), and an absent optional
-  setting is left out of the graph JSON however it was spelled.
+    setting is left out of the graph JSON however it was spelled.
+- **Rank and channels come from the op's shape.** The planner reads an op's
+  output rank as the length of its `OpShape` and the channel count as its axis
+  2; the separate `OutputRankRule`/`OutputChannelRule` declarations are gone.
+  A crop, transpose or reshape now plans a known channel count, a size an op
+  replaces is no longer carried across it when the input rank is unknown, and
+  a contour measure plans one value per contour (its length is the set's
+  size) rather than a single value.
 
 
 - **The builder's planner and the executor share one dtype lattice.** A

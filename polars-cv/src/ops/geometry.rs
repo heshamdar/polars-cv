@@ -78,7 +78,7 @@ pub struct ContourArea {
 
 impl OpDef for ContourArea {
     fn shape(&self) -> Option<OpShape> {
-        Some(OpShape::Fixed(vec![Sym::Known(1)]))
+        Some(GeometryOp::Area { signed: false }.shape())
     }
 
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {

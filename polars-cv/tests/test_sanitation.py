@@ -671,7 +671,7 @@ def test_a_binary_op_without_its_operand_state_is_refused():
 def test_op_schema_rules_are_required_not_defaulted():
     """The structural schema rules are REQUIRED trait methods (no default
     body). An op that omits one is a compile error, so a new op cannot silently
-    inherit ``PreserveRank``/``PreserveChannels``/``PreserveInput``/``Preserve``
+    inherit ``PreserveInput``/``Preserve``
     and lie about its structure — contract by the type system, not convention.
     This ratchets against re-adding a default body to ``view-buffer``'s ``Op``
     trait, or to the typed op's symbolic ``OpDef::shape``.
@@ -684,8 +684,6 @@ def test_op_schema_rules_are_required_not_defaulted():
         pytest.skip("view-buffer sources not available")
     text = traits.read_text()
     for rule, ret in (
-        ("output_rank_rule", "OutputRankRule"),
-        ("output_channel_rule", "OutputChannelRule"),
         ("output_dtype_rule", "OutputDTypeRule"),
         ("shape", "OpShape"),
     ):

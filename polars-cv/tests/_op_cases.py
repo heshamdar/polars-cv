@@ -179,7 +179,7 @@ HISTOGRAM_OUTPUTS: tuple[str, ...] = (
 )
 
 #: Every colour space ``convert_color`` can target, for the
-#: ``StripProcessRestore`` channel rule.
+#: ``ColorChannels`` shape.
 COLOR_SPACES: tuple[str, ...] = ("rgb", "bgr", "hsv", "lab", "ycbcr", "gray")
 
 #: Ops whose engine kernel requires a single-channel buffer.

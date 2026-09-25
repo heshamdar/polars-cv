@@ -731,8 +731,8 @@ mod tests {
 
     /// Each op's shape is declared twice — from its typed fields (planning,
     /// symbolic) and by the engine op it resolves to (execution) — so for
-    /// every registered sample the two must agree: both absent for a
-    /// graph-level step, and equal on the sample's literal values. A typed
+    /// every registered sample the two must agree on the sample's literal
+    /// values (a graph-level step has only the step's). A typed
     /// shape cannot read a per-row value, so the only way to get it wrong is
     /// to ignore a field, which the literal sample exposes.
     #[test]
@@ -740,23 +740,19 @@ mod tests {
         let mut compared = 0;
         for op in TypedOp::samples() {
             let step = op.resolve(0, &ParamCtx::planning()).unwrap();
-            let (typed, resolved) = (op.shape(), step.shape());
-            assert_eq!(
-                typed.is_some(),
-                resolved.is_some(),
-                "{}: shape presence",
-                op.name()
-            );
+            let Some(typed) = op.shape() else {
+                continue;
+            };
             let mut slots = 0;
             op.visit_slots(&mut |_, _| slots += 1);
             if slots == 0 {
                 assert_eq!(
                     typed,
-                    resolved,
+                    step.shape(),
                     "{}: typed shape vs the resolved step's",
                     op.name()
                 );
-                compared += usize::from(typed.is_some());
+                compared += 1;
             }
         }
         assert!(compared > 40, "only {compared} shapes compared");

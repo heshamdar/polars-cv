@@ -106,7 +106,7 @@ def make_test_png(
 
 
 #: PIL mode per channel count. 2 channels is grayscale+alpha, which is what the
-#: ``StripProcessRestore`` channel rule produces from RGBA and which nothing
+#: ``ColorChannels`` shape produces from RGBA and which nothing
 #: fed through a sink before the schema-parity matrix existed.
 _MODE_FOR_CHANNELS = {1: "L", 2: "LA", 3: "RGB", 4: "RGBA"}
 

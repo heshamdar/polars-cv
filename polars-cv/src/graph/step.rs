@@ -15,7 +15,7 @@
 use view_buffer::core::dtype::OutputDTypeRule;
 use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
 use view_buffer::ops::phash::PerceptualHashOp;
-use view_buffer::ops::{Domain, OutputChannelRule, OutputRankRule, SpatialDependency};
+use view_buffer::ops::{Domain, OpShape, SpatialDependency};
 use view_buffer::ops::{HistogramOp, ReductionOp};
 use view_buffer::{BinaryOp, GeometryOp, IdentityRule, Op, ViewDto};
 
@@ -150,45 +150,6 @@ impl GraphStep {
         }
     }
 
-    /// The rule that determines how this step transforms the input rank.
-    pub fn output_rank_rule(&self) -> OutputRankRule {
-        match self {
-            GraphStep::Buffer(dto) => dto.output_rank_rule(),
-            GraphStep::Geometry(op) => op.output_rank_rule(),
-            GraphStep::Binary { op, .. } => op.output_rank_rule(),
-            GraphStep::Reduction(op) => op.output_rank_rule(),
-            GraphStep::Histogram(op) => op.output_rank_rule(),
-            GraphStep::PerceptualHash(op) => op.output_rank_rule(),
-            GraphStep::ApplyMask { .. } => OutputRankRule::PreserveRank,
-            // Merge always yields an [H, W, C] image.
-            GraphStep::ChannelMerge { .. } => OutputRankRule::Fixed(3),
-            // Dimension vectors and region scores are 1-D.
-            GraphStep::ExtractShape | GraphStep::LabelReduce { .. } => OutputRankRule::Fixed(1),
-            GraphStep::AssertShape { rank, .. } => {
-                rank.map_or(OutputRankRule::PreserveRank, OutputRankRule::Fixed)
-            }
-        }
-    }
-
-    /// The rule that determines how this step transforms the channel count.
-    pub fn output_channel_rule(&self) -> OutputChannelRule {
-        match self {
-            GraphStep::Buffer(dto) => dto.output_channel_rule(),
-            GraphStep::Geometry(op) => op.output_channel_rule(),
-            GraphStep::Binary { op, .. } => op.output_channel_rule(),
-            GraphStep::Reduction(op) => op.output_channel_rule(),
-            GraphStep::Histogram(op) => op.output_channel_rule(),
-            GraphStep::PerceptualHash(op) => op.output_channel_rule(),
-            GraphStep::ApplyMask { .. } => OutputChannelRule::PreserveChannels,
-            // One channel per merged single-channel input (this + others).
-            GraphStep::ChannelMerge { others } => OutputChannelRule::Fixed(others.len() + 1),
-            GraphStep::ExtractShape | GraphStep::LabelReduce { .. } => {
-                OutputChannelRule::NotApplicable
-            }
-            GraphStep::AssertShape { .. } => OutputChannelRule::PreserveChannels,
-        }
-    }
-
     /// How this step's output depends on the spatial extent of its input — the
     /// plan-time authority for whether a spatial window may commute with it.
     pub fn spatial_dependency(&self) -> SpatialDependency {
@@ -254,26 +215,29 @@ impl GraphStep {
         }
     }
 
-    /// How the step's output shape follows from its input, for the buffer and
-    /// geometry steps that have one; `None` for a graph-level step (binary,
-    /// reduction, histogram, …), whose output the planner does not size. The
-    /// engine's side of `typed_shape_is_the_resolved_steps`: the planner reads
-    /// the typed op's symbolic `OpDef::shape`, never a resolved step's.
-    #[cfg(test)]
-    pub fn shape(&self) -> Option<view_buffer::ops::OpShape> {
-        use view_buffer::ops::Op;
+    /// How the step's output shape follows from its inputs — every step has
+    /// one, and the planner reads the output rank (its length) and channel
+    /// count (its axis 2) from it. The planner reads the typed op's symbolic
+    /// `OpDef::shape` for sizes where there is one (a resolved step carries
+    /// planning placeholders for per-row values); the graph-level steps' shapes
+    /// read only structural parameters.
+    pub fn shape(&self) -> OpShape {
         match self {
-            GraphStep::Buffer(dto) => Some(dto.as_op().shape()),
-            GraphStep::Geometry(op) => Some(op.shape()),
-            GraphStep::Binary { .. }
-            | GraphStep::ApplyMask { .. }
-            | GraphStep::ChannelMerge { .. }
-            | GraphStep::Reduction(_)
-            | GraphStep::Histogram(_)
-            | GraphStep::PerceptualHash(_)
-            | GraphStep::ExtractShape
-            | GraphStep::AssertShape { .. }
-            | GraphStep::LabelReduce { .. } => None,
+            GraphStep::Buffer(dto) => dto.as_op().shape(),
+            GraphStep::Geometry(op) => op.shape(),
+            GraphStep::Binary { op, .. } => op.shape(),
+            GraphStep::Reduction(op) => op.shape(),
+            GraphStep::Histogram(op) => op.shape(),
+            GraphStep::PerceptualHash(op) => op.shape(),
+            // The mask is blended into this buffer in place.
+            GraphStep::ApplyMask { .. } => OpShape::Preserve,
+            // This `[H, W]` buffer and one per merged operand.
+            GraphStep::ChannelMerge { others } => OpShape::StackChannels(others.len() + 1),
+            GraphStep::ExtractShape => OpShape::InputRank,
+            // One score per contour: as many as the row holds.
+            GraphStep::LabelReduce { .. } => OpShape::Dynamic,
+            // A declaration's sizes are applied by the planner (`plan::declare`).
+            GraphStep::AssertShape { .. } => OpShape::Preserve,
         }
     }
 

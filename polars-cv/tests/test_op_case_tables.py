@@ -65,7 +65,7 @@ def test_histogram_outputs_are_the_whole_enum() -> None:
 def test_color_spaces_are_the_whole_enum() -> None:
     """Every ``convert_color`` target is swept.
 
-    The table exists for the ``StripProcessRestore`` channel rule, whose whole
+    The table exists for the ``ColorChannels`` shape, whose whole
     point is that different targets have different channel counts — so the one
     left out is exactly the one worth having.
     """

@@ -49,7 +49,7 @@ src/
 │   ├── histogram.rs    # Histogram computation
 │   ├── phash.rs        # Perceptual hashing (aHash/pHash/dHash) ops
 │   ├── view.rs         # ViewOp enum — zero-copy layout ops (transpose, reshape, flip, crop, channel_select)
-│   ├── shape_rule.rs   # OutputRankRule / OutputChannelRule — plan-time structure rules (the authority)
+│   ├── shape_rule.rs   # OpShape — shape arithmetic, rank (its length) and channels (axis 2): the authority
 │   ├── validation.rs   # Plan-time shape/dtype constraint checks
 │   └── util.rs         # Shared index/coordinate helpers
 ├── expr.rs             # ViewExpr — lazy expression graph builder
@@ -137,10 +137,8 @@ pub trait Op {
     fn name(&self) -> &'static str;
     fn infer_strides(&self, shape: &[usize], strides: &[isize]) -> Option<Vec<isize>>;
 
-    // The plan-time contract — seven required rules, no defaults.
+    // The plan-time contract — five required rules, no defaults.
     fn shape(&self) -> OpShape; // the one authority for shape arithmetic
-    fn output_rank_rule(&self) -> OutputRankRule;
-    fn output_channel_rule(&self) -> OutputChannelRule;
     fn output_dtype_rule(&self) -> OutputDTypeRule;
     fn memory_effect(&self) -> MemoryEffect; // View, StridePreserving, RequiresContiguous
     fn spatial_dependency(&self) -> SpatialDependency; // Global is the safe answer
@@ -185,14 +183,15 @@ Alpha channels are **always preserved** during image decoding. `from_dynamic_ima
 - RGBA → `[H, W, 4]`, GrayA → `[H, W, 2]`
 - RGB → `[H, W, 3]`, Gray → `[H, W, 1]`
 
-Operations handle alpha via the channel strategy declared by their
-`OutputChannelRule` (`ops/shape_rule.rs`):
+Operations handle alpha via their `OpShape` (`ops/shape_rule.rs`), whose axis
+2 is the output channel count (the planner reads it; there is no separate
+channel rule):
 
-| `OutputChannelRule` | Operations | Behavior |
+| `OpShape` | Operations | Behavior |
 |----------|-----------|----------|
-| **`PreserveChannels`** | resize, normalize, crop, flip, pad, etc. | All channels processed uniformly |
-| **`StripProcessRestore`** | blur, cvt_color, sobel, laplacian, sharpen | Alpha split off, op on color channels, alpha re-attached |
-| **`Fixed(n)`** | grayscale, canny, threshold, erode, dilate, morph_gradient | Alpha discarded, fixed output channels |
+| **`Preserve`** and the H/W-only shapes | resize, normalize, crop, flip, pad, threshold, erode, dilate, etc. | All channels processed uniformly |
+| **`ColorChannels`** | cvt_color | Alpha split off, op on color channels, alpha re-attached |
+| **`SingleChannel`** | grayscale, canny | Alpha discarded, one output channel |
 
 Key implementation points:
 - `ops/color.rs` provides `split_alpha()` / `merge_alpha()` helpers used by `apply_color_convert()`

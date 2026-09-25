@@ -19,7 +19,7 @@
 use pyo3::prelude::*;
 
 use crate::py_value_error;
-use view_buffer::ops::{Dim, Domain, HistogramOutput, OutputRankRule};
+use view_buffer::ops::{Dim, Domain, HistogramOutput, OpShape};
 use view_buffer::PlannedDType;
 
 use crate::graph::step::GraphStep;
@@ -252,7 +252,6 @@ pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Resu
         return declare(state.clone(), declared);
     }
 
-    let (out_domain, ndim) = fold(&step, state.domain, state.ndim);
     let other = match &step {
         GraphStep::Binary { other, .. } => Some(referenced(refs, op.name(), other)?),
         _ => None,
@@ -262,77 +261,92 @@ pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Resu
         _ => single_input_dtype(&step, state.dtype),
     };
 
-    // H/W: the op's own shape over the shapes it consumes, symbolically — a
-    // per-row parameter or an unknown input size leaves its axis unknown.
-    // `None` leaves a size as it was: an op whose input rank is unknown says
-    // nothing about H/W.
-    let mut dims: [Option<Option<usize>>; 3] = [None; 3];
-    if let Some(input) = input_dims(&step, state) {
-        check_rank(&step, &input)?;
-        let other_input = other.and_then(|o| input_dims(&step, o));
-        let inputs: Vec<&[Dim]> = std::iter::once(input.as_slice())
-            .chain(other_input.as_deref())
-            .collect();
-        // A binary op whose other operand has no known rank has no shape to
-        // broadcast against: unknown, never the left operand's shape alone.
-        let out = match (other, &other_input) {
-            (Some(_), None) => None,
-            _ => op.shape().and_then(|shape| shape.dims(&inputs)),
-        };
-        let size = |axis: usize| {
-            let dim = out.as_ref().and_then(|out| out.get(axis).copied());
-            dim.and_then(Dim::known)
-        };
-        dims[0] = Some(size(0));
-        dims[1] = Some(size(1));
+    // The shape: the typed op's own, symbolic over its per-row fields, or —
+    // for a graph-level step — the resolved step's. A resolved step carries
+    // planning placeholders for per-row values, and a geometry measure's shape
+    // is per contour where the step runs over a set, so only the rank and the
+    // channel axis are read from it; its H and W stay unknown.
+    let typed = op.shape();
+    let sized = typed.is_some();
+    let shape = typed.unwrap_or_else(|| step.shape());
+    let input = input_dims(&step, state);
+    let other_input = other.and_then(|o| input_dims(&step, o));
+    if let Some(input) = &input {
+        check_rank(&step, input)?;
+    }
+    let mut ranks = vec![input.as_ref().map(Vec::len)];
+    if other.is_some() {
+        ranks.push(other_input.as_ref().map(Vec::len));
+    }
+    let out_domain = step.output_domain(state.domain);
+    // Scalar and vector domains pin the rank whatever the shape says.
+    let ndim = match out_domain {
+        Domain::Scalar => Some(0),
+        Domain::Vector => Some(1),
+        Domain::Buffer | Domain::Contour => shape.rank(&ranks),
+    };
+    let mut dims: [Option<usize>; 3] = match (&input, other.is_some(), &other_input) {
+        (Some(input), false, _) => known_sizes(shape.dims(&[input])),
+        (Some(input), true, Some(other_input)) => known_sizes(shape.dims(&[input, other_input])),
+        // A binary operand of unknown rank: nothing to broadcast against.
+        (_, true, _) => [None; 3],
+        // An input of unknown rank: a size is known after the op only where
+        // the shape gives it whatever the rank (a grayscale keeps a declared
+        // H; a resize replaces it).
+        (None, false, _) => sizes_over_any_rank(&shape, &state.dims),
+    };
+    if !sized {
+        dims[0] = None;
+        dims[1] = None;
+    }
+    // A dimension the output rank does not have has no size (a scalar's
+    // single slot, a vector's pinned rank).
+    if let Some(n) = ndim {
+        dims.iter_mut().skip(n).for_each(|d| *d = None);
     }
     // A canvas taken from another node has that node's planned H/W.
     if let TypedOp::Rasterize(r) = op {
         if let RasterSize::FromNode(NodeRef(node)) = &r.size {
             let canvas = referenced(refs, op.name(), node)?;
-            dims[0] = Some(canvas.dims[0]);
-            dims[1] = Some(canvas.dims[1]);
-        }
-    }
-    // Channels: the op's channel rule over the incoming count.
-    dims[2] = Some(step.output_channel_rule().apply(state.dims[2]));
-    // A dimension the output rank does not have has no size.
-    if let Some(n) = ndim {
-        for (axis, dim) in dims.iter_mut().enumerate() {
-            if axis >= n {
-                *dim = Some(None);
-            }
+            dims[0] = canvas.dims[0];
+            dims[1] = canvas.dims[1];
         }
     }
 
-    let mut next = state.clone();
-    next.domain = out_domain;
-    next.dtype = dtype;
-    next.ndim = ndim;
-    for (size, replaced) in next.dims.iter_mut().zip(dims) {
-        if let Some(replaced) = replaced {
-            *size = replaced;
-        }
-    }
-    Ok(next)
+    Ok(State {
+        domain: out_domain,
+        dtype,
+        ndim,
+        dims,
+    })
 }
 
-/// An op's output domain and rank over the incoming ones.
-fn fold(step: &GraphStep, domain: Domain, ndim: Option<usize>) -> (Domain, Option<usize>) {
-    let out_domain = step.output_domain(domain);
-    let ndim = match step.output_rank_rule() {
-        OutputRankRule::Fixed(n) => Some(n),
-        OutputRankRule::PreserveRank => ndim,
-        OutputRankRule::ReduceByOne => ndim.map(|n| n.saturating_sub(1).max(1)),
-        OutputRankRule::Unknown => None,
-    };
-    // Scalar and vector domains pin the rank whatever the rule says.
-    let ndim = match out_domain {
-        Domain::Scalar => Some(0),
-        Domain::Vector => Some(1),
-        Domain::Buffer | Domain::Contour => ndim,
-    };
-    (out_domain, ndim)
+/// The known sizes of dimensions 0..3 of a planned output shape.
+fn known_sizes(out: Option<Vec<Dim>>) -> [Option<usize>; 3] {
+    std::array::from_fn(|axis| {
+        out.as_ref()
+            .and_then(|out| out.get(axis).copied())
+            .and_then(Dim::known)
+    })
+}
+
+/// The sizes `shape` gives over an input of unknown rank whose known sizes
+/// are `sizes`: evaluated over each rank the planner tracks, a size is known
+/// only where every rank that has the axis agrees on it.
+fn sizes_over_any_rank(shape: &OpShape, sizes: &[Option<usize>; 3]) -> [Option<usize>; 3] {
+    let outs: Vec<Vec<Dim>> = (1..=sizes.len())
+        .filter_map(|rank| {
+            let input: Vec<Dim> = (0..rank)
+                .map(|axis| sizes[axis].map_or(Dim::Input(axis), Dim::Known))
+                .collect();
+            shape.dims(&[&input])
+        })
+        .collect();
+    std::array::from_fn(|axis| {
+        let mut claims = outs.iter().filter_map(|out| out.get(axis).copied());
+        let first = claims.next()?.known()?;
+        claims.all(|d| d.known() == Some(first)).then_some(first)
+    })
 }
 
 /// An op's output dtype from its own one-input rule, over the planned input
@@ -927,14 +941,30 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_input_rank_leaves_hw_untouched() {
+    fn an_op_that_keeps_hw_keeps_a_size_over_an_unknown_rank() {
         // H is a declared size over an unknown rank (assert_shape on a list).
         let s = state("buffer", "u8", None, [Some(7), None, None]);
         let out = run(json!({"op": "grayscale"}), &s).unwrap();
         assert_eq!(
             out.dims[..2],
             [Some(7), None],
-            "H/W must be kept, not cleared"
+            "grayscale keeps H/W, so a declared H survives"
+        );
+    }
+
+    #[test]
+    fn a_size_an_op_changes_is_not_carried_over_an_unknown_rank() {
+        // The declared H cannot survive a resize to 4, whatever the rank.
+        let s = state("buffer", "u8", None, [Some(7), None, None]);
+        let out = run(
+            json!({"op": "resize", "height": 4, "width": 6, "filter": "bilinear"}),
+            &s,
+        )
+        .unwrap();
+        assert_ne!(
+            out.dims[0],
+            Some(7),
+            "a stale size was carried across a resize"
         );
     }
 

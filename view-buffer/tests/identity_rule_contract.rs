@@ -20,11 +20,8 @@
 //! [`WhenShapePreserved`]: view_buffer::IdentityRule::WhenShapePreserved
 
 use view_buffer::ops::pad::{PadMode, PadPosition};
-use view_buffer::ops::Dim;
-use view_buffer::{
-    ComputeOp, DType, IdentityRule, ImageOp, ImageOpKind, OutputChannelRule, OutputRankRule,
-    ViewDto, ViewOp,
-};
+use view_buffer::ops::{Dim, OpShape};
+use view_buffer::{ComputeOp, DType, IdentityRule, ImageOp, ImageOpKind, ViewDto, ViewOp};
 
 fn pad(top: u32) -> ViewDto {
     ViewDto::Image(ImageOp {
@@ -127,17 +124,10 @@ fn when_dtype_preserved_moves_no_shape() {
         if rule != IdentityRule::WhenDtypePreserved {
             continue;
         }
-        let op = dto.as_op();
         assert_eq!(
-            op.output_rank_rule(),
-            OutputRankRule::PreserveRank,
-            "{}: WhenDtypePreserved must preserve rank",
-            dto.name()
-        );
-        assert_eq!(
-            op.output_channel_rule(),
-            OutputChannelRule::PreserveChannels,
-            "{}: WhenDtypePreserved must preserve channels",
+            dto.as_op().shape(),
+            OpShape::Preserve,
+            "{}: WhenDtypePreserved must preserve the whole shape",
             dto.name()
         );
     }

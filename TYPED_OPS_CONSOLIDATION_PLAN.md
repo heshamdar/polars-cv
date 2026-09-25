@@ -14,7 +14,7 @@
 > | C1 — Typed planner state | **done** — `PlanState` is a frozen Rust pyclass (`Domain`, `PlannedDType`); Python dataclass, `HINT_DIMS`, `Domain` mirror, `Domain::Any`, string dtype helpers deleted; binary ops plan over both states |
 > | C2 — Declarations are ops; Rust plans the graph | **done** — `assert_shape` op checked per row; `planned` wire field, `plan_assert`/`plan_sink`/`check_sink`, `fold_output_*`, `asserted`/`declared` flags, Python assertion machinery deleted; `.sink()` runs `check_graph`; one refs mechanism for node reads |
 > | C3 — Rust owns the op list (`Plan`) | **done** — `Plan` frozen pyclass (`push`/`select`/`with_source`/`rebased`/`continuing`/`run_pass`/`to_spec`); `OpSpec`/`ParamValue`/`SourceSpec`/`planning_slots`, `_push_op`/`_append_op`/`_replay`/`_state_at`/`_entering`/`_Position`/`_STATE_COPIERS`/`_copy_state_from`/`_create_sub_pipeline`/`_track_expr`, `plan_step`/`plan_source`/`node_pass` FFI and the AST/copy-table guards deleted. Deviations: one `select(positions, start)` serves slice, reorder and deletion; CSE compares the ops' wire form over the graph's slot table in Python (the slot table is Python's), not a Rust `common_prefix_len`; `_to_python` stays (numpy scalars at encode) |
-> | C4 — One op definition (mode-generic ops) | not started |
+> | C4 — One op definition (mode-generic ops) | C4a **done** — `OutputRankRule`/`OutputChannelRule`, the `Op` rule methods and their parity tests deleted; every `GraphStep` has an `OpShape`, rank = `OpShape::rank`, channels = axis 2; unknown-rank sizes kept only where every rank agrees; contour measures `Dynamic`. Deviation: a graph-level step's H/W stay unknown until C4b (its resolved shape carries planning placeholders). C4b next (decision: combine) |
 > | C5 — Geometry namespaces on the typed ops | not started |
 > | C6 — One registry, one default convention | not started |
 > | C7 — Python surface fully generated | not started |
@@ -147,31 +147,62 @@ plan. The migration page's "Hand-built graph JSON" section loses `planned`.
 
 ## C4 — One op definition (mode-generic ops)
 
-The engine op structs become generic over a mode `M: Mode` with
-`M::V<T>` = `T` (`Exec`) or `Sym<T>` (`Plan`). Each typed op implements one
-`build<M>(&self, &impl Values<M>) -> GraphStep<M>`: executing resolves a row,
-planning maps a literal to `Sym::Known` and a slot to `Sym::PerRow`. Every rule
-is implemented once on the engine op, generically.
+**Decision (C4b): combine.** The wire struct is folded into the engine struct:
+the typed op *is* the engine op. Recorded here as answered.
+
+Two stages, each deleting first and each green on its own.
+
+### C4a — Rank and channels are read off `OpShape`
+
+Every step has an `OpShape` (the graph-level ones too), and the planner reads
+the output rank as the shape's length and the channel count as its axis 2.
+The two declared rules that restated those facts go.
 
 **Delete first:**
 
 | What | Where | Replaced by |
 |---|---|---|
-| `OpDef::shape` (the typed second constructor) on all 85 ops | `polars-cv/src/ops/*.rs` | `build::<Plan>` then the engine op's `shape()` |
-| `typed_shape_is_the_resolved_steps` | `ops/mod.rs:835` | structural |
-| `ParamCtx::planning`, `is_planning`, `WireScalar::planning_value` and every `if ctx.is_planning()` | `params.rs:268-313`, `ops/param.rs:78`, `ops/filter.rs:74`, `ops/affine.rs:96`, `ops/geometry.rs:330`, `view-buffer/src/naming.rs:76/218/255/282/305` | `build::<Plan>` (no values are invented) |
-| `planning_step` | `lib.rs:106` | `build::<Plan>` |
-| `check_rank`'s placeholder shape | `plan.rs:459` | `validate` generic over `Dim` |
-| `OutputRankRule`, `OutputChannelRule` and their parity tests | `view-buffer/src/ops/shape_rule.rs`, `traits.rs` | read off `OpShape::dims` (rank = output length, channels = axis 2) |
-| `rotate`'s `Rotation` split into three engine steps | `ops/affine.rs:163-222` | one engine `Rotate<M>` whose shape is `MaybeSwapHw`/`RotateExpand` per mode |
+| `OutputRankRule`, `OutputChannelRule` (enums, `apply`) | `view-buffer/src/ops/shape_rule.rs` | `OpShape::rank(inputs)` (the length of `dims`) and axis 2 of `OpShape::dims` |
+| `Op::output_rank_rule`, `Op::output_channel_rule` and every impl | `view-buffer/src/ops/{traits,image,compute,color,filter,view,binary,reduction,histogram,phash}.rs`, `geometry/ops.rs` | — |
+| `ViewDto::output_rank_rule`/`output_channel_rule`, `GraphStep::output_rank_rule`/`output_channel_rule` | `ops/dto.rs`, `graph/step.rs` | `GraphStep::shape` (total: every variant has a shape) |
+| The rule/shape parity tests (`parity_tests::check` and its probes) | `shape_rule.rs` | nothing to bind: one authority |
+| `plan::fold`'s rank match, `dims[2] = channel_rule.apply(..)` | `plan.rs` | the shape |
+| "graph-level steps have no `OpShape`, H/W invalidated" | `plan.rs`, AGENTS | reductions, histograms, hashes, merges and masks are sized by their shape |
 
-Recipe per family (as in P3): convert the engine enum, its `Op` impl and runner
-arms, then the typed ops' `resolve`+`shape` → `build`; delete dead helpers the
-compiler reports; port tests.
+### C4b — The typed op is the engine op, generic over a mode
 
-**Decision point (asked before starting C4b):** fold the wire struct into the
-engine struct (a third mode, `Wire`, with `V<T> = Param<T>`), so the typed op
-*is* the engine op. This moves `Param` and the catalogue derive into view-buffer.
+`view_buffer::mode`: `trait Mode { type V<T>; type L<T>; fn sym(..) -> Sym<T>; }`
+with two modes — `Exec` (`V<T> = L<T> = T`, the default type parameter, so the
+kernels read plain values unchanged) and `Wire` (`V<T> = Param<T>`,
+`L<T> = Literal<T>`). A `Wire` op already says, per field, "known" or "per
+row", so it is the plan-time view: no third mode and no placeholder values.
+Each op is one struct in view-buffer, `Resize<M: Mode = Exec>`, carried by its
+engine enum's variant; its rules (shape, dtype, domains, identity, spatial)
+are implemented once, generically. `#[derive(Op)]` (moved to view-buffer with
+`Param`, `Literal`, `FieldType`, the catalogue types) also derives
+`Resize<Wire>::resolve(values) -> Resize<Exec>`. `GraphStep<M = Exec>`;
+`TypedOp` holds `Wire` ops and wraps each into a `GraphStep<Wire>` (total, no
+values), which the planner reads and execution resolves per row.
+
+**Delete first:**
+
+| What | Where | Replaced by |
+|---|---|---|
+| `OpDef::shape` (the typed second constructor) on all ops, `TypedOp::shape` | `polars-cv/src/ops/*.rs` | the engine op's generic `shape()` on the `Wire` op |
+| `OpDef::resolve`'s hand-written field-by-field resolution on all ops | `polars-cv/src/ops/*.rs` | derived `resolve` (Wire → Exec) + one `step()` wrap per op |
+| The duplicate per-op structs in polars-cv (`ops::image::Resize`, …) | `polars-cv/src/ops/*.rs` | the engine structs in view-buffer |
+| `typed_shape_is_the_resolved_steps` | `ops/mod.rs` | structural (one struct, one shape) |
+| `ParamCtx::planning`, `is_planning`, `WireScalar::planning_value` and every `if ctx.is_planning()` | `params.rs`, `ops/param.rs`, `ops/{filter,affine,geometry}.rs`, `view-buffer/src/naming.rs` | the `Wire` step (no values are invented) |
+| `planning_step` | `lib.rs` | `TypedOp::step()` |
+| `check_rank`'s placeholder sizes | `plan.rs` | `validate` over the `Wire` op where it reads only the rank and parameters |
+| `rotate`'s `Rotation` split into three engine steps chosen from a value | `ops/affine.rs` | one engine `Rotate<M>` whose shape is `MaybeSwapHw`/`RotateExpand` from its own fields |
+| `ImageOpKind::shape`-style per-family shape functions that restate the typed shape | `view-buffer/src/ops/*.rs` | the generic `shape()` of each op struct |
+
+Recipe per family: move the typed struct into view-buffer as the variant's
+payload (wire field names and types win), make it generic, implement its
+rules generically, port the kernels' patterns, delete the polars-cv struct and
+its `OpDef`; the build stays green between families because `TypedOp` holds
+either kind until the last family moves.
 
 ---
 
