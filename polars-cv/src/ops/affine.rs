@@ -8,6 +8,7 @@ use view_buffer::{AffineParams, ComputeOp, InterpolationType, ViewDto, ViewOp};
 use super::{Literal, OpDef, Param};
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
+use view_buffer::ops::{Op as _, OpShape, Sym};
 
 /// Apply a 2x3 affine transformation matrix.
 ///
@@ -57,6 +58,14 @@ pub struct WarpAffine {
 }
 
 impl OpDef for WarpAffine {
+    fn shape(&self) -> Option<OpShape> {
+        let [height, width] = &self.output_size;
+        Some(OpShape::SetHw {
+            h: height.size(),
+            w: width.size(),
+        })
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let WarpAffine {
             matrix,
@@ -80,11 +89,11 @@ impl OpDef for WarpAffine {
         // point has no answer. Reject it here, where the user supplied it, and
         // name the determinant so the offending coefficients are findable.
         //
-        // Not under a plan-time probe: every expression parameter is bound to
-        // the *same* placeholder there, so a per-row matrix arrives as six
-        // equal coefficients and is singular by construction. Its real values
+        // Not at plan time: every per-row parameter resolves to the *same*
+        // placeholder there, so a per-row matrix arrives as six equal
+        // coefficients and is singular by construction. Its real values
         // only exist per row, where this same code runs for a dynamic op.
-        if !ctx.is_probe() && !affine.is_invertible() {
+        if !ctx.is_planning() && !affine.is_invertible() {
             return Err(polars_err!(ComputeError:
                 "warp_affine: matrix {:?} is singular (determinant {}), so it \
                  has no inverse and the warp is undefined. A row of zeros, a \
@@ -137,6 +146,21 @@ pub struct Rotate {
 }
 
 impl OpDef for Rotate {
+    fn shape(&self) -> Option<OpShape> {
+        Some(match (self.angle.sym(), self.expand.get()) {
+            // A per-row angle is a lattice rotation (swapping H/W) on some rows
+            // and a resampling on others.
+            (Sym::PerRow, false) => OpShape::MaybeSwapHw,
+            (Sym::PerRow, true) => OpShape::RotateExpand(Sym::PerRow),
+            (Sym::Known(angle), expand) => match classify(angle) {
+                Rotation::Lattice(view) => view.shape(),
+                Rotation::Identity => OpShape::Preserve,
+                Rotation::Resample(angle) if expand => OpShape::RotateExpand(Sym::Known(angle)),
+                Rotation::Resample(_) => OpShape::Preserve,
+            },
+        })
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let Rotate {
             angle,
@@ -144,34 +168,53 @@ impl OpDef for Rotate {
             interpolation,
             border_value,
         } = self;
-        const EPSILON: f32 = 0.001;
-        let angle = angle.resolve(row, ctx)?.rem_euclid(360.0);
-        let near = |target: f32| (angle - target).abs() < EPSILON;
         // The lattice rotations and the 0° no-op are exact permutations of the
         // input pixels; `interpolation`/`border_value` apply only to the
         // resampling branch.
-        let step = if near(90.0) {
-            ViewDto::View(ViewOp::Rotate90)
-        } else if near(180.0) {
-            ViewDto::View(ViewOp::Rotate180)
-        } else if near(270.0) {
-            ViewDto::View(ViewOp::Rotate270)
-        } else if near(0.0) || near(360.0) {
-            ViewDto::Compute(ComputeOp::RotateAffine {
+        let step = match classify(angle.resolve(row, ctx)?) {
+            Rotation::Lattice(view) => ViewDto::View(view),
+            Rotation::Identity => ViewDto::Compute(ComputeOp::RotateAffine {
                 angle_deg: 0.0,
                 expand: false,
                 interpolation: InterpolationType::Bilinear,
                 border_value: 0.0,
-            })
-        } else {
+            }),
             // The matrix is built at execution from the buffer's dimensions.
-            ViewDto::Compute(ComputeOp::RotateAffine {
+            Rotation::Resample(angle) => ViewDto::Compute(ComputeOp::RotateAffine {
                 angle_deg: angle,
                 expand: expand.get(),
                 interpolation: interpolation.resolve(row, ctx)?,
                 border_value: border_value.resolve(row, ctx)?,
-            })
+            }),
         };
         Ok(GraphStep::Buffer(step))
+    }
+}
+
+/// What a rotation by `angle` degrees is: the one classification `resolve`
+/// executes and `shape` plans from.
+enum Rotation {
+    /// A multiple of 90° other than 0: a zero-copy view.
+    Lattice(ViewOp),
+    /// 0° (mod 360): nothing moves.
+    Identity,
+    /// Any other angle (normalized to `[0, 360)`): resampled.
+    Resample(f32),
+}
+
+fn classify(angle: f32) -> Rotation {
+    const EPSILON: f32 = 0.001;
+    let angle = angle.rem_euclid(360.0);
+    let near = |target: f32| (angle - target).abs() < EPSILON;
+    if near(90.0) {
+        Rotation::Lattice(ViewOp::Rotate90)
+    } else if near(180.0) {
+        Rotation::Lattice(ViewOp::Rotate180)
+    } else if near(270.0) {
+        Rotation::Lattice(ViewOp::Rotate270)
+    } else if near(0.0) || near(360.0) {
+        Rotation::Identity
+    } else {
+        Rotation::Resample(angle)
     }
 }

@@ -43,7 +43,7 @@ several minutes. Reach for `--release` only when benchmarking.
 | `formats/` | Typed sources and sinks, one struct per format (`formats!` registry, `io_catalog.json`) |
 | `execute.rs` | Decode/encode helpers shared by graph execution |
 | `graph/step.rs` | `GraphStep` — the plugin-level step vocabulary: `Buffer(ViewDto)` plus graph-only steps (binary, mask, merge, geometry, reduction, histogram, perceptual_hash, extract_shape, label_reduce); contract methods read by the FFI |
-| `params.rs` | `ParamCtx`/`ParamCol` — the per-call view of expression-parameter columns every typed `Param<T>` reads through, with the null policy. `ParamCtx::probe` marks the plan-time shape probe, where every expression param is bound to an integer placeholder and enum/flag params fall back to a valid value; real execution stays strict |
+| `params.rs` | `ParamCtx`/`ParamCol` — the per-call view of expression-parameter columns every typed `Param<T>` reads through, with the null policy. `ParamCtx::planning` resolves an op with no row, for its value-independent rules: every per-row param takes `WireScalar::planning_value`. Shapes never go through it — they are symbolic (`OpDef::shape`) |
 | `output.rs` | Numpy/torch zero-copy struct output (`NumpyRowOutput`, `build_numpy_series`) |
 | `ext_types.rs` | `ExtType`: the polars-cv Arrow extension types. Builds tagged *outputs* only (`ExtType::tag` / `dtype`, e.g. `SinkKind::NdArray`); inputs never arrive tagged because `polars_cv._plugin.call` passes `.ext.storage()`, so nothing registers with polars-core's extension registry |
 | `cloud.rs` | Cloud storage and HTTP file reads via `object_store` + `reqwest` |

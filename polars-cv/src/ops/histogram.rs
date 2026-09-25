@@ -9,6 +9,7 @@ use view_buffer::ops::histogram::{HistogramClosed, HistogramOp, HistogramOutput}
 use super::{FieldType, Literal, OpDef, Param, TypeDesc};
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
+use view_buffer::ops::OpShape;
 
 /// Compute pixel value histogram.
 ///
@@ -77,6 +78,10 @@ impl FieldType for Bins {
 }
 
 impl OpDef for Histogram {
+    fn shape(&self) -> Option<OpShape> {
+        None
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let Histogram {
             bins,

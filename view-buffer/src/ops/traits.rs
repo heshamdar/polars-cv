@@ -1,7 +1,7 @@
 //! Core operation traits and types.
 
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::validation::ValidationError;
 
@@ -39,56 +39,23 @@ pub enum MemoryEffect {
 /// are strictly opt-in: an op that changes pixel positions must stay
 /// [`Never`](IdentityRule::Never) even when it happens to preserve shape.
 ///
-/// [`Always`](IdentityRule::Always) is decided by *literal* parameter values, so
-/// it names the parameters it inspected (`deciding_params`). That declaration is
-/// what makes the verdict structurally safe across the FFI: an op is resolved
-/// with every expression parameter neutralized to a placeholder, so an `Always`
-/// op whose deciding parameter is actually per-row would otherwise be spoofed by
-/// the placeholder happening to equal the identity value. The plugin's
-/// identity-elimination pass treats the op as [`Never`](IdentityRule::Never)
-/// whenever any named deciding parameter
-/// was expression-bound, so soundness rests on the declaration rather than on
-/// which placeholder value the resolver used.
+/// A rule never depends on a parameter's value: whether a pad or crop is a
+/// no-op for *these* parameters is decided by its [`OpShape`] (`preserves`),
+/// where a per-row parameter is [`Sym::PerRow`](crate::ops::Sym) and so can
+/// never prove it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdentityRule {
     /// The op computes; it is never removable. The conservative answer for any
     /// op that transforms its input.
     Never,
-    /// The op is a no-op purely by its (literal) parameters, for any input —
-    /// e.g. `pad(0, 0, 0, 0)`. `deciding_params` names the parameters whose
-    /// literal values were read to reach this verdict (e.g. `pad`'s four
-    /// amounts); if any of them is per-row the op cannot be proven a no-op at
-    /// plan time and is treated as [`Never`](IdentityRule::Never). List every
-    /// parameter the identity condition inspects, and no others — a fill `value`
-    /// behind zero amounts is not a deciding param.
-    Always {
-        deciding_params: &'static [&'static str],
-    },
-    /// The op is an identity exactly when its output shape equals its input
-    /// shape. Sound only for ops that move no pixels when shape is preserved —
-    /// a pure view (`reshape`, a crop anchored at the origin) or a pad that
-    /// added nothing. An op whose candidacy also rests on a literal parameter
-    /// value (a crop's origin being `(0, 0)`) names those parameters in
-    /// `deciding_params`, gated exactly as for [`Always`](IdentityRule::Always).
-    WhenShapePreserved {
-        deciding_params: &'static [&'static str],
-    },
+    /// The op is an identity exactly when it provably hands every element
+    /// through in place — [`OpShape::preserves`] over its entering shape.
+    /// Sound only for ops that move no pixels when that holds: a pure view
+    /// (`reshape`, a crop at the origin) or a pad that added nothing.
+    WhenShapePreserved,
     /// The op is an identity exactly when its output dtype equals its input
     /// dtype — the same-dtype `cast`, which copies rather than converts.
     WhenDtypePreserved,
-}
-
-impl IdentityRule {
-    /// The parameters whose literal values this verdict was decided by. A
-    /// planner must treat the op as [`Never`](IdentityRule::Never) when any of
-    /// them is per-row: the verdict was reached against a placeholder.
-    pub fn deciding_params(&self) -> &'static [&'static str] {
-        match self {
-            IdentityRule::Always { deciding_params }
-            | IdentityRule::WhenShapePreserved { deciding_params } => deciding_params,
-            IdentityRule::Never | IdentityRule::WhenDtypePreserved => &[],
-        }
-    }
 }
 
 /// Trait for all operations in the pipeline.
@@ -109,16 +76,22 @@ pub trait Op {
     /// Returns the name of this operation for display/debugging.
     fn name(&self) -> &'static str;
 
-    /// Infers the output shape given input shapes.
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize>;
+    /// How the output shape follows from the input shapes: the one authority
+    /// for this op's shape arithmetic, evaluated on known sizes at execution
+    /// ([`OpShape::concrete`]) and symbolically by the planner
+    /// ([`OpShape::dims`]).
+    ///
+    /// Required (no default): an op that inherited `Preserve` would lie about
+    /// every shape it changes.
+    fn shape(&self) -> OpShape;
 
     /// Declares how this operation transforms the input *rank* (number of
     /// dimensions).
     ///
     /// This is the plan-time-inspectable, structural counterpart to
-    /// [`infer_shape`](Op::infer_shape): it states the rank effect abstractly
+    /// [`shape`](Op::shape): it states the rank effect abstractly
     /// (and can say [`Unknown`](OutputRankRule::Unknown)) without a concrete
-    /// input shape. `infer_shape` stays the concrete authority; the two are
+    /// input shape. `shape` stays the concrete authority; the two are
     /// bound by a parity test so they cannot diverge.
     ///
     /// Required (no default): every op must state its rank transform so a new
@@ -129,7 +102,7 @@ pub trait Op {
     /// trailing dimension of an `[H, W, C]` buffer).
     ///
     /// The plan-time-inspectable, structural counterpart to
-    /// [`infer_shape`](Op::infer_shape) for the channel dimension. Replaces the
+    /// [`shape`](Op::shape) for the channel dimension. Replaces the
     /// Python-side alpha/channel contract as the single authority.
     ///
     /// Required (no default): every op must state its channel transform.
@@ -146,13 +119,13 @@ pub trait Op {
     /// / ROI) may commute with the op.
     ///
     /// The structural, plan-time-inspectable counterpart to
-    /// [`infer_shape`](Op::infer_shape) for spatial locality, in the same spirit
+    /// [`shape`](Op::shape) for spatial locality, in the same spirit
     /// as [`output_channel_rule`](Op::output_channel_rule) is for the channel
     /// dimension. See [`SpatialDependency`] for the four closed variants.
     ///
     /// Required (no default): an op that omits it would silently inherit a
     /// dependency it does not have. Unlike the rank/channel/dtype rules there is
-    /// no `infer_shape`-style authority to parity-check this against, so the
+    /// no `shape`-style authority to parity-check this against, so the
     /// conservative, always-correct answer for any op whose dependence cannot be
     /// reasoned about is [`SpatialDependency::Global`] (it permits no reorder).
     fn spatial_dependency(&self) -> SpatialDependency;

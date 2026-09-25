@@ -9,6 +9,7 @@ use view_buffer::ViewDto;
 use super::{Literal, OpDef};
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
+use view_buffer::ops::{Op as _, OpShape};
 
 /// Convert between color spaces.
 ///
@@ -27,6 +28,16 @@ pub struct CvtColor {
 }
 
 impl OpDef for CvtColor {
+    fn shape(&self) -> Option<OpShape> {
+        Some(
+            ColorConvertOp {
+                from: self.from_space.get(),
+                to: self.to_space.get(),
+            }
+            .shape(),
+        )
+    }
+
     fn resolve(&self, _row: usize, _ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let CvtColor {
             from_space,

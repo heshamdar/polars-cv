@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
@@ -143,41 +143,28 @@ impl Op for GeometryOp {
         }
     }
 
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
+    fn shape(&self) -> OpShape {
+        let fixed = |dims: &[usize]| OpShape::Fixed(dims.iter().map(|&n| Sym::Known(n)).collect());
         match self {
             // Scalar outputs
-            GeometryOp::Area { .. } | GeometryOp::Perimeter => vec![1],
-
+            GeometryOp::Area { .. } | GeometryOp::Perimeter => fixed(&[1]),
             // Centroid returns (x, y)
-            GeometryOp::Centroid => vec![2],
-
+            GeometryOp::Centroid => fixed(&[2]),
             // BoundingBox returns (x, y, width, height)
-            GeometryOp::BoundingBox => vec![4],
-
+            GeometryOp::BoundingBox => fixed(&[4]),
             // Contour transforms preserve the point list; `Simplify` and
             // `ConvexHull` may shorten it, which is not knowable statically, so
             // the input shape stands in for both.
             GeometryOp::Translate { .. }
             | GeometryOp::Scale { .. }
             | GeometryOp::Simplify { .. }
-            | GeometryOp::ConvexHull => {
-                if !inputs.is_empty() {
-                    inputs[0].to_vec()
-                } else {
-                    vec![]
-                }
-            }
-
+            | GeometryOp::ConvexHull => OpShape::Preserve,
             // Rasterize produces an image
             GeometryOp::Rasterize { width, height, .. } => {
-                vec![*height as usize, *width as usize, 1]
+                fixed(&[*height as usize, *width as usize, 1])
             }
-
-            // ExtractContours output shape is dynamic
-            GeometryOp::ExtractContours { .. } => {
-                // Variable-length output, placeholder
-                vec![]
-            }
+            // ExtractContours output shape is data-dependent
+            GeometryOp::ExtractContours { .. } => OpShape::Dynamic,
         }
     }
 
@@ -380,7 +367,7 @@ mod tests {
             fill_value: 255,
             background: 0,
         };
-        let shape = op.infer_shape(&[]);
+        let shape = op.shape().concrete(&[]);
         assert_eq!(shape, vec![100, 200, 1]);
     }
 

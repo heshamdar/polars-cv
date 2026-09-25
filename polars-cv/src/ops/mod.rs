@@ -72,6 +72,13 @@ pub trait OpDef: OpFields {
     /// The step for `row`. Per-row parameters read their column here; an op
     /// with none is resolved once at graph compile time.
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep>;
+
+    /// How the step's output shape follows from its input, read from the
+    /// op's own fields without resolving any: a per-row field is
+    /// [`Sym::PerRow`](view_buffer::ops::Sym), never a placeholder value.
+    /// `None` exactly when the step is graph-level (binary, reduction, …);
+    /// `typed_shape_is_the_resolved_steps` holds the two together.
+    fn shape(&self) -> Option<view_buffer::ops::OpShape>;
 }
 
 /// One op in the catalogue.
@@ -153,6 +160,13 @@ macro_rules! typed_ops {
             pub fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
                 match self {
                     $(TypedOp::$variant(op) => OpDef::resolve(op, row, ctx),)+
+                }
+            }
+
+            /// See [`OpDef::shape`].
+            pub fn shape(&self) -> Option<view_buffer::ops::OpShape> {
+                match self {
+                    $(TypedOp::$variant(op) => OpDef::shape(op),)+
                 }
             }
 
@@ -698,12 +712,12 @@ mod tests {
     }
 
     /// `rasterize(shape=<node>)` takes its canvas from another node's buffer,
-    /// which only the graph executor has. A plan-time probe sees dimensions
-    /// that vary with the probe (so the planner reports them unknown); any
-    /// other resolution is a compile path that skipped the executor's
-    /// special case, and must fail rather than invent a size.
+    /// which only the graph executor has. Plan-time resolution (for rules) may
+    /// stand any canvas in, since the size is symbolic; any other resolution
+    /// is a compile path that skipped the executor's special case, and must
+    /// fail rather than invent a size.
     #[test]
-    fn a_node_sized_rasterize_resolves_only_under_a_probe() {
+    fn a_node_sized_rasterize_resolves_only_at_plan_time() {
         let op = TypedOp::from_fields(
             "rasterize",
             json!({"size": "n0", "fill_value": 255, "background": 0}),
@@ -712,13 +726,7 @@ mod tests {
         .unwrap();
         let err = op.resolve(0, &ParamCtx::empty()).unwrap_err().to_string();
         assert!(err.contains("graph executor"), "{err}");
-        let dims = |probe: i64| match op.resolve(0, &ParamCtx::probe(&[], probe)).unwrap() {
-            GraphStep::Geometry(view_buffer::GeometryOp::Rasterize { width, height, .. }) => {
-                (width, height)
-            }
-            step => panic!("{step:?}"),
-        };
-        assert_ne!(dims(3), dims(5));
+        assert!(op.resolve(0, &ParamCtx::planning()).is_ok());
     }
 
     #[test]
@@ -816,6 +824,39 @@ mod tests {
         assert!(serde_json::from_value::<NoFields>(json!({})).is_ok());
         assert!(serde_json::from_value::<NoFields>(json!({"x": 1})).is_err());
         assert!(NoFields::fields().is_empty());
+    }
+
+    /// Each op's shape is declared twice — from its typed fields (planning,
+    /// symbolic) and by the engine op it resolves to (execution) — so for
+    /// every registered sample the two must agree: both absent for a
+    /// graph-level step, and equal on the sample's literal values. A typed
+    /// shape cannot read a per-row value, so the only way to get it wrong is
+    /// to ignore a field, which the literal sample exposes.
+    #[test]
+    fn typed_shape_is_the_resolved_steps() {
+        let mut compared = 0;
+        for op in TypedOp::samples() {
+            let step = op.resolve(0, &ParamCtx::planning()).unwrap();
+            let (typed, resolved) = (op.shape(), step.shape());
+            assert_eq!(
+                typed.is_some(),
+                resolved.is_some(),
+                "{}: shape presence",
+                op.name()
+            );
+            let mut slots = 0;
+            op.visit_slots(&mut |_, _| slots += 1);
+            if slots == 0 {
+                assert_eq!(
+                    typed,
+                    resolved,
+                    "{}: typed shape vs the resolved step's",
+                    op.name()
+                );
+                compared += usize::from(typed.is_some());
+            }
+        }
+        assert!(compared > 40, "only {compared} shapes compared");
     }
 
     #[test]

@@ -1703,7 +1703,7 @@ class Pipeline(_OpsMixin):
             if width is None or height is None:
                 msg = "Both width and height must be specified"
                 raise ValueError(msg)
-            # H/W come from `GeometryOp::Rasterize::infer_shape` and the
+            # H/W come from `GeometryOp::Rasterize`'s `shape` and the
             # single-channel output from the op's `fixed:1` channel rule; none
             # of it is re-derived here.
             return self._rasterize(

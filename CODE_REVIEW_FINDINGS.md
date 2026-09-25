@@ -1005,7 +1005,14 @@ matrix; the entries here track status only.
   `{"$slot": n}` into each expression kwarg, and `GeomParams` checks the
   derived slots against the inputs. The name map and its readers are deleted.
 
-### CR-49 — Plan-time shapes are inferred by probing four magic values · `Open` · Low (design)
+### CR-49 — Plan-time shapes are inferred by probing four magic values · `Fixed` · Low (design)
+
+> **Fixed** (typed-op P9): `Op::shape() -> OpShape` is the one shape
+> authority, evaluated symbolically by the planner from each typed op's
+> `OpDef::shape`; the probe, `unknown_dim_probe` and `PRESERVED_DIM` are
+> deleted. The probe had been planning unknown images as square (see the
+> CHANGELOG's Fixed entry). `ParamCtx::probe` survives as
+> `ParamCtx::planning`, one placeholder for the value-independent rules.
 
 - **Location:** `lib.rs` `op_infer_shape` (probes 7, 13, 90, 180),
   `unknown_dim_probe`, `PRESERVED_DIM`, `ParamCtx::probe`.

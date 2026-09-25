@@ -8,6 +8,7 @@ use view_buffer::{ImageOp, ImageOpKind, ViewDto, ViewOp};
 use super::{OpDef, Param};
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
+use view_buffer::ops::OpShape;
 
 /// Extract a single channel from a multi-channel image: a 2D [H, W] buffer
 /// from a [H, W, C] input.
@@ -23,6 +24,10 @@ pub struct ChannelSelect {
 }
 
 impl OpDef for ChannelSelect {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::DropChannelAxis)
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let ChannelSelect { index } = self;
         Ok(GraphStep::Buffer(ViewDto::View(ViewOp::ChannelSelect {
@@ -45,6 +50,10 @@ pub struct ChannelSwap {
 }
 
 impl OpDef for ChannelSwap {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Preserve)
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let ChannelSwap { order } = self;
         let order = order

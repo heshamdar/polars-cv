@@ -265,8 +265,8 @@ fn float_to_i64(v: f64) -> Option<i64> {
 #[derive(Default)]
 pub struct ParamCtx<'a> {
     cols: Vec<ParamCol<'a>>,
-    /// The placeholder value of a plan-time probe; `None` for execution.
-    probe: Option<i64>,
+    /// Resolving an op at plan time, for its rules (see [`planning`](Self::planning)).
+    planning: bool,
     null_policy: NullParamPolicy,
     /// Set by [`ParamCol::on_null`] when a null was read under
     /// [`NullParamPolicy::Null`]. `Cell` because resolvers take `&ParamCtx`;
@@ -284,50 +284,33 @@ impl<'a> ParamCtx<'a> {
     pub fn with_null_policy(inputs: &'a [Series], policy: NullParamPolicy) -> Self {
         ParamCtx {
             cols: inputs.iter().map(ParamCol::new).collect(),
-            probe: None,
+            planning: false,
             null_policy: policy,
             null_hit: Cell::new(false),
         }
     }
 
-    /// Build a *plan-time probe* context (see `lib.rs::infer_shape`).
-    ///
-    /// Shape probing binds every expression parameter to an integer
-    /// placeholder so it can detect which output dimensions depend on a
-    /// per-row value. A dynamic enum or flag parameter cannot consume an
-    /// integer, so accessors ask [`is_probe`](Self::is_probe) and substitute
-    /// the parameter's documented default instead.
-    ///
-    /// That substitution is sound only because a parameter may become per-row
-    /// exclusively when it has **no effect on output shape, rank, or dtype**
-    /// (a `Literal<T>` field cannot hold a slot), so which variant probing picks cannot change the
-    /// inferred schema. Signalling this explicitly — rather than inferring it
-    /// from the placeholder's dtype — keeps real execution strict: a user who
-    /// routes an integer column into an enum parameter still gets an error.
-    ///
-    /// `value` is the placeholder every column in `inputs` holds; see
-    /// [`probe_value`](Self::probe_value).
-    pub fn probe(inputs: &'a [Series], value: i64) -> Self {
+    /// A *plan-time* context: an op is resolved without any row to read its
+    /// rules (domain, dtype, rank, channels, identity), which is sound because
+    /// a parameter may be per-row exclusively when it has **no effect on
+    /// output shape, rank, or dtype** (a `Literal<T>` field cannot hold a
+    /// slot). Every per-row parameter therefore resolves to
+    /// [`WireScalar::planning_value`](view_buffer::naming::WireScalar::planning_value).
+    /// The shape is not read this way: it is symbolic ([`OpDef::shape`](crate::ops::OpDef::shape)).
+    pub fn planning() -> Self {
         ParamCtx {
-            cols: inputs.iter().map(ParamCol::new).collect(),
-            probe: Some(value),
-            // Probe placeholders are synthesised non-null integers, so the
-            // policy is unreachable here; `Raise` keeps probing strict.
+            cols: Vec::new(),
+            planning: true,
+            // No column is read, so the policy is unreachable; `Raise` keeps
+            // planning strict.
             null_policy: NullParamPolicy::Raise,
             null_hit: Cell::new(false),
         }
     }
 
-    /// Whether this is a plan-time shape probe rather than real execution.
-    pub fn is_probe(&self) -> bool {
-        self.probe.is_some()
-    }
-
-    /// The probe's placeholder value, for a dimension that comes from outside
-    /// the op (`rasterize(shape=<node>)`): reading it makes that dimension
-    /// vary across probes, which is how the planner learns it is unknown.
-    pub fn probe_value(&self) -> Option<i64> {
-        self.probe
+    /// Whether this resolves an op at plan time rather than for a row.
+    pub fn is_planning(&self) -> bool {
+        self.planning
     }
 
     /// The policy this context applies to null parameter values.

@@ -9,6 +9,7 @@ use view_buffer::ViewDto;
 use super::{OpDef, Param};
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
+use view_buffer::ops::OpShape;
 
 /// Apply generic 2D convolution with an arbitrary kernel.
 ///
@@ -41,6 +42,10 @@ pub struct Convolve2d {
 }
 
 impl OpDef for Convolve2d {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Preserve)
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let Convolve2d {
             kernel,
@@ -57,9 +62,8 @@ impl OpDef for Convolve2d {
                 k as usize
             }
             // A per-row `ksize` is only known per row, but the kernel length
-            // is structural and checkable now: it fixes the side. Under a
-            // plan-time probe the slot holds a placeholder, so the side comes
-            // from the kernel.
+            // is structural and checkable now: it fixes the side. At plan time
+            // there is no row to read, so the side comes from the kernel.
             Param::Slot(_) => {
                 let side = len.isqrt();
                 if side * side != len || side % 2 == 0 {
@@ -67,7 +71,7 @@ impl OpDef for Convolve2d {
                         "convolve2d kernel length {} must be the square of an odd \
                          number (9 for 3x3, 25 for 5x5, ...)", len);
                 }
-                if ctx.is_probe() {
+                if ctx.is_planning() {
                     side
                 } else {
                     ksize.resolve(row, ctx)? as usize

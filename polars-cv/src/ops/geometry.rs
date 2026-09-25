@@ -11,6 +11,7 @@ use view_buffer::GeometryOp;
 use super::{FieldType, NodeRef, OpDef, Param, TypeDesc};
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
+use view_buffer::ops::{Op as _, OpShape, Sym};
 
 fn geometry(op: GeometryOp) -> PolarsResult<GraphStep> {
     Ok(GraphStep::Geometry(op))
@@ -45,6 +46,10 @@ pub struct ExtractContours {
 }
 
 impl OpDef for ExtractContours {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Dynamic)
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let ExtractContours {
             mode,
@@ -72,6 +77,10 @@ pub struct ContourArea {
 }
 
 impl OpDef for ContourArea {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Fixed(vec![Sym::Known(1)]))
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let ContourArea { signed } = self;
         geometry(GeometryOp::Area {
@@ -92,6 +101,10 @@ macro_rules! contour_measures {
         pub struct $ty {}
 
         impl OpDef for $ty {
+            fn shape(&self) -> Option<OpShape> {
+                Some(GeometryOp::$variant.shape())
+            }
+
             fn resolve(&self, _row: usize, _ctx: &ParamCtx) -> PolarsResult<GraphStep> {
                 let $ty {} = self;
                 geometry(GeometryOp::$variant)
@@ -125,6 +138,10 @@ pub struct ContourTranslate {
 }
 
 impl OpDef for ContourTranslate {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Preserve)
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let ContourTranslate { dx, dy } = self;
         geometry(GeometryOp::Translate {
@@ -160,6 +177,10 @@ pub struct ContourScale {
 }
 
 impl OpDef for ContourScale {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Preserve)
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let ContourScale { sx, sy, origin } = self;
         geometry(GeometryOp::Scale {
@@ -182,6 +203,10 @@ pub struct ContourSimplify {
 }
 
 impl OpDef for ContourSimplify {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Preserve)
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let ContourSimplify { tolerance } = self;
         geometry(GeometryOp::Simplify {
@@ -280,6 +305,15 @@ impl Rasterize {
 }
 
 impl OpDef for Rasterize {
+    fn shape(&self) -> Option<OpShape> {
+        let (height, width) = match &self.size {
+            RasterSize::Fixed([height, width]) => (height.size(), width.size()),
+            // Another node's canvas: known only once that node has run.
+            RasterSize::FromNode(_) => (Sym::PerRow, Sym::PerRow),
+        };
+        Some(OpShape::Fixed(vec![height, width, Sym::Known(1)]))
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let Rasterize {
             size,
@@ -290,21 +324,14 @@ impl OpDef for Rasterize {
             RasterSize::Fixed([height, width]) => {
                 (width.resolve(row, ctx)?, height.resolve(row, ctx)?)
             }
-            // A plan-time probe reads its placeholder, so the dimensions vary
-            // across probes and the planner reports them unknown; the
-            // builder's canvas assertion then supplies what it knows.
-            RasterSize::FromNode(_) => match ctx.probe_value() {
-                Some(probe) => {
-                    let dim = u32::try_from(probe).map_err(
-                        |_| polars_err!(ComputeError: "probe value {} is not a dimension", probe),
-                    )?;
-                    (dim, dim)
-                }
-                None => polars_bail!(ComputeError:
-                    "rasterize(shape=<node>) takes its size from another node's \
-                     buffer, which only the graph executor has; this spec reached \
-                     a path that resolves it without one"),
-            },
+            // At plan time any canvas stands in: the size is symbolic
+            // (`shape`), and the rules this resolution is read for do not
+            // depend on it.
+            RasterSize::FromNode(_) if ctx.is_planning() => (1, 1),
+            RasterSize::FromNode(_) => polars_bail!(ComputeError:
+                "rasterize(shape=<node>) takes its size from another node's \
+                 buffer, which only the graph executor has; this spec reached \
+                 a path that resolves it without one"),
         };
         Ok(GraphStep::Geometry(
             self.with_size(width, height, row, ctx)?,

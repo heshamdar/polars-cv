@@ -499,9 +499,9 @@ class TestPerRowAffineExecution:
 
 @plugin_required
 class TestAffineRankContract:
-    """An affine warp's output rank must match its declared `infer_shape`.
+    """An affine warp's output rank must match its declared `shape`.
 
-    `ComputeOp::Affine::infer_shape` replaces H and W and leaves the rest of the
+    `ComputeOp::Affine`'s `shape` replaces H and W and leaves the rest of the
     input shape alone, so a `[H, W, 1]` input must stay 3-D. The kernel used to
     collapse any single-channel result to `[H, W]`, which the runtime rank guard
     only caught once plan-time rank folding started reporting a rank at all for

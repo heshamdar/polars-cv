@@ -421,9 +421,9 @@ class TestListParamElementsAcceptExpressions:
 class TestEnumParamsAcceptExpressions:
     """Enums with no shape/rank/dtype effect resolve per row.
 
-    Plan-time shape probing binds expression params to integer placeholders, so
-    these also exercise ``ParamCtx::probe`` substituting the default — if that
-    path were broken, building the pipeline would fail before execution.
+    Plan-time resolution (for an op's rules) gives each expression param a
+    placeholder, so these also exercise ``ParamCtx::planning`` — if that path
+    were broken, building the pipeline would fail before execution.
     """
 
     @pytest.fixture()

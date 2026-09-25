@@ -73,7 +73,7 @@ macro_rules! named_variants {
             fn spellings() -> Vec<&'static str> {
                 $crate::naming::names(Self::NAMED)
             }
-            fn probe_value() -> Self {
+            fn planning_value() -> Self {
                 Self::NAMED[0].1
             }
         }
@@ -213,8 +213,9 @@ pub trait WireScalar: Sized + Copy + PartialEq + core::fmt::Debug {
     fn to_wire(self) -> WireValue<'static>;
     /// Every accepted spelling, for a named enum; empty otherwise.
     fn spellings() -> Vec<&'static str>;
-    /// A valid value to stand in for a per-row one under a plan-time probe.
-    fn probe_value() -> Self;
+    /// A valid value to stand in for a per-row one when an op is resolved at
+    /// plan time for its rules, which no per-row-eligible value can change.
+    fn planning_value() -> Self;
 }
 
 fn describe_wire(value: WireValue<'_>) -> String {
@@ -251,8 +252,8 @@ macro_rules! wire_int {
             fn spellings() -> Vec<&'static str> {
                 Vec::new()
             }
-            fn probe_value() -> Self {
-                0
+            fn planning_value() -> Self {
+                1
             }
         }
     )+};
@@ -278,8 +279,8 @@ macro_rules! wire_float {
             fn spellings() -> Vec<&'static str> {
                 Vec::new()
             }
-            fn probe_value() -> Self {
-                0.0
+            fn planning_value() -> Self {
+                1.0
             }
         }
     )+};
@@ -301,7 +302,7 @@ impl WireScalar for bool {
     fn spellings() -> Vec<&'static str> {
         Vec::new()
     }
-    fn probe_value() -> Self {
+    fn planning_value() -> Self {
         false
     }
 }

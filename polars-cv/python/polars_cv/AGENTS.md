@@ -190,13 +190,12 @@ rank, or dtype**. Everything else follows from that one invariant.
    `mode`/`method`, label_reduce `reduction`/`region_mode`,
    `apply_mask(invert)`, `area(signed)`, `convolve2d(normalize)`.
 
-**Plan-time probing is why enums need care.** `infer_shape` (`lib.rs`) runs
-each op four times with every expression param bound to an *integer* probe. A
-dynamic enum cannot read an integer, so `ParamCtx::probe` marks the context and
-the enum/bool accessors substitute their default. That is sound only because of
-the rule above — the variant probing picks cannot change the inferred schema.
-Signalling it explicitly (rather than sniffing the column's dtype) keeps real
-execution strict: routing an integer column into an enum param still errors.
+**Plan-time resolution is why the rule matters.** The planner resolves each
+op once, with no row, to read its rules (domain, dtype, rank, channels,
+identity): `ParamCtx::planning` hands every per-row parameter a placeholder
+(`WireScalar::planning_value`). That is sound only because of the rule above —
+no per-row-eligible value can change those rules. Shapes are not read this
+way: they are symbolic (below), so no placeholder ever reaches a size.
 
 **Structural parameters are literal-only and enforced on both sides.** Axis
 lists, reduction `axis`, `perceptual_hash(hash_size)`, `reshape` arity,
@@ -276,8 +275,8 @@ the same mixin unless `.cv` genuinely honours it.
    per-row expressions on the clone rather than the receiver. `_append_op`
    then hands off to `_push_op`, which checks the input domain and applies
    the whole plan-time effect in one `plan_step` call: the schema fold
-   (domain/dtype/ndim) and the shape hints (`infer_shape` for H/W, the channel
-   rule for C).
+   (domain/dtype/ndim) and the shape hints (the op's symbolic `shape` for
+   H/W, the channel rule for C).
 
    **Do not touch `_ops` directly.** `_push_op` is the only function permitted
    to mutate it, enforced by `test_op_append_is_structurally_exclusive` in
@@ -326,28 +325,30 @@ them. `shear()` and `rotate_and_scale()` build their matrix (the literal
 rotation matrix via the `rotation_matrix_2d` FFI) and delegate to
 `warp_affine()`; `_to_spec_dict()` emits ops verbatim.
 
-### Shape Hints (single authority: view-buffer `infer_shape`)
+### Shape Hints (single authority: view-buffer `OpShape`)
 
-No per-dimension geometry is derived in Python. `plan_step` runs the op's
-view-buffer `infer_shape` (through the probing `infer_shape` in `lib.rs`), the
-same authority execution uses, so the tracked H/W
-cannot disagree with what the op produces.
+No per-dimension geometry is derived in Python. Every op's shape arithmetic is
+one view-buffer `OpShape`, which execution evaluates on known sizes and
+`plan_step` evaluates symbolically: each typed op builds its `OpShape` from its
+own fields (`OpDef::shape`), a per-row field as `Sym::PerRow` and an unknown
+input size as `Dim::Input(k)`. So the tracked H/W cannot disagree with what
+the op produces, and no placeholder value stands in for a per-row one
+(`typed_shape_is_the_resolved_steps` holds the typed shape to the engine op's).
 
 Not every step *has* an inferable shape: axis reductions, histograms, channel
-merge and the binary ops are graph-level steps `infer_shape` rejects. For
-those the H/W hints are **invalidated**, not carried forward — several of them
-do change H/W, and keeping the pre-op values is how a pipeline came to publish
-`[100, 200, 2]` for data that executes as `[200, 3, 2]`. Unknown is always safe:
-the output publishes no shape and a typed sink asks for an explicit shape. Unknowns
-propagate automatically: an unknown input dim or a per-row expression param
-yields a `None` output dim. This covers every op uniformly — including rotation
-(static 90/270 swap, static-angle expand bounding box, and expression-angle
-"unknown", all computed by the Rust `RotateAffine`/`Rotate90` `infer_shape`).
+merge and the binary ops are graph-level steps with no `OpShape`. For those
+the H/W hints are **invalidated**, not carried forward — several of them do
+change H/W, and keeping the pre-op values is how a pipeline came to publish
+`[100, 200, 2]` for data that executes as `[200, 3, 2]`. Unknown is always
+safe: the output publishes no shape and a typed sink asks for an explicit
+shape. A per-row parameter leaves unknown exactly the axes it decides
+(`resize(height=pl.col("h"), width=100)` plans `[?, 100]`); a per-row rotation
+angle is known only for a square input.
 Channels come from the channel rule and rank from `plan::fold`; `plan_step`
 applies all three and clips the hints to the output rank.
 
-An unknown input rank normally means "do not ask": `infer_shape` indexes the
-input shape, so a fabricated one publishes a fabricated result. The exception is
+An unknown input rank normally means "do not ask": there is no shape to reason
+about, and a fabricated one publishes a fabricated result. The exception is
 a step that *builds* a buffer out of a non-buffer domain — `input_domains`
 excludes buffer, `output_domain` is buffer — whose output geometry comes from
 its own params and reads no input at all. `rasterize` is the case, and

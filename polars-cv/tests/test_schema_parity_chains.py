@@ -4,7 +4,7 @@ A single-op sweep cannot reach these. What is checked here:
 
 * chains that stack an H/W change on a rank change on a channel change on a
   dtype change, asserted after every prefix as well as at the end;
-* the steps ``infer_shape`` refuses, which wipe the H/W hints — the
+* the steps with no ``OpShape`` (graph-level), which wipe the H/W hints — the
   requirement there is that a shape-dependent sink is *rejected while
   planning*, never accepted and then wrong;
 * every binary op, with the operand axis read from Rust's ``BinaryOp::NAMED``
@@ -147,7 +147,7 @@ def test_grayscale_is_fixed_one_channel_and_drops_alpha(channels: int) -> None:
 # Hint-invalidating steps
 # ---------------------------------------------------------------------------
 
-#: Steps ``infer_shape`` rejects (no inferable shape), which wipe the H/W hints.
+#: Steps with no ``OpShape`` (graph-level), which wipe the H/W hints.
 #: After one of these the array sink has no shape to plan and must refuse.
 _HINT_INVALIDATING = {
     "reduce_sum": lambda p: p.reduce_sum(),

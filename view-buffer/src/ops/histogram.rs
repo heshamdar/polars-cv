@@ -5,7 +5,7 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule, ViewType};
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
@@ -320,17 +320,18 @@ impl Op for HistogramOp {
         "Histogram"
     }
 
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
+    fn shape(&self) -> OpShape {
         let num_bins = if let Some(ref edges) = self.edges {
             edges.len().saturating_sub(1)
         } else {
             self.bins
         };
+        let fixed = |dims: &[usize]| OpShape::Fixed(dims.iter().map(|&n| Sym::Known(n)).collect());
         match self.output {
-            HistogramOutput::Counts | HistogramOutput::Normalized => vec![num_bins],
-            HistogramOutput::Quantized => inputs[0].to_vec(),
-            HistogramOutput::Edges => vec![num_bins + 1],
-            HistogramOutput::Buckets => vec![num_bins, 4],
+            HistogramOutput::Counts | HistogramOutput::Normalized => fixed(&[num_bins]),
+            HistogramOutput::Quantized => OpShape::Preserve,
+            HistogramOutput::Edges => fixed(&[num_bins + 1]),
+            HistogramOutput::Buckets => fixed(&[num_bins, 4]),
         }
     }
 

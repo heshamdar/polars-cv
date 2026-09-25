@@ -8,6 +8,7 @@ use view_buffer::ops::phash::{HashAlgorithm, PerceptualHashOp};
 use super::{Literal, OpDef};
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
+use view_buffer::ops::OpShape;
 
 /// Compute a perceptual hash fingerprint.
 ///
@@ -26,6 +27,10 @@ pub struct PerceptualHash {
 }
 
 impl OpDef for PerceptualHash {
+    fn shape(&self) -> Option<OpShape> {
+        None
+    }
+
     fn resolve(&self, _row: usize, _ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let PerceptualHash {
             algorithm,

@@ -2,7 +2,7 @@
 //!
 //! [`plan_step`] takes the pipeline's tracked state and one serialized op and
 //! returns the state after it — the input-domain check, the schema fold
-//! (domain, dtype, rank), the H/W the op's `infer_shape` gives, its channel
+//! (domain, dtype, rank), the H/W the op's symbolic `shape` gives, its channel
 //! rule, and the clipping of every hint to the output rank. These used to be
 //! four FFI calls sequenced by eight Python helpers, any of which a caller
 //! could skip; one call cannot be half-applied.
@@ -15,7 +15,7 @@
 use pyo3::prelude::*;
 
 use crate::py_value_error;
-use view_buffer::ops::{Domain, HistogramOutput, OutputRankRule};
+use view_buffer::ops::{Dim, Domain, HistogramOutput, OutputRankRule};
 
 use crate::graph::step::GraphStep;
 
@@ -195,23 +195,18 @@ pub(crate) fn step(
         (_, None) => single_input_dtype(&step, &state.dtype)?,
     };
 
-    // H/W: from the op's `infer_shape` over the shape it consumes.
+    // H/W: the op's own shape over the shape it consumes, symbolically — a
+    // per-row parameter or an unknown input size leaves its axis unknown.
     let mut dims: [Option<Option<i64>>; 3] = [None; 3];
     if let Some(input) = input_dims(&step, state) {
-        match crate::infer_shape(op_json, &input)? {
-            // No inferable shape (an axis reduction, a histogram, a binary
-            // op): unknown, never the stale pre-op values.
-            None => {
-                dims[0] = Some(None);
-                dims[1] = Some(None);
-            }
-            Some(out) => {
-                // A negative dim is "the unknown input axis, unchanged".
-                let size = |i: usize| out.get(i).copied().flatten().filter(|d| *d >= 0);
-                dims[0] = Some(size(0));
-                dims[1] = Some(size(1));
-            }
-        }
+        check_rank(&step, &input)?;
+        let out = op.shape().and_then(|shape| shape.dims(&[&input]));
+        let size = |axis: usize| {
+            let dim = out.as_ref().and_then(|out| out.get(axis).copied());
+            dim.and_then(Dim::known).and_then(|n| i64::try_from(n).ok())
+        };
+        dims[0] = Some(size(0));
+        dims[1] = Some(size(1));
     }
     // Channels: the op's channel rule over the incoming count.
     let channels_in = state.dims[2].and_then(|c| usize::try_from(c).ok());
@@ -434,17 +429,18 @@ pub(crate) fn plan_sink(
     check_sink(&sink, &state, source.as_ref(), alias).map_err(py_value_error)
 }
 
-/// The input shape to hand `infer_shape`, or `None` to not ask.
-///
-/// Unknown input rank normally means "do not ask" — `infer_shape` indexes its
-/// input, so a fabricated shape would publish a fabricated result. A step that
-/// *builds* a buffer from another domain (`rasterize`) is the exception: it
-/// consumes no buffer, so there is no input shape to be unknown about.
-fn input_dims(step: &GraphStep, state: &State) -> Option<Vec<Option<i64>>> {
+/// The shape an op consumes, symbolically: each known size, and `Input(k)`
+/// for an unknown one. `None` when the rank is unknown, so there is no shape
+/// to reason about — except for a step that *builds* a buffer from another
+/// domain (`rasterize`), which consumes no buffer at all.
+pub(crate) fn input_dims(step: &GraphStep, state: &State) -> Option<Vec<Dim>> {
     match state.ndim {
         Some(n) if n >= 1 => Some(
             (0..n)
-                .map(|i| state.dims.get(i).copied().flatten())
+                .map(|axis| match state.dims.get(axis).copied().flatten() {
+                    Some(size) => usize::try_from(size).map_or(Dim::Unknown, Dim::Known),
+                    None => Dim::Input(axis),
+                })
                 .collect(),
         ),
         _ if !step.input_domains().contains(&Domain::Buffer)
@@ -453,6 +449,26 @@ fn input_dims(step: &GraphStep, state: &State) -> Option<Vec<Option<i64>>> {
             Some(Vec::new())
         }
         _ => None,
+    }
+}
+
+/// The op's own `validate`, for the verdicts that depend on the input rank
+/// alone (a channel op on a rank-2 buffer): those are refused while the
+/// pipeline is built. Sizes the plan does not know are passed as 1, which no
+/// rank-level verdict reads; a size-level failure stays a row error.
+fn check_rank(step: &GraphStep, input: &[Dim]) -> Result<(), String> {
+    let op: &dyn view_buffer::Op = match step {
+        GraphStep::Buffer(dto) => dto.as_op(),
+        GraphStep::Geometry(geo) => geo,
+        _ => return Ok(()),
+    };
+    if input.is_empty() {
+        return Ok(());
+    }
+    let shape: Vec<usize> = input.iter().map(|d| d.known().unwrap_or(1)).collect();
+    match op.validate(&[shape.as_slice()], &[]) {
+        Err(e) if e.depends_only_on_rank() => Err(e.to_string()),
+        _ => Ok(()),
     }
 }
 
@@ -711,49 +727,39 @@ mod tests {
         assert_eq!(plan(contour(json!("n0"))).3, [None, None, Some(1)]);
     }
 
-    /// `infer_shape` (the probing shape authority `step` reads): literal
-    /// params and known dims give exact dims, a per-row param or unknown dim
-    /// gives `None`, and an unknown input axis carried through reads `-1`.
+    /// The H/W `step` plans from the op's symbolic shape: literal params and
+    /// known sizes give exact dims, and a per-row param or unknown size leaves
+    /// only the axes it decides unknown — no placeholder value is involved.
     #[test]
-    fn infer_shape_propagates_known_and_unknown_dims() {
-        let shape = |op: serde_json::Value, dims: &[Option<i64>]| {
-            crate::infer_shape(&op.to_string(), dims).unwrap()
+    fn shapes_are_planned_symbolically() {
+        let hw = |op: serde_json::Value, s: &State| {
+            let out = run(op, s, None).unwrap();
+            (out.dims[0].unwrap(), out.dims[1].unwrap())
         };
+        let unknown = state("buffer", "u8", Some(3), [None, None, Some(3)]);
         let resize = |h: serde_json::Value| json!({"op": "resize", "height": h, "width": 100, "filter": "bilinear"});
-        assert_eq!(
-            shape(resize(json!(224)), &[None, None, None]),
-            Some(vec![Some(224), Some(100), Some(-1)])
-        );
-        assert_eq!(
-            shape(resize(json!({"$slot": 0})), &[None, None, Some(3)]),
-            Some(vec![None, Some(100), Some(3)])
-        );
+        assert_eq!(hw(resize(json!(224)), &unknown), (Some(224), Some(100)));
+        assert_eq!(hw(resize(json!({"$slot": 0})), &unknown), (None, Some(100)));
         let pad = json!({"op": "pad", "top": 1, "bottom": 2, "left": 3, "right": 4, "value": 0.0, "mode": "constant"});
-        assert_eq!(
-            shape(pad, &[Some(10), Some(10), Some(3)]),
-            Some(vec![Some(13), Some(17), Some(3)])
-        );
+        let square = state("buffer", "u8", Some(3), [Some(10), Some(10), Some(3)]);
+        assert_eq!(hw(pad, &square), (Some(13), Some(17)));
         let rotate = |angle: serde_json::Value| json!({"op": "rotate", "angle": angle, "expand": false, "interpolation": "nearest", "border_value": 0.0});
-        let image = [Some(100), Some(50), Some(3)];
-        // A literal 90 swaps H/W; a per-row angle might, so H/W are unknown.
+        // A literal 90 swaps H/W; a per-row angle might, so H/W are unknown —
+        // unless the image is square, where a swap changes nothing.
+        assert_eq!(hw(rotate(json!(90.0)), &image()), (Some(50), Some(100)));
+        assert_eq!(hw(rotate(json!({"$slot": 0})), &image()), (None, None));
         assert_eq!(
-            shape(rotate(json!(90.0)), &image),
-            Some(vec![Some(50), Some(100), Some(3)])
-        );
-        assert_eq!(
-            shape(rotate(json!({"$slot": 0})), &image),
-            Some(vec![None, None, Some(3)])
+            hw(rotate(json!({"$slot": 0})), &square),
+            (Some(10), Some(10))
         );
         // A contour input has no shape: the canvas is rasterize's own, or
         // unknown when it comes from another node.
+        let contours = State::new("contour", "auto", None);
         let rasterize = |size: serde_json::Value| json!({"op": "rasterize", "size": size, "fill_value": 255, "background": 0});
         assert_eq!(
-            shape(rasterize(json!([10, 12])), &[]),
-            Some(vec![Some(10), Some(12), Some(1)])
+            hw(rasterize(json!([10, 12])), &contours),
+            (Some(10), Some(12))
         );
-        assert_eq!(
-            shape(rasterize(json!("n0")), &[]),
-            Some(vec![None, None, Some(1)])
-        );
+        assert_eq!(hw(rasterize(json!("n0")), &contours), (None, None));
     }
 }

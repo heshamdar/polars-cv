@@ -234,6 +234,28 @@ impl GraphStep {
         }
     }
 
+    /// How the step's output shape follows from its input, for the buffer and
+    /// geometry steps that have one; `None` for a graph-level step (binary,
+    /// reduction, histogram, …), whose output the planner does not size. The
+    /// engine's side of `typed_shape_is_the_resolved_steps`: the planner reads
+    /// the typed op's symbolic `OpDef::shape`, never a resolved step's.
+    #[cfg(test)]
+    pub fn shape(&self) -> Option<view_buffer::ops::OpShape> {
+        use view_buffer::ops::Op;
+        match self {
+            GraphStep::Buffer(dto) => Some(dto.as_op().shape()),
+            GraphStep::Geometry(op) => Some(op.shape()),
+            GraphStep::Binary { .. }
+            | GraphStep::ApplyMask { .. }
+            | GraphStep::ChannelMerge { .. }
+            | GraphStep::Reduction(_)
+            | GraphStep::Histogram(_)
+            | GraphStep::PerceptualHash(_)
+            | GraphStep::ExtractShape
+            | GraphStep::LabelReduce { .. } => None,
+        }
+    }
+
     /// Whether this step is a hoistable H/W spatial window (a crop/ROI) — the
     /// plan-time authority the spatial-window pushdown reads.
     pub fn is_spatial_window(&self) -> bool {

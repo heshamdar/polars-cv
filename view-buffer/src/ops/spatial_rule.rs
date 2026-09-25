@@ -36,7 +36,7 @@
 //! # No independent authority — how this is kept honest
 //!
 //! Unlike the rank/channel/dtype rules, a spatial dependency has *no* second
-//! source of truth (no `infer_shape` analog) to parity-check against: it is a
+//! source of truth (no `shape` analog) to parity-check against: it is a
 //! new primary declaration. Its correctness is therefore pinned by (1) the
 //! compiler — [`Op::spatial_dependency`](crate::ops::Op::spatial_dependency) is
 //! required with no default, *and every impl matches its enum exhaustively
@@ -140,7 +140,7 @@ impl SpatialDependency {
 #[cfg(test)]
 mod tests {
     //! Expected-value coverage: pin the declared spatial dependency of each op
-    //! enumerated here. There is no `infer_shape`-style authority to
+    //! enumerated here. There is no `shape`-style authority to
     //! parity-check against (see the module docs), so these hand-written
     //! expectations — together with the compiler's requiredness and the
     //! now-exhaustive matches in every `spatial_dependency` impl (no blanket
