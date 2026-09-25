@@ -1572,7 +1572,7 @@ fn clamp_for_dtype(v: f64, dtype: DType) -> f64 {
 #[inline]
 fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
     match op.kind {
-        ImageOpKind::Threshold(thresh) => threshold_generic(work_buf, thresh),
+        ImageOpKind::Threshold { value } => threshold_generic(work_buf, value),
         ImageOpKind::Grayscale => grayscale_strided(work_buf),
         ImageOpKind::Resize {
             width,
@@ -1656,7 +1656,10 @@ fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
                 value,
             )
         }
-        ImageOpKind::ChannelSwap { ref order } => apply_channel_swap(&work_buf, order),
+        ImageOpKind::ChannelSwap { ref order } => {
+            let order: Vec<usize> = order.iter().map(|&i| i as usize).collect();
+            apply_channel_swap(&work_buf, &order)
+        }
     }
 }
 

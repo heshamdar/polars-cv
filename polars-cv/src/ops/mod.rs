@@ -25,7 +25,6 @@ pub mod declare;
 pub mod filter;
 pub mod geometry;
 pub mod histogram;
-pub mod image;
 pub mod label;
 pub mod param;
 pub mod phash;
@@ -37,20 +36,8 @@ use serde::Serialize;
 
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
-pub use param::{ColumnRef, FieldType, Literal, NodeRef, Param, TypeDesc};
-
-/// One field of an op, as the catalogue describes it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct FieldDesc {
-    pub name: &'static str,
-    pub doc: &'static str,
-    /// The Python signature default; absent means required (or `None` for an
-    /// optional field).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default: Option<serde_json::Value>,
-    #[serde(rename = "type")]
-    pub ty: TypeDesc,
-}
+pub use param::{ColumnRef, FieldType, Literal, NodeRef, Param, ParamExt, TypeDesc};
+pub use view_buffer::mode::{FieldDesc, OpDesc};
 
 /// What `#[derive(Op)]` emits for an op struct.
 pub trait OpFields {
@@ -82,53 +69,54 @@ pub trait OpDef: OpFields {
     fn shape(&self) -> Option<view_buffer::ops::OpShape>;
 }
 
-/// One op in the catalogue.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct OpDesc {
-    /// The wire name.
-    pub name: &'static str,
-    /// The Python method name.
-    pub python: &'static str,
-    pub visibility: &'static str,
-    pub doc: &'static str,
-    pub fields: Vec<FieldDesc>,
-}
-
-impl OpDesc {
-    pub(crate) fn of<T: OpFields>(name: &'static str) -> Self {
-        OpDesc {
-            name,
-            python: T::PYTHON_NAME.unwrap_or(name),
-            visibility: T::VISIBILITY,
-            doc: T::DOC,
-            fields: T::fields(),
-        }
+/// The catalogue entry of the op struct `T`, registered as `name`.
+pub(crate) fn op_desc<T: OpFields>(name: &'static str) -> OpDesc {
+    OpDesc {
+        name,
+        python: T::PYTHON_NAME.unwrap_or(name),
+        visibility: T::VISIBILITY,
+        doc: T::DOC,
+        fields: T::fields(),
     }
 }
 
-/// Register the typed ops: wire name, `TypedOp` variant, struct, and a valid
+/// Register the typed ops.
+///
+/// `families` are engine enums that *are* typed ops (`#[derive(Ops)]`): each
+/// is one `TypedOp` variant holding its `Wire` form, with the wrap that makes
+/// its executed form a `GraphStep`. The remaining lines are per-op structs
+/// still defined here: wire name, `TypedOp` variant, struct, and a valid
 /// sample of its wire fields.
 ///
 /// Registering is the whole act: the line is what makes the op
 /// deserializable, resolvable, described and — through the sample — covered by
 /// the registry-driven tests, so there is no second list.
 macro_rules! typed_ops {
-    ($($wire:literal => $variant:ident($ty:ty) $sample:tt),+ $(,)?) => {
+    (
+        families { $($family:ident($fty:ty) => $wrap:expr;)* }
+        $($wire:literal => $variant:ident($ty:ty) $sample:tt),+ $(,)?
+    ) => {
         /// A typed operation (see the module docs).
         #[derive(Debug, Clone, PartialEq)]
         pub enum TypedOp {
+            $($family(<$fty as Family>::Wire),)*
             $($variant($ty)),+
         }
 
         impl TypedOp {
-            /// Every typed op's wire name, sorted (the tests' view of the
-            /// registry; the wire dispatches through `from_fields`).
+            /// Every typed op's wire name, sorted.
             #[cfg(test)]
-            pub const NAMES: &'static [&'static str] = &[$($wire),+];
+            pub fn names() -> Vec<&'static str> {
+                let mut names: Vec<&'static str> = vec![$($wire),+];
+                $(names.extend_from_slice(<<$fty as Family>::Wire>::WIRE_NAMES);)*
+                names.sort_unstable();
+                names
+            }
 
             /// The op's wire name.
             pub fn name(&self) -> &'static str {
                 match self {
+                    $(TypedOp::$family(op) => op.wire_name().expect("a typed op has a wire name"),)*
                     $(TypedOp::$variant(_) => $wire),+
                 }
             }
@@ -139,6 +127,12 @@ macro_rules! typed_ops {
                 name: &str,
                 fields: serde_json::Value,
             ) -> Option<Result<Self, String>> {
+                $(
+                    if <<$fty as Family>::Wire>::WIRE_NAMES.contains(&name) {
+                        return <<$fty as Family>::Wire>::from_wire(name, fields)
+                            .map(|r| r.map(TypedOp::$family));
+                    }
+                )*
                 match name {
                     $($wire => Some(
                         serde_path_to_error::deserialize::<_, $ty>(fields)
@@ -152,14 +146,20 @@ macro_rules! typed_ops {
             /// The op's fields as a wire object (without `"op"`).
             pub fn fields_json(&self) -> serde_json::Value {
                 match self {
-                    $(TypedOp::$variant(op) => serde_json::to_value(op),)+
+                    $(TypedOp::$family(op) => serde_json::Value::Object(
+                        op.wire_fields().expect("a typed op has wire fields"),
+                    ),)*
+                    $(TypedOp::$variant(op) => serde_json::to_value(op)
+                        .expect("an op struct serializes to a JSON object"),)+
                 }
-                .expect("an op struct serializes to a JSON object")
             }
 
-            /// See [`OpDef::resolve`].
+            /// The step for `row` (see [`OpDef::resolve`]).
             pub fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
                 match self {
+                    $(TypedOp::$family(op) => Ok(($wrap)(
+                        view_buffer::mode::Resolve::resolve(op, &param::RowValues { row, ctx })?,
+                    )),)*
                     $(TypedOp::$variant(op) => OpDef::resolve(op, row, ctx),)+
                 }
             }
@@ -167,6 +167,7 @@ macro_rules! typed_ops {
             /// See [`OpDef::shape`].
             pub fn shape(&self) -> Option<view_buffer::ops::OpShape> {
                 match self {
+                    $(TypedOp::$family(op) => Some(op.shape()),)*
                     $(TypedOp::$variant(op) => OpDef::shape(op),)+
                 }
             }
@@ -174,29 +175,52 @@ macro_rules! typed_ops {
             /// See [`OpFields::visit_slots`].
             pub fn visit_slots(&self, f: &mut dyn FnMut(&'static str, usize)) {
                 match self {
+                    $(TypedOp::$family(op) => op.visit_slots(f),)*
                     $(TypedOp::$variant(op) => op.visit_slots(f),)+
                 }
             }
 
-            /// One valid instance of every typed op, in `NAMES` order.
+            /// One valid instance of every typed op, in `names()` order.
             #[cfg(test)]
             pub fn samples() -> Vec<TypedOp> {
-                vec![$(
+                let mut samples: Vec<TypedOp> = vec![$(
                     TypedOp::from_fields($wire, serde_json::json!($sample))
                         .expect("registered")
                         .unwrap_or_else(|e| panic!("sample for '{}': {e}", $wire)),
-                )+]
+                )+];
+                $(samples.extend(
+                    <<$fty as Family>::Wire>::samples().into_iter().map(TypedOp::$family),
+                );)*
+                samples.sort_by_key(TypedOp::name);
+                samples
             }
 
-            /// Every typed op's description, in `NAMES` order.
+            /// Every typed op's description, in `names()` order.
             pub fn catalog() -> Vec<OpDesc> {
-                vec![$(OpDesc::of::<$ty>($wire)),+]
+                let mut catalog = vec![$(op_desc::<$ty>($wire)),+];
+                $(catalog.extend(<<$fty as Family>::Wire>::catalog());)*
+                catalog.sort_by_key(|d| d.name);
+                catalog
             }
         }
     };
 }
 
+/// An engine family that is typed ops: its `Wire` and `Exec` forms.
+pub trait Family {
+    type Wire;
+}
+
+impl Family for view_buffer::ImageOpKind {
+    type Wire = view_buffer::ImageOpKind<view_buffer::mode::Wire>;
+}
+
 typed_ops! {
+    families {
+        Image(view_buffer::ImageOpKind) => |kind| GraphStep::Buffer(
+            view_buffer::ViewDto::Image(view_buffer::ImageOp { kind })
+        );
+    }
     "abs" => Abs(compute::Abs) {},
     "add" => Add(binary::Add) {"other": "n0"},
     "add_constant" => AddConstant(compute::AddConstant) {"value": 1.0},
@@ -208,13 +232,10 @@ typed_ops! {
     "bitwise_or" => BitwiseOr(binary::BitwiseOr) {"other": "n0"},
     "bitwise_xor" => BitwiseXor(binary::BitwiseXor) {"other": "n0"},
     "blend" => Blend(binary::Blend) {"other": "n0"},
-    "blur" => Blur(image::Blur) {"sigma": 1.0},
-    "canny" => Canny(image::Canny) {"low_threshold": 50.0, "high_threshold": 150.0},
     "cast" => Cast(compute::Cast) {"dtype": "f32"},
     "ceil" => Ceil(compute::Ceil) {},
     "channel_merge" => ChannelMerge(binary::ChannelMerge) {"others": ["n0", "n1"]},
     "channel_select" => ChannelSelect(channel::ChannelSelect) {"index": 0},
-    "channel_swap" => ChannelSwap(channel::ChannelSwap) {"order": [2, 1, 0]},
     "clamp" => Clamp(compute::Clamp) {"min": 0.0, "max": 1.0},
     "clamp_max" => ClampMax(compute::ClampMax) {"value": 1.0},
     "clamp_min" => ClampMin(compute::ClampMin) {"value": 0.0},
@@ -230,34 +251,23 @@ typed_ops! {
         {"kernel": [0, 0, 0, 0, 1, 0, 0, 0, 0], "ksize": 3, "normalize": false, "border": "replicate"},
     "crop" => Crop(view::Crop) {"top": 1, "left": 1, "height": 2, "width": 2},
     "cvt_color" => CvtColor(color::CvtColor) {"from_space": "rgb", "to_space": "hsv"},
-    "dilate" => Dilate(image::Dilate) {"ksize": 3, "iterations": 1},
     "divide" => Divide(binary::Divide) {"other": "n0"},
-    "equalize_histogram" => EqualizeHistogram(image::EqualizeHistogram) {},
-    "erode" => Erode(image::Erode) {"ksize": 3, "iterations": 1},
     "extract_contours" => ExtractContours(geometry::ExtractContours)
         {"mode": "tree", "method": "none", "min_area": 2.0},
     "extract_shape" => ExtractShape(reduce::ExtractShape) {},
     "flip" => Flip(view::Flip) {"axes": [1]},
     "floor" => Floor(compute::Floor) {},
-    "grayscale" => Grayscale(image::Grayscale) {},
     "histogram" => Histogram(histogram::Histogram)
         {"bins": 8, "range": null, "closed": "left", "output": "counts"},
     "invert" => Invert(compute::Invert) {},
     "label_reduce" => LabelReduce(label::LabelReduce)
         {"contours": {"$slot": 1}, "reduction": "mean", "region_mode": "bbox"},
-    "letterbox" => Letterbox(image::Letterbox)
-        {"height": 4, "width": 4, "value": 0.0, "filter": "bilinear"},
     "maximum" => Maximum(binary::Maximum) {"other": "n0"},
     "minimum" => Minimum(binary::Minimum) {"other": "n0"},
-    "morphology_gradient" => MorphologyGradient(image::MorphologyGradient) {"ksize": 3},
     "multiply" => Multiply(binary::Multiply) {"other": "n0"},
     "neg" => Neg(compute::Neg) {},
     "normalize" => Normalize(compute::Normalize)
         {"method": "preset", "mean": [0.5], "std": [0.25], "out_dtype": "f32"},
-    "pad" => Pad(image::Pad)
-        {"top": 1, "bottom": 1, "left": 1, "right": 1, "value": 0.0, "mode": "constant"},
-    "pad_to_size" => PadToSize(image::PadToSize)
-        {"height": 4, "width": 4, "position": "center", "value": 0.0},
     "perceptual_hash" => PerceptualHash(phash::PerceptualHash) {"algorithm": "perceptual", "hash_size": 64},
     "rasterize" => Rasterize(geometry::Rasterize) {"size": [8, 6], "fill_value": 1, "background": 0},
     "ratio" => Ratio(binary::Ratio) {"other": "n0"},
@@ -273,12 +283,6 @@ typed_ops! {
     "reduce_sum" => ReduceSum(reduce::ReduceSum) {},
     "relu" => Relu(compute::Relu) {},
     "reshape" => Reshape(view::Reshape) {"shape": [2, 2, 1]},
-    "resize" => Resize(image::Resize) {"height": 4, "width": 4, "filter": "bilinear"},
-    "resize_max" => ResizeMax(image::ResizeMax) {"max_size": 4, "filter": "bilinear"},
-    "resize_min" => ResizeMin(image::ResizeMin) {"min_size": 4, "filter": "bilinear"},
-    "resize_scale" => ResizeScale(image::ResizeScale) {"scale_x": 0.5, "scale_y": 0.5, "filter": "bilinear"},
-    "resize_to_height" => ResizeToHeight(image::ResizeToHeight) {"height": 4, "filter": "bilinear"},
-    "resize_to_width" => ResizeToWidth(image::ResizeToWidth) {"width": 4, "filter": "bilinear"},
     "rotate" => Rotate(affine::Rotate)
         {"angle": 30.0, "expand": true, "interpolation": "nearest", "border_value": 0.0},
     "round" => Round(compute::Round) {},
@@ -288,7 +292,6 @@ typed_ops! {
     "square" => Square(compute::Square) {},
     "subtract" => Subtract(binary::Subtract) {"other": "n0"},
     "subtract_constant" => SubtractConstant(compute::SubtractConstant) {"value": 1.0},
-    "threshold" => Threshold(image::Threshold) {"value": 128.0},
     "transpose" => Transpose(view::Transpose) {"axes": [1, 0, 2]},
     "trunc" => Trunc(compute::Trunc) {},
     "warp_affine" => WarpAffine(affine::WarpAffine) {
@@ -376,7 +379,7 @@ mod tests {
 
     #[test]
     fn typed_names_are_sorted_and_unique() {
-        assert!(TypedOp::NAMES.windows(2).all(|w| w[0] < w[1]));
+        assert!(TypedOp::names().windows(2).all(|w| w[0] < w[1]));
     }
 
     #[test]

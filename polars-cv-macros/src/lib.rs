@@ -27,6 +27,28 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{parse_macro_input, spanned::Spanned, Attribute, Data, DeriveInput, Expr, Fields, Lit};
 
+mod modal;
+
+/// The engine enums as the typed op catalogue: see `modal`.
+#[proc_macro_derive(Ops, attributes(op, param))]
+pub fn derive_ops(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match modal::derive_ops(&input) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// `Wire` → `Exec`, field by field: see `modal`.
+#[proc_macro_derive(Resolve)]
+pub fn derive_resolve(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match modal::derive_resolve(&input) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
 #[proc_macro_derive(Op, attributes(op, param))]
 pub fn derive_op(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

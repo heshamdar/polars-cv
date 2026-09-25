@@ -1,6 +1,8 @@
 //! Contour extraction (buffer → contour), rasterization (contour → buffer),
 //! measures and transforms (contour → scalar, vector or contour).
 
+#[allow(unused_imports)]
+use crate::ops::ParamExt as _;
 use polars::prelude::*;
 use polars_cv_macros::Op;
 use serde::de::Error as _;

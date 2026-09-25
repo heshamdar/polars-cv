@@ -671,7 +671,7 @@
     "name": "dilate",
     "python": "dilate",
     "visibility": "public",
-    "doc": "Morphological dilation (local maximum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).\n\nExample:\n   >>> mask = Pipeline().source(\"image_bytes\").grayscale().threshold(128).dilate(ksize=3)",
+    "doc": "Morphological dilation (local maximum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).\n\nExample:\n    >>> mask = Pipeline().source(\"image_bytes\").grayscale().threshold(128).dilate(ksize=3)",
     "fields": [
       {
         "name": "ksize",
@@ -721,7 +721,7 @@
     "name": "erode",
     "python": "erode",
     "visibility": "public",
-    "doc": "Morphological erosion (local minimum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).\n\nExample:\n   >>> mask = Pipeline().source(\"image_bytes\").grayscale().threshold(128).erode(ksize=3)",
+    "doc": "Morphological erosion (local minimum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).\n\nExample:\n    >>> mask = Pipeline().source(\"image_bytes\").grayscale().threshold(128).erode(ksize=3)",
     "fields": [
       {
         "name": "ksize",
@@ -1625,7 +1625,7 @@
     "name": "resize_max",
     "python": "resize_max",
     "visibility": "public",
-    "doc": "Resize image so the maximum dimension equals target, preserving aspect ratio (200x100 with max_size=50 gives 50x25).\n\nExample:\n   >>> pipe = Pipeline().source(\"image_bytes\").resize_max(224)",
+    "doc": "Resize image so the maximum dimension equals target, preserving aspect ratio (200x100 with max_size=50 gives 50x25).\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").resize_max(224)",
     "fields": [
       {
         "name": "max_size",
@@ -1659,7 +1659,7 @@
     "name": "resize_min",
     "python": "resize_min",
     "visibility": "public",
-    "doc": "Resize image so the minimum dimension equals target, preserving aspect ratio (200x100 with min_size=50 gives 100x50).\n\nExample:\n   >>> pipe = Pipeline().source(\"image_bytes\").resize_min(224)",
+    "doc": "Resize image so the minimum dimension equals target, preserving aspect ratio (200x100 with min_size=50 gives 100x50).\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").resize_min(224)",
     "fields": [
       {
         "name": "min_size",
@@ -1736,7 +1736,7 @@
     "name": "resize_to_height",
     "python": "resize_to_height",
     "visibility": "public",
-    "doc": "Resize image to target height, preserving aspect ratio (width is computed at runtime).\n\nExample:\n   >>> pipe = Pipeline().source(\"image_bytes\").resize_to_height(224)",
+    "doc": "Resize image to target height, preserving aspect ratio (width is computed at runtime).\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").resize_to_height(224)",
     "fields": [
       {
         "name": "height",
@@ -1770,7 +1770,7 @@
     "name": "resize_to_width",
     "python": "resize_to_width",
     "visibility": "public",
-    "doc": "Resize image to target width, preserving aspect ratio (height is computed at runtime).\n\nExample:\n   >>> pipe = Pipeline().source(\"image_bytes\").resize_to_width(224)",
+    "doc": "Resize image to target width, preserving aspect ratio (height is computed at runtime).\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").resize_to_width(224)",
     "fields": [
       {
         "name": "width",

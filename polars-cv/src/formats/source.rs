@@ -1,5 +1,7 @@
 //! Source formats: how a node's input column is decoded.
 
+#[allow(unused_imports)]
+use crate::ops::ParamExt as _;
 use std::collections::HashMap;
 
 use polars::prelude::*;
