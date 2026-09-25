@@ -108,7 +108,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   (hand-written sugar remains only where a signature needs it: `scale`,
   `clamp`, `resize_scale`, `scale_contour`, `rasterize`,
   and the `LazyPipelineExpr` methods that combine expressions); call
-  signatures are unchanged. The wire form of a field is the value itself
+  signatures change only by the signature rule below (see the migration
+  guide). The wire form of a field is the value itself
   (`"height": 224`, `"filter": "bilinear"`) or `{"$slot": n}`, every field is
   present, and the Rust definition is the only validator, so errors are
   reported by it — naming the op, the field and the valid values (`operation
