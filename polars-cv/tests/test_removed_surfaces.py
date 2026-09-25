@@ -23,6 +23,7 @@ import polars_cv
 from polars_cv import Pipeline
 
 from ._discovery import requires_checkout, rust_sources
+from ._plan_view import ops_of
 from .conftest import plugin_required
 
 #: Every test here is a structural guard: it checks the *shape* of the codebase
@@ -327,11 +328,12 @@ def test_out_dtype_does_not_reach_the_op_params(op: str) -> None:
         "scale": lambda: pipe.scale(2.0, out_dtype="u8"),
         "clamp": lambda: pipe.clamp(0.0, 1.0, out_dtype="u8"),
     }[op]()
-    assert [spec.op for spec in built._ops] == [op, "cast"], (
+    ops = ops_of(built)
+    assert [o.op for o in ops] == [op, "cast"], (
         f"{op}(out_dtype=...) must lower to the op plus a cast, got "
-        f"{[spec.op for spec in built._ops]}"
+        f"{[o.op for o in ops]}"
     )
-    assert "out_dtype" not in built._ops[0].params, (
+    assert "out_dtype" not in ops[0].params, (
         f"{op} must not serialize out_dtype: no resolve_op arm reads it"
     )
 
@@ -1055,3 +1057,39 @@ def test_vb_graph_rejects_the_expr_column_names_kwarg() -> None:
     )
     with pytest.raises(pl.exceptions.ComputeError, match="expr_column_names"):
         pl.DataFrame({"img": [b""]}).lazy().select(out=expr).collect()
+
+
+@plugin_required
+def test_the_per_step_planner_ffi_is_gone() -> None:
+    """``plan_source``/``plan_step``/``node_pass`` let Python hold the op list
+    and drive Rust one step at a time, so a rewrite (a slice, a reorder, a
+    pass) had to replay the steps itself. The op list is now the Rust ``Plan``
+    and every rewrite is one of its methods (consolidation plan C3)."""
+    import polars_cv._lib as _lib
+
+    for gone in ("plan_source", "plan_step", "node_pass", "resolve_op_from_json"):
+        assert not hasattr(_lib, gone), f"{gone} FFI restored; use a Plan method"
+
+
+def test_the_python_op_records_are_gone() -> None:
+    """``OpSpec``/``ParamValue``/``SourceSpec`` were Python's copy of the wire
+    op, source and argument, with an equality CSE relied on. The plan holds the
+    typed ops and CSE compares their wire form over the graph's slot table
+    (consolidation plan C3)."""
+    import polars_cv._types as types
+    import polars_cv.pipeline as pipeline
+
+    for gone in ("OpSpec", "ParamValue", "SourceSpec", "planning_slots"):
+        assert not hasattr(types, gone), f"_types.{gone} restored"
+    for gone in ("_STATE_COPIERS", "_Position", "_plain"):
+        assert not hasattr(pipeline, gone), f"pipeline.{gone} restored"
+    for gone in (
+        "_push_op",
+        "_append_op",
+        "_replay",
+        "_state_at",
+        "_copy_state_from",
+        "_create_sub_pipeline",
+        "_track_expr",
+    ):
+        assert not hasattr(pipeline.Pipeline, gone), f"Pipeline.{gone} restored"

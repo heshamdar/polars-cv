@@ -24,7 +24,7 @@ The **user-facing Python layer**. Responsible for:
 | `pipeline.py` | `Pipeline` builder — source, operations, domain/dtype/shape tracking |
 | `lazy.py` | `LazyPipelineExpr` — lazy composition, `.pipe()`, `.merge_pipe()`, `.alias()`, `.sink()`, binary ops |
 | `expressions.py` | `CvNamespace` — `.cv.pipe()`, `.cv.read_bytes()`, `.cv.width()`, `.cv.height()`, `.cv.channels()`, `.cv.image_dtype()` |
-| `_types.py` | `OpSpec`, `ParamValue`, `SourceSpec`, `DType`, `ColorSpace`, `Domain`, the parameter-applicability tables |
+| `_types.py` | `SlotTable` (a graph's plugin inputs), `CloudOptions`, the `IntOrExpr`-style aliases; the enums (`DType`, `Domain`, …) come from `_ops_generated.py` |
 | `_graph.py` | `PipelineGraph`, `GraphNode` — DAG construction, JSON serialization, CSE, plugin registration |
 | `_graph_viz.py` | Graph visualization (networkx/graphviz) |
 | `display.py` | `show_images()` — notebook image rendering, format detection, VIEW/numpy to PNG |
@@ -54,13 +54,13 @@ pipe = Pipeline().source("image_bytes").resize(height=224, width=224).on_error("
 #   (PipelineGraph._to_dict raises on conflicts).
 ```
 
-Key internal state tracked on each Pipeline:
-- `_source: SourceSpec | None` — how to decode input data
-- `_ops: list[OpSpec]` — ordered list of operations
-- `_domain: str` — current domain (buffer/contour/scalar/vector)
-- `_output_dtype: str` — current dtype tracking (u8/f32/auto/etc.)
-- `_ndim: int | None` — current dimensionality
-- `_expr_columns: dict[str, pl.Expr]` — expression parameters to pass to Rust
+A Pipeline's whole internal state:
+- `_plan: Plan` — the Rust plan (`src/plan.rs`): the source, the typed ops and
+  the state at every op boundary. Immutable; `_state` is `_plan.state`.
+- `_exprs: list[pl.Expr]` — the expressions the plan's `{"$slot": i}`
+  parameters name, by `i` (each distinct expression once, by `meta.eq`)
+- `_node_refs` — the `LazyPipelineExpr` nodes the ops or source read by id
+- `_on_error`, `_on_null_param` — the graph-level per-row policies
 
 ### LazyPipelineExpr Composition
 
@@ -110,15 +110,17 @@ ordering.
 ### Operation Contracts (view-buffer is the authority)
 
 Every operation's schema effect — output domain, dtype, rank (ndim), H/W and
-channel count — comes from the op's Rust contract, applied in Rust by one call
-per appended op: `_lib.plan_step(op_json, state, refs)` (`src/plan.rs`;
-`refs` are the states of the nodes the op reads by id). The pipeline's whole
-tracked state is one `PlanState` (`Pipeline._state`: domain, dtype, rank, known
-sizes), computed only in Rust — `plan_source` for a source, `plan_step` per op,
-an `assert_shape` included (it is an op) — and never edited in Python. `_push_op` records the state entering
-each op (`_entering`). A slice, reorder or
-deletion of the ops goes through `_replay`, which appends the kept ops again
-from a recorded state, so no per-position fact is ever re-keyed by hand.
+channel count — comes from the op's Rust contract, applied in Rust by one
+`plan::step` per appended op (`src/plan.rs`). The ops themselves live in the
+pipeline's Rust `Plan`, which keeps the state entering each op; Python holds
+the plan object and never an op list. Every change is a `Plan` method that
+plans each op it keeps: `push` (an append, with `refs` — the states of the
+nodes the op reads by id), `with_source` (which plans the ops again from the
+source's state), `select` (a slice, reorder or deletion), `rebased` (a
+continuation onto an upstream node's state) and `run_pass`. So no per-position
+fact is ever re-keyed by hand, and an `assert_shape` is planned like any op.
+The tracked state is one `PlanState` (`Pipeline._state`: domain, dtype, rank,
+known sizes), computed only in Rust and never edited in Python.
 Python **reads** these rules; it
 does not re-declare them. There is no Python contract
 table to keep in sync.
@@ -126,7 +128,7 @@ table to keep in sync.
 The contract fields read by the planner are:
 - `output_domain` — buffer / scalar / vector / contour (`any` = identity, leaves
   the domain unchanged)
-- `dtype_rule` — resolved to a concrete dtype by `plan_step`
+- `dtype_rule` — resolved to a concrete dtype by `plan::step`
 - `rank_rule` — `fixed:N`, `reduce_one`, `preserve`, or `unknown`
 - `channel_rule` — drives planning-time channel inference
 
@@ -150,11 +152,11 @@ Alpha channels are **always preserved** during image decoding. Image sources
 `.assert_shape(channels=4)`.
 
 Each op's alpha/channel behaviour is described by its view-buffer `channel_rule`
-(e.g. passthrough, drop-to-fixed, color-conversion). `plan_step` applies it
+(e.g. passthrough, drop-to-fixed, color-conversion). `plan::step` applies it
 (`OutputChannelRule::apply`) to the tracked channel count. Rust implements the matching behaviour
 based on the buffer's actual channel count.
 
-### ParamValue — Literal vs Expression Parameters
+### Literal vs Expression Parameters
 
 Operations accept either literal values or Polars expressions:
 
@@ -164,14 +166,17 @@ pipe.resize(height=224, width=pl.col("target_w"))
 #           literal           expression (resolved per-row at execution time)
 ```
 
-`ParamValue` wraps this distinction. Expression params are tracked in `_expr_columns` and passed to Rust as additional input columns.
+An expression crosses as `{"$slot": i}` over the pipeline's expression table
+(`Pipeline._slot`); a graph renumbers every pipeline's slots onto its one
+`SlotTable` (`Plan.to_spec`) and passes the expressions to Rust as additional
+input columns.
 
 **The rule:** a parameter may be per-row **iff it has no effect on output shape,
 rank, or dtype**. Everything else follows from that one invariant.
 
 **Dynamic parameter coverage.** Three kinds of parameter are expression-capable:
 
-1. *Scalars* (`IntOrExpr` / `FloatOrExpr`), via `_track_expr`: resize dimensions,
+1. *Scalars* (`IntOrExpr` / `FloatOrExpr`), via `_wire`: resize dimensions,
    crop offsets, pad amounts and values, rotate angle and `border_value`,
    warp_affine `output_size`/`border_value`, blur sigma, threshold value, canny
    thresholds, contrast/gamma/brightness/sharpen factors, morphology
@@ -202,9 +207,9 @@ way: they are symbolic (below), so no placeholder ever reaches a size.
 lists, reduction `axis`, `perceptual_hash(hash_size)`, `reshape` arity,
 `rotate(expand)`, and the dtype-bearing enums `cast(dtype)`,
 `normalize(method`/`out_dtype)`, `histogram(closed`/`output)` fix the plan-time
-schema, so they must be literals. On a typed op the field is a `Literal<T>`: a
-literal `ParamValue` can never hold a `pl.Expr` (`ParamValue.__post_init__`
-raises the "structural" error in Python), and `{"$slot": n}` in a `Literal` is
+schema, so they must be literals. On a typed op the field is a `Literal<T>`: `_encode_field` refuses a
+`pl.Expr` for a field the catalogue does not type per-row (the "structural"
+`TypeError`), and `{"$slot": n}` in a `Literal` is
 a serde error in Rust (`ops::tests::a_slot_in_a_structural_field_is_rejected`).
 Guarded by `TestStructuralParamsRejectExpressions` in
 `test_param_strictness.py`.
@@ -236,9 +241,8 @@ Adding a third policy would make the branch reachable and change that.
 
 Do **not** add a per-op or per-parameter null keyword. Deliberately absent, for
 two reasons: a fallback value is already expressible as
-`pl.col("h").fill_null(224)`, and a per-parameter policy would have to enter the
-`ParamValue` wire format, which would mean `__eq__`/`__hash__` must include it
-or CSE will merge ops that differ only in policy.
+`pl.col("h").fill_null(224)`, and a per-parameter policy would have to enter every op's wire form, which CSE
+compares, or CSE will merge ops that differ only in policy.
 
 The geometry namespaces have no `Pipeline` to hang a graph-level setting on, so
 the policy lives on the accessor: `on_null(policy)` returns a copy with
@@ -260,10 +264,9 @@ the same mixin unless `.cv` genuinely honours it.
    definition (`src/ops/`, see the root `CLAUDE.md`): `scripts/gen_ops.py`
    writes it into `_ops_generated.py` — signature (the positional rule is
    derived, `gen_ops.positional`), defaults, docstring — and `Pipeline`
-   inherits it from `_OpsMixin`. Every generated method appends through
-   `Pipeline._append_typed` → `_append_op` → `_push_op`, which checks the
-   input domain and applies the whole plan-time effect in one `plan_step`
-   call: the schema fold (domain/dtype/ndim) and the shape hints (the op's
+   inherits it from `_OpsMixin`. Every generated method appends through `Pipeline._append_typed` → `_push` →
+`Plan.push`, which checks the input domain and applies the whole plan-time
+effect in one `plan::step`: the schema fold (domain/dtype/ndim) and the shape hints (the op's
    symbolic `shape` for H/W, the channel rule for C).
 
    Hand-write a `Pipeline` method only as *sugar* over a generated one: an
@@ -272,13 +275,12 @@ the same mixin unless `.cv` genuinely honours it.
    it. Validation that must precede the op goes before that call; work after
    the append (a `preserve_dtype` cast-back) reads the returned pipeline.
 
-   **Do not touch `_ops` directly.** `_push_op` is the only function permitted
-   to mutate it, enforced by `test_op_append_is_structurally_exclusive` in
-   `tests/test_append_contract.py`. That guard exists because the previous
-   convention — each builder calling the update methods by hand — let 41 of 60
-   builders skip the shape-hint half and publish a planned schema execution
-   could not produce. Never build or edit a `PlanState` by hand either; it
-   follows from the op's Rust contract (`plan_step`).
+   **There is no op list to touch.** The ops are the Rust `Plan`, a frozen
+object with no setter; the only way to add one is `Plan.push`, which plans
+it whole. (The convention it replaced — each builder calling the update
+methods by hand — let 41 of 60 builders skip the shape-hint half and publish a
+planned schema execution could not produce.) Never build or edit a
+`PlanState` by hand either; it follows from the op's Rust contract.
 
 2. **`lazy.py`**: Nothing to add. `LazyPipelineExpr` generates a forwarder for
    every chainable `Pipeline` method at import time
@@ -290,7 +292,7 @@ the same mixin unless `.cv` genuinely honours it.
 
 3. **Schema inference**: nothing to add in `_types.py` or the planner. The
    op's domain, dtype, rank and channel effects are read at planning time from
-   its Rust contract via `_lib.plan_step`, and the optimisation passes read
+   its Rust contract via `Plan.push`, and the optimisation passes read
    its spatial and identity rules in Rust (`passes.rs`), so make sure the op declares the right contract on
    the Rust side (next step). Do not add per-op special cases in Python —
    `test_op_schema_authority` and the batch-fold conformance tests in
@@ -317,8 +319,7 @@ rotation matrix via the `rotation_matrix_2d` FFI) and delegate to
 ### Shape Hints (single authority: view-buffer `OpShape`)
 
 No per-dimension geometry is derived in Python. Every op's shape arithmetic is
-one view-buffer `OpShape`, which execution evaluates on known sizes and
-`plan_step` evaluates symbolically: each typed op builds its `OpShape` from its
+one view-buffer `OpShape`, which execution evaluates on known sizes and `plan::step` evaluates symbolically: each typed op builds its `OpShape` from its
 own fields (`OpDef::shape`), a per-row field as `Sym::PerRow` and an unknown
 input size as `Dim::Input(k)`. So the tracked H/W cannot disagree with what
 the op produces, and no placeholder value stands in for a per-row one
@@ -333,8 +334,7 @@ safe: the output publishes no shape and a typed sink asks for an explicit
 shape. A per-row parameter leaves unknown exactly the axes it decides
 (`resize(height=pl.col("h"), width=100)` plans `[?, 100]`); a per-row rotation
 angle is known only for a square input.
-Channels come from the channel rule and rank from `plan::fold`; `plan_step`
-applies all three and clips the hints to the output rank.
+Channels come from the channel rule and rank from `plan::fold`; `plan::step` applies all three and clips the hints to the output rank.
 
 An unknown input rank normally means "do not ask": there is no shape to reason
 about, and a fabricated one publishes a fabricated result. The exception is
@@ -349,7 +349,7 @@ A `source()` or `.sink()` parameter that the chosen format never reads is
 rejected. Each source and sink format is a typed Rust struct carrying exactly
 the fields its decode or encode reads (`src/formats/`, each
 `deny_unknown_fields`), and the builder validates what the caller passed
-against that definition (`plan_source`, and `check_graph` for the whole graph at
+against that definition (`Plan.with_source`, and `check_graph` for the whole graph at
 `.sink()`) — the deserializer the graph itself uses — so an unknown, misspelled or inapplicable keyword is refused while the
 pipeline is built, naming the formats it does apply to. `source()` sends
 exactly the keywords the caller passed (read from its own `locals()`; every
@@ -359,10 +359,10 @@ produced one raise, one warning and five silent drops on the source side, and an
 open keyword surface on the sink side.
 
 `source("contour")` publishes that same contract: its decode *is* a rasterize,
-so its planned state (`plan_source` → `plan::source_state`) is the
+so its planned state (`Plan.with_source` → `plan::source_state`) is the
 `rasterize` op's over the contour domain (rank 3, u8, one channel, the canvas),
 computed by the same `plan::step`, instead of the source hand-writing a rank.
-No op is appended to `_ops` — the rasterize already happens inside the
+No op is appended to the plan — the rasterize already happens inside the
 decode. Whatever the two routes to a mask publish,
 they publish it identically (`TestContourSourcePlanTimeContract`).
 
@@ -373,6 +373,6 @@ they publish it identically (`TestContourSourcePlanTimeContract`).
   reads dtype/domain/rank/channel from it at planning time; a wrong or missing
   contract makes planned and executed schemas diverge (caught by the
   plan==exec tests in `test_sanitation.py`).
-- **Expression params must be tracked.** If an op accepts `pl.Expr` parameters, they must go through `_track_expr()` to be serialized to Rust.
+- **Expression params must be slotted.** An expression reaches Rust only as a slot in the pipeline's table (`_slot()`, which `_encode_field` and `_wire()` call); a typed op's fields get this from their catalogue type.
 - **The `auto` dtype.** Sources like `image_bytes` and `file_path` have dtype `auto` because the actual dtype is only known at execution time (after decoding). Operations that need a known dtype (like `sink("list")` or `sink("array")`) must have it resolved before the sink, either via `source(..., dtype="f32")`, `.cast(...)`, or a dtype-fixing operation. `contour` is *not* one of them — rasterizing fixes u8, so it publishes u8 and rejects a `dtype=` assertion rather than accepting one it never reads.
-- **Continuation nodes must inherit upstream typing context.** In `LazyPipelineExpr.pipe()` for op-only continuation pipelines (`source is None`), compute node domain/dtype/ndim using upstream state + new ops. Copying op-only pipeline typing state can cause contract drift (planned dtype mismatch at execution).
+- **Continuation nodes must inherit upstream typing context.** In `LazyPipelineExpr.pipe()` for op-only continuation pipelines (a plan with no source), compute node domain/dtype/ndim using upstream state + new ops. Copying op-only pipeline typing state can cause contract drift (planned dtype mismatch at execution).

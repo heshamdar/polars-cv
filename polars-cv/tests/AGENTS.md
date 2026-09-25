@@ -318,7 +318,7 @@ them", and that shape has one failure mode this suite has shipped twice: the
 find returns nothing, the assertion holds for free, and the guard reads as
 coverage forever. `_test_files()` and `_PACKAGE_MODULES` were both a bare
 `rglob` whose empty result was indistinguishable from a clean bill of health,
-and the second is what the whole `_push_op` append contract rests on.
+and the second is what the whole op-append contract rested on.
 
 So **do not glob in a test module.** Call `rust_src_dir()`, `rust_sources()`,
 `package_modules()`, `suite_files()` or `suite_modules()` from

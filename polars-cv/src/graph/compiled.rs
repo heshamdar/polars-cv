@@ -623,7 +623,7 @@ impl CompiledGraph {
     ///
     /// **Read the contract; never restate it.** `GraphStep::input_domains` is the
     /// single authority `CLAUDE.md` names for what a step accepts, and the Python
-    /// planner validates against it through `plan_step`. Execution used to
+    /// planner validates against it through `Plan::push`. Execution used to
     /// re-derive the same fact by hand at ten sites — `current_output.as_buffer()`
     /// with a hardcoded `"<Step> requires Buffer"` string each time — and the two
     /// had already diverged: `Reduction` declares `[Buffer, Vector]`, so the

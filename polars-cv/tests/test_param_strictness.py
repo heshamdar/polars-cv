@@ -359,7 +359,7 @@ class TestListParamElementsAcceptExpressions:
     """List-valued params keep a structural *length* but per-row *values*.
 
     The element count fixes a kernel size or channel count at planning time;
-    the coefficients themselves resolve per row through ``ParamValue::List``
+    the coefficients themselves resolve per row, element by element
     (the same encoding ``warp_affine``'s matrix has always used).
     """
 

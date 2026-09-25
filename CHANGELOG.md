@@ -90,8 +90,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   and sink; the planned-state field, the execution-side dtype/rank folds and the
   first-input-column fallback are gone. `.sink()` validates the graph with the
   plugin's own compile, planning and sink-schema code (`_lib.check_graph`), so
-  sink problems raise `ValueError` at `.sink()`; `plan_sink`/`plan_assert` are
+    sink problems raise `ValueError` at `.sink()`; `plan_sink`/`plan_assert` are
   gone.
+- **A pipeline's ops are a Rust `Plan`.** `Pipeline` holds one immutable
+  `polars_cv._lib.Plan` (its source, typed ops and the state at every op
+  boundary) plus its expression table; every append, slice, reorder, pass and
+  continuation is a `Plan` method that plans each op it keeps. The Python op
+  records (`OpSpec`, `ParamValue`, `SourceSpec`) and the per-step FFI
+  (`plan_step`, `plan_source`, `node_pass`) are gone. `repr(pipeline)` shows
+  enum arguments by their wire name (`origin=centroid`), and an absent optional
+  setting is left out of the graph JSON however it was spelled.
 
 
 - **The builder's planner and the executor share one dtype lattice.** A

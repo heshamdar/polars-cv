@@ -9,7 +9,7 @@ import pytest
 
 from polars_cv import Pipeline
 from polars_cv._types import DType, SourceFormat
-from tests._plan_view import EXPR, op_names, ops_of, planned, source_of
+from tests._plan_view import EXPR, exprs_of, op_names, ops_of, planned, source_of
 
 
 class TestPipelineSource:
@@ -62,13 +62,13 @@ class TestExpressionTracking:
         pipe = Pipeline().source().resize(height=pl.col("h"), width=pl.col("w"))
         assert ops_of(pipe)[0].params["height"] == EXPR
         assert ops_of(pipe)[0].params["width"] == EXPR
-        assert len(pipe._expr_refs) == 2
+        assert len(exprs_of(pipe)) == 2
 
     def test_no_duplicate_expr_tracking(self) -> None:
         """The same expression is tracked only once."""
         expr = pl.col("size")
         pipe = Pipeline().source().resize(height=expr, width=expr)
-        assert len(pipe._expr_refs) == 1
+        assert len(exprs_of(pipe)) == 1
 
 
 class TestPipelineValidation:

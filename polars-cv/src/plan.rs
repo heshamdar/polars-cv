@@ -1,11 +1,15 @@
-//! The plan-time effect of appending one op: the Python planner's one call.
+//! The planner: a pipeline's [`Plan`] and the step that extends it.
 //!
-//! [`plan_step`] takes the pipeline's tracked state and one serialized op and
-//! returns the state after it — the input-domain check, the schema fold
-//! (domain, dtype, rank), the H/W the op's symbolic `shape` gives, its channel
-//! rule, and the clipping of every hint to the output rank. These used to be
-//! four FFI calls sequenced by eight Python helpers, any of which a caller
-//! could skip; one call cannot be half-applied.
+//! [`step`] takes the state at one op boundary and one typed op and returns
+//! the state after it — the input-domain check, the schema fold (domain,
+//! dtype, rank), the sizes the op's symbolic `shape` gives, its channel rule,
+//! and the clipping of every size to the output rank. One call cannot be
+//! half-applied.
+//!
+//! [`Plan`] is a pipeline's source, its typed ops and the state at every op
+//! boundary, and the only record of them: Python holds the plan object, and
+//! every change to it (an append, a slice, a reorder, a pass, a rebase onto an
+//! upstream node) is a method here that plans each op it keeps with [`step`].
 //!
 //! A two-input op plans over both operands, so a binary op takes the other
 //! operand's state, and only a binary op may: passing one to any other op, or
@@ -397,17 +401,6 @@ pub(crate) fn source_state(
     })
 }
 
-/// Python entry point for [`source_state`]: validate a serialized source
-/// against its typed format, and return the state it starts a pipeline in.
-/// `refs` are the states of the nodes it reads (a contour canvas's).
-#[pyfunction]
-#[pyo3(signature = (source_json, refs=None))]
-pub(crate) fn plan_source(source_json: &str, refs: Option<Refs>) -> PyResult<State> {
-    let source: crate::formats::source::Source =
-        serde_json::from_str(source_json).map_err(|e| py_value_error(e.to_string()))?;
-    source_state(&source, &refs.unwrap_or_default()).map_err(py_value_error)
-}
-
 /// The shape an op consumes, symbolically: each known size, and `Input(k)`
 /// for an unknown one. `None` when the rank is unknown, so there is no shape
 /// to reason about — except for a step that *builds* a buffer from another
@@ -469,20 +462,424 @@ fn binary_dtype(
     }
 }
 
-/// Python entry point for [`step`]: the state after appending `op_json`.
-/// `refs` are the states of the nodes the op reads by id.
+/// One appended op with what it was planned against: the state entering it
+/// and the states of the nodes it reads by id. A rewrite plans it again from
+/// these, so no per-position fact is ever carried across by hand.
+#[derive(Debug, Clone)]
+struct Planned {
+    op: crate::ops::TypedOp,
+    entering: State,
+    refs: Refs,
+}
+
+/// A pipeline's plan: its source, its typed ops and the state at every op
+/// boundary — the one record of a `Pipeline`'s ops (Python holds only this,
+/// its expression table and its node references).
+///
+/// Immutable: every rewrite (an append, a slice, a reorder, a deletion, a
+/// rebase onto an upstream) returns a new plan whose every state was planned
+/// by [`step`], so an op cannot be appended or moved with part of its
+/// plan-time effect skipped. Expression parameters are `{"$slot": i}` over
+/// the pipeline's own expression table; [`Plan::to_spec`] maps them onto a
+/// graph's inputs.
+#[pyclass(frozen, skip_from_py_object, module = "polars_cv._lib", name = "Plan")]
+#[derive(Debug, Clone)]
+pub(crate) struct Plan {
+    source: Option<crate::formats::source::Source>,
+    start: State,
+    ops: Vec<Planned>,
+    state: State,
+}
+
+impl Plan {
+    /// `ops` planned again from `start`, in order.
+    fn replanned(
+        source: Option<crate::formats::source::Source>,
+        start: State,
+        ops: impl IntoIterator<Item = (crate::ops::TypedOp, Refs)>,
+    ) -> Result<Plan, String> {
+        let mut plan = Plan {
+            source,
+            start: start.clone(),
+            ops: Vec::new(),
+            state: start,
+        };
+        for (op, refs) in ops {
+            plan = plan.pushed(op, refs)?;
+        }
+        Ok(plan)
+    }
+
+    fn pushed(mut self, op: crate::ops::TypedOp, refs: Refs) -> Result<Plan, String> {
+        let next = step(&op, &self.state, &refs)?;
+        let entering = std::mem::replace(&mut self.state, next);
+        self.ops.push(Planned { op, entering, refs });
+        Ok(self)
+    }
+
+    fn states(&self) -> Vec<State> {
+        self.ops
+            .iter()
+            .map(|p| p.entering.clone())
+            .chain(std::iter::once(self.state.clone()))
+            .collect()
+    }
+
+    fn typed_ops(&self) -> Vec<crate::ops::TypedOp> {
+        self.ops.iter().map(|p| p.op.clone()).collect()
+    }
+
+    /// The state at op boundary `position`: entering that op, or the final
+    /// state at the end.
+    fn state_before(&self, position: usize) -> Result<State, String> {
+        match position.cmp(&self.ops.len()) {
+            std::cmp::Ordering::Less => Ok(self.ops[position].entering.clone()),
+            std::cmp::Ordering::Equal => Ok(self.state.clone()),
+            std::cmp::Ordering::Greater => Err(format!(
+                "position {position} is past the plan's {} ops",
+                self.ops.len()
+            )),
+        }
+    }
+
+    /// The ops at `positions`, in that order, planned again from the state at
+    /// boundary `start` (default: entering the first of them).
+    fn selected(&self, positions: &[usize], start: Option<usize>) -> Result<Plan, String> {
+        let at = start.or(positions.first().copied()).unwrap_or(0);
+        let start = self.state_before(at)?;
+        let ops = positions
+            .iter()
+            .map(|&i| {
+                self.ops
+                    .get(i)
+                    .map(|p| (p.op.clone(), p.refs.clone()))
+                    .ok_or_else(|| format!("no op at position {i}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Plan::replanned(self.source.clone(), start, ops)
+    }
+
+    /// A plan from its pickle wire (see `Plan::__reduce__`).
+    fn from_wire(wire: &str) -> Result<Plan, String> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct WireOp {
+            op: crate::ops::TypedOp,
+            refs: Refs,
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct WirePlan {
+            source: Option<crate::formats::source::Source>,
+            start: State,
+            ops: Vec<WireOp>,
+        }
+        let plan: WirePlan = serde_json::from_str(wire).map_err(|e| e.to_string())?;
+        Plan::replanned(
+            plan.source,
+            plan.start,
+            plan.ops.into_iter().map(|o| (o.op, o.refs)),
+        )
+    }
+}
+
+/// `value` with every `{"$slot": i}` replaced by `{"$slot": map[i]}`.
+fn remap_slots(value: &mut serde_json::Value, map: &[usize]) -> Result<(), String> {
+    use crate::ops::param::SLOT_KEY;
+    use serde_json::Value;
+    match value {
+        Value::Object(obj) if obj.len() == 1 && obj.contains_key(SLOT_KEY) => {
+            let local = obj[SLOT_KEY]
+                .as_u64()
+                .and_then(|i| usize::try_from(i).ok())
+                .ok_or_else(|| format!("a slot is a non-negative int, got {value}"))?;
+            let global = *map
+                .get(local)
+                .ok_or_else(|| format!("slot {local} has no graph input (map of {})", map.len()))?;
+            *value = serde_json::json!({ SLOT_KEY: global });
+        }
+        Value::Object(obj) => {
+            for v in obj.values_mut() {
+                remap_slots(v, map)?;
+            }
+        }
+        Value::Array(items) => {
+            for v in items {
+                remap_slots(v, map)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// `value` on the wire: an object field that is `null` (an absent optional
+/// setting) is left out, so an unset setting and an omitted one serialize
+/// alike, and the graph JSON (the compiled-graph cache key) carries only what
+/// was set.
+fn wire<T: serde::Serialize>(value: &T) -> serde_json::Value {
+    let mut value = serde_json::to_value(value).expect("a plan value always serializes");
+    if let serde_json::Value::Object(obj) = &mut value {
+        obj.retain(|_, v| !v.is_null());
+    }
+    value
+}
+
+fn parse_op(op_json: &str) -> PyResult<crate::ops::TypedOp> {
+    serde_json::from_str(op_json).map_err(|e| py_value_error(e.to_string()))
+}
+
+#[pymethods]
+impl Plan {
+    /// The plan of a pipeline with no source and no ops.
+    #[new]
+    fn empty() -> Self {
+        let start = State::new(Domain::Buffer, PlannedDType::Unknown, None);
+        Plan {
+            source: None,
+            start: start.clone(),
+            ops: Vec::new(),
+            state: start,
+        }
+    }
+
+    /// The plan of a sourceless pipeline that continues from `start`, the
+    /// output state of the node it will follow (`LazyPipelineExpr`'s
+    /// builders validate against it).
+    #[staticmethod]
+    fn continuing(start: State) -> Self {
+        Plan {
+            source: None,
+            start: start.clone(),
+            ops: Vec::new(),
+            state: start,
+        }
+    }
+
+    /// This plan with `source_json` as its source (validated against the
+    /// format's typed definition) and its ops planned again from the state the
+    /// source starts them in. `refs` are the states of the nodes the source
+    /// reads (a contour canvas's).
+    #[pyo3(signature = (source_json, refs=None))]
+    fn with_source(&self, source_json: &str, refs: Option<Refs>) -> PyResult<Plan> {
+        let source: crate::formats::source::Source =
+            serde_json::from_str(source_json).map_err(|e| py_value_error(e.to_string()))?;
+        let start = source_state(&source, &refs.unwrap_or_default()).map_err(py_value_error)?;
+        let ops = self.ops.iter().map(|p| (p.op.clone(), p.refs.clone()));
+        Plan::replanned(Some(source), start, ops).map_err(py_value_error)
+    }
+
+    /// This plan's ops planned again from `start`, the output state of the
+    /// node they now follow, with `source_json` (the graph's "receive from
+    /// upstream" source) as the source.
+    fn rebased(&self, source_json: &str, start: State) -> PyResult<Plan> {
+        let source =
+            serde_json::from_str(source_json).map_err(|e| py_value_error(e.to_string()))?;
+        let ops = self.ops.iter().map(|p| (p.op.clone(), p.refs.clone()));
+        Plan::replanned(Some(source), start, ops).map_err(py_value_error)
+    }
+
+    /// This plan with `op_json` appended. `refs` are the states of the nodes
+    /// it reads by id.
+    #[pyo3(signature = (op_json, refs=None))]
+    fn push(&self, op_json: &str, refs: Option<Refs>) -> PyResult<Plan> {
+        self.clone()
+            .pushed(parse_op(op_json)?, refs.unwrap_or_default())
+            .map_err(py_value_error)
+    }
+
+    /// The ops at `positions`, in that order, planned again from the state
+    /// entering the first of them (`positions` empty: the state at `start`).
+    /// A slice, a reorder and a deletion are each one call.
+    #[pyo3(signature = (positions, start=None))]
+    fn select(&self, positions: Vec<usize>, start: Option<usize>) -> PyResult<Plan> {
+        self.selected(&positions, start).map_err(py_value_error)
+    }
+
+    /// The node-scope pass `pass_name` applied: the new plan, or `None` when
+    /// it changes nothing.
+    fn run_pass(&self, pass_name: &str) -> PyResult<Option<Plan>> {
+        use crate::passes::{run, LogicalPass, Node};
+        let pass = view_buffer::naming::lookup(LogicalPass::NAMED, pass_name)
+            .ok_or_else(|| py_value_error(format!("unknown pass {pass_name:?}")))?;
+        let (ops, states) = (self.typed_ops(), self.states());
+        let order = run(
+            pass,
+            &Node {
+                ops: &ops,
+                states: &states,
+            },
+        )
+        .map_err(py_value_error)?;
+        order
+            .map(|order| {
+                let ops = order
+                    .iter()
+                    .map(|&i| (self.ops[i].op.clone(), self.ops[i].refs.clone()));
+                Plan::replanned(self.source.clone(), self.start.clone(), ops)
+            })
+            .transpose()
+            .map_err(py_value_error)
+    }
+
+    /// The state at op boundary `position`: entering that op, or the final
+    /// state at the end.
+    fn state_at(&self, position: usize) -> PyResult<State> {
+        self.state_before(position).map_err(py_value_error)
+    }
+
+    /// The state after the last op.
+    #[getter]
+    fn state(&self) -> State {
+        self.state.clone()
+    }
+
+    /// Whether the plan has a source.
+    #[getter]
+    fn has_source(&self) -> bool {
+        self.source.is_some()
+    }
+
+    /// The source's format name, if any.
+    #[getter]
+    fn source_format(&self) -> Option<&'static str> {
+        self.source.as_ref().map(|s| s.name())
+    }
+
+    fn __len__(&self) -> usize {
+        self.ops.len()
+    }
+
+    /// Each op's wire JSON, with the pipeline's own slot numbers.
+    fn ops_json(&self) -> Vec<String> {
+        self.ops.iter().map(|p| wire(&p.op).to_string()).collect()
+    }
+
+    /// The source's wire JSON, with the pipeline's own slot numbers.
+    fn source_json(&self) -> Option<String> {
+        self.source.as_ref().map(|s| wire(s).to_string())
+    }
+
+    /// The node spec a graph serializes (`{"source": ..., "ops": [...]}`) with
+    /// slot `i` renumbered to graph input `slot_map[i]`.
+    fn to_spec(&self, slot_map: Vec<usize>) -> PyResult<String> {
+        let mut spec = serde_json::json!({
+            "source": self.source.as_ref().map(wire),
+            "ops": self.ops.iter().map(|p| wire(&p.op)).collect::<Vec<_>>(),
+        });
+        remap_slots(&mut spec, &slot_map).map_err(py_value_error)?;
+        Ok(spec.to_string())
+    }
+
+    fn __copy__(slf: Py<Self>) -> Py<Self> {
+        slf
+    }
+
+    fn __deepcopy__(slf: Py<Self>, _memo: &Bound<'_, PyAny>) -> Py<Self> {
+        slf
+    }
+
+    /// Pickled as its source and ops (with the states they read), and planned
+    /// again when loaded.
+    fn __reduce__(slf: &Bound<'_, Self>) -> PyResult<(Py<PyAny>, (String,))> {
+        let plan = slf.get();
+        let refs = |r: &Refs| -> serde_json::Value {
+            r.iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        serde_json::from_str(&v._wire()).expect("wire state"),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>()
+                .into()
+        };
+        let wire = serde_json::json!({
+            "source": plan.source,
+            "start": serde_json::from_str::<serde_json::Value>(&plan.start._wire()).expect("wire state"),
+            "ops": plan.ops.iter().map(|p| serde_json::json!({"op": p.op, "refs": refs(&p.refs)})).collect::<Vec<_>>(),
+        });
+        let restore = slf
+            .py()
+            .import("polars_cv._lib")?
+            .getattr("_plan_from_json")?;
+        Ok((restore.unbind(), (wire.to_string(),)))
+    }
+}
+
+/// Unpickle a [`Plan`] (see `Plan::__reduce__`).
 #[pyfunction]
-#[pyo3(signature = (op_json, state, refs=None))]
-pub(crate) fn plan_step(op_json: &str, state: State, refs: Option<Refs>) -> PyResult<State> {
-    let op: crate::ops::TypedOp =
-        serde_json::from_str(op_json).map_err(|e| py_value_error(e.to_string()))?;
-    step(&op, &state, &refs.unwrap_or_default()).map_err(py_value_error)
+pub(crate) fn _plan_from_json(wire: &str) -> PyResult<Plan> {
+    Plan::from_wire(wire).map_err(py_value_error)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn remap_slots_renumbers_every_slot_and_refuses_an_unmapped_one() {
+        let mut v = json!({"op": "x", "a": {"$slot": 0}, "b": [1, {"$slot": 1}]});
+        remap_slots(&mut v, &[5, 7]).unwrap();
+        assert_eq!(
+            v,
+            json!({"op": "x", "a": {"$slot": 5}, "b": [1, {"$slot": 7}]})
+        );
+        let mut v = json!({"a": {"$slot": 2}});
+        assert!(remap_slots(&mut v, &[0]).unwrap_err().contains("slot 2"));
+    }
+
+    #[test]
+    fn wire_leaves_out_unset_fields_but_keeps_nulls_inside_values() {
+        let v = wire(&json!({"a": null, "b": [null, 1], "c": {"d": null}}));
+        assert_eq!(v, json!({"b": [null, 1], "c": {"d": null}}));
+    }
+
+    fn pushed(plan: Plan, op: serde_json::Value) -> Plan {
+        plan.pushed(serde_json::from_value(op).unwrap(), Refs::new())
+            .unwrap()
+    }
+
+    #[test]
+    fn select_plans_the_kept_ops_again_from_the_state_entering_them() {
+        let start = state("buffer", "u8", Some(3), [Some(10), Some(20), Some(3)]);
+        let mut plan = Plan::continuing(start.clone());
+        plan = pushed(
+            plan,
+            json!({"op": "resize", "height": 4, "width": 6, "filter": "bilinear"}),
+        );
+        plan = pushed(plan, json!({"op": "grayscale"}));
+        plan = pushed(plan, json!({"op": "cast", "dtype": "f32"}));
+        let whole = plan.selected(&[0, 1, 2], None).unwrap();
+        assert_eq!(whole.states(), plan.states());
+        // A suffix starts from the state entering it, even when it is empty.
+        let tail = plan.selected(&[2], None).unwrap();
+        assert_eq!(tail.state_before(0).unwrap(), plan.state_before(2).unwrap());
+        assert_eq!(tail.state, plan.state);
+        let empty = plan.selected(&[], Some(3)).unwrap();
+        assert_eq!(empty.state, plan.state);
+        // A reorder is planned, not carried: cast then grayscale.
+        let reordered = plan.selected(&[0, 2, 1], None).unwrap();
+        assert_eq!(reordered.state.dtype, plan.state.dtype);
+        assert!(plan.selected(&[3], None).is_err());
+    }
+
+    #[test]
+    fn a_plan_survives_its_pickle_wire() {
+        let plan = pushed(
+            Plan::continuing(state("buffer", "u8", Some(3), [None; 3])),
+            json!({"op": "resize", "height": 4, "width": 6, "filter": "bilinear"}),
+        );
+        let wire = json!({
+            "source": null,
+            "start": serde_json::from_str::<serde_json::Value>(&plan.start._wire()).unwrap(),
+            "ops": [{"op": serde_json::from_str::<serde_json::Value>(&plan.ops_json()[0]).unwrap(), "refs": {}}],
+        });
+        let back = Plan::from_wire(&wire.to_string()).unwrap();
+        assert_eq!(back.states(), plan.states());
+        assert_eq!(back.ops_json(), plan.ops_json());
+    }
 
     fn state(domain: &str, dtype: &str, ndim: Option<usize>, dims: [Option<usize>; 3]) -> State {
         State {

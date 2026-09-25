@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import math
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
@@ -20,23 +20,20 @@ from polars_cv._types import (
     FloatOrExpr,
     IntOrExpr,
     NullParamPolicy,
-    OpSpec,
-    ParamValue,
     RowErrorPolicy,
     ScaleOrigin,
     SlotTable,
     SourceFormat,
-    SourceSpec,
+    _to_python,
     _validate_enum,
     normalize_cloud_options,
-    planning_slots,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
 
     from polars_cv._graph import PipelineGraph
-    from polars_cv._lib import PlanState
+    from polars_cv._lib import Plan, PlanState
     from polars_cv._optimize import OptFlags
     from polars_cv._types import SlotOf
     from polars_cv.lazy import LazyPipelineExpr
@@ -89,75 +86,23 @@ def _rotation_matrix(
     return [cos_a, -sin_a, tx, sin_a, cos_a, ty]
 
 
-def _same(value: "Any") -> "Any":
-    """Carry a field across a copy by reference (immutable or deliberately shared)."""
-    return value
+#: Refusal for an expression given where the catalogue types a field literal.
+_STRUCTURAL = (
+    "This parameter is structural (it fixes the output shape/rank at planning "
+    "time) and must be a literal, not a Polars expression."
+)
 
 
-#: Every field of a :class:`Pipeline`'s state, and how a copy of it is made.
-#:
-#: This is the single authority for "what *is* a Pipeline's state", and
-#: :meth:`Pipeline._copy_state_from` is the only reader. Every constructor of a
-#: derived pipeline — ``_clone``, ``_create_sub_pipeline``, and CSE's
-#: ``_create_shared_node`` in ``_graph.py`` — copies the whole state through it
-#: and *then* overrides the few fields it means to change, so a new field is
-#: carried by default instead of by remembering three call sites.
-#:
-#: It replaced three hand-written field-by-field copies that had already
-#: drifted: ``_create_sub_pipeline`` copied 11 of the 14 fields, so the public
-#: ``Pipeline.on_error(...).to_graph(...)`` silently executed under ``"raise"``
-#: — ``PipelineGraph._to_dict`` reads the policy off the *node* pipeline, and
-#: the sub-pipeline it built had the default. Prefer a mechanism callers cannot
-#: step around to a convention each caller must re-enact.
-#:
-#: A field added to ``__init__`` and not here fails
-#: ``test_pipeline_state_copy_is_complete``.
-_STATE_COPIERS: "dict[str, Callable[[Any], Any]]" = {
-    # Specs and tracked scalars: immutable, shared by reference.
-    "_source": _same,
-    # The tracked state: an immutable record Rust hands back each step.
-    "_state": _same,
-    "_on_error": _same,
-    "_on_null_param": _same,
-    # Containers: copied so the clone cannot mutate its origin.
-    "_ops": list,
-    "_expr_refs": list,
-    # Per-op entering states: immutable records, so a shallow copy suffices.
-    "_entering": list,
-    # `pl.Expr` / `LazyPipelineExpr` elements are shared deliberately — they are
-    # graph identities, and deep-copying one would break node reference.
-    "_node_refs": list,
-}
+def _encode_field(p: "Pipeline", value: Any, ty: "dict[str, Any]", where: str) -> Any:
+    """One typed-op argument as its wire value, per its catalogue type
+    (``OP_FIELDS``); ``None`` for an absent optional field.
 
-
-class _Position(NamedTuple):
-    """What the planner keeps for one op: the state entering it, and the states
-    of the nodes it reads by id (a binary op's operand, a canvas's node), which
-    its plan step reads again on replay."""
-
-    state: "PlanState"
-    refs: "dict[str, PlanState]"
-
-
-def _plain(value: Any) -> Any:
-    """A parameter as ``repr`` shows it: literals as themselves, lists
-    element-wise, a per-row expression as the expression."""
-    if isinstance(value, ParamValue):
-        return _plain(value.value)
-    if isinstance(value, list):
-        return [_plain(v) for v in value]
-    return value
-
-
-def _encode_field(
-    p: "Pipeline", value: Any, ty: "dict[str, Any]", where: str
-) -> "ParamValue | None":
-    """Encode one typed-op argument per its catalogue type (``OP_FIELDS``).
-
-    ``None`` for an absent optional field. A sequence field is encoded element
-    by element, so each element may be an expression; anything else in its
-    place is passed through for the Rust definition to reject. An expression
-    for a structural (literal-only) field is refused by ``ParamValue``.
+    A per-row field's expression becomes ``{"$slot": i}`` over *p*'s
+    expression table; a node operand its node id (recorded as a node *p*
+    reads). A sequence field is encoded element by element, so each element
+    may be an expression. Nothing is validated here beyond what the type
+    decides: the op's Rust definition refuses a wrong type, range, enum name
+    or length when the plan pushes it.
     """
     kind = ty["kind"]
     if kind == "optional":
@@ -168,18 +113,14 @@ def _encode_field(
         if not isinstance(value, pl.Expr):
             msg = f"{where} must be a Polars expression, got {type(value).__name__}"
             raise TypeError(msg)
-        return p._track_expr(value)
+        return p._slot(value)
     if kind == "node":
-        # An operand expression crosses as its node id and is recorded as a
-        # node this pipeline reads: its state plans the op, and the graph
-        # wiring makes it an upstream edge.
         from polars_cv.lazy import LazyPipelineExpr
 
         if isinstance(value, LazyPipelineExpr):
-            if all(ref is not value for ref in p._node_refs):
-                p._node_refs.append(value)
-            value = value._node_id
-        return ParamValue(is_expr=False, value=value)
+            p._read_node(value)
+            return value._node_id
+        return value
     if kind == "one_of":
         # The options differ in shape: a sequence picks the sequence option.
         wants_seq = _is_sequence(value)
@@ -189,16 +130,16 @@ def _encode_field(
         msg = f"{where}: no catalogue option takes {type(value).__name__}"
         raise TypeError(msg)
     if kind in ("array", "list") and _is_sequence(value):
-        return ParamValue(
-            is_expr=False,
-            value=[
-                _encode_field(p, v, ty["inner"], f"{where}[{i}]")
-                for i, v in enumerate(value)
-            ],
-        )
+        return [
+            _encode_field(p, v, ty["inner"], f"{where}[{i}]")
+            for i, v in enumerate(value)
+        ]
     if kind == "scalar" and ty["per_row"]:
-        return p._track_expr(value)
-    return ParamValue(is_expr=False, value=value)
+        return p._wire(value)
+    if isinstance(value, pl.Expr):
+        msg = f"{where}: {_STRUCTURAL}"
+        raise TypeError(msg)
+    return _to_python(value)
 
 
 def _is_sequence(value: Any) -> bool:
@@ -256,62 +197,68 @@ class Pipeline(_OpsMixin):
 
     def __init__(self) -> None:
         """Initialize an empty pipeline."""
-        self._source: SourceSpec | None = None
-        self._ops: list[OpSpec] = []
-        self._expr_refs: list[pl.Expr] = []
-        # The planned state after the last op (see `PlanState`): domain,
-        # dtype, rank, known sizes, which of them the user asserted, and
-        # whether a declaration reached this lineage.
-        from polars_cv._lib import PlanState
+        from polars_cv._lib import Plan
 
-        self._state: PlanState = PlanState()
-        # The state entering each op, in step with `_ops`. A slice, a
-        # reorder or a deletion of the ops replays them from one of these
-        # (`_replay`), and identity elimination judges an op against its own.
-        self._entering: list[_Position] = []
+        # The source, the typed ops and the state at every op boundary: one
+        # immutable Rust object, rebuilt by Rust on every append or rewrite.
+        self._plan: Plan = Plan()
+        # The expressions the plan's `{"$slot": i}` parameters name, by `i`
+        # (each distinct expression once, by `meta.eq`).
+        self._exprs: list[pl.Expr] = []
         # Per-row error policy for the executed graph ("raise" by default).
         self._on_error: str = "raise"
         # What a null in a per-row expression parameter means ("raise" by
         # default). Independent of _on_error — see on_null_param().
         self._on_null_param: str = "raise"
-        # LazyPipelineExpr nodes referenced by ops (e.g. rasterize(shape=...));
-        # consumers wiring this pipeline into a graph add them as upstream
-        # dependencies so the referenced node executes first.
+        # LazyPipelineExpr nodes the ops or the source read by id (a binary
+        # op's operand, a canvas): their states plan those steps, and the
+        # graph makes them upstream edges so they execute first.
         self._node_refs: "list[LazyPipelineExpr]" = []
 
-    def _track_expr(self, value: IntOrExpr | FloatOrExpr) -> ParamValue:
-        """
-        Create a ParamValue and track the expression if needed.
+    @property
+    def _state(self) -> "PlanState":
+        """The planned state after the last op."""
+        return self._plan.state
 
-        Args:
-            value: Literal or expression value.
+    def _slot(self, expr: pl.Expr) -> dict[str, int]:
+        """``{"$slot": i}`` for *expr* in this pipeline's expression table,
+        adding it once (by ``meta.eq``, never by text)."""
+        for i, known in enumerate(self._exprs):
+            if known is expr or known.meta.eq(expr):
+                return {"$slot": i}
+        self._exprs.append(expr)
+        return {"$slot": len(self._exprs) - 1}
 
-        Returns:
-            ParamValue instance.
-        """
-        param = ParamValue.from_arg(value)
-        if param.is_expr and isinstance(value, pl.Expr):
-            # Track each distinct expression once (by meta.eq, never by text).
-            if not any(e is value or e.meta.eq(value) for e in self._expr_refs):
-                self._expr_refs.append(value)
-        return param
+    def _wire(self, value: Any) -> Any:
+        """A per-row argument's wire value: its slot, or the literal."""
+        return self._slot(value) if isinstance(value, pl.Expr) else _to_python(value)
 
-    def _copy_state_from(self, other: "Pipeline") -> None:
-        """Copy *other*'s entire state onto this pipeline.
+    def _read_node(self, node: "LazyPipelineExpr") -> None:
+        """Record *node* as one this pipeline reads by id."""
+        if all(ref is not node for ref in self._node_refs):
+            self._node_refs.append(node)
 
-        The one way a derived pipeline inherits state, driven by
-        :data:`_STATE_COPIERS`. Callers that mean to change a field override it
-        *after* this returns, so anything they do not mention survives — the
-        opposite of building a pipeline up field by field, which is how
-        ``_create_sub_pipeline`` came to drop ``on_error`` / ``on_null_param``.
-        """
-        for name, copier in _STATE_COPIERS.items():
-            setattr(self, name, copier(getattr(other, name)))
+    def _refs(self) -> "dict[str, PlanState]":
+        """The states of the nodes this pipeline reads, by node id."""
+        return {ref._node_id: ref._pipeline._state for ref in self._node_refs}
+
+    def _unwire(self, value: Any) -> Any:
+        """A wire value with each ``{"$slot": i}`` as the expression it names."""
+        if isinstance(value, dict):
+            if value.keys() == {"$slot"}:
+                return self._exprs[value["$slot"]]
+            return {k: self._unwire(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._unwire(v) for v in value]
+        return value
 
     def _clone(self) -> "Pipeline":
-        """Create a shallow clone of this pipeline for chaining."""
-        new = Pipeline()
-        new._copy_state_from(self)
+        """A copy for chaining: the plan is immutable and shared, the lists
+        are copied so the clone cannot mutate its origin."""
+        new = Pipeline.__new__(Pipeline)
+        new.__dict__.update(
+            {k: list(v) if isinstance(v, list) else v for k, v in vars(self).items()}
+        )
         return new
 
     def on_error(self, policy: str) -> "Pipeline":
@@ -429,111 +376,28 @@ class Pipeline(_OpsMixin):
         """
         return self._state.dtype
 
-    def _append_op(
-        self,
-        op_name: str,
-        build_params: "Callable[[Pipeline], dict[str, ParamValue]]",
-    ) -> "Pipeline":
-        """Append one operation and apply its full plan-time effect.
-
-        Every builder method routes through this. An operation therefore
-        cannot be appended without also validating its input domain and
-        updating **both** the tracked domain/dtype/ndim and the shape hints.
-        Skipping the latter is what let ``transpose``/``channel_select``
-        desync the planned schema from execution; making the sequence
-        unskippable is the fix.
-
-        Args:
-            op_name: The operation's wire name (an op in the generated catalogue).
-            build_params: Callable receiving the *cloned* pipeline and
-                returning the op's parameters. It runs after the clone so it
-                can register per-row expressions via that clone's
-                ``_track_expr`` (and, for ``rasterize``, record a shape
-                reference) without mutating the receiver.
-
-        Returns:
-            A new Pipeline with the operation appended and all state updated.
-        """
-        new = self._clone()
-        spec = OpSpec(op=op_name, params=build_params(new))
-        # One contract read serves both the input-domain check and the channel
-        # rule, so an append still costs a constant number of FFI calls.
-        new._push_op(spec)
-        return new
-
     def _append_typed(self, op_name: str, values: "dict[str, Any]") -> "Pipeline":
-        """Append a typed op (one in the generated catalogue).
+        """A new pipeline with the typed op *op_name* appended.
 
         The generated builder methods (``_ops_generated._OpsMixin``) call this
-        with their arguments as given; each field is encoded by the one rule
-        its catalogue type names. Values are *not* validated here: the op's
-        Rust definition rejects a wrong type, a value out of range, an unknown
-        enum name or a wrong length when :meth:`_push_op` plans the op, so
-        there is no second copy of any of those rules.
+        with their arguments as given; see :meth:`_push`.
         """
+        new = self._clone()
+        new._push(op_name, values)
+        return new
+
+    def _push(self, op_name: str, values: "dict[str, Any]") -> None:
+        """Append the typed op *op_name* **in place**: each argument encoded by
+        its catalogue type, then one ``Plan.push``, which validates the op
+        against its Rust definition and plans it. The plan is the only record
+        of the ops, and Rust the only code that extends it."""
         fields = OP_FIELDS[op_name]
-
-        def _params(p: "Pipeline") -> dict[str, ParamValue]:
-            params: dict[str, ParamValue] = {}
-            for name, value in values.items():
-                encoded = _encode_field(p, value, fields[name], f"{op_name}({name}=)")
-                if encoded is not None:
-                    params[name] = encoded
-            return params
-
-        return self._append_op(op_name, _params)
-
-    def _push_op(
-        self, spec: "OpSpec", *, refs: "dict[str, PlanState] | None" = None
-    ) -> None:
-        """Append ``spec`` **in place** and apply its full plan-time effect.
-
-        **The single mutator of ``_ops`` in the package.** :meth:`_append_op`
-        wraps it for the immutable builder path; the graph hook
-        (:meth:`_add_node_op`) calls it directly because it mutates an
-        already-cloned pipeline. The effect — input-domain check, schema fold,
-        H/W, channels, rank clipping, a declaration's check — is one Rust call
-        (``plan_step``), made before anything changes, so an op cannot be
-        appended with only part of it applied. The nodes the op reads by id (a
-        binary op's operand, a canvas's node) are planned from
-        :attr:`_node_refs`' states, or from ``refs`` when a replay re-appends
-        an op with the states it was first planned against.
-
-        The guard is ``test_op_append_is_structurally_exclusive``, which walks
-        this module's AST and fails if anything else mutates ``_ops``.
-        """
-        from polars_cv._lib import plan_step
-
-        if refs is None:
-            refs = {ref._node_id: ref._pipeline._state for ref in self._node_refs}
-        planned = plan_step(json.dumps(spec.to_dict(planning_slots)), self._state, refs)
-        self._entering.append(_Position(self._state, refs))
-        self._ops.append(spec)
-        self._state = planned
-
-    def _replay(self, positions: "Sequence[int]", *, start: "PlanState") -> None:
-        """Rebuild the op list from ``positions`` of the current one, in place.
-
-        **The one wholesale rewrite of ``_ops``**: a slice (CSE's prefix and
-        suffix, a sub-pipeline), a reorder (the spatial pushdown) and a
-        deletion (identity elimination) all name the ops they keep, in order,
-        and the state they start from. Each op is then planned again, so every
-        per-position fact is *recomputed* for the new order rather than re-keyed
-        by the caller.
-        """
-        steps = [(self._ops[i], self._entering[i].refs) for i in positions]
-        self._ops = []
-        self._entering = []
-        self._state = start
-        for spec, refs in steps:
-            self._push_op(spec, refs=refs)
-
-    def _state_at(self, position: int) -> "PlanState":
-        """The state at op boundary ``position``: entering op ``position``, or
-        the current state at the end."""
-        if position < len(self._ops):
-            return self._entering[position].state
-        return self._state
+        op: dict[str, Any] = {"op": op_name}
+        for name, value in values.items():
+            encoded = _encode_field(self, value, fields[name], f"{op_name}({name}=)")
+            if encoded is not None:
+                op[name] = encoded
+        self._plan = self._plan.push(json.dumps(op), self._refs())
 
     # --- Source (required, starts the chain) ---
 
@@ -692,7 +556,6 @@ class Pipeline(_OpsMixin):
         # passed iff it is not None.
         passed = {k: v for k, v in locals().items() if k != "self" and v is not None}
 
-        from polars_cv._lib import plan_source
         from polars_cv.lazy import LazyPipelineExpr
 
         new = self._clone()
@@ -723,45 +586,32 @@ class Pipeline(_OpsMixin):
             msg = "'shape' must be a LazyPipelineExpr"
             raise TypeError(msg)
 
-        # Every keyword the caller passed goes into the spec, whichever format
-        # it is for: the format's Rust definition refuses one it does not
-        # read, naming where it does apply (`plan_source` below).
-        def literal(value: Any) -> ParamValue:
-            return ParamValue(is_expr=False, value=value)
-
-        params: dict[str, ParamValue] = {}
+        # Every keyword the caller passed goes into the source, whichever
+        # format it is for: the format's Rust definition refuses one it does
+        # not read, naming where it does apply (`Plan.with_source` below).
+        source: dict[str, Any] = {"format": fmt.value}
         for name, value in passed.items():
             if name == "dtype":
-                params[name] = literal(_validate_enum(value, DType, "dtype").value)
+                source[name] = _validate_enum(value, DType, "dtype").value
             elif name == "shape":
-                # The canvas node, by id: Rust takes that node's already-computed
-                # buffer. `_node_refs` is what turns the reference into an
-                # upstream edge, so the node is executed (as for `rasterize`).
-                params["size"] = literal(value._node_id)
-                new._node_refs.append(value)
+                # The canvas node, by id: Rust takes that node's planned size
+                # and, at execution, its buffer.
+                source["size"] = value._node_id
+                new._read_node(value)
             elif name in ("height", "width"):
-                params["size"] = literal(
-                    [
-                        literal(None) if d is None else new._track_expr(d)
-                        for d in (height, width)
-                    ]
-                )
+                source["size"] = [
+                    None if d is None else new._wire(d) for d in (height, width)
+                ]
             elif name in ("fill_value", "background"):
-                params[name] = new._track_expr(value)
+                source[name] = new._wire(value)
             elif name == "cloud_options":
                 options = normalize_cloud_options(value)
-                params[name] = literal(None if options is None else options.to_dict())
+                source[name] = None if options is None else options.to_dict()
             elif name == "allowed_roots":
-                params[name] = literal(list(value))
+                source[name] = list(value)
             else:
-                params[name] = literal(value)
-        new._source = SourceSpec(format=fmt, params=params)
-        # The format's Rust definition validates the spec (refusing a setting
-        # it does not read, naming where it applies) and says what state the
-        # decode starts the pipeline in.
-        # A contour canvas from another node takes that node's planned size.
-        refs = {ref._node_id: ref._pipeline._state for ref in new._node_refs}
-        new._state = plan_source(json.dumps(new._source.to_dict(planning_slots)), refs)
+                source[name] = _to_python(value)
+        new._plan = new._plan.with_source(json.dumps(source), new._refs())
         return new
 
     def thumbnail(self, max_size: int) -> "Pipeline":
@@ -807,30 +657,21 @@ class Pipeline(_OpsMixin):
             ```
         """
 
-        if self._source is None:
+        source_json = self._plan.source_json()
+        if source_json is None:
             msg = "thumbnail() requires a source; call .source(...) first"
             raise ValueError(msg)
         if not isinstance(max_size, int) or isinstance(max_size, bool) or max_size <= 0:
             msg = f"max_size must be a positive int, got {max_size!r}"
             raise ValueError(msg)
 
-        from polars_cv._lib import plan_source
-
-        new = self._clone()
-        assert new._source is not None  # guaranteed: checked on self above
-        new._source = SourceSpec(
-            format=new._source.format,
-            params={
-                **new._source.params,
-                "decode_max_size": ParamValue(is_expr=False, value=max_size),
-            },
-        )
         # `thumbnail()` writes `decode_max_size`, so it applies exactly where
         # that field does: the source format's own definition decides, as it
-        # does for `source(decode_max_size=)`. The two used to disagree about
-        # `auto` when each kept its own list.
+        # does for `source(decode_max_size=)`.
+        source = {**json.loads(source_json), "decode_max_size": max_size}
+        new = self._clone()
         try:
-            plan_source(json.dumps(new._source.to_dict(planning_slots)))
+            new._plan = new._plan.with_source(json.dumps(source), new._refs())
         except ValueError as e:
             msg = f"thumbnail() only applies where decode_max_size does: {e}"
             raise ValueError(msg) from None
@@ -1557,7 +1398,7 @@ class Pipeline(_OpsMixin):
         Raises:
             ValueError: If pipeline is invalid.
         """
-        if self._source is None:
+        if not self._plan.has_source:
             msg = "Pipeline must have a source. Call .source() first."
             raise ValueError(msg)
 
@@ -1568,7 +1409,7 @@ class Pipeline(_OpsMixin):
         Returns:
             True if the pipeline has a source defined.
         """
-        return self._source is not None
+        return self._plan.has_source
 
     # --- Graph Conversion ---
 
@@ -1607,11 +1448,9 @@ class Pipeline(_OpsMixin):
 
         # Create single node with all operations
         node_id = "_node_0"
-        # Create a sub-pipeline with source and all ops (no sink - handled separately)
-        sub_pipe = self._create_sub_pipeline(0, len(self._ops))
         graph.add_node(
             node_id=node_id,
-            pipeline=sub_pipe,
+            pipeline=self._clone(),
             column=column,
             upstream=[],
             alias="_output",  # Implicit terminal alias
@@ -1619,39 +1458,6 @@ class Pipeline(_OpsMixin):
         graph._alias_to_node["_output"] = node_id
 
         return graph
-
-    def _create_sub_pipeline(
-        self,
-        start_op: int,
-        end_op: int,
-        source_format: str | None = None,
-    ) -> "Pipeline":
-        """
-        Create a sub-pipeline with a subset of operations.
-
-        Args:
-            start_op: Starting operation index (inclusive).
-            end_op: Ending operation index (exclusive).
-            source_format: Override source format (e.g., "blob" for non-root nodes).
-
-        Returns:
-            New Pipeline with the specified operations.
-        """
-        # Inherit the whole state, then override only what this slice changes.
-        # The per-row policies (`_on_error`, `_on_null_param`) ride along that
-        # way: `PipelineGraph._to_dict` reads them off the node pipeline, and
-        # `to_graph()` makes this sub-pipeline the graph's *only* node, so a
-        # dropped policy here silently reverted the user's `on_error("null")`.
-        sub = Pipeline()
-        sub._copy_state_from(self)
-
-        if source_format is not None:
-            # Non-root node: source is blob (receives from upstream)
-            sub._source = SourceSpec(format=SourceFormat(source_format))
-
-        # The slice starts from the state entering its first op.
-        sub._replay(range(start_op, end_op), start=self._state_at(start_op))
-        return sub
 
     # --- Graph Composition Support ---
 
@@ -1672,38 +1478,23 @@ class Pipeline(_OpsMixin):
             op_name: The op's wire name.
             values: Its arguments, by catalogue field name.
         """
-        fields = OP_FIELDS[op_name]
-        params: dict[str, ParamValue] = {}
-        for name, value in values.items():
-            encoded = _encode_field(self, value, fields[name], f"{op_name}({name}=)")
-            if encoded is not None:
-                params[name] = encoded
-        self._push_op(OpSpec(op=op_name, params=params))
+        self._push(op_name, values)
 
     # --- Node-scope optimisation passes ---
 
     def _run_node_pass(self, name: str) -> None:
         """Apply the node-scope logical pass ``name`` to this pipeline, in place.
 
-        The pass itself is Rust (``node_pass``, ``src/passes.rs``): it reads
-        the ops and the state at every op boundary and answers with the new op
-        order — a subset for identity elimination, a permutation for the
-        spatial-window pushdown — or ``None`` when nothing changes. The new
-        order is committed by :meth:`_replay`, so every per-position fact is
-        recomputed for it. An ``assert_shape`` is an op like any other: never
-        an identity, and never crossed by a crop.
+        The pass is Rust (``Plan.run_pass``, ``src/passes.rs``): it reads the
+        ops and the state at every op boundary and answers with a new plan —
+        a subset of the ops for identity elimination, a permutation for the
+        spatial-window pushdown, every state planned again — or ``None`` when
+        nothing changes. An ``assert_shape`` is an op like any other: never an
+        identity, and never crossed by a crop.
         """
-        from polars_cv._lib import node_pass
-
-        if not self._ops:
-            return
-        order = node_pass(
-            name,
-            [json.dumps(op.to_dict(planning_slots)) for op in self._ops],
-            [self._state_at(p) for p in range(len(self._ops) + 1)],
-        )
-        if order is not None:
-            self._replay(order, start=self._state_at(0))
+        planned = self._plan.run_pass(name)
+        if planned is not None:
+            self._plan = planned
 
     def _to_spec_dict(self, slot_of: "SlotOf") -> dict:
         """
@@ -1711,15 +1502,10 @@ class Pipeline(_OpsMixin):
 
         Used for graph serialization where sink is handled separately.
 
-        Serialization only serializes: it emits ``self._ops`` verbatim and runs
-        no optimization — every pass is applied by ``PipelineGraph.optimize``
-        before serialization (see ``polars_cv._optimize``).
-
-        Shape hints are deliberately *not* emitted: no Rust code ever read the
-        key, and because ``graph_json`` is the compiled-graph cache key, two
-        pipelines that execute identically but carry different hints occupied
-        separate cache entries. Plan-time shape still crosses the boundary in
-        each output's ``planned`` state, which Rust does read.
+        Serialization only serializes: it emits the plan's ops verbatim and
+        runs no optimization — every pass is applied by
+        ``PipelineGraph.optimize`` before serialization (see
+        ``polars_cv._optimize``).
 
         Args:
             slot_of: The graph's slot resolver (``SlotTable.index``), mapping
@@ -1728,10 +1514,7 @@ class Pipeline(_OpsMixin):
         Returns:
             Dictionary with source and ops.
         """
-        return {
-            "source": self._source.to_dict(slot_of) if self._source else None,
-            "ops": [op.to_dict(slot_of) for op in self._ops],
-        }
+        return json.loads(self._plan.to_spec([slot_of(e) for e in self._exprs]))
 
     # --- Serialization ---
 
@@ -1750,7 +1533,7 @@ class Pipeline(_OpsMixin):
         # A lone pipeline's inputs: its column at 0, then its expressions.
         table = SlotTable()
         table.add(pl.col("__input__"))
-        for expr in self._expr_refs:
+        for expr in self._exprs:
             table.add(expr)
         return json.dumps(self._to_spec_dict(table.index))
 
@@ -1761,18 +1544,20 @@ class Pipeline(_OpsMixin):
         Returns:
             List of Polars expressions that need to be passed to the plugin.
         """
-        return self._expr_refs.copy()
+        return list(self._exprs)
 
     # --- Repr ---
 
     def __repr__(self) -> str:
         """Return string representation of pipeline: the chain as written."""
         parts = []
-        if self._source:
-            parts.append(f"source({self._source.format.value!r})")
-        for op in self._ops:
-            params_str = ", ".join(f"{k}={_plain(v)}" for k, v in op.params.items())
-            parts.append(f"{op.op}({params_str})")
+        if self._plan.has_source:
+            parts.append(f"source({self._plan.source_format!r})")
+        for op_json in self._plan.ops_json():
+            op = self._unwire(json.loads(op_json))
+            name = op.pop("op")
+            params = ", ".join(f"{k}={v}" for k, v in op.items() if v is not None)
+            parts.append(f"{name}({params})")
         return f"Pipeline().{'.'.join(parts)}" if parts else "Pipeline()"
 
     def explain(

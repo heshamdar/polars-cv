@@ -3,7 +3,7 @@
 ``tests/test_expression_params.py`` covers the ``.contour``/``.point``/``.bbox``
 namespaces, which carry their parameters as extra plugin *inputs*. This file
 covers the other half: the parameters that ride through the ``vb_graph`` graph
-engine as ``ParamValue``s, which is nearly every operation on ``Pipeline``.
+engine as ``{"$slot": n}`` op fields, which is nearly every operation on ``Pipeline``.
 
 The sweep is table-driven (``tests/_expr_param_cases.py``) and each case is
 checked three ways by ``tests/_expr_param_runner.py`` — against the literal
@@ -172,7 +172,7 @@ class TestDerivedExpressions:
     """A parameter takes any expression, not only a bare column reference.
 
     Expression parameters are keyed on ``str(expr)`` when they cross the wire
-    (``ParamValue.to_dict``), so two derived expressions sharing a root column
+    (the op's wire form), so two derived expressions sharing a root column
     are the case that key exists to keep apart: before it, ``col("h").max()``
     and ``col("h").min()`` hashed to the same slot.
     """

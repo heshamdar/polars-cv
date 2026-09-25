@@ -2,8 +2,8 @@
 
 A parameter is *expression-eligible* iff its value has no effect on the output
 shape, rank or dtype — the rule stated in the root ``CLAUDE.md`` — and the way
-a parameter opts in is ``Pipeline._track_expr`` (directly, or — for a typed
-op — through ``_encode_field`` on a ``Param`` field). The visible
+a parameter opts in is ``Pipeline._wire`` (directly, or — for a typed op —
+through ``_encode_field`` on a ``Param`` field). The visible
 consequence of opting in is the annotation: ``IntOrExpr``, ``FloatOrExpr``,
 ``BoolOrExpr``, ``StrOrExpr`` or a bare ``pl.Expr`` union.
 
@@ -879,7 +879,7 @@ def expression_eligible_parameters() -> dict[str, str]:
     Read off the live signatures rather than a second list, so the ratchet
     tracks the builder. ``LazyPipelineExpr`` annotations are excluded: those
     name another *node* in the graph (``rasterize(shape=)``), not a per-row
-    value, and are wired by node id rather than by ``ParamValue``.
+    value, and are wired by node id rather than by slot.
 
     Returns:
         Mapping of ``method.parameter`` to the annotation that qualified it.

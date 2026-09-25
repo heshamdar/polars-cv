@@ -8,6 +8,7 @@ lazy pipeline operations that are fused into a single plugin call when
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -38,6 +39,9 @@ def _generate_node_id() -> str:
 #: ``test_stat_reducers_are_all_pipeline_methods`` rejects a value that is not
 #: a real reduction, which is what stops this becoming a list of names nothing
 #: resolves.
+#: The source of a node that receives its input from an upstream node.
+_BLOB_SOURCE = json.dumps({"format": "blob"})
+
 _STAT_REDUCERS: "dict[str, str]" = {
     "mean": "reduce_mean",
     "std": "reduce_std",
@@ -148,45 +152,16 @@ class LazyPipelineExpr(_LazyOpsMixin):
         Args:
             pipeline: Operations to apply. If no source(), it continues from here.
         """
-        if pipeline._source is None:
-            # Continuation: new node receives input from self, only has NEW ops
-            from polars_cv._types import SourceFormat, SourceSpec
-            from polars_cv.pipeline import Pipeline as PipelineClass
-
-            new_pipeline = PipelineClass()
-            # BLOB source means "receive from upstream node"
-            new_pipeline._source = SourceSpec(format=SourceFormat.BLOB)
-            new_pipeline._expr_refs = pipeline._expr_refs.copy()
-            # Carry the graph-level policies through continuations.
-            new_pipeline._on_error = pipeline._on_error
-            new_pipeline._on_null_param = pipeline._on_null_param
-
-            # A continuation's pre-op state IS the upstream node's output
-            # state, hints included. Seed from it, then re-apply each new op
-            # through the same mandatory append path the eager builders use,
-            # so domain/dtype/ndim and the shape hints advance together, one
-            # op at a time.
-            #
-            # Folding per-op is the point: the previous code replayed only the
-            # hints and assigned the rank afterwards, so every replayed
-            # op saw `ndim = None` and the H/W update was skipped at its
-            # opening guard — the H/W half of the replay never ran. It
-            # cannot be fixed by hoisting that assignment, either: a
-            # rank-changing op must infer against its own input rank, not the
-            # chain's final one.
-            #
-            # The state is the upstream's as Rust planned it, unedited: the
-            # first op's plan step makes every size its own inference, and with
-            # no ops the output *is* the upstream's (asserted sizes included).
-            new_pipeline._state = self._pipeline._state
-            # The replay is the append path run once per op (an assert_shape
-            # included), each planned against the states it reads.
-            for op_spec, position in zip(pipeline._ops, pipeline._entering):
-                new_pipeline._push_op(op_spec, refs=position.refs)
-
-            # Ops referencing other nodes (rasterize(shape=...)) make those
-            # nodes upstream dependencies so they execute first.
-            new_pipeline._node_refs = pipeline._node_refs.copy()
+        if not pipeline._plan.has_source:
+            # Continuation: a new node that receives this node's output (a
+            # "blob" source) and applies only the new ops, each planned again
+            # by Rust from this node's output state. The clone carries the
+            # expressions the ops' slots name, the graph-level policies and
+            # the nodes the ops read.
+            new_pipeline = pipeline._clone()
+            new_pipeline._plan = pipeline._plan.rebased(
+                _BLOB_SOURCE, self._pipeline._state
+            )
             return LazyPipelineExpr(
                 column=None,  # No column - receives from upstream, not from DataFrame
                 pipeline=new_pipeline,
@@ -386,17 +361,17 @@ class LazyPipelineExpr(_LazyOpsMixin):
         from polars_cv.pipeline import Pipeline
 
         # Carry the original contour source's fill/background across to the new
-        # shape-referencing source. Both are ``ParamValue | None`` (they accept
-        # per-row expressions), so unwrap back to the value the caller passed —
-        # re-wrapping a ``ParamValue`` would nest it and fail JSON encoding.
-        orig_source = contour._pipeline._source
+        # shape-referencing source, as the values the caller passed (a
+        # per-row one as its expression).
+        orig = contour._pipeline
+        orig_source = orig._unwire(json.loads(orig._plan.source_json() or "{}"))
 
-        def _unwrap(name: str, default: int) -> int | pl.Expr:
-            param = orig_source.params.get(name) if orig_source else None
-            return default if param is None else param.value
+        def _given(name: str, default: int) -> int | pl.Expr:
+            value = orig_source.get(name)
+            return default if value is None else value
 
-        fill_value = _unwrap("fill_value", 255)
-        background = _unwrap("background", 0)
+        fill_value = _given("fill_value", 255)
+        background = _given("background", 0)
 
         # Create new contour source with shape= referencing this image for dimensions
         raster_pipeline = Pipeline().source(
@@ -621,26 +596,24 @@ class LazyPipelineExpr(_LazyOpsMixin):
         and ``.channel_select(2)`` after ``.grayscale()`` is refused.
         ``pipe()`` then plans the continuation node from upstream.
         """
+        from polars_cv._lib import Plan
         from polars_cv.pipeline import Pipeline
 
         inner = Pipeline()
-        inner._state = self._pipeline._state
+        inner._plan = Plan.continuing(self._pipeline._state)
         return inner
 
     def _binary_op(self, op: str, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
         """Create a binary operation between this and another LazyPipelineExpr."""
-        from polars_cv._types import SourceFormat, SourceSpec
+        from polars_cv._lib import Plan
         from polars_cv.pipeline import Pipeline as PipelineClass
 
-        # Create a new pipeline that receives from upstream (BLOB source)
-        # and only applies the binary op - don't clone self's ops as they're
-        # already applied by the upstream node
+        # A node that receives the left operand's output (a "blob" source) and
+        # applies only the binary op, planned from that state; its rules read
+        # both operands (true division of two u8 is f32, the shapes
+        # broadcast), so the other operand's state goes with it.
         new_pipeline = PipelineClass()
-        new_pipeline._source = SourceSpec(format=SourceFormat.BLOB)
-        # The op applies to the left operand's output, so it starts from that
-        # state; its rules read both operands (true division of two u8 is f32,
-        # the shapes broadcast), so the other operand's state goes with it.
-        new_pipeline._state = self._pipeline._state
+        new_pipeline._plan = Plan().rebased(_BLOB_SOURCE, self._pipeline._state)
         new_pipeline._add_node_op(op, {"other": other})
 
         return LazyPipelineExpr(

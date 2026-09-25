@@ -313,7 +313,7 @@ class TestPipelineBuilder:
     """Tests for morphological pipeline construction (no plugin required)."""
 
     def test_erode_creates_op(self) -> None:
-        """Erode method adds an OpSpec with correct params."""
+        """Erode method adds an op with correct params."""
         pipe = Pipeline().erode(ksize=5, iterations=2)
         assert len(ops_of(pipe)) == 1
         assert ops_of(pipe)[0].op == "erode"
@@ -321,7 +321,7 @@ class TestPipelineBuilder:
         assert ops_of(pipe)[0].params["iterations"] == 2
 
     def test_dilate_creates_op(self) -> None:
-        """Dilate method adds an OpSpec with correct params."""
+        """Dilate method adds an op with correct params."""
         pipe = Pipeline().dilate(ksize=7)
         assert len(ops_of(pipe)) == 1
         assert ops_of(pipe)[0].op == "dilate"
@@ -347,7 +347,7 @@ class TestPipelineBuilder:
         assert ops_of(pipe)[1].params["ksize"] == 5
 
     def test_gradient_creates_op(self) -> None:
-        """Morphology gradient adds a single OpSpec."""
+        """Morphology gradient adds a single op."""
         pipe = Pipeline().morphology_gradient(ksize=3)
         assert len(ops_of(pipe)) == 1
         assert ops_of(pipe)[0].op == "morphology_gradient"

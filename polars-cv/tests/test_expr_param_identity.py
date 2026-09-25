@@ -4,7 +4,7 @@ Polars' ``str(expr)`` is a display form, not an identity: every
 ``pl.lit(pl.Series("f", ...))`` prints ``Series[f]`` whatever its values, and
 two different Python UDFs print the same ``python_udf`` text. polars-cv used
 that text as the identity of an expression parameter in every place one was
-compared — the plugin input slot it binds to, ``ParamValue`` equality (and so
+compared — the plugin input slot it binds to, op equality (and so
 CSE), and root-column deduplication — so two different expressions with equal
 text silently became one, and the second op read the first op's values
 (CR-31).
@@ -17,13 +17,16 @@ so text collisions cannot merge expressions.
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import polars as pl
 import pytest
 
 from polars_cv import Pipeline
-from polars_cv._types import OpSpec, ParamValue, SlotTable
+from polars_cv._types import SlotTable
 
+from ._plan_view import exprs_of, op_json, ops_of
 from .conftest import make_test_png, plugin_required
 
 N = 3
@@ -63,32 +66,25 @@ class TestSlotTable:
             table.index(pl.col("b"))
 
 
-class TestParamValueIdentity:
-    """``ParamValue`` equality drives CSE, so it must not merge distinct exprs."""
+@plugin_required
+class TestPipelineSlots:
+    """A pipeline numbers its expressions by ``meta.eq``, which drives CSE, so
+    distinct expressions must not merge."""
 
-    def test_params_with_colliding_text_are_not_equal(self) -> None:
-        a = ParamValue.from_arg(pl.lit(_series(1.0)))
-        b = ParamValue.from_arg(pl.lit(_series(3.0)))
-        assert a != b
+    def _slots(self, pipe: Pipeline) -> list[object]:
+        return [
+            json.loads(op_json(pipe, i))["factor"] for i in range(len(ops_of(pipe)))
+        ]
 
-    def test_ops_with_colliding_param_text_are_not_equal(self) -> None:
-        a = OpSpec("scale", {"factor": ParamValue.from_arg(pl.lit(_series(1.0)))})
-        b = OpSpec("scale", {"factor": ParamValue.from_arg(pl.lit(_series(3.0)))})
-        assert a != b
+    def test_params_with_colliding_text_get_distinct_slots(self) -> None:
+        pipe = Pipeline().source().scale(pl.lit(_series(1.0)))
+        pipe = pipe.scale(pl.lit(_series(3.0)))
+        assert self._slots(pipe) == [{"$slot": 0}, {"$slot": 1}]
 
-    def test_equal_expressions_are_equal_params(self) -> None:
-        a = ParamValue.from_arg(pl.col("h") + 1)
-        b = ParamValue.from_arg(pl.col("h") + 1)
-        assert a == b
-        assert hash(a) == hash(b)
-
-    def test_serialized_slots_differ(self) -> None:
-        a = ParamValue.from_arg(pl.lit(_series(1.0)))
-        b = ParamValue.from_arg(pl.lit(_series(3.0)))
-        table = SlotTable()
-        table.add(a.value)
-        table.add(b.value)
-        assert a.to_wire(table.index) != b.to_wire(table.index)
+    def test_equal_expressions_share_a_slot(self) -> None:
+        pipe = Pipeline().source().scale(pl.col("h") + 1).scale(pl.col("h") + 1)
+        assert self._slots(pipe) == [{"$slot": 0}, {"$slot": 0}]
+        assert len(exprs_of(pipe)) == 1
 
 
 @plugin_required

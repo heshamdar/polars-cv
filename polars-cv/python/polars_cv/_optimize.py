@@ -50,7 +50,7 @@ class PassSpec:
         tier: ``"logical"`` — applied by ``PipelineGraph.optimize``, rewriting
             the logical graph before serialization (CSE in Python, which holds
             the expression identities; the node-scope passes in Rust,
-            ``node_pass``); or ``"engine"`` — a per-row lowering rewrite in the
+            ``Plan.run_pass``); or ``"engine"`` — a per-row lowering rewrite in the
             Rust engine, whose flag is serialized into the graph's ``opt``
             object and gates the matching ``OptConfig`` field. Mandatory
             correctness lowering (materialization, the f64 fusion exclusion) is

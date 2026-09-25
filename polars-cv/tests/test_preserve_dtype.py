@@ -2,7 +2,7 @@
 Tests for the opt-in ``preserve_dtype`` parameter on scalar ops.
 
 ``preserve_dtype=True`` on ``scale`` / ``clamp`` / ``adjust_brightness``
-lowers to a trailing ``cast(<pre-op dtype>)`` OpSpec: the computation still
+lowers to a trailing ``cast(<pre-op dtype>)`` op: the computation still
 runs in f32 per the PromoteToFloat contract, but the stored result is cast
 back (round-then-saturate for integer targets), e.g. u8 in → u8 out instead
 of the promoted f32 (4× smaller payloads).

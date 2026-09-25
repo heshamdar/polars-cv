@@ -4,7 +4,7 @@ Tests for remote file_path prefetching and cloud_options round-trip.
 Remote `file_path` sources are fetched concurrently before the row loop
 (per batch); these tests exercise that path hermetically with a local HTTP
 server — no external network. The cloud_options round-trip test checks the
-fix for the known gap where `SourceSpec.to_dict()` dropped credentials.
+fix for the known gap where the source's serialization dropped credentials.
 """
 
 from __future__ import annotations
