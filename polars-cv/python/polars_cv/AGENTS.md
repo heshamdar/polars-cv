@@ -320,10 +320,10 @@ rotation matrix via the `rotation_matrix_2d` FFI) and delegate to
 
 No per-dimension geometry is derived in Python. Every op's shape arithmetic is
 one view-buffer `OpShape`, which execution evaluates on known sizes and `plan::step` evaluates symbolically: each typed op builds its `OpShape` from its
-own fields (`OpDef::shape`), a per-row field as `Sym::PerRow` and an unknown
+own fields (its family's generic `shape()` on the `Wire` op), a per-row field as `Sym::PerRow` and an unknown
 input size as `Dim::Input(k)`. So the tracked H/W cannot disagree with what
 the op produces, and no placeholder value stands in for a per-row one
-(`typed_shape_is_the_resolved_steps` holds the typed shape to the engine op's).
+(`typed_shape_is_the_resolved_steps` holds it to the executed step's where an op lowers).
 
 Not every step *has* an inferable shape: axis reductions, histograms, channel
 merge and the binary ops are graph-level steps with no `OpShape`. For those

@@ -168,10 +168,14 @@ fn referenced<'a>(refs: &'a Refs, op: &str, node: &str) -> Result<&'a State, Str
 /// contradicts: a rank that is already known differently, a dimension the
 /// rank does not have, or a size that disagrees with a known one. A per-row
 /// size is declared but is no plan-time fact.
-fn declare(mut state: State, op: &crate::ops::declare::AssertShape) -> Result<State, String> {
+fn declare(
+    mut state: State,
+    rank: &Option<crate::ops::Literal<u32>>,
+    dims: &[Option<crate::ops::Param<u32>>; 3],
+) -> Result<State, String> {
     use crate::ops::Param;
 
-    if let Some(rank) = op.rank.map(|r| r.get() as usize) {
+    if let Some(rank) = rank.map(|r| r.get() as usize) {
         if !(1..=DIM_NAMES.len()).contains(&rank) {
             return Err(format!(
                 "assert_shape(dims=...) supports 1 to {} dimensions ({}), got {rank}. \
@@ -190,7 +194,7 @@ fn declare(mut state: State, op: &crate::ops::declare::AssertShape) -> Result<St
         }
         state.ndim = Some(rank);
     }
-    for (axis, declared) in op.dims.iter().enumerate() {
+    for (axis, declared) in dims.iter().enumerate() {
         let Some(declared) = declared else {
             continue;
         };
@@ -248,8 +252,8 @@ pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Resu
         ));
     }
     // A declaration's whole effect is on the plan.
-    if let TypedOp::AssertShape(declared) = op {
-        return declare(state.clone(), declared);
+    if let TypedOp::Graph(crate::ops::graph::GraphOp::AssertShape { rank, dims }) = op {
+        return declare(state.clone(), rank, dims);
     }
 
     let other = match &step {

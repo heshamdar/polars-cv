@@ -296,7 +296,8 @@ impl<'a> ParamCtx<'a> {
     /// output shape, rank, or dtype** (a `Literal<T>` field cannot hold a
     /// slot). Every per-row parameter therefore resolves to
     /// [`WireScalar::planning_value`](view_buffer::naming::WireScalar::planning_value).
-    /// The shape is not read this way: it is symbolic ([`OpDef::shape`](crate::ops::OpDef::shape)).
+    /// The shape is not read this way: it is symbolic
+    /// ([`TypedOp::shape`](crate::ops::TypedOp::shape)).
     pub fn planning() -> Self {
         ParamCtx {
             cols: Vec::new(),

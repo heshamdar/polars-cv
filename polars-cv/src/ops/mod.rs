@@ -1,14 +1,16 @@
 //! The typed op catalogue: one Rust definition per operation.
 //!
-//! An op is a struct deriving [`Op`](polars_cv_macros::Op) (its fields are
-//! [`Param`]/[`Literal`] compositions) plus an [`OpDef`] impl that resolves it
-//! to a [`GraphStep`], and one line in [`typed_ops!`]. From that:
+//! An op is one variant of a *family* — an engine enum in view-buffer
+//! (`ImageOpKind`, `ComputeOp`, …) or [`graph::GraphOp`] — generic over a
+//! [`Mode`](view_buffer::mode::Mode) and deriving `Ops`/`Resolve`; the family
+//! is one line in [`typed_ops!`]. From that:
 //!
-//! - **serde** rejects an unknown op, an unknown or missing field, a wrong
-//!   type, an out-of-range value and a per-row value for a structural field;
-//! - **the compiler** rejects an op with no `OpDef`, and a field the `OpDef`
-//!   does not use (each impl opens with an exhaustive destructure, and an
-//!   unused binding is a `-D warnings` error);
+//! - **the derived wire** rejects an unknown op, an unknown or missing field, a
+//!   wrong type, an out-of-range value and a per-row value for a structural
+//!   field;
+//! - **the compiler** holds the executed op to the wire's fields: the `Exec`
+//!   variant *is* the `Wire` variant with each value resolved, so there is no
+//!   field to forget;
 //! - **the catalogue** ([`catalog_json`], committed as
 //!   `tests/golden/op_catalog.json`) is what `scripts/gen_ops.py` generates
 //!   the Python builder methods from.
@@ -16,11 +18,8 @@
 //! [`TypedOp`] *is* the wire op: `{"op": <name>, <field>: <value>, ...}`,
 //! deserialized strictly by name. A name no op registers is an error.
 
-pub mod binary;
-pub mod declare;
-pub mod label;
+pub mod graph;
 pub mod param;
-pub mod reduce;
 
 use polars::prelude::*;
 use serde::Serialize;
@@ -42,22 +41,6 @@ pub trait OpFields {
     fn fields() -> Vec<FieldDesc>;
     /// Call `f(field, slot)` for every slot any field reads.
     fn visit_slots(&self, f: &mut dyn FnMut(&'static str, usize));
-}
-
-/// An op's execution: resolve it, for one row, to the step the engine runs.
-///
-/// No default methods (see CLAUDE.md, "No defaulted contract methods").
-pub trait OpDef: OpFields {
-    /// The step for `row`. Per-row parameters read their column here; an op
-    /// with none is resolved once at graph compile time.
-    fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep>;
-
-    /// How the step's output shape follows from its input, read from the
-    /// op's own fields without resolving any: a per-row field is
-    /// [`Sym::PerRow`](view_buffer::ops::Sym), never a placeholder value.
-    /// `None` exactly when the step is graph-level (binary, reduction, …);
-    /// `typed_shape_is_the_resolved_steps` holds the two together.
-    fn shape(&self) -> Option<view_buffer::ops::OpShape>;
 }
 
 /// The catalogue entry of the op struct `T`, registered as `name`.
@@ -83,22 +66,18 @@ pub(crate) fn op_desc<T: OpFields>(name: &'static str) -> OpDesc {
 /// deserializable, resolvable, described and — through the sample — covered by
 /// the registry-driven tests, so there is no second list.
 macro_rules! typed_ops {
-    (
-        families { $($family:ident($fty:ty) => $wrap:expr;)* }
-        $($wire:literal => $variant:ident($ty:ty) $sample:tt),+ $(,)?
-    ) => {
+    ($($family:ident($fty:ty) => $wrap:expr;)*) => {
         /// A typed operation (see the module docs).
         #[derive(Debug, Clone, PartialEq)]
         pub enum TypedOp {
             $($family(<$fty as Family>::Wire),)*
-            $($variant($ty)),+
         }
 
         impl TypedOp {
             /// Every typed op's wire name, sorted.
             #[cfg(test)]
             pub fn names() -> Vec<&'static str> {
-                let mut names: Vec<&'static str> = vec![$($wire),+];
+                let mut names: Vec<&'static str> = Vec::new();
                 $(names.extend_from_slice(<<$fty as Family>::Wire>::WIRE_NAMES);)*
                 names.sort_unstable();
                 names
@@ -108,7 +87,6 @@ macro_rules! typed_ops {
             pub fn name(&self) -> &'static str {
                 match self {
                     $(TypedOp::$family(op) => op.wire_name().expect("a typed op has a wire name"),)*
-                    $(TypedOp::$variant(_) => $wire),+
                 }
             }
 
@@ -124,14 +102,8 @@ macro_rules! typed_ops {
                             .map(|r| r.map(TypedOp::$family));
                     }
                 )*
-                match name {
-                    $($wire => Some(
-                        serde_path_to_error::deserialize::<_, $ty>(fields)
-                            .map(TypedOp::$variant)
-                            .map_err(|e| path_error(&e)),
-                    ),)+
-                    _ => None,
-                }
+                let _ = fields;
+                None
             }
 
             /// The op's fields as a wire object (without `"op"`).
@@ -140,12 +112,11 @@ macro_rules! typed_ops {
                     $(TypedOp::$family(op) => serde_json::Value::Object(
                         op.wire_fields().expect("a typed op has wire fields"),
                     ),)*
-                    $(TypedOp::$variant(op) => serde_json::to_value(op)
-                        .expect("an op struct serializes to a JSON object"),)+
                 }
             }
 
-            /// The step for `row` (see [`OpDef::resolve`]).
+            /// The step for `row`. Per-row parameters read their column here;
+            /// an op with none is resolved once at graph compile time.
             pub fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
                 match self {
                     $(TypedOp::$family(op) => {
@@ -155,15 +126,16 @@ macro_rules! typed_ops {
                             &param::RowValues { row, ctx },
                         )?))
                     })*
-                    $(TypedOp::$variant(op) => OpDef::resolve(op, row, ctx),)+
                 }
             }
 
-            /// See [`OpDef::shape`].
+            /// How the step's output shape follows from its input, read from
+            /// the op's own fields without resolving any: a per-row field is
+            /// [`Sym::PerRow`](view_buffer::ops::Sym). `None` exactly for a
+            /// graph-level op ([`Family::planned_shape`]).
             pub fn shape(&self) -> Option<view_buffer::ops::OpShape> {
                 match self {
-                    $(TypedOp::$family(op) => Some(op.shape()),)*
-                    $(TypedOp::$variant(op) => OpDef::shape(op),)+
+                    $(TypedOp::$family(op) => <$fty as Family>::planned_shape(op),)*
                 }
             }
 
@@ -171,18 +143,13 @@ macro_rules! typed_ops {
             pub fn visit_slots(&self, f: &mut dyn FnMut(&'static str, usize)) {
                 match self {
                     $(TypedOp::$family(op) => op.visit_slots(f),)*
-                    $(TypedOp::$variant(op) => op.visit_slots(f),)+
                 }
             }
 
             /// One valid instance of every typed op, in `names()` order.
             #[cfg(test)]
             pub fn samples() -> Vec<TypedOp> {
-                let mut samples: Vec<TypedOp> = vec![$(
-                    TypedOp::from_fields($wire, serde_json::json!($sample))
-                        .expect("registered")
-                        .unwrap_or_else(|e| panic!("sample for '{}': {e}", $wire)),
-                )+];
+                let mut samples: Vec<TypedOp> = Vec::new();
                 $(samples.extend(
                     <<$fty as Family>::Wire>::samples().into_iter().map(TypedOp::$family),
                 );)*
@@ -192,7 +159,7 @@ macro_rules! typed_ops {
 
             /// Every typed op's description, in `names()` order.
             pub fn catalog() -> Vec<OpDesc> {
-                let mut catalog = vec![$(op_desc::<$ty>($wire)),+];
+                let mut catalog = Vec::new();
                 $(catalog.extend(<<$fty as Family>::Wire>::catalog());)*
                 catalog.sort_by_key(|d| d.name);
                 catalog
@@ -201,80 +168,65 @@ macro_rules! typed_ops {
     };
 }
 
-/// An engine family that is typed ops: its `Wire` and `Exec` forms.
+/// A family of typed ops: an enum (or struct) deriving `Ops`/`Resolve`,
+/// whose `Wire` form is the `TypedOp` variant and whose `Exec` form (`Self`)
+/// executes.
 pub trait Family {
     type Wire;
+    /// The op's symbolic output shape, `None` for a graph-level op.
+    fn planned_shape(op: &Self::Wire) -> Option<view_buffer::ops::OpShape>;
 }
 
-impl Family for view_buffer::ImageOpKind {
-    type Wire = view_buffer::ImageOpKind<view_buffer::mode::Wire>;
+/// An engine family: its one generic `shape()` is the planned shape.
+macro_rules! engine_families {
+    ($($ty:ident)::+ ; $($rest:tt)*) => {
+        impl Family for $($ty)::+ {
+            type Wire = $($ty)::+<view_buffer::mode::Wire>;
+            fn planned_shape(op: &Self::Wire) -> Option<view_buffer::ops::OpShape> {
+                Some(op.shape())
+            }
+        }
+        engine_families!($($rest)*);
+    };
+    () => {};
 }
 
-impl Family for view_buffer::ComputeOp {
-    type Wire = view_buffer::ComputeOp<view_buffer::mode::Wire>;
+engine_families! {
+    view_buffer::ImageOpKind;
+    view_buffer::ComputeOp;
+    view_buffer::ViewOp;
+    view_buffer::GeometryOp;
+    view_buffer::ops::ReductionOp;
+    view_buffer::ops::histogram::HistogramOp;
+    view_buffer::ops::phash::PerceptualHashOp;
+    view_buffer::ColorConvertOp;
+    view_buffer::ops::filter::ConvolveOp;
 }
 
-impl Family for view_buffer::ViewOp {
-    type Wire = view_buffer::ViewOp<view_buffer::mode::Wire>;
-}
-
-impl Family for view_buffer::GeometryOp {
-    type Wire = view_buffer::GeometryOp<view_buffer::mode::Wire>;
-}
-
-impl Family for view_buffer::ops::ReductionOp {
-    type Wire = view_buffer::ops::ReductionOp<view_buffer::mode::Wire>;
-}
-
-impl Family for view_buffer::ops::histogram::HistogramOp {
-    type Wire = view_buffer::ops::histogram::HistogramOp<view_buffer::mode::Wire>;
-}
-
-impl Family for view_buffer::ops::phash::PerceptualHashOp {
-    type Wire = view_buffer::ops::phash::PerceptualHashOp<view_buffer::mode::Wire>;
-}
-
-impl Family for view_buffer::ColorConvertOp {
-    type Wire = view_buffer::ColorConvertOp<view_buffer::mode::Wire>;
-}
-
-impl Family for view_buffer::ops::filter::ConvolveOp {
-    type Wire = view_buffer::ops::filter::ConvolveOp<view_buffer::mode::Wire>;
+impl Family for graph::GraphOp {
+    type Wire = graph::GraphOp<view_buffer::mode::Wire>;
+    /// A graph-level op's effect is the planner's own rules (a node's
+    /// operand, a declaration), not an engine shape.
+    fn planned_shape(_op: &Self::Wire) -> Option<view_buffer::ops::OpShape> {
+        None
+    }
 }
 
 typed_ops! {
-    families {
-        Image(view_buffer::ImageOpKind) => |kind| GraphStep::Buffer(
-            view_buffer::ViewDto::Image(view_buffer::ImageOp { kind })
-        );
-        Compute(view_buffer::ComputeOp) => |op: view_buffer::ComputeOp| GraphStep::Buffer(op.lowered());
-        View(view_buffer::ViewOp) => |op| GraphStep::Buffer(view_buffer::ViewDto::View(op));
-        Geometry(view_buffer::GeometryOp) => GraphStep::Geometry;
-        Reduction(view_buffer::ops::ReductionOp) => GraphStep::Reduction;
-        Histogram(view_buffer::ops::histogram::HistogramOp) => GraphStep::Histogram;
-        PerceptualHash(view_buffer::ops::phash::PerceptualHashOp) => GraphStep::PerceptualHash;
-        Color(view_buffer::ColorConvertOp) => |op| GraphStep::Buffer(view_buffer::ViewDto::Color(op));
-        Filter(view_buffer::ops::filter::ConvolveOp) => |op| GraphStep::Buffer(
-            view_buffer::ViewDto::Filter(op)
-        );
-    }
-    "add" => Add(binary::Add) {"other": "n0"},
-    "apply_mask" => ApplyMask(binary::ApplyMask) {"mask": "n0", "invert": true},
-    "assert_shape" => AssertShape(declare::AssertShape) {"rank": 3, "dims": [8, null, 2]},
-    "bitwise_and" => BitwiseAnd(binary::BitwiseAnd) {"other": "n0"},
-    "bitwise_or" => BitwiseOr(binary::BitwiseOr) {"other": "n0"},
-    "bitwise_xor" => BitwiseXor(binary::BitwiseXor) {"other": "n0"},
-    "blend" => Blend(binary::Blend) {"other": "n0"},
-    "channel_merge" => ChannelMerge(binary::ChannelMerge) {"others": ["n0", "n1"]},
-    "divide" => Divide(binary::Divide) {"other": "n0"},
-    "extract_shape" => ExtractShape(reduce::ExtractShape) {},
-    "label_reduce" => LabelReduce(label::LabelReduce)
-        {"contours": {"$slot": 1}, "reduction": "mean", "region_mode": "bbox"},
-    "maximum" => Maximum(binary::Maximum) {"other": "n0"},
-    "minimum" => Minimum(binary::Minimum) {"other": "n0"},
-    "multiply" => Multiply(binary::Multiply) {"other": "n0"},
-    "ratio" => Ratio(binary::Ratio) {"other": "n0"},
-    "subtract" => Subtract(binary::Subtract) {"other": "n0"},
+    Image(view_buffer::ImageOpKind) => |kind| GraphStep::Buffer(
+        view_buffer::ViewDto::Image(view_buffer::ImageOp { kind })
+    );
+    Compute(view_buffer::ComputeOp) => |op: view_buffer::ComputeOp| GraphStep::Buffer(op.lowered());
+    View(view_buffer::ViewOp) => |op| GraphStep::Buffer(view_buffer::ViewDto::View(op));
+    Geometry(view_buffer::GeometryOp) => GraphStep::Geometry;
+    Reduction(view_buffer::ops::ReductionOp) => GraphStep::Reduction;
+    Histogram(view_buffer::ops::histogram::HistogramOp) => GraphStep::Histogram;
+    PerceptualHash(view_buffer::ops::phash::PerceptualHashOp) => GraphStep::PerceptualHash;
+    Color(view_buffer::ColorConvertOp) => |op| GraphStep::Buffer(view_buffer::ViewDto::Color(op));
+    Filter(view_buffer::ops::filter::ConvolveOp) => |op| GraphStep::Buffer(
+        view_buffer::ViewDto::Filter(op)
+    );
+    Graph(graph::GraphOp) => graph::GraphOp::step;
 }
 
 impl Serialize for TypedOp {
@@ -719,31 +671,29 @@ mod tests {
         assert!(NoFields::fields().is_empty());
     }
 
-    /// Each op's shape is declared twice — from its typed fields (planning,
-    /// symbolic) and by the engine op it resolves to (execution) — so for
-    /// every registered sample the two must agree on the sample's literal
-    /// values (a graph-level step has only the step's). A typed
-    /// shape cannot read a per-row value, so the only way to get it wrong is
-    /// to ignore a field, which the literal sample exposes.
+    /// Each op's shape is one generic definition, but an op may execute as
+    /// a different engine step than itself — `rotate` by a lattice angle as a
+    /// zero-copy view, `warp_affine` as `Affine` — whose shape is its own. So
+    /// for every all-literal sample the planned shape must be the executed
+    /// step's (a graph-level op plans none).
     #[test]
     fn typed_shape_is_the_resolved_steps() {
         let mut compared = 0;
         for op in TypedOp::samples() {
-            let step = op.resolve(0, &ParamCtx::planning()).unwrap();
+            if !op.is_static() {
+                continue;
+            }
+            let step = op.resolve(0, &ParamCtx::empty()).unwrap();
             let Some(typed) = op.shape() else {
                 continue;
             };
-            let mut slots = 0;
-            op.visit_slots(&mut |_, _| slots += 1);
-            if slots == 0 {
-                assert_eq!(
-                    typed,
-                    step.shape(),
-                    "{}: typed shape vs the resolved step's",
-                    op.name()
-                );
-                compared += 1;
-            }
+            assert_eq!(
+                typed,
+                step.shape(),
+                "{}: typed shape vs the resolved step's",
+                op.name()
+            );
+            compared += 1;
         }
         assert!(compared > 40, "only {compared} shapes compared");
     }

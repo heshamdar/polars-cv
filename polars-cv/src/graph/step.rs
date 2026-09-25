@@ -218,9 +218,9 @@ impl GraphStep {
     /// How the step's output shape follows from its inputs — every step has
     /// one, and the planner reads the output rank (its length) and channel
     /// count (its axis 2) from it. The planner reads the typed op's symbolic
-    /// `OpDef::shape` for sizes where there is one (a resolved step carries
-    /// planning placeholders for per-row values); the graph-level steps' shapes
-    /// read only structural parameters.
+    /// shape (`TypedOp::shape`) for sizes where there is one (a resolved step
+    /// carries planning placeholders for per-row values); the graph-level
+    /// steps' shapes read only structural parameters.
     pub fn shape(&self) -> OpShape {
         match self {
             GraphStep::Buffer(dto) => dto.as_op().shape(),
