@@ -94,8 +94,6 @@ pub(crate) struct Node<'a> {
     pub ops: &'a [String],
     /// `ops.len() + 1` states: entering each op, then the final one.
     pub states: &'a [State],
-    /// Op boundaries carrying a shape declaration.
-    pub assertions: &'a [usize],
 }
 
 /// Run a node-scope pass. `Err` for a graph-scope pass.
@@ -123,15 +121,11 @@ pub(crate) fn run(pass: LogicalPass, node: &Node<'_>) -> Result<Option<Vec<usize
 
 /// The ops that are not provable no-ops, in order.
 ///
-/// A node carrying any assertion is left alone, so no assertion key has to be
-/// re-derived across a deletion.
+/// Every planned fact is one: a declared size is checked where it is written
+/// (`assert_shape`), and a declared dtype where the data is decoded.
 fn eliminate_identities(node: &Node<'_>) -> Result<Vec<usize>, String> {
-    let all: Vec<usize> = (0..node.ops.len()).collect();
-    if !node.assertions.is_empty() {
-        return Ok(all);
-    }
-    let mut kept = Vec::with_capacity(all.len());
-    for i in all {
+    let mut kept = Vec::with_capacity(node.ops.len());
+    for i in 0..node.ops.len() {
         if !is_identity(node, i)? {
             kept.push(i);
         }
@@ -155,12 +149,7 @@ fn is_identity(node: &Node<'_>, i: usize) -> Result<bool, String> {
             let Some(shape) = op.shape() else {
                 return Ok(false);
             };
-            // Sizes that may rest on a declaration are a claim, not a fact: a
-            // declaration anywhere in the node's lineage makes them possibly
-            // one (the final state records whether one did), so only a
-            // verdict that holds for any input stands then.
-            let declared = node.states.last().is_some_and(|s| s.declared);
-            let input = crate::plan::input_dims(&step, entering).filter(|_| !declared);
+            let input = crate::plan::input_dims(&step, entering);
             shape.preserves(input.as_deref())
         }
     })
@@ -170,9 +159,8 @@ fn is_identity(node: &Node<'_>, i: usize) -> Result<bool, String> {
 ///
 /// The run stops at the first op the window may not cross (its spatial rule
 /// is not `Pointwise`, or it reads another node's buffer, which the window
-/// would leave full-size). A crop whose run holds an assertion boundary stays
-/// put: moving it would change a shape the user pinned. Two crops never
-/// contend — a crop is itself not `Pointwise` — so, left to right, a crop's
+/// would leave full-size); an `assert_shape` is not `Pointwise`, so a crop
+/// never moves across a declaration. Two crops never contend — a crop is itself not `Pointwise` — so, left to right, a crop's
 /// run is always the tail of the order built so far.
 fn hoist_spatial_windows(node: &Node<'_>) -> Result<Vec<usize>, String> {
     let steps = node
@@ -193,10 +181,6 @@ fn hoist_spatial_windows(node: &Node<'_>) -> Result<Vec<usize>, String> {
         while j > 0 && crossable(&steps[j - 1]) {
             j -= 1;
         }
-        if node.assertions.iter().any(|b| (j + 1..=i).contains(b)) {
-            order.push(i);
-            continue;
-        }
         order.insert(j, i);
     }
     Ok(order)
@@ -211,7 +195,6 @@ pub(crate) fn node_pass(
     pass_name: &str,
     ops: Vec<String>,
     states: Vec<State>,
-    assertions: Vec<usize>,
 ) -> PyResult<Option<Vec<usize>>> {
     let pass = view_buffer::naming::lookup(LogicalPass::NAMED, pass_name)
         .ok_or_else(|| py_value_error(format!("unknown pass {pass_name:?}")))?;
@@ -220,7 +203,6 @@ pub(crate) fn node_pass(
         &Node {
             ops: &ops,
             states: &states,
-            assertions: &assertions,
         },
     )
     .map_err(py_value_error)
@@ -246,12 +228,8 @@ mod tests {
         values.iter().map(|v| v.to_string()).collect()
     }
 
-    fn node<'a>(ops: &'a [String], states: &'a [State], assertions: &'a [usize]) -> Node<'a> {
-        Node {
-            ops,
-            states,
-            assertions,
-        }
+    fn node<'a>(ops: &'a [String], states: &'a [State]) -> Node<'a> {
+        Node { ops, states }
     }
 
     const CROP: fn() -> serde_json::Value =
@@ -265,24 +243,24 @@ mod tests {
             json!({"op": "grayscale"}),
         ]);
         let s = [image(4, 5), image(4, 5), image(4, 5), image(4, 5)];
-        let order = run(LogicalPass::IdentityElimination, &node(&o, &s, &[])).unwrap();
+        let order = run(LogicalPass::IdentityElimination, &node(&o, &s)).unwrap();
         assert_eq!(order, Some(vec![2]));
     }
 
     #[test]
-    fn a_partial_crop_or_an_asserting_node_is_kept() {
+    fn a_partial_crop_or_an_assertion_is_kept() {
         let o = ops(&[CROP()]);
         let s = [image(4, 5), image(2, 2)];
         assert_eq!(
-            run(LogicalPass::IdentityElimination, &node(&o, &s, &[])).unwrap(),
+            run(LogicalPass::IdentityElimination, &node(&o, &s)).unwrap(),
             None
         );
-        let o = ops(&[
-            json!({"op": "pad", "top": 0, "bottom": 0, "left": 0, "right": 0, "value": 0, "mode": "constant"}),
-        ]);
+        // An assertion checks every row, so it never goes, even when the
+        // plan already knows it holds.
+        let o = ops(&[json!({"op": "assert_shape", "rank": null, "dims": [4, 5, null]})]);
         let s = [image(4, 5), image(4, 5)];
         assert_eq!(
-            run(LogicalPass::IdentityElimination, &node(&o, &s, &[1])).unwrap(),
+            run(LogicalPass::IdentityElimination, &node(&o, &s)).unwrap(),
             None
         );
     }
@@ -296,7 +274,7 @@ mod tests {
             CROP(),
         ]);
         let s = vec![image(4, 5); 5];
-        let order = run(LogicalPass::SpatialWindowPushdown, &node(&o, &s, &[])).unwrap();
+        let order = run(LogicalPass::SpatialWindowPushdown, &node(&o, &s)).unwrap();
         // blur is a neighbourhood op: the crop stops after it.
         assert_eq!(order, Some(vec![0, 3, 1, 2]));
     }
@@ -306,12 +284,17 @@ mod tests {
         let o = ops(&[json!({"op": "add", "other": "n0"}), CROP()]);
         let s = vec![image(4, 5); 3];
         assert_eq!(
-            run(LogicalPass::SpatialWindowPushdown, &node(&o, &s, &[])).unwrap(),
+            run(LogicalPass::SpatialWindowPushdown, &node(&o, &s)).unwrap(),
             None
         );
-        let o = ops(&[json!({"op": "invert"}), CROP()]);
+        let o = ops(&[
+            json!({"op": "invert"}),
+            json!({"op": "assert_shape", "rank": null, "dims": [4, 5, null]}),
+            CROP(),
+        ]);
+        let s = vec![image(4, 5); 4];
         assert_eq!(
-            run(LogicalPass::SpatialWindowPushdown, &node(&o, &s, &[1])).unwrap(),
+            run(LogicalPass::SpatialWindowPushdown, &node(&o, &s)).unwrap(),
             None
         );
     }
@@ -342,7 +325,7 @@ mod tests {
     fn a_graph_pass_is_refused_on_a_node() {
         let err = run(
             LogicalPass::CommonSubexpressionElimination,
-            &node(&[], &[image(1, 1)], &[]),
+            &node(&[], &[image(1, 1)]),
         )
         .unwrap_err();
         assert!(err.contains("rewrites the graph"), "{err}");
@@ -357,7 +340,7 @@ mod tests {
         let s = [image(4, 5), image(4, 5)];
         let eliminated = |op: serde_json::Value| {
             let o = ops(&[op]);
-            run(LogicalPass::IdentityElimination, &node(&o, &s, &[])).unwrap() == Some(vec![])
+            run(LogicalPass::IdentityElimination, &node(&o, &s)).unwrap() == Some(vec![])
         };
         assert!(!eliminated(pad(json!({"$slot": 0}), json!(0.0))));
         assert!(eliminated(pad(json!(0), json!({"$slot": 0}))));

@@ -65,9 +65,11 @@ class TestADtypeClaimIsChecked:
 
 
 @plugin_required
-class TestACanvasFromAnotherNodeIsADeclaration:
-    """``source("contour", shape=)`` and ``rasterize(shape=)`` take a canvas the
-    same way: a size resting on an upstream ``assert_shape`` stays a claim."""
+class TestACanvasFromAnotherNodeIsChecked:
+    """``source("contour", shape=)`` takes the canvas node's planned size, and
+    that size is a checked fact: an ``assert_shape`` it rests on is checked
+    where it was written, so a wrong one fails the row naming the assertion,
+    with or without optimizations (consolidation plan C0.2, C2)."""
 
     CONTOUR = {
         "exterior": [
@@ -84,32 +86,46 @@ class TestACanvasFromAnotherNodeIsADeclaration:
         return pl.DataFrame({"img": [_png(6, 8)], "c": [self.CONTOUR]})
 
     @pytest.mark.parametrize("flags", [OptFlags.none(), OptFlags.all()])
-    def test_optimizing_does_not_change_the_result(self, flags: OptFlags) -> None:
+    def test_a_wrong_upstream_assertion_is_reported_as_the_users(
+        self, flags: OptFlags
+    ) -> None:
         shape = pl.col("img").cv.pipe(
             Pipeline().source("image_bytes").assert_shape(height=10, width=10)
         )
         pipe = (
             Pipeline().source("contour", shape=shape).pad_to_size(height=10, width=10)
         )
+        with pytest.raises(pl.exceptions.ComputeError) as err:
+            self._frame().select(
+                pl.col("c").cv.pipe(pipe).sink("numpy", opt_flags=flags)
+            )
+        assert "assert_shape(height=10, width=10) does not hold" in str(err.value)
+        assert "contract" not in str(err.value)
+
+    @pytest.mark.parametrize("flags", [OptFlags.none(), OptFlags.all()])
+    def test_the_canvas_is_the_nodes_size(self, flags: OptFlags) -> None:
+        shape = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
+        pipe = Pipeline().source("contour", shape=shape).pad_to_size(height=6, width=8)
         out = self._frame().select(
             pl.col("c").cv.pipe(pipe).sink("numpy", opt_flags=flags)
         )
-        assert out.to_series()[0]["shape"] == [10, 10, 1]
+        assert out.to_series()[0]["shape"] == [6, 8, 1]
 
-    def test_the_source_state_records_the_declaration(self) -> None:
+    def test_the_source_state_takes_the_nodes_planned_size(self) -> None:
         shape = pl.col("img").cv.pipe(
             Pipeline().source("image_bytes").assert_shape(height=10, width=10)
         )
-        assert planned(Pipeline().source("contour", shape=shape)).declared
+        assert planned(Pipeline().source("contour", shape=shape)).hw == (10, 10)
 
 
 @plugin_required
 @pytest.mark.parametrize("size", [-5, 0])
 def test_assert_shape_refuses_a_non_positive_size(size: int) -> None:
     """Refused by Rust (``Declared::Size``), whichever spelling carries it."""
-    with pytest.raises(ValueError, match="positive int"):
+    refused = "positive int|cannot be negative"
+    with pytest.raises(ValueError, match=refused):
         Pipeline().source("image_bytes").assert_shape(height=size)
-    with pytest.raises(ValueError, match="positive int"):
+    with pytest.raises(ValueError, match=refused):
         Pipeline().source("list").assert_shape(dims=[8, size, 3])
 
 

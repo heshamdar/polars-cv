@@ -12,7 +12,7 @@
 > |---|---|
 > | C0 — Correctness fixes (test-first) | **done** — C0.1, C0.2, C0.4–C0.7 fixed test-first (`tests/test_plan_claims.py`, docstring binding guard); C0.3 moved to C2 |
 > | C1 — Typed planner state | **done** — `PlanState` is a frozen Rust pyclass (`Domain`, `PlannedDType`); Python dataclass, `HINT_DIMS`, `Domain` mirror, `Domain::Any`, string dtype helpers deleted; binary ops plan over both states |
-> | C2 — Declarations are ops; Rust plans the graph | not started |
+> | C2 — Declarations are ops; Rust plans the graph | **done** — `assert_shape` op checked per row; `planned` wire field, `plan_assert`/`plan_sink`/`check_sink`, `fold_output_*`, `asserted`/`declared` flags, Python assertion machinery deleted; `.sink()` runs `check_graph`; one refs mechanism for node reads |
 > | C3 — Rust owns the op list (`Plan`) | not started |
 > | C4 — One op definition (mode-generic ops) | not started |
 > | C5 — Geometry namespaces on the typed ops | not started |

@@ -209,9 +209,8 @@ def test_every_pipeline_field_survives_a_copy() -> None:
         "_ops": ["sentinel-op"],
         "_expr_refs": ["sentinel-expr"],
         "_entering": ["sentinel-position"],
-        "_shape_refs": ["sentinel-ref"],
+        "_node_refs": ["sentinel-ref"],
         "_state": object(),
-        "_assertions": {2: None},
     }
     assert set(sentinels) == set(_STATE_COPIERS), (
         "this test's sentinel table drifted from _STATE_COPIERS: "
@@ -244,21 +243,6 @@ def test_every_pipeline_field_survives_a_copy() -> None:
         f"{aliased}. Mutating the clone would mutate the pipeline it came "
         f"from; `Pipeline` is immutable by contract."
     )
-
-
-def test_replay_takes_its_assertions_explicitly() -> None:
-    """``_replay`` cannot be called without saying where the assertions go.
-
-    The one re-key a rewrite still owns is the assertions' (a slice shifts
-    them); a keyword-only parameter with no default makes forgetting it a
-    ``TypeError`` rather than an assertion silently kept at the wrong place.
-    """
-    import inspect
-
-    params = inspect.signature(Pipeline._replay).parameters
-    for name in ("start", "assertions"):
-        assert params[name].kind is inspect.Parameter.KEYWORD_ONLY, name
-        assert params[name].default is inspect.Parameter.empty, name
 
 
 @plugin_required
@@ -312,7 +296,7 @@ def test_push_op_applies_the_whole_plan_step_unconditionally() -> None:
 
     args = [a.arg for a in fn.args.kwonlyargs] + [a.arg for a in fn.args.args]
     flags = [a for a in args if a not in {"self", "spec"}]
-    assert flags == ["other"], (
+    assert flags == ["refs"], (
         f"_push_op grew a new parameter: {flags}. Every additional flag is a "
         f"way to append an op while skipping part of its plan-time effect."
     )
@@ -509,9 +493,9 @@ def test_a_contradicting_assertion_is_rejected_where_it_is_written() -> None:
     and reported at ``collect()`` by ``validate_output_schema`` as *"the
     planner's shape contract disagrees with the Rust implementation"* — the
     plugin taking the blame for a value the caller typed three lines earlier.
-    Both spellings are checked: the lazy continuation replays assertions through
-    the same ``_apply_assertions_at``, so a check that only ran in the eager
-    builder would leave half the surface open.
+    Both spellings are checked: the lazy continuation replays the
+    ``assert_shape`` op through the same ``plan_step``, so a check that only
+    ran in the eager builder would leave half the surface open.
     """
     base = Pipeline().source("image_bytes", dtype="u8")
     with pytest.raises(ValueError, match="contradicts the height 224"):
@@ -545,16 +529,11 @@ def test_dims_pins_the_rank_a_list_source_could_not_supply() -> None:
     A list/array source leaves the rank unknown, and an output's shape only
     publishes at rank 3 — so the H/W/C spelling set the hints and changed
     nothing, and the sink's advice to "use .assert_shape()" was circular.
-    The output facts Rust reads off this state (the rank-3 gate, "asserted")
-    are pinned by ``output_facts_are_read_off_the_planned_state``.
+    The output facts Rust plans from this state (the rank-3 gate) are pinned
+    by ``output_facts_are_planned_from_the_ops``.
     """
     pipe = Pipeline().source("list", dtype="f32").assert_shape(dims=[8, 8, 3])
     assert (pipe._state.ndim, pipe._state.dims) == (3, (8, 8, 3))
-    assert all(pipe._state.asserted)
-
-    # An inferred shape is not attributed to the caller.
-    inferred = Pipeline().source("image_bytes", dtype="u8").resize(height=8, width=8)
-    assert not any(inferred._state.asserted)
 
 
 def test_dims_rejects_what_it_cannot_track() -> None:
@@ -562,7 +541,7 @@ def test_dims_rejects_what_it_cannot_track() -> None:
         Pipeline().source("list").assert_shape(dims=[8, 8, 3], height=8)
     with pytest.raises(ValueError, match="needs a declaration"):
         Pipeline().source("list").assert_shape()
-    with pytest.raises(ValueError, match="up to 3 dimensions"):
+    with pytest.raises(ValueError, match="1 to 3 dimensions"):
         Pipeline().source("list").assert_shape(dims=[2, 8, 8, 3])
     with pytest.raises(ValueError, match="positive int"):
         Pipeline().source("list").assert_shape(dims=[8, 0, 3])

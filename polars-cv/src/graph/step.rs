@@ -41,6 +41,12 @@ pub(crate) enum GraphStep {
     PerceptualHash(PerceptualHashOp),
     /// Read the buffer's dimensions as a vector.
     ExtractShape,
+    /// Check a declared shape (`assert_shape`): the data passes through
+    /// unchanged, or the row fails naming the declaration.
+    AssertShape {
+        rank: Option<usize>,
+        dims: [Option<usize>; 3],
+    },
     /// Score contour regions (from an expression column) over the buffer.
     LabelReduce {
         /// Input position of the contour-list column.
@@ -74,7 +80,7 @@ impl GraphStep {
     /// variant a compile error; this one now does too.
     pub fn input_domains(&self) -> Vec<Domain> {
         match self {
-            GraphStep::Binary { .. } | GraphStep::Reduction(_) => {
+            GraphStep::Binary { .. } | GraphStep::Reduction(_) | GraphStep::AssertShape { .. } => {
                 vec![Domain::Buffer, Domain::Vector]
             }
             GraphStep::Buffer(_)
@@ -100,6 +106,7 @@ impl GraphStep {
             | GraphStep::Histogram(_)
             | GraphStep::PerceptualHash(_)
             | GraphStep::ExtractShape
+            | GraphStep::AssertShape { .. }
             | GraphStep::LabelReduce { .. } => Domain::Buffer,
         }
     }
@@ -114,6 +121,8 @@ impl GraphStep {
             // Same container as its operands: `hash_a ^ hash_b` stays a
             // vector, two images stay a buffer.
             GraphStep::Binary { .. } => input,
+            // A declaration describes the data; it does not change its kind.
+            GraphStep::AssertShape { .. } => input,
             GraphStep::ApplyMask { .. } | GraphStep::ChannelMerge { .. } => Domain::Buffer,
             // Perceptual hash produces a fixed-length 1-D fingerprint.
             GraphStep::PerceptualHash(_)
@@ -137,6 +146,7 @@ impl GraphStep {
             }
             // Dimension reads and region scores are f64 values.
             GraphStep::ExtractShape | GraphStep::LabelReduce { .. } => OutputDTypeRule::ForceF64,
+            GraphStep::AssertShape { .. } => OutputDTypeRule::PreserveInput,
         }
     }
 
@@ -154,6 +164,9 @@ impl GraphStep {
             GraphStep::ChannelMerge { .. } => OutputRankRule::Fixed(3),
             // Dimension vectors and region scores are 1-D.
             GraphStep::ExtractShape | GraphStep::LabelReduce { .. } => OutputRankRule::Fixed(1),
+            GraphStep::AssertShape { rank, .. } => {
+                rank.map_or(OutputRankRule::PreserveRank, OutputRankRule::Fixed)
+            }
         }
     }
 
@@ -172,6 +185,7 @@ impl GraphStep {
             GraphStep::ExtractShape | GraphStep::LabelReduce { .. } => {
                 OutputChannelRule::NotApplicable
             }
+            GraphStep::AssertShape { .. } => OutputChannelRule::PreserveChannels,
         }
     }
 
@@ -193,6 +207,9 @@ impl GraphStep {
             // Dimension reads and region reductions aggregate over the whole
             // input; neither admits a spatial-window reorder.
             GraphStep::ExtractShape | GraphStep::LabelReduce { .. } => SpatialDependency::Global,
+            // A declaration is about the whole shape at this point: a window
+            // moved across it would change what it checks.
+            GraphStep::AssertShape { .. } => SpatialDependency::Global,
         }
     }
 
@@ -213,6 +230,8 @@ impl GraphStep {
             | GraphStep::ChannelMerge { .. }
             | GraphStep::ExtractShape
             | GraphStep::LabelReduce { .. } => IdentityRule::Never,
+            // It checks every row; removing it would remove the check.
+            GraphStep::AssertShape { .. } => IdentityRule::Never,
         }
     }
 
@@ -230,6 +249,7 @@ impl GraphStep {
             | GraphStep::Histogram(_)
             | GraphStep::PerceptualHash(_)
             | GraphStep::ExtractShape
+            | GraphStep::AssertShape { .. }
             | GraphStep::LabelReduce { .. } => false,
         }
     }
@@ -252,6 +272,7 @@ impl GraphStep {
             | GraphStep::Histogram(_)
             | GraphStep::PerceptualHash(_)
             | GraphStep::ExtractShape
+            | GraphStep::AssertShape { .. }
             | GraphStep::LabelReduce { .. } => None,
         }
     }
@@ -272,6 +293,7 @@ impl GraphStep {
             | GraphStep::ApplyMask { .. }
             | GraphStep::ChannelMerge { .. }
             | GraphStep::ExtractShape
+            | GraphStep::AssertShape { .. }
             | GraphStep::LabelReduce { .. } => false,
         }
     }

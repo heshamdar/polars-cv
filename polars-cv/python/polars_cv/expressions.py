@@ -61,7 +61,7 @@ class CvNamespace(_PluginNamespace):
             pipeline=pipe,
             # Ops referencing other nodes (rasterize(shape=...)) make those
             # nodes upstream dependencies so they execute first.
-            upstream=list(pipe._shape_refs),
+            upstream=list(pipe._node_refs),
         )
 
     # ------------------------------------------------------------------

@@ -227,7 +227,7 @@ def test_auto_16bit_image_list_sink_requires_explicit_dtype():
     The user is required to supply the dtype instead.
     """
     pipe = Pipeline().source("image_bytes")
-    with pytest.raises(ValueError, match="(?i)explicit dtype"):
+    with pytest.raises(ValueError, match="(?i)explicit"):
         pl.col("out").cv.pipe(pipe).sink("list")
 
 
@@ -554,13 +554,13 @@ _REQUIRED_LIB_HOOKS = (
     "io_catalog",
     # The enum catalogue the Python enum classes are generated from.
     "enum_catalog",
-    # Validate a serialized source (planning its state) or sink against its
-    # typed format, so the builder refuses an inapplicable keyword while it is
+    # Validate a serialized source against its typed format and plan its
+    # state, so the builder refuses an inapplicable keyword while it is
     # written.
     "plan_source",
-    "plan_sink",
-    # Apply a shape declaration to a planned state (the checks included).
-    "plan_assert",
+    # Compile and plan a whole graph and check its sinks, as the plugin will
+    # (what `.sink()` runs).
+    "check_graph",
 )
 
 
@@ -639,7 +639,7 @@ def _binary_dtype(op: str, left: str, right: str) -> str:
 
     op_json = json.dumps({"op": op, "other": "n0"})
     return plan_step(
-        op_json, _plan_state("buffer", left, 3), _plan_state("buffer", right, 3)
+        op_json, _plan_state("buffer", left, 3), {"n0": _plan_state("buffer", right, 3)}
     ).dtype
 
 
@@ -669,17 +669,14 @@ def test_binary_dtype_authority():
 
 
 @plugin_required
-def test_the_other_operand_state_is_for_binary_ops_only():
-    """A binary op without its other operand's state, or any other op with one,
-    is refused rather than planned with the one-input rule."""
+def test_a_binary_op_without_its_operand_state_is_refused():
+    """A binary op plans over the state of the node it reads; with none it is
+    refused rather than planned with the one-input rule."""
     from polars_cv._lib import plan_step
 
     add = json.dumps({"op": "add", "other": "n0"})
-    with pytest.raises(ValueError, match="needs the other operand"):
+    with pytest.raises(ValueError, match="reads node 'n0', which has no planned state"):
         plan_step(add, _plan_state("buffer", "u8", 3))
-    with pytest.raises(ValueError, match="only a binary op"):
-        u8 = _plan_state("buffer", "u8", 3)
-        plan_step(json.dumps({"op": "grayscale"}), u8, u8)
 
 
 @requires_checkout
@@ -1097,11 +1094,7 @@ def test_replay_reproduces_the_tracked_state() -> None:
     ]
     for pipe in corpus:
         replayed = pipe._clone()
-        replayed._replay(
-            range(len(pipe._ops)),
-            start=pipe._state_at(0),
-            assertions=pipe._assertions,
-        )
+        replayed._replay(range(len(pipe._ops)), start=pipe._state_at(0))
         ops = [o.op for o in pipe._ops]
         assert replayed._state == pipe._state, f"final state drift for {ops}"
         assert replayed._entering == pipe._entering, f"entering drift for {ops}"

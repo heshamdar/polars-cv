@@ -52,7 +52,7 @@ class TestPipelineBuilderIntegration:
         import json
 
         data = json.loads(json_str)
-        assert len(data["ops"]) == 7
+        assert len(data["ops"]) == 8  # the assert_shape is an op
 
     def test_dynamic_pipeline_to_json(self) -> None:
         """Test pipeline with expressions serializes correctly."""

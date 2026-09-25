@@ -459,8 +459,8 @@ class TestSpatialWindowPushdown:
         assert _node_ops(graph) == ["resize", "crop", "grayscale"]
 
     def test_assert_shape_is_a_barrier(self) -> None:
-        # A user shape assertion between the pointwise run and the crop pins the
-        # pre-crop shape; the crop must not move across it.
+        # A user shape assertion between the pointwise run and the crop checks
+        # the pre-crop shape; the crop must not move across it.
         pipe = (
             Pipeline()
             .source("image_bytes")
@@ -470,7 +470,7 @@ class TestSpatialWindowPushdown:
         )
         graph = _graph_of(pipe)
         graph.optimize(OptFlags.all())
-        assert _node_ops(graph) == ["grayscale", "crop"]
+        assert _node_ops(graph) == ["grayscale", "assert_shape", "crop"]
 
     def test_crop_does_not_cross_node_boundary(self) -> None:
         # .pipe() makes a new node; phase 1's barrier is the node boundary, so a
@@ -688,9 +688,10 @@ class TestIdentityElimination:
         assert _node_ops(g) == ["crop"]
 
     @plugin_required
-    def test_assertion_bearing_node_is_left_untouched(self) -> None:
-        # A node carrying an assert_shape is skipped wholesale so no positional
-        # assertion key is re-derived across a deletion — the no-op crop stays.
+    def test_an_assertion_is_kept_and_does_not_shield_its_node(self) -> None:
+        # An assert_shape checks every row, so it is never an identity, even
+        # where the plan already knows it holds. It is an op like any other:
+        # the node's no-op crop still goes.
         g = _graph_of(
             Pipeline()
             .source("image_bytes")
@@ -699,7 +700,7 @@ class TestIdentityElimination:
             .assert_shape(height=64, width=64)
         )
         g.optimize(OptFlags.all())
-        assert _node_ops(g) == ["resize", "crop"]
+        assert _node_ops(g) == ["resize", "assert_shape"]
 
     @plugin_required
     def test_offset_crop_with_full_extent_is_kept(self) -> None:
@@ -713,13 +714,11 @@ class TestIdentityElimination:
         assert _node_ops(g) == ["resize", "crop"]
 
     @plugin_required
-    def test_declared_shape_in_the_lineage_blocks_shape_based_elimination(
-        self,
-    ) -> None:
-        # A continuation inherits its upstream's asserted H/W as a plain hint and
-        # none of its assertions. That H/W is a claim, not a fact, so a
-        # shape-preserving crop cannot be proven a no-op — while a zero pad (a
-        # no-op by its literal params alone, whatever the shape) still goes.
+    def test_a_declared_shape_in_the_lineage_is_a_checked_fact(self) -> None:
+        # The upstream assertion is checked where it was written, so every row
+        # reaching the continuation is 10x10: the full-frame crop is provably
+        # a no-op and goes, with the zero pad. (A row the assertion does not
+        # describe fails at the assertion, optimized or not.)
         upstream = pl.col("image").cv.pipe(
             Pipeline().source("image_bytes").assert_shape(height=10, width=10)
         )
@@ -729,7 +728,7 @@ class TestIdentityElimination:
             .crop(top=0, left=0, height=10, width=10)
         ).sink("numpy", return_expr=False, opt_flags=OptFlags.all())
         ops = [op_names(n.pipeline) for n in graph._nodes.values()]
-        assert ["crop"] in ops
+        assert ["assert_shape"] in ops and ["crop"] not in ops
 
     @plugin_required
     def test_undeclared_continuation_still_eliminates_a_full_frame_crop(

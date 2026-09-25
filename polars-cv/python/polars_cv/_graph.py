@@ -394,7 +394,7 @@ class PipelineGraph:
         Returns:
             The node_id of the newly created shared node.
         """
-        from polars_cv.pipeline import Pipeline, _assertion_window
+        from polars_cv.pipeline import Pipeline
 
         shared_id = f"_cse_{uuid.uuid4().hex[:8]}"
 
@@ -412,11 +412,7 @@ class PipelineGraph:
         # The template's leading ops *are* the prefix (CSE matched them), so
         # the shared node replays them from the template's entering state.
         prefix_len = len(prefix_ops)
-        shared_pipeline._replay(
-            range(prefix_len),
-            start=template._state_at(0),
-            assertions=_assertion_window(template._assertions, 0, prefix_len),
-        )
+        shared_pipeline._replay(range(prefix_len), start=template._state_at(0))
 
         # Create the shared node
         shared_node = GraphNode(
@@ -442,17 +438,11 @@ class PipelineGraph:
             shared_id: The ID of the shared node to use as upstream.
             prefix_len: Number of operations that are now in the shared node.
         """
-        from polars_cv.pipeline import _assertion_window
-
         # Keep only the suffix, replayed from the state entering it (the
-        # shared node's output state); assert_shape positions shift with it.
+        # shared node's output state).
         pipeline = node.pipeline
         pipeline._replay(
-            range(prefix_len, len(pipeline._ops)),
-            start=pipeline._state_at(prefix_len),
-            assertions=_assertion_window(
-                pipeline._assertions, prefix_len, len(pipeline._ops)
-            ),
+            range(prefix_len, len(pipeline._ops)), start=pipeline._state_at(prefix_len)
         )
 
         # Set the shared node as upstream
@@ -462,10 +452,7 @@ class PipelineGraph:
             # Prepend shared node to existing upstream
             node.upstream = [shared_id] + node.upstream
 
-        # Clear column binding - now receives input from upstream
-        # Keep the column reference for column_bindings but mark it as non-root
-        # Actually, we need to keep track that this node no longer reads directly
-        # The shared node will have the column binding instead
+        # The node now reads the shared node; the shared node holds the binding.
         node.column = None
 
     def to_expr(self) -> pl.Expr:
@@ -545,13 +532,17 @@ class PipelineGraph:
     def _output_spec(
         self, node_id: str, fmt: str, params: dict[str, Any]
     ) -> dict[str, Any]:
-        """One output on the wire: its node, sink, and the node's final planned
-        state, from which Rust reads the output's schema facts."""
-        return {
-            "node": node_id,
-            "sink": {"format": fmt, **params},
-            "planned": json.loads(self._nodes[node_id].pipeline._state._wire()),
-        }
+        """One output on the wire: its node and its sink. Everything else about
+        the output is planned by Rust from the graph itself."""
+        return {"node": node_id, "sink": {"format": fmt, **params}}
+
+    def check(self) -> None:
+        """Refuse a graph the plugin would refuse, now: compile and plan it,
+        and check every output's sink, through the plugin's own code
+        (``_lib.check_graph``). Raises ``ValueError``."""
+        from polars_cv._lib import check_graph
+
+        check_graph(self._to_json())
 
     def _to_dict(self) -> dict[str, Any]:
         if self._output is None and self._multi_output is None:

@@ -121,10 +121,11 @@ def test_image_encoder_sinks_decide_at_plan_time(sink: str) -> None:
 def test_unencodable_combinations_are_refused_before_any_data_moves(
     dtype: str, sink: str
 ) -> None:
-    """The refusal must happen at plan time, with a message naming the fix."""
+    """The refusal must happen before any data moves — at ``.sink()``, where
+    it is written — with a message naming the fix."""
     result = _cell(dtype, sink)
-    assert result.outcome is Outcome.REJECTED_AT_PLAN, (
-        f"{dtype} -> {sink} should be refused while planning, got "
+    assert result.outcome is Outcome.REJECTED_AT_BUILD, (
+        f"{dtype} -> {sink} should be refused at .sink(), got "
         f"{result.outcome.name} (planned {result.planned!r})"
     )
     assert dtype.upper() in (result.reason or "").upper(), (
@@ -180,8 +181,8 @@ def test_a_promoted_but_unresolved_dtype_is_still_refused() -> None:
     )
 
     result = plan_or_reject(_df(), lambda: pl.col("img").cv.pipe(pipe).sink("jpeg"))
-    assert result.outcome is Outcome.REJECTED_AT_PLAN, (
-        f"expected a plan-time refusal, got {result.outcome.name} "
+    assert result.outcome is Outcome.REJECTED_AT_BUILD, (
+        f"expected a refusal at .sink(), got {result.outcome.name} "
         f"(planned {result.planned!r})"
     )
     assert "floating point" in (result.reason or ""), result.reason

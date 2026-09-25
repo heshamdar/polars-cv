@@ -8,7 +8,6 @@ lazy pipeline operations that are fused into a single plugin call when
 
 from __future__ import annotations
 
-import json
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -50,31 +49,6 @@ _STAT_REDUCERS: "dict[str, str]" = {
 #: What ``include=None`` means. ``sum`` is deliberately outside it: it scales
 #: with element count rather than describing a distribution, so it is opt-in.
 _DEFAULT_STATS: "tuple[str, ...]" = ("mean", "std", "min", "max")
-
-
-def _check_sink(
-    fmt: str, kwargs: "dict[str, Any]", pipeline: Any, alias: str | None = None
-) -> None:
-    """Check one output's sink against its Rust definition and the plan.
-
-    ``plan_sink`` validates the format and its keywords (a keyword the format
-    does not read, a misspelled one, a ``dtype`` other than half precision) and
-    then refuses a sink the output's planned state cannot give a Polars
-    schema: a typed ``list``/``array`` element with no known dtype, an
-    ``array`` with no shape, a ``list`` with no rank — unless the source
-    resolves them from the input column. All of it raises here, while the
-    pipeline is built, rather than at ``collect()``.
-    """
-    from polars_cv._lib import plan_sink
-    from polars_cv._types import planning_slots
-
-    source = pipeline._source
-    plan_sink(
-        json.dumps({"format": fmt, **kwargs}, default=list),
-        pipeline._state,
-        None if source is None else json.dumps(source.to_dict(planning_slots)),
-        alias,
-    )
 
 
 class LazyPipelineExpr(_LazyOpsMixin):
@@ -176,8 +150,6 @@ class LazyPipelineExpr(_LazyOpsMixin):
         """
         if pipeline._source is None:
             # Continuation: new node receives input from self, only has NEW ops
-            import copy as _copy
-
             from polars_cv._types import SourceFormat, SourceSpec
             from polars_cv.pipeline import Pipeline as PipelineClass
 
@@ -207,23 +179,19 @@ class LazyPipelineExpr(_LazyOpsMixin):
             # first op's plan step makes every size its own inference, and with
             # no ops the output *is* the upstream's (asserted sizes included).
             new_pipeline._state = self._pipeline._state
-            new_pipeline._assertions = _copy.deepcopy(pipeline._assertions)
-            # An assert_shape() written before the first op has no preceding
-            # append to apply it; every later position is applied by the
-            # `_push_op` that lands on it, so the replay is just the append
-            # path run once per op.
-            new_pipeline._apply_assertions_at(0)
-            for op_spec in pipeline._ops:
-                new_pipeline._push_op(op_spec)
+            # The replay is the append path run once per op (an assert_shape
+            # included), each planned against the states it reads.
+            for op_spec, position in zip(pipeline._ops, pipeline._entering):
+                new_pipeline._push_op(op_spec, refs=position.refs)
 
             # Ops referencing other nodes (rasterize(shape=...)) make those
             # nodes upstream dependencies so they execute first.
-            new_pipeline._shape_refs = pipeline._shape_refs.copy()
+            new_pipeline._node_refs = pipeline._node_refs.copy()
             return LazyPipelineExpr(
                 column=None,  # No column - receives from upstream, not from DataFrame
                 pipeline=new_pipeline,
                 node_id=_generate_node_id(),
-                upstream=[self, *new_pipeline._shape_refs],
+                upstream=[self, *new_pipeline._node_refs],
             )
         else:
             # Has source: create new root node
@@ -232,7 +200,7 @@ class LazyPipelineExpr(_LazyOpsMixin):
                 column=self._column,
                 pipeline=pipeline,
                 node_id=_generate_node_id(),
-                upstream=list(pipeline._shape_refs),
+                upstream=list(pipeline._node_refs),
             )
 
     # --- Sink (materializes to pl.Expr) ---
@@ -295,17 +263,8 @@ class LazyPipelineExpr(_LazyOpsMixin):
 
         if isinstance(format, dict):
             # Multi-output: the shared kwargs apply to every alias's sink.
-            for alias, fmt_str in format.items():
-                node = self._find_node_by_alias(alias, all_nodes)
-                _check_sink(
-                    fmt_str,
-                    kwargs,
-                    (node or self)._pipeline,
-                    alias,
-                )
             graph.set_multi_output(format, **kwargs)
         else:
-            _check_sink(format, kwargs, self._pipeline)
             graph.set_output(self._node_id, format, **kwargs)
 
         # The explicit optimization phase: rewrite the logical graph into its
@@ -314,6 +273,9 @@ class LazyPipelineExpr(_LazyOpsMixin):
         from polars_cv._optimize import resolve_opt_flags
 
         graph.optimize(resolve_opt_flags(opt_flags))
+        # Refused here, where it is written, by the code the plugin runs: the
+        # graph is compiled and planned, and every output's sink checked.
+        graph.check()
 
         if return_expr:
             # Register and return the fused expression
@@ -679,7 +641,7 @@ class LazyPipelineExpr(_LazyOpsMixin):
         # state; its rules read both operands (true division of two u8 is f32,
         # the shapes broadcast), so the other operand's state goes with it.
         new_pipeline._state = self._pipeline._state
-        new_pipeline._add_node_op(op, {"other": other}, other=other._pipeline._state)
+        new_pipeline._add_node_op(op, {"other": other})
 
         return LazyPipelineExpr(
             column=None,  # No direct column - receives from upstream
@@ -687,15 +649,6 @@ class LazyPipelineExpr(_LazyOpsMixin):
             node_id=_generate_node_id(),
             upstream=[self, other],
         )
-
-    def _find_node_by_alias(
-        self, alias: str, nodes: list["LazyPipelineExpr"]
-    ) -> "LazyPipelineExpr | None":
-        """Find a node in the graph by its alias."""
-        for node in nodes:
-            if node._alias == alias:
-                return node
-        return None
 
     def _collect_dependency_graph(self) -> list["LazyPipelineExpr"]:
         """

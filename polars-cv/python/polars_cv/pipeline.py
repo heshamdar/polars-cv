@@ -7,7 +7,6 @@ processing pipelines that can be applied to Polars DataFrame columns.
 
 from __future__ import annotations
 
-import copy
 import json
 import math
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -28,7 +27,6 @@ from polars_cv._types import (
     SlotTable,
     SourceFormat,
     SourceSpec,
-    _reject_expr,
     _validate_enum,
     normalize_cloud_options,
     planning_slots,
@@ -91,43 +89,6 @@ def _rotation_matrix(
     return [cos_a, -sin_a, tx, sin_a, cos_a, ty]
 
 
-def _asserted_rank(dims: "Sequence[int | None]") -> int:
-    """Validate an ``assert_shape(dims=...)`` list and return the rank it pins.
-
-    Entries are literal ``int``\\ s or ``None`` (dimension left unknown). An
-    expression is refused rather than tracked: ``dims=`` publishes the output
-    schema, and a per-row size is not a plan-time fact — ``height=`` remains
-    available for a per-row dimension, where it correctly publishes nothing.
-
-    Rank is capped at ``len(PlanState.DIM_NAMES)`` because that is how many dimensions
-    :class:`PlanState` tracks. Accepting a longer list would silently file
-    dimension 0 under ``height`` and drop everything past dimension 2, which is
-    a mis-assignment rather than a missing feature — so it is refused here.
-    """
-    from polars_cv._lib import PlanState
-
-    if not isinstance(dims, (list, tuple)):
-        msg = f"assert_shape(dims=...) must be a list of ints, got {dims!r}"
-        raise ValueError(msg)
-    dims = list(dims)
-    if not dims:
-        msg = "assert_shape(dims=[]) declares a rank-0 output, which no sink produces."
-        raise ValueError(msg)
-    if len(dims) > len(PlanState.DIM_NAMES):
-        msg = (
-            f"assert_shape(dims=...) supports up to {len(PlanState.DIM_NAMES)} dimensions "
-            f"({', '.join(PlanState.DIM_NAMES)}), got {len(dims)}. Higher-rank shapes are "
-            f"not tracked by the planner; pass the shape to the sink instead "
-            f"(.sink('array', shape=[...]))."
-        )
-        raise ValueError(msg)
-    for axis, size in enumerate(dims):
-        if size is not None:
-            # Sizes are checked by `plan_assert` (Rust `Declared::Size`).
-            _reject_expr(size, f"'dims[{axis}]'")
-    return len(dims)
-
-
 def _same(value: "Any") -> "Any":
     """Carry a field across a copy by reference (immutable or deliberately shared)."""
     return value
@@ -165,64 +126,27 @@ _STATE_COPIERS: "dict[str, Callable[[Any], Any]]" = {
     "_entering": list,
     # `pl.Expr` / `LazyPipelineExpr` elements are shared deliberately — they are
     # graph identities, and deep-copying one would break node reference.
-    "_shape_refs": list,
-    # Assertion dicts the builders fill in place: deep-copied.
-    "_assertions": copy.deepcopy,
+    "_node_refs": list,
 }
 
 
 class _Position(NamedTuple):
-    """What the planner keeps for one op: the state entering it, and a binary
-    op's other operand's state (its two-input rules read it on replay)."""
+    """What the planner keeps for one op: the state entering it, and the states
+    of the nodes it reads by id (a binary op's operand, a canvas's node), which
+    its plan step reads again on replay."""
 
     state: "PlanState"
-    other: "PlanState | None"
+    refs: "dict[str, PlanState]"
 
 
-#: A shape declaration at one op boundary, in the wire form ``plan_assert``
-#: reads (``src/plan.rs``'s ``Assertion``): ``{"ndim": int | None, "dims":
-#: [d0, d1, d2], "by_user": bool}``, each ``d`` ``None`` (not declared),
-#: ``{"size": n}``, ``"per_row"`` or ``"unknown"``.
-Assertion = dict
-
-
-def _new_assertion(*, by_user: bool) -> Assertion:
-    """An assertion declaring nothing yet."""
-    return {"ndim": None, "dims": [None, None, None], "by_user": by_user}
-
-
-def _assertion_window(
-    assertions: "dict[int, Assertion]", start: int, end: int
-) -> "dict[int, Assertion]":
-    """The assertions of op boundaries ``start..=end``, re-keyed from 0.
-
-    Assertions are keyed by op *boundary* (an assertion at ``k`` applies after
-    op ``k - 1``), so a slice ``[start, end)`` keeps both of its end boundaries.
-    """
-    return {
-        i - start: copy.deepcopy(a) for i, a in assertions.items() if start <= i <= end
-    }
-
-
-def _render_assertion(assertion: Assertion) -> str:
-    """An ``assert_shape(...)`` call as the user wrote it."""
-    from polars_cv._lib import PlanState
-
-    def size(declared: Any) -> str:
-        return "expr" if declared == "per_row" else str(declared["size"])
-
-    if assertion["ndim"] is not None:
-        dims = [
-            "None" if d is None or d == "unknown" else size(d)
-            for d in assertion["dims"][: assertion["ndim"]]
-        ]
-        return f"assert_shape(dims=[{', '.join(dims)}])"
-    named = [
-        f"{name}={size(d)}"
-        for name, d in zip(PlanState.DIM_NAMES, assertion["dims"])
-        if d is not None
-    ]
-    return f"assert_shape({', '.join(named)})"
+def _plain(value: Any) -> Any:
+    """A parameter as ``repr`` shows it: literals as themselves, lists
+    element-wise, a per-row expression as the expression."""
+    if isinstance(value, ParamValue):
+        return _plain(value.value)
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    return value
 
 
 def _encode_field(
@@ -246,11 +170,14 @@ def _encode_field(
             raise TypeError(msg)
         return p._track_expr(value)
     if kind == "node":
-        # An operand expression crosses as its node id; the graph wiring
-        # (upstream edges) is the lazy layer's job, not the op's.
+        # An operand expression crosses as its node id and is recorded as a
+        # node this pipeline reads: its state plans the op, and the graph
+        # wiring makes it an upstream edge.
         from polars_cv.lazy import LazyPipelineExpr
 
         if isinstance(value, LazyPipelineExpr):
+            if all(ref is not value for ref in p._node_refs):
+                p._node_refs.append(value)
             value = value._node_id
         return ParamValue(is_expr=False, value=value)
     if kind == "one_of":
@@ -342,10 +269,6 @@ class Pipeline(_OpsMixin):
         # reorder or a deletion of the ops replays them from one of these
         # (`_replay`), and identity elimination judges an op against its own.
         self._entering: list[_Position] = []
-        # Shape declarations (`assert_shape`, a canvas taken from another
-        # node), keyed by the op boundary they were written at, so a replay or
-        # a lazy continuation applies each where it was written.
-        self._assertions: dict[int, Assertion] = {}
         # Per-row error policy for the executed graph ("raise" by default).
         self._on_error: str = "raise"
         # What a null in a per-row expression parameter means ("raise" by
@@ -354,7 +277,7 @@ class Pipeline(_OpsMixin):
         # LazyPipelineExpr nodes referenced by ops (e.g. rasterize(shape=...));
         # consumers wiring this pipeline into a graph add them as upstream
         # dependencies so the referenced node executes first.
-        self._shape_refs: "list[LazyPipelineExpr]" = []
+        self._node_refs: "list[LazyPipelineExpr]" = []
 
     def _track_expr(self, value: IntOrExpr | FloatOrExpr) -> ParamValue:
         """
@@ -560,110 +483,57 @@ class Pipeline(_OpsMixin):
 
         return self._append_op(op_name, _params)
 
-    def _push_op(self, spec: "OpSpec", *, other: "PlanState | None" = None) -> None:
+    def _push_op(
+        self, spec: "OpSpec", *, refs: "dict[str, PlanState] | None" = None
+    ) -> None:
         """Append ``spec`` **in place** and apply its full plan-time effect.
 
         **The single mutator of ``_ops`` in the package.** :meth:`_append_op`
         wraps it for the immutable builder path; the graph hook
         (:meth:`_add_node_op`) calls it directly because it mutates an
         already-cloned pipeline. The effect — input-domain check, schema fold,
-        H/W, channels, rank clipping — is one Rust call (``plan_step``),
-        made before anything changes, so an op cannot be appended with only part
-        of it applied.
+        H/W, channels, rank clipping, a declaration's check — is one Rust call
+        (``plan_step``), made before anything changes, so an op cannot be
+        appended with only part of it applied. The nodes the op reads by id (a
+        binary op's operand, a canvas's node) are planned from
+        :attr:`_node_refs`' states, or from ``refs`` when a replay re-appends
+        an op with the states it was first planned against.
 
         The guard is ``test_op_append_is_structurally_exclusive``, which walks
         this module's AST and fails if anything else mutates ``_ops``.
-
-        Args:
-            spec: The operation to append.
-            other: A binary op's other operand's state, which its two-input
-                rules read. Rust refuses it for any other op, and refuses a
-                binary op without it.
         """
         from polars_cv._lib import plan_step
 
-        planned = plan_step(
-            json.dumps(spec.to_dict(planning_slots)), self._state, other
-        )
-        self._entering.append(_Position(self._state, other))
+        if refs is None:
+            refs = {ref._node_id: ref._pipeline._state for ref in self._node_refs}
+        planned = plan_step(json.dumps(spec.to_dict(planning_slots)), self._state, refs)
+        self._entering.append(_Position(self._state, refs))
         self._ops.append(spec)
         self._state = planned
-        # An assertion recorded *after* this op outranks what the contract
-        # inferred. rasterize(shape=<node>) is the case that needs it: its
-        # canvas comes from another node's buffer, which no contract on this
-        # op can describe.
-        self._apply_assertions_at(len(self._ops))
 
-    def _replay(
-        self,
-        positions: "Sequence[int]",
-        *,
-        start: PlanState,
-        assertions: "dict[int, Assertion]",
-    ) -> None:
+    def _replay(self, positions: "Sequence[int]", *, start: "PlanState") -> None:
         """Rebuild the op list from ``positions`` of the current one, in place.
 
         **The one wholesale rewrite of ``_ops``**: a slice (CSE's prefix and
         suffix, a sub-pipeline), a reorder (the spatial pushdown) and a
         deletion (identity elimination) all name the ops they keep, in order,
-        and the state they start from. Each op is then appended again through
-        :meth:`_push_op`, so every per-position fact is *recomputed* for the new
-        order rather than re-keyed by the caller — the re-key arithmetic each
-        rewrite used to carry is where the CSE path once forgot the
-        assertions. ``assertions`` is required, and keyed for the new list.
+        and the state they start from. Each op is then planned again, so every
+        per-position fact is *recomputed* for the new order rather than re-keyed
+        by the caller.
         """
-        steps = [(self._ops[i], self._entering[i].other) for i in positions]
+        steps = [(self._ops[i], self._entering[i].refs) for i in positions]
         self._ops = []
         self._entering = []
-        self._assertions = assertions
         self._state = start
-        self._apply_assertions_at(0)
-        for spec, other in steps:
-            self._push_op(spec, other=other)
+        for spec, refs in steps:
+            self._push_op(spec, refs=refs)
 
-    def _state_at(self, position: int) -> PlanState:
+    def _state_at(self, position: int) -> "PlanState":
         """The state at op boundary ``position``: entering op ``position``, or
         the current state at the end."""
         if position < len(self._ops):
             return self._entering[position].state
         return self._state
-
-    def _apply_assertions_at(self, position: int) -> None:
-        """Check and apply any shape declaration recorded at op ``position``.
-
-        A user assertion outranks whatever the ops inferred, but only from the
-        point it was written — which is why it is replayed positionally rather
-        than applied once at the end.
-
-        **The single place a declaration is validated as well as applied**, and
-        the checks are Rust's (``plan_assert``): a rank already known
-        differently, a dimension the rank does not have, or a size that
-        disagrees with a known one is refused at the line that wrote it.
-        ``assert_shape`` records into ``_assertions`` and calls this, so the
-        eager spelling and the lazy continuation's replay run the same checks.
-        """
-        assertion = self._assertions.get(position)
-        if assertion is None:
-            return
-        from polars_cv._lib import plan_assert
-
-        after_op = self._ops[-1].op if self._ops else None
-        self._state = plan_assert(self._state, json.dumps(assertion), after_op)
-
-    @staticmethod
-    def _canvas_of(shape: "LazyPipelineExpr") -> "list[Any]":
-        """The canvas a ``shape=<node>`` reference declares, per dimension.
-
-        The referenced node's planned H/W are the authority: no contract on the
-        rasterize itself can describe a canvas that comes from another node's
-        buffer. An unknown size there is declared unknown. Shared by
-        ``rasterize(shape=)`` and ``source("contour", shape=)`` — the same mask
-        from the same reference, so they cannot disagree.
-        """
-        height, width, _ = shape._pipeline._state.dims
-        return [
-            "unknown" if size is None else {"size": size} for size in (height, width)
-        ] + [None]
 
     # --- Source (required, starts the chain) ---
 
@@ -865,10 +735,10 @@ class Pipeline(_OpsMixin):
                 params[name] = literal(_validate_enum(value, DType, "dtype").value)
             elif name == "shape":
                 # The canvas node, by id: Rust takes that node's already-computed
-                # buffer. `_shape_refs` is what turns the reference into an
+                # buffer. `_node_refs` is what turns the reference into an
                 # upstream edge, so the node is executed (as for `rasterize`).
                 params["size"] = literal(value._node_id)
-                new._shape_refs.append(value)
+                new._node_refs.append(value)
             elif name in ("height", "width"):
                 params["size"] = literal(
                     [
@@ -889,15 +759,9 @@ class Pipeline(_OpsMixin):
         # The format's Rust definition validates the spec (refusing a setting
         # it does not read, naming where it applies) and says what state the
         # decode starts the pipeline in.
-        new._state = plan_source(json.dumps(new._source.to_dict(planning_slots)))
-        if shape is not None:
-            # A contour canvas taken from another node is a declaration, as it
-            # is for `rasterize(shape=)`: recorded and applied through the one
-            # assertion path, so the plan knows its sizes may rest on a claim.
-            canvas = new._assertions.setdefault(0, _new_assertion(by_user=False))
-            canvas["dims"] = Pipeline._canvas_of(shape)
-            new._apply_assertions_at(0)
-
+        # A contour canvas from another node takes that node's planned size.
+        refs = {ref._node_id: ref._pipeline._state for ref in new._node_refs}
+        new._state = plan_source(json.dumps(new._source.to_dict(planning_slots)), refs)
         return new
 
     def thumbnail(self, max_size: int) -> "Pipeline":
@@ -995,17 +859,17 @@ class Pipeline(_OpsMixin):
         **An assertion states a fact; it does not change one.** A declaration
         that contradicts what the pipeline already knows — or that names a
         dimension the output rank does not have — is rejected here, at the line
-        that wrote it. Previously it was accepted, published as the output
-        schema, and reported at ``collect()`` as a plugin contract bug.
+        that wrote it. Execution checks it against every row where it was
+        written, so a row whose data disagrees fails naming the assertion, and
+        everything after it may rely on the declared shape.
 
         Two spellings:
 
         - ``dims=[8, 8, 3]`` — positional and complete. Entry *i* is the size
           of dimension *i*; ``None`` leaves one unknown. This also pins the
           output **rank** to ``len(dims)``, which is what lets a list/array
-          source reach an ``array`` sink. Entries are literal ``int``\\ s: a
-          rank and its per-dimension sizes are plan-time schema facts, so
-          unlike most parameters they cannot be per-row expressions.
+          source reach an ``array`` sink. An entry may be an expression: it is
+          checked per row, and like any per-row size it publishes no shape.
         - ``height=``/``width=``/``channels=`` — the ``[H, W, C]`` spelling of
           dimensions 0, 1 and 2, for the common image case. The hints are
           **positional**, so these names only describe an ``[H, W, C]`` buffer:
@@ -1037,45 +901,28 @@ class Pipeline(_OpsMixin):
             df.with_columns(pl.col("arr").cv.pipe(pipe).sink("array"))
             ```
         """
-        from polars_cv._lib import PlanState
-
-        named = {"height": height, "width": width, "channels": channels}
-        given = {dim: value for dim, value in named.items() if value is not None}
-        if dims is not None and given:
+        if dims is not None and any(v is not None for v in (height, width, channels)):
+            given = [
+                n
+                for n, v in zip(
+                    ("height", "width", "channels"), (height, width, channels)
+                )
+                if v is not None
+            ]
             msg = (
                 f"assert_shape() takes either dims=[...] or the per-dimension "
-                f"keywords {sorted(given)}, not both — dims= already gives "
-                f"every dimension a position."
+                f"keywords {given}, not both — dims= already gives every "
+                f"dimension a position."
             )
             raise ValueError(msg)
-        if dims is None and not given:
+        if dims is not None:
+            dims = list(dims)
+            # The rank is the list's length; Rust refuses one it cannot track.
+            return self._assert_shape(rank=len(dims), dims=(dims + [None] * 3)[:3])
+        if height is None and width is None and channels is None:
             msg = "assert_shape() needs a declaration: dims=[...] or height=/width=/channels=."
             raise ValueError(msg)
-
-        new = self._clone()
-        # Recorded against the current op position so a continuation can replay
-        # the assertion at the point the user wrote it. Without the position an
-        # assertion could not be told apart from a hint an op computed, and
-        # replaying it at the end would override later ops that legitimately
-        # change the shape (assert channels=3, then grayscale → 1).
-        assertion = new._assertions.setdefault(
-            len(new._ops), _new_assertion(by_user=True)
-        )
-        if dims is not None:
-            assertion["ndim"] = _asserted_rank(dims)
-            for axis, size in enumerate(dims):
-                if size is not None:
-                    assertion["dims"][axis] = {"size": size}
-        else:
-            for dim, value in given.items():
-                # A per-row size is declared but is no plan-time fact.
-                assertion["dims"][PlanState.DIM_NAMES.index(dim)] = (
-                    "per_row" if isinstance(value, pl.Expr) else {"size": value}
-                )
-        # Applied (and checked) through the one path the lazy replay also uses,
-        # rather than assigning the hints here — see `_apply_assertions_at`.
-        new._apply_assertions_at(len(new._ops))
-        return new
+        return self._assert_shape(rank=None, dims=[height, width, channels])
 
     # --- View Operations (zero-copy where possible) ---
 
@@ -1666,24 +1513,9 @@ class Pipeline(_OpsMixin):
         if not isinstance(shape, LazyPipelineExpr):
             msg = "'shape' must be a LazyPipelineExpr"
             raise TypeError(msg)
-        new = self._rasterize(size=shape, fill_value=fill_value, background=background)
-        # The referenced node must execute before this one; graph wiring
-        # (cv.pipe / LazyPipelineExpr.pipe) adds it as an upstream dep.
-        new._shape_refs.append(shape)
-        # The canvas comes from another node's buffer, so no contract on this
-        # op can supply it: it is recorded as an assertion at this op's
-        # position, which the lazy continuation replays like a user
-        # `assert_shape`, and applied the way `_push_op` applies one — last,
-        # over the op's own (unknown) inferred size.
-        #
-        # Tagged `shape_ref`, not `assert_shape`: the canvas comes from another
-        # node's *inferred* hints, so if execution disagrees that is a contract
-        # bug and keeps the contract-bug wording.
-        position = len(new._ops)
-        asserted = new._assertions.setdefault(position, _new_assertion(by_user=False))
-        asserted["dims"] = Pipeline._canvas_of(shape)
-        new._apply_assertions_at(position)
-        return new
+        # The canvas is the node's: `_encode_field` records it in `_node_refs`,
+        # which plans the canvas from its state and makes it an upstream edge.
+        return self._rasterize(size=shape, fill_value=fill_value, background=background)
 
     def scale_contour(
         self,
@@ -1818,11 +1650,7 @@ class Pipeline(_OpsMixin):
             sub._source = SourceSpec(format=SourceFormat(source_format))
 
         # The slice starts from the state entering its first op.
-        sub._replay(
-            range(start_op, end_op),
-            start=self._state_at(start_op),
-            assertions=_assertion_window(self._assertions, start_op, end_op),
-        )
+        sub._replay(range(start_op, end_op), start=self._state_at(start_op))
         return sub
 
     # --- Graph Composition Support ---
@@ -1831,8 +1659,6 @@ class Pipeline(_OpsMixin):
         self,
         op_name: str,
         values: "dict[str, Any]",
-        *,
-        other: "PlanState | None" = None,
     ) -> None:
         """Append a ``lazy_only`` op — one reading other graph nodes — in place.
 
@@ -1845,8 +1671,6 @@ class Pipeline(_OpsMixin):
         Args:
             op_name: The op's wire name.
             values: Its arguments, by catalogue field name.
-            other: A binary op's other operand's state (see
-                :meth:`_push_op`).
         """
         fields = OP_FIELDS[op_name]
         params: dict[str, ParamValue] = {}
@@ -1854,10 +1678,7 @@ class Pipeline(_OpsMixin):
             encoded = _encode_field(self, value, fields[name], f"{op_name}({name}=)")
             if encoded is not None:
                 params[name] = encoded
-        # Binary ops are elementwise, so H/W pass through unchanged — but the
-        # append still routes through `_push_op`, which records the
-        # entering-hints snapshot and applies the channel rule.
-        self._push_op(OpSpec(op=op_name, params=params), other=other)
+        self._push_op(OpSpec(op=op_name, params=params))
 
     # --- Node-scope optimisation passes ---
 
@@ -1869,9 +1690,8 @@ class Pipeline(_OpsMixin):
         order — a subset for identity elimination, a permutation for the
         spatial-window pushdown — or ``None`` when nothing changes. The new
         order is committed by :meth:`_replay`, so every per-position fact is
-        recomputed for it. Assertion boundaries do not move: identity
-        elimination leaves an asserting node alone, and the pushdown never
-        moves a crop across one.
+        recomputed for it. An ``assert_shape`` is an op like any other: never
+        an identity, and never crossed by a crop.
         """
         from polars_cv._lib import node_pass
 
@@ -1881,10 +1701,9 @@ class Pipeline(_OpsMixin):
             name,
             [json.dumps(op.to_dict(planning_slots)) for op in self._ops],
             [self._state_at(p) for p in range(len(self._ops) + 1)],
-            sorted(self._assertions),
         )
         if order is not None:
-            self._replay(order, start=self._state_at(0), assertions=self._assertions)
+            self._replay(order, start=self._state_at(0))
 
     def _to_spec_dict(self, slot_of: "SlotOf") -> dict:
         """
@@ -1947,24 +1766,13 @@ class Pipeline(_OpsMixin):
     # --- Repr ---
 
     def __repr__(self) -> str:
-        """Return string representation of pipeline.
-
-        Renders the chain as written: each ``assert_shape`` the user wrote
-        appears where they wrote it. Sizes the ops inferred are not
-        declarations and are not rendered as one.
-        """
+        """Return string representation of pipeline: the chain as written."""
         parts = []
         if self._source:
             parts.append(f"source({self._source.format.value!r})")
-        for position in range(len(self._ops) + 1):
-            assertion = self._assertions.get(position)
-            if assertion is not None and assertion["by_user"]:
-                parts.append(_render_assertion(assertion))
-            if position < len(self._ops):
-                op = self._ops[position]
-                params_str = ", ".join(f"{k}={v.value}" for k, v in op.params.items())
-                parts.append(f"{op.op}({params_str})")
-
+        for op in self._ops:
+            params_str = ", ".join(f"{k}={_plain(v)}" for k, v in op.params.items())
+            parts.append(f"{op.op}({params_str})")
         return f"Pipeline().{'.'.join(parts)}" if parts else "Pipeline()"
 
     def explain(

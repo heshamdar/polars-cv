@@ -51,6 +51,21 @@ that happens to equal the default: `source("image_bytes",
 require_contiguous=False)` raises, because image sources never read
 `require_contiguous`. Drop the keyword.
 
+## `assert_shape` is checked
+
+`assert_shape` is an operation that checks every row where it is written: a row
+whose data does not match fails naming the assertion, and everything after it
+relies on the declared shape. It used to be an unchecked claim, reported (if at
+all) when the output's shape disagreed. `dims=` entries may now be per-row
+expressions, like `height=`/`width=`/`channels=`.
+
+## Sinks are checked at `.sink()`
+
+`.sink()` compiles and plans the graph with the plugin's own code, so an output
+the plugin cannot produce (an unencodable dtype, a `vector` into `numpy`, a
+singular `warp_affine` matrix) raises `ValueError` there rather than a
+`ComputeError` at `collect()`.
+
 ## Removed
 
 - `Pipeline.output_encoding()`. The plugin reads whether an output is
@@ -61,10 +76,11 @@ require_contiguous=False)` raises, because image sources never read
 Only relevant if you build the plugin's graph JSON yourself rather than through
 `Pipeline`:
 
-- Each output carries its node's planned state as `planned` (`{"domain",
-  "dtype", "ndim", "dims", "asserted", "declared"}`, only `domain` and `dtype`
-  required) instead of `expected_domain`, `expected_dtype`, `expected_shape`,
-  `expected_ndim` and `shape_asserted`, which are now refused.
+- An output is only `{"node", "sink"}`: the plugin plans every output's
+  schema from the graph itself. `expected_domain`, `expected_dtype`,
+  `expected_shape`, `expected_ndim`, `shape_asserted` and `planned` are refused.
+- A shape declaration is an op, `{"op": "assert_shape", "rank": ..., "dims":
+  [d0, d1, d2]}`, checked against every row where it appears.
 - Op, source and sink fields are the Python parameter names with bare values
   (`"height": 224`) or `{"$slot": n}` for a per-row expression. Unknown fields
   are refused by name.

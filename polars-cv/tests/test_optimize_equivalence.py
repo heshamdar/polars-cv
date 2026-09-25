@@ -634,12 +634,14 @@ class TestOptimizationRegressions:
             with pytest.raises(pl.exceptions.ComputeError, match="outside"):
                 _sink_output(sample_df, pipe, flags, "numpy")
 
-    def test_declared_shape_reaching_a_cse_suffix_is_not_trusted(
+    def test_a_wrong_declaration_reaching_a_cse_suffix_fails_every_way(
         self, sample_df: pl.DataFrame
     ) -> None:
-        # CSE moves the assert_shape into the shared prefix node; the suffix keeps
-        # the H/W it implied but not the assertion. That H/W is a declaration, not
-        # a fact, so it must not license deleting the crop as "full-frame".
+        # The image is 96x96 and the assertion says 10x10. CSE moves the
+        # assert_shape into the shared prefix node, and the suffix plans from
+        # the H/W it declared — which is sound only because the assertion is
+        # checked: the query fails naming it, optimized or not, rather than
+        # an optimization deleting the crop as "full-frame".
         pipes = {
             "a": _src()
             .assert_shape(height=10, width=10)
@@ -647,20 +649,29 @@ class TestOptimizationRegressions:
             .crop(top=0, left=0, height=10, width=10),
             "b": _src().grayscale().threshold(128),
         }
-        off = _run_multi(sample_df, pipes, OptFlags.none())
-        for flags in _all_flag_subsets():
-            assert _run_multi(sample_df, pipes, flags) == off, (
-                f"output changed under {flags}"
-            )
+        for flags in [OptFlags.none(), *_all_flag_subsets()]:
+            with pytest.raises(pl.exceptions.ComputeError, match="does not hold"):
+                _run_multi(sample_df, pipes, flags)
 
-    def test_declared_shape_reaching_a_lazy_continuation_is_not_trusted(
+    def test_a_wrong_declaration_reaching_a_lazy_continuation_fails_every_way(
         self, sample_df: pl.DataFrame
     ) -> None:
-        # The continuation inherits the upstream node's asserted H/W as a hint but
-        # none of its assertions — the same declaration-as-fact hole as CSE.
+        # The same through a continuation, which plans from the upstream
+        # node's (declared, checked) H/W.
         upstream = pl.col("image").cv.pipe(_src().assert_shape(height=10, width=10))
         cont = upstream.pipe(
             Pipeline().grayscale().crop(top=0, left=0, height=10, width=10)
+        )
+        for flags in [OptFlags.none(), *_all_flag_subsets()]:
+            with pytest.raises(pl.exceptions.ComputeError, match="does not hold"):
+                sample_df.select(o=cont.sink("numpy", opt_flags=flags))
+
+    def test_a_true_declaration_lets_optimizations_rely_on_it(
+        self, sample_df: pl.DataFrame
+    ) -> None:
+        upstream = pl.col("image").cv.pipe(_src().assert_shape(height=96, width=96))
+        cont = upstream.pipe(
+            Pipeline().grayscale().crop(top=0, left=0, height=96, width=96)
         )
         off = sample_df.select(o=cont.sink("numpy", opt_flags=OptFlags.none()))
         for flags in _all_flag_subsets():

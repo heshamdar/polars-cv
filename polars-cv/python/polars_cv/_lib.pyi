@@ -20,7 +20,7 @@ __source_hash__: str
 class PlanState:
     """The planner's state at one op boundary (``src/plan.rs``'s ``State``).
 
-    Built only by Rust (``plan_source``/``plan_step``/``plan_assert``); frozen.
+    Built only by Rust (``plan_source``/``plan_step``); frozen.
     """
 
     DIM_NAMES: tuple[str, str, str]
@@ -35,17 +35,12 @@ class PlanState:
     def ndim(self) -> int | None: ...
     @property
     def dims(self) -> tuple[int | None, int | None, int | None]: ...
-    @property
-    def asserted(self) -> tuple[bool, bool, bool]: ...
-    @property
-    def declared(self) -> bool: ...
     def _wire(self) -> str: ...
 
 def node_pass(
     pass_name: str,
     ops: list[str],
     states: list[PlanState],
-    assertions: list[int],
 ) -> list[int] | None:
     """Run a node-scope logical pass; the node's new op order, or ``None``."""
 
@@ -53,15 +48,10 @@ def pass_catalog() -> str:
     """Return the optimisation-pass catalogue as JSON (see ``tests/golden/pass_catalog.json``)."""
 
 def plan_step(
-    op_json: str, state: PlanState, other: PlanState | None = None
+    op_json: str, state: PlanState, refs: dict[str, PlanState] | None = None
 ) -> PlanState:
-    """The planned state after appending ``op_json``; ``other`` is a binary
-    op's other operand's state."""
-
-def plan_assert(
-    state: PlanState, assertion_json: str, after_op: str | None = None
-) -> PlanState:
-    """The planned state after a shape declaration; ``ValueError`` if it contradicts."""
+    """The planned state after appending ``op_json``; ``refs`` are the states
+    of the nodes it reads by id."""
 
 def rotation_matrix_2d(
     angle_deg: float,
@@ -80,14 +70,11 @@ def io_catalog() -> str:
 def enum_catalog() -> str:
     """Return the registered-enum catalogue as JSON (see ``tests/golden/enum_catalog.json``)."""
 
-def plan_sink(
-    sink_json: str,
-    state: PlanState,
-    source_json: str | None = None,
-    alias: str | None = None,
-) -> None:
-    """Validate a serialized sink against its typed format and the output's
-    planned state; raise ``ValueError``."""
+def check_graph(graph_json: str) -> None:
+    """Compile and plan a graph and check every output's sink, as the plugin
+    will; raise ``ValueError``."""
 
-def plan_source(source_json: str) -> PlanState:
+def plan_source(
+    source_json: str, refs: dict[str, PlanState] | None = None
+) -> PlanState:
     """Validate a serialized source and return its planned state."""
