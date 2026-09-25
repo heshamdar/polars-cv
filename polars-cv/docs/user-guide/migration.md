@@ -1,0 +1,70 @@
+# Migrating to the typed-op API
+
+Every operation, source and sink is now defined once in Rust, and the Python
+builder methods are generated from those definitions. The generator applies one
+signature rule to every method, which changes how some are called. This page
+lists what to change coming from 0.28.
+
+## Keyword-only parameters
+
+An operation with exactly one required parameter takes it positionally or by
+name; every other parameter is keyword-only. These calls must now name their
+arguments:
+
+| Before | After |
+|---|---|
+| `.convolve2d(k, 3)` | `.convolve2d(kernel=k, ksize=3)` |
+| `.convert_color("rgb", "hsv")` | `.convert_color(from_space="rgb", to_space="hsv")` |
+| `.histogram(64)` | `.histogram(bins=64)` |
+| `.normalize("zscore")` | `.normalize(method="zscore")` |
+| `.reduce_max(0)` (also `reduce_mean`, `reduce_min`) | `.reduce_max(axis=0)` |
+| `.reduce_std(0, 1)` | `.reduce_std(axis=0, ddof=1)` |
+| `.warp_affine(m, (h, w))` | `.warp_affine(matrix=m, output_size=(h, w))` |
+| `.perceptual_hash("average", 64)` | `.perceptual_hash(algorithm="average", hash_size=64)` |
+
+A positional call now raises `TypeError: ... takes 1 positional argument but 3
+were given`, so none of these fail silently.
+
+These gained a positional first argument (existing keyword calls still work):
+`adjust_contrast(factor)`, `adjust_gamma(gamma)`, `channel_select(index)`,
+`channel_swap(order)`, `simplify(tolerance)` and `label_reduce(contours)`.
+
+```python
+from polars_cv import Pipeline
+
+pipe = (
+    Pipeline()
+    .source("image_bytes")
+    .convert_color(from_space="rgb", to_space="hsv")
+    .channel_select(2)
+    .normalize(method="minmax")
+)
+```
+
+## `source()` keywords default to `None`
+
+Each `source()` keyword now defaults to `None`, meaning "the format's own
+default" (`fill_value` 255, `background` 0, `require_contiguous` `False`,
+`on_error` `"raise"`). A keyword is passed exactly when it is not `None`, and a
+passed keyword the format does not read is refused. That now includes a value
+that happens to equal the default: `source("image_bytes",
+require_contiguous=False)` raises, because image sources never read
+`require_contiguous`. Drop the keyword.
+
+## Removed
+
+- `Pipeline.output_encoding()`. The plugin reads whether an output is
+  histogram buckets from the ops themselves.
+
+## Hand-built graph JSON
+
+Only relevant if you build the plugin's graph JSON yourself rather than through
+`Pipeline`:
+
+- Each output carries its node's planned state as `planned` (`{"domain",
+  "dtype", "ndim", "dims", "asserted", "declared"}`, only `domain` and `dtype`
+  required) instead of `expected_domain`, `expected_dtype`, `expected_shape`,
+  `expected_ndim` and `shape_asserted`, which are now refused.
+- Op, source and sink fields are the Python parameter names with bare values
+  (`"height": 224`) or `{"$slot": n}` for a per-row expression. Unknown fields
+  are refused by name.

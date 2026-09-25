@@ -99,6 +99,7 @@ nav:
       - Chaining: user-guide/composition/chaining.md
       - Multi-Output: user-guide/composition/multi-output.md
       - Binary Operations: user-guide/composition/binary-ops.md
+    - Migrating to the Typed-Op API: user-guide/migration.md
   - API Reference:
     - Pipeline: api/pipeline.md
     - LazyPipelineExpr: api/lazy.md
