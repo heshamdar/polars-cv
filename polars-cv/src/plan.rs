@@ -55,8 +55,8 @@ const DIM_NAMES: [&str; 3] = ["height", "width", "channels"];
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Declared {
-    /// A literal size.
-    Size(i64),
+    /// A literal size; zero and negative sizes are refused on the wire.
+    Size(std::num::NonZeroU32),
     /// A per-row size: declared, but no plan-time fact.
     PerRow,
     /// Declared unknown (a canvas whose source node's size is itself unknown).
@@ -118,7 +118,7 @@ pub(crate) fn assert_shape(
             ));
         }
         let size = match declared {
-            Declared::Size(size) => Some(*size),
+            Declared::Size(size) => Some(i64::from(size.get())),
             Declared::PerRow | Declared::Unknown => None,
         };
         if let (Some(known), Some(size)) = (state.dims[axis], size) {
@@ -350,8 +350,11 @@ pub(crate) fn plan_assert(
     assertion_json: &str,
     after_op: Option<&str>,
 ) -> PyResult<State> {
-    let assertion: Assertion =
-        serde_json::from_str(assertion_json).map_err(|e| py_value_error(e.to_string()))?;
+    let assertion: Assertion = serde_json::from_str(assertion_json).map_err(|e| {
+        py_value_error(format!(
+            "assert_shape(): each size must be a positive int or None ({e})"
+        ))
+    })?;
     assert_shape(state, &assertion, after_op).map_err(py_value_error)
 }
 
@@ -452,10 +455,11 @@ pub(crate) fn input_dims(step: &GraphStep, state: &State) -> Option<Vec<Dim>> {
     }
 }
 
-/// The op's own `validate`, for the verdicts that depend on the input rank
-/// alone (a channel op on a rank-2 buffer): those are refused while the
-/// pipeline is built. Sizes the plan does not know are passed as 1, which no
-/// rank-level verdict reads; a size-level failure stays a row error.
+/// The op's own `validate`, refused while the pipeline is built wherever the
+/// plan knows enough: every verdict when the whole input shape is known, and
+/// only the verdicts that depend on the rank alone (a channel op on a rank-2
+/// buffer) otherwise. Sizes the plan does not know are passed as 1, which no
+/// rank-level verdict reads; a size-level failure then stays a row error.
 fn check_rank(step: &GraphStep, input: &[Dim]) -> Result<(), String> {
     let op: &dyn view_buffer::Op = match step {
         GraphStep::Buffer(dto) => dto.as_op(),
@@ -465,9 +469,11 @@ fn check_rank(step: &GraphStep, input: &[Dim]) -> Result<(), String> {
     if input.is_empty() {
         return Ok(());
     }
-    let shape: Vec<usize> = input.iter().map(|d| d.known().unwrap_or(1)).collect();
+    let known: Option<Vec<usize>> = input.iter().map(|d| d.known()).collect();
+    let fully_known = known.is_some();
+    let shape = known.unwrap_or_else(|| input.iter().map(|d| d.known().unwrap_or(1)).collect());
     match op.validate(&[shape.as_slice()], &[]) {
-        Err(e) if e.depends_only_on_rank() => Err(e.to_string()),
+        Err(e) if fully_known || e.depends_only_on_rank() => Err(e.to_string()),
         _ => Ok(()),
     }
 }

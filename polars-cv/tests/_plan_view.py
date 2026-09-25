@@ -32,6 +32,9 @@ class PlanView:
     height: int | str | None
     width: int | str | None
     channels: int | str | None
+    #: A declaration (``assert_shape``, a canvas from another node) reached
+    #: this lineage, so the sizes may rest on a claim.
+    declared: bool = False
 
     @property
     def hw(self) -> tuple[int | str | None, int | str | None]:
@@ -54,6 +57,7 @@ def planned(p: "Pipeline | LazyPipelineExpr") -> PlanView:
         height=height,
         width=width,
         channels=channels,
+        declared=state.declared,
     )
 
 

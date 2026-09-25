@@ -16,7 +16,7 @@ use view_buffer::ops::{Op as _, OpShape};
 /// Domain: buffer → buffer
 ///
 /// Example:
-///     >>> pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
+///     >>> pipe = Pipeline().source("image_bytes").convert_color(from_space="rgb", to_space="hsv")
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
 #[serde(deny_unknown_fields)]
 #[op(python = "convert_color")]

@@ -31,6 +31,7 @@ from polars_cv.lazy import LazyPipelineExpr
 from ._discovery import doc_page, doc_pages, repo_file
 from ._doc_tables import (
     cell_code,
+    docstring_pipeline_calls,
     fenced_python_method_calls,
     pipeline_chain_calls,
     table_with_header,
@@ -238,6 +239,44 @@ def test_documented_pipeline_calls_bind(page: str) -> None:
     wrong = [why for call in calls if (why := _unbindable(call))]
     assert not wrong, f"{page}: calls that do not fit their signature:\n" + "\n".join(
         wrong
+    )
+
+
+def _pipeline_docstrings() -> dict[str, str]:
+    """Every public ``Pipeline`` method's docstring (generated or hand-written)."""
+    return {
+        name: inspect.getdoc(member) or ""
+        for name, member in inspect.getmembers(Pipeline, callable)
+        if not name.startswith("_")
+    }
+
+
+#: Fewer bound docstring calls than this means the ``>>>`` extraction broke.
+_DOCSTRING_CALL_FLOOR = 50
+
+
+def test_docstring_pipeline_calls_bind() -> None:
+    """Every ``>>> Pipeline()…`` example in a method docstring binds.
+
+    The generated methods' docstrings come from the Rust doc comments, which the
+    Markdown scan above never reads; mkdocs renders them into the API pages.
+    """
+    wrong = [
+        f"{name}: {why}"
+        for name, doc in _pipeline_docstrings().items()
+        for call in docstring_pipeline_calls(doc)
+        if (why := _unbindable(call))
+    ]
+    assert not wrong, "docstring examples that do not bind:\n" + "\n".join(wrong)
+
+
+def test_the_docstring_binding_guard_sees_the_examples() -> None:
+    bound = sum(
+        len(docstring_pipeline_calls(doc)) for doc in _pipeline_docstrings().values()
+    )
+    assert bound >= _DOCSTRING_CALL_FLOOR, (
+        f"only {bound} Pipeline() calls found in docstrings (floor "
+        f"{_DOCSTRING_CALL_FLOOR}): the >>> extraction is broken"
     )
 
 

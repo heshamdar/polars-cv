@@ -10,7 +10,7 @@
 >
 > | Phase | Status |
 > |---|---|
-> | C0 — Correctness fixes (test-first) | not started |
+> | C0 — Correctness fixes (test-first) | **done** — C0.1, C0.2, C0.4–C0.7 fixed test-first (`tests/test_plan_claims.py`, docstring binding guard); C0.3 moved to C2 |
 > | C1 — Typed planner state | not started |
 > | C2 — Declarations are ops; Rust plans the graph | not started |
 > | C3 — Rust owns the op list (`Plan`) | not started |
@@ -72,7 +72,7 @@ Python mirrors. Hand-written code fell by 320 lines (−0.6%); tests grew by 1,1
 |---|---|---|---|
 | C0.1 | `source("blob", dtype="u8").cast("u8")` over an f32 blob returns u8 with optimizations on (today: fails with a planner-blame error) | The blob decoder checks the declared dtype against the blob header and refuses a mismatch naming both, so the claim is a fact identity elimination may rely on | `BlobSource.dtype` doc "for the planner" → "checked at decode"; `graph/compiled.rs` blob branch passes the declared dtype |
 | C0.2 | `source("contour", shape=<node with assert_shape>)…pad_to_size(...)` gives the same output with optimizations on and off, and a wrong upstream assertion is reported as the user's assertion | `source(contour, shape=)` records its canvas through the same path as `rasterize(shape=)` (a `by_user=False` declaration), so `declared` is set | **Delete** the `dataclasses.replace(new._state, dims=…)` block in `Pipeline.source` (`pipeline.py:931-937`) |
-| C0.3 | `…perceptual_hash().sink("numpy")` raises at `.sink()` | `plan::check_sink` calls `SinkKind::resolve` — one (domain, sink) authority | none (a second caller of the one table) |
+| C0.3 | *moved to C2 (C2.sink)*: the histogram-bucket encoding outranks the (domain, sink) pair and is known only from the op list, which `plan_sink` does not see | — | — |
 | C0.4 | `plan_assert` with `{"size": -5}` or `0` is refused | `Declared::Size(u32)` + non-zero check in Rust | **Delete** the positivity branch of Python `_asserted_rank` (Rust is the authority) |
 | C0.5 | `grayscale().channel_select(2)` raises at build | `check_rank` passes known sizes; when the input shape is fully known every `validate` failure is raised at build, not only rank-level ones | **Delete** the "unknown sizes are passed as 1" placeholder for a fully known shape |
 | C0.6 | `repr()`/`explain()` of `source(...).resize(4,4)` does not print a fictitious `assert_shape(...)` | `__repr__` renders the assertions that were written, where they were written | **Delete** the `known = [...]` block in `Pipeline.__repr__` that renders inferred dims as `assert_shape` |
@@ -115,6 +115,7 @@ Python mirrors. Hand-written code fell by 320 lines (−0.6%); tests grew by 1,1
 | `passes::Node.assertions` and the "assertion boundary" special cases | `passes.rs:92-200` | the `assert_shape` op is `IdentityRule::Never` and not `Pointwise`, so both passes treat it like any other op |
 | `fold_output_rank`, `fold_output_dtype`, `op_json`, `resolve_one_output_spec`'s folds, the `input_dtypes.first()` fallback | `graph/compiled.rs:1566-1745` | `plan::step` replayed from a source state derived from the column dtype (`plan::source_state_for_column`) — the builder's planner, not a second one |
 | `histogram_buckets` post-construction mutation on `OutputSpec` | `graph/types.rs:53, 381` | read off the planned node's final step |
+| `plan_sink` FFI and `plan::check_sink` (a second copy of the sink checks in `graph/decode.rs:565-745`, without the (domain, sink) table) | `plan.rs:356-430` | `.sink()` validates by loading its graph through `UnifiedGraph::from_json` + `SinkKind::resolve` — the code the plugin runs (C2.sink: `…perceptual_hash().sink("numpy")` raises at `.sink()`) |
 | `resolve_op_from_json` op → JSON → op round trips | `lib.rs:99`, `compiled.rs:1686/1723`, `types.rs:381`, `passes.rs:181/374` | typed `TypedOp` values throughout |
 
 **Wire:** `UnifiedGraph::from_json` plans every node in topological order
