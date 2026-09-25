@@ -327,6 +327,26 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   on `LazyPipelineExpr`) and `ColumnRef` (`label_reduce`'s contour column).
   `ParamCtx` carries the plan-time probe value, which a node-sized `rasterize`
   reads so its canvas plans as unknown.
+- **Typed-op migration, P7 (planner into Rust).** Every schema fact the
+  Python planner computed is now computed by `src/plan.rs`, one FFI call per
+  step: `plan_step` (an op's domain, dtype, rank, H/W and channels, the binary
+  dtype from the other operand's), `plan_source` (a source's starting state
+  from its typed format), `plan_assert` (an `assert_shape` declaration,
+  checked and applied) and `plan_sink` (a sink's keywords and the state it
+  needs). Python holds the result as an immutable `PlanState` with the Rust
+  `State`'s field names; every rewrite of an op list (CSE, sub-pipelines, the
+  passes) is one `_replay` from a recorded state. Identity elimination and
+  the spatial pushdown run in Rust (`node_pass`, dispatched on a generated
+  `LogicalPass`); the pass list is one Rust catalogue that `OptFlags` and
+  `OptConfig` are both built from, and `OptConfig` refuses an unknown key.
+  Each graph output carries its node's final state as `planned`, from which
+  Rust reads the output's schema facts (the five `expected_*` wire fields and
+  `expected_encoding` are gone). The binary `LazyPipelineExpr` methods are
+  generated from the catalogue. Deleted: the `op_schema`, `op_contract`,
+  `op_identity_rule`, `op_infer_shape`, `op_output_channels`,
+  `binary_output_dtype`, `io_check`/`sink_check` FFIs and their string
+  vocabularies, `ShapeHints`, `ShapeAssertion`, `PassSpec.bit_exact`, and the
+  Python folds, hint snapshots and rewrite helpers they fed.
 - **Typed-op migration, P6 (legacy protocol deleted).** `TypedOp` is the wire
   op; `pipeline.rs` (`OpSpec`, `LegacyOpSpec`, the name dispatcher),
   `LEGACY_OPS`, `resolve_op`, the untyped Rust `ParamValue`, the `known_ops`,
