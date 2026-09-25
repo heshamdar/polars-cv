@@ -14,17 +14,17 @@ use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
 
 /// Declare the two-buffer arithmetic ops, one per `BinaryOp::NAMED` entry
-/// (`binary_ops_are_exactly_the_named_table` pins the correspondence).
+/// (`binary_ops_are_exactly_the_named_table` pins the correspondence). Each is
+/// buffer → buffer, element-wise with another buffer node; its doc is the
+/// generated `LazyPipelineExpr` method's docstring.
 macro_rules! binary_ops {
-    ($($ty:ident $doc:literal => $variant:ident;)+) => {$(
-        #[doc = $doc]
-        ///
-        /// Domain: buffer → buffer (element-wise with another buffer node).
+    ($($(#[doc = $doc:literal])+ $ty:ident => $variant:ident;)+) => {$(
+        $(#[doc = $doc])+
         #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
         #[serde(deny_unknown_fields)]
         #[op(visibility = "lazy_only")]
         pub struct $ty {
-            /// The other operand's node.
+            /// The expression to combine with, element-wise.
             #[param(positional)]
             pub other: NodeRef,
         }
@@ -42,17 +42,127 @@ macro_rules! binary_ops {
 }
 
 binary_ops! {
-    Add "Element-wise addition (saturating for integer dtypes)." => Add;
-    Subtract "Element-wise subtraction (saturating for integer dtypes)." => Subtract;
-    Multiply "Element-wise multiplication (saturating for integer dtypes)." => Multiply;
-    Divide "Element-wise division (integer division by zero yields 0)." => Divide;
-    Blend "Normalized multiplication, e.g. (a/255) * (b/255) * 255 for u8." => Blend;
-    Ratio "Ratio a/b scaled to the dtype's full range." => Ratio;
-    Maximum "Element-wise maximum." => Maximum;
-    Minimum "Element-wise minimum." => Minimum;
-    BitwiseAnd "Element-wise bitwise AND." => BitwiseAnd;
-    BitwiseOr "Element-wise bitwise OR." => BitwiseOr;
-    BitwiseXor "Element-wise bitwise XOR." => BitwiseXor;
+    /// Element-wise addition with another array.
+    ///
+    /// For u8/u16: saturating addition (clamps to the maximum, e.g. 255 for
+    /// u8). For f32/f64: standard addition.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> a = pl.col("image1").cv.pipe(pipe1)
+    ///     >>> b = pl.col("image2").cv.pipe(pipe2)
+    ///     >>> result = a.add(b).sink("numpy")
+    ///     ```
+    Add => Add;
+    /// Element-wise subtraction.
+    ///
+    /// For u8/u16: saturating subtraction (clamps to 0). For f32/f64:
+    /// standard subtraction.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> a = pl.col("image1").cv.pipe(pipe1)
+    ///     >>> b = pl.col("image2").cv.pipe(pipe2)
+    ///     >>> result = a.subtract(b).sink("numpy")
+    ///     ```
+    Subtract => Subtract;
+    /// Element-wise multiplication.
+    ///
+    /// For u8/u16: saturating multiplication (clamps to the maximum). For
+    /// f32/f64: standard multiplication. For normalized image blending
+    /// (values treated as [0, 1]), use ``blend`` instead.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> a = pl.col("image1").cv.pipe(pipe1)
+    ///     >>> b = pl.col("image2").cv.pipe(pipe2)
+    ///     >>> result = a.multiply(b).sink("numpy")
+    ///     ```
+    Multiply => Multiply;
+    /// Element-wise division.
+    ///
+    /// For u8/u16: integer division, with division by zero yielding 0. For
+    /// f32/f64: standard division.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> a = pl.col("image1").cv.pipe(pipe1)
+    ///     >>> b = pl.col("image2").cv.pipe(pipe2)
+    ///     >>> result = a.divide(b).sink("numpy")
+    ///     ```
+    Divide => Divide;
+    /// Normalized blend (element-wise), for image blending/compositing.
+    ///
+    /// For u8: (a/255) * (b/255) * 255. For u16: (a/65535) * (b/65535) *
+    /// 65535. For f32/f64: standard multiplication.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> a = pl.col("image1").cv.pipe(pipe1)
+    ///     >>> b = pl.col("image2").cv.pipe(pipe2)
+    ///     >>> result = a.blend(b).sink("numpy")
+    ///     ```
+    Blend => Blend;
+    /// Scaled ratio: a/b scaled to the full range of the dtype.
+    ///
+    /// For u8: (a/b) * 255, clamped to [0, 255]. For u16: (a/b) * 65535,
+    /// clamped to [0, 65535]. For f32/f64: standard division.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> a = pl.col("image1").cv.pipe(pipe1)
+    ///     >>> b = pl.col("image2").cv.pipe(pipe2)
+    ///     >>> result = a.ratio(b).sink("numpy")
+    ///     ```
+    Ratio => Ratio;
+    /// Element-wise maximum of two arrays, for compositing, clamping and
+    /// non-linear image processing.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> a = pl.col("image1").cv.pipe(pipe1)
+    ///     >>> b = pl.col("image2").cv.pipe(pipe2)
+    ///     >>> result = a.maximum(b).sink("numpy")
+    ///     ```
+    Maximum => Maximum;
+    /// Element-wise minimum of two arrays, for compositing, clamping and
+    /// non-linear image processing.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> a = pl.col("image1").cv.pipe(pipe1)
+    ///     >>> b = pl.col("image2").cv.pipe(pipe2)
+    ///     >>> result = a.minimum(b).sink("numpy")
+    ///     ```
+    Minimum => Minimum;
+    /// Element-wise bitwise AND: for binary masks (0/255), the intersection.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> a = pl.col("image1").cv.pipe(pipe1)
+    ///     >>> b = pl.col("image2").cv.pipe(pipe2)
+    ///     >>> result = a.bitwise_and(b).sink("numpy")
+    ///     ```
+    BitwiseAnd => BitwiseAnd;
+    /// Element-wise bitwise OR: for binary masks (0/255), the union.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> a = pl.col("image1").cv.pipe(pipe1)
+    ///     >>> b = pl.col("image2").cv.pipe(pipe2)
+    ///     >>> result = a.bitwise_or(b).sink("numpy")
+    ///     ```
+    BitwiseOr => BitwiseOr;
+    /// Element-wise bitwise XOR: for binary masks (0/255), the symmetric
+    /// difference.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> a = pl.col("image1").cv.pipe(pipe1)
+    ///     >>> b = pl.col("image2").cv.pipe(pipe2)
+    ///     >>> result = a.bitwise_xor(b).sink("numpy")
+    ///     ```
+    BitwiseXor => BitwiseXor;
 }
 
 /// Apply a binary mask to this image.

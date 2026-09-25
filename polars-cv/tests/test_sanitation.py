@@ -456,9 +456,9 @@ def test_lib_module_registration_matches_required_hooks():
 def _emitted_op_names_from_source():
     """Op names actually emitted by the Python builders, scanned from source.
 
-    Pipeline builders emit ``op="<name>"`` literals (pipeline.py) and the binary
-    helpers emit ``_binary_op("<name>")`` / ``_add_node_op("<name>")``
-    (lazy.py). Scanning the source keeps the comparison drift-proof without a
+    Pipeline builders emit ``op="<name>"`` literals (pipeline.py), the node
+    helpers ``_add_node_op("<name>")`` (lazy.py) and the generated methods
+    ``_append_typed("<name>")`` / ``_binary_op("<name>")``. Scanning the source keeps the comparison drift-proof without a
     second hand-maintained list.
     """
     import re
@@ -473,6 +473,7 @@ def _emitted_op_names_from_source():
     names |= set(re.findall(r'_(?:binary_op|add_node_op)\("([a-z_]+)"', lazy))
     generated = (pkg / "_ops_generated.py").read_text()
     names |= set(re.findall(r'_append_typed\(\s*"([a-z_0-9]+)"', generated))
+    names |= _binary_op_names_from_source()
     return names
 
 
@@ -604,12 +605,22 @@ def test_plugin_is_present_when_required() -> None:
 
 
 def _binary_op_names_from_source() -> set[str]:
-    """Binary op names the lazy API emits via ``self._binary_op("<name>")``."""
+    """Binary op names the lazy API emits via ``self._binary_op("<name>")``.
+
+    The methods are generated into ``_LazyOpsMixin``; ``lazy.py`` is scanned
+    too, so a hand-written binary method would be counted rather than missed.
+    """
     import re
     from pathlib import Path
 
-    lazy = (Path(polars_cv.__file__).parent / "lazy.py").read_text()
-    return set(re.findall(r'self\._binary_op\("([a-z_]+)"', lazy))
+    pkg = Path(polars_cv.__file__).parent
+    return {
+        name
+        for module in ("lazy.py", "_ops_generated.py")
+        for name in re.findall(
+            r'self\._binary_op\("([a-z_]+)"', (pkg / module).read_text()
+        )
+    }
 
 
 def _binary_dtype(op: str, left: str, right: str) -> str:
@@ -628,7 +639,7 @@ def test_binary_dtype_authority():
     the names are scanned from source).
     """
     emitted = _binary_op_names_from_source()
-    assert emitted, "no binary ops scanned from lazy.py — scan regex out of date?"
+    assert emitted, "no binary ops scanned from source — scan regex out of date?"
     for op in emitted:
         result = _binary_dtype(op, "u8", "u8")
         assert result in {"u8", "f32"}, f"{op}: unexpected dtype {result}"
@@ -769,9 +780,9 @@ def test_binary_ops_match_rust():
     # unrelated generated method would pass. Compare against the names the lazy
     # API actually emits as binary ops.
     emitted = _binary_op_names_from_source()
-    assert emitted, "no binary ops scanned from lazy.py — scan regex out of date?"
+    assert emitted, "no binary ops scanned from source — scan regex out of date?"
     assert emitted == rust, (
-        f"BinaryOp drift between Rust and lazy.py: "
+        f"BinaryOp drift between Rust and the lazy API: "
         f"rust-only={sorted(rust - emitted)}, python-only={sorted(emitted - rust)}"
     )
 
@@ -2616,14 +2627,15 @@ def test_the_committed_catalog_is_the_built_one() -> None:
 
 
 def test_every_lazy_only_op_is_a_lazy_method_with_its_fields() -> None:
-    """A ``lazy_only`` op's builder is hand-written on ``LazyPipelineExpr``.
+    """A ``lazy_only`` op's builder is a ``LazyPipelineExpr`` method.
 
     Such an op combines this expression with other graph nodes (a binary op,
     ``apply_mask``, ``channel_merge``), so ``gen_ops.py`` emits no ``Pipeline``
     method for it. The catalogue still owns its fields: the lazy method must
-    exist, be defined on ``LazyPipelineExpr`` itself (not forwarded from a
-    ``Pipeline`` method), and take exactly the catalogue's fields, in order —
-    the wire follows the signature, as for every generated method.
+    exist — generated into ``_LazyOpsMixin`` for the binary ops, hand-written
+    for the rest — never be a forwarder from a ``Pipeline`` method, and take
+    exactly the catalogue's fields, in order — the wire follows the signature,
+    as for every generated method.
     """
     import inspect
     from pathlib import Path
@@ -2636,8 +2648,11 @@ def test_every_lazy_only_op_is_a_lazy_method_with_its_fields() -> None:
     assert lazy_only, "no lazy_only op in the catalogue — the scan matched nothing"
     for op in lazy_only:
         name = op["python"]
-        method = LazyPipelineExpr.__dict__.get(name)
+        method = getattr(LazyPipelineExpr, name, None)
         assert callable(method), f"lazy_only op {op['name']!r} has no lazy method"
+        assert not getattr(method, "__polars_cv_generated__", False), (
+            f"lazy_only op {op['name']!r} is a forwarder, not a lazy method"
+        )
         assert not hasattr(Pipeline, name), (
             f"lazy_only op {op['name']!r} must not be a Pipeline method"
         )

@@ -10,11 +10,11 @@
     "name": "add",
     "python": "add",
     "visibility": "lazy_only",
-    "doc": "Element-wise addition (saturating for integer dtypes).\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "doc": "Element-wise addition with another array.\n\nFor u8/u16: saturating addition (clamps to the maximum, e.g. 255 for\nu8). For f32/f64: standard addition.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.add(b).sink(\"numpy\")\n    ```",
     "fields": [
       {
         "name": "other",
-        "doc": "The other operand's node.",
+        "doc": "The expression to combine with, element-wise.",
         "positional": true,
         "type": {
           "kind": "node"
@@ -107,11 +107,11 @@
     "name": "bitwise_and",
     "python": "bitwise_and",
     "visibility": "lazy_only",
-    "doc": "Element-wise bitwise AND.\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "doc": "Element-wise bitwise AND: for binary masks (0/255), the intersection.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.bitwise_and(b).sink(\"numpy\")\n    ```",
     "fields": [
       {
         "name": "other",
-        "doc": "The other operand's node.",
+        "doc": "The expression to combine with, element-wise.",
         "positional": true,
         "type": {
           "kind": "node"
@@ -123,11 +123,11 @@
     "name": "bitwise_or",
     "python": "bitwise_or",
     "visibility": "lazy_only",
-    "doc": "Element-wise bitwise OR.\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "doc": "Element-wise bitwise OR: for binary masks (0/255), the union.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.bitwise_or(b).sink(\"numpy\")\n    ```",
     "fields": [
       {
         "name": "other",
-        "doc": "The other operand's node.",
+        "doc": "The expression to combine with, element-wise.",
         "positional": true,
         "type": {
           "kind": "node"
@@ -139,11 +139,11 @@
     "name": "bitwise_xor",
     "python": "bitwise_xor",
     "visibility": "lazy_only",
-    "doc": "Element-wise bitwise XOR.\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "doc": "Element-wise bitwise XOR: for binary masks (0/255), the symmetric\ndifference.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.bitwise_xor(b).sink(\"numpy\")\n    ```",
     "fields": [
       {
         "name": "other",
-        "doc": "The other operand's node.",
+        "doc": "The expression to combine with, element-wise.",
         "positional": true,
         "type": {
           "kind": "node"
@@ -155,11 +155,11 @@
     "name": "blend",
     "python": "blend",
     "visibility": "lazy_only",
-    "doc": "Normalized multiplication, e.g. (a/255) * (b/255) * 255 for u8.\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "doc": "Normalized blend (element-wise), for image blending/compositing.\n\nFor u8: (a/255) * (b/255) * 255. For u16: (a/65535) * (b/65535) *\n65535. For f32/f64: standard multiplication.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.blend(b).sink(\"numpy\")\n    ```",
     "fields": [
       {
         "name": "other",
-        "doc": "The other operand's node.",
+        "doc": "The expression to combine with, element-wise.",
         "positional": true,
         "type": {
           "kind": "node"
@@ -703,11 +703,11 @@
     "name": "divide",
     "python": "divide",
     "visibility": "lazy_only",
-    "doc": "Element-wise division (integer division by zero yields 0).\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "doc": "Element-wise division.\n\nFor u8/u16: integer division, with division by zero yielding 0. For\nf32/f64: standard division.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.divide(b).sink(\"numpy\")\n    ```",
     "fields": [
       {
         "name": "other",
-        "doc": "The other operand's node.",
+        "doc": "The expression to combine with, element-wise.",
         "positional": true,
         "type": {
           "kind": "node"
@@ -1045,11 +1045,11 @@
     "name": "maximum",
     "python": "maximum",
     "visibility": "lazy_only",
-    "doc": "Element-wise maximum.\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "doc": "Element-wise maximum of two arrays, for compositing, clamping and\nnon-linear image processing.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.maximum(b).sink(\"numpy\")\n    ```",
     "fields": [
       {
         "name": "other",
-        "doc": "The other operand's node.",
+        "doc": "The expression to combine with, element-wise.",
         "positional": true,
         "type": {
           "kind": "node"
@@ -1061,11 +1061,11 @@
     "name": "minimum",
     "python": "minimum",
     "visibility": "lazy_only",
-    "doc": "Element-wise minimum.\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "doc": "Element-wise minimum of two arrays, for compositing, clamping and\nnon-linear image processing.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.minimum(b).sink(\"numpy\")\n    ```",
     "fields": [
       {
         "name": "other",
-        "doc": "The other operand's node.",
+        "doc": "The expression to combine with, element-wise.",
         "positional": true,
         "type": {
           "kind": "node"
@@ -1096,11 +1096,11 @@
     "name": "multiply",
     "python": "multiply",
     "visibility": "lazy_only",
-    "doc": "Element-wise multiplication (saturating for integer dtypes).\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "doc": "Element-wise multiplication.\n\nFor u8/u16: saturating multiplication (clamps to the maximum). For\nf32/f64: standard multiplication. For normalized image blending\n(values treated as [0, 1]), use ``blend`` instead.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.multiply(b).sink(\"numpy\")\n    ```",
     "fields": [
       {
         "name": "other",
-        "doc": "The other operand's node.",
+        "doc": "The expression to combine with, element-wise.",
         "positional": true,
         "type": {
           "kind": "node"
@@ -1423,11 +1423,11 @@
     "name": "ratio",
     "python": "ratio",
     "visibility": "lazy_only",
-    "doc": "Ratio a/b scaled to the dtype's full range.\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "doc": "Scaled ratio: a/b scaled to the full range of the dtype.\n\nFor u8: (a/b) * 255, clamped to [0, 255]. For u16: (a/b) * 65535,\nclamped to [0, 65535]. For f32/f64: standard division.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.ratio(b).sink(\"numpy\")\n    ```",
     "fields": [
       {
         "name": "other",
-        "doc": "The other operand's node.",
+        "doc": "The expression to combine with, element-wise.",
         "positional": true,
         "type": {
           "kind": "node"
@@ -1974,11 +1974,11 @@
     "name": "subtract",
     "python": "subtract",
     "visibility": "lazy_only",
-    "doc": "Element-wise subtraction (saturating for integer dtypes).\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "doc": "Element-wise subtraction.\n\nFor u8/u16: saturating subtraction (clamps to 0). For f32/f64:\nstandard subtraction.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.subtract(b).sink(\"numpy\")\n    ```",
     "fields": [
       {
         "name": "other",
-        "doc": "The other operand's node.",
+        "doc": "The expression to combine with, element-wise.",
         "positional": true,
         "type": {
           "kind": "node"
