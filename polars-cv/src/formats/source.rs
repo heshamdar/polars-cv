@@ -102,21 +102,22 @@ pub struct ContourSource {
     /// ``[height, width]`` of the mask (each may be a Polars expression), or
     /// the node whose buffer's height and width the mask takes.
     pub size: RasterSize,
-    /// Inside value. Accepts a Polars expression for per-row values.
-    pub fill_value: Param<u8>,
-    /// Outside value. Accepts a Polars expression for per-row values.
-    pub background: Param<u8>,
+    /// Inside value (default 255). Accepts a Polars expression for per-row
+    /// values.
+    pub fill_value: Option<Param<u8>>,
+    /// Outside value (default 0). Accepts a Polars expression for per-row
+    /// values.
+    pub background: Option<Param<u8>>,
     /// "raise" (default) or "null": what a row that cannot be decoded does.
     pub on_error: Option<Literal<FetchErrorPolicy>>,
 }
 
 impl ContourSource {
-    /// `(fill_value, background)` at `row`.
+    /// `(fill_value, background)` at `row`; absent is 255 and 0.
     pub fn fill(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<(u8, u8)> {
-        Ok((
-            self.fill_value.resolve(row, ctx)?,
-            self.background.resolve(row, ctx)?,
-        ))
+        let at =
+            |p: &Option<Param<u8>>, absent| p.as_ref().map_or(Ok(absent), |p| p.resolve(row, ctx));
+        Ok((at(&self.fill_value, 255)?, at(&self.background, 0)?))
     }
 }
 

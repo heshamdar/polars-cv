@@ -81,6 +81,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **Breaking: `Pipeline.source()` keywords default to `None`.** `fill_value`,
+  `background`, `require_contiguous` and `on_error` read `None` (the format's
+  own default: 255, 0, `False`, `"raise"`) instead of restating it, so passing
+  a keyword is exactly passing a non-`None` value — `on_error="raise"` or
+  `require_contiguous=False` on a format that does not read them is now
+  refused like any other inapplicable keyword. The contour colours' defaults
+  live in the Rust source definition. `perceptual_hash` is generated like
+  every other op: `algorithm`'s default is the string `"perceptual"` and both
+  parameters are keyword-only. `Pipeline.output_encoding()` is removed (the
+  executor reads histogram buckets off the ops).
 - **Breaking: one signature rule for every generated builder method.** An op
   with exactly one required parameter takes it positional-or-keyword; every
   other parameter is keyword-only. Now positional: `adjust_contrast(factor)`,
@@ -96,7 +106,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **Every operation is a typed op.** Each of the 85 ops is one Rust definition
   (`polars-cv/src/ops/`) from which its Python builder method is generated
   (hand-written sugar remains only where a signature needs it: `scale`,
-  `clamp`, `resize_scale`, `perceptual_hash`, `scale_contour`, `rasterize`,
+  `clamp`, `resize_scale`, `scale_contour`, `rasterize`,
   and the `LazyPipelineExpr` methods that combine expressions); call
   signatures are unchanged. The wire form of a field is the value itself
   (`"height": 224`, `"filter": "bilinear"`) or `{"$slot": n}`, every field is

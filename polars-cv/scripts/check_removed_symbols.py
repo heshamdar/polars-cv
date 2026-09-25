@@ -269,6 +269,12 @@ REMOVED: tuple[Removed, ...] = (
     Removed("_current_domain", "P7e: PlanState.domain"),
     Removed("_expected_ndim", "P7e: PlanState.ndim"),
     Removed("ShapeHints", "P7e: PlanState.dims"),
+    Removed("is_supplied", "P8: source() keywords default to None"),
+    Removed(
+        "output_encoding",
+        "P8: Rust reads histogram buckets off the ops (OutputSpec.histogram_buckets)",
+    ),
+    Removed("_source_param_defaults", "P8: source() keywords default to None"),
     Removed(
         "shape_asserted",
         "P7e: an output carries its planned state; Rust reads the facts off it",

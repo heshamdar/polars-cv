@@ -1258,8 +1258,8 @@
   {
     "name": "perceptual_hash",
     "python": "perceptual_hash",
-    "visibility": "internal",
-    "doc": "Compute a perceptual hash fingerprint.\n\nThe public `Pipeline.perceptual_hash` is sugar over this op (its signature\ndefault is the Python `HashAlgorithm` member).",
+    "visibility": "public",
+    "doc": "Compute a perceptual hash fingerprint.\n\nExample:\n    >>> Pipeline().source(\"image_bytes\").perceptual_hash()",
     "fields": [
       {
         "name": "algorithm",

@@ -326,8 +326,8 @@ pub(crate) fn source_state(source: &crate::formats::source::Source) -> Result<St
         Source::Contour(s) => {
             let rasterize = crate::ops::TypedOp::Rasterize(crate::ops::geometry::Rasterize {
                 size: s.size.clone(),
-                fill_value: s.fill_value,
-                background: s.background,
+                fill_value: s.fill_value.unwrap_or(crate::ops::Param::Lit(255)),
+                background: s.background.unwrap_or(crate::ops::Param::Lit(0)),
             });
             let op_json = serde_json::to_string(&rasterize).map_err(|e| e.to_string())?;
             let contours = State::new("contour", "auto", None);

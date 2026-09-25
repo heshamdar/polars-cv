@@ -234,20 +234,26 @@
         },
         {
           "name": "fill_value",
-          "doc": "Inside value. Accepts a Polars expression for per-row values.",
+          "doc": "Inside value (default 255). Accepts a Polars expression for per-row\nvalues.",
           "type": {
-            "kind": "scalar",
-            "per_row": true,
-            "py": "int"
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": true,
+              "py": "int"
+            }
           }
         },
         {
           "name": "background",
-          "doc": "Outside value. Accepts a Polars expression for per-row values.",
+          "doc": "Outside value (default 0). Accepts a Polars expression for per-row\nvalues.",
           "type": {
-            "kind": "scalar",
-            "per_row": true,
-            "py": "int"
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": true,
+              "py": "int"
+            }
           }
         },
         {

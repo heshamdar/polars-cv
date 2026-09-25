@@ -863,12 +863,12 @@
    ],
    [
     "algorithm",
-    "POSITIONAL_OR_KEYWORD",
-    "<HashAlgorithm.PERCEPTUAL: 'perceptual'>"
+    "KEYWORD_ONLY",
+    "'perceptual'"
    ],
    [
     "hash_size",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "64"
    ]
   ],
@@ -2201,13 +2201,6 @@
     ""
    ]
   ],
-  "output_encoding": [
-   [
-    "self",
-    "POSITIONAL_OR_KEYWORD",
-    ""
-   ]
-  ],
   "pad": [
    [
     "self",
@@ -2280,12 +2273,12 @@
    ],
    [
     "algorithm",
-    "POSITIONAL_OR_KEYWORD",
-    "<HashAlgorithm.PERCEPTUAL: 'perceptual'>"
+    "KEYWORD_ONLY",
+    "'perceptual'"
    ],
    [
     "hash_size",
-    "POSITIONAL_OR_KEYWORD",
+    "KEYWORD_ONLY",
     "64"
    ]
   ],
@@ -2783,12 +2776,12 @@
    [
     "fill_value",
     "KEYWORD_ONLY",
-    "255"
+    "None"
    ],
    [
     "background",
     "KEYWORD_ONLY",
-    "0"
+    "None"
    ],
    [
     "cloud_options",
@@ -2798,12 +2791,12 @@
    [
     "require_contiguous",
     "KEYWORD_ONLY",
-    "False"
+    "None"
    ],
    [
     "on_error",
     "KEYWORD_ONLY",
-    "'raise'"
+    "None"
    ],
    [
     "decode_max_size",

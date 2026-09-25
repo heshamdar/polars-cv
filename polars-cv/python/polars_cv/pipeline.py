@@ -22,7 +22,6 @@ from polars_cv._types import (
     CloudOptions,
     DType,
     FloatOrExpr,
-    HashAlgorithm,
     IntOrExpr,
     NullParamPolicy,
     OpSpec,
@@ -34,7 +33,6 @@ from polars_cv._types import (
     SourceSpec,
     _reject_expr,
     _validate_enum,
-    is_supplied,
     normalize_cloud_options,
     planning_slots,
 )
@@ -106,29 +104,6 @@ def _matrix_param_from_floats(values: "list[float]") -> "ParamValue":
         is_expr=False,
         value=[ParamValue(is_expr=False, value=float(v)) for v in values],
     )
-
-
-def _source_param_defaults() -> "dict[str, Any]":
-    """Each ``Pipeline.source`` keyword's default, read from its signature.
-
-    The signature is the authority for what a default *is*, so "the caller
-    passed this" cannot drift from what the function actually does with it.
-    Cached: the signature never changes at runtime, and `source()` is on the
-    builder's hot path.
-    """
-    global _SOURCE_DEFAULTS
-    if _SOURCE_DEFAULTS is None:
-        import inspect
-
-        _SOURCE_DEFAULTS = {
-            name: param.default
-            for name, param in inspect.signature(Pipeline.source).parameters.items()
-            if param.default is not inspect.Parameter.empty
-        }
-    return _SOURCE_DEFAULTS
-
-
-_SOURCE_DEFAULTS: "dict[str, Any] | None" = None
 
 
 def _asserted_rank(dims: "Sequence[int | None]") -> int:
@@ -576,26 +551,6 @@ class Pipeline(_OpsMixin):
         """
         return self._state.dtype
 
-    def output_encoding(self) -> str | None:
-        """Get the sink encoding selector for this pipeline's output, if any.
-
-        Most outputs are encoded by their (domain, sink-format) pair. The one
-        exception is histogram ``buckets``: a ``vector``-domain output encoded as
-        ``List(Struct[lower_edge, upper_edge, count, normalized])``. Returns
-        ``"histogram_buckets"`` for it, else ``None``.
-
-        Introspection only: the executor reads the same fact off the ops itself
-        (``UnifiedGraph::from_json``). Scheduled for removal with the public API
-        reshaping (typed-op P8).
-        """
-        if self._ops:
-            last = self._ops[-1]
-            if last.op == "histogram":
-                mode = last.params.get("output")
-                if mode is not None and not mode.is_expr and mode.value == "buckets":
-                    return "histogram_buckets"
-        return None
-
     def _append_op(
         self,
         op_name: str,
@@ -770,14 +725,14 @@ class Pipeline(_OpsMixin):
         width: IntOrExpr | None = None,
         height: IntOrExpr | None = None,
         shape: "LazyPipelineExpr | None" = None,
-        fill_value: IntOrExpr = 255,
-        background: IntOrExpr = 0,
+        fill_value: IntOrExpr | None = None,
+        background: IntOrExpr | None = None,
         # Cloud storage options for file_path sources
         cloud_options: "CloudOptions | dict[str, Any] | None" = None,
         # Contiguity option for list/array sources
-        require_contiguous: bool = False,
+        require_contiguous: bool | None = None,
         # Error handling for source decoding
-        on_error: str = "raise",
+        on_error: str | None = None,
         # Explicit decode-scale assertion for image sources
         decode_max_size: int | None = None,
         # Path sandboxing for file_path sources
@@ -799,7 +754,8 @@ class Pipeline(_OpsMixin):
         to u16, and TIFF may produce u8, u16, f32, or f64.  All decoded
         images are always 3D ``[H, W, C]``.
 
-        Each keyword below applies to some formats and not others, and one that
+        Each keyword below applies to some formats and not others. Every one
+        defaults to ``None`` (the format's own default), and one you pass that
         does not apply to the format you chose is **rejected** rather than
         ignored: a ``width`` on an image source, or ``cloud_options`` on a
         source that never opens a path, has no effect and is a mistake worth
@@ -848,7 +804,8 @@ class Pipeline(_OpsMixin):
             background: Value for pixels outside contour (default 0). Accepts
                 a Polars expression for per-row dynamic values.
             cloud_options: Credentials for cloud storage (S3, GCS, Azure).
-            require_contiguous: For "list"/"array", whether to require rectangular data.
+            require_contiguous: For "list"/"array", whether to require
+                rectangular data (default ``False``).
             on_error: Error handling strategy for source decoding.
                 - ``"raise"`` (default): propagate decode errors (fails the
                   entire batch).
@@ -910,107 +867,73 @@ class Pipeline(_OpsMixin):
         """
         # Taken before anything else binds a name: these *are* the parameters,
         # so what is sent below cannot be a stale or partial list of them
-        # (`test_source_applicability_reads_every_parameter`).
-        passed = dict(locals())
+        # (`test_source_applicability_reads_every_parameter`). A keyword was
+        # passed iff it is not None.
+        passed = {k: v for k, v in locals().items() if k != "self" and v is not None}
 
         from polars_cv._lib import plan_source
         from polars_cv.lazy import LazyPipelineExpr
 
         new = self._clone()
-        fmt = _validate_enum(format, SourceFormat, "source format")
-        defaults = _source_param_defaults()
-        supplied = {
-            name
-            for name, value in passed.items()
-            if name not in ("self", "format") and is_supplied(value, defaults[name])
-        }
+        fmt = _validate_enum(passed.pop("format"), SourceFormat, "source format")
 
         if decode_max_size is not None and (
             not isinstance(decode_max_size, int) or decode_max_size <= 0
         ):
             msg = f"decode_max_size must be a positive int, got {decode_max_size!r}"
             raise ValueError(msg)
-
-        dtype_enum = None
-        if dtype is not None:
-            dtype_enum = _validate_enum(dtype, DType, "dtype")
-
         if fmt == SourceFormat.CONTOUR:
-            has_explicit_dims = width is not None or height is not None
-            has_shape = shape is not None
-
-            if has_explicit_dims and has_shape:
+            if shape is not None and (width is not None or height is not None):
                 msg = (
                     "Cannot specify both 'shape' and explicit dimensions (width/height)"
                 )
                 raise ValueError(msg)
-
-            if not has_explicit_dims and not has_shape:
+            if shape is None and (width is None) != (height is None):
+                msg = "Both 'width' and 'height' must be specified together"
+                raise ValueError(msg)
+            if shape is None and width is None:
                 msg = (
                     "Contour source requires either:\n"
                     "  1. Both 'width' and 'height' parameters, or\n"
                     "  2. A 'shape' LazyPipelineExpr to infer dimensions from"
                 )
                 raise ValueError(msg)
+        if shape is not None and not isinstance(shape, LazyPipelineExpr):
+            msg = "'shape' must be a LazyPipelineExpr"
+            raise TypeError(msg)
 
-            if has_explicit_dims and (width is None or height is None):
-                msg = "Both 'width' and 'height' must be specified together"
-                raise ValueError(msg)
-
-        # The canvas node, by id: Rust takes that node's already-computed
-        # buffer.
-        shape_node = None
-        if shape is not None:
-            if not isinstance(shape, LazyPipelineExpr):
-                msg = "'shape' must be a LazyPipelineExpr"
-                raise TypeError(msg)
-            shape_node = shape._node_id
-            # Referencing a node by id is not enough to get it executed:
-            # `_shape_refs` is what `cv.pipe` / `LazyPipelineExpr.pipe` turn
-            # into upstream edges, and only an upstream edge puts a node into
-            # the dependency graph. Mirrors `rasterize(shape=...)`.
-            new._shape_refs.append(shape)
-
-        def _given(name: str, value: Any) -> Any:
-            """The value when the caller passed it, else ``None`` (absent)."""
-            return value if name in supplied else None
-
-        # Every setting the caller passed goes into the spec, whichever format
+        # Every keyword the caller passed goes into the spec, whichever format
         # it is for: the format's Rust definition refuses one it does not
-        # read, naming where it does apply (`plan_source` below). The contour
-        # colours always go — that decode reads them.
-        is_contour = fmt == SourceFormat.CONTOUR
-
+        # read, naming where it does apply (`plan_source` below).
         def literal(value: Any) -> ParamValue:
             return ParamValue(is_expr=False, value=value)
 
         params: dict[str, ParamValue] = {}
-        if dtype_enum is not None:
-            params["dtype"] = literal(dtype_enum.value)
-        if shape_node is not None:
-            params["size"] = literal(shape_node)
-        elif width is not None or height is not None:
-            params["size"] = literal(
-                [
-                    literal(None) if d is None else new._track_expr(d)
-                    for d in (height, width)
-                ]
-            )
-        if is_contour or "fill_value" in supplied:
-            params["fill_value"] = new._track_expr(fill_value)
-        if is_contour or "background" in supplied:
-            params["background"] = new._track_expr(background)
-        options = normalize_cloud_options(_given("cloud_options", cloud_options))
-        if options is not None:
-            params["cloud_options"] = literal(options.to_dict())
-        if require_contiguous:
-            params["require_contiguous"] = literal(True)
-        if on_error != "raise":
-            params["on_error"] = literal(on_error)
-        if decode_max_size is not None:
-            params["decode_max_size"] = literal(decode_max_size)
-        if allowed_roots is not None:
-            params["allowed_roots"] = literal(list(allowed_roots))
+        for name, value in passed.items():
+            if name == "dtype":
+                params[name] = literal(_validate_enum(value, DType, "dtype").value)
+            elif name == "shape":
+                # The canvas node, by id: Rust takes that node's already-computed
+                # buffer. `_shape_refs` is what turns the reference into an
+                # upstream edge, so the node is executed (as for `rasterize`).
+                params["size"] = literal(value._node_id)
+                new._shape_refs.append(value)
+            elif name in ("height", "width"):
+                params["size"] = literal(
+                    [
+                        literal(None) if d is None else new._track_expr(d)
+                        for d in (height, width)
+                    ]
+                )
+            elif name in ("fill_value", "background"):
+                params[name] = new._track_expr(value)
+            elif name == "cloud_options":
+                options = normalize_cloud_options(value)
+                params[name] = literal(None if options is None else options.to_dict())
+            elif name == "allowed_roots":
+                params[name] = literal(list(value))
+            else:
+                params[name] = literal(value)
         new._source = SourceSpec(format=fmt, params=params)
         # The format's Rust definition validates the spec (refusing a setting
         # it does not read, naming where it applies) and says what state the
@@ -1728,27 +1651,6 @@ class Pipeline(_OpsMixin):
         """
         matrix = _rotation_matrix(angle, center, scale)
         return self.warp_affine(matrix=matrix, output_size=output_size)
-
-    def perceptual_hash(
-        self,
-        algorithm: HashAlgorithm | str = HashAlgorithm.PERCEPTUAL,
-        hash_size: int = 64,
-    ) -> "Pipeline":
-        """
-        Compute a perceptual hash fingerprint.
-
-        Args:
-            algorithm: "perceptual" (pHash), "average" (aHash), "difference" (dHash).
-            hash_size: Number of bits in the hash (must be power of 2).
-
-        Example:
-            >>> Pipeline().source("image_bytes").perceptual_hash()
-        """
-
-        # The Rust definition validates both (an unknown algorithm, a
-        # non-positive or per-row `hash_size`); this method only keeps the
-        # signature, whose default is the Python enum member.
-        return self._perceptual_hash(algorithm=algorithm, hash_size=hash_size)
 
     # --- Contour/Geometry Operations ---
 
