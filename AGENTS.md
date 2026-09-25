@@ -254,7 +254,7 @@ side channel.
 | Fact | Single authority | Rejection mechanism |
 |------|------------------|---------------------|
 | Appending an op to a `Pipeline` (domain check + schema fold + shape hints, one `plan_step`) | `Pipeline._push_op()` | `test_op_append_is_structurally_exclusive` — AST walk failing if anything but `_push_op`/`_replay`/`_clone` touches `_ops` or `_entering` |
-| An op's rank / channel / dtype / memory / spatial / identity contract | `Op` trait methods, **no defaults** | Compile error: a new op that omits one does not build |
+| An op's shape / rank / channel / dtype / memory / spatial / identity contract | `Op` trait methods (and the typed op's `OpDef::shape`), **no defaults**; identity rules never depend on parameter values (`OpShape::preserves` decides) | Compile error: a new op that omits one does not build; `test_op_schema_rules_are_required_not_defaulted` pins the no-default form |
 | An op's accepted input domains | Rust `GraphStep::input_domains` (exhaustive — no catch-all arm), checked by `plan_step` | `test_domain_vocabulary_declared_once` — `Pipeline` may not carry `DOMAIN_*` constants or a `_validate_domain`; execution reads the same contract via `step_buffer_operand` rather than restating it per arm |
 | An op's H/W effect | view-buffer `OpShape` (`Op::shape`), built symbolically from a typed op's fields by `OpDef::shape` and read by `plan_step` and identity elimination | `typed_shape_is_the_resolved_steps`; no `OpShape` ⇒ hints invalidated, never carried forward |
 | Which ops exist | Rust `ops::TypedOp` (`typed_ops!` registry) → generated Python `TYPED_OPS` | `the_catalogue_is_the_op_set` (the frozen op set), `test_every_op_is_emitted_by_a_builder` (works with no `.so`); an unregistered name fails deserialization |
@@ -263,7 +263,9 @@ side channel.
 | Enum variant names crossing the FFI | `named_variants!` + `naming::REGISTRY` (engine) chained with `naming::PLUGIN_REGISTRY` (plugin-owned enums: `RowErrorPolicy`, `NullParamPolicy`, `FetchErrorPolicy`) | `every_named_enum_is_registered` (a `NAMED` table not in the registry fails), `registered_enums_have_unique_names`, `plugin_enums_have_unique_names`, `plugin_enums_do_not_shadow_engine_enums`; the Python classes are generated from the registries (`enum_catalog.json` → `gen_ops.py`, bar the stated `NOT_GENERATED` exceptions), pinned by `enum_catalog_matches_the_committed_file` and `test_the_committed_catalog_is_the_built_one` |
 | A graph policy's wire spelling (`on_error`, `on_null_param`) | Its `NAMED` table, read by `ops::param::literal_field` (no serde derive on the enum) | `graph_policies_parse_through_their_named_tables`; there is no second spelling to compare |
 | Source/sink formats, and which parameters each reads | One `#[derive(Op)]` struct per format in `polars-cv/src/formats/` (`formats!` registry → `tests/golden/io_catalog.json` → generated `SourceFormat`/`SinkFormat`); the builder checks what the caller passed over `plan_source` (which also plans the source's state) and `plan_sink` (which also checks the sink against the output's planned state) | Deserialization: an unknown format or field is refused, and a field the format does not read names where it applies (`deny_unknown_fields` on every format struct); `io_catalog_matches_the_committed_file` and `test_the_committed_catalog_is_the_built_one`; `test_param_applicability.py` sweeps parameter × format grids from the catalogue and checks the `quality` claim against the encoders |
-| `LazyPipelineExpr`'s method surface | generated from `Pipeline` at import | `test_lazy_pipeline_method_parity`, `test_lazy_stub_is_current` |
+| `LazyPipelineExpr`'s method surface | generated: forwarders from `Pipeline` at import, and the binary `lazy_only` ops into `_LazyOpsMixin` by `gen_ops.py` | `test_lazy_pipeline_method_parity`, `test_every_lazy_only_op_is_a_lazy_method_with_its_fields`, `test_lazy_stub_is_current` |
+| Which builder parameters are positional | Derived, never declared: `gen_ops.positional` (an op's only required field is positional-or-keyword, the rest keyword-only) | `tests/golden/signatures.json` (`test_the_call_surface_matches_the_snapshot`); `test_documented_pipeline_calls_bind` binds every documented `Pipeline()` call; the derive refuses a `#[param(positional)]` key |
+| An output's planned schema on the wire | The output node's final `plan::State`, sent as `planned`; `OutputSpec` reads its facts in `From<WireOutput>` | `WireOutput` is `deny_unknown_fields` with `planned` required (`an_output_without_its_planned_state_is_refused`), `output_facts_are_read_off_the_planned_state` |
 | The graph wire format's node fields | `GraphNode` with `#[serde(deny_unknown_fields)]` | Deserialization error — a stale or misspelled key fails the query |
 | Null parameter handling | `NullParamPolicy` on `ParamCtx`, via `ParamCol::on_null` | Reviewed by hand: never add per-op or per-parameter null keywords |
 | What a `(domain, sink format)` pair produces | `SinkKind::resolve` in `src/graph/sink_kind.rs` | Compile error: the four halves of the sink contract (`dtype_for_output`, `encode_node_output`, `null_row_result_for_spec`, `build_series_from_spec`) match on the enum, so a new kind is non-exhaustive in all four at once; `every_kind_is_produced_by_some_pair` rejects a kind no pair names |
@@ -322,13 +324,16 @@ current instead.
    take the policy as a *required* argument, so a new caller cannot reach a
    path by omitting it.
 
-**In progress: the typed op protocol ([`TYPED_OPS_PLAN.md`](TYPED_OPS_PLAN.md),
-CR-45…CR-49).** It replaces the name + untyped-param-map protocol with one typed
-definition per op, a generated Python builder and a Rust planner. It is not the
-"table-driven `resolve_op`" dropped above: that kept the untyped map and moved the
-arms into a table; this removes the untyped map, so the registries, parity tests
-and read-tracker that guard it are deleted rather than re-tabulated. The plan file
-holds the phase status and the deletion matrix — keep it current.
+7. *The typed op protocol ([`TYPED_OPS_PLAN.md`](TYPED_OPS_PLAN.md),
+   CR-45…CR-49).* One typed Rust definition per op, source and sink; a
+   generated Python builder, enums and pass flags; a Rust planner
+   (`plan_step`/`plan_source`/`plan_assert`/`plan_sink`, `node_pass`) with
+   symbolic shapes (`OpShape`). It replaces the name + untyped-param-map
+   protocol. It is not the "table-driven `resolve_op`" dropped above: that
+   kept the untyped map and moved the arms into a table; this removes the
+   untyped map, so the registries, parity tests and read-tracker that guard it
+   are deleted rather than re-tabulated. The plan file holds the phase record,
+   the deviations and the deletion matrix.
 
 **Where deferred work is tracked.** Verified *defects* — a behaviour the code
 should have but does not — are pinned executably in

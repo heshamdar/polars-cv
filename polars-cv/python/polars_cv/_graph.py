@@ -217,10 +217,6 @@ class PipelineGraph:
         self._multi_output = multi
         self._output = None
 
-    def is_multi_output(self) -> bool:
-        """Check if the graph uses multi-output mode."""
-        return self._multi_output is not None
-
     # --- Optimization phase ---
 
     def optimize(self, flags: "OptFlags") -> "PipelineGraph":
@@ -677,24 +673,6 @@ class PipelineGraph:
             dfs(node_id)
 
         return order
-
-    def get_output_nodes(self) -> set[str]:
-        """
-        Get the set of node IDs that are output targets.
-
-        This is useful for optimization - these nodes should not be
-        optimized away or fused past.
-
-        Returns:
-            Set of node IDs that are designated as outputs.
-        """
-        output_nodes: set[str] = set()
-        if self._output:
-            output_nodes.add(self._output.node_id)
-        if self._multi_output:
-            for node_id, _, _ in self._multi_output.outputs.values():
-                output_nodes.add(node_id)
-        return output_nodes
 
     def show_graph(self) -> pydot.Dot:
         """Build dot representation of graph."""

@@ -93,19 +93,6 @@ def _rotation_matrix(
     return [cos_a, -sin_a, tx, sin_a, cos_a, ty]
 
 
-def _matrix_param_from_floats(values: "list[float]") -> "ParamValue":
-    """Build a ``warp_affine`` ``matrix`` param from six literal floats.
-
-    Matrix elements are serialized as individual ``ParamValue`` dicts so any of
-    them may be a per-row expression; a fully-literal matrix (fusion output,
-    converted-rotate matrix) still goes through the same per-element shape.
-    """
-    return ParamValue(
-        is_expr=False,
-        value=[ParamValue(is_expr=False, value=float(v)) for v in values],
-    )
-
-
 def _asserted_rank(dims: "Sequence[int | None]") -> int:
     """Validate an ``assert_shape(dims=...)`` list and return the rank it pins.
 

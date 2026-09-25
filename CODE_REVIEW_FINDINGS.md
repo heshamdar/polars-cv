@@ -977,7 +977,17 @@ matrix; the entries here track status only.
   (`enum_catalog`), taking their parity tests and the `enum_variants` FFI with
   them. The Python planner's own `OpSpec`/`ParamValue` go with CR-46 (P7).
 
-### CR-46 — The planner is split across the FFI and folded twice · `Open` · Medium (design)
+### CR-46 — The planner is split across the FFI and folded twice · `Fixed` · Medium (design)
+
+> **Fixed** (typed-op P7, P9): the plan is Rust's — `plan_step`/`plan_source`/
+> `plan_assert`/`plan_sink` return an immutable `PlanState`, `node_pass` runs
+> the node-scope passes, each output carries its `planned` state, and shapes
+> are symbolic (`OpShape`). The FFIs listed below and the Python folds are
+> deleted; `fold_output_rank`/`fold_output_dtype` became one `fold_lineage`
+> (the column-resolved rank/dtype of a list/array source, known only at
+> execution). Deviation: no `Plan` pyclass — Python keeps the op list and the
+> `PlanState` records, rewriting only through `_replay` (see
+> `TYPED_OPS_PLAN.md`).
 
 - **Location:** `pipeline.py` planner state and `_append_op`/`_push_op`/`_update_*`;
   `lib.rs` `op_schema`/`op_contract`/`op_infer_shape`/`op_output_channels`/

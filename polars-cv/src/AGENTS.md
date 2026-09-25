@@ -185,7 +185,7 @@ encoding (`encode_sink`), shared by the graph executor.
 ## Adding a New Operation (Rust Side)
 
 1. **`view-buffer`**: Implement the op — see [`view-buffer/AGENTS.md`](../../view-buffer/AGENTS.md)
-2. **`ops/`**: Add the op's `#[derive(Op)]` struct and `OpDef` impl (returning `GraphStep::Buffer(dto)` for an engine op) and its `typed_ops!` line, then re-bless the catalogue and run `scripts/gen_ops.py`
+2. **`ops/`**: Add the op's `#[derive(Op)]` struct, its `OpDef` impl — `resolve` (returning `GraphStep::Buffer(dto)` for an engine op) and `shape` (the step's `OpShape` from the fields, `None` for a graph-level step; `typed_shape_is_the_resolved_steps` checks it against the resolved step) — and its `typed_ops!` line, then re-bless the catalogue and run `scripts/gen_ops.py`
 3. **Test**: Ensure the operation works end-to-end via Python tests
 
 ## Error Handling
