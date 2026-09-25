@@ -1,28 +1,15 @@
-//! Typed op parameters. [`Param`], [`Literal`] and the catalogue types live
-//! with the engine ops in `view_buffer::mode`; the two graph-level field
-//! kinds — [`ColumnRef`] and [`NodeRef`] — and the per-row [`Values`] of one
-//! row of the plugin's parameter columns live here.
+//! Typed op parameters. [`Param`], [`Literal`], [`ColumnRef`], [`NodeRef`]
+//! and the catalogue types live with the engine ops in `view_buffer::mode`;
+//! the per-row [`Values`] of one row of the plugin's parameter columns live
+//! here.
 
 use polars::prelude::*;
-use serde::de::Error as _;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub use view_buffer::mode::{
-    as_slot, literal_field, FieldType, Literal, Param, Resolve, TypeDesc, Values, SLOT_KEY,
+    literal_field, ColumnRef, FieldType, Literal, NodeRef, Param, Resolve, Values, SLOT_KEY,
 };
 use view_buffer::naming::{WireKind, WireScalar, WireValue};
 
 use crate::params::ParamCtx;
-
-/// An input column the step reads as *data* — `label_reduce`'s contour set —
-/// rather than a parameter value resolved per row. Always a slot: a literal
-/// has nowhere to go.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ColumnRef(pub usize);
-
-/// Another graph node, by id: the operand of a binary op, a mask, a merged
-/// channel. Graph topology, so never per-row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeRef(pub String);
 
 /// One row of the plugin's parameter columns: where a `Wire` op's slots are
 /// read when it is resolved for that row.
@@ -72,56 +59,4 @@ impl<T: WireScalar> ParamExt<T> for Param<T> {
             Param::Slot(_) => Resolve::resolve(self, &RowValues { row, ctx }),
         }
     }
-}
-
-impl Serialize for ColumnRef {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        Param::<i64>::Slot(self.0).serialize(s)
-    }
-}
-
-impl<'de> Deserialize<'de> for ColumnRef {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let value = serde_json::Value::deserialize(d)?;
-        match as_slot(&value) {
-            Some(slot) => slot.map(ColumnRef).map_err(D::Error::custom),
-            None => Err(D::Error::custom(format!(
-                "this parameter is an input column and must be a Polars \
-                 expression, got the literal {value}"
-            ))),
-        }
-    }
-}
-
-impl Serialize for NodeRef {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for NodeRef {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        match serde_json::Value::deserialize(d)? {
-            serde_json::Value::String(id) => Ok(NodeRef(id)),
-            other => Err(D::Error::custom(format!(
-                "expected a graph node id (a string), got {other}"
-            ))),
-        }
-    }
-}
-
-impl FieldType for ColumnRef {
-    fn describe() -> TypeDesc {
-        TypeDesc::Column
-    }
-    fn visit_slots(&self, f: &mut dyn FnMut(usize)) {
-        f(self.0);
-    }
-}
-
-impl FieldType for NodeRef {
-    fn describe() -> TypeDesc {
-        TypeDesc::Node
-    }
-    fn visit_slots(&self, _f: &mut dyn FnMut(usize)) {}
 }

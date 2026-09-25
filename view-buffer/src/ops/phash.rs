@@ -16,13 +16,11 @@ use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use crate::mode::{Exec, Mode};
+use polars_cv_macros::{Ops, Resolve};
 
 /// Perceptual hash algorithm selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HashAlgorithm {
     /// Average Hash (aHash) - fastest, least robust.
     /// Computes average pixel value and compares each pixel to the mean.
@@ -51,34 +49,35 @@ crate::naming::named_variants!(HashAlgorithm: "Perceptual hash algorithm selecti
     "blockhash" => Blockhash,
 });
 
-/// Perceptual hashing operation.
+/// Compute a perceptual hash fingerprint.
 ///
-/// Computes a fixed-length perceptual hash of an image that can be used
-/// to detect similar images even after transformations like resize,
-/// compression, or minor edits.
-///
-/// # Output
-///
-/// Returns a 1D u8 array of shape `[hash_size / 8]` containing the hash bytes.
-/// For a 64-bit hash (default), this is shape `[8]`.
-///
-/// # Example
-///
-/// ```ignore
-/// let op = PerceptualHashOp::new(HashAlgorithm::Perceptual);
-/// let hash = op.execute(&image_buffer);
-/// // hash.shape() == [8] for 64-bit hash
-/// // hash.dtype() == DType::U8
-/// ```
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct PerceptualHashOp {
-    /// Hash algorithm to use.
-    pub algorithm: HashAlgorithm,
+/// Example:
+///     >>> Pipeline().source("image_bytes").perceptual_hash()
+#[derive(Debug, Clone, PartialEq, Ops, Resolve)]
+#[op(name = "perceptual_hash", sample = {"algorithm": "average", "hash_size": 64})]
+pub struct PerceptualHashOp<M: Mode = Exec> {
+    /// "perceptual" (pHash), "average" (aHash), "difference" (dHash).
+    #[param(default = "perceptual")]
+    pub algorithm: M::L<HashAlgorithm>,
+    /// Number of bits in the hash (must be power of 2). It fixes the output
+    /// vector length, so it is literal-only.
+    #[param(default = 64)]
+    pub hash_size: M::L<u32>,
+}
 
-    /// Hash size in bits (must be a power of 2: 64, 128, 256).
-    /// Default is 64 bits (8 bytes).
-    pub hash_size: u32,
+impl<M: Mode> PerceptualHashOp<M> {
+    /// A hash needs at least one bit.
+    pub fn check(&self) -> Result<(), String> {
+        if M::lit(&self.hash_size) == 0 {
+            return Err("hash_size must be a positive integer".into());
+        }
+        Ok(())
+    }
+
+    /// Output is always a 1D array of hash bytes.
+    pub fn shape(&self) -> OpShape {
+        OpShape::Fixed(vec![Sym::Known((M::lit(&self.hash_size) / 8) as usize)])
+    }
 }
 
 impl PerceptualHashOp {
@@ -188,8 +187,7 @@ impl Op for PerceptualHashOp {
     }
 
     fn shape(&self) -> OpShape {
-        // Output is always a 1D array of hash bytes
-        OpShape::Fixed(vec![Sym::Known(self.hash_bytes())])
+        PerceptualHashOp::shape(self)
     }
 
     fn memory_effect(&self) -> MemoryEffect {

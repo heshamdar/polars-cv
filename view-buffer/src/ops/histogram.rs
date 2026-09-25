@@ -11,12 +11,11 @@ use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
 use crate::ops::Domain;
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use crate::mode::{Exec, FieldType, Literal, Mode, Param, TypeDesc, Wire};
+use polars_cv_macros::{Ops, Resolve};
 
 /// Output mode for histogram operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum HistogramOutput {
     /// Return bin counts as a 1D array.
     Counts,
@@ -32,7 +31,6 @@ pub enum HistogramOutput {
 
 /// Interval closedness for histogram bins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum HistogramClosed {
     /// Intervals are left-closed [a, b). (Last bin is [a, b]).
     #[default]
@@ -54,29 +52,133 @@ crate::naming::named_variants!(HistogramClosed: "Interval inclusiveness for hist
     "right" => Right,
 });
 
-/// Histogram and quantization operations.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct HistogramOp {
-    /// Number of bins.
-    pub bins: usize,
-    /// Value range (min, max). None = auto from data.
-    pub range: Option<(f64, f64)>,
-    /// Explicit bin edges. If provided, overrides `bins` and `range`.
-    pub edges: Option<Vec<f64>>,
-    /// Interval closedness.
-    pub closed: HistogramClosed,
-    /// Output mode.
-    pub output: HistogramOutput,
+/// Compute pixel value histogram.
+///
+/// Example:
+///     >>> Pipeline().source("image_bytes").grayscale().histogram(bins=8)
+#[derive(Debug, Clone, PartialEq, Ops, Resolve)]
+#[op(name = "histogram", sample = {"bins": 8, "range": null, "closed": "left",
+                                   "output": "counts"})]
+pub struct HistogramOp<M: Mode = Exec> {
+    /// Number of bins (default 256), a Polars expression for per-row dynamic
+    /// bin count, or an explicit list of bin edges.
+    #[param(default = 256)]
+    pub bins: Bins<M>,
+    /// (min, max) tuple. Auto-detected if None.
+    pub range: Option<[M::V<f64>; 2]>,
+    /// "left" or "right" interval inclusiveness (default "left").
+    #[param(default = "left")]
+    pub closed: M::L<HistogramClosed>,
+    /// "buckets" (list of structs), "counts" (bin counts), "normalized" (sum to
+    /// 1.0), "quantized" (pixel indices), "edges" (bin edges).
+    #[param(default = "buckets")]
+    pub output: M::L<HistogramOutput>,
+}
+
+/// How the bins are given: a count, or the edges themselves.
+///
+/// Two variants rather than a count plus optional edges, so a spec cannot carry
+/// both and have one ignored. On the wire a list is `Edges`, anything else
+/// (a number or a slot) is `Count`.
+#[derive(Debug, Clone, PartialEq, Resolve)]
+pub enum Bins<M: Mode = Exec> {
+    /// This many equal-width bins over the range; may be per-row (the output
+    /// is a list, so its length may vary by row).
+    Count(M::V<u32>),
+    /// Explicit, literal bin edges.
+    Edges(Vec<M::L<f64>>),
+}
+
+impl serde::Serialize for Bins<Wire> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Bins::Count(n) => n.serialize(s),
+            Bins::Edges(e) => e.serialize(s),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Bins<Wire> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let value = serde_json::Value::deserialize(d)?;
+        if value.is_array() {
+            serde_json::from_value(value).map(Bins::Edges)
+        } else {
+            serde_json::from_value(value).map(Bins::Count)
+        }
+        .map_err(D::Error::custom)
+    }
+}
+
+impl FieldType for Bins<Wire> {
+    fn describe() -> TypeDesc {
+        TypeDesc::OneOf {
+            options: vec![
+                <Param<u32> as FieldType>::describe(),
+                <Vec<Literal<f64>> as FieldType>::describe(),
+            ],
+        }
+    }
+    fn visit_slots(&self, f: &mut dyn FnMut(usize)) {
+        match self {
+            Bins::Count(p) => p.visit_slots(f),
+            Bins::Edges(e) => e.visit_slots(f),
+        }
+    }
+}
+
+impl<M: Mode> HistogramOp<M> {
+    /// Every histogram parameter is independent; the counts are checked by
+    /// `validate`.
+    pub fn check(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// The number of bins: the count, or one fewer than the edges.
+    fn num_bins(&self) -> Sym<usize> {
+        match &self.bins {
+            Bins::Count(n) => match M::sym(n) {
+                Sym::Known(n) => Sym::Known(n as usize),
+                Sym::PerRow => Sym::PerRow,
+            },
+            Bins::Edges(edges) => Sym::Known(edges.len().saturating_sub(1)),
+        }
+    }
+
+    /// How the output shape follows from the input: the bins' vector (or
+    /// table), or the input itself for `quantized`. A per-row bin count leaves
+    /// the length per-row.
+    pub fn shape(&self) -> OpShape {
+        let bins = self.num_bins();
+        let plus_one = match bins {
+            Sym::Known(n) => Sym::Known(n + 1),
+            Sym::PerRow => Sym::PerRow,
+        };
+        match M::lit(&self.output) {
+            HistogramOutput::Counts | HistogramOutput::Normalized => OpShape::Fixed(vec![bins]),
+            HistogramOutput::Quantized => OpShape::Preserve,
+            HistogramOutput::Edges => OpShape::Fixed(vec![plus_one]),
+            HistogramOutput::Buckets => OpShape::Fixed(vec![bins, Sym::Known(4)]),
+        }
+    }
+
+    /// The domain of this histogram's result: `Quantized` maps pixels in
+    /// place (buffer); every other output mode yields a 1-D vector.
+    pub fn output_domain(&self) -> Domain {
+        match M::lit(&self.output) {
+            HistogramOutput::Quantized => Domain::Buffer,
+            _ => Domain::Vector,
+        }
+    }
 }
 
 impl HistogramOp {
     /// Create a new histogram operation.
     pub fn new(bins: usize) -> Self {
         Self {
-            bins,
+            bins: Bins::Count(bins as u32),
             range: None,
-            edges: None,
             closed: HistogramClosed::Left,
             output: HistogramOutput::Counts,
         }
@@ -84,13 +186,13 @@ impl HistogramOp {
 
     /// Set the value range.
     pub fn with_range(mut self, min: f64, max: f64) -> Self {
-        self.range = Some((min, max));
+        self.range = Some([min, max]);
         self
     }
 
     /// Set explicit edges.
     pub fn with_edges(mut self, edges: Vec<f64>) -> Self {
-        self.edges = Some(edges);
+        self.bins = Bins::Edges(edges);
         self
     }
 
@@ -104,6 +206,27 @@ impl HistogramOp {
     pub fn with_output(mut self, output: HistogramOutput) -> Self {
         self.output = output;
         self
+    }
+
+    /// The explicit edges, when the bins are given that way.
+    fn explicit_edges(&self) -> Option<&Vec<f64>> {
+        match &self.bins {
+            Bins::Edges(edges) => Some(edges),
+            Bins::Count(_) => None,
+        }
+    }
+
+    /// The equal-width bin count (edges: one fewer than their number).
+    fn bin_count(&self) -> usize {
+        match &self.bins {
+            Bins::Count(n) => *n as usize,
+            Bins::Edges(edges) => edges.len().saturating_sub(1),
+        }
+    }
+
+    /// The `(min, max)` range, when given.
+    fn value_range(&self) -> Option<(f64, f64)> {
+        self.range.map(|[min, max]| (min, max))
     }
 
     /// Execute the histogram operation.
@@ -132,10 +255,10 @@ impl HistogramOp {
         let shape = buffer.shape();
 
         // Determine edges
-        let edges = if let Some(ref e) = self.edges {
+        let edges = if let Some(e) = self.explicit_edges() {
             e.clone()
         } else {
-            let (mut min_val, mut max_val) = match self.range {
+            let (mut min_val, mut max_val) = match self.value_range() {
                 Some((min, max)) => (min, max),
                 None => {
                     // Auto-detect from data
@@ -153,9 +276,10 @@ impl HistogramOp {
                 max_val += 0.5;
             }
 
-            let bin_width = (max_val - min_val) / self.bins as f64;
-            let mut e = Vec::with_capacity(self.bins + 1);
-            for i in 0..=self.bins {
+            let bins = self.bin_count();
+            let bin_width = (max_val - min_val) / bins as f64;
+            let mut e = Vec::with_capacity(bins + 1);
+            for i in 0..=bins {
                 e.push(min_val + i as f64 * bin_width);
             }
             e
@@ -191,7 +315,7 @@ impl HistogramOp {
             None
         };
 
-        let is_uniform = self.edges.is_none();
+        let is_uniform = self.explicit_edges().is_none();
 
         for &x in data {
             let xf: f64 = num_traits::NumCast::from(x).unwrap_or(0.0);
@@ -301,38 +425,13 @@ impl HistogramOp {
     }
 }
 
-impl HistogramOp {
-    /// The domain of this histogram's result: `Quantized` maps pixels in
-    /// place (buffer); every other output mode yields a 1-D vector.
-    ///
-    /// Lives here, next to the op, as the single authority the graph layer
-    /// reads (formerly duplicated in the DTO's output_domain match).
-    pub fn output_domain(&self) -> Domain {
-        match self.output {
-            HistogramOutput::Quantized => Domain::Buffer,
-            _ => Domain::Vector,
-        }
-    }
-}
-
 impl Op for HistogramOp {
     fn name(&self) -> &'static str {
         "Histogram"
     }
 
     fn shape(&self) -> OpShape {
-        let num_bins = if let Some(ref edges) = self.edges {
-            edges.len().saturating_sub(1)
-        } else {
-            self.bins
-        };
-        let fixed = |dims: &[usize]| OpShape::Fixed(dims.iter().map(|&n| Sym::Known(n)).collect());
-        match self.output {
-            HistogramOutput::Counts | HistogramOutput::Normalized => fixed(&[num_bins]),
-            HistogramOutput::Quantized => OpShape::Preserve,
-            HistogramOutput::Edges => fixed(&[num_bins + 1]),
-            HistogramOutput::Buckets => fixed(&[num_bins, 4]),
-        }
+        HistogramOp::shape(self)
     }
 
     fn memory_effect(&self) -> MemoryEffect {
@@ -366,14 +465,14 @@ impl Op for HistogramOp {
         _input_shapes: &[&[usize]],
         _input_dtypes: &[DType],
     ) -> Result<(), ValidationError> {
-        if let Some(ref edges) = self.edges {
+        if let Some(edges) = self.explicit_edges() {
             if edges.len() < 2 {
                 return Err(ValidationError::InvalidParameter {
                     param: "edges".to_string(),
                     reason: "edges must contain at least 2 values".to_string(),
                 });
             }
-        } else if self.bins == 0 {
+        } else if self.bin_count() == 0 {
             return Err(ValidationError::InvalidParameter {
                 param: "bins".to_string(),
                 reason: "bins must be > 0".to_string(),

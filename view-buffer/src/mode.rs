@@ -128,6 +128,17 @@ impl<T: WireScalar> Literal<T> {
     }
 }
 
+/// An input column the step reads as *data* — `label_reduce`'s contour set —
+/// rather than a parameter value resolved per row. Always a slot: a literal
+/// has nowhere to go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColumnRef(pub usize);
+
+/// Another graph node, by id: the operand of a binary op, a mask, a merged
+/// channel. Graph topology, so never per-row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeRef(pub String);
+
 /// Where a `Wire` op's per-row values come from: one row of the plugin's
 /// parameter columns.
 pub trait Values {
@@ -152,6 +163,20 @@ impl<T: WireScalar> Resolve for Param<T> {
             Param::Lit(v) => Ok(v),
             Param::Slot(slot) => values.value(slot),
         }
+    }
+}
+
+impl Resolve for NodeRef {
+    type Exec = NodeRef;
+    fn resolve<V: Values>(&self, _values: &V) -> Result<NodeRef, V::Error> {
+        Ok(self.clone())
+    }
+}
+
+impl Resolve for ColumnRef {
+    type Exec = ColumnRef;
+    fn resolve<V: Values>(&self, _values: &V) -> Result<ColumnRef, V::Error> {
+        Ok(*self)
     }
 }
 
@@ -481,4 +506,56 @@ pub fn refuse_unknown_fields(
             })
         }
     }
+}
+
+impl Serialize for ColumnRef {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        Param::<i64>::Slot(self.0).serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for ColumnRef {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(d)?;
+        match as_slot(&value) {
+            Some(slot) => slot.map(ColumnRef).map_err(D::Error::custom),
+            None => Err(D::Error::custom(format!(
+                "this parameter is an input column and must be a Polars \
+                 expression, got the literal {value}"
+            ))),
+        }
+    }
+}
+
+impl Serialize for NodeRef {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for NodeRef {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        match serde_json::Value::deserialize(d)? {
+            serde_json::Value::String(id) => Ok(NodeRef(id)),
+            other => Err(D::Error::custom(format!(
+                "expected a graph node id (a string), got {other}"
+            ))),
+        }
+    }
+}
+
+impl FieldType for ColumnRef {
+    fn describe() -> TypeDesc {
+        TypeDesc::Column
+    }
+    fn visit_slots(&self, f: &mut dyn FnMut(usize)) {
+        f(self.0);
+    }
+}
+
+impl FieldType for NodeRef {
+    fn describe() -> TypeDesc {
+        TypeDesc::Node
+    }
+    fn visit_slots(&self, _f: &mut dyn FnMut(usize)) {}
 }

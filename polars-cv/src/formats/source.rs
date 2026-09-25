@@ -11,7 +11,7 @@ use view_buffer::DType;
 
 use super::formats;
 use crate::fetch::FetchErrorPolicy;
-use crate::ops::geometry::RasterSize;
+type RasterSize = view_buffer::geometry::ops::RasterSize<view_buffer::mode::Wire>;
 use crate::ops::{Literal, Param};
 use crate::params::ParamCtx;
 

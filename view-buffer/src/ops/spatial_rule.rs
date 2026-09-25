@@ -236,7 +236,7 @@ mod tests {
             ComputeOp::AdjustContrast { factor: 1.5 }.spatial_dependency(),
             g
         );
-        assert_eq!(ReductionOp::Sum { axis: None }.spatial_dependency(), g);
+        assert_eq!(ReductionOp::Sum.spatial_dependency(), g);
         assert_eq!(HistogramOp::new(8).spatial_dependency(), g);
         assert_eq!(
             PerceptualHashOp::new(HashAlgorithm::Perceptual).spatial_dependency(),
@@ -407,6 +407,6 @@ mod tests {
             filter: FilterType::Nearest
         })
         .is_spatial_window());
-        assert!(!ReductionOp::Sum { axis: None }.is_spatial_window());
+        assert!(!ReductionOp::Sum.is_spatial_window());
     }
 }
