@@ -20,7 +20,7 @@
 > | P7 — Planner into Rust | **done, targets missed (see deviations)** — P7a `a6f0aa1`: `plan_step`, one FFI per append. P7b `98d7592`: per-op entering state and one rewrite primitive, `_replay`. P7c `66ff9bb`, `0df1790`, `9e3b6af`: identity elimination and the spatial pushdown in Rust (`node_pass`, generated `LogicalPass`), the pass catalogue (`OptFlags`/`OptConfig` from one list), `bit_exact` deleted. P7d `2ae8eaf`, `8f7f8fa`: `plan_source`; histogram buckets read off the ops. P7e `cc383db` … `0cef576`: `PlanState` is Rust's `State`, assertions applied by `plan_assert`, sinks checked by `plan_sink`, outputs carry `planned` (the `expected_*` wire fields deleted), binary lazy methods generated, one lineage fold. Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `0cef576` |
 > | P8 — API reshaping | **done, no version bump (see deviations)** — P8a `65bc3d6`: one signature rule, derived by `gen_ops.positional` (the `#[param(positional)]` marker deleted; 15 ops change kind). P8b `ab13385`: `source()` keywords default to `None` (`is_supplied`, `_source_param_defaults` deleted; contour colour defaults in Rust), `perceptual_hash` generated, `output_encoding()` deleted. P8 exit `6a571ce`: documented `Pipeline()` calls bind against the real signatures, migration page. `signatures.json` re-recorded in P8a/P8b. Gate: full `scripts/verify.sh` PASS at `6a571ce` |
 > | P9 — Symbolic shapes | **done** — `00b34cb`: `Op::shape() -> OpShape` (required) replaces `infer_shape` as the one shape authority, evaluated on known sizes at execution and symbolically (`Dim`, `Sym`) by the planner from each typed op's required `OpDef::shape`; the four-value probe, `unknown_dim_probe`, `PRESERVED_DIM`, the planning `catch_unwind`, `output_hw`, `IdentityRule::Always` and `deciding_params` deleted; `ParamCtx::probe` → `ParamCtx::planning` (see deviations). Fixed a probe bug: unknown inputs were planned as square. Gate: full `scripts/verify.sh` PASS at `00b34cb` |
-> | P10 — Final sweep | **done** — docs: canonical-paths table, "Adding a New Operation" (CLAUDE.md, `src/` and `python/` AGENTS.md), module tables; audits: `cargo machete` clean, `vulture` (four dead Python helpers deleted, the rest public API or false positives), removed-symbol list extended; the structural lane already runs the catalogue ↔ `.so` ↔ generated-module check (`test_the_committed_catalog_is_the_built_one`) and the stub check; CR-45…CR-49 closed. Gate: full `scripts/verify.sh` PASS at `P10_SHA` |
+> | P10 — Final sweep | **done** — docs: canonical-paths table, "Adding a New Operation" (CLAUDE.md, `src/` and `python/` AGENTS.md), module tables; audits: `cargo machete` clean, `vulture` (four dead Python helpers deleted, the rest public API or false positives), removed-symbol list extended; the structural lane already runs the catalogue ↔ `.so` ↔ generated-module check (`test_the_committed_catalog_is_the_built_one`) and the stub check; CR-45…CR-49 closed. Gate: full `scripts/verify.sh` PASS at `bbb0875` |
 
 ## Handover (2026-09-24, P6 closed)
 
@@ -60,7 +60,7 @@ Read this section, then the phase text for P7 onwards below.
   calls are bound against the real signatures.
 - P9 is done (`00b34cb`): shapes are symbolic (`OpShape`); no value is ever
   substituted for a per-row one to compute a size.
-- P10 is done (`P10_SHA`): the migration is complete.
+- P10 is done (`bbb0875`): the migration is complete.
 
 ### Line counts per phase
 
@@ -79,6 +79,7 @@ stands (lines, by area; `py-gen` is `_ops_generated.py`, generated):
 | P7 exit `0cef576` | 18,967 | 209 | 20,969 | 12,183 | 2,125 | 54,930 |
 | P8 `6a571ce` | 18,936 | 197 | 20,969 | 12,062 | 2,127 | 55,140 |
 | P9 `00b34cb` | 19,097 | 197 | 21,233 | 12,062 | 2,127 | 55,164 |
+| P10 `bbb0875` | 19,097 | 197 | 21,233 | 12,022 | 2,127 | 55,164 |
 
 So far the phases have *moved* definitions into typed Rust (each carrying the
 docs, defaults and validation Python used to hold) more than they have
