@@ -6,8 +6,9 @@ is declared here — the plugin functions themselves (``vb_graph``,
 ``read_file_bytes``, the geometry entry points) are registered through
 ``register_plugin_function`` by path, never imported, so they need no signature.
 
-Signatures mirror the call sites in ``pipeline.py`` / ``lazy.py`` / ``__init__.py``;
-the ``op_*`` inputs are JSON-serialised op specs (``json.dumps(spec.to_dict())``).
+Signatures mirror the call sites in ``pipeline.py`` / ``lazy.py`` / ``_graph.py``;
+``*_json`` inputs are wire JSON, expression parameters as ``{"$slot": i}`` over
+the pipeline's own expression table.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ __source_hash__: str
 class PlanState:
     """The planner's state at one op boundary (``src/plan.rs``'s ``State``).
 
-    Built only by Rust (``plan_source``/``plan_step``); frozen.
+    Built only by Rust (a :class:`Plan`'s steps); frozen.
     """
 
     DIM_NAMES: tuple[str, str, str]
@@ -37,21 +38,37 @@ class PlanState:
     def dims(self) -> tuple[int | None, int | None, int | None]: ...
     def _wire(self) -> str: ...
 
-def node_pass(
-    pass_name: str,
-    ops: list[str],
-    states: list[PlanState],
-) -> list[int] | None:
-    """Run a node-scope logical pass; the node's new op order, or ``None``."""
+class Plan:
+    """A pipeline's source, typed ops and the state at every op boundary
+    (``src/plan.rs``). Immutable: every method returns a new plan, every state
+    of which Rust planned."""
+
+    def __init__(self) -> None:
+        """The plan of a pipeline with no source and no ops."""
+
+    @staticmethod
+    def continuing(start: PlanState) -> Plan: ...
+    def with_source(
+        self, source_json: str, refs: dict[str, PlanState] | None = None
+    ) -> Plan: ...
+    def rebased(self, source_json: str, start: PlanState) -> Plan: ...
+    def push(self, op_json: str, refs: dict[str, PlanState] | None = None) -> Plan: ...
+    def select(self, positions: list[int], start: int | None = None) -> Plan: ...
+    def run_pass(self, pass_name: str) -> Plan | None: ...
+    def state_at(self, position: int) -> PlanState: ...
+    @property
+    def state(self) -> PlanState: ...
+    @property
+    def has_source(self) -> bool: ...
+    @property
+    def source_format(self) -> str | None: ...
+    def __len__(self) -> int: ...
+    def ops_json(self) -> list[str]: ...
+    def source_json(self) -> str | None: ...
+    def to_spec(self, slot_map: list[int]) -> str: ...
 
 def pass_catalog() -> str:
     """Return the optimisation-pass catalogue as JSON (see ``tests/golden/pass_catalog.json``)."""
-
-def plan_step(
-    op_json: str, state: PlanState, refs: dict[str, PlanState] | None = None
-) -> PlanState:
-    """The planned state after appending ``op_json``; ``refs`` are the states
-    of the nodes it reads by id."""
 
 def rotation_matrix_2d(
     angle_deg: float,
@@ -73,8 +90,3 @@ def enum_catalog() -> str:
 def check_graph(graph_json: str) -> None:
     """Compile and plan a graph and check every output's sink, as the plugin
     will; raise ``ValueError``."""
-
-def plan_source(
-    source_json: str, refs: dict[str, PlanState] | None = None
-) -> PlanState:
-    """Validate a serialized source and return its planned state."""

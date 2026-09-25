@@ -363,7 +363,7 @@ class TestPerRowAffineParams:
             )
         )
         assert ops_of(pipe)[-1].op == "warp_affine"
-        # Matrix is serialized as a list of 6 per-element ParamValue dicts.
+        # Matrix is serialized as a list of 6 elements, each literal or a slot.
         matrix = ops_of(pipe)[-1].params["matrix"]
         assert isinstance(matrix, list)
         assert len(matrix) == 6

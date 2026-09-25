@@ -502,7 +502,7 @@ class TestChannelRuleHasOneAuthority:
     errors cancelled.
 
     Both have been fixed: quantized declares ``PreserveChannels``, and the
-    planner's one Rust call (``plan_step``) applies the rule. These pin the outcome so a
+    planner's one Rust call (``Plan.push``) applies the rule. These pin the outcome so a
     future change to either cannot quietly re-introduce the pair.
     """
 

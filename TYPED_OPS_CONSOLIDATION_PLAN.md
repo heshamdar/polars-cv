@@ -13,7 +13,7 @@
 > | C0 — Correctness fixes (test-first) | **done** — C0.1, C0.2, C0.4–C0.7 fixed test-first (`tests/test_plan_claims.py`, docstring binding guard); C0.3 moved to C2 |
 > | C1 — Typed planner state | **done** — `PlanState` is a frozen Rust pyclass (`Domain`, `PlannedDType`); Python dataclass, `HINT_DIMS`, `Domain` mirror, `Domain::Any`, string dtype helpers deleted; binary ops plan over both states |
 > | C2 — Declarations are ops; Rust plans the graph | **done** — `assert_shape` op checked per row; `planned` wire field, `plan_assert`/`plan_sink`/`check_sink`, `fold_output_*`, `asserted`/`declared` flags, Python assertion machinery deleted; `.sink()` runs `check_graph`; one refs mechanism for node reads |
-> | C3 — Rust owns the op list (`Plan`) | not started |
+> | C3 — Rust owns the op list (`Plan`) | **done** — `Plan` frozen pyclass (`push`/`select`/`with_source`/`rebased`/`continuing`/`run_pass`/`to_spec`); `OpSpec`/`ParamValue`/`SourceSpec`/`planning_slots`, `_push_op`/`_append_op`/`_replay`/`_state_at`/`_entering`/`_Position`/`_STATE_COPIERS`/`_copy_state_from`/`_create_sub_pipeline`/`_track_expr`, `plan_step`/`plan_source`/`node_pass` FFI and the AST/copy-table guards deleted. Deviations: one `select(positions, start)` serves slice, reorder and deletion; CSE compares the ops' wire form over the graph's slot table in Python (the slot table is Python's), not a Rust `common_prefix_len`; `_to_python` stays (numpy scalars at encode) |
 > | C4 — One op definition (mode-generic ops) | not started |
 > | C5 — Geometry namespaces on the typed ops | not started |
 > | C6 — One registry, one default convention | not started |

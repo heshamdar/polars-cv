@@ -222,8 +222,8 @@ def test_unset_allowed_roots_leaves_the_graph_json_unchanged() -> None:
 def test_allowed_roots_participates_in_source_identity() -> None:
     """Two sources differing only in their sandbox are not the same source.
 
-    `SourceSpec` is hashed for CSE. If the roots were left out of `__eq__` /
-    `__hash__`, a restricted and an unrestricted source would collapse into one
+    CSE groups nodes by their source's wire form. If the roots were left out of
+    it, a restricted and an unrestricted source would collapse into one
     node and one of them would silently get the other's policy.
     """
     a = source_of(Pipeline().source("file_path", allowed_roots=["/srv/a"]))

@@ -40,7 +40,6 @@ import pytest
 
 import polars_cv
 from polars_cv import Pipeline
-from polars_cv._types import planning_slots
 from tests._discovery import (
     package_modules,
     requires_checkout,
@@ -278,6 +277,13 @@ def _plan_state(domain: str, dtype: str, ndim: "int | None") -> object:
     return state
 
 
+def _planned_after(op_json: str, state: object, refs: "dict | None" = None) -> object:
+    """The state after planning *op_json* from *state*: one ``Plan.push``."""
+    from polars_cv._lib import Plan
+
+    return Plan.continuing(state).push(op_json, refs).state
+
+
 def _planned_shape(pipe):
     """The pipeline's plan-time [H, W, C], using None for unknown/expr dims."""
 
@@ -463,9 +469,8 @@ def test_lib_module_registration_matches_required_hooks():
 def _emitted_op_names_from_source():
     """Op names actually emitted by the Python builders, scanned from source.
 
-    Pipeline builders emit ``op="<name>"`` literals (pipeline.py), the node
-    helpers ``_add_node_op("<name>")`` (lazy.py) and the generated methods
-    ``_append_typed("<name>")`` / ``_binary_op("<name>")``. Scanning the source keeps the comparison drift-proof without a
+    The node helpers emit ``_add_node_op("<name>")`` (lazy.py), the generated
+    methods ``_append_typed("<name>")`` / ``_binary_op("<name>")``. Scanning the source keeps the comparison drift-proof without a
     second hand-maintained list.
     """
     import re
@@ -473,9 +478,6 @@ def _emitted_op_names_from_source():
 
     pkg = Path(polars_cv.__file__).parent
     names: set[str] = set()
-    text = (pkg / "pipeline.py").read_text()
-    names |= set(re.findall(r'op="([a-z_0-9]+)"', text))
-    names |= set(re.findall(r'_append_op\(\s*"([a-z_0-9]+)"', text))
     lazy = (pkg / "lazy.py").read_text()
     names |= set(re.findall(r'_(?:binary_op|add_node_op)\("([a-z_]+)"', lazy))
     generated = (pkg / "_ops_generated.py").read_text()
@@ -508,25 +510,19 @@ def test_registry_parity_no_dead_contracts():
     """Ops the Pipeline never emits are not executable (B2: sobel/laplacian/sharpen)."""
     import json
 
-    from polars_cv._lib import plan_step
-
     # sobel/laplacian/sharpen lower to convolve2d; they are not real executable
     # ops, so planning them must fail (their standalone contracts are dead, B2).
     for lowered in ("sobel", "laplacian", "sharpen"):
         with pytest.raises(ValueError, match="Unknown operation"):
-            plan_step(json.dumps({"op": lowered}), _plan_state("buffer", "u8", 3))
+            _planned_after(json.dumps({"op": lowered}), _plan_state("buffer", "u8", 3))
 
 
 _REQUIRED_LIB_HOOKS = (
     # Unpickles a `PlanState` (its `__reduce__` names it); Python never calls
     # it directly.
     "_plan_state_from_json",
-    # One appended op's whole plan-time effect (domain check, schema, H/W,
-    # channels, rank clipping), the builder's one call per append.
-    "plan_step",
-    # The node-scope optimisation passes (identity elimination, spatial-window
-    # pushdown), which answer with the node's new op order.
-    "node_pass",
+    # Unpickles a `Plan` (its `__reduce__` names it).
+    "_plan_from_json",
     # Every optimisation pass (logical and engine), which OptFlags and
     # OPTIMIZATION_PASSES are generated from.
     "pass_catalog",
@@ -554,10 +550,6 @@ _REQUIRED_LIB_HOOKS = (
     "io_catalog",
     # The enum catalogue the Python enum classes are generated from.
     "enum_catalog",
-    # Validate a serialized source against its typed format and plan its
-    # state, so the builder refuses an inapplicable keyword while it is
-    # written.
-    "plan_source",
     # Compile and plan a whole graph and check its sinks, as the plugin will
     # (what `.sink()` runs).
     "check_graph",
@@ -634,11 +626,9 @@ def _binary_op_names_from_source() -> set[str]:
 
 
 def _binary_dtype(op: str, left: str, right: str) -> str:
-    """A binary op's planned dtype over two operand dtypes, via ``plan_step``."""
-    from polars_cv._lib import plan_step
-
+    """A binary op's planned dtype over two operand dtypes, via ``Plan.push``."""
     op_json = json.dumps({"op": op, "other": "n0"})
-    return plan_step(
+    return _planned_after(
         op_json, _plan_state("buffer", left, 3), {"n0": _plan_state("buffer", right, 3)}
     ).dtype
 
@@ -672,11 +662,9 @@ def test_binary_dtype_authority():
 def test_a_binary_op_without_its_operand_state_is_refused():
     """A binary op plans over the state of the node it reads; with none it is
     refused rather than planned with the one-input rule."""
-    from polars_cv._lib import plan_step
-
     add = json.dumps({"op": "add", "other": "n0"})
     with pytest.raises(ValueError, match="reads node 'n0', which has no planned state"):
-        plan_step(add, _plan_state("buffer", "u8", 3))
+        _planned_after(add, _plan_state("buffer", "u8", 3))
 
 
 @requires_checkout
@@ -897,11 +885,11 @@ def test_lazy_stub_is_current():
 
 
 def test_source_modifiers_are_not_generated_lazy_forwarders():
-    """A Pipeline method that mutates ``_source`` must be Pipeline-only.
+    """A Pipeline method that sets the source must be Pipeline-only.
 
     ``_install_pipeline_forwarders`` generates a lazy forwarder for every
     chainable Pipeline op, running it on a *sourceless* continuation
-    (``_continuation()`` returns ``Pipeline()`` with ``_source is None``). A
+    (``_continuation()`` returns a pipeline whose plan has no source). A
     source-modifier (``source``, ``thumbnail``) would therefore unconditionally
     raise "requires a source" as a lazy method — a latent, always-failing
     forwarder. Such methods must live in ``PIPELINE_ONLY_METHODS`` so no
@@ -913,8 +901,8 @@ def test_source_modifiers_are_not_generated_lazy_forwarders():
     from polars_cv.lazy import PIPELINE_ONLY_METHODS
     from polars_cv.pipeline import Pipeline
 
-    # `._source =` assignment, but not the `._source ==`/`is None` comparisons.
-    assigns_source = re.compile(r"\._source\s*=(?!=)")
+    # A source is set only through `Plan.with_source`.
+    assigns_source = re.compile(r"\.with_source\(")
     offenders = []
     for name in dir(Pipeline):
         if name.startswith("_"):
@@ -972,19 +960,13 @@ def test_explicit_lazy_methods_take_a_lazy_operand():
 
 
 # ---------------------------------------------------------------------------
-# plan_step: the single per-op schema authority (domain, dtype, ndim)
+# Plan.push: the single per-op schema authority (domain, dtype, ndim)
 # ---------------------------------------------------------------------------
 
 
 def _op_json(op: str, **params: object) -> str:
-    """An all-literal op's wire JSON, in whichever form (typed or legacy) the
-    op crosses the boundary in — ``OpSpec.to_dict`` decides, not this helper."""
-    from polars_cv._types import OpSpec, ParamValue
-
-    spec = OpSpec(
-        op, {k: ParamValue(is_expr=False, value=v) for k, v in params.items()}
-    )
-    return json.dumps(spec.to_dict(planning_slots))
+    """An all-literal op's wire JSON."""
+    return json.dumps({"op": op, **params})
 
 
 @plugin_required
@@ -1047,19 +1029,18 @@ def _op_json(op: str, **params: object) -> str:
     ],
 )
 def test_op_schema_authority(op_json, state_in, expected) -> None:
-    """``plan_step`` resolves the param-dependent schema cases in Rust —
+    """``Plan.push`` resolves the param-dependent schema cases in Rust —
     including everything the Python planner used to special-case."""
-    import polars_cv._lib as lib
-
-    step = lib.plan_step(op_json, _plan_state(*state_in))
+    step = _planned_after(op_json, _plan_state(*state_in))
     assert (step.domain, step.dtype, step.ndim) == expected
 
 
 @plugin_required
-def test_replay_reproduces_the_tracked_state() -> None:
-    """Replaying a pipeline's ops from its first entering state (what every
-    slice, reorder and deletion does) reproduces the state its builders
-    tracked, at every position — so a rewrite cannot shift the plan."""
+def test_replanning_reproduces_the_appended_states() -> None:
+    """Planning a pipeline's ops again from its first entering state (what
+    every ``Plan.select`` — slice, reorder, deletion — does) reproduces the
+    states its appends planned, at every position — so a rewrite cannot shift
+    the plan."""
     corpus = [
         Pipeline().source("blob", dtype="u8").grayscale().threshold(128),
         Pipeline().source("blob", dtype="u8").cast("f32").scale(2.0),
@@ -1093,36 +1074,12 @@ def test_replay_reproduces_the_tracked_state() -> None:
         .convex_hull(),
     ]
     for pipe in corpus:
-        replayed = pipe._clone()
-        replayed._replay(range(len(pipe._ops)), start=pipe._state_at(0))
-        ops = [o.op for o in pipe._ops]
-        assert replayed._state == pipe._state, f"final state drift for {ops}"
-        assert replayed._entering == pipe._entering, f"entering drift for {ops}"
-
-
-@plugin_required
-def test_append_cost_is_linear(monkeypatch) -> None:
-    """Appending N ops makes exactly N plan_step calls (no full replay)."""
-    import polars_cv._lib as lib
-
-    calls = {"n": 0}
-    real = lib.plan_step
-
-    def counting(*args, **kwargs):
-        calls["n"] += 1
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(lib, "plan_step", counting)
-
-    pipe = Pipeline().source("blob", dtype="u8")
-    n_ops = 6
-    for _ in range(n_ops // 2):
-        pipe = pipe.scale(2.0).relu()
-    assert len(pipe._ops) == n_ops
-    assert calls["n"] == n_ops, (
-        f"expected exactly {n_ops} plan_step calls, got {calls['n']} — "
-        "per-append tracking must not replay prior ops"
-    )
+        plan = pipe._plan
+        replayed = plan.select(list(range(len(plan))), start=0)
+        ops = [json.loads(o)["op"] for o in plan.ops_json()]
+        assert replayed.ops_json() == plan.ops_json(), ops
+        for i in range(len(plan) + 1):
+            assert replayed.state_at(i) == plan.state_at(i), f"drift at {i}: {ops}"
 
 
 @plugin_required

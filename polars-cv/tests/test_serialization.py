@@ -7,23 +7,21 @@ import json
 import polars as pl
 
 from polars_cv import Pipeline
-from polars_cv._types import ParamValue, SlotTable
 
 
-class TestParamValueSerialization:
-    """Tests for ParamValue serialization."""
+class TestParameterSerialization:
+    """A parameter crosses as its value, or as ``{"$slot": n}``: its position
+    among the plugin inputs."""
 
     def test_literal_int_serialization(self) -> None:
-        """Integer literals serialize correctly."""
-        assert ParamValue.from_arg(42).to_wire(SlotTable().index) == 42
+        data = json.loads(Pipeline().source().scale(2)._to_json())
+        assert data["ops"][0]["factor"] == 2
 
     def test_expr_column_serialization(self) -> None:
-        """An expression serializes as its position among the plugin inputs."""
-        table = SlotTable()
-        table.add(pl.col("image"))
-        table.add(pl.col("my_column"))
-        d = ParamValue.from_arg(pl.col("my_column")).to_wire(table.index)
-        assert d == {"$slot": 1}
+        pipe = Pipeline().source().scale(pl.col("my_column"))
+        data = json.loads(pipe._to_json())
+        # Input 0 is the pipeline's column, so its one expression is input 1.
+        assert data["ops"][0]["factor"] == {"$slot": 1}
 
 
 class TestPipelineJsonFormat:

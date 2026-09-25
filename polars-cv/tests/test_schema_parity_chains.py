@@ -225,7 +225,7 @@ def test_binary_op_axis_is_the_rust_registry() -> None:
 def test_binary_ops_plan_what_they_execute(op: str) -> None:
     """Only ``divide`` had a plan-vs-exec test; here is the whole family.
 
-    Binary ops are the one two-input dtype rule: ``plan_step`` reads the other
+    Binary ops are the one two-input dtype rule: ``Plan.push`` reads the other
     operand's state for them (``other=``), so their promotion — u8 x u8 ->
     f32 for ``divide``/``ratio`` — is a separate branch of the fold.
     """

@@ -1,10 +1,10 @@
 """The one place tests read a pipeline's *planned* state.
 
-The planner's state is an implementation detail that the typed-op migration
-moves from Python fields into a Rust ``Plan`` (``TYPED_OPS_PLAN.md``, P7). Tests
-that assert on planned domain, dtype, rank or shape hints read them through
-:func:`planned` and :func:`ops_of`, so that move changes this module and nothing
-else in the suite.
+The planner's state is an implementation detail: a pipeline's Rust ``Plan``
+(its source, typed ops and the state at every op boundary). Tests that assert
+on planned domain, dtype, rank or shape hints, or on the ops and source, read
+them through :func:`planned`, :func:`ops_of` and :func:`source_of`, so a change
+to how the plan is held changes this module and nothing else in the suite.
 
 Values are plain data: a hint is its literal size, the string ``"expr"`` when
 it is a per-row expression, or ``None`` when unknown.
@@ -12,6 +12,7 @@ it is a per-row expression, or ``None`` when unknown.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -71,21 +72,23 @@ class OpView:
 
 
 def _plain(value: Any) -> Any:
-    if hasattr(value, "is_expr") and hasattr(value, "value"):  # a ParamValue
-        return EXPR if value.is_expr else _plain(value.value)
-    if isinstance(value, dict) and value.get("type") in ("literal", "expr"):
-        return EXPR if value["type"] == "expr" else _plain(value.get("value"))
+    if isinstance(value, dict) and value.keys() == {"$slot"}:
+        return EXPR
     if isinstance(value, (list, tuple)):
         return [_plain(v) for v in value]
     return value
 
 
 def ops_of(p: "Pipeline | LazyPipelineExpr") -> list[OpView]:
-    """Each op appended to *p*, in order."""
-    return [
-        OpView(op.op, {name: _plain(v) for name, v in op.params.items()})
-        for op in _pipeline(p)._ops
-    ]
+    """Each op appended to *p*, in order (an absent optional field omitted)."""
+    views = []
+    for text in _pipeline(p)._plan.ops_json():
+        op = json.loads(text)
+        name = op.pop("op")
+        views.append(
+            OpView(name, {k: _plain(v) for k, v in op.items() if v is not None})
+        )
+    return views
 
 
 def op_names(p: "Pipeline | LazyPipelineExpr") -> list[str]:
@@ -94,49 +97,52 @@ def op_names(p: "Pipeline | LazyPipelineExpr") -> list[str]:
 
 
 class SourceView:
-    """A source's settings by name, independent of how the spec stores them.
+    """A source's settings by name, as the caller passed them (a per-row one
+    as its expression).
 
     An absent setting reads as its default (``on_error`` is ``"raise"``,
     everything else ``None``); a contour canvas taken from another node reads
     as ``shape_node``, and ``cloud_options`` as a ``CloudOptions``.
     """
 
-    def __init__(self, spec: Any) -> None:
-        self._spec = spec
+    def __init__(self, pipeline: "Pipeline") -> None:
+        self._pipeline = pipeline
+        self._settings = pipeline._unwire(json.loads(pipeline._plan.source_json()))
 
     @property
     def format(self) -> Any:
-        return self._spec.format
+        from polars_cv._types import SourceFormat
+
+        return SourceFormat(self._settings["format"])
 
     def to_dict(self, slot_of: Any) -> dict[str, Any]:
-        return self._spec.to_dict(slot_of)
+        return self._pipeline._to_spec_dict(slot_of)["source"]
 
     def __getattr__(self, name: str) -> Any:
         from polars_cv._types import normalize_cloud_options
 
-        settings = {key: param.value for key, param in self._spec.params.items()}
+        settings = self._settings
         if name == "shape_node":
             size = settings.get("size")
             return size if isinstance(size, str) else None
         if name == "cloud_options":
             return normalize_cloud_options(settings.get("cloud_options"))
-        return settings.get(name, "raise" if name == "on_error" else None)
+        value = settings.get(name)
+        return ("raise" if name == "on_error" else None) if value is None else value
 
 
 def source_of(p: "Pipeline | LazyPipelineExpr") -> "SourceView | None":
     """*p*'s source settings (``None`` for a continuation pipeline)."""
-    spec = _pipeline(p)._source
-    return None if spec is None else SourceView(spec)
+    pipeline = _pipeline(p)
+    return SourceView(pipeline) if pipeline._plan.has_source else None
 
 
 def op_json(p: "Pipeline | LazyPipelineExpr", index: int) -> str:
-    """The wire JSON of one appended op, for tests of the op-level FFI.
+    """The wire JSON of one appended op, slots numbered over *p*'s own
+    expression table."""
+    return _pipeline(p)._plan.ops_json()[index]
 
-    Only the ``op_*`` FFI tests need the wire form; they are rewritten when the
-    planner moves into Rust (``TYPED_OPS_PLAN.md``, P7) and this goes with them.
-    """
-    import json
 
-    from polars_cv._types import planning_slots
-
-    return json.dumps(_pipeline(p)._ops[index].to_dict(planning_slots))
+def exprs_of(p: "Pipeline | LazyPipelineExpr") -> list[Any]:
+    """The expressions *p*'s slots name, by slot number."""
+    return list(_pipeline(p)._exprs)

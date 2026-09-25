@@ -28,8 +28,8 @@ use polars::prelude::*;
 use pyo3::prelude::*;
 use pyo3_polars::derive::polars_expr;
 
-use crate::passes::{node_pass, pass_catalog};
-use crate::plan::{_plan_state_from_json, plan_source, plan_step};
+use crate::passes::pass_catalog;
+use crate::plan::{_plan_from_json, _plan_state_from_json};
 use serde::Deserialize;
 
 /// Python module entry point for maturin.
@@ -48,10 +48,9 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // for. This moves whenever the built artifact could differ.
     m.add("__source_hash__", env!("POLARS_CV_SOURCE_HASH"))?;
     m.add_class::<plan::State>()?;
+    m.add_class::<plan::Plan>()?;
+    m.add_function(wrap_pyfunction!(_plan_from_json, m)?)?;
     m.add_function(wrap_pyfunction!(_plan_state_from_json, m)?)?;
-    m.add_function(wrap_pyfunction!(plan_step, m)?)?;
-    m.add_function(wrap_pyfunction!(plan_source, m)?)?;
-    m.add_function(wrap_pyfunction!(node_pass, m)?)?;
     m.add_function(wrap_pyfunction!(pass_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(op_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(io_catalog, m)?)?;
@@ -73,16 +72,6 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// interpreter) as the `ValueError` Python sees.
 pub(crate) fn py_value_error(msg: String) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(msg)
-}
-
-/// Resolve one serialized op spec at plan time, for its rules (domain,
-/// dtype, rank, channels, identity), which no per-row value can change.
-///
-/// Shared by `plan_step` and the passes so neither re-implements the
-/// deserialize → resolve path.
-pub(crate) fn resolve_op_from_json(op_json: &str) -> Result<crate::graph::step::GraphStep, String> {
-    let op: crate::ops::TypedOp = serde_json::from_str(op_json).map_err(|e| e.to_string())?;
-    planning_step(&op)
 }
 
 /// Resolve a typed op at plan time, for its rules (see

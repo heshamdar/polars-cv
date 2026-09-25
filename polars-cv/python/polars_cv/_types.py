@@ -1,13 +1,12 @@
 """
 Type definitions for polars-cv.
 
-This module contains the core type definitions used throughout the package,
-including ParamValue for handling literal vs expression parameters.
+This module contains the core type definitions used throughout the package.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Union
 
 try:
@@ -96,7 +95,6 @@ if TYPE_CHECKING:
     pass
 
 # Type alias for values that can be either literals or expressions
-LiteralOrExpr: TypeAlias = Union[int, float, str, pl.Expr]
 IntOrExpr: TypeAlias = Union[int, pl.Expr]
 FloatOrExpr: TypeAlias = Union[float, pl.Expr]
 # For non-structural flags only. A flag that changes the output shape — such as
@@ -174,7 +172,7 @@ def _reject_expr(value: "Any", what: str) -> None:
     data. Without this guard the expression fails much later and opaquely —
     inside ``bool()`` ("the truth value of an Expr is ambiguous") or at JSON
     serialization — instead of naming the real problem. Mirrors the message
-    ``ParamValue.__post_init__`` raises for scalar structural params.
+    ``_encode_field`` raises for a typed op's structural fields.
     """
     if isinstance(value, pl.Expr):
         msg = (
@@ -273,7 +271,7 @@ class SlotTable:
         if found is None:
             msg = (
                 f"expression {expr} is not a registered plugin input; builders "
-                "must register expression parameters via Pipeline._track_expr"
+                "must register expression parameters via Pipeline._slot"
             )
             raise KeyError(msg)
         return found
@@ -286,16 +284,6 @@ class SlotTable:
         return len(self._exprs)
 
 
-def planning_slots(expr: pl.Expr) -> int:  # noqa: ARG001 - deliberately ignored
-    """The slot resolver for plan-time FFI calls (``plan_step`` and friends).
-
-    Planning never reads a slot's data: the Rust planner replaces every slot
-    with a probe placeholder. So any index is sound here — and only here. A
-    graph that executes serializes through its own :class:`SlotTable`.
-    """
-    return 0
-
-
 def _to_python(value: Any) -> Any:
     """A numpy scalar as the Python number it holds; anything else unchanged.
 
@@ -306,88 +294,6 @@ def _to_python(value: Any) -> Any:
     if type(value).__module__ == "numpy" and callable(getattr(value, "item", None)):
         return value.item()
     return value
-
-
-@dataclass
-class ParamValue:
-    """
-    A parameter value that can be either a literal or an expression reference.
-
-    When serialized, expressions are stored as column references that are
-    resolved at execution time per row.
-    """
-
-    is_expr: bool
-    value: Any  # The literal value or expression
-
-    def __post_init__(self) -> None:
-        # A literal parameter can never hold a Polars expression. Structural
-        # params (enum tags, axes, kernel shapes, hash_size) are built as
-        # literals precisely because they fix the plan-time schema; routing an
-        # expression to one lands here with a clear error instead of failing
-        # opaquely later at JSON serialization. Dynamic params must set
-        # ``is_expr=True`` (see :meth:`from_arg` / ``Pipeline._track_expr``).
-        if not self.is_expr and isinstance(self.value, pl.Expr):
-            msg = (
-                "This parameter is structural (it fixes the output shape/rank "
-                "at planning time) and must be a literal, not a Polars "
-                "expression."
-            )
-            raise TypeError(msg)
-
-    def __eq__(self, other: object) -> bool:
-        """Compare two ParamValues for equality."""
-        if not isinstance(other, ParamValue):
-            return NotImplemented
-        if self.is_expr != other.is_expr:
-            return False
-        if self.is_expr:
-            return self.value is other.value or self.value.meta.eq(other.value)
-        return self.value == other.value
-
-    def __hash__(self) -> int:
-        """Hash for use in sets and dicts."""
-        if self.is_expr:
-            # meta.eq-equal expressions may print differently, so no text is a
-            # sound hash; equal objects need only share a bucket.
-            return hash(True)
-        # For literals, hash the value directly (works for immutable types)
-        try:
-            return hash((False, self.value))
-        except TypeError:
-            # Fallback for unhashable types (e.g., lists)
-            return hash((False, str(self.value)))
-
-    @classmethod
-    def from_arg(cls, arg: LiteralOrExpr) -> "ParamValue":
-        """
-        Create a ParamValue from a literal or expression.
-
-        Args:
-            arg: Either a literal value (int, float, str) or a Polars expression.
-
-        Returns:
-            ParamValue with appropriate type flag.
-        """
-        if isinstance(arg, pl.Expr):
-            return cls(is_expr=True, value=arg)
-        return cls(is_expr=False, value=arg)
-
-    def to_wire(self, slot_of: SlotOf) -> Any:
-        """Serialize as a field of an op, source or sink.
-
-        A field is the value itself — ``224``, ``"bilinear"``, a
-        list of elements — or ``{"$slot": n}`` for an expression; the Rust
-        struct it deserializes into decides what is valid.
-        """
-        if self.is_expr:
-            return {"$slot": slot_of(self.value)}
-        if isinstance(self.value, list):
-            return [
-                v.to_wire(slot_of) if isinstance(v, ParamValue) else _to_python(v)
-                for v in self.value
-            ]
-        return _to_python(self.value)
 
 
 @dataclass
@@ -594,72 +500,3 @@ def normalize_cloud_options(
         merged.update(passthrough)
         opts_dict["storage_options"] = merged
     return CloudOptions(**opts_dict)
-
-
-@dataclass
-class SourceSpec:
-    """A pipeline's input source: its format and the settings passed for it.
-
-    Shaped like :class:`OpSpec`: the settings are ``ParamValue``\\ s by field
-    name, and the format's Rust definition (``src/formats/source.rs``) is the
-    only statement of which fields exist and which formats read them — it
-    refuses the rest when ``plan_source`` validates the spec.
-    """
-
-    format: SourceFormat
-    params: dict[str, ParamValue] = field(default_factory=dict)
-
-    def __eq__(self, other: object) -> bool:
-        """Compare two SourceSpecs (same format and settings)."""
-        if not isinstance(other, SourceSpec):
-            return NotImplemented
-        return self.format == other.format and self.params == other.params
-
-    def __hash__(self) -> int:
-        """Hash for use in sets and dicts (CSE groups nodes by source)."""
-        return hash(
-            (self.format, tuple(sorted((k, hash(v)) for k, v in self.params.items())))
-        )
-
-    def to_dict(self, slot_of: SlotOf) -> dict[str, Any]:
-        """Serialize for the plugin wire: ``{"format": name, field: value, ...}``."""
-        result: dict[str, Any] = {"format": self.format.value}
-        for key, value in self.params.items():
-            result[key] = value.to_wire(slot_of)
-        return result
-
-
-@dataclass
-class OpSpec:
-    """Specification for a single operation in the pipeline."""
-
-    op: str  # Operation name
-    params: dict[str, ParamValue] = field(default_factory=dict)
-
-    def __eq__(self, other: object) -> bool:
-        """Compare two OpSpecs for equality (same op and params)."""
-        if not isinstance(other, OpSpec):
-            return NotImplemented
-        if self.op != other.op:
-            return False
-        if set(self.params.keys()) != set(other.params.keys()):
-            return False
-        return all(self.params[k] == other.params[k] for k in self.params)
-
-    def __hash__(self) -> int:
-        """Hash for use in sets and dicts."""
-        # Create a stable hash from op name and sorted params
-        param_hashes = tuple((k, hash(v)) for k, v in sorted(self.params.items()))
-        return hash((self.op, param_hashes))
-
-    def to_dict(self, slot_of: SlotOf) -> dict[str, Any]:
-        """Serialize for the plugin wire: ``{"op": name, field: value, ...}``.
-
-        Each field is its bare value or ``{"$slot": n}``
-        (:meth:`ParamValue.to_wire`); the op's Rust definition decides what is
-        valid.
-        """
-        result: dict[str, Any] = {"op": self.op}
-        for key, value in self.params.items():
-            result[key] = value.to_wire(slot_of)
-        return result

@@ -2,8 +2,8 @@
 //!
 //! Each returns the node's new op order as indices into the old list (a
 //! subset for a deletion, a permutation for a reorder), or `None` when nothing
-//! changes. Python applies it with `Pipeline._replay`, which appends the kept
-//! ops again from the node's first entering state, so a pass decides *what*
+//! changes. `Plan::run_pass` applies it by planning the kept ops again from
+//! the node's first entering state, so a pass decides *what*
 //! the ops become and never maintains per-position state itself.
 //!
 //! The decisions read only the op contracts (`GraphStep`) and the per-boundary
@@ -14,7 +14,6 @@ use view_buffer::{IdentityRule, SpatialDependency};
 
 use crate::graph::step::GraphStep;
 use crate::plan::State;
-use crate::py_value_error;
 
 /// Every logical optimisation pass, by the name `OptFlags` knows it by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +90,7 @@ pub(crate) fn pass_catalog() -> String {
 
 /// One node's ops and what the planner knows about them.
 pub(crate) struct Node<'a> {
-    pub ops: &'a [String],
+    pub ops: &'a [crate::ops::TypedOp],
     /// `ops.len() + 1` states: entering each op, then the final one.
     pub states: &'a [State],
 }
@@ -136,9 +135,8 @@ fn eliminate_identities(node: &Node<'_>) -> Result<Vec<usize>, String> {
 /// Whether op `i` is removable: its identity rule, evaluated against the
 /// state entering it and the one it leaves. Any unknown keeps the op.
 fn is_identity(node: &Node<'_>, i: usize) -> Result<bool, String> {
-    let op_json = &node.ops[i];
-    let op: crate::ops::TypedOp = serde_json::from_str(op_json).map_err(|e| e.to_string())?;
-    let step = crate::planning_step(&op)?;
+    let op = &node.ops[i];
+    let step = crate::planning_step(op)?;
     let (entering, leaving) = (&node.states[i], &node.states[i + 1]);
     Ok(match step.identity_rule() {
         IdentityRule::Never => false,
@@ -166,7 +164,7 @@ fn hoist_spatial_windows(node: &Node<'_>) -> Result<Vec<usize>, String> {
     let steps = node
         .ops
         .iter()
-        .map(|op| crate::resolve_op_from_json(op))
+        .map(crate::planning_step)
         .collect::<Result<Vec<GraphStep>, String>>()?;
     let crossable = |step: &GraphStep| {
         !step.reads_other_nodes() && step.spatial_dependency() == SpatialDependency::Pointwise
@@ -186,28 +184,6 @@ fn hoist_spatial_windows(node: &Node<'_>) -> Result<Vec<usize>, String> {
     Ok(order)
 }
 
-/// Python entry point: run the node-scope pass `pass_name`.
-///
-/// `states` are the planner's `PlanState` at each boundary (`len(ops) + 1`).
-/// Returns the new order, or `None` when the pass changes nothing.
-#[pyfunction]
-pub(crate) fn node_pass(
-    pass_name: &str,
-    ops: Vec<String>,
-    states: Vec<State>,
-) -> PyResult<Option<Vec<usize>>> {
-    let pass = view_buffer::naming::lookup(LogicalPass::NAMED, pass_name)
-        .ok_or_else(|| py_value_error(format!("unknown pass {pass_name:?}")))?;
-    run(
-        pass,
-        &Node {
-            ops: &ops,
-            states: &states,
-        },
-    )
-    .map_err(py_value_error)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,11 +200,14 @@ mod tests {
         }
     }
 
-    fn ops(values: &[serde_json::Value]) -> Vec<String> {
-        values.iter().map(|v| v.to_string()).collect()
+    fn ops(values: &[serde_json::Value]) -> Vec<crate::ops::TypedOp> {
+        values
+            .iter()
+            .map(|v| serde_json::from_value(v.clone()).unwrap())
+            .collect()
     }
 
-    fn node<'a>(ops: &'a [String], states: &'a [State]) -> Node<'a> {
+    fn node<'a>(ops: &'a [crate::ops::TypedOp], states: &'a [State]) -> Node<'a> {
         Node { ops, states }
     }
 
@@ -358,7 +337,7 @@ mod tests {
     #[test]
     fn representative_ops_have_their_true_spatial_rule() {
         let rule = |op: serde_json::Value| -> String {
-            match crate::resolve_op_from_json(&op.to_string())
+            match crate::planning_step(&serde_json::from_value(op).unwrap())
                 .unwrap()
                 .spatial_dependency()
             {

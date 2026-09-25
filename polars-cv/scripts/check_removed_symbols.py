@@ -343,6 +343,108 @@ REMOVED: tuple[Removed, ...] = (
     Removed("root_column_for", "C2: planning follows each node's lineage (no first-column fallback)"),
     Removed("has_typed_elements", "C2: dead with check_sink"),
     Removed("the_catalogue_is_the_op_set", "C2: OP_SET restated typed_ops!; op_catalog.json is the record"),
+    # Consolidation C3: the Rust Plan owns the op list.
+    Removed(
+        "plan_step",
+        "C3: Plan.push (the Rust plan extends itself)",
+        allowed_in=frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
+    ),
+    Removed(
+        "plan_source",
+        "C3: Plan.with_source",
+        allowed_in=frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
+    ),
+    Removed(
+        "node_pass",
+        "C3: Plan.run_pass",
+        allowed_in=frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
+    ),
+    Removed(
+        "resolve_op_from_json",
+        "C3: dead once Python holds no op list",
+        allowed_in=frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
+    ),
+    Removed(
+        "OpSpec",
+        "C3: the Rust Plan holds the typed ops",
+        allowed_in=frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
+    ),
+    Removed(
+        "ParamValue",
+        "C3: an argument is encoded straight to its wire value",
+        allowed_in=frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
+    ),
+    Removed(
+        "SourceSpec",
+        "C3: the Rust Plan holds the typed source",
+        allowed_in=frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
+    ),
+    Removed(
+        "planning_slots",
+        "C3: Python no longer serializes ops for planning",
+        allowed_in=frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
+    ),
+    Removed("LiteralOrExpr", "C3: only ParamValue.from_arg took it"),
+    Removed(
+        "_push_op",
+        "C3: Pipeline._push -> Plan.push",
+        allowed_in=frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
+    ),
+    Removed(
+        "_append_op",
+        "C3: Pipeline._append_typed -> Pipeline._push",
+        allowed_in=frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
+    ),
+    Removed(
+        "_replay",
+        "C3: Plan.select plans the kept ops again",
+        allowed_in=frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
+    ),
+    Removed(
+        "_state_at",
+        "C3: Plan.state_at",
+        allowed_in=frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
+    ),
+    Removed("_entering", "C3: the Plan keeps the state entering each op"),
+    Removed(
+        "_Position",
+        "C3: the Plan keeps each op's entering state and refs",
+        allowed_in=frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
+    ),
+    Removed(
+        "_STATE_COPIERS",
+        "C3: Pipeline._clone copies every field",
+        allowed_in=frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
+    ),
+    Removed(
+        "_copy_state_from",
+        "C3: Pipeline._clone copies every field",
+        allowed_in=frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
+    ),
+    Removed(
+        "_create_sub_pipeline",
+        "C3: to_graph clones; CSE cuts with Plan.select",
+        allowed_in=frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
+    ),
+    Removed(
+        "_track_expr",
+        "C3: Pipeline._slot",
+        allowed_in=frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
+    ),
+    Removed("_expr_refs", "C3: Pipeline._exprs (the table the plan's slots index)"),
+    Removed("_OPS_MUTATORS", "C3: Python cannot mutate the plan's ops"),
+    Removed("_mutates_ops", "C3: Python cannot mutate the plan's ops"),
+    Removed("test_op_append_is_structurally_exclusive", "C3: the frozen Plan is the guard"),
+    Removed("test_pipeline_state_copy_is_complete", "C3: _clone copies every field"),
+    Removed("test_every_pipeline_field_survives_a_copy", "C3: test_a_derived_pipeline_keeps_every_setting_and_shares_no_list"),
+    Removed("test_a_slice_replays_the_states_it_keeps", "C3: Rust select_plans_the_kept_ops_again_from_the_state_entering_them"),
+    Removed("test_push_op_applies_the_whole_plan_step_unconditionally", "C3: Plan.push is one Rust call"),
+    Removed("test_python_holds_no_copy_of_the_channel_rule_arithmetic", "C3: Python holds no op list to apply a rule to"),
+    Removed("test_replay_reproduces_the_tracked_state", "C3: test_replanning_reproduces_the_appended_states"),
+    Removed("test_append_cost_is_linear", "C3: Plan.push plans one op; there is no replay to count"),
+    Removed("TestOpSpecEquality", "C3: TestCSEPrefixKey"),
+    Removed("TestParamValueIdentity", "C3: TestPipelineSlots"),
+    Removed("TestParamValueSerialization", "C3: TestParameterSerialization"),
 )
 
 

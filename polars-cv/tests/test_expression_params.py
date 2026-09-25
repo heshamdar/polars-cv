@@ -2,7 +2,7 @@
 
 The `.contour`, `.point` and `.bbox` namespaces bypass the `vb_graph` graph
 engine, so they carry per-row parameters as extra plugin *input series* rather
-than through `ParamValue` (see `_ArgBinder` in `_namespace.py` and `GeomParams`
+than as op fields (see `_ArgBinder` in `_namespace.py` and `GeomParams`
 in `src/geom_params.rs`).
 
 These operations used to raise `TypeError` on a `pl.Expr` — a deliberate guard

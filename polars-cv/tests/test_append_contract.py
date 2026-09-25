@@ -1,39 +1,27 @@
-"""Guards for the mandatory op-append contract (Phase 1).
+"""Guards for the op-append contract.
 
 Every plan-time effect of appending an operation — input-domain validation,
-the domain/dtype/ndim fold, and the shape hints — is applied by exactly one
-function, ``Pipeline._push_op``. These tests exist to make that structural
-rather than conventional:
+the domain/dtype/rank fold and the shape — is one Rust call, ``Plan.push``,
+on an immutable plan Python cannot edit: a builder cannot append an op with
+part of its effect skipped, because the plan it gets back was planned whole.
 
-* :func:`test_op_append_is_structurally_exclusive` forbids any other code from
-  mutating ``_ops``, so a builder physically cannot append while tracking only
-  part of the effect.
 * :func:`test_eager_and_lazy_agree_on_shape_state` pins the two spellings of an
   operation (``.pipe(p.op())`` and ``.pipe(p).op()``) to the same state, and
   its op table is completeness-asserted against the real chainable-op list, so
   a new operation cannot join without a case.
-
-The predecessor of the first test ratcheted only the dtype update while
-naming this exact failure mode ("the eager/lazy drift class of bug"); an
-enumerated guard that lists one of two required calls is how the transpose and
-pad shape bugs shipped underneath it.
 """
 
 from __future__ import annotations
 
-import ast
 import io
-from pathlib import Path
 
 import numpy as np
 import polars as pl
 import pytest
 from PIL import Image
 
-import polars_cv
 from polars_cv import Pipeline
 
-from ._discovery import package_modules
 from ._op_cases import (
     BUFFER,
     CONTOUR,
@@ -54,284 +42,41 @@ from .conftest import plugin_required
 pytestmark = pytest.mark.structural
 
 # ---------------------------------------------------------------------------
-# 1. Only _push_op may mutate _ops
+# 1. The plan is Rust's, and immutable
 # ---------------------------------------------------------------------------
-
-#: The only functions permitted to touch ``Pipeline._ops``.
-#:
-#: There are exactly two ways ``_ops`` (and ``_entering``, the state entering
-#: each op, kept in step with it) is assigned:
-#:
-#: * ``_push_op`` appends one op at the end, records the state entering it and
-#:   advances the tracked state.
-#: * ``_replay`` is the single wholesale rewrite. A slice (CSE, a
-#:   sub-pipeline), a reorder (the pushdown) and a deletion (identity
-#:   elimination) name the ops they keep and the state to start from, and it
-#:   appends them again through ``_push_op`` — so every per-position fact is
-#:   recomputed, and no rewrite carries re-key arithmetic of its own (which is
-#:   how the CSE path once forgot ``_assertions``).
-#:
-#: ``_clone`` is listed because it is the copy constructor: it duplicates every
-#: field including all the side tables (via ``_copy_state_from`` /
-#: ``_STATE_COPIERS``), so there is no position bookkeeping for it to get wrong.
-_OPS_MUTATORS = frozenset(
-    {
-        "_push_op",
-        "_replay",
-        "_clone",
-    }
-)
-
-#: The per-position fields only the mutators above may write.
-_POSITIONAL = frozenset({"_ops", "_entering"})
-
-
-def _pipeline_ast() -> ast.ClassDef:
-    source = Path(polars_cv.pipeline.__file__).read_text()
-    tree = ast.parse(source)
-    return next(
-        n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Pipeline"
-    )
-
-
-def _mutates_ops(node: ast.AST) -> bool:
-    """True if *node* appends to, assigns into, replaces or aliases ``*._ops``
-    (or ``*._entering``, which is kept in step with it).
-
-    Aliasing counts (``ops = self._ops`` then ``ops.append(...)``) because it
-    is the obvious way around a guard that only looks for ``._ops.append``.
-    """
-    for sub in ast.walk(node):
-        # ops = x._ops  — an alias the mutation can then happen through
-        if isinstance(sub, ast.Assign) and isinstance(sub.value, ast.Attribute):
-            if sub.value.attr in _POSITIONAL:
-                return True
-        # x._ops.append(...) / .extend(...) / .insert(...) / .clear(...)
-        if (
-            isinstance(sub, ast.Call)
-            and isinstance(sub.func, ast.Attribute)
-            and sub.func.attr in {"append", "extend", "insert", "clear", "pop"}
-            and isinstance(sub.func.value, ast.Attribute)
-            and sub.func.value.attr in _POSITIONAL
-        ):
-            return True
-        # x._ops[i] = ... and x._ops += ...
-        targets: list[ast.AST] = []
-        if isinstance(sub, ast.Assign):
-            targets = list(sub.targets)
-        elif isinstance(sub, ast.AugAssign):
-            targets = [sub.target]
-        for t in targets:
-            if isinstance(t, ast.Subscript) and isinstance(t.value, ast.Attribute):
-                if t.value.attr in _POSITIONAL:
-                    return True
-            if isinstance(t, ast.Attribute) and t.attr in _POSITIONAL:
-                return True
-    return False
-
-
-def test_op_append_is_structurally_exclusive() -> None:
-    """``_push_op`` is the only function that may append to ``_ops``.
-
-    This is the contract that makes the append sequence unskippable: a builder
-    cannot add an operation without also running the domain check, the schema
-    fold and the shape-hint update, because it never touches ``_ops`` at all.
-    """
-    offenders: list[str] = []
-    # Discovery goes through `_discovery`, which refuses to return an empty
-    # set: this guard passing over zero modules is the failure mode it exists
-    # to prevent, not a pass.
-    for module in package_modules():
-        tree = ast.parse(module.read_text())
-        for fn in ast.walk(tree):
-            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if fn.name in _OPS_MUTATORS:
-                continue
-            # Only the function's own statements, not those of nested defs
-            # (which are reported under their own name).
-            if _mutates_ops(fn):
-                offenders.append(f"{module.name}:{fn.name}")
-    assert not offenders, (
-        f"only {sorted(_OPS_MUTATORS)} may touch Pipeline._ops, but these also "
-        f"do: {sorted(set(offenders))}. Route appends through _append_op() / "
-        f"_push_op() and wholesale rewrites through _replay() so the ops and "
-        f"the state entering each cannot be updated by halves."
-    )
-
-
-def test_pipeline_state_copy_is_complete() -> None:
-    """``_STATE_COPIERS`` must name every field ``Pipeline.__init__`` creates.
-
-    A derived pipeline — ``_clone``, ``_create_sub_pipeline``, CSE's
-    ``_create_shared_node`` — inherits its state through
-    ``Pipeline._copy_state_from``, which reads only this table. A field the
-    table omits is silently reset to its ``__init__`` default in every one of
-    them, which is not a degradation the caller can see.
-
-    That is not hypothetical: the three copies used to be written out by hand,
-    ``_create_sub_pipeline`` carried 11 of the 14 fields, and because
-    ``to_graph()`` makes its sub-pipeline the graph's only node, a public
-    ``Pipeline().source(...).on_error("null").to_graph(col)`` executed under
-    ``"raise"``. Guard the table rather than the three call sites: the call
-    sites are what kept being forgotten.
-    """
-    from polars_cv.pipeline import _STATE_COPIERS
-
-    declared = set(_STATE_COPIERS)
-    actual = set(vars(Pipeline()))
-
-    assert actual, "Pipeline() has no instance attributes -- the probe is broken"
-    assert declared == actual, (
-        f"_STATE_COPIERS is out of step with Pipeline.__init__.\n"
-        f"  missing from the table (silently dropped by every copy): "
-        f"{sorted(actual - declared)}\n"
-        f"  named but no longer a field (stale entry): {sorted(declared - actual)}"
-    )
-
-
-def test_every_pipeline_field_survives_a_copy() -> None:
-    """The table is honoured: a mutated field reaches the copy.
-
-    ``test_pipeline_state_copy_is_complete`` checks the *names*; this checks
-    that ``_copy_state_from`` actually transfers a value for each, so an entry
-    whose copier silently drops data (or a field re-assigned after the copy)
-    fails here rather than in a user's graph.
-    """
-    from polars_cv.pipeline import _STATE_COPIERS
-
-    source = Pipeline()
-    # A value distinguishable from every `__init__` default, per field type.
-    sentinels = {
-        "_source": object(),
-        "_on_error": "null",
-        "_on_null_param": "null",
-        "_ops": ["sentinel-op"],
-        "_expr_refs": ["sentinel-expr"],
-        "_entering": ["sentinel-position"],
-        "_node_refs": ["sentinel-ref"],
-        "_state": object(),
-    }
-    assert set(sentinels) == set(_STATE_COPIERS), (
-        "this test's sentinel table drifted from _STATE_COPIERS: "
-        f"{sorted(set(sentinels) ^ set(_STATE_COPIERS))}"
-    )
-    for name, value in sentinels.items():
-        setattr(source, name, value)
-
-    copied = Pipeline()
-    copied._copy_state_from(source)
-
-    for name, value in sentinels.items():
-        assert getattr(copied, name) == value, (
-            f"_copy_state_from lost {name}: expected {value!r}, "
-            f"got {getattr(copied, name)!r}"
-        )
-
-    # Equality alone cannot see the bug the table exists to prevent. A copier
-    # that aliases instead of copying passes every check above and then lets a
-    # clone mutate its origin -- which is what `_clone` returning a *new*
-    # Pipeline is for. Containers must be distinct objects.
-    aliased = sorted(
-        name
-        for name in _STATE_COPIERS
-        if isinstance(getattr(source, name), (list, dict, set))
-        and getattr(copied, name) is getattr(source, name)
-    )
-    assert not aliased, (
-        f"these fields are shared with the origin rather than copied: "
-        f"{aliased}. Mutating the clone would mutate the pipeline it came "
-        f"from; `Pipeline` is immutable by contract."
-    )
 
 
 @plugin_required
-def test_a_slice_replays_the_states_it_keeps() -> None:
-    """A sub-pipeline over ``[start, end)`` has exactly the states the whole
-    pipeline had there — entering each kept op, and at ``end``."""
-    pipe = (
+def test_the_plan_cannot_be_edited_from_python() -> None:
+    """A pipeline's ops live in its Rust ``Plan``, which has no setter: the
+    only way to change them is a method that plans every op it keeps
+    (``push``, ``select``, ``with_source``, ``rebased``, ``run_pass``)."""
+    plan = Pipeline().source("image_bytes").grayscale()._plan
+    for name in ("state", "has_source", "source_format"):
+        with pytest.raises(AttributeError):
+            setattr(plan, name, None)
+    with pytest.raises(AttributeError):
+        plan.ops = []  # type: ignore[attr-defined]
+
+
+@plugin_required
+def test_a_derived_pipeline_keeps_every_setting_and_shares_no_list() -> None:
+    """``_clone`` is the one copy: policies, expressions and node reads reach
+    the copy, and appending to the copy leaves its origin as it was."""
+    base = (
         Pipeline()
-        .source("blob", dtype="u8")
-        .assert_shape(dims=[10, 20, 3])
-        .resize(height=4, width=6)
-        .grayscale()
-        .pad(top=1, bottom=1, left=1, right=1)
+        .source("image_bytes")
+        .on_error("null")
+        .on_null_param("null")
+        .resize(height=pl.col("h"), width=4)
     )
-    for start, end in [(0, 3), (1, 3), (1, 2), (0, 1)]:
-        sub = pipe._create_sub_pipeline(start, end)
-        assert sub._entering == pipe._entering[start:end], (start, end)
-        assert sub._state == pipe._state_at(end), (start, end)
-
-
-def test_push_op_applies_the_whole_plan_step_unconditionally() -> None:
-    """``_push_op`` must apply the op's whole plan-time effect, every time.
-
-    Guards the body of the sole mutator itself: it is not enough that callers
-    route through it if it were to become selective. The effect is one Rust
-    call (``plan_step``: domain check, schema, H/W, channels, rank clipping)
-    whose result becomes ``self._state``; neither may sit inside a compound
-    statement, and the only parameter besides the op is the binary operand's
-    dtype, which Rust itself requires for exactly the binary ops.
-    """
-    fn = next(
-        m
-        for m in _pipeline_ast().body
-        if isinstance(m, ast.FunctionDef) and m.name == "_push_op"
-    )
-
-    def effects(tree: ast.AST) -> set[str]:
-        """The Rust call made and the state assigned, anywhere under *tree*."""
-        found = set()
-        for sub in ast.walk(tree):
-            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
-                if sub.func.id == "plan_step":
-                    found.add("plan_step")
-            if isinstance(sub, ast.Assign) and any(
-                isinstance(t, ast.Attribute) and t.attr == "_state" for t in sub.targets
-            ):
-                found.add("_state =")
-        return found
-
-    assert effects(fn) == {"plan_step", "_state ="}, effects(fn)
-
-    args = [a.arg for a in fn.args.kwonlyargs] + [a.arg for a in fn.args.args]
-    flags = [a for a in args if a not in {"self", "spec"}]
-    assert flags == ["refs"], (
-        f"_push_op grew a new parameter: {flags}. Every additional flag is a "
-        f"way to append an op while skipping part of its plan-time effect."
-    )
-
-    compound = (ast.If, ast.Try, ast.For, ast.While, ast.With)
-    guarded = set().union(
-        *(effects(branch) for branch in ast.walk(fn) if isinstance(branch, compound))
-    )
-    assert not guarded, (
-        "the plan step must run for every appended op, not conditionally"
-    )
-
-
-def test_python_holds_no_copy_of_the_channel_rule_arithmetic() -> None:
-    """The package must not re-implement ``OutputChannelRule::apply``.
-
-    A source scan, because the property is "this code does not exist". The
-    rule is applied in Rust (``plan_step``); what must not come back is
-    package code spelling its variants to compute a channel count. It scans the
-    whole package, so the arithmetic cannot return under another name.
-    Limits: a spelling built at runtime would pass unseen.
-    """
-    sources = {p: p.read_text() for p in package_modules()}
-    for path, src in sources.items():
-        for spelling in (
-            "strip_restore",
-            '"fixed:',
-            '"preserve"',
-            '"n/a"',
-            '"channel_rule"',
-        ):
-            assert spelling not in src, (
-                f"{spelling!r} is in {path.name}: the channel arithmetic "
-                f"belongs to OutputChannelRule::apply, reached via plan_step"
-            )
+    derived = base.scale(pl.col("s"))
+    assert (derived._on_error, derived._on_null_param) == ("null", "null")
+    assert len(derived._exprs) == 2
+    assert len(base._exprs) == 1
+    assert len(base._plan) == 1
+    graph_node = base.to_graph(pl.col("img"))._nodes["_node_0"].pipeline
+    assert graph_node._on_error == "null"
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +106,7 @@ def test_input_domain_matches_the_rust_contract() -> None:
     """The rejection names the op and the domains its Rust contract accepts.
 
     Input domain used to be a hand-written argument at every builder call
-    site; the check and its message are now ``plan_step``'s. Binary ops and
+    site; the check and its message are now ``Plan.push``'s. Binary ops and
     reductions accept two domains, and the message lists both.
     """
     contour_pipe = (
@@ -494,7 +239,7 @@ def test_a_contradicting_assertion_is_rejected_where_it_is_written() -> None:
     planner's shape contract disagrees with the Rust implementation"* — the
     plugin taking the blame for a value the caller typed three lines earlier.
     Both spellings are checked: the lazy continuation replays the
-    ``assert_shape`` op through the same ``plan_step``, so a check that only
+    ``assert_shape`` op through the same ``Plan.push``, so a check that only
     ran in the eager builder would leave half the surface open.
     """
     base = Pipeline().source("image_bytes", dtype="u8")

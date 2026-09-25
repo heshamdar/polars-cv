@@ -163,7 +163,7 @@ impl BinaryOp {
     /// The output dtype of this binary op for the given operand dtypes.
     ///
     /// This is the single authority shared by planning (the plugin's
-    /// `plan_step`, given both operand dtypes) and execution ([`execute`](BinaryOp::execute)). Divide and Ratio use
+    /// `plan::step`, given both operand dtypes) and execution ([`execute`](BinaryOp::execute)). Divide and Ratio use
     /// *true division*: integer operands promote to float (`F32`, or `F64` when an
     /// operand is already `F64`), matching numpy-style semantics. All other ops
     /// use standard numeric promotion of the two operands.

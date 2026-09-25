@@ -331,7 +331,7 @@ Rust: view-buffer (the engine)
 | `pipeline.py` | `Pipeline` builder — all image/array operations as chainable methods |
 | `lazy.py` | `LazyPipelineExpr` — lazy `.pipe()`, `.merge_pipe()`, `.sink()`, binary ops |
 | `expressions.py` | `CvNamespace` — the `.cv` accessor registered on Polars expressions (`.pipe()`, `.read_bytes()`, header-only metadata) |
-| `_types.py` | Core type definitions: `OpSpec`, `ParamValue` (the builder's record of an argument, literal or expression), `SourceSpec`, `SlotTable`, `Domain`; the other enums are generated into `_ops_generated.py` |
+| `_types.py` | Core type definitions: `SlotTable` (a graph's plugin inputs, by `meta.eq`), `CloudOptions`, the `IntOrExpr`-style aliases; the enums are generated into `_ops_generated.py` |
 | `_graph.py` | `PipelineGraph` / `GraphNode` — DAG construction, JSON serialization, CSE, plugin registration |
 | `_namespace.py` | Shared base for the `.cv`/`.point`/`.contour`/`.bbox` expression namespaces (plugin-registration boilerplate) |
 | `_plugin.py` | `call()` — the one way into the compiled plugin: pins polars to the imported `.so`, passes every argument as `.ext.storage()` |
@@ -344,7 +344,7 @@ Rust: view-buffer (the engine)
 ### Key Rust Modules
 
 **polars-cv/src/**
-- `lib.rs` — PyO3 module entry, `vb_graph` polars expression function, dtype inference, and the `plan_step`/`node_pass`/`enum_catalog`/`op_catalog`/`io_catalog`/`plan_source`/`check_graph` FFI the Python planner reads (`plan.rs` holds `plan_step`, one call per appended op; `passes.rs` the node-scope optimisation passes)
+- `lib.rs` — PyO3 module entry, `vb_graph` polars expression function, dtype inference, and the `Plan`/`PlanState` classes and `enum_catalog`/`op_catalog`/`io_catalog`/`check_graph` FFI the Python builder reads (`plan.rs` holds `Plan` — a pipeline's source, typed ops and the state at every op boundary — and `plan::step`, run once per appended op; `passes.rs` the node-scope optimisation passes)
 - `ops/` — the typed op catalogue: one `#[derive(Op)]` struct per op (`Param<T>`/`Literal<T>` fields), registered in `typed_ops!`; `TypedOp` is the wire op, `OpDef::resolve` maps it to a `GraphStep` (`graph/step.rs`: buffer ops wrap view-buffer's `ViewDto`; graph-only steps are their own variants) and `OpDef::shape` gives its symbolic `OpShape`; `catalog_json()` feeds `scripts/gen_ops.py`
 - `formats/` — the typed sources and sinks, one struct per format in a `formats!` registry
 - `execute.rs` — source decoding helpers (image bytes, contours) and byte-sink encoding
@@ -388,11 +388,11 @@ Domain constraints are enforced at pipeline-build time. Operations that don't ma
 
 ### Parameter Values
 
-Most operation parameters accept either a literal (`224`) or a Polars expression (`pl.col("target_height")`). This is typed as `ParamValue` in `_types.py`. Per-row expression params are resolved in Rust via `params.rs` (each op through its typed `Param<T>` fields), and by `geom_params.rs` for the `.contour`/`.point`/`.bbox` namespaces, which bypass `vb_graph` but carry their expression params the same way: extra plugin inputs, each named by its kwarg's `{"$slot": n}`.
+Most operation parameters accept either a literal (`224`) or a Polars expression (`pl.col("target_height")`). The builder encodes an expression as `{"$slot": i}` over the pipeline's own expression table (`Pipeline._slot`), renumbered onto the graph's inputs at serialization. Per-row expression params are resolved in Rust via `params.rs` (each op through its typed `Param<T>` fields), and by `geom_params.rs` for the `.contour`/`.point`/`.bbox` namespaces, which bypass `vb_graph` but carry their expression params the same way: extra plugin inputs, each named by its kwarg's `{"$slot": n}`.
 
 The rule for whether a parameter may be per-row is *not* its type: **a parameter is eligible iff its value has no effect on the output shape, rank or dtype**, because the lazy schema is computed at plan time and must match what executes. So non-structural enums and flags (`filter`, `interpolation`, `pad(mode=)`, `convolve2d(border=, normalize=)`, …) are per-row, while structural parameters are literal-only: `cast(dtype=)`, `normalize(method=, out_dtype=)`, reduction `axis`, `perceptual_hash(hash_size=, algorithm=)`, `rotate(expand=)`, `histogram(closed=, output=)`, the `transpose`/`flip` axis lists and `reshape`'s element count. For a list-valued parameter the *length* is structural while the elements are not — a `convolve2d` kernel keeps a literal element count but each coefficient may be an expression. Plan-time shapes are symbolic (a per-row param is `Sym::PerRow` in the op's `OpShape`), but the planner still resolves each op once without a row to read its rules, where every per-row param takes a placeholder (`ParamCtx::planning`); that is sound only because of the eligibility rule.
 
-A parameter column may contain **nulls**. `Pipeline.on_null_param("raise"|"null")` (and `on_null(...)` on the geometry accessors) chooses between failing the query and nulling just the affected rows. This is one shared mechanism, never per-op handling: a `NullParamPolicy` rides on `ParamCtx` and every null reaches `ParamCol::on_null`, which flags the context so `graph/compiled.rs` skips the node for that row — reusing the same null-propagation path a null input image already takes, so nulling is node-scoped rather than row-scoped. Do not add per-op or per-parameter null keywords: a fallback value is already `pl.col("h").fill_null(224)`, and a per-parameter policy would have to enter the `ParamValue` wire format and its `__eq__`/`__hash__` (or CSE would merge ops differing only in policy).
+A parameter column may contain **nulls**. `Pipeline.on_null_param("raise"|"null")` (and `on_null(...)` on the geometry accessors) chooses between failing the query and nulling just the affected rows. This is one shared mechanism, never per-op handling: a `NullParamPolicy` rides on `ParamCtx` and every null reaches `ParamCol::on_null`, which flags the context so `graph/compiled.rs` skips the node for that row — reusing the same null-propagation path a null input image already takes, so nulling is node-scoped rather than row-scoped. Do not add per-op or per-parameter null keywords: a fallback value is already `pl.col("h").fill_null(224)`, and a per-parameter policy would have to enter every op's wire form (or CSE, which compares that form, would merge ops differing only in policy).
 
 ### `Pipeline` Is Immutable
 
@@ -424,7 +424,7 @@ rejects a second declaration — lives in
 [`AGENTS.md`](AGENTS.md#canonical-paths). It is reference material you reach for
 when adding an op, enum, dtype spelling, source/sink parameter or optimization
 pass, so it loads on demand there rather than in every session's context. The
-former exceptions (`OpSpec`'s `#[serde(flatten)]` params, and the `BinaryOp`
+former exceptions (the op spec's `#[serde(flatten)]` params, and the `BinaryOp`
 arm, both since removed) are documented alongside it.
 
 ### Test Structure
@@ -466,12 +466,11 @@ arm, both since removed) are documented alongside it.
    `typed_shape_is_the_resolved_steps` then holds `shape` to the step's. A parameter
    read only under some branch becomes an enum variant, never an optional
    field that can be ignored. The Python planner picks up the op's schema
-   effect through `plan_step` — no Python-side schema special cases.
+   effect through `Plan.push` — no Python-side schema special cases.
 3. Re-bless the catalogue (`POLARS_CV_BLESS=1 scripts/with-pyo3-env.sh cargo
    test -p polars-cv catalog_matches`), regenerate the builder (`python
    scripts/gen_ops.py`) and `maturin develop`. The generated method appends
-   through `Pipeline._append_typed` → `_append_op` → `_push_op`, the only way
-   in. The matching `LazyPipelineExpr` method is generated automatically from
+   through `Pipeline._append_typed` → `_push` → `Plan.push`, the only way in. The matching `LazyPipelineExpr` method is generated automatically from
    `Pipeline` at import time (`python/polars_cv/lazy.py`), and a `lazy_only`
    binary op's is generated into `_LazyOpsMixin` — do **not** hand-mirror
    either. Hand-written `Pipeline` methods are for sugar over generated

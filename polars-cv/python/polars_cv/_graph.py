@@ -22,7 +22,6 @@ if TYPE_CHECKING:
     import pydot
 
     from polars_cv._optimize import OptFlags
-    from polars_cv._types import OpSpec
     from polars_cv.pipeline import Pipeline
 
 
@@ -262,7 +261,7 @@ class PipelineGraph:
                 # only Python holds.
                 self._optimize_common_subexpressions()
             else:
-                # Node scope: Rust (`node_pass`) decides, and refuses a name
+                # Node scope: Rust (`Plan.run_pass`) decides, and refuses a name
                 # that is not a `LogicalPass`.
                 for node in self._nodes.values():
                     node.pipeline._run_node_pass(spec.name)
@@ -300,19 +299,28 @@ class PipelineGraph:
             if len(nodes) < 2:
                 continue
 
-            # Find common prefix among all nodes in this group
-            ops_lists = [node.pipeline._ops for node in nodes]
-            common_ops = self._find_common_prefix(ops_lists)
+            # Find common prefix among all nodes in this group. Ops compare as
+            # their wire form over the graph's one slot table, so two
+            # expression parameters are the same iff they bind the same input.
+            table = self._slot_table()
+            ops_lists = [
+                [
+                    json.dumps(op, sort_keys=True)
+                    for op in node.pipeline._to_spec_dict(table.index)["ops"]
+                ]
+                for node in nodes
+            ]
+            prefix_len = len(self._find_common_prefix(ops_lists))
 
-            if len(common_ops) == 0:
+            if prefix_len == 0:
                 continue
 
             # Create shared node for the common prefix
-            shared_id = self._create_shared_node(nodes[0], common_ops)
+            shared_id = self._create_shared_node(nodes[0], prefix_len)
 
             # Update original nodes to use shared node as upstream
             for node in nodes:
-                self._update_node_to_use_shared(node, shared_id, len(common_ops))
+                self._update_node_to_use_shared(node, shared_id, prefix_len)
 
     def _group_nodes_for_cse(self) -> dict[str, list[GraphNode]]:
         """
@@ -338,12 +346,8 @@ class PipelineGraph:
             # would bucket two *different* sources together and fuse a shared
             # prefix node with the wrong source. String equality cannot collide.
             col_key = table.index(node.column)
-            source = node.pipeline._source
-            source_key = (
-                json.dumps(source.to_dict(table.index), sort_keys=True)
-                if source
-                else "none"
-            )
+            source = node.pipeline._to_spec_dict(table.index)["source"]
+            source_key = json.dumps(source, sort_keys=True)
             group_key = f"{col_key}:{source_key}"
 
             if group_key not in groups:
@@ -352,7 +356,7 @@ class PipelineGraph:
 
         return groups
 
-    def _find_common_prefix(self, ops_lists: list[list["OpSpec"]]) -> list["OpSpec"]:
+    def _find_common_prefix(self, ops_lists: list[list[str]]) -> list[str]:
         """
         Find the longest common prefix across all operation lists.
 
@@ -370,7 +374,7 @@ class PipelineGraph:
         if min_len == 0:
             return []
 
-        prefix: list["OpSpec"] = []
+        prefix: list[str] = []
         for i in range(min_len):
             first = ops_lists[0][i]
             # Check if all lists have the same op at position i
@@ -381,38 +385,26 @@ class PipelineGraph:
 
         return prefix
 
-    def _create_shared_node(
-        self, template_node: GraphNode, prefix_ops: list["OpSpec"]
-    ) -> str:
+    def _create_shared_node(self, template_node: GraphNode, prefix_len: int) -> str:
         """
         Create a shared node containing the common prefix operations.
 
         Args:
             template_node: A node to use as template for source/column.
-            prefix_ops: The operations to include in the shared node.
+            prefix_len: How many of the template's leading ops are shared.
 
         Returns:
             The node_id of the newly created shared node.
         """
-        from polars_cv.pipeline import Pipeline
-
         shared_id = f"_cse_{uuid.uuid4().hex[:8]}"
 
-        # Create a new pipeline with just the prefix operations. It inherits
-        # the template's whole state through the one copy mechanism, then
-        # overrides the ops; see `_STATE_COPIERS` in `pipeline.py`.
-        #
-        # The per-row policies come along, which is a no-op for the graph
-        # spec today: `_to_dict` hoists the *set* of non-default policies
-        # across all nodes, and the template node keeps its own. Copying them
-        # is what keeps that true if the hoist ever reads one node.
-        template = template_node.pipeline
-        shared_pipeline = Pipeline()
-        shared_pipeline._copy_state_from(template)
         # The template's leading ops *are* the prefix (CSE matched them), so
-        # the shared node replays them from the template's entering state.
-        prefix_len = len(prefix_ops)
-        shared_pipeline._replay(range(prefix_len), start=template._state_at(0))
+        # the shared node is the template's plan cut to them. It inherits the
+        # rest of the template (expressions, node reads, per-row policies)
+        # through the one copy, `_clone`.
+        template = template_node.pipeline
+        shared_pipeline = template._clone()
+        shared_pipeline._plan = template._plan.select(list(range(prefix_len)), start=0)
 
         # Create the shared node
         shared_node = GraphNode(
@@ -441,8 +433,8 @@ class PipelineGraph:
         # Keep only the suffix, replayed from the state entering it (the
         # shared node's output state).
         pipeline = node.pipeline
-        pipeline._replay(
-            range(prefix_len, len(pipeline._ops)), start=pipeline._state_at(prefix_len)
+        pipeline._plan = pipeline._plan.select(
+            list(range(prefix_len, len(pipeline._plan))), start=prefix_len
         )
 
         # Set the shared node as upstream
