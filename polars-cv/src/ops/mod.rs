@@ -18,9 +18,7 @@
 
 pub mod affine;
 pub mod binary;
-pub mod channel;
 pub mod color;
-pub mod compute;
 pub mod declare;
 pub mod filter;
 pub mod geometry;
@@ -29,7 +27,6 @@ pub mod label;
 pub mod param;
 pub mod phash;
 pub mod reduce;
-pub mod view;
 
 use polars::prelude::*;
 use serde::Serialize;
@@ -157,9 +154,13 @@ macro_rules! typed_ops {
             /// The step for `row` (see [`OpDef::resolve`]).
             pub fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
                 match self {
-                    $(TypedOp::$family(op) => Ok(($wrap)(
-                        view_buffer::mode::Resolve::resolve(op, &param::RowValues { row, ctx })?,
-                    )),)*
+                    $(TypedOp::$family(op) => {
+                        op.check().map_err(|e| polars_err!(ComputeError: "{}", e))?;
+                        Ok(($wrap)(view_buffer::mode::Resolve::resolve(
+                            op,
+                            &param::RowValues { row, ctx },
+                        )?))
+                    })*
                     $(TypedOp::$variant(op) => OpDef::resolve(op, row, ctx),)+
                 }
             }
@@ -215,30 +216,30 @@ impl Family for view_buffer::ImageOpKind {
     type Wire = view_buffer::ImageOpKind<view_buffer::mode::Wire>;
 }
 
+impl Family for view_buffer::ComputeOp {
+    type Wire = view_buffer::ComputeOp<view_buffer::mode::Wire>;
+}
+
+impl Family for view_buffer::ViewOp {
+    type Wire = view_buffer::ViewOp<view_buffer::mode::Wire>;
+}
+
 typed_ops! {
     families {
         Image(view_buffer::ImageOpKind) => |kind| GraphStep::Buffer(
             view_buffer::ViewDto::Image(view_buffer::ImageOp { kind })
         );
+        Compute(view_buffer::ComputeOp) => |op| GraphStep::Buffer(view_buffer::ViewDto::Compute(op));
+        View(view_buffer::ViewOp) => |op| GraphStep::Buffer(view_buffer::ViewDto::View(op));
     }
-    "abs" => Abs(compute::Abs) {},
     "add" => Add(binary::Add) {"other": "n0"},
-    "add_constant" => AddConstant(compute::AddConstant) {"value": 1.0},
-    "adjust_contrast" => AdjustContrast(compute::AdjustContrast) {"factor": 1.5},
-    "adjust_gamma" => AdjustGamma(compute::AdjustGamma) {"gamma": 0.5},
     "apply_mask" => ApplyMask(binary::ApplyMask) {"mask": "n0", "invert": true},
     "assert_shape" => AssertShape(declare::AssertShape) {"rank": 3, "dims": [8, null, 2]},
     "bitwise_and" => BitwiseAnd(binary::BitwiseAnd) {"other": "n0"},
     "bitwise_or" => BitwiseOr(binary::BitwiseOr) {"other": "n0"},
     "bitwise_xor" => BitwiseXor(binary::BitwiseXor) {"other": "n0"},
     "blend" => Blend(binary::Blend) {"other": "n0"},
-    "cast" => Cast(compute::Cast) {"dtype": "f32"},
-    "ceil" => Ceil(compute::Ceil) {},
     "channel_merge" => ChannelMerge(binary::ChannelMerge) {"others": ["n0", "n1"]},
-    "channel_select" => ChannelSelect(channel::ChannelSelect) {"index": 0},
-    "clamp" => Clamp(compute::Clamp) {"min": 0.0, "max": 1.0},
-    "clamp_max" => ClampMax(compute::ClampMax) {"value": 1.0},
-    "clamp_min" => ClampMin(compute::ClampMin) {"value": 0.0},
     "contour_area" => ContourArea(geometry::ContourArea) {"signed": false},
     "contour_bounding_box" => ContourBoundingBox(geometry::ContourBoundingBox) {},
     "contour_centroid" => ContourCentroid(geometry::ContourCentroid) {},
@@ -249,29 +250,21 @@ typed_ops! {
     "contour_translate" => ContourTranslate(geometry::ContourTranslate) {"dx": 1.0, "dy": -2.0},
     "convolve2d" => Convolve2d(filter::Convolve2d)
         {"kernel": [0, 0, 0, 0, 1, 0, 0, 0, 0], "ksize": 3, "normalize": false, "border": "replicate"},
-    "crop" => Crop(view::Crop) {"top": 1, "left": 1, "height": 2, "width": 2},
     "cvt_color" => CvtColor(color::CvtColor) {"from_space": "rgb", "to_space": "hsv"},
     "divide" => Divide(binary::Divide) {"other": "n0"},
     "extract_contours" => ExtractContours(geometry::ExtractContours)
         {"mode": "tree", "method": "none", "min_area": 2.0},
     "extract_shape" => ExtractShape(reduce::ExtractShape) {},
-    "flip" => Flip(view::Flip) {"axes": [1]},
-    "floor" => Floor(compute::Floor) {},
     "histogram" => Histogram(histogram::Histogram)
         {"bins": 8, "range": null, "closed": "left", "output": "counts"},
-    "invert" => Invert(compute::Invert) {},
     "label_reduce" => LabelReduce(label::LabelReduce)
         {"contours": {"$slot": 1}, "reduction": "mean", "region_mode": "bbox"},
     "maximum" => Maximum(binary::Maximum) {"other": "n0"},
     "minimum" => Minimum(binary::Minimum) {"other": "n0"},
     "multiply" => Multiply(binary::Multiply) {"other": "n0"},
-    "neg" => Neg(compute::Neg) {},
-    "normalize" => Normalize(compute::Normalize)
-        {"method": "preset", "mean": [0.5], "std": [0.25], "out_dtype": "f32"},
     "perceptual_hash" => PerceptualHash(phash::PerceptualHash) {"algorithm": "perceptual", "hash_size": 64},
     "rasterize" => Rasterize(geometry::Rasterize) {"size": [8, 6], "fill_value": 1, "background": 0},
     "ratio" => Ratio(binary::Ratio) {"other": "n0"},
-    "reciprocal" => Reciprocal(compute::Reciprocal) {},
     "reduce_argmax" => ReduceArgmax(reduce::ReduceArgmax) {"axis": 0},
     "reduce_argmin" => ReduceArgmin(reduce::ReduceArgmin) {"axis": 0},
     "reduce_max" => ReduceMax(reduce::ReduceMax) {"axis": null},
@@ -281,19 +274,9 @@ typed_ops! {
     "reduce_popcount" => ReducePopcount(reduce::ReducePopcount) {},
     "reduce_std" => ReduceStd(reduce::ReduceStd) {"axis": null, "ddof": 1},
     "reduce_sum" => ReduceSum(reduce::ReduceSum) {},
-    "relu" => Relu(compute::Relu) {},
-    "reshape" => Reshape(view::Reshape) {"shape": [2, 2, 1]},
     "rotate" => Rotate(affine::Rotate)
         {"angle": 30.0, "expand": true, "interpolation": "nearest", "border_value": 0.0},
-    "round" => Round(compute::Round) {},
-    "scale" => Scale(compute::Scale) {"factor": 2.0},
-    "sign" => Sign(compute::Sign) {},
-    "sqrt" => Sqrt(compute::Sqrt) {},
-    "square" => Square(compute::Square) {},
     "subtract" => Subtract(binary::Subtract) {"other": "n0"},
-    "subtract_constant" => SubtractConstant(compute::SubtractConstant) {"value": 1.0},
-    "transpose" => Transpose(view::Transpose) {"axes": [1, 0, 2]},
-    "trunc" => Trunc(compute::Trunc) {},
     "warp_affine" => WarpAffine(affine::WarpAffine) {
         "matrix": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         "output_size": [4, 4],

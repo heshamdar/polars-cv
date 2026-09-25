@@ -155,7 +155,7 @@ mod tests {
     use super::*;
     use crate::ops::binary::BinaryOp;
     use crate::ops::color::{ColorConvertOp, ColorSpace};
-    use crate::ops::compute::{ComputeOp, Normalization};
+    use crate::ops::compute::ComputeOp;
     use crate::ops::filter::{BorderMode, ConvolveOp};
     use crate::ops::histogram::HistogramOp;
     use crate::ops::image::{FilterType, ImageOp, ImageOpKind};
@@ -174,17 +174,23 @@ mod tests {
     fn pointwise_ops() {
         let pw = SpatialDependency::Pointwise;
         assert_eq!(
-            ComputeOp::Cast(crate::core::dtype::DType::F32).spatial_dependency(),
+            ComputeOp::Cast {
+                dtype: crate::core::dtype::DType::F32
+            }
+            .spatial_dependency(),
             pw
         );
-        assert_eq!(ComputeOp::Scale(2.0).spatial_dependency(), pw);
+        assert_eq!(ComputeOp::Scale { factor: 2.0 }.spatial_dependency(), pw);
         assert_eq!(ComputeOp::Relu.spatial_dependency(), pw);
         assert_eq!(ComputeOp::Invert.spatial_dependency(), pw);
         assert_eq!(
             ComputeOp::Clamp { min: 0.0, max: 1.0 }.spatial_dependency(),
             pw
         );
-        assert_eq!(ComputeOp::AdjustGamma(2.2).spatial_dependency(), pw);
+        assert_eq!(
+            ComputeOp::AdjustGamma { gamma: 2.2 }.spatial_dependency(),
+            pw
+        );
         assert_eq!(ComputeOp::Scalar(ScalarOp::Relu).spatial_dependency(), pw);
         assert_eq!(
             ColorConvertOp {
@@ -217,11 +223,19 @@ mod tests {
     fn global_ops() {
         let g = SpatialDependency::Global;
         assert_eq!(
-            ComputeOp::Normalize(Normalization::MinMax, crate::core::dtype::DType::F32)
-                .spatial_dependency(),
+            ComputeOp::Normalize {
+                method: crate::ops::compute::NormalizeMethod::MinMax,
+                mean: None,
+                std: None,
+                out_dtype: None,
+            }
+            .spatial_dependency(),
             g
         );
-        assert_eq!(ComputeOp::AdjustContrast(1.5).spatial_dependency(), g);
+        assert_eq!(
+            ComputeOp::AdjustContrast { factor: 1.5 }.spatial_dependency(),
+            g
+        );
         assert_eq!(ReductionOp::Sum { axis: None }.spatial_dependency(), g);
         assert_eq!(HistogramOp::new(8).spatial_dependency(), g);
         assert_eq!(
@@ -300,11 +314,14 @@ mod tests {
             .spatial_dependency(),
             geo
         );
-        assert_eq!(ViewOp::Transpose(vec![1, 0, 2]).spatial_dependency(), geo);
-        assert_eq!(ViewOp::Reshape(vec![48]).spatial_dependency(), geo);
-        assert_eq!(ViewOp::Flip(vec![0]).spatial_dependency(), geo);
+        assert_eq!(ViewOp::transpose(&[1, 0, 2]).spatial_dependency(), geo);
         assert_eq!(
-            ViewOp::Crop {
+            ViewOp::Reshape { shape: vec![48] }.spatial_dependency(),
+            geo
+        );
+        assert_eq!(ViewOp::flip(&[0]).spatial_dependency(), geo);
+        assert_eq!(
+            ViewOp::Slice {
                 start: vec![0, 0, 0],
                 end: vec![2, 2, 3]
             }
@@ -361,7 +378,7 @@ mod tests {
     fn spatial_window_is_only_an_hw_crop() {
         // The `crop` builder emits `[top, left, 0] .. [_, _, usize::MAX]`: the
         // channel axis is left at full extent, so it is a hoistable H/W window.
-        assert!(ViewOp::Crop {
+        assert!(ViewOp::Slice {
             start: vec![1, 1, 0],
             end: vec![5, 5, usize::MAX],
         }
@@ -369,20 +386,20 @@ mod tests {
 
         // A crop that slices the channel axis (start != 0, or a bounded channel
         // end) is not H/W-only and must not be hoistable.
-        assert!(!ViewOp::Crop {
+        assert!(!ViewOp::Slice {
             start: vec![0, 0, 1],
             end: vec![5, 5, usize::MAX],
         }
         .is_spatial_window());
-        assert!(!ViewOp::Crop {
+        assert!(!ViewOp::Slice {
             start: vec![0, 0, 0],
             end: vec![5, 5, 2],
         }
         .is_spatial_window());
 
         // Nothing else is a window: geometric neighbours, pointwise ops, reduces.
-        assert!(!ViewOp::Flip(vec![0]).is_spatial_window());
-        assert!(!ViewOp::Reshape(vec![48]).is_spatial_window());
+        assert!(!ViewOp::flip(&[0]).is_spatial_window());
+        assert!(!ViewOp::Reshape { shape: vec![48] }.is_spatial_window());
         assert!(!img(ImageOpKind::Grayscale).is_spatial_window());
         assert!(!img(ImageOpKind::Resize {
             width: 8,

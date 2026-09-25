@@ -255,6 +255,12 @@ pub enum ImageOpKind<M: Mode = Exec> {
 }
 
 impl<M: Mode> ImageOpKind<M> {
+    /// Refuse a parameter combination no row can execute. Every image op's
+    /// parameters are independent, so there is none.
+    pub fn check(&self) -> Result<(), String> {
+        Ok(())
+    }
+
     /// How this op's output shape follows from its input — the one
     /// definition, read on the `Wire` op at plan time (a per-row parameter is
     /// `Sym::PerRow`) and on the `Exec` op at execution.

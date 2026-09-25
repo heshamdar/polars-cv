@@ -43,16 +43,19 @@ pub fn execute_plan(source: ViewBuffer, ops: Vec<ViewDto>) -> ViewBuffer {
 
 /// Applies a view operation to a buffer.
 pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
+    if let Some((start, end)) = op.window() {
+        return buf.slice(&start, &end);
+    }
     match op {
-        ViewOp::Transpose(perm) => buf.permute(&perm),
-        ViewOp::Reshape(shape) => {
+        ViewOp::Transpose { .. } => buf.permute(&op.axes()),
+        ViewOp::Reshape { shape } => {
             if !buf.layout.is_contiguous() {
                 panic!("Reshape on non-contiguous view not supported without copy");
             }
-            buf.reshape(shape)
+            buf.reshape(shape.iter().map(|&d| d as usize).collect())
         }
-        ViewOp::Flip(axes) => buf.flip(&axes),
-        ViewOp::Crop { start, end } => buf.slice(&start, &end),
+        ViewOp::Flip { .. } => buf.flip(&op.axes()),
+        ViewOp::Crop { .. } | ViewOp::Slice { .. } => unreachable!("windows are sliced above"),
         ViewOp::Rotate90 => {
             // Rotate90: transpose [1,0] then flip axis 1 (width)
             // For HWC layout: transpose swaps H and W, then flip W
@@ -88,6 +91,7 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
             transposed.flip(&[0]) // Flip height axis
         }
         ViewOp::ChannelSelect { index } => {
+            let index = index as usize;
             let shape = buf.shape();
             if shape.len() != 3 {
                 return buf;
@@ -104,8 +108,11 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
 /// Applies a compute operation to a buffer.
 #[inline]
 pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
+    if let Some(op) = op.scalar() {
+        return apply_scalar_op(buf, op);
+    }
     match op {
-        ComputeOp::Cast(dtype) => buf.cast(dtype),
+        ComputeOp::Cast { dtype } => buf.cast(dtype),
         ComputeOp::Affine(params) => apply_affine_warp(buf, params),
         ComputeOp::RotateAffine {
             angle_deg,
@@ -119,7 +126,7 @@ pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer 
                 AffineParams::from_rotation(angle_deg, h, w, expand, interpolation, border_value);
             apply_affine_warp(buf, params)
         }
-        ComputeOp::Scale(factor) => apply_scalar_owned_with(
+        ComputeOp::Scale { factor } => apply_scalar_owned_with(
             buf,
             move |x: f32| x * factor,
             move |x: f64| x * factor as f64,
@@ -141,36 +148,46 @@ pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer 
                 buf.apply_fused_kernel(kernel)
             }
         }
-        ComputeOp::Normalize(ref method, out_dtype) => apply_normalize(&buf, method, out_dtype),
+        ComputeOp::Normalize {
+            method,
+            ref mean,
+            ref std,
+            out_dtype,
+        } => apply_normalize(
+            &buf,
+            &ComputeOp::normalization(method, mean, std),
+            out_dtype.unwrap_or(DType::F32),
+        ),
         ComputeOp::Clamp { min, max } => apply_scalar_owned_with(
             buf,
             move |x: f32| x.clamp(min, max),
             move |x: f64| x.clamp(min as f64, max as f64),
         ),
-        ComputeOp::AdjustContrast(factor) => apply_adjust_contrast(&buf, factor),
-        ComputeOp::AdjustGamma(gamma) => apply_adjust_gamma(&buf, gamma),
+        ComputeOp::AdjustContrast { factor } => apply_adjust_contrast(&buf, factor),
+        ComputeOp::AdjustGamma { gamma } => apply_adjust_gamma(&buf, gamma),
         ComputeOp::Invert => apply_invert(&buf),
-        ComputeOp::Scalar(op) => {
-            // Route through the fused kernel so a lone scalar op and a fused
-            // one share the identical f32 arithmetic (the "route through the
-            // kernel" design). f64 preserves precision on its own cold path
-            // (`PromoteToFloat` keeps f64; the kernel is f32-only), mirroring
-            // how the promote-family ops keep f64 unfused.
-            if buf.dtype() == DType::F64 {
-                apply_scalar_op_f64(&buf, &op)
-            } else {
-                let kernel = FusedKernel {
-                    ops: vec![op],
-                    out_dtype: DType::F32,
-                };
-                let mut buf = buf;
-                if buf.try_apply_fused_kernel_inplace(&kernel) {
-                    buf
-                } else {
-                    buf.apply_fused_kernel(&kernel)
-                }
-            }
-        }
+        _ => unreachable!("every other compute op is a scalar op, applied above"),
+    }
+}
+
+/// A lone scalar op, routed through the fused kernel so it and a fused one
+/// share the identical f32 arithmetic (the "route through the kernel"
+/// design). f64 preserves precision on its own cold path (`PromoteToFloat`
+/// keeps f64; the kernel is f32-only), mirroring how the promote-family ops
+/// keep f64 unfused.
+fn apply_scalar_op(buf: ViewBuffer, op: ScalarOp) -> ViewBuffer {
+    if buf.dtype() == DType::F64 {
+        return apply_scalar_op_f64(&buf, &op);
+    }
+    let kernel = FusedKernel {
+        ops: vec![op],
+        out_dtype: DType::F32,
+    };
+    let mut buf = buf;
+    if buf.try_apply_fused_kernel_inplace(&kernel) {
+        buf
+    } else {
+        buf.apply_fused_kernel(&kernel)
     }
 }
 

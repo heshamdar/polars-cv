@@ -46,7 +46,7 @@ fn probes() -> Vec<(ViewDto, IdentityRule, bool)> {
         (pad(0), WhenShapePreserved, true),
         (pad(1), WhenShapePreserved, false),
         (
-            ViewDto::View(ViewOp::Crop {
+            ViewDto::View(ViewOp::Slice {
                 start: vec![0, 0, 0],
                 end: vec![4, 4, 3],
             }),
@@ -56,7 +56,7 @@ fn probes() -> Vec<(ViewDto, IdentityRule, bool)> {
         // An offset crop can only keep the input's extent by running past the
         // edge, where the engine clamps it to a smaller window: never a no-op.
         (
-            ViewDto::View(ViewOp::Crop {
+            ViewDto::View(ViewOp::Slice {
                 start: vec![2, 2, 0],
                 end: vec![6, 6, usize::MAX],
             }),
@@ -64,12 +64,14 @@ fn probes() -> Vec<(ViewDto, IdentityRule, bool)> {
             false,
         ),
         (
-            ViewDto::View(ViewOp::Reshape(vec![4, 4, 3])),
+            ViewDto::View(ViewOp::Reshape {
+                shape: vec![4, 4, 3],
+            }),
             WhenShapePreserved,
             true,
         ),
         (
-            ViewDto::View(ViewOp::Reshape(vec![16, 3])),
+            ViewDto::View(ViewOp::Reshape { shape: vec![16, 3] }),
             WhenShapePreserved,
             false,
         ),
@@ -87,13 +89,17 @@ fn probes() -> Vec<(ViewDto, IdentityRule, bool)> {
         ),
         // A cast copies when the target equals the input (decided by dtype).
         (
-            ViewDto::Compute(ComputeOp::Cast(DType::U8)),
+            ViewDto::Compute(ComputeOp::Cast { dtype: DType::U8 }),
             WhenDtypePreserved,
             false,
         ),
         // Representative computing / pixel-moving ops.
-        (ViewDto::Compute(ComputeOp::Scale(2.0)), Never, false),
-        (ViewDto::View(ViewOp::Flip(vec![0])), Never, false),
+        (
+            ViewDto::Compute(ComputeOp::Scale { factor: 2.0 }),
+            Never,
+            false,
+        ),
+        (ViewDto::View(ViewOp::flip(&[0])), Never, false),
     ]
 }
 

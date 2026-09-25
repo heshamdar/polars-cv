@@ -48,7 +48,7 @@ fn test_plan_execution() {
     // Source [1.0, 2.0, 3.0, 4.0]; plan: Scale(2.0) -> Relu.
     let source = ViewBuffer::from_vec(vec![1.0_f32, 2.0, 3.0, 4.0]);
     let ops = vec![
-        ViewDto::Compute(ComputeOp::Scale(2.0)),
+        ViewDto::Compute(ComputeOp::Scale { factor: 2.0 }),
         ViewDto::Compute(ComputeOp::Relu),
     ];
     let result = view_buffer::execute_plan(source, ops);
