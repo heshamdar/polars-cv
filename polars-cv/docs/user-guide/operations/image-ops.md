@@ -111,7 +111,7 @@ Convert between color spaces using `convert_color` or convenience methods.
 
 ```python
 # Generic conversion
-Pipeline().source("image_bytes").convert_color("rgb", "hsv")
+Pipeline().source("image_bytes").convert_color(from_space="rgb", to_space="hsv")
 
 # Convenience methods
 Pipeline().source("image_bytes").to_hsv()
@@ -241,10 +241,10 @@ Apply 2D convolution with an arbitrary kernel.
 ```python
 # Custom 3x3 emboss kernel
 kernel = [-2, -1, 0, -1, 1, 1, 0, 1, 2]
-Pipeline().source("image_bytes").convolve2d(kernel, ksize=3)
+Pipeline().source("image_bytes").convolve2d(kernel=kernel, ksize=3)
 
 # Normalize kernel so output values stay in range
-Pipeline().source("image_bytes").convolve2d(kernel, ksize=3, normalize=True)
+Pipeline().source("image_bytes").convolve2d(kernel=kernel, ksize=3, normalize=True)
 ```
 
 **Border modes:** `"replicate"` (default), `"zero"`, `"reflect"`.

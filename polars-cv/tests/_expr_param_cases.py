@@ -358,13 +358,13 @@ CASES: list[ExprCase] = [
         "convolve2d",
         "kernel",
         # One coefficient varies; the other eight stay literal zeros.
-        lambda v: gray().convolve2d([0.0] * 4 + [v] + [0.0] * 4, 3),
+        lambda v: gray().convolve2d(kernel=[0.0] * 4 + [v] + [0.0] * 4, ksize=3),
         (0.5, 1.0, 2.0),
     ),
     ExprCase(
         "convolve2d",
         "ksize",
-        lambda v: gray().convolve2d([0.0] * 4 + [1.0] + [0.0] * 4, v),
+        lambda v: gray().convolve2d(kernel=[0.0] * 4 + [1.0] + [0.0] * 4, ksize=v),
         (3, 3),
         varies=False,
         note=(
@@ -376,7 +376,7 @@ CASES: list[ExprCase] = [
     ExprCase(
         "convolve2d",
         "normalize",
-        lambda v: gray().convolve2d([1.0] * 9, 3, normalize=v),
+        lambda v: gray().convolve2d(kernel=[1.0] * 9, ksize=3, normalize=v),
         (True, False),
     ),
     ExprCase(
@@ -385,7 +385,9 @@ CASES: list[ExprCase] = [
         # A 5x5 kernel pads two pixels. At a one-pixel pad "reflect" and
         # "replicate" both reach the edge pixel and coincide, which would make
         # the distinctness assertion unsatisfiable rather than informative.
-        lambda v: gray().convolve2d([1.0] * 25, 5, normalize=True, border=v),
+        lambda v: gray().convolve2d(
+            kernel=[1.0] * 25, ksize=5, normalize=True, border=v
+        ),
         ("replicate", "zero", "reflect"),
     ),
     ExprCase(
@@ -600,20 +602,24 @@ CASES: list[ExprCase] = [
         "warp_affine",
         "matrix",
         # Only the x-translation moves; the other five stay literal.
-        lambda v: rgb().warp_affine([1.0, 0.0, v, 0.0, 1.0, 0.0], (12, 12)),
+        lambda v: rgb().warp_affine(
+            matrix=[1.0, 0.0, v, 0.0, 1.0, 0.0], output_size=(12, 12)
+        ),
         (0.0, 2.0, 4.0),
     ),
     ExprCase(
         "warp_affine",
         "output_size",
-        lambda v: rgb().warp_affine([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], (v, 12)),
+        lambda v: rgb().warp_affine(
+            matrix=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0], output_size=(v, 12)
+        ),
         (8, 12, 16),
     ),
     ExprCase(
         "warp_affine",
         "interpolation",
         lambda v: rgb().warp_affine(
-            [1.0, 0.3, 0.0, 0.2, 1.0, 0.0], (12, 12), interpolation=v
+            matrix=[1.0, 0.3, 0.0, 0.2, 1.0, 0.0], output_size=(12, 12), interpolation=v
         ),
         ("nearest", "bilinear"),
     ),
@@ -621,7 +627,7 @@ CASES: list[ExprCase] = [
         "warp_affine",
         "border_value",
         lambda v: rgb().warp_affine(
-            [1.0, 0.0, 4.0, 0.0, 1.0, 4.0], (16, 16), border_value=v
+            matrix=[1.0, 0.0, 4.0, 0.0, 1.0, 4.0], output_size=(16, 16), border_value=v
         ),
         (0.0, 128.0, 255.0),
     ),

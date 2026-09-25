@@ -121,7 +121,7 @@ class TestChannelInferencePlanning:
             Pipeline()
             .source("image_bytes")
             .assert_shape(channels=4)
-            .convert_color("rgb", "hsv")
+            .convert_color(from_space="rgb", to_space="hsv")
         )
         assert planned(pipe).channels is not None
         assert planned(pipe).channels == 4
@@ -132,14 +132,18 @@ class TestChannelInferencePlanning:
             Pipeline()
             .source("image_bytes")
             .assert_shape(channels=4)
-            .convert_color("rgb", "gray")
+            .convert_color(from_space="rgb", to_space="gray")
         )
         assert planned(pipe).channels is not None
         assert planned(pipe).channels == 2
 
     def test_cvt_color_with_unknown_channels(self) -> None:
         """cvt_color with unknown input channels produces unknown output."""
-        pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .convert_color(from_space="rgb", to_space="hsv")
+        )
         assert planned(pipe).channels is None
 
     def test_blur_with_known_rgba(self) -> None:
@@ -154,7 +158,7 @@ class TestChannelInferencePlanning:
             Pipeline()
             .source("image_bytes")
             .assert_shape(channels=3)
-            .convert_color("rgb", "hsv")
+            .convert_color(from_space="rgb", to_space="hsv")
         )
         assert planned(pipe).channels is not None
         assert planned(pipe).channels == 3
@@ -410,7 +414,11 @@ class TestAlphaStripProcessRestore:
         """cvt_color RGB->HSV on RGBA should produce 4 channels."""
         png_bytes = _make_rgba_png(10, 10)
         df = pl.DataFrame({"image": [png_bytes]})
-        pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .convert_color(from_space="rgb", to_space="hsv")
+        )
         result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
         shape = _extract_shape(result)
         assert shape == [10, 10, 4]
@@ -419,7 +427,11 @@ class TestAlphaStripProcessRestore:
         """cvt_color RGB->Gray on RGBA should produce 2 channels (GrayA)."""
         png_bytes = _make_rgba_png(10, 10)
         df = pl.DataFrame({"image": [png_bytes]})
-        pipe = Pipeline().source("image_bytes").convert_color("rgb", "gray")
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .convert_color(from_space="rgb", to_space="gray")
+        )
         result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
         shape = _extract_shape(result)
         assert shape == [10, 10, 2]
@@ -430,7 +442,11 @@ class TestAlphaStripProcessRestore:
 
         png_bytes = _make_rgba_png(4, 4)
         df = pl.DataFrame({"image": [png_bytes]})
-        pipe = Pipeline().source("image_bytes").convert_color("rgb", "bgr")
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .convert_color(from_space="rgb", to_space="bgr")
+        )
         result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
         arr = numpy_from_struct(result["output"][0])
         assert arr.shape[2] == 4

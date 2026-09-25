@@ -1,14 +1,13 @@
 #!/usr/bin/env python
 """(Re)record ``tests/golden/signatures.json``: the public builder call surface.
 
-The typed-op migration (``TYPED_OPS_PLAN.md``) replaces hand-written builder
-methods with generated ones, and must not change how they are *called* until
-its API phase (P8). This snapshot freezes, for every public method of
-``Pipeline`` and ``LazyPipelineExpr``, each parameter's name, kind and default.
-Annotations are deliberately not recorded: generated methods will spell their
-types differently while accepting the same calls.
+This snapshot pins, for every public method of ``Pipeline`` and
+``LazyPipelineExpr``, each parameter's name, kind and default. Annotations are
+deliberately not recorded: they are spelled by the generator and do not change
+which calls are accepted.
 
-Re-record only in the API phase, deliberately, with the diff reviewed.
+Re-record only for a deliberate API change, with the diff reviewed and a
+CHANGELOG entry (the typed-op migration's API phase, P8, was one).
 
 Usage::
 

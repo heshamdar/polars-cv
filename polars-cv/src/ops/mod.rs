@@ -43,8 +43,6 @@ pub use param::{ColumnRef, FieldType, Literal, NodeRef, Param, TypeDesc};
 pub struct FieldDesc {
     pub name: &'static str,
     pub doc: &'static str,
-    /// Positional-or-keyword in Python (otherwise keyword-only).
-    pub positional: bool,
     /// The Python signature default; absent means required (or `None` for an
     /// optional field).
     #[serde(skip_serializing_if = "Option::is_none")]

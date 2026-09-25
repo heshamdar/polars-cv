@@ -458,7 +458,8 @@ arm, both since removed) are documented alongside it.
    `#[serde(deny_unknown_fields)]` — the derive refuses to compile without it)
    whose fields are `Param<T>` (may be per-row) or `Literal<T>` (structural),
    each with a doc comment (the generated `Args:` entry) and, where Python has
-   one, `#[param(default = ...)]` / `#[param(positional)]`; an `OpDef` impl
+   one, `#[param(default = ...)]` (an op's only required field is generated
+   positional-or-keyword, every other keyword-only); an `OpDef` impl
    that opens with an exhaustive destructure and returns the `GraphStep`; and
    one line with a valid sample in `typed_ops!` (`ops/mod.rs`). A parameter
    read only under some branch becomes an enum variant, never an optional

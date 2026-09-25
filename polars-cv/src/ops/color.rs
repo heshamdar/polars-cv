@@ -21,10 +21,8 @@ use crate::params::ParamCtx;
 #[op(python = "convert_color")]
 pub struct CvtColor {
     /// Source color space (rgb, bgr, hsv, lab, ycbcr, gray).
-    #[param(positional)]
     pub from_space: Literal<ColorSpace>,
     /// Target color space (rgb, bgr, hsv, lab, ycbcr, gray).
-    #[param(positional)]
     pub to_space: Literal<ColorSpace>,
 }
 

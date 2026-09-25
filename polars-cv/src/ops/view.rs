@@ -59,7 +59,6 @@ impl OpDef for Crop {
 #[serde(deny_unknown_fields)]
 pub struct Transpose {
     /// New order of axes: a permutation of every input axis.
-    #[param(positional)]
     pub axes: Vec<Literal<u32>>,
 }
 
@@ -78,7 +77,6 @@ impl OpDef for Transpose {
 pub struct Reshape {
     /// New shape. The number of entries fixes the output rank; each entry may
     /// be a Polars expression.
-    #[param(positional)]
     pub shape: Vec<Param<u32>>,
 }
 
@@ -98,7 +96,6 @@ impl OpDef for Reshape {
 #[serde(deny_unknown_fields)]
 pub struct Flip {
     /// Axes to flip.
-    #[param(positional)]
     pub axes: Vec<Literal<u32>>,
 }
 

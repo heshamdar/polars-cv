@@ -25,7 +25,6 @@ macro_rules! binary_ops {
         #[op(visibility = "lazy_only")]
         pub struct $ty {
             /// The expression to combine with, element-wise.
-            #[param(positional)]
             pub other: NodeRef,
         }
 
@@ -173,7 +172,6 @@ binary_ops! {
 #[op(visibility = "lazy_only")]
 pub struct ApplyMask {
     /// The mask's node.
-    #[param(positional)]
     pub mask: NodeRef,
     /// If True, invert the mask (keep exterior, zero interior).
     #[param(default = false)]
@@ -199,7 +197,6 @@ impl OpDef for ApplyMask {
 pub struct ChannelMerge {
     /// The other single-channel operands' nodes, in channel order after this
     /// one.
-    #[param(positional)]
     pub others: Vec<NodeRef>,
 }
 

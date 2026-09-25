@@ -81,6 +81,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **Breaking: one signature rule for every generated builder method.** An op
+  with exactly one required parameter takes it positional-or-keyword; every
+  other parameter is keyword-only. Now positional: `adjust_contrast(factor)`,
+  `adjust_gamma(gamma)`, `channel_select(index)`, `channel_swap(order)`,
+  `simplify(tolerance)`, `label_reduce(contours)`. Now keyword-only (pass by
+  name): `convolve2d(kernel=, ksize=)`, `convert_color(from_space=,
+  to_space=)`, `histogram(bins=, range=, closed=, output=)`,
+  `normalize(method=, mean=, std=, out_dtype=)`, `reduce_max/mean/min(axis=)`,
+  `reduce_std(axis=, ddof=)` and `warp_affine(matrix=, output_size=)` —
+  e.g. `.normalize("minmax")` is now `.normalize(method="minmax")`. The rule is
+  derived by the generator from which fields are required, so the per-field
+  `#[param(positional)]` marker is gone. Names and defaults are unchanged.
 - **Every operation is a typed op.** Each of the 85 ops is one Rust definition
   (`polars-cv/src/ops/`) from which its Python builder method is generated
   (hand-written sugar remains only where a signature needs it: `scale`,

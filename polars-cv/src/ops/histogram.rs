@@ -19,17 +19,16 @@ use crate::params::ParamCtx;
 pub struct Histogram {
     /// Number of bins (default 256), a Polars expression for per-row dynamic
     /// bin count, or an explicit list of bin edges.
-    #[param(positional, default = 256)]
+    #[param(default = 256)]
     pub bins: Bins,
     /// (min, max) tuple. Auto-detected if None.
-    #[param(positional)]
     pub range: Option<[Param<f64>; 2]>,
     /// "left" or "right" interval inclusiveness (default "left").
-    #[param(positional, default = "left")]
+    #[param(default = "left")]
     pub closed: Literal<HistogramClosed>,
     /// "buckets" (list of structs), "counts" (bin counts), "normalized" (sum to
     /// 1.0), "quantized" (pixel indices), "edges" (bin edges).
-    #[param(positional, default = "buckets")]
+    #[param(default = "buckets")]
     pub output: Literal<HistogramOutput>,
 }
 

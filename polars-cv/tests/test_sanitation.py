@@ -306,7 +306,7 @@ _SHAPE_PIPELINES = [
             .source("image_bytes")
             .assert_shape(channels=4)
             .resize(height=6, width=6)
-            .convert_color("rgb", "gray")
+            .convert_color(from_space="rgb", to_space="gray")
         ),
         "RGBA",
     ),
@@ -317,7 +317,7 @@ _SHAPE_PIPELINES = [
             .source("image_bytes")
             .assert_shape(channels=4)
             .resize(height=6, width=6)
-            .convert_color("rgb", "hsv")
+            .convert_color(from_space="rgb", to_space="hsv")
         ),
         "RGBA",
     ),

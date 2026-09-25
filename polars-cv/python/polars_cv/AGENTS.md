@@ -40,7 +40,7 @@ The **user-facing Python layer**. Responsible for:
 ```python
 pipe = Pipeline().source("image_bytes").resize(height=224, width=224).grayscale()
 pipe = Pipeline().source("image_bytes").channel_select(index=0)
-pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
+pipe = Pipeline().source("image_bytes").convert_color(from_space="rgb", to_space="hsv")
 pipe = Pipeline().source("image_bytes").sobel(axis="x")
 pipe = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
 pipe = Pipeline().source(

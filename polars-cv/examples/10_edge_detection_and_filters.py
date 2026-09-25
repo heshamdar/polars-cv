@@ -81,14 +81,22 @@ def demo_convolution() -> None:
     blur_kernel = [1, 1, 1, 1, 1, 1, 1, 1, 1]
 
     emboss = (
-        Pipeline().source("image_bytes").grayscale().convolve2d(emboss_kernel, ksize=3)
+        Pipeline()
+        .source("image_bytes")
+        .grayscale()
+        .convolve2d(kernel=emboss_kernel, ksize=3)
     )
-    edge = Pipeline().source("image_bytes").grayscale().convolve2d(edge_kernel, ksize=3)
+    edge = (
+        Pipeline()
+        .source("image_bytes")
+        .grayscale()
+        .convolve2d(kernel=edge_kernel, ksize=3)
+    )
     blur = (
         Pipeline()
         .source("image_bytes")
         .grayscale()
-        .convolve2d(blur_kernel, ksize=3, normalize=True)
+        .convolve2d(kernel=blur_kernel, ksize=3, normalize=True)
     )
 
     result = df.with_columns(
