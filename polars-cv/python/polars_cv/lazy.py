@@ -51,100 +51,29 @@ _STAT_REDUCERS: "dict[str, str]" = {
 _DEFAULT_STATS: "tuple[str, ...]" = ("mean", "std", "min", "max")
 
 
-def _array_sink_needs_shape(pipeline: Any, alias: str | None = None) -> str:
-    """The message for an ``array`` sink whose shape the planner cannot name.
-
-    Written once and used by both the single-output and the multi-output check,
-    and deliberately naming *what each remedy actually supplies*. The advice it
-    replaces was circular for the case that hits it most: it told the user to
-    call ``.assert_shape()`` or ``.resize()``, and a list/array source — whose
-    shape genuinely is not knowable until execution, and which is therefore the
-    source that lands here — got the same message back after doing so.
-    ``.resize()`` fixes H and W but never the channel count, and
-    ``.assert_shape()`` only reaches the schema now that ``dims=`` pins the rank
-    alongside the sizes.
-    """
-    from polars_cv._types import HINT_DIMS
-
-    state = pipeline._state
-    missing = [dim for dim in HINT_DIMS if state.dim(dim) is None]
-    if state.ndim != 3 and not missing:
-        unknown = "the output rank"
-    else:
-        unknown = ", ".join(missing) if missing else "the output rank"
-    where = f" (alias '{alias}')" if alias else ""
-    return (
-        f"an 'array' sink{where} needs the full output shape at planning time, "
-        f"and this pipeline's is not known: {unknown}. Three ways to supply it:\n"
-        f"  .sink('array', shape=[8, 8, 3])   — always works; the shape belongs "
-        f"to the sink\n"
-        f"  .assert_shape(dims=[8, 8, 3])     — when you know it and the source "
-        f"does not (a list/array column's shape is only settled during "
-        f"execution)\n"
-        f"  .resize(height=8, width=8)        — supplies height and width only"
-    )
-
-
-def _require_concrete_sink_dtype(
-    pipeline: Any, fmt: str, alias: str | None = None
+def _check_sink(
+    fmt: str, kwargs: "dict[str, Any]", pipeline: Any, alias: str | None = None
 ) -> None:
-    """Enforce that a typed ``list``/``array`` sink knows its element dtype.
+    """Check one output's sink against its Rust definition and the plan.
 
-    A Polars ``List``/``Array`` column needs a concrete inner dtype at planning
-    time. For image/blob sources the decoded dtype is only known at runtime, so a
-    plan-time guess (it would silently fall back to ``u8``) can diverge from what
-    execution produces (e.g. a 16-bit image). Rather than guess, require the user
-    to supply the dtype.
-
-    A ``list``/``array`` *source* is exempt: its element dtype is carried in the
-    input column's schema and resolved at planning time (not by sampling rows).
-    Binary/blob sinks and the numpy/torch struct sinks never need a static
-    element dtype, so they are not checked here.
+    ``plan_sink`` validates the format and its keywords (a keyword the format
+    does not read, a misspelled one, a ``dtype`` other than half precision) and
+    then refuses a sink the output's planned state cannot give a Polars
+    schema: a typed ``list``/``array`` element with no known dtype, an
+    ``array`` with no shape, a ``list`` with no rank — unless the source
+    resolves them from the input column. All of it raises here, while the
+    pipeline is built, rather than at ``collect()``.
     """
-    from polars_cv._types import (
-        SINKS_WITH_TYPED_ELEMENTS,
-        SOURCES_RESOLVED_FROM_COLUMN,
+    from polars_cv._lib import plan_sink
+    from polars_cv._types import planning_slots
+
+    source = pipeline._source
+    plan_sink(
+        json.dumps({"format": fmt, **kwargs}, default=list),
+        pipeline._state,
+        None if source is None else json.dumps(source.to_dict(planning_slots)),
+        alias,
     )
-
-    if fmt not in SINKS_WITH_TYPED_ELEMENTS:
-        return
-    if pipeline._state.dtype != "auto":
-        return
-
-    # These sources resolve their leaf dtype from the Polars column at
-    # plan-time-with-input (Rust `resolved_output_specs`). "auto" may resolve to
-    # a List/Array column the same way, so defer to that runtime resolution — a
-    # Binary/image column under "auto" still surfaces a clear error there
-    # (`list_array_inner_dtype`) rather than here.
-    if (
-        pipeline._source is not None
-        and pipeline._source.format in SOURCES_RESOLVED_FROM_COLUMN
-    ):
-        return
-
-    where = f" (alias '{alias}')" if alias else ""
-    msg = (
-        f"Element dtype is unknown for the '{fmt}' sink{where}: the decoded dtype "
-        "of an image/blob source is only known at runtime, so a typed Polars "
-        f"'{fmt}' output cannot be planned. Supply an explicit dtype — e.g. "
-        'source(..., dtype="u16") or a .cast("u16") before the sink.'
-    )
-    raise ValueError(msg)
-
-
-def _validate_sink_params(fmt: str, kwargs: "dict[str, Any]") -> None:
-    """Check one sink — its format and keywords — against its Rust definition.
-
-    Each sink format is a typed struct carrying exactly the fields its encoder
-    reads (``src/formats/sink.rs``). The graph deserializes the same struct, so
-    this is that one validator run early: an unknown format, a keyword the
-    format does not read (naming where it does apply), a misspelled keyword and
-    a ``dtype`` other than half precision all raise here, while the pipeline is
-    being built, rather than at ``collect()``.
-    """
-    from polars_cv._lib import sink_check
-
-    sink_check(json.dumps({"format": fmt, **kwargs}, default=list))
 
 
 class LazyPipelineExpr:
@@ -347,7 +276,6 @@ class LazyPipelineExpr:
             A Polars expression (or PipelineGraph if return_expr=False).
         """
         from polars_cv._graph import PipelineGraph
-        from polars_cv._types import SOURCES_RESOLVED_FROM_COLUMN
 
         # Validate no cycles
         self._validate_no_cycles()
@@ -367,66 +295,18 @@ class LazyPipelineExpr:
             )
 
         if isinstance(format, dict):
-            # Multi-output mode
-            # Validate array sinks in multi-output
-
+            # Multi-output: the shared kwargs apply to every alias's sink.
             for alias, fmt_str in format.items():
-                # A sink dtype (f16) in multi-output applies to the shared kwargs;
-                # validate it against each alias's format.
-                _validate_sink_params(fmt_str, kwargs)
-                # Typed list/array sinks must know their element dtype at plan time.
                 node = self._find_node_by_alias(alias, all_nodes)
-                if node is not None:
-                    _require_concrete_sink_dtype(node._pipeline, fmt_str, alias)
-
-                # Validate list sink ndim — allow None when Rust can resolve
-                # it from the Polars column type (list/array sources).
-                if fmt_str == "list":
-                    node = self._find_node_by_alias(alias, all_nodes)
-                    if node and node._pipeline._state.ndim is None:
-                        if (
-                            node._pipeline._source is None
-                            or node._pipeline._source.format
-                            not in SOURCES_RESOLVED_FROM_COLUMN
-                        ):
-                            msg = "Number of dimensions (ndim) is unknown for 'list' sink. This should not happen for standard sources."
-                            raise ValueError(msg)
-
-                if fmt_str == "array":
-                    # For multi-output, we don't have a simple way to pass per-alias shape yet
-                    # but we can check if the node has deterministic shape
-                    node = self._find_node_by_alias(alias, all_nodes)
-                    if node and not node._pipeline._state.has_all_dims():
-                        raise ValueError(_array_sink_needs_shape(node._pipeline, alias))
+                _check_sink(
+                    fmt_str,
+                    kwargs,
+                    (node or self)._pipeline,
+                    alias,
+                )
             graph.set_multi_output(format, **kwargs)
         else:
-            # Single output mode
-            _validate_sink_params(format, kwargs)
-            # Typed list/array sinks must know their element dtype at plan time.
-            _require_concrete_sink_dtype(self._pipeline, format)
-
-            # Validate array sink
-
-            if format == "array" and "shape" not in kwargs:
-                if not self._pipeline._state.has_all_dims():
-                    raise ValueError(_array_sink_needs_shape(self._pipeline))
-
-            # Validate list sink ndim — allow None when Rust can resolve
-            # it from the Polars column type (list/array sources).
-            if format == "list":
-                if self._pipeline._state.ndim is None:
-                    # LIST/ARRAY sources resolve ndim from the Polars column at
-                    # plan-time-with-input; "auto" defers to that same runtime
-                    # resolution (a Binary/image column then errors on its
-                    # unresolved element dtype rather than on ndim).
-                    if (
-                        self._pipeline._source is None
-                        or self._pipeline._source.format
-                        not in SOURCES_RESOLVED_FROM_COLUMN
-                    ):
-                        msg = "Number of dimensions (ndim) is unknown for 'list' sink. This should not happen for standard sources."
-                        raise ValueError(msg)
-
+            _check_sink(format, kwargs, self._pipeline)
             graph.set_output(self._node_id, format, **kwargs)
 
         # The explicit optimization phase: rewrite the logical graph into its

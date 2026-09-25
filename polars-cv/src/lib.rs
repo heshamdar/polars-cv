@@ -29,7 +29,7 @@ use pyo3::prelude::*;
 use pyo3_polars::derive::polars_expr;
 
 use crate::passes::{node_pass, pass_catalog};
-use crate::plan::{plan_assert, plan_source, plan_step};
+use crate::plan::{plan_assert, plan_sink, plan_source, plan_step};
 use serde::Deserialize;
 
 /// Python module entry point for maturin.
@@ -55,7 +55,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(op_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(io_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(enum_catalog, m)?)?;
-    m.add_function(wrap_pyfunction!(sink_check, m)?)?;
+    m.add_function(wrap_pyfunction!(plan_sink, m)?)?;
     m.add_function(wrap_pyfunction!(point_schema, m)?)?;
     m.add_function(wrap_pyfunction!(contour_schema, m)?)?;
     m.add_function(wrap_pyfunction!(bbox_schema, m)?)?;
@@ -398,18 +398,6 @@ fn io_catalog() -> String {
 #[pyfunction]
 fn enum_catalog() -> String {
     crate::naming::enum_catalog_json()
-}
-
-/// Validate one serialized sink against its typed format, so `.sink()`
-/// refuses it when it is written rather than at `collect()`. (A source is
-/// validated by `plan_source`, which also plans its state.)
-///
-/// The same deserializer the graph uses; there is no second validator.
-#[pyfunction]
-fn sink_check(spec_json: &str) -> PyResult<()> {
-    serde_json::from_str::<crate::formats::sink::Sink>(spec_json)
-        .map(|_| ())
-        .map_err(|e| py_value_error(e.to_string()))
 }
 
 // ============================================================================

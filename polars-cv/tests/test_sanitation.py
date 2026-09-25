@@ -547,7 +547,7 @@ _REQUIRED_LIB_HOOKS = (
     # typed format, so the builder refuses an inapplicable keyword while it is
     # written.
     "plan_source",
-    "sink_check",
+    "plan_sink",
     # Apply a shape declaration to a planned state (the checks included).
     "plan_assert",
 )

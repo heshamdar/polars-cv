@@ -277,6 +277,12 @@ REMOVED: tuple[Removed, ...] = (
     Removed("_require_dim_is_assertable", "P7e: plan::assert_shape"),
     Removed("_shape_ref_dims", "P7e: Pipeline._canvas_of"),
     Removed("_is_known", "P7e: PlanState.dim"),
+    Removed("sink_check", "P7e: plan_sink validates the sink and plans it"),
+    Removed("SOURCES_RESOLVED_FROM_COLUMN", "P7e: Source::resolves_from_column"),
+    Removed("SINKS_WITH_TYPED_ELEMENTS", "P7e: Sink::has_typed_elements"),
+    Removed("_require_concrete_sink_dtype", "P7e: plan::check_sink"),
+    Removed("_array_sink_needs_shape", "P7e: plan::check_sink"),
+    Removed("_validate_sink_params", "P7e: lazy._check_sink -> plan_sink"),
 )
 
 
