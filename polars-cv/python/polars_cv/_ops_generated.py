@@ -1928,3 +1928,198 @@ class _OpsMixin:
                 "border_value": border_value,
             },
         )
+
+
+class _LazyOpsMixin:
+    """The generated binary-op methods ``LazyPipelineExpr`` inherits."""
+
+    if TYPE_CHECKING:
+
+        def _binary_op(self, op: str, other: LazyPipelineExpr) -> LazyPipelineExpr: ...
+
+    def add(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Element-wise addition with another array.
+
+        For u8/u16: saturating addition (clamps to the maximum, e.g. 255 for
+        u8). For f32/f64: standard addition.
+
+        Args:
+            other: The expression to combine with, element-wise.
+
+        Example:
+            ```python
+            >>> a = pl.col("image1").cv.pipe(pipe1)
+            >>> b = pl.col("image2").cv.pipe(pipe2)
+            >>> result = a.add(b).sink("numpy")
+            ```
+        """
+        return self._binary_op("add", other)
+
+    def bitwise_and(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Element-wise bitwise AND: for binary masks (0/255), the intersection.
+
+        Args:
+            other: The expression to combine with, element-wise.
+
+        Example:
+            ```python
+            >>> a = pl.col("image1").cv.pipe(pipe1)
+            >>> b = pl.col("image2").cv.pipe(pipe2)
+            >>> result = a.bitwise_and(b).sink("numpy")
+            ```
+        """
+        return self._binary_op("bitwise_and", other)
+
+    def bitwise_or(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Element-wise bitwise OR: for binary masks (0/255), the union.
+
+        Args:
+            other: The expression to combine with, element-wise.
+
+        Example:
+            ```python
+            >>> a = pl.col("image1").cv.pipe(pipe1)
+            >>> b = pl.col("image2").cv.pipe(pipe2)
+            >>> result = a.bitwise_or(b).sink("numpy")
+            ```
+        """
+        return self._binary_op("bitwise_or", other)
+
+    def bitwise_xor(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Element-wise bitwise XOR: for binary masks (0/255), the symmetric
+        difference.
+
+        Args:
+            other: The expression to combine with, element-wise.
+
+        Example:
+            ```python
+            >>> a = pl.col("image1").cv.pipe(pipe1)
+            >>> b = pl.col("image2").cv.pipe(pipe2)
+            >>> result = a.bitwise_xor(b).sink("numpy")
+            ```
+        """
+        return self._binary_op("bitwise_xor", other)
+
+    def blend(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Normalized blend (element-wise), for image blending/compositing.
+
+        For u8: (a/255) * (b/255) * 255. For u16: (a/65535) * (b/65535) *
+        65535. For f32/f64: standard multiplication.
+
+        Args:
+            other: The expression to combine with, element-wise.
+
+        Example:
+            ```python
+            >>> a = pl.col("image1").cv.pipe(pipe1)
+            >>> b = pl.col("image2").cv.pipe(pipe2)
+            >>> result = a.blend(b).sink("numpy")
+            ```
+        """
+        return self._binary_op("blend", other)
+
+    def divide(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Element-wise division.
+
+        For u8/u16: integer division, with division by zero yielding 0. For
+        f32/f64: standard division.
+
+        Args:
+            other: The expression to combine with, element-wise.
+
+        Example:
+            ```python
+            >>> a = pl.col("image1").cv.pipe(pipe1)
+            >>> b = pl.col("image2").cv.pipe(pipe2)
+            >>> result = a.divide(b).sink("numpy")
+            ```
+        """
+        return self._binary_op("divide", other)
+
+    def maximum(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Element-wise maximum of two arrays, for compositing, clamping and
+        non-linear image processing.
+
+        Args:
+            other: The expression to combine with, element-wise.
+
+        Example:
+            ```python
+            >>> a = pl.col("image1").cv.pipe(pipe1)
+            >>> b = pl.col("image2").cv.pipe(pipe2)
+            >>> result = a.maximum(b).sink("numpy")
+            ```
+        """
+        return self._binary_op("maximum", other)
+
+    def minimum(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Element-wise minimum of two arrays, for compositing, clamping and
+        non-linear image processing.
+
+        Args:
+            other: The expression to combine with, element-wise.
+
+        Example:
+            ```python
+            >>> a = pl.col("image1").cv.pipe(pipe1)
+            >>> b = pl.col("image2").cv.pipe(pipe2)
+            >>> result = a.minimum(b).sink("numpy")
+            ```
+        """
+        return self._binary_op("minimum", other)
+
+    def multiply(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Element-wise multiplication.
+
+        For u8/u16: saturating multiplication (clamps to the maximum). For
+        f32/f64: standard multiplication. For normalized image blending
+        (values treated as [0, 1]), use ``blend`` instead.
+
+        Args:
+            other: The expression to combine with, element-wise.
+
+        Example:
+            ```python
+            >>> a = pl.col("image1").cv.pipe(pipe1)
+            >>> b = pl.col("image2").cv.pipe(pipe2)
+            >>> result = a.multiply(b).sink("numpy")
+            ```
+        """
+        return self._binary_op("multiply", other)
+
+    def ratio(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Scaled ratio: a/b scaled to the full range of the dtype.
+
+        For u8: (a/b) * 255, clamped to [0, 255]. For u16: (a/b) * 65535,
+        clamped to [0, 65535]. For f32/f64: standard division.
+
+        Args:
+            other: The expression to combine with, element-wise.
+
+        Example:
+            ```python
+            >>> a = pl.col("image1").cv.pipe(pipe1)
+            >>> b = pl.col("image2").cv.pipe(pipe2)
+            >>> result = a.ratio(b).sink("numpy")
+            ```
+        """
+        return self._binary_op("ratio", other)
+
+    def subtract(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Element-wise subtraction.
+
+        For u8/u16: saturating subtraction (clamps to 0). For f32/f64:
+        standard subtraction.
+
+        Args:
+            other: The expression to combine with, element-wise.
+
+        Example:
+            ```python
+            >>> a = pl.col("image1").cv.pipe(pipe1)
+            >>> b = pl.col("image2").cv.pipe(pipe2)
+            >>> result = a.subtract(b).sink("numpy")
+            ```
+        """
+        return self._binary_op("subtract", other)

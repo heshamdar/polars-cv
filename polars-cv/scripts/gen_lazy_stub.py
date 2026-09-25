@@ -179,7 +179,12 @@ def _instance_attrs() -> str:
 
 def generate_stub() -> str:
     body: list[str] = [_instance_attrs()]
-    for name, member in vars(LazyPipelineExpr).items():
+    # The class's own members, then the generated binary ops it inherits: the
+    # stub declares a flat class, so an inherited method must be restated here.
+    members = {**vars(LazyPipelineExpr)}
+    for base in LazyPipelineExpr.__mro__[1:-1]:
+        members.update({k: v for k, v in vars(base).items() if k not in members})
+    for name, member in members.items():
         if name.startswith("__") and name not in ("__init__", "__repr__", "__str__"):
             continue
         rendered = _render_member(name, member)

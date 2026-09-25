@@ -22,7 +22,11 @@ compiled extension, so it runs without a build. It writes:
   ``lazy_only`` op (one combining this expression with other graph nodes) has
   no ``Pipeline`` method: its builder is ``LazyPipelineExpr``'s, which owns the
   graph wiring, and ``test_every_lazy_only_op_is_a_lazy_method_with_its_fields``
-  pins that method to the op's fields.
+  pins that method to the op's fields;
+- ``_LazyOpsMixin``: that lazy method, for each ``lazy_only`` op whose one
+  field is the other operand's node (the element-wise binary ops), all built by
+  ``LazyPipelineExpr._binary_op``. ``LazyPipelineExpr`` inherits it; the
+  multi-operand ``lazy_only`` ops stay hand-written there.
 
 Usage::
 
@@ -189,6 +193,29 @@ def method(op: dict[str, Any]) -> str:
     )
 
 
+def is_binary(op: dict[str, Any]) -> bool:
+    """A ``lazy_only`` op whose only field is the other operand's node."""
+    fields = op["fields"]
+    return (
+        op["visibility"] == "lazy_only"
+        and len(fields) == 1
+        and fields[0]["positional"]
+        and fields[0]["type"]["kind"] == "node"
+    )
+
+
+def lazy_method(op: dict[str, Any]) -> str:
+    """Render one binary op's ``LazyPipelineExpr`` method."""
+    (field,) = op["fields"]
+    name = field["name"]
+    doc = _indent(docstring(op), "        ").lstrip()
+    return (
+        f"    def {op['python']}(self, {name}: LazyPipelineExpr) -> LazyPipelineExpr:\n"
+        f'        """{doc}\n        """\n'
+        f'        return self._binary_op("{op["name"]}", {name})\n'
+    )
+
+
 def _imports(methods: str) -> str:
     """The import block: only what the rendered methods name (ruff F401)."""
     aliases = sorted(
@@ -256,8 +283,9 @@ def render(
         op["name"]: {f["name"]: f["type"] for f in op["fields"]} for op in catalog
     }
     methods = "\n".join(method(op) for op in catalog if op["visibility"] != "lazy_only")
+    lazy_methods = "\n".join(lazy_method(op) for op in catalog if is_binary(op))
     text = (
-        _HEADER.format(imports=_imports(methods))
+        _HEADER.format(imports=_imports(methods + lazy_methods))
         + "\n\n"
         + "".join(
             named_enum(e) + "\n\n" for e in enums if e["name"] not in NOT_GENERATED
@@ -280,6 +308,11 @@ def render(
         + "    if TYPE_CHECKING:\n\n"
         + "        def _append_typed(self, op_name: str, values: dict[str, Any]) -> Pipeline: ...\n\n"
         + methods
+        + "\n\nclass _LazyOpsMixin:\n"
+        + '    """The generated binary-op methods ``LazyPipelineExpr`` inherits."""\n\n'
+        + "    if TYPE_CHECKING:\n\n"
+        + "        def _binary_op(self, op: str, other: LazyPipelineExpr) -> LazyPipelineExpr: ...\n\n"
+        + lazy_methods
     )
     # JSON's literals are Python's apart from these three.
     text = text.replace(": true", ": True").replace(": false", ": False")
