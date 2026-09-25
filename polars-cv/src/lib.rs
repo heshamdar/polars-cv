@@ -29,7 +29,7 @@ use pyo3::prelude::*;
 use pyo3_polars::derive::polars_expr;
 
 use crate::passes::{node_pass, pass_catalog};
-use crate::plan::{plan_source, plan_step};
+use crate::plan::{plan_assert, plan_source, plan_step};
 use serde::Deserialize;
 
 /// Python module entry point for maturin.
@@ -49,6 +49,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__source_hash__", env!("POLARS_CV_SOURCE_HASH"))?;
     m.add_function(wrap_pyfunction!(plan_step, m)?)?;
     m.add_function(wrap_pyfunction!(plan_source, m)?)?;
+    m.add_function(wrap_pyfunction!(plan_assert, m)?)?;
     m.add_function(wrap_pyfunction!(node_pass, m)?)?;
     m.add_function(wrap_pyfunction!(pass_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(op_catalog, m)?)?;

@@ -58,7 +58,7 @@ class GraphNode:
     @property
     def expected_ndim(self) -> int | None:
         """Get the expected number of dimensions of this node's pipeline."""
-        return self.pipeline._expected_ndim
+        return self.pipeline._state.ndim
 
     @property
     def expected_shape(self) -> list[int] | None:
@@ -69,19 +69,11 @@ class GraphNode:
         publishing ``[H, W, C]`` for a rank-2 output is exactly how
         ``channel_select`` used to declare a schema execution could not produce.
         """
-        if self.pipeline._expected_ndim != 3:
+        state = self.pipeline._state
+        if state.ndim != 3:
             return None
-        hints = self.pipeline._shape_hints
-        if (
-            hints.height
-            and not hints.height.is_expr
-            and hints.width
-            and not hints.width.is_expr
-        ):
-            if not hints.channels or hints.channels.is_expr:
-                return None
-            return [hints.height.value, hints.width.value, hints.channels.value]
-        return None
+        known = [size for size in state.dims if size is not None]
+        return known if len(known) == 3 else None
 
     @property
     def shape_asserted(self) -> bool:
@@ -93,7 +85,7 @@ class GraphNode:
         is a claim about their data, and blaming "the Rust implementation" for
         it — which is what happened — sends them to the wrong file.
         """
-        return bool(self.pipeline._asserted_dims)
+        return any(self.pipeline._state.asserted)
 
 
 @dataclass

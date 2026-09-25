@@ -33,7 +33,7 @@ from PIL import Image
 import polars_cv
 from polars_cv import Pipeline
 from polars_cv._graph import GraphNode
-from polars_cv._types import HINT_DIMS, Domain
+from polars_cv._types import Domain
 
 from ._discovery import package_modules
 from ._op_cases import BUFFER, CONTOUR, EXTRA_CASES, OP_CASES, base_pipeline
@@ -199,18 +199,13 @@ def test_every_pipeline_field_survives_a_copy() -> None:
     # A value distinguishable from every `__init__` default, per field type.
     sentinels = {
         "_source": object(),
-        "_current_domain": "contour",
-        "_output_dtype": "f64",
-        "_expected_ndim": 7,
         "_on_error": "null",
         "_on_null_param": "null",
-        "_shape_declared": True,
         "_ops": ["sentinel-op"],
         "_expr_refs": ["sentinel-expr"],
-        "_asserted_dims": {"height"},
         "_entering": ["sentinel-position"],
         "_shape_refs": ["sentinel-ref"],
-        "_shape_hints": None,
+        "_state": object(),
         "_assertions": {2: None},
     }
     assert set(sentinels) == set(_STATE_COPIERS), (
@@ -276,7 +271,7 @@ def test_a_slice_replays_the_states_it_keeps() -> None:
     for start, end in [(0, 3), (1, 3), (1, 2), (0, 1)]:
         sub = pipe._create_sub_pipeline(start, end)
         assert sub._entering == pipe._entering[start:end], (start, end)
-        assert sub._state() == pipe._state_at(end), (start, end)
+        assert sub._state == pipe._state_at(end), (start, end)
 
 
 def test_push_op_applies_the_whole_plan_step_unconditionally() -> None:
@@ -284,8 +279,8 @@ def test_push_op_applies_the_whole_plan_step_unconditionally() -> None:
 
     Guards the body of the sole mutator itself: it is not enough that callers
     route through it if it were to become selective. The effect is one Rust
-    call (``_plan_step``: domain check, schema, H/W, channels, rank clipping)
-    and its adoption (``_apply_step``); neither may sit inside a compound
+    call (``plan_step``: domain check, schema, H/W, channels, rank clipping)
+    whose result becomes ``self._state``; neither may sit inside a compound
     statement, and the only parameter besides the op is the binary operand's
     dtype, which Rust itself requires for exactly the binary ops.
     """
@@ -294,12 +289,21 @@ def test_push_op_applies_the_whole_plan_step_unconditionally() -> None:
         for m in _pipeline_ast().body
         if isinstance(m, ast.FunctionDef) and m.name == "_push_op"
     )
-    called = {
-        sub.func.attr
-        for sub in ast.walk(fn)
-        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
-    }
-    assert {"_plan_step", "_apply_step"} <= called, called
+
+    def effects(tree: ast.AST) -> set[str]:
+        """The Rust call made and the state assigned, anywhere under *tree*."""
+        found = set()
+        for sub in ast.walk(tree):
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
+                if sub.func.id == "plan_step":
+                    found.add("plan_step")
+            if isinstance(sub, ast.Assign) and any(
+                isinstance(t, ast.Attribute) and t.attr == "_state" for t in sub.targets
+            ):
+                found.add("_state =")
+        return found
+
+    assert effects(fn) == {"plan_step", "_state ="}, effects(fn)
 
     args = [a.arg for a in fn.args.kwonlyargs] + [a.arg for a in fn.args.args]
     flags = [a for a in args if a not in {"self", "spec"}]
@@ -309,14 +313,10 @@ def test_push_op_applies_the_whole_plan_step_unconditionally() -> None:
     )
 
     compound = (ast.If, ast.Try, ast.For, ast.While, ast.With)
-    guarded = {
-        sub.func.attr
-        for branch in ast.walk(fn)
-        if isinstance(branch, compound)
-        for sub in ast.walk(branch)
-        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
-    }
-    assert not guarded & {"_plan_step", "_apply_step"}, (
+    guarded = set().union(
+        *(effects(branch) for branch in ast.walk(fn) if isinstance(branch, compound))
+    )
+    assert not guarded, (
         "the plan step must run for every appended op, not conditionally"
     )
 
@@ -374,8 +374,8 @@ def test_domain_vocabulary_declared_once() -> None:
 
     # The domain a pipeline reports must be a member of the one vocabulary...
     pipe = Pipeline().source("blob", dtype="u8")
-    assert pipe._current_domain in {d.value for d in Domain}, (
-        f"Pipeline reports domain {pipe._current_domain!r}, which is not in "
+    assert pipe._state.domain in {d.value for d in Domain}, (
+        f"Pipeline reports domain {pipe._state.domain!r}, which is not in "
         f"_types.Domain — the vocabulary this test claims is the only one."
     )
     # ...and the check that reads it must still reject a mismatch. Without
@@ -434,12 +434,8 @@ _OP_CASES = OP_CASES
 
 
 def _state(pipe: Pipeline) -> tuple:
-    hints = pipe._shape_hints
-    dims = tuple(
-        None if (p := hints.get(dim)) is None or p.is_expr else p.value
-        for dim in HINT_DIMS
-    )
-    return (dims, pipe._expected_ndim, pipe._output_dtype, pipe._current_domain)
+    s = pipe._state
+    return (s.dims, s.ndim, s.dtype, s.domain)
 
 
 def test_op_case_table_is_complete() -> None:
@@ -487,7 +483,7 @@ def test_eager_and_lazy_agree_on_shape_state(op) -> None:
     """``.pipe(p.op())`` and ``.pipe(p).op()`` must plan identically.
 
     The lazy continuation re-applies each op over the upstream state. It used
-    to replay only the shape hints, and to assign ``_expected_ndim`` *after*
+    to replay only the shape hints, and to assign the rank *after*
     that loop — so every replayed op saw ``ndim = None`` and the H/W half of
     the replay returned at its opening guard. Six of ten sampled ops disagreed
     with their eager spelling, ``pad`` and ``rotate`` among them.
@@ -516,24 +512,23 @@ def test_assert_shape_survives_a_continuation() -> None:
     lazy = (
         pl.col("img").cv.pipe(base).resize(height=6, width=5).assert_shape(channels=3)
     )
-    hints = lazy._pipeline._shape_hints
-    assert (hints.height.value, hints.width.value, hints.channels.value) == (6, 5, 3)
+    assert lazy._pipeline._state.dims == (6, 5, 3)
 
     # Asserted before an op that changes the same dimension: the op wins.
     # Checked on both spellings — the positional replay is what makes the lazy
     # side work, and an end-of-chain overlay would pass the eager case alone.
     base_u8 = Pipeline().source("image_bytes", dtype="u8")
     eager = base_u8.assert_shape(channels=3).grayscale()
-    assert eager._shape_hints.channels.value == 1
+    assert eager._state.dims[2] == 1
 
     lazy = pl.col("img").cv.pipe(base_u8).assert_shape(channels=3).grayscale()._pipeline
-    assert lazy._shape_hints.channels.value == 1
+    assert lazy._state.dims[2] == 1
 
     # And an assertion mid-chain in a single continuation pipeline.
     mid = (
         pl.col("img").cv.pipe(Pipeline().assert_shape(channels=3).grayscale())._pipeline
     )
-    assert mid._shape_hints.channels.value == 1
+    assert mid._state.dims[2] == 1
 
 
 def test_a_contradicting_assertion_is_rejected_where_it_is_written() -> None:
@@ -565,12 +560,12 @@ def test_a_contradicting_assertion_is_rejected_where_it_is_written() -> None:
 def test_an_assertion_may_not_name_a_dimension_the_rank_lacks() -> None:
     """The hints are positional, so the H/W/C names only fit a rank-3 buffer."""
     flat = Pipeline().source("raw", dtype="u8")  # rank 1
-    assert flat._expected_ndim == 1
+    assert flat._state.ndim == 1
     with pytest.raises(ValueError, match="does not have"):
         flat.assert_shape(channels=3)
     # `dims=` is the spelling that does fit, and it pins the rank with it.
     lifted = flat.assert_shape(dims=[64])
-    assert lifted._expected_ndim == 1
+    assert lifted._state.ndim == 1
 
 
 def test_dims_pins_the_rank_a_list_source_could_not_supply() -> None:
@@ -581,7 +576,7 @@ def test_dims_pins_the_rank_a_list_source_could_not_supply() -> None:
     nothing, and the sink's advice to "use .assert_shape()" was circular.
     """
     pipe = Pipeline().source("list", dtype="f32").assert_shape(dims=[8, 8, 3])
-    assert pipe._expected_ndim == 3
+    assert pipe._state.ndim == 3
     node = GraphNode(node_id="n", pipeline=pipe, column=None)
     assert node.expected_shape == [8, 8, 3]
     assert node.shape_asserted is True

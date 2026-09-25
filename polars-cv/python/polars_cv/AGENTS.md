@@ -109,10 +109,13 @@ ordering.
 
 Every operation's schema effect — output domain, dtype, rank (ndim), H/W and
 channel count — comes from the op's Rust contract, applied in Rust by one call
-per appended op: `_lib.plan_step(op_json, domain, dtype, ndim, dims,
-other_dtype=None)` (`src/plan.rs`). `Pipeline._push_op` makes it through
-`_plan_step` and adopts the result with `_apply_step`, recording the state
-entering each op (`_entering`, a `PlanState` per op). A slice, reorder or
+per appended op: `_lib.plan_step(op_json, state, other_dtype=None)`
+(`src/plan.rs`). The pipeline's whole tracked state is one `PlanState`
+(`Pipeline._state`: domain, dtype, rank, known sizes, which of them the user
+asserted, whether a declaration reached the lineage), computed only in Rust —
+`plan_source` for a source, `plan_step` per op, `plan_assert` for a shape
+declaration — and never edited in Python. `_push_op` records the state entering
+each op (`_entering`). A slice, reorder or
 deletion of the ops goes through `_replay`, which appends the kept ops again
 from a recorded state, so no per-position fact is ever re-keyed by hand.
 Python **reads** these rules; it
@@ -132,7 +135,7 @@ execution-time schema.** If an op's dtype cannot be determined at planning time
 
 An `auto` **source** (the `source()` default) is treated like `blob` here: its
 decode path is chosen from the column dtype in Rust at execution time, so
-`_expected_ndim` is `None` and the dtype stays `auto` unless the caller asserts
+the rank is `None` and the dtype stays `auto` unless the caller asserts
 one. The `list`/`array` sink guards in `lazy.py` let `auto` through alongside
 `list`/`array` because Rust's `resolved_output_specs` resolves a `List`/`Array`
 column's leaf dtype and rank when the plan sees the input; a Binary/image column
@@ -142,7 +145,7 @@ under `auto` then surfaces the error there instead.
 
 Alpha channels are **always preserved** during image decoding. Image sources
 (`image_bytes`, `file_path`) produce unknown channel count at planning time
-(`_shape_hints.channels = None`). Users can assert known channels via
+(`PlanState.dims[2]` is `None`). Users can assert known channels via
 `.assert_shape(channels=4)`.
 
 Each op's alpha/channel behaviour is described by its view-buffer `channel_rule`
@@ -281,8 +284,8 @@ the same mixin unless `.cv` genuinely honours it.
    `tests/test_append_contract.py`. That guard exists because the previous
    convention — each builder calling the update methods by hand — let 41 of 60
    builders skip the shape-hint half and publish a planned schema execution
-   could not produce. Never assign `_current_domain` / `_output_dtype` /
-   `_shape_hints` by hand either; they follow from the op's Rust contract.
+   could not produce. Never build or edit a `PlanState` by hand either; it
+   follows from the op's Rust contract (`plan_step`).
 
    Validation that must happen before the op is built (a kernel-size check, an
    enum parse) goes in the method body before the `return`; work that must

@@ -20,9 +20,8 @@ __source_hash__: str
 def node_pass(
     pass_name: str,
     ops: list[str],
-    states: list[tuple[str, int | None, list[int | None]]],
+    states: list[Any],
     assertions: list[int],
-    shape_declared: bool,
 ) -> list[int] | None:
     """Run a node-scope logical pass; the node's new op order, or ``None``."""
 
@@ -30,15 +29,14 @@ def pass_catalog() -> str:
     """Return the optimisation-pass catalogue as JSON (see ``tests/golden/pass_catalog.json``)."""
 
 def plan_step(
-    op_json: str,
-    domain: str,
-    dtype: str,
-    ndim: int | None,
-    dims: list[int | None],
-    other_dtype: str | None = None,
+    op_json: str, state: Any, other_dtype: str | None = None
 ) -> dict[str, Any]:
-    """One op's plan-time effect: ``{"domain", "dtype", "ndim", "dims"}``, where
-    ``dims`` lists ``(axis, size)`` for the hints the op replaces."""
+    """The planned state (a ``PlanState``'s fields) after appending ``op_json``."""
+
+def plan_assert(
+    state: Any, assertion_json: str, after_op: str | None = None
+) -> dict[str, Any]:
+    """The planned state after a shape declaration; ``ValueError`` if it contradicts."""
 
 def rotation_matrix_2d(
     angle_deg: float,
@@ -61,5 +59,5 @@ def sink_check(spec_json: str) -> None:
     """Validate one serialized sink against its typed format; raise ``ValueError``."""
 
 def plan_source(source_json: str) -> dict[str, Any]:
-    """Validate a serialized source and return its planned state:
-    ``{"domain", "dtype", "ndim", "dims"}``."""
+    """Validate a serialized source and return its planned state (a
+    ``PlanState``'s fields)."""

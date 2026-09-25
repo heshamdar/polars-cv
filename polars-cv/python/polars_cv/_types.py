@@ -763,69 +763,13 @@ SINKS_WITH_TYPED_ELEMENTS: "frozenset[SinkFormat]" = frozenset(
 #: The dimension a shape hint names, by position. The hints are **positional**:
 #: ``height`` is dimension 0, ``width`` dimension 1, ``channels`` dimension 2,
 #: whatever the data means by them. Every reader agrees on that order —
-#: ``Pipeline._plan_step`` hands Rust the hints in it (and reads the replaced
-#: ones back by axis)
-#: and ``GraphNode.expected_shape`` publishes ``[H, W, C]`` from it — so the
+#: ``PlanState.dims`` holds the sizes in it and ``GraphNode.expected_shape`` publishes ``[H, W, C]`` from it — so the
 #: order is named once here rather than re-spelled at each site.
 #:
 #: This is why ``assert_shape`` rejects ``height=``/``width=``/``channels=``
 #: once the rank is known to be anything but 3: outside an ``[H, W, C]``
 #: buffer the names describe nothing, and ``dims=`` is the honest spelling.
 HINT_DIMS: "tuple[str, ...]" = ("height", "width", "channels")
-
-
-@dataclass
-class ShapeHints:
-    """Per-dimension sizes the planner knows, indexed by :data:`HINT_DIMS`."""
-
-    height: ParamValue | None = None
-    width: ParamValue | None = None
-    channels: ParamValue | None = None
-
-    def get(self, dim: str) -> "ParamValue | None":
-        """The hint for *dim*, which must be one of :data:`HINT_DIMS`."""
-        if dim not in HINT_DIMS:
-            msg = f"{dim!r} is not a tracked shape dimension {HINT_DIMS}"
-            raise ValueError(msg)
-        return getattr(self, dim)
-
-    def has_any(self) -> bool:
-        """Check if any hints are provided."""
-        return any(self.get(dim) is not None for dim in HINT_DIMS)
-
-    def has_all_dims(self) -> bool:
-        """Check if all image dimensions (H, W, C) are provided."""
-        return all(
-            (hint := self.get(dim)) is not None and not hint.is_expr
-            for dim in HINT_DIMS
-        )
-
-
-@dataclass
-class ShapeAssertion:
-    """One shape declaration, recorded at the op position it was written at.
-
-    Replayed positionally by ``Pipeline._apply_assertions_at`` so a lazy
-    continuation applies it where the user wrote it, rather than at the end of
-    the chain where it would override ops that legitimately change the shape.
-
-    ``source`` names who declared it, and decides who is blamed when execution
-    disagrees with the plan:
-
-    - ``"assert_shape"`` — the user said so. A divergence is theirs, and
-      ``validate_output_schema`` says so instead of reporting a plugin bug.
-    - ``"shape_ref"`` — ``rasterize(shape=<node>)`` / ``source("contour",
-      shape=)`` took the canvas from another node's *inferred* hints. A
-      divergence there really is a contract bug, so it keeps the original
-      wording.
-    """
-
-    #: Declared size per dimension name. ``None`` declares it *unknown* — the
-    #: ``shape_ref`` answer when the referenced node's own hint is per-row.
-    dims: "dict[str, ParamValue | None]" = field(default_factory=dict)
-    #: Rank asserted alongside the dims (``assert_shape(dims=[...])`` only).
-    ndim: int | None = None
-    source: str = "assert_shape"
 
 
 @dataclass
