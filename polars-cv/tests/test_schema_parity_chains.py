@@ -224,7 +224,7 @@ def test_binary_ops_plan_what_they_execute(op: str) -> None:
     """Only ``divide`` had a plan-vs-exec test; here is the whole family.
 
     Binary ops are the one two-input dtype rule: ``plan_step`` reads the other
-    operand's dtype for them (``other_dtype``), so their promotion — u8 x u8 ->
+    operand's state for them (``other=``), so their promotion — u8 x u8 ->
     f32 for ``divide``/``ratio`` — is a separate branch of the fold.
     """
     df = _df("null_first")

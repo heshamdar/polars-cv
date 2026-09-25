@@ -11,7 +11,6 @@ use view_buffer::geometry::{extract::extract_contours, rasterize::rasterize, Con
 use view_buffer::ops::NodeOutput;
 use view_buffer::{DType, GeometryOp, Op, PlannedDType, ViewBuffer};
 
-use super::decode::dtype_str_to_polars;
 use super::sink_kind::SinkKind;
 use super::types::{OutputSpec, OutputValue, TypedBufferData};
 
@@ -30,7 +29,7 @@ pub(crate) fn execute_geometry_op(
         .map_err(|e| format!("{}: {e}", op.name()))?;
     let expected_domain = op.input_domain();
     let actual_domain = input.domain();
-    if !expected_domain.accepts(actual_domain) {
+    if expected_domain != actual_domain {
         return Err(format!(
             "{}() expects {} input but received {}. Add a domain-converting operation.",
             op.name(),
@@ -175,22 +174,19 @@ pub(crate) type TypedListRow = Option<(TypedBufferData, Vec<usize>)>;
 
 /// The element dtype a tensor sink column is built with.
 ///
-/// The planner's dtype when it declared one; only for `"auto"` — which
-/// `dtype_for_output` refuses for a planned typed sink, so only direct callers
-/// of the executor reach it — the first row's. Every row must then carry
-/// exactly this dtype (see [`flat_values`]).
-fn element_dtype(rows: &[TypedListRow], dtype_str: &str) -> PolarsResult<DType> {
+/// The planner's dtype when it declared one; only for an unresolved one —
+/// which `dtype_for_output` refuses for a planned typed sink, so only direct
+/// callers of the executor reach it — the first row's. Every row must then
+/// carry exactly this dtype (see [`flat_values`]).
+fn element_dtype(rows: &[TypedListRow], dtype: PlannedDType) -> PolarsResult<DType> {
     let first_row = || rows.iter().find_map(|r| r.as_ref()).map(|(d, _)| d.dtype());
-    match PlannedDType::parse(dtype_str) {
-        Some(PlannedDType::Known(dtype)) => Ok(dtype),
-        Some(PlannedDType::Unknown | PlannedDType::SomeFloat) if first_row().is_some() => {
-            Ok(first_row().unwrap())
-        }
-        // An unrecognised spelling, or a sentinel with no row to resolve it:
-        // `dtype_str_to_polars` owns the explanation, and errors for both.
-        _ => Err(dtype_str_to_polars(dtype_str)
-            .err()
-            .unwrap_or_else(|| polars_err!(ComputeError: "unresolvable dtype '{dtype_str}'"))),
+    match dtype {
+        PlannedDType::Known(dtype) => Ok(dtype),
+        PlannedDType::Unknown | PlannedDType::SomeFloat => first_row().ok_or_else(|| {
+            polars_err!(ComputeError:
+                "a typed sink's element dtype was never planned ({}) and there is no \
+                 row to take it from", dtype.as_str())
+        }),
     }
 }
 
@@ -266,14 +262,14 @@ fn row_validity(rows: &[TypedListRow]) -> Option<polars_arrow::bitmap::Bitmap> {
 pub(super) fn build_typed_list_series_from_rows_with_dtype(
     name: PlSmallStr,
     rows: &[TypedListRow],
-    dtype_str: &str,
+    dtype: PlannedDType,
     expected_shape: Option<&Vec<usize>>,
     expected_ndim: Option<usize>,
 ) -> PolarsResult<Series> {
     use polars_arrow::array::ListArray;
     use polars_arrow::offset::{Offsets, OffsetsBuffer};
 
-    let dtype = element_dtype(rows, dtype_str)?;
+    let dtype = element_dtype(rows, dtype)?;
     // `dtype_for_output` refuses a list sink whose rank it cannot name, so a
     // planned query always reaches here with one. The row fallback keeps a
     // direct (unplanned) caller working; only a genuinely rankless call fails.
@@ -334,7 +330,7 @@ pub(super) fn build_typed_list_series_from_rows_with_dtype(
 pub(super) fn build_typed_array_series_from_rows_with_dtype(
     name: PlSmallStr,
     rows: &[TypedListRow],
-    dtype_str: &str,
+    dtype: PlannedDType,
     sink_shape: &Option<Vec<usize>>,
     expected_shape: Option<&Vec<usize>>,
 ) -> PolarsResult<Series> {
@@ -359,7 +355,7 @@ pub(super) fn build_typed_array_series_from_rows_with_dtype(
              contract disagree about this output."
         );
     };
-    let dtype = element_dtype(rows, dtype_str)?;
+    let dtype = element_dtype(rows, dtype)?;
     let expected_len: usize = shape.iter().product();
     for (i, row) in rows.iter().enumerate() {
         if let Some((data, _)) = row {
@@ -472,7 +468,7 @@ pub(crate) fn encode_node_output(
 ) -> Result<OutputValue, String> {
     let sink = &spec.sink;
     let format = sink.name();
-    let domain = spec.expected_domain.as_str();
+    let domain = spec.expected_domain.name();
     let kind = SinkKind::resolve(spec).map_err(|e| e.to_string())?;
 
     match kind {
@@ -789,6 +785,11 @@ mod tensor_sink_tests {
         dt
     }
 
+    use view_buffer::{DType, PlannedDType};
+
+    const U8: PlannedDType = PlannedDType::Known(DType::U8);
+    const F32: PlannedDType = PlannedDType::Known(DType::F32);
+
     #[test]
     fn array_sink_with_a_null_row_keeps_values_and_the_null() {
         let shape = vec![2, 2, 3];
@@ -796,7 +797,7 @@ mod tensor_sink_tests {
         let s = build_typed_array_series_from_rows_with_dtype(
             "o".into(),
             &rows,
-            "u8",
+            U8,
             &Some(shape.clone()),
             None,
         )
@@ -817,9 +818,8 @@ mod tensor_sink_tests {
     #[test]
     fn list_sink_rank3_ragged_rows_with_a_null() {
         let rows = vec![u8_row(0, &[2, 1, 3]), None, u8_row(50, &[1, 2, 3])];
-        let s =
-            build_typed_list_series_from_rows_with_dtype("o".into(), &rows, "u8", None, Some(3))
-                .unwrap();
+        let s = build_typed_list_series_from_rows_with_dtype("o".into(), &rows, U8, None, Some(3))
+            .unwrap();
         assert_eq!(s.dtype(), &nested(DataType::UInt8, 3, None));
         assert_eq!(s.len(), 3);
         assert!(s.get(1).unwrap().is_null());
@@ -838,9 +838,8 @@ mod tensor_sink_tests {
     #[test]
     fn list_sink_rank1_with_a_null() {
         let rows = vec![u8_row(1, &[3]), None, u8_row(9, &[2])];
-        let s =
-            build_typed_list_series_from_rows_with_dtype("o".into(), &rows, "u8", None, Some(1))
-                .unwrap();
+        let s = build_typed_list_series_from_rows_with_dtype("o".into(), &rows, U8, None, Some(1))
+            .unwrap();
         assert_eq!(s.dtype(), &DataType::List(Box::new(DataType::UInt8)));
         assert!(s.get(1).unwrap().is_null());
         let flat: Vec<u8> = leaves(&s.drop_nulls(), 1)
@@ -857,12 +856,12 @@ mod tensor_sink_tests {
             Some((TypedBufferData::F32(vec![0.5, 1.5]), vec![2])),
         ];
         let list =
-            build_typed_list_series_from_rows_with_dtype("o".into(), &rows, "u8", None, Some(1));
+            build_typed_list_series_from_rows_with_dtype("o".into(), &rows, U8, None, Some(1));
         assert!(list.is_err(), "list sink cast a f32 row to u8: {list:?}");
         let array = build_typed_array_series_from_rows_with_dtype(
             "o".into(),
             &rows,
-            "u8",
+            U8,
             &Some(vec![2]),
             None,
         );
@@ -878,7 +877,7 @@ mod tensor_sink_tests {
         let r = build_typed_array_series_from_rows_with_dtype(
             "o".into(),
             &rows,
-            "u8",
+            U8,
             &Some(vec![2, 3]),
             None,
         );
@@ -888,35 +887,15 @@ mod tensor_sink_tests {
     #[test]
     fn list_row_with_the_wrong_rank_is_an_error() {
         let rows = vec![u8_row(0, &[2, 3]), u8_row(0, &[6])];
-        let r =
-            build_typed_list_series_from_rows_with_dtype("o".into(), &rows, "u8", None, Some(2));
+        let r = build_typed_list_series_from_rows_with_dtype("o".into(), &rows, U8, None, Some(2));
         assert!(r.is_err());
-    }
-
-    #[test]
-    fn an_unrecognised_dtype_is_an_error_even_with_rows() {
-        let rows = vec![u8_row(0, &[2])];
-        let list =
-            build_typed_list_series_from_rows_with_dtype("o".into(), &rows, "uint8", None, Some(1));
-        assert!(
-            list.is_err(),
-            "unrecognised dtype fell back to the row: {list:?}"
-        );
-        let array = build_typed_array_series_from_rows_with_dtype(
-            "o".into(),
-            &rows,
-            "uint8",
-            &Some(vec![2]),
-            None,
-        );
-        assert!(array.is_err());
     }
 
     #[test]
     fn all_null_rows_keep_the_planned_nesting() {
         let rows: Vec<TypedListRow> = vec![None, None];
         let list =
-            build_typed_list_series_from_rows_with_dtype("o".into(), &rows, "f32", None, Some(3))
+            build_typed_list_series_from_rows_with_dtype("o".into(), &rows, F32, None, Some(3))
                 .unwrap();
         assert_eq!(list.dtype(), &nested(DataType::Float32, 3, None));
         assert_eq!(list.null_count(), 2);
@@ -924,7 +903,7 @@ mod tensor_sink_tests {
         let array = build_typed_array_series_from_rows_with_dtype(
             "o".into(),
             &rows,
-            "f32",
+            F32,
             &Some(shape.clone()),
             None,
         )
@@ -947,8 +926,8 @@ mod contour_sink_tests {
         OutputSpec {
             node: "n".to_string(),
             sink: serde_json::from_value(serde_json::json!({"format": "native"})).unwrap(),
-            expected_domain: "contour".to_string(),
-            expected_dtype: "auto".to_string(),
+            expected_domain: view_buffer::ops::Domain::Contour,
+            expected_dtype: view_buffer::PlannedDType::Unknown,
             expected_shape: None,
             shape_asserted: false,
             expected_ndim: None,

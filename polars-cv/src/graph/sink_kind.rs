@@ -32,6 +32,7 @@ use view_buffer::ImageCodec;
 
 use super::types::OutputSpec;
 use crate::formats::sink::Sink;
+use view_buffer::ops::Domain;
 
 /// The output shape a `(domain, format)` pair resolves to.
 ///
@@ -85,29 +86,28 @@ impl SinkKind {
         if spec.histogram_buckets {
             return Ok(Self::HistogramBuckets);
         }
-        let domain = spec.expected_domain.as_str();
-        match (domain, &spec.sink) {
-            ("buffer", Sink::Numpy(_) | Sink::Torch(_)) => Ok(Self::NumpyStruct),
-            ("buffer", Sink::NdArray(_)) => Ok(Self::NdArray),
-            ("buffer", Sink::Png(_) | Sink::Jpeg(_) | Sink::WebP(_) | Sink::Tiff(_)) => {
+        match (spec.expected_domain, &spec.sink) {
+            (Domain::Buffer, Sink::Numpy(_) | Sink::Torch(_)) => Ok(Self::NumpyStruct),
+            (Domain::Buffer, Sink::NdArray(_)) => Ok(Self::NdArray),
+            (Domain::Buffer, Sink::Png(_) | Sink::Jpeg(_) | Sink::WebP(_) | Sink::Tiff(_)) => {
                 Ok(Self::EncodedImage)
             }
-            ("buffer", Sink::Blob(_)) => Ok(Self::Blob),
-            ("buffer", Sink::List(_)) => Ok(Self::BufferList),
-            ("buffer", Sink::Array(_)) => Ok(Self::BufferArray),
-            ("scalar", Sink::Native(_)) => Ok(Self::Scalar),
-            ("vector", Sink::Native(_) | Sink::List(_)) => Ok(Self::VectorList),
-            ("vector", Sink::Array(_)) => Ok(Self::VectorArray),
-            ("contour", Sink::Native(_)) => Ok(Self::Contours),
+            (Domain::Buffer, Sink::Blob(_)) => Ok(Self::Blob),
+            (Domain::Buffer, Sink::List(_)) => Ok(Self::BufferList),
+            (Domain::Buffer, Sink::Array(_)) => Ok(Self::BufferArray),
+            (Domain::Scalar, Sink::Native(_)) => Ok(Self::Scalar),
+            (Domain::Vector, Sink::Native(_) | Sink::List(_)) => Ok(Self::VectorList),
+            (Domain::Vector, Sink::Array(_)) => Ok(Self::VectorArray),
+            (Domain::Contour, Sink::Native(_)) => Ok(Self::Contours),
             // Named separately from the catch-all so the message can say what
             // to do instead; the generic one cannot.
-            ("buffer", Sink::Native(_)) => polars_bail!(ComputeError:
+            (Domain::Buffer, Sink::Native(_)) => polars_bail!(ComputeError:
                 "'native' sink is not defined for buffer outputs; use an explicit \
                  format (numpy, png, list, array, blob, ...)"
             ),
             (domain, sink) => polars_bail!(ComputeError:
                 "Unsupported output combination: domain '{}' with sink format '{}'",
-                domain, sink.name()
+                domain.name(), sink.name()
             ),
         }
     }
@@ -133,8 +133,8 @@ mod tests {
         OutputSpec {
             node: "n".to_string(),
             sink: serde_json::from_value(serde_json::json!({"format": format})).unwrap(),
-            expected_domain: domain.to_string(),
-            expected_dtype: "u8".to_string(),
+            expected_domain: view_buffer::naming::lookup(Domain::NAMED, domain).unwrap(),
+            expected_dtype: view_buffer::PlannedDType::Known(view_buffer::DType::U8),
             expected_shape: None,
             shape_asserted: false,
             expected_ndim: None,

@@ -81,6 +81,21 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+
+- **The builder's planner and the executor share one dtype lattice.** A
+  float-promoting op over a dtype the plan does not know (`scale`, `sqrt`,
+  `sobel`, … after `source("image_bytes")`) is planned as `auto_float` —
+  "a float, which one depends on the decode" — where it was `auto`.
+  `Pipeline.output_dtype()` can therefore return `"auto_float"`.
+- **`Pipeline._state` is a Rust object** (`polars_cv._lib.PlanState`, frozen,
+  built only by the planner). The Python `PlanState` dataclass, `HINT_DIMS` and
+  the hand-written `Domain` enum are gone; `Domain` is generated from the
+  registry like every other enum (the engine's `any` wildcard variant is
+  deleted, so there is no user-facing subset to maintain).
+- **A binary op plans over both operands' states**, not only the other
+  operand's dtype, and a lazy continuation or binary op starts from the upstream
+  state as planned rather than a copy with the sizes dropped.
+
 - **Breaking: `Pipeline.source()` keywords default to `None`.** `fill_value`,
   `background`, `require_contiguous` and `on_error` read `None` (the format's
   own default: 255, 0, `False`, `"raise"`) instead of restating it, so passing
@@ -243,6 +258,21 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   gone. Guarded by `test_removed_surfaces.py`.
 
 ### Fixed
+
+
+- **Optimizations can no longer turn a working query into a failing one on a
+  claim.** A blob's declared `dtype` is checked at decode (a mismatch is a row
+  error naming both dtypes); before, identity elimination took the declaration
+  as fact and removed a `.cast()` the user wrote. `source("contour", shape=…)`
+  records its canvas as a declaration, as `rasterize(shape=…)` does, so a size
+  resting on an upstream `assert_shape` is not treated as known.
+- **A fully known input shape is validated at build time**: e.g.
+  `grayscale().channel_select(2)` after `assert_shape(channels=3)` raises when
+  written, not per row.
+- `assert_shape` sizes must be positive ints, checked in Rust whichever spelling
+  (`dims=` or `height=`/`width=`/`channels=`) carries them.
+- `repr()`/`explain()` render the `assert_shape` calls that were written, where
+  they were written, instead of every inferred size as an `assert_shape(...)`.
 
 - **An image of unknown size is no longer planned as square.** The plan-time
   shape prober stood the same placeholder in for every unknown input axis, so

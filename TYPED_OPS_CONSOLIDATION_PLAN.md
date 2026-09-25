@@ -11,7 +11,7 @@
 > | Phase | Status |
 > |---|---|
 > | C0 — Correctness fixes (test-first) | **done** — C0.1, C0.2, C0.4–C0.7 fixed test-first (`tests/test_plan_claims.py`, docstring binding guard); C0.3 moved to C2 |
-> | C1 — Typed planner state | not started |
+> | C1 — Typed planner state | **done** — `PlanState` is a frozen Rust pyclass (`Domain`, `PlannedDType`); Python dataclass, `HINT_DIMS`, `Domain` mirror, `Domain::Any`, string dtype helpers deleted; binary ops plan over both states |
 > | C2 — Declarations are ops; Rust plans the graph | not started |
 > | C3 — Rust owns the op list (`Plan`) | not started |
 > | C4 — One op definition (mode-generic ops) | not started |
@@ -96,6 +96,10 @@ Python mirrors. Hand-written code fell by 320 lines (−0.6%); tests grew by 1,1
 | `test_enum_parity_domain`, `_RUST_INTERNAL_DOMAINS` | `tests/test_sanitation.py:722-745` | structural (no Python copy) |
 | `test_domain_vocabulary_declared_once` | `tests/test_append_contract.py:352` | structural |
 | `HINT_DIMS` (Python) | `polars_cv/_types.py:654` | `State.DIM_NAMES` class attribute from Rust `DIM_NAMES` |
+| `Domain::Any` (a wildcard variant no pipeline can be in; the reason `Domain` could not be generated) | `view-buffer/src/ops/mod.rs:88` | `GraphStep::output_domain(input)`; `Domain::accepts` deleted |
+| `decode::parse_dtype_str`, `dtype_str_to_polars` | `graph/decode.rs:191, 565` | `list_array_inner_dtype(PlannedDType)` |
+| Python `dataclasses.replace` edits of the state (`LazyPipelineExpr.pipe` reset `asserted`; lazy `_continuation`/`_binary_op` dropped the sizes) | `lazy.py:210, 670, 690` | the upstream state as Rust planned it |
+| `test_the_ffi_agrees_with_the_planner` (compared `plan_step` with itself through a fabricated state) | `tests/test_alpha_channel.py:541` | structural |
 
 **Wire:** `plan_step`/`plan_source`/`plan_assert` take and return `State`;
 `tests/_plan_view.py` reads attributes (the seam absorbs the change).

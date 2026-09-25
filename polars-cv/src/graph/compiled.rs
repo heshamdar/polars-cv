@@ -1640,7 +1640,7 @@ fn resolve_one_output_spec(graph: &UnifiedGraph, spec: &mut OutputSpec, dt: &Dat
     let inferred_dtype_str = dtype_from_polars_leaf(&leaf_dtype).map(|d| d.short_name());
 
     {
-        if !PlannedDType::parse(&spec.expected_dtype).is_some_and(|d| d.is_concrete()) {
+        if !spec.expected_dtype.is_concrete() {
             // The *source* element type, as far as the column reveals it. A
             // Binary/String column says nothing (a PNG decodes u8 or u16, a
             // TIFF f32 or f64); a list/array column's leaf type is meaningful
@@ -1660,7 +1660,7 @@ fn resolve_one_output_spec(graph: &UnifiedGraph, spec: &mut OutputSpec, dt: &Dat
             let folded =
                 fold_output_dtype(graph, &spec.node, source_dtype).unwrap_or(PlannedDType::Unknown);
             if folded != PlannedDType::Unknown {
-                spec.expected_dtype = folded.as_str().to_string();
+                spec.expected_dtype = folded;
             }
         }
         // Output rank was left unknown by the Python planner (source rank was
@@ -1839,22 +1839,21 @@ fn validate_output_schema(
         return Ok(());
     };
 
-    // Dtype: planned dtype must match the produced dtype.
-    if spec.expected_dtype != "auto" {
-        if let Ok(expected) = super::decode::parse_dtype_str(&spec.expected_dtype) {
-            let actual = buf.dtype();
-            if actual != expected {
-                return Err(format!(
-                    "Output '{alias}': planned dtype {expected:?} but execution \
-                     produced {actual:?}. This indicates a mismatch between the \
-                     planner's view-buffer contract and the Rust implementation."
-                ));
-            }
-        }
+    // Dtype: the produced dtype must be one the plan allows (the exact one
+    // when known, a float when only that is known).
+    let expected = spec.expected_dtype;
+    let actual = buf.dtype();
+    if !expected.candidates().is_empty() && !expected.candidates().contains(&actual) {
+        return Err(format!(
+            "Output '{alias}': planned dtype {} but execution produced {actual:?}. \
+             This indicates a mismatch between the planner's view-buffer contract and \
+             the Rust implementation.",
+            expected.as_str()
+        ));
     }
 
     // Rank + per-dim shape, for plain buffer outputs only.
-    if spec.expected_domain.as_str() == "buffer" && !spec.histogram_buckets {
+    if spec.expected_domain == Domain::Buffer && !spec.histogram_buckets {
         let actual_shape = buf.shape();
         if let Some(expected_ndim) = spec.expected_ndim {
             if actual_shape.len() != expected_ndim {

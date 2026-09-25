@@ -149,7 +149,7 @@ fn is_identity(node: &Node<'_>, i: usize) -> Result<bool, String> {
     Ok(match step.identity_rule() {
         IdentityRule::Never => false,
         IdentityRule::WhenDtypePreserved => {
-            entering.dtype != "auto" && leaving.dtype == entering.dtype
+            entering.dtype.is_concrete() && leaving.dtype == entering.dtype
         }
         IdentityRule::WhenShapePreserved => {
             let Some(shape) = op.shape() else {
@@ -231,10 +231,14 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn image(h: i64, w: i64) -> State {
+    fn image(h: usize, w: usize) -> State {
         State {
             dims: [Some(h), Some(w), Some(3)],
-            ..State::new("buffer", "u8", Some(3))
+            ..State::new(
+                view_buffer::ops::Domain::Buffer,
+                view_buffer::PlannedDType::Known(view_buffer::DType::U8),
+                Some(3),
+            )
         }
     }
 

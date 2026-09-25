@@ -32,7 +32,6 @@ from PIL import Image
 
 import polars_cv
 from polars_cv import Pipeline
-from polars_cv._types import Domain
 
 from ._discovery import package_modules
 from ._op_cases import (
@@ -313,7 +312,7 @@ def test_push_op_applies_the_whole_plan_step_unconditionally() -> None:
 
     args = [a.arg for a in fn.args.kwonlyargs] + [a.arg for a in fn.args.args]
     flags = [a for a in args if a not in {"self", "spec"}]
-    assert flags == ["other_dtype"], (
+    assert flags == ["other"], (
         f"_push_op grew a new parameter: {flags}. Every additional flag is a "
         f"way to append an op while skipping part of its plan-time effect."
     )
@@ -354,40 +353,6 @@ def test_python_holds_no_copy_of_the_channel_rule_arithmetic() -> None:
 # ---------------------------------------------------------------------------
 # 2. Input domain comes from the Rust contract
 # ---------------------------------------------------------------------------
-
-
-def test_domain_vocabulary_declared_once() -> None:
-    """The domain vocabulary lives in ``_types.Domain``, nowhere else.
-
-    ``Pipeline`` used to carry ``DOMAIN_BUFFER``/``DOMAIN_CONTOUR``/... string
-    constants — a third copy behind Rust's ``Domain::NAMED`` and the Python
-    ``Domain`` enum, and the only one nothing could pin.
-
-    Every assertion below is an *absence*, which is equally true of a
-    ``Pipeline`` that no longer checks domains at all. The positive half
-    confirms the replacement is live: a wrong-domain op still raises, and the
-    pipeline still tracks a domain drawn from the ``Domain`` vocabulary.
-    """
-    leaked = [n for n in dir(Pipeline) if n.startswith("DOMAIN_")]
-    assert not leaked, f"Pipeline must not re-declare domain constants: {leaked}"
-    assert not hasattr(Pipeline, "_validate_domain"), (
-        "_validate_domain re-declared each op's input domain in Python; the "
-        "check is plan_step's, from the op's Rust input_domains"
-    )
-    source = Path(polars_cv.pipeline.__file__).read_text()
-    assert "_validate_domain" not in source
-    assert "DOMAIN_BUFFER" not in source
-
-    # The domain a pipeline reports must be a member of the one vocabulary...
-    pipe = Pipeline().source("blob", dtype="u8")
-    assert pipe._state.domain in {d.value for d in Domain}, (
-        f"Pipeline reports domain {pipe._state.domain!r}, which is not in "
-        f"_types.Domain — the vocabulary this test claims is the only one."
-    )
-    # ...and the check that reads it must still reject a mismatch. Without
-    # this, deleting the domain check entirely passes every assertion above.
-    with pytest.raises(ValueError, match="(?i)domain"):
-        pipe.rasterize(width=8, height=8)
 
 
 @plugin_required

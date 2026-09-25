@@ -8,7 +8,6 @@ including ParamValue for handling literal vs expression parameters.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Union
 
 try:
@@ -29,6 +28,9 @@ from polars_cv._ops_generated import (
 )
 from polars_cv._ops_generated import (
     ColorSpace as ColorSpace,
+)
+from polars_cv._ops_generated import (
+    Domain as Domain,
 )
 from polars_cv._ops_generated import (
     DType as DType,
@@ -162,21 +164,6 @@ def dtype_name_for(dtype: pl.DataType) -> str:
 # Use with: normalize(method="preset", mean=IMAGENET_MEAN, std=IMAGENET_STD)
 IMAGENET_MEAN: list[float] = [0.485, 0.456, 0.406]
 IMAGENET_STD: list[float] = [0.229, 0.224, 0.225]
-
-
-class Domain(str, Enum):
-    """
-    Data domain for typed pipeline nodes.
-
-    Tracks what type of data is flowing through the pipeline for
-    static type inference and sink validation.
-    """
-
-    BUFFER = "buffer"  # Image/array data
-    CONTOUR = "contour"  # Extracted geometry
-    SCALAR = "scalar"  # Single numeric value
-    VECTOR = "vector"  # Fixed-length numeric array (incl. histogram buckets,
-    # whose List(Struct) schema is selected by the sink encoding, not the domain)
 
 
 def _reject_expr(value: "Any", what: str) -> None:
@@ -640,18 +627,6 @@ class SourceSpec:
         for key, value in self.params.items():
             result[key] = value.to_wire(slot_of)
         return result
-
-
-#: The dimension a shape hint names, by position. The hints are **positional**:
-#: ``height`` is dimension 0, ``width`` dimension 1, ``channels`` dimension 2,
-#: whatever the data means by them. Every reader agrees on that order —
-#: ``PlanState.dims`` holds the sizes in it and the output's ``[H, W, C]`` shape (read off it in Rust) follows it — so the
-#: order is named once here rather than re-spelled at each site.
-#:
-#: This is why ``assert_shape`` rejects ``height=``/``width=``/``channels=``
-#: once the rank is known to be anything but 3: outside an ``[H, W, C]``
-#: buffer the names describe nothing, and ``dims=`` is the honest spelling.
-HINT_DIMS: "tuple[str, ...]" = ("height", "width", "channels")
 
 
 @dataclass

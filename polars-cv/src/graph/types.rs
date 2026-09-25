@@ -30,9 +30,9 @@ pub struct OutputSpec {
     /// Sink specification.
     pub sink: Sink,
     /// Expected output domain for validation and type inference.
-    pub expected_domain: String,
+    pub expected_domain: view_buffer::ops::Domain,
     /// Expected output dtype for list/array sinks.
-    pub expected_dtype: String,
+    pub expected_dtype: view_buffer::PlannedDType,
     /// Expected output shape for list/array sinks.
     pub expected_shape: Option<Vec<usize>>,
     /// Did any dimension of the plan come from a user `assert_shape`?
@@ -77,13 +77,7 @@ impl From<WireOutput> for OutputSpec {
         // output is how `channel_select` once declared a schema execution
         // could not produce.
         let expected_shape = (planned.ndim == Some(3))
-            .then(|| {
-                planned
-                    .dims
-                    .iter()
-                    .map(|d| d.and_then(|n| usize::try_from(n).ok()))
-                    .collect::<Option<Vec<_>>>()
-            })
+            .then(|| planned.dims.iter().copied().collect::<Option<Vec<_>>>())
             .flatten();
         OutputSpec {
             node,
@@ -189,7 +183,7 @@ mod row_error_policy_tests {
         let spec = |state: &str| output(&format!(r#", "planned": {state}"#)).unwrap();
         let full = spec(r#"{"domain": "buffer", "dtype": "u8", "ndim": 3, "dims": [4, 5, 3]}"#);
         assert_eq!(
-            (full.expected_domain.as_str(), full.expected_dtype.as_str()),
+            (full.expected_domain.name(), full.expected_dtype.as_str()),
             ("buffer", "u8")
         );
         assert_eq!(full.expected_shape, Some(vec![4, 5, 3]));

@@ -29,7 +29,6 @@ deleted and re-added later.
 from __future__ import annotations
 
 import ast
-import dataclasses
 import io
 import json
 import os
@@ -265,10 +264,18 @@ def test_plan_equals_exec_binary_promote():
 
 
 def _plan_state(domain: str, dtype: str, ndim: "int | None") -> object:
-    """A ``PlanState`` with nothing known about the sizes."""
-    from polars_cv.pipeline import PlanState
-
-    return PlanState(domain=domain, dtype=dtype, ndim=ndim)
+    """A ``PlanState`` with nothing known about the sizes, built the only way
+    one can be: by planning a real pipeline (``auto`` = no declared dtype)."""
+    image = Pipeline().source("image_bytes", dtype=None if dtype == "auto" else dtype)
+    if (domain, ndim) == ("buffer", 3):
+        state = image._state
+    elif (domain, ndim) == ("contour", None):
+        state = image.grayscale().threshold(1).extract_contours()._state
+    else:
+        msg = f"no pipeline plans a ({domain}, {dtype}, {ndim}) state"
+        raise ValueError(msg)
+    assert (state.domain, state.ndim) == (domain, ndim), state
+    return state
 
 
 def _planned_shape(pipe):
@@ -511,6 +518,9 @@ def test_registry_parity_no_dead_contracts():
 
 
 _REQUIRED_LIB_HOOKS = (
+    # Unpickles a `PlanState` (its `__reduce__` names it); Python never calls
+    # it directly.
+    "_plan_state_from_json",
     # One appended op's whole plan-time effect (domain check, schema, H/W,
     # channels, rank clipping), the builder's one call per append.
     "plan_step",
@@ -628,7 +638,9 @@ def _binary_dtype(op: str, left: str, right: str) -> str:
     from polars_cv._lib import plan_step
 
     op_json = json.dumps({"op": op, "other": "n0"})
-    return plan_step(op_json, _plan_state("buffer", left, 3), right)["dtype"]
+    return plan_step(
+        op_json, _plan_state("buffer", left, 3), _plan_state("buffer", right, 3)
+    ).dtype
 
 
 @plugin_required
@@ -657,8 +669,8 @@ def test_binary_dtype_authority():
 
 
 @plugin_required
-def test_the_other_operand_dtype_is_for_binary_ops_only():
-    """A binary op without its other operand's dtype, or any other op with one,
+def test_the_other_operand_state_is_for_binary_ops_only():
+    """A binary op without its other operand's state, or any other op with one,
     is refused rather than planned with the one-input rule."""
     from polars_cv._lib import plan_step
 
@@ -666,7 +678,8 @@ def test_the_other_operand_dtype_is_for_binary_ops_only():
     with pytest.raises(ValueError, match="needs the other operand"):
         plan_step(add, _plan_state("buffer", "u8", 3))
     with pytest.raises(ValueError, match="only a binary op"):
-        plan_step(json.dumps({"op": "grayscale"}), _plan_state("buffer", "u8", 3), "u8")
+        u8 = _plan_state("buffer", "u8", 3)
+        plan_step(json.dumps({"op": "grayscale"}), u8, u8)
 
 
 @requires_checkout
@@ -717,30 +730,6 @@ def _rust_enum_variants(enum_name):
         return None
     (desc,) = [e for e in json.loads(fn()) if e["name"] == enum_name]
     return set(desc["variants"])
-
-
-# view-buffer's `any` Domain is an internal identity domain (materialize) that is
-# never surfaced to a Python pipeline, so it is excluded from the comparison.
-_RUST_INTERNAL_DOMAINS = {"any"}
-
-
-@plugin_required
-def test_enum_parity_domain():
-    """Python Domain values must equal the surfaced Rust Domain variant set (A4).
-
-    The former Python-only `histogram` "domain" is gone (histogram buckets are a
-    `vector` output whose struct schema is selected by the sink encoding), so the
-    only remaining difference is Rust's internal `any` domain, which is never
-    surfaced to a pipeline.
-    """
-    rust = _rust_enum_variants("Domain")
-    if rust is None:
-        pytest.skip("_lib.enum_catalog() not built")
-    import polars_cv._types as t
-
-    surfaced = rust - _RUST_INTERNAL_DOMAINS
-    py = {m.value for m in t.Domain}
-    assert py == surfaced, f"Domain: python {py} != surfaced rust {surfaced}"
 
 
 # Every other registered enum's Python class is generated from the enum
@@ -1053,7 +1042,7 @@ def _op_json(op: str, **params: object) -> str:
         ),
         (
             _op_json("rasterize", size=[8, 8], fill_value=255, background=0),
-            ("contour", "u8", None),
+            ("contour", "f64", None),
             ("buffer", "u8", 3),
         ),
         # ordinary buffer op: rank/dtype preserved.
@@ -1066,7 +1055,7 @@ def test_op_schema_authority(op_json, state_in, expected) -> None:
     import polars_cv._lib as lib
 
     step = lib.plan_step(op_json, _plan_state(*state_in))
-    assert (step["domain"], step["dtype"], step["ndim"]) == expected
+    assert (step.domain, step.dtype, step.ndim) == expected
 
 
 @plugin_required
@@ -1147,8 +1136,7 @@ def test_append_cost_is_linear(monkeypatch) -> None:
 def test_axis_reduction_ndim_decrements_exactly_once() -> None:
     """Regression: the old full-replay tracking re-subtracted axis
     reductions' ndim on every subsequent append."""
-    pipe = Pipeline().source("blob", dtype="u8")
-    pipe._state = dataclasses.replace(pipe._state, ndim=3)  # white-box: seed a rank
+    pipe = Pipeline().source("blob", dtype="u8").assert_shape(dims=[None] * 3)
     pipe = pipe.reduce_max(axis=0)
     assert pipe._state.ndim == 2
     pipe = pipe.reduce_min(axis=0)
@@ -1161,8 +1149,7 @@ def test_reshape_rank_tracked_eagerly() -> None:
     the eager pipeline kept the stale pre-reshape ndim while the lazy fold
     saw the op — eager and lazy tracking disagreed. Reshape's rank is
     structural (= len(shape)), so both paths now report it exactly."""
-    pipe = Pipeline().source("blob", dtype="u8")
-    pipe._state = dataclasses.replace(pipe._state, ndim=3)  # white-box: seed a rank
+    pipe = Pipeline().source("blob", dtype="u8").assert_shape(dims=[None] * 3)
 
     flat = pipe.reshape([16])
     assert flat._state.ndim == 1

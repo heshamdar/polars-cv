@@ -174,9 +174,9 @@ def test_a_promoted_but_unresolved_dtype_is_still_refused() -> None:
     8-bit sample whichever float it is, so the sink is refused while planning.
     """
     pipe = Pipeline().source("image_bytes").scale(factor=2.0)
-    assert pipe.output_dtype() == "auto", (
-        "the Python planner still reports 'auto'; the refinement happens in "
-        "Rust's resolved_output_specs, which has the input column"
+    assert pipe.output_dtype() == "auto_float", (
+        "the builder's planner and the execution side share one dtype "
+        "lattice, so the builder already knows the output is a float"
     )
 
     result = plan_or_reject(_df(), lambda: pl.col("img").cv.pipe(pipe).sink("jpeg"))

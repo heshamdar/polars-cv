@@ -29,7 +29,7 @@ use pyo3::prelude::*;
 use pyo3_polars::derive::polars_expr;
 
 use crate::passes::{node_pass, pass_catalog};
-use crate::plan::{plan_assert, plan_sink, plan_source, plan_step};
+use crate::plan::{_plan_state_from_json, plan_assert, plan_sink, plan_source, plan_step};
 use serde::Deserialize;
 
 /// Python module entry point for maturin.
@@ -47,6 +47,8 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // literal until the next bump, which is the whole window the check exists
     // for. This moves whenever the built artifact could differ.
     m.add("__source_hash__", env!("POLARS_CV_SOURCE_HASH"))?;
+    m.add_class::<plan::State>()?;
+    m.add_function(wrap_pyfunction!(_plan_state_from_json, m)?)?;
     m.add_function(wrap_pyfunction!(plan_step, m)?)?;
     m.add_function(wrap_pyfunction!(plan_source, m)?)?;
     m.add_function(wrap_pyfunction!(plan_assert, m)?)?;
@@ -67,23 +69,6 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 // ============================================================================
 // Contract introspection (single-authority bridge for the Python schema layer)
 // ============================================================================
-
-/// Canonical short name for a view-buffer `DType`.
-///
-/// Delegates to `DType::NAMED` — the same table the Python `DType` enum
-/// mirrors — so the two vocabularies line up by construction.
-fn dtype_short_name(dt: view_buffer::DType) -> &'static str {
-    dt.short_name()
-}
-
-/// Parse a short dtype name back into a view-buffer `DType`.
-///
-/// Inverse of [`dtype_short_name`]. Used to turn the Python schema layer's
-/// dtype strings into the `DType` the canonical [`OutputDTypeRule::resolve`]
-/// authority operates on.
-pub(crate) fn parse_dtype(s: &str) -> Result<view_buffer::DType, String> {
-    view_buffer::DType::from_short_name(s).ok_or_else(|| format!("unknown dtype {s:?}"))
-}
 
 /// A planner error (a plain message, so the planning core needs no
 /// interpreter) as the `ValueError` Python sees.
@@ -108,39 +93,6 @@ pub(crate) fn planning_step(
 ) -> Result<crate::graph::step::GraphStep, String> {
     op.resolve(0, &crate::params::ParamCtx::planning())
         .map_err(|e| format!("resolve_op: {e}"))
-}
-
-/// Shared dtype resolution for `plan_step`.
-///
-/// This is the single authority the Python schema layer defers to instead of
-/// re-applying a parallel dtype rule: it composes view-buffer's
-/// `ViewDto::output_dtype_rule()` with `OutputDTypeRule::resolve`.
-///
-/// `input_dtype` is a short dtype name (`"u8"`, `"f32"`, …) or the sentinel
-/// `"auto"` used for image sources whose decoded dtype is not yet known. For
-/// `"auto"`, input-dependent rules (`PreserveInput`, `PromoteToFloat`)
-/// propagate `"auto"`; fixed/force rules resolve to their concrete dtype. A
-/// structural `out_dtype` parameter (e.g. `normalize`) is not an override here:
-/// it is folded into the op's own `Fixed` rule, so it flows through
-/// `output_dtype_rule()` like any other fixed dtype.
-pub(crate) fn output_dtype_for(
-    step: &crate::graph::step::GraphStep,
-    input_dtype: &str,
-) -> Result<String, String> {
-    use view_buffer::OutputDTypeRule as R;
-    let rule = step.output_dtype_rule();
-
-    if input_dtype == "auto" {
-        return Ok(match rule {
-            // Output follows the (unknown) input: stays unknown.
-            R::PreserveInput | R::PromoteToFloat => "auto".to_string(),
-            // Fixed/force rules ignore the input dtype.
-            _ => dtype_short_name(rule.resolve(view_buffer::DType::U8)).to_string(),
-        });
-    }
-
-    let in_dt = parse_dtype(input_dtype)?;
-    Ok(dtype_short_name(rule.resolve(in_dt)).to_string())
 }
 
 /// The field names of the `{x, y}` point struct the geometry surfaces publish.

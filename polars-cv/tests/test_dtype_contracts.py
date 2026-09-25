@@ -137,9 +137,10 @@ class TestPipelineOutputDtype:
         assert pipe.output_dtype() == "f32"
 
     def test_scale_promotes_to_float(self) -> None:
-        """Scale on auto input should stay auto (PROMOTE_TO_FLOAT on auto)."""
+        """Scale on an unknown input is known to be *a* float (f32 or f64,
+        depending on the decode): ``PROMOTE_TO_FLOAT`` over ``auto``."""
         pipe = Pipeline().source("image_bytes").scale(1.0 / 255.0)
-        assert pipe.output_dtype() == "auto"
+        assert pipe.output_dtype() == "auto_float"
 
     def test_scale_promotes_u8_to_f32(self) -> None:
         """Scale on known u8 input should promote to f32."""

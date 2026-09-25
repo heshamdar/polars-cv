@@ -318,6 +318,21 @@ REMOVED: tuple[Removed, ...] = (
     Removed("_require_concrete_sink_dtype", "P7e: plan::check_sink"),
     Removed("_array_sink_needs_shape", "P7e: plan::check_sink"),
     Removed("_validate_sink_params", "P7e: lazy._check_sink -> plan_sink"),
+    # Consolidation C1: the planner state is a typed Rust object; nothing in
+    # Python restates it.
+    Removed("HINT_DIMS", "C1: PlanState.DIM_NAMES (Rust plan::DIM_NAMES)"),
+    Removed("has_all_dims", "C1: dead with the Python PlanState dataclass"),
+    Removed("other_dtype", "C1: a binary op plans over the other operand's state"),
+    Removed("output_dtype_for", "C1: OutputDTypeRule::resolve_planned (one lattice)"),
+    Removed("dtype_short_name", "C1: DType::short_name"),
+    Removed("parse_dtype_str", "C1: dtype fields are PlannedDType"),
+    Removed("dtype_str_to_polars", "C1: decode::list_array_inner_dtype(PlannedDType)"),
+    Removed("test_enum_parity_domain", "C1: Domain is generated (no Domain::Any)"),
+    Removed("_RUST_INTERNAL_DOMAINS", "C1: Domain::Any deleted"),
+    Removed(
+        "test_domain_vocabulary_declared_once",
+        "C1: Domain is generated from the registry",
+    ),
 )
 
 

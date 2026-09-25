@@ -57,10 +57,6 @@ NOT_GENERATED = {
     "BinaryOp": "the binary ops are methods",
     # `.sink(dtype=)` passes the keyword through; the typed sink validates it.
     "SinkDType": "validated by the typed sink",
-    # The engine's domain vocabulary includes the internal `any` (a step
-    # declaring it accepts every domain), which a pipeline is never *in*; the
-    # Python `Domain` is the user-facing subset (`test_enum_parity_domain`).
-    "Domain": "carries the engine-internal `any`",
 }
 OUTPUT = _PKG / "python" / "polars_cv" / "_ops_generated.py"
 

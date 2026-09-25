@@ -64,13 +64,12 @@
   },
   {
     "name": "Domain",
-    "doc": "",
+    "doc": "The kind of data a pipeline carries at one point: ``buffer`` (an image or array), ``contour`` (geometry), ``scalar`` or ``vector``.",
     "variants": [
       "buffer",
       "contour",
       "scalar",
-      "vector",
-      "any"
+      "vector"
     ]
   },
   {
