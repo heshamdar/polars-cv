@@ -20,8 +20,8 @@ use view_buffer::{
 /// One probe instance per `ViewDto` variant.
 fn view_dto_probes() -> Vec<ViewDto> {
     vec![
-        ViewDto::View(ViewOp::Transpose(vec![1, 0, 2])),
-        ViewDto::Compute(ComputeOp::Scale(2.0)),
+        ViewDto::View(ViewOp::transpose(&[1, 0, 2])),
+        ViewDto::Compute(ComputeOp::Scale { factor: 2.0 }),
         ViewDto::Image(ImageOp {
             kind: ImageOpKind::Resize {
                 width: 2,

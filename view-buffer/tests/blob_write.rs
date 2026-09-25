@@ -12,7 +12,7 @@ fn cases() -> Vec<(&'static str, ViewBuffer)> {
 
     // Strided: transpose produces a non-contiguous view.
     let transposed = ViewExpr::new_source(contiguous.clone())
-        .apply_op(view_buffer::ViewDto::View(ViewOp::Transpose(vec![1, 0, 2])))
+        .apply_op(view_buffer::ViewDto::View(ViewOp::transpose(&[1, 0, 2])))
         .plan()
         .execute();
 

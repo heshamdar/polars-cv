@@ -10,7 +10,7 @@ use view_buffer::{AffineParams, ComputeOp, InterpolationType, ViewDto, ViewOp};
 use super::{Literal, OpDef, Param};
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
-use view_buffer::ops::{Op as _, OpShape, Sym};
+use view_buffer::ops::{OpShape, Sym};
 
 /// Apply a 2x3 affine transformation matrix.
 ///
