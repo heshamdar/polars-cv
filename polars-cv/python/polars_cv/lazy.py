@@ -815,7 +815,6 @@ PIPELINE_ONLY_METHODS = frozenset(
         "to_graph",
         "current_domain",
         "output_dtype",
-        "output_encoding",
         # Introspection, not a chainable op: returns a str rendering, and
         # optimization is a graph-level phase a single lazy expr cannot stand in
         # for, so it is not forwarded onto LazyPipelineExpr.

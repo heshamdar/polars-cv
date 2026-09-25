@@ -642,28 +642,6 @@ class SourceSpec:
         return result
 
 
-def is_supplied(value: Any, default: Any) -> bool:
-    """Did the caller pass ``value``, or is it the parameter's default?
-
-    Identity first so ``None``/``False`` defaults are exact, then equality for
-    value defaults (``fill_value=255``). A Polars expression short-circuits: no
-    default is an expression, and ``Expr.__ne__`` builds an expression rather
-    than answering, so comparing one would raise "the truth value of an Expr is
-    ambiguous" instead of reporting it as supplied.
-
-    ``Pipeline.source()`` sends exactly the settings the caller passed, so the
-    typed source can refuse one its format does not read; until its signature
-    stops carrying value defaults (typed-op plan P8), this is how "passed" is
-    told apart from "left at the default". ``.sink()`` takes ``**kwargs``,
-    where every key present was passed.
-    """
-    if value is default:
-        return False
-    if isinstance(value, pl.Expr):
-        return True
-    return bool(value != default)
-
-
 #: The dimension a shape hint names, by position. The hints are **positional**:
 #: ``height`` is dimension 0, ``width`` dimension 1, ``channels`` dimension 2,
 #: whatever the data means by them. Every reader agrees on that order —

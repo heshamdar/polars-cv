@@ -362,8 +362,8 @@ the fields its decode or encode reads (`src/formats/`, each
 against that definition (`plan_source`, `plan_sink`) — the deserializer the graph itself
 uses — so an unknown, misspelled or inapplicable keyword is refused while the
 pipeline is built, naming the formats it does apply to. `source()` sends
-exactly the keywords the caller passed (read from its own `locals()`, told
-apart from defaults by `is_supplied` until P8 drops the value defaults), and
+exactly the keywords the caller passed (read from its own `locals()`; every
+keyword defaults to `None`, so passed means not `None`), and
 `thumbnail()` validates the spec it writes the same way. Do not add a per-parameter check beside it — that is what
 produced one raise, one warning and five silent drops on the source side, and an
 open keyword surface on the sink side.

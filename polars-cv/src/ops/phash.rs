@@ -11,11 +11,10 @@ use crate::params::ParamCtx;
 
 /// Compute a perceptual hash fingerprint.
 ///
-/// The public `Pipeline.perceptual_hash` is sugar over this op (its signature
-/// default is the Python `HashAlgorithm` member).
+/// Example:
+///     >>> Pipeline().source("image_bytes").perceptual_hash()
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
 #[serde(deny_unknown_fields)]
-#[op(visibility = "internal")]
 pub struct PerceptualHash {
     /// "perceptual" (pHash), "average" (aHash), "difference" (dHash).
     #[param(default = "perceptual")]

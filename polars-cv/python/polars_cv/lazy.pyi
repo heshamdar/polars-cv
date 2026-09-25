@@ -16,7 +16,6 @@ from polars_cv._optimize import OptFlags
 from polars_cv._types import (
     BoolOrExpr,
     FloatOrExpr,
-    HashAlgorithm,
     IntOrExpr,
     ScaleOrigin,
 )
@@ -215,7 +214,7 @@ class LazyPipelineExpr:
         value: FloatOrExpr = ...,
     ) -> LazyPipelineExpr: ...
     def perceptual_hash(
-        self, algorithm: HashAlgorithm | str = ..., hash_size: int = ...
+        self, *, algorithm: str = ..., hash_size: int = ...
     ) -> LazyPipelineExpr: ...
     def perimeter(self) -> LazyPipelineExpr: ...
     def rasterize(

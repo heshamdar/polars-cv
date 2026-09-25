@@ -1504,18 +1504,18 @@ class _OpsMixin:
             {"height": height, "width": width, "position": position, "value": value},
         )
 
-    def _perceptual_hash(
+    def perceptual_hash(
         self, *, algorithm: str = "perceptual", hash_size: int = 64
     ) -> Pipeline:
         """Compute a perceptual hash fingerprint.
-
-        The public `Pipeline.perceptual_hash` is sugar over this op (its signature
-        default is the Python `HashAlgorithm` member).
 
         Args:
             algorithm: "perceptual" (pHash), "average" (aHash), "difference" (dHash).
             hash_size: Number of bits in the hash (must be power of 2). It fixes the
                 output vector length, so it is literal-only.
+
+        Example:
+            >>> Pipeline().source("image_bytes").perceptual_hash()
         """
         return self._append_typed(
             "perceptual_hash", {"algorithm": algorithm, "hash_size": hash_size}
