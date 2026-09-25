@@ -63,25 +63,6 @@ formats! {
 }
 
 impl Sink {
-    /// Whether the output's Polars dtype carries a typed element
-    /// (`List(inner)`, `Array(inner, n)`), which therefore has to be known at
-    /// plan time. The encoded, blob and tensor-struct sinks describe their
-    /// contents in the data instead.
-    pub fn has_typed_elements(&self) -> bool {
-        match self {
-            Sink::List(_) | Sink::Array(_) => true,
-            Sink::Blob(_)
-            | Sink::Jpeg(_)
-            | Sink::Native(_)
-            | Sink::NdArray(_)
-            | Sink::Numpy(_)
-            | Sink::Png(_)
-            | Sink::Tiff(_)
-            | Sink::Torch(_)
-            | Sink::WebP(_) => false,
-        }
-    }
-
     /// The image codec a re-encoding sink writes through.
     pub fn image_codec(&self) -> Option<ImageCodec> {
         match self {

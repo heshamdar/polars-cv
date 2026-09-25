@@ -557,9 +557,18 @@ pub fn polars_dtype_for(dt: view_buffer::DType) -> DataType {
 /// Refuses a dtype the planner never pinned down (`auto`, `auto_float`): a
 /// typed column cannot be planned from it, and mapping it to anything would be
 /// a column execution may contradict.
-pub(crate) fn list_array_inner_dtype(dtype: PlannedDType, sink: &str) -> PolarsResult<DataType> {
+fn list_array_inner_dtype(
+    dtype: PlannedDType,
+    sink: &str,
+    facts: ColumnFacts,
+) -> PolarsResult<DataType> {
     match dtype {
         PlannedDType::Known(dtype) => Ok(polars_dtype_for(dtype)),
+        // The column will supply it; this schema is only checked, never
+        // published (`check_output_before_column`).
+        PlannedDType::SomeFloat | PlannedDType::Unknown if facts == ColumnFacts::Pending => {
+            Ok(DataType::Null)
+        }
         // Not labelled an internal error: the common way to get here is a
         // source column whose element type the planner cannot map to a buffer
         // dtype (a boolean or decimal list), which is the user's input, not a
@@ -572,10 +581,36 @@ pub(crate) fn list_array_inner_dtype(dtype: PlannedDType, sink: &str) -> PolarsR
         ),
     }
 }
+/// Whether the input column has been seen when an output's schema is decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ColumnFacts {
+    /// Polars is planning the query: the plan already holds everything the
+    /// column reveals.
+    Resolved,
+    /// `.sink()` is checking a graph whose root takes its element type or rank
+    /// from a column not yet seen. Those two facts are the column's to supply,
+    /// so an unknown one is not refused; everything else is decided now.
+    Pending,
+}
+
 /// Get the Polars DataType for a given output specification.
 ///
 /// Returns the appropriate dtype based on domain, sink format, and expected dtype.
 pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
+    output_schema(spec, ColumnFacts::Resolved)
+}
+
+/// Check an output's sink before its column is seen (see
+/// [`ColumnFacts::Pending`]). The schema is not returned: an element type or
+/// rank the column will supply is not known yet.
+pub(crate) fn check_output_before_column(spec: &OutputSpec) -> PolarsResult<()> {
+    output_schema(spec, ColumnFacts::Pending).map(|_| ())
+}
+
+/// The one sink-schema decision, for [`dtype_for_output`] and
+/// [`check_output_before_column`].
+fn output_schema(spec: &OutputSpec, facts: ColumnFacts) -> PolarsResult<DataType> {
+    let inner = |sink: &str| list_array_inner_dtype(spec.expected_dtype, sink, facts);
     match SinkKind::resolve(spec)? {
         SinkKind::HistogramBuckets => Ok(DataType::List(Box::new(histogram_struct_dtype()))),
         SinkKind::NumpyStruct => Ok(crate::output::numpy_output_dtype()),
@@ -601,12 +636,13 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
             Ok(DataType::Binary)
         }
         SinkKind::BufferList => {
-            let inner = list_array_inner_dtype(spec.expected_dtype, "list")?;
+            let inner = inner("list")?;
             let ndim = spec
                 .expected_shape
                 .as_ref()
                 .map(|shape| shape.len())
-                .or(spec.expected_ndim);
+                .or(spec.expected_ndim)
+                .or((facts == ColumnFacts::Pending).then_some(1));
             // Not a fallback to depth 1: the nesting depth *is* the schema for
             // a list sink, and guessing it is how `source("auto")` on a Binary
             // column came to publish `List(u8)` for data that executes as
@@ -633,7 +669,7 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
             Ok(dtype)
         }
         SinkKind::BufferArray => {
-            let inner = list_array_inner_dtype(spec.expected_dtype, "array")?;
+            let inner = inner("array")?;
             let sink_shape = spec.sink.shape();
             let shape = sink_shape.as_ref().or(spec.expected_shape.as_ref());
             if let Some(shape) = shape {
@@ -667,7 +703,7 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
             // buffer/list and array arms do, instead of silently mapping it to
             // U8 — a plan/data divergence if a vector output ever reached the
             // sink still "auto". (Today vector dtypes are always concrete.)
-            let inner = list_array_inner_dtype(spec.expected_dtype, "list")?;
+            let inner = inner("list")?;
             if let Some(ref shape) = spec.expected_shape {
                 let mut dtype = inner;
                 for _ in 0..shape.len() {
@@ -688,7 +724,7 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
         // This pair used to ride the silent Binary fallthrough: execution
         // produced an Array while lazy schema claimed Binary.
         SinkKind::VectorArray => {
-            let inner = list_array_inner_dtype(spec.expected_dtype, "array")?;
+            let inner = inner("array")?;
             let sink_shape = spec.sink.shape();
             let shape = sink_shape.as_ref().or(spec.expected_shape.as_ref());
             if let Some(shape) = shape {

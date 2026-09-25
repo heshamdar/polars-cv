@@ -29,7 +29,7 @@ use pyo3::prelude::*;
 use pyo3_polars::derive::polars_expr;
 
 use crate::passes::{node_pass, pass_catalog};
-use crate::plan::{_plan_state_from_json, plan_assert, plan_sink, plan_source, plan_step};
+use crate::plan::{_plan_state_from_json, plan_source, plan_step};
 use serde::Deserialize;
 
 /// Python module entry point for maturin.
@@ -51,13 +51,12 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_plan_state_from_json, m)?)?;
     m.add_function(wrap_pyfunction!(plan_step, m)?)?;
     m.add_function(wrap_pyfunction!(plan_source, m)?)?;
-    m.add_function(wrap_pyfunction!(plan_assert, m)?)?;
     m.add_function(wrap_pyfunction!(node_pass, m)?)?;
     m.add_function(wrap_pyfunction!(pass_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(op_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(io_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(enum_catalog, m)?)?;
-    m.add_function(wrap_pyfunction!(plan_sink, m)?)?;
+    m.add_function(wrap_pyfunction!(check_graph, m)?)?;
     m.add_function(wrap_pyfunction!(point_schema, m)?)?;
     m.add_function(wrap_pyfunction!(contour_schema, m)?)?;
     m.add_function(wrap_pyfunction!(bbox_schema, m)?)?;
@@ -242,6 +241,29 @@ fn vb_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
     execute_graph(inputs, &kwargs)
 }
 
+/// Validate a graph the way the plugin will load it, so `.sink()` raises where
+/// it is written rather than at `collect()`: compile it (structure, ops,
+/// planning) and resolve every output's `(domain, sink)` pair and schema.
+///
+/// A root whose source takes its element type or rank from the input column
+/// (`Source::resolves_from_column`) leaves those two facts to the column: they
+/// are decided when Polars plans the query, by the same code
+/// (`decode::ColumnFacts`); everything else is checked here.
+#[pyfunction]
+fn check_graph(graph_json: &str) -> PyResult<()> {
+    let fail = |e: PolarsError| py_value_error(e.to_string());
+    let compiled = crate::graph::get_or_compile(graph_json).map_err(fail)?;
+    let graph = compiled.graph();
+    for (alias, spec) in crate::graph::resolved_output_specs(graph, &[]).map_err(fail)? {
+        let checked = match graph.root_resolves_from_column(&spec.node) {
+            true => crate::graph::decode::check_output_before_column(&spec),
+            false => crate::graph::dtype_for_output(&spec).map(|_| ()),
+        };
+        checked.map_err(|e| py_value_error(format!("output '{alias}': {e}")))?;
+    }
+    Ok(())
+}
+
 /// Compute the output dtype for unified graph (single or multi-output).
 ///
 /// This function receives kwargs and parses the graph JSON to determine
@@ -267,7 +289,7 @@ fn unified_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsRe
             .iter()
             .map(|f| f.dtype().clone())
             .collect::<Vec<_>>(),
-    );
+    )?;
 
     // The null_with_message error policy appends a reserved `_error` field,
     // which forces struct output even for single-output graphs. This mirrors

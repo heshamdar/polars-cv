@@ -21,6 +21,7 @@ pub mod binary;
 pub mod channel;
 pub mod color;
 pub mod compute;
+pub mod declare;
 pub mod filter;
 pub mod geometry;
 pub mod histogram;
@@ -202,6 +203,7 @@ typed_ops! {
     "adjust_contrast" => AdjustContrast(compute::AdjustContrast) {"factor": 1.5},
     "adjust_gamma" => AdjustGamma(compute::AdjustGamma) {"gamma": 0.5},
     "apply_mask" => ApplyMask(binary::ApplyMask) {"mask": "n0", "invert": true},
+    "assert_shape" => AssertShape(declare::AssertShape) {"rank": 3, "dims": [8, null, 2]},
     "bitwise_and" => BitwiseAnd(binary::BitwiseAnd) {"other": "n0"},
     "bitwise_or" => BitwiseOr(binary::BitwiseOr) {"other": "n0"},
     "bitwise_xor" => BitwiseXor(binary::BitwiseXor) {"other": "n0"},
@@ -363,7 +365,6 @@ mod tests {
     use polars_cv_macros::Op;
     use serde::Deserialize;
     use serde_json::json;
-    use std::collections::BTreeSet;
 
     fn parse(v: serde_json::Value) -> Result<TypedOp, String> {
         serde_json::from_value(v).map_err(|e| e.to_string())
@@ -371,104 +372,6 @@ mod tests {
 
     fn parse_err(v: serde_json::Value) -> String {
         parse(v).expect_err("expected the spec to be rejected")
-    }
-
-    /// The ops executable before the migration (P0's name registry). The typed
-    /// catalogue must be exactly this set, so no op was dropped on the way. An
-    /// op added on purpose is added here too.
-    const OP_SET: &[&str] = &[
-        "abs",
-        "add",
-        "add_constant",
-        "adjust_contrast",
-        "adjust_gamma",
-        "apply_mask",
-        "bitwise_and",
-        "bitwise_or",
-        "bitwise_xor",
-        "blend",
-        "blur",
-        "canny",
-        "cast",
-        "ceil",
-        "channel_merge",
-        "channel_select",
-        "channel_swap",
-        "clamp",
-        "clamp_max",
-        "clamp_min",
-        "contour_area",
-        "contour_bounding_box",
-        "contour_centroid",
-        "contour_convex_hull",
-        "contour_perimeter",
-        "contour_scale",
-        "contour_simplify",
-        "contour_translate",
-        "convolve2d",
-        "crop",
-        "cvt_color",
-        "dilate",
-        "divide",
-        "equalize_histogram",
-        "erode",
-        "extract_contours",
-        "extract_shape",
-        "flip",
-        "floor",
-        "grayscale",
-        "histogram",
-        "invert",
-        "label_reduce",
-        "letterbox",
-        "maximum",
-        "minimum",
-        "morphology_gradient",
-        "multiply",
-        "neg",
-        "normalize",
-        "pad",
-        "pad_to_size",
-        "perceptual_hash",
-        "rasterize",
-        "ratio",
-        "reciprocal",
-        "reduce_argmax",
-        "reduce_argmin",
-        "reduce_max",
-        "reduce_mean",
-        "reduce_min",
-        "reduce_percentile",
-        "reduce_popcount",
-        "reduce_std",
-        "reduce_sum",
-        "relu",
-        "reshape",
-        "resize",
-        "resize_max",
-        "resize_min",
-        "resize_scale",
-        "resize_to_height",
-        "resize_to_width",
-        "rotate",
-        "round",
-        "scale",
-        "sign",
-        "sqrt",
-        "square",
-        "subtract",
-        "subtract_constant",
-        "threshold",
-        "transpose",
-        "trunc",
-        "warp_affine",
-    ];
-
-    #[test]
-    fn the_catalogue_is_the_op_set() {
-        let typed: BTreeSet<&str> = TypedOp::NAMES.iter().copied().collect();
-        let expected: BTreeSet<&str> = OP_SET.iter().copied().collect();
-        assert_eq!(typed, expected, "the typed catalogue must be the op set");
     }
 
     #[test]

@@ -330,6 +330,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "adjust_contrast",
         "adjust_gamma",
         "apply_mask",
+        "assert_shape",
         "bitwise_and",
         "bitwise_or",
         "bitwise_xor",
@@ -481,6 +482,20 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "apply_mask": {
         "mask": {"kind": "node"},
         "invert": {"kind": "scalar", "per_row": True, "py": "bool"},
+    },
+    "assert_shape": {
+        "rank": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
+        },
+        "dims": {
+            "kind": "array",
+            "len": 3,
+            "inner": {
+                "kind": "optional",
+                "inner": {"kind": "scalar", "per_row": True, "py": "int"},
+            },
+        },
     },
     "bitwise_and": {"other": {"kind": "node"}},
     "bitwise_or": {"other": {"kind": "node"}},
@@ -962,6 +977,24 @@ class _OpsMixin:
             >>> pipe = Pipeline().source("image_bytes").adjust_gamma(gamma=0.5)
         """
         return self._append_typed("adjust_gamma", {"gamma": gamma})
+
+    def _assert_shape(
+        self, dims: Sequence[IntOrExpr | None], *, rank: int | None = None
+    ) -> Pipeline:
+        """Declare the shape of the data at this point: its rank and any of the sizes
+        of dimensions 0, 1 and 2.
+
+        The planner applies the declaration (refusing one it contradicts), and
+        execution checks it against every row, so everything downstream rests on a
+        checked fact. The public `Pipeline.assert_shape` is sugar over this op.
+
+        Args:
+            rank: The rank, when declared (`assert_shape(dims=[...])` declares
+                `len(dims)`).
+            dims: The sizes of dimensions 0, 1 and 2; `None` declares nothing about that
+                dimension. A per-row size is checked per row and is no plan-time fact.
+        """
+        return self._append_typed("assert_shape", {"rank": rank, "dims": dims})
 
     def blur(self, sigma: FloatOrExpr) -> Pipeline:
         """Apply Gaussian blur.

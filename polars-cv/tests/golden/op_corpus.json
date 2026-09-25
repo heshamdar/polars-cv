@@ -211,7 +211,7 @@
   "reject/crop_window_outside_the_image": {"error": "ComputeError"},
   "reject/negative_crop_offset": {"error": "ValueError"},
   "reject/op_on_the_wrong_domain": {"error": "ValueError"},
-  "reject/singular_affine_matrix": {"error": "ComputeError"},
+  "reject/singular_affine_matrix": {"error": "ValueError"},
   "reject/structural_param_rejects_expression": {"error": "TypeError"},
   "reject/unknown_enum_value": {"error": "ValueError"},
   "reject/unknown_keyword": {"error": "TypeError"}

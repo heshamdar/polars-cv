@@ -48,6 +48,7 @@ use super::decode::{
 };
 use super::encode::{encode_node_output, execute_geometry_op};
 use super::types::{OutputSpec, OutputValue, RowErrorPolicy, RowResult, UnifiedGraph};
+use crate::plan::State;
 
 /// The exact graph JSON a graph was compiled from. Stored on the compiled
 /// graph so cache hits are validated by full equality, never by hash alone.
@@ -168,6 +169,8 @@ impl CompiledGraph {
         let mut graph = UnifiedGraph::from_json(graph_json)?;
         validate_graph_structure(&graph)?;
         let min_inputs = prepare_graph_params(&mut graph)?;
+        // A graph that does not plan is refused whole, before any row runs.
+        resolved_output_specs(&graph, &[])?;
 
         // `_error` is reserved for the error-message field of the
         // null_with_message policy; an output alias would collide with it.
@@ -296,7 +299,7 @@ impl CompiledGraph {
         let resolved_outputs = resolved_output_specs(
             &self.graph,
             &inputs.iter().map(|s| s.dtype().clone()).collect::<Vec<_>>(),
-        );
+        )?;
         let output_nodes = resolved_outputs
             .iter()
             .map(|(_, spec)| self.node_index.get(&spec.node).copied())
@@ -611,6 +614,7 @@ impl CompiledGraph {
             | GraphStep::Histogram(_)
             | GraphStep::PerceptualHash(_)
             | GraphStep::ExtractShape
+            | GraphStep::AssertShape { .. }
             | GraphStep::LabelReduce { .. } => false,
         }
     }
@@ -1128,6 +1132,22 @@ impl CompiledGraph {
                                 );
                                 current_output = NodeOutput::from_buffer(result);
                             }
+                            GraphStep::AssertShape { rank, dims } => {
+                                current_output =
+                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                let shape: Vec<usize> = match &current_output {
+                                    NodeOutput::Buffer(buf) => buf.shape().to_vec(),
+                                    NodeOutput::Vector(vals) => vec![vals.len()],
+                                    other => {
+                                        return Err(format!(
+                                            "assert_shape() declares a shape, but the data here \
+                                             is {}",
+                                            other.domain().name()
+                                        ))
+                                    }
+                                };
+                                check_declared_shape(&shape, *rank, dims)?;
+                            }
                             GraphStep::ExtractShape => {
                                 // Extract shape from buffer and return as vector
                                 current_output =
@@ -1578,169 +1598,78 @@ fn prepare_graph_params(graph: &mut UnifiedGraph) -> PolarsResult<usize> {
     Ok(inputs)
 }
 
-/// Resolve `"auto"` dtype and missing ndim on the graph's output specs from
-/// the first input column's type, returning per-call clones sorted by alias.
+/// Plan every node of `graph` and return each output's spec, sorted by alias.
 ///
-/// This is the single implementation shared by the planning-time
-/// (`unified_output_dtype`) and execution-time entry points, so the inferred
-/// schema cannot diverge between the two. It must stay per-call (never cached):
-/// the resolution depends on the input column's dtype.
+/// The one planner: each node starts from its source's state (a root) or its
+/// primary upstream's final state, and each op is applied by [`plan::step`] —
+/// the function the Python builder calls per append — with the states planned
+/// so far as the nodes an op may read by id. With `input_dtypes`, a root whose
+/// source resolves its element type or rank from the input column
+/// ([`Source::resolves_from_column`]) starts from what that column reveals.
 ///
-/// Only the leaf type of List/Array sources is meaningful for dtype: for
-/// Binary/String (image/file) sources the column type does not reflect the
-/// decoded buffer dtype, so `"auto"` is left unresolved.
-/// Walk to the root of *node_id*'s lineage and return the input column it reads.
-///
-/// A graph can have more than one root — `merge_pipe` and the binary ops join
-/// two `pl.col()` lineages into one `vb_graph` call — and each output belongs
-/// to exactly one of them. Resolving every output against the *first* input
-/// column instead assigned one branch's element type to the other: two
-/// list columns of different leaf dtypes produced a struct whose second field
-/// was planned from the first field's column.
-fn root_column_for(graph: &UnifiedGraph, node_id: &str) -> Option<usize> {
-    let node = graph.nodes.get(node_id)?;
-    match node.upstream.first() {
-        Some(upstream) => root_column_for(graph, upstream),
-        None => graph.column_bindings.get(node_id).copied(),
-    }
-}
-
+/// Shared by the schema (`unified_output_dtype`) and execution entry points,
+/// so the published schema and the executed one cannot diverge. Per call,
+/// never cached: the column refinement depends on the input dtypes.
 pub(crate) fn resolved_output_specs(
     graph: &UnifiedGraph,
     input_dtypes: &[DataType],
-) -> Vec<(String, OutputSpec)> {
+) -> PolarsResult<Vec<(String, OutputSpec)>> {
+    let mut states = crate::plan::Refs::new();
+    for node_id in graph.topological_order() {
+        let node = &graph.nodes[node_id];
+        let mut state = match graph.column_bindings.get(node_id) {
+            Some(&column) => {
+                let state = crate::plan::source_state(&node.source, &states)
+                    .map_err(|e| polars_err!(ComputeError: "node '{}': {}", node_id, e))?;
+                match input_dtypes.get(column) {
+                    Some(dt) if node.source.resolves_from_column() => refine_by_column(state, dt),
+                    _ => state,
+                }
+            }
+            None => states[&node.upstream[0]].clone(),
+        };
+        for op in &node.ops {
+            state = crate::plan::step(op, &state, &states)
+                .map_err(|e| polars_err!(ComputeError: "node '{}': {}", node_id, e))?;
+        }
+        states.insert(node_id.clone(), state);
+    }
+
     let mut specs: Vec<(String, OutputSpec)> = graph
         .outputs
         .iter()
-        .map(|(alias, spec)| (alias.clone(), spec.clone()))
-        .collect();
+        .map(|(alias, out)| {
+            let planned = states.get(&out.node).ok_or_else(|| {
+                polars_err!(ComputeError: "output '{}' names unknown node '{}'", alias, out.node)
+            })?;
+            Ok((
+                alias.clone(),
+                OutputSpec::planned(out, planned, graph.ends_in_histogram_buckets(&out.node)),
+            ))
+        })
+        .collect::<PolarsResult<_>>()?;
     specs.sort_by(|a, b| a.0.cmp(&b.0));
-
-    for (_, spec) in specs.iter_mut() {
-        // Each output is resolved against the column its own lineage reads.
-        let Some(dt) = root_column_for(graph, &spec.node)
-            .and_then(|idx| input_dtypes.get(idx))
-            .or_else(|| input_dtypes.first())
-        else {
-            continue;
-        };
-        resolve_one_output_spec(graph, spec, dt);
-    }
-    specs
+    Ok(specs)
 }
 
-/// Fill in one output's `"auto"` dtype and unknown rank from *dt*, the Polars
-/// type of the column its lineage reads.
-fn resolve_one_output_spec(graph: &UnifiedGraph, spec: &mut OutputSpec, dt: &DataType) {
-    let (leaf_dtype, ndim) = peel_nesting(dt);
-    // Polars leaf type → our dtype comes from `decode::dtype_from_polars_leaf`
-    // (the one such mapping in this crate); the *name* comes from
-    // `DType::short_name` (the one place a dtype is spelled). Neither is
-    // restated here.
-    let inferred_dtype_str = dtype_from_polars_leaf(&leaf_dtype).map(|d| d.short_name());
-
-    {
-        if !spec.expected_dtype.is_concrete() {
-            // The *source* element type, as far as the column reveals it. A
-            // Binary/String column says nothing (a PNG decodes u8 or u16, a
-            // TIFF f32 or f64); a list/array column's leaf type is meaningful
-            // when it maps to a buffer element type at all.
-            let source_dtype = match &leaf_dtype {
-                DataType::Binary | DataType::String | DataType::Null => PlannedDType::Unknown,
-                _ => inferred_dtype_str
-                    .and_then(PlannedDType::parse)
-                    .unwrap_or(PlannedDType::Unknown),
-            };
-            // Fold the ops' dtype rules over it, exactly as the rank is folded
-            // below. Assigning the *column's* type directly was wrong for any
-            // lineage that changes the dtype: `source("list")` over a u8 column
-            // followed by `scale()` was planned u8 and executed f32. Folding
-            // also recovers information from an unknown source — every rule but
-            // PreserveInput either fixes the dtype or pins it to a float.
-            let folded =
-                fold_output_dtype(graph, &spec.node, source_dtype).unwrap_or(PlannedDType::Unknown);
-            if folded != PlannedDType::Unknown {
-                spec.expected_dtype = folded;
-            }
-        }
-        // Output rank was left unknown by the Python planner (source rank was
-        // not known at build time — a list/array column). The true source rank
-        // is the input nesting depth; derive the OUTPUT rank by folding the
-        // output node's op rank rules from it, rather than assigning the input
-        // depth directly (which would be wrong after a rank-changing op such as
-        // channel_select). Reuses the same OutputRankRule authority as plan_step.
-        if spec.expected_ndim.is_none() && ndim > 0 {
-            spec.expected_ndim = fold_output_rank(graph, &spec.node, ndim);
+/// A root's state with what its input column reveals: a `List`/`Array`
+/// column's nesting depth is the rank, and its leaf type (when it maps to a
+/// buffer element) the dtype. A binary or string column reveals neither — a
+/// PNG decodes u8 or u16 — so its state is left as the source planned it.
+fn refine_by_column(mut state: State, column: &DataType) -> State {
+    let (leaf, depth) = peel_nesting(column);
+    if depth == 0 {
+        return state;
+    }
+    if state.ndim.is_none() {
+        state.ndim = Some(depth);
+    }
+    if !state.dtype.is_concrete() {
+        if let Some(dtype) = dtype_from_polars_leaf(&leaf) {
+            state.dtype = PlannedDType::Known(dtype);
         }
     }
-}
-
-/// A compiled op as wire JSON, for the introspection entry points
-/// (`resolve_op_from_json`): just the op's serde form.
-fn op_json(op: &TypedOp) -> String {
-    serde_json::to_string(op).expect("an op always serializes")
-}
-
-/// Derive a node's output rank by folding each op's `OutputRankRule` from a
-/// concrete source rank. Walks the primary upstream lineage to the root source
-/// node (whose input rank is the given `source_rank`). Returns `None` if any op
-/// declares an `Unknown` rank rule — the rank genuinely stays unknown.
-fn fold_output_rank(graph: &UnifiedGraph, node_id: &str, source_rank: usize) -> Option<usize> {
-    use view_buffer::ops::OutputRankRule;
-
-    let node = graph.nodes.get(node_id)?;
-    // The rank entering this node's ops: the primary upstream's output rank, or
-    // the source rank for a root node. Multi-input steps (binary/merge) pin
-    // rank via a Fixed rule, so following the first upstream is sufficient for
-    // the pure Preserve/ReduceByOne lineages that reach this unknown-rank path.
-    let mut rank = match node.upstream.first() {
-        Some(up) => fold_output_rank(graph, up, source_rank)?,
-        None => source_rank,
-    };
-    for op in &node.ops {
-        let step = crate::resolve_op_from_json(&op_json(op)).ok()?;
-        rank = match step.output_rank_rule() {
-            OutputRankRule::PreserveRank => rank,
-            OutputRankRule::ReduceByOne => rank.saturating_sub(1).max(1),
-            OutputRankRule::Fixed(n) => n,
-            OutputRankRule::Unknown => return None,
-        };
-    }
-    Some(rank)
-}
-
-/// Fold the ops' dtype rules from *source_dtype* to this node's output.
-///
-/// The dtype twin of [`fold_output_rank`], and it exists for the same reason:
-/// the *source's* element type is not the *output's* element type once an op
-/// changes it. `resolved_output_specs` used to assign the input column's leaf
-/// type straight to the output, so `source("list")` over a `List(UInt8)` column
-/// followed by `scale()` published `List(UInt8)` for data that arrives f32.
-///
-/// Returns `None` if any op in the lineage cannot be resolved, which the caller
-/// treats as "unknown" — the same conservative outcome as before.
-fn fold_output_dtype(
-    graph: &UnifiedGraph,
-    node_id: &str,
-    source_dtype: PlannedDType,
-) -> Option<PlannedDType> {
-    let node = graph.nodes.get(node_id)?;
-    // As in `fold_output_rank`, the primary upstream carries the lineage.
-    // Multi-input steps whose dtype genuinely depends on both operands (the
-    // binary ops) declare `PreserveInput` and are resolved by the Python
-    // planner's `plan_step` (given the other operand's dtype); reaching here with
-    // one still-unknown operand simply yields unknown.
-    let mut dtype = match node.upstream.first() {
-        Some(up) => fold_output_dtype(graph, up, source_dtype)?,
-        None => source_dtype,
-    };
-    for op in &node.ops {
-        let step = crate::resolve_op_from_json(&op_json(op)).ok()?;
-        // `out_dtype` overrides ride on the op's own params, which
-        // `op_json` preserves, so the step's rule already reflects them.
-        dtype = step.output_dtype_rule().resolve_planned(dtype);
-    }
-    Some(dtype)
+    state
 }
 
 /// Recursively peel List/Array nesting to find the leaf dtype and depth.
@@ -1817,6 +1746,46 @@ pub(crate) fn get_or_compile(graph_json: &str) -> PolarsResult<Arc<CompiledGraph
     Ok(compiled)
 }
 
+/// Check one row's shape against an `assert_shape` declaration.
+///
+/// The declaration is the user's statement about their data, so a mismatch is
+/// reported as theirs: it names what they wrote and what arrived.
+fn check_declared_shape(
+    shape: &[usize],
+    rank: Option<usize>,
+    dims: &[Option<usize>; 3],
+) -> Result<(), String> {
+    let mismatch = rank.is_some_and(|r| r != shape.len())
+        || dims
+            .iter()
+            .enumerate()
+            .any(|(axis, d)| d.is_some_and(|d| shape.get(axis) != Some(&d)));
+    if !mismatch {
+        return Ok(());
+    }
+    let declared: Vec<String> = match rank {
+        Some(r) => vec![format!(
+            "dims=[{}]",
+            dims[..r.min(3)]
+                .iter()
+                .map(|d| d.map_or("None".to_string(), |d| d.to_string()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )],
+        None => crate::plan::DIM_NAMES
+            .iter()
+            .zip(dims)
+            .filter_map(|(name, d)| d.map(|d| format!("{name}={d}")))
+            .collect(),
+    };
+    Err(format!(
+        "assert_shape({}) does not hold: the data is {shape:?}. An assertion states \
+         what the data is; it does not change it. Correct the assertion, or drop it \
+         and let the planner infer the shape.",
+        declared.join(", ")
+    ))
+}
+
 /// Validate that a buffer output's produced schema matches the plan.
 ///
 /// This is the runtime `plan == data` guard: the schema the Python planner
@@ -1866,24 +1835,15 @@ fn validate_output_schema(
             }
         }
         if let Some(expected_shape) = spec.expected_shape.as_ref() {
+            // A user's `assert_shape` is checked where it was written, so a
+            // divergence here is always an op's contract disagreeing with its
+            // implementation.
             if actual_shape != expected_shape.as_slice() {
-                // Whose claim was it? An inferred shape that execution
-                // contradicts is a contract bug; an asserted one is the
-                // caller's, and saying otherwise sends them to the wrong file.
-                return Err(if spec.shape_asserted {
-                    format!(
-                        "Output '{alias}': assert_shape() declared {expected_shape:?} \
-                         but execution produced {actual_shape:?}. An assertion states \
-                         what the data is; it does not change it. Correct the \
-                         assertion, or drop it and let the planner infer the shape."
-                    )
-                } else {
-                    format!(
-                        "Output '{alias}': planned shape {expected_shape:?} but execution \
-                         produced {actual_shape:?}. The planner's shape contract disagrees \
-                         with the Rust implementation."
-                    )
-                });
+                return Err(format!(
+                    "Output '{alias}': planned shape {expected_shape:?} but execution \
+                     produced {actual_shape:?}. The planner's shape contract disagrees \
+                     with the Rust implementation."
+                ));
             }
         }
     }
@@ -1902,7 +1862,7 @@ mod tests {
             }
         },
         "outputs": {
-            "_output": {"node": "n0", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}
+            "_output": {"node": "n0", "sink": {"format": "blob"}}
         },
         "column_bindings": {"n0": 0}
     }"#;
@@ -1915,7 +1875,7 @@ mod tests {
             }
         },
         "outputs": {
-            "_output": {"node": "n0", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}
+            "_output": {"node": "n0", "sink": {"format": "blob"}}
         },
         "column_bindings": {"n0": 0}
     }"#;
@@ -1946,7 +1906,7 @@ mod tests {
                 }
             },
             "outputs": {
-                "_output": {"node": "n0", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}
+                "_output": {"node": "n0", "sink": {"format": "blob"}}
             },
             "column_bindings": {"n0": 0}
         }"#;
@@ -1984,6 +1944,7 @@ mod tests {
             GraphStep::Histogram(_) => "Histogram",
             GraphStep::PerceptualHash(_) => "PerceptualHash",
             GraphStep::ExtractShape => "ExtractShape",
+            GraphStep::AssertShape { .. } => "AssertShape",
             GraphStep::LabelReduce { .. } => "LabelReduce",
         }
     }
@@ -2122,7 +2083,7 @@ mod tests {
                     "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
                            "ops": [{"op": "add", "other": "n0"}]}
                 },
-                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
+                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
@@ -2138,7 +2099,7 @@ mod tests {
                     "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
                            "ops": [{"op": "apply_mask", "mask": "n0", "invert": false}]}
                 },
-                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
+                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), &[mask_blob()])],
@@ -2154,7 +2115,7 @@ mod tests {
                     "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
                            "ops": [{"op": "channel_merge", "others": ["n0"]}]}
                 },
-                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
+                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), &[single])],
@@ -2167,7 +2128,7 @@ mod tests {
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "extract_contours", "mode": "external", "method": "simple"}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "planned": {"domain": "contour", "dtype": "auto"}}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), &[mask_blob()])],
@@ -2179,50 +2140,50 @@ mod tests {
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "reduce_sum"}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "planned": {"domain": "scalar", "dtype": "auto"}}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
         assert_eq!(out.f64().unwrap().get(0), Some(6.0));
 
-        // Histogram: counts buffer.
+        // Histogram: a counts vector (u64).
         let out = exec(
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "histogram", "bins": 4, "range": null,
                                            "closed": "left", "output": "counts"}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "list"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
-        let counts = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
-        assert_eq!(counts.as_slice::<u64>().iter().sum::<u64>(), 4);
+        let counts = out.list().unwrap().get_as_series(0).unwrap();
+        assert_eq!(counts.dtype(), &DataType::UInt64);
+        assert_eq!(counts.sum::<u64>().unwrap(), 4);
 
-        // PerceptualHash: image buffer -> 1-D u8 fingerprint. The step produces
-        // a Buffer node output (u8, so the typed list/array sinks preserve
-        // UInt8); serialize it via blob here to prove the variant executes.
+        // PerceptualHash: image buffer -> 1-D u8 fingerprint (vector domain;
+        // u8, so the typed list/array sinks preserve UInt8).
         let out = exec(
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "perceptual_hash",
                                            "algorithm": "average", "hash_size": 64}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "list"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
-        let hash_buf = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
-        assert_eq!(hash_buf.dtype(), view_buffer::DType::U8);
-        assert_eq!(hash_buf.shape(), &[8]);
+        let hash = out.list().unwrap().get_as_series(0).unwrap();
+        assert_eq!(hash.dtype(), &DataType::UInt8);
+        assert_eq!(hash.len(), 8);
 
         // ExtractShape: dimension vector.
         let out = exec(
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "extract_shape"}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "planned": {"domain": "vector", "dtype": "auto"}}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
@@ -2247,12 +2208,36 @@ mod tests {
                                            "contours": {"$slot": 1},
                                            "reduction": "max",
                                            "region_mode": "interior"}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "planned": {"domain": "vector", "dtype": "auto"}}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), &[mask_blob()]), cont_col],
         );
         assert_eq!(out.null_count(), 0);
+
+        // AssertShape: a declaration that holds passes the data through; one
+        // that does not fails the row naming what the user wrote.
+        let declared = |dims: &str| {
+            format!(
+                r#"{{
+                    "nodes": {{"n0": {{"source": {{"format": "blob"}},
+                                      "ops": [{{"op": "assert_shape", "rank": 2, "dims": {dims}}}]}}}},
+                    "outputs": {{"_output": {{"node": "n0", "sink": {{"format": "blob"}}}}}},
+                    "column_bindings": {{"n0": 0}}
+                }}"#
+            )
+        };
+        let blob_input = [Series::new("b".into(), std::slice::from_ref(&f32_blob))];
+        assert_eq!(exec(&declared("[2, 2, null]"), &blob_input).null_count(), 0);
+        let err = CompiledGraph::compile(&declared("[2, 3, null]"))
+            .unwrap()
+            .execute(&blob_input)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("assert_shape(dims=[2, 3]) does not hold: the data is [2, 2]"),
+            "{err}"
+        );
 
         // The set assertion. Without it the graphs above are a list somebody
         // remembered to extend, which is the shape this repo keeps regretting.
@@ -2279,7 +2264,7 @@ mod tests {
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "reduce_max",
                                            "axis": 0}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), &[blob])],
@@ -2299,7 +2284,7 @@ mod tests {
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "reduce_percentile",
                                            "q": 50.0}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "planned": {"domain": "scalar", "dtype": "auto"}}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}},
                 "column_bindings": {"n0": 0}
             }"#,
             &[Series::new("b".into(), &[blob])],
@@ -2326,7 +2311,7 @@ mod tests {
             }
         },
         "outputs": {
-            "_output": {"node": "n0", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}
+            "_output": {"node": "n0", "sink": {"format": "blob"}}
         },
         "column_bindings": {"n0": 0}
     }"#;
@@ -2474,7 +2459,7 @@ mod tests {
         let err = compile_err(
             r#"{
             "nodes": {"n0": {"source": {"format": "blob"}}},
-            "outputs": {"_output": {"node": "nope", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
+            "outputs": {"_output": {"node": "nope", "sink": {"format": "blob"}}},
             "column_bindings": {"n0": 0}
         }"#,
         );
@@ -2490,7 +2475,7 @@ mod tests {
                 "n0": {"source": {"format": "blob"}},
                 "orphan": {"source": {"format": "blob"}}
             },
-            "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
+            "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
             "column_bindings": {"n0": 0}
         }"#,
         );
@@ -2508,7 +2493,7 @@ mod tests {
                 "n0": {"source": {"format": "blob"}},
                 "n1": {"source": {"format": "blob"}, "upstream": ["ghost"]}
             },
-            "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
+            "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
             "column_bindings": {"n0": 0}
         }"#,
         );
@@ -2520,7 +2505,7 @@ mod tests {
         let err = compile_err(
             r#"{
             "nodes": {"n0": {"source": {"format": "carrier_pigeon"}}},
-            "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}, "planned": {"domain": "buffer", "dtype": "auto"}}},
+            "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
             "column_bindings": {"n0": 0}
         }"#,
         );

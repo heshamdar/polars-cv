@@ -81,6 +81,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **`assert_shape` is a checked operation.** It is planned where it is written
+  and checked against every row there; a mismatch fails the row naming the
+  assertion. Optimizations may rely on the declared shape (it is a fact once
+  checked), an assertion is never removed, and it no longer shields its node
+  from identity elimination. `dims=` entries may be per-row expressions.
+- **The plugin plans the graph itself.** An output on the wire is only its node
+  and sink; the planned-state field, the execution-side dtype/rank folds and the
+  first-input-column fallback are gone. `.sink()` validates the graph with the
+  plugin's own compile, planning and sink-schema code (`_lib.check_graph`), so
+  sink problems raise `ValueError` at `.sink()`; `plan_sink`/`plan_assert` are
+  gone.
+
 
 - **The builder's planner and the executor share one dtype lattice.** A
   float-promoting op over a dtype the plan does not know (`scale`, `sqrt`,

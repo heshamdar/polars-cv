@@ -94,8 +94,10 @@ When `.sink()` is called, a `PipelineGraph` is built:
 
 **A node reference is not a dependency until it is an upstream edge.** An op or
 source that points at another `LazyPipelineExpr` by node id — `rasterize(shape=)`,
-`source("contour", shape=)` — must *also* append it to `Pipeline._shape_refs`,
-because `_shape_refs` is what `cv.pipe` / `LazyPipelineExpr.pipe` turn into the
+`source("contour", shape=)`, a binary operand — is recorded in `Pipeline._node_refs`
+(by `_encode_field`, for every node-typed field), because `_node_refs` is both
+what plans the op (the node's state, by id) and what `cv.pipe` /
+`LazyPipelineExpr.pipe` turn into the
 `upstream` list, and only an upstream edge puts the referenced node into the
 graph at all. Record the id without the edge and the reference dangles at
 execution — invisibly, for as long as some other consumer happens to pull the
@@ -109,12 +111,11 @@ ordering.
 
 Every operation's schema effect — output domain, dtype, rank (ndim), H/W and
 channel count — comes from the op's Rust contract, applied in Rust by one call
-per appended op: `_lib.plan_step(op_json, state, other=None)`
-(`src/plan.rs`). The pipeline's whole tracked state is one `PlanState`
-(`Pipeline._state`: domain, dtype, rank, known sizes, which of them the user
-asserted, whether a declaration reached the lineage), computed only in Rust —
-`plan_source` for a source, `plan_step` per op, `plan_assert` for a shape
-declaration — and never edited in Python. `_push_op` records the state entering
+per appended op: `_lib.plan_step(op_json, state, refs)` (`src/plan.rs`;
+`refs` are the states of the nodes the op reads by id). The pipeline's whole
+tracked state is one `PlanState` (`Pipeline._state`: domain, dtype, rank, known
+sizes), computed only in Rust — `plan_source` for a source, `plan_step` per op,
+an `assert_shape` included (it is an op) — and never edited in Python. `_push_op` records the state entering
 each op (`_entering`). A slice, reorder or
 deletion of the ops goes through `_replay`, which appends the kept ops again
 from a recorded state, so no per-position fact is ever re-keyed by hand.
@@ -348,8 +349,8 @@ A `source()` or `.sink()` parameter that the chosen format never reads is
 rejected. Each source and sink format is a typed Rust struct carrying exactly
 the fields its decode or encode reads (`src/formats/`, each
 `deny_unknown_fields`), and the builder validates what the caller passed
-against that definition (`plan_source`, `plan_sink`) — the deserializer the graph itself
-uses — so an unknown, misspelled or inapplicable keyword is refused while the
+against that definition (`plan_source`, and `check_graph` for the whole graph at
+`.sink()`) — the deserializer the graph itself uses — so an unknown, misspelled or inapplicable keyword is refused while the
 pipeline is built, naming the formats it does apply to. `source()` sends
 exactly the keywords the caller passed (read from its own `locals()`; every
 keyword defaults to `None`, so passed means not `None`), and

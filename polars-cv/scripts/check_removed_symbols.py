@@ -293,16 +293,7 @@ REMOVED: tuple[Removed, ...] = (
     Removed("_source_param_defaults", "P8: source() keywords default to None"),
     Removed(
         "shape_asserted",
-        "P7e: an output carries its planned state; Rust reads the facts off it",
-        # The Rust OutputSpec field it is read into, and the graph's reporting.
-        allowed_in=frozenset(
-            {
-                "polars-cv/src/graph/types.rs",
-                "polars-cv/src/graph/compiled.rs",
-                "polars-cv/src/graph/encode.rs",
-                "polars-cv/src/graph/sink_kind.rs",
-            }
-        ),
+        "C2: assert_shape checks rows where it is written; no output flag",
     ),
     Removed("ShapeAssertion", "P7e: an assertion is plan_assert's wire dict"),
     Removed("_plan_step", "P7e: _push_op calls plan_step and keeps its state"),
@@ -333,6 +324,25 @@ REMOVED: tuple[Removed, ...] = (
         "test_domain_vocabulary_declared_once",
         "C1: Domain is generated from the registry",
     ),
+    # Consolidation C2: declarations are ops, Rust plans the graph itself.
+    Removed("plan_assert", "C2: assert_shape is a typed op planned by plan_step"),
+    Removed("plan_sink", "C2: .sink() runs check_graph (the plugin's own compile + sink schema)"),
+    Removed("check_sink", "C2: decode::output_schema is the one sink check"),
+    Removed("_check_sink", "C2: PipelineGraph.check -> _lib.check_graph"),
+    Removed("_assertion_window", "C2: assertions are ops; a slice keeps them like any op"),
+    Removed("_apply_assertions_at", "C2: assertions are ops, applied by plan_step"),
+    Removed("_new_assertion", "C2: assertions are ops"),
+    Removed("_render_assertion", "C2: repr renders the assert_shape op"),
+    Removed("_asserted_rank", "C2: plan::declare checks the rank"),
+    Removed("_canvas_of", "C2: a canvas node is read by id (plan::Refs)"),
+    Removed("_shape_refs", "C2: Pipeline._node_refs (every node an op reads by id)"),
+    Removed("_find_node_by_alias", "C2: dead once sinks are checked on the whole graph"),
+    Removed("WireOutput", "C2: the wire output is node + sink (OutputRequest)"),
+    Removed("fold_output_rank", "C2: resolved_output_specs plans the graph with plan::step"),
+    Removed("fold_output_dtype", "C2: resolved_output_specs plans the graph with plan::step"),
+    Removed("root_column_for", "C2: planning follows each node's lineage (no first-column fallback)"),
+    Removed("has_typed_elements", "C2: dead with check_sink"),
+    Removed("the_catalogue_is_the_op_set", "C2: OP_SET restated typed_ops!; op_catalog.json is the record"),
 )
 
 

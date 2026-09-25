@@ -98,6 +98,42 @@
     ]
   },
   {
+    "name": "assert_shape",
+    "python": "assert_shape",
+    "visibility": "internal",
+    "doc": "Declare the shape of the data at this point: its rank and any of the sizes\nof dimensions 0, 1 and 2.\n\nThe planner applies the declaration (refusing one it contradicts), and\nexecution checks it against every row, so everything downstream rests on a\nchecked fact. The public `Pipeline.assert_shape` is sugar over this op.",
+    "fields": [
+      {
+        "name": "rank",
+        "doc": "The rank, when declared (`assert_shape(dims=[...])` declares\n`len(dims)`).",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "int"
+          }
+        }
+      },
+      {
+        "name": "dims",
+        "doc": "The sizes of dimensions 0, 1 and 2; `None` declares nothing about that\ndimension. A per-row size is checked per row and is no plan-time fact.",
+        "type": {
+          "kind": "array",
+          "len": 3,
+          "inner": {
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": true,
+              "py": "int"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
     "name": "bitwise_and",
     "python": "bitwise_and",
     "visibility": "lazy_only",

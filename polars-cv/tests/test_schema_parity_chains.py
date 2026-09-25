@@ -184,7 +184,9 @@ def test_array_sink_refuses_after_a_hint_invalidating_step(name: str) -> None:
         # reason exists is a tautology — both rejection constructors always
         # set one — so a sink keyword rename, or any unrelated build error,
         # would have kept this test green while testing nothing.
-        assert "shape" in (result.reason or "").lower(), (
+        # A scalar has no array form at all: that is the reason, not a shape.
+        expected = "domain 'scalar'" if name == "reduce_sum" else "shape"
+        assert expected in (result.reason or "").lower(), (
             f"{name}: the array sink was refused, but not for an unknown "
             f"shape. Reason: {result.reason!r}"
         )

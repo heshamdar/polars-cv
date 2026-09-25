@@ -678,7 +678,7 @@ mod tests {
                 }
             },
             "outputs": {
-                "_output": {"node": "_node_0", "sink": {"format": "numpy"}, "planned": {"domain": "buffer", "dtype": "auto"}}
+                "_output": {"node": "_node_0", "sink": {"format": "numpy"}}
             },
             "column_bindings": {"_node_0": 0}
         }"#;
@@ -702,8 +702,8 @@ mod tests {
                 }
             },
             "outputs": {
-                "original": {"node": "_node_0", "sink": {"format": "png"}, "planned": {"domain": "buffer", "dtype": "auto"}},
-                "processed": {"node": "_node_1", "sink": {"format": "numpy"}, "planned": {"domain": "buffer", "dtype": "auto"}}
+                "original": {"node": "_node_0", "sink": {"format": "png"}},
+                "processed": {"node": "_node_1", "sink": {"format": "numpy"}}
             },
             "column_bindings": {"_node_0": 0}
         }"#;
@@ -721,8 +721,8 @@ mod tests {
                 "b": {"source": {"format": "blob"}, "ops": [], "upstream": ["a"]}
             },
             "outputs": {
-                "out_a": {"node": "a", "sink": {"format": "numpy"}, "planned": {"domain": "buffer", "dtype": "auto"}},
-                "out_b": {"node": "b", "sink": {"format": "png"}, "planned": {"domain": "buffer", "dtype": "auto"}}
+                "out_a": {"node": "a", "sink": {"format": "numpy"}},
+                "out_b": {"node": "b", "sink": {"format": "png"}}
             },
             "column_bindings": {"a": 0}
         }"#;
@@ -929,7 +929,6 @@ mod contour_sink_tests {
             expected_domain: view_buffer::ops::Domain::Contour,
             expected_dtype: view_buffer::PlannedDType::Unknown,
             expected_shape: None,
-            shape_asserted: false,
             expected_ndim: None,
             histogram_buckets: false,
         }

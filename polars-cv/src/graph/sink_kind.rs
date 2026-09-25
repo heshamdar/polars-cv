@@ -136,7 +136,6 @@ mod tests {
             expected_domain: view_buffer::naming::lookup(Domain::NAMED, domain).unwrap(),
             expected_dtype: view_buffer::PlannedDType::Known(view_buffer::DType::U8),
             expected_shape: None,
-            shape_asserted: false,
             expected_ndim: None,
             histogram_buckets: false,
         }

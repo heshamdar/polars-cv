@@ -45,11 +45,6 @@ OPEN_STRUCT_EXEMPT = {
     # a file on disk rather than a kwarg from Python, so it is not a
     # plugin-boundary struct at all.
     "cloud_auth.rs::Probe": "intentional partial parse of an ADC file",
-    # Deserialized only through `#[serde(from = "WireOutput")]`, so its own
-    # attributes never see the wire: `WireOutput` (same file, closed) does, and
-    # `an_output_without_its_planned_state_is_refused` pins that it refuses an
-    # unknown field.
-    "types.rs::OutputSpec": "deserialized via its closed WireOutput",
 }
 
 _DESERIALIZED_STRUCT = re.compile(
