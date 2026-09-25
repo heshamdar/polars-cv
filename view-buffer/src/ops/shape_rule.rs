@@ -2,7 +2,7 @@
 //! (rank and channel count).
 //!
 //! These are the plan-time-inspectable, op-coupled counterparts to
-//! [`infer_shape`](crate::ops::Op::infer_shape), in the same spirit as
+//! [`OpShape`] (an op's [`shape`](crate::ops::Op::shape)), in the same spirit as
 //! [`OutputDTypeRule`](crate::core::dtype::OutputDTypeRule) is for dtype.
 //!
 //! A shape transform decomposes into two parts:
@@ -10,12 +10,12 @@
 //!   dimension. This is declarable up front (these rules) and is exactly what
 //!   plan-time schema inference needs when concrete dimensions are unknown.
 //! - **Geometric** — the actual `H`/`W` values produced (e.g. a resize target).
-//!   These depend on operation parameters and stay in `infer_shape`.
+//!   These depend on operation parameters and live in [`OpShape`], the one
+//!   authority for shape arithmetic, evaluated symbolically ([`Dim`], [`Sym`])
+//!   at plan time and on known sizes at execution.
 //!
-//! `infer_shape` remains the concrete authority; these rules declare the
-//! structural effect. A parity test (`tests`/`shape_rule_parity`) binds the two
-//! so the declaration can never silently diverge from what `infer_shape`
-//! actually produces.
+//! A parity test (`parity_tests`) binds these rules to `OpShape` so the
+//! declaration can never silently diverge from the shape an op produces.
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -28,7 +28,7 @@ pub enum OutputRankRule {
     PreserveRank,
     /// Output rank is input rank minus one (axis or channel-dimension drop).
     ///
-    /// Mirrors `infer_shape`'s clamp behaviour: reducing the rank of a rank-1
+    /// Mirrors `shape`'s clamp behaviour: reducing the rank of a rank-1
     /// input still yields rank 1 (a single scalar slot), never rank 0.
     ReduceByOne,
     /// Output is always exactly this rank, regardless of input.
@@ -97,10 +97,350 @@ impl OutputChannelRule {
     }
 }
 
+/// One dimension of a shape at plan time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dim {
+    /// A size known before execution.
+    Known(usize),
+    /// The unknown size of input axis `k`, carried through unchanged: an output
+    /// axis reading `Input(k)` is provably that input axis's size, which is
+    /// what lets the planner prove an op preserves an unknown shape.
+    Input(usize),
+    /// Not knowable before execution: it rests on data, a per-row parameter, or
+    /// arithmetic on an unknown size.
+    Unknown,
+}
+
+impl Dim {
+    /// The size, when known.
+    pub fn known(self) -> Option<usize> {
+        match self {
+            Dim::Known(n) => Some(n),
+            Dim::Input(_) | Dim::Unknown => None,
+        }
+    }
+
+    /// `f` of a known size; anything else is unknown.
+    fn map(self, f: impl FnOnce(usize) -> usize) -> Dim {
+        self.known().map_or(Dim::Unknown, |n| Dim::Known(f(n)))
+    }
+
+    /// This size plus `amount`. Adding a known zero keeps an `Input` symbol, so
+    /// a zero pad is provably shape-preserving over an unknown shape.
+    fn plus(self, amount: Sym<usize>) -> Dim {
+        match amount {
+            Sym::Known(0) => self,
+            Sym::Known(a) => self.map(|n| n + a),
+            Sym::PerRow => Dim::Unknown,
+        }
+    }
+}
+
+/// A shape-determining parameter at plan time: its value, or `PerRow` when a
+/// per-row expression supplies it (known only once a row executes).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Sym<T> {
+    Known(T),
+    PerRow,
+}
+
+impl<T> Sym<T> {
+    /// The value, when known.
+    pub fn known(self) -> Option<T> {
+        match self {
+            Sym::Known(v) => Some(v),
+            Sym::PerRow => None,
+        }
+    }
+}
+
+impl Sym<usize> {
+    fn dim(self) -> Dim {
+        self.known().map_or(Dim::Unknown, Dim::Known)
+    }
+}
+
+/// How an operation's output shape follows from its input shapes — the one
+/// authority for shape arithmetic. Execution evaluates it on known sizes
+/// ([`OpShape::concrete`]); the planner on symbolic ones ([`OpShape::dims`]),
+/// with a per-row parameter as [`Sym::PerRow`] rather than a placeholder value.
+///
+/// "H/W" are dimensions 0 and 1; the geometric variants leave a rank below 2
+/// unchanged and carry every axis past the second through.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OpShape {
+    /// The input shape, unchanged.
+    Preserve,
+    /// Exactly this shape, whatever the input (a hash, a histogram, a canvas,
+    /// a reshape target).
+    Fixed(Vec<Sym<usize>>),
+    /// Not knowable before execution (a data-dependent length).
+    Dynamic,
+    /// `[H, W, C]` → `[H, W, 1]`; any other rank unchanged.
+    SingleChannel,
+    /// A colour conversion to `channels` colour channels, plus one when the
+    /// input carries alpha (2 or 4 channels). A rank-2 input gains a channel
+    /// axis unless the target is gray.
+    ColorChannels { channels: usize, to_gray: bool },
+    /// `[H, W, C]` → `[H, W]`; any other rank unchanged.
+    DropChannelAxis,
+    /// H and W swap.
+    SwapHw,
+    /// H and W swap on some rows and not others (a per-row lattice rotation):
+    /// known only for a square input.
+    MaybeSwapHw,
+    /// The bounding box of the input rotated by `angle` degrees.
+    RotateExpand(Sym<f32>),
+    /// H/W set to `(h, w)`.
+    SetHw { h: Sym<usize>, w: Sym<usize> },
+    /// H/W scaled by `(sy, sx)`, rounded.
+    ScaleHw { sy: Sym<f32>, sx: Sym<f32> },
+    /// H set to `h`, W following the aspect ratio.
+    HeightTo(Sym<usize>),
+    /// W set to `w`, H following the aspect ratio.
+    WidthTo(Sym<usize>),
+    /// The long side scaled to `n`, the other following the aspect ratio.
+    LongSideTo(Sym<usize>),
+    /// The short side scaled to `n`, the other following the aspect ratio.
+    ShortSideTo(Sym<usize>),
+    /// H grown by `top + bottom`, W by `left + right`.
+    Pad {
+        top: Sym<usize>,
+        bottom: Sym<usize>,
+        left: Sym<usize>,
+        right: Sym<usize>,
+    },
+    /// H/W grown to at least `(h, w)`.
+    AtLeastHw { h: Sym<usize>, w: Sym<usize> },
+    /// Axis `i` of the output is input axis `perm[i]`.
+    Transpose(Vec<usize>),
+    /// Axis `i` starts at `start[i]` and keeps `len[i]` elements, or runs to
+    /// the end of the axis when `len[i]` is `None`; later axes are kept whole.
+    Crop {
+        start: Vec<Sym<usize>>,
+        len: Vec<Option<Sym<usize>>>,
+    },
+    /// Axis `axis` removed (a global reduction when `None`); never below rank 1.
+    Reduce { axis: Option<usize> },
+    /// The two inputs broadcast together.
+    Broadcast,
+}
+
+impl OpShape {
+    /// The output shape for `inputs`, `None` when not knowable before
+    /// execution. Total: an input of an unexpected rank yields unknown sizes,
+    /// never a panic.
+    pub fn dims(&self, inputs: &[&[Dim]]) -> Option<Vec<Dim>> {
+        let input: &[Dim] = inputs.first().copied().unwrap_or(&[]);
+        let hw = |h: Dim, w: Dim| {
+            let mut out = input.to_vec();
+            if out.len() >= 2 {
+                out[0] = h;
+                out[1] = w;
+            }
+            out
+        };
+        let (in_h, in_w) = match input {
+            [h, w, ..] => (*h, *w),
+            _ => (Dim::Unknown, Dim::Unknown),
+        };
+        // Both sizes of an aspect-ratio computation, when known.
+        let known_hw = in_h.known().zip(in_w.known());
+        let aspect = |f: &dyn Fn(f32, f32) -> (f32, f32)| match known_hw {
+            Some((h, w)) => {
+                let (oh, ow) = f(h as f32, w as f32);
+                hw(
+                    Dim::Known(oh.round() as usize),
+                    Dim::Known(ow.round() as usize),
+                )
+            }
+            None => hw(Dim::Unknown, Dim::Unknown),
+        };
+        Some(match self {
+            OpShape::Preserve => input.to_vec(),
+            OpShape::Fixed(shape) => shape.iter().map(|s| s.dim()).collect(),
+            OpShape::Dynamic => return None,
+            OpShape::SingleChannel => match input {
+                [h, w, _] => vec![*h, *w, Dim::Known(1)],
+                _ => input.to_vec(),
+            },
+            OpShape::ColorChannels { channels, to_gray } => match input {
+                [_, _] if *to_gray => input.to_vec(),
+                [h, w] => vec![*h, *w, Dim::Known(*channels)],
+                [h, w, c] => {
+                    let alpha = |c: usize| usize::from(matches!(c, 2 | 4));
+                    vec![*h, *w, c.map(|c| channels + alpha(c))]
+                }
+                _ => input.to_vec(),
+            },
+            OpShape::DropChannelAxis => match input {
+                [h, w, _] => vec![*h, *w],
+                _ => input.to_vec(),
+            },
+            OpShape::SwapHw => hw(in_w, in_h),
+            OpShape::MaybeSwapHw => match known_hw {
+                Some((h, w)) if h == w => input.to_vec(),
+                _ => hw(Dim::Unknown, Dim::Unknown),
+            },
+            OpShape::RotateExpand(angle) => match (known_hw, angle.known()) {
+                (Some((h, w)), Some(angle)) => {
+                    let rad = (angle as f64) * std::f64::consts::PI / 180.0;
+                    let (cos, sin) = (rad.cos().abs(), rad.sin().abs());
+                    let (h, w) = (h as f64, w as f64);
+                    hw(
+                        Dim::Known((h * cos + w * sin).round() as usize),
+                        Dim::Known((w * cos + h * sin).round() as usize),
+                    )
+                }
+                _ => hw(Dim::Unknown, Dim::Unknown),
+            },
+            OpShape::SetHw { h, w } => hw(h.dim(), w.dim()),
+            OpShape::ScaleHw { sy, sx } => {
+                let by = |d: Dim, s: Sym<f32>| match s {
+                    Sym::Known(s) => d.map(|n| (n as f32 * s).round() as usize),
+                    Sym::PerRow => Dim::Unknown,
+                };
+                hw(by(in_h, *sy), by(in_w, *sx))
+            }
+            OpShape::HeightTo(h) => match h.known() {
+                Some(t) => aspect(&|ih, iw| (t as f32, t as f32 * (iw / ih))),
+                None => hw(Dim::Unknown, Dim::Unknown),
+            }
+            .into_iter()
+            .enumerate()
+            .map(|(i, d)| if i == 0 { h.dim() } else { d })
+            .collect(),
+            OpShape::WidthTo(w) => match w.known() {
+                Some(t) => aspect(&|ih, iw| (t as f32 * (ih / iw), t as f32)),
+                None => hw(Dim::Unknown, Dim::Unknown),
+            }
+            .into_iter()
+            .enumerate()
+            .map(|(i, d)| if i == 1 { w.dim() } else { d })
+            .collect(),
+            OpShape::LongSideTo(n) | OpShape::ShortSideTo(n) => match n.known() {
+                Some(n) => {
+                    let long = matches!(self, OpShape::LongSideTo(_));
+                    aspect(&|ih, iw| {
+                        let side = if long { ih.max(iw) } else { ih.min(iw) };
+                        let scale = n as f32 / side;
+                        (ih * scale, iw * scale)
+                    })
+                }
+                None => hw(Dim::Unknown, Dim::Unknown),
+            },
+            OpShape::Pad {
+                top,
+                bottom,
+                left,
+                right,
+            } => hw(in_h.plus(*top).plus(*bottom), in_w.plus(*left).plus(*right)),
+            OpShape::AtLeastHw { h, w } => {
+                let at_least = |d: Dim, t: Sym<usize>| match (d.known(), t.known()) {
+                    (Some(n), Some(t)) => Dim::Known(n.max(t)),
+                    _ => Dim::Unknown,
+                };
+                hw(at_least(in_h, *h), at_least(in_w, *w))
+            }
+            OpShape::Transpose(perm) => perm
+                .iter()
+                .map(|&axis| input.get(axis).copied().unwrap_or(Dim::Unknown))
+                .collect(),
+            OpShape::Crop { start, len } => input
+                .iter()
+                .enumerate()
+                .map(|(axis, &d)| {
+                    let from = start.get(axis).copied().unwrap_or(Sym::Known(0));
+                    match len.get(axis).copied().flatten() {
+                        Some(len) => len.dim(),
+                        None => match from {
+                            Sym::Known(0) => d,
+                            Sym::Known(s) => d.map(|n| n.saturating_sub(s)),
+                            Sym::PerRow => Dim::Unknown,
+                        },
+                    }
+                })
+                .collect(),
+            OpShape::Reduce { axis: None } => vec![Dim::Known(1)],
+            OpShape::Reduce { axis: Some(axis) } => {
+                let mut out = input.to_vec();
+                if *axis < out.len() {
+                    out.remove(*axis);
+                }
+                if out.is_empty() {
+                    out.push(Dim::Known(1));
+                }
+                out
+            }
+            OpShape::Broadcast => match inputs {
+                [a, b] => {
+                    let known = |s: &[Dim]| s.iter().map(|d| d.known()).collect::<Option<Vec<_>>>();
+                    match known(a).zip(known(b)) {
+                        Some((a, b)) => crate::ops::binary::broadcast_shapes(&a, &b)
+                            .unwrap_or(a)
+                            .into_iter()
+                            .map(Dim::Known)
+                            .collect(),
+                        None => vec![Dim::Unknown; a.len().max(b.len())],
+                    }
+                }
+                _ => input.to_vec(),
+            },
+        })
+    }
+
+    /// The output shape for known input shapes: [`dims`](Self::dims) on known
+    /// sizes, which yields known sizes. Empty when not knowable before
+    /// execution (a data-dependent length).
+    pub fn concrete(&self, inputs: &[&[usize]]) -> Vec<usize> {
+        let known: Vec<Vec<Dim>> = inputs
+            .iter()
+            .map(|s| s.iter().map(|&n| Dim::Known(n)).collect())
+            .collect();
+        let refs: Vec<&[Dim]> = known.iter().map(Vec::as_slice).collect();
+        self.dims(&refs)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| {
+                d.known()
+                    .expect("an op's shape over known sizes and known parameters is known")
+            })
+            .collect()
+    }
+
+    /// Whether the op provably hands every element through where it was —
+    /// the output is the input's shape *and* nothing was offset — over
+    /// `input`, or over any input at all when the rank is unknown (`None`).
+    ///
+    /// A crop away from a known-zero origin never preserves: it can keep the
+    /// input's shape only by running past the edge. Any per-row parameter
+    /// ([`Sym::PerRow`]) leaves its axis unknown, so it never proves anything.
+    pub fn preserves(&self, input: Option<&[Dim]>) -> bool {
+        let zero = |s: &Sym<usize>| *s == Sym::Known(0);
+        let for_any_input = match self {
+            OpShape::Preserve => true,
+            OpShape::Pad {
+                top,
+                bottom,
+                left,
+                right,
+            } => [top, bottom, left, right].into_iter().all(zero),
+            OpShape::Crop { start, len } => {
+                if !start.iter().all(zero) {
+                    return false;
+                }
+                len.iter().all(Option::is_none)
+            }
+            _ => false,
+        };
+        for_any_input || input.is_some_and(|input| self.dims(&[input]).as_deref() == Some(input))
+    }
+}
+
 #[cfg(test)]
 mod parity_tests {
-    //! Bind the declarative rules to `infer_shape`: for every operation, the
-    //! rank/channel a rule *predicts* must equal what `infer_shape` actually
+    //! Bind the declarative rules to `shape`: for every operation, the
+    //! rank/channel a rule *predicts* must equal what `shape` actually
     //! produces. This is the drift guard that makes the rules a faithful, single
     //! authority for plan-time structural inference rather than a parallel copy.
 
@@ -116,19 +456,19 @@ mod parity_tests {
     use crate::ops::traits::Op;
     use crate::ops::view::ViewOp;
 
-    /// Assert that `op`'s declared rank/channel rules agree with `infer_shape`
+    /// Assert that `op`'s declared rank/channel rules agree with `shape`
     /// on `probe`. `Unknown`/`NotApplicable` rules are intentionally skipped —
     /// they declare "not knowable", so there is nothing to bind.
     fn check(op: &dyn Op, probe: &[usize]) {
         // Duplicate the probe so multi-input ops (binary, pairwise geometry)
         // also have a second input; single-input ops ignore the extra.
-        let out = op.infer_shape(&[probe, probe]);
+        let out = op.shape().concrete(&[probe, probe]);
 
         if let Some(expected_rank) = op.output_rank_rule().apply(probe.len()) {
             assert_eq!(
                 expected_rank,
                 out.len(),
-                "{}: rank rule {:?} predicted rank {} but infer_shape gave {:?}",
+                "{}: rank rule {:?} predicted rank {} but shape gave {:?}",
                 op.name(),
                 op.output_rank_rule(),
                 expected_rank,
@@ -142,7 +482,7 @@ mod parity_tests {
                 assert_eq!(
                     out.len(),
                     3,
-                    "{}: channel rule {:?} implies a rank-3 output but infer_shape gave {:?}",
+                    "{}: channel rule {:?} implies a rank-3 output but shape gave {:?}",
                     op.name(),
                     op.output_channel_rule(),
                     out,
@@ -150,7 +490,7 @@ mod parity_tests {
                 assert_eq!(
                     expected_c,
                     out[2],
-                    "{}: channel rule {:?} predicted {} channels but infer_shape gave {:?}",
+                    "{}: channel rule {:?} predicted {} channels but shape gave {:?}",
                     op.name(),
                     op.output_channel_rule(),
                     expected_c,
@@ -311,12 +651,12 @@ mod parity_tests {
         assert!(
             missing.is_empty(),
             "these ImageOpKind variants are acknowledged but never probed \
-             against infer_shape: {missing:?}"
+             against shape: {missing:?}"
         );
     }
 
     #[test]
-    fn image_ops_match_infer_shape() {
+    fn image_ops_match_shape() {
         // A non-square probe so H/W math errors cannot cancel out.
         let probe = [4usize, 6, 3];
         for kind in image_kind_probes() {
@@ -325,7 +665,7 @@ mod parity_tests {
     }
 
     #[test]
-    fn view_ops_match_infer_shape() {
+    fn view_ops_match_shape() {
         let probe = [4usize, 4, 3];
         check(&ViewOp::Transpose(vec![2, 1, 0]), &probe);
         check(&ViewOp::Reshape(vec![48]), &probe);
@@ -344,7 +684,7 @@ mod parity_tests {
     }
 
     #[test]
-    fn compute_and_filter_ops_match_infer_shape() {
+    fn compute_and_filter_ops_match_shape() {
         let probe = [4usize, 4, 3];
         check(&ComputeOp::Scale(2.0), &probe);
         check(&ComputeOp::Relu, &probe);
@@ -362,14 +702,14 @@ mod parity_tests {
     }
 
     #[test]
-    fn binary_ops_match_infer_shape() {
+    fn binary_ops_match_shape() {
         let probe = [4usize, 4, 3];
         check(&BinaryOp::Add, &probe);
         check(&BinaryOp::Multiply, &probe);
     }
 
     #[test]
-    fn reduction_ops_match_infer_shape() {
+    fn reduction_ops_match_shape() {
         let probe = [4usize, 4, 3];
         check(&ReductionOp::Sum { axis: None }, &probe);
         check(&ReductionOp::Sum { axis: Some(0) }, &probe);
@@ -380,7 +720,7 @@ mod parity_tests {
     }
 
     #[test]
-    fn histogram_ops_match_infer_shape() {
+    fn histogram_ops_match_shape() {
         let probe = [4usize, 4, 3];
         for output in [
             HistogramOutput::Counts,
@@ -394,13 +734,13 @@ mod parity_tests {
     }
 
     #[test]
-    fn phash_matches_infer_shape() {
+    fn phash_matches_shape() {
         let probe = [4usize, 4, 3];
         check(&PerceptualHashOp::new(HashAlgorithm::Perceptual), &probe);
     }
 
     #[test]
-    fn geometry_ops_match_infer_shape() {
+    fn geometry_ops_match_shape() {
         let contour = [10usize, 2];
         check(&GeometryOp::Area { signed: false }, &contour);
         check(&GeometryOp::Perimeter, &contour);
@@ -438,8 +778,8 @@ mod parity_tests {
     }
 
     #[test]
-    fn color_convert_matches_infer_shape() {
-        // ColorConvertOp has an inherent (single-input) infer_shape, so check it
+    fn color_convert_matches_shape() {
+        // ColorConvertOp is single-input, so check it
         // directly against its declared rules.
         let cases = [
             (ColorSpace::Rgb, ColorSpace::Gray),
@@ -449,12 +789,131 @@ mod parity_tests {
         for (from, to) in cases {
             let op = ColorConvertOp { from, to };
             for probe in [vec![4usize, 4, 3], vec![4, 4, 4]] {
-                let out = op.infer_shape(&probe);
+                let out = op.shape().concrete(&[&probe]);
                 assert_eq!(op.output_rank_rule().apply(probe.len()), Some(out.len()));
                 if let Some(expected_c) = op.output_channel_rule().apply(Some(probe[2])) {
                     assert_eq!(expected_c, out[2], "{from:?}->{to:?} channel mismatch");
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod symbolic_tests {
+    //! `OpShape::dims` over symbolic sizes: what the planner reads instead of
+    //! probing the op with placeholder values.
+
+    use super::{Dim, OpShape, Sym};
+    use Dim::{Input, Known, Unknown};
+
+    fn dims(shape: OpShape, input: &[Dim]) -> Vec<Dim> {
+        shape.dims(&[input]).expect("inferable")
+    }
+
+    const IMAGE: [Dim; 3] = [Input(0), Input(1), Known(3)];
+
+    #[test]
+    fn a_per_row_parameter_leaves_only_its_own_axis_unknown() {
+        let resize = |h| OpShape::SetHw {
+            h,
+            w: Sym::Known(100),
+        };
+        assert_eq!(
+            dims(resize(Sym::Known(224)), &IMAGE),
+            [Known(224), Known(100), Known(3)]
+        );
+        assert_eq!(
+            dims(resize(Sym::PerRow), &IMAGE),
+            [Unknown, Known(100), Known(3)]
+        );
+        // An aspect-ratio resize over an unknown input knows only its target.
+        assert_eq!(
+            dims(OpShape::HeightTo(Sym::Known(8)), &IMAGE),
+            [Known(8), Unknown, Known(3)]
+        );
+    }
+
+    #[test]
+    fn an_unknown_input_axis_is_carried_as_itself() {
+        assert_eq!(dims(OpShape::Preserve, &IMAGE), IMAGE);
+        assert_eq!(
+            dims(OpShape::SwapHw, &IMAGE),
+            [Input(1), Input(0), Known(3)]
+        );
+        assert_eq!(
+            dims(OpShape::Transpose(vec![2, 0, 1]), &IMAGE),
+            [Known(3), Input(0), Input(1)]
+        );
+        let zero = Sym::Known(0);
+        let pad = |top| OpShape::Pad {
+            top,
+            bottom: zero,
+            left: zero,
+            right: zero,
+        };
+        // A zero pad provably preserves an unknown shape; a real one does not.
+        assert_eq!(dims(pad(zero), &IMAGE), IMAGE);
+        assert!(pad(zero).preserves(None));
+        assert_eq!(dims(pad(Sym::Known(2)), &IMAGE)[0], Unknown);
+        assert_eq!(
+            dims(pad(Sym::Known(2)), &[Known(10), Known(10)]),
+            [Known(12), Known(10)]
+        );
+        assert!(!pad(Sym::PerRow).preserves(Some(&IMAGE)));
+    }
+
+    #[test]
+    fn a_crop_to_the_end_from_the_origin_is_the_input() {
+        let crop = |top, height| OpShape::Crop {
+            start: vec![top, Sym::Known(0)],
+            len: vec![height, None],
+        };
+        assert_eq!(dims(crop(Sym::Known(0), None), &IMAGE), IMAGE);
+        assert!(crop(Sym::Known(0), None).preserves(None));
+        // A full-extent window at a known-zero origin preserves a known shape;
+        // at any other origin it would run past the edge, so never.
+        let full = [Known(4), Known(6)];
+        assert!(crop(Sym::Known(0), Some(Sym::Known(4))).preserves(Some(&full)));
+        assert!(!crop(Sym::Known(2), Some(Sym::Known(4))).preserves(Some(&full)));
+        assert!(!crop(Sym::PerRow, Some(Sym::Known(4))).preserves(Some(&full)));
+        assert_eq!(
+            dims(crop(Sym::Known(2), None), &[Known(10), Known(6)]),
+            [Known(8), Known(6)]
+        );
+        assert_eq!(dims(crop(Sym::PerRow, None), &IMAGE)[0], Unknown);
+        assert_eq!(
+            dims(crop(Sym::PerRow, Some(Sym::Known(4))), &IMAGE)[0],
+            Known(4)
+        );
+    }
+
+    #[test]
+    fn a_per_row_rotation_is_known_only_for_a_square() {
+        assert_eq!(
+            dims(OpShape::MaybeSwapHw, &[Known(5), Known(5), Known(3)]),
+            [Known(5), Known(5), Known(3)]
+        );
+        assert_eq!(
+            dims(OpShape::MaybeSwapHw, &[Known(5), Known(4), Known(3)]),
+            [Unknown, Unknown, Known(3)]
+        );
+        assert_eq!(
+            dims(OpShape::RotateExpand(Sym::PerRow), &[Known(5), Known(4)]),
+            [Unknown, Unknown]
+        );
+        assert_eq!(
+            dims(
+                OpShape::RotateExpand(Sym::Known(90.0)),
+                &[Known(5), Known(4)]
+            ),
+            [Known(4), Known(5)]
+        );
+    }
+
+    #[test]
+    fn a_data_dependent_shape_is_not_inferable() {
+        assert_eq!(OpShape::Dynamic.dims(&[&IMAGE]), None);
+        assert!(OpShape::Dynamic.concrete(&[&[4, 4]]).is_empty());
     }
 }

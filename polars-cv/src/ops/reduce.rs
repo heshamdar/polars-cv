@@ -8,6 +8,7 @@ use view_buffer::ops::ReductionOp;
 use super::{Literal, OpDef, Param};
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
+use view_buffer::ops::OpShape;
 
 fn reduction(op: ReductionOp) -> PolarsResult<GraphStep> {
     Ok(GraphStep::Reduction(op))
@@ -25,6 +26,10 @@ fn axis_of(axis: &Option<Literal<u32>>) -> Option<usize> {
 pub struct ReduceSum {}
 
 impl OpDef for ReduceSum {
+    fn shape(&self) -> Option<OpShape> {
+        None
+    }
+
     fn resolve(&self, _row: usize, _ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let ReduceSum {} = self;
         reduction(ReductionOp::Sum { axis: None })
@@ -39,6 +44,10 @@ impl OpDef for ReduceSum {
 pub struct ReducePopcount {}
 
 impl OpDef for ReducePopcount {
+    fn shape(&self) -> Option<OpShape> {
+        None
+    }
+
     fn resolve(&self, _row: usize, _ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let ReducePopcount {} = self;
         reduction(ReductionOp::PopCount)
@@ -58,6 +67,10 @@ pub struct ReducePercentile {
 }
 
 impl OpDef for ReducePercentile {
+    fn shape(&self) -> Option<OpShape> {
+        None
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let ReducePercentile { q } = self;
         reduction(ReductionOp::Percentile {
@@ -82,6 +95,10 @@ macro_rules! axis_reductions {
         }
 
         impl OpDef for $ty {
+            fn shape(&self) -> Option<OpShape> {
+                None
+            }
+
             fn resolve(&self, _row: usize, _ctx: &ParamCtx) -> PolarsResult<GraphStep> {
                 let $ty { axis } = self;
                 reduction(ReductionOp::$variant { axis: axis_of(axis) })
@@ -115,6 +132,10 @@ pub struct ReduceStd {
 }
 
 impl OpDef for ReduceStd {
+    fn shape(&self) -> Option<OpShape> {
+        None
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let ReduceStd { axis, ddof } = self;
         reduction(ReductionOp::Std {
@@ -140,6 +161,10 @@ macro_rules! arg_reductions {
         }
 
         impl OpDef for $ty {
+            fn shape(&self) -> Option<OpShape> {
+                None
+            }
+
             fn resolve(&self, _row: usize, _ctx: &ParamCtx) -> PolarsResult<GraphStep> {
                 let $ty { axis } = self;
                 reduction(ReductionOp::$variant {
@@ -163,6 +188,10 @@ arg_reductions! {
 pub struct ExtractShape {}
 
 impl OpDef for ExtractShape {
+    fn shape(&self) -> Option<OpShape> {
+        None
+    }
+
     fn resolve(&self, _row: usize, _ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let ExtractShape {} = self;
         Ok(GraphStep::ExtractShape)

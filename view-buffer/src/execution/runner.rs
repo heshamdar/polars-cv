@@ -1532,7 +1532,7 @@ where
         }
     }
 
-    // Mirror `ComputeOp::Affine::infer_shape`, which replaces H and W and
+    // Mirror `ComputeOp::Affine`'s `shape`, which replaces H and W and
     // leaves the rest of the input shape alone. Collapsing a `[H, W, 1]` input
     // to `[H, W]` here contradicted that contract, so a single-channel affine
     // planned rank 3 and produced rank 2.
@@ -1603,18 +1603,17 @@ fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
                 }
             }
         }
-        // Deferred resizes: dimensions come from output_hw — the same
-        // authority infer_shape declared at plan time — then the shared
-        // resize kernel runs.
+        // Deferred resizes: dimensions come from the kind's shape — the same
+        // authority the planner reads — then the shared resize kernel runs.
         ref kind @ (ImageOpKind::ResizeScale { .. }
         | ImageOpKind::ResizeToHeight { .. }
         | ImageOpKind::ResizeToWidth { .. }
         | ImageOpKind::ResizeMax { .. }
         | ImageOpKind::ResizeMin { .. }) => {
             let shape = work_buf.shape();
-            let (h, w) = kind
-                .output_hw(shape[0], shape[1])
-                .expect("deferred resize kinds always produce output dims");
+            let [h, w] = kind.shape().concrete(&[&shape[..2]])[..] else {
+                unreachable!("an H/W shape over a rank-2 input is rank 2")
+            };
             let filter = match kind {
                 ImageOpKind::ResizeScale { filter, .. }
                 | ImageOpKind::ResizeToHeight { filter, .. }

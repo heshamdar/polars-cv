@@ -91,182 +91,23 @@ pub(crate) fn py_value_error(msg: String) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(msg)
 }
 
-/// Resolve one serialized op spec to its `ViewDto`, mapping errors to Python.
+/// Resolve one serialized op spec at plan time, for its rules (domain,
+/// dtype, rank, channels, identity), which no per-row value can change.
 ///
 /// Shared by `plan_step` and the passes so neither re-implements the
 /// deserialize → resolve path.
-///
-/// Expression parameters (dynamic, per-row values like a column-driven resize
-/// height) are *neutralized* with a placeholder before resolution: each
-/// referenced column is bound to a one-element `Int64` series. The schema
-/// knowledge these functions expose — output dtype rule, domain, and the
-/// dimensionality rule — never depends on the concrete numeric value of a
-/// dimensional parameter, so the placeholder is sound and lets introspection
-/// work on the same live op specs the planner sees (which routinely carry
-/// expression params) rather than only literal-only ops.
 pub(crate) fn resolve_op_from_json(op_json: &str) -> Result<crate::graph::step::GraphStep, String> {
-    // Structural schema (domain/dtype/rank/channel rules) never depends on the
-    // concrete value of a dimensional param, so any placeholder works here.
-    resolve_op_from_json_probe(op_json, 1)
-}
-
-/// Like [`resolve_op_from_json`] but binds each expression param to a specific
-/// `probe` value instead of `1`. Used by [`infer_shape`] to detect which
-/// output dimensions depend on a per-row expression (they vary across probes)
-/// versus which are fixed by literal params (identical across probes).
-pub(crate) fn resolve_op_from_json_probe(
-    op_json: &str,
-    probe: i64,
-) -> Result<crate::graph::step::GraphStep, String> {
     let op: crate::ops::TypedOp = serde_json::from_str(op_json).map_err(|e| e.to_string())?;
-    probe_step(&op, probe)
+    planning_step(&op)
 }
 
-/// Resolve a typed op with every expression param bound to `probe` (see
-/// [`resolve_op_from_json_probe`]).
-pub(crate) fn probe_step(
+/// Resolve a typed op at plan time, for its rules (see
+/// [`ParamCtx::planning`](crate::params::ParamCtx::planning)).
+pub(crate) fn planning_step(
     op: &crate::ops::TypedOp,
-    probe: i64,
 ) -> Result<crate::graph::step::GraphStep, String> {
-    use crate::params::ParamCtx;
-
-    // Every slot reads a placeholder column holding `probe`.
-    let placeholders = vec![Series::new("".into(), &[probe]); op.min_inputs()];
-    // A *probe* context: placeholders are integers, so a dynamic enum or flag
-    // param cannot be read from one. `ParamCtx::probe` tells the enum/bool
-    // accessors to substitute their default instead. Sound because only params
-    // with no shape/rank/dtype effect are allowed to be dynamic, so the variant
-    // probing picks cannot change the inferred schema.
-    let ctx = ParamCtx::probe(&placeholders, probe);
-    op.resolve(0, &ctx).map_err(|e| format!("resolve_op: {e}"))
-}
-
-/// An op's plan-time output shape — the single authority for per-dimension
-/// geometry the planner (`plan::step`, identity elimination) reads.
-///
-/// `input_dims` carries the current per-dimension sizes, each `None` when the
-/// dimension is unknown at plan time. The returned dims propagate unknowns: a
-/// dimension is `Some(n)` only when it is identical across every probe (fixed by
-/// literal params and known input dims) and `None` when it varies (it depends on
-/// an unknown input dim or a per-row expression param).
-///
-/// The probe set includes 90-degree multiples so a discontinuous shape function
-/// — rotate's zero-copy 90/180/270 fast path swaps H and W — is correctly seen
-/// as unknown for an expression angle over a non-square image, while a literal
-/// angle still resolves to its exact branch.
-///
-/// `None` when the step has no inferable shape (a graph-level step, a
-/// data-dependent output); `Err` when the op's parameters do not fit the input.
-pub(crate) fn infer_shape(
-    op_json: &str,
-    input_dims: &[Option<i64>],
-) -> Result<Option<Vec<Option<i64>>>, String> {
-    const PROBES: [i64; 4] = [7, 13, 90, 180];
-    let mut runs: Vec<Vec<i64>> = Vec::with_capacity(PROBES.len());
-    for &p in &PROBES {
-        match infer_shape_probe(op_json, input_dims, p)? {
-            Some(run) => runs.push(run),
-            None => return Ok(None),
-        }
-    }
-    let first = &runs[0];
-    // Rank is structural (never data-dependent), so it must be stable across
-    // probes; a variation signals a contract bug rather than an unknown.
-    if runs.iter().any(|r| r.len() != first.len()) {
-        return Err("infer_shape: output rank varied across shape probes".to_string());
-    }
-    Ok(Some(
-        (0..first.len())
-            .map(|i| {
-                let v = first[i];
-                if runs.iter().all(|r| r[i] == v) {
-                    return Some(v);
-                }
-                // An unknown input axis the op carries through unchanged: every
-                // probe's output equals that probe's own input. Its size is still
-                // unknown, but it is provably *the input's* size, which is what
-                // the identity-elimination pass needs to prove a full-frame crop is
-                // a no-op. Reported as `PRESERVED_DIM`; callers that want a size
-                // treat it as unknown. (This used to arrive by accident: a crop's
-                // `usize::MAX` "to the end" extent, cast to i64, was -1.)
-                let unknown_input = matches!(input_dims.get(i), Some(None));
-                let carried = PROBES
-                    .iter()
-                    .zip(&runs)
-                    .all(|(&probe, r)| r[i] == unknown_dim_probe(probe));
-                (unknown_input && carried).then_some(PRESERVED_DIM)
-            })
-            .collect(),
-    ))
-}
-
-/// [`infer_shape`]'s "this output axis is the unknown input axis, unchanged".
-const PRESERVED_DIM: i64 = -1;
-
-/// The value an unknown input dim takes in one probe run.
-///
-/// Distinct from the value expression params take in the same run (`probe`),
-/// so an output that merely equals a per-row parameter — `resize(height=
-/// pl.col("h"))` — cannot pass for an input axis carried through unchanged.
-fn unknown_dim_probe(probe: i64) -> i64 {
-    2 * probe + 1
-}
-
-/// One probe of [`infer_shape`]: resolve the op with expression params bound
-/// to `probe`, substitute each unknown input dim with `probe`, and run the op's
-/// `infer_shape`.
-/// `Ok(None)` when the op has no inferable shape; `Err` when its parameters do
-/// not fit the input (the op's own `validate`).
-fn infer_shape_probe(
-    op_json: &str,
-    input_dims: &[Option<i64>],
-    probe: i64,
-) -> Result<Option<Vec<i64>>, String> {
-    use crate::graph::step::GraphStep;
-
-    let step = resolve_op_from_json_probe(op_json, probe)?;
-    // Buffer ops and geometry steps both carry an `Op` with a real
-    // `infer_shape`. Geometry has to be included or the planner has no shape
-    // authority for `rasterize`, whose output canvas is fixed by its own
-    // width/height params — the Python side then had to assign those hints
-    // itself, a side effect the lazy continuation replay silently skipped.
-    let op: &dyn view_buffer::Op = match &step {
-        GraphStep::Buffer(dto) => dto.as_op(),
-        GraphStep::Geometry(geo) => geo,
-        // Only buffer and geometry steps carry an inferable shape.
-        _ => return Ok(None),
-    };
-    let input_shape: Vec<usize> = input_dims
-        .iter()
-        .map(|d| d.unwrap_or_else(|| unknown_dim_probe(probe)).max(1) as usize)
-        .collect();
-    // The op's own `validate` is the authority on which parameters fit the
-    // input: run it against the planned shape. Unknown sizes are placeholders
-    // there, so only a failure that depends on the rank alone is a verdict.
-    // (A size-level failure against fully known dims is still left to
-    // execution, where it has always been a row error; moving it to build time
-    // is a behaviour change for the symbolic-shape phase, P9.)
-    if let Err(e) = op.validate(&[input_shape.as_slice()], &[]) {
-        if e.depends_only_on_rank() {
-            return Err(e.to_string());
-        }
-    }
-    // `infer_shape` implementations index their input shape directly. The
-    // rank-level mismatches that would panic there were rejected by `validate`
-    // above; a size-level one that could not be judged (unknown sizes) may
-    // still panic on placeholder sizes, and is "not inferable" rather than a
-    // `PanicException` escaping into an ordinary builder call.
-    let Ok(out) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        op.infer_shape(&[input_shape.as_slice()])
-    })) else {
-        return Ok(None);
-    };
-    // A step whose output shape is data-dependent (extract_contours) returns
-    // an empty shape; report it as "not inferable" rather than as rank 0.
-    if out.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(out.iter().map(|&x| x as i64).collect()))
+    op.resolve(0, &crate::params::ParamCtx::planning())
+        .map_err(|e| format!("resolve_op: {e}"))
 }
 
 /// Shared dtype resolution for `plan_step`.

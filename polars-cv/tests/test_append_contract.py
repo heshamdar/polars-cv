@@ -656,3 +656,19 @@ def test_lazy_plan_equals_exec(non_square_png, label, chain, sink) -> None:
         .cast("u8")
     )
     _assert_plan_equals_exec(df, chain(pl.col("img").cv.pipe(base)).sink(sink))
+
+
+def test_an_unknown_input_is_not_planned_as_square() -> None:
+    """An aspect-preserving resize of an image of unknown size has unknown H/W.
+
+    The retired shape prober stood the *same* placeholder in for every unknown
+    input axis, so it planned every unknown image as square: with a per-row
+    ``filter`` making the op per-row, ``resize_max(7)`` published ``[7, 7]``
+    for a 100x50 image that executes as 7x4. Shapes are now symbolic, so only
+    what the op fixes is known.
+    """
+    per_row = pl.col("filter")
+    plan = Pipeline().source("image_bytes").resize_max(7, filter=per_row)._state
+    assert plan.dims[:2] == (None, None)
+    plan = Pipeline().source("image_bytes").resize_to_height(7, filter=per_row)._state
+    assert plan.dims[:2] == (7, None)

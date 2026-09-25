@@ -689,7 +689,7 @@ class TestContourSourcePlanTimeContract:
     def test_the_rasterize_op_publishes_a_sinkable_shape(self) -> None:
         """The op half of the same fix: `rasterize().sink("array")` needs no shape.
 
-        `GeometryOp::Rasterize::infer_shape` always described this canvas, and
+        `GeometryOp::Rasterize`'s `shape` always described this canvas, and
         the op's docstring said so, but the planner declined to ask for it
         because the contour domain has no input rank — so a fully determined
         mask still demanded an explicit `shape=` at the sink.

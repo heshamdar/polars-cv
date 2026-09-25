@@ -3,7 +3,7 @@
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::affine::{AffineParams, InterpolationType};
 use crate::ops::scalar::{FusedKernel, ScalarOp};
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
@@ -137,37 +137,18 @@ impl Op for ComputeOp {
         }
     }
 
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
+    fn shape(&self) -> OpShape {
         match self {
-            ComputeOp::Affine(params) => {
-                let input_shape = inputs[0];
-                let mut s = input_shape.to_vec();
-                if s.len() >= 2 {
-                    s[0] = params.output_height as usize;
-                    s[1] = params.output_width as usize;
-                }
-                s
-            }
+            ComputeOp::Affine(params) => OpShape::SetHw {
+                h: Sym::Known(params.output_height as usize),
+                w: Sym::Known(params.output_width as usize),
+            },
             ComputeOp::RotateAffine {
-                angle_deg, expand, ..
-            } => {
-                let input_shape = inputs[0];
-                if !expand || input_shape.len() < 2 {
-                    return input_shape.to_vec();
-                }
-                let ih = input_shape[0] as f64;
-                let iw = input_shape[1] as f64;
-                let rad = (*angle_deg as f64) * std::f64::consts::PI / 180.0;
-                let abs_cos = rad.cos().abs();
-                let abs_sin = rad.sin().abs();
-                let new_w = (iw * abs_cos + ih * abs_sin).round() as usize;
-                let new_h = (ih * abs_cos + iw * abs_sin).round() as usize;
-                let mut s = input_shape.to_vec();
-                s[0] = new_h;
-                s[1] = new_w;
-                s
-            }
-            _ => inputs[0].to_vec(),
+                angle_deg,
+                expand: true,
+                ..
+            } => OpShape::RotateExpand(Sym::Known(*angle_deg)),
+            _ => OpShape::Preserve,
         }
     }
 

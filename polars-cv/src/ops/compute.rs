@@ -8,6 +8,7 @@ use view_buffer::{ComputeOp, DType, Normalization, NormalizeMethod, ScalarOp, Vi
 use super::{Literal, OpDef, Param};
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
+use view_buffer::ops::OpShape;
 
 fn compute(op: ComputeOp) -> PolarsResult<GraphStep> {
     Ok(GraphStep::Buffer(ViewDto::Compute(op)))
@@ -22,6 +23,10 @@ pub struct Cast {
 }
 
 impl OpDef for Cast {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Preserve)
+    }
+
     fn resolve(&self, _row: usize, _ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let Cast { dtype } = self;
         compute(ComputeOp::Cast(dtype.get()))
@@ -41,6 +46,10 @@ pub struct Scale {
 }
 
 impl OpDef for Scale {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Preserve)
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let Scale { factor } = self;
         compute(ComputeOp::Scale(factor.resolve(row, ctx)?))
@@ -62,6 +71,10 @@ pub struct Clamp {
 }
 
 impl OpDef for Clamp {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Preserve)
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let Clamp { min, max } = self;
         compute(ComputeOp::Clamp {
@@ -105,6 +118,10 @@ pub struct Normalize {
 }
 
 impl OpDef for Normalize {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Preserve)
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let Normalize {
             method,
@@ -158,6 +175,10 @@ macro_rules! unary_ops {
         pub struct $ty {}
 
         impl OpDef for $ty {
+            fn shape(&self) -> Option<OpShape> {
+                Some(OpShape::Preserve)
+            }
+
             fn resolve(&self, _row: usize, _ctx: &ParamCtx) -> PolarsResult<GraphStep> {
                 let $ty {} = self;
                 compute($op)
@@ -205,6 +226,10 @@ macro_rules! value_ops {
         }
 
         impl OpDef for $ty {
+            fn shape(&self) -> Option<OpShape> {
+                Some(OpShape::Preserve)
+            }
+
             fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
                 let $ty { value } = self;
                 compute(ComputeOp::Scalar($op(value.resolve(row, ctx)?)))
@@ -236,6 +261,10 @@ pub struct AdjustContrast {
 }
 
 impl OpDef for AdjustContrast {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Preserve)
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let AdjustContrast { factor } = self;
         compute(ComputeOp::AdjustContrast(factor.resolve(row, ctx)?))
@@ -255,6 +284,10 @@ pub struct AdjustGamma {
 }
 
 impl OpDef for AdjustGamma {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Preserve)
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let AdjustGamma { gamma } = self;
         compute(ComputeOp::AdjustGamma(gamma.resolve(row, ctx)?))

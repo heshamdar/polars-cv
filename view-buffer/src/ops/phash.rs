@@ -11,7 +11,7 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
@@ -187,9 +187,9 @@ impl Op for PerceptualHashOp {
         "PerceptualHash"
     }
 
-    fn infer_shape(&self, _inputs: &[&[usize]]) -> Vec<usize> {
+    fn shape(&self) -> OpShape {
         // Output is always a 1D array of hash bytes
-        vec![self.hash_bytes()]
+        OpShape::Fixed(vec![Sym::Known(self.hash_bytes())])
     }
 
     fn output_rank_rule(&self) -> OutputRankRule {
@@ -401,13 +401,13 @@ mod tests {
     }
 
     #[test]
-    fn test_infer_shape() {
+    fn test_shape() {
         let op = PerceptualHashOp::new(HashAlgorithm::Perceptual).with_hash_size(64);
-        let shape = op.infer_shape(&[&[256, 256, 3]]);
+        let shape = op.shape().concrete(&[&[256, 256, 3]]);
         assert_eq!(shape, vec![8]); // 64 bits = 8 bytes
 
         let op_large = PerceptualHashOp::new(HashAlgorithm::Perceptual).with_hash_size(256);
-        let shape_large = op_large.infer_shape(&[&[256, 256, 3]]);
+        let shape_large = op_large.shape().concrete(&[&[256, 256, 3]]);
         assert_eq!(shape_large, vec![32]); // 256 bits = 32 bytes
     }
 }

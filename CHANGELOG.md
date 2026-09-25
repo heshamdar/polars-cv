@@ -244,6 +244,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **An image of unknown size is no longer planned as square.** The plan-time
+  shape prober stood the same placeholder in for every unknown input axis, so
+  an aspect-preserving resize made per-row by another parameter
+  (`resize_max(7, filter=pl.col("f"))`) published `[7, 7]` for a 100x50 image
+  that executes as 7x4. Shapes are now computed symbolically: only what the op
+  fixes is known (`resize_to_height(7, ...)` plans `[7, ?]`). Conversely a
+  per-row rotation angle over a known square image now keeps its size.
 - **`transpose` with a repeated axis is rejected when the pipeline is built.**
   `transpose([0, 0, 1])` passed the builder (which checked only count and
   range) and failed per row. Axis lists for `transpose`/`flip` are now checked
@@ -350,6 +357,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   on `LazyPipelineExpr`) and `ColumnRef` (`label_reduce`'s contour column).
   `ParamCtx` carries the plan-time probe value, which a node-sized `rasterize`
   reads so its canvas plans as unknown.
+- **Typed-op migration, P9 (symbolic shapes).** Each view-buffer op declares
+  its shape transform as data, `Op::shape() -> OpShape` (required, replacing
+  `infer_shape`): one authority that execution evaluates on known sizes and
+  the planner evaluates symbolically over `Dim` (`Known`, `Input(k)`,
+  `Unknown`) and `Sym` (`Known`, `PerRow`) arguments. Each typed op builds its
+  `OpShape` from its own fields (`OpDef::shape`, required), so planning never
+  binds a per-row value; `typed_shape_is_the_resolved_steps` holds it to the
+  engine op's. Deleted: the four-value shape probe (`infer_shape`,
+  `infer_shape_probe`, `unknown_dim_probe`, `PRESERVED_DIM`), the planning
+  `catch_unwind`, `ImageOpKind::output_hw`, `IdentityRule::Always` and
+  `deciding_params` (identity rules no longer depend on parameter values;
+  `OpShape::preserves` decides a pad or crop). `ParamCtx::probe` became
+  `ParamCtx::planning`, a single placeholder for reading an op's
+  value-independent rules.
 - **Typed-op migration, P7 (planner into Rust).** Every schema fact the
   Python planner computed is now computed by `src/plan.rs`, one FFI call per
   step: `plan_step` (an op's domain, dtype, rank, H/W and channels, the binary

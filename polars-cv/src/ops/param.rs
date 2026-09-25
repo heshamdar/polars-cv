@@ -30,6 +30,27 @@ pub enum Param<T> {
     Slot(usize),
 }
 
+impl<T: Copy> Param<T> {
+    /// This parameter as a shape argument: its value when literal, `PerRow`
+    /// when a column supplies it.
+    pub fn sym(&self) -> view_buffer::ops::Sym<T> {
+        match self {
+            Param::Lit(v) => view_buffer::ops::Sym::Known(*v),
+            Param::Slot(_) => view_buffer::ops::Sym::PerRow,
+        }
+    }
+}
+
+impl Param<u32> {
+    /// A size parameter as a shape argument (see [`sym`](Self::sym)).
+    pub fn size(&self) -> view_buffer::ops::Sym<usize> {
+        match self {
+            Param::Lit(v) => view_buffer::ops::Sym::Known(*v as usize),
+            Param::Slot(_) => view_buffer::ops::Sym::PerRow,
+        }
+    }
+}
+
 /// A structural parameter: always a literal, never per-row.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Literal<T>(pub T);
@@ -48,20 +69,19 @@ pub struct NodeRef(pub String);
 impl<T: WireScalar> Param<T> {
     /// The value at `row`: the literal, or the bound column's value.
     ///
-    /// Under a plan-time probe (`ParamCtx::probe`) a named enum or flag cannot
-    /// be read from the integer placeholder, so it takes an arbitrary valid
-    /// value. That is sound only because such a parameter is per-row
-    /// eligible, i.e. has no effect on the schema being probed.
+    /// At plan time (`ParamCtx::planning`) a per-row parameter has no row to
+    /// read, so it takes an arbitrary valid value. That is sound only because
+    /// such a parameter is per-row eligible, i.e. has no effect on the schema.
     pub fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<T> {
         let idx = match *self {
             Param::Lit(v) => return Ok(v),
+            Param::Slot(_) if ctx.is_planning() => return Ok(T::planning_value()),
             Param::Slot(idx) => idx,
         };
         let col = ctx.col(idx)?;
         let value = match T::KIND {
             WireKind::Int => WireValue::Int(col.get_i64(row, ctx)?),
             WireKind::Float => WireValue::Float(col.get_f64(row, ctx)?),
-            WireKind::Bool | WireKind::Name if ctx.is_probe() => return Ok(T::probe_value()),
             WireKind::Bool => WireValue::Bool(col.get_bool(row, ctx)?),
             WireKind::Name => WireValue::Str(col.get_str(row, ctx)?),
         };

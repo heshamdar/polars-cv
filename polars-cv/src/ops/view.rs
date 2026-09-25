@@ -8,6 +8,7 @@ use view_buffer::{ViewDto, ViewOp};
 use super::{Literal, OpDef, Param};
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
+use view_buffer::ops::{OpShape, Sym};
 
 /// Extract a rectangular region.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
@@ -26,6 +27,14 @@ pub struct Crop {
 }
 
 impl OpDef for Crop {
+    fn shape(&self) -> Option<OpShape> {
+        let size = |p: &Option<Param<u32>>| p.as_ref().map(Param::size);
+        Some(OpShape::Crop {
+            start: vec![self.top.size(), self.left.size(), Sym::Known(0)],
+            len: vec![size(&self.height), size(&self.width), None],
+        })
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let Crop {
             top,
@@ -63,6 +72,10 @@ pub struct Transpose {
 }
 
 impl OpDef for Transpose {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Transpose(axes_of(&self.axes)))
+    }
+
     fn resolve(&self, _row: usize, _ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let Transpose { axes } = self;
         Ok(GraphStep::Buffer(ViewDto::View(ViewOp::Transpose(
@@ -81,6 +94,10 @@ pub struct Reshape {
 }
 
 impl OpDef for Reshape {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Fixed(self.shape.iter().map(Param::size).collect()))
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let Reshape { shape } = self;
         let shape = shape
@@ -100,6 +117,10 @@ pub struct Flip {
 }
 
 impl OpDef for Flip {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Preserve)
+    }
+
     fn resolve(&self, _row: usize, _ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let Flip { axes } = self;
         Ok(GraphStep::Buffer(ViewDto::View(ViewOp::Flip(axes_of(

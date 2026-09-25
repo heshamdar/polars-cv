@@ -671,11 +671,12 @@ def test_the_other_operand_dtype_is_for_binary_ops_only():
 
 @requires_checkout
 def test_op_schema_rules_are_required_not_defaulted():
-    """The three structural schema rules are REQUIRED trait methods (no default
+    """The structural schema rules are REQUIRED trait methods (no default
     body). An op that omits one is a compile error, so a new op cannot silently
-    inherit ``PreserveRank``/``PreserveChannels``/``PreserveInput`` and lie about
-    its structure — contract by the type system, not convention. This ratchets
-    against re-adding a default body to ``view-buffer``'s ``Op`` trait.
+    inherit ``PreserveRank``/``PreserveChannels``/``PreserveInput``/``Preserve``
+    and lie about its structure — contract by the type system, not convention.
+    This ratchets against re-adding a default body to ``view-buffer``'s ``Op``
+    trait, or to the typed op's symbolic ``OpDef::shape``.
     """
     import re
 
@@ -688,6 +689,7 @@ def test_op_schema_rules_are_required_not_defaulted():
         ("output_rank_rule", "OutputRankRule"),
         ("output_channel_rule", "OutputChannelRule"),
         ("output_dtype_rule", "OutputDTypeRule"),
+        ("shape", "OpShape"),
     ):
         required = re.search(rf"fn {rule}\(&self\) -> {ret};", text)
         defaulted = re.search(rf"fn {rule}\(&self\) -> {ret}\s*\{{", text)
@@ -695,6 +697,12 @@ def test_op_schema_rules_are_required_not_defaulted():
             f"Op::{rule} must be a required trait method with no default body "
             "so ops cannot inherit a silent, possibly-wrong structural default"
         )
+    op_def = (src / "ops" / "mod.rs").read_text()
+    trait = op_def.split("pub trait OpDef: OpFields {", 1)[1].split("\n}", 1)[0]
+    assert re.search(r"fn shape\(&self\) -> Option<[\w:]*OpShape>;", trait), (
+        "OpDef::shape must be required: a typed op that inherited a shape would "
+        "plan a schema its fields do not describe"
+    )
 
 
 # ---------------------------------------------------------------------------

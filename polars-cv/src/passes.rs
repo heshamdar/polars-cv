@@ -144,53 +144,26 @@ fn eliminate_identities(node: &Node<'_>) -> Result<Vec<usize>, String> {
 fn is_identity(node: &Node<'_>, i: usize) -> Result<bool, String> {
     let op_json = &node.ops[i];
     let op: crate::ops::TypedOp = serde_json::from_str(op_json).map_err(|e| e.to_string())?;
-    let rule = crate::resolve_op_from_json(op_json)?.identity_rule();
-    // A verdict resting on a parameter's literal value cannot be proven when
-    // that parameter is per-row: the op keeps computing on rows where it is
-    // not the identity value.
-    let mut per_row = Vec::new();
-    op.visit_slots(&mut |name, _| per_row.push(name));
-    if rule.deciding_params().iter().any(|p| per_row.contains(p)) {
-        return Ok(false);
-    }
+    let step = crate::planning_step(&op)?;
     let (entering, leaving) = (&node.states[i], &node.states[i + 1]);
-    Ok(match rule {
+    Ok(match step.identity_rule() {
         IdentityRule::Never => false,
-        IdentityRule::Always { .. } => true,
         IdentityRule::WhenDtypePreserved => {
             entering.dtype != "auto" && leaving.dtype == entering.dtype
         }
-        IdentityRule::WhenShapePreserved { .. } => {
-            // Hints that may rest on a declaration are a claim, not a fact.
-            // A declaration anywhere in the node's lineage makes its sizes
-            // possibly a claim; the final state records whether one did.
-            let declared = node.states.last().is_some_and(|s| s.declared);
-            let Some(ndim) = entering.ndim.filter(|_| !declared) else {
+        IdentityRule::WhenShapePreserved => {
+            let Some(shape) = op.shape() else {
                 return Ok(false);
             };
-            let dims: Vec<Option<i64>> = (0..ndim)
-                .map(|axis| if axis < 2 { entering.dims[axis] } else { None })
-                .collect();
-            match crate::infer_shape(op_json, &dims)? {
-                Some(out) => shape_preserved(&out, &dims),
-                None => false,
-            }
+            // Sizes that may rest on a declaration are a claim, not a fact: a
+            // declaration anywhere in the node's lineage makes them possibly
+            // one (the final state records whether one did), so only a
+            // verdict that holds for any input stands then.
+            let declared = node.states.last().is_some_and(|s| s.declared);
+            let input = crate::plan::input_dims(&step, entering).filter(|_| !declared);
+            shape.preserves(input.as_deref())
         }
     })
-}
-
-/// Whether an inferred output shape equals the shape entering the op.
-///
-/// A negative output dim is `infer_shape`'s "the unknown input axis,
-/// unchanged", so it matches; otherwise a dim must be known and equal. Any
-/// unproven dimension keeps the op.
-fn shape_preserved(out: &[Option<i64>], entering: &[Option<i64>]) -> bool {
-    out.len() == entering.len()
-        && out.iter().zip(entering).all(|(o, e)| match o {
-            Some(o) if *o < 0 => true,
-            Some(o) => Some(*o) == *e,
-            None => false,
-        })
 }
 
 /// Each crop hoisted to the front of the pointwise run before it.

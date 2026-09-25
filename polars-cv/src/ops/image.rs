@@ -10,6 +10,7 @@ use view_buffer::ViewDto;
 use super::{OpDef, Param};
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
+use view_buffer::ops::OpShape;
 
 /// Resize image to specified dimensions.
 ///
@@ -28,6 +29,13 @@ pub struct Resize {
 }
 
 impl OpDef for Resize {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::SetHw {
+            h: self.height.size(),
+            w: self.width.size(),
+        })
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let Resize {
             height,
@@ -65,6 +73,13 @@ pub struct ResizeScale {
 }
 
 impl OpDef for ResizeScale {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::ScaleHw {
+            sy: self.scale_y.sym(),
+            sx: self.scale_x.sym(),
+        })
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let ResizeScale {
             scale_x,
@@ -82,7 +97,7 @@ impl OpDef for ResizeScale {
 /// Declare an aspect-preserving resize: one target size plus a filter.
 macro_rules! aspect_resizes {
     ($($ty:ident { $field:ident: $field_doc:literal } $doc:literal $example:literal
-        => $kind:ident;)+) => {$(
+        => $kind:ident, $shape:ident;)+) => {$(
         #[doc = $doc]
         ///
         /// Example:
@@ -98,6 +113,10 @@ macro_rules! aspect_resizes {
         }
 
         impl OpDef for $ty {
+            fn shape(&self) -> Option<OpShape> {
+                Some(OpShape::$shape(self.$field.size()))
+            }
+
             fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
                 let $ty { $field, filter } = self;
                 image(ImageOpKind::$kind {
@@ -113,19 +132,19 @@ aspect_resizes! {
     ResizeToHeight { height: "Target height (literal or expression)." }
         "Resize image to target height, preserving aspect ratio (width is computed at runtime)."
         "    >>> pipe = Pipeline().source(\"image_bytes\").resize_to_height(224)"
-        => ResizeToHeight;
+        => ResizeToHeight, HeightTo;
     ResizeToWidth { width: "Target width (literal or expression)." }
         "Resize image to target width, preserving aspect ratio (height is computed at runtime)."
         "    >>> pipe = Pipeline().source(\"image_bytes\").resize_to_width(224)"
-        => ResizeToWidth;
+        => ResizeToWidth, WidthTo;
     ResizeMax { max_size: "Target for the maximum dimension (literal or expression)." }
         "Resize image so the maximum dimension equals target, preserving aspect ratio (200x100 with max_size=50 gives 50x25)."
         "    >>> pipe = Pipeline().source(\"image_bytes\").resize_max(224)"
-        => ResizeMax;
+        => ResizeMax, LongSideTo;
     ResizeMin { min_size: "Target for the minimum dimension (literal or expression)." }
         "Resize image so the minimum dimension equals target, preserving aspect ratio (200x100 with min_size=50 gives 100x50)."
         "    >>> pipe = Pipeline().source(\"image_bytes\").resize_min(224)"
-        => ResizeMin;
+        => ResizeMin, ShortSideTo;
 }
 
 /// Add padding to the image.
@@ -158,6 +177,15 @@ pub struct Pad {
 }
 
 impl OpDef for Pad {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Pad {
+            top: self.top.size(),
+            bottom: self.bottom.size(),
+            left: self.left.size(),
+            right: self.right.size(),
+        })
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let Pad {
             top,
@@ -201,6 +229,13 @@ pub struct PadToSize {
 }
 
 impl OpDef for PadToSize {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::AtLeastHw {
+            h: self.height.size(),
+            w: self.width.size(),
+        })
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let PadToSize {
             height,
@@ -239,6 +274,13 @@ pub struct Letterbox {
 }
 
 impl OpDef for Letterbox {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::SetHw {
+            h: self.height.size(),
+            w: self.width.size(),
+        })
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let Letterbox {
             height,
@@ -261,6 +303,10 @@ impl OpDef for Letterbox {
 pub struct Grayscale {}
 
 impl OpDef for Grayscale {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::SingleChannel)
+    }
+
     fn resolve(&self, _row: usize, _ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let Grayscale {} = self;
         image(ImageOpKind::Grayscale)
@@ -277,6 +323,10 @@ impl OpDef for Grayscale {
 pub struct EqualizeHistogram {}
 
 impl OpDef for EqualizeHistogram {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Preserve)
+    }
+
     fn resolve(&self, _row: usize, _ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let EqualizeHistogram {} = self;
         image(ImageOpKind::HistogramEqualize)
@@ -293,6 +343,10 @@ pub struct Threshold {
 }
 
 impl OpDef for Threshold {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Preserve)
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let Threshold { value } = self;
         image(ImageOpKind::Threshold(value.resolve(row, ctx)?))
@@ -308,6 +362,10 @@ pub struct Blur {
 }
 
 impl OpDef for Blur {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Preserve)
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let Blur { sigma } = self;
         image(ImageOpKind::Blur {
@@ -337,6 +395,10 @@ macro_rules! morphology {
         }
 
         impl OpDef for $ty {
+            fn shape(&self) -> Option<OpShape> {
+                Some(OpShape::Preserve)
+            }
+
             fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
                 let $ty { ksize, iterations } = self;
                 image(ImageOpKind::$kind {
@@ -372,6 +434,10 @@ pub struct MorphologyGradient {
 }
 
 impl OpDef for MorphologyGradient {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::Preserve)
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let MorphologyGradient { ksize } = self;
         image(ImageOpKind::MorphGradient {
@@ -398,6 +464,10 @@ pub struct Canny {
 }
 
 impl OpDef for Canny {
+    fn shape(&self) -> Option<OpShape> {
+        Some(OpShape::SingleChannel)
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let Canny {
             low_threshold,

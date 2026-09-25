@@ -8,6 +8,7 @@ use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
 use super::{ColumnRef, OpDef, Param};
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
+use view_buffer::ops::OpShape;
 
 /// Score contour regions against the current buffer values.
 ///
@@ -32,6 +33,10 @@ pub struct LabelReduce {
 }
 
 impl OpDef for LabelReduce {
+    fn shape(&self) -> Option<OpShape> {
+        None
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let LabelReduce {
             contours,

@@ -12,6 +12,7 @@ use view_buffer::BinaryOp;
 use super::{NodeRef, OpDef, Param};
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
+use view_buffer::ops::OpShape;
 
 /// Declare the two-buffer arithmetic ops, one per `BinaryOp::NAMED` entry
 /// (`binary_ops_are_exactly_the_named_table` pins the correspondence). Each is
@@ -29,6 +30,10 @@ macro_rules! binary_ops {
         }
 
         impl OpDef for $ty {
+            fn shape(&self) -> Option<OpShape> {
+                None
+            }
+
             fn resolve(&self, _row: usize, _ctx: &ParamCtx) -> PolarsResult<GraphStep> {
                 let $ty { other } = self;
                 Ok(GraphStep::Binary {
@@ -179,6 +184,10 @@ pub struct ApplyMask {
 }
 
 impl OpDef for ApplyMask {
+    fn shape(&self) -> Option<OpShape> {
+        None
+    }
+
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let ApplyMask { mask, invert } = self;
         Ok(GraphStep::ApplyMask {
@@ -201,6 +210,10 @@ pub struct ChannelMerge {
 }
 
 impl OpDef for ChannelMerge {
+    fn shape(&self) -> Option<OpShape> {
+        None
+    }
+
     fn resolve(&self, _row: usize, _ctx: &ParamCtx) -> PolarsResult<GraphStep> {
         let ChannelMerge { others } = self;
         if others.is_empty() {

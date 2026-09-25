@@ -20,7 +20,7 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule, ViewType};
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::{OpShape, OutputChannelRule, OutputRankRule};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
@@ -501,13 +501,8 @@ impl Op for BinaryOp {
         }
     }
 
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
-        // Binary ops take two inputs
-        if inputs.len() >= 2 {
-            broadcast_shapes(inputs[0], inputs[1]).unwrap_or_else(|| inputs[0].to_vec())
-        } else {
-            inputs[0].to_vec()
-        }
+    fn shape(&self) -> OpShape {
+        OpShape::Broadcast
     }
 
     fn memory_effect(&self) -> MemoryEffect {

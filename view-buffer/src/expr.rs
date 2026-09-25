@@ -192,7 +192,7 @@ impl ViewExpr {
             ViewDto::Image(img) => {
                 // The one construction path for every image op. Output metadata
                 // is derived from the op's own contract and never restated
-                // here: shape from `infer_shape`, strides from `calc_strides`
+                // here: shape from `shape()`, strides from `calc_strides`
                 // (which honours the op's declared `MemoryEffect`), dtype from
                 // its `OutputDTypeRule`. The typed builders (`grayscale`,
                 // `threshold`, `resize`, `blur`, the morphology ops) are thin
@@ -207,7 +207,7 @@ impl ViewExpr {
                 // poisoning downstream kernel fusion (a fused `invert` read the
                 // mistracked `U8` and computed `255 - x` instead of `1 - x`).
                 // One arm, one authority, removes that whole class.
-                let new_shape = img.infer_shape(&[&self.shape]);
+                let new_shape = img.shape().concrete(&[&self.shape]);
                 let new_strides = self.calc_strides(&img, &new_shape);
                 let new_dtype = img.resolve_output_dtype(self.dtype);
                 Arc::new(Self {
@@ -218,7 +218,7 @@ impl ViewExpr {
                 })
             }
             ViewDto::Filter(op) => {
-                let new_shape = Op::infer_shape(&op, &[&self.shape]);
+                let new_shape = op.shape().concrete(&[&self.shape]);
                 let new_strides = self.calc_strides(&op, &new_shape);
                 let new_dtype = op.resolve_output_dtype(self.dtype);
                 Arc::new(Self {
@@ -229,7 +229,7 @@ impl ViewExpr {
                 })
             }
             ViewDto::Color(op) => {
-                let new_shape = ColorConvertOp::infer_shape(&op, &self.shape);
+                let new_shape = op.shape().concrete(&[&self.shape]);
                 let new_dtype = Op::resolve_output_dtype(&op, self.dtype);
                 Arc::new(Self {
                     shape: new_shape,
@@ -270,7 +270,7 @@ impl ViewExpr {
     }
 
     /// Build a `Compute` node whose metadata comes entirely from the op's own
-    /// contract: shape from `infer_shape`, strides from `calc_strides` (which
+    /// contract: shape from `shape()`, strides from `calc_strides` (which
     /// honours the op's declared `MemoryEffect`), dtype from its
     /// `OutputDTypeRule`. The compute analogue of `apply_op`'s `Image` arm and
     /// the single construction authority the compute builders share, so none of
@@ -280,7 +280,7 @@ impl ViewExpr {
     /// through untouched, which this generic contiguous-or-inferred path cannot
     /// express.
     fn compute_node(self: &Arc<Self>, op: ComputeOp) -> Arc<Self> {
-        let new_shape = op.infer_shape(&[&self.shape]);
+        let new_shape = op.shape().concrete(&[&self.shape]);
         let new_strides = self.calc_strides(&op, &new_shape);
         let new_dtype = op.resolve_output_dtype(self.dtype);
         Arc::new(Self {
@@ -291,14 +291,14 @@ impl ViewExpr {
         })
     }
 
-    /// Build a `View` node from the op's contract (shape via `infer_shape`,
+    /// Build a `View` node from the op's contract (shape via `shape()`,
     /// strides via `calc_strides`); a view never changes dtype, so it is
     /// preserved. The view analogue of [`compute_node`](Self::compute_node).
     ///
     /// `reshape` keeps its own builder because it must reject a non-contiguous
     /// input (its bespoke panic) rather than route through here.
     fn view_node(self: &Arc<Self>, op: ViewOp) -> Arc<Self> {
-        let new_shape = op.infer_shape(&[&self.shape]);
+        let new_shape = op.shape().concrete(&[&self.shape]);
         let new_strides = self.calc_strides(&op, &new_shape);
         Arc::new(Self {
             node: ExprNode::View(op, self.clone()),
@@ -357,7 +357,7 @@ impl ViewExpr {
 
     pub fn cast(self: &Arc<Self>, target: DType) -> Arc<Self> {
         let op = ComputeOp::Cast(target);
-        let new_shape = op.infer_shape(&[&self.shape]);
+        let new_shape = op.shape().concrete(&[&self.shape]);
 
         // A same-dtype cast is an identity clone: the buffer (and its
         // strides) pass through untouched. Any real cast materializes a
