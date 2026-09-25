@@ -39,11 +39,11 @@ several minutes. Reach for `--release` only when benchmarking.
 | `graph/compiled.rs` | `CompiledGraph` — process-wide compiled-graph cache (parsed spec, topo order, slot-bound params) |
 | `graph/decode.rs` | Source decoding, `dtype_for_output` schema inference, reflect/symmetric padding |
 | `graph/encode.rs` | Output encoding, geometry op execution |
-| `ops/` | The typed op catalogue: one `#[derive(Op)]` struct per op (`typed_ops!` registry); `TypedOp` is the wire op and `OpDef::resolve` maps it to a `GraphStep`; `op_catalog.json` is generated from it |
+| `ops/` | The typed op catalogue: `typed_ops!` lists the op families (view-buffer's engine enums, and `ops/graph.rs`'s `GraphOp` for graph-only ops), each generic over `Mode` and deriving `Ops`/`Resolve`; `TypedOp` holds the `Wire` op, resolved per row to the `Exec` op and wrapped as a `GraphStep`; `op_catalog.json` is generated from it |
 | `formats/` | Typed sources and sinks, one struct per format (`formats!` registry, `io_catalog.json`) |
 | `execute.rs` | Decode/encode helpers shared by graph execution |
 | `graph/step.rs` | `GraphStep` — the plugin-level step vocabulary: `Buffer(ViewDto)` plus graph-only steps (binary, mask, merge, geometry, reduction, histogram, perceptual_hash, extract_shape, label_reduce); contract methods read by the FFI |
-| `params.rs` | `ParamCtx`/`ParamCol` — the per-call view of expression-parameter columns every typed `Param<T>` reads through, with the null policy. `ParamCtx::planning` resolves an op with no row, for its value-independent rules: every per-row param takes `WireScalar::planning_value`. Shapes never go through it — they are symbolic (`OpDef::shape`) |
+| `params.rs` | `ParamCtx`/`ParamCol` — the per-call view of expression-parameter columns every typed `Param<T>` reads through, with the null policy. `ParamCtx::planning` resolves an op with no row, for its value-independent rules: every per-row param takes `WireScalar::planning_value`. Shapes never go through it — they are symbolic (`TypedOp::shape`) |
 | `output.rs` | Numpy/torch zero-copy struct output (`NumpyRowOutput`, `build_numpy_series`) |
 | `ext_types.rs` | `ExtType`: the polars-cv Arrow extension types. Builds tagged *outputs* only (`ExtType::tag` / `dtype`, e.g. `SinkKind::NdArray`); inputs never arrive tagged because `polars_cv._plugin.call` passes `.ext.storage()`, so nothing registers with polars-core's extension registry |
 | `cloud.rs` | Cloud storage and HTTP file reads via `object_store` + `reqwest` |
@@ -113,8 +113,9 @@ docs in `graph/compiled.rs` and `tests/test_graph_cache.py`.
 
 ### Op resolution
 
-Each op is a typed struct in `ops/` whose `OpDef::resolve` returns its
-`GraphStep` (`graph/step.rs`). Buffer ops wrap a view-buffer `ViewDto`
+Each op is a `Wire` variant of its family; resolving it (derived: each
+per-row field read from its column) gives the `Exec` variant, which its
+family's `typed_ops!` wrap turns into the `GraphStep` (`graph/step.rs`). Buffer ops wrap a view-buffer `ViewDto`
 (`GraphStep::Buffer`); steps that involve graph topology (node references,
 per-row expression columns) or non-buffer outputs are their own `GraphStep`
 variants and never enter view-buffer's vocabulary. An op with no per-row
@@ -185,7 +186,7 @@ encoding (`encode_sink`), shared by the graph executor.
 ## Adding a New Operation (Rust Side)
 
 1. **`view-buffer`**: Implement the op — see [`view-buffer/AGENTS.md`](../../view-buffer/AGENTS.md)
-2. **`ops/`**: Add the op's `#[derive(Op)]` struct, its `OpDef` impl — `resolve` (returning `GraphStep::Buffer(dto)` for an engine op) and `shape` (the step's `OpShape` from the fields, `None` for a graph-level step; `typed_shape_is_the_resolved_steps` checks it against the resolved step) — and its `typed_ops!` line, then re-bless the catalogue and run `scripts/gen_ops.py`
+2. **The family**: add the op as a variant of its family enum (the view-buffer engine enum, or `GraphOp` in `ops/graph.rs` for a graph-level step) with `#[op(name, sample)]` and wire-typed fields (`M::V<T>`/`M::L<T>`); its family's generic `shape()`/`check()` cover it. Then re-bless the catalogue and run `scripts/gen_ops.py`
 3. **Test**: Ensure the operation works end-to-end via Python tests
 
 ## Error Handling

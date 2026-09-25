@@ -45,9 +45,9 @@ The enforcement standard is stricter than "prefer the shared path":
   that does the whole thing.
 - **No defaulted contract methods on op traits.** `Op::shape`,
   `output_dtype_rule`,
-  `memory_effect`, `spatial_dependency` and `identity_rule`, and the typed op's
-  `OpDef::shape`, are required with no default so a new op cannot inherit a
-  lie. Adding a default to any of them is a regression,
+  `memory_effect`, `spatial_dependency` and `identity_rule`, and the typed op
+  family's `Family::planned_shape`, are required with no default so a new op
+  cannot inherit a lie. Adding a default to any of them is a regression,
   however convenient.
 - **One authority per fact, named once.** A dtype's spellings live in
   `dtype_table!`; enum variant names live in `named_variants!` + the
@@ -345,7 +345,7 @@ Rust: view-buffer (the engine)
 
 **polars-cv/src/**
 - `lib.rs` — PyO3 module entry, `vb_graph` polars expression function, dtype inference, and the `Plan`/`PlanState` classes and `enum_catalog`/`op_catalog`/`io_catalog`/`check_graph` FFI the Python builder reads (`plan.rs` holds `Plan` — a pipeline's source, typed ops and the state at every op boundary — and `plan::step`, run once per appended op; `passes.rs` the node-scope optimisation passes)
-- `ops/` — the typed op catalogue: one `#[derive(Op)]` struct per op (`Param<T>`/`Literal<T>` fields), registered in `typed_ops!`; `TypedOp` is the wire op, `OpDef::resolve` maps it to a `GraphStep` (`graph/step.rs`: buffer ops wrap view-buffer's `ViewDto`; graph-only steps are their own variants) and `OpDef::shape` gives its symbolic `OpShape`; `catalog_json()` feeds `scripts/gen_ops.py`
+- `ops/` — the typed op catalogue: `typed_ops!` lists the op *families* — view-buffer's engine enums (`ImageOpKind`, `ComputeOp`, `ViewOp`, …) and `ops/graph.rs`'s `GraphOp` for the graph-only ops — each generic over a `Mode` (`Wire`: `Param<T>`/`Literal<T>` fields; `Exec`: plain values) and deriving `Ops`/`Resolve`. `TypedOp` holds the `Wire` op; resolving it (derived, per row) gives the `Exec` op, wrapped as a `GraphStep` (`graph/step.rs`); each family's one generic `shape()` is its symbolic `OpShape`; `catalog_json()` feeds `scripts/gen_ops.py`
 - `formats/` — the typed sources and sinks, one struct per format in a `formats!` registry
 - `execute.rs` — source decoding helpers (image bytes, contours) and byte-sink encoding
 - `graph/` — `UnifiedGraph` execution engine: `types.rs` (`UnifiedGraph`, `GraphNode`, `OutputSpec`, `RowErrorPolicy`), `compiled.rs` (process-wide compiled-graph cache), `step.rs` (`GraphStep` — the plugin-level step vocabulary), source decoding (`decode.rs`), sink encoding (`encode.rs`)
@@ -452,21 +452,24 @@ arm, both since removed) are documented alongside it.
    (`tests/apply_op_coverage.rs` requires a probe per variant). Graph-level
    steps (node references, non-buffer outputs) become `GraphStep` variants in
    `polars-cv/src/graph/step.rs` instead.
-2. Define it in the **typed catalogue**, `polars-cv/src/ops/<family>.rs`: a
-   struct deriving `Op` (plus `Serialize`/`Deserialize` and
-   `#[serde(deny_unknown_fields)]` — the derive refuses to compile without it)
-   whose fields are `Param<T>` (may be per-row) or `Literal<T>` (structural),
-   each with a doc comment (the generated `Args:` entry) and, where Python has
-   one, `#[param(default = ...)]` (an op's only required field is generated
-   positional-or-keyword, every other keyword-only); an `OpDef` impl whose
-   `resolve` opens with an exhaustive destructure and returns the `GraphStep`,
-   and whose `shape` builds the step's `OpShape` from the fields (`Param::size`
-   / `sym` make a per-row field `Sym::PerRow`; `None` for a graph-level step);
-   and one line with a valid sample in `typed_ops!` (`ops/mod.rs`) —
-   `typed_shape_is_the_resolved_steps` then holds `shape` to the step's. A parameter
-   read only under some branch becomes an enum variant, never an optional
-   field that can be ignored. The Python planner picks up the op's schema
-   effect through `Plan.push` — no Python-side schema special cases.
+2. Define it in the **typed catalogue**: a variant of its family enum —
+   the engine enum in view-buffer (`ImageOpKind<M>`, `ComputeOp<M>`, …) for an
+   engine op, `GraphOp<M>` in `polars-cv/src/ops/graph.rs` for a graph-level
+   one — with `#[op(name = "...", sample = {...})]` (plus `python = ` /
+   `visibility = ` where needed). Its fields are the wire's: `M::V<T>` (may be
+   per-row) or `M::L<T>` (structural), each with a doc comment (the generated
+   `Args:` entry) and, where Python has one, `#[param(default = ...)]` (an op's
+   only required field is generated positional-or-keyword, every other
+   keyword-only); the variant's doc comment is the Python docstring. The
+   family's one generic `shape()` covers the variant (a per-row field reads
+   `Sym::PerRow` via `M::sym`/`size`), and its `check()` refuses any
+   parameter combination no row can run. Kernels match the `Exec` variant,
+   where `M::V<u32>` *is* `u32`. A new family is one `typed_ops!` line.
+   `typed_shape_is_the_resolved_steps` holds the planned shape to the
+   executed step's where an op lowers to another (`ComputeOp::lowered`). A
+   parameter read only under some branch becomes an enum variant, never an
+   optional field that can be ignored. The Python planner picks up the op's
+   schema effect through `Plan.push` — no Python-side schema special cases.
 3. Re-bless the catalogue (`POLARS_CV_BLESS=1 scripts/with-pyo3-env.sh cargo
    test -p polars-cv catalog_matches`), regenerate the builder (`python
    scripts/gen_ops.py`) and `maturin develop`. The generated method appends

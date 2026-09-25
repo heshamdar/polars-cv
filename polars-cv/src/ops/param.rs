@@ -23,7 +23,8 @@ impl Values for RowValues<'_> {
 
     fn value<T: WireScalar>(&self, slot: usize) -> PolarsResult<T> {
         let (row, ctx) = (self.row, self.ctx);
-        // Transitional (C4b): a not-yet-combined op resolved for its rules.
+        // The planner resolves an op for its rules with no row to read; see
+        // `ParamCtx::planning`.
         if ctx.is_planning() {
             return Ok(T::planning_value());
         }
@@ -41,22 +42,15 @@ impl Values for RowValues<'_> {
     }
 }
 
-/// `Param::resolve` for one row, as the not-yet-combined typed ops call it.
+/// `Param::resolve` for one row, for the typed fields read outside an op —
+/// the formats' (`ContourSource`) and the geometry namespaces' kwargs.
 pub trait ParamExt<T> {
     /// The value at `row`: the literal, or the bound column's value.
-    ///
-    /// At plan time (`ParamCtx::planning`) a per-row parameter has no row to
-    /// read, so it takes an arbitrary valid value. That is sound only because
-    /// such a parameter is per-row eligible, i.e. has no effect on the schema.
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<T>;
 }
 
 impl<T: WireScalar> ParamExt<T> for Param<T> {
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<T> {
-        match *self {
-            Param::Lit(v) => Ok(v),
-            Param::Slot(_) if ctx.is_planning() => Ok(T::planning_value()),
-            Param::Slot(_) => Resolve::resolve(self, &RowValues { row, ctx }),
-        }
+        Resolve::resolve(self, &RowValues { row, ctx })
     }
 }

@@ -674,7 +674,9 @@ def test_op_schema_rules_are_required_not_defaulted():
     inherit ``PreserveInput``/``Preserve``
     and lie about its structure — contract by the type system, not convention.
     This ratchets against re-adding a default body to ``view-buffer``'s ``Op``
-    trait, or to the typed op's symbolic ``OpDef::shape``.
+    trait, or to the typed op family's symbolic ``Family::planned_shape`` (the
+    engine families' is their one generic ``shape()``, which the
+    ``engine_families!`` impl calls, so a family without one does not compile).
     """
     import re
 
@@ -693,11 +695,14 @@ def test_op_schema_rules_are_required_not_defaulted():
             f"Op::{rule} must be a required trait method with no default body "
             "so ops cannot inherit a silent, possibly-wrong structural default"
         )
-    op_def = (src / "ops" / "mod.rs").read_text()
-    trait = op_def.split("pub trait OpDef: OpFields {", 1)[1].split("\n}", 1)[0]
-    assert re.search(r"fn shape\(&self\) -> Option<[\w:]*OpShape>;", trait), (
-        "OpDef::shape must be required: a typed op that inherited a shape would "
-        "plan a schema its fields do not describe"
+    ops = (src / "ops" / "mod.rs").read_text()
+    assert "pub trait Family {" in ops, "the typed op families' trait moved"
+    trait = ops.split("pub trait Family {", 1)[1].split("\n}", 1)[0]
+    assert re.search(
+        r"fn planned_shape\(op: &Self::Wire\) -> Option<[\w:]*OpShape>;", trait
+    ), (
+        "Family::planned_shape must be required: a typed op family that inherited "
+        "a shape would plan a schema its fields do not describe"
     )
 
 
