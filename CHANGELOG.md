@@ -368,6 +368,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **Streaming throughput regressions from the row-parallel executor
+  (CR-32) and the aligned blob copy (CR-41) are fixed.** A binary row's
+  aligned copy assembled 8-byte words one at a time, ~7x slower than a
+  memcpy (60+ µs per 256×256×3 row); it is one copy now. And every call split
+  its rows over the plugin's thread pool, including the streaming engine's
+  concurrent morsel calls, which moved every row's buffers between threads:
+  up to 2.6x slower per row on byte-heavy streaming queries. A call now
+  spreads its rows only when it runs alone and the graph's previous call did
+  too (the in-memory engine's single call per query keeps its speedup), and a
+  one-thread pool never splits.
 - **An op reading another node checks that node's domain at build.**
   `img.apply_mask(contours)`, `img.add(contours)` and `channel_merge` over a
   contour-domain node built, planned a buffer schema and failed every row;

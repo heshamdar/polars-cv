@@ -49,16 +49,12 @@ pub(crate) fn get_binary_row_buffer(
 ///
 /// Backed by a `Vec<u64>` so the alignment comes from the allocation's type,
 /// not from allocator behaviour. The tail word is zero-padded; callers carry
-/// the true length separately.
+/// the true length separately. One `copy_from_slice` over the words' bytes:
+/// assembling them word by word was ~7x slower than the copy itself, the
+/// largest per-row cost of a large blob or raw row.
 fn aligned_copy(bytes: &[u8]) -> polars_buffer::Buffer<u8> {
-    let words: Vec<u64> = bytes
-        .chunks(8)
-        .map(|chunk| {
-            let mut word = [0u8; 8];
-            word[..chunk.len()].copy_from_slice(chunk);
-            u64::from_ne_bytes(word)
-        })
-        .collect();
+    let mut words = vec![0u64; bytes.len().div_ceil(8)];
+    bytemuck::cast_slice_mut::<u64, u8>(&mut words)[..bytes.len()].copy_from_slice(bytes);
     polars_buffer::Buffer::from(words)
         .try_transmute::<u8>()
         .expect("u64 -> u8 reinterpretation cannot fail")
@@ -1094,9 +1090,15 @@ mod tests {
         // boundary in the source.
         let ca = BinaryChunked::from_slice(
             "b".into(),
-            &[&[1u8, 2, 3][..], &[4u8; 13][..], &[5u8; 1][..]],
+            &[
+                &[1u8, 2, 3][..],
+                &[4u8; 13][..],
+                &[5u8; 1][..],
+                &[][..],
+                &[6u8; 8][..],
+            ],
         )
-        .slice(1, 2);
+        .slice(1, 4);
         for row in 0..ca.len() {
             let (buffer, offset, len) = super::get_binary_row_buffer(&ca, row).unwrap();
             assert_eq!(offset, 0);

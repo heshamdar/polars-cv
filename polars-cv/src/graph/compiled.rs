@@ -25,7 +25,7 @@ use polars::prelude::*;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use pyo3_polars::export::polars_core::runtime::THREAD_POOL;
@@ -126,6 +126,10 @@ pub struct CompiledGraph {
     /// The exact kwargs this graph was compiled from, kept for exact-match
     /// cache validation.
     key: GraphKwargsKey,
+    /// How this graph's calls overlap, which decides whether one spreads its
+    /// rows over the thread pool. Every streaming morsel of a query runs this
+    /// same cached graph.
+    calls: CallTracker,
     /// Which threads executed rows of this graph (test instrumentation).
     #[cfg(test)]
     row_threads: Mutex<std::collections::HashSet<std::thread::ThreadId>>,
@@ -260,6 +264,7 @@ impl CompiledGraph {
             key: GraphKwargsKey {
                 graph_json: graph_json.to_string(),
             },
+            calls: CallTracker::default(),
             #[cfg(test)]
             row_threads: Mutex::default(),
             #[cfg(test)]
@@ -317,16 +322,27 @@ impl CompiledGraph {
             output_nodes,
         };
 
-        // Rows are independent, so the call is split into contiguous row
+        // Rows are independent, so a call can be split into contiguous row
         // ranges that run on the plugin's thread pool and are concatenated in
         // order. Without this a call used one core however many rows it held,
         // so the in-memory engine was single-threaded on a single-chunk frame
         // (CR-32). The pool is the plugin's own copy of polars' `THREAD_POOL`
-        // (a plugin links its own polars-core, so it cannot join the host's);
-        // it is sized by `POLARS_MAX_THREADS`, and callers block while their
-        // rows run, so concurrent calls (streaming morsels) share its threads
-        // rather than multiplying them.
-        let ranges = row_ranges(len, THREAD_POOL.current_num_threads());
+        // (a plugin links its own polars-core, so it cannot join the host's),
+        // sized by `POLARS_MAX_THREADS`.
+        //
+        // The streaming engine is already parallel: it runs a query's morsels
+        // as concurrent calls of this graph, one per host thread. Splitting
+        // those as well only moved every row's buffers between threads and
+        // oversubscribed the cores (up to half a byte-heavy streaming query's
+        // throughput), so a call spreads only when it runs alone and the last
+        // call did too (`Call::spreads`).
+        let call = self.calls.enter();
+        let workers = if call.spreads() {
+            THREAD_POOL.current_num_threads()
+        } else {
+            1
+        };
+        let ranges = row_ranges(len, workers);
         let plan_cache = PlanCache::new(&self.plan);
         let first_failure = AtomicUsize::new(usize::MAX);
         let run_range = |range_idx: usize, rows: Range<usize>| -> RangeOutcome {
@@ -1267,6 +1283,11 @@ fn run_segment(
 /// the other threads idle; one range when there is nothing to split.
 fn row_ranges(len: usize, threads: usize) -> Vec<Range<usize>> {
     const RANGES_PER_THREAD: usize = 4;
+    // One worker gains nothing from ranges: they would only hand the rows to
+    // another thread while this one waits.
+    if threads < 2 {
+        return std::iter::once(0..len).collect();
+    }
     let count = (threads * RANGES_PER_THREAD).clamp(1, len.max(1));
     let (base, extra) = (len / count, len % count);
     let mut start = 0;
@@ -1278,6 +1299,61 @@ fn row_ranges(len: usize, threads: usize) -> Vec<Range<usize>> {
             range
         })
         .collect()
+}
+
+/// How a graph's calls overlap in time.
+///
+/// The host engine decides how a plugin is called and does not say which
+/// engine it is. Overlap is the observable difference: the streaming engine
+/// runs a graph's morsels as concurrent calls, the in-memory engine makes one
+/// call per query.
+#[derive(Default)]
+struct CallTracker {
+    /// Calls running now.
+    running: AtomicUsize,
+    /// Calls ever started; a call that sees it move on was overlapped.
+    started: AtomicUsize,
+    /// Whether the last call to finish overlapped another.
+    overlapping: AtomicBool,
+}
+
+impl CallTracker {
+    fn enter(&self) -> Call<'_> {
+        let ticket = self.started.fetch_add(1, Ordering::SeqCst) + 1;
+        let alone = self.running.fetch_add(1, Ordering::SeqCst) == 0;
+        Call {
+            tracker: self,
+            ticket,
+            alone,
+        }
+    }
+}
+
+/// One running call of a graph (see [`CallTracker`]).
+struct Call<'a> {
+    tracker: &'a CallTracker,
+    /// This call's number among the graph's calls.
+    ticket: usize,
+    /// No other call was running when this one started.
+    alone: bool,
+}
+
+impl Call<'_> {
+    /// Whether this call spreads its rows over the thread pool: it started
+    /// alone, and the last call to finish ran alone too. A streaming query's
+    /// first morsel also starts alone, a moment before the others, so being
+    /// alone at the start cannot tell the engines apart by itself.
+    fn spreads(&self) -> bool {
+        self.alone && !self.tracker.overlapping.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for Call<'_> {
+    fn drop(&mut self) {
+        let overlapped = !self.alone || self.tracker.started.load(Ordering::SeqCst) != self.ticket;
+        self.tracker.overlapping.store(overlapped, Ordering::SeqCst);
+        self.tracker.running.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// One row range's rows (one vector per resolved output) and error messages.
@@ -2267,6 +2343,61 @@ mod tests {
                 "row {i}"
             );
         }
+    }
+
+    /// While another call of the same graph runs (the streaming engine's
+    /// concurrent morsels of one query), a call runs its rows on its own
+    /// thread: the host is already parallel across the calls, and handing
+    /// each call's rows to the pool made every row's buffers cross threads,
+    /// costing up to half the throughput of a byte-heavy streaming query.
+    #[test]
+    fn a_call_runs_inline_while_another_call_of_its_graph_runs() {
+        let compiled = CompiledGraph::compile(RAW_CHAIN_GRAPH).unwrap();
+        compiled.calls.running.fetch_add(1, Ordering::SeqCst); // another call
+        assert_eq!(threads_of_a_call(&compiled, false), 1);
+        assert_eq!(compiled.calls.running.load(Ordering::SeqCst), 1);
+        // It overlapped, so its host is running this graph in parallel.
+        assert!(compiled.calls.overlapping.load(Ordering::SeqCst));
+    }
+
+    /// A streaming query's first morsel starts a moment before the others,
+    /// alone: it runs inline because the last call overlapped. A call that
+    /// runs alone throughout lets the next one spread again (the in-memory
+    /// engine's one call per query).
+    #[test]
+    fn a_call_after_overlapping_calls_runs_inline() {
+        use pyo3_polars::export::polars_core::runtime::THREAD_POOL;
+        if THREAD_POOL.current_num_threads() < 2 {
+            eprintln!("skipped: the pool has a single thread");
+            return;
+        }
+        let compiled = CompiledGraph::compile(RAW_CHAIN_GRAPH).unwrap();
+        compiled.calls.overlapping.store(true, Ordering::SeqCst);
+        assert_eq!(threads_of_a_call(&compiled, false), 1);
+        assert!(!compiled.calls.overlapping.load(Ordering::SeqCst));
+        assert!(threads_of_a_call(&compiled, true) > 1);
+    }
+
+    /// How many threads ran rows of one 256-row call; with `rendezvous`, a
+    /// spreading call's first row waits for a second thread.
+    fn threads_of_a_call(compiled: &CompiledGraph, rendezvous: bool) -> usize {
+        let rows: Vec<Vec<u8>> = (0..256u32).map(|i| vec![i as u8; 64]).collect();
+        compiled.row_threads.lock().unwrap().clear();
+        compiled.rendezvous.store(rendezvous, Ordering::Relaxed);
+        let out = compiled.execute(&[Series::new("r".into(), &rows)]).unwrap();
+        assert_eq!(out.len(), rows.len());
+        compiled.row_threads.lock().unwrap().len()
+    }
+
+    /// One worker has nothing to split across: the rows run on the caller.
+    #[test]
+    fn a_single_worker_takes_the_whole_call() {
+        assert_eq!(
+            row_ranges(300, 1),
+            std::iter::once(0..300).collect::<Vec<_>>()
+        );
+        assert_eq!(row_ranges(0, 1), std::iter::once(0..0).collect::<Vec<_>>());
+        assert_eq!(row_ranges(300, 2).len(), 8);
     }
 
     /// A segment with a per-row parameter is planned every row.
