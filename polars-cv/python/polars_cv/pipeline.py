@@ -999,7 +999,7 @@ class Pipeline(_OpsMixin):
         sobel_x_3: list[FloatOrExpr] = [-1.0, 0.0, 1.0, -2.0, 0.0, 2.0, -1.0, 0.0, 1.0]
         sobel_y_3: list[FloatOrExpr] = [-1.0, -2.0, -1.0, 0.0, 0.0, 0.0, 1.0, 2.0, 1.0]
         kernel = sobel_x_3 if axis == "x" else sobel_y_3
-        return self.convolve2d(kernel=kernel, ksize=ksize, normalize=False)
+        return self.convolve2d(kernel=kernel, normalize=False)
 
     def laplacian(self, *, ksize: int = 3) -> "Pipeline":
         """
@@ -1026,7 +1026,7 @@ class Pipeline(_OpsMixin):
             raise ValueError(msg)
 
         laplacian_3 = [0.0, 1.0, 0.0, 1.0, -4.0, 1.0, 0.0, 1.0, 0.0]
-        return self.convolve2d(kernel=laplacian_3, ksize=ksize, normalize=False)
+        return self.convolve2d(kernel=laplacian_3, normalize=False)
 
     def sharpen(self, *, strength: FloatOrExpr = 1.0) -> "Pipeline":
         """
@@ -1062,7 +1062,7 @@ class Pipeline(_OpsMixin):
         center = 1.0 + 8.0 * s
         neg = -s
         k = [neg, neg, neg, neg, center, neg, neg, neg, neg]
-        return self.convolve2d(kernel=k, ksize=3, normalize=False)
+        return self.convolve2d(kernel=k, normalize=False)
 
     # --- Edge Detection ---
 

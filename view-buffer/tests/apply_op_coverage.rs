@@ -35,7 +35,6 @@ fn view_dto_probes() -> Vec<ViewDto> {
         }),
         ViewDto::Filter(ConvolveOp {
             kernel: vec![0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
-            ksize: 3,
             normalize: false,
             border: BorderMode::Replicate,
         }),

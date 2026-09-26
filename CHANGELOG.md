@@ -304,6 +304,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Removed
 
+- **`convolve2d(ksize=)`.** The side is the kernel's: its length must be the
+  square of an odd number (9 for 3×3, 25 for 5×5, ...), and `kernel` is now
+  the op's one positional parameter (`.convolve2d(k)`). `ksize` could only
+  restate that length, and a per-row `ksize` could only fail when it
+  disagreed. Guarded by `test_removed_surfaces.py`.
 - **The resize family's `filter=` no longer accepts `"triangle"` from a
   per-row column.** It was a parser-only alias for `"bilinear"`
   (`FilterType::ALIASES`, now deleted) that the Python builder already

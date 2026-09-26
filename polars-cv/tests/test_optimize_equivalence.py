@@ -84,7 +84,7 @@ _OP_FAMILY_CASES: list[tuple[str, object, str]] = [
     ("grayscale", lambda p: p.grayscale(), "numpy"),
     ("threshold", lambda p: p.grayscale().threshold(128), "numpy"),
     ("blur", lambda p: p.blur(1.0), "numpy"),
-    ("convolve2d", lambda p: p.convolve2d(kernel=[1.0 / 9] * 9, ksize=3), "numpy"),
+    ("convolve2d", lambda p: p.convolve2d(kernel=[1.0 / 9] * 9), "numpy"),
     (
         "convert_color",
         lambda p: p.convert_color(from_space="rgb", to_space="hsv"),

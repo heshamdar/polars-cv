@@ -269,7 +269,6 @@ mod tests {
         assert_eq!(
             ConvolveOp {
                 kernel: vec![0.0; 9],
-                ksize: 3,
                 normalize: false,
                 border: BorderMode::Replicate
             }

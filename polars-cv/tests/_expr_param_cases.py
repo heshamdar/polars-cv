@@ -358,25 +358,13 @@ CASES: list[ExprCase] = [
         "convolve2d",
         "kernel",
         # One coefficient varies; the other eight stay literal zeros.
-        lambda v: gray().convolve2d(kernel=[0.0] * 4 + [v] + [0.0] * 4, ksize=3),
+        lambda v: gray().convolve2d(kernel=[0.0] * 4 + [v] + [0.0] * 4),
         (0.5, 1.0, 2.0),
     ),
     ExprCase(
         "convolve2d",
-        "ksize",
-        lambda v: gray().convolve2d(kernel=[0.0] * 4 + [1.0] + [0.0] * 4, ksize=v),
-        (3, 3),
-        varies=False,
-        note=(
-            "ksize must equal the square root of the structural kernel length, "
-            "so an expression can only restate it; a disagreeing value is "
-            "rejected at execution (TestConvolveKsizeExpression)"
-        ),
-    ),
-    ExprCase(
-        "convolve2d",
         "normalize",
-        lambda v: gray().convolve2d(kernel=[1.0] * 9, ksize=3, normalize=v),
+        lambda v: gray().convolve2d(kernel=[1.0] * 9, normalize=v),
         (True, False),
     ),
     ExprCase(
@@ -385,9 +373,7 @@ CASES: list[ExprCase] = [
         # A 5x5 kernel pads two pixels. At a one-pixel pad "reflect" and
         # "replicate" both reach the edge pixel and coincide, which would make
         # the distinctness assertion unsatisfiable rather than informative.
-        lambda v: gray().convolve2d(
-            kernel=[1.0] * 25, ksize=5, normalize=True, border=v
-        ),
+        lambda v: gray().convolve2d(kernel=[1.0] * 25, normalize=True, border=v),
         ("replicate", "zero", "reflect"),
     ),
     ExprCase(

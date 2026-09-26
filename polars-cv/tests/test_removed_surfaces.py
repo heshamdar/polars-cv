@@ -252,6 +252,27 @@ def test_the_contour_source_has_no_canvas_fields() -> None:
 
 
 # ---------------------------------------------------------------------------
+# convolve2d(ksize=): a second statement of the kernel's length
+# ---------------------------------------------------------------------------
+
+
+@plugin_required
+def test_convolve2d_takes_its_side_from_the_kernel() -> None:
+    """``ksize`` could only ever equal the square root of the kernel length.
+
+    The length is structural, so the side was known from the kernel alone;
+    ``ksize`` restated it, and a per-row ``ksize`` could only fail when it
+    disagreed. The kernel is now the one statement of its size.
+    """
+    identity = [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+    Pipeline().source("image_bytes").convolve2d(identity)
+    with pytest.raises(TypeError, match="ksize"):
+        Pipeline().source("image_bytes").convolve2d(identity, ksize=3)  # type: ignore[call-arg]
+    with pytest.raises(ValueError, match="odd"):
+        Pipeline().source("image_bytes").convolve2d([1.0] * 4)
+
+
+# ---------------------------------------------------------------------------
 # Python-side sink spec classes: unreachable, and wrong where they disagreed
 # ---------------------------------------------------------------------------
 

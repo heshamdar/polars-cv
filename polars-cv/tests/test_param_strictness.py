@@ -232,7 +232,7 @@ class TestEnumValuesExecutable:
             Pipeline()
             .source("image_bytes")
             .grayscale()
-            .convolve2d(kernel=kernel, ksize=3, border=border)
+            .convolve2d(kernel=kernel, border=border)
         )
         _run(pipe, "numpy", image_bytes)
 
@@ -374,7 +374,7 @@ class TestListParamElementsAcceptExpressions:
             lambda k: (
                 Pipeline()
                 .source("image_bytes")
-                .convolve2d(kernel=[k] * 4 + [1.0] + [k] * 4, ksize=3)
+                .convolve2d(kernel=[k] * 4 + [1.0] + [k] * 4)
             ),
             [0.0, 1.0, 0.5],
             column="k",
@@ -410,11 +410,9 @@ class TestListParamElementsAcceptExpressions:
         )
 
     def test_convolve2d_rejects_a_non_square_kernel(self) -> None:
-        """The kernel *length* is checkable even when ``ksize`` is dynamic."""
+        """The kernel *length* is checked at build, whatever its coefficients."""
         with pytest.raises(ValueError, match="square of an odd number"):
-            Pipeline().source("image_bytes").convolve2d(
-                kernel=[1.0] * 8, ksize=pl.col("k")
-            )
+            Pipeline().source("image_bytes").convolve2d(kernel=[pl.col("k")] * 8)
 
 
 @plugin_required
@@ -456,9 +454,7 @@ class TestEnumParamsAcceptExpressions:
         _assert_matches_per_row_literals(
             image_bytes,
             lambda b: (
-                Pipeline()
-                .source("image_bytes")
-                .convolve2d(kernel=[1.0] * 9, ksize=3, border=b)
+                Pipeline().source("image_bytes").convolve2d(kernel=[1.0] * 9, border=b)
             ),
             ["replicate", "zero", "reflect"],
             column="b",
@@ -673,7 +669,7 @@ class TestFlagParamsAcceptExpressions:
             lambda n: (
                 Pipeline()
                 .source("image_bytes")
-                .convolve2d(kernel=[1.0] * 9, ksize=3, normalize=n)
+                .convolve2d(kernel=[1.0] * 9, normalize=n)
             ),
             [True, False],
             column="n",

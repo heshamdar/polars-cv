@@ -180,7 +180,7 @@ rank, or dtype**. Everything else follows from that one invariant.
    crop offsets, pad amounts and values, rotate angle and `border_value`,
    warp_affine `output_size`/`border_value`, blur sigma, threshold value, canny
    thresholds, contrast/gamma/brightness/sharpen factors, morphology
-   ksize/iterations, channel_select index, convolve2d ksize, rasterize
+   ksize/iterations, channel_select index, rasterize
    `width`/`height`/`fill_value`/`background`, histogram
    `range` (both ends), extract_contours `min_area`, reduce_percentile q,
    reduce_std ddof.

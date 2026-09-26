@@ -13,7 +13,7 @@ arguments:
 
 | Before | After |
 |---|---|
-| `.convolve2d(k, 3)` | `.convolve2d(kernel=k, ksize=3)` |
+| `.convolve2d(k, 3)` | `.convolve2d(k)` (the side comes from the kernel) |
 | `.convert_color("rgb", "hsv")` | `.convert_color(from_space="rgb", to_space="hsv")` |
 | `.histogram(64)` | `.histogram(bins=64)` |
 | `.normalize("zscore")` | `.normalize(method="zscore")` |
@@ -96,6 +96,8 @@ decoded.
 
 ## Removed
 
+- `convolve2d(ksize=)`. The kernel's length decides its side; write
+  `.convolve2d(k)` (or `kernel=k`).
 - `Pipeline.output_encoding()`. The plugin reads whether an output is
   histogram buckets from the ops themselves.
 
