@@ -1289,14 +1289,14 @@ impl SourceFormat {
     /// The decode path of a typed source.
     fn of(source: &Source) -> Self {
         match source {
-            Source::Array(_) => SourceFormat::Array,
-            Source::Auto(_) => SourceFormat::Auto,
-            Source::Blob(_) => SourceFormat::Blob,
-            Source::Contour(_) => SourceFormat::Contour,
-            Source::FilePath(_) => SourceFormat::FilePath,
-            Source::ImageBytes(_) => SourceFormat::ImageBytes,
-            Source::List(_) => SourceFormat::List,
-            Source::Raw(_) => SourceFormat::Raw,
+            Source::Array { .. } => SourceFormat::Array,
+            Source::Auto { .. } => SourceFormat::Auto,
+            Source::Blob { .. } => SourceFormat::Blob,
+            Source::Contour { .. } => SourceFormat::Contour,
+            Source::FilePath { .. } => SourceFormat::FilePath,
+            Source::ImageBytes { .. } => SourceFormat::ImageBytes,
+            Source::List { .. } => SourceFormat::List,
+            Source::Raw { .. } => SourceFormat::Raw,
         }
     }
 }

@@ -33,29 +33,25 @@
         {
           "name": "require_contiguous",
           "doc": "Require rectangular data (zero-copy); jagged rows are then an error.",
+          "default": false,
           "type": {
-            "kind": "optional",
-            "inner": {
-              "kind": "scalar",
-              "per_row": false,
-              "py": "bool"
-            }
+            "kind": "scalar",
+            "per_row": false,
+            "py": "bool"
           }
         },
         {
           "name": "on_error",
-          "doc": "\"raise\" (default) or \"null\": what a row that cannot be decoded does.",
+          "doc": "\"raise\" or \"null\": what a row that cannot be decoded does.",
+          "default": "raise",
           "type": {
-            "kind": "optional",
-            "inner": {
-              "kind": "scalar",
-              "per_row": false,
-              "py": "FetchErrorPolicy",
-              "variants": [
-                "raise",
-                "null"
-              ]
-            }
+            "kind": "scalar",
+            "per_row": false,
+            "py": "FetchErrorPolicy",
+            "variants": [
+              "raise",
+              "null"
+            ]
           }
         }
       ]
@@ -93,13 +89,11 @@
         {
           "name": "require_contiguous",
           "doc": "Require rectangular data when the column is a List/Array.",
+          "default": false,
           "type": {
-            "kind": "optional",
-            "inner": {
-              "kind": "scalar",
-              "per_row": false,
-              "py": "bool"
-            }
+            "kind": "scalar",
+            "per_row": false,
+            "py": "bool"
           }
         },
         {
@@ -141,18 +135,16 @@
         },
         {
           "name": "on_error",
-          "doc": "\"raise\" (default) or \"null\": what a row that cannot be decoded does.",
+          "doc": "\"raise\" or \"null\": what a row that cannot be decoded does.",
+          "default": "raise",
           "type": {
-            "kind": "optional",
-            "inner": {
-              "kind": "scalar",
-              "per_row": false,
-              "py": "FetchErrorPolicy",
-              "variants": [
-                "raise",
-                "null"
-              ]
-            }
+            "kind": "scalar",
+            "per_row": false,
+            "py": "FetchErrorPolicy",
+            "variants": [
+              "raise",
+              "null"
+            ]
           }
         }
       ]
@@ -189,18 +181,16 @@
         },
         {
           "name": "on_error",
-          "doc": "\"raise\" (default) or \"null\": what a row that cannot be decoded does.",
+          "doc": "\"raise\" or \"null\": what a row that cannot be decoded does.",
+          "default": "raise",
           "type": {
-            "kind": "optional",
-            "inner": {
-              "kind": "scalar",
-              "per_row": false,
-              "py": "FetchErrorPolicy",
-              "variants": [
-                "raise",
-                "null"
-              ]
-            }
+            "kind": "scalar",
+            "per_row": false,
+            "py": "FetchErrorPolicy",
+            "variants": [
+              "raise",
+              "null"
+            ]
           }
         }
       ]
@@ -213,18 +203,16 @@
       "fields": [
         {
           "name": "on_error",
-          "doc": "\"raise\" (default) or \"null\": what a row that cannot be decoded does.",
+          "doc": "\"raise\" or \"null\": what a row that cannot be decoded does.",
+          "default": "raise",
           "type": {
-            "kind": "optional",
-            "inner": {
-              "kind": "scalar",
-              "per_row": false,
-              "py": "FetchErrorPolicy",
-              "variants": [
-                "raise",
-                "null"
-              ]
-            }
+            "kind": "scalar",
+            "per_row": false,
+            "py": "FetchErrorPolicy",
+            "variants": [
+              "raise",
+              "null"
+            ]
           }
         }
       ]
@@ -298,18 +286,16 @@
         },
         {
           "name": "on_error",
-          "doc": "\"raise\" (default) or \"null\": what a row that cannot be read or decoded\ndoes.",
+          "doc": "\"raise\" or \"null\": what a row that cannot be read or decoded does.",
+          "default": "raise",
           "type": {
-            "kind": "optional",
-            "inner": {
-              "kind": "scalar",
-              "per_row": false,
-              "py": "FetchErrorPolicy",
-              "variants": [
-                "raise",
-                "null"
-              ]
-            }
+            "kind": "scalar",
+            "per_row": false,
+            "py": "FetchErrorPolicy",
+            "variants": [
+              "raise",
+              "null"
+            ]
           }
         }
       ]
@@ -358,18 +344,16 @@
         },
         {
           "name": "on_error",
-          "doc": "\"raise\" (default) or \"null\": what a row that cannot be decoded does.",
+          "doc": "\"raise\" or \"null\": what a row that cannot be decoded does.",
+          "default": "raise",
           "type": {
-            "kind": "optional",
-            "inner": {
-              "kind": "scalar",
-              "per_row": false,
-              "py": "FetchErrorPolicy",
-              "variants": [
-                "raise",
-                "null"
-              ]
-            }
+            "kind": "scalar",
+            "per_row": false,
+            "py": "FetchErrorPolicy",
+            "variants": [
+              "raise",
+              "null"
+            ]
           }
         }
       ]
@@ -407,29 +391,25 @@
         {
           "name": "require_contiguous",
           "doc": "Require rectangular data (zero-copy); jagged rows are then an error.",
+          "default": false,
           "type": {
-            "kind": "optional",
-            "inner": {
-              "kind": "scalar",
-              "per_row": false,
-              "py": "bool"
-            }
+            "kind": "scalar",
+            "per_row": false,
+            "py": "bool"
           }
         },
         {
           "name": "on_error",
-          "doc": "\"raise\" (default) or \"null\": what a row that cannot be decoded does.",
+          "doc": "\"raise\" or \"null\": what a row that cannot be decoded does.",
+          "default": "raise",
           "type": {
-            "kind": "optional",
-            "inner": {
-              "kind": "scalar",
-              "per_row": false,
-              "py": "FetchErrorPolicy",
-              "variants": [
-                "raise",
-                "null"
-              ]
-            }
+            "kind": "scalar",
+            "per_row": false,
+            "py": "FetchErrorPolicy",
+            "variants": [
+              "raise",
+              "null"
+            ]
           }
         }
       ]
@@ -463,18 +443,16 @@
         },
         {
           "name": "on_error",
-          "doc": "\"raise\" (default) or \"null\": what a row that cannot be decoded does.",
+          "doc": "\"raise\" or \"null\": what a row that cannot be decoded does.",
+          "default": "raise",
           "type": {
-            "kind": "optional",
-            "inner": {
-              "kind": "scalar",
-              "per_row": false,
-              "py": "FetchErrorPolicy",
-              "variants": [
-                "raise",
-                "null"
-              ]
-            }
+            "kind": "scalar",
+            "per_row": false,
+            "py": "FetchErrorPolicy",
+            "variants": [
+              "raise",
+              "null"
+            ]
           }
         }
       ]
@@ -508,7 +486,7 @@
       "name": "blob",
       "python": "blob",
       "visibility": "public",
-      "doc": "A format with no parameters: re-encoded by an image codec (``png``,\n``webp``, ``tiff``), the self-describing VIEW ``blob``, a nested ``list``,\nor the domain's ``native`` Polars type.",
+      "doc": "The self-describing VIEW protocol, as `Binary`.",
       "fields": []
     },
     {
@@ -519,14 +497,12 @@
       "fields": [
         {
           "name": "quality",
-          "doc": "JPEG quality, 1-100 (default 85). Only the JPEG encoder takes one.",
+          "doc": "JPEG quality, 1-100. Only the JPEG encoder takes one.",
+          "default": 85,
           "type": {
-            "kind": "optional",
-            "inner": {
-              "kind": "scalar",
-              "per_row": false,
-              "py": "int"
-            }
+            "kind": "scalar",
+            "per_row": false,
+            "py": "int"
           }
         }
       ]
@@ -535,25 +511,25 @@
       "name": "list",
       "python": "list",
       "visibility": "public",
-      "doc": "A format with no parameters: re-encoded by an image codec (``png``,\n``webp``, ``tiff``), the self-describing VIEW ``blob``, a nested ``list``,\nor the domain's ``native`` Polars type.",
+      "doc": "A nested Polars `List`.",
       "fields": []
     },
     {
       "name": "native",
       "python": "native",
       "visibility": "public",
-      "doc": "A format with no parameters: re-encoded by an image codec (``png``,\n``webp``, ``tiff``), the self-describing VIEW ``blob``, a nested ``list``,\nor the domain's ``native`` Polars type.",
+      "doc": "The domain's own Polars type: `Float64` for a scalar, a `List` for a\nvector, the contour struct for contours.",
       "fields": []
     },
     {
       "name": "ndarray",
       "python": "ndarray",
       "visibility": "public",
-      "doc": "A zero-copy tensor struct (`numpy`, `torch`, or the tagged `ndarray`).",
+      "doc": "The `polars_cv.ndarray` extension type: a zero-copy tensor struct.",
       "fields": [
         {
           "name": "dtype",
-          "doc": "Downcast the elements to this dtype at encode time: only half precision\n(``\"f16\"``/``\"float16\"``); use ``.cast(...)`` for any other dtype.",
+          "doc": "Downcast the elements to this dtype at encode time: only half\nprecision (``\"f16\"``/``\"float16\"``); use ``.cast(...)`` for any\nother dtype.",
           "type": {
             "kind": "optional",
             "inner": {
@@ -573,11 +549,11 @@
       "name": "numpy",
       "python": "numpy",
       "visibility": "public",
-      "doc": "A zero-copy tensor struct (`numpy`, `torch`, or the tagged `ndarray`).",
+      "doc": "A zero-copy tensor struct `numpy_from_struct` reads.",
       "fields": [
         {
           "name": "dtype",
-          "doc": "Downcast the elements to this dtype at encode time: only half precision\n(``\"f16\"``/``\"float16\"``); use ``.cast(...)`` for any other dtype.",
+          "doc": "Downcast the elements to this dtype at encode time: only half\nprecision (``\"f16\"``/``\"float16\"``); use ``.cast(...)`` for any\nother dtype.",
           "type": {
             "kind": "optional",
             "inner": {
@@ -597,25 +573,25 @@
       "name": "png",
       "python": "png",
       "visibility": "public",
-      "doc": "A format with no parameters: re-encoded by an image codec (``png``,\n``webp``, ``tiff``), the self-describing VIEW ``blob``, a nested ``list``,\nor the domain's ``native`` Polars type.",
+      "doc": "Re-encoded as PNG.",
       "fields": []
     },
     {
       "name": "tiff",
       "python": "tiff",
       "visibility": "public",
-      "doc": "A format with no parameters: re-encoded by an image codec (``png``,\n``webp``, ``tiff``), the self-describing VIEW ``blob``, a nested ``list``,\nor the domain's ``native`` Polars type.",
+      "doc": "Re-encoded as TIFF.",
       "fields": []
     },
     {
       "name": "torch",
       "python": "torch",
       "visibility": "public",
-      "doc": "A zero-copy tensor struct (`numpy`, `torch`, or the tagged `ndarray`).",
+      "doc": "A zero-copy tensor struct `torch_from_struct` reads.",
       "fields": [
         {
           "name": "dtype",
-          "doc": "Downcast the elements to this dtype at encode time: only half precision\n(``\"f16\"``/``\"float16\"``); use ``.cast(...)`` for any other dtype.",
+          "doc": "Downcast the elements to this dtype at encode time: only half\nprecision (``\"f16\"``/``\"float16\"``); use ``.cast(...)`` for any\nother dtype.",
           "type": {
             "kind": "optional",
             "inner": {
@@ -635,7 +611,7 @@
       "name": "webp",
       "python": "webp",
       "visibility": "public",
-      "doc": "A format with no parameters: re-encoded by an image codec (``png``,\n``webp``, ``tiff``), the self-describing VIEW ``blob``, a nested ``list``,\nor the domain's ``native`` Polars type.",
+      "doc": "Re-encoded as WebP (lossless).",
       "fields": []
     }
   ]

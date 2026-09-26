@@ -283,10 +283,18 @@ fn param_default(attrs: &[Attribute]) -> syn::Result<Option<Expr>> {
 /// `#[derive(Ops)]`: each variant carrying `#[op(name = ...)]` is one wire
 /// op. A variant without it is engine-internal (fusion's output, say): it has
 /// no wire form, and the wire never produces it.
+///
+/// A family with per-row values is generic over its mode, and its `Wire`
+/// form is the wire's. A family with none (the sources and sinks: every
+/// field a `Literal` or a plain setting) has no type parameter and is its
+/// own wire form; there is nothing to resolve.
 pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
-    let mode = mode_param(input)?;
+    let mode = input.generics.type_params().next().map(|p| p.ident.clone());
     let name = &input.ident;
-    let wire = with_mode(input, quote!(::view_buffer::mode::Wire));
+    let wire = match &mode {
+        Some(_) => with_mode(input, quote!(::view_buffer::mode::Wire)),
+        None => quote!(#name),
+    };
     // A struct is one op: the same generation over a single "variant" whose
     // attributes are the struct's and whose constructor is the struct itself.
     let variants: Vec<(Option<&Ident>, &[Attribute], &Fields)> = match &input.data {
@@ -385,7 +393,10 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     format!("field `{fname}` needs a doc comment: it is the generated Args: entry"),
                 ));
             }
-            let wty = wire_type(&f.ty, &mode);
+            let wty = match &mode {
+                Some(mode) => wire_type(&f.ty, mode),
+                None => f.ty.clone(),
+            };
             let declared = param_default(&f.attrs)?;
             if declared.is_some() && is_option(&f.ty) {
                 return Err(syn::Error::new(
@@ -560,6 +571,12 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
             fn wire_name(&self) -> ::core::option::Option<&'static str> {
                 Self::wire_name(self)
+            }
+            fn wire_fields(
+                &self,
+            ) -> ::core::option::Option<::serde_json::Map<::std::string::String, ::serde_json::Value>>
+            {
+                Self::wire_fields(self)
             }
             fn visit_slots(&self, f: &mut dyn FnMut(&'static str, usize)) {
                 Self::visit_slots(self, f)

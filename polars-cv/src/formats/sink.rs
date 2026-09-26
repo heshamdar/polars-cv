@@ -1,112 +1,134 @@
 //! Sink formats: how an output node is encoded.
 
-use polars_cv_macros::Op;
-use serde::{Deserialize, Serialize};
+use polars_cv_macros::Ops;
 use view_buffer::ImageCodec;
 
-use super::formats;
 pub use super::sink_dtype::SinkDType;
 use crate::ops::Literal;
 
-/// A zero-copy tensor struct (`numpy`, `torch`, or the tagged `ndarray`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
-#[serde(deny_unknown_fields)]
-pub struct TensorSink {
-    /// Downcast the elements to this dtype at encode time: only half precision
-    /// (``"f16"``/``"float16"``); use ``.cast(...)`` for any other dtype.
-    pub dtype: Option<Literal<SinkDType>>,
+/// How an output node is encoded (see the module docs).
+#[derive(Debug, Clone, PartialEq, Ops)]
+pub enum Sink {
+    /// A fixed-shape Polars `Array`.
+    #[op(name = "array", sample = {"shape": [2, 2]})]
+    Array {
+        /// The output shape; inferred from the planned shape when absent.
+        shape: Option<Vec<Literal<u32>>>,
+    },
+    /// The self-describing VIEW protocol, as `Binary`.
+    #[op(name = "blob", sample = {})]
+    Blob,
+    /// Re-encoded as JPEG.
+    #[op(name = "jpeg", sample = {"quality": 90})]
+    Jpeg {
+        /// JPEG quality, 1-100. Only the JPEG encoder takes one.
+        #[param(default = 85)]
+        quality: Literal<u8>,
+    },
+    /// A nested Polars `List`.
+    #[op(name = "list", sample = {})]
+    List,
+    /// The domain's own Polars type: `Float64` for a scalar, a `List` for a
+    /// vector, the contour struct for contours.
+    #[op(name = "native", sample = {})]
+    Native,
+    /// The `polars_cv.ndarray` extension type: a zero-copy tensor struct.
+    #[op(name = "ndarray", sample = {"dtype": "f16"})]
+    NdArray {
+        /// Downcast the elements to this dtype at encode time: only half
+        /// precision (``"f16"``/``"float16"``); use ``.cast(...)`` for any
+        /// other dtype.
+        dtype: Option<Literal<SinkDType>>,
+    },
+    /// A zero-copy tensor struct `numpy_from_struct` reads.
+    #[op(name = "numpy", sample = {})]
+    Numpy {
+        /// Downcast the elements to this dtype at encode time: only half
+        /// precision (``"f16"``/``"float16"``); use ``.cast(...)`` for any
+        /// other dtype.
+        dtype: Option<Literal<SinkDType>>,
+    },
+    /// Re-encoded as PNG.
+    #[op(name = "png", sample = {})]
+    Png,
+    /// Re-encoded as TIFF.
+    #[op(name = "tiff", sample = {})]
+    Tiff,
+    /// A zero-copy tensor struct `torch_from_struct` reads.
+    #[op(name = "torch", sample = {"dtype": "float16"})]
+    Torch {
+        /// Downcast the elements to this dtype at encode time: only half
+        /// precision (``"f16"``/``"float16"``); use ``.cast(...)`` for any
+        /// other dtype.
+        dtype: Option<Literal<SinkDType>>,
+    },
+    /// Re-encoded as WebP (lossless).
+    #[op(name = "webp", sample = {})]
+    WebP,
 }
 
-/// Re-encoded as JPEG.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
-#[serde(deny_unknown_fields)]
-pub struct JpegSink {
-    /// JPEG quality, 1-100 (default 85). Only the JPEG encoder takes one.
-    pub quality: Option<Literal<u8>>,
-}
-
-impl JpegSink {
-    /// The quality when none is given.
-    pub const DEFAULT_QUALITY: u8 = 85;
-}
-
-/// A fixed-shape Polars `Array`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
-#[serde(deny_unknown_fields)]
-pub struct ArraySink {
-    /// The output shape; inferred from the planned shape when absent.
-    pub shape: Option<Vec<Literal<u32>>>,
-}
-
-/// A format with no parameters: re-encoded by an image codec (``png``,
-/// ``webp``, ``tiff``), the self-describing VIEW ``blob``, a nested ``list``,
-/// or the domain's ``native`` Polars type.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
-#[serde(deny_unknown_fields)]
-pub struct PlainSink {}
-
-formats! {
-    /// How an output node is encoded (see the module docs).
-    Sink("sink") {
-        "array" => Array(ArraySink) {"shape": [2, 2]},
-        "blob" => Blob(PlainSink) {},
-        "jpeg" => Jpeg(JpegSink) {"quality": 90},
-        "list" => List(PlainSink) {},
-        "native" => Native(PlainSink) {},
-        "ndarray" => NdArray(TensorSink) {"dtype": "f16"},
-        "numpy" => Numpy(TensorSink) {},
-        "png" => Png(PlainSink) {},
-        "tiff" => Tiff(PlainSink) {},
-        "torch" => Torch(TensorSink) {"dtype": "float16"},
-        "webp" => WebP(PlainSink) {},
+impl super::Format for Sink {
+    const KIND: &'static str = "sink";
+    fn formats() -> &'static [view_buffer::mode::OpDesc] {
+        static CATALOG: std::sync::LazyLock<Vec<view_buffer::mode::OpDesc>> =
+            std::sync::LazyLock::new(Sink::catalog);
+        &CATALOG
     }
 }
+
+super::tagged_serde!(Sink);
 
 impl Sink {
     /// The image codec a re-encoding sink writes through.
     pub fn image_codec(&self) -> Option<ImageCodec> {
         match self {
-            Sink::Png(_) => Some(ImageCodec::Png),
-            Sink::Jpeg(_) => Some(ImageCodec::Jpeg),
-            Sink::WebP(_) => Some(ImageCodec::WebP),
-            Sink::Tiff(_) => Some(ImageCodec::Tiff),
-            Sink::Array(_)
-            | Sink::Blob(_)
-            | Sink::List(_)
-            | Sink::Native(_)
-            | Sink::NdArray(_)
-            | Sink::Numpy(_)
-            | Sink::Torch(_) => None,
-        }
-    }
-
-    /// The JPEG quality; the default for every other format, which ignores it.
-    pub fn quality(&self) -> u8 {
-        match self {
-            Sink::Jpeg(JpegSink { quality }) => quality
-                .map(|q| q.get())
-                .unwrap_or(JpegSink::DEFAULT_QUALITY),
-            _ => JpegSink::DEFAULT_QUALITY,
+            Sink::Png => Some(ImageCodec::Png),
+            Sink::Jpeg { .. } => Some(ImageCodec::Jpeg),
+            Sink::WebP => Some(ImageCodec::WebP),
+            Sink::Tiff => Some(ImageCodec::Tiff),
+            Sink::Array { .. }
+            | Sink::Blob
+            | Sink::List
+            | Sink::Native
+            | Sink::NdArray { .. }
+            | Sink::Numpy { .. }
+            | Sink::Torch { .. } => None,
         }
     }
 
     /// The `array` sink's explicit shape.
     pub fn shape(&self) -> Option<Vec<usize>> {
         match self {
-            Sink::Array(ArraySink { shape }) => shape
+            Sink::Array { shape } => shape
                 .as_ref()
                 .map(|s| s.iter().map(|d| d.get() as usize).collect()),
-            _ => None,
+            Sink::Blob
+            | Sink::Jpeg { .. }
+            | Sink::List
+            | Sink::Native
+            | Sink::NdArray { .. }
+            | Sink::Numpy { .. }
+            | Sink::Png
+            | Sink::Tiff
+            | Sink::Torch { .. }
+            | Sink::WebP => None,
         }
     }
 
     /// Whether a tensor sink downcasts to half precision.
     pub fn as_f16(&self) -> bool {
         match self {
-            Sink::Numpy(t) | Sink::Torch(t) | Sink::NdArray(t) => {
-                matches!(t.dtype, Some(Literal(SinkDType::F16)))
+            Sink::NdArray { dtype } | Sink::Numpy { dtype } | Sink::Torch { dtype } => {
+                matches!(dtype, Some(Literal(SinkDType::F16)))
             }
-            _ => false,
+            Sink::Array { .. }
+            | Sink::Blob
+            | Sink::Jpeg { .. }
+            | Sink::List
+            | Sink::Native
+            | Sink::Png
+            | Sink::Tiff
+            | Sink::WebP => false,
         }
     }
 }
@@ -114,6 +136,7 @@ impl Sink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::formats::Format as _;
 
     fn parse(v: serde_json::Value) -> Result<Sink, String> {
         serde_json::from_value(v).map_err(|e| e.to_string())
@@ -131,7 +154,12 @@ mod tests {
     #[test]
     fn an_absent_field_takes_its_default() {
         let sink = parse(serde_json::json!({"format": "jpeg"})).unwrap();
-        assert_eq!(sink.quality(), 85);
+        assert_eq!(
+            sink,
+            Sink::Jpeg {
+                quality: Literal(85)
+            }
+        );
         assert_eq!(
             parse(serde_json::json!({"format": "array"}))
                 .unwrap()

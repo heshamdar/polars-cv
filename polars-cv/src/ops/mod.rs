@@ -27,30 +27,7 @@ use serde::Serialize;
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
 pub use param::{ColumnRef, FieldType, Literal, NodeRef, Param, ParamExt};
-pub use view_buffer::mode::{FieldDesc, OpDesc};
-
-/// What `#[derive(Op)]` emits for an op struct.
-pub trait OpFields {
-    /// The op's doc comment: the generated docstring's body.
-    const DOC: &'static str;
-    /// The Python method name, when it differs from the wire name.
-    const PYTHON_NAME: Option<&'static str>;
-    /// Every field, in declaration (= Python signature) order.
-    fn fields() -> Vec<FieldDesc>;
-    /// Call `f(field, slot)` for every slot any field reads.
-    fn visit_slots(&self, f: &mut dyn FnMut(&'static str, usize));
-}
-
-/// The catalogue entry of the op struct `T`, registered as `name`.
-pub(crate) fn op_desc<T: OpFields>(name: &'static str) -> OpDesc {
-    OpDesc {
-        name,
-        python: T::PYTHON_NAME.unwrap_or(name),
-        visibility: view_buffer::mode::Visibility::Public,
-        doc: T::DOC,
-        fields: T::fields(),
-    }
-}
+pub use view_buffer::mode::OpDesc;
 
 /// Register the typed op families.
 ///
@@ -113,7 +90,7 @@ macro_rules! typed_ops {
                 }
             }
 
-            /// See [`OpFields::visit_slots`].
+            /// Call `f(field, slot)` for every slot a field reads.
             pub fn visit_slots(&self, f: &mut dyn FnMut(&'static str, usize)) {
                 match self {
                     $($($at)::+($($inner)*) => $op.visit_slots(f),)*
@@ -213,15 +190,6 @@ impl TypedOp {
     }
 }
 
-pub(crate) fn path_error(e: &serde_path_to_error::Error<serde_json::Error>) -> String {
-    let path = e.path().to_string();
-    if path == "." {
-        e.inner().to_string()
-    } else {
-        format!("'{path}': {}", e.inner())
-    }
-}
-
 /// The catalogue as committed in `tests/golden/op_catalog.json`.
 pub fn catalog_json() -> String {
     let mut text =
@@ -233,8 +201,6 @@ pub fn catalog_json() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use polars_cv_macros::Op;
-    use serde::Deserialize;
     use serde_json::json;
 
     fn parse(v: serde_json::Value) -> Result<TypedOp, String> {
@@ -617,17 +583,6 @@ mod tests {
     fn an_unknown_operation_is_rejected() {
         let err = parse_err(json!({"op": "definitely_not_a_real_op"}));
         assert!(err.contains("Unknown operation"), "{err}");
-    }
-
-    #[test]
-    fn an_extra_key_on_a_no_field_op_is_rejected() {
-        /// A test op with no parameters.
-        #[derive(Debug, Deserialize, Op)]
-        #[serde(deny_unknown_fields)]
-        struct NoFields {}
-        assert!(serde_json::from_value::<NoFields>(json!({})).is_ok());
-        assert!(serde_json::from_value::<NoFields>(json!({"x": 1})).is_err());
-        assert!(NoFields::fields().is_empty());
     }
 
     #[test]

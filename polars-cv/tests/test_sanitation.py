@@ -2266,7 +2266,10 @@ def test_the_precommit_hook_runs_the_ci_python_linters() -> None:
 # failure mode `CLAUDE.md` calls out and this repo has shipped more than once.
 # Counting *every* deserialized struct rather than the open ones is deliberate:
 # an open-struct floor would fall to zero exactly when the code became correct.
-_DESERIALIZED_STRUCT_FLOOR = 11
+# C6b took it from 22 to 10: the eleven per-format source/sink structs (and a
+# test-only `NoFields`) left serde for `#[derive(Ops)]`, whose wire refuses an
+# unknown field by construction.
+_DESERIALIZED_STRUCT_FLOOR = 10
 
 
 def test_every_deserialized_plugin_struct_rejects_unknown_fields() -> None:

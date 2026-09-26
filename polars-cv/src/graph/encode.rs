@@ -13,6 +13,7 @@ use view_buffer::{DType, GeometryOp, Op, PlannedDType, ViewBuffer};
 
 use super::sink_kind::SinkKind;
 use super::types::{OutputSpec, OutputValue, TypedBufferData};
+use crate::formats::Format as _;
 
 /// Execute a geometry operation with typed domain dispatch.
 ///
