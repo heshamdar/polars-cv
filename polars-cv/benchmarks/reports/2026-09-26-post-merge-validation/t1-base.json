@@ -1,0 +1,702 @@
+[
+  {
+    "framework": "polars-cv-eager",
+    "operation": "adjust_brightness",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.23426775180014375,
+    "throughput_images_per_second": 1280.5859863116505,
+    "latency_ms_per_image": 0.7808925060004792,
+    "peak_memory_mb": 472.10546875,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "adjust_contrast",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.33849618550048033,
+    "throughput_images_per_second": 886.272911927908,
+    "latency_ms_per_image": 1.1283206183349344,
+    "peak_memory_mb": 471.87890625,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "blur",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.42708229849959023,
+    "throughput_images_per_second": 702.4407264219307,
+    "latency_ms_per_image": 1.4236076616653008,
+    "peak_memory_mb": 303.3359375,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "canny",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.4293513871994946,
+    "throughput_images_per_second": 698.7283817965341,
+    "latency_ms_per_image": 1.431171290664982,
+    "peak_memory_mb": 266.15625,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "crop_center",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.05546469390101265,
+    "throughput_images_per_second": 5408.846220902388,
+    "latency_ms_per_image": 0.18488231300337551,
+    "peak_memory_mb": 260.1171875,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "dilate",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.07641765290027251,
+    "throughput_images_per_second": 3925.7944809101846,
+    "latency_ms_per_image": 0.25472550966757507,
+    "peak_memory_mb": 265.1953125,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "erode",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.07824190020000969,
+    "throughput_images_per_second": 3834.2627062112538,
+    "latency_ms_per_image": 0.26080633400003234,
+    "peak_memory_mb": 265.2890625,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "flip_horizontal",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.19963186430031782,
+    "throughput_images_per_second": 1502.7661092654655,
+    "latency_ms_per_image": 0.6654395476677261,
+    "peak_memory_mb": 302.52734375,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "flip_vertical",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.19834566610006732,
+    "throughput_images_per_second": 1512.5109910324286,
+    "latency_ms_per_image": 0.6611522203335577,
+    "peak_memory_mb": 302.79296875,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "grayscale",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.06217173549994186,
+    "throughput_images_per_second": 4825.343825254493,
+    "latency_ms_per_image": 0.20723911833313952,
+    "peak_memory_mb": 264.84765625,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "heavy_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.39006755059890563,
+    "throughput_images_per_second": 769.0975564088403,
+    "latency_ms_per_image": 1.3002251686630188,
+    "peak_memory_mb": 265.51953125,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "histogram_equalize",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.15192246219958178,
+    "throughput_images_per_second": 1974.6915344610961,
+    "latency_ms_per_image": 0.5064082073319393,
+    "peak_memory_mb": 265.01171875,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "imagenet_preprocess",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.3389971599001001,
+    "throughput_images_per_second": 884.963166323894,
+    "latency_ms_per_image": 1.1299905330003337,
+    "peak_memory_mb": 419.7578125,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "invert",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.05804282129975036,
+    "throughput_images_per_second": 5168.597826261941,
+    "latency_ms_per_image": 0.19347607099916786,
+    "peak_memory_mb": 302.74609375,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "light_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.30828303410016816,
+    "throughput_images_per_second": 973.1317225278223,
+    "latency_ms_per_image": 1.0276101136672273,
+    "peak_memory_mb": 419.68359375,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "medical_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.5319189180001558,
+    "throughput_images_per_second": 563.995732898359,
+    "latency_ms_per_image": 1.7730630600005193,
+    "peak_memory_mb": 548.015625,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "medium_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.46040646270012076,
+    "throughput_images_per_second": 651.5981514260384,
+    "latency_ms_per_image": 1.5346882090004024,
+    "peak_memory_mb": 419.734375,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "normalize",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.26450223089923386,
+    "throughput_images_per_second": 1134.2059345967843,
+    "latency_ms_per_image": 0.8816741029974462,
+    "peak_memory_mb": 472.02734375,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "pad",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.0783219465000002,
+    "throughput_images_per_second": 3830.3440275197863,
+    "latency_ms_per_image": 0.26107315500000067,
+    "peak_memory_mb": 321.89453125,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "resize",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.12642599469982088,
+    "throughput_images_per_second": 2372.9297183882472,
+    "latency_ms_per_image": 0.4214199823327363,
+    "peak_memory_mb": 289.04296875,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "rotate_45",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 1.0045482086999982,
+    "throughput_images_per_second": 298.6417151529589,
+    "latency_ms_per_image": 3.348494028999994,
+    "peak_memory_mb": 359.2734375,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "rotate_90",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.19456432340030005,
+    "throughput_images_per_second": 1541.9065261146295,
+    "latency_ms_per_image": 0.6485477446676668,
+    "peak_memory_mb": 302.64453125,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "sharpen",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.5470270297000752,
+    "throughput_images_per_second": 548.4189696521659,
+    "latency_ms_per_image": 1.823423432333584,
+    "peak_memory_mb": 471.98828125,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "sobel_x",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.21159096259980287,
+    "throughput_images_per_second": 1417.8299314579492,
+    "latency_ms_per_image": 0.7053032086660096,
+    "peak_memory_mb": 321.58984375,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "threshold",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.0647617241997068,
+    "throughput_images_per_second": 4632.365856642189,
+    "latency_ms_per_image": 0.21587241399902266,
+    "peak_memory_mb": 264.87890625,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "adjust_brightness",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.23189096660025826,
+    "throughput_images_per_second": 1293.7114558548133,
+    "latency_ms_per_image": 0.7729698886675276,
+    "peak_memory_mb": 410.4453125,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "adjust_contrast",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.31779525070051023,
+    "throughput_images_per_second": 944.0040382564418,
+    "latency_ms_per_image": 1.059317502335034,
+    "peak_memory_mb": 411.16015625,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "blur",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.3758125774000291,
+    "throughput_images_per_second": 798.2702496959506,
+    "latency_ms_per_image": 1.2527085913334304,
+    "peak_memory_mb": 246.96875,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "canny",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.43828129019966583,
+    "throughput_images_per_second": 684.4919158272313,
+    "latency_ms_per_image": 1.4609376339988862,
+    "peak_memory_mb": 247.08203125,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "crop_center",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.05215714639998623,
+    "throughput_images_per_second": 5751.848417843642,
+    "latency_ms_per_image": 0.17385715466662077,
+    "peak_memory_mb": 246.97265625,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "dilate",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.07278751110025042,
+    "throughput_images_per_second": 4121.586182371441,
+    "latency_ms_per_image": 0.2426250370008347,
+    "peak_memory_mb": 247.1015625,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "erode",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.07178073940012837,
+    "throughput_images_per_second": 4179.394117518153,
+    "latency_ms_per_image": 0.23926913133376124,
+    "peak_memory_mb": 247.06640625,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "flip_horizontal",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.16608154090008612,
+    "throughput_images_per_second": 1806.3416221582302,
+    "latency_ms_per_image": 0.5536051363336204,
+    "peak_memory_mb": 246.953125,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "flip_vertical",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.17124962390025758,
+    "throughput_images_per_second": 1751.8286648893993,
+    "latency_ms_per_image": 0.5708320796675252,
+    "peak_memory_mb": 246.97265625,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "grayscale",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.05423701899962907,
+    "throughput_images_per_second": 5531.277447273636,
+    "latency_ms_per_image": 0.1807900633320969,
+    "peak_memory_mb": 246.9453125,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "heavy_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.36327858249969724,
+    "throughput_images_per_second": 825.8125153861776,
+    "latency_ms_per_image": 1.2109286083323243,
+    "peak_memory_mb": 247.171875,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "histogram_equalize",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.13993672679935115,
+    "throughput_images_per_second": 2143.8260481121315,
+    "latency_ms_per_image": 0.4664557559978372,
+    "peak_memory_mb": 247.1015625,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "imagenet_preprocess",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.3254920748004224,
+    "throughput_images_per_second": 921.6814270637678,
+    "latency_ms_per_image": 1.0849735826680746,
+    "peak_memory_mb": 359.1015625,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "invert",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.023229344499486614,
+    "throughput_images_per_second": 12914.699336721715,
+    "latency_ms_per_image": 0.07743114833162205,
+    "peak_memory_mb": 247.03125,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "light_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.2922604715997295,
+    "throughput_images_per_second": 1026.4816119604102,
+    "latency_ms_per_image": 0.9742015719990983,
+    "peak_memory_mb": 359.0390625,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "medical_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.5219021445009275,
+    "throughput_images_per_second": 574.8204010291566,
+    "latency_ms_per_image": 1.739673815003092,
+    "peak_memory_mb": 487.0859375,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "medium_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.4497262150001916,
+    "throughput_images_per_second": 667.072521000076,
+    "latency_ms_per_image": 1.499087383333972,
+    "peak_memory_mb": 358.890625,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "normalize",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.25219572660025735,
+    "throughput_images_per_second": 1189.5522737207787,
+    "latency_ms_per_image": 0.8406524220008579,
+    "peak_memory_mb": 410.859375,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "pad",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.04771090769936563,
+    "throughput_images_per_second": 6287.870310293611,
+    "latency_ms_per_image": 0.15903635899788543,
+    "peak_memory_mb": 259.97265625,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "resize",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.10572810800003936,
+    "throughput_images_per_second": 2837.4668352136628,
+    "latency_ms_per_image": 0.35242702666679787,
+    "peak_memory_mb": 246.9921875,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "rotate_45",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.955178837499625,
+    "throughput_images_per_second": 314.07731015619134,
+    "latency_ms_per_image": 3.183929458332083,
+    "peak_memory_mb": 298.04296875,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "rotate_90",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.17510676039964893,
+    "throughput_images_per_second": 1713.240535746908,
+    "latency_ms_per_image": 0.5836892013321631,
+    "peak_memory_mb": 246.93359375,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "sharpen",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.3407487051001226,
+    "throughput_images_per_second": 880.4142041034335,
+    "latency_ms_per_image": 1.1358290170004088,
+    "peak_memory_mb": 411.1875,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "sobel_x",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.13805096660034905,
+    "throughput_images_per_second": 2173.110463387668,
+    "latency_ms_per_image": 0.46016988866783015,
+    "peak_memory_mb": 260.2734375,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "threshold",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.054950797199671796,
+    "throughput_images_per_second": 5459.429440302857,
+    "latency_ms_per_image": 0.18316932399890598,
+    "peak_memory_mb": 247.02734375,
+    "gpu_mode": null
+  }
+]
