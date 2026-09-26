@@ -8,6 +8,9 @@
 > green again. A phase's commit contains both halves; the ledger rows are
 > ticked in the same commit.
 >
+> **Handover:** `HANDOVER.md` (repo root) summarises the state after C5 and the
+> next steps for a new agent.
+>
 > | Phase | Status |
 > |---|---|
 > | C0 — Correctness fixes (test-first) | **done** — C0.1, C0.2, C0.4–C0.7 fixed test-first (`tests/test_plan_claims.py`, docstring binding guard); C0.3 moved to C2 |
@@ -284,6 +287,7 @@ come after the last family.
 | At | plugin | engine | macros | py-hand | py-gen | tests |
 |---|---:|---:|---:|---:|---:|---:|
 | PR #99 head `0f22dd4` | 19,097 | 21,233 | 197 | 12,022 | 2,127 | 55,164 |
+| after C5 `ac45f93` | 17,448 | 22,474 | 767 | 10,496 | 2,715 | 54,992 |
 
 ---
 
