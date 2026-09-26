@@ -23,6 +23,7 @@ import polars_cv
 from polars_cv import Pipeline
 
 from ._discovery import requires_checkout, rust_sources
+from ._plan_view import ops_of
 from .conftest import plugin_required
 
 #: Every test here is a structural guard: it checks the *shape* of the codebase
@@ -43,7 +44,7 @@ def test_rasterize_has_no_anti_alias_parameter() -> None:
     """``rasterize`` must not accept ``anti_alias``.
 
     It was threaded from the builder through the op spec, the JSON graph,
-    ``resolve_rasterize_style``, ``GeometryOp::Rasterize`` and into
+    the op's style resolver, ``GeometryOp::Rasterize`` and into
     ``geometry::rasterize``, whose signature named it ``_anti_alias`` and
     ignored it. Beyond being a documented no-op it was not free: it entered the
     op's identity, so two pipelines that behave identically hashed differently
@@ -61,20 +62,20 @@ def test_rasterize_has_no_anti_alias_parameter() -> None:
         contour_pipe.rasterize(width=8, height=8, anti_alias=True)  # type: ignore[call-arg]
 
 
-def test_anti_alias_is_gone_from_the_type_stub() -> None:
-    """The generated stub must not advertise the removed parameter.
+def test_anti_alias_is_gone_from_the_lazy_surface() -> None:
+    """The generated lazy ``rasterize`` must not advertise the removed parameter.
 
-    ``"anti_alias" not in stub`` is also true of an empty stub, a stub that
-    lost ``rasterize`` altogether, and a stub whose path this test no longer
-    finds — three ways to pass while checking nothing. Confirm the file is the
-    populated stub it claims to be first.
+    The lazy forwarders are real methods generated from ``Pipeline``'s
+    signatures (``_lazy_forwarders.py``), so the check reads that signature,
+    after confirming it is the populated one.
     """
-    stub = (Path(polars_cv.__file__).parent / "lazy.pyi").read_text()
-    assert "def rasterize" in stub, (
-        "lazy.pyi does not declare rasterize, so the assertion below holds "
-        "vacuously. Regenerate with scripts/gen_lazy_stub.py."
-    )
-    assert "anti_alias" not in stub
+    import inspect
+
+    from polars_cv import LazyPipelineExpr
+
+    params = inspect.signature(LazyPipelineExpr.rasterize).parameters
+    assert "width" in params, "the lazy rasterize lost its canvas: a vacuous check"
+    assert "anti_alias" not in params
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +108,24 @@ def test_graph_json_carries_no_shape_hints() -> None:
         assert "shape_hints" not in node, (
             f"node {node_id} still serializes shape_hints, which nothing reads"
         )
+
+
+@plugin_required
+def test_graph_json_carries_no_visualization_metadata() -> None:
+    """Nodes must not serialize ``alias``, ``domain`` or ``output_dtype``.
+
+    Rust declared all three on ``GraphNode`` only so the node stayed closed
+    under ``deny_unknown_fields`` — the executor read none of them, and they
+    entered the compiled-graph cache key. They existed for the graph
+    visualizer, which now reads them from the Python graph it already holds.
+    """
+    pipe = Pipeline().source("image_bytes", dtype="u8").resize(height=8, width=8)
+    graph = pl.col("img").cv.pipe(pipe).sink("png", return_expr=False)
+    spec = json.loads(graph._to_json())
+
+    for node_id, node in spec["nodes"].items():
+        for key in ("alias", "domain", "output_dtype"):
+            assert key not in node, f"node {node_id} still serializes {key!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +161,7 @@ def test_graph_node_rejects_unknown_fields() -> None:
 
     expr = pl.col("img").cv._plugin(  # type: ignore[attr-defined]
         "vb_graph",
-        kwargs={"graph_json": tampered, "expr_column_names": []},
+        kwargs={"graph_json": tampered},
     )
     with pytest.raises(pl.exceptions.ComputeError) as excinfo:
         df.lazy().select(out=expr).collect()
@@ -159,12 +178,12 @@ def test_graph_node_rejects_unknown_fields() -> None:
 def test_assert_shape_has_no_batch_parameter() -> None:
     """``assert_shape(batch=...)`` must raise, not be silently recorded.
 
-    It reached ``ShapeHints.batch`` and stopped there. Nothing read it: not
-    ``has_all_dims``, not ``expected_shape``, not ``_current_input_dims``, and
+    It reached a ``batch`` shape hint and stopped there. Nothing read it: not
+    the planner's all-dims check, not ``expected_shape``, not the planner's shape input, and
     not Rust — the node-level ``shape_hints`` wire field it was serialized into
     had already lost its last reader, and then the field itself. So a caller who
     declared a batch dimension got exactly the same plan as one who did not,
-    while ``ShapeHints.to_dict`` went on emitting it.
+    while the hints' ``to_dict`` went on emitting it.
 
     The hints are positional and track three dimensions; a fourth had no
     position to occupy. ``assert_shape(dims=[...])`` is the spelling for a shape
@@ -174,14 +193,13 @@ def test_assert_shape_has_no_batch_parameter() -> None:
     with pytest.raises(TypeError, match="batch"):
         Pipeline().source("image_bytes").assert_shape(batch=4)
 
-    from polars_cv._types import ShapeHints
+    # The planner's state (Rust's, held as `PlanState`) tracks exactly three
+    # positional sizes; the hints class that carried `batch` is gone with it.
+    from polars_cv._lib import PlanState
 
-    assert not hasattr(ShapeHints(), "batch"), (
-        "ShapeHints.batch is back; it was removed because nothing read it"
-    )
-    assert not hasattr(ShapeHints, "to_dict"), (
-        "ShapeHints.to_dict is back; it serialized the node-level `shape_hints` "
-        "wire field, which no longer exists"
+    assert len(PlanState().dims) == 3
+    assert not hasattr(PlanState(), "batch"), (
+        "a `batch` size is back; it was removed because nothing read it"
     )
 
 
@@ -202,12 +220,92 @@ def test_contour_source_rejects_a_dtype_assertion() -> None:
 
     The dtype is now published from the rasterize contract instead, so the
     parameter has nothing left to say. ``.cast(...)`` after the source is the
-    supported way to change it, and it runs through the real cast op.
+    supported way to change it, and it runs through the real cast op. The
+    typed contour source has no ``dtype`` field, so the rejection names the
+    formats that do take one (the ``.cast`` hint went with the hand-kept hint
+    table, typed-op P4).
     """
-    with pytest.raises(ValueError, match="dtype does not apply"):
-        Pipeline().source("contour", width=8, height=8, dtype="f32")
-    with pytest.raises(ValueError, match="use .cast"):
-        Pipeline().source("contour", width=8, height=8, dtype="u8")
+    for dtype in ("f32", "u8"):
+        with pytest.raises(ValueError, match="'dtype' does not apply to the 'contour'"):
+            Pipeline().source("contour", dtype=dtype)
+
+
+# ---------------------------------------------------------------------------
+# The contour source's canvas fields: a second rasterize
+# ---------------------------------------------------------------------------
+
+
+@plugin_required
+def test_the_contour_source_has_no_canvas_fields() -> None:
+    """A contour source only decodes; the canvas belongs to ``rasterize``.
+
+    The source carried its own ``size``/``fill_value``/``background`` — a copy
+    of the op's fields with its own defaults, per-row resolution, node-canvas
+    lookup and decode path beside the op's. ``source("contour", width=, ...)``
+    now appends the ``rasterize`` op, so the wire refuses the fields on the
+    source rather than reading them a second way.
+    """
+    for field, value in (("size", [4, 4]), ("fill_value", 1), ("background", 0)):
+        wire = json.dumps({"format": "contour", field: value})
+        with pytest.raises(ValueError, match=f"'{field}' is not a source parameter"):
+            Pipeline()._plan.with_source(wire)
+
+
+# ---------------------------------------------------------------------------
+# sobel(ksize=), laplacian(ksize=): a parameter with one legal value
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("method", ["sobel", "laplacian"])
+def test_sobel_and_laplacian_take_no_ksize(method: str) -> None:
+    """Both accepted ``ksize`` and raised for anything but ``3``: a parameter
+    with one legal value states nothing. The kernel is the 3x3 one."""
+    with pytest.raises(TypeError, match="unexpected keyword argument 'ksize'"):
+        getattr(Pipeline().source("image_bytes"), method)(ksize=3)
+
+
+# ---------------------------------------------------------------------------
+# source()'s canvas keywords: sugar for an op the caller can name
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "keyword", ["width", "height", "shape", "fill_value", "background"]
+)
+def test_source_has_no_canvas_keywords(keyword: str) -> None:
+    """``source()`` has exactly the typed sources' fields.
+
+    After C6c the canvas keywords only appended ``rasterize()``, and they were
+    the one part of ``source()`` its catalogue could not generate. Rasterize
+    by name: ``source("contour").rasterize(width=, height=)``.
+    """
+    value: object = 8
+    if keyword == "shape":
+        # A real canvas node, so the refusal cannot be a type check on it.
+        value = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
+    with pytest.raises(TypeError, match=f"unexpected keyword argument '{keyword}'"):
+        Pipeline().source("contour", **{keyword: value})
+
+
+# ---------------------------------------------------------------------------
+# convolve2d(ksize=): a second statement of the kernel's length
+# ---------------------------------------------------------------------------
+
+
+@plugin_required
+def test_convolve2d_takes_its_side_from_the_kernel() -> None:
+    """``ksize`` could only ever equal the square root of the kernel length.
+
+    The length is structural, so the side was known from the kernel alone;
+    ``ksize`` restated it, and a per-row ``ksize`` could only fail when it
+    disagreed. The kernel is now the one statement of its size.
+    """
+    identity = [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+    Pipeline().source("image_bytes").convolve2d(identity)
+    with pytest.raises(TypeError, match="ksize"):
+        Pipeline().source("image_bytes").convolve2d(identity, ksize=3)  # type: ignore[call-arg]
+    with pytest.raises(ValueError, match="odd"):
+        Pipeline().source("image_bytes").convolve2d([1.0] * 4)
 
 
 # ---------------------------------------------------------------------------
@@ -225,14 +323,15 @@ def test_the_python_sink_spec_dataclasses_are_gone() -> None:
     They were not inert. Each held a copy of which sink parameters apply to
     which format (``if format == JPEG or WEBP: result["quality"]``), and that
     copy was wrong in the same way the docstrings were — the WebP encoder takes
-    no quality. `SINK_PARAM_APPLIES` is the one place that fact now lives.
+    no quality. The typed sinks (`src/formats/sink.rs`) are the one place that
+    fact now lives.
     """
     import polars_cv._types as types_module
 
     for name in ("SinkSpec", "OutputSpec", "MultiSinkSpec"):
         assert not hasattr(types_module, name), (
             f"{name} was deleted as unreachable; the sink's wire format is "
-            f"Rust's SinkSpec and its parameter table is SINK_PARAM_APPLIES"
+            f"the typed Rust `Sink` (src/formats/sink.rs)"
         )
 
 
@@ -294,7 +393,7 @@ def test_out_dtype_does_not_reach_the_op_params(op: str) -> None:
     """``scale``/``clamp`` must not carry ``out_dtype`` on the wire.
 
     They have no configurable output dtype — their rule is ``PromoteToFloat``,
-    which ``output_dtype_for`` does not honour an override for, and neither
+    which the planner's dtype rule does not honour an override for, and neither
     ``resolve_op`` arm ever read the parameter. It rode in the op's identity
     (so two pipelines that behave identically hashed differently for CSE) and
     was discarded at execution.
@@ -307,11 +406,12 @@ def test_out_dtype_does_not_reach_the_op_params(op: str) -> None:
         "scale": lambda: pipe.scale(2.0, out_dtype="u8"),
         "clamp": lambda: pipe.clamp(0.0, 1.0, out_dtype="u8"),
     }[op]()
-    assert [spec.op for spec in built._ops] == [op, "cast"], (
+    ops = ops_of(built)
+    assert [o.op for o in ops] == [op, "cast"], (
         f"{op}(out_dtype=...) must lower to the op plus a cast, got "
-        f"{[spec.op for spec in built._ops]}"
+        f"{[o.op for o in ops]}"
     )
-    assert "out_dtype" not in built._ops[0].params, (
+    assert "out_dtype" not in ops[0].params, (
         f"{op} must not serialize out_dtype: no resolve_op arm reads it"
     )
 
@@ -475,20 +575,23 @@ def test_the_engine_carries_no_detection_vocabulary() -> None:
 
 
 def test_the_contour_kwargs_wire_field_is_gone() -> None:
-    """``strategy`` must not come back as a Rust kwargs field either.
+    """``strategy`` must not come back as a geometry function field either.
 
-    Removing it from the Python signature alone would leave the wire field
+    Removing it from the Python signature alone would leave a wire field
     accepting a value from any other caller, which is how an unread field goes
-    on being emitted for releases (see the ``shape_hints`` guard above).
+    on being emitted for releases (see the ``shape_hints`` guard above). Every
+    accessor's fields are its Rust definition's, catalogued in
+    ``geom_catalog.json`` (the shared ``ContourKwargs`` bag is gone).
     """
-    contour_rs = (
-        Path(__file__).resolve().parents[1] / "src" / "contour.rs"
-    ).read_text()
-    assert "pub struct ContourKwargs" in contour_rs, (
-        "probe is broken: ContourKwargs not found in src/contour.rs"
+    catalog = json.loads(
+        (Path(__file__).resolve().parent / "golden" / "geom_catalog.json").read_text()
     )
-    assert "pub strategy" not in contour_rs, (
-        "ContourKwargs declares 'strategy' again -- nothing reads it."
+    assert any(fn["python"] == "correspond" for fn in catalog), (
+        "probe is broken: no geometry function catalogued"
+    )
+    fields = {(fn["name"], f["name"]) for fn in catalog for f in fn["fields"]}
+    assert not any(field == "strategy" for _, field in fields), (
+        "a geometry function declares 'strategy' again -- nothing reads it."
     )
 
 
@@ -560,8 +663,8 @@ def test_affine_fusion_pass_is_gone() -> None:
     ):
         assert gone not in source, (
             f"{gone} was restored -- affine fusion is removed; if a new "
-            f"interpolation-fusing pass is added it must declare bit_exact=False "
-            f"and be tested within a tolerance, not silently."
+            f"interpolation-fusing pass is added it must be tested within a "
+            f"tolerance explicitly, not slipped past the byte-equality guard."
         )
 
 
@@ -964,27 +1067,110 @@ def test_no_module_carries_its_own_plugin_path() -> None:
 
 
 # ---------------------------------------------------------------------------
-# POLARS_CV_ENGINE_WARN_ROWS: a row threshold for a cost that is not row-shaped
+# The single-thread engine warning: its premise is gone
 # ---------------------------------------------------------------------------
 
 
-def test_the_engine_warning_reads_no_row_threshold() -> None:
-    """The single-thread warning must not go back to counting rows (CR-32).
+@plugin_required
+def test_the_single_thread_engine_warning_is_gone() -> None:
+    """A long in-memory call prints nothing about threads (CR-32).
 
-    ``POLARS_CV_ENGINE_WARN_ROWS`` fired at 50 000 rows in one call, but an
-    image row costs milliseconds, so a single-threaded run could take tens of
-    seconds without firing. The warning is now based on how long one call ran
-    with no other call alongside it (``POLARS_CV_ENGINE_WARN_SECONDS``). The
-    old name survives only in the notice telling a user who still sets it that
-    it is no longer read.
+    The warning told eager users their call "ran on one thread" and sent them
+    to the streaming engine. A call now runs its rows on the plugin's thread
+    pool, so the advice is false and the warning, with its
+    ``POLARS_CV_ENGINE_WARN_SECONDS`` / ``POLARS_CV_SILENCE_ENGINE_WARNING``
+    knobs, was deleted. Run with the threshold that used to fire on any call.
     """
-    source = next(p for p in rust_sources() if p.name == "engine_warning.rs")
-    text = source.read_text()
-    assert "POLARS_CV_ENGINE_WARN_SECONDS" in text, (
-        "probe is broken: engine_warning.rs no longer reads the seconds "
-        "threshold, so the absence check below proves nothing"
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(
+        """
+        import polars as pl
+        from polars_cv import Pipeline
+        from tests.conftest import make_test_png
+
+        df = pl.DataFrame({"img": [make_test_png(32, 32)] * 16})
+        pipe = Pipeline().source("image_bytes", dtype="u8").blur(sigma=1.0)
+        df.lazy().select(o=pl.col("img").cv.pipe(pipe).sink("numpy")).collect(
+            engine="in-memory"
+        )
+        """
     )
-    assert 'var("POLARS_CV_ENGINE_WARN_ROWS")' not in text, (
-        "the row threshold is being read again"
+    env = {**os.environ, "POLARS_CV_ENGINE_WARN_SECONDS": "0.000001"}
+    env.pop("POLARS_CV_SILENCE_ENGINE_WARNING", None)
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=Path(__file__).resolve().parents[1],
     )
-    assert "DEFAULT_WARN_ROWS" not in text, "the row threshold constant is back"
+    assert "polars-cv:" not in proc.stderr, proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# expr_column_names: expression params bound to inputs by display text
+# ---------------------------------------------------------------------------
+
+
+@plugin_required
+def test_vb_graph_rejects_the_expr_column_names_kwarg() -> None:
+    """Expression params are ``{"$slot": n}``; no name list binds them.
+
+    ``expr_column_names`` paired each expression's display text with an input
+    column. Text is not identity (CR-31), and the list made the cache key
+    depend on which expressions happened to be alive. ``GraphKwargs`` is
+    ``deny_unknown_fields``, so a caller still sending it must fail rather
+    than have it silently ignored.
+    """
+    graph = (
+        pl.col("img")
+        .cv.pipe(Pipeline().source("image_bytes", dtype="u8").grayscale())
+        .sink("png", return_expr=False)
+    )
+    expr = pl.col("img").cv._plugin(  # type: ignore[attr-defined]
+        "vb_graph",
+        kwargs={"graph_json": graph._to_json(), "expr_column_names": []},
+    )
+    with pytest.raises(pl.exceptions.ComputeError, match="expr_column_names"):
+        pl.DataFrame({"img": [b""]}).lazy().select(out=expr).collect()
+
+
+@plugin_required
+def test_the_per_step_planner_ffi_is_gone() -> None:
+    """``plan_source``/``plan_step``/``node_pass`` let Python hold the op list
+    and drive Rust one step at a time, so a rewrite (a slice, a reorder, a
+    pass) had to replay the steps itself. The op list is now the Rust ``Plan``
+    and every rewrite is one of its methods (consolidation plan C3)."""
+    import polars_cv._lib as _lib
+
+    for gone in ("plan_source", "plan_step", "node_pass", "resolve_op_from_json"):
+        assert not hasattr(_lib, gone), f"{gone} FFI restored; use a Plan method"
+
+
+def test_the_python_op_records_are_gone() -> None:
+    """``OpSpec``/``ParamValue``/``SourceSpec`` were Python's copy of the wire
+    op, source and argument, with an equality CSE relied on. The plan holds the
+    typed ops and CSE compares their wire form over the graph's slot table
+    (consolidation plan C3)."""
+    import polars_cv._types as types
+    import polars_cv.pipeline as pipeline
+
+    for gone in ("OpSpec", "ParamValue", "SourceSpec", "planning_slots"):
+        assert not hasattr(types, gone), f"_types.{gone} restored"
+    for gone in ("_STATE_COPIERS", "_Position", "_plain"):
+        assert not hasattr(pipeline, gone), f"pipeline.{gone} restored"
+    for gone in (
+        "_push_op",
+        "_append_op",
+        "_replay",
+        "_state_at",
+        "_copy_state_from",
+        "_create_sub_pipeline",
+        "_track_expr",
+    ):
+        assert not hasattr(pipeline.Pipeline, gone), f"Pipeline.{gone} restored"

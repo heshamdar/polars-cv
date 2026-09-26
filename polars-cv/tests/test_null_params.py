@@ -164,7 +164,7 @@ class TestOnNullParamNull:
         pipe = (
             Pipeline()
             .source("image_bytes")
-            .convolve2d(kernel=kernel, ksize=3, normalize=pl.col("norm"))
+            .convolve2d(kernel=kernel, normalize=pl.col("norm"))
             .on_null_param("null")
         )
         df = pl.DataFrame(
@@ -183,7 +183,6 @@ class TestOnNullParamNull:
             .source("image_bytes")
             .convolve2d(
                 kernel=[0.0, 0.0, 0.0, 0.0, pl.col("center"), 0.0, 0.0, 0.0, 0.0],
-                ksize=3,
             )
             .on_null_param("null")
         )
@@ -564,7 +563,8 @@ class TestNullOperandPropagation:
 
 @plugin_required
 class TestContourSourceShapeReference:
-    """`source("contour", shape=...)` reads another node for its dimensions.
+    """`source("contour").rasterize(shape=...)` reads another node for its
+    dimensions.
 
     That read is a cross-node operand like any other, so a shape node which
     produced nothing for a row must null this row — not raise. Regression for
@@ -578,7 +578,7 @@ class TestContourSourceShapeReference:
 
     def test_shape_ref_only_null_bytes(self) -> None:
         img = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
-        mask = pl.col("cnt").cv.pipe(Pipeline().source("contour", shape=img))
+        mask = pl.col("cnt").cv.pipe(Pipeline().source("contour").rasterize(shape=img))
 
         df = pl.DataFrame(
             {"img": [_png(), None], "cnt": [SQUARE, SQUARE]},
@@ -596,7 +596,7 @@ class TestContourSourceShapeReference:
             .on_null_param("null")
         )
         mask = pl.col("cnt").cv.pipe(
-            Pipeline().source("contour", shape=img).on_null_param("null")
+            Pipeline().source("contour").rasterize(shape=img).on_null_param("null")
         )
 
         df = pl.DataFrame(
@@ -608,7 +608,7 @@ class TestContourSourceShapeReference:
 
     def test_null_bytes_in_the_shape_branch(self) -> None:
         img = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
-        mask = pl.col("cnt").cv.pipe(Pipeline().source("contour", shape=img))
+        mask = pl.col("cnt").cv.pipe(Pipeline().source("contour").rasterize(shape=img))
         expr = img.apply_mask(mask).sink("numpy")
 
         df = pl.DataFrame(
@@ -627,7 +627,7 @@ class TestContourSourceShapeReference:
             .on_null_param("null")
         )
         mask = pl.col("cnt").cv.pipe(
-            Pipeline().source("contour", shape=img).on_null_param("null")
+            Pipeline().source("contour").rasterize(shape=img).on_null_param("null")
         )
         expr = img.apply_mask(mask).sink("numpy")
 
@@ -648,7 +648,8 @@ class TestSourceAndSinkParamSites:
         img = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
         mask = pl.col("cnt").cv.pipe(
             Pipeline()
-            .source("contour", shape=img, fill_value=pl.col("fill"))
+            .source("contour")
+            .rasterize(shape=img, fill_value=pl.col("fill"))
             .on_null_param("null")
         )
         expr = img.apply_mask(mask).sink("numpy")
@@ -666,7 +667,7 @@ class TestSourceAndSinkParamSites:
         # accessor, so it reports with the same "parameter '<name>'" prefix.
         img = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
         mask = pl.col("cnt").cv.pipe(
-            Pipeline().source("contour", shape=img, fill_value=pl.col("fill"))
+            Pipeline().source("contour").rasterize(shape=img, fill_value=pl.col("fill"))
         )
 
         df = pl.DataFrame(
@@ -674,7 +675,8 @@ class TestSourceAndSinkParamSites:
             schema={"img": pl.Binary, "cnt": None, "fill": pl.Int64},
         )
         with pytest.raises(
-            pl.exceptions.ComputeError, match=r"parameter 'fill_value' must be in 0"
+            pl.exceptions.ComputeError,
+            match=r"'fill' at row 0: 300 is out of range for u8",
         ):
             df.with_columns(out=mask.sink("numpy"))
 
@@ -684,7 +686,8 @@ class TestSourceAndSinkParamSites:
             pl.col("cnt")
             .cv.pipe(
                 Pipeline()
-                .source("contour", shape=img)
+                .source("contour")
+                .rasterize(shape=img)
                 .extract_contours()
                 .rasterize(shape=img, fill_value=pl.col("fill"))
                 .on_null_param("null")

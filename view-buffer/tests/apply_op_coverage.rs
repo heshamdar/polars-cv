@@ -3,7 +3,7 @@
 //! `ViewDto` is defined as "exactly what the engine can run": no panic arms,
 //! no silent no-ops. This test executes one probe per variant end-to-end
 //! (`apply_op` → `plan()` → `execute()`) and checks the result against the
-//! variant's own declared contracts (`infer_shape` via the backing `Op`, and
+//! variant's own declared contracts (`shape` via the backing `Op`, and
 //! `output_dtype_rule`). The exhaustive match in `variant_name` makes adding a
 //! `ViewDto` variant a compile error until it is acknowledged, and
 //! `every_view_dto_variant_has_a_probe` reads that match back out of this file
@@ -20,8 +20,8 @@ use view_buffer::{
 /// One probe instance per `ViewDto` variant.
 fn view_dto_probes() -> Vec<ViewDto> {
     vec![
-        ViewDto::View(ViewOp::Transpose(vec![1, 0, 2])),
-        ViewDto::Compute(ComputeOp::Scale(2.0)),
+        ViewDto::View(ViewOp::transpose(&[1, 0, 2])),
+        ViewDto::Compute(ComputeOp::Scale { factor: 2.0 }),
         ViewDto::Image(ImageOp {
             kind: ImageOpKind::Resize {
                 width: 2,
@@ -30,12 +30,11 @@ fn view_dto_probes() -> Vec<ViewDto> {
             },
         }),
         ViewDto::Color(ColorConvertOp {
-            from: ColorSpace::Rgb,
-            to: ColorSpace::Gray,
+            from_space: ColorSpace::Rgb,
+            to_space: ColorSpace::Gray,
         }),
         ViewDto::Filter(ConvolveOp {
             kernel: vec![0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
-            ksize: 3,
             normalize: false,
             border: BorderMode::Replicate,
         }),
@@ -66,7 +65,7 @@ fn variant_name(dto: &ViewDto) -> &'static str {
 /// enum's variants without a derive or a second list, and a second list is what
 /// this is replacing. The parse asserts it found a plausible match rather than
 /// silently matching nothing — the failure mode a scan has to be protected
-/// from. Same shape as `resolve_op_arms_are_all_known_ops` in the plugin crate.
+/// from.
 fn acknowledged_variants() -> Vec<String> {
     let src = include_str!("apply_op_coverage.rs");
     let body = src
@@ -114,7 +113,7 @@ fn apply_op_executes_every_view_dto_variant() {
         let name = dto.name();
 
         let source = ViewBuffer::from_vec_with_shape(vec![7u8; 4 * 4 * 3], vec![4, 4, 3]);
-        let expected_shape = dto.as_op().infer_shape(&[&[4, 4, 3]]);
+        let expected_shape = dto.as_op().shape().concrete(&[&[4, 4, 3]]);
         let expected_dtype = dto.output_dtype_rule().resolve(DType::U8);
 
         let expr = ViewExpr::new_source(source).apply_op(dto);
@@ -123,7 +122,7 @@ fn apply_op_executes_every_view_dto_variant() {
         assert_eq!(
             result.shape(),
             expected_shape.as_slice(),
-            "{name}: executed shape must match the Op contract's infer_shape"
+            "{name}: executed shape must match the Op contract's shape"
         );
         assert_eq!(
             result.dtype(),

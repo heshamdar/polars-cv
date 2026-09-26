@@ -5,16 +5,15 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::OpShape;
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use crate::mode::{Exec, Mode};
+use polars_cv_macros::{Ops, Resolve};
 
 /// Supported color spaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ColorSpace {
     Rgb,
     Bgr,
@@ -24,7 +23,7 @@ pub enum ColorSpace {
     Gray,
 }
 
-crate::naming::named_variants!(ColorSpace {
+crate::naming::named_variants!(ColorSpace: "Supported color spaces for ``convert_color``." {
     "rgb" => Rgb,
     "bgr" => Bgr,
     "hsv" => Hsv,
@@ -34,17 +33,6 @@ crate::naming::named_variants!(ColorSpace {
 });
 
 impl ColorSpace {
-    /// Additional parser-accepted spellings, not surfaced as canonical names.
-    pub const ALIASES: &'static [(&'static str, ColorSpace)] =
-        &[("grey", ColorSpace::Gray), ("grayscale", ColorSpace::Gray)];
-
-    /// Parse a color space from a string (case-insensitive; accepts aliases).
-    pub fn from_str_name(s: &str) -> Option<Self> {
-        let lower = s.to_lowercase();
-        crate::naming::lookup(Self::NAMED, &lower)
-            .or_else(|| crate::naming::lookup(Self::ALIASES, &lower))
-    }
-
     /// Number of channels for this color space.
     pub fn channels(&self) -> usize {
         match self {
@@ -54,57 +42,47 @@ impl ColorSpace {
     }
 }
 
-/// Color conversion operation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct ColorConvertOp {
-    pub from: ColorSpace,
-    pub to: ColorSpace,
+/// Convert between color spaces.
+///
+/// Example:
+///     >>> pipe = Pipeline().source("image_bytes").convert_color(from_space="rgb", to_space="hsv")
+#[derive(Debug, Clone, PartialEq, Ops, Resolve)]
+#[op(name = "cvt_color", python = "convert_color",
+     sample = {"from_space": "rgb", "to_space": "hsv"})]
+pub struct ColorConvertOp<M: Mode = Exec> {
+    /// Source color space (rgb, bgr, hsv, lab, ycbcr, gray).
+    pub from_space: M::L<ColorSpace>,
+    /// Target color space (rgb, bgr, hsv, lab, ycbcr, gray).
+    pub to_space: M::L<ColorSpace>,
 }
 
-impl ColorConvertOp {
-    /// Infer the output shape given an input shape.
-    ///
-    /// Alpha channels are preserved: RGBA (4ch) through a non-gray conversion
-    /// stays 4ch; RGBA through gray conversion becomes GrayA (2ch).
-    pub fn infer_shape(&self, input: &[usize]) -> Vec<usize> {
-        let out_color_c = self.to.channels();
-        match input.len() {
-            2 if self.to == ColorSpace::Gray => input.to_vec(),
-            2 => vec![input[0], input[1], out_color_c],
-            3 => {
-                let in_c = input[2];
-                let has_alpha = matches!(in_c, 2 | 4);
-                let out_c = out_color_c + if has_alpha { 1 } else { 0 };
-                vec![input[0], input[1], out_c]
-            }
-            _ => input.to_vec(),
-        }
+impl<M: Mode> ColorConvertOp<M> {
+    /// Both spaces are structural, and any pair converts.
+    pub fn check(&self) -> Result<(), String> {
+        Ok(())
     }
 
+    /// The target's colour channels, plus a carried alpha.
+    pub fn shape(&self) -> OpShape {
+        let to = M::lit(&self.to_space);
+        OpShape::ColorChannels {
+            channels: to.channels(),
+            to_gray: to == ColorSpace::Gray,
+        }
+    }
+}
+
+impl<M: Mode> ColorConvertOp<M> {
     /// Whether the conversion promotes dtype to f32.
     ///
     /// LAB conversions require float math and output f32.
     /// All other conversions preserve the input dtype.
     pub fn promotes_to_float(&self) -> bool {
-        matches!(self.from, ColorSpace::Lab) || matches!(self.to, ColorSpace::Lab)
-    }
-
-    /// Declared rank effect: color conversion never changes the rank.
-    pub fn output_rank_rule(&self) -> OutputRankRule {
-        OutputRankRule::PreserveRank
-    }
-
-    /// Declared channel effect: the color channels become the target color
-    /// space's channel count, with any input alpha channel preserved.
-    pub fn output_channel_rule(&self) -> OutputChannelRule {
-        OutputChannelRule::StripProcessRestore {
-            color_channels: self.to.channels(),
-        }
+        M::lit(&self.from_space) == ColorSpace::Lab || M::lit(&self.to_space) == ColorSpace::Lab
     }
 }
 
-impl Op for ColorConvertOp {
+impl<M: Mode> Op for ColorConvertOp<M> {
     fn validate(
         &self,
         input_shapes: &[&[usize]],
@@ -114,7 +92,7 @@ impl Op for ColorConvertOp {
         crate::ops::validation::require_hw_or_hwc(shape)?;
         crate::ops::validation::require_channels_at_least(
             shape,
-            self.from.channels(),
+            M::lit(&self.from_space).channels(),
             "[H, W, C] with at least the source color space's channels",
         )
     }
@@ -123,16 +101,8 @@ impl Op for ColorConvertOp {
         "ColorConvert"
     }
 
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
-        ColorConvertOp::infer_shape(self, inputs[0])
-    }
-
-    fn output_rank_rule(&self) -> OutputRankRule {
-        ColorConvertOp::output_rank_rule(self)
-    }
-
-    fn output_channel_rule(&self) -> OutputChannelRule {
-        ColorConvertOp::output_channel_rule(self)
+    fn shape(&self) -> OpShape {
+        ColorConvertOp::shape(self)
     }
 
     fn memory_effect(&self) -> MemoryEffect {
@@ -277,7 +247,7 @@ fn merge_alpha_typed<T: crate::core::dtype::ViewType + Default + Copy>(
 /// strip-process-restore: the alpha is separated, the conversion is applied
 /// to the color channels, and then the alpha is re-attached.
 pub fn apply_color_convert(buf: &ViewBuffer, op: &ColorConvertOp) -> ViewBuffer {
-    if op.from == op.to {
+    if op.from_space == op.to_space {
         return buf.clone();
     }
 
@@ -306,35 +276,37 @@ pub fn apply_color_convert(buf: &ViewBuffer, op: &ColorConvertOp) -> ViewBuffer 
 
 /// Core color conversion logic operating on color channels only (no alpha).
 fn apply_color_convert_core(buf: &ViewBuffer, op: &ColorConvertOp) -> ViewBuffer {
-    if op.from == op.to {
+    if op.from_space == op.to_space {
         return buf.clone();
     }
 
     // BGR is just a channel reorder — delegate to swap
-    if op.from == ColorSpace::Rgb && op.to == ColorSpace::Bgr {
+    if op.from_space == ColorSpace::Rgb && op.to_space == ColorSpace::Bgr {
         return channel_reorder(buf, &[2, 1, 0]);
     }
-    if op.from == ColorSpace::Bgr && op.to == ColorSpace::Rgb {
+    if op.from_space == ColorSpace::Bgr && op.to_space == ColorSpace::Rgb {
         return channel_reorder(buf, &[2, 1, 0]);
     }
 
     // Grayscale from RGB
-    if op.from == ColorSpace::Rgb && op.to == ColorSpace::Gray {
+    if op.from_space == ColorSpace::Rgb && op.to_space == ColorSpace::Gray {
         return rgb_to_gray(buf);
     }
-    if op.from == ColorSpace::Bgr && op.to == ColorSpace::Gray {
+    if op.from_space == ColorSpace::Bgr && op.to_space == ColorSpace::Gray {
         let rgb = channel_reorder(buf, &[2, 1, 0]);
         return rgb_to_gray(&rgb);
     }
 
     // Gray to RGB/BGR: replicate single channel
-    if op.from == ColorSpace::Gray && (op.to == ColorSpace::Rgb || op.to == ColorSpace::Bgr) {
+    if op.from_space == ColorSpace::Gray
+        && (op.to_space == ColorSpace::Rgb || op.to_space == ColorSpace::Bgr)
+    {
         return gray_to_rgb(buf);
     }
 
     // For remaining conversions, route through f32 RGB intermediate
-    let rgb_f32 = to_rgb_f32(buf, op.from);
-    let result = from_rgb_f32(&rgb_f32, op.to);
+    let rgb_f32 = to_rgb_f32(buf, op.from_space);
+    let result = from_rgb_f32(&rgb_f32, op.to_space);
 
     // Non-Lab conversions preserve the element dtype (the declared
     // PreserveInput contract): the math runs in f32, then casts back.
@@ -807,15 +779,15 @@ mod tests {
     fn test_rgb_to_bgr_roundtrip() {
         let rgb = make_rgb_u8(100, 150, 200);
         let op_fwd = ColorConvertOp {
-            from: ColorSpace::Rgb,
-            to: ColorSpace::Bgr,
+            from_space: ColorSpace::Rgb,
+            to_space: ColorSpace::Bgr,
         };
         let bgr = apply_color_convert(&rgb, &op_fwd);
         assert_eq!(bgr.as_slice::<u8>(), &[200, 150, 100]);
 
         let op_bwd = ColorConvertOp {
-            from: ColorSpace::Bgr,
-            to: ColorSpace::Rgb,
+            from_space: ColorSpace::Bgr,
+            to_space: ColorSpace::Rgb,
         };
         let back = apply_color_convert(&bgr, &op_bwd);
         assert_eq!(back.as_slice::<u8>(), &[100, 150, 200]);
@@ -825,8 +797,8 @@ mod tests {
     fn test_rgb_to_gray() {
         let rgb = make_rgb_u8(255, 0, 0);
         let op = ColorConvertOp {
-            from: ColorSpace::Rgb,
-            to: ColorSpace::Gray,
+            from_space: ColorSpace::Rgb,
+            to_space: ColorSpace::Gray,
         };
         let gray = apply_color_convert(&rgb, &op);
         assert_eq!(gray.shape(), &[1, 1, 1]);
@@ -839,14 +811,14 @@ mod tests {
     fn test_rgb_hsv_roundtrip() {
         let rgb = make_rgb_u8(100, 150, 200);
         let to_hsv = ColorConvertOp {
-            from: ColorSpace::Rgb,
-            to: ColorSpace::Hsv,
+            from_space: ColorSpace::Rgb,
+            to_space: ColorSpace::Hsv,
         };
         let hsv = apply_color_convert(&rgb, &to_hsv);
 
         let to_rgb = ColorConvertOp {
-            from: ColorSpace::Hsv,
-            to: ColorSpace::Rgb,
+            from_space: ColorSpace::Hsv,
+            to_space: ColorSpace::Rgb,
         };
         let back = apply_color_convert(&hsv, &to_rgb);
         let back_vals = back.as_slice::<u8>();
@@ -860,14 +832,14 @@ mod tests {
     fn test_rgb_ycbcr_roundtrip() {
         let rgb = make_rgb_u8(100, 150, 200);
         let to_ycbcr = ColorConvertOp {
-            from: ColorSpace::Rgb,
-            to: ColorSpace::YCbCr,
+            from_space: ColorSpace::Rgb,
+            to_space: ColorSpace::YCbCr,
         };
         let ycbcr = apply_color_convert(&rgb, &to_ycbcr);
 
         let to_rgb = ColorConvertOp {
-            from: ColorSpace::YCbCr,
-            to: ColorSpace::Rgb,
+            from_space: ColorSpace::YCbCr,
+            to_space: ColorSpace::Rgb,
         };
         let back = apply_color_convert(&ycbcr, &to_rgb);
         let back_vals = back.as_slice::<u8>();
@@ -880,16 +852,16 @@ mod tests {
     fn test_rgb_lab_roundtrip() {
         let rgb = make_rgb_u8(100, 150, 200);
         let to_lab = ColorConvertOp {
-            from: ColorSpace::Rgb,
-            to: ColorSpace::Lab,
+            from_space: ColorSpace::Rgb,
+            to_space: ColorSpace::Lab,
         };
         let lab = apply_color_convert(&rgb, &to_lab);
         // LAB always outputs f32
         assert_eq!(lab.dtype(), DType::F32);
 
         let to_rgb = ColorConvertOp {
-            from: ColorSpace::Lab,
-            to: ColorSpace::Rgb,
+            from_space: ColorSpace::Lab,
+            to_space: ColorSpace::Rgb,
         };
         let back = apply_color_convert(&lab, &to_rgb);
         // LAB->RGB also stays f32
@@ -904,8 +876,8 @@ mod tests {
     fn test_noop_conversion() {
         let rgb = make_rgb_u8(100, 150, 200);
         let op = ColorConvertOp {
-            from: ColorSpace::Rgb,
-            to: ColorSpace::Rgb,
+            from_space: ColorSpace::Rgb,
+            to_space: ColorSpace::Rgb,
         };
         let result = apply_color_convert(&rgb, &op);
         assert_eq!(result.as_slice::<u8>(), rgb.as_slice::<u8>());
@@ -922,7 +894,10 @@ mod tests {
             (ColorSpace::Gray, ColorSpace::Rgb),
         ];
         for (from, to) in cases {
-            let op = ColorConvertOp { from, to };
+            let op = ColorConvertOp {
+                from_space: from,
+                to_space: to,
+            };
             let channels = if from == ColorSpace::Gray { 1 } else { 3 };
             for dtype in [DType::U16, DType::I32, DType::F64] {
                 let src =
@@ -949,8 +924,8 @@ mod tests {
     #[test]
     fn test_alpha_path_preserves_dtype() {
         let op = ColorConvertOp {
-            from: ColorSpace::Rgb,
-            to: ColorSpace::Hsv,
+            from_space: ColorSpace::Rgb,
+            to_space: ColorSpace::Hsv,
         };
         for dtype in [DType::U16, DType::F64] {
             let src = ViewBuffer::from_vec_with_shape(vec![100u8, 150, 200, 255], vec![1, 1, 4])
@@ -970,8 +945,8 @@ mod tests {
     #[test]
     fn test_lab_is_f32_for_all_input_dtypes() {
         let to_lab = ColorConvertOp {
-            from: ColorSpace::Rgb,
-            to: ColorSpace::Lab,
+            from_space: ColorSpace::Rgb,
+            to_space: ColorSpace::Lab,
         };
         for dtype in [DType::U8, DType::U16, DType::F64] {
             let src =

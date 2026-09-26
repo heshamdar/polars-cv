@@ -1,89 +1,98 @@
 //! Per-row parameter resolution for the geometry namespaces.
 //!
 //! The `.contour` / `.point` / `.bbox` accessors are standalone
-//! `#[polars_expr]` functions rather than `vb_graph` graph nodes, so they have
-//! none of [`crate::params::ParamValue`]'s literal-vs-expression machinery.
-//! Their per-row channel is the plugin's *input series*: Python appends an
-//! expression-valued parameter as an extra argument and records its index in
-//! the `input_slots` kwarg.
-//!
-//! Position alone is not enough to identify those inputs, because several of
-//! these functions already read *optional* data operands positionally
-//! (`point_rotate`'s `origin`, `bbox_correspond`'s `order`) — an appended
-//! parameter would be indistinguishable from an omitted operand. Looking every
-//! variable input up by name removes the ambiguity.
+//! `#[polars_expr]` functions rather than `vb_graph` graph nodes, but they use
+//! the same per-row mechanism as every typed op: a kwarg is a
+//! [`Param<T>`](crate::ops::Param) — the literal value, or `{"$slot": n}`
+//! naming the plugin input that holds it per row — and an optional data
+//! operand (`point.rotate`'s `origin`, `correspond`'s `order`) is a
+//! [`ColumnRef`]. Each function's arguments are its typed definition
+//! (`geom_fns`), parsed strictly by name; the generated Python accessor appends
+//! each expression as an input and writes its position into its field, so
+//! nothing is looked up by name.
 //!
 //! Reading is delegated to [`crate::params::ParamCol`], so these namespaces
 //! inherit the same dtype coverage, scalar broadcasting (a length-1 series from
 //! an aggregation applies to every row) and [`NullParamPolicy`] the graph
-//! engine already uses. The policy arrives as an `on_null` kwarg (set from
-//! Python by `_PluginNamespace.on_null`) and is applied by [`GeomParams::row`],
-//! which each row loop wraps its parameter resolution in.
+//! engine uses. The policy arrives as an `on_null` kwarg (set from Python by
+//! `_GeomNamespace.on_null`) and is applied by [`GeomParams::row`], which each
+//! row loop wraps its parameter resolution in.
 
-use std::collections::HashMap;
-
+#[allow(unused_imports)]
+use crate::ops::ParamExt as _;
 use polars::prelude::*;
+use serde::Deserialize;
+use view_buffer::mode::WireOps;
+use view_buffer::naming::WireScalar;
 
+use crate::ops::{ColumnRef, Literal, Param};
 use crate::params::{NullParamPolicy, ParamCtx};
 
-/// Named indices into a plugin's `inputs` slice.
-///
-/// Empty for a call with no expression parameters and no optional operands,
-/// which reproduces the original all-literal behaviour.
-pub type InputSlots = HashMap<String, usize>;
+/// A geometry plugin call's kwargs: the function's own wire fields, and the
+/// null policy (`_GeomNamespace.on_null`) every call carries.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GeomKwargs {
+    args: serde_json::Map<String, serde_json::Value>,
+    on_null: Literal<NullParamPolicy>,
+}
 
 /// Per-row resolver over one plugin call's inputs.
-///
-/// Built once before the row loop. A lookup inside the loop is a small
-/// string-keyed map probe followed by an indexed column read — these functions
-/// are dominated by contour parsing, so resolving by name rather than hoisting
-/// literals out of the loop is not a measurable cost.
 pub struct GeomParams<'a> {
+    inputs: &'a [Series],
     ctx: ParamCtx<'a>,
-    slots: &'a InputSlots,
 }
 
 impl<'a> GeomParams<'a> {
-    /// Wrap a call's inputs and its `input_slots` map.
+    /// Parse the call's arguments as the function `name` of family `F` —
+    /// strictly: an unknown or missing field, a wrong type and a per-row value
+    /// for a structural field are refused, naming the field — and wrap its
+    /// inputs.
     ///
-    /// Validates the map against the inputs up front, because both ways it can
-    /// be wrong fail silently or violently otherwise: an index past the end
-    /// would panic on a raw `inputs[idx]`, and a map that does not account for
-    /// every extra input means an operand or parameter was dropped somewhere
-    /// between the builder and here — which would compute a quietly wrong
-    /// result rather than fail.
-    pub fn new(
+    /// Checks the arguments' slots against the inputs up front, because both
+    /// ways they can disagree fail badly otherwise: a slot past the end would
+    /// panic on a raw index, and an input no slot claims means an operand or
+    /// parameter was dropped between the builder and here — a quietly wrong
+    /// result rather than an error. The slots come from the definition's
+    /// derived visitor, so there is no list of them to keep.
+    pub fn parse<F: WireOps>(
         inputs: &'a [Series],
-        slots: &'a InputSlots,
-        on_null: NullParamPolicy,
-    ) -> PolarsResult<Self> {
-        for (name, &idx) in slots {
-            if idx == 0 || idx >= inputs.len() {
-                polars_bail!(ComputeError:
-                    "input slot '{}' points at index {} but the call has {} inputs; \
-                     the expression was built by an incompatible version",
-                    name, idx, inputs.len()
-                );
+        kwargs: GeomKwargs,
+        name: &str,
+    ) -> PolarsResult<(F, Self)> {
+        let op = F::from_wire(name, serde_json::Value::Object(kwargs.args))
+            .ok_or_else(|| polars_err!(ComputeError: "'{}' is not a function of its family", name))?
+            .map_err(|e| polars_err!(ComputeError: "{}: {}", name, e))?;
+        let mut claimed: Vec<usize> = Vec::new();
+        let mut bad: Option<(&'static str, usize)> = None;
+        op.visit_slots(&mut |field, slot| {
+            if slot == 0 || slot >= inputs.len() {
+                bad.get_or_insert((field, slot));
             }
-        }
-        // Index 0 is the namespace's own column; every other input must be
-        // claimed by exactly one name.
-        if slots.len() + 1 != inputs.len() {
+            claimed.push(slot);
+        });
+        if let Some((field, slot)) = bad {
             polars_bail!(ComputeError:
-                "call has {} inputs but 'input_slots' names {}; every operand and \
-                 per-row parameter must be registered (see `_ArgBinder`)",
-                inputs.len(), slots.len()
+                "'{}' reads input {} but the call has {} inputs; the expression \
+                 was built by an incompatible version",
+                field, slot, inputs.len()
             );
         }
-        Ok(GeomParams {
-            ctx: ParamCtx::with_null_policy(inputs, on_null),
-            slots,
-        })
-    }
-
-    /// The input series index bound to `name`, if any.
-    pub fn slot(&self, name: &str) -> Option<usize> {
-        self.slots.get(name).copied()
+        // Index 0 is the namespace's own column; every other input must be
+        // claimed exactly once.
+        claimed.sort_unstable();
+        if claimed != (1..inputs.len()).collect::<Vec<_>>() {
+            polars_bail!(ComputeError:
+                "call has {} inputs but its arguments read {:?}; every operand \
+                 and per-row parameter must be passed exactly once",
+                inputs.len(), claimed
+            );
+        }
+        let params = GeomParams {
+            inputs,
+            ctx: ParamCtx::with_null_policy(inputs, kwargs.on_null.get()),
+        };
+        Ok((op, params))
     }
 
     /// Resolve one row's parameters, applying the call's [`NullParamPolicy`].
@@ -104,60 +113,27 @@ impl<'a> GeomParams<'a> {
         }
     }
 
-    /// Resolve a float parameter: the bound input at `row`, else the literal
-    /// kwarg, else `default`.
-    pub fn f64(
-        &self,
-        name: &str,
-        literal: Option<f64>,
-        default: f64,
-        row: usize,
-    ) -> PolarsResult<f64> {
-        match self.slot(name) {
-            Some(idx) => self.ctx.col(idx)?.get_f64(row, &self.ctx),
-            None => Ok(literal.unwrap_or(default)),
-        }
+    /// A parameter's value at `row`.
+    pub fn value<T: WireScalar>(&self, param: &Param<T>, row: usize) -> PolarsResult<T> {
+        param.resolve(row, &self.ctx)
     }
 
-    /// Resolve a required float parameter: the bound input at `row`, else the
-    /// literal kwarg, erroring when the caller supplied neither.
-    pub fn required_f64(&self, name: &str, literal: Option<f64>, row: usize) -> PolarsResult<f64> {
-        match self.slot(name) {
-            Some(idx) => self.ctx.col(idx)?.get_f64(row, &self.ctx),
-            None => literal.ok_or_else(|| polars_err!(ComputeError: "{} is required", name)),
-        }
+    /// A data operand's input series.
+    pub fn column(&self, column: &ColumnRef) -> &'a Series {
+        &self.inputs[column.0]
     }
 
-    /// Resolve a string parameter from a bound input, else the literal kwarg.
-    ///
-    /// For enum-valued parameters with no shape or dtype effect. A bound input
-    /// must be a genuine String column; the callers pass the result to the
-    /// same `parse` used for the literal form, so an unknown value produces
-    /// the same error either way.
-    pub fn str_opt(
-        &self,
-        name: &str,
-        literal: Option<&'a str>,
-        row: usize,
-    ) -> PolarsResult<Option<&'a str>> {
-        match self.slot(name) {
-            Some(idx) => self.ctx.col(idx)?.get_str(row, &self.ctx).map(Some),
-            None => Ok(literal),
-        }
+    /// An optional data operand's input series, when the caller gave one.
+    pub fn optional_column(&self, column: &Option<ColumnRef>) -> Option<&'a Series> {
+        column.as_ref().map(|c| self.column(c))
     }
+}
 
-    /// Resolve a boolean parameter from a bound input, else the literal kwarg.
-    ///
-    /// A bound input must be a genuine Boolean column, matching how the graph
-    /// engine's `get::opt_bool_dyn` treats flags: silently accepting a numeric
-    /// column would turn a mis-routed expression into a wrong result rather
-    /// than an error.
-    pub fn bool(&self, name: &str, literal: bool, row: usize) -> PolarsResult<bool> {
-        match self.slot(name) {
-            Some(idx) => self.ctx.col(idx)?.get_bool(row, &self.ctx),
-            None => Ok(literal),
-        }
-    }
+/// The error for a function whose arguments parsed as another function of
+/// its family — impossible, since [`GeomParams::parse`] parses by the
+/// function's own name, but refused rather than panicked on.
+pub fn parsed_as_another(name: &str) -> PolarsError {
+    polars_err!(ComputeError: "internal: '{}' parsed as another function", name)
 }
 
 /// Validate a resolved parameter that must lie within an inclusive range.

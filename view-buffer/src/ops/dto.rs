@@ -1,14 +1,12 @@
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
+use crate::mode::{Exec, Mode};
 use crate::ops::color::ColorConvertOp;
 use crate::ops::compute::ComputeOp;
 use crate::ops::filter::ConvolveOp;
 use crate::ops::image::ImageOp;
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::{IdentityRule, Op};
 use crate::ops::view::ViewOp;
 use crate::ops::Domain;
+use polars_cv_macros::Resolve;
 
 /// A pure Data Transfer Object (DTO) for single-buffer operation plans.
 ///
@@ -18,26 +16,28 @@ use crate::ops::Domain;
 /// `apply_op_executes_every_view_dto_variant` coverage test). Graph-level
 /// concerns — multi-input operations, node references, expression columns,
 /// domain transitions — live in the polars-cv plugin's `GraphStep`, not here.
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum ViewDto {
+///
+/// Generic over the [`Mode`] like its ops: the `Wire` form is what a plan
+/// holds and reads its rules from, the `Exec` form what runs.
+#[derive(Debug, Clone, PartialEq, Resolve)]
+pub enum ViewDto<M: Mode = Exec> {
     /// Zero-copy layout operation (transpose, reshape, flip, crop, …).
-    View(ViewOp),
+    View(ViewOp<M>),
     /// Element-wise compute operation (cast, scale, clamp, affine, …).
-    Compute(ComputeOp),
+    Compute(ComputeOp<M>),
     /// Image-processing operation (resize family, blur, pad family, …).
-    Image(ImageOp),
+    Image(ImageOp<M>),
     /// Color space conversion (RGB ↔ HSV, LAB, YCbCr, BGR, Gray).
-    Color(ColorConvertOp),
+    Color(ColorConvertOp<M>),
     /// Generic 2D convolution with arbitrary kernel.
-    Filter(ConvolveOp),
+    Filter(ConvolveOp<M>),
 }
 
 // PadMode/PadPosition live with the padding kernels; re-exported here
 // for the existing `ops::dto::PadMode` import paths.
 pub use crate::ops::pad::{PadMode, PadPosition};
 
-impl ViewDto {
+impl<M: Mode> ViewDto<M> {
     /// The backing [`Op`] implementation — the single delegation point for
     /// every per-op contract (name, shape, dtype, rank, channel rules).
     /// Adding a variant without an `Op` impl fails to compile here.
@@ -48,6 +48,18 @@ impl ViewDto {
             ViewDto::Image(op) => op,
             ViewDto::Color(op) => op,
             ViewDto::Filter(op) => op,
+        }
+    }
+
+    /// Refuse a parameter combination no row can run, from the values this
+    /// op knows (all of them once resolved, the literals on the wire).
+    pub fn check(&self) -> Result<(), String> {
+        match self {
+            ViewDto::View(op) => op.check(),
+            ViewDto::Compute(op) => op.check(),
+            ViewDto::Image(op) => op.kind.check(),
+            ViewDto::Color(op) => op.check(),
+            ViewDto::Filter(op) => op.check(),
         }
     }
 
@@ -65,17 +77,6 @@ impl ViewDto {
     /// The rule that determines this operation's output dtype.
     pub fn output_dtype_rule(&self) -> crate::core::dtype::OutputDTypeRule {
         self.as_op().output_dtype_rule()
-    }
-
-    /// The rule that determines how this operation transforms the input rank.
-    pub fn output_rank_rule(&self) -> OutputRankRule {
-        self.as_op().output_rank_rule()
-    }
-
-    /// The rule that determines how this operation transforms the channel
-    /// count (the trailing dimension of an `[H, W, C]` buffer).
-    pub fn output_channel_rule(&self) -> OutputChannelRule {
-        self.as_op().output_channel_rule()
     }
 
     /// How this operation's output depends on the spatial extent of its input.

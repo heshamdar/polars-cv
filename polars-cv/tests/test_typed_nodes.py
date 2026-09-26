@@ -133,7 +133,7 @@ class TestMultiPhaseWorkaround:
         img_pipe = (
             Pipeline().source("image_bytes").resize(height=50, width=50).grayscale()
         )
-        contour_pipe = Pipeline().source("contour", width=50, height=50)
+        contour_pipe = Pipeline().source("contour").rasterize(width=50, height=50)
 
         img = pl.col("image").cv.pipe(img_pipe).alias("resized")
         mask = pl.col("contour").cv.pipe(contour_pipe).alias("mask")
@@ -637,15 +637,13 @@ class TestRasterizeShapeReference:
         # Doctor the rasterize op into a dangling shape reference.
         for op in spec["nodes"]["n0"]["ops"]:
             if op["op"] == "rasterize":
-                op.pop("width", None)
-                op.pop("height", None)
-                op["shape_ref"] = {"type": "literal", "value": "ghost"}
+                op["size"] = "ghost"
         expr = _plugin.call(
             "vb_graph",
             args=[pl.col("image")],
-            kwargs={"graph_json": json.dumps(spec), "expr_column_names": []},
+            kwargs={"graph_json": json.dumps(spec)},
             is_elementwise=True,
         )
         df = pl.DataFrame({"image": [self._png(16, 16)]})
-        with pytest.raises(pl.exceptions.ComputeError, match="shape reference 'ghost'"):
+        with pytest.raises(pl.exceptions.ComputeError, match="'ghost'"):
             df.with_columns(out=expr)

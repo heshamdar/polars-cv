@@ -7,23 +7,21 @@ import json
 import polars as pl
 
 from polars_cv import Pipeline
-from polars_cv._types import ParamValue
 
 
-class TestParamValueSerialization:
-    """Tests for ParamValue serialization."""
+class TestParameterSerialization:
+    """A parameter crosses as its value, or as ``{"$slot": n}``: its position
+    among the plugin inputs."""
 
     def test_literal_int_serialization(self) -> None:
-        """Integer literals serialize correctly."""
-        d = ParamValue.from_arg(42).to_dict()
-        assert d["type"] == "literal"
-        assert d["value"] == 42
+        data = json.loads(Pipeline().source().scale(2)._to_json())
+        assert data["ops"][0]["factor"] == 2
 
     def test_expr_column_serialization(self) -> None:
-        """Expression columns serialize as expr param refs."""
-        d = ParamValue.from_arg(pl.col("my_column")).to_dict()
-        assert d["type"] == "expr"
-        assert d["col"] == 'col("my_column")'
+        pipe = Pipeline().source().scale(pl.col("my_column"))
+        data = json.loads(pipe._to_json())
+        # Input 0 is the pipeline's column, so its one expression is input 1.
+        assert data["ops"][0]["factor"] == {"$slot": 1}
 
 
 class TestPipelineJsonFormat:
@@ -42,15 +40,13 @@ class TestPipelineJsonFormat:
         assert data["source"]["format"] == "raw"
         assert data["source"]["dtype"] == "f32"
 
-    def test_shape_hints_are_not_serialized(self) -> None:
-        """Shape hints are preserved in serialization."""
+    def test_a_declaration_crosses_as_an_op_and_hints_do_not(self) -> None:
+        """An ``assert_shape`` is an op on the wire (Rust plans and checks it);
+        the planner's inferred sizes are never serialized."""
         pipe = Pipeline().source().assert_shape(height=100, width=200)
         data = json.loads(pipe._to_json())
-        # Shape hints are plan-time state, not wire format: no Rust code ever
-        # read the key. Plan-time shape reaches Rust as `expected_shape` on the
-        # output spec instead.
         assert "shape_hints" not in data
-        assert data["ops"] == []
+        assert data["ops"] == [{"op": "assert_shape", "dims": [100, 200, None]}]
 
 
 class TestExpressionReferencesJson:
@@ -65,10 +61,11 @@ class TestExpressionReferencesJson:
             .crop(top=pl.col("y"), left=pl.col("x"))
         )
         data = json.loads(pipe._to_json())
-        assert data["ops"][0]["height"]["col"] == 'col("h")'
-        assert data["ops"][0]["width"]["col"] == 'col("w")'
-        assert data["ops"][1]["top"]["col"] == 'col("y")'
-        assert data["ops"][1]["left"]["col"] == 'col("x")'
+        # Input 0 is the pipeline's column; each distinct expression follows.
+        assert data["ops"][0]["height"] == {"$slot": 1}
+        assert data["ops"][0]["width"] == {"$slot": 2}
+        assert data["ops"][1]["top"] == {"$slot": 3}
+        assert data["ops"][1]["left"] == {"$slot": 4}
 
 
 class TestJsonRustCompatibility:
@@ -77,13 +74,10 @@ class TestJsonRustCompatibility:
     def test_flip_axes_list(self) -> None:
         """Flip axes are serialized as int lists."""
         data = json.loads(Pipeline().source().flip([0, 1])._to_json())
-        axes = data["ops"][0]["axes"]
-        assert axes["type"] == "literal"
-        assert axes["value"] == [0, 1]
+        # A typed op's field is the value itself.
+        assert data["ops"][0]["axes"] == [0, 1]
 
     def test_transpose_axes_list(self) -> None:
         """Transpose axes are serialized as int lists."""
         data = json.loads(Pipeline().source().transpose([2, 0, 1])._to_json())
-        axes = data["ops"][0]["axes"]
-        assert axes["type"] == "literal"
-        assert axes["value"] == [2, 0, 1]
+        assert data["ops"][0]["axes"] == [2, 0, 1]

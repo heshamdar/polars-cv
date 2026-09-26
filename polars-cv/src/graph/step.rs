@@ -1,236 +1,163 @@
-//! `GraphStep` — the executor's operation vocabulary.
+//! `GraphStep` — the executor's operation vocabulary, and the typed op.
 //!
-//! A pipeline op resolves to either a fusable single-buffer engine op
-//! (`Buffer(ViewDto)`, executed through `ViewExpr`) or a **graph-level step**:
-//! an operation that needs graph wiring (other nodes' buffers, expression
-//! columns) or changes the data domain (buffer → contour/scalar/vector).
+//! A step is a fusable single-buffer engine op (`Buffer(ViewDto)`, executed
+//! through `ViewExpr`), an engine op that changes the data domain (geometry,
+//! reduction, histogram, perceptual hash), or a **graph-level op**
+//! ([`GraphOp`]): one that reads other nodes' buffers or an input column.
 //!
-//! Node references and Polars expression column names live *here*, in the
-//! plugin — the engine's `ViewDto` no longer carries graph topology. The
-//! step's math still lives in view-buffer (`BinaryOp::execute`, `apply_mask`,
-//! `apply_channel_merge`, `score_contours_on_buffer`, `ReductionOp::execute`,
-//! `HistogramOp::execute`, geometry ops); the arms in the executor are thin
-//! wiring.
+//! Generic over the [`Mode`] like every family it holds: `GraphStep<Wire>` is
+//! the typed op ([`TypedOp`](crate::ops::TypedOp)) — what a plan holds and
+//! reads every rule below from, with a per-row value unknown rather than
+//! stood in for — and resolving it for a row gives the `GraphStep<Exec>` that
+//! runs. The step's math lives in view-buffer (`BinaryOp::execute`,
+//! `apply_mask`, `ReductionOp::execute`, …); the executor's arms are wiring.
 
+use polars_cv_macros::Resolve;
 use view_buffer::core::dtype::OutputDTypeRule;
-use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
+use view_buffer::mode::{Exec, Mode};
 use view_buffer::ops::phash::PerceptualHashOp;
-use view_buffer::ops::{Domain, OutputChannelRule, OutputRankRule, SpatialDependency};
+use view_buffer::ops::{Domain, OpShape, SpatialDependency};
 use view_buffer::ops::{HistogramOp, ReductionOp};
-use view_buffer::{BinaryOp, GeometryOp, IdentityRule, Op, ViewDto};
+use view_buffer::{GeometryOp, IdentityRule, Op, ViewDto};
 
-/// One resolved operation in a compiled graph node.
-#[derive(Debug, Clone)]
-pub(crate) enum GraphStep {
+use crate::ops::graph::GraphOp;
+
+/// One operation of a graph node (see the module docs).
+#[derive(Debug, Clone, PartialEq, Resolve)]
+pub enum GraphStep<M: Mode = Exec> {
     /// A fusable single-buffer engine op, executed via `ViewExpr::apply_op`.
-    Buffer(ViewDto),
-    /// Two-buffer arithmetic; the second operand is another node's output.
-    Binary { op: BinaryOp, other: String },
-    /// Weighted mask blend; the mask is another node's output.
-    ApplyMask { mask: String, invert: bool },
-    /// Merge single-channel buffers from other nodes into one `[H, W, C]`.
-    ChannelMerge { others: Vec<String> },
+    Buffer(ViewDto<M>),
     /// Geometry op (extract_contours, rasterize, measures, transforms) —
     /// changes or consumes the contour domain.
-    Geometry(GeometryOp),
+    Geometry(GeometryOp<M>),
     /// Reduction: global → scalar, axis → smaller buffer.
-    Reduction(ReductionOp),
+    Reduction(ReductionOp<M>),
     /// Histogram: quantized → buffer, other modes → vector.
-    Histogram(HistogramOp),
+    Histogram(HistogramOp<M>),
     /// Perceptual hash: image buffer → 1-D u8 fingerprint (vector domain).
-    PerceptualHash(PerceptualHashOp),
-    /// Read the buffer's dimensions as a vector.
-    ExtractShape,
-    /// Score contour regions (from an expression column) over the buffer.
-    LabelReduce {
-        contours_col: String,
-        reduction: LabelReduction,
-        region_mode: LabelRegionMode,
-    },
+    PerceptualHash(PerceptualHashOp<M>),
+    /// A graph-level op: reads other nodes or an input column.
+    Graph(GraphOp<M>),
 }
 
-impl GraphStep {
-    /// Every domain this step can consume.
-    ///
-    /// A set rather than a single domain because two families genuinely accept
-    /// more than one: binary ops and reductions consume any numeric container,
-    /// which is `buffer` *and* `vector` (a perceptual hash is a 1-D u8 buffer
-    /// that happens to be encoded as a vector — the library's own
-    /// `hamming_distance` is `hash_a ^ hash_b -> reduce_popcount`, with both
-    /// operands in `vector`).
-    ///
-    /// Declaring a single `Buffer` read as "images only" and was wrong; it went
-    /// unnoticed because nothing enforced input domains from this contract
-    /// until the planner started to. Widening those two to `Domain::Any`
-    /// instead would have been wrong in the other direction — it would stop
-    /// rejecting `extract_contours().reduce_sum()`, which the suite pins.
-    ///
-    /// Exhaustive on purpose. This was the one contract method on `GraphStep`
-    /// with a `_ =>` catch-all, so a new multi-domain variant would silently
-    /// have been given a single domain — in the method `CLAUDE.md` names as
-    /// *the* authority for accepted input domains, and which the Python
-    /// planner validates against. The other five contract methods make a new
-    /// variant a compile error; this one now does too.
+impl<M: Mode> GraphStep<M> {
+    /// Whose contract this step's rules are: the engine op's, or the graph
+    /// op's own.
+    fn rules(&self) -> Rules<'_, M> {
+        match self {
+            GraphStep::Buffer(dto) => Rules::Engine(dto.as_op()),
+            GraphStep::Geometry(op) => Rules::Engine(op),
+            GraphStep::Reduction(op) => Rules::Engine(op),
+            GraphStep::Histogram(op) => Rules::Engine(op),
+            GraphStep::PerceptualHash(op) => Rules::Engine(op),
+            GraphStep::Graph(op) => Rules::Graph(op),
+        }
+    }
+
+    /// Refuse a parameter combination no row can run, from the values this
+    /// step knows: all of them once resolved, the literals on the wire.
+    pub fn check(&self) -> Result<(), String> {
+        match self {
+            GraphStep::Buffer(dto) => dto.check(),
+            GraphStep::Geometry(op) => op.check(),
+            GraphStep::Reduction(op) => op.check(),
+            GraphStep::Histogram(op) => op.check(),
+            GraphStep::PerceptualHash(op) => op.check(),
+            GraphStep::Graph(op) => op.check(),
+        }
+    }
+
+    /// Every domain this step can consume (see [`GraphOp::input_domains`]
+    /// for the ones that take more than one).
     pub fn input_domains(&self) -> Vec<Domain> {
         match self {
-            GraphStep::Binary { .. } | GraphStep::Reduction(_) => {
-                vec![Domain::Buffer, Domain::Vector]
+            // Reductions consume any numeric container: a perceptual hash is
+            // a 1-D u8 buffer encoded as a vector, and `hash_a ^ hash_b ->
+            // reduce_popcount` is the library's own hamming distance.
+            GraphStep::Reduction(_) => vec![Domain::Buffer, Domain::Vector],
+            GraphStep::Graph(op) => op.input_domains(),
+            GraphStep::Buffer(_) | GraphStep::Histogram(_) | GraphStep::PerceptualHash(_) => {
+                vec![Domain::Buffer]
             }
-            GraphStep::Buffer(_)
-            | GraphStep::Geometry(_)
-            | GraphStep::ApplyMask { .. }
-            | GraphStep::ChannelMerge { .. }
-            | GraphStep::Histogram(_)
-            | GraphStep::PerceptualHash(_)
-            | GraphStep::ExtractShape
-            | GraphStep::LabelReduce { .. } => vec![self.input_domain()],
+            GraphStep::Geometry(op) => vec![op.input_domain()],
         }
     }
 
-    /// The primary domain this step consumes.
-    pub fn input_domain(&self) -> Domain {
-        match self {
-            GraphStep::Buffer(dto) => dto.input_domain(),
-            GraphStep::Geometry(op) => op.input_domain(),
-            GraphStep::Binary { .. }
-            | GraphStep::Reduction(_)
-            | GraphStep::ApplyMask { .. }
-            | GraphStep::ChannelMerge { .. }
-            | GraphStep::Histogram(_)
-            | GraphStep::PerceptualHash(_)
-            | GraphStep::ExtractShape
-            | GraphStep::LabelReduce { .. } => Domain::Buffer,
-        }
-    }
-
-    /// The domain this step produces.
-    pub fn output_domain(&self) -> Domain {
+    /// The domain this step produces from an `input` in its accepted domains.
+    pub fn output_domain(&self, input: Domain) -> Domain {
         match self {
             GraphStep::Buffer(dto) => dto.output_domain(),
             GraphStep::Geometry(op) => op.output_domain(),
             GraphStep::Reduction(op) => op.output_domain(),
             GraphStep::Histogram(op) => op.output_domain(),
-            GraphStep::Binary { .. }
-            | GraphStep::ApplyMask { .. }
-            | GraphStep::ChannelMerge { .. } => Domain::Buffer,
             // Perceptual hash produces a fixed-length 1-D fingerprint.
-            GraphStep::PerceptualHash(_)
-            | GraphStep::ExtractShape
-            | GraphStep::LabelReduce { .. } => Domain::Vector,
+            GraphStep::PerceptualHash(_) => Domain::Vector,
+            GraphStep::Graph(op) => op.output_domain(input),
         }
     }
 
     /// The rule that determines this step's output element dtype.
     pub fn output_dtype_rule(&self) -> OutputDTypeRule {
-        match self {
-            GraphStep::Buffer(dto) => dto.output_dtype_rule(),
-            GraphStep::Geometry(op) => op.output_dtype_rule(),
-            GraphStep::Binary { op, .. } => op.output_dtype_rule(),
-            GraphStep::Reduction(op) => op.output_dtype_rule(),
-            GraphStep::Histogram(op) => op.output_dtype_rule(),
-            GraphStep::PerceptualHash(op) => op.output_dtype_rule(),
-            // Mask blending and channel merge preserve the buffer dtype.
-            GraphStep::ApplyMask { .. } | GraphStep::ChannelMerge { .. } => {
-                OutputDTypeRule::PreserveInput
-            }
-            // Dimension reads and region scores are f64 values.
-            GraphStep::ExtractShape | GraphStep::LabelReduce { .. } => OutputDTypeRule::ForceF64,
-        }
-    }
-
-    /// The rule that determines how this step transforms the input rank.
-    pub fn output_rank_rule(&self) -> OutputRankRule {
-        match self {
-            GraphStep::Buffer(dto) => dto.output_rank_rule(),
-            GraphStep::Geometry(op) => op.output_rank_rule(),
-            GraphStep::Binary { op, .. } => op.output_rank_rule(),
-            GraphStep::Reduction(op) => op.output_rank_rule(),
-            GraphStep::Histogram(op) => op.output_rank_rule(),
-            GraphStep::PerceptualHash(op) => op.output_rank_rule(),
-            GraphStep::ApplyMask { .. } => OutputRankRule::PreserveRank,
-            // Merge always yields an [H, W, C] image.
-            GraphStep::ChannelMerge { .. } => OutputRankRule::Fixed(3),
-            // Dimension vectors and region scores are 1-D.
-            GraphStep::ExtractShape | GraphStep::LabelReduce { .. } => OutputRankRule::Fixed(1),
-        }
-    }
-
-    /// The rule that determines how this step transforms the channel count.
-    pub fn output_channel_rule(&self) -> OutputChannelRule {
-        match self {
-            GraphStep::Buffer(dto) => dto.output_channel_rule(),
-            GraphStep::Geometry(op) => op.output_channel_rule(),
-            GraphStep::Binary { op, .. } => op.output_channel_rule(),
-            GraphStep::Reduction(op) => op.output_channel_rule(),
-            GraphStep::Histogram(op) => op.output_channel_rule(),
-            GraphStep::PerceptualHash(op) => op.output_channel_rule(),
-            GraphStep::ApplyMask { .. } => OutputChannelRule::PreserveChannels,
-            // One channel per merged single-channel input (this + others).
-            GraphStep::ChannelMerge { others } => OutputChannelRule::Fixed(others.len() + 1),
-            GraphStep::ExtractShape | GraphStep::LabelReduce { .. } => {
-                OutputChannelRule::NotApplicable
-            }
+        match self.rules() {
+            Rules::Engine(op) => op.output_dtype_rule(),
+            Rules::Graph(op) => op.output_dtype_rule(),
         }
     }
 
     /// How this step's output depends on the spatial extent of its input — the
     /// plan-time authority for whether a spatial window may commute with it.
     pub fn spatial_dependency(&self) -> SpatialDependency {
-        match self {
-            GraphStep::Buffer(dto) => dto.spatial_dependency(),
-            GraphStep::Geometry(op) => op.spatial_dependency(),
-            GraphStep::Binary { op, .. } => op.spatial_dependency(),
-            GraphStep::Reduction(op) => op.spatial_dependency(),
-            GraphStep::Histogram(op) => op.spatial_dependency(),
-            GraphStep::PerceptualHash(op) => op.spatial_dependency(),
-            // Mask blending and channel merge combine aligned buffers pixel for
-            // pixel — spatially per-element.
-            GraphStep::ApplyMask { .. } | GraphStep::ChannelMerge { .. } => {
-                SpatialDependency::Pointwise
-            }
-            // Dimension reads and region reductions aggregate over the whole
-            // input; neither admits a spatial-window reorder.
-            GraphStep::ExtractShape | GraphStep::LabelReduce { .. } => SpatialDependency::Global,
+        match self.rules() {
+            Rules::Engine(op) => op.spatial_dependency(),
+            Rules::Graph(op) => op.spatial_dependency(),
         }
     }
 
     /// Under what condition this step is a removable no-op — the plan-time
     /// authority an identity-elimination pass reads.
     pub fn identity_rule(&self) -> IdentityRule {
+        match self.rules() {
+            Rules::Engine(op) => op.identity_rule(),
+            Rules::Graph(op) => op.identity_rule(),
+        }
+    }
+
+    /// Whether this step reads another graph node's buffer, so a spatial
+    /// window hoisted past it would crop only this operand.
+    pub fn reads_other_nodes(&self) -> bool {
         match self {
-            GraphStep::Buffer(dto) => dto.identity_rule(),
-            GraphStep::Geometry(op) => op.identity_rule(),
-            GraphStep::Binary { op, .. } => op.identity_rule(),
-            GraphStep::Reduction(op) => op.identity_rule(),
-            GraphStep::Histogram(op) => op.identity_rule(),
-            GraphStep::PerceptualHash(op) => op.identity_rule(),
-            // Mask blending, channel merge, dimension reads and region
-            // reductions all combine or derive from their inputs — never a
-            // no-op on a single buffer.
-            GraphStep::ApplyMask { .. }
-            | GraphStep::ChannelMerge { .. }
-            | GraphStep::ExtractShape
-            | GraphStep::LabelReduce { .. } => IdentityRule::Never,
+            GraphStep::Graph(op) => op.reads_other_nodes(),
+            GraphStep::Buffer(_)
+            | GraphStep::Geometry(_)
+            | GraphStep::Reduction(_)
+            | GraphStep::Histogram(_)
+            | GraphStep::PerceptualHash(_) => false,
+        }
+    }
+
+    /// How the step's output shape follows from its inputs — every step has
+    /// one, and the planner reads the output rank (its length), channel count
+    /// (its axis 2) and sizes from it. A per-row value is `Sym::PerRow`.
+    pub fn shape(&self) -> OpShape {
+        match self.rules() {
+            Rules::Engine(op) => op.shape(),
+            Rules::Graph(op) => op.shape(),
         }
     }
 
     /// Whether this step is a hoistable H/W spatial window (a crop/ROI) — the
     /// plan-time authority the spatial-window pushdown reads.
     pub fn is_spatial_window(&self) -> bool {
-        match self {
-            GraphStep::Buffer(dto) => dto.is_spatial_window(),
-            // Geometry, binary, reduction, histogram, perceptual-hash, mask,
-            // merge, dimension-read and region-reduction steps are never an
-            // H/W crop over a single buffer.
-            GraphStep::Geometry(_)
-            | GraphStep::Binary { .. }
-            | GraphStep::Reduction(_)
-            | GraphStep::Histogram(_)
-            | GraphStep::PerceptualHash(_)
-            | GraphStep::ApplyMask { .. }
-            | GraphStep::ChannelMerge { .. }
-            | GraphStep::ExtractShape
-            | GraphStep::LabelReduce { .. } => false,
+        match self.rules() {
+            Rules::Engine(op) => op.is_spatial_window(),
+            // A graph-level op is never an H/W crop over a single buffer.
+            Rules::Graph(_) => false,
         }
     }
+}
+
+/// A step's contract: an engine op's [`Op`] impl, or a graph op's own rules.
+enum Rules<'a, M: Mode> {
+    Engine(&'a dyn Op),
+    Graph(&'a GraphOp<M>),
 }

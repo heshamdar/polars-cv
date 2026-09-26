@@ -11,9 +11,8 @@
 //!
 //! Rust reads [`point_fields`] / [`contour_fields`] / [`bbox_fields`]; Python
 //! holds `POINT_SCHEMA` / `CONTOUR_SCHEMA` / `BBOX_SCHEMA` to them through the
-//! `point_schema` / `contour_schema` / `bbox_schema` FFIs, the way
-//! `enum_variants` surfaces the naming registry — a runtime accessor plus a
-//! parity test, rather than a generated file, so `polars_cv.geometry` still
+//! `point_schema` / `contour_schema` / `bbox_schema` FFIs — a runtime
+//! accessor plus a parity test, rather than a generated file, so `polars_cv.geometry` still
 //! imports with no compiled extension present.
 //!
 //! A contour *is* built from [`point_fields`] (its rings are lists of points),

@@ -15,6 +15,7 @@ import pytest
 
 from polars_cv import Pipeline
 from polars_cv.pipeline import Pipeline as PipelineClass
+from tests._plan_view import ops_of, planned
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
@@ -312,54 +313,54 @@ class TestPipelineBuilder:
     """Tests for morphological pipeline construction (no plugin required)."""
 
     def test_erode_creates_op(self) -> None:
-        """Erode method adds an OpSpec with correct params."""
+        """Erode method adds an op with correct params."""
         pipe = Pipeline().erode(ksize=5, iterations=2)
-        assert len(pipe._ops) == 1
-        assert pipe._ops[0].op == "erode"
-        assert pipe._ops[0].params["ksize"].value == 5
-        assert pipe._ops[0].params["iterations"].value == 2
+        assert len(ops_of(pipe)) == 1
+        assert ops_of(pipe)[0].op == "erode"
+        assert ops_of(pipe)[0].params["ksize"] == 5
+        assert ops_of(pipe)[0].params["iterations"] == 2
 
     def test_dilate_creates_op(self) -> None:
-        """Dilate method adds an OpSpec with correct params."""
+        """Dilate method adds an op with correct params."""
         pipe = Pipeline().dilate(ksize=7)
-        assert len(pipe._ops) == 1
-        assert pipe._ops[0].op == "dilate"
-        assert pipe._ops[0].params["ksize"].value == 7
-        assert pipe._ops[0].params["iterations"].value == 1
+        assert len(ops_of(pipe)) == 1
+        assert ops_of(pipe)[0].op == "dilate"
+        assert ops_of(pipe)[0].params["ksize"] == 7
+        assert ops_of(pipe)[0].params["iterations"] == 1
 
     def test_open_is_erode_then_dilate(self) -> None:
         """Morphology open is composed of erode then dilate."""
         pipe = Pipeline().morphology_open(ksize=5)
-        assert len(pipe._ops) == 2
-        assert pipe._ops[0].op == "erode"
-        assert pipe._ops[1].op == "dilate"
-        assert pipe._ops[0].params["ksize"].value == 5
-        assert pipe._ops[1].params["ksize"].value == 5
+        assert len(ops_of(pipe)) == 2
+        assert ops_of(pipe)[0].op == "erode"
+        assert ops_of(pipe)[1].op == "dilate"
+        assert ops_of(pipe)[0].params["ksize"] == 5
+        assert ops_of(pipe)[1].params["ksize"] == 5
 
     def test_close_is_dilate_then_erode(self) -> None:
         """Morphology close is composed of dilate then erode."""
         pipe = Pipeline().morphology_close(ksize=5)
-        assert len(pipe._ops) == 2
-        assert pipe._ops[0].op == "dilate"
-        assert pipe._ops[1].op == "erode"
-        assert pipe._ops[0].params["ksize"].value == 5
-        assert pipe._ops[1].params["ksize"].value == 5
+        assert len(ops_of(pipe)) == 2
+        assert ops_of(pipe)[0].op == "dilate"
+        assert ops_of(pipe)[1].op == "erode"
+        assert ops_of(pipe)[0].params["ksize"] == 5
+        assert ops_of(pipe)[1].params["ksize"] == 5
 
     def test_gradient_creates_op(self) -> None:
-        """Morphology gradient adds a single OpSpec."""
+        """Morphology gradient adds a single op."""
         pipe = Pipeline().morphology_gradient(ksize=3)
-        assert len(pipe._ops) == 1
-        assert pipe._ops[0].op == "morphology_gradient"
-        assert pipe._ops[0].params["ksize"].value == 3
+        assert len(ops_of(pipe)) == 1
+        assert ops_of(pipe)[0].op == "morphology_gradient"
+        assert ops_of(pipe)[0].params["ksize"] == 3
 
     def test_domain_preserved(self) -> None:
         """Morphological ops preserve the buffer domain."""
         pipe = Pipeline().source("image_bytes").grayscale().erode(ksize=3)
-        assert pipe._current_domain == "buffer"
+        assert planned(pipe).domain == "buffer"
 
     def test_dtype_preserved(self) -> None:
         """Morphological ops preserve the output dtype."""
         pipe = Pipeline().source("image_bytes").grayscale()
-        dtype_before = pipe._output_dtype
+        dtype_before = planned(pipe).dtype
         pipe_after = pipe.erode(ksize=3)
-        assert pipe_after._output_dtype == dtype_before
+        assert planned(pipe_after).dtype == dtype_before

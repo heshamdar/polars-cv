@@ -100,8 +100,8 @@ pipe = (
 ```
 
 A parameter may be an expression whenever its value does not fix the output
-shape, rank or dtype at planning time — the lazy schema has to match what
-executes. The same rule governs the geometry namespaces
+rank or dtype at planning time — the lazy schema has to match what executes. A
+size may be per-row; that axis is then unknown at planning time. The same rule governs the geometry namespaces
 ([`.contour` / `.point` / `.bbox`](../operations/geometry.md#expression-parameters)),
 and [Dynamic Parameters](../operations/image-ops.md#dynamic-parameters) lists
 every parameter on both sides of the line.

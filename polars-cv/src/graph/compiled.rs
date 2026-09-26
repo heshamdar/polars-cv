@@ -1,8 +1,8 @@
 //! Compiled, cacheable form of a pipeline graph.
 //!
-//! [`CompiledGraph`] is a pure function of the plugin kwargs
-//! (`graph_json` + `expr_column_names`): JSON parsing, topological ordering,
-//! expression-parameter slot binding, and static (all-literal) op resolution
+//! [`CompiledGraph`] is a pure function of the plugin kwargs (`graph_json`):
+//! JSON parsing, topological ordering, nested-parameter hoisting, and static
+//! (all-literal) op resolution
 //! all happen once at compile time. Because the plugin is registered as
 //! elementwise, the streaming engine invokes it once **per morsel** — the
 //! process-wide cache ([`get_or_compile`]) makes repeat invocations pay only
@@ -24,17 +24,22 @@
 use polars::prelude::*;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::ops::Range;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
+
+use pyo3_polars::export::polars_core::runtime::THREAD_POOL;
 use view_buffer::geometry::label::score_contours_on_buffer;
 use view_buffer::ops::{Domain, NodeOutput};
 use view_buffer::{Op, PlannedDType, ViewBuffer, ViewDto, ViewExpr};
 
 use crate::contour::parse_contour_list;
-use crate::execute::{
-    decode_contour_source, decode_contour_source_with_dims, decode_image_bytes, resolve_op,
-};
-use crate::params::{ParamCtx, ParamValue};
-use crate::pipeline::OpSpec;
+use crate::execute::decode_image_bytes;
+use crate::formats::source::Source;
+use crate::ops::graph::Role;
+use crate::ops::{NodeRef, TypedOp};
+use crate::params::ParamCtx;
+use view_buffer::geometry::ops::RasterSize;
 
 use super::step::GraphStep;
 
@@ -44,12 +49,12 @@ use super::decode::{
 };
 use super::encode::{encode_node_output, execute_geometry_op};
 use super::types::{OutputSpec, OutputValue, RowErrorPolicy, RowResult, UnifiedGraph};
+use crate::plan::State;
 
-/// The exact kwargs a graph was compiled from. Stored on the compiled graph
-/// so cache hits can be validated by full equality, never by hash alone.
+/// The exact graph JSON a graph was compiled from. Stored on the compiled
+/// graph so cache hits are validated by full equality, never by hash alone.
 struct GraphKwargsKey {
     graph_json: String,
-    expr_column_names: Vec<String>,
 }
 
 /// A per-op resolver, fixed at graph-compile time.
@@ -58,19 +63,22 @@ pub(crate) enum OpResolver {
     Static(GraphStep),
     /// Has at least one dynamic (slot-bound) param: re-resolved per row with
     /// direct typed slot reads (no string-keyed lookups, no `AnyValue`).
-    Dynamic(OpSpec),
+    Dynamic(TypedOp),
     /// `rasterize(shape=<node>)`: output dimensions come from another node's
     /// buffer at execution time (the referenced node is an upstream
     /// dependency, so it has already run); the remaining params resolve from
     /// the spec like any dynamic op.
-    RasterizeShapeRef { spec: OpSpec, shape_node: String },
+    RasterizeShapeRef {
+        op: view_buffer::GeometryOp<view_buffer::mode::Wire>,
+        shape_node: String,
+    },
 }
 
 /// One op of a node's chain, resolved for the current row.
 enum ResolvedStep<'a> {
     Step(Cow<'a, GraphStep>),
     RasterizeShapeRef {
-        spec: &'a OpSpec,
+        op: &'a view_buffer::GeometryOp<view_buffer::mode::Wire>,
         shape_node: &'a str,
     },
 }
@@ -78,10 +86,9 @@ enum ResolvedStep<'a> {
 /// One executed node, prepared at compile time.
 struct NodePlan {
     id: String,
-    /// The node's source spec (its ops are compiled into `resolvers`).
-    source: crate::pipeline::SourceSpec,
-    /// The source's decode path, parsed from `source.format`.
-    format: SourceFormat,
+    /// The node's source (its ops are compiled into `resolvers`); an `auto`
+    /// one is routed to a concrete source once per batch.
+    source: Source,
     /// Input column, for a root node.
     column: Option<usize>,
     /// Position in `plan` of the node this one reads, for a non-root node.
@@ -113,19 +120,30 @@ pub struct CompiledGraph {
     /// Node id → position in `plan`, for cross-node operand reads (`Binary`,
     /// `ApplyMask`, `ChannelMerge`, shape references), which name a node.
     node_index: HashMap<String, usize>,
-    /// Expression column name → absolute input slot (for steps that carry
-    /// the column *name*, e.g. `label_reduce`).
-    name_to_slot: HashMap<String, usize>,
+    /// How many plugin inputs this graph reads: one past the highest slot or
+    /// column binding. Checked against each call's inputs.
+    min_inputs: usize,
     /// The exact kwargs this graph was compiled from, kept for exact-match
     /// cache validation.
     key: GraphKwargsKey,
+    /// Which threads executed rows of this graph (test instrumentation).
+    #[cfg(test)]
+    row_threads: Mutex<std::collections::HashSet<std::thread::ThreadId>>,
+    /// Signalled when a thread first executes a row (test instrumentation).
+    #[cfg(test)]
+    row_threads_seen: std::sync::Condvar,
+    /// When set, a row waits (bounded) until a second thread has run a row,
+    /// so a test of parallelism does not depend on scheduling luck.
+    #[cfg(test)]
+    rendezvous: std::sync::atomic::AtomicBool,
+    /// How many times a buffer-op segment was planned (test instrumentation).
+    #[cfg(test)]
+    plan_builds: AtomicUsize,
 }
 
 /// Per-call execution state: everything derived from the actual input series.
 struct ExecState<'a> {
     inputs: &'a [Series],
-    /// Typed parameter accessors, built once per call.
-    ctx: ParamCtx<'a>,
     /// Output specs with `"auto"` dtype/ndim resolved from the input column
     /// type, sorted by alias.
     resolved_outputs: Vec<(String, OutputSpec)>,
@@ -134,12 +152,12 @@ struct ExecState<'a> {
     /// per-batch latency; per-path errors surface at their row so the usual
     /// error policies apply.
     prefetched: Vec<Option<crate::fetch::FetchedBatch>>,
-    /// Concrete decode path for each `"auto"` source node, resolved once per
-    /// batch from the input column dtype (node_id → resolved format). The dtype
-    /// is constant across rows, so this avoids re-resolving per row; a
-    /// resolution error is stored and surfaced at its row so the usual error
-    /// policies apply. Non-auto nodes are absent.
-    resolved_auto_formats: Vec<Option<Result<SourceFormat, String>>>,
+    /// The concrete source each `"auto"` source node reads this batch's column
+    /// as ([`Source::route`]), aligned with `plan`. The column dtype is
+    /// constant across rows, so this is taken once per batch; a routing error
+    /// is stored and surfaced at its row so the usual error policies apply.
+    /// `None` for a concrete source.
+    routed_sources: Vec<Option<Result<Source, String>>>,
     /// Position in `plan` of each resolved output's node (aligned with
     /// `resolved_outputs`).
     output_nodes: Vec<Option<usize>>,
@@ -147,29 +165,12 @@ struct ExecState<'a> {
 
 impl CompiledGraph {
     /// Compile a graph from the plugin kwargs.
-    pub fn compile(graph_json: &str, expr_column_names: &[String]) -> PolarsResult<Self> {
+    pub fn compile(graph_json: &str) -> PolarsResult<Self> {
         let mut graph = UnifiedGraph::from_json(graph_json)?;
         validate_graph_structure(&graph)?;
-
-        // Expression columns are appended to the plugin inputs after the
-        // source columns; bind each referenced name to its absolute index.
-        // Several root nodes may share one input column (one binding entry
-        // each, same column index), so the offset is the number of *distinct*
-        // columns — counting entries would shift every expression slot.
-        let num_source_columns = graph
-            .column_bindings
-            .values()
-            .copied()
-            .max()
-            .map(|max_idx| max_idx + 1)
-            .unwrap_or(1);
-        let name_to_slot: HashMap<String, usize> = expr_column_names
-            .iter()
-            .enumerate()
-            .map(|(i, name)| (name.clone(), num_source_columns + i))
-            .collect();
-
-        bind_graph_params(&mut graph, &name_to_slot)?;
+        let min_inputs = prepare_graph_params(&mut graph)?;
+        // A graph that does not plan is refused whole, before any row runs.
+        resolved_output_specs(&graph, &[])?;
 
         // `_error` is reserved for the error-message field of the
         // null_with_message policy; an output alias would collide with it.
@@ -193,27 +194,31 @@ impl CompiledGraph {
             let node = &graph.nodes[node_id];
             let mut resolvers: Vec<OpResolver> = Vec::with_capacity(node.ops.len());
             for spec in &node.ops {
-                // rasterize(shape=<node>) carries a shape_ref instead of
-                // width/height; it gets a dedicated resolver because its
-                // dimensions come from another node's output, not a param.
-                if spec.op == "rasterize" {
-                    if let Some(shape_ref) = spec.params.get("shape_ref") {
-                        let shape_node = shape_ref.resolve_string()?.to_string();
-                        if !graph.nodes.contains_key(&shape_node) {
+                // rasterize(shape=<node>) takes its canvas from another
+                // node's output, not a param, so it gets a dedicated resolver.
+                if let TypedOp::Geometry(
+                    op @ view_buffer::GeometryOp::Rasterize {
+                        size: RasterSize::FromNode(NodeRef(shape_node)),
+                        ..
+                    },
+                ) = spec
+                {
+                    {
+                        if !graph.nodes.contains_key(shape_node) {
                             return Err(polars_err!(ComputeError:
                                 "Node '{}': rasterize shape reference '{}' is not a node in the graph",
                                 node_id, shape_node
                             ));
                         }
                         resolvers.push(OpResolver::RasterizeShapeRef {
-                            spec: spec.clone(),
-                            shape_node,
+                            op: op.clone(),
+                            shape_node: shape_node.clone(),
                         });
                         continue;
                     }
                 }
-                if spec.is_all_literal() {
-                    resolvers.push(OpResolver::Static(resolve_op(spec, 0, &empty_ctx)?));
+                if spec.is_static() {
+                    resolvers.push(OpResolver::Static(spec.resolve(0, &empty_ctx)?));
                 } else {
                     resolvers.push(OpResolver::Dynamic(spec.clone()));
                 }
@@ -230,53 +235,39 @@ impl CompiledGraph {
                 id: node_id.clone(),
                 column,
                 upstream,
-                // Parsed once at the edge: the row loop checks a flag instead
-                // of comparing strings.
-                source_null: crate::fetch::parse_on_error(
-                    node.source.on_error.as_str(),
-                    &format!("source node '{node_id}'"),
-                )?,
+                source_null: node.source.nulls_on_error(),
                 cloud_options: node
                     .source
-                    .cloud_options
-                    .as_ref()
+                    .path_settings()
+                    .0
                     .map(crate::cloud::CloudOptions::from_map),
                 path_policy: node
                     .source
-                    .allowed_roots
-                    .as_ref()
-                    .map(|roots| crate::fetch::PathPolicy::new(roots))
+                    .path_settings()
+                    .1
+                    .map(crate::fetch::PathPolicy::new)
                     .unwrap_or_default(),
                 resolvers,
                 source: node.source.clone(),
-                // `validate_graph_structure` has already refused an unknown name.
-                format: SourceFormat::parse(&node.source.format).ok_or_else(|| {
-                    polars_err!(ComputeError:
-                        "Node '{}': unknown source format '{}'", node_id, node.source.format)
-                })?,
             });
-        }
-
-        // A node no output reaches is never executed, but its settings are
-        // still validated, as they were when every node was parsed here.
-        for (node_id, node) in &graph.nodes {
-            if !node_index.contains_key(node_id) {
-                crate::fetch::parse_on_error(
-                    node.source.on_error.as_str(),
-                    &format!("source node '{node_id}'"),
-                )?;
-            }
         }
 
         Ok(CompiledGraph {
             graph,
             plan,
             node_index,
-            name_to_slot,
+            min_inputs,
             key: GraphKwargsKey {
                 graph_json: graph_json.to_string(),
-                expr_column_names: expr_column_names.to_vec(),
             },
+            #[cfg(test)]
+            row_threads: Mutex::default(),
+            #[cfg(test)]
+            row_threads_seen: std::sync::Condvar::new(),
+            #[cfg(test)]
+            rendezvous: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            plan_builds: AtomicUsize::new(0),
         })
     }
 
@@ -302,50 +293,81 @@ impl CompiledGraph {
         } else {
             return Err(polars_err!(ComputeError : "No input columns provided"));
         };
-        // Column bindings are compile-time data but their bounds depend on
-        // this call's inputs: check once here instead of per row.
-        for (node_id, col_idx) in &self.graph.column_bindings {
-            if *col_idx >= inputs.len() {
-                return Err(polars_err!(ComputeError:
-                    "Column index {} out of bounds for node '{}' ({} input columns)",
-                    col_idx, node_id, inputs.len()
-                ));
-            }
+        // Slots and column bindings are compile-time data but their bounds
+        // depend on this call's inputs: check once here instead of per row.
+        if inputs.len() < self.min_inputs {
+            return Err(polars_err!(ComputeError:
+                "graph reads {} input columns but the call supplied {}",
+                self.min_inputs, inputs.len()
+            ));
         }
         let resolved_outputs = resolved_output_specs(
             &self.graph,
             &inputs.iter().map(|s| s.dtype().clone()).collect::<Vec<_>>(),
-        );
+        )?;
         let output_nodes = resolved_outputs
             .iter()
             .map(|(_, spec)| self.node_index.get(&spec.node).copied())
             .collect();
         let state = ExecState {
             inputs,
-            ctx: ParamCtx::with_null_policy(inputs, self.graph.on_null_param),
             resolved_outputs,
             prefetched: self.prefetch_remote_sources(inputs),
-            resolved_auto_formats: self.resolve_auto_source_formats(inputs),
+            routed_sources: self.route_auto_sources(inputs),
             output_nodes,
         };
 
-        // One row vector per resolved output, aligned with `resolved_outputs`.
+        // Rows are independent, so the call is split into contiguous row
+        // ranges that run on the plugin's thread pool and are concatenated in
+        // order. Without this a call used one core however many rows it held,
+        // so the in-memory engine was single-threaded on a single-chunk frame
+        // (CR-32). The pool is the plugin's own copy of polars' `THREAD_POOL`
+        // (a plugin links its own polars-core, so it cannot join the host's);
+        // it is sized by `POLARS_MAX_THREADS`, and callers block while their
+        // rows run, so concurrent calls (streaming morsels) share its threads
+        // rather than multiplying them.
+        let ranges = row_ranges(len, THREAD_POOL.current_num_threads());
+        let plan_cache = PlanCache::new(&self.plan);
+        let first_failure = AtomicUsize::new(usize::MAX);
+        let run_range = |range_idx: usize, rows: Range<usize>| -> RangeOutcome {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.execute_rows(&state, rows, range_idx, &plan_cache, &first_failure)
+            }))
+            .map_err(|payload| {
+                polars_err!(ComputeError : "Pipeline batch failed: {}",
+                    panic_message(payload.as_ref()))
+            })?
+            .map_err(|msg| polars_err!(ComputeError : "Pipeline execution failed: {}", msg))
+        };
+        let mut outcomes: Vec<Option<RangeOutcome>> = ranges.iter().map(|_| None).collect();
+        if let [only] = ranges.as_slice() {
+            outcomes[0] = Some(run_range(0, only.clone()));
+        } else {
+            let run_range = &run_range;
+            THREAD_POOL.scope(|scope| {
+                for ((range_idx, rows), slot) in
+                    ranges.iter().cloned().enumerate().zip(outcomes.iter_mut())
+                {
+                    scope.spawn(move |_| *slot = Some(run_range(range_idx, rows)));
+                }
+            });
+        }
+
+        // Concatenate in row order. Under `on_error="raise"` the first failing
+        // range holds the earliest failing row, so its error is the one a
+        // sequential run would have reported.
         let mut results: Vec<Vec<RowResult>> = (0..state.resolved_outputs.len())
             .map(|_| Vec::with_capacity(len))
             .collect();
-        let batch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.execute_rows(&state, len, &mut results)
-        }));
-        let error_messages = match batch_result {
-            Ok(Ok(messages)) => messages,
-            Ok(Err(msg)) => {
-                return Err(polars_err!(ComputeError : "Pipeline execution failed: {}", msg));
+        let mut error_messages: Vec<Option<String>> = Vec::new();
+        for outcome in outcomes {
+            let (range_results, range_messages) =
+                outcome.expect("every range ran to completion inside the scope")?;
+            for (all, part) in results.iter_mut().zip(range_results) {
+                all.extend(part);
             }
-            Err(panic_payload) => {
-                return Err(polars_err!(ComputeError : "Pipeline batch failed: {}",
-                    panic_message(panic_payload.as_ref())));
-            }
-        };
+            error_messages.extend(range_messages);
+        }
 
         let with_message = self.graph.on_error == RowErrorPolicy::NullWithMessage;
         if self.graph.is_single_output() && !with_message {
@@ -371,37 +393,47 @@ impl CompiledGraph {
         }
     }
 
-    /// The per-row loop: decode sources, run ops, encode outputs.
+    /// The per-row loop over one row range: decode sources, run ops, encode
+    /// outputs.
     ///
     /// Applies the graph's [`RowErrorPolicy`] to per-row errors and returns
-    /// one error-message slot per row when the policy is `NullWithMessage`
-    /// (an empty Vec otherwise). Errors are `String` so the surrounding
+    /// this range's rows (one vector per resolved output) plus one
+    /// error-message slot per row when the policy is `NullWithMessage` (an
+    /// empty Vec otherwise). Errors are `String` so the surrounding
     /// `catch_unwind`/`PolarsError` wrapping stays in one place.
+    ///
+    /// Under `Raise` a failing range records its index in `first_failure`,
+    /// and a range after it stops early: its rows would be discarded, since
+    /// the earlier error is the one reported.
     fn execute_rows(
         &self,
         state: &ExecState<'_>,
-        len: usize,
-        results: &mut [Vec<RowResult>],
-    ) -> Result<Vec<Option<String>>, String> {
+        rows: Range<usize>,
+        range_idx: usize,
+        plan_cache: &PlanCache,
+        first_failure: &AtomicUsize,
+    ) -> Result<RangeRows, String> {
         let policy = self.graph.on_error;
         let with_message = policy == RowErrorPolicy::NullWithMessage;
+        let mut results: Vec<Vec<RowResult>> = (0..state.resolved_outputs.len())
+            .map(|_| Vec::with_capacity(rows.len()))
+            .collect();
         let mut error_messages: Vec<Option<String>> = if with_message {
-            Vec::with_capacity(len)
+            Vec::with_capacity(rows.len())
         } else {
             Vec::new()
         };
+        // Per range, not per call: `ParamCtx` carries this thread's
+        // null-parameter flag in a `Cell`.
+        let ctx = ParamCtx::with_null_policy(state.inputs, self.graph.on_null_param);
         // Allocated once and reused across rows/nodes to avoid per-row churn.
         let mut node_outputs: Vec<Option<NodeOutput>> = vec![None; self.plan.len()];
         let mut dto_scratch: Vec<ResolvedStep<'_>> = Vec::new();
-        // Planned steps of each static buffer-op segment, per node and
-        // segment start, reused while the source layout repeats (CR-37).
-        // Per call, so it needs no synchronisation across morsels.
-        let mut plan_cache: Vec<Vec<Option<CachedPlan>>> = self
-            .plan
-            .iter()
-            .map(|np| (0..np.resolvers.len()).map(|_| None).collect())
-            .collect();
-        for row_idx in 0..len {
+        let start = rows.start;
+        for row_idx in rows {
+            if first_failure.load(Ordering::Relaxed) < range_idx {
+                break;
+            }
             node_outputs.iter_mut().for_each(|output| *output = None);
             // Panics are caught per row, so they reach the row policy like any
             // other row error. view-buffer reports some data-dependent failures
@@ -410,16 +442,17 @@ impl CompiledGraph {
             // `on_error="null"`, and under streaming how much of the query it
             // took down depended on the morsel size (CR-34). The per-row state
             // is rebuilt from scratch every row (`node_outputs` is reset, and the
-            // null policies truncate `results` back to `row_idx`), so nothing a
+            // null policies truncate `results` back to this row), so nothing a
             // panicking row half-wrote survives it.
             let row_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.execute_one_row(
                     state,
+                    &ctx,
                     row_idx,
                     &mut node_outputs,
                     &mut dto_scratch,
-                    &mut plan_cache,
-                    results,
+                    plan_cache,
+                    &mut results,
                 )
             }))
             .unwrap_or_else(|payload| {
@@ -438,15 +471,18 @@ impl CompiledGraph {
                     }
                 }
                 Err(msg) => match policy {
-                    RowErrorPolicy::Raise => return Err(msg),
+                    RowErrorPolicy::Raise => {
+                        first_failure.fetch_min(range_idx, Ordering::Relaxed);
+                        return Err(msg);
+                    }
                     RowErrorPolicy::Null | RowErrorPolicy::NullWithMessage => {
                         // All-or-nothing per row: drop anything this row may
                         // have pushed before failing, then null every output.
-                        for ((_, spec), rows) in
+                        for ((_, spec), out) in
                             state.resolved_outputs.iter().zip(results.iter_mut())
                         {
-                            rows.truncate(row_idx);
-                            rows.push(null_row_result_for_spec(spec).map_err(|e| e.to_string())?);
+                            out.truncate(row_idx - start);
+                            out.push(null_row_result_for_spec(spec).map_err(|e| e.to_string())?);
                         }
                         if with_message {
                             error_messages.push(Some(msg));
@@ -455,20 +491,36 @@ impl CompiledGraph {
                 },
             }
         }
-        Ok(error_messages)
+        Ok((results, error_messages))
     }
 
     /// Execute every node and encode every output for one row.
+    #[allow(clippy::too_many_arguments)]
     fn execute_one_row<'g>(
         &'g self,
         state: &ExecState<'_>,
+        ctx: &ParamCtx<'_>,
         row_idx: usize,
         node_outputs: &mut [Option<NodeOutput>],
         dto_scratch: &mut Vec<ResolvedStep<'g>>,
-        plan_cache: &mut [Vec<Option<CachedPlan>>],
+        plan_cache: &PlanCache,
         results: &mut [Vec<RowResult>],
     ) -> Result<(), String> {
-        self.run_row_nodes(state, row_idx, node_outputs, dto_scratch, plan_cache)?;
+        #[cfg(test)]
+        {
+            let mut seen = self.row_threads.lock().unwrap();
+            seen.insert(std::thread::current().id());
+            self.row_threads_seen.notify_all();
+            // One wait per call: once a second thread has arrived (or the
+            // wait timed out, as it does for a sequential run) rows proceed.
+            if self.rendezvous.swap(false, Ordering::Relaxed) {
+                let _ = self
+                    .row_threads_seen
+                    .wait_timeout_while(seen, std::time::Duration::from_secs(5), |s| s.len() < 2)
+                    .unwrap();
+            }
+        }
+        self.run_row_nodes(state, ctx, row_idx, node_outputs, dto_scratch, plan_cache)?;
         for (((alias, spec), node), rows) in state
             .resolved_outputs
             .iter()
@@ -559,15 +611,18 @@ impl CompiledGraph {
     fn vector_reads_as_buffer(step: &GraphStep) -> bool {
         match step {
             GraphStep::Reduction(_) => true,
-            GraphStep::Binary { .. }
-            | GraphStep::Buffer(_)
+            GraphStep::Buffer(_)
             | GraphStep::Geometry(_)
-            | GraphStep::ApplyMask { .. }
-            | GraphStep::ChannelMerge { .. }
             | GraphStep::Histogram(_)
-            | GraphStep::PerceptualHash(_)
-            | GraphStep::ExtractShape
-            | GraphStep::LabelReduce { .. } => false,
+            | GraphStep::PerceptualHash(_) => false,
+            GraphStep::Graph(graph) => match graph.role() {
+                Role::Binary(..)
+                | Role::ApplyMask { .. }
+                | Role::ChannelMerge { .. }
+                | Role::ExtractShape
+                | Role::AssertShape { .. }
+                | Role::LabelReduce { .. } => false,
+            },
         }
     }
 
@@ -575,7 +630,7 @@ impl CompiledGraph {
     ///
     /// **Read the contract; never restate it.** `GraphStep::input_domains` is the
     /// single authority `CLAUDE.md` names for what a step accepts, and the Python
-    /// planner validates against it through `op_contract`. Execution used to
+    /// planner validates against it through `Plan::push`. Execution used to
     /// re-derive the same fact by hand at ten sites — `current_output.as_buffer()`
     /// with a hardcoded `"<Step> requires Buffer"` string each time — and the two
     /// had already diverged: `Reduction` declares `[Buffer, Vector]`, so the
@@ -619,230 +674,40 @@ impl CompiledGraph {
     fn run_row_nodes<'g>(
         &'g self,
         state: &ExecState<'_>,
+        ctx: &ParamCtx<'_>,
         row_idx: usize,
         node_outputs: &mut [Option<NodeOutput>],
         dto_scratch: &mut Vec<ResolvedStep<'g>>,
-        plan_cache: &mut [Vec<Option<CachedPlan>>],
+        plan_cache: &PlanCache,
     ) -> Result<(), String> {
         let inputs = state.inputs;
-        let ctx = &state.ctx;
         {
             // Labelled so a null per-row parameter can skip straight to the
             // next node: leaving this node out of `node_outputs` is exactly
             // how a null *input* already propagates (see the `else` branch of
             // `if let Some(input)` below, and `execute_one_row`).
             'nodes: for (idx, np) in self.plan.iter().enumerate() {
-                let source = &np.source;
-                let node_id = &np.id;
                 let node_input: Option<NodeOutput> = if let Some(col_idx) = np.column {
                     let on_error_null = np.source_null;
-                    // Cleared here so `took_null` below refers only to this
-                    // node's own source-parameter resolution (a contour
-                    // source's `fill_value` / `background`).
-                    ctx.clear_null();
-                    let decode_result: Result<Option<NodeOutput>, String> = (|| {
+                    // An `"auto"` source reads as the concrete source it was
+                    // routed to once per batch (`route_auto_sources`).
+                    let decode_result = match state.routed_sources[idx].as_ref() {
+                        Some(Ok(routed)) => Ok(routed),
+                        Some(Err(e)) => Err(e.clone()),
+                        None => Ok(&np.source),
+                    }
+                    .and_then(|source| {
                         // Bounds are validated once per call in `execute()`.
-                        let input_series = &inputs[col_idx];
-                        // An `"auto"` source was resolved to a concrete decode
-                        // path once per batch (see `resolve_auto_source_formats`);
-                        // reuse that result here.
-                        let source_format = match np.format {
-                            SourceFormat::Auto => match state.resolved_auto_formats[idx].as_ref() {
-                                Some(Ok(fmt)) => *fmt,
-                                Some(Err(e)) => return Err(e.clone()),
-                                // Resolved for every bound auto node; bounds were
-                                // checked in `execute()`.
-                                None => {
-                                    return Err(format!(
-                                        "internal: auto source '{node_id}' was not resolved"
-                                    ))
-                                }
-                            },
-                            fmt => fmt,
-                        };
-                        if source_format == SourceFormat::Contour {
-                            match input_series.get(row_idx) {
-                                Ok(value) if !value.is_null() => {
-                                    if let Some(ref shape_pipeline) = source.shape_pipeline {
-                                        let shape_node_id = shape_pipeline
-                                            .get("node_id")
-                                            .and_then(|v| v.as_str())
-                                            .ok_or_else(|| {
-                                                "shape_pipeline missing 'node_id'".to_string()
-                                            })?;
-                                        // The fifth cross-node operand read.
-                                        // `Ok(None)` (rather than `continue
-                                        // 'nodes`) because this sits inside the
-                                        // decode closure, whose `None` already
-                                        // means "no output for this row".
-                                        let Some(shape_output) = self.operand(
-                                            node_outputs,
-                                            shape_node_id,
-                                            "Contour source shape",
-                                        )?
-                                        else {
-                                            return Ok(None);
-                                        };
-                                        let shape_buffer = shape_output
-                                            .as_buffer()
-                                            .ok_or_else(|| {
-                                                format!(
-                                                    "Shape reference '{shape_node_id}' must be a Buffer, not {:?}",
-                                                    shape_output.domain()
-                                                )
-                                            })?;
-                                        let shape = shape_buffer.shape();
-                                        if shape.len() < 2 {
-                                            return Err(format!(
-                                                "Shape buffer has invalid dimensions: expected at least 2D, got {}D",
-                                                shape.len()
-                                            ));
-                                        }
-                                        let height = shape[0] as u32;
-                                        let width = shape[1] as u32;
-                                        let (fill_value, background) = match source
-                                            .resolve_fill(row_idx, ctx)
-                                        {
-                                            Ok(v) => v,
-                                            Err(e) => {
-                                                return Err(format!("Contour decode error: {e}"))
-                                            }
-                                        };
-                                        match decode_contour_source_with_dims(
-                                            &value, width, height, fill_value, background,
-                                        ) {
-                                            Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
-                                            Err(e) => Err(format!("Contour decode error: {e}")),
-                                        }
-                                    } else {
-                                        match decode_contour_source(&value, row_idx, source, ctx) {
-                                            Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
-                                            Err(e) => Err(format!("Contour decode error: {e}")),
-                                        }
-                                    }
-                                }
-                                _ => Ok(None),
-                            }
-                        // `file_path` is fetch + decode: `crate::fetch` reads the
-                        // bytes the path names (applying its `PathPolicy`
-                        // sandbox), then they decode as image bytes.
-                        } else if source_format == SourceFormat::FilePath {
-                            if input_series.dtype() == &DataType::Null {
-                                Ok(None)
-                            } else {
-                                let input_ca = match input_series.str() {
-                                    Ok(ca) => ca,
-                                    Err(_) => {
-                                        return Err(format!(
-                                            "Expected String column for file_path source '{node_id}', got {:?}",
-                                            input_series.dtype()
-                                        ));
-                                    }
-                                };
-                                match input_ca.get(row_idx) {
-                                    Some(path) => {
-                                        // Stage 1: bytes. Remote paths were fetched
-                                        // concurrently before the row loop; local
-                                        // files are read inline.
-                                        let empty;
-                                        let batch = match state.prefetched[idx].as_ref() {
-                                            Some(b) => b,
-                                            None => {
-                                                empty = crate::fetch::FetchedBatch::empty();
-                                                &empty
-                                            }
-                                        };
-                                        let bytes = crate::fetch::row_bytes(
-                                            batch,
-                                            path,
-                                            np.cloud_options.as_ref(),
-                                            &np.path_policy,
-                                        )?;
-                                        // Stage 2: file_path contents decode like
-                                        // image bytes.
-                                        match decode_image_bytes(&bytes, source) {
-                                            Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
-                                            Err(e) => {
-                                                Err(format!("Decode error for file '{path}': {e}"))
-                                            }
-                                        }
-                                    }
-                                    None => Ok(None),
-                                }
-                            }
-                        } else if matches!(source_format, SourceFormat::List | SourceFormat::Array)
-                        {
-                            if input_series.dtype() == &DataType::Null {
-                                Ok(None)
-                            } else {
-                                let dtype_opt = source.dtype.as_deref();
-                                let require_contiguous = source.require_contiguous;
-                                match decode_list_or_array_source(
-                                    input_series,
-                                    row_idx,
-                                    dtype_opt,
-                                    require_contiguous,
-                                ) {
-                                    Ok(Some(buf)) => Ok(Some(NodeOutput::from_buffer(buf))),
-                                    Ok(None) => Ok(None),
-                                    Err(e) => Err(format!("List/Array decode error: {e}")),
-                                }
-                            }
-                        } else if input_series.dtype() == &DataType::Null {
-                            Ok(None)
-                        } else {
-                            let input_ca = match input_series.binary() {
-                                Ok(ca) => ca,
-                                Err(_) => {
-                                    return Err(format!(
-                                        "Expected Binary column for node '{node_id}', got {:?}",
-                                        input_series.dtype()
-                                    ));
-                                }
-                            };
-                            if matches!(source_format, SourceFormat::Blob | SourceFormat::Raw) {
-                                if let Some((buffer, offset, len)) =
-                                    get_binary_row_buffer(input_ca, row_idx)
-                                {
-                                    match decode_binary_zero_copy(
-                                        buffer,
-                                        offset,
-                                        len,
-                                        source_format.name(),
-                                        source.dtype.as_deref(),
-                                    ) {
-                                        Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
-                                        Err(e) => Err(format!("Zero-copy decode error: {e}")),
-                                    }
-                                } else {
-                                    Ok(None)
-                                }
-                            } else {
-                                // Every other format has been dispatched above;
-                                // only encoded image bytes remain.
-                                if source_format != SourceFormat::ImageBytes {
-                                    return Err(format!(
-                                        "internal: source format '{}' reached the image decoder",
-                                        source_format.name()
-                                    ));
-                                }
-                                match input_ca.get(row_idx) {
-                                    Some(bytes) => match decode_image_bytes(bytes, source) {
-                                        Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
-                                        Err(e) => Err(format!("Decode error: {e}")),
-                                    },
-                                    None => Ok(None),
-                                }
-                            }
-                        }
-                    })(
-                    );
+                        decode_source_row(
+                            np,
+                            source,
+                            &inputs[col_idx],
+                            row_idx,
+                            state.prefetched[idx].as_ref(),
+                        )
+                    });
                     match decode_result {
                         Ok(output) => output,
-                        // A null per-row *parameter* is not a decode failure:
-                        // under `on_null_param="null"` it nulls this node for
-                        // this row regardless of the source's own `on_error`.
-                        Err(_) if ctx.took_null() => None,
                         Err(_e) if on_error_null => None,
                         Err(e) => return Err(e),
                     }
@@ -863,7 +728,7 @@ impl CompiledGraph {
                                 }
                                 OpResolver::Dynamic(spec) => {
                                     ctx.clear_null();
-                                    match resolve_op(spec, row_idx, ctx) {
+                                    match spec.resolve(row_idx, ctx) {
                                         Ok(step) => {
                                             dto_scratch.push(ResolvedStep::Step(Cow::Owned(step)))
                                         }
@@ -874,8 +739,8 @@ impl CompiledGraph {
                                         Err(e) => return Err(format!("Op resolution error: {e}")),
                                     }
                                 }
-                                OpResolver::RasterizeShapeRef { spec, shape_node } => dto_scratch
-                                    .push(ResolvedStep::RasterizeShapeRef { spec, shape_node }),
+                                OpResolver::RasterizeShapeRef { op, shape_node } => dto_scratch
+                                    .push(ResolvedStep::RasterizeShapeRef { op, shape_node }),
                             }
                         }
                     }
@@ -884,22 +749,27 @@ impl CompiledGraph {
                     // `OptConfig` is `Copy`, so the closure captures a value and
                     // does not borrow `self`.
                     let opt_cfg = self.graph.opt;
-                    let node_cache = &mut plan_cache[idx];
-                    let mut flush_buffer_ops = |output: NodeOutput,
-                                                pending: &mut PendingSegment<'_>|
+                    let node_cache = &plan_cache.slots[idx];
+                    let flush_buffer_ops = |output: NodeOutput,
+                                            pending: &mut PendingSegment<'_>|
                      -> Result<NodeOutput, String> {
                         let slot = match pending.start {
-                            Some(start) if pending.cacheable => Some(&mut node_cache[start]),
+                            Some(start) if pending.cacheable => Some(&node_cache[start]),
                             _ => None,
                         };
                         let result = run_segment(output, &pending.ops, slot, &opt_cfg);
                         pending.clear();
-                        result
+                        let (output, _planned) = result?;
+                        #[cfg(test)]
+                        if _planned {
+                            self.plan_builds.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Ok(output)
                     };
                     let mut pending_buffer_ops = PendingSegment::default();
                     for (step_idx, step) in dto_scratch.iter().enumerate() {
                         let graph_step = match step {
-                            ResolvedStep::RasterizeShapeRef { spec, shape_node } => {
+                            ResolvedStep::RasterizeShapeRef { op, shape_node } => {
                                 // Dimensions come from the referenced node's
                                 // buffer (already executed: it is upstream).
                                 current_output =
@@ -931,22 +801,14 @@ impl CompiledGraph {
                                 let height = dims[0] as u32;
                                 let width = dims[1] as u32;
                                 ctx.clear_null();
-                                let style_params = crate::params::OpParams::new(&spec.params);
-                                let (fill_value, background) =
-                                    match crate::execute::resolve_rasterize_style(
-                                        &style_params,
-                                        row_idx,
-                                        ctx,
-                                    ) {
-                                        Ok(style) => style,
-                                        Err(_) if ctx.took_null() => continue 'nodes,
-                                        Err(e) => return Err(e.to_string()),
-                                    };
-                                let geo_op = view_buffer::GeometryOp::Rasterize {
-                                    width,
-                                    height,
-                                    fill_value,
-                                    background,
+                                let resolved = view_buffer::mode::Resolve::resolve(
+                                    *op,
+                                    &crate::ops::param::RowValues { row: row_idx, ctx },
+                                );
+                                let geo_op = match resolved {
+                                    Ok(geo_op) => geo_op.with_canvas(height, width),
+                                    Err(_) if ctx.took_null() => continue 'nodes,
+                                    Err(e) => return Err(e.to_string()),
                                 };
                                 current_output = execute_geometry_op(current_output, &geo_op)?;
                                 continue;
@@ -958,56 +820,6 @@ impl CompiledGraph {
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
                                 current_output = execute_geometry_op(current_output, geo_op)?;
-                            }
-                            GraphStep::Binary { op, other } => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = Self::step_buffer_operand(
-                                    &current_output,
-                                    graph_step.as_ref(),
-                                    "Binary op",
-                                )?;
-                                let Some(other_output) =
-                                    self.operand(node_outputs, other, "Binary op")?
-                                else {
-                                    continue 'nodes;
-                                };
-                                let other_buf = Self::step_buffer_operand(
-                                    other_output,
-                                    graph_step.as_ref(),
-                                    "Binary op other operand",
-                                )?;
-                                op.validate(
-                                    &[current_buf.shape(), other_buf.shape()],
-                                    &[current_buf.dtype(), other_buf.dtype()],
-                                )
-                                .map_err(|e| format!("{}: {e}", op.name()))?;
-                                let result = op.execute(&current_buf, &other_buf);
-                                current_output = NodeOutput::from_buffer(result);
-                            }
-                            GraphStep::ApplyMask { mask, invert } => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = Self::step_buffer_operand(
-                                    &current_output,
-                                    graph_step.as_ref(),
-                                    "ApplyMask",
-                                )?;
-                                let Some(mask_output) =
-                                    self.operand(node_outputs, mask, "ApplyMask")?
-                                else {
-                                    continue 'nodes;
-                                };
-                                let mask_buf = Self::step_buffer_operand(
-                                    mask_output,
-                                    graph_step.as_ref(),
-                                    "ApplyMask mask",
-                                )?;
-                                view_buffer::validate_mask(current_buf.shape(), mask_buf.shape())
-                                    .map_err(|e| format!("apply_mask: {e}"))?;
-                                let result =
-                                    view_buffer::apply_mask(&current_buf, &mask_buf, *invert);
-                                current_output = NodeOutput::from_buffer(result);
                             }
                             GraphStep::Reduction(reduction_op) => {
                                 current_output =
@@ -1075,97 +887,172 @@ impl CompiledGraph {
                                 );
                                 current_output = NodeOutput::from_buffer(result);
                             }
-                            GraphStep::ExtractShape => {
-                                // Extract shape from buffer and return as vector
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = Self::step_buffer_operand(
-                                    &current_output,
-                                    graph_step.as_ref(),
-                                    "ExtractShape",
-                                )?;
-                                let shape = current_buf.shape();
-                                // Return shape as f64 vector [height, width, channels]
-                                let shape_vec: Vec<f64> = shape.iter().map(|&d| d as f64).collect();
-                                current_output = NodeOutput::from_vector(shape_vec);
-                            }
-                            GraphStep::LabelReduce {
-                                contours_col,
-                                reduction,
-                                region_mode,
-                            } => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = Self::step_buffer_operand(
-                                    &current_output,
-                                    graph_step.as_ref(),
-                                    "LabelReduce",
-                                )?;
-                                let slot =
-                                    self.name_to_slot.get(contours_col).ok_or_else(|| {
-                                        format!(
-                                            "LabelReduce contour column '{contours_col}' not found in expression inputs"
-                                        )
-                                    })?;
-                                let contour_col = ctx.col(*slot).map_err(|e| e.to_string())?;
-                                let contour_value = contour_col.get_any(row_idx).map_err(|e| {
-                                    format!(
-                                        "LabelReduce failed to read contours at row {row_idx}: {e}"
-                                    )
-                                })?;
-                                if contour_value.is_null() {
-                                    current_output = NodeOutput::from_vector(Vec::new());
-                                    continue;
-                                }
-                                let contours = parse_contour_list(&contour_value).map_err(|e| {
-                                    format!("LabelReduce contour parsing failed: {e}")
-                                })?;
-                                let scores = score_contours_on_buffer(
-                                    &current_buf,
-                                    &contours,
-                                    *reduction,
-                                    *region_mode,
-                                )?;
-                                current_output = NodeOutput::from_vector(scores);
-                            }
-                            GraphStep::ChannelMerge { others } => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = Self::step_buffer_operand(
-                                    &current_output,
-                                    graph_step.as_ref(),
-                                    "ChannelMerge",
-                                )?;
-                                // Owned first: `step_buffer_operand` hands back an
-                                // `Arc`, which must outlive the borrow the merge
-                                // call takes.
-                                let mut owned: Vec<Arc<ViewBuffer>> = vec![current_buf];
-                                for other_id in others {
+                            GraphStep::Graph(graph) => match graph.role() {
+                                Role::Binary(op, other) => {
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf = Self::step_buffer_operand(
+                                        &current_output,
+                                        graph_step.as_ref(),
+                                        "Binary op",
+                                    )?;
                                     let Some(other_output) =
-                                        self.operand(node_outputs, other_id, "ChannelMerge")?
+                                        self.operand(node_outputs, &other.0, "Binary op")?
                                     else {
                                         continue 'nodes;
                                     };
-                                    // Same contract read as the current operand
-                                    // above -- ChannelMerge declares `[Buffer]`, so
-                                    // this refuses a vector, but it refuses it by
-                                    // reading the contract rather than restating it.
-                                    owned.push(Self::step_buffer_operand(
+                                    let other_buf = Self::step_buffer_operand(
                                         other_output,
                                         graph_step.as_ref(),
-                                        &format!("ChannelMerge operand '{other_id}'"),
-                                    )?);
+                                        "Binary op other operand",
+                                    )?;
+                                    op.validate(
+                                        &[current_buf.shape(), other_buf.shape()],
+                                        &[current_buf.dtype(), other_buf.dtype()],
+                                    )
+                                    .map_err(|e| format!("{}: {e}", op.name()))?;
+                                    let result = op.execute(&current_buf, &other_buf);
+                                    current_output = NodeOutput::from_buffer(result);
                                 }
-                                let all_bufs: Vec<&ViewBuffer> =
-                                    owned.iter().map(|b| b.as_ref()).collect();
-                                view_buffer::validate_channel_merge(
-                                    &all_bufs.iter().map(|b| b.shape()).collect::<Vec<_>>(),
-                                    &all_bufs.iter().map(|b| b.dtype()).collect::<Vec<_>>(),
-                                )
-                                .map_err(|e| format!("channel_merge: {e}"))?;
-                                let result = view_buffer::apply_channel_merge(&all_bufs);
-                                current_output = NodeOutput::from_buffer(result);
-                            }
+                                Role::ApplyMask { mask, invert } => {
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf = Self::step_buffer_operand(
+                                        &current_output,
+                                        graph_step.as_ref(),
+                                        "ApplyMask",
+                                    )?;
+                                    let Some(mask_output) =
+                                        self.operand(node_outputs, &mask.0, "ApplyMask")?
+                                    else {
+                                        continue 'nodes;
+                                    };
+                                    let mask_buf = Self::step_buffer_operand(
+                                        mask_output,
+                                        graph_step.as_ref(),
+                                        "ApplyMask mask",
+                                    )?;
+                                    view_buffer::validate_mask(
+                                        current_buf.shape(),
+                                        mask_buf.shape(),
+                                    )
+                                    .map_err(|e| format!("apply_mask: {e}"))?;
+                                    let result =
+                                        view_buffer::apply_mask(&current_buf, &mask_buf, *invert);
+                                    current_output = NodeOutput::from_buffer(result);
+                                }
+                                Role::AssertShape { rank, dims } => {
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let shape: Vec<usize> = match &current_output {
+                                        NodeOutput::Buffer(buf) => buf.shape().to_vec(),
+                                        NodeOutput::Vector(vals) => vec![vals.len()],
+                                        other => {
+                                            return Err(format!(
+                                            "assert_shape() declares a shape, but the data here \
+                                                 is {}",
+                                            other.domain().name()
+                                        ))
+                                        }
+                                    };
+                                    check_declared_shape(
+                                        &shape,
+                                        rank.map(|r| r as usize),
+                                        &dims.map(|d| d.map(|d| d as usize)),
+                                    )?;
+                                }
+                                Role::ExtractShape => {
+                                    // Extract shape from buffer and return as vector
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf = Self::step_buffer_operand(
+                                        &current_output,
+                                        graph_step.as_ref(),
+                                        "ExtractShape",
+                                    )?;
+                                    let shape = current_buf.shape();
+                                    // Return shape as f64 vector [height, width, channels]
+                                    let shape_vec: Vec<f64> =
+                                        shape.iter().map(|&d| d as f64).collect();
+                                    current_output = NodeOutput::from_vector(shape_vec);
+                                }
+                                Role::LabelReduce {
+                                    contours,
+                                    reduction,
+                                    region_mode,
+                                } => {
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf = Self::step_buffer_operand(
+                                        &current_output,
+                                        graph_step.as_ref(),
+                                        "LabelReduce",
+                                    )?;
+                                    let contour_col =
+                                        ctx.col(contours.0).map_err(|e| e.to_string())?;
+                                    let contour_value = contour_col.get_any(row_idx).map_err(|e| {
+                                        format!(
+                                            "LabelReduce failed to read contours at row {row_idx}: {e}"
+                                        )
+                                    })?;
+                                    if contour_value.is_null() {
+                                        current_output = NodeOutput::from_vector(Vec::new());
+                                        continue;
+                                    }
+                                    let contours =
+                                        parse_contour_list(&contour_value).map_err(|e| {
+                                            format!("LabelReduce contour parsing failed: {e}")
+                                        })?;
+                                    let scores = score_contours_on_buffer(
+                                        &current_buf,
+                                        &contours,
+                                        *reduction,
+                                        *region_mode,
+                                    )?;
+                                    current_output = NodeOutput::from_vector(scores);
+                                }
+                                Role::ChannelMerge { others } => {
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf = Self::step_buffer_operand(
+                                        &current_output,
+                                        graph_step.as_ref(),
+                                        "ChannelMerge",
+                                    )?;
+                                    // Owned first: `step_buffer_operand` hands back an
+                                    // `Arc`, which must outlive the borrow the merge
+                                    // call takes.
+                                    let mut owned: Vec<Arc<ViewBuffer>> = vec![current_buf];
+                                    for other_id in others {
+                                        let Some(other_output) = self.operand(
+                                            node_outputs,
+                                            &other_id.0,
+                                            "ChannelMerge",
+                                        )?
+                                        else {
+                                            continue 'nodes;
+                                        };
+                                        // Same contract read as the current operand
+                                        // above -- ChannelMerge declares `[Buffer]`, so
+                                        // this refuses a vector, but it refuses it by
+                                        // reading the contract rather than restating it.
+                                        owned.push(Self::step_buffer_operand(
+                                            other_output,
+                                            graph_step.as_ref(),
+                                            &format!("ChannelMerge operand '{}'", other_id.0),
+                                        )?);
+                                    }
+                                    let all_bufs: Vec<&ViewBuffer> =
+                                        owned.iter().map(|b| b.as_ref()).collect();
+                                    view_buffer::validate_channel_merge(
+                                        &all_bufs.iter().map(|b| b.shape()).collect::<Vec<_>>(),
+                                        &all_bufs.iter().map(|b| b.dtype()).collect::<Vec<_>>(),
+                                    )
+                                    .map_err(|e| format!("channel_merge: {e}"))?;
+                                    let result = view_buffer::apply_channel_merge(&all_bufs);
+                                    current_output = NodeOutput::from_buffer(result);
+                                }
+                            },
                             // Fusable single-buffer engine ops accumulate and
                             // run as one ViewExpr chain at the next flush.
                             GraphStep::Buffer(dto) => {
@@ -1183,27 +1070,19 @@ impl CompiledGraph {
         Ok(())
     }
 
-    /// Resolve each `"auto"` source node's concrete decode path once per batch.
+    /// Route each `"auto"` source node to its concrete source once per batch
+    /// ([`Source::route`]).
     ///
-    /// The decode path depends only on the bound input column's dtype, which is
-    /// constant across rows, so resolving here (rather than per row) avoids
+    /// The route depends only on the bound input column's dtype, which is
+    /// constant across rows, so taking it here (rather than per row) avoids
     /// repeated work — including the O(n) magic-byte scan for `Binary` columns.
     /// Errors are stored per node and re-surfaced at their row so the batch's
-    /// row-error policy still applies. Aligned with `plan`; non-auto nodes are
-    /// `None`.
-    fn resolve_auto_source_formats(
-        &self,
-        inputs: &[Series],
-    ) -> Vec<Option<Result<SourceFormat, String>>> {
+    /// row-error policy still applies. Aligned with `plan`; concrete sources
+    /// are `None`.
+    fn route_auto_sources(&self, inputs: &[Series]) -> Vec<Option<Result<Source, String>>> {
         self.plan
             .iter()
-            .map(|np| {
-                if np.format != SourceFormat::Auto {
-                    return None;
-                }
-                let series = inputs.get(np.column?)?;
-                Some(resolve_auto_format(series))
-            })
+            .map(|np| np.source.route(inputs.get(np.column?)?))
             .collect()
     }
 
@@ -1223,7 +1102,7 @@ impl CompiledGraph {
         self.plan
             .iter()
             .map(|np| {
-                if !matches!(np.format, SourceFormat::FilePath | SourceFormat::Auto) {
+                if !matches!(np.source, Source::FilePath { .. } | Source::Auto { .. }) {
                     return None;
                 }
                 let ca = inputs.get(np.column?)?.str().ok()?;
@@ -1234,74 +1113,6 @@ impl CompiledGraph {
                 ))
             })
             .collect()
-    }
-}
-
-/// Source formats the executor can decode. Kept in sync with the row loop's
-/// source dispatch through [`SourceFormat`].
-///
-/// The other half of this vocabulary is Python's `SourceFormat` enum
-/// (`python/polars_cv/_types.py`), which is what a user actually names. The two
-/// must be equal — a Python-only format builds a graph this list rejects, a
-/// Rust-only one is a decode path nothing can reach — and
-/// `test_source_formats_match_the_rust_vocabulary` pins them by reading this
-/// declaration, so keep it a plain `&[&str]` literal.
-const KNOWN_SOURCE_FORMATS: &[&str] = &[
-    "array",
-    "auto",
-    "blob",
-    "contour",
-    "file_path",
-    "image_bytes",
-    "list",
-    "raw",
-];
-
-/// A source's decode path: its wire name from [`KNOWN_SOURCE_FORMATS`], parsed
-/// once at compile time (and, for `Auto`, resolved once per batch) so the row
-/// loop dispatches on a value instead of comparing strings (CR-37).
-///
-/// `source_format_names_match_the_vocabulary` holds [`SourceFormat::ALL`] and
-/// the literal list equal, so neither can gain a name the other lacks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SourceFormat {
-    Array,
-    Auto,
-    Blob,
-    Contour,
-    FilePath,
-    ImageBytes,
-    List,
-    Raw,
-}
-
-impl SourceFormat {
-    const ALL: [SourceFormat; 8] = [
-        SourceFormat::Array,
-        SourceFormat::Auto,
-        SourceFormat::Blob,
-        SourceFormat::Contour,
-        SourceFormat::FilePath,
-        SourceFormat::ImageBytes,
-        SourceFormat::List,
-        SourceFormat::Raw,
-    ];
-
-    fn name(self) -> &'static str {
-        match self {
-            SourceFormat::Array => "array",
-            SourceFormat::Auto => "auto",
-            SourceFormat::Blob => "blob",
-            SourceFormat::Contour => "contour",
-            SourceFormat::FilePath => "file_path",
-            SourceFormat::ImageBytes => "image_bytes",
-            SourceFormat::List => "list",
-            SourceFormat::Raw => "raw",
-        }
-    }
-
-    fn parse(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|f| f.name() == name)
     }
 }
 
@@ -1351,67 +1162,120 @@ struct CachedPlan {
     steps: Vec<view_buffer::execution::PlanStep>,
 }
 
+/// Distinct source layouts remembered per segment. A column whose rows keep
+/// changing shape stops being cached once this many are held, so a call's
+/// cache stays small; such segments plan per row, as they did before CR-37.
+const PLAN_CACHE_LAYOUTS: usize = 16;
+
+/// The plans of every static buffer-op segment for one call, shared by the
+/// row ranges that call runs in parallel: a segment is planned once per
+/// distinct source layout per call (CR-37), whichever thread meets it first.
+/// Per call, so nothing data-derived outlives it.
+struct PlanCache {
+    /// Per node, per segment start: the layouts planned so far.
+    slots: Vec<Vec<RwLock<Vec<CachedPlan>>>>,
+}
+
+impl PlanCache {
+    fn new(plan: &[NodePlan]) -> Self {
+        PlanCache {
+            slots: plan
+                .iter()
+                .map(|np| np.resolvers.iter().map(|_| RwLock::default()).collect())
+                .collect(),
+        }
+    }
+}
+
 /// Plan (or replay the cached plan of) one op segment and execute it.
+/// Returns the output and whether the segment had to be planned.
 fn run_segment(
     output: NodeOutput,
     ops: &[&ViewDto],
-    cache: Option<&mut Option<CachedPlan>>,
+    cache: Option<&RwLock<Vec<CachedPlan>>>,
     cfg: &view_buffer::OptConfig,
-) -> Result<NodeOutput, String> {
+) -> Result<(NodeOutput, bool), String> {
     if ops.is_empty() {
-        return Ok(output);
+        return Ok((output, false));
     }
     let buf = output
         .as_buffer()
         .ok_or_else(|| format!("Expected Buffer for pending ops, got {:?}", output.domain()))?;
     let source = (**buf).clone();
-    let matches = |c: &CachedPlan| {
-        c.dtype == source.dtype()
-            && c.shape == source.shape()
-            && c.strides == source.strides_bytes()
+    let key = (
+        source.dtype(),
+        source.shape().to_vec(),
+        source.strides_bytes().to_vec(),
+    );
+    let matches = |c: &CachedPlan| c.dtype == key.0 && c.shape == key.1 && c.strides == key.2;
+    let execute = |source: ViewBuffer, steps| {
+        let plan = view_buffer::execution::ExecutionPlan { source, steps };
+        NodeOutput::from_buffer(plan.execute())
     };
-    let result = match cache {
-        Some(Some(cached)) if matches(cached) => view_buffer::execution::ExecutionPlan {
-            source,
-            steps: cached.steps.clone(),
+    let plan = |source: ViewBuffer| -> Result<Vec<view_buffer::execution::PlanStep>, String> {
+        let mut expr = ViewExpr::new_source(source);
+        for op in ops {
+            // The validated entry point: an op that cannot run on the
+            // shape reaching it is this row's error, not a kernel panic.
+            expr = expr
+                .try_apply_op((*op).clone())
+                .map_err(|e| format!("{}: {e}", op.as_op().name()))?;
         }
-        .execute(),
-        slot => {
-            let key = (
-                source.dtype(),
-                source.shape().to_vec(),
-                source.strides_bytes().to_vec(),
-            );
-            let mut expr = ViewExpr::new_source(source);
-            for op in ops {
-                // The validated entry point: an op that cannot run on the
-                // shape reaching it is this row's error, not a kernel panic.
-                expr = expr
-                    .try_apply_op((*op).clone())
-                    .map_err(|e| format!("{}: {e}", op.as_op().name()))?;
-            }
-            #[cfg(test)]
-            PLAN_BUILDS.with(|n| n.set(n.get() + 1));
-            let plan = expr.plan_with(cfg);
-            if let Some(slot) = slot {
-                *slot = Some(CachedPlan {
-                    dtype: key.0,
-                    shape: key.1,
-                    strides: key.2,
-                    steps: plan.steps.clone(),
-                });
-            }
-            plan.execute()
-        }
+        Ok(expr.plan_with(cfg).steps)
     };
-    Ok(NodeOutput::from_buffer(result))
+    let cached = |plans: &[CachedPlan]| plans.iter().find(|p| matches(p)).map(|p| p.steps.clone());
+
+    let Some(cache) = cache else {
+        let steps = plan(source.clone())?;
+        return Ok((execute(source, steps), true));
+    };
+    if let Some(steps) = cached(&cache.read().unwrap()) {
+        return Ok((execute(source, steps), false));
+    }
+    // Planned under the write lock: a range that misses on the same layout
+    // meanwhile waits here and then finds this plan, rather than planning
+    // its own. Only planning is serialised; execution happens after release.
+    let mut plans = cache.write().unwrap();
+    if let Some(steps) = cached(&plans) {
+        drop(plans);
+        return Ok((execute(source, steps), false));
+    }
+    let steps = plan(source.clone())?;
+    if plans.len() < PLAN_CACHE_LAYOUTS {
+        plans.push(CachedPlan {
+            dtype: key.0,
+            shape: key.1.clone(),
+            strides: key.2.clone(),
+            steps: steps.clone(),
+        });
+    }
+    drop(plans);
+    Ok((execute(source, steps), true))
 }
 
-#[cfg(test)]
-thread_local! {
-    /// How many times a buffer-op segment was planned (test instrumentation).
-    static PLAN_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+/// Contiguous row ranges covering `0..len`, for `threads` workers.
+///
+/// A few ranges per thread so an expensive stretch of rows does not leave
+/// the other threads idle; one range when there is nothing to split.
+fn row_ranges(len: usize, threads: usize) -> Vec<Range<usize>> {
+    const RANGES_PER_THREAD: usize = 4;
+    let count = (threads * RANGES_PER_THREAD).clamp(1, len.max(1));
+    let (base, extra) = (len / count, len % count);
+    let mut start = 0;
+    (0..count)
+        .map(|i| {
+            let end = start + base + usize::from(i < extra);
+            let range = start..end;
+            start = end;
+            range
+        })
+        .collect()
 }
+
+/// One row range's rows (one vector per resolved output) and error messages.
+type RangeRows = (Vec<Vec<RowResult>>, Vec<Option<String>>);
+/// A row range's result, with its failure already in `PolarsError` form.
+type RangeOutcome = PolarsResult<RangeRows>;
 
 /// The message a caught panic carried.
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
@@ -1424,37 +1288,111 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-/// Resolve an `"auto"` source format to a concrete decode path from the input
-/// column's Polars dtype. The dtype is constant across rows, so the resolution
-/// is stable per node. `Binary` columns are sniffed for the VIEW protocol magic
-/// to tell self-describing blobs apart from encoded image bytes (the image
-/// decoder auto-detects PNG/JPEG/TIFF internally, so `"image_bytes"` covers all
-/// non-VIEW binary).
-fn resolve_auto_format(series: &Series) -> Result<SourceFormat, String> {
-    match series.dtype() {
-        DataType::String => Ok(SourceFormat::FilePath),
-        DataType::List(_) => Ok(SourceFormat::List),
-        DataType::Array(_, _) => Ok(SourceFormat::Array),
-        DataType::Binary => {
-            // Inspect the first present row: blobs carry the magic, images don't.
-            if let Ok(ca) = series.binary() {
-                for i in 0..ca.len() {
-                    if let Some(bytes) = ca.get(i) {
-                        return if bytes.starts_with(&view_buffer::protocol::MAGIC_BYTES) {
-                            Ok(SourceFormat::Blob)
-                        } else {
-                            Ok(SourceFormat::ImageBytes)
-                        };
-                    }
+/// Decode row `row` of a root node's column through its concrete `source`
+/// (an `auto` source is routed per batch before it gets here).
+fn decode_source_row(
+    np: &NodePlan,
+    source: &Source,
+    series: &Series,
+    row: usize,
+    prefetched: Option<&crate::fetch::FetchedBatch>,
+) -> Result<Option<NodeOutput>, String> {
+    if series.dtype() == &DataType::Null {
+        return Ok(None);
+    }
+    let binary = || {
+        series.binary().map_err(|_| {
+            format!(
+                "Expected Binary column for node '{}', got {:?}",
+                np.id,
+                series.dtype()
+            )
+        })
+    };
+    let buffer = |buf| Some(NodeOutput::from_buffer(buf));
+    match source {
+        // The column's contour set; a mask is the `rasterize` op that
+        // follows, if any.
+        Source::Contour { .. } => match series.get(row) {
+            Ok(value) if !value.is_null() => crate::contour::parse_contour_set(&value)
+                .map(|set| Some(NodeOutput::from_contours(set)))
+                .map_err(|e| format!("Contour decode error: {e}")),
+            _ => Ok(None),
+        },
+        // `file_path` is fetch + decode: `crate::fetch` reads the bytes the
+        // path names (applying its `PathPolicy` sandbox), then they decode as
+        // image bytes.
+        Source::FilePath { .. } => {
+            let ca = series.str().map_err(|_| {
+                format!(
+                    "Expected String column for file_path source '{}', got {:?}",
+                    np.id,
+                    series.dtype()
+                )
+            })?;
+            let Some(path) = ca.get(row) else {
+                return Ok(None);
+            };
+            // Stage 1: bytes. Remote paths were fetched concurrently before
+            // the row loop; local files are read inline.
+            let empty;
+            let batch = match prefetched {
+                Some(b) => b,
+                None => {
+                    empty = crate::fetch::FetchedBatch::empty();
+                    &empty
                 }
-            }
-            // All-null column: default to image bytes (decode yields null rows).
-            Ok(SourceFormat::ImageBytes)
+            };
+            let bytes =
+                crate::fetch::row_bytes(batch, path, np.cloud_options.as_ref(), &np.path_policy)?;
+            // Stage 2: the contents decode like image bytes.
+            decode_image_bytes(&bytes, source)
+                .map(buffer)
+                .map_err(|e| format!("Decode error for file '{path}': {e}"))
         }
-        other => Err(format!(
-            "auto source cannot infer a decode path for column dtype {other:?}; \
-             specify an explicit source format (e.g. source(\"image_bytes\"), \
-             source(\"list\"), source(\"blob\"))."
+        Source::List { .. } | Source::Array { .. } => {
+            decode_list_or_array_source(series, row, source.dtype(), source.require_contiguous())
+                .map(|buf| buf.map(NodeOutput::from_buffer))
+                .map_err(|e| format!("List/Array decode error: {e}"))
+        }
+        // Raw bytes take the declared dtype.
+        Source::Raw { dtype, .. } => {
+            let Some((bytes, offset, len)) = get_binary_row_buffer(binary()?, row) else {
+                return Ok(None);
+            };
+            decode_binary_zero_copy(bytes, offset, len, Some(dtype.get()))
+                .map(buffer)
+                .map_err(|e| format!("Zero-copy decode error: {e}"))
+        }
+        // A blob carries its own dtype, which a declared one must match: the
+        // planner (and identity elimination) takes the declaration as fact.
+        Source::Blob { dtype, .. } => {
+            let Some((bytes, offset, len)) = get_binary_row_buffer(binary()?, row) else {
+                return Ok(None);
+            };
+            let buf = decode_binary_zero_copy(bytes, offset, len, None)
+                .map_err(|e| format!("Zero-copy decode error: {e}"))?;
+            match dtype.map(|d| d.get()) {
+                Some(declared) if declared != buf.dtype() => Err(format!(
+                    "the blob holds {} elements, but the source declares dtype=\"{}\". A \
+                     blob carries its own dtype: drop the declaration, correct it, or \
+                     .cast(\"{}\") after the source.",
+                    buf.dtype().short_name(),
+                    declared.short_name(),
+                    declared.short_name()
+                )),
+                _ => Ok(buffer(buf)),
+            }
+        }
+        Source::ImageBytes { .. } => match binary()?.get(row) {
+            Some(bytes) => decode_image_bytes(bytes, source)
+                .map(buffer)
+                .map_err(|e| format!("Decode error: {e}")),
+            None => Ok(None),
+        },
+        Source::Auto { .. } => Err(format!(
+            "internal: auto source '{}' reached decoding unrouted",
+            np.id
         )),
     }
 }
@@ -1467,12 +1405,6 @@ fn resolve_auto_format(series: &Series) -> Result<SourceFormat, String> {
 /// errors. Compile-time rejection gives one clear error instead.
 fn validate_graph_structure(graph: &UnifiedGraph) -> PolarsResult<()> {
     for (node_id, node) in &graph.nodes {
-        if SourceFormat::parse(&node.source.format).is_none() {
-            polars_bail!(ComputeError:
-                "Node '{}': unknown source format '{}' (expected one of {:?})",
-                node_id, node.source.format, KNOWN_SOURCE_FORMATS
-            );
-        }
         if !graph.column_bindings.contains_key(node_id) && node.upstream.is_empty() {
             polars_bail!(ComputeError:
                 "Node '{}' has neither an input column binding nor an upstream node",
@@ -1495,316 +1427,125 @@ fn validate_graph_structure(graph: &UnifiedGraph) -> PolarsResult<()> {
                 alias, spec.node
             );
         }
-        match spec.expected_encoding.as_deref() {
-            None | Some("histogram_buckets") => {}
-            Some(other) => polars_bail!(ComputeError:
-                "Output '{}': unknown expected_encoding '{}' (expected 'histogram_buckets')",
-                alias, other
-            ),
-        }
     }
     Ok(())
 }
 
-/// Bind every expression parameter in the graph to its input slot.
+/// Prepare every parameter in the graph for execution, returning how many
+/// plugin inputs the graph reads (one past the highest slot or column binding).
 ///
-/// `label_reduce`'s `contours` param is deliberately left as `Expr` — the
-/// column *name* travels through the view-buffer DTO and is mapped to a slot
-/// by the executor (see the `LabelReduce` arm in `execute_rows`).
-fn bind_graph_params(
-    graph: &mut UnifiedGraph,
-    name_to_slot: &HashMap<String, usize>,
-) -> PolarsResult<()> {
+/// Slots arrive already positional, so nothing is bound by name; this only
+/// finds the highest one.
+fn prepare_graph_params(graph: &mut UnifiedGraph) -> PolarsResult<usize> {
+    let mut inputs = graph
+        .column_bindings
+        .values()
+        .map(|&idx| idx + 1)
+        .max()
+        .unwrap_or(1);
     for node in graph.nodes.values_mut() {
-        if let Some(w) = node.source.width.as_mut() {
-            bind_param(w, name_to_slot)?;
-        }
-        if let Some(h) = node.source.height.as_mut() {
-            bind_param(h, name_to_slot)?;
-        }
-        if let Some(f) = node.source.fill_value.as_mut() {
-            bind_param(f, name_to_slot)?;
-        }
-        if let Some(b) = node.source.background.as_mut() {
-            bind_param(b, name_to_slot)?;
-        }
-        for op in node.ops.iter_mut() {
-            let keep_named = op.op == "label_reduce";
-            for (pname, p) in op.params.iter_mut() {
-                if keep_named && pname == "contours" {
-                    continue;
-                }
-                bind_param(p, name_to_slot)?;
-            }
+        node.source
+            .visit_slots(&mut |_, slot| inputs = inputs.max(slot + 1));
+        for op in &node.ops {
+            inputs = inputs.max(op.min_inputs());
         }
     }
-    Ok(())
+    Ok(inputs)
 }
 
-/// Bind one parameter for execution: an `Expr` becomes its input `Slot`, and a
-/// nested param list becomes a pre-parsed, bound `List`. Scalar literals and
-/// plain scalar arrays are left untouched.
+/// Plan every node of `graph` and return each output's spec, sorted by alias.
 ///
-/// A `Literal` whose JSON value is an array of serialized `ParamValue`s (a
-/// `warp_affine` matrix, a `reshape` shape, a `convolve2d` kernel, `normalize`
-/// mean/std, a `channel_swap` order) is parsed once here into a
-/// [`ParamValue::List`] with each element bound — so per-row resolution reads the
-/// already-bound elements directly instead of re-deserializing the JSON every
-/// row. Plain literal arrays (flip/transpose axes, histogram bin edges) are
-/// left as-is.
-fn bind_param(p: &mut ParamValue, name_to_slot: &HashMap<String, usize>) -> PolarsResult<()> {
-    match p {
-        ParamValue::Expr { col, .. } => {
-            let name = col.as_deref().ok_or_else(
-                || polars_err!(ComputeError: "Expression parameter missing column name"),
-            )?;
-            let idx = name_to_slot.get(name).ok_or_else(|| {
-                polars_err!(ComputeError:
-                    "Column '{}' not found in expression inputs", name
-                )
-            })?;
-            *p = ParamValue::Slot { idx: *idx };
-        }
-        ParamValue::Literal { value } => {
-            // A nested param list serializes its elements as ParamValue dicts
-            // (a `type` tag). Detect that shape (not a plain scalar array) and
-            // hoist it into a pre-parsed, bound `List`.
-            let is_nested_param_list = value.as_array().is_some_and(|arr| {
-                arr.iter().any(|e| e.get("type").is_some())
-                    && arr.iter().all(|e| {
-                        e.get("type")
-                            .and_then(|t| t.as_str())
-                            .is_some_and(|t| matches!(t, "literal" | "expr" | "slot"))
-                    })
-            });
-            if is_nested_param_list {
-                let arr = value.as_array().expect("checked is_array above");
-                let mut items: Vec<ParamValue> = arr
-                    .iter()
-                    .map(|elem| {
-                        serde_json::from_value(elem.clone())
-                            .map_err(|e| polars_err!(ComputeError: "invalid nested param: {e}"))
-                    })
-                    .collect::<PolarsResult<_>>()?;
-                for item in items.iter_mut() {
-                    bind_param(item, name_to_slot)?;
-                }
-                *p = ParamValue::List(items);
-            }
-        }
-        ParamValue::Slot { .. } | ParamValue::List(_) => {}
-    }
-    Ok(())
-}
-
-/// Resolve `"auto"` dtype and missing ndim on the graph's output specs from
-/// the first input column's type, returning per-call clones sorted by alias.
+/// The one planner: each node starts from its source's state (a root) or its
+/// primary upstream's final state, and each op is applied by [`plan::step`] —
+/// the function the Python builder calls per append — with the states planned
+/// so far as the nodes an op may read by id. With `input_dtypes`, a root whose
+/// source resolves its element type or rank from the input column
+/// ([`Source::resolves_from_column`]) starts from what that column reveals.
 ///
-/// This is the single implementation shared by the planning-time
-/// (`unified_output_dtype`) and execution-time entry points, so the inferred
-/// schema cannot diverge between the two. It must stay per-call (never cached):
-/// the resolution depends on the input column's dtype.
-///
-/// Only the leaf type of List/Array sources is meaningful for dtype: for
-/// Binary/String (image/file) sources the column type does not reflect the
-/// decoded buffer dtype, so `"auto"` is left unresolved.
-/// Walk to the root of *node_id*'s lineage and return the input column it reads.
-///
-/// A graph can have more than one root — `merge_pipe` and the binary ops join
-/// two `pl.col()` lineages into one `vb_graph` call — and each output belongs
-/// to exactly one of them. Resolving every output against the *first* input
-/// column instead assigned one branch's element type to the other: two
-/// list columns of different leaf dtypes produced a struct whose second field
-/// was planned from the first field's column.
-fn root_column_for(graph: &UnifiedGraph, node_id: &str) -> Option<usize> {
-    let node = graph.nodes.get(node_id)?;
-    match node.upstream.first() {
-        Some(upstream) => root_column_for(graph, upstream),
-        None => graph.column_bindings.get(node_id).copied(),
-    }
-}
-
+/// Shared by the schema (`unified_output_dtype`) and execution entry points,
+/// so the published schema and the executed one cannot diverge. Per call,
+/// never cached: the column refinement depends on the input dtypes.
 pub(crate) fn resolved_output_specs(
     graph: &UnifiedGraph,
     input_dtypes: &[DataType],
-) -> Vec<(String, OutputSpec)> {
+) -> PolarsResult<Vec<(String, OutputSpec)>> {
+    let mut states = crate::plan::Refs::new();
+    for node_id in graph.topological_order() {
+        let node = &graph.nodes[node_id];
+        let mut state = match graph.column_bindings.get(node_id) {
+            Some(&column) => {
+                let state = crate::plan::source_state(&node.source);
+                match input_dtypes.get(column) {
+                    Some(dt) if node.source.resolves_from_column() => refine_by_column(state, dt),
+                    _ => state,
+                }
+            }
+            None => states[&node.upstream[0]].clone(),
+        };
+        for op in &node.ops {
+            state = crate::plan::step(op, &state, &states)
+                .map_err(|e| polars_err!(ComputeError: "node '{}': {}", node_id, e))?;
+        }
+        states.insert(node_id.clone(), state);
+    }
+
     let mut specs: Vec<(String, OutputSpec)> = graph
         .outputs
         .iter()
-        .map(|(alias, spec)| (alias.clone(), spec.clone()))
-        .collect();
+        .map(|(alias, out)| {
+            let planned = states.get(&out.node).ok_or_else(|| {
+                polars_err!(ComputeError: "output '{}' names unknown node '{}'", alias, out.node)
+            })?;
+            Ok((
+                alias.clone(),
+                OutputSpec::planned(out, planned, graph.ends_in_histogram_buckets(&out.node)),
+            ))
+        })
+        .collect::<PolarsResult<_>>()?;
     specs.sort_by(|a, b| a.0.cmp(&b.0));
-
-    for (_, spec) in specs.iter_mut() {
-        // Each output is resolved against the column its own lineage reads.
-        let Some(dt) = root_column_for(graph, &spec.node)
-            .and_then(|idx| input_dtypes.get(idx))
-            .or_else(|| input_dtypes.first())
-        else {
-            continue;
-        };
-        resolve_one_output_spec(graph, spec, dt);
-    }
-    specs
+    Ok(specs)
 }
 
-/// Fill in one output's `"auto"` dtype and unknown rank from *dt*, the Polars
-/// type of the column its lineage reads.
-fn resolve_one_output_spec(graph: &UnifiedGraph, spec: &mut OutputSpec, dt: &DataType) {
-    let (leaf_dtype, ndim) = peel_nesting(dt);
-    // Polars leaf type → our dtype comes from `decode::dtype_from_polars_leaf`
-    // (the one such mapping in this crate); the *name* comes from
-    // `DType::short_name` (the one place a dtype is spelled). Neither is
-    // restated here.
-    let inferred_dtype_str = dtype_from_polars_leaf(&leaf_dtype).map(|d| d.short_name());
-
-    {
-        if !PlannedDType::parse(&spec.expected_dtype).is_some_and(|d| d.is_concrete()) {
-            // The *source* element type, as far as the column reveals it. A
-            // Binary/String column says nothing (a PNG decodes u8 or u16, a
-            // TIFF f32 or f64); a list/array column's leaf type is meaningful
-            // when it maps to a buffer element type at all.
-            let source_dtype = match &leaf_dtype {
-                DataType::Binary | DataType::String | DataType::Null => PlannedDType::Unknown,
-                _ => inferred_dtype_str
-                    .and_then(PlannedDType::parse)
-                    .unwrap_or(PlannedDType::Unknown),
-            };
-            // Fold the ops' dtype rules over it, exactly as the rank is folded
-            // below. Assigning the *column's* type directly was wrong for any
-            // lineage that changes the dtype: `source("list")` over a u8 column
-            // followed by `scale()` was planned u8 and executed f32. Folding
-            // also recovers information from an unknown source — every rule but
-            // PreserveInput either fixes the dtype or pins it to a float.
-            let folded =
-                fold_output_dtype(graph, &spec.node, source_dtype).unwrap_or(PlannedDType::Unknown);
-            if folded != PlannedDType::Unknown {
-                spec.expected_dtype = folded.as_str().to_string();
+/// A root's state with what its input column reveals: a `List`/`Array`
+/// column's nesting depth is the rank, and its leaf type (when it maps to a
+/// buffer element) the dtype. A binary or string column reveals neither — a
+/// PNG decodes u8 or u16 — so its state is left as the source planned it.
+fn refine_by_column(mut state: State, column: &DataType) -> State {
+    let (leaf, sizes) = peel_nesting(column);
+    if sizes.is_empty() {
+        return state;
+    }
+    if state.ndim.is_none() {
+        state.ndim = Some(sizes.len());
+    }
+    // Every size the column's type fixes (an `Array` level) is known; a
+    // `List` level's varies per row. Known facts are planned, never dropped.
+    if state.ndim == Some(sizes.len()) {
+        for (dim, size) in state.dims.iter_mut().zip(&sizes) {
+            if dim.is_none() {
+                *dim = *size;
             }
         }
-        // Output rank was left unknown by the Python planner (source rank was
-        // not known at build time — a list/array column). The true source rank
-        // is the input nesting depth; derive the OUTPUT rank by folding the
-        // output node's op rank rules from it, rather than assigning the input
-        // depth directly (which would be wrong after a rank-changing op such as
-        // channel_select). Reuses the same OutputRankRule authority as op_schema.
-        if spec.expected_ndim.is_none() && ndim > 0 {
-            spec.expected_ndim = fold_output_rank(graph, &spec.node, ndim);
+    }
+    if !state.dtype.is_concrete() {
+        if let Some(dtype) = dtype_from_polars_leaf(&leaf) {
+            state.dtype = PlannedDType::Known(dtype);
         }
     }
+    state
 }
 
-/// Re-serialize one compiled param into a form `resolve_op_from_json` accepts.
-///
-/// The ops walked by [`fold_output_rank`] have already been through
-/// [`bind_graph_params`], so their expression params are `Slot`s and their
-/// nested lists are `List`s — both `#[serde(skip)]`, and therefore *dropped* by
-/// a plain `serde_json::to_string`. The op would then fail to resolve for a
-/// missing parameter, which the caller's `.ok()?` silently turns into "rank
-/// unknown" — collapsing a planned `List(List(List(f32)))` to `List(f32)` and
-/// desyncing the lazy schema from the produced data.
-///
-/// A `Slot` goes back to the wire `Expr` form rather than to a literal, so the
-/// probe context binds it and substitutes defaults for dynamic enums; a literal
-/// integer would fail an enum lookup. None of these values can affect the
-/// result: a rank rule is structural and never reads a parameter's value.
-fn param_probe_json(param: &ParamValue) -> serde_json::Value {
-    match param {
-        ParamValue::Literal { value } => serde_json::json!({"type": "literal", "value": value}),
-        ParamValue::Expr { col } => serde_json::json!({"type": "expr", "col": col}),
-        ParamValue::Slot { .. } => serde_json::json!({"type": "expr", "col": "__probe__"}),
-        ParamValue::List(items) => serde_json::json!({
-            "type": "literal",
-            "value": items.iter().map(param_probe_json).collect::<Vec<_>>(),
-        }),
-    }
-}
-
-/// Render a compiled [`OpSpec`] as introspectable JSON. See [`param_probe_json`].
-fn op_probe_json(op: &OpSpec) -> String {
-    let mut map = serde_json::Map::new();
-    map.insert("op".into(), serde_json::Value::String(op.op.clone()));
-    for (name, param) in &op.params {
-        map.insert(name.clone(), param_probe_json(param));
-    }
-    serde_json::Value::Object(map).to_string()
-}
-
-/// Derive a node's output rank by folding each op's `OutputRankRule` from a
-/// concrete source rank. Walks the primary upstream lineage to the root source
-/// node (whose input rank is the given `source_rank`). Returns `None` if any op
-/// declares an `Unknown` rank rule — the rank genuinely stays unknown.
-fn fold_output_rank(graph: &UnifiedGraph, node_id: &str, source_rank: usize) -> Option<usize> {
-    use view_buffer::ops::OutputRankRule;
-
-    let node = graph.nodes.get(node_id)?;
-    // The rank entering this node's ops: the primary upstream's output rank, or
-    // the source rank for a root node. Multi-input steps (binary/merge) pin
-    // rank via a Fixed rule, so following the first upstream is sufficient for
-    // the pure Preserve/ReduceByOne lineages that reach this unknown-rank path.
-    let mut rank = match node.upstream.first() {
-        Some(up) => fold_output_rank(graph, up, source_rank)?,
-        None => source_rank,
+/// Peel List/Array nesting: the leaf dtype, and each level's size, outermost
+/// first — `Some(n)` for a fixed-size `Array`, `None` for a `List`.
+fn peel_nesting(dt: &DataType) -> (DataType, Vec<Option<usize>>) {
+    let (inner, size) = match dt {
+        DataType::List(inner) => (inner, None),
+        DataType::Array(inner, n) => (inner, Some(*n)),
+        other => return (other.clone(), Vec::new()),
     };
-    for op in &node.ops {
-        let step = crate::resolve_op_from_json(&op_probe_json(op)).ok()?;
-        rank = match step.output_rank_rule() {
-            OutputRankRule::PreserveRank => rank,
-            OutputRankRule::ReduceByOne => rank.saturating_sub(1).max(1),
-            OutputRankRule::Fixed(n) => n,
-            OutputRankRule::Unknown => return None,
-        };
-    }
-    Some(rank)
-}
-
-/// Fold the ops' dtype rules from *source_dtype* to this node's output.
-///
-/// The dtype twin of [`fold_output_rank`], and it exists for the same reason:
-/// the *source's* element type is not the *output's* element type once an op
-/// changes it. `resolved_output_specs` used to assign the input column's leaf
-/// type straight to the output, so `source("list")` over a `List(UInt8)` column
-/// followed by `scale()` published `List(UInt8)` for data that arrives f32.
-///
-/// Returns `None` if any op in the lineage cannot be resolved, which the caller
-/// treats as "unknown" — the same conservative outcome as before.
-fn fold_output_dtype(
-    graph: &UnifiedGraph,
-    node_id: &str,
-    source_dtype: PlannedDType,
-) -> Option<PlannedDType> {
-    let node = graph.nodes.get(node_id)?;
-    // As in `fold_output_rank`, the primary upstream carries the lineage.
-    // Multi-input steps whose dtype genuinely depends on both operands (the
-    // binary ops) declare `PreserveInput` and are resolved by the Python
-    // planner's `binary_output_dtype`, which has both sides; reaching here with
-    // one still-unknown operand simply yields unknown.
-    let mut dtype = match node.upstream.first() {
-        Some(up) => fold_output_dtype(graph, up, source_dtype)?,
-        None => source_dtype,
-    };
-    for op in &node.ops {
-        let step = crate::resolve_op_from_json(&op_probe_json(op)).ok()?;
-        // `out_dtype` overrides ride on the op's own params, which
-        // `op_probe_json` preserves, so the step's rule already reflects them.
-        dtype = step.output_dtype_rule().resolve_planned(dtype);
-    }
-    Some(dtype)
-}
-
-/// Recursively peel List/Array nesting to find the leaf dtype and depth.
-fn peel_nesting(dt: &DataType) -> (DataType, usize) {
-    match dt {
-        DataType::List(inner) => {
-            let (leaf, depth) = peel_nesting(inner);
-            (leaf, depth + 1)
-        }
-        DataType::Array(inner, _) => {
-            let (leaf, depth) = peel_nesting(inner);
-            (leaf, depth + 1)
-        }
-        other => (other.clone(), 0),
-    }
+    let (leaf, mut sizes) = peel_nesting(inner);
+    sizes.insert(0, size);
+    (leaf, sizes)
 }
 
 // ============================================================================
@@ -1823,11 +1564,10 @@ fn graph_cache() -> &'static Mutex<CacheEntries> {
     CACHE.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-fn cache_key_hash(graph_json: &str, expr_column_names: &[String]) -> u64 {
+fn cache_key_hash(graph_json: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     graph_json.hash(&mut hasher);
-    expr_column_names.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -1836,19 +1576,15 @@ fn cache_key_hash(graph_json: &str, expr_column_names: &[String]) -> u64 {
 /// A hit requires both the hash **and** full equality of the kwargs against
 /// the stored copy — the hash alone is never trusted. Most-recently-used
 /// entries are kept at the front; the lock is never held during compilation.
-pub(crate) fn get_or_compile(
-    graph_json: &str,
-    expr_column_names: &[String],
-) -> PolarsResult<Arc<CompiledGraph>> {
-    let hash = cache_key_hash(graph_json, expr_column_names);
+pub(crate) fn get_or_compile(graph_json: &str) -> PolarsResult<Arc<CompiledGraph>> {
+    let hash = cache_key_hash(graph_json);
 
     {
         let mut cache = graph_cache().lock().unwrap();
-        if let Some(pos) = cache.iter().position(|(h, compiled)| {
-            *h == hash
-                && compiled.key.graph_json == graph_json
-                && compiled.key.expr_column_names == expr_column_names
-        }) {
+        if let Some(pos) = cache
+            .iter()
+            .position(|(h, compiled)| *h == hash && compiled.key.graph_json == graph_json)
+        {
             let entry = cache.remove(pos);
             let compiled = entry.1.clone();
             cache.insert(0, entry);
@@ -1858,17 +1594,57 @@ pub(crate) fn get_or_compile(
 
     // Compile outside the lock; concurrent misses may compile the same graph
     // twice, which is harmless (the result is deterministic).
-    let compiled = Arc::new(CompiledGraph::compile(graph_json, expr_column_names)?);
+    let compiled = Arc::new(CompiledGraph::compile(graph_json)?);
 
     let mut cache = graph_cache().lock().unwrap();
-    let already_present = cache.iter().any(|(h, c)| {
-        *h == hash && c.key.graph_json == graph_json && c.key.expr_column_names == expr_column_names
-    });
+    let already_present = cache
+        .iter()
+        .any(|(h, c)| *h == hash && c.key.graph_json == graph_json);
     if !already_present {
         cache.insert(0, (hash, compiled.clone()));
         cache.truncate(GRAPH_CACHE_CAP);
     }
     Ok(compiled)
+}
+
+/// Check one row's shape against an `assert_shape` declaration.
+///
+/// The declaration is the user's statement about their data, so a mismatch is
+/// reported as theirs: it names what they wrote and what arrived.
+fn check_declared_shape(
+    shape: &[usize],
+    rank: Option<usize>,
+    dims: &[Option<usize>; 3],
+) -> Result<(), String> {
+    let mismatch = rank.is_some_and(|r| r != shape.len())
+        || dims
+            .iter()
+            .enumerate()
+            .any(|(axis, d)| d.is_some_and(|d| shape.get(axis) != Some(&d)));
+    if !mismatch {
+        return Ok(());
+    }
+    let declared: Vec<String> = match rank {
+        Some(r) => vec![format!(
+            "dims=[{}]",
+            dims[..r.min(3)]
+                .iter()
+                .map(|d| d.map_or("None".to_string(), |d| d.to_string()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )],
+        None => crate::plan::DIM_NAMES
+            .iter()
+            .zip(dims)
+            .filter_map(|(name, d)| d.map(|d| format!("{name}={d}")))
+            .collect(),
+    };
+    Err(format!(
+        "assert_shape({}) does not hold: the data is {shape:?}. An assertion states \
+         what the data is; it does not change it. Correct the assertion, or drop it \
+         and let the planner infer the shape.",
+        declared.join(", ")
+    ))
 }
 
 /// Validate that a buffer output's produced schema matches the plan.
@@ -1893,22 +1669,21 @@ fn validate_output_schema(
         return Ok(());
     };
 
-    // Dtype: planned dtype must match the produced dtype.
-    if spec.expected_dtype != "auto" {
-        if let Ok(expected) = super::decode::parse_dtype_str(&spec.expected_dtype) {
-            let actual = buf.dtype();
-            if actual != expected {
-                return Err(format!(
-                    "Output '{alias}': planned dtype {expected:?} but execution \
-                     produced {actual:?}. This indicates a mismatch between the \
-                     planner's view-buffer contract and the Rust implementation."
-                ));
-            }
-        }
+    // Dtype: the produced dtype must be one the plan allows (the exact one
+    // when known, a float when only that is known).
+    let expected = spec.expected_dtype;
+    let actual = buf.dtype();
+    if !expected.candidates().is_empty() && !expected.candidates().contains(&actual) {
+        return Err(format!(
+            "Output '{alias}': planned dtype {} but execution produced {actual:?}. \
+             This indicates a mismatch between the planner's view-buffer contract and \
+             the Rust implementation.",
+            expected.as_str()
+        ));
     }
 
     // Rank + per-dim shape, for plain buffer outputs only.
-    if spec.expected_domain.as_str() == "buffer" && spec.expected_encoding.is_none() {
+    if spec.expected_domain == Domain::Buffer && !spec.histogram_buckets {
         let actual_shape = buf.shape();
         if let Some(expected_ndim) = spec.expected_ndim {
             if actual_shape.len() != expected_ndim {
@@ -1921,24 +1696,15 @@ fn validate_output_schema(
             }
         }
         if let Some(expected_shape) = spec.expected_shape.as_ref() {
+            // A user's `assert_shape` is checked where it was written, so a
+            // divergence here is always an op's contract disagreeing with its
+            // implementation.
             if actual_shape != expected_shape.as_slice() {
-                // Whose claim was it? An inferred shape that execution
-                // contradicts is a contract bug; an asserted one is the
-                // caller's, and saying otherwise sends them to the wrong file.
-                return Err(if spec.shape_asserted {
-                    format!(
-                        "Output '{alias}': assert_shape() declared {expected_shape:?} \
-                         but execution produced {actual_shape:?}. An assertion states \
-                         what the data is; it does not change it. Correct the \
-                         assertion, or drop it and let the planner infer the shape."
-                    )
-                } else {
-                    format!(
-                        "Output '{alias}': planned shape {expected_shape:?} but execution \
-                         produced {actual_shape:?}. The planner's shape contract disagrees \
-                         with the Rust implementation."
-                    )
-                });
+                return Err(format!(
+                    "Output '{alias}': planned shape {expected_shape:?} but execution \
+                     produced {actual_shape:?}. The planner's shape contract disagrees \
+                     with the Rust implementation."
+                ));
             }
         }
     }
@@ -1966,7 +1732,7 @@ mod tests {
         "nodes": {
             "n0": {
                 "source": {"format": "blob"},
-                "ops": [{"op": "scale", "factor": {"type": "expr", "col": "f"}}]
+                "ops": [{"op": "scale", "factor": {"$slot": 1}}]
             }
         },
         "outputs": {
@@ -1985,7 +1751,7 @@ mod tests {
         // blob: f32 buffer round-trips through source(blob) → relu → sink(blob).
         let buf = ViewBuffer::from_vec_with_shape(vec![1.0f32, -2.0, 3.0], vec![3]);
         let input = Series::new("b".into(), &[buf.to_blob()]);
-        let compiled = CompiledGraph::compile(SIMPLE_GRAPH, &[]).unwrap();
+        let compiled = CompiledGraph::compile(SIMPLE_GRAPH).unwrap();
         let out = compiled.execute(&[input]).unwrap();
         let out_bytes = out.binary().unwrap().get(0).unwrap();
         let decoded = ViewBuffer::from_blob(out_bytes).unwrap();
@@ -2006,7 +1772,7 @@ mod tests {
             "column_bindings": {"n0": 0}
         }"#;
         let input = Series::new("r".into(), &[vec![1u8, 2, 3]]);
-        let compiled = CompiledGraph::compile(RAW_GRAPH, &[]).unwrap();
+        let compiled = CompiledGraph::compile(RAW_GRAPH).unwrap();
         let out = compiled.execute(&[input]).unwrap();
         let out_bytes = out.binary().unwrap().get(0).unwrap();
         let decoded = ViewBuffer::from_blob(out_bytes).unwrap();
@@ -2016,8 +1782,6 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::BTreeSet;
 
-    use crate::execute::KNOWN_OPS;
-
     /// The variant a step belongs to.
     ///
     /// Exhaustive, so adding a `GraphStep` fails to compile here. That alone
@@ -2026,22 +1790,26 @@ mod tests {
     /// `assert_step_covered` was called exactly once — with a `Buffer` step —
     /// so nothing checked that the other nine had a graph. Two tests close
     /// that now: `every_graph_step_variant_is_reachable_from_a_known_op`
-    /// against `KNOWN_OPS`, the same way `every_graph_geometry_op_executes`
+    /// over the catalogue's samples, the same way `every_graph_geometry_op_executes`
     /// does in `encode.rs`, and the coverage assertion at the end of
     /// `every_graph_step_variant_executes`, which records what that test
     /// actually ran.
     fn step_name(step: &GraphStep) -> &'static str {
         match step {
             GraphStep::Buffer(_) => "Buffer",
-            GraphStep::Binary { .. } => "Binary",
-            GraphStep::ApplyMask { .. } => "ApplyMask",
-            GraphStep::ChannelMerge { .. } => "ChannelMerge",
             GraphStep::Geometry(_) => "Geometry",
             GraphStep::Reduction(_) => "Reduction",
             GraphStep::Histogram(_) => "Histogram",
             GraphStep::PerceptualHash(_) => "PerceptualHash",
-            GraphStep::ExtractShape => "ExtractShape",
-            GraphStep::LabelReduce { .. } => "LabelReduce",
+            // A graph op is named by its role: each executes differently.
+            GraphStep::Graph(graph) => match graph.role() {
+                Role::Binary(..) => "Binary",
+                Role::ApplyMask { .. } => "ApplyMask",
+                Role::ChannelMerge { .. } => "ChannelMerge",
+                Role::ExtractShape => "ExtractShape",
+                Role::AssertShape { .. } => "AssertShape",
+                Role::LabelReduce { .. } => "LabelReduce",
+            },
         }
     }
 
@@ -2056,10 +1824,17 @@ mod tests {
             .split("\n    }")
             .next()
             .expect("step_name's body has no closing brace");
+        // An engine step's variant, or a graph op's role; `Graph` itself is
+        // only the role's container.
         let names: Vec<String> = body
             .lines()
-            .filter_map(|line| line.trim().strip_prefix("GraphStep::"))
+            .filter_map(|line| {
+                let line = line.trim();
+                line.strip_prefix("GraphStep::")
+                    .or_else(|| line.strip_prefix("Role::"))
+            })
             .filter_map(|rest| rest.split([' ', '(']).next())
+            .filter(|name| *name != "Graph")
             .map(str::to_string)
             .collect();
         assert!(
@@ -2074,53 +1849,17 @@ mod tests {
     ///
     /// A variant no op produces is dead vocabulary that every match still has
     /// to answer for; a variant that exists but is unreachable is also one the
-    /// execution graphs below cannot really be covering. Driven from
-    /// `KNOWN_OPS` rather than a probe list, so the axis is the op registry.
+    /// execution graphs below cannot really be covering. Driven from the
+    /// typed catalogue's samples rather than a probe list, so the axis is the
+    /// op registry.
     #[test]
     fn every_graph_step_variant_is_reachable_from_a_known_op() {
-        fn probe_params(op: &str) -> Vec<(&'static str, ParamValue)> {
-            use serde_json::json;
-            fn lit(v: serde_json::Value) -> ParamValue {
-                ParamValue::Literal { value: v }
-            }
-            // `label_reduce` names its contour column rather than taking a
-            // value, so its probe is an `Expr` — the wire form graph
-            // compilation binds to an input slot.
-            let col = |name: &str| ParamValue::Expr {
-                col: Some(name.to_string()),
-            };
-            match op {
-                "add" | "subtract" | "multiply" | "divide" | "minimum" | "maximum" | "ratio" => {
-                    vec![("other_node", lit(json!("n0")))]
-                }
-                "apply_mask" => vec![("other_node", lit(json!("n0")))],
-                "channel_merge" => vec![("other_nodes", lit(json!(["n0"])))],
-                "label_reduce" => vec![("contours", col("c"))],
-                "histogram" => vec![
-                    ("bins", lit(json!(8))),
-                    ("closed", lit(json!("left"))),
-                    ("output", lit(json!("counts"))),
-                ],
-                "rasterize" => vec![("width", lit(json!(8))), ("height", lit(json!(8)))],
-                "reduce_percentile" => vec![("q", lit(json!(0.5)))],
-                "threshold" => vec![("value", lit(json!(128.0)))],
-                _ => vec![],
-            }
-        }
-
         let mut reachable: BTreeSet<&'static str> = BTreeSet::new();
-        for &op_name in KNOWN_OPS {
-            let params: HashMap<String, ParamValue> = probe_params(op_name)
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect();
-            let spec = OpSpec {
-                op: op_name.to_string(),
-                params,
-            };
-            if let Ok(step) = resolve_op(&spec, 0, &ParamCtx::empty()) {
-                reachable.insert(step_name(&step));
-            }
+        for op in crate::ops::TypedOp::samples() {
+            let step = op
+                .resolve(0, &ParamCtx::empty())
+                .expect("a registered sample resolves");
+            reachable.insert(step_name(&step));
         }
 
         let missing: Vec<String> = acknowledged_steps()
@@ -2129,7 +1868,7 @@ mod tests {
             .collect();
         assert!(
             missing.is_empty(),
-            "these GraphStep variants are acknowledged but no KNOWN_OPS entry \
+            "these GraphStep variants are acknowledged but no registered op \
              produces them: {missing:?}"
         );
     }
@@ -2145,8 +1884,8 @@ mod tests {
             const { RefCell::new(BTreeSet::new()) };
     }
 
-    fn exec(graph: &str, names: &[String], inputs: &[Series]) -> Series {
-        let compiled = CompiledGraph::compile(graph, names).expect("graph must compile");
+    fn exec(graph: &str, inputs: &[Series]) -> Series {
+        let compiled = CompiledGraph::compile(graph).expect("graph must compile");
         EXECUTED_STEPS.with(|seen| {
             let mut seen = seen.borrow_mut();
             for resolver in compiled.plan.iter().flat_map(|np| &np.resolvers) {
@@ -2158,8 +1897,19 @@ mod tests {
                 // the graph runs.
                 let step = match resolver {
                     OpResolver::Static(step) => Some(Cow::Borrowed(step)),
-                    OpResolver::Dynamic(spec) | OpResolver::RasterizeShapeRef { spec, .. } => {
-                        resolve_op(spec, 0, &ParamCtx::empty()).ok().map(Cow::Owned)
+                    OpResolver::Dynamic(spec) => {
+                        spec.resolve(0, &ParamCtx::empty()).ok().map(Cow::Owned)
+                    }
+                    OpResolver::RasterizeShapeRef { op, .. } => {
+                        view_buffer::mode::Resolve::resolve(
+                            op,
+                            &crate::ops::param::RowValues {
+                                row: 0,
+                                ctx: &ParamCtx::empty(),
+                            },
+                        )
+                        .ok()
+                        .map(|geo| Cow::Owned(GraphStep::Geometry(geo.with_canvas(1, 1))))
                     }
                 };
                 if let Some(step) = step {
@@ -2195,12 +1945,10 @@ mod tests {
     fn every_graph_step_variant_executes() {
         let f32_blob =
             ViewBuffer::from_vec_with_shape(vec![1.0f32, -2.0, 3.0, 4.0], vec![2, 2]).to_blob();
-        let no_names: Vec<String> = vec![];
 
         // Buffer (relu executes via the fused ViewExpr run).
         let out = exec(
             SIMPLE_GRAPH,
-            &no_names,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
         assert_eq!(out.null_count(), 0);
@@ -2211,12 +1959,11 @@ mod tests {
                 "nodes": {
                     "n0": {"source": {"format": "blob"}},
                     "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
-                           "ops": [{"op": "add", "other_node": {"type": "literal", "value": "n0"}}]}
+                           "ops": [{"op": "add", "other": "n0"}]}
                 },
                 "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
         let doubled = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
@@ -2228,12 +1975,11 @@ mod tests {
                 "nodes": {
                     "n0": {"source": {"format": "blob"}},
                     "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
-                           "ops": [{"op": "apply_mask", "other_node": {"type": "literal", "value": "n0"}}]}
+                           "ops": [{"op": "apply_mask", "mask": "n0", "invert": false}]}
                 },
                 "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), &[mask_blob()])],
         );
         assert_eq!(out.null_count(), 0);
@@ -2245,12 +1991,11 @@ mod tests {
                 "nodes": {
                     "n0": {"source": {"format": "blob"}},
                     "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
-                           "ops": [{"op": "channel_merge", "other_nodes": {"type": "literal", "value": ["n0"]}}]}
+                           "ops": [{"op": "channel_merge", "others": ["n0"]}]}
                 },
                 "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), &[single])],
         );
         let merged = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
@@ -2260,11 +2005,10 @@ mod tests {
         let out = exec(
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
-                                  "ops": [{"op": "extract_contours"}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "contour"}},
+                                  "ops": [{"op": "extract_contours", "mode": "external", "method": "simple"}]}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), &[mask_blob()])],
         );
         assert_eq!(out.null_count(), 0);
@@ -2274,59 +2018,52 @@ mod tests {
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "reduce_sum"}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "scalar"}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
         assert_eq!(out.f64().unwrap().get(0), Some(6.0));
 
-        // Histogram: counts buffer.
+        // Histogram: a counts vector (u64).
         let out = exec(
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
-                                  "ops": [{"op": "histogram",
-                                           "bins": {"type": "literal", "value": 4},
-                                           "closed": {"type": "literal", "value": "left"},
-                                           "output": {"type": "literal", "value": "counts"}}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
+                                  "ops": [{"op": "histogram", "bins": 4, "range": null,
+                                           "closed": "left", "output": "counts"}]}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "list"}}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
-        let counts = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
-        assert_eq!(counts.as_slice::<u64>().iter().sum::<u64>(), 4);
+        let counts = out.list().unwrap().get_as_series(0).unwrap();
+        assert_eq!(counts.dtype(), &DataType::UInt64);
+        assert_eq!(counts.sum::<u64>().unwrap(), 4);
 
-        // PerceptualHash: image buffer -> 1-D u8 fingerprint. The step produces
-        // a Buffer node output (u8, so the typed list/array sinks preserve
-        // UInt8); serialize it via blob here to prove the variant executes.
+        // PerceptualHash: image buffer -> 1-D u8 fingerprint (vector domain;
+        // u8, so the typed list/array sinks preserve UInt8).
         let out = exec(
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "perceptual_hash",
-                                           "algorithm": {"type": "literal", "value": "average"},
-                                           "hash_size": {"type": "literal", "value": 64}}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
+                                           "algorithm": "average", "hash_size": 64}]}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "list"}}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
-        let hash_buf = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
-        assert_eq!(hash_buf.dtype(), view_buffer::DType::U8);
-        assert_eq!(hash_buf.shape(), &[8]);
+        let hash = out.list().unwrap().get_as_series(0).unwrap();
+        assert_eq!(hash.dtype(), &DataType::UInt8);
+        assert_eq!(hash.len(), 8);
 
         // ExtractShape: dimension vector.
         let out = exec(
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "extract_shape"}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "vector"}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
         assert_eq!(out.null_count(), 0);
@@ -2346,15 +2083,39 @@ mod tests {
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "label_reduce",
-                                           "contours": {"type": "expr", "col": "cont"},
-                                           "reduction": {"type": "literal", "value": "max"}}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "vector"}},
+                                           "contours": {"$slot": 1},
+                                           "reduction": "max",
+                                           "region_mode": "interior"}]}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &["cont".to_string()],
             &[Series::new("b".into(), &[mask_blob()]), cont_col],
         );
         assert_eq!(out.null_count(), 0);
+
+        // AssertShape: a declaration that holds passes the data through; one
+        // that does not fails the row naming what the user wrote.
+        let declared = |dims: &str| {
+            format!(
+                r#"{{
+                    "nodes": {{"n0": {{"source": {{"format": "blob"}},
+                                      "ops": [{{"op": "assert_shape", "rank": 2, "dims": {dims}}}]}}}},
+                    "outputs": {{"_output": {{"node": "n0", "sink": {{"format": "blob"}}}}}},
+                    "column_bindings": {{"n0": 0}}
+                }}"#
+            )
+        };
+        let blob_input = [Series::new("b".into(), std::slice::from_ref(&f32_blob))];
+        assert_eq!(exec(&declared("[2, 2, null]"), &blob_input).null_count(), 0);
+        let err = CompiledGraph::compile(&declared("[2, 3, null]"))
+            .unwrap()
+            .execute(&blob_input)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("assert_shape(dims=[2, 3]) does not hold: the data is [2, 2]"),
+            "{err}"
+        );
 
         // The set assertion. Without it the graphs above are a list somebody
         // remembered to extend, which is the shape this repo keeps regretting.
@@ -2376,16 +2137,14 @@ mod tests {
     #[test]
     fn axis_reduction_of_1d_buffer_stays_buffer() {
         let blob = ViewBuffer::from_vec_with_shape(vec![1.0f32, 5.0, 3.0], vec![3]).to_blob();
-        let no_names: Vec<String> = vec![];
         let out = exec(
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "reduce_max",
-                                           "axis": {"type": "literal", "value": 0}}]}},
+                                           "axis": 0}]}},
                 "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), &[blob])],
         );
         let buf = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
@@ -2398,16 +2157,14 @@ mod tests {
     #[test]
     fn percentile_reduction_is_scalar() {
         let blob = ViewBuffer::from_vec_with_shape(vec![1.0f32, 2.0, 3.0, 4.0], vec![4]).to_blob();
-        let no_names: Vec<String> = vec![];
         let out = exec(
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "reduce_percentile",
-                                           "q": {"type": "literal", "value": 50.0}}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "scalar"}},
+                                           "q": 50.0}]}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &no_names,
             &[Series::new("b".into(), &[blob])],
         );
         assert_eq!(out.dtype(), &DataType::Float64);
@@ -2416,22 +2173,11 @@ mod tests {
 
     #[test]
     fn cache_hit_returns_same_compilation() {
-        let names: Vec<String> = vec![];
-        let a = get_or_compile(SIMPLE_GRAPH, &names).unwrap();
-        let b = get_or_compile(SIMPLE_GRAPH, &names).unwrap();
+        let a = get_or_compile(SIMPLE_GRAPH).unwrap();
+        let b = get_or_compile(SIMPLE_GRAPH).unwrap();
         assert!(
             Arc::ptr_eq(&a, &b),
             "identical kwargs must hit the cache, not recompile"
-        );
-    }
-
-    #[test]
-    fn different_expr_names_do_not_collide() {
-        let a = get_or_compile(DYNAMIC_GRAPH, &["f".to_string()]).unwrap();
-        let b = get_or_compile(DYNAMIC_GRAPH, &["f".to_string(), "g".to_string()]).unwrap();
-        assert!(
-            !Arc::ptr_eq(&a, &b),
-            "same JSON with different expr columns must compile separately"
         );
     }
 
@@ -2439,7 +2185,7 @@ mod tests {
         "nodes": {
             "n0": {
                 "source": {"format": "raw", "dtype": "u8"},
-                "ops": [{"op": "invert"}, {"op": "scale", "factor": {"type": "literal", "value": 2.0}}]
+                "ops": [{"op": "invert"}, {"op": "scale", "factor": 2.0}]
             }
         },
         "outputs": {
@@ -2448,10 +2194,10 @@ mod tests {
         "column_bindings": {"n0": 0}
     }"#;
 
-    fn plans_during(f: impl FnOnce()) -> usize {
-        let before = PLAN_BUILDS.with(|n| n.get());
+    fn plans_during(compiled: &CompiledGraph, f: impl FnOnce()) -> usize {
+        let before = compiled.plan_builds.load(Ordering::Relaxed);
         f();
-        PLAN_BUILDS.with(|n| n.get()) - before
+        compiled.plan_builds.load(Ordering::Relaxed) - before
     }
 
     /// A static op segment is planned once per source dtype/shape/strides in a
@@ -2464,10 +2210,12 @@ mod tests {
             vec![2, 12, 22, 32],
             vec![5, 6, 7, 8, 9, 10],
         ];
-        let compiled = CompiledGraph::compile(RAW_CHAIN_GRAPH, &[]).unwrap();
+        let compiled = CompiledGraph::compile(RAW_CHAIN_GRAPH).unwrap();
         let input = Series::new("r".into(), &rows);
         let mut out = None;
-        let plans = plans_during(|| out = Some(compiled.execute(&[input]).unwrap()));
+        let plans = plans_during(&compiled, || {
+            out = Some(compiled.execute(&[input]).unwrap())
+        });
         assert_eq!(
             plans, 2,
             "three [4] rows share one plan, the [6] row needs its own"
@@ -2487,48 +2235,63 @@ mod tests {
         }
     }
 
+    /// One call spreads its rows over the plugin's thread pool, so a
+    /// single-chunk frame on the in-memory engine is not single-threaded
+    /// (CR-32), and the rows still come back in order.
+    #[test]
+    fn a_call_runs_its_rows_on_several_threads() {
+        use pyo3_polars::export::polars_core::runtime::THREAD_POOL;
+        if THREAD_POOL.current_num_threads() < 2 {
+            eprintln!("skipped: the pool has a single thread");
+            return;
+        }
+        let rows: Vec<Vec<u8>> = (0..256u32).map(|i| vec![i as u8; 64]).collect();
+        let compiled = CompiledGraph::compile(RAW_CHAIN_GRAPH).unwrap();
+        // The first row waits (up to 5 s) for a second thread to run a row:
+        // a parallel call gets one at once, a sequential call times out.
+        compiled.rendezvous.store(true, Ordering::Relaxed);
+        let out = compiled.execute(&[Series::new("r".into(), &rows)]).unwrap();
+        let threads = compiled.row_threads.lock().unwrap().len();
+        assert!(threads > 1, "256 rows ran on {threads} thread(s)");
+        for (i, row) in rows.iter().enumerate() {
+            // Each row must equal the same row executed alone.
+            let alone = compiled
+                .execute(&[Series::new("r".into(), std::slice::from_ref(row))])
+                .unwrap();
+            assert_eq!(
+                out.binary().unwrap().get(i),
+                alone.binary().unwrap().get(0),
+                "row {i}"
+            );
+        }
+    }
+
     /// A segment with a per-row parameter is planned every row.
     #[test]
     fn dynamic_segments_are_not_cached() {
-        let compiled = CompiledGraph::compile(DYNAMIC_GRAPH, &["f".to_string()]).unwrap();
+        let compiled = CompiledGraph::compile(DYNAMIC_GRAPH).unwrap();
         let buf = ViewBuffer::from_vec_with_shape(vec![1.0f32, 2.0], vec![2]);
         let blobs = Series::new("b".into(), &[buf.to_blob(), buf.to_blob(), buf.to_blob()]);
         let factors = Series::new("f".into(), &[1.0f64, 2.0, 3.0]);
         let mut out = None;
-        let plans = plans_during(|| out = Some(compiled.execute(&[blobs, factors]).unwrap()));
+        let plans = plans_during(&compiled, || {
+            out = Some(compiled.execute(&[blobs, factors]).unwrap())
+        });
         assert_eq!(plans, 3);
         let out = out.unwrap();
         let third = ViewBuffer::from_blob(out.binary().unwrap().get(2).unwrap()).unwrap();
         assert_eq!(third.as_slice::<f32>(), &[3.0, 6.0]);
     }
 
-    /// The enum the row loop dispatches on and the wire vocabulary the planner
-    /// and Python are pinned to are the same set of names.
-    #[test]
-    fn source_format_names_match_the_vocabulary() {
-        let mut from_enum: Vec<&str> = SourceFormat::ALL.iter().map(|f| f.name()).collect();
-        let mut from_list: Vec<&str> = KNOWN_SOURCE_FORMATS.to_vec();
-        from_enum.sort_unstable();
-        from_list.sort_unstable();
-        assert_eq!(from_enum, from_list);
-        for name in KNOWN_SOURCE_FORMATS {
-            assert_eq!(
-                SourceFormat::parse(name).map(SourceFormat::name),
-                Some(*name)
-            );
-        }
-        assert_eq!(SourceFormat::parse("image-bytes"), None);
-    }
-
     #[test]
     fn static_ops_are_precompiled_and_dynamic_are_not() {
-        let compiled = CompiledGraph::compile(SIMPLE_GRAPH, &[]).unwrap();
+        let compiled = CompiledGraph::compile(SIMPLE_GRAPH).unwrap();
         assert!(matches!(
             compiled.node_plan("n0").resolvers[0],
             OpResolver::Static(_)
         ));
 
-        let compiled = CompiledGraph::compile(DYNAMIC_GRAPH, &["f".to_string()]).unwrap();
+        let compiled = CompiledGraph::compile(DYNAMIC_GRAPH).unwrap();
         assert!(matches!(
             compiled.node_plan("n0").resolvers[0],
             OpResolver::Dynamic(_)
@@ -2536,20 +2299,25 @@ mod tests {
         // The dynamic op's expr param must have been bound to a slot:
         // 1 source column + position 0 → absolute slot 1.
         match &compiled.node_plan("n0").resolvers[0] {
-            OpResolver::Dynamic(spec) => match spec.params.get("factor").unwrap() {
-                ParamValue::Slot { idx } => assert_eq!(*idx, 1),
-                other => panic!("expected bound slot, got {other:?}"),
-            },
-            _ => unreachable!(),
+            OpResolver::Dynamic(op) => {
+                let mut slots = Vec::new();
+                op.visit_slots(&mut |name, slot| slots.push((name, slot)));
+                assert_eq!(slots, [("factor", 1)]);
+            }
+            _ => panic!("expected a dynamic typed op"),
         }
     }
 
     #[test]
-    fn unknown_expr_column_fails_at_compile_time() {
-        let err = CompiledGraph::compile(DYNAMIC_GRAPH, &[])
-            .err()
-            .expect("compiling with a missing expr column must fail");
-        assert!(err.to_string().contains("not found in expression inputs"));
+    fn a_slot_beyond_the_call_inputs_is_an_error() {
+        // DYNAMIC_GRAPH reads its factor from input 1; a call with only the
+        // image column must fail up front, not index past the inputs per row.
+        let compiled = CompiledGraph::compile(DYNAMIC_GRAPH).unwrap();
+        let buf = ViewBuffer::from_vec_with_shape(vec![1.0f32], vec![1]);
+        let err = compiled
+            .execute(&[Series::new("b".into(), &[buf.to_blob()])])
+            .unwrap_err();
+        assert!(err.to_string().contains("reads 2 input columns"), "{err}");
     }
     // --- Compile-time structural validation ---
     //
@@ -2557,7 +2325,7 @@ mod tests {
     // output), or with a panic. They must now be clear compile errors.
 
     fn compile_err(graph_json: &str) -> String {
-        CompiledGraph::compile(graph_json, &[])
+        CompiledGraph::compile(graph_json)
             .err()
             .expect("malformed graph must fail to compile")
             .to_string()
@@ -2623,18 +2391,5 @@ mod tests {
             err.contains("unknown source format 'carrier_pigeon'"),
             "{err}"
         );
-    }
-
-    #[test]
-    fn unknown_expected_encoding_is_a_compile_error() {
-        // Previously: silently ignored (treated as plain encoding).
-        let err = compile_err(
-            r#"{
-            "nodes": {"n0": {"source": {"format": "blob"}}},
-            "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}, "expected_encoding": "morse"}},
-            "column_bindings": {"n0": 0}
-        }"#,
-        );
-        assert!(err.contains("unknown expected_encoding 'morse'"), "{err}");
     }
 }

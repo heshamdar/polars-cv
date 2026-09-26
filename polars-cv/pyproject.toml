@@ -10,12 +10,15 @@ authors = [{ name = "Hesham Dar", email = "heshamdar@gmail.com" }]
 readme = "README.md"
 license = { text = "MIT OR Apache-2.0" }
 requires-python = ">=3.10"
+# Each floor is the oldest release the full fast suite passes on, and the
+# `dependency-floors` CI job installs exactly these (read by
+# `scripts/dependency_floors.py`) to keep that true (CR-44). polars < 1.36.1
+# lacks the extension-type API the package imports; 1.36.1-1.40.x import but
+# fail the suite. numpy 1.x runs the package but not its reference tests
+# (their scipy/imagehash oracles need numpy 2).
 dependencies = [
-    "networkx>=3.4.2",
-    "numpy>=2.2.6",
-    "polars>=1.0,<2.0",
-    "graphviz>=0.21",
-    "pydot>=4.0.1",
+    "numpy>=2.0.2",
+    "polars>=1.41.1,<2.0",
 ]
 classifiers = [
     "Programming Language :: Rust",
@@ -26,8 +29,21 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 
+[project.optional-dependencies]
+# `PipelineGraph.show_graph()` only; imported lazily, and a clear ImportError
+# names this extra when it is missing.
+viz = [
+    "networkx>=3.4.2",
+    "graphviz>=0.21",
+    "pydot>=4.0.1",
+]
+
 [dependency-groups]
 dev = [
+    # The `viz` extra, so the graph-visualisation tests run in the dev loop.
+    "networkx>=3.4.2",
+    "graphviz>=0.21",
+    "pydot>=4.0.1",
     "pytest>=7.0",
     "opencv-python>=4.8",
     "scipy>=1.10",
@@ -66,6 +82,15 @@ docs = [
     "ruff",
 ]
 
+
+# uv never builds or installs this project; `maturin develop` is the one
+# extension build (debug). Without this, `uv run <cmd>` re-syncs the project
+# through the maturin backend at [profile.release] (fat LTO) — minutes of work
+# that `maturin develop` then overwrites — and the documented `uv run pytest`
+# walked straight into it (CR-43). Guarded by
+# `test_build_efficiency.py::test_uv_never_builds_the_project`.
+[tool.uv]
+package = false
 
 [tool.maturin]
 python-source = "python"
@@ -128,12 +153,6 @@ show_missing = true
 # errors; whittle the baselined ignores down over time.
 [tool.ty.src]
 include = ["python/polars_cv"]
-# lazy.py builds LazyPipelineExpr's chainable API by setattr at import time, so
-# its type surface lives in the generated lazy.pyi (kept in sync by
-# test_lazy_stub_is_current). Checking the .py *and* its sibling .pyi makes ty
-# treat the two as distinct nominal classes; the stub is the checked contract,
-# so exclude the implementation and let importers resolve against the stub.
-exclude = ["python/polars_cv/lazy.py"]
 
 [tool.ty.environment]
 python-version = "3.10"

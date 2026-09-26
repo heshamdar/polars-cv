@@ -659,7 +659,8 @@ def test_graph_and_namespace_scale_agree_for_an_explicit_origin(origin: str) -> 
 
     pipe = (
         Pipeline()
-        .source("contour", width=16, height=16)
+        .source("contour")
+        .rasterize(width=16, height=16)
         .extract_contours()
         .scale_contour(sx=2.0, sy=2.0, origin=origin)
     )

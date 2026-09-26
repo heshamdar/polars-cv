@@ -89,48 +89,57 @@ Registered on `pl.Expr` for columns matching `POINT_SCHEMA`. Each method calls `
 
 Point and contour namespace operations go directly through `_plugin.call` to dedicated Rust functions. Every accessor also accepts the `PointType`/`ContourType`/`BBoxType` extension types: `_plugin.call` hands the plugin `.ext.storage()`, so a tagged column computes exactly as its plain struct (`test_accessors_accept_tagged_inputs`). Accessors that work on the struct in Python (`.point.x`/`.y`) must read `.ext.storage()` themselves. They do **not** go through the `vb_graph` pipeline path. This is a design distinction — they operate on Struct columns directly rather than on binary image data.
 
-### Parameter policy: per-row via input slots, not `ParamValue`
+### Parameter policy: one typed definition per function, like every op
 
-Because these bypass `vb_graph`, they have none of `ParamValue`'s literal-vs-
-expression machinery. Their per-row channel is instead the plugin's **input
-series**: `_ArgBinder` (`_namespace.py`) appends an expression-valued parameter
-as an extra plugin argument and records it in an `input_slots` name→index map
-passed as a kwarg. Rust reads it back through `GeomParams`
-(`polars-cv/src/geom_params.rs`), which delegates to `params::ParamCol` — so
-these namespaces inherit the graph engine's dtype coverage, scalar broadcasting
-and null-as-error policy for free.
+Each plugin function is described the way an op is: a variant of a
+mode-generic family in `polars-cv/src/geom_fns.rs` (`ContourFn`, `PointFn`,
+`BBoxFn`) with the wire's fields — `M::V<T>` for a value that may be per-row,
+`ColumnRef` / `Option<ColumnRef>` for a data operand — its doc comment as the
+Python docstring, and its defaults declared once with `#[param(default = ...)]`.
+A function that is also a pipeline op (`.contour.area`, `translate`, `scale`,
+…) *is* that `GeometryOp` variant (`geom_fns::OP_ACCESSORS`), so the two
+surfaces cannot drift in fields, defaults or docs.
 
-**Look inputs up by name, never by position.** Several of these functions take
-*optional* data operands (`correspond`'s `order`, `point.rotate`'s
-`origin`). With per-row parameters also occupying input slots, an appended
-parameter is otherwise indistinguishable from an omitted operand. Register the
-data operands in the map too (`binder.add_data("scores", scores)`) and read them
-via `params.slot("scores")`.
+Every accessor method is generated (`scripts/gen_ops.py`, from
+`tests/golden/geom_catalog.json`) as one `self._call("<fn>", {...})`.
+`_GeomNamespace._call` (`_namespace.py`) appends each `pl.Expr` as a plugin
+input and writes its position (`{"$slot": n}`) into its field; a literal is
+the value itself. It asks the plugin to parse the literals against the
+definition as the expression is built (`_lib.check_geom_call`), so a
+misspelled enum raises `ValueError` where it was written. In Rust,
+`GeomParams::parse` reads the call's arguments strictly as the function's own
+definition and checks that every input is claimed exactly once; each row
+resolves a field through `params.value(field, row)` and `params::ParamCol`, so
+these namespaces share the graph engine's dtype coverage, scalar broadcasting
+and null policy.
 
-Numeric parameters here are per-row capable; parameters that *select behaviour*
-rather than carry a value stay literal kwargs (`scale`'s `origin`,
-`ensure_winding`'s `direction`).
+**Operands are read through their references, never by position.** Optional
+operands (`correspond`'s `order`, `point.rotate`'s `origin`) and per-row
+parameters both occupy input slots; each field names its own
+(`params.column(field)` / `params.optional_column(field)`).
+
+Every enum parameter here is per-row capable (none changes an output schema);
+`test_non_structural_geometry_enums_accept_an_expression` reads the catalogue.
 
 Validation that can no longer happen once per batch moves into the row loop and
 names the offending row — see the `threshold` range check in
 `contour_correspond` and the zero-dimension guard in `point_normalize`.
 
-**Keep signatures honest.** These namespaces have no generated stub, and
-their *annotations* have no parity test — the schema they publish does
-(`tests/test_schema_parity_namespaces.py`, swept in both arities and
-completeness-asserted against the real method list, as the section below
-describes). So a hand-written annotation can still drift from behaviour
-unnoticed —
-which is exactly how four `.contour` methods came to advertise `int | pl.Expr`
-while unconditionally raising `TypeError` on it. `mkdocs.yml` sets
-`show_signature_annotations: true`, so a wrong annotation is published in the
-API reference.
-
 ## Adding a Geometry Operation
 
-1. **Rust:** Add the function in `polars-cv/src/point.rs` or `polars-cv/src/contour.rs` with `#[polars_expr]`
-2. **Python:** Add a method to `PointNamespace` or `ContourNamespace` that builds an `_ArgBinder` and calls `binder.call(self, "<rust_fn_name>")` (or `self._plugin(...)` when it takes no parameters)
-3. **Per-row params:** register each with `binder.add_param(...)`, add the matching field to `ContourKwargs`/`PointKwargs`, and resolve it inside the row loop with `GeomParams`
+1. **Definition:** add a variant to `ContourFn`/`PointFn`/`BBoxFn` in
+   `src/geom_fns.rs` — `#[op(name = "<fn>", python = "<method>", sample =
+   {...})]`, a doc comment (the docstring, with its `Returns:`), a doc comment
+   per field, and `#[param(default = ...)]` where the method has a default.
+   (If the method is a pipeline op, add it to `OP_ACCESSORS` instead.)
+2. **Function:** add the `#[polars_expr]` function in `src/contour.rs` or
+   `src/point.rs` (a `contour_accessor!` arm for a contour one), parsing its
+   definition with `GeomParams::parse` and reading each field per row.
+3. **Regenerate:** re-bless the catalogues (`POLARS_CV_BLESS=1
+   scripts/with-pyo3-env.sh cargo test -p polars-cv catalog_matches`), run
+   `scripts/gen_ops.py` and `scripts/gen_signature_snapshot.py`, and
+   `maturin develop`. The Python method appears on the namespace; write none by
+   hand.
 4. **Tests:** Add to `tests/test_contour_plugin.py` or create a reference test. For a per-row parameter, assert two rows with *different* values produce *different* outputs (`tests/test_expression_params.py`) — a call that merely succeeds cannot distinguish "resolved per row" from "silently dropped"
 
 ## Schema export policy
@@ -173,11 +182,11 @@ from it:
 - `Arity::of` reads it, using `point_dtype_fields()` — the same field names the
   point parser reads, so the dispatch cannot admit a struct the parser rejects.
 - `elementwise_field` / `binary_field` wrap the element type for the declaration.
-- `map_contours` / `map_contours_with_params` / `zip_contours` wrap the results
+- `map_contours` / `zip_contours` wrap the results
   with the same `Arity::wrap`, and are the only decode path the accessors use.
 - `contour_accessor!` emits both halves from a single `-> <elem>` declaration.
 
-`map_contours_with_params` also owns the null-parameter policy: it wraps each
+`map_contours` also owns the null-parameter policy: it wraps each
 *row* in `GeomParams::row`, so `on_null("null")` nulls the row rather than each
 contour. That is the job `contour_row` used to do, moved so it cannot be
 forgotten.
@@ -189,7 +198,7 @@ through `elementwise_field`/`pack_row`, so only the loop is local.
 
 ### Adding an accessor
 
-Use a `contour_accessor!` arm — `map`, `map_params` or `zip`. Do not write a
+Use a `contour_accessor!` arm — `map` or `zip`, each naming the definition it parses. Do not write a
 bare `#[polars_expr(output_type=...)]` for a contour accessor: the case table in
 `tests/test_schema_parity_namespaces.py` is completeness-asserted against the
 namespace's real methods *and* swept in both arities, so an accessor that skips

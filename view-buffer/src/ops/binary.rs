@@ -20,7 +20,7 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule, ViewType};
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::OpShape;
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
@@ -87,8 +87,8 @@ pub enum BinaryOp {
 //
 // This table used to be `BINARY_OPS` in the polars-cv crate, which made
 // `BinaryOp` the one enum-shaped vocabulary the registry could not hold — and
-// so the one that needed a hand-written arm in `enum_variants`, exempted by
-// name from the parity test. Nothing required it to live there: the enum is
+// so the one that needed a hand-written FFI arm and a parity-test exemption.
+// Nothing required it to live there: the enum is
 // this crate's, and the names describe engine semantics, not plugin ones.
 //
 // Declaring it here puts it under the same exhaustiveness guard as every other
@@ -162,8 +162,8 @@ impl BinaryOp {
 
     /// The output dtype of this binary op for the given operand dtypes.
     ///
-    /// This is the single authority shared by planning (the `binary_output_dtype`
-    /// FFI) and execution ([`execute`](BinaryOp::execute)). Divide and Ratio use
+    /// This is the single authority shared by planning (the plugin's
+    /// `plan::step`, given both operand dtypes) and execution ([`execute`](BinaryOp::execute)). Divide and Ratio use
     /// *true division*: integer operands promote to float (`F32`, or `F64` when an
     /// operand is already `F64`), matching numpy-style semantics. All other ops
     /// use standard numeric promotion of the two operands.
@@ -501,13 +501,8 @@ impl Op for BinaryOp {
         }
     }
 
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
-        // Binary ops take two inputs
-        if inputs.len() >= 2 {
-            broadcast_shapes(inputs[0], inputs[1]).unwrap_or_else(|| inputs[0].to_vec())
-        } else {
-            inputs[0].to_vec()
-        }
+    fn shape(&self) -> OpShape {
+        OpShape::Broadcast
     }
 
     fn memory_effect(&self) -> MemoryEffect {
@@ -593,16 +588,6 @@ impl Op for BinaryOp {
 
     fn output_dtype_rule(&self) -> OutputDTypeRule {
         OutputDTypeRule::PreserveInput
-    }
-
-    fn output_rank_rule(&self) -> OutputRankRule {
-        // Element-wise between two broadcast-compatible buffers of equal rank.
-        OutputRankRule::PreserveRank
-    }
-
-    fn output_channel_rule(&self) -> OutputChannelRule {
-        // Element-wise: the channel count is that of the operands, unchanged.
-        OutputChannelRule::PreserveChannels
     }
 }
 

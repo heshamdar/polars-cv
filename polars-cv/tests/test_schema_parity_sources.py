@@ -11,7 +11,7 @@ Three axes that the existing coverage barely touched:
   compared plan-vs-exec, leaving ``i8 i16 u32 i32 u64 i64`` — and with them
   every dtype rule that can produce them — unchecked against data.
 * **Channel count.** 1, 2, 3 and 4 all reach different arms of the alpha
-  rules. Two channels (``GrayA``, what ``StripProcessRestore`` yields from
+  rules. Two channels (``GrayA``, what the ``ColorChannels`` shape yields from
   RGBA) had never been fed through a sink.
 
 Both vocabularies are completeness-asserted against the enums in
@@ -410,7 +410,8 @@ def test_blob_source_round_trips(pattern: str) -> None:
 @plugin_required
 @pytest.mark.parametrize("shape", ["struct", "set"])
 def test_contour_source(shape: str) -> None:
-    """The contour source rasterises geometry back into the buffer domain.
+    """A contour source with a canvas (its appended ``rasterize()``) reaches
+    the buffer domain.
 
     Both shapes a geometry column takes are swept, because both reach the same
     source: one contour per row (``Struct``), and the contour *set* per row
@@ -446,7 +447,7 @@ def test_contour_source(shape: str) -> None:
             {"img": [whole, None, whole]}, schema={"img": pl.List(CONTOUR_SCHEMA)}
         )
 
-    pipe = Pipeline().source("contour", width=16, height=16).cast("u8")
+    pipe = Pipeline().source("contour").rasterize(width=16, height=16).cast("u8")
     _sweep(
         df,
         pipe,

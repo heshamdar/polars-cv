@@ -238,7 +238,7 @@ class TestContourSourceGraph:
 
     def test_contour_source_rasterization(self, contour_df: pl.DataFrame) -> None:
         """Test contour source is properly rasterized through graph."""
-        pipe = Pipeline().source("contour", width=100, height=100)
+        pipe = Pipeline().source("contour").rasterize(width=100, height=100)
 
         result = contour_df.with_columns(
             rasterized=pl.col("contour").cv.pipe(pipe).sink("numpy")
@@ -251,7 +251,8 @@ class TestContourSourceGraph:
         """Test contour source with additional operations."""
         pipe = (
             Pipeline()
-            .source("contour", width=100, height=100)
+            .source("contour")
+            .rasterize(width=100, height=100)
             .resize(height=50, width=50)
         )
 
@@ -267,8 +268,10 @@ class TestExpressionArgumentsGraph:
 
     def test_dynamic_resize(self, contour_df: pl.DataFrame) -> None:
         """Test dynamic resize with expression arguments."""
-        pipe = Pipeline().source(
-            "contour", width=pl.col("target_width"), height=pl.col("target_height")
+        pipe = (
+            Pipeline()
+            .source("contour")
+            .rasterize(width=pl.col("target_width"), height=pl.col("target_height"))
         )
 
         result = contour_df.with_columns(

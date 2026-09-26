@@ -48,7 +48,6 @@ from ._op_cases import (
     SINGLE_CHANNEL_OPS,
     base_pipeline,
     buffer_ops,
-    build_case,
 )
 from .conftest import make_image_png, plugin_required
 
@@ -66,7 +65,7 @@ def test_histogram_outputs_are_the_whole_enum() -> None:
 def test_color_spaces_are_the_whole_enum() -> None:
     """Every ``convert_color`` target is swept.
 
-    The table exists for the ``StripProcessRestore`` channel rule, whose whole
+    The table exists for the ``ColorChannels`` shape, whose whole
     point is that different targets have different channel counts — so the one
     left out is exactly the one worth having.
     """
@@ -177,10 +176,9 @@ def _probe_sink(pipe: Pipeline) -> str:
 def test_single_channel_ops_are_exactly_the_ops_that_refuse_three_channels() -> None:
     """The table must equal what the kernels actually refuse.
 
-    Nothing rejects a three-channel pipeline for these at build or plan time —
-    the failure is a runtime refusal from the kernel — so there is no plan-time
-    authority to derive the list from. Asking the kernels is the next strongest
-    thing, and it fails in both directions: an op that starts refusing three
+    The refusal is the op's own ``validate``, raised at build time here because
+    the base pipeline asserts a known ``[H, W, 3]`` shape. Asking the ops is the
+    strongest check available, and it fails in both directions: an op that starts refusing three
     channels without joining the table (so the sweeps that use the table start
     erroring), and an op that stops refusing while the table still puts a
     ``grayscale()`` in front of it (so the sweep quietly tests something else).
@@ -197,8 +195,11 @@ def test_single_channel_ops_are_exactly_the_ops_that_refuse_three_channels() -> 
     accepted: set[str] = set()
     unexplained: dict[str, str] = {}
     for op in buffer_ops():
-        pipe = build_case(op)
         try:
+            # Built on the three-channel base itself, not `build_case`, which
+            # puts a grayscale() in front of the ops this probe is looking for.
+            domain, kwargs = OP_CASES[op]
+            pipe = getattr(base_pipeline(domain), op)(**kwargs)
             run(df, "img", pipe, sink=_probe_sink(pipe))
         except Exception as e:  # noqa: BLE001 - the message is what is under test
             if _SINGLE_CHANNEL_REFUSAL in str(e):
@@ -237,6 +238,6 @@ def test_the_single_channel_probe_can_see_a_refusal() -> None:
     driven through the same path and asserted to raise, naming the precondition.
     """
     df = pl.DataFrame({"img": [make_image_png(height=100, width=200, channels=3)]})
-    pipe = base_pipeline(BUFFER).erode(ksize=3)
     with pytest.raises(Exception, match=_SINGLE_CHANNEL_REFUSAL):
+        pipe = base_pipeline(BUFFER).erode(ksize=3)
         run(df, "img", pipe, sink=_probe_sink(pipe))

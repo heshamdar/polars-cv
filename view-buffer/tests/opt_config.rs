@@ -180,7 +180,7 @@ fn transpose_merge_toggle_is_output_preserving() {
 fn scalar_fusion_toggle_is_output_preserving() {
     let data = vec![1.0f32, -2.0, 3.0, 4.0];
     let expr = ViewExpr::new_source(ViewBuffer::from_vec(data))
-        .apply_op(ViewDto::Compute(ComputeOp::Scale(2.0)))
+        .apply_op(ViewDto::Compute(ComputeOp::Scale { factor: 2.0 }))
         .apply_op(ViewDto::Compute(ComputeOp::Relu));
 
     assert_eq!(

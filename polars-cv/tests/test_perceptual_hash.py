@@ -70,7 +70,7 @@ class TestPerceptualHashPipeline:
         """perceptual_hash transitions the pipeline to the ``vector`` domain.
 
         The domain is sourced from the op's Rust contract
-        (``GraphStep::PerceptualHash`` → ``Domain::Vector``) via ``op_schema``,
+        (``GraphStep::PerceptualHash`` → ``Domain::Vector``) via ``Plan.push``,
         matching its sibling vector producer ``histogram`` — not the old
         buffer-domain ``ViewDto`` path. Guards the promotion done in this pass."""
         pipe = Pipeline().source("image_bytes").perceptual_hash()

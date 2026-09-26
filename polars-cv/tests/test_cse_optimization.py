@@ -16,6 +16,8 @@ import pytest
 from PIL import Image
 
 from polars_cv import Pipeline, numpy_from_struct
+from tests._plan_view import ops_of
+from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
     pass
@@ -48,102 +50,54 @@ def sample_df() -> pl.DataFrame:
 # ============================================================
 
 
-class TestOpSpecEquality:
-    """Tests for OpSpec equality comparison."""
+def _shared_prefix(a: Pipeline, b: Pipeline) -> int:
+    """How many leading ops CSE shares between *a* and *b* on one column."""
+    from polars_cv._graph import PipelineGraph
 
-    def test_identical_ops_are_equal(self) -> None:
-        """Two OpSpecs with same op and params should be equal."""
-        from polars_cv._types import OpSpec, ParamValue
+    graph = PipelineGraph()
+    graph.add_node("a", a, pl.col("image"), [], alias="a")
+    graph.add_node("b", b, pl.col("image"), [], alias="b")
+    graph._optimize_common_subexpressions()
+    shared = [n for n in graph._nodes if n.startswith("_cse_")]
+    return len(ops_of(graph._nodes[shared[0]].pipeline)) if shared else 0
 
-        op1 = OpSpec(
-            op="resize",
-            params={
-                "width": ParamValue(is_expr=False, value=100),
-                "height": ParamValue(is_expr=False, value=100),
-            },
-        )
-        op2 = OpSpec(
-            op="resize",
-            params={
-                "width": ParamValue(is_expr=False, value=100),
-                "height": ParamValue(is_expr=False, value=100),
-            },
-        )
 
-        assert op1 == op2
-        assert hash(op1) == hash(op2)
+@plugin_required
+class TestCSEPrefixKey:
+    """CSE shares an op iff it is the same op over the same graph inputs."""
 
-    def test_different_params_not_equal(self) -> None:
-        """OpSpecs with different param values should not be equal."""
-        from polars_cv._types import OpSpec, ParamValue
+    BASE = Pipeline().source("image_bytes")
 
-        op1 = OpSpec(
-            op="resize",
-            params={
-                "width": ParamValue(is_expr=False, value=100),
-                "height": ParamValue(is_expr=False, value=100),
-            },
-        )
-        op2 = OpSpec(
-            op="resize",
-            params={
-                "width": ParamValue(is_expr=False, value=200),
-                "height": ParamValue(is_expr=False, value=100),
-            },
-        )
+    def test_identical_ops_are_shared(self) -> None:
+        a = self.BASE.resize(width=100, height=100).grayscale()
+        b = self.BASE.resize(width=100, height=100).threshold(128)
+        assert _shared_prefix(a, b) == 1
 
-        assert op1 != op2
+    def test_different_params_are_not_shared(self) -> None:
+        a = self.BASE.resize(width=100, height=100)
+        b = self.BASE.resize(width=200, height=100)
+        assert _shared_prefix(a, b) == 0
 
-    def test_different_ops_not_equal(self) -> None:
-        """OpSpecs with different operation names should not be equal."""
-        from polars_cv._types import OpSpec, ParamValue
+    def test_different_ops_are_not_shared(self) -> None:
+        assert _shared_prefix(self.BASE.grayscale(), self.BASE.threshold(128)) == 0
 
-        op1 = OpSpec(op="grayscale", params={})
-        op2 = OpSpec(
-            op="threshold", params={"level": ParamValue(is_expr=False, value=128)}
-        )
+    def test_the_same_expression_is_shared(self) -> None:
+        a = self.BASE.resize(width=pl.col("w"), height=100).grayscale()
+        b = self.BASE.resize(width=pl.col("w"), height=100).threshold(1)
+        assert _shared_prefix(a, b) == 1
 
-        assert op1 != op2
+    def test_the_same_expression_at_different_local_slots_is_shared(self) -> None:
+        # Each pipeline numbers its own expressions; CSE compares graph inputs.
+        a = self.BASE.scale(pl.col("s")).resize(width=pl.col("w"), height=1)
+        b = self.BASE.scale(pl.col("s")).resize(width=pl.col("w"), height=1)
+        b2 = self.BASE.resize(width=pl.col("w"), height=1)
+        assert _shared_prefix(a, b) == 2
+        assert _shared_prefix(b2, a) == 0
 
-    def test_expression_params_equality(self) -> None:
-        """OpSpecs with expression params compare by string representation."""
-        from polars_cv._types import OpSpec, ParamValue
-
-        op1 = OpSpec(
-            op="resize",
-            params={
-                "width": ParamValue(is_expr=True, value=pl.col("w")),
-                "height": ParamValue(is_expr=False, value=100),
-            },
-        )
-        op2 = OpSpec(
-            op="resize",
-            params={
-                "width": ParamValue(is_expr=True, value=pl.col("w")),
-                "height": ParamValue(is_expr=False, value=100),
-            },
-        )
-
-        assert op1 == op2
-
-    def test_different_expression_params_not_equal(self) -> None:
-        """OpSpecs with different expression column refs should not be equal."""
-        from polars_cv._types import OpSpec, ParamValue
-
-        op1 = OpSpec(
-            op="resize",
-            params={
-                "width": ParamValue(is_expr=True, value=pl.col("w1")),
-            },
-        )
-        op2 = OpSpec(
-            op="resize",
-            params={
-                "width": ParamValue(is_expr=True, value=pl.col("w2")),
-            },
-        )
-
-        assert op1 != op2
+    def test_different_expressions_are_not_shared(self) -> None:
+        a = self.BASE.resize(width=pl.col("w1"), height=100)
+        b = self.BASE.resize(width=pl.col("w2"), height=100)
+        assert _shared_prefix(a, b) == 0
 
 
 class TestCSEBasic:

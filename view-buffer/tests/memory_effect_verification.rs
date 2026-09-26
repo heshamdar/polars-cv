@@ -8,7 +8,7 @@
 //! - allocating ops must create new storage
 //! - dtype must be preserved unless explicitly changed
 
-use view_buffer::ops::{ComputeOp, MemoryEffect, NormalizeMethod, Op, ViewOp};
+use view_buffer::ops::{ComputeOp, MemoryEffect, Normalization, Op, ViewOp};
 use view_buffer::{DType, ViewBuffer, ViewExpr};
 
 // --- Helper Functions ---
@@ -55,10 +55,10 @@ fn make_3d_buffer() -> ViewBuffer {
 #[test]
 fn test_view_ops_declare_zero_copy() {
     let ops = [
-        ViewOp::Transpose(vec![1, 0]),
-        ViewOp::Reshape(vec![100]),
-        ViewOp::Flip(vec![0]),
-        ViewOp::Crop {
+        ViewOp::transpose(&[1, 0]),
+        ViewOp::Reshape { shape: vec![100] },
+        ViewOp::flip(&[0]),
+        ViewOp::Slice {
             start: vec![0, 0],
             end: vec![5, 5],
         },
@@ -76,10 +76,10 @@ fn test_view_ops_declare_zero_copy() {
 #[test]
 fn test_compute_ops_declare_allocating() {
     let ops = [
-        ComputeOp::Cast(DType::F32),
-        ComputeOp::Scale(2.0),
+        ComputeOp::Cast { dtype: DType::F32 },
+        ComputeOp::Scale { factor: 2.0 },
         ComputeOp::Relu,
-        ComputeOp::Normalize(NormalizeMethod::MinMax, DType::F32),
+        ComputeOp::from_normalization(Normalization::MinMax, DType::F32),
         ComputeOp::Clamp { min: 0.0, max: 1.0 },
     ];
 
@@ -203,7 +203,7 @@ fn test_normalize_preserves_dtype() {
 
     let expr = ViewExpr::new_source(original);
     let normalized = expr
-        .normalize(NormalizeMethod::MinMax, DType::F32)
+        .normalize(Normalization::MinMax, DType::F32)
         .plan()
         .execute();
     assert_eq!(
@@ -228,7 +228,7 @@ fn test_cast_changes_dtype() {
 #[test]
 fn test_normalize_validation_accepts_2d() {
     let buf_2d = make_2d_buffer(); // [10, 10] F32
-    let op = ComputeOp::Normalize(NormalizeMethod::MinMax, DType::F32);
+    let op = ComputeOp::from_normalization(Normalization::MinMax, DType::F32);
     let result = op.validate(&[buf_2d.shape()], &[buf_2d.dtype()]);
     assert!(result.is_ok(), "Normalize should accept 2D F32 buffer");
 }
@@ -243,7 +243,7 @@ fn test_normalize_validation_accepts_hw1() {
         .plan()
         .execute();
 
-    let op = ComputeOp::Normalize(NormalizeMethod::MinMax, DType::F32);
+    let op = ComputeOp::from_normalization(Normalization::MinMax, DType::F32);
     let result = op.validate(&[buf_hw1.shape()], &[buf_hw1.dtype()]);
     assert!(result.is_ok(), "Normalize should accept HW1 F32 buffer");
 }
@@ -263,13 +263,13 @@ fn test_normalize_validation_channel_rules() {
         .plan()
         .execute();
 
-    for method in [NormalizeMethod::MinMax, NormalizeMethod::ZScore] {
-        let op = ComputeOp::Normalize(method, DType::F32);
+    for method in [Normalization::MinMax, Normalization::ZScore] {
+        let op = ComputeOp::from_normalization(method, DType::F32);
         assert!(op.validate(&[buf_hwc.shape()], &[buf_hwc.dtype()]).is_ok());
     }
 
-    let mismatched = ComputeOp::Normalize(
-        NormalizeMethod::Preset {
+    let mismatched = ComputeOp::from_normalization(
+        Normalization::Preset {
             mean: vec![0.5, 0.5],
             std: vec![0.2, 0.2],
         },
@@ -287,7 +287,7 @@ fn test_normalize_validation_channel_rules() {
 fn test_normalize_validation_accepts_all_numeric_types() {
     // With the dtype promotion system, normalize now accepts all numeric types
     // and handles casting internally. This test verifies that behavior.
-    let op = ComputeOp::Normalize(NormalizeMethod::MinMax, DType::F32);
+    let op = ComputeOp::from_normalization(Normalization::MinMax, DType::F32);
 
     // Test that all numeric types are accepted
     let numeric_dtypes = [

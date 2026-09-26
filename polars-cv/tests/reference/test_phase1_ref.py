@@ -13,6 +13,7 @@ import polars as pl
 import pytest
 
 from polars_cv import Pipeline, numpy_from_struct
+from tests._plan_view import op_names, planned
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
@@ -296,21 +297,21 @@ class TestPhase1Contracts:
     def test_invert_preserves_dtype(self) -> None:
         """invert should preserve the input dtype (not promote to float)."""
         pipe = Pipeline().source("image_bytes").invert()
-        assert pipe._output_dtype == "auto"
+        assert planned(pipe).dtype == "auto"
 
     def test_adjust_contrast_promotes_dtype(self) -> None:
         """adjust_contrast should promote integer dtypes to float."""
         pipe = Pipeline().source("image_bytes", dtype="u8").adjust_contrast(factor=1.5)
-        assert pipe._output_dtype == "f32"
+        assert planned(pipe).dtype == "f32"
 
     def test_adjust_gamma_promotes_dtype(self) -> None:
         """adjust_gamma should promote integer dtypes to float."""
         pipe = Pipeline().source("image_bytes", dtype="u8").adjust_gamma(gamma=0.5)
-        assert pipe._output_dtype == "f32"
+        assert planned(pipe).dtype == "f32"
 
     def test_brightness_chains_scale_clamp(self) -> None:
         """adjust_brightness should produce scale + clamp ops."""
         pipe = Pipeline().source("image_bytes").adjust_brightness(factor=1.5)
-        op_names = [op.op for op in pipe._ops]
-        assert "scale" in op_names
-        assert "clamp" in op_names
+        names = op_names(pipe)
+        assert "scale" in names
+        assert "clamp" in names

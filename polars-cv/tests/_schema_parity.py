@@ -37,6 +37,8 @@ from typing import Any, Callable
 
 import polars as pl
 
+from tests._plan_view import planned
+
 # Streaming leads deliberately: it is the primary execution mode for this
 # library, and it is the engine that splits a column into morsels — so it is
 # the one where a schema derived from "the first row" can differ per batch.
@@ -295,7 +297,7 @@ def encodable_by_image_codec(pipe: Any) -> bool:
     ``test_schema_parity_encoder_sinks.py``; the broad sweeps skip the cells it
     owns instead of each rediscovering it. u8 at rank 2 or 3 clears all four.
     """
-    return pipe.output_dtype() == "u8" and pipe._expected_ndim in (2, 3)
+    return pipe.output_dtype() == "u8" and planned(pipe).ndim in (2, 3)
 
 
 def leaf_dtype(dtype: pl.DataType) -> pl.DataType:

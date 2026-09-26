@@ -5,8 +5,8 @@ asserting something about their contents. That shape has one failure mode, and
 this repo has shipped it: **the find returns nothing, the assertion holds
 vacuously, and the guard reads as coverage forever.** Two live instances
 motivated this module — ``_test_files()`` and ``_PACKAGE_MODULES`` both went
-green on an empty glob, and the second is what the entire ``_push_op`` append
-contract rests on.
+green on an empty glob, and the second is what the whole op-append
+contract rested on.
 
 So discovery happens here and nowhere else, and every accessor either returns a
 non-empty set or raises.

@@ -3,8 +3,7 @@
 The core guarantee: toggling optimization passes changes only the *physical*
 graph, never the result the user sees. This executes representative pipelines
 under a representative set of flag combinations and asserts the outputs agree
-byte-for-byte. Every current optimization is byte-exact (``PassSpec.bit_exact``
-is ``True`` for all of them); ``TestEveryOptimizationOnOffEquivalence`` pins a
+byte-for-byte. Every optimization is byte-exact; ``TestEveryOptimizationOnOffEquivalence`` pins a
 dedicated on/off differential for each registered pass so none can be added
 without one.
 """
@@ -20,6 +19,7 @@ from PIL import Image
 
 from polars_cv import OptFlags, Pipeline, numpy_from_struct
 from polars_cv._optimize import PASS_NAMES
+from tests._plan_view import op_names, ops_of
 from tests.conftest import plugin_required
 
 
@@ -84,8 +84,12 @@ _OP_FAMILY_CASES: list[tuple[str, object, str]] = [
     ("grayscale", lambda p: p.grayscale(), "numpy"),
     ("threshold", lambda p: p.grayscale().threshold(128), "numpy"),
     ("blur", lambda p: p.blur(1.0), "numpy"),
-    ("convolve2d", lambda p: p.convolve2d([1.0 / 9] * 9, 3), "numpy"),
-    ("convert_color", lambda p: p.convert_color("rgb", "hsv"), "numpy"),
+    ("convolve2d", lambda p: p.convolve2d(kernel=[1.0 / 9] * 9), "numpy"),
+    (
+        "convert_color",
+        lambda p: p.convert_color(from_space="rgb", to_space="hsv"),
+        "numpy",
+    ),
     ("cast", lambda p: p.cast("f32"), "numpy"),
     ("scale", lambda p: p.cast("f32").scale(0.5), "numpy"),
     ("clamp", lambda p: p.cast("f32").clamp(0.0, 128.0), "numpy"),
@@ -144,7 +148,7 @@ def _total_ops(graph) -> int:  # type: ignore[no-untyped-def]
     than the same graph with CSE off. This is the 'the pass actually fired'
     signal for the CSE tests.
     """
-    return sum(len(n.pipeline._ops) for n in graph._nodes.values())
+    return sum(len(ops_of(n.pipeline)) for n in graph._nodes.values())
 
 
 def _run_multi(
@@ -310,7 +314,9 @@ _POINTWISE_CROP_CASES: list[tuple[str, object]] = [
     ),
     (
         "convert_color",
-        lambda p: p.convert_color("rgb", "hsv").crop(top=0, left=0, height=8, width=8),
+        lambda p: p.convert_color(from_space="rgb", to_space="hsv").crop(
+            top=0, left=0, height=8, width=8
+        ),
     ),
     (
         "cast_clamp",
@@ -368,7 +374,7 @@ class TestSpatialPushdownEquivalence:
                 )
             )
             (node,) = graph._nodes.values()
-            return [op.op for op in node.pipeline._ops]
+            return op_names(node.pipeline)
 
         assert ops(True) == ["crop", "grayscale"]
         assert ops(False) == ["grayscale", "crop"]
@@ -617,23 +623,25 @@ class TestOptimizationRegressions:
         self, sample_df: pl.DataFrame
     ) -> None:
         # A crop whose extent equals the input's but whose origin is not (0, 0)
-        # preserves the *planned* shape while running past the edge; the engine
-        # clamps it to a smaller window, so it is not a no-op.
+        # preserves the *planned* shape while its window runs past the edge.
+        # That window is an error (CR-42; it used to be clamped), so it is not
+        # a no-op: were identity elimination to delete it, the error would
+        # turn into a successful, unchanged image under that flag subset.
         pipe = (
             _src().resize(height=20, width=20).crop(top=5, left=5, height=20, width=20)
         )
-        outputs = [
-            _sink_output(sample_df, pipe, f, "numpy") for f in _all_flag_subsets()
-        ]
-        for other in outputs[1:]:
-            assert other == outputs[0], "identity elimination deleted an offset crop"
+        for flags in _all_flag_subsets():
+            with pytest.raises(pl.exceptions.ComputeError, match="outside"):
+                _sink_output(sample_df, pipe, flags, "numpy")
 
-    def test_declared_shape_reaching_a_cse_suffix_is_not_trusted(
+    def test_a_wrong_declaration_reaching_a_cse_suffix_fails_every_way(
         self, sample_df: pl.DataFrame
     ) -> None:
-        # CSE moves the assert_shape into the shared prefix node; the suffix keeps
-        # the H/W it implied but not the assertion. That H/W is a declaration, not
-        # a fact, so it must not license deleting the crop as "full-frame".
+        # The image is 96x96 and the assertion says 10x10. CSE moves the
+        # assert_shape into the shared prefix node, and the suffix plans from
+        # the H/W it declared — which is sound only because the assertion is
+        # checked: the query fails naming it, optimized or not, rather than
+        # an optimization deleting the crop as "full-frame".
         pipes = {
             "a": _src()
             .assert_shape(height=10, width=10)
@@ -641,20 +649,29 @@ class TestOptimizationRegressions:
             .crop(top=0, left=0, height=10, width=10),
             "b": _src().grayscale().threshold(128),
         }
-        off = _run_multi(sample_df, pipes, OptFlags.none())
-        for flags in _all_flag_subsets():
-            assert _run_multi(sample_df, pipes, flags) == off, (
-                f"output changed under {flags}"
-            )
+        for flags in [OptFlags.none(), *_all_flag_subsets()]:
+            with pytest.raises(pl.exceptions.ComputeError, match="does not hold"):
+                _run_multi(sample_df, pipes, flags)
 
-    def test_declared_shape_reaching_a_lazy_continuation_is_not_trusted(
+    def test_a_wrong_declaration_reaching_a_lazy_continuation_fails_every_way(
         self, sample_df: pl.DataFrame
     ) -> None:
-        # The continuation inherits the upstream node's asserted H/W as a hint but
-        # none of its assertions — the same declaration-as-fact hole as CSE.
+        # The same through a continuation, which plans from the upstream
+        # node's (declared, checked) H/W.
         upstream = pl.col("image").cv.pipe(_src().assert_shape(height=10, width=10))
         cont = upstream.pipe(
             Pipeline().grayscale().crop(top=0, left=0, height=10, width=10)
+        )
+        for flags in [OptFlags.none(), *_all_flag_subsets()]:
+            with pytest.raises(pl.exceptions.ComputeError, match="does not hold"):
+                sample_df.select(o=cont.sink("numpy", opt_flags=flags))
+
+    def test_a_true_declaration_lets_optimizations_rely_on_it(
+        self, sample_df: pl.DataFrame
+    ) -> None:
+        upstream = pl.col("image").cv.pipe(_src().assert_shape(height=96, width=96))
+        cont = upstream.pipe(
+            Pipeline().grayscale().crop(top=0, left=0, height=96, width=96)
         )
         off = sample_df.select(o=cont.sink("numpy", opt_flags=OptFlags.none()))
         for flags in _all_flag_subsets():

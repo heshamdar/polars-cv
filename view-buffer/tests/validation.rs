@@ -3,7 +3,7 @@
 //! Tests for the plan-time validation framework.
 
 use view_buffer::ops::validation::{is_2d_like, is_float_dtype, is_image_like, is_integer_dtype};
-use view_buffer::ops::{ComputeOp, NormalizeMethod, Op};
+use view_buffer::ops::{ComputeOp, Normalization, Op};
 use view_buffer::DType;
 
 // --- Shape Predicate Tests ---
@@ -81,7 +81,7 @@ fn test_is_integer_dtype() {
 /// would have rejected every minmax normalize of an RGB image.
 #[test]
 fn test_normalize_accepts_any_shape() {
-    let op = ComputeOp::Normalize(NormalizeMethod::MinMax, DType::F32);
+    let op = ComputeOp::from_normalization(Normalization::MinMax, DType::F32);
     for shape in [
         &[10, 10][..],
         &[100, 200],
@@ -96,7 +96,7 @@ fn test_normalize_accepts_any_shape() {
 
 #[test]
 fn test_normalize_accepts_all_numeric_dtypes() {
-    let op = ComputeOp::Normalize(NormalizeMethod::MinMax, DType::F32);
+    let op = ComputeOp::from_normalization(Normalization::MinMax, DType::F32);
 
     // With dtype promotion, all numeric types are valid
     // The operation internally casts to f32 for computation
@@ -111,8 +111,8 @@ fn test_normalize_accepts_all_numeric_dtypes() {
 #[test]
 fn test_normalize_preset_error_message_names_the_mismatch() {
     // The per-channel method is the one that constrains the channel count.
-    let op = ComputeOp::Normalize(
-        NormalizeMethod::Preset {
+    let op = ComputeOp::from_normalization(
+        Normalization::Preset {
             mean: vec![0.5, 0.5],
             std: vec![0.2, 0.2],
         },
@@ -129,7 +129,7 @@ fn test_normalize_preset_error_message_names_the_mismatch() {
 fn test_normalize_dtype_promotion_behavior() {
     // With dtype promotion, normalize accepts all numeric types
     // This test verifies the working dtype is used correctly
-    let op = ComputeOp::Normalize(NormalizeMethod::MinMax, DType::F32);
+    let op = ComputeOp::from_normalization(Normalization::MinMax, DType::F32);
 
     // All numeric types should be accepted - the operation handles casting internally
     assert!(op.validate(&[&[10, 10]], &[DType::U8]).is_ok());
@@ -141,9 +141,9 @@ fn test_normalize_dtype_promotion_behavior() {
 
 #[test]
 fn test_other_compute_ops_have_no_validation() {
-    let ops = [
-        ComputeOp::Cast(DType::U8),
-        ComputeOp::Scale(2.0),
+    let ops: [ComputeOp; 4] = [
+        ComputeOp::Cast { dtype: DType::U8 },
+        ComputeOp::Scale { factor: 2.0 },
         ComputeOp::Relu,
         ComputeOp::Clamp { min: 0.0, max: 1.0 },
     ];
@@ -159,7 +159,7 @@ fn test_other_compute_ops_have_no_validation() {
 
 #[test]
 fn test_zscore_normalize_validates_same_as_minmax() {
-    let op = ComputeOp::Normalize(NormalizeMethod::ZScore, DType::F32);
+    let op = ComputeOp::from_normalization(Normalization::ZScore, DType::F32);
 
     // Same requirements as MinMax: a global statistic, any shape, any numeric dtype.
     assert!(op.validate(&[&[10, 10]], &[DType::F32]).is_ok());

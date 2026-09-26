@@ -1,163 +1,310 @@
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
+use crate::mode::{known, size, Exec, Mode};
 use crate::ops::pad::{PadMode, PadPosition};
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::{OpShape, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
+use polars_cv_macros::{Ops, Resolve};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum ImageOpKind {
-    Threshold(f64),
+/// The image ops: one variant per wire op (see `crate::mode`). Each
+/// variant's doc comment is its Python docstring and each field's its `Args:`
+/// entry; the kernels read the `Exec` form.
+#[derive(Debug, Clone, PartialEq, Ops, Resolve)]
+pub enum ImageOpKind<M: Mode = Exec> {
+    /// Apply binary threshold: a U8 mask, 255 where the element exceeds `value`
+    /// and 0 elsewhere (for u8 input typically 0-255; for [0, 1] floats e.g. 0.5).
+    #[op(name = "threshold", sample = {"value": 128.0})]
+    Threshold {
+        /// Threshold value (int or float, or Polars expression).
+        value: M::V<f64>,
+    },
+    /// Resize image to specified dimensions.
+    ///
+    /// Example:
+    ///     >>> Pipeline().source("image_bytes").resize(height=224, width=224)
+    #[op(name = "resize", sample = {"height": 4, "width": 4, "filter": "bilinear"})]
     Resize {
-        width: u32,
-        height: u32,
-        filter: FilterType,
+        /// Target height.
+        height: M::V<u32>,
+        /// Target width.
+        width: M::V<u32>,
+        /// Interpolation: "nearest", "bilinear", "lanczos3" (default).
+        #[param(default = "lanczos3")]
+        filter: M::V<FilterType>,
     },
+    /// Apply Gaussian blur.
+    #[op(name = "blur", sample = {"sigma": 1.0})]
     Blur {
-        sigma: f32,
+        /// Standard deviation for Gaussian kernel.
+        sigma: M::V<f32>,
     },
+    /// Convert to grayscale (luminance 0.299R + 0.587G + 0.114B).
+    #[op(name = "grayscale", sample = {})]
     Grayscale,
-    /// Canny edge detection (fused Gaussian + Sobel + NMS + hysteresis).
+    /// Canny edge detection: Gaussian blur, Sobel gradients, non-maximum
+    /// suppression and double-threshold hysteresis. Output is a U8 binary edge
+    /// map (0 or 255).
+    ///
+    /// Example:
+    ///     >>> edges = Pipeline().source("image_bytes").canny(low_threshold=50, high_threshold=150)
+    #[op(name = "canny", sample = {"low_threshold": 50.0, "high_threshold": 150.0})]
     Canny {
-        low_threshold: f32,
-        high_threshold: f32,
+        /// Lower hysteresis threshold.
+        #[param(default = 50.0)]
+        low_threshold: M::V<f32>,
+        /// Upper hysteresis threshold.
+        #[param(default = 150.0)]
+        high_threshold: M::V<f32>,
     },
-    /// Histogram equalization for contrast enhancement.
+    /// Apply histogram equalization for contrast enhancement: map each pixel
+    /// through the normalized CDF, per channel. Output is U8.
+    ///
+    /// Example:
+    ///     >>> eq = Pipeline().source("image_bytes").grayscale().equalize_histogram()
+    #[op(name = "equalize_histogram", sample = {})]
     HistogramEqualize,
-    /// Morphological erosion: output = local minimum over ksize×ksize neighborhood.
-    /// Requires single-channel input.
+    /// Morphological erosion (local minimum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).
+    ///
+    /// Example:
+    ///     >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
+    #[op(name = "erode", sample = {"ksize": 3, "iterations": 1})]
     Erode {
-        ksize: u32,
-        iterations: u32,
+        /// Size of the square structuring element. Must be odd and >= 1.
+        /// Accepts a Polars expression for per-row dynamic values.
+        #[param(default = 3)]
+        ksize: M::V<u32>,
+        /// Number of times the operation is applied. Accepts a Polars
+        /// expression for per-row dynamic values.
+        #[param(default = 1)]
+        iterations: M::V<u32>,
     },
-    /// Morphological dilation: output = local maximum over ksize×ksize neighborhood.
-    /// Requires single-channel input.
+    /// Morphological dilation (local maximum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).
+    ///
+    /// Example:
+    ///     >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3)
+    #[op(name = "dilate", sample = {"ksize": 3, "iterations": 1})]
     Dilate {
-        ksize: u32,
-        iterations: u32,
+        /// Size of the square structuring element. Must be odd and >= 1.
+        /// Accepts a Polars expression for per-row dynamic values.
+        #[param(default = 3)]
+        ksize: M::V<u32>,
+        /// Number of times the operation is applied. Accepts a Polars
+        /// expression for per-row dynamic values.
+        #[param(default = 1)]
+        iterations: M::V<u32>,
     },
-    /// Morphological gradient: dilate − erode (edge outline).
-    /// Requires single-channel input.
+    /// Morphological gradient (dilate - erode): an edge outline. Requires
+    /// single-channel input.
+    ///
+    /// Example:
+    ///     >>> edges = Pipeline().source("image_bytes").grayscale().threshold(128).morphology_gradient(ksize=3)
+    #[op(name = "morphology_gradient", sample = {"ksize": 3})]
     MorphGradient {
-        ksize: u32,
+        /// Size of the square structuring element. Must be odd and >= 1. Accepts a
+        /// Polars expression for per-row dynamic values.
+        #[param(default = 3)]
+        ksize: M::V<u32>,
     },
-    /// Resize by scale factors — output dimensions derive from the input
-    /// shape via [`ImageOpKind::output_hw`].
+    /// Resize image by scale factor: `new_width = input_width * scale_x`,
+    /// `new_height = input_height * scale_y`, computed at runtime.
+    ///
+    /// The public `Pipeline.resize_scale` is sugar over this op that also accepts
+    /// one uniform `scale`.
+    #[op(name = "resize_scale", visibility = Internal,
+         sample = {"scale_x": 0.5, "scale_y": 0.5, "filter": "bilinear"})]
     ResizeScale {
-        scale_x: f32,
-        scale_y: f32,
-        filter: FilterType,
+        /// X (width) scale factor.
+        scale_x: M::V<f32>,
+        /// Y (height) scale factor.
+        scale_y: M::V<f32>,
+        /// Resize filter ("nearest", "bilinear", "lanczos3").
+        #[param(default = "lanczos3")]
+        filter: M::V<FilterType>,
     },
-    /// Resize to a target height, preserving aspect ratio.
+    /// Resize image to target height, preserving aspect ratio (width is computed at runtime).
+    ///
+    /// Example:
+    ///     >>> pipe = Pipeline().source("image_bytes").resize_to_height(224)
+    #[op(name = "resize_to_height", sample = {"height": 4, "filter": "bilinear"})]
     ResizeToHeight {
-        height: u32,
-        filter: FilterType,
+        /// Target height (literal or expression).
+        height: M::V<u32>,
+        /// Resize filter ("nearest", "bilinear", "lanczos3").
+        #[param(default = "lanczos3")]
+        filter: M::V<FilterType>,
     },
-    /// Resize to a target width, preserving aspect ratio.
+    /// Resize image to target width, preserving aspect ratio (height is computed at runtime).
+    ///
+    /// Example:
+    ///     >>> pipe = Pipeline().source("image_bytes").resize_to_width(224)
+    #[op(name = "resize_to_width", sample = {"width": 4, "filter": "bilinear"})]
     ResizeToWidth {
-        width: u32,
-        filter: FilterType,
+        /// Target width (literal or expression).
+        width: M::V<u32>,
+        /// Resize filter ("nearest", "bilinear", "lanczos3").
+        #[param(default = "lanczos3")]
+        filter: M::V<FilterType>,
     },
-    /// Resize so the longer side equals `max_size`, preserving aspect ratio.
+    /// Resize image so the maximum dimension equals target, preserving aspect ratio (200x100 with max_size=50 gives 50x25).
+    ///
+    /// Example:
+    ///     >>> pipe = Pipeline().source("image_bytes").resize_max(224)
+    #[op(name = "resize_max", sample = {"max_size": 4, "filter": "bilinear"})]
     ResizeMax {
-        max_size: u32,
-        filter: FilterType,
+        /// Target for the maximum dimension (literal or expression).
+        max_size: M::V<u32>,
+        /// Resize filter ("nearest", "bilinear", "lanczos3").
+        #[param(default = "lanczos3")]
+        filter: M::V<FilterType>,
     },
-    /// Resize so the shorter side equals `min_size`, preserving aspect ratio.
+    /// Resize image so the minimum dimension equals target, preserving aspect ratio (200x100 with min_size=50 gives 100x50).
+    ///
+    /// Example:
+    ///     >>> pipe = Pipeline().source("image_bytes").resize_min(224)
+    #[op(name = "resize_min", sample = {"min_size": 4, "filter": "bilinear"})]
     ResizeMin {
-        min_size: u32,
-        filter: FilterType,
+        /// Target for the minimum dimension (literal or expression).
+        min_size: M::V<u32>,
+        /// Resize filter ("nearest", "bilinear", "lanczos3").
+        #[param(default = "lanczos3")]
+        filter: M::V<FilterType>,
     },
-    /// Pad with per-side amounts and a border mode.
+    /// Add padding to the image.
+    ///
+    /// Example:
+    ///     >>> pipe = Pipeline().source("image_bytes").pad(top=10, bottom=10)
+    ///     >>> pipe = Pipeline().source("image_bytes").pad(left=20, right=20, value=128)
+    #[op(name = "pad", sample = {"top": 1, "bottom": 1, "left": 1, "right": 1,
+                                 "value": 0.0, "mode": "constant"})]
     Pad {
-        top: u32,
-        bottom: u32,
-        left: u32,
-        right: u32,
-        value: f32,
-        mode: PadMode,
+        /// Padding on top edge.
+        #[param(default = 0)]
+        top: M::V<u32>,
+        /// Padding on bottom edge.
+        #[param(default = 0)]
+        bottom: M::V<u32>,
+        /// Padding on left edge.
+        #[param(default = 0)]
+        left: M::V<u32>,
+        /// Padding on right edge.
+        #[param(default = 0)]
+        right: M::V<u32>,
+        /// Fill value for "constant" mode (default 0). Accepts a Polars expression
+        /// for per-row dynamic values.
+        #[param(default = 0.0)]
+        value: M::V<f32>,
+        /// Padding mode - "constant", "edge", "reflect", "symmetric".
+        #[param(default = "constant")]
+        mode: M::V<PadMode>,
     },
-    /// Constant-pad to an exact size at a position (saturating: an input
-    /// larger than the target is left unpadded on that axis).
+    /// Pad image to exact target size (computed at runtime). A larger image is
+    /// not cropped - resize first if needed.
+    ///
+    /// Example:
+    ///     >>> pipe = Pipeline().source("image_bytes").pad_to_size(height=100, width=200)
+    #[op(name = "pad_to_size", sample = {"height": 4, "width": 4, "position": "center",
+                                         "value": 0.0})]
     PadToSize {
-        height: u32,
-        width: u32,
-        position: PadPosition,
-        value: f32,
+        /// Target height.
+        height: M::V<u32>,
+        /// Target width.
+        width: M::V<u32>,
+        /// Where to place original content: "center" (default), "top-left" or
+        /// "bottom-right".
+        #[param(default = "center")]
+        position: M::V<PadPosition>,
+        /// Fill value for padding (default 0). Accepts a Polars expression for
+        /// per-row dynamic values.
+        #[param(default = 0.0)]
+        value: M::V<f32>,
     },
-    /// Letterbox: aspect-preserving resize, then center constant-pad to the
-    /// exact target size.
+    /// Resize image maintaining aspect ratio and pad to exact target size: fit
+    /// within the target, then pad with centered positioning.
+    ///
+    /// Example:
+    ///     >>> pipe = Pipeline().source("image_bytes").letterbox(height=224, width=224)
+    #[op(name = "letterbox", sample = {"height": 4, "width": 4, "value": 0.0,
+                                       "filter": "bilinear"})]
     Letterbox {
-        height: u32,
-        width: u32,
-        value: f32,
-        filter: FilterType,
+        /// Target height (literal or expression).
+        height: M::V<u32>,
+        /// Target width (literal or expression).
+        width: M::V<u32>,
+        /// Fill value for padding (default 0, typically black). Accepts a Polars
+        /// expression for per-row dynamic values.
+        #[param(default = 0.0)]
+        value: M::V<f32>,
+        /// Resampling filter for the resize step (default "lanczos3").
+        #[param(default = "lanczos3")]
+        filter: M::V<FilterType>,
     },
-    /// Reorder the channels of an `[H, W, C]` buffer (allocating).
+    /// Reorder channels in a multi-channel image.
+    ///
+    /// Example:
+    ///     >>> pipe = Pipeline().source("image_bytes").channel_swap(order=[2, 1, 0])
+    #[op(name = "channel_swap", sample = {"order": [2, 1, 0]})]
     ChannelSwap {
-        order: Vec<usize>,
+        /// New channel ordering, e.g. [2, 1, 0] for RGB-to-BGR. **Each index may be
+        /// a literal or a Polars expression**, so the permutation can vary per row.
+        /// The list *length* is the channel count and must be literal.
+        order: Vec<M::V<u32>>,
     },
 }
 
-impl ImageOpKind {
-    /// The output `(height, width)` this op produces for an `in_h × in_w`
-    /// input.
-    ///
-    /// The **single authority** for geometric output dimensions, shared by
-    /// [`Op::infer_shape`] (planning) and the execution runner, so planned
-    /// and executed dimensions cannot diverge. Returns `None` for kinds that
-    /// preserve the input dimensions.
-    pub fn output_hw(&self, in_h: usize, in_w: usize) -> Option<(usize, usize)> {
+impl<M: Mode> ImageOpKind<M> {
+    /// Refuse a parameter combination no row can execute. Every image op's
+    /// parameters are independent, so there is none.
+    pub fn check(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// How this op's output shape follows from its input — the one
+    /// definition, read on the `Wire` op at plan time (a per-row parameter is
+    /// `Sym::PerRow`) and on the `Exec` op at execution.
+    pub fn shape(&self) -> OpShape {
         match self {
-            ImageOpKind::Resize { width, height, .. } => Some((*height as usize, *width as usize)),
+            ImageOpKind::Grayscale | ImageOpKind::Canny { .. } => OpShape::SingleChannel,
+            ImageOpKind::Threshold { .. }
+            | ImageOpKind::Blur { .. }
+            | ImageOpKind::ChannelSwap { .. }
+            | ImageOpKind::HistogramEqualize
+            | ImageOpKind::Erode { .. }
+            | ImageOpKind::Dilate { .. }
+            | ImageOpKind::MorphGradient { .. } => OpShape::Preserve,
+            ImageOpKind::Resize { width, height, .. }
+            | ImageOpKind::Letterbox { height, width, .. } => OpShape::SetHw {
+                h: size::<M>(height),
+                w: size::<M>(width),
+            },
             ImageOpKind::ResizeScale {
                 scale_x, scale_y, ..
-            } => Some((
-                (in_h as f32 * scale_y).round() as usize,
-                (in_w as f32 * scale_x).round() as usize,
-            )),
-            ImageOpKind::ResizeToHeight { height, .. } => {
-                let aspect = in_w as f32 / in_h as f32;
-                Some((*height as usize, (*height as f32 * aspect).round() as usize))
-            }
-            ImageOpKind::ResizeToWidth { width, .. } => {
-                let aspect = in_h as f32 / in_w as f32;
-                Some(((*width as f32 * aspect).round() as usize, *width as usize))
-            }
-            ImageOpKind::ResizeMax { max_size, .. } => {
-                let scale = *max_size as f32 / in_h.max(in_w) as f32;
-                Some((
-                    (in_h as f32 * scale).round() as usize,
-                    (in_w as f32 * scale).round() as usize,
-                ))
-            }
-            ImageOpKind::ResizeMin { min_size, .. } => {
-                let scale = *min_size as f32 / in_h.min(in_w) as f32;
-                Some((
-                    (in_h as f32 * scale).round() as usize,
-                    (in_w as f32 * scale).round() as usize,
-                ))
-            }
+            } => OpShape::ScaleHw {
+                sy: M::sym(scale_y),
+                sx: M::sym(scale_x),
+            },
+            ImageOpKind::ResizeToHeight { height, .. } => OpShape::HeightTo(size::<M>(height)),
+            ImageOpKind::ResizeToWidth { width, .. } => OpShape::WidthTo(size::<M>(width)),
+            ImageOpKind::ResizeMax { max_size, .. } => OpShape::LongSideTo(size::<M>(max_size)),
+            ImageOpKind::ResizeMin { min_size, .. } => OpShape::ShortSideTo(size::<M>(min_size)),
             ImageOpKind::Pad {
                 top,
                 bottom,
                 left,
                 right,
                 ..
-            } => Some((
-                in_h + *top as usize + *bottom as usize,
-                in_w + *left as usize + *right as usize,
-            )),
-            ImageOpKind::PadToSize { height, width, .. } => {
-                Some((in_h.max(*height as usize), in_w.max(*width as usize)))
-            }
-            ImageOpKind::Letterbox { height, width, .. } => {
-                Some((*height as usize, *width as usize))
-            }
-            _ => None,
+            } => OpShape::Pad {
+                top: size::<M>(top),
+                bottom: size::<M>(bottom),
+                left: size::<M>(left),
+                right: size::<M>(right),
+            },
+            ImageOpKind::PadToSize { height, width, .. } => OpShape::AtLeastHw {
+                h: size::<M>(height),
+                w: size::<M>(width),
+            },
         }
     }
 }
@@ -184,9 +331,8 @@ pub enum FilterType {
     Lanczos3,
 }
 
-// `Triangle` is surfaced under its API name "bilinear"; the parser-only
-// alias "triangle" is kept for backwards compatibility (see `ALIASES`).
-crate::naming::named_variants!(FilterType {
+// `Triangle` is surfaced under its API name "bilinear".
+crate::naming::named_variants!(FilterType: "Image resize filter types." {
     "nearest" => Nearest,
     "bilinear" => Triangle,
     "catmullrom" => CatmullRom,
@@ -194,19 +340,13 @@ crate::naming::named_variants!(FilterType {
     "lanczos3" => Lanczos3,
 });
 
-impl FilterType {
-    /// Additional parser-accepted spellings, not surfaced as canonical names.
-    pub const ALIASES: &'static [(&'static str, FilterType)] =
-        &[("triangle", FilterType::Triangle)];
+/// An image op, as the engine's `ViewDto` carries it.
+#[derive(Debug, Clone, PartialEq, Resolve)]
+pub struct ImageOp<M: Mode = Exec> {
+    pub kind: ImageOpKind<M>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct ImageOp {
-    pub kind: ImageOpKind,
-}
-
-impl Op for ImageOp {
+impl<M: Mode> Op for ImageOp<M> {
     fn validate(
         &self,
         input_shapes: &[&[usize]],
@@ -215,7 +355,7 @@ impl Op for ImageOp {
         use crate::ops::validation::{require_hw_or_hwc, require_single_channel, ValidationError};
         let shape = input_shapes[0];
         match &self.kind {
-            ImageOpKind::Threshold(_)
+            ImageOpKind::Threshold { .. }
             | ImageOpKind::Erode { .. }
             | ImageOpKind::Dilate { .. }
             | ImageOpKind::MorphGradient { .. } => require_single_channel(shape),
@@ -245,8 +385,16 @@ impl Op for ImageOp {
                     _ => Ok(()),
                 }
             }
+            // A per-row index is checked per row.
             ImageOpKind::ChannelSwap { order } => match shape {
-                [_, _, c] if order.len() == *c && order.iter().all(|&i| i < *c) => Ok(()),
+                [_, _, c]
+                    if order.len() == *c
+                        && order
+                            .iter()
+                            .all(|i| known::<M, u32>(i).is_none_or(|i| (i as usize) < *c)) =>
+                {
+                    Ok(())
+                }
                 _ => Err(ValidationError::ShapeRequirement {
                     requirement: "[H, W, C] with one order entry per channel, each < C",
                     got: shape.to_vec(),
@@ -257,7 +405,7 @@ impl Op for ImageOp {
 
     fn name(&self) -> &'static str {
         match &self.kind {
-            ImageOpKind::Threshold(_) => "Threshold",
+            ImageOpKind::Threshold { .. } => "Threshold",
             ImageOpKind::Resize { .. } => "Resize",
             ImageOpKind::Blur { .. } => "Blur",
             ImageOpKind::Grayscale => "Grayscale",
@@ -278,90 +426,13 @@ impl Op for ImageOp {
         }
     }
 
-    fn output_rank_rule(&self) -> OutputRankRule {
-        // Every image kind preserves rank: resize/blur/pad/threshold/morph keep
-        // [H, W, C]; grayscale/canny keep the rank and set the channel dim via
-        // the channel rule; channel_swap permutes within the channel dim.
-        OutputRankRule::PreserveRank
-    }
-
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
-        let input_shape = inputs[0];
-        match &self.kind {
-            ImageOpKind::Threshold(_) => input_shape.to_vec(),
-            ImageOpKind::Blur { .. } => input_shape.to_vec(),
-            ImageOpKind::Grayscale => {
-                let mut s = input_shape.to_vec();
-                if s.len() == 3 {
-                    s[2] = 1;
-                }
-                // 2D input stays 2D (already single-channel by definition)
-                s
-            }
-            // Every geometric kind takes its output H/W from output_hw — the
-            // same authority the runner executes with.
-            ImageOpKind::Resize { .. }
-            | ImageOpKind::ResizeScale { .. }
-            | ImageOpKind::ResizeToHeight { .. }
-            | ImageOpKind::ResizeToWidth { .. }
-            | ImageOpKind::ResizeMax { .. }
-            | ImageOpKind::ResizeMin { .. }
-            | ImageOpKind::Pad { .. }
-            | ImageOpKind::PadToSize { .. }
-            | ImageOpKind::Letterbox { .. } => {
-                let mut s = input_shape.to_vec();
-                if s.len() >= 2 {
-                    if let Some((h, w)) = self.kind.output_hw(s[0], s[1]) {
-                        s[0] = h;
-                        s[1] = w;
-                    }
-                }
-                s
-            }
-            ImageOpKind::ChannelSwap { .. } => input_shape.to_vec(),
-            ImageOpKind::Canny { .. } => {
-                // Output is single-channel binary edge map
-                if input_shape.len() == 3 {
-                    vec![input_shape[0], input_shape[1], 1]
-                } else {
-                    input_shape.to_vec()
-                }
-            }
-            ImageOpKind::HistogramEqualize => input_shape.to_vec(),
-            ImageOpKind::Erode { .. } => input_shape.to_vec(),
-            ImageOpKind::Dilate { .. } => input_shape.to_vec(),
-            ImageOpKind::MorphGradient { .. } => input_shape.to_vec(),
-        }
-    }
-
-    fn output_channel_rule(&self) -> OutputChannelRule {
-        match &self.kind {
-            // Grayscale and Canny collapse to a single channel.
-            ImageOpKind::Grayscale | ImageOpKind::Canny { .. } => OutputChannelRule::Fixed(1),
-            // Threshold, Resize, Blur, HistogramEqualize and the morphological
-            // operations are applied per-channel and preserve the channel count.
-            ImageOpKind::Threshold(_)
-            | ImageOpKind::Resize { .. }
-            | ImageOpKind::Blur { .. }
-            | ImageOpKind::HistogramEqualize
-            | ImageOpKind::Erode { .. }
-            | ImageOpKind::Dilate { .. }
-            | ImageOpKind::MorphGradient { .. }
-            | ImageOpKind::ResizeScale { .. }
-            | ImageOpKind::ResizeToHeight { .. }
-            | ImageOpKind::ResizeToWidth { .. }
-            | ImageOpKind::ResizeMax { .. }
-            | ImageOpKind::ResizeMin { .. }
-            | ImageOpKind::Pad { .. }
-            | ImageOpKind::PadToSize { .. }
-            | ImageOpKind::Letterbox { .. }
-            | ImageOpKind::ChannelSwap { .. } => OutputChannelRule::PreserveChannels,
-        }
+    fn shape(&self) -> OpShape {
+        self.kind.shape()
     }
 
     fn memory_effect(&self) -> MemoryEffect {
         match &self.kind {
-            ImageOpKind::Threshold(_) => MemoryEffect::StridePreserving,
+            ImageOpKind::Threshold { .. } => MemoryEffect::StridePreserving,
             // Resize uses fast_image_resize which requires contiguous input
             ImageOpKind::Resize { .. } => MemoryEffect::RequiresContiguous,
             ImageOpKind::Blur { .. } => MemoryEffect::RequiresContiguous,
@@ -386,27 +457,17 @@ impl Op for ImageOp {
 
     fn identity_rule(&self) -> IdentityRule {
         match &self.kind {
-            // Zero padding on every side copies the input unchanged.
-            ImageOpKind::Pad {
-                top: 0,
-                bottom: 0,
-                left: 0,
-                right: 0,
-                ..
-            } => IdentityRule::Always {
-                deciding_params: &["top", "bottom", "left", "right"],
-            },
-            // Padding to the current size adds nothing: if the output shape is
-            // preserved, no pixels were added. (Letterbox resamples first, so
-            // shape preservation does *not* imply a no-op — it stays Never.)
-            ImageOpKind::PadToSize { .. } => IdentityRule::WhenShapePreserved {
-                deciding_params: &[],
-            },
+            // A pad that adds nothing, or padding to the current size, copies
+            // the input unchanged: `OpShape::preserves` decides whether this
+            // one does. (Letterbox resamples first, so shape preservation does
+            // *not* imply a no-op — it stays Never.)
+            ImageOpKind::Pad { .. } | ImageOpKind::PadToSize { .. } => {
+                IdentityRule::WhenShapePreserved
+            }
             // Everything else transforms values or coordinates: resamples,
             // reduces/reorders channels, thresholds, filters, or smooths (a
             // blur with sigma 0 is a degenerate NaN kernel, not an identity).
-            ImageOpKind::Pad { .. }
-            | ImageOpKind::Letterbox { .. }
+            ImageOpKind::Letterbox { .. }
             | ImageOpKind::Resize { .. }
             | ImageOpKind::ResizeScale { .. }
             | ImageOpKind::ResizeToHeight { .. }
@@ -414,7 +475,7 @@ impl Op for ImageOp {
             | ImageOpKind::ResizeMax { .. }
             | ImageOpKind::ResizeMin { .. }
             | ImageOpKind::Blur { .. }
-            | ImageOpKind::Threshold(_)
+            | ImageOpKind::Threshold { .. }
             | ImageOpKind::Grayscale
             | ImageOpKind::ChannelSwap { .. }
             | ImageOpKind::Erode { .. }
@@ -435,23 +496,26 @@ impl Op for ImageOp {
         match &self.kind {
             // Per-element: threshold compares one pixel, grayscale combines the
             // channels at one pixel, channel_swap reorders channels in place.
-            ImageOpKind::Threshold(_)
+            ImageOpKind::Threshold { .. }
             | ImageOpKind::Grayscale
             | ImageOpKind::ChannelSwap { .. } => SpatialDependency::Pointwise,
             // Separable Gaussian of radius ceil(3σ) — the radius
             // `gaussian_kernel_1d` builds in the runner.
-            ImageOpKind::Blur { sigma } => {
-                SpatialDependency::neighborhood((sigma * 3.0).ceil() as usize)
-            }
+            ImageOpKind::Blur { sigma } => SpatialDependency::neighborhood_of(
+                M::sym(sigma).map(|sigma| (sigma * 3.0).ceil() as usize),
+            ),
             // A ksize×ksize structuring element applied `iterations` times
             // reaches (ksize / 2) * iterations pixels out.
             ImageOpKind::Erode { ksize, iterations }
             | ImageOpKind::Dilate { ksize, iterations } => {
-                SpatialDependency::neighborhood((*ksize as usize / 2) * *iterations as usize)
+                SpatialDependency::neighborhood_of(match (M::sym(ksize), M::sym(iterations)) {
+                    (Sym::Known(k), Sym::Known(n)) => Sym::Known((k as usize / 2) * n as usize),
+                    _ => Sym::PerRow,
+                })
             }
             // Gradient = one dilate − one erode, each of half-extent ksize / 2.
             ImageOpKind::MorphGradient { ksize } => {
-                SpatialDependency::neighborhood(*ksize as usize / 2)
+                SpatialDependency::neighborhood_of(M::sym(ksize).map(|k| k as usize / 2))
             }
             // Canny's hysteresis links edges via connectivity that can span the
             // whole image, so its support is not bounded — treat as global.
@@ -499,7 +563,7 @@ impl Op for ImageOp {
             // Grayscale uses BT.601 channel reduction — generic over dtype.
             ImageOpKind::Grayscale => None,
             // Threshold compares each element against a float threshold — generic.
-            ImageOpKind::Threshold(_) => None,
+            ImageOpKind::Threshold { .. } => None,
             // Blur operates on the input's native dtype (u8/u16/f32 directly;
             // other dtypes via an f32 round-trip inside the kernel).
             ImageOpKind::Blur { .. } => None,
@@ -532,7 +596,7 @@ impl Op for ImageOp {
             // Grayscale is a channel reduction that preserves element dtype.
             ImageOpKind::Grayscale => OutputDTypeRule::PreserveInput,
             // Threshold always produces a U8 binary mask (0 or 255).
-            ImageOpKind::Threshold(_) => OutputDTypeRule::Fixed(DType::U8),
+            ImageOpKind::Threshold { .. } => OutputDTypeRule::Fixed(DType::U8),
             // Blur preserves the input dtype (Gaussian smoothing is value-preserving).
             ImageOpKind::Blur { .. } => OutputDTypeRule::PreserveInput,
             // Canny produces a U8 binary edge map (0 or 255).
@@ -555,5 +619,27 @@ impl Op for ImageOp {
             | ImageOpKind::Letterbox { .. }
             | ImageOpKind::ChannelSwap { .. } => OutputDTypeRule::PreserveInput,
         }
+    }
+}
+
+#[cfg(test)]
+mod rule_tests {
+    use super::*;
+    use crate::mode::{Param, Wire};
+    use crate::ops::spatial_rule::NeighborhoodSupport;
+
+    /// A rule that reads a per-row value says so rather than reading a
+    /// stand-in: a blur whose sigma is per-row has a per-row radius.
+    #[test]
+    fn a_per_row_sigma_plans_a_per_row_radius() {
+        let blur = |sigma| ImageOp::<Wire> {
+            kind: ImageOpKind::Blur { sigma },
+        };
+        let radius = |op: ImageOp<Wire>| match op.spatial_dependency() {
+            SpatialDependency::Neighborhood(NeighborhoodSupport { radius }) => radius,
+            other => panic!("a blur is a neighborhood, got {other:?}"),
+        };
+        assert_eq!(radius(blur(Param::Slot(1))), Sym::PerRow);
+        assert_eq!(radius(blur(Param::Lit(1.0))), Sym::Known(3));
     }
 }

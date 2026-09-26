@@ -46,7 +46,7 @@ pub mod view;
 
 pub use binary::BinaryOp;
 pub use color::{ColorConvertOp, ColorSpace};
-pub use compute::{ComputeOp, NormalizeMethod};
+pub use compute::{ComputeOp, Normalization, NormalizeMethod};
 pub use dto::ViewDto;
 pub use filter::{BorderMode, ConvolveOp};
 pub use histogram::{HistogramOp, HistogramOutput};
@@ -56,7 +56,7 @@ pub use pad::{PadMode, PadPosition};
 pub use phash::{HashAlgorithm, PerceptualHashOp};
 pub use reduction::ReductionOp;
 pub use scalar::{FusedKernel, ScalarOp};
-pub use shape_rule::{OutputChannelRule, OutputRankRule};
+pub use shape_rule::{Dim, OpShape, Sym};
 pub use spatial_rule::{GeometricEffect, NeighborhoodSupport, SpatialDependency};
 pub use traits::{IdentityRule, MemoryEffect, Op};
 pub use validation::ValidationError;
@@ -84,26 +84,16 @@ pub enum Domain {
     Scalar,
     /// Multiple scalar values (bbox, centroid, etc.).
     Vector,
-    /// Accepts any domain (e.g., identity, materialize).
-    Any,
 }
 
-crate::naming::named_variants!(Domain {
+crate::naming::named_variants!(Domain: "The kind of data a pipeline carries at one point: ``buffer`` (an image or array), ``contour`` (geometry), ``scalar`` or ``vector``." {
     "buffer" => Buffer,
     "contour" => Contour,
     "scalar" => Scalar,
     "vector" => Vector,
-    "any" => Any,
 });
 
 impl Domain {
-    /// Check if this domain can accept input from another domain.
-    ///
-    /// `Any` domain accepts all inputs.
-    pub fn accepts(&self, input: Domain) -> bool {
-        *self == Domain::Any || *self == input
-    }
-
     /// Get a human-readable name for the domain.
     pub fn name(&self) -> &'static str {
         Self::NAMED

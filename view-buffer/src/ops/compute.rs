@@ -3,18 +3,18 @@
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::affine::{AffineParams, InterpolationType};
 use crate::ops::scalar::{FusedKernel, ScalarOp};
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::{OpShape, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use crate::mode::{size, Exec, Mode};
+use crate::ops::view::ViewOp;
+use polars_cv_macros::{Ops, Resolve};
 
-/// Method for normalizing data.
+/// A normalization, with the per-channel statistics a preset carries.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum NormalizeMethod {
+pub enum Normalization {
     /// Scale to [0.0, 1.0] range using min/max.
     MinMax,
     /// Standardize using (x - mean) / std (computed per-image).
@@ -37,62 +37,271 @@ pub enum NormalizeMethod {
     },
 }
 
-impl NormalizeMethod {
-    /// Canonical Python-facing method names.
-    ///
-    /// `Preset` carries payload, so this enum cannot use the `named_variants!`
-    /// value table; the parser handles `preset` structurally (it needs the
-    /// `mean`/`std` parameters). The exhaustive match below still forces this
-    /// list to be revisited when a variant is added.
-    pub const NAMES: &'static [&'static str] = &["minmax", "zscore", "preset"];
+/// Which normalization: the user-facing method name, without its payload.
+///
+/// `Normalization::Preset` carries statistics, so it cannot hold a
+/// `named_variants!` table; this fieldless twin does, and
+/// [`Normalization::method`] ties the two together exhaustively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NormalizeMethod {
+    MinMax,
+    ZScore,
+    Preset,
 }
 
-const _: fn(&NormalizeMethod) = |m| match m {
-    NormalizeMethod::MinMax | NormalizeMethod::ZScore | NormalizeMethod::Preset { .. } => (),
-};
+crate::naming::named_variants!(NormalizeMethod: "Normalization methods (``PRESET``: channel-wise with preset mean/std values)." {
+    "minmax" => MinMax,
+    "zscore" => ZScore,
+    "preset" => Preset,
+});
 
-/// Compute operations that process data element-wise or globally.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum ComputeOp {
+impl Normalization {
+    /// The method this normalization is.
+    pub fn method(&self) -> NormalizeMethod {
+        match self {
+            Normalization::MinMax => NormalizeMethod::MinMax,
+            Normalization::ZScore => NormalizeMethod::ZScore,
+            Normalization::Preset { .. } => NormalizeMethod::Preset,
+        }
+    }
+}
+
+/// The compute ops: one variant per wire op (see `crate::mode`), plus the
+/// engine-internal variants that lowering and fusion produce. Each wire
+/// variant's doc comment is its Python docstring.
+#[derive(Debug, Clone, PartialEq, Ops, Resolve)]
+pub enum ComputeOp<M: Mode = Exec> {
     /// Cast to a different data type.
-    Cast(DType),
+    #[op(name = "cast", sample = {"dtype": "f32"})]
+    Cast {
+        /// Target data type (e.g., "f32", "u8").
+        dtype: M::L<DType>,
+    },
+    /// Multiply all values by a factor.
+    ///
+    /// The public `Pipeline.scale` is sugar over this op that adds
+    /// `out_dtype`/`preserve_dtype` (a trailing cast).
+    #[op(name = "scale", visibility = Internal, sample = {"factor": 2.0})]
+    Scale {
+        /// Scale factor.
+        factor: M::V<f32>,
+    },
+    /// Apply ReLU activation (max(0, x)): negative values become zero.
+    #[op(name = "relu", sample = {})]
+    Relu,
+    /// Normalize values to a standard range.
+    ///
+    /// Example:
+    ///     >>> Pipeline().source().normalize(method="minmax")
+    ///     >>> Pipeline().source().normalize(
+    ///     ...     method="preset",
+    ///     ...     mean=[0.485, 0.456, 0.406],
+    ///     ...     std=[0.229, 0.224, 0.225],
+    ///     ... )
+    #[op(name = "normalize", sample = {"method": "preset", "mean": [0.5], "std": [0.25],
+                                       "out_dtype": "f32"})]
+    Normalize {
+        /// Normalization method: "minmax" scales values to [0, 1] using
+        /// per-element min/max; "zscore" standardizes to mean=0, std=1 using
+        /// per-element statistics; "preset" applies ImageNet-style channel-wise
+        /// normalization, `(x - mean[c]) / std[c]`, with the given `mean` and `std`.
+        #[param(default = "minmax")]
+        method: M::L<NormalizeMethod>,
+        /// Per-channel mean values; required for, and only valid with,
+        /// method="preset" (e.g. ImageNet `[0.485, 0.456, 0.406]`). Each element may
+        /// be a literal float or a Polars expression; the list length is the channel
+        /// count.
+        mean: Option<Vec<M::V<f32>>>,
+        /// Per-channel standard deviation values; required for, and only valid
+        /// with, method="preset" (e.g. ImageNet `[0.229, 0.224, 0.225]`). Each
+        /// element accepts an expression, as with `mean`.
+        std: Option<Vec<M::V<f32>>>,
+        /// Output dtype (default f32). Normalization computes in f32 and the result
+        /// is cast to this dtype at execution. For half precision use the sink
+        /// dtype instead (`.sink("numpy", dtype="f16")`).
+        out_dtype: Option<M::L<DType>>,
+    },
+    /// Clamp values to a range.
+    ///
+    /// The public `Pipeline.clamp` is sugar over this op that adds
+    /// `out_dtype`/`preserve_dtype` (a trailing cast).
+    #[op(name = "clamp", visibility = Internal, sample = {"min": 0.0, "max": 1.0})]
+    Clamp {
+        /// Minimum value (literal or expression).
+        min: M::V<f32>,
+        /// Maximum value (literal or expression).
+        max: M::V<f32>,
+    },
+    /// Adjust image contrast: `(pixel - mean) * factor + mean`.
+    ///
+    /// Example:
+    ///     >>> pipe = Pipeline().source("image_bytes").adjust_contrast(factor=1.5)
+    #[op(name = "adjust_contrast", sample = {"factor": 1.5})]
+    AdjustContrast {
+        /// Contrast factor. 1.0 = no change, >1 = more contrast, <1 = less.
+        factor: M::V<f32>,
+    },
+    /// Apply gamma (power-law) correction: normalize to [0,1], raise to `gamma`,
+    /// denormalize.
+    ///
+    /// Example:
+    ///     >>> pipe = Pipeline().source("image_bytes").adjust_gamma(gamma=0.5)
+    #[op(name = "adjust_gamma", sample = {"gamma": 0.5})]
+    AdjustGamma {
+        /// Gamma value. <1 = brighter, >1 = darker, 1.0 = no change.
+        gamma: M::V<f32>,
+    },
+    /// Invert pixel values: `255 - pixel` for u8, `1.0 - pixel` for float [0,1].
+    #[op(name = "invert", sample = {})]
+    Invert,
+    /// Negate every value (`-x`).
+    #[op(name = "neg", sample = {})]
+    Neg,
+    /// Absolute value (`|x|`).
+    #[op(name = "abs", sample = {})]
+    Abs,
+    /// Square root (`sqrt(x)`; NaN for negative input).
+    #[op(name = "sqrt", sample = {})]
+    Sqrt,
+    /// Square (`x * x`).
+    #[op(name = "square", sample = {})]
+    Square,
+    /// Reciprocal (`1 / x`; ±inf at zero).
+    #[op(name = "reciprocal", sample = {})]
+    Reciprocal,
+    /// Sign: `-1`/`0`/`+1` (`0` for ±0, NaN for NaN).
+    #[op(name = "sign", sample = {})]
+    Sign,
+    /// Round toward negative infinity.
+    #[op(name = "floor", sample = {})]
+    Floor,
+    /// Round toward positive infinity.
+    #[op(name = "ceil", sample = {})]
+    Ceil,
+    /// Round to nearest, ties to even (matches Polars/numpy).
+    #[op(name = "round", sample = {})]
+    Round,
+    /// Round toward zero (drop the fractional part).
+    #[op(name = "trunc", sample = {})]
+    Trunc,
+    /// Floor values at `value` (`max(x, value)`); one-sided clamp.
+    #[op(name = "clamp_min", sample = {"value": 0.0})]
+    ClampMin {
+        /// Lower bound (literal or per-row expression).
+        value: M::V<f32>,
+    },
+    /// Cap values at `value` (`min(x, value)`); one-sided clamp.
+    #[op(name = "clamp_max", sample = {"value": 1.0})]
+    ClampMax {
+        /// Upper bound (literal or per-row expression).
+        value: M::V<f32>,
+    },
+    /// Add a constant to every value (`x + value`).
+    #[op(name = "add_constant", sample = {"value": 1.0})]
+    AddConstant {
+        /// Constant addend (literal or per-row expression).
+        value: M::V<f32>,
+    },
+    /// Subtract a constant from every value (`x - value`).
+    #[op(name = "subtract_constant", sample = {"value": 1.0})]
+    SubtractConstant {
+        /// Constant subtrahend (literal or per-row expression).
+        value: M::V<f32>,
+    },
+    /// Apply a 2x3 affine transformation matrix.
+    ///
+    /// The matrix ``[a, b, tx, c, d, ty]`` is a **forward** mapping from
+    /// source to destination (same convention as OpenCV ``warpAffine``):
+    ///
+    /// ```text
+    /// x_dst = a * x_src + b * y_src + tx
+    /// y_dst = c * x_src + d * y_src + ty
+    /// ```
+    ///
+    /// The kernel inverts this matrix internally for interpolation.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> # Translate image by (50, 30)
+    ///     >>> pipe = Pipeline().source("image_bytes").warp_affine(
+    ///     ...     matrix=[1.0, 0.0, 50.0, 0.0, 1.0, 30.0],
+    ///     ...     output_size=(224, 224),
+    ///     ... )
+    ///     >>>
+    ///     >>> # Per-sample random affine: each row uses its own matrix columns
+    ///     >>> pipe = Pipeline().source("image_bytes").warp_affine(
+    ///     ...     matrix=[pl.col("a"), pl.col("b"), pl.col("tx"),
+    ///     ...             pl.col("c"), pl.col("d"), pl.col("ty")],
+    ///     ...     output_size=(224, 224),
+    ///     ... )
+    ///     ```
+    #[op(name = "warp_affine", sample = {"matrix": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                                         "output_size": [4, 4],
+                                         "interpolation": "bilinear",
+                                         "border_value": 0.0})]
+    WarpAffine {
+        /// Six-element sequence representing the 2x3 affine matrix
+        /// ``[a, b, tx, c, d, ty]`` (forward mapping). **Each element may be a
+        /// literal float or a Polars expression**, so a batch can apply a
+        /// different (e.g. random) affine per row in one call — the matrix is
+        /// resolved per row at execution.
+        matrix: [M::V<f64>; 6],
+        /// ``(height, width)`` of the output image. Each element accepts a Polars
+        /// expression for per-row dynamic values.
+        output_size: [M::V<u32>; 2],
+        /// Interpolation method -- ``"bilinear"`` (default) or ``"nearest"``.
+        #[param(default = "bilinear")]
+        interpolation: M::V<InterpolationType>,
+        /// Pixel value for out-of-bounds regions (default 0).
+        #[param(default = 0.0)]
+        border_value: M::V<f64>,
+    },
+    /// Rotate image by specified angle.
+    ///
+    /// For angles of 90, 180, or 270 degrees, this uses zero-copy view operations
+    /// (``interpolation`` and ``border_value`` do not apply: nothing is resampled
+    /// and no out-of-bounds region is exposed). For arbitrary angles, the rotation
+    /// is performed via an affine transformation using the specified
+    /// interpolation and border value. For combined rotation + scale or explicit
+    /// output sizing, use :meth:`rotate_and_scale` or :meth:`warp_affine`.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> pipe = Pipeline().source("image_bytes").rotate(90)
+    ///     >>> pipe = Pipeline().source("image_bytes").rotate(45, expand=True)
+    ///     >>> pipe = Pipeline().source("image_bytes").rotate(pl.col("angle"))
+    ///     >>> pipe = Pipeline().source("image_bytes").rotate(30, interpolation="nearest")
+    ///     ```
+    #[op(name = "rotate", sample = {"angle": 30.0, "expand": true, "interpolation": "nearest",
+                                    "border_value": 0.0})]
+    Rotate {
+        /// Rotation angle in degrees (positive = clockwise). Can be a literal float
+        /// or Polars expression.
+        angle: M::V<f32>,
+        /// If True, expand output dimensions to fit rotated image. If False
+        /// (default), keep original dimensions (corners may be cropped).
+        #[param(default = false)]
+        expand: M::L<bool>,
+        /// Interpolation method for arbitrary angles -- ``"bilinear"`` (default) or
+        /// ``"nearest"``. Not applicable to 90/180/270 degree rotations.
+        #[param(default = "bilinear")]
+        interpolation: M::V<InterpolationType>,
+        /// Fill value for out-of-bounds pixels (default 0). Not applicable to
+        /// 90/180/270 degree rotations.
+        #[param(default = 0.0)]
+        border_value: M::V<f64>,
+    },
+    // --- Engine-internal: produced by lowering and fusion, never on the wire.
     /// Apply an affine transformation.
     Affine(AffineParams),
-    /// Scale by a constant factor.
-    Scale(f32),
-    /// Apply ReLU activation.
-    Relu,
     /// Apply a fused kernel of scalar operations.
     Fused(FusedKernel),
-    /// A single pure-elementwise scalar op (`abs`, `sqrt`, `min(c)`, …).
+    /// A single pure-elementwise scalar op, as fusion's lowering and the
+    /// engine's own builders express one (`ScalarOp` is the one arithmetic
+    /// authority; the wire's scalar ops lower to it through [`scalar`]).
     ///
-    /// The user-facing bridge for the core math primitives: each such
-    /// `Pipeline` method resolves to one `ComputeOp::Scalar(ScalarOp)`. It
-    /// carries the same `PromoteToFloat` contract as `Scale`/`Relu`/`Clamp` and
-    /// lowers (via `extract_ops`) to its inner `ScalarOp`, so the fused and
-    /// unfused paths share one arithmetic authority. `ScalarOp` is the single
-    /// source of both the arithmetic and the op identity, so no per-op
-    /// `ComputeOp` variant is needed.
+    /// [`scalar`]: ComputeOp::scalar
     Scalar(ScalarOp),
-    /// Normalize data - requires full buffer scan. Only supports 2D-like shapes (HW or HW1).
-    ///
-    /// Computation always happens in f32; the second field is the output dtype,
-    /// folded from the structural `out_dtype` parameter (defaulting to `F32`).
-    /// The op reports it via a `Fixed(out_dtype)` rule, so the planner's
-    /// `output_dtype_rule().resolve(input)` already yields it; execution casts
-    /// the f32 result to it so the produced dtype matches — see the
-    /// dtype-contract tests.
-    Normalize(NormalizeMethod, DType),
-    /// Clamp values to [min, max] range.
-    Clamp { min: f32, max: f32 },
-    /// Adjust contrast: `(pixel - mean) * factor + mean`.
-    /// Requires full buffer scan to compute the mean.
-    AdjustContrast(f32),
-    /// Adjust gamma (power-law): normalize to [0,1], apply `pixel^gamma`, denormalize.
-    AdjustGamma(f32),
-    /// Invert pixel values: `max_val - pixel` (255 for u8, 1.0 for float).
-    Invert,
     /// Deferred rotation via affine transform. The affine matrix is built at
     /// execution time from the actual buffer dimensions so that the image
     /// center is computed correctly.
@@ -104,92 +313,292 @@ pub enum ComputeOp {
     },
 }
 
-impl Op for ComputeOp {
-    fn name(&self) -> &'static str {
+impl<M: Mode> ComputeOp<M> {
+    /// How this op's output shape follows from its input — the one
+    /// definition, read on the `Wire` op at plan time and on the `Exec` op
+    /// at execution.
+    pub fn shape(&self) -> OpShape {
         match self {
-            ComputeOp::Cast(_) => "Cast",
-            ComputeOp::Affine(_) => "Affine",
-            ComputeOp::Scale(_) => "Scale",
-            ComputeOp::Relu => "Relu",
-            ComputeOp::Fused(_) => "Fused",
-            ComputeOp::Normalize(..) => "Normalize",
-            ComputeOp::Clamp { .. } => "Clamp",
-            ComputeOp::AdjustContrast(_) => "AdjustContrast",
-            ComputeOp::AdjustGamma(_) => "AdjustGamma",
-            ComputeOp::Invert => "Invert",
-            ComputeOp::RotateAffine { .. } => "RotateAffine",
-            ComputeOp::Scalar(s) => s.name(),
+            ComputeOp::WarpAffine {
+                output_size: [h, w],
+                ..
+            } => OpShape::SetHw {
+                h: size::<M>(h),
+                w: size::<M>(w),
+            },
+            ComputeOp::Rotate { angle, expand, .. } => match (M::sym(angle), M::lit(expand)) {
+                // A per-row angle is a lattice rotation (swapping H/W) on some
+                // rows and a resampling on others.
+                (Sym::PerRow, false) => OpShape::MaybeSwapHw,
+                (Sym::PerRow, true) => OpShape::RotateExpand(Sym::PerRow),
+                (Sym::Known(angle), expand) => match Rotation::of(angle) {
+                    Rotation::Lattice(view) => view.shape(),
+                    Rotation::Identity => OpShape::Preserve,
+                    Rotation::Resample(angle) if expand => OpShape::RotateExpand(Sym::Known(angle)),
+                    Rotation::Resample(_) => OpShape::Preserve,
+                },
+            },
+            ComputeOp::Affine(params) => OpShape::SetHw {
+                h: Sym::Known(params.output_height as usize),
+                w: Sym::Known(params.output_width as usize),
+            },
+            ComputeOp::RotateAffine {
+                angle_deg,
+                expand: true,
+                ..
+            } => OpShape::RotateExpand(Sym::Known(*angle_deg)),
+            _ => OpShape::Preserve,
         }
     }
 
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
-        match self {
-            ComputeOp::Affine(params) => {
-                let input_shape = inputs[0];
-                let mut s = input_shape.to_vec();
-                if s.len() >= 2 {
-                    s[0] = params.output_height as usize;
-                    s[1] = params.output_width as usize;
+    /// Refuse a parameter combination no row can execute, from the
+    /// parameters alone: `mean`/`std` belong to `method="preset"` only, and
+    /// it needs both, of one length. Checked when the op is planned.
+    pub fn check(&self) -> Result<(), String> {
+        // Warping is inverse mapping — for each output pixel, ask where it
+        // came from — so a matrix that collapses the plane onto a line or a
+        // point has no answer. Refused where every coefficient is known: at
+        // plan time for a literal matrix, per row for a per-row one.
+        if let ComputeOp::WarpAffine { matrix, .. } = self {
+            let known: Option<Vec<f64>> = matrix.iter().map(|c| M::sym(c).known()).collect();
+            if let Some(known) = known {
+                let [a, b, _, c, d, _] =
+                    [known[0], known[1], known[2], known[3], known[4], known[5]];
+                let determinant = a * d - b * c;
+                if determinant.abs() < AffineParams::SINGULAR_EPSILON {
+                    return Err(format!(
+                        "warp_affine: matrix {known:?} is singular (determinant \
+                         {determinant}), so it has no inverse and the warp is undefined. \
+                         A row of zeros, a zero scale factor on an axis, or two \
+                         proportional rows will do this."
+                    ));
                 }
-                s
             }
-            ComputeOp::RotateAffine {
-                angle_deg, expand, ..
-            } => {
-                let input_shape = inputs[0];
-                if !expand || input_shape.len() < 2 {
-                    return input_shape.to_vec();
-                }
-                let ih = input_shape[0] as f64;
-                let iw = input_shape[1] as f64;
-                let rad = (*angle_deg as f64) * std::f64::consts::PI / 180.0;
-                let abs_cos = rad.cos().abs();
-                let abs_sin = rad.sin().abs();
-                let new_w = (iw * abs_cos + ih * abs_sin).round() as usize;
-                let new_h = (ih * abs_cos + iw * abs_sin).round() as usize;
-                let mut s = input_shape.to_vec();
-                s[0] = new_h;
-                s[1] = new_w;
-                s
-            }
-            _ => inputs[0].to_vec(),
+            return Ok(());
         }
+        let ComputeOp::Normalize {
+            method, mean, std, ..
+        } = self
+        else {
+            return Ok(());
+        };
+        match M::lit(method) {
+            NormalizeMethod::MinMax | NormalizeMethod::ZScore => {
+                if mean.is_some() || std.is_some() {
+                    return Err("mean/std parameters are only valid for method='preset'".into());
+                }
+            }
+            NormalizeMethod::Preset => {
+                let (Some(mean), Some(std)) = (mean, std) else {
+                    return Err("method='preset' requires both 'mean' and 'std' parameters".into());
+                };
+                if mean.len() != std.len() {
+                    return Err(format!(
+                        "mean length ({}) must match std length ({})",
+                        mean.len(),
+                        std.len()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// What a rotation by `angle` degrees is: the one classification the
+/// planner's shape and execution's lowering both read.
+enum Rotation {
+    /// A multiple of 90° other than 0: a zero-copy view.
+    Lattice(ViewOp),
+    /// 0° (mod 360): nothing moves.
+    Identity,
+    /// Any other angle (normalized to `[0, 360)`): resampled.
+    Resample(f32),
+}
+
+impl Rotation {
+    fn of(angle: f32) -> Rotation {
+        const EPSILON: f32 = 0.001;
+        let angle = angle.rem_euclid(360.0);
+        let near = |target: f32| (angle - target).abs() < EPSILON;
+        if near(90.0) {
+            Rotation::Lattice(ViewOp::Rotate90)
+        } else if near(180.0) {
+            Rotation::Lattice(ViewOp::Rotate180)
+        } else if near(270.0) {
+            Rotation::Lattice(ViewOp::Rotate270)
+        } else if near(0.0) || near(360.0) {
+            Rotation::Identity
+        } else {
+            Rotation::Resample(angle)
+        }
+    }
+}
+
+impl ComputeOp {
+    /// The engine step this op executes as. A rotation by a lattice angle is
+    /// a zero-copy view and any other a resampling warp, chosen from the
+    /// (resolved) angle; a warp's matrix becomes its `AffineParams`. Every
+    /// other op executes as itself.
+    pub fn lowered(self) -> crate::ops::dto::ViewDto {
+        use crate::ops::dto::ViewDto;
+        match self {
+            ComputeOp::Rotate {
+                angle,
+                expand,
+                interpolation,
+                border_value,
+            } => match Rotation::of(angle) {
+                Rotation::Lattice(view) => ViewDto::View(view),
+                // The lattice rotations and the 0° no-op are exact
+                // permutations of the input pixels; `interpolation` and
+                // `border_value` apply only to the resampling branch.
+                Rotation::Identity => ViewDto::Compute(ComputeOp::RotateAffine {
+                    angle_deg: 0.0,
+                    expand: false,
+                    interpolation: InterpolationType::Bilinear,
+                    border_value: 0.0,
+                }),
+                // The matrix is built at execution from the buffer's size.
+                Rotation::Resample(angle) => ViewDto::Compute(ComputeOp::RotateAffine {
+                    angle_deg: angle,
+                    expand,
+                    interpolation,
+                    border_value,
+                }),
+            },
+            ComputeOp::WarpAffine {
+                matrix,
+                output_size: [output_height, output_width],
+                interpolation,
+                border_value,
+            } => ViewDto::Compute(ComputeOp::Affine(AffineParams {
+                matrix,
+                output_height,
+                output_width,
+                interpolation,
+                border_value,
+            })),
+            other => ViewDto::Compute(other),
+        }
+    }
+
+    /// The pure-elementwise scalar op this is, when it is one: the one
+    /// arithmetic authority fusion and the unfused path both run.
+    pub fn scalar(&self) -> Option<ScalarOp> {
+        Some(match *self {
+            ComputeOp::Neg => ScalarOp::Neg,
+            ComputeOp::Abs => ScalarOp::Abs,
+            ComputeOp::Sqrt => ScalarOp::Sqrt,
+            ComputeOp::Square => ScalarOp::Square,
+            ComputeOp::Reciprocal => ScalarOp::Recip,
+            ComputeOp::Sign => ScalarOp::Sign,
+            ComputeOp::Floor => ScalarOp::Floor,
+            ComputeOp::Ceil => ScalarOp::Ceil,
+            ComputeOp::Round => ScalarOp::Round,
+            ComputeOp::Trunc => ScalarOp::Trunc,
+            ComputeOp::ClampMin { value } => ScalarOp::Max(value),
+            ComputeOp::ClampMax { value } => ScalarOp::Min(value),
+            ComputeOp::AddConstant { value } => ScalarOp::Add(value),
+            ComputeOp::SubtractConstant { value } => ScalarOp::Sub(value),
+            ComputeOp::Scalar(ref s) => s.clone(),
+            _ => return None,
+        })
+    }
+
+    /// A `Normalize` op performing `normalization`, emitting `out_dtype`.
+    pub fn from_normalization(normalization: Normalization, out_dtype: DType) -> Self {
+        let method = normalization.method();
+        let (mean, std) = match normalization {
+            Normalization::Preset { mean, std } => (Some(mean), Some(std)),
+            Normalization::MinMax | Normalization::ZScore => (None, None),
+        };
+        ComputeOp::Normalize {
+            method,
+            mean,
+            std,
+            out_dtype: Some(out_dtype),
+        }
+    }
+
+    /// The normalization a `Normalize` op performs (its parameters having
+    /// passed [`check`](Self::check)).
+    pub fn normalization(
+        method: NormalizeMethod,
+        mean: &Option<Vec<f32>>,
+        std: &Option<Vec<f32>>,
+    ) -> Normalization {
+        match (method, mean, std) {
+            (NormalizeMethod::MinMax, ..) => Normalization::MinMax,
+            (NormalizeMethod::ZScore, ..) => Normalization::ZScore,
+            (NormalizeMethod::Preset, mean, std) => Normalization::Preset {
+                mean: mean.clone().unwrap_or_default(),
+                std: std.clone().unwrap_or_default(),
+            },
+        }
+    }
+}
+
+impl<M: Mode> Op for ComputeOp<M> {
+    fn name(&self) -> &'static str {
+        // A scalar op is named by the one arithmetic authority it lowers to
+        // (`scalar()`; `wire_scalars_are_named_as_their_scalar_op` pins it).
+        match self {
+            ComputeOp::Scalar(s) => s.name(),
+            ComputeOp::Neg => "Neg",
+            ComputeOp::Abs => "Abs",
+            ComputeOp::Sqrt => "Sqrt",
+            ComputeOp::Square => "Square",
+            ComputeOp::Reciprocal => "Recip",
+            ComputeOp::Sign => "Sign",
+            ComputeOp::Floor => "Floor",
+            ComputeOp::Ceil => "Ceil",
+            ComputeOp::Round => "Round",
+            ComputeOp::Trunc => "Trunc",
+            ComputeOp::ClampMin { .. } => "Max",
+            ComputeOp::ClampMax { .. } => "Min",
+            ComputeOp::Cast { .. } => "Cast",
+            ComputeOp::Affine(_) => "Affine",
+            ComputeOp::Scale { .. } => "Scale",
+            ComputeOp::Relu => "Relu",
+            ComputeOp::Fused(_) => "Fused",
+            ComputeOp::Normalize { .. } => "Normalize",
+            ComputeOp::Clamp { .. } => "Clamp",
+            ComputeOp::AdjustContrast { .. } => "AdjustContrast",
+            ComputeOp::AdjustGamma { .. } => "AdjustGamma",
+            ComputeOp::Invert => "Invert",
+            ComputeOp::RotateAffine { .. } => "RotateAffine",
+            ComputeOp::WarpAffine { .. } => "WarpAffine",
+            ComputeOp::Rotate { .. } => "Rotate",
+            ComputeOp::AddConstant { .. } => "Add",
+            ComputeOp::SubtractConstant { .. } => "Sub",
+        }
+    }
+
+    fn shape(&self) -> OpShape {
+        ComputeOp::shape(self)
     }
 
     fn memory_effect(&self) -> MemoryEffect {
         match self {
-            ComputeOp::Cast(_) => MemoryEffect::StridePreserving,
-            ComputeOp::Scale(_) => MemoryEffect::StridePreserving,
-            ComputeOp::Relu => MemoryEffect::StridePreserving,
-            ComputeOp::Fused(_) => MemoryEffect::StridePreserving,
-            ComputeOp::Scalar(_) => MemoryEffect::StridePreserving,
-            ComputeOp::Clamp { .. } => MemoryEffect::StridePreserving,
-            ComputeOp::AdjustGamma(_) => MemoryEffect::StridePreserving,
-            ComputeOp::Invert => MemoryEffect::StridePreserving,
-            ComputeOp::Affine(_) => MemoryEffect::RequiresContiguous,
-            ComputeOp::RotateAffine { .. } => MemoryEffect::RequiresContiguous,
-            ComputeOp::Normalize(..) => MemoryEffect::RequiresContiguous,
-            ComputeOp::AdjustContrast(_) => MemoryEffect::RequiresContiguous,
+            ComputeOp::Affine(_)
+            | ComputeOp::RotateAffine { .. }
+            | ComputeOp::WarpAffine { .. }
+            | ComputeOp::Rotate { .. } => MemoryEffect::RequiresContiguous,
+            ComputeOp::Normalize { .. } | ComputeOp::AdjustContrast { .. } => {
+                MemoryEffect::RequiresContiguous
+            }
+            _ => MemoryEffect::StridePreserving,
         }
     }
 
     fn identity_rule(&self) -> IdentityRule {
         match self {
             // A same-dtype cast copies its input; any other target converts.
-            ComputeOp::Cast(_) => IdentityRule::WhenDtypePreserved,
+            ComputeOp::Cast { .. } => IdentityRule::WhenDtypePreserved,
             // Every other compute op transforms pixel values (arithmetic ops
             // also promote to float, so they are not even dtype-preserving).
-            ComputeOp::Affine(_)
-            | ComputeOp::Scale(_)
-            | ComputeOp::Relu
-            | ComputeOp::Fused(_)
-            | ComputeOp::Scalar(_)
-            | ComputeOp::Normalize(..)
-            | ComputeOp::Clamp { .. }
-            | ComputeOp::AdjustGamma(_)
-            | ComputeOp::Invert
-            | ComputeOp::AdjustContrast(_)
-            | ComputeOp::RotateAffine { .. } => IdentityRule::Never,
+            _ => IdentityRule::Never,
         }
     }
 
@@ -199,19 +608,17 @@ impl Op for ComputeOp {
 
     fn spatial_dependency(&self) -> SpatialDependency {
         match self {
-            // Per-element: output at (y, x) depends only on input at (y, x).
-            ComputeOp::Cast(_)
-            | ComputeOp::Scale(_)
-            | ComputeOp::Relu
-            | ComputeOp::Fused(_)
-            | ComputeOp::Scalar(_)
-            | ComputeOp::Clamp { .. }
-            | ComputeOp::AdjustGamma(_)
-            | ComputeOp::Invert => SpatialDependency::Pointwise,
             // Read a global statistic (min/max/mean/std) over all pixels.
-            ComputeOp::Normalize(..) | ComputeOp::AdjustContrast(_) => SpatialDependency::Global,
+            ComputeOp::Normalize { .. } | ComputeOp::AdjustContrast { .. } => {
+                SpatialDependency::Global
+            }
             // Resample onto a transformed coordinate grid.
-            ComputeOp::Affine(_) | ComputeOp::RotateAffine { .. } => SpatialDependency::geometric(),
+            ComputeOp::Affine(_)
+            | ComputeOp::RotateAffine { .. }
+            | ComputeOp::WarpAffine { .. }
+            | ComputeOp::Rotate { .. } => SpatialDependency::geometric(),
+            // Per-element: output at (y, x) depends only on input at (y, x).
+            _ => SpatialDependency::Pointwise,
         }
     }
 
@@ -243,38 +650,47 @@ impl Op for ComputeOp {
         input_dtypes: &[DType],
     ) -> Result<(), ValidationError> {
         match self {
-            ComputeOp::Normalize(method, _) => {
+            ComputeOp::Normalize {
+                method, mean, std, ..
+            } => {
+                self.check()
+                    .map_err(|message| ValidationError::Generic { message })?;
                 let shape = input_shapes[0];
-
-                match method {
-                    // Global statistics over every element: any shape.
-                    NormalizeMethod::MinMax | NormalizeMethod::ZScore => {}
-                    NormalizeMethod::Preset { mean, std } => {
-                        if shape.len() < 2 || shape.len() > 3 {
-                            return Err(ValidationError::ShapeRequirement {
-                                requirement: "2D (HW) or 3D (HWC)",
-                                got: shape.to_vec(),
-                            });
-                        }
-                        let channels = if shape.len() == 3 { shape[2] } else { 1 };
-                        if mean.len() != channels || std.len() != channels {
-                            return Err(ValidationError::ShapeRequirement {
-                                requirement: "mean/std length must match channel count",
-                                got: vec![mean.len(), std.len(), channels],
-                            });
-                        }
+                if let (NormalizeMethod::Preset, Some(mean), Some(std)) =
+                    (M::lit(method), mean, std)
+                {
+                    if shape.len() < 2 || shape.len() > 3 {
+                        return Err(ValidationError::ShapeRequirement {
+                            requirement: "2D (HW) or 3D (HWC)",
+                            got: shape.to_vec(),
+                        });
+                    }
+                    let channels = if shape.len() == 3 { shape[2] } else { 1 };
+                    if mean.len() != channels || std.len() != channels {
+                        return Err(ValidationError::ShapeRequirement {
+                            requirement: "mean/std length must match channel count",
+                            got: vec![mean.len(), std.len(), channels],
+                        });
                     }
                 }
 
-                if !self.accepted_input_dtypes().accepts(input_dtypes[0]) {
-                    return Err(ValidationError::DTypeRequirement {
-                        expected: vec![DType::F32, DType::F64],
-                        got: input_dtypes[0],
-                    });
+                // A shape-only caller (plan-time validation) passes no dtype.
+                if let Some(&dtype) = input_dtypes.first() {
+                    if !self.accepted_input_dtypes().accepts(dtype) {
+                        return Err(ValidationError::DTypeRequirement {
+                            expected: vec![DType::F32, DType::F64],
+                            got: dtype,
+                        });
+                    }
                 }
                 Ok(())
             }
-            ComputeOp::Affine(_) | ComputeOp::RotateAffine { .. } => {
+            ComputeOp::WarpAffine { .. } => {
+                self.check()
+                    .map_err(|message| ValidationError::Generic { message })?;
+                crate::ops::validation::require_hw_or_hwc(input_shapes[0])
+            }
+            ComputeOp::Affine(_) | ComputeOp::RotateAffine { .. } | ComputeOp::Rotate { .. } => {
                 crate::ops::validation::require_hw_or_hwc(input_shapes[0])
             }
             _ => Ok(()),
@@ -283,72 +699,99 @@ impl Op for ComputeOp {
 
     fn accepted_input_dtypes(&self) -> DTypeCategory {
         match self {
-            ComputeOp::Normalize(..)
-            | ComputeOp::Scale(_)
-            | ComputeOp::Clamp { .. }
-            | ComputeOp::Relu
-            | ComputeOp::AdjustContrast(_)
-            | ComputeOp::AdjustGamma(_)
-            | ComputeOp::Invert => DTypeCategory::Numeric,
-            ComputeOp::Cast(_) => DTypeCategory::Any,
-            ComputeOp::Affine(_) => DTypeCategory::Any,
-            ComputeOp::RotateAffine { .. } => DTypeCategory::Any,
-            ComputeOp::Fused(_) => DTypeCategory::Any,
-            ComputeOp::Scalar(_) => DTypeCategory::Numeric,
+            ComputeOp::Cast { .. }
+            | ComputeOp::Affine(_)
+            | ComputeOp::RotateAffine { .. }
+            | ComputeOp::WarpAffine { .. }
+            | ComputeOp::Rotate { .. }
+            | ComputeOp::Fused(_) => DTypeCategory::Any,
+            _ => DTypeCategory::Numeric,
         }
     }
 
     fn working_dtype(&self) -> Option<DType> {
         match self {
-            ComputeOp::Normalize(..) => Some(DType::F32),
-            ComputeOp::Scale(_) => Some(DType::F32),
-            ComputeOp::Clamp { .. } => Some(DType::F32),
-            ComputeOp::Relu => Some(DType::F32),
-            ComputeOp::AdjustContrast(_) => Some(DType::F32),
-            ComputeOp::AdjustGamma(_) => Some(DType::F32),
+            ComputeOp::Normalize { .. }
+            | ComputeOp::Scale { .. }
+            | ComputeOp::Clamp { .. }
+            | ComputeOp::Relu
+            | ComputeOp::AdjustContrast { .. }
+            | ComputeOp::AdjustGamma { .. } => Some(DType::F32),
             // No fixed f32 working dtype: these compute in the input dtype
-            // (or defer to a nested kernel). Listed rather than `_ => None` so a
-            // new ComputeOp must declare its working dtype instead of inheriting
-            // `None` silently.
-            ComputeOp::Invert
-            | ComputeOp::Cast(_)
-            | ComputeOp::Affine(_)
-            | ComputeOp::RotateAffine { .. }
-            | ComputeOp::Fused(_)
-            // The kernel reads any dtype and converts internally (like Fused),
-            // so there is no external working-dtype pre-cast.
-            | ComputeOp::Scalar(_) => None,
+            // (or defer to a nested kernel, or — the scalar ops — read any
+            // dtype and convert internally, like Fused).
+            _ => None,
         }
-    }
-
-    fn output_rank_rule(&self) -> OutputRankRule {
-        // Every compute kind is element-wise or a geometric H/W warp
-        // (affine/rotate) — the rank is always preserved.
-        OutputRankRule::PreserveRank
-    }
-
-    fn output_channel_rule(&self) -> OutputChannelRule {
-        // Compute kinds operate per element and never add or drop channels.
-        OutputChannelRule::PreserveChannels
     }
 
     fn output_dtype_rule(&self) -> OutputDTypeRule {
         match self {
-            // The op is constructed with its output dtype already resolved
-            // (`out_dtype`, defaulting to F32), so the rule is that concrete
-            // dtype — no separate override pass is needed once the op exists.
-            ComputeOp::Normalize(_, out_dtype) => OutputDTypeRule::Fixed(*out_dtype),
-            ComputeOp::Scale(_) => OutputDTypeRule::PromoteToFloat,
-            ComputeOp::Clamp { .. } => OutputDTypeRule::PromoteToFloat,
-            ComputeOp::Relu => OutputDTypeRule::PromoteToFloat,
-            ComputeOp::AdjustContrast(_) => OutputDTypeRule::PromoteToFloat,
-            ComputeOp::AdjustGamma(_) => OutputDTypeRule::PromoteToFloat,
-            ComputeOp::Invert => OutputDTypeRule::PreserveInput,
-            ComputeOp::Cast(target) => OutputDTypeRule::Fixed(*target),
-            ComputeOp::Affine(_) => OutputDTypeRule::PreserveInput,
-            ComputeOp::RotateAffine { .. } => OutputDTypeRule::PreserveInput,
+            // Computation happens in f32; the result is cast to `out_dtype`.
+            ComputeOp::Normalize { out_dtype, .. } => {
+                OutputDTypeRule::Fixed(out_dtype.as_ref().map_or(DType::F32, M::lit))
+            }
+            ComputeOp::Cast { dtype } => OutputDTypeRule::Fixed(M::lit(dtype)),
             ComputeOp::Fused(k) => OutputDTypeRule::Fixed(k.out_dtype),
-            ComputeOp::Scalar(_) => OutputDTypeRule::PromoteToFloat,
+            ComputeOp::Invert
+            | ComputeOp::Affine(_)
+            | ComputeOp::RotateAffine { .. }
+            | ComputeOp::WarpAffine { .. }
+            | ComputeOp::Rotate { .. } => OutputDTypeRule::PreserveInput,
+            _ => OutputDTypeRule::PromoteToFloat,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mode::{Literals, Resolve, Wire};
+
+    /// The generic `name()` spells each wire scalar op's `ScalarOp` name
+    /// (a per-row value cannot build the `ScalarOp`); the executed op's
+    /// `scalar()` is the authority it must match.
+    #[test]
+    fn wire_scalars_are_named_as_their_scalar_op() {
+        let mut scalars = 0;
+        for wire in ComputeOp::<Wire>::samples() {
+            let exec: ComputeOp = wire.resolve(&Literals).unwrap();
+            assert_eq!(wire.name(), exec.name());
+            if let Some(scalar) = exec.scalar() {
+                assert_eq!(exec.name(), scalar.name(), "{exec:?}");
+                scalars += 1;
+            }
+        }
+        assert!(scalars >= 14, "only {scalars} scalar ops compared");
+    }
+
+    /// An op executes as the step it lowers to — `rotate` by a lattice angle
+    /// as a zero-copy view, `warp_affine` as `Affine` — whose shape is that
+    /// step's own; the plan reads the op's. The two must agree.
+    #[test]
+    fn a_lowered_op_keeps_its_shape() {
+        let mut ops: Vec<ComputeOp> = ComputeOp::<Wire>::samples()
+            .iter()
+            .map(|op| op.resolve(&Literals).unwrap())
+            .collect();
+        // Every rotation class: the lattice angles, the identity, a resample.
+        for angle in [0.0, 90.0, 180.0, 270.0, -90.0, 30.0] {
+            for expand in [false, true] {
+                ops.push(ComputeOp::Rotate {
+                    angle,
+                    expand,
+                    interpolation: InterpolationType::Bilinear,
+                    border_value: 0.0,
+                });
+            }
+        }
+        let input = [7usize, 5, 3];
+        for op in ops {
+            let lowered = op.clone().lowered();
+            assert_eq!(
+                op.shape().concrete(&[&input]),
+                lowered.as_op().shape().concrete(&[&input]),
+                "{op:?} lowers to {lowered:?}"
+            );
         }
     }
 }

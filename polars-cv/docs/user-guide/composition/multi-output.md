@@ -147,7 +147,7 @@ Combine multiple input columns with multiple outputs:
 ```python
 # Two different input columns
 img = pl.col("image").cv.pipe(Pipeline().source("image_bytes").resize(height=128, width=128))
-mask = pl.col("mask_contour").cv.pipe(Pipeline().source("contour", shape=img))
+mask = pl.col("mask_contour").cv.pipe(Pipeline().source("contour").rasterize(shape=img))
 
 # Apply mask
 masked = img.apply_mask(mask).alias("masked")

@@ -48,7 +48,7 @@ pub enum DType {
 /// reshuffled into wire-code order for cosmetics.
 macro_rules! dtype_table {
     ($(($variant:ident, $short:literal, $code:literal, $numpy:literal)),+ $(,)?) => {
-        crate::naming::named_variants!(DType { $($short => $variant),+ });
+        crate::naming::named_variants!(DType: "Supported data types." { $($short => $variant),+ });
 
         impl DType {
             /// Every dtype, in `NAMED` declaration order.

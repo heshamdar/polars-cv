@@ -85,18 +85,18 @@ def main() -> None:
     gt_mask_expr = (
         pl.col("gt_contour")
         .cv.pipe(
-            Pipeline().source(
-                "contour", width=96, height=96, fill_value=255, background=0
-            ),
+            Pipeline()
+            .source("contour")
+            .rasterize(width=96, height=96, fill_value=255, background=0),
         )
         .alias("gt_mask")
     )
     pred_mask_expr = (
         pl.col("pred_contour")
         .cv.pipe(
-            Pipeline().source(
-                "contour", width=96, height=96, fill_value=255, background=0
-            ),
+            Pipeline()
+            .source("contour")
+            .rasterize(width=96, height=96, fill_value=255, background=0),
         )
         .alias("pred_mask")
     )

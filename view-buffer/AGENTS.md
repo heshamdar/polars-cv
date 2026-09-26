@@ -49,7 +49,7 @@ src/
 │   ├── histogram.rs    # Histogram computation
 │   ├── phash.rs        # Perceptual hashing (aHash/pHash/dHash) ops
 │   ├── view.rs         # ViewOp enum — zero-copy layout ops (transpose, reshape, flip, crop, channel_select)
-│   ├── shape_rule.rs   # OutputRankRule / OutputChannelRule — plan-time structure rules (the authority)
+│   ├── shape_rule.rs   # OpShape — shape arithmetic, rank (its length) and channels (axis 2): the authority
 │   ├── validation.rs   # Plan-time shape/dtype constraint checks
 │   └── util.rs         # Shared index/coordinate helpers
 ├── expr.rs             # ViewExpr — lazy expression graph builder
@@ -80,7 +80,7 @@ Strided multi-dimensional array backed by a Rust `Vec` or Arrow buffer.
 ```rust
 let result = ViewExpr::new_source(buffer)
     .resize(224, 224, FilterType::Lanczos3)
-    .normalize(NormalizeMethod::MinMax, None, None)
+    .normalize(Normalization::MinMax, None, None)
     .cast(DType::F32)
     .plan().execute();
 ```
@@ -129,18 +129,16 @@ Consecutive compute operations (scalar element-wise: scale, relu, clamp, cast) a
 ### Op Trait
 
 `Op` (`src/ops/traits.rs`) declares the plan-time contract every op must
-answer. Six rule methods carry **no default**, so a new op does not compile
+answer. Seven rule methods carry **no default**, so a new op does not compile
 until it states each one — it cannot inherit a lie:
 
 ```rust
 pub trait Op {
     fn name(&self) -> &'static str;
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize>;
     fn infer_strides(&self, shape: &[usize], strides: &[isize]) -> Option<Vec<isize>>;
 
-    // The plan-time contract — six required rules, no defaults.
-    fn output_rank_rule(&self) -> OutputRankRule;
-    fn output_channel_rule(&self) -> OutputChannelRule;
+    // The plan-time contract — five required rules, no defaults.
+    fn shape(&self) -> OpShape; // the one authority for shape arithmetic
     fn output_dtype_rule(&self) -> OutputDTypeRule;
     fn memory_effect(&self) -> MemoryEffect; // View, StridePreserving, RequiresContiguous
     fn spatial_dependency(&self) -> SpatialDependency; // Global is the safe answer
@@ -152,14 +150,22 @@ pub trait Op {
 }
 ```
 
+`shape` returns an `OpShape` (`src/ops/shape_rule.rs`): the op's shape
+transform as data. Execution evaluates it on known sizes (`OpShape::concrete`);
+the plugin's planner evaluates it symbolically (`OpShape::dims`), where a size
+is `Dim::Known(n)`, `Dim::Input(k)` (an unknown input axis carried through) or
+`Dim::Unknown`, and a shape-deciding parameter is `Sym::Known(v)` or
+`Sym::PerRow`. It is total: an unexpected rank yields unknown sizes, never a
+panic. `ImageOpKind::shape` is what the runner sizes a deferred resize with.
+
 `identity_rule` answers *under what condition* the op is a removable no-op
-(`Never`, `Always`, `WhenShapePreserved`, `WhenDtypePreserved`); the Python
-planner evaluates the condition. A verdict that also rests on a literal
-parameter value names it in `deciding_params` (a zero `pad`'s four amounts, a
-crop's `top`/`left` — a crop is a candidate only at a `(0, 0)` origin), and
-`op_identity_rule` forces `never` when any of them is per-row. Shape
-preservation alone never proves a no-op for an op whose shape rule ignores a
-parameter that moves pixels.
+(`Never`, `WhenShapePreserved`, `WhenDtypePreserved`), and never depends on a
+parameter's value. Whether *these* parameters make a `WhenShapePreserved` op a
+no-op is `OpShape::preserves` — a zero pad, a full-frame crop at a known-zero
+origin (never at any other origin: it could keep its extent only by running
+past the edge), a same-shape reshape — so a per-row parameter, being
+`Sym::PerRow`, can never prove one. Shape preservation alone never proves a
+no-op for an op that moves pixels, which is why those stay `Never`.
 
 The dtype methods that *do* carry defaults are `validate()`,
 `accepted_input_dtypes()`, `working_dtype()`, `resolve_output_dtype()` and
@@ -177,14 +183,15 @@ Alpha channels are **always preserved** during image decoding. `from_dynamic_ima
 - RGBA → `[H, W, 4]`, GrayA → `[H, W, 2]`
 - RGB → `[H, W, 3]`, Gray → `[H, W, 1]`
 
-Operations handle alpha via the channel strategy declared by their
-`OutputChannelRule` (`ops/shape_rule.rs`):
+Operations handle alpha via their `OpShape` (`ops/shape_rule.rs`), whose axis
+2 is the output channel count (the planner reads it; there is no separate
+channel rule):
 
-| `OutputChannelRule` | Operations | Behavior |
+| `OpShape` | Operations | Behavior |
 |----------|-----------|----------|
-| **`PreserveChannels`** | resize, normalize, crop, flip, pad, etc. | All channels processed uniformly |
-| **`StripProcessRestore`** | blur, cvt_color, sobel, laplacian, sharpen | Alpha split off, op on color channels, alpha re-attached |
-| **`Fixed(n)`** | grayscale, canny, threshold, erode, dilate, morph_gradient | Alpha discarded, fixed output channels |
+| **`Preserve`** and the H/W-only shapes | resize, normalize, crop, flip, pad, threshold, erode, dilate, etc. | All channels processed uniformly |
+| **`ColorChannels`** | cvt_color | Alpha split off, op on color channels, alpha re-attached |
+| **`SingleChannel`** | grayscale, canny | Alpha discarded, one output channel |
 
 Key implementation points:
 - `ops/color.rs` provides `split_alpha()` / `merge_alpha()` helpers used by `apply_color_convert()`
@@ -211,7 +218,7 @@ Key implementation points:
 ## Adding a New Operation
 
 1. Define the op in the appropriate `ops/` file (add variant to `ImageOpKind`, `ComputeOp`, `GeometryOp`, etc.)
-2. Implement the `Op` trait with `infer_shape` and `memory_effect`
+2. Implement the `Op` trait: `shape` (an `OpShape`), `memory_effect` and the other required rules
 3. Add to `ViewDto` in `ops/dto.rs`
 4. Add builder method to `ViewExpr` in `expr.rs`
 5. Add execution logic in `execution/runner.rs`

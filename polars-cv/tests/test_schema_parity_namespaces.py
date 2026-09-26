@@ -171,7 +171,7 @@ POINT_CASES: dict[str, object] = {
     "manhattan_distance": lambda: pl.col("pa").point.manhattan_distance(pl.col("pb")),
     "angle_to": lambda: pl.col("pa").point.angle_to(pl.col("pb")),
     "midpoint": lambda: pl.col("pa").point.midpoint(pl.col("pb")),
-    "interpolate": lambda: pl.col("pa").point.interpolate(pl.col("pb"), 0.5),
+    "interpolate": lambda: pl.col("pa").point.interpolate(pl.col("pb"), t=0.5),
     "translate": lambda: pl.col("pa").point.translate(1.0, 2.0),
     "scale": lambda: pl.col("pa").point.scale(2.0, 2.0),
     "rotate": lambda: pl.col("pa").point.rotate(45.0),
@@ -477,7 +477,7 @@ def test_a_tagged_contour_is_a_pipeline_source() -> None:
     """``source("contour")`` rasterizes a tagged contour like the plain one."""
     from polars_cv import Pipeline
 
-    pipe = Pipeline().source("contour", width=16, height=16)
+    pipe = Pipeline().source("contour").rasterize(width=16, height=16)
     expr = pl.col("a").cv.pipe(pipe).sink("list")
     tagged = assert_plan_equals_exec(_tagged_contour_df(), expr)
     plain = assert_plan_equals_exec(_contour_df(), expr)

@@ -2,7 +2,7 @@
 Tests for the opt-in ``preserve_dtype`` parameter on scalar ops.
 
 ``preserve_dtype=True`` on ``scale`` / ``clamp`` / ``adjust_brightness``
-lowers to a trailing ``cast(<pre-op dtype>)`` OpSpec: the computation still
+lowers to a trailing ``cast(<pre-op dtype>)`` op: the computation still
 runs in f32 per the PromoteToFloat contract, but the stored result is cast
 back (round-then-saturate for integer targets), e.g. u8 in → u8 out instead
 of the promoted f32 (4× smaller payloads).
@@ -22,6 +22,7 @@ import polars as pl
 import pytest
 
 from polars_cv import Pipeline, numpy_from_struct
+from tests._plan_view import op_names, planned
 from tests.conftest import plugin_required
 
 
@@ -54,17 +55,17 @@ class TestPreserveDtypeValidation:
 
     def test_planned_dtype_is_input_dtype(self) -> None:
         pipe = _u8_src().scale(2.0, preserve_dtype=True)
-        assert pipe._output_dtype == "u8"
+        assert planned(pipe).dtype == "u8"
         pipe = _u8_src().clamp(0.0, 200.0, preserve_dtype=True)
-        assert pipe._output_dtype == "u8"
+        assert planned(pipe).dtype == "u8"
         pipe = _u8_src().adjust_brightness(factor=1.3, preserve_dtype=True)
-        assert pipe._output_dtype == "u8"
+        assert planned(pipe).dtype == "u8"
 
     def test_float_input_is_noop_cast(self) -> None:
         # f32 in → scale already produces f32: no cast op is appended.
         pipe = _u8_src().cast("f32").scale(2.0, preserve_dtype=True)
-        assert pipe._output_dtype == "f32"
-        assert [op.op for op in pipe._ops].count("cast") == 1  # only the explicit one
+        assert planned(pipe).dtype == "f32"
+        assert op_names(pipe).count("cast") == 1  # only the explicit one
 
 
 @plugin_required

@@ -113,7 +113,7 @@ def _source_hash_from_tree() -> str | None:
         except OSError:  # pragma: no cover  # unreadable source file; defensive
             pass
 
-    for crate in ("polars-cv", "view-buffer"):
+    for crate in ("polars-cv", "polars-cv-macros", "view-buffer"):
         crate_root = root / crate
         for rs in sorted((crate_root / "src").rglob("*.rs")):
             _push(rs, f"{crate}/{rs.relative_to(crate_root).as_posix()}")
@@ -391,8 +391,8 @@ def mask_iou(
     )
 
     # Compute IoU using Polars scalar operations
-    intersection_sum = result.struct.field("_iou_intersection")  # ty: ignore[unresolved-attribute]
-    union_sum = result.struct.field("_iou_union")  # ty: ignore[unresolved-attribute]
+    intersection_sum = result.struct.field("_iou_intersection")
+    union_sum = result.struct.field("_iou_union")
 
     return intersection_sum / (union_sum + epsilon)
 
@@ -412,7 +412,7 @@ def hamming_distance(
     xor_result = hash1.bitwise_xor(hash2).pipe(Pipeline().reduce_popcount())
 
     # Sink as native scalar (Float64)
-    return xor_result.sink("native")  # ty: ignore[invalid-return-type]
+    return xor_result.sink("native")
 
 
 def hash_similarity(
@@ -436,7 +436,7 @@ def hash_similarity(
     distance = xor_popcount.sink("native")
 
     # Compute similarity: (1 - distance / total_bits) * 100
-    return (1.0 - distance / hash_bits) * 100.0  # ty: ignore[unsupported-operator]
+    return (1.0 - distance / hash_bits) * 100.0
 
 
 def mask_dice(
@@ -471,8 +471,8 @@ def mask_dice(
     )
 
     # Compute Dice using Polars scalar operations
-    inter = result.struct.field("_dice_intersection")  # ty: ignore[unresolved-attribute]
-    total = result.struct.field("_dice_pred") + result.struct.field("_dice_target")  # ty: ignore[unresolved-attribute]
+    inter = result.struct.field("_dice_intersection")
+    total = result.struct.field("_dice_pred") + result.struct.field("_dice_target")
 
     return (2.0 * inter) / (total + epsilon)
 

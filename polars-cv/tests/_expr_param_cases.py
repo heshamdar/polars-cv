@@ -2,8 +2,8 @@
 
 A parameter is *expression-eligible* iff its value has no effect on the output
 shape, rank or dtype — the rule stated in the root ``CLAUDE.md`` — and the way
-a parameter opts in is ``Pipeline._track_expr`` (directly, or via
-``_param_list``/``_enum_param``, which take it as a callback). The visible
+a parameter opts in is ``Pipeline._wire`` (directly, or — for a typed op —
+through ``_encode_field`` on a ``Param`` field). The visible
 consequence of opting in is the annotation: ``IntOrExpr``, ``FloatOrExpr``,
 ``BoolOrExpr``, ``StrOrExpr`` or a bare ``pl.Expr`` union.
 
@@ -19,7 +19,7 @@ eligible parameters are *elements* of a list or tuple argument — a
 ``warp_affine`` matrix coefficient, an ``output_size`` half, a ``normalize``
 mean — and a kwargs table cannot express "this one element is an expression
 while its siblings stay literal", which is precisely the case the
-element-by-element ``_param_list`` lowering exists to serve.
+element-by-element encoding of a typed list field exists to serve.
 """
 
 from __future__ import annotations
@@ -192,40 +192,6 @@ DIAMOND_SET = [
 # --- The table -------------------------------------------------------------
 
 CASES: list[ExprCase] = [
-    # --- source (the contour source rasterizes onto a canvas) --------------
-    ExprCase(
-        "source",
-        "width",
-        lambda v: Pipeline().source("contour", width=v, height=12),
-        (10, 14, 16),
-        column=CONTOURS,
-    ),
-    ExprCase(
-        "source",
-        "height",
-        lambda v: Pipeline().source("contour", width=12, height=v),
-        (10, 14, 16),
-        column=CONTOURS,
-    ),
-    ExprCase(
-        "source",
-        "fill_value",
-        lambda v: Pipeline().source("contour", width=12, height=12, fill_value=v),
-        (255, 128, 64),
-        column=CONTOURS,
-    ),
-    ExprCase(
-        "source",
-        "background",
-        lambda v: Pipeline().source("contour", width=12, height=12, background=v),
-        (0, 32, 96),
-        column=CONTOURS,
-    ),
-    # --- assert_shape ------------------------------------------------------
-    # These three state a fact about the buffer rather than changing it, so a
-    # correct assertion is invisible in the output by construction. What they
-    # must do instead — reject the row whose buffer disagrees — is pinned by
-    # `TestAssertShapeExpressions` in test_expression_op_params.py.
     ExprCase(
         "assert_shape",
         "height",
@@ -358,25 +324,13 @@ CASES: list[ExprCase] = [
         "convolve2d",
         "kernel",
         # One coefficient varies; the other eight stay literal zeros.
-        lambda v: gray().convolve2d([0.0] * 4 + [v] + [0.0] * 4, 3),
+        lambda v: gray().convolve2d(kernel=[0.0] * 4 + [v] + [0.0] * 4),
         (0.5, 1.0, 2.0),
     ),
     ExprCase(
         "convolve2d",
-        "ksize",
-        lambda v: gray().convolve2d([0.0] * 4 + [1.0] + [0.0] * 4, v),
-        (3, 3),
-        varies=False,
-        note=(
-            "ksize must equal the square root of the structural kernel length, "
-            "so an expression can only restate it; a disagreeing value is "
-            "rejected at execution (TestConvolveKsizeExpression)"
-        ),
-    ),
-    ExprCase(
-        "convolve2d",
         "normalize",
-        lambda v: gray().convolve2d([1.0] * 9, 3, normalize=v),
+        lambda v: gray().convolve2d(kernel=[1.0] * 9, normalize=v),
         (True, False),
     ),
     ExprCase(
@@ -385,7 +339,7 @@ CASES: list[ExprCase] = [
         # A 5x5 kernel pads two pixels. At a one-pixel pad "reflect" and
         # "replicate" both reach the edge pixel and coincide, which would make
         # the distinctness assertion unsatisfiable rather than informative.
-        lambda v: gray().convolve2d([1.0] * 25, 5, normalize=True, border=v),
+        lambda v: gray().convolve2d(kernel=[1.0] * 25, normalize=True, border=v),
         ("replicate", "zero", "reflect"),
     ),
     ExprCase(
@@ -600,20 +554,24 @@ CASES: list[ExprCase] = [
         "warp_affine",
         "matrix",
         # Only the x-translation moves; the other five stay literal.
-        lambda v: rgb().warp_affine([1.0, 0.0, v, 0.0, 1.0, 0.0], (12, 12)),
+        lambda v: rgb().warp_affine(
+            matrix=[1.0, 0.0, v, 0.0, 1.0, 0.0], output_size=(12, 12)
+        ),
         (0.0, 2.0, 4.0),
     ),
     ExprCase(
         "warp_affine",
         "output_size",
-        lambda v: rgb().warp_affine([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], (v, 12)),
+        lambda v: rgb().warp_affine(
+            matrix=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0], output_size=(v, 12)
+        ),
         (8, 12, 16),
     ),
     ExprCase(
         "warp_affine",
         "interpolation",
         lambda v: rgb().warp_affine(
-            [1.0, 0.3, 0.0, 0.2, 1.0, 0.0], (12, 12), interpolation=v
+            matrix=[1.0, 0.3, 0.0, 0.2, 1.0, 0.0], output_size=(12, 12), interpolation=v
         ),
         ("nearest", "bilinear"),
     ),
@@ -621,7 +579,7 @@ CASES: list[ExprCase] = [
         "warp_affine",
         "border_value",
         lambda v: rgb().warp_affine(
-            [1.0, 0.0, 4.0, 0.0, 1.0, 4.0], (16, 16), border_value=v
+            matrix=[1.0, 0.0, 4.0, 0.0, 1.0, 4.0], output_size=(16, 16), border_value=v
         ),
         (0.0, 128.0, 255.0),
     ),
@@ -873,7 +831,7 @@ def expression_eligible_parameters() -> dict[str, str]:
     Read off the live signatures rather than a second list, so the ratchet
     tracks the builder. ``LazyPipelineExpr`` annotations are excluded: those
     name another *node* in the graph (``rasterize(shape=)``), not a per-row
-    value, and are wired by node id rather than by ``ParamValue``.
+    value, and are wired by node id rather than by slot.
 
     Returns:
         Mapping of ``method.parameter`` to the annotation that qualified it.

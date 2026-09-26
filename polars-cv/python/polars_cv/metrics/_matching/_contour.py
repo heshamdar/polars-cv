@@ -207,7 +207,7 @@ def _add_gt_shape_columns(
 
     shape_expr = gt_handle.apply(lambda p: p.extract_shape()).sink("native")
     return (
-        lf.with_columns(_gt_shape=shape_expr)  # ty: ignore[invalid-argument-type]
+        lf.with_columns(_gt_shape=shape_expr)
         .with_columns(
             _gt_h=pl.col("_gt_shape").list.get(0).cast(pl.Int64),
             _gt_w=pl.col("_gt_shape").list.get(1).cast(pl.Int64),
@@ -264,7 +264,7 @@ def _extract_with_fused_resize(
     # Multi-output sink returns a Struct column; unnest to get
     # individual columns, then rename to internal names.
     return (
-        lf.with_columns(_fused_out=multi_out)  # ty: ignore[invalid-argument-type]
+        lf.with_columns(_fused_out=multi_out)
         .unnest("_fused_out")
         .with_columns(
             _pred_contours=pl.col("extracted_contours").cast(CONTOUR_SET_SCHEMA),
@@ -306,7 +306,7 @@ def _extract_contours_via(
     return lf.with_columns(
         handle.apply(build_ops)
         .sink("native")
-        .cast(CONTOUR_SET_SCHEMA)  # ty: ignore[unresolved-attribute]
+        .cast(CONTOUR_SET_SCHEMA)
         .alias(output_col)
     )
 
@@ -336,7 +336,7 @@ def _score_contours_via(
             )
         )
         .sink("native")
-        .alias(output_col)  # ty: ignore[unresolved-attribute]
+        .alias(output_col)
     )
 
 

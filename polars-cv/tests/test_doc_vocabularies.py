@@ -29,7 +29,13 @@ from polars_cv.geometry.points import PointNamespace
 from polars_cv.lazy import LazyPipelineExpr
 
 from ._discovery import doc_page, doc_pages, repo_file
-from ._doc_tables import cell_code, fenced_python_method_calls, table_with_header
+from ._doc_tables import (
+    cell_code,
+    docstring_pipeline_calls,
+    fenced_python_method_calls,
+    pipeline_chain_calls,
+    table_with_header,
+)
 
 #: Every test here is a structural guard: it checks the *shape* of the codebase
 #: -- registries, authorities, removed surfaces, documented vocabularies --
@@ -163,7 +169,7 @@ def test_documented_methods_exist(page: str) -> None:
 
     The operations pages name operations in prose headings ("Warp Affine",
     "Channel Select"), not in a table — so there is no list to diff, and a
-    guard written as "the table's rows are a subset of ``OP_NAMES``" would
+    guard written as "the table's rows are a subset of the op names" would
     match nothing and pass forever. What a reader actually copies is the code
     blocks, so those are what this reads.
 
@@ -188,6 +194,97 @@ def test_documented_methods_exist(page: str) -> None:
         f"Pipeline, LazyPipelineExpr, the expression namespaces, the metrics "
         f"API, or Polars. Either the documentation is stale or the name "
         f"belongs in _FOREIGN_METHODS."
+    )
+
+
+def _unbindable(call: ast.Call) -> str | None:
+    """Why *call* does not fit its ``Pipeline`` method's signature, if it does not."""
+    name = call.func.attr  # type: ignore[attr-defined]
+    method = getattr(Pipeline, name, None)
+    if not callable(method):
+        return f".{name}() is not a Pipeline method"
+    if any(isinstance(a, ast.Starred) for a in call.args) or any(
+        k.arg is None for k in call.keywords
+    ):
+        return None  # a splat: the arity is not in the text
+    try:
+        inspect.signature(method).bind(
+            None, *call.args, **{k.arg: k.value for k in call.keywords if k.arg}
+        )
+    except TypeError as e:
+        return (
+            f".{name}({ast.unparse(call)[len(ast.unparse(call.func)) + 1 : -1]}): {e}"
+        )
+    return None
+
+
+#: Fewer bound calls than this across the docs means the chain matching broke
+#: and the binding guard below is passing vacuously.
+_BOUND_CALL_FLOOR = 300
+
+
+@pytest.mark.parametrize("page", [p.name for p in doc_pages()], ids=lambda n: n)
+def test_documented_pipeline_calls_bind(page: str) -> None:
+    """Every documented ``Pipeline()…`` call binds to the real signature.
+
+    ``test_documented_methods_exist`` checks a name resolves; this checks the
+    call a reader would copy is accepted as written — the positional/keyword
+    split, the parameter names, the arity — which is what a signature change
+    (typed-op P8) breaks while every name still resolves.
+    """
+    path = next(p for p in doc_pages() if p.name == page)
+    calls = pipeline_chain_calls(path.read_text())
+    if not calls:
+        pytest.skip(f"{page} has no Pipeline() chains to bind")
+    wrong = [why for call in calls if (why := _unbindable(call))]
+    assert not wrong, f"{page}: calls that do not fit their signature:\n" + "\n".join(
+        wrong
+    )
+
+
+def _pipeline_docstrings() -> dict[str, str]:
+    """Every public ``Pipeline`` method's docstring (generated or hand-written)."""
+    return {
+        name: inspect.getdoc(member) or ""
+        for name, member in inspect.getmembers(Pipeline, callable)
+        if not name.startswith("_")
+    }
+
+
+#: Fewer bound docstring calls than this means the ``>>>`` extraction broke.
+_DOCSTRING_CALL_FLOOR = 50
+
+
+def test_docstring_pipeline_calls_bind() -> None:
+    """Every ``>>> Pipeline()…`` example in a method docstring binds.
+
+    The generated methods' docstrings come from the Rust doc comments, which the
+    Markdown scan above never reads; mkdocs renders them into the API pages.
+    """
+    wrong = [
+        f"{name}: {why}"
+        for name, doc in _pipeline_docstrings().items()
+        for call in docstring_pipeline_calls(doc)
+        if (why := _unbindable(call))
+    ]
+    assert not wrong, "docstring examples that do not bind:\n" + "\n".join(wrong)
+
+
+def test_the_docstring_binding_guard_sees_the_examples() -> None:
+    bound = sum(
+        len(docstring_pipeline_calls(doc)) for doc in _pipeline_docstrings().values()
+    )
+    assert bound >= _DOCSTRING_CALL_FLOOR, (
+        f"only {bound} Pipeline() calls found in docstrings (floor "
+        f"{_DOCSTRING_CALL_FLOOR}): the >>> extraction is broken"
+    )
+
+
+def test_the_binding_guard_sees_the_docs() -> None:
+    bound = sum(len(pipeline_chain_calls(p.read_text())) for p in doc_pages())
+    assert bound >= _BOUND_CALL_FLOOR, (
+        f"only {bound} Pipeline() calls found in the docs (floor "
+        f"{_BOUND_CALL_FLOOR}): the chain matching in _doc_tables is broken"
     )
 
 

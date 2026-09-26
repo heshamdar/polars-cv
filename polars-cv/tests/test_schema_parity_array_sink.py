@@ -90,7 +90,7 @@ _KNOWN_SHAPE = {
 }
 
 #: Pipelines whose dimensions the planner *has* — they are sitting in
-#: ``_shape_hints`` — but cannot publish, because ``expected_shape`` is gated
+#: the plan's known sizes — but cannot publish, because ``expected_shape`` is gated
 #: on rank 3. These must refuse the array sink without an explicit ``shape=``
 #: and be exact with one.
 #:
@@ -307,7 +307,7 @@ def test_multi_output_struct_fields_match_field_by_field() -> None:
 def test_multi_output_array_branch_honours_an_explicit_shape() -> None:
     """The single-output array branch honours ``shape=`` before checking hints.
 
-    The multi-output branch checks ``has_all_dims()`` *first* — an asymmetry
+    The multi-output branch checks that every planned size is known *first* — an asymmetry
     between two spellings of the same request. This pins whichever behaviour is
     current so a change to either is deliberate.
     """

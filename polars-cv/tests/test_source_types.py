@@ -82,7 +82,7 @@ class TestRawSource:
 
     def test_raw_source_requires_dtype(self) -> None:
         """Raw source without dtype should raise error."""
-        with pytest.raises(ValueError, match="dtype is required"):
+        with pytest.raises(ValueError, match="missing field `dtype`"):
             Pipeline().source("raw")
 
 
@@ -192,7 +192,7 @@ class TestListSource:
 
 
 # ============================================================
-# Test Class: Array Source Type (TO BE IMPLEMENTED)
+# Test Class: Array Source Type
 # ============================================================
 
 
@@ -226,6 +226,49 @@ class TestArraySource:
         assert result["out"].dtype == pl.List(pl.List(pl.UInt8))
         assert result["out"][0].to_list() == data
 
+    def test_an_array_column_plans_its_full_shape(self) -> None:
+        """A fixed-size ``Array`` column states its whole shape in its dtype,
+        so the plan knows it: an ``array`` sink needs no ``shape=``, and the
+        ops after the source plan from those sizes.
+
+        The planner used to read only the column's nesting depth and element
+        type, so ``sink("array")`` refused ("needs the full output shape").
+        """
+        img = np.arange(4 * 5 * 3, dtype=np.uint8).reshape(1, 4, 5, 3)
+        df = pl.DataFrame({"a": pl.Series(img, dtype=pl.Array(pl.UInt8, (4, 5, 3)))})
+
+        whole = pl.col("a").cv.pipe(Pipeline().source("array")).sink("array")
+        assert df.lazy().select(o=whole).collect_schema()["o"] == pl.Array(
+            pl.UInt8, (4, 5, 3)
+        )
+        out = df.select(o=whole)["o"].to_numpy()
+        np.testing.assert_array_equal(out, img)
+
+        cropped = (
+            pl.col("a")
+            .cv.pipe(Pipeline().source("array").crop(top=1, left=1, height=2, width=3))
+            .sink("array")
+        )
+        assert df.lazy().select(o=cropped).collect_schema()["o"] == pl.Array(
+            pl.UInt8, (2, 3, 3)
+        )
+        assert df.select(o=cropped)["o"].dtype == pl.Array(pl.UInt8, (2, 3, 3))
+
+    def test_a_list_column_still_needs_a_shape_for_an_array_sink(self) -> None:
+        """A ``List`` column's sizes differ per row: only its rank and element
+        type can come from it, so an ``array`` sink asks for a shape as it is
+        written — and ``auto`` over a ``List`` column when the query is
+        planned, the first point its column is seen."""
+        with pytest.raises(ValueError, match="full output shape"):
+            pl.col("a").cv.pipe(Pipeline().source("list")).sink("array")
+
+        df = pl.DataFrame({"a": [[[1, 2], [3, 4]]]}).cast(
+            {"a": pl.List(pl.List(pl.UInt8))}
+        )
+        expr = pl.col("a").cv.pipe(Pipeline().source("auto")).sink("array")
+        with pytest.raises(pl.exceptions.ComputeError, match="full output shape"):
+            df.lazy().select(o=expr).collect_schema()
+
 
 # ============================================================
 # Test Class: Source Format Validation
@@ -240,7 +283,7 @@ class TestSourceFormatValidation:
         with pytest.raises(ValueError) as exc_info:
             Pipeline().source("invalid_format")
 
-        assert "Invalid source format" in str(exc_info.value)
+        assert "unknown source format" in str(exc_info.value)
         # Should list valid formats
         assert "image_bytes" in str(exc_info.value)
 

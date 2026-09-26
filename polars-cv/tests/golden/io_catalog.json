@@ -1,0 +1,620 @@
+{
+  "source_doc": "Define the input source format.\n\nThe default ``\"auto\"`` infers the decode path from the column's Polars\ndtype at runtime. Pass an explicit format to override the inference (or\nwhen the column dtype cannot be routed, such as a plain numeric column).\n\nImage sources (``\"image_bytes\"`` and ``\"file_path\"``) auto-detect the\nencoding and preserve its dtype: PNG/JPEG decode to u8, 16-bit PNG to u16,\nand TIFF may produce u8, u16, f32 or f64. Decoded images are always 3D\n``[H, W, C]``. Until then the dtype is ``\"auto\"``: a ``list``/``array``\nsink needs it known at planning time, from ``dtype=`` here, a ``cast()``,\nor an operation that fixes it.\n\nA ``\"contour\"`` source decodes to the contour domain; rasterize it with\n:meth:`rasterize`.\n\nEach keyword applies to some formats and not others, and defaults to\n``None`` (the format's own default). One that does not apply to the chosen\nformat is **rejected**, naming the formats it applies to.\n\n``decode_max_size`` asserts the pipeline needs at most this many pixels on\nthe decoded long side, so JPEG decoding uses IDCT scaling (1/8, 1/4 or\n1/2) to skip work. The long side never drops below\n``min(decode_max_size, original)``, so a downstream resize to that size\nnever upscales; other encodings decode at full size. A scaled decode\nfollowed by a resize is not bit-identical to a full decode and the same\nresize, hence the explicit opt-in.\n\n``allowed_roots`` restricts which locations a path column may read from.\nAn entry that parses as a remote URI (``\"s3://bucket/public/\"``) is\nmatched as a URI prefix, anything else (``\"/srv/images\"``) as a local\ndirectory. Local paths are canonicalized first, so ``..`` and symlinks\ncannot escape, and matching is component-wise (``\"/srv/images\"`` does not\nadmit ``\"/srv/images-private\"``). A path matching no entry is refused, and\nthe refusal is subject to ``on_error``.\n\nExample:\n    ```python\n    >>> # Decode PNG/JPEG bytes from a column\n    >>> pipe = Pipeline().source(\"image_bytes\").resize(height=224, width=224)\n    >>>\n    >>> # Read from file paths or URLs, sandboxed\n    >>> pipe = Pipeline().source(\"file_path\", allowed_roots=[\"/srv/images\"])\n    >>>\n    >>> # Assert dtype for a list sink (cast if needed at runtime)\n    >>> pipe = Pipeline().source(\"image_bytes\", dtype=\"f32\")\n    >>>\n    >>> # Gracefully handle corrupt images as null\n    >>> pipe = Pipeline().source(\"image_bytes\", on_error=\"null\")\n    >>>\n    >>> # Rasterize a contour column to a mask\n    >>> pipe = Pipeline().source(\"contour\").rasterize(width=64, height=64)\n    ```",
+  "default_source": "auto",
+  "sources": [
+    {
+      "name": "array",
+      "python": "array",
+      "visibility": "public",
+      "doc": "A Polars fixed-size `Array` column, one nesting level per axis.",
+      "fields": [
+        {
+          "name": "dtype",
+          "doc": "Element dtype; inferred from the column when absent.",
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": false,
+              "py": "DType",
+              "variants": [
+                "u8",
+                "i8",
+                "u16",
+                "i16",
+                "u32",
+                "i32",
+                "u64",
+                "i64",
+                "f32",
+                "f64"
+              ]
+            }
+          }
+        },
+        {
+          "name": "require_contiguous",
+          "doc": "Require rectangular data (zero-copy); jagged rows are then an error.",
+          "default": false,
+          "type": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "bool"
+          }
+        },
+        {
+          "name": "on_error",
+          "doc": "\"raise\" or \"null\": what a row that cannot be decoded does.",
+          "default": "raise",
+          "type": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "FetchErrorPolicy",
+            "variants": [
+              "raise",
+              "null"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "auto",
+      "python": "auto",
+      "visibility": "public",
+      "doc": "Infer the decode path from the column's Polars dtype: String → file_path,\nList/Array → list/array, Binary → blob if VIEW-tagged else image_bytes.",
+      "fields": [
+        {
+          "name": "dtype",
+          "doc": "Asserted element dtype (a decoded image is cast to it).",
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": false,
+              "py": "DType",
+              "variants": [
+                "u8",
+                "i8",
+                "u16",
+                "i16",
+                "u32",
+                "i32",
+                "u64",
+                "i64",
+                "f32",
+                "f64"
+              ]
+            }
+          }
+        },
+        {
+          "name": "require_contiguous",
+          "doc": "Require rectangular data when the column is a List/Array.",
+          "default": false,
+          "type": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "bool"
+          }
+        },
+        {
+          "name": "cloud_options",
+          "doc": "Cloud-storage credentials: a ``CloudOptions`` or a dict.",
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "map"
+            }
+          }
+        },
+        {
+          "name": "allowed_roots",
+          "doc": "Locations a path column may read from (unrestricted when absent;\nsee above).",
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "list",
+              "inner": {
+                "kind": "scalar",
+                "per_row": false,
+                "py": "str"
+              }
+            }
+          }
+        },
+        {
+          "name": "decode_max_size",
+          "doc": "Decode only enough pixels for this long side (JPEG IDCT scaling;\nsee above).",
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": false,
+              "py": "int"
+            }
+          }
+        },
+        {
+          "name": "on_error",
+          "doc": "\"raise\" or \"null\": what a row that cannot be decoded does.",
+          "default": "raise",
+          "type": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "FetchErrorPolicy",
+            "variants": [
+              "raise",
+              "null"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "blob",
+      "python": "blob",
+      "visibility": "public",
+      "doc": "The self-describing VIEW protocol.",
+      "fields": [
+        {
+          "name": "dtype",
+          "doc": "Declared element dtype. A blob carries its own, so a declaration is\nchecked at decode: a blob of another dtype is a row error.",
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": false,
+              "py": "DType",
+              "variants": [
+                "u8",
+                "i8",
+                "u16",
+                "i16",
+                "u32",
+                "i32",
+                "u64",
+                "i64",
+                "f32",
+                "f64"
+              ]
+            }
+          }
+        },
+        {
+          "name": "on_error",
+          "doc": "\"raise\" or \"null\": what a row that cannot be decoded does.",
+          "default": "raise",
+          "type": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "FetchErrorPolicy",
+            "variants": [
+              "raise",
+              "null"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "contour",
+      "python": "contour",
+      "visibility": "public",
+      "doc": "A contour column (one contour or a set per row), decoded as the contour\nset `extract_contours` produces. A mask is the `rasterize` op's.",
+      "fields": [
+        {
+          "name": "on_error",
+          "doc": "\"raise\" or \"null\": what a row that cannot be decoded does.",
+          "default": "raise",
+          "type": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "FetchErrorPolicy",
+            "variants": [
+              "raise",
+              "null"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "file_path",
+      "python": "file_path",
+      "visibility": "public",
+      "doc": "A path (local, s3://, gs://, az://, http://) whose contents decode like\nimage bytes.",
+      "fields": [
+        {
+          "name": "dtype",
+          "doc": "Asserted element dtype: a decoded image with another dtype is cast.",
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": false,
+              "py": "DType",
+              "variants": [
+                "u8",
+                "i8",
+                "u16",
+                "i16",
+                "u32",
+                "i32",
+                "u64",
+                "i64",
+                "f32",
+                "f64"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cloud_options",
+          "doc": "Cloud-storage credentials: a ``CloudOptions`` or a dict.",
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "map"
+            }
+          }
+        },
+        {
+          "name": "allowed_roots",
+          "doc": "Locations a path column may read from (unrestricted when absent;\nsee above).",
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "list",
+              "inner": {
+                "kind": "scalar",
+                "per_row": false,
+                "py": "str"
+              }
+            }
+          }
+        },
+        {
+          "name": "decode_max_size",
+          "doc": "Decode only enough pixels for this long side (JPEG IDCT scaling;\nsee above).",
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": false,
+              "py": "int"
+            }
+          }
+        },
+        {
+          "name": "on_error",
+          "doc": "\"raise\" or \"null\": what a row that cannot be read or decoded does.",
+          "default": "raise",
+          "type": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "FetchErrorPolicy",
+            "variants": [
+              "raise",
+              "null"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "image_bytes",
+      "python": "image_bytes",
+      "visibility": "public",
+      "doc": "Encoded image bytes (PNG/JPEG/TIFF/...), always decoded to `[H, W, C]`.",
+      "fields": [
+        {
+          "name": "dtype",
+          "doc": "Asserted element dtype: a decoded image with another dtype is cast.",
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": false,
+              "py": "DType",
+              "variants": [
+                "u8",
+                "i8",
+                "u16",
+                "i16",
+                "u32",
+                "i32",
+                "u64",
+                "i64",
+                "f32",
+                "f64"
+              ]
+            }
+          }
+        },
+        {
+          "name": "decode_max_size",
+          "doc": "Decode only enough pixels for this long side (JPEG IDCT scaling;\nsee above).",
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": false,
+              "py": "int"
+            }
+          }
+        },
+        {
+          "name": "on_error",
+          "doc": "\"raise\" or \"null\": what a row that cannot be decoded does.",
+          "default": "raise",
+          "type": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "FetchErrorPolicy",
+            "variants": [
+              "raise",
+              "null"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "list",
+      "python": "list",
+      "visibility": "public",
+      "doc": "A Polars nested `List` column, one nesting level per axis; its sizes\nmay differ from row to row.",
+      "fields": [
+        {
+          "name": "dtype",
+          "doc": "Element dtype; inferred from the column when absent.",
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": false,
+              "py": "DType",
+              "variants": [
+                "u8",
+                "i8",
+                "u16",
+                "i16",
+                "u32",
+                "i32",
+                "u64",
+                "i64",
+                "f32",
+                "f64"
+              ]
+            }
+          }
+        },
+        {
+          "name": "require_contiguous",
+          "doc": "Require rectangular data (zero-copy); jagged rows are then an error.",
+          "default": false,
+          "type": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "bool"
+          }
+        },
+        {
+          "name": "on_error",
+          "doc": "\"raise\" or \"null\": what a row that cannot be decoded does.",
+          "default": "raise",
+          "type": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "FetchErrorPolicy",
+            "variants": [
+              "raise",
+              "null"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "raw",
+      "python": "raw",
+      "visibility": "public",
+      "doc": "Raw bytes, decoded as a flat 1-D buffer of `dtype`.",
+      "fields": [
+        {
+          "name": "dtype",
+          "doc": "The element dtype: raw bytes carry no type metadata, so it is required.",
+          "type": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "DType",
+            "variants": [
+              "u8",
+              "i8",
+              "u16",
+              "i16",
+              "u32",
+              "i32",
+              "u64",
+              "i64",
+              "f32",
+              "f64"
+            ]
+          }
+        },
+        {
+          "name": "on_error",
+          "doc": "\"raise\" or \"null\": what a row that cannot be decoded does.",
+          "default": "raise",
+          "type": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "FetchErrorPolicy",
+            "variants": [
+              "raise",
+              "null"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "sinks": [
+    {
+      "name": "array",
+      "python": "array",
+      "visibility": "public",
+      "doc": "A fixed-shape Polars `Array`.",
+      "fields": [
+        {
+          "name": "shape",
+          "doc": "The output shape; inferred from the planned shape when absent.",
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "list",
+              "inner": {
+                "kind": "scalar",
+                "per_row": false,
+                "py": "int"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "blob",
+      "python": "blob",
+      "visibility": "public",
+      "doc": "The self-describing VIEW protocol, as `Binary`.",
+      "fields": []
+    },
+    {
+      "name": "jpeg",
+      "python": "jpeg",
+      "visibility": "public",
+      "doc": "Re-encoded as JPEG.",
+      "fields": [
+        {
+          "name": "quality",
+          "doc": "JPEG quality, 1-100. Only the JPEG encoder takes one.",
+          "default": 85,
+          "type": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "int"
+          }
+        }
+      ]
+    },
+    {
+      "name": "list",
+      "python": "list",
+      "visibility": "public",
+      "doc": "A nested Polars `List`.",
+      "fields": []
+    },
+    {
+      "name": "native",
+      "python": "native",
+      "visibility": "public",
+      "doc": "The domain's own Polars type: `Float64` for a scalar, a `List` for a\nvector, the contour struct for contours.",
+      "fields": []
+    },
+    {
+      "name": "ndarray",
+      "python": "ndarray",
+      "visibility": "public",
+      "doc": "The `polars_cv.ndarray` extension type: a zero-copy tensor struct.",
+      "fields": [
+        {
+          "name": "dtype",
+          "doc": "Downcast the elements to this dtype at encode time: only half\nprecision (``\"f16\"``/``\"float16\"``); use ``.cast(...)`` for any\nother dtype.",
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": false,
+              "py": "SinkDType",
+              "variants": [
+                "f16",
+                "float16"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "numpy",
+      "python": "numpy",
+      "visibility": "public",
+      "doc": "A zero-copy tensor struct `numpy_from_struct` reads.",
+      "fields": [
+        {
+          "name": "dtype",
+          "doc": "Downcast the elements to this dtype at encode time: only half\nprecision (``\"f16\"``/``\"float16\"``); use ``.cast(...)`` for any\nother dtype.",
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": false,
+              "py": "SinkDType",
+              "variants": [
+                "f16",
+                "float16"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "png",
+      "python": "png",
+      "visibility": "public",
+      "doc": "Re-encoded as PNG.",
+      "fields": []
+    },
+    {
+      "name": "tiff",
+      "python": "tiff",
+      "visibility": "public",
+      "doc": "Re-encoded as TIFF.",
+      "fields": []
+    },
+    {
+      "name": "torch",
+      "python": "torch",
+      "visibility": "public",
+      "doc": "A zero-copy tensor struct `torch_from_struct` reads.",
+      "fields": [
+        {
+          "name": "dtype",
+          "doc": "Downcast the elements to this dtype at encode time: only half\nprecision (``\"f16\"``/``\"float16\"``); use ``.cast(...)`` for any\nother dtype.",
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": false,
+              "py": "SinkDType",
+              "variants": [
+                "f16",
+                "float16"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "webp",
+      "python": "webp",
+      "visibility": "public",
+      "doc": "Re-encoded as WebP (lossless).",
+      "fields": []
+    }
+  ]
+}

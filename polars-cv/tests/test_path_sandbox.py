@@ -29,6 +29,7 @@ import pytest
 from PIL import Image
 
 from polars_cv import Pipeline
+from tests._plan_view import source_of
 
 from .conftest import plugin_required
 
@@ -221,13 +222,13 @@ def test_unset_allowed_roots_leaves_the_graph_json_unchanged() -> None:
 def test_allowed_roots_participates_in_source_identity() -> None:
     """Two sources differing only in their sandbox are not the same source.
 
-    `SourceSpec` is hashed for CSE. If the roots were left out of `__eq__` /
-    `__hash__`, a restricted and an unrestricted source would collapse into one
+    CSE groups nodes by their source's wire form. If the roots were left out of
+    it, a restricted and an unrestricted source would collapse into one
     node and one of them would silently get the other's policy.
     """
-    a = Pipeline().source("file_path", allowed_roots=["/srv/a"])._source
-    b = Pipeline().source("file_path", allowed_roots=["/srv/b"])._source
-    unrestricted = Pipeline().source("file_path")._source
+    a = source_of(Pipeline().source("file_path", allowed_roots=["/srv/a"]))
+    b = source_of(Pipeline().source("file_path", allowed_roots=["/srv/b"]))
+    unrestricted = source_of(Pipeline().source("file_path"))
 
     assert a != b
     assert a != unrestricted

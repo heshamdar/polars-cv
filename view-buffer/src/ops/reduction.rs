@@ -5,74 +5,123 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule, ViewType};
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::OpShape;
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
 use crate::ops::Domain;
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use crate::mode::{Exec, Mode};
+use polars_cv_macros::{Ops, Resolve};
 
-/// Reduction operations that aggregate across dimensions.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum ReductionOp {
-    /// Maximum value (global or along axis).
+/// The reductions: one variant per wire op (see `crate::mode`).
+#[derive(Debug, Clone, PartialEq, Ops, Resolve)]
+pub enum ReductionOp<M: Mode = Exec> {
+    /// Reduce buffer by computing the maximum value.
+    #[op(name = "reduce_max", sample = {"axis": 0})]
     Max {
-        /// Axis to reduce. None = global reduction.
-        axis: Option<usize>,
+        /// Axis to reduce along. None for global reduction. It fixes the
+        /// output rank, so it is literal-only.
+        axis: Option<M::L<u32>>,
     },
-    /// Minimum value (global or along axis).
+    /// Reduce buffer by computing the minimum value.
+    #[op(name = "reduce_min", sample = {"axis": 0})]
     Min {
-        /// Axis to reduce. None = global reduction.
-        axis: Option<usize>,
+        /// Axis to reduce along. None for global reduction. It fixes the
+        /// output rank, so it is literal-only.
+        axis: Option<M::L<u32>>,
     },
-    /// Arithmetic mean (global or along axis).
+    /// Compute arithmetic mean.
+    #[op(name = "reduce_mean", sample = {"axis": 1})]
     Mean {
-        /// Axis to reduce. None = global reduction.
-        axis: Option<usize>,
+        /// Axis to reduce along. None for global reduction. It fixes the
+        /// output rank, so it is literal-only.
+        axis: Option<M::L<u32>>,
     },
-    /// Standard deviation (global or along axis).
+    /// Reduce buffer by computing the standard deviation.
+    ///
+    /// Example:
+    ///     >>> pipe = Pipeline().source("image_bytes").reduce_std(ddof=1)
+    #[op(name = "reduce_std", sample = {"axis": 0, "ddof": 1})]
     Std {
-        /// Axis to reduce. None = global reduction.
-        axis: Option<usize>,
-        /// Degrees of freedom (0 = population, 1 = sample).
-        ddof: u8,
+        /// Axis to reduce along. None for global reduction.
+        axis: Option<M::L<u32>>,
+        /// Delta degrees of freedom. 0 for population std (default), 1 for sample
+        /// std. Accepts a Polars expression for per-row dynamic values.
+        #[param(default = 0)]
+        ddof: M::V<u8>,
     },
-    /// Sum (global or along axis).
-    Sum {
-        /// Axis to reduce. None = global reduction.
-        axis: Option<usize>,
-    },
-    /// Index of maximum value along axis.
+    /// Sum all elements in the buffer.
+    #[op(name = "reduce_sum", sample = {})]
+    Sum,
+    /// Index of the maximum value along an axis.
+    ///
+    /// Unlike other reductions it always requires an axis: a global index
+    /// is ambiguous for a multi-dimensional array. The result has the reduced
+    /// shape and an i64 dtype.
+    #[op(name = "reduce_argmax", sample = {"axis": 0})]
     ArgMax {
-        /// Axis along which to find the maximum.
-        axis: usize,
+        /// Axis along which to find the index.
+        axis: M::L<u32>,
     },
-    /// Index of minimum value along axis.
+    /// Index of the minimum value along an axis.
+    ///
+    /// Unlike other reductions it always requires an axis: a global index
+    /// is ambiguous for a multi-dimensional array. The result has the reduced
+    /// shape and an i64 dtype.
+    #[op(name = "reduce_argmin", sample = {"axis": 0})]
     ArgMin {
-        /// Axis along which to find the minimum.
-        axis: usize,
+        /// Axis along which to find the index.
+        axis: M::L<u32>,
     },
-    /// Population count - count the number of set bits in the buffer.
-    ///
-    /// This is a global reduction that counts all set bits across the entire buffer.
-    /// Useful for:
-    /// - Computing Hamming distance between hashes (XOR then popcount)
-    /// - Counting pixels in binary masks
-    /// - Sparse array analysis
-    ///
-    /// For integer types, counts actual bits. For float types, casts to i64 first.
+    /// Count set bits (1s) in the buffer.
+    #[op(name = "reduce_popcount", sample = {})]
     PopCount,
-    /// Percentile value (global only).
-    ///
-    /// Computes the q-th percentile of all elements using linear interpolation.
-    /// q is in [0, 100]. Always returns F64.
+    /// Compute the q-th percentile of all values (linear interpolation, as numpy's
+    /// default).
+    #[op(name = "reduce_percentile", sample = {"q": 50.0})]
     Percentile {
-        /// Percentile to compute, in [0, 100].
-        q: f64,
+        /// Percentile to compute, in [0, 100]. Accepts a Polars expression for
+        /// per-row dynamic values.
+        q: M::V<f64>,
     },
+}
+
+impl<M: Mode> ReductionOp<M> {
+    /// Every reduction's parameters are independent.
+    pub fn check(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// The axis reduced, `None` for a global reduction.
+    pub fn axis(&self) -> Option<usize> {
+        match self {
+            ReductionOp::Max { axis }
+            | ReductionOp::Min { axis }
+            | ReductionOp::Mean { axis }
+            | ReductionOp::Std { axis, .. } => axis.as_ref().map(|a| M::lit(a) as usize),
+            ReductionOp::ArgMax { axis } | ReductionOp::ArgMin { axis } => {
+                Some(M::lit(axis) as usize)
+            }
+            ReductionOp::Sum | ReductionOp::PopCount | ReductionOp::Percentile { .. } => None,
+        }
+    }
+
+    /// How this op's output shape follows from its input: the axis removed,
+    /// or a single slot for a global reduction.
+    pub fn shape(&self) -> OpShape {
+        OpShape::Reduce { axis: self.axis() }
+    }
+
+    /// The domain this reduction produces: a scalar for a global one, a
+    /// smaller buffer for an axis one.
+    pub fn output_domain(&self) -> Domain {
+        if self.axis().is_some() {
+            Domain::Buffer
+        } else {
+            Domain::Scalar
+        }
+    }
 }
 
 impl ReductionOp {
@@ -262,7 +311,7 @@ impl ReductionOp {
                 let std = variance.sqrt();
                 ViewBuffer::from_scalar(std)
             }
-            ReductionOp::Sum { axis: None } => {
+            ReductionOp::Sum => {
                 let sum: f64 = data
                     .iter()
                     .copied()
@@ -272,7 +321,7 @@ impl ReductionOp {
             }
             // Axis-based reductions
             ReductionOp::Max { axis: Some(ax) } => {
-                self.reduce_axis::<T, _>(buffer, *ax, |slice: &[T]| {
+                self.reduce_axis::<T, _>(buffer, *ax as usize, |slice: &[T]| {
                     slice
                         .iter()
                         .copied()
@@ -280,7 +329,7 @@ impl ReductionOp {
                 })
             }
             ReductionOp::Min { axis: Some(ax) } => {
-                self.reduce_axis::<T, _>(buffer, *ax, |slice: &[T]| {
+                self.reduce_axis::<T, _>(buffer, *ax as usize, |slice: &[T]| {
                     slice
                         .iter()
                         .copied()
@@ -289,7 +338,7 @@ impl ReductionOp {
             }
             ReductionOp::Mean { axis: Some(ax) } => {
                 // For axis reduction, output is float
-                self.reduce_axis_to_f64::<T, _>(buffer, *ax, |slice: &[T]| {
+                self.reduce_axis_to_f64::<T, _>(buffer, *ax as usize, |slice: &[T]| {
                     let sum: f64 = slice
                         .iter()
                         .copied()
@@ -303,7 +352,7 @@ impl ReductionOp {
                 ddof,
             } => {
                 let ddof_val = *ddof;
-                self.reduce_axis_to_f64::<T, _>(buffer, *ax, move |slice: &[T]| {
+                self.reduce_axis_to_f64::<T, _>(buffer, *ax as usize, move |slice: &[T]| {
                     let n = slice.len() as f64;
                     let denominator = n - ddof_val as f64;
                     if denominator <= 0.0 {
@@ -327,17 +376,12 @@ impl ReductionOp {
                     variance.sqrt()
                 })
             }
-            ReductionOp::Sum { axis: Some(ax) } => {
-                self.reduce_axis_to_f64::<T, _>(buffer, *ax, |slice: &[T]| {
-                    slice
-                        .iter()
-                        .copied()
-                        .map(|x| num_traits::NumCast::from(x).unwrap_or(0.0))
-                        .sum()
-                })
+            ReductionOp::ArgMax { axis } => {
+                self.reduce_axis_argmax::<T>(buffer, *axis as usize, true)
             }
-            ReductionOp::ArgMax { axis } => self.reduce_axis_argmax::<T>(buffer, *axis, true),
-            ReductionOp::ArgMin { axis } => self.reduce_axis_argmax::<T>(buffer, *axis, false),
+            ReductionOp::ArgMin { axis } => {
+                self.reduce_axis_argmax::<T>(buffer, *axis as usize, false)
+            }
             // PopCount and Percentile are handled specially in execute() before calling execute_typed()
             ReductionOp::PopCount => unreachable!("PopCount is handled in execute()"),
             ReductionOp::Percentile { .. } => unreachable!("Percentile is handled in execute()"),
@@ -510,37 +554,14 @@ impl ReductionOp {
     }
 }
 
-impl ReductionOp {
-    /// The domain of this reduction's result: global reductions (no axis)
-    /// collapse to a scalar; axis reductions keep a (smaller) buffer.
-    ///
-    /// Lives here, next to the op, as the single authority the graph layer
-    /// reads (formerly duplicated in the DTO's output_domain match).
-    pub fn output_domain(&self) -> Domain {
-        match self {
-            ReductionOp::Sum { axis: None }
-            | ReductionOp::Mean { axis: None }
-            | ReductionOp::Max { axis: None }
-            | ReductionOp::Min { axis: None }
-            | ReductionOp::Std { axis: None, .. }
-            | ReductionOp::PopCount
-            // Percentile has no axis form: always a global scalar. (The old
-            // DTO-level match mislabeled it Buffer; a Python special case
-            // papered over that until the authority moved here.)
-            | ReductionOp::Percentile { .. } => Domain::Scalar,
-            _ => Domain::Buffer,
-        }
-    }
-}
-
-impl Op for ReductionOp {
+impl<M: Mode> Op for ReductionOp<M> {
     fn name(&self) -> &'static str {
         match self {
             ReductionOp::Max { .. } => "Max",
             ReductionOp::Min { .. } => "Min",
             ReductionOp::Mean { .. } => "Mean",
             ReductionOp::Std { .. } => "Std",
-            ReductionOp::Sum { .. } => "Sum",
+            ReductionOp::Sum => "Sum",
             ReductionOp::ArgMax { .. } => "ArgMax",
             ReductionOp::ArgMin { .. } => "ArgMin",
             ReductionOp::PopCount => "PopCount",
@@ -548,57 +569,8 @@ impl Op for ReductionOp {
         }
     }
 
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
-        let input_shape = inputs[0];
-
-        let axis = match self {
-            ReductionOp::Max { axis }
-            | ReductionOp::Min { axis }
-            | ReductionOp::Mean { axis }
-            | ReductionOp::Std { axis, .. }
-            | ReductionOp::Sum { axis } => *axis,
-            ReductionOp::ArgMax { axis } | ReductionOp::ArgMin { axis } => Some(*axis),
-            // PopCount and Percentile are always global reductions
-            ReductionOp::PopCount | ReductionOp::Percentile { .. } => None,
-        };
-
-        match axis {
-            None => vec![1], // Global reduction
-            Some(ax) => {
-                let mut out_shape: Vec<usize> = input_shape.to_vec();
-                if ax < out_shape.len() {
-                    out_shape.remove(ax);
-                }
-                if out_shape.is_empty() {
-                    out_shape.push(1);
-                }
-                out_shape
-            }
-        }
-    }
-
-    fn output_rank_rule(&self) -> OutputRankRule {
-        // Global reductions collapse to a single scalar slot ([1]); axis
-        // reductions drop the reduced axis.
-        let global = match self {
-            ReductionOp::Max { axis }
-            | ReductionOp::Min { axis }
-            | ReductionOp::Mean { axis }
-            | ReductionOp::Std { axis, .. }
-            | ReductionOp::Sum { axis } => axis.is_none(),
-            ReductionOp::ArgMax { .. } | ReductionOp::ArgMin { .. } => false,
-            ReductionOp::PopCount | ReductionOp::Percentile { .. } => true,
-        };
-        if global {
-            OutputRankRule::Fixed(1)
-        } else {
-            OutputRankRule::ReduceByOne
-        }
-    }
-
-    fn output_channel_rule(&self) -> OutputChannelRule {
-        // Reductions produce scalar/vector data, not an image with channels.
-        OutputChannelRule::NotApplicable
+    fn shape(&self) -> OpShape {
+        ReductionOp::shape(self)
     }
 
     fn memory_effect(&self) -> MemoryEffect {
@@ -624,7 +596,7 @@ impl Op for ReductionOp {
             | ReductionOp::Min { .. }
             | ReductionOp::Mean { .. }
             | ReductionOp::Std { .. }
-            | ReductionOp::Sum { .. }
+            | ReductionOp::Sum
             | ReductionOp::ArgMax { .. }
             | ReductionOp::ArgMin { .. }
             | ReductionOp::PopCount
@@ -645,18 +617,7 @@ impl Op for ReductionOp {
         input_shapes: &[&[usize]],
         _input_dtypes: &[DType],
     ) -> Result<(), ValidationError> {
-        let axis = match self {
-            ReductionOp::Max { axis }
-            | ReductionOp::Min { axis }
-            | ReductionOp::Mean { axis }
-            | ReductionOp::Std { axis, .. }
-            | ReductionOp::Sum { axis } => *axis,
-            ReductionOp::ArgMax { axis } | ReductionOp::ArgMin { axis } => Some(*axis),
-            // PopCount and Percentile are always global reductions (no axis)
-            ReductionOp::PopCount | ReductionOp::Percentile { .. } => None,
-        };
-
-        if let Some(ax) = axis {
+        if let Some(ax) = self.axis() {
             if ax >= input_shapes[0].len() {
                 return Err(ValidationError::InvalidAxis {
                     axis: ax,
@@ -680,7 +641,7 @@ impl Op for ReductionOp {
         match self {
             ReductionOp::Mean { .. }
             | ReductionOp::Std { .. }
-            | ReductionOp::Sum { .. }
+            | ReductionOp::Sum
             | ReductionOp::PopCount
             | ReductionOp::Percentile { .. } => OutputDTypeRule::ForceF64,
             ReductionOp::ArgMax { .. } | ReductionOp::ArgMin { .. } => OutputDTypeRule::ForceI64,
@@ -727,15 +688,10 @@ mod tests {
             assert_eq!(result.as_slice::<f32>(), &[expected]);
         }
 
-        // Sum/Mean compute in f64 along an axis.
-        for (op, expected) in [
-            (ReductionOp::Sum { axis: Some(0) }, 9.0f64),
-            (ReductionOp::Mean { axis: Some(0) }, 3.0),
-        ] {
-            let result = op.execute(&buffer);
-            assert_eq!(result.shape(), &[1]);
-            assert!((result.as_slice::<f64>()[0] - expected).abs() < 1e-10);
-        }
+        // Mean computes in f64 along an axis.
+        let result = ReductionOp::Mean { axis: Some(0) }.execute(&buffer);
+        assert_eq!(result.shape(), &[1]);
+        assert!((result.as_slice::<f64>()[0] - 3.0).abs() < 1e-10);
 
         let argmax = ReductionOp::ArgMax { axis: 0 }.execute(&buffer);
         assert_eq!(argmax.shape(), &[1]);

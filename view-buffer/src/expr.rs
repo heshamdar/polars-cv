@@ -8,48 +8,60 @@ use crate::ops::affine::AffineParams;
 use crate::ops::scalar::{FusedKernel, ScalarOp};
 use crate::ops::traits::MemoryEffect;
 use crate::ops::{
-    ColorConvertOp, ComputeOp, ConvolveOp, FilterType, ImageOp, ImageOpKind, NormalizeMethod, Op,
+    ColorConvertOp, ComputeOp, ConvolveOp, FilterType, ImageOp, ImageOpKind, Normalization, Op,
     ViewDto, ViewOp,
 };
 
-/// Which engine-tier (Tier-2) optimizations [`ViewExpr::optimize_with`] applies.
-///
-/// Each field toggles one output-preserving rewrite so it can be A/B differential
-/// tested (output-on == output-off). Every field defaults to `true`, and the
-/// struct is `#[serde(default)]`, so a direct view-buffer caller, an older graph
-/// spec, or a spec omitting individual keys gets the full set enabled — the
-/// historical behavior. Mandatory correctness lowering (materialization,
-/// stride-preserving views, the f64 fusion exclusion) is *not* represented here:
-/// it is not optional, so it has no toggle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
-pub struct OptConfig {
-    /// Cancel `flip(a) ∘ flip(a)` (involution).
-    pub view_flip_involution: bool,
-    /// Merge `transpose(p1) ∘ transpose(p2)` into one (or identity).
-    pub view_transpose_merge: bool,
-    /// Drop a `cast(T)` whose child is already dtype `T`.
-    pub cast_identity: bool,
+/// Declares [`OptConfig`] and [`ENGINE_PASSES`] from one list, so a toggle
+/// cannot exist without its catalogue entry or the other way round.
+macro_rules! engine_passes {
+    ($($(#[doc = $doc:literal])* $name:ident: $summary:literal),+ $(,)?) => {
+        /// Which engine-tier (Tier-2) optimizations [`ViewExpr::optimize_with`]
+        /// applies.
+        ///
+        /// Each field toggles one output-preserving rewrite so it can be A/B
+        /// differential tested (output-on == output-off). Every field defaults
+        /// to `true`, and the struct is `#[serde(default)]`, so a direct
+        /// view-buffer caller, an older graph spec, or a spec omitting
+        /// individual keys gets the full set enabled — the historical behavior.
+        /// An unknown key is refused: a toggle Python names and Rust does not
+        /// have would otherwise be silently ignored. Mandatory correctness
+        /// lowering (materialization, stride-preserving views, the f64 fusion
+        /// exclusion) is *not* represented here: it is not optional, so it has
+        /// no toggle.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+        #[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
+        pub struct OptConfig {
+            $($(#[doc = $doc])* pub $name: bool,)+
+        }
+
+        impl Default for OptConfig {
+            fn default() -> Self {
+                Self { $($name: true,)+ }
+            }
+        }
+
+        /// Every engine-tier pass: its [`OptConfig`] field name (the
+        /// `OptFlags` field Python generates from it) and a one-line summary.
+        pub const ENGINE_PASSES: &[(&str, &str)] = &[$((stringify!($name), $summary)),+];
+    };
+}
+
+engine_passes! {
     /// Collapse `cast(inner) ∘ cast(target)` when `inner` losslessly contains the
     /// grandchild dtype and dropping it keeps the final cast on the same
     /// conversion path (a narrowing intermediate, or a float intermediate between
     /// integer input and integer target, is kept).
-    pub cast_chain_collapse: bool,
+    cast_chain_collapse: "Drop a redundant intermediate cast from a cast chain when the intermediate dtype losslessly holds the input and dropping it keeps the final cast's conversion (a narrowing intermediate quantizes, and a float between an integer input and an integer target saturates, so both are kept).",
+    /// Drop a `cast(T)` whose child is already dtype `T`.
+    cast_identity: "Drop a cast whose target dtype already equals its input dtype.",
+    /// Cancel `flip(a) ∘ flip(a)` (involution).
+    view_flip_involution: "Cancel two adjacent flips over the same axes (flip∘flip = id).",
+    /// Merge `transpose(p1) ∘ transpose(p2)` into one (or identity).
+    view_transpose_merge: "Merge two adjacent transposes into one (or into the identity).",
     /// Fuse adjacent scalar/compute ops into a single kernel.
-    pub scalar_fusion: bool,
-}
-
-impl Default for OptConfig {
-    fn default() -> Self {
-        Self {
-            view_flip_involution: true,
-            view_transpose_merge: true,
-            cast_identity: true,
-            cast_chain_collapse: true,
-            scalar_fusion: true,
-        }
-    }
+    scalar_fusion: "Fuse adjacent scalar/compute ops into one kernel (f64 chains stay unfused — a mandatory precision guard, not this toggle).",
 }
 
 /// A node in the expression graph.
@@ -108,7 +120,7 @@ impl ViewExpr {
         op: ViewDto,
     ) -> Result<Arc<Self>, crate::ops::validation::ValidationError> {
         op.as_op().validate(&[&self.shape], &[self.dtype])?;
-        if let ViewDto::View(ViewOp::Reshape(_)) = &op {
+        if let ViewDto::View(ViewOp::Reshape { .. }) = &op {
             if let Some(strides) = &self.strides {
                 let facts =
                     crate::core::layout::LayoutFacts::new(&self.shape, strides, self.dtype, 0);
@@ -134,10 +146,15 @@ impl ViewExpr {
     pub fn apply_op(self: &Arc<Self>, op: ViewDto) -> Arc<Self> {
         match op {
             ViewDto::View(view) => match view {
-                ViewOp::Transpose(perm) => self.transpose(perm),
-                ViewOp::Reshape(shape) => self.reshape(shape),
-                ViewOp::Flip(axes) => self.flip(axes),
-                ViewOp::Crop { start, end } => self.crop(start, end),
+                ViewOp::Transpose { .. } => self.transpose(view.axes()),
+                ViewOp::Reshape { shape } => {
+                    self.reshape(shape.iter().map(|&d| d as usize).collect())
+                }
+                ViewOp::Flip { .. } => self.flip(view.axes()),
+                ViewOp::Crop { .. } | ViewOp::Slice { .. } => {
+                    let (start, end) = view.window().expect("a crop or slice has a window");
+                    self.crop(start, end)
+                }
                 ViewOp::Rotate90 => {
                     if self.shape.len() < 2 {
                         return self.clone();
@@ -161,26 +178,20 @@ impl ViewExpr {
                     };
                     self.transpose(perm).flip(vec![0])
                 }
-                ViewOp::ChannelSelect { index } => self.channel_select(index),
+                ViewOp::ChannelSelect { index } => self.channel_select(index as usize),
             },
-            ViewDto::Compute(compute) => match compute {
-                ComputeOp::Cast(dtype) => self.cast(dtype),
-                ComputeOp::Affine(params) => self.affine(params),
-                ComputeOp::Scale(f) => self.scale(f),
-                ComputeOp::Relu => self.relu(),
-                ComputeOp::Fused(kernel) => self.fused(kernel),
-                ComputeOp::Normalize(method, out_dtype) => self.normalize(method, out_dtype),
-                ComputeOp::Clamp { min, max } => self.clamp(min, max),
-                ComputeOp::AdjustContrast(factor) => self.adjust_contrast(factor),
-                ComputeOp::AdjustGamma(gamma) => self.adjust_gamma(gamma),
-                ComputeOp::Invert => self.invert(),
-                s @ ComputeOp::Scalar(_) => self.compute_node(s),
-                r @ ComputeOp::RotateAffine { .. } => self.compute_node(r),
+            ViewDto::Compute(compute) => match compute.lowered() {
+                // A cast's strides depend on its source dtype; every other
+                // compute op is one node.
+                ViewDto::Compute(ComputeOp::Cast { dtype }) => self.cast(dtype),
+                ViewDto::Compute(other) => self.compute_node(other),
+                // A lattice rotation lowers to a view.
+                lowered => self.apply_op(lowered),
             },
             ViewDto::Image(img) => {
                 // The one construction path for every image op. Output metadata
                 // is derived from the op's own contract and never restated
-                // here: shape from `infer_shape`, strides from `calc_strides`
+                // here: shape from `shape()`, strides from `calc_strides`
                 // (which honours the op's declared `MemoryEffect`), dtype from
                 // its `OutputDTypeRule`. The typed builders (`grayscale`,
                 // `threshold`, `resize`, `blur`, the morphology ops) are thin
@@ -195,7 +206,7 @@ impl ViewExpr {
                 // poisoning downstream kernel fusion (a fused `invert` read the
                 // mistracked `U8` and computed `255 - x` instead of `1 - x`).
                 // One arm, one authority, removes that whole class.
-                let new_shape = img.infer_shape(&[&self.shape]);
+                let new_shape = img.shape().concrete(&[&self.shape]);
                 let new_strides = self.calc_strides(&img, &new_shape);
                 let new_dtype = img.resolve_output_dtype(self.dtype);
                 Arc::new(Self {
@@ -206,7 +217,7 @@ impl ViewExpr {
                 })
             }
             ViewDto::Filter(op) => {
-                let new_shape = Op::infer_shape(&op, &[&self.shape]);
+                let new_shape = op.shape().concrete(&[&self.shape]);
                 let new_strides = self.calc_strides(&op, &new_shape);
                 let new_dtype = op.resolve_output_dtype(self.dtype);
                 Arc::new(Self {
@@ -217,7 +228,7 @@ impl ViewExpr {
                 })
             }
             ViewDto::Color(op) => {
-                let new_shape = ColorConvertOp::infer_shape(&op, &self.shape);
+                let new_shape = op.shape().concrete(&[&self.shape]);
                 let new_dtype = Op::resolve_output_dtype(&op, self.dtype);
                 Arc::new(Self {
                     shape: new_shape,
@@ -258,7 +269,7 @@ impl ViewExpr {
     }
 
     /// Build a `Compute` node whose metadata comes entirely from the op's own
-    /// contract: shape from `infer_shape`, strides from `calc_strides` (which
+    /// contract: shape from `shape()`, strides from `calc_strides` (which
     /// honours the op's declared `MemoryEffect`), dtype from its
     /// `OutputDTypeRule`. The compute analogue of `apply_op`'s `Image` arm and
     /// the single construction authority the compute builders share, so none of
@@ -268,7 +279,7 @@ impl ViewExpr {
     /// through untouched, which this generic contiguous-or-inferred path cannot
     /// express.
     fn compute_node(self: &Arc<Self>, op: ComputeOp) -> Arc<Self> {
-        let new_shape = op.infer_shape(&[&self.shape]);
+        let new_shape = op.shape().concrete(&[&self.shape]);
         let new_strides = self.calc_strides(&op, &new_shape);
         let new_dtype = op.resolve_output_dtype(self.dtype);
         Arc::new(Self {
@@ -279,14 +290,14 @@ impl ViewExpr {
         })
     }
 
-    /// Build a `View` node from the op's contract (shape via `infer_shape`,
+    /// Build a `View` node from the op's contract (shape via `shape()`,
     /// strides via `calc_strides`); a view never changes dtype, so it is
     /// preserved. The view analogue of [`compute_node`](Self::compute_node).
     ///
     /// `reshape` keeps its own builder because it must reject a non-contiguous
     /// input (its bespoke panic) rather than route through here.
     fn view_node(self: &Arc<Self>, op: ViewOp) -> Arc<Self> {
-        let new_shape = op.infer_shape(&[&self.shape]);
+        let new_shape = op.shape().concrete(&[&self.shape]);
         let new_strides = self.calc_strides(&op, &new_shape);
         Arc::new(Self {
             node: ExprNode::View(op, self.clone()),
@@ -299,11 +310,13 @@ impl ViewExpr {
     // --- View Ops ---
 
     pub fn transpose(self: &Arc<Self>, perm: Vec<usize>) -> Arc<Self> {
-        self.view_node(ViewOp::Transpose(perm))
+        self.view_node(ViewOp::transpose(&perm))
     }
 
     pub fn reshape(self: &Arc<Self>, new_shape: Vec<usize>) -> Arc<Self> {
-        let op = ViewOp::Reshape(new_shape.clone());
+        let op = ViewOp::Reshape {
+            shape: new_shape.iter().map(|&d| d as u32).collect(),
+        };
 
         // Validation: Reshape on non-contiguous strided buffer is invalid as a View.
         if let Some(strides) = &self.strides {
@@ -334,18 +347,18 @@ impl ViewExpr {
     }
 
     pub fn crop(self: &Arc<Self>, start: Vec<usize>, end: Vec<usize>) -> Arc<Self> {
-        self.view_node(ViewOp::Crop { start, end })
+        self.view_node(ViewOp::Slice { start, end })
     }
 
     pub fn flip(self: &Arc<Self>, axes: Vec<usize>) -> Arc<Self> {
-        self.view_node(ViewOp::Flip(axes))
+        self.view_node(ViewOp::flip(&axes))
     }
 
     // --- Compute Ops ---
 
     pub fn cast(self: &Arc<Self>, target: DType) -> Arc<Self> {
-        let op = ComputeOp::Cast(target);
-        let new_shape = op.infer_shape(&[&self.shape]);
+        let op = ComputeOp::Cast { dtype: target };
+        let new_shape = op.shape().concrete(&[&self.shape]);
 
         // A same-dtype cast is an identity clone: the buffer (and its
         // strides) pass through untouched. Any real cast materializes a
@@ -372,7 +385,7 @@ impl ViewExpr {
     }
 
     pub fn scale(self: &Arc<Self>, factor: f32) -> Arc<Self> {
-        self.compute_node(ComputeOp::Scale(factor))
+        self.compute_node(ComputeOp::Scale { factor })
     }
 
     pub fn relu(self: &Arc<Self>) -> Arc<Self> {
@@ -389,8 +402,8 @@ impl ViewExpr {
     /// f32; pass `DType::F32` for the default float output, or another dtype to
     /// have the normalized result cast to it (folded into the op's `Fixed`
     /// output rule).
-    pub fn normalize(self: &Arc<Self>, method: NormalizeMethod, out_dtype: DType) -> Arc<Self> {
-        self.compute_node(ComputeOp::Normalize(method, out_dtype))
+    pub fn normalize(self: &Arc<Self>, method: Normalization, out_dtype: DType) -> Arc<Self> {
+        self.compute_node(ComputeOp::from_normalization(method, out_dtype))
     }
 
     /// Clamp values to [min, max] range.
@@ -400,12 +413,12 @@ impl ViewExpr {
 
     /// Adjust contrast: `(pixel - mean) * factor + mean`.
     pub fn adjust_contrast(self: &Arc<Self>, factor: f32) -> Arc<Self> {
-        self.compute_node(ComputeOp::AdjustContrast(factor))
+        self.compute_node(ComputeOp::AdjustContrast { factor })
     }
 
     /// Adjust gamma (power-law transformation).
     pub fn adjust_gamma(self: &Arc<Self>, gamma: f32) -> Arc<Self> {
-        self.compute_node(ComputeOp::AdjustGamma(gamma))
+        self.compute_node(ComputeOp::AdjustGamma { gamma })
     }
 
     /// Invert pixel values: `max_val - pixel`.
@@ -415,7 +428,9 @@ impl ViewExpr {
 
     /// Select a single channel from a [H, W, C] buffer, producing [H, W].
     pub fn channel_select(self: &Arc<Self>, index: usize) -> Arc<Self> {
-        self.view_node(ViewOp::ChannelSelect { index })
+        self.view_node(ViewOp::ChannelSelect {
+            index: index as u32,
+        })
     }
 
     // --- Image Ops ---
@@ -444,7 +459,7 @@ impl ViewExpr {
 
     pub fn threshold(self: &Arc<Self>, value: f64) -> Arc<Self> {
         self.apply_op(ViewDto::Image(ImageOp {
-            kind: ImageOpKind::Threshold(value),
+            kind: ImageOpKind::Threshold { value },
         }))
     }
 
@@ -498,23 +513,28 @@ impl ViewExpr {
         };
 
         match optimized_node {
-            ExprNode::View(ViewOp::Flip(axes1), child) => {
+            ExprNode::View(ViewOp::Flip { axes: axes1 }, child) => {
                 if cfg.view_flip_involution {
-                    if let ExprNode::View(ViewOp::Flip(ref axes2), ref grandchild) = &child.node {
+                    if let ExprNode::View(ViewOp::Flip { axes: ref axes2 }, ref grandchild) =
+                        &child.node
+                    {
                         if axes1 == *axes2 {
                             return grandchild.clone();
                         }
                     }
                 }
-                self.rebuild(ExprNode::View(ViewOp::Flip(axes1), child))
+                self.rebuild(ExprNode::View(ViewOp::Flip { axes: axes1 }, child))
             }
 
-            ExprNode::View(ViewOp::Transpose(p1), child) => {
+            ExprNode::View(ViewOp::Transpose { axes: p1 }, child) => {
                 if cfg.view_transpose_merge {
-                    if let ExprNode::View(ViewOp::Transpose(ref p2), ref grandchild) = &child.node {
+                    if let ExprNode::View(ViewOp::Transpose { axes: ref p2 }, ref grandchild) =
+                        &child.node
+                    {
                         // Compose the two permutations: applying `p1` after `p2` is a
                         // single transpose by `merged[i] = p2[p1[i]]`.
-                        let merged: Vec<usize> = p1.iter().map(|&i| p2[i]).collect();
+                        let merged: Vec<usize> =
+                            p1.iter().map(|&i| p2[i as usize] as usize).collect();
                         let is_identity = merged.iter().enumerate().all(|(i, &x)| i == x);
                         if is_identity {
                             return grandchild.clone();
@@ -527,12 +547,15 @@ impl ViewExpr {
                         return grandchild.transpose(merged);
                     }
                 }
-                self.rebuild(ExprNode::View(ViewOp::Transpose(p1), child))
+                self.rebuild(ExprNode::View(ViewOp::Transpose { axes: p1 }, child))
             }
 
             ExprNode::Compute(op1, child) => {
                 // Cast optimization: eliminate redundant casts
-                if let ComputeOp::Cast(target_dtype) = &op1 {
+                if let ComputeOp::Cast {
+                    dtype: target_dtype,
+                } = &op1
+                {
                     // Optimization 1: Identity cast (cast to same dtype as child)
                     // Example: u8 input -> cast(u8) -> output
                     // Result: eliminate the cast entirely
@@ -556,7 +579,7 @@ impl ViewExpr {
                     // wrapping one (u16 300 -> f32 -> u8 is 255, u16 300 -> u8 is
                     // 44), so that shape is kept too.
                     if cfg.cast_chain_collapse {
-                        if let ExprNode::Compute(ComputeOp::Cast(inner), ref grandchild) =
+                        if let ExprNode::Compute(ComputeOp::Cast { dtype: inner }, ref grandchild) =
                             &child.node
                         {
                             let switches_int_conversion = DTypeCategory::Integer
@@ -570,7 +593,9 @@ impl ViewExpr {
                                 // from grandchild.
                                 return Arc::new(Self {
                                     node: ExprNode::Compute(
-                                        ComputeOp::Cast(*target_dtype),
+                                        ComputeOp::Cast {
+                                            dtype: *target_dtype,
+                                        },
                                         grandchild.clone(),
                                     ),
                                     shape: self.shape.clone(),
@@ -718,8 +743,8 @@ fn extract_ops(
     // drop precision. f64 chains simply stay unfused.
     let promote_family_fusable = input_dtype != DType::F64;
     match op {
-        ComputeOp::Scale(s) if promote_family_fusable => {
-            list.push(ScalarOp::Mul(*s));
+        ComputeOp::Scale { factor } if promote_family_fusable => {
+            list.push(ScalarOp::Mul(*factor));
             true
         }
         ComputeOp::Relu if promote_family_fusable => {
@@ -733,15 +758,15 @@ fn extract_ops(
         // The core math primitives: each is already a single `ScalarOp`, so
         // lowering is a direct push. f64 stays unfused (the kernel is f32),
         // via the same promote-family gate as the ops above.
-        ComputeOp::Scalar(s) if promote_family_fusable => {
-            list.push(s.clone());
+        op if promote_family_fusable && op.scalar().is_some() => {
+            list.extend(op.scalar());
             true
         }
         // Gamma is scan-free and lowers exactly to its unfused formula:
         // `((x / max).clamp(0, 1)).powf(g) * max`, max = the input dtype's
         // value range for integers, 1 for float inputs (matching
         // `apply_adjust_gamma` via the same `norm_range_max_f32`).
-        ComputeOp::AdjustGamma(g) if promote_family_fusable => {
+        ComputeOp::AdjustGamma { gamma: g } if promote_family_fusable => {
             let max_val: f32 = input_dtype.norm_range_max_f32();
             if max_val != 1.0 {
                 list.push(ScalarOp::Div(max_val));
@@ -774,7 +799,7 @@ fn extract_ops(
         // - as the chain's last op, the kernel's out_dtype performs it;
         // - mid-chain, only cast-to-f32 is a no-op (the kernel computes in
         //   f32 anyway); other mid-chain casts quantize and must materialize.
-        ComputeOp::Cast(target) => is_outer || *target == DType::F32,
+        ComputeOp::Cast { dtype: target } => is_outer || *target == DType::F32,
         // An existing kernel can be extended only while its result is still
         // raw f32 — a non-f32 out_dtype is a quantization step that later
         // ops must observe.
@@ -860,7 +885,7 @@ mod dtype_contract_tests {
             // dtype; `grayscale()` hardcoded `U8`, diverging from the contract
             // on non-u8 input. They now route through the same canonical block.
             ImageOpKind::Grayscale,
-            ImageOpKind::Threshold(128.0),
+            ImageOpKind::Threshold { value: 128.0 },
             ImageOpKind::Blur { sigma: 1.0 },
             ImageOpKind::Resize {
                 width: 4,
@@ -899,7 +924,10 @@ mod dtype_contract_tests {
 
             let cases: [(Arc<ViewExpr>, ImageOpKind); 4] = [
                 (source.grayscale(), ImageOpKind::Grayscale),
-                (source.threshold(128.0), ImageOpKind::Threshold(128.0)),
+                (
+                    source.threshold(128.0),
+                    ImageOpKind::Threshold { value: 128.0 },
+                ),
                 (
                     source.resize(4, 4, FilterType::Triangle),
                     ImageOpKind::Resize {

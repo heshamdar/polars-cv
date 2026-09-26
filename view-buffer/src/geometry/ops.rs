@@ -1,10 +1,10 @@
 //! Geometry operation enum for pipeline integration.
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use crate::mode::{known, Exec, FieldType, Mode, NodeRef, Param, TypeDesc, Wire};
+use polars_cv_macros::{Ops, Resolve};
 
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::shape_rule::{OpShape, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
@@ -12,7 +12,6 @@ use crate::ops::Domain;
 
 /// Origin point for scale operations.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ScaleOrigin {
     /// Scale around the contour's centroid.
     Centroid,
@@ -22,72 +21,253 @@ pub enum ScaleOrigin {
     Origin,
 }
 
-/// Geometry operations reachable from a `Pipeline` graph.
+/// The geometry ops reachable from a `Pipeline` graph — one variant per wire
+/// op (see `crate::mode`).
 ///
 /// This enum is the *graph* vocabulary, not a catalogue of the geometry the crate
-/// can do. Every variant here has a `resolve_op` arm in the polars-cv plugin and a
-/// `GraphStep::Geometry` encoding; contour operations that only make sense on an
-/// already-materialized contour column — winding, flip, normalize, contains_point,
-/// IoU, Dice, Hausdorff and friends — are standalone `.contour` namespace plugin
-/// functions that call [`super::measures`], [`super::predicates`],
-/// [`super::pairwise`] and [`super::transforms`] directly. Adding a variant here
-/// without a `resolve_op` arm makes it unconstructible; adding one without an
-/// encoding is a compile error at the plugin's exhaustive match.
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum GeometryOp {
-    // --- Measures (contour -> scalar) ---
-    /// Compute the area of the region the contour describes.
-    /// If `signed` is true, returns signed area (negative for CW).
-    Area { signed: bool },
-
-    /// Compute perimeter (arc length).
+/// can do: contour operations that only make sense on an already-materialized
+/// contour column — winding, flip, normalize, contains_point, IoU, Dice,
+/// Hausdorff and friends — are standalone `.contour` namespace plugin functions
+/// that call [`super::measures`], [`super::predicates`], [`super::pairwise`] and
+/// [`super::transforms`] directly.
+#[derive(Debug, Clone, PartialEq, Ops, Resolve)]
+pub enum GeometryOp<M: Mode = Exec> {
+    /// Compute the area of the contour using the Shoelace formula.
+    ///
+    /// The area of the region the contour describes: the exterior minus the
+    /// union of its hole rings, in either winding direction. Overlapping or
+    /// nested hole rings are not double-subtracted. One value per contour for
+    /// a contour set.
+    #[op(name = "contour_area", python = "area", sample = {"signed": false})]
+    Area {
+        /// If True, return signed area (negative for CW winding).
+        #[param(default = false)]
+        signed: M::V<bool>,
+    },
+    /// Compute the perimeter (arc length) of the contour.
+    #[op(name = "contour_perimeter", python = "perimeter", sample = {})]
     Perimeter,
-
-    /// Compute centroid (center of mass).
+    /// Compute the centroid (center of mass) of the contour.
+    ///
+    /// Measured on the same region as `area()` — the exterior minus the union
+    /// of the hole rings — so overlapping or nested holes are not subtracted
+    /// twice.
+    ///
+    /// Returns ``[x, y]``.
+    #[op(name = "contour_centroid", python = "centroid", sample = {})]
     Centroid,
-
-    /// Compute axis-aligned bounding box.
+    /// Compute the axis-aligned bounding box of the contour.
+    ///
+    /// Returns ``[x, y, width, height]``.
+    #[op(name = "contour_bounding_box", python = "bounding_box", sample = {})]
     BoundingBox,
-
-    // --- Transforms (contour -> contour) ---
-    /// Translate by offset.
-    Translate { dx: f64, dy: f64 },
-
-    /// Scale relative to an origin point.
+    /// Translate the contour by an offset.
+    #[op(name = "contour_translate", python = "translate", sample = {"dx": 1.0, "dy": -2.0})]
+    Translate {
+        /// X offset (horizontal translation).
+        dx: M::V<f64>,
+        /// Y offset (vertical translation).
+        dy: M::V<f64>,
+    },
+    /// Scale the contour about *origin*.
+    #[op(name = "contour_scale", python = "scale_contour",
+         sample = {"sx": 2.0, "sy": 0.5, "origin": "bbox_center"})]
     Scale {
-        sx: f64,
-        sy: f64,
-        origin: ScaleOrigin,
+        /// X scale factor.
+        sx: M::V<f64>,
+        /// Y scale factor.
+        sy: M::V<f64>,
+        /// Point to scale about — ``"centroid"`` (center of mass),
+        /// ``"bbox_center"`` (bounding-box center) or ``"origin"`` (the
+        /// coordinate origin ``(0, 0)``). Accepts an expression for a per-row
+        /// choice: which point the scale is measured from changes no output
+        /// shape, rank or dtype.
+        #[param(default = "centroid")]
+        origin: M::V<ScaleOrigin>,
     },
-
-    /// Simplify using Douglas-Peucker algorithm.
-    Simplify { tolerance: f64 },
-
-    /// Compute convex hull.
+    /// Simplify the contour using the Douglas-Peucker algorithm.
+    #[op(name = "contour_simplify", python = "simplify", sample = {"tolerance": 1.5})]
+    Simplify {
+        /// Maximum distance from the original contour.
+        tolerance: M::V<f64>,
+    },
+    /// Compute the convex hull of the contour.
+    #[op(name = "contour_convex_hull", python = "convex_hull", sample = {})]
     ConvexHull,
-
-    // --- Rasterization (contour -> image) ---
-    /// Rasterize contour to binary mask.
+    /// Rasterize contours to a mask.
+    ///
+    /// The builder is ``Pipeline.rasterize``, whose ``width``/``height`` or
+    /// ``shape`` arguments become ``size``; it also records the shape reference's
+    /// graph dependency and its canvas assertion.
+    #[op(name = "rasterize", visibility = Internal,
+         sample = {"size": [8, 6], "fill_value": 1, "background": 0})]
     Rasterize {
-        width: u32,
-        height: u32,
-        fill_value: u8,
-        background: u8,
+        /// ``[height, width]`` of the mask (each may be a Polars expression), or
+        /// another node whose buffer's height and width the mask takes.
+        size: RasterSize<M>,
+        /// Inside value (default 255). Accepts a Polars expression for per-row
+        /// dynamic values.
+        #[param(default = 255)]
+        fill_value: M::V<u8>,
+        /// Outside value (default 0). Accepts a Polars expression for per-row
+        /// dynamic values.
+        #[param(default = 0)]
+        background: M::V<u8>,
     },
-
-    // --- Extraction (image -> contour) ---
-    /// Extract contours from binary image.
+    /// Extract contours from binary mask.
+    ///
+    /// The traced outline passes through the **centres** of the boundary pixels,
+    /// so it sits half a pixel inside the region it describes: a blob filling
+    /// ``w x h`` pixels comes back bounding ``(w-1) x (h-1)``. Rasterizing the
+    /// result therefore erodes it by a pixel per round trip.
+    ///
+    /// Borders come back as a flat list with no hierarchy. ``mode="all"`` yields
+    /// the exterior plus one border for each enclosed background region — holes
+    /// that touch or nest enclose one region between them — and reassembling a
+    /// holed contour from those is the caller's job. ``mode="external"`` keeps
+    /// only the outermost, discarding hole borders.
+    #[op(name = "extract_contours", sample = {"mode": "tree", "method": "none", "min_area": 2.0})]
     ExtractContours {
-        mode: ExtractMode,
-        method: ApproxMethod,
-        min_area: Option<f64>,
+        /// "external" (outer only), "tree" (full hierarchy), "all".
+        #[param(default = "external")]
+        mode: M::V<ExtractMode>,
+        /// "simple" (remove redundant), "none" (all points), "approx".
+        #[param(default = "simple")]
+        method: M::V<ApproxMethod>,
+        /// Filter small contours. Accepts a Polars expression for per-row dynamic
+        /// thresholds.
+        min_area: Option<M::V<f64>>,
     },
+}
+
+/// Where a rasterized mask's canvas size comes from.
+///
+/// Two variants rather than optional width/height plus an optional node, so a
+/// spec cannot carry both and have one ignored. On the wire a string is a node
+/// id, anything else the `[height, width]` pair.
+#[derive(Debug, Clone, PartialEq, Resolve)]
+pub enum RasterSize<M: Mode = Exec> {
+    /// Explicit `[height, width]`.
+    Fixed([M::V<u32>; 2]),
+    /// The height and width of another node's buffer, known only when the
+    /// graph executor has run that node: it sets the canvas
+    /// ([`GeometryOp::with_canvas`]) before the op executes.
+    FromNode(NodeRef),
+}
+
+impl serde::Serialize for RasterSize<Wire> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            RasterSize::Fixed(dims) => dims.serialize(s),
+            RasterSize::FromNode(node) => node.serialize(s),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for RasterSize<Wire> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let value = serde_json::Value::deserialize(d)?;
+        if value.is_string() {
+            serde_json::from_value(value).map(RasterSize::FromNode)
+        } else {
+            serde_json::from_value(value).map(RasterSize::Fixed)
+        }
+        .map_err(D::Error::custom)
+    }
+}
+
+impl FieldType for RasterSize<Wire> {
+    fn describe() -> TypeDesc {
+        TypeDesc::OneOf {
+            options: vec![
+                <[Param<u32>; 2] as FieldType>::describe(),
+                <NodeRef as FieldType>::describe(),
+            ],
+        }
+    }
+    fn visit_slots(&self, f: &mut dyn FnMut(usize)) {
+        match self {
+            RasterSize::Fixed(dims) => dims.visit_slots(f),
+            RasterSize::FromNode(node) => node.visit_slots(f),
+        }
+    }
+}
+
+impl<M: Mode> GeometryOp<M> {
+    /// Refuse a parameter combination no row can execute: none (the
+    /// per-value checks — a positive canvas, a non-negative tolerance — are
+    /// `validate`'s, on the values).
+    pub fn check(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// How this op's output shape follows from its input — the one
+    /// definition.
+    pub fn shape(&self) -> OpShape {
+        match self {
+            // A measure runs over the row's contour set: one value (a
+            // centroid's two, a box's four) per member, so the length is the
+            // set's size — known only with the data.
+            GeometryOp::Area { .. }
+            | GeometryOp::Perimeter
+            | GeometryOp::Centroid
+            | GeometryOp::BoundingBox => OpShape::Dynamic,
+            // Contour transforms preserve the point list; `Simplify` and
+            // `ConvexHull` may shorten it, which is not knowable statically, so
+            // the input shape stands in for both.
+            GeometryOp::Translate { .. }
+            | GeometryOp::Scale { .. }
+            | GeometryOp::Simplify { .. }
+            | GeometryOp::ConvexHull => OpShape::Preserve,
+            GeometryOp::Rasterize { size, .. } => {
+                let (h, w) = match size {
+                    RasterSize::Fixed([h, w]) => {
+                        (crate::mode::size::<M>(h), crate::mode::size::<M>(w))
+                    }
+                    // Another node's canvas: known only once that node has run.
+                    RasterSize::FromNode(_) => (Sym::PerRow, Sym::PerRow),
+                };
+                OpShape::Fixed(vec![h, w, Sym::Known(1)])
+            }
+            // ExtractContours output shape is data-dependent
+            GeometryOp::ExtractContours { .. } => OpShape::Dynamic,
+        }
+    }
+}
+
+impl GeometryOp {
+    /// This rasterize op with its canvas set to `height` x `width` (another
+    /// node's buffer's, read by the executor). Any other op is unchanged.
+    pub fn with_canvas(self, height: u32, width: u32) -> GeometryOp {
+        match self {
+            GeometryOp::Rasterize {
+                fill_value,
+                background,
+                ..
+            } => GeometryOp::Rasterize {
+                size: RasterSize::Fixed([height, width]),
+                fill_value,
+                background,
+            },
+            other => other,
+        }
+    }
+
+    /// A rasterize op's canvas, `(height, width)`, once it is known.
+    pub fn canvas(&self) -> Option<(u32, u32)> {
+        match self {
+            GeometryOp::Rasterize {
+                size: RasterSize::Fixed([h, w]),
+                ..
+            } => Some((*h, *w)),
+            _ => None,
+        }
+    }
 }
 
 /// Mode for contour extraction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ExtractMode {
     /// Only outermost contours (no nesting).
     External,
@@ -99,7 +279,6 @@ pub enum ExtractMode {
 
 /// Contour approximation method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ApproxMethod {
     /// Keep all boundary points.
     None,
@@ -109,25 +288,25 @@ pub enum ApproxMethod {
     Approx,
 }
 
-crate::naming::named_variants!(ScaleOrigin {
+crate::naming::named_variants!(ScaleOrigin: "Point a contour scale operation is measured from (``.contour.scale``)." {
     "centroid" => Centroid,
     "bbox_center" => BBoxCenter,
     "origin" => Origin,
 });
 
-crate::naming::named_variants!(ExtractMode {
+crate::naming::named_variants!(ExtractMode: "Contour retrieval mode for ``extract_contours``.\n\n- EXTERNAL: Outermost contours only (default).\n- TREE: Full nesting hierarchy.\n- ALL: Every contour, without hierarchy." {
     "external" => External,
     "tree" => Tree,
     "all" => All,
 });
 
-crate::naming::named_variants!(ApproxMethod {
+crate::naming::named_variants!(ApproxMethod: "Contour point-approximation method for ``extract_contours``.\n\n- NONE: Keep every boundary point.\n- SIMPLE: Drop redundant collinear points (default).\n- APPROX: Douglas-Peucker style approximation." {
     "none" => None,
     "simple" => Simple,
     "approx" => Approx,
 });
 
-impl Op for GeometryOp {
+impl<M: Mode> Op for GeometryOp<M> {
     fn name(&self) -> &'static str {
         match self {
             GeometryOp::Area { .. } => "Area",
@@ -143,70 +322,8 @@ impl Op for GeometryOp {
         }
     }
 
-    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
-        match self {
-            // Scalar outputs
-            GeometryOp::Area { .. } | GeometryOp::Perimeter => vec![1],
-
-            // Centroid returns (x, y)
-            GeometryOp::Centroid => vec![2],
-
-            // BoundingBox returns (x, y, width, height)
-            GeometryOp::BoundingBox => vec![4],
-
-            // Contour transforms preserve the point list; `Simplify` and
-            // `ConvexHull` may shorten it, which is not knowable statically, so
-            // the input shape stands in for both.
-            GeometryOp::Translate { .. }
-            | GeometryOp::Scale { .. }
-            | GeometryOp::Simplify { .. }
-            | GeometryOp::ConvexHull => {
-                if !inputs.is_empty() {
-                    inputs[0].to_vec()
-                } else {
-                    vec![]
-                }
-            }
-
-            // Rasterize produces an image
-            GeometryOp::Rasterize { width, height, .. } => {
-                vec![*height as usize, *width as usize, 1]
-            }
-
-            // ExtractContours output shape is dynamic
-            GeometryOp::ExtractContours { .. } => {
-                // Variable-length output, placeholder
-                vec![]
-            }
-        }
-    }
-
-    fn output_rank_rule(&self) -> OutputRankRule {
-        match self {
-            // Scalar/vector measures emit a fixed-length 1-D result.
-            GeometryOp::Area { .. }
-            | GeometryOp::Perimeter
-            | GeometryOp::Centroid
-            | GeometryOp::BoundingBox => OutputRankRule::Fixed(1),
-            // Contour→contour transforms preserve the point-list rank.
-            GeometryOp::Translate { .. }
-            | GeometryOp::Scale { .. }
-            | GeometryOp::Simplify { .. }
-            | GeometryOp::ConvexHull => OutputRankRule::PreserveRank,
-            // Rasterize emits an [H, W, 1] image.
-            GeometryOp::Rasterize { .. } => OutputRankRule::Fixed(3),
-            // Extraction produces a variable-length contour set.
-            GeometryOp::ExtractContours { .. } => OutputRankRule::Unknown,
-        }
-    }
-
-    fn output_channel_rule(&self) -> OutputChannelRule {
-        match self {
-            // Rasterize produces a single-channel mask.
-            GeometryOp::Rasterize { .. } => OutputChannelRule::Fixed(1),
-            // Everything else is scalar/vector/contour data, not an image.
-            _ => OutputChannelRule::NotApplicable,
-        }
+    fn shape(&self) -> OpShape {
+        GeometryOp::shape(self)
     }
 
     fn memory_effect(&self) -> MemoryEffect {
@@ -262,8 +379,15 @@ impl Op for GeometryOp {
         _input_dtypes: &[DType],
     ) -> Result<(), ValidationError> {
         match self {
-            GeometryOp::Rasterize { width, height, .. } => {
-                if *width == 0 || *height == 0 {
+            // A canvas another node sets is known only once that node has
+            // run (the executor sets it, and refuses a rasterize without
+            // one); a per-row size is checked per row.
+            GeometryOp::Rasterize {
+                size: RasterSize::Fixed([h, w]),
+                ..
+            } => {
+                let zero = |d: &M::V<u32>| known::<M, u32>(d) == Some(0);
+                if zero(h) || zero(w) {
                     return Err(ValidationError::InvalidParameter {
                         param: "width/height".to_string(),
                         reason: "Dimensions must be > 0".to_string(),
@@ -273,7 +397,7 @@ impl Op for GeometryOp {
             }
 
             GeometryOp::Simplify { tolerance } => {
-                if *tolerance < 0.0 {
+                if known::<M, f64>(tolerance).is_some_and(|t| t < 0.0) {
                     return Err(ValidationError::InvalidParameter {
                         param: "tolerance".to_string(),
                         reason: "Tolerance must be >= 0".to_string(),
@@ -302,7 +426,7 @@ impl Op for GeometryOp {
     }
 }
 
-impl GeometryOp {
+impl<M: Mode> GeometryOp<M> {
     /// Get the input domain this geometry operation expects.
     pub fn input_domain(&self) -> Domain {
         match self {
@@ -356,14 +480,16 @@ impl GeometryOp {
 mod tests {
     use super::*;
 
+    // The rules are generic over the mode; these tests read executed ops.
+    type GeometryOp = super::GeometryOp<Exec>;
+
     #[test]
     fn test_op_names() {
         assert_eq!(GeometryOp::Area { signed: false }.name(), "Area");
         assert_eq!(GeometryOp::Perimeter.name(), "Perimeter");
         assert_eq!(
             GeometryOp::Rasterize {
-                width: 100,
-                height: 100,
+                size: RasterSize::Fixed([100, 100]),
                 fill_value: 255,
                 background: 0,
             }
@@ -374,21 +500,19 @@ mod tests {
 
     #[test]
     fn test_rasterize_shape() {
-        let op = GeometryOp::Rasterize {
-            width: 200,
-            height: 100,
+        let op: GeometryOp = GeometryOp::Rasterize {
+            size: RasterSize::Fixed([100, 200]),
             fill_value: 255,
             background: 0,
         };
-        let shape = op.infer_shape(&[]);
+        let shape = op.shape().concrete(&[]);
         assert_eq!(shape, vec![100, 200, 1]);
     }
 
     #[test]
     fn test_validate_rasterize() {
         let op = GeometryOp::Rasterize {
-            width: 0,
-            height: 100,
+            size: RasterSize::Fixed([100, 0]),
             fill_value: 255,
             background: 0,
         };
@@ -408,8 +532,7 @@ mod tests {
 
         // Rasterize: Contour → Buffer
         let rasterize = GeometryOp::Rasterize {
-            width: 100,
-            height: 100,
+            size: RasterSize::Fixed([100, 100]),
             fill_value: 255,
             background: 0,
         };

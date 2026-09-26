@@ -45,6 +45,11 @@ Extract a rectangular region.
 Pipeline().source("image_bytes").crop(top=10, left=10, height=100, width=100)
 ```
 
+Omit `height` or `width` to crop to the end of that axis. The window must lie
+inside the image: a negative bound, or a window that runs past the edge, is an
+error (a per-row error when it comes from a column, so `on_error` applies)
+rather than being clamped to a smaller region.
+
 ## Rotate
 
 Rotate by an angle in degrees. Part of the [affine transform family](#affine-transforms).
@@ -106,7 +111,7 @@ Convert between color spaces using `convert_color` or convenience methods.
 
 ```python
 # Generic conversion
-Pipeline().source("image_bytes").convert_color("rgb", "hsv")
+Pipeline().source("image_bytes").convert_color(from_space="rgb", to_space="hsv")
 
 # Convenience methods
 Pipeline().source("image_bytes").to_hsv()
@@ -236,10 +241,10 @@ Apply 2D convolution with an arbitrary kernel.
 ```python
 # Custom 3x3 emboss kernel
 kernel = [-2, -1, 0, -1, 1, 1, 0, 1, 2]
-Pipeline().source("image_bytes").convolve2d(kernel, ksize=3)
+Pipeline().source("image_bytes").convolve2d(kernel=kernel)
 
 # Normalize kernel so output values stay in range
-Pipeline().source("image_bytes").convolve2d(kernel, ksize=3, normalize=True)
+Pipeline().source("image_bytes").convolve2d(kernel=kernel, normalize=True)
 ```
 
 **Border modes:** `"replicate"` (default), `"zero"`, `"reflect"`.
@@ -250,7 +255,7 @@ Sobel gradient operator (delegates to `convolve2d` with standard kernels).
 
 ```python
 Pipeline().source("image_bytes").grayscale().sobel(axis="x")
-Pipeline().source("image_bytes").grayscale().sobel(axis="y", ksize=3)
+Pipeline().source("image_bytes").grayscale().sobel(axis="y")
 ```
 
 ### Laplacian
@@ -602,7 +607,7 @@ pipe = Pipeline().source("image_bytes").crop(
 | Sharpen | `strength` |
 | Morphology | `ksize`, `iterations` |
 | Channel select / swap | `index`, `order` (each element, per-row) |
-| Convolution | `kernel` (each coefficient, per-row), `ksize`, `border` |
+| Convolution | `kernel` (each coefficient, per-row), `normalize`, `border` |
 | Flags | `apply_mask(invert)`, `convolve2d(normalize)`, `area(signed)` |
 | Reductions | `q` (percentile), `ddof` (std) |
 | Histogram | `bins` (integer form), `range` |
@@ -619,7 +624,8 @@ therefore fails at planning time, since that sink needs a known shape — use th
 `list` sink, or pass a literal `bins`.
 
 **Structural parameters remain literal-only**, because they fix the output
-shape, rank or dtype at planning time and the lazy schema must match what
+rank or dtype (or, like `rotate(expand)` and a kernel's length, the planned
+dimensions themselves) at planning time and the lazy schema must match what
 executes: reduction `axis`, `perceptual_hash(hash_size)`, the `axes` lists of
 `transpose`/`flip`, `reshape`'s element count, `rotate(expand)` (it changes the
 output dimensions), `cast(dtype)`, `normalize(method`/`out_dtype)` and

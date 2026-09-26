@@ -2,8 +2,8 @@
 
 The `.contour`, `.point` and `.bbox` namespaces bypass the `vb_graph` graph
 engine, so they carry per-row parameters as extra plugin *input series* rather
-than through `ParamValue` (see `_ArgBinder` in `_namespace.py` and `GeomParams`
-in `src/geom_params.rs`).
+than as graph op fields (see `_GeomNamespace._call` in `_namespace.py` and
+`GeomParams` in `src/geom_params.rs`).
 
 These operations used to raise `TypeError` on a `pl.Expr` — a deliberate guard
 added after a bug where expression arguments were silently *dropped*, i.e.
@@ -112,9 +112,9 @@ class TestContourExpressionParams:
 
     def test_scale_uses_per_row_factors(self) -> None:
         df = _two_rows(c=[SQUARE, SQUARE], sx=[2.0, 3.0], sy=[1.0, 1.0])
-        out = df.with_columns(s=pl.col("c").contour.scale(pl.col("sx"), pl.col("sy")))[
-            "s"
-        ].to_list()
+        out = df.with_columns(
+            s=pl.col("c").contour.scale(pl.col("sx"), pl.col("sy"), origin="origin")
+        )["s"].to_list()
         assert out[0]["exterior"][2]["x"] == 200.0
         assert out[1]["exterior"][2]["x"] == 300.0
 
@@ -191,8 +191,9 @@ class TestPointExpressionParams:
     def test_rotate_per_row_angle_with_origin_operand(self) -> None:
         """The optional `origin` operand and a dynamic `angle` coexist.
 
-        Both occupy plugin input slots, which is exactly the collision the
-        name-keyed `input_slots` map exists to prevent.
+        Both occupy plugin input slots; each kwarg names its own position
+        (`{"$slot": n}`), so an optional operand cannot be mistaken for an
+        appended parameter.
         """
         df = _two_rows(
             p=[{"x": 0.0, "y": 0.0}] * 2,

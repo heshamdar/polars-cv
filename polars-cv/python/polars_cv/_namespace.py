@@ -11,17 +11,18 @@ collapses to a single ``self._plugin(...)`` call, which goes through
 from __future__ import annotations
 
 import copy
-from typing import Any, Callable
+import json
+from enum import Enum
+from typing import Any, TypeVar
 
 import polars as pl
 
 from polars_cv import _plugin
-from polars_cv._types import NullParamPolicy
+from polars_cv._types import NullParamPolicy, _to_python
 
-#: Accepted ``on_null(...)`` values, read from the Rust enum's Python mirror
-#: rather than spelled here. ``NullParamPolicy`` is registered in
-#: ``PLUGIN_REGISTRY``, so ``test_every_rust_enum_is_parity_checked`` holds the
-#: mirror to what ``enum_variants("NullParamPolicy")`` reports.
+#: Accepted ``on_null(...)`` values, read from ``NullParamPolicy`` — a class
+#: generated from the Rust enum (``PLUGIN_REGISTRY`` → ``enum_catalog.json``)
+#: rather than spelled here.
 _NULL_PARAM_POLICIES = tuple(p.value for p in NullParamPolicy)
 
 
@@ -60,21 +61,32 @@ class _PluginNamespace:
         )
 
 
-class _GeomNullPolicy:
-    """Adds ``on_null`` to the geometry accessors — and only to those.
+#: The concrete namespace type, so `on_null` chains keep their accessor methods.
+_Policy = TypeVar("_Policy", bound="_GeomNamespace")
 
-    Deliberately **not** on :class:`_PluginNamespace`. ``.cv`` shares that base
-    but routes per-row parameters through the ``vb_graph`` graph engine, where
-    the policy belongs to the pipeline (``Pipeline.on_null_param``). Inheriting
-    ``on_null`` onto ``.cv`` would let ``pl.col("x").cv.on_null("null")`` chain
-    and read as effective while silently doing nothing, because only
-    :meth:`_ArgBinder.call` reads ``_on_null``. Keeping it on a geometry-only
-    mixin makes that call an ``AttributeError`` instead of a quiet no-op.
+
+class _GeomNamespace(_PluginNamespace):
+    """The geometry accessors' base: their one plugin call, and ``on_null``.
+
+    Every ``.contour``/``.point``/``.bbox`` method is generated
+    (``_ops_generated``) as one :meth:`_call` of its Rust definition
+    (``src/geom_fns.rs``), with that definition's signature, defaults and
+    docstring.
+
+    ``on_null`` is here, not on ``_PluginNamespace``.
+
+    ``.cv`` shares that base but routes per-row parameters through the
+    ``vb_graph`` graph engine, where the policy belongs to the pipeline
+    (``Pipeline.on_null_param``). Inheriting ``on_null`` onto ``.cv`` would let
+    ``pl.col("x").cv.on_null("null")`` chain and read as effective while
+    silently doing nothing, because only :meth:`_call` reads ``_on_null``.
+    Keeping it on the geometry base makes that call an ``AttributeError``
+    instead of a quiet no-op.
     """
 
     _on_null: str = "raise"
 
-    def on_null(self, policy: str):
+    def on_null(self: _Policy, policy: str) -> _Policy:
         """Set what a null in a per-row expression parameter means.
 
         These namespaces have no ``Pipeline`` object to hang a graph-level
@@ -107,78 +119,38 @@ class _GeomNullPolicy:
         new._on_null = policy
         return new
 
+    def _call(self, function: str, values: dict[str, Any]) -> pl.Expr:
+        """Call the plugin function ``function`` with its arguments ``values``.
 
-class _ArgBinder:
-    """Builds a plugin call whose parameters may be literals or expressions.
-
-    The geometry namespaces bypass the ``vb_graph`` graph engine, so they have
-    no ``ParamValue`` machinery. Their per-row channel is instead the plugin's
-    *input series*: an expression-valued parameter is appended as an extra
-    argument and Rust reads it at the current row.
-
-    Position alone cannot identify those inputs. Several of these functions
-    already read *optional* data operands positionally (``point.rotate``'s
-    ``origin``, ``correspond``' ``order``), so an appended parameter
-    would be indistinguishable from an omitted operand. Every variable
-    argument — data operand and dynamic parameter alike — is therefore
-    registered in ``input_slots``, a ``name -> index`` map passed as a kwarg,
-    and Rust looks inputs up by name rather than by position.
-
-    Index 0 is always the namespace's own expression (``_plugin`` prepends it),
-    so the first appended argument lands at index 1.
-    """
-
-    def __init__(self) -> None:
-        self._args: list[pl.Expr] = []
-        self._kwargs: dict[str, Any] = {}
-        self._slots: dict[str, int] = {}
-
-    def _append(self, name: str, expr: pl.Expr) -> None:
-        # +1 leaves room for the namespace's own expression at index 0.
-        self._slots[name] = len(self._args) + 1
-        self._args.append(expr)
-
-    def add_data(self, name: str, expr: pl.Expr | None) -> None:
-        """Register a data operand (another column), skipping it when absent."""
-        if expr is not None:
-            self._append(name, expr)
-
-    def add_param(
-        self,
-        name: str,
-        value: str | float | int | bool | pl.Expr | None,
-        *,
-        cast: Callable[[Any], Any] = float,
-    ) -> None:
-        """Register a parameter as either a per-row input or a scalar kwarg.
-
-        A scalar rides in ``_kwargs`` under ``cast`` (``float`` by default, but
-        ``str`` / ``int`` / ``bool`` for enum and flag parameters); a ``pl.Expr``
-        becomes a per-row input.
+        The per-row wire form of every typed op: an argument is its literal
+        value, or — for a ``pl.Expr`` — ``{"$slot": n}``, where ``n`` is the
+        position of the plugin input the expression is appended as (a
+        parameter read per row, or a data operand). Each expression's position
+        is written into its own field, so no input is identified by name or by
+        an assumed position. Index 0 is the namespace's own expression. An
+        absent optional operand (``None``) is left out. The literals are
+        checked against the function's Rust definition here, as the
+        expression is built (``_lib.check_geom_call``); raises ``ValueError``.
         """
-        if value is None:
-            return
-        if isinstance(value, pl.Expr):
-            self._append(name, value)
-        else:
-            self._kwargs[name] = cast(value)
+        args: list[pl.Expr] = []
+        fields: dict[str, Any] = {}
+        for name, value in values.items():
+            if value is None:
+                continue
+            if isinstance(value, pl.Expr):
+                args.append(value)
+                fields[name] = {"$slot": len(args)}
+            elif isinstance(value, Enum):
+                fields[name] = value.value
+            else:
+                fields[name] = _to_python(value)
+        # Refused now, where it was written, by the definition itself — not
+        # when the query runs.
+        from polars_cv._lib import check_geom_call
 
-    def call(
-        self,
-        namespace: _PluginNamespace,
-        function_name: str,
-        **kwargs: Any,
-    ) -> pl.Expr:
-        """Invoke ``function_name`` with the collected args, kwargs and slots."""
-        return namespace._plugin(
-            function_name,
-            args=self._args,
-            kwargs={
-                **self._kwargs,
-                **kwargs,
-                "input_slots": self._slots,
-                # Injected centrally so no geometry method has to declare it;
-                # Rust reads it in `GeomParams::new`.
-                "on_null": namespace._on_null,  # ty: ignore[unresolved-attribute]
-            },
+        check_geom_call(function, json.dumps(fields))
+        return self._plugin(
+            function,
+            args=args,
+            kwargs={"args": fields, "on_null": self._on_null},
         )

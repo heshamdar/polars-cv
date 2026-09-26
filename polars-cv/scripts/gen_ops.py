@@ -1,0 +1,688 @@
+#!/usr/bin/env python
+"""Generate ``_ops_generated.py`` from the typed op catalogue, and
+``_lazy_forwarders.py`` from the ``Pipeline`` built on it.
+
+The catalogue (``tests/golden/op_catalog.json``) is emitted by the Rust op
+definitions in ``src/ops/`` and pinned there by the Rust test
+``catalog_matches_the_committed_file``; this script reads that file, never the
+compiled extension, so it runs without a build. It writes:
+
+- one ``str`` enum per registered Rust enum (``tests/golden/enum_catalog.json``,
+  pinned by ``enum_catalog_matches_the_committed_file``), bar
+  ``NOT_GENERATED``, docstring and spellings from the ``named_variants!``
+  invocation;
+- ``SourceFormat``/``SinkFormat``: the source and sink formats, from
+  ``tests/golden/io_catalog.json`` (the
+  Rust ``formats`` registry, pinned by ``io_catalog_matches_the_committed_file``);
+- ``TYPED_OPS``: the op names that cross the wire in the typed form;
+- ``SOURCE_FIELDS``: each ``source()`` keyword's field type, the union of the
+  source formats' fields, which ``Pipeline._with_source`` encodes by;
+- ``OP_FIELDS``: each typed op's field types, which the builder's one encoder
+  (``Pipeline._append_typed``) reads;
+- ``_OpsMixin``: ``source()``, from ``io_catalog.json`` (every typed source
+  field as a keyword, the ``Source`` family's doc as its docstring), and one
+  builder method per op (``_``-prefixed for an internal op
+  that hand-written sugar wraps), with the signature, defaults
+  and docstring the Rust definition declares. ``Pipeline`` inherits it. A
+  ``lazy_only`` op (one combining this expression with other graph nodes) has
+  no ``Pipeline`` method: its builder is ``LazyPipelineExpr``'s, which owns the
+  graph wiring, and ``test_every_lazy_only_op_is_a_lazy_method_with_its_fields``
+  pins that method to the op's fields;
+- ``_LazyOpsMixin``: that lazy method, for each ``lazy_only`` op whose one
+  field is the other operand's node (the element-wise binary ops), all built by
+  ``LazyPipelineExpr._binary_op``. ``LazyPipelineExpr`` inherits it; the
+  multi-operand ``lazy_only`` ops stay hand-written there;
+- ``_ContourOpsMixin``, ``_PointOpsMixin``, ``_BBoxOpsMixin``: every
+  ``.contour``/``.point``/``.bbox`` accessor method, from
+  ``tests/golden/geom_catalog.json`` (the Rust ``geom_fns`` definitions, pinned
+  by ``geom_catalog_matches_the_committed_file``), each one call of the
+  namespace's ``_call``.
+
+Then, into ``_lazy_forwarders.py``, ``_LazyForwardersMixin``: one
+``LazyPipelineExpr`` method per chainable ``Pipeline`` method (generated or
+hand-written sugar alike), with its signature, applying it to the
+expression's continuation. That half imports the package (pure Python, so
+still no build) to read the ``Pipeline`` the first half defines.
+
+Usage::
+
+    python scripts/gen_ops.py            # (re)write the module
+    python scripts/gen_ops.py --check    # exit 1 if it is stale
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+import textwrap
+from pathlib import Path
+from typing import Any
+
+_PKG = Path(__file__).resolve().parents[1]
+CATALOG = _PKG / "tests" / "golden" / "op_catalog.json"
+IO_CATALOG = _PKG / "tests" / "golden" / "io_catalog.json"
+ENUM_CATALOG = _PKG / "tests" / "golden" / "enum_catalog.json"
+PASS_CATALOG = _PKG / "tests" / "golden" / "pass_catalog.json"
+GEOM_CATALOG = _PKG / "tests" / "golden" / "geom_catalog.json"
+
+#: The geometry namespaces, in the order their mixins are written: the Rust
+#: namespace key and the generated mixin's class name.
+GEOM_NAMESPACES = (
+    ("contour", "_ContourOpsMixin"),
+    ("point", "_PointOpsMixin"),
+    ("bbox", "_BBoxOpsMixin"),
+)
+
+#: Registered enums with no generated Python class, and why. Every other enum
+#: in the catalogue becomes a ``str`` enum here, so a new registered enum gets
+#: its Python class by being registered.
+NOT_GENERATED = {
+    # Python exposes the binary ops as LazyPipelineExpr methods, not an enum.
+    "BinaryOp": "the binary ops are methods",
+    # `.sink(dtype=)` passes the keyword through; the typed sink validates it.
+    "SinkDType": "validated by the typed sink",
+}
+OUTPUT = _PKG / "python" / "polars_cv" / "_ops_generated.py"
+FORWARDERS = _PKG / "python" / "polars_cv" / "_lazy_forwarders.py"
+
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+from _format import ruff_format  # noqa: E402
+
+
+def _load_domains() -> Any:
+    """``polars_cv/_domains.py`` by path: the one ``Domain:`` renderer, shared
+    with the hand-written sugar, loaded without importing the package (whose
+    generated modules this script writes)."""
+    import importlib.util
+
+    path = _PKG / "python" / "polars_cv" / "_domains.py"
+    spec = importlib.util.spec_from_file_location("_polars_cv_domains", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_domains = _load_domains()
+
+_HEADER = '''\
+# This file is generated by scripts/gen_ops.py from tests/golden/op_catalog.json,
+# io_catalog.json, enum_catalog.json, pass_catalog.json and geom_catalog.json. Do not edit by hand: change the Rust
+# definition (src/ops/, src/formats/, src/geom_fns.rs), re-bless the catalogues
+# (POLARS_CV_BLESS=1 cargo test -p polars-cv catalog_matches), then rerun the
+# generator.
+"""Builder methods generated from the typed op catalogue."""
+
+from __future__ import annotations
+
+{imports}
+'''
+
+#: Python annotation per catalogue scalar type, (per-row, literal).
+_SCALAR = {
+    "int": ("IntOrExpr", "int"),
+    "float": ("FloatOrExpr", "float"),
+    "bool": ("BoolOrExpr", "bool"),
+    "str": ("str", "str"),
+}
+
+#: Docstring width, less the method body's eight-space indent.
+_DOC_WIDTH = 88 - 8
+
+#: Docstring section headers the generated ``Args:`` block goes before.
+_SECTION = re.compile(r"^(Example|Examples|Returns|Raises|Note|Notes|Warning):\s*$")
+
+
+def annotation(ty: dict[str, Any]) -> str:
+    """The Python annotation for a catalogue field type."""
+    kind = ty["kind"]
+    if kind == "scalar":
+        if ty.get("variants"):
+            return "str | pl.Expr" if ty["per_row"] else "str"
+        per_row, literal = _SCALAR[ty["py"]]
+        return per_row if ty["per_row"] else literal
+    if kind == "optional":
+        return f"{annotation(ty['inner'])} | None"
+    if kind in ("array", "list"):
+        return f"Sequence[{annotation(ty['inner'])}]"
+    if kind == "one_of":
+        return " | ".join(annotation(option) for option in ty["options"])
+    if kind == "column":
+        return "pl.Expr"
+    if kind == "node":
+        return "LazyPipelineExpr"
+    if kind == "map":
+        # The one map field is `source(cloud_options=)`.
+        return "CloudOptions | dict[str, Any]"
+    msg = f"unknown catalogue type kind {kind!r}"
+    raise ValueError(msg)
+
+
+def _default(field: dict[str, Any]) -> str | None:
+    if "default" in field:
+        return repr(field["default"])
+    if field["type"]["kind"] == "optional":
+        return "None"
+    return None
+
+
+def _indent(text: str, prefix: str) -> str:
+    return "\n".join(prefix + line if line.strip() else "" for line in text.split("\n"))
+
+
+def docstring(op: dict[str, Any]) -> str:
+    """The op doc with its ``Domain:`` line and a Google ``Args:`` block from
+    the field docs."""
+    lines = op["doc"].split("\n")
+    at = next((i for i, line in enumerate(lines) if _SECTION.match(line)), len(lines))
+    args = []
+    for field in op["fields"]:
+        # Rewrapped: the Rust doc comment's line breaks sit at a different
+        # indent, and the rendered line must fit the formatter's limit.
+        args += textwrap.wrap(
+            " ".join(field["doc"].split()),
+            width=_DOC_WIDTH,
+            initial_indent=f"    {field['name']}: ",
+            subsequent_indent="        ",
+        )
+    block = ["Args:", *args] if args else []
+    body = lines[:at]
+    while body and not body[-1].strip():
+        body.pop()
+    if "domains" in op:
+        body += ["", *_domains.wrap(_domains.domain_line(op["domains"]), _DOC_WIDTH)]
+    tail = lines[at:]
+    parts = [*body, "", *block]
+    if tail:
+        parts += ["", *tail]
+    return "\n".join(parts).rstrip()
+
+
+def method_name(op: dict[str, Any]) -> str:
+    """The generated method's name.
+
+    A ``public`` op is the Python method itself. An ``internal`` one is the
+    building block a hand-written sugar method on ``Pipeline`` calls (``scale``
+    adds ``out_dtype``/``preserve_dtype`` over ``_scale``), so it is private.
+    """
+    if op["visibility"] == "public":
+        return op["python"]
+    if op["visibility"] == "internal":
+        return f"_{op['python']}"
+    msg = f"gen_ops.py cannot yet place {op['visibility']} op {op['name']!r}"
+    raise ValueError(msg)
+
+
+def positional(op: dict[str, Any]) -> str | None:
+    """The op's positional-or-keyword parameter, if it has one.
+
+    The signature rule: an op with exactly one required field takes it
+    positional-or-keyword (``.cast("f32")``, ``.threshold(128)``); every other
+    parameter is keyword-only. Derived, never declared, so no op can opt out.
+    """
+    required = [
+        f["name"]
+        for f in op["fields"]
+        if "default" not in f and f["type"]["kind"] != "optional"
+    ]
+    return required[0] if len(required) == 1 else None
+
+
+def method(op: dict[str, Any]) -> str:
+    """Render one builder method."""
+    first = positional(op)
+    fields = sorted(op["fields"], key=lambda f: f["name"] != first)
+    params = ["self", *(["*"] if first is None and fields else [])]
+    for field in fields:
+        text = f"{field['name']}: {annotation(field['type'])}"
+        default = _default(field)
+        if default is not None:
+            text += f" = {default}"
+        params.append(text)
+        if field["name"] == first and len(fields) > 1:
+            params.append("*")
+    values = ", ".join(f'"{f["name"]}": {f["name"]}' for f in op["fields"])
+    doc = _indent(docstring(op), "        ").lstrip()
+    return (
+        f"    def {method_name(op)}({', '.join(params)}) -> Pipeline:\n"
+        f'        """{doc}\n        """\n'
+        f'        return self._append_typed("{op["name"]}", {{{values}}})\n'
+    )
+
+
+def geom_method(fn: dict[str, Any]) -> str:
+    """Render one geometry accessor method.
+
+    The accessors' signature rule: every required field is
+    positional-or-keyword, in declaration order (``.translate(dx, dy)``,
+    ``.iou(other)``); every field with a default, or optional, is keyword-only.
+    """
+
+    def required(f: dict[str, Any]) -> bool:
+        return "default" not in f and f["type"]["kind"] != "optional"
+
+    fields = [f for f in fn["fields"] if required(f)]
+    rest = [f for f in fn["fields"] if not required(f)]
+    params = ["self"]
+    for field in fields:
+        params.append(f"{field['name']}: {annotation(field['type'])}")
+    if rest:
+        params.append("*")
+    for field in rest:
+        params.append(
+            f"{field['name']}: {annotation(field['type'])} = {_default(field)}"
+        )
+    values = ", ".join(f'"{f["name"]}": {f["name"]}' for f in fn["fields"])
+    doc = _indent(docstring(fn), "        ").lstrip()
+    return (
+        f"    def {fn['python']}({', '.join(params)}) -> pl.Expr:\n"
+        f'        """{doc}\n        """\n'
+        f'        return self._call("{fn["name"]}", {{{values}}})\n'
+    )
+
+
+def geom_mixins(geom: list[dict[str, Any]]) -> str:
+    """The geometry accessor mixins, one per namespace."""
+    out = []
+    for namespace, class_name in GEOM_NAMESPACES:
+        methods = "\n".join(
+            geom_method(fn) for fn in geom if fn["namespace"] == namespace
+        )
+        out.append(
+            f"class {class_name}:\n"
+            f'    """The generated ``.{namespace}`` accessor methods."""\n\n'
+            "    if TYPE_CHECKING:\n\n"
+            "        def _call(self, function: str, values: dict[str, Any]) -> pl.Expr: ...\n\n"
+            + methods
+        )
+    return "\n\n".join(out)
+
+
+def _required(ty: dict[str, Any]) -> dict[str, Any]:
+    """A field type without its ``optional`` wrapper."""
+    return ty["inner"] if ty["kind"] == "optional" else ty
+
+
+def source_fields(io: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Each ``source()`` keyword's type: the union of the formats' fields.
+
+    A keyword is one field name across formats, so the formats declaring it
+    must agree on its type (bar being optional in some).
+    """
+    types: dict[str, dict[str, Any]] = {}
+    for fmt in io["sources"]:
+        for field in fmt["fields"]:
+            ty = _required(field["type"])
+            if types.setdefault(field["name"], ty) != ty:
+                msg = f"source field {field['name']!r} has two types across formats"
+                raise ValueError(msg)
+    return dict(sorted(types.items()))
+
+
+def source_method(io: dict[str, Any]) -> str:
+    """Render ``source()``: every typed source field, keyword-only, ``None``
+    meaning the chosen format's own default.
+
+    Each keyword's ``Args:`` entry says which formats take it, with each
+    format's doc for it; the format argument lists every format's doc.
+    """
+    by_doc: dict[str, dict[str, list[str]]] = {}
+    for fmt in io["sources"]:
+        for field in fmt["fields"]:
+            doc = " ".join(field["doc"].split())
+            by_doc.setdefault(field["name"], {}).setdefault(doc, []).append(fmt["name"])
+    fields = source_fields(io)
+    formats = " ".join(
+        f"``{f['name']}``: {' '.join(f['doc'].split())}" for f in io["sources"]
+    )
+    desc = {
+        "doc": io["source_doc"],
+        "fields": [
+            {"name": "format", "doc": f"How to decode the input column. {formats}"},
+            *(
+                {
+                    "name": name,
+                    "doc": " ".join(
+                        f"{', '.join(f'``{n}``' for n in names)}: {doc}"
+                        for doc, names in by_doc[name].items()
+                    ),
+                }
+                for name in fields
+            ),
+        ],
+    }
+    params = [
+        "self",
+        f"format: str = {io['default_source']!r}",
+        "*",
+        *(f"{name}: {annotation(ty)} | None = None" for name, ty in fields.items()),
+    ]
+    values = ", ".join(f'"{name}": {name}' for name in fields)
+    doc = _indent(docstring(desc), "        ").lstrip()
+    return (
+        f"    def source({', '.join(params)}) -> Pipeline:\n"
+        f'        """{doc}\n        """\n'
+        f"        return self._with_source(format, {{{values}}})\n"
+    )
+
+
+def is_binary(op: dict[str, Any]) -> bool:
+    """A ``lazy_only`` op whose only field is the other operand's node."""
+    fields = op["fields"]
+    return (
+        op["visibility"] == "lazy_only"
+        and len(fields) == 1
+        and fields[0]["type"]["kind"] == "node"
+    )
+
+
+def lazy_method(op: dict[str, Any]) -> str:
+    """Render one binary op's ``LazyPipelineExpr`` method."""
+    (field,) = op["fields"]
+    name = field["name"]
+    doc = _indent(docstring(op), "        ").lstrip()
+    return (
+        f"    def {op['python']}(self, {name}: LazyPipelineExpr) -> LazyPipelineExpr:\n"
+        f'        """{doc}\n        """\n'
+        f'        return self._binary_op("{op["name"]}", {name})\n'
+    )
+
+
+def _imports(methods: str) -> str:
+    """The import block: only what the rendered methods name (ruff F401)."""
+    aliases = sorted(
+        name
+        for name in ("BoolOrExpr", "CloudOptions", "FloatOrExpr", "IntOrExpr")
+        if re.search(rf"\b{name}\b", methods)
+    )
+    lines = []
+    if "Sequence[" in methods:
+        lines.append("from collections.abc import Sequence")
+    lines.append("from dataclasses import dataclass")
+    lines.append("from enum import Enum")
+    lines.append("from typing import TYPE_CHECKING, Any\n\nif TYPE_CHECKING:")
+    if "pl.Expr" in methods:
+        lines.append("    import polars as pl\n")
+    if aliases:
+        lines.append(f"    from polars_cv._types import {', '.join(aliases)}")
+    if "LazyPipelineExpr" in methods:
+        lines.append("    from polars_cv.lazy import LazyPipelineExpr")
+    lines.append("    from polars_cv.pipeline import Pipeline")
+    return "\n".join(lines)
+
+
+def format_enum(name: str, kind: str, formats: list[dict[str, Any]]) -> str:
+    """A ``str`` enum of one pipeline end's formats, one member per format."""
+    members = "".join(
+        f'    {f["name"].upper()} = "{f["name"]}"\n'
+        for f in sorted(formats, key=lambda f: f["name"])
+    )
+    return (
+        f"class {name}(str, Enum):\n"
+        f'    """Every {kind} format (typed per format in ``src/formats/``)."""\n\n'
+        f"{members}"
+    )
+
+
+def named_enum(desc: dict[str, Any]) -> str:
+    """A registered Rust enum as a ``str`` enum, one member per spelling."""
+    members = "".join(
+        f'    {v.upper().replace("-", "_")} = "{v}"\n' for v in desc["variants"]
+    )
+    doc = _indent(desc["doc"], "    ").lstrip()
+    return f'class {desc["name"]}(str, Enum):\n    """{doc}\n    """\n\n{members}'
+
+
+def opt_flag_fields(passes: list[dict[str, Any]]) -> str:
+    """``OptFlags``' fields: one boolean per pass, on by default."""
+    body = "".join(f"    {p['name']}: bool = True\n" for p in passes)
+    return (
+        "@dataclass(frozen=True)\n"
+        "class _OptFlagFields:\n"
+        '    """One boolean per optimisation pass, in catalogue order."""\n\n' + body
+    )
+
+
+def render(
+    catalog: list[dict[str, Any]],
+    io: dict[str, Any],
+    enums: list[dict[str, Any]],
+    passes: list[dict[str, Any]],
+    geom: list[dict[str, Any]],
+) -> str:
+    """The whole generated module, formatted."""
+    names = sorted(op["name"] for op in catalog)
+    fields = {
+        op["name"]: {f["name"]: f["type"] for f in op["fields"]} for op in catalog
+    }
+    methods = source_method(io) + "\n".join(
+        method(op) for op in catalog if op["visibility"] != "lazy_only"
+    )
+    lazy_methods = "\n".join(lazy_method(op) for op in catalog if is_binary(op))
+    geom_methods = geom_mixins(geom)
+    text = (
+        _HEADER.format(imports=_imports(methods + lazy_methods + geom_methods))
+        + "\n\n"
+        + "".join(
+            named_enum(e) + "\n\n" for e in enums if e["name"] not in NOT_GENERATED
+        )
+        + format_enum("SourceFormat", "source", io["sources"])
+        + "\n\n"
+        + format_enum("SinkFormat", "sink", io["sinks"])
+        + "\n\n#: Ops whose wire form is typed (bare values and slots).\n"
+        + f"TYPED_OPS: frozenset[str] = frozenset({names!r})\n\n"
+        + "#: Every optimisation pass, in the order they apply: (name, tier, summary).\n"
+        + "PASS_CATALOG: tuple[tuple[str, str, str], ...] = "
+        + repr(tuple((p["name"], p["tier"], p["summary"]) for p in passes))
+        + "\n\n\n"
+        + opt_flag_fields(passes)
+        + "\n\n"
+        + "#: Each typed op's field types, as the catalogue describes them.\n"
+        + f"OP_FIELDS: dict[str, dict[str, Any]] = {json.dumps(fields)}\n\n"
+        + "#: Each typed op's domain contract (the catalogue's ``domains``).\n"
+        + "OP_DOMAINS: dict[str, list[dict[str, Any]]] = "
+        + json.dumps({op["name"]: op["domains"] for op in catalog})
+        + "\n\n"
+        + "#: Each ``source()`` keyword's field type, across the formats.\n"
+        + f"SOURCE_FIELDS: dict[str, dict[str, Any]] = {json.dumps(source_fields(io))}\n\n\n"
+        + "class _OpsMixin:\n"
+        + '    """The generated builder methods ``Pipeline`` inherits."""\n\n'
+        + "    if TYPE_CHECKING:\n\n"
+        + "        def _append_typed(self, op_name: str, values: dict[str, Any]) -> Pipeline: ...\n"
+        + "        def _with_source(self, format: str, values: dict[str, Any]) -> Pipeline: ...\n\n"
+        + methods
+        + "\n\nclass _LazyOpsMixin:\n"
+        + '    """The generated binary-op methods ``LazyPipelineExpr`` inherits."""\n\n'
+        + "    if TYPE_CHECKING:\n\n"
+        + "        def _binary_op(self, op: str, other: LazyPipelineExpr) -> LazyPipelineExpr: ...\n\n"
+        + lazy_methods
+        + "\n\n"
+        + geom_methods
+    )
+    # JSON's literals are Python's apart from these three.
+    text = text.replace(": true", ": True").replace(": false", ": False")
+    text = text.replace(": null", ": None")
+    return ruff_format(text, filename="_ops_generated.py")
+
+
+#: Where each name a forwarder's annotation may use comes from. A name not
+#: here fails the render, rather than emitting an annotation nothing defines.
+_FORWARDER_IMPORTS = {
+    "pl": "import polars as pl",
+    "Any": "from typing import Any",
+    "Sequence": "from collections.abc import Sequence",
+    "BoolOrExpr": "from polars_cv._types import BoolOrExpr",
+    "CloudOptions": "from polars_cv._types import CloudOptions",
+    "FloatOrExpr": "from polars_cv._types import FloatOrExpr",
+    "IntOrExpr": "from polars_cv._types import IntOrExpr",
+    "LazyPipelineExpr": "from polars_cv.lazy import LazyPipelineExpr",
+    "Pipeline": "from polars_cv.pipeline import Pipeline",
+}
+_BUILTIN_NAMES = {"int", "float", "str", "bool", "None", "tuple", "list", "dict"}
+
+_FORWARDERS_HEADER = '''\
+# This file is generated by scripts/gen_ops.py from the built Pipeline class.
+# Do not edit by hand: change Pipeline (or the Rust catalogue it is generated
+# from), then rerun the generator.
+"""``LazyPipelineExpr``'s chainable operations, one per ``Pipeline`` method."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+{imports}
+'''
+
+
+def forwarder(name: str, method: Any) -> tuple[str, set[str]]:
+    """One ``LazyPipelineExpr`` method: ``Pipeline.name``'s signature, applying
+    the op to this expression's continuation and piping the result back.
+
+    Returns the rendered method and the annotation names it uses.
+    """
+    import inspect
+
+    sig = inspect.signature(method)
+    params = ["self"]
+    args = []
+    star = False
+    used: set[str] = set()
+    for p in list(sig.parameters.values())[1:]:
+        if p.kind not in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY):
+            msg = f"Pipeline.{name}: cannot forward a {p.kind.name} parameter"
+            raise ValueError(msg)
+        if p.kind is p.KEYWORD_ONLY and not star:
+            params.append("*")
+            star = True
+        ann = str(p.annotation).strip("\"'")
+        # A dotted name (`pl.Expr`) needs its head imported.
+        heads = {n.split(".")[0] for n in re.findall(r"[A-Za-z_][\w.]*", ann)}
+        used |= heads - _BUILTIN_NAMES
+        text = f"{p.name}: {ann}"
+        if p.default is not p.empty:
+            text += f" = {p.default!r}"
+        params.append(text)
+        args.append(f"{p.name}={p.name}")
+    summary = (inspect.getdoc(method) or "").strip().split("\n")[0]
+    doc = f"{summary}\n\n        Lazy form of :meth:`Pipeline.{name}` on this expression's output."
+    return (
+        f"    def {name}({', '.join(params)}) -> LazyPipelineExpr:\n"
+        f'        """{doc}\n        """\n'
+        f"        return self.pipe(self._continuation().{name}({', '.join(args)}))\n",
+        used,
+    )
+
+
+def _import_block(lines: list[str]) -> str:
+    """Import lines grouped as ruff's isort wants them (stdlib, third-party,
+    first-party), ``from`` imports of one module merged, indented for a
+    ``TYPE_CHECKING`` block."""
+    froms: dict[str, set[str]] = {}
+    plain: set[str] = set()
+    for line in lines:
+        if line.startswith("from "):
+            module, name = line[5:].split(" import ")
+            froms.setdefault(module, set()).add(name)
+        else:
+            plain.add(line)
+
+    def group(module: str) -> int:
+        top = module.split(".")[0]
+        return 2 if top == "polars_cv" else 1 if top == "polars" else 0
+
+    rendered: dict[int, list[str]] = {0: [], 1: [], 2: []}
+    for line in sorted(plain):
+        rendered[group(line.split()[1])].append(line)
+    for module in sorted(froms):
+        names = ", ".join(sorted(froms[module]))
+        rendered[group(module)].append(f"from {module} import {names}")
+    return "\n\n".join(
+        "\n".join(f"    {line}" for line in rendered[g])
+        for g in (0, 1, 2)
+        if rendered[g]
+    )
+
+
+def render_forwarders() -> str:
+    """The forwarders module: one method per chainable ``Pipeline`` method
+    that ``LazyPipelineExpr`` does not write itself.
+
+    Reads the built class, so it runs after ``_ops_generated.py`` is written
+    (and imports it fresh): the forwarders follow generated ops and
+    hand-written sugar alike.
+    """
+    package = str(_PKG / "python")
+    if package not in sys.path:
+        sys.path.insert(0, package)
+    if not FORWARDERS.exists():
+        # The package imports this module, so the first render needs one to
+        # exist; any earlier version imports (a forwarder only reaches
+        # `Pipeline` when called).
+        FORWARDERS.write_text("class _LazyForwardersMixin:\n    pass\n")
+    from polars_cv.lazy import LazyPipelineExpr, _chainable_pipeline_ops
+    from polars_cv.pipeline import Pipeline
+
+    methods = []
+    used: set[str] = {"LazyPipelineExpr", "Pipeline"}
+    for name in _chainable_pipeline_ops():
+        if name in vars(LazyPipelineExpr):
+            continue  # hand-written: it takes another node as an operand
+        text, names = forwarder(name, getattr(Pipeline, name))
+        methods.append(text)
+        used |= names
+    unknown = used - _FORWARDER_IMPORTS.keys()
+    if unknown:
+        msg = f"forwarder annotations use {sorted(unknown)}; add their imports"
+        raise ValueError(msg)
+    imports = _import_block([_FORWARDER_IMPORTS[n] for n in used])
+    text = (
+        _FORWARDERS_HEADER.format(imports=imports)
+        + "\n\nclass _LazyForwardersMixin:\n"
+        + '    """The generated chainable operations ``LazyPipelineExpr`` inherits."""\n\n'
+        + "    if TYPE_CHECKING:\n\n"
+        + "        def pipe(self, pipeline: Pipeline) -> LazyPipelineExpr: ...\n"
+        + "        def _continuation(self) -> Pipeline: ...\n\n"
+        + "\n".join(methods)
+    )
+    return ruff_format(text, filename="_lazy_forwarders.py")
+
+
+def generate() -> str:
+    """Render from the committed catalogue."""
+    return render(
+        json.loads(CATALOG.read_text()),
+        json.loads(IO_CATALOG.read_text()),
+        json.loads(ENUM_CATALOG.read_text()),
+        json.loads(PASS_CATALOG.read_text()),
+        json.loads(GEOM_CATALOG.read_text()),
+    )
+
+
+def main() -> int:
+    check = "--check" in sys.argv[1:]
+    text = generate()
+    if check and OUTPUT.read_text() != text:
+        print(f"{OUTPUT.relative_to(_PKG)} is stale; run scripts/gen_ops.py")
+        return 1
+    if not check:
+        OUTPUT.write_text(text)
+        print(f"wrote {OUTPUT.relative_to(_PKG)}")
+    # The forwarders read the Pipeline built from the module just written.
+    forwarders = render_forwarders()
+    if check:
+        if FORWARDERS.read_text() != forwarders:
+            print(f"{FORWARDERS.relative_to(_PKG)} is stale; run scripts/gen_ops.py")
+            return 1
+        return 0
+    FORWARDERS.write_text(forwarders)
+    print(f"wrote {FORWARDERS.relative_to(_PKG)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

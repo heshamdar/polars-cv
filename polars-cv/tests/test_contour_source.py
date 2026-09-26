@@ -21,6 +21,7 @@ import pytest
 
 from polars_cv import Pipeline, numpy_from_struct
 from polars_cv.geometry import CONTOUR_SCHEMA, CONTOUR_SET_SCHEMA
+from tests._plan_view import EXPR, planned
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
@@ -79,9 +80,9 @@ def _square_with_hole(x: float, y: float, size: float, hole: float) -> dict:
     }
 
 
-def _rasterize(column: pl.Series, **source_kwargs) -> np.ndarray:
-    """Rasterize a geometry column through `source("contour")`."""
-    pipe = Pipeline().source("contour", **source_kwargs)
+def _rasterize(column: pl.Series, **canvas) -> np.ndarray:
+    """Rasterize a geometry column through `source("contour").rasterize()`."""
+    pipe = Pipeline().source("contour").rasterize(**canvas)
     frame = pl.DataFrame({"c": column})
     return numpy_from_struct(
         frame.select(m=pl.col("c").cv.pipe(pipe).sink("numpy"))["m"][0]
@@ -139,7 +140,7 @@ class TestContourSourceExplicitDims:
             }
         ).cast({"contour": CONTOUR_SCHEMA})
 
-        pipe = Pipeline().source("contour", width=100, height=100)
+        pipe = Pipeline().source("contour").rasterize(width=100, height=100)
         result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
 
         assert isinstance(result["mask"].dtype, pl.Struct)
@@ -159,8 +160,10 @@ class TestContourSourceExplicitDims:
             }
         ).cast({"contour": CONTOUR_SCHEMA})
 
-        pipe = Pipeline().source(
-            "contour", width=100, height=100, fill_value=128, background=64
+        pipe = (
+            Pipeline()
+            .source("contour")
+            .rasterize(width=100, height=100, fill_value=128, background=64)
         )
         result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
 
@@ -182,7 +185,7 @@ class TestContourSourceExplicitDims:
             }
         ).cast({"contour": CONTOUR_SCHEMA})
 
-        pipe = Pipeline().source("contour", width=100, height=100)
+        pipe = Pipeline().source("contour").rasterize(width=100, height=100)
         result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
 
         assert result["mask"].len() == 2
@@ -203,7 +206,7 @@ class TestContourSourceExplicitDims:
         ).cast({"contour": CONTOUR_SCHEMA})
 
         # Rasterize and then blur
-        pipe = Pipeline().source("contour", width=100, height=100).blur(2.0)
+        pipe = Pipeline().source("contour").rasterize(width=100, height=100).blur(2.0)
         result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["mask"][0])
@@ -223,7 +226,8 @@ class TestContourSourceExplicitDims:
 
         pipe = (
             Pipeline()
-            .source("contour", width=100, height=100)
+            .source("contour")
+            .rasterize(width=100, height=100)
             .resize(width=50, height=50)
         )
         result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
@@ -248,7 +252,11 @@ class TestContourSourceDynamicDims:
             }
         ).cast({"contour": CONTOUR_SCHEMA})
 
-        pipe = Pipeline().source("contour", width=pl.col("w"), height=pl.col("h"))
+        pipe = (
+            Pipeline()
+            .source("contour")
+            .rasterize(width=pl.col("w"), height=pl.col("h"))
+        )
         result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
 
         # First row: 50x50
@@ -263,23 +271,35 @@ class TestContourSourceDynamicDims:
 class TestContourSourceValidation:
     """Tests for contour source validation."""
 
-    def test_missing_dimensions_error(self) -> None:
-        """Error when neither dimensions nor shape provided."""
-        with pytest.raises(ValueError, match="Contour source requires"):
-            Pipeline().source("contour")
+    def test_a_bare_contour_source_is_the_contour_domain(self) -> None:
+        """Without a canvas the source decodes contours and stops there.
+
+        It used to refuse (a contour source *was* a rasterization). The
+        source now only decodes; rasterizing is the ``rasterize`` op, so a
+        pipeline may measure or transform the column's contours first.
+        """
+        pipe = Pipeline().source("contour")
+        assert pipe.current_domain() == "contour"
+
+        df = pl.DataFrame({"contour": [create_square_contour(10, 10, 50)]}).cast(
+            {"contour": CONTOUR_SCHEMA}
+        )
+        areas = df.select(a=pl.col("contour").cv.pipe(pipe.area()).sink("native"))["a"]
+        # One value per member of the row's set.
+        assert areas.to_list() == [[2500.0]]
 
     def test_partial_dimensions_error(self) -> None:
         """Error when only width or only height provided."""
         with pytest.raises(ValueError, match="must be specified together"):
-            Pipeline().source("contour", width=100)
+            Pipeline().source("contour").rasterize(width=100)
 
         with pytest.raises(ValueError, match="must be specified together"):
-            Pipeline().source("contour", height=100)
+            Pipeline().source("contour").rasterize(height=100)
 
     def test_both_shape_and_dims_error(self) -> None:
         """Error when both shape and explicit dimensions provided."""
         # This should work (just width/height)
-        Pipeline().source("contour", width=100, height=100)
+        Pipeline().source("contour").rasterize(width=100, height=100)
 
         # Can't easily test the shape + dims conflict without a real LazyPipelineExpr
 
@@ -299,7 +319,7 @@ class TestContourSourceNullHandling:
             }
         ).cast({"contour": CONTOUR_SCHEMA})
 
-        pipe = Pipeline().source("contour", width=100, height=100)
+        pipe = Pipeline().source("contour").rasterize(width=100, height=100)
         result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
 
         # First and third rows should have data
@@ -440,7 +460,7 @@ class TestContourSetSource:
             [[create_square_contour(10, 10, 30)], None],
             dtype=CONTOUR_SET_SCHEMA,
         )
-        pipe = Pipeline().source("contour", width=32, height=32)
+        pipe = Pipeline().source("contour").rasterize(width=32, height=32)
         result = pl.DataFrame({"c": column}).with_columns(
             m=pl.col("c").cv.pipe(pipe).sink("numpy")
         )
@@ -572,7 +592,9 @@ class TestContourSourceIntegration:
             }
         ).cast({"contour": CONTOUR_SCHEMA})
 
-        pipe = Pipeline().source("contour", width=100, height=100).threshold(128)
+        pipe = (
+            Pipeline().source("contour").rasterize(width=100, height=100).threshold(128)
+        )
         result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["mask"][0])
@@ -586,12 +608,12 @@ def _contract(pipe: Pipeline) -> dict:
     """The plan-time buffer contract a pipeline publishes."""
 
     def dim(value) -> "int | None":
-        return None if value is None or value.is_expr else value.value
+        return None if value is None or value == EXPR else value
 
-    hints = pipe._shape_hints
+    hints = planned(pipe)
     return {
         "domain": pipe.current_domain(),
-        "ndim": pipe._expected_ndim,
+        "ndim": planned(pipe).ndim,
         "dtype": pipe.output_dtype(),
         "height": dim(hints.height),
         "width": dim(hints.width),
@@ -620,12 +642,14 @@ class TestContourSourcePlanTimeContract:
         dtype fall back to "auto", makes the two routes disagree.
         """
         assert _contract(
-            Pipeline().source("contour", width=100, height=64)
+            Pipeline().source("contour").rasterize(width=100, height=64)
         ) == _contract(self._via_op(width=100, height=64))
 
     def test_it_states_the_whole_contract_not_just_the_rank(self) -> None:
         """Rank, dtype, channels and canvas — all four, from the op's rules."""
-        assert _contract(Pipeline().source("contour", width=100, height=64)) == {
+        assert _contract(
+            Pipeline().source("contour").rasterize(width=100, height=64)
+        ) == {
             "domain": "buffer",
             "ndim": 3,
             "dtype": "u8",
@@ -636,7 +660,9 @@ class TestContourSourcePlanTimeContract:
 
     def test_a_per_row_dimension_is_unknown_not_guessed(self) -> None:
         """An expression canvas has no plan-time size; the rest still holds."""
-        contract = _contract(Pipeline().source("contour", width=pl.col("w"), height=64))
+        contract = _contract(
+            Pipeline().source("contour").rasterize(width=pl.col("w"), height=64)
+        )
         assert contract["width"] is None
         assert (contract["ndim"], contract["dtype"], contract["channels"]) == (
             3,
@@ -657,11 +683,11 @@ class TestContourSourcePlanTimeContract:
         )
         unsized = pl.col("i").cv.pipe(Pipeline().source("image_bytes"))
 
-        from_sized = _contract(Pipeline().source("contour", shape=sized))
+        from_sized = _contract(Pipeline().source("contour").rasterize(shape=sized))
         assert (from_sized["height"], from_sized["width"]) == (16, 32)
         assert from_sized == _contract(self._via_op(shape=sized))
 
-        from_unsized = _contract(Pipeline().source("contour", shape=unsized))
+        from_unsized = _contract(Pipeline().source("contour").rasterize(shape=unsized))
         assert (from_unsized["height"], from_unsized["width"]) == (None, None)
         assert from_unsized == _contract(self._via_op(shape=unsized))
 
@@ -677,7 +703,7 @@ class TestContourSourcePlanTimeContract:
         frame = pl.DataFrame({"c": column})
         expr = (
             pl.col("c")
-            .cv.pipe(Pipeline().source("contour", width=12, height=10))
+            .cv.pipe(Pipeline().source("contour").rasterize(width=12, height=10))
             .sink(sink)
         )
 
@@ -688,7 +714,7 @@ class TestContourSourcePlanTimeContract:
     def test_the_rasterize_op_publishes_a_sinkable_shape(self) -> None:
         """The op half of the same fix: `rasterize().sink("array")` needs no shape.
 
-        `GeometryOp::Rasterize::infer_shape` always described this canvas, and
+        `GeometryOp::Rasterize`'s `shape` always described this canvas, and
         the op's docstring said so, but the planner declined to ask for it
         because the contour domain has no input rank — so a fully determined
         mask still demanded an explicit `shape=` at the sink.

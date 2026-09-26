@@ -36,7 +36,7 @@
 //! # No independent authority — how this is kept honest
 //!
 //! Unlike the rank/channel/dtype rules, a spatial dependency has *no* second
-//! source of truth (no `infer_shape` analog) to parity-check against: it is a
+//! source of truth (no `shape` analog) to parity-check against: it is a
 //! new primary declaration. Its correctness is therefore pinned by (1) the
 //! compiler — [`Op::spatial_dependency`](crate::ops::Op::spatial_dependency) is
 //! required with no default, *and every impl matches its enum exhaustively
@@ -60,8 +60,7 @@
 //! remap) without changing the enum — match arms reading `Neighborhood(_)` or
 //! `Geometric(_)` keep compiling.
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use crate::ops::shape_rule::Sym;
 
 /// The bounded spatial support of a [`Neighborhood`](SpatialDependency::Neighborhood)
 /// op.
@@ -70,18 +69,18 @@ use serde::{Deserialize, Serialize};
 /// distance) of `(y, x)`, in the input's own coordinate system. A crop of the
 /// output therefore corresponds to a crop of the input dilated by `radius`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct NeighborhoodSupport {
     /// Half-extent of the dependency window, in input pixels (a `ksize×ksize`
-    /// kernel has `radius = ksize / 2`).
-    pub radius: usize,
+    /// kernel has `radius = ksize / 2`); `PerRow` when a per-row parameter
+    /// sets it, known only once a row executes.
+    pub radius: Sym<usize>,
     // Future enrichment — separable/anisotropic radii — extends this struct,
     // not the `SpatialDependency` enum.
 }
 
 impl NeighborhoodSupport {
     /// A symmetric neighborhood of the given half-extent.
-    pub fn new(radius: usize) -> Self {
+    pub fn new(radius: Sym<usize>) -> Self {
         Self { radius }
     }
 }
@@ -94,7 +93,6 @@ impl NeighborhoodSupport {
 /// window can be transformed through) extends this struct; the enum and every
 /// `Geometric(_)` match arm are unaffected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct GeometricEffect {
     // Intentionally empty for now — see the struct docs.
 }
@@ -111,7 +109,6 @@ impl GeometricEffect {
 /// See the [module docs](self) for the precise, closed definition of each
 /// variant and why there is no `Unknown`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum SpatialDependency {
     /// Output at `(y, x)` depends only on input at `(y, x)`. Radius 0.
     Pointwise,
@@ -128,6 +125,11 @@ impl SpatialDependency {
     /// A symmetric neighborhood dependency of the given radius — the common
     /// constructor for kernel ops (`radius = ksize / 2`).
     pub fn neighborhood(radius: usize) -> Self {
+        SpatialDependency::neighborhood_of(Sym::Known(radius))
+    }
+
+    /// A neighborhood whose radius may be per-row.
+    pub fn neighborhood_of(radius: Sym<usize>) -> Self {
         SpatialDependency::Neighborhood(NeighborhoodSupport::new(radius))
     }
 
@@ -140,7 +142,7 @@ impl SpatialDependency {
 #[cfg(test)]
 mod tests {
     //! Expected-value coverage: pin the declared spatial dependency of each op
-    //! enumerated here. There is no `infer_shape`-style authority to
+    //! enumerated here. There is no `shape`-style authority to
     //! parity-check against (see the module docs), so these hand-written
     //! expectations — together with the compiler's requiredness and the
     //! now-exhaustive matches in every `spatial_dependency` impl (no blanket
@@ -153,18 +155,24 @@ mod tests {
     //! kernel in `execution::runner`'s `blur_radius_tests`.
 
     use super::*;
+    use crate::mode::Exec;
     use crate::ops::binary::BinaryOp;
-    use crate::ops::color::{ColorConvertOp, ColorSpace};
-    use crate::ops::compute::{ComputeOp, NormalizeMethod};
-    use crate::ops::filter::{BorderMode, ConvolveOp};
-    use crate::ops::histogram::HistogramOp;
+    use crate::ops::color::ColorSpace;
+    use crate::ops::filter::BorderMode;
     use crate::ops::image::{FilterType, ImageOp, ImageOpKind};
     use crate::ops::pad::{PadMode, PadPosition};
-    use crate::ops::phash::{HashAlgorithm, PerceptualHashOp};
-    use crate::ops::reduction::ReductionOp;
+    use crate::ops::phash::HashAlgorithm;
     use crate::ops::scalar::ScalarOp;
     use crate::ops::traits::Op;
-    use crate::ops::view::ViewOp;
+
+    // The rules are generic over the mode; these tests read executed ops.
+    type ColorConvertOp = crate::ops::color::ColorConvertOp<Exec>;
+    type ComputeOp = crate::ops::compute::ComputeOp<Exec>;
+    type ConvolveOp = crate::ops::filter::ConvolveOp<Exec>;
+    type HistogramOp = crate::ops::histogram::HistogramOp<Exec>;
+    type PerceptualHashOp = crate::ops::phash::PerceptualHashOp<Exec>;
+    type ReductionOp = crate::ops::reduction::ReductionOp<Exec>;
+    type ViewOp = crate::ops::view::ViewOp<Exec>;
 
     fn img(kind: ImageOpKind) -> ImageOp {
         ImageOp { kind }
@@ -174,22 +182,28 @@ mod tests {
     fn pointwise_ops() {
         let pw = SpatialDependency::Pointwise;
         assert_eq!(
-            ComputeOp::Cast(crate::core::dtype::DType::F32).spatial_dependency(),
+            ComputeOp::Cast {
+                dtype: crate::core::dtype::DType::F32
+            }
+            .spatial_dependency(),
             pw
         );
-        assert_eq!(ComputeOp::Scale(2.0).spatial_dependency(), pw);
+        assert_eq!(ComputeOp::Scale { factor: 2.0 }.spatial_dependency(), pw);
         assert_eq!(ComputeOp::Relu.spatial_dependency(), pw);
         assert_eq!(ComputeOp::Invert.spatial_dependency(), pw);
         assert_eq!(
             ComputeOp::Clamp { min: 0.0, max: 1.0 }.spatial_dependency(),
             pw
         );
-        assert_eq!(ComputeOp::AdjustGamma(2.2).spatial_dependency(), pw);
+        assert_eq!(
+            ComputeOp::AdjustGamma { gamma: 2.2 }.spatial_dependency(),
+            pw
+        );
         assert_eq!(ComputeOp::Scalar(ScalarOp::Relu).spatial_dependency(), pw);
         assert_eq!(
             ColorConvertOp {
-                from: ColorSpace::Rgb,
-                to: ColorSpace::Hsv
+                from_space: ColorSpace::Rgb,
+                to_space: ColorSpace::Hsv
             }
             .spatial_dependency(),
             pw
@@ -199,7 +213,10 @@ mod tests {
         // Spatially pointwise: picks a channel at the same (y, x).
         assert_eq!(ViewOp::ChannelSelect { index: 0 }.spatial_dependency(), pw);
         // Image-domain pointwise.
-        assert_eq!(img(ImageOpKind::Threshold(128.0)).spatial_dependency(), pw);
+        assert_eq!(
+            img(ImageOpKind::Threshold { value: 128.0 }).spatial_dependency(),
+            pw
+        );
         assert_eq!(img(ImageOpKind::Grayscale).spatial_dependency(), pw);
         assert_eq!(
             img(ImageOpKind::ChannelSwap {
@@ -214,12 +231,20 @@ mod tests {
     fn global_ops() {
         let g = SpatialDependency::Global;
         assert_eq!(
-            ComputeOp::Normalize(NormalizeMethod::MinMax, crate::core::dtype::DType::F32)
-                .spatial_dependency(),
+            ComputeOp::Normalize {
+                method: crate::ops::compute::NormalizeMethod::MinMax,
+                mean: None,
+                std: None,
+                out_dtype: None,
+            }
+            .spatial_dependency(),
             g
         );
-        assert_eq!(ComputeOp::AdjustContrast(1.5).spatial_dependency(), g);
-        assert_eq!(ReductionOp::Sum { axis: None }.spatial_dependency(), g);
+        assert_eq!(
+            ComputeOp::AdjustContrast { factor: 1.5 }.spatial_dependency(),
+            g
+        );
+        assert_eq!(ReductionOp::Sum.spatial_dependency(), g);
         assert_eq!(HistogramOp::new(8).spatial_dependency(), g);
         assert_eq!(
             PerceptualHashOp::new(HashAlgorithm::Perceptual).spatial_dependency(),
@@ -244,7 +269,6 @@ mod tests {
         assert_eq!(
             ConvolveOp {
                 kernel: vec![0.0; 9],
-                ksize: 3,
                 normalize: false,
                 border: BorderMode::Replicate
             }
@@ -297,11 +321,14 @@ mod tests {
             .spatial_dependency(),
             geo
         );
-        assert_eq!(ViewOp::Transpose(vec![1, 0, 2]).spatial_dependency(), geo);
-        assert_eq!(ViewOp::Reshape(vec![48]).spatial_dependency(), geo);
-        assert_eq!(ViewOp::Flip(vec![0]).spatial_dependency(), geo);
+        assert_eq!(ViewOp::transpose(&[1, 0, 2]).spatial_dependency(), geo);
         assert_eq!(
-            ViewOp::Crop {
+            ViewOp::Reshape { shape: vec![48] }.spatial_dependency(),
+            geo
+        );
+        assert_eq!(ViewOp::flip(&[0]).spatial_dependency(), geo);
+        assert_eq!(
+            ViewOp::Slice {
                 start: vec![0, 0, 0],
                 end: vec![2, 2, 3]
             }
@@ -358,7 +385,7 @@ mod tests {
     fn spatial_window_is_only_an_hw_crop() {
         // The `crop` builder emits `[top, left, 0] .. [_, _, usize::MAX]`: the
         // channel axis is left at full extent, so it is a hoistable H/W window.
-        assert!(ViewOp::Crop {
+        assert!(ViewOp::Slice {
             start: vec![1, 1, 0],
             end: vec![5, 5, usize::MAX],
         }
@@ -366,20 +393,20 @@ mod tests {
 
         // A crop that slices the channel axis (start != 0, or a bounded channel
         // end) is not H/W-only and must not be hoistable.
-        assert!(!ViewOp::Crop {
+        assert!(!ViewOp::Slice {
             start: vec![0, 0, 1],
             end: vec![5, 5, usize::MAX],
         }
         .is_spatial_window());
-        assert!(!ViewOp::Crop {
+        assert!(!ViewOp::Slice {
             start: vec![0, 0, 0],
             end: vec![5, 5, 2],
         }
         .is_spatial_window());
 
         // Nothing else is a window: geometric neighbours, pointwise ops, reduces.
-        assert!(!ViewOp::Flip(vec![0]).is_spatial_window());
-        assert!(!ViewOp::Reshape(vec![48]).is_spatial_window());
+        assert!(!ViewOp::flip(&[0]).is_spatial_window());
+        assert!(!ViewOp::Reshape { shape: vec![48] }.is_spatial_window());
         assert!(!img(ImageOpKind::Grayscale).is_spatial_window());
         assert!(!img(ImageOpKind::Resize {
             width: 8,
@@ -387,6 +414,6 @@ mod tests {
             filter: FilterType::Nearest
         })
         .is_spatial_window());
-        assert!(!ReductionOp::Sum { axis: None }.is_spatial_window());
+        assert!(!ReductionOp::Sum.is_spatial_window());
     }
 }

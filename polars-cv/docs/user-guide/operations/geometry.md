@@ -115,17 +115,16 @@ df.with_columns(
 )
 ```
 
-`scale` takes `origin=` — `"origin"` (the default), `"centroid"` or
-`"bbox_center"`. `Pipeline.scale_contour` takes the same parameter but defaults
-to `"centroid"`, which is what each surface has always done; pass `origin`
-explicitly if the two must agree.
+`scale` takes `origin=` — `"centroid"` (the default), `"bbox_center"` or
+`"origin"`. `.contour.scale` and `Pipeline.scale_contour` are one operation
+with one definition, so they always agree.
 
 ### Rasterization
 
 Convert contours to binary masks:
 
 ```python
-pipe = Pipeline().source("contour", width=200, height=200)
+pipe = Pipeline().source("contour").rasterize(width=200, height=200)
 
 result = df.with_columns(
     mask=pl.col("contour").cv.pipe(pipe).sink("numpy")
@@ -146,7 +145,7 @@ contours = (
     .sink("native")                      # List(CONTOUR_SCHEMA), one set per row
 )
 
-mask = pl.col("contours").cv.pipe(Pipeline().source("contour", width=200, height=200))
+mask = pl.col("contours").cv.pipe(Pipeline().source("contour").rasterize(width=200, height=200))
 ```
 
 The trip back is lossy in one known direction: `extract_contours()` traces the
@@ -163,7 +162,7 @@ Infer dimensions from an existing image:
 
 ```python
 img = pl.col("image").cv.pipe(Pipeline().source("image_bytes").resize(height=200, width=200))
-mask = pl.col("contour").cv.pipe(Pipeline().source("contour", shape=img))
+mask = pl.col("contour").cv.pipe(Pipeline().source("contour").rasterize(shape=img))
 ```
 
 `shape=` takes a **reference pipeline** (a `LazyPipelineExpr`) instead of literal

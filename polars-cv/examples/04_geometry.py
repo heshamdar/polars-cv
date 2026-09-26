@@ -108,8 +108,8 @@ def contour_demo(df: pl.DataFrame) -> None:
             pl.col("contour_set_gt"),
             threshold=0.4,
             order=pl.col("pred_scores").list.eval(
-            pl.element().rank(method="ordinal", descending=True).arg_sort()
-        ),
+                pl.element().rank(method="ordinal", descending=True).arg_sort()
+            ),
         ),
     )
     print("\nContour ops:")
@@ -124,8 +124,8 @@ def bbox_demo(df: pl.DataFrame) -> None:
             pl.col("bbox_set_gt"),
             threshold=0.4,
             order=pl.col("pred_scores").list.eval(
-            pl.element().rank(method="ordinal", descending=True).arg_sort()
-        ),
+                pl.element().rank(method="ordinal", descending=True).arg_sort()
+            ),
         ),
     )
     print("\nBBox ops:")
@@ -150,9 +150,9 @@ def transition_demo(df: pl.DataFrame) -> None:
     rasterized = df.with_columns(
         mask=pl.col("contour_a")
         .cv.pipe(
-            Pipeline().source(
-                "contour", width=96, height=96, fill_value=255, background=0
-            )
+            Pipeline()
+            .source("contour")
+            .rasterize(width=96, height=96, fill_value=255, background=0)
         )
         .sink("numpy"),
     )

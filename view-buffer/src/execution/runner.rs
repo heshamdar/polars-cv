@@ -43,16 +43,19 @@ pub fn execute_plan(source: ViewBuffer, ops: Vec<ViewDto>) -> ViewBuffer {
 
 /// Applies a view operation to a buffer.
 pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
+    if let Some((start, end)) = op.window() {
+        return buf.slice(&start, &end);
+    }
     match op {
-        ViewOp::Transpose(perm) => buf.permute(&perm),
-        ViewOp::Reshape(shape) => {
+        ViewOp::Transpose { .. } => buf.permute(&op.axes()),
+        ViewOp::Reshape { shape } => {
             if !buf.layout.is_contiguous() {
                 panic!("Reshape on non-contiguous view not supported without copy");
             }
-            buf.reshape(shape)
+            buf.reshape(shape.iter().map(|&d| d as usize).collect())
         }
-        ViewOp::Flip(axes) => buf.flip(&axes),
-        ViewOp::Crop { start, end } => buf.slice(&start, &end),
+        ViewOp::Flip { .. } => buf.flip(&op.axes()),
+        ViewOp::Crop { .. } | ViewOp::Slice { .. } => unreachable!("windows are sliced above"),
         ViewOp::Rotate90 => {
             // Rotate90: transpose [1,0] then flip axis 1 (width)
             // For HWC layout: transpose swaps H and W, then flip W
@@ -88,6 +91,7 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
             transposed.flip(&[0]) // Flip height axis
         }
         ViewOp::ChannelSelect { index } => {
+            let index = index as usize;
             let shape = buf.shape();
             if shape.len() != 3 {
                 return buf;
@@ -104,8 +108,11 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
 /// Applies a compute operation to a buffer.
 #[inline]
 pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
+    if let Some(op) = op.scalar() {
+        return apply_scalar_op(buf, op);
+    }
     match op {
-        ComputeOp::Cast(dtype) => buf.cast(dtype),
+        ComputeOp::Cast { dtype } => buf.cast(dtype),
         ComputeOp::Affine(params) => apply_affine_warp(buf, params),
         ComputeOp::RotateAffine {
             angle_deg,
@@ -119,7 +126,7 @@ pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer 
                 AffineParams::from_rotation(angle_deg, h, w, expand, interpolation, border_value);
             apply_affine_warp(buf, params)
         }
-        ComputeOp::Scale(factor) => apply_scalar_owned_with(
+        ComputeOp::Scale { factor } => apply_scalar_owned_with(
             buf,
             move |x: f32| x * factor,
             move |x: f64| x * factor as f64,
@@ -141,36 +148,46 @@ pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer 
                 buf.apply_fused_kernel(kernel)
             }
         }
-        ComputeOp::Normalize(ref method, out_dtype) => apply_normalize(&buf, method, out_dtype),
+        ComputeOp::Normalize {
+            method,
+            ref mean,
+            ref std,
+            out_dtype,
+        } => apply_normalize(
+            &buf,
+            &ComputeOp::normalization(method, mean, std),
+            out_dtype.unwrap_or(DType::F32),
+        ),
         ComputeOp::Clamp { min, max } => apply_scalar_owned_with(
             buf,
             move |x: f32| x.clamp(min, max),
             move |x: f64| x.clamp(min as f64, max as f64),
         ),
-        ComputeOp::AdjustContrast(factor) => apply_adjust_contrast(&buf, factor),
-        ComputeOp::AdjustGamma(gamma) => apply_adjust_gamma(&buf, gamma),
+        ComputeOp::AdjustContrast { factor } => apply_adjust_contrast(&buf, factor),
+        ComputeOp::AdjustGamma { gamma } => apply_adjust_gamma(&buf, gamma),
         ComputeOp::Invert => apply_invert(&buf),
-        ComputeOp::Scalar(op) => {
-            // Route through the fused kernel so a lone scalar op and a fused
-            // one share the identical f32 arithmetic (the "route through the
-            // kernel" design). f64 preserves precision on its own cold path
-            // (`PromoteToFloat` keeps f64; the kernel is f32-only), mirroring
-            // how the promote-family ops keep f64 unfused.
-            if buf.dtype() == DType::F64 {
-                apply_scalar_op_f64(&buf, &op)
-            } else {
-                let kernel = FusedKernel {
-                    ops: vec![op],
-                    out_dtype: DType::F32,
-                };
-                let mut buf = buf;
-                if buf.try_apply_fused_kernel_inplace(&kernel) {
-                    buf
-                } else {
-                    buf.apply_fused_kernel(&kernel)
-                }
-            }
-        }
+        _ => unreachable!("every other compute op is a scalar op, applied above"),
+    }
+}
+
+/// A lone scalar op, routed through the fused kernel so it and a fused one
+/// share the identical f32 arithmetic (the "route through the kernel"
+/// design). f64 preserves precision on its own cold path (`PromoteToFloat`
+/// keeps f64; the kernel is f32-only), mirroring how the promote-family ops
+/// keep f64 unfused.
+fn apply_scalar_op(buf: ViewBuffer, op: ScalarOp) -> ViewBuffer {
+    if buf.dtype() == DType::F64 {
+        return apply_scalar_op_f64(&buf, &op);
+    }
+    let kernel = FusedKernel {
+        ops: vec![op],
+        out_dtype: DType::F32,
+    };
+    let mut buf = buf;
+    if buf.try_apply_fused_kernel_inplace(&kernel) {
+        buf
+    } else {
+        buf.apply_fused_kernel(&kernel)
     }
 }
 
@@ -196,7 +213,7 @@ fn apply_scalar_op_f64(buf: &ViewBuffer, op: &ScalarOp) -> ViewBuffer {
 /// dtype-contract tests).
 fn apply_normalize(
     buf: &ViewBuffer,
-    method: &crate::ops::NormalizeMethod,
+    method: &crate::ops::Normalization,
     out_dtype: DType,
 ) -> ViewBuffer {
     let normalized = apply_normalize_f32(buf, method);
@@ -216,8 +233,8 @@ fn apply_normalize(
 /// - **Constant array (min == max)**: Returns 0.0 for all elements (MinMax) or 0.0 (ZScore)
 /// - **NaN values**: Propagated according to IEEE 754 semantics
 /// - **Inf values**: Handled naturally by min/max/mean calculations
-fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -> ViewBuffer {
-    use crate::ops::NormalizeMethod;
+fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::Normalization) -> ViewBuffer {
+    use crate::ops::Normalization;
 
     // Cast to f32 working dtype if needed (dtype promotion)
     let work_buf = if buf.dtype() != DType::F32 {
@@ -233,7 +250,7 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -
     {
         if let Ok(view) = work_buf.as_array_view::<f32>() {
             match method {
-                NormalizeMethod::MinMax => {
+                Normalization::MinMax => {
                     let min = view.iter().cloned().fold(f32::INFINITY, f32::min);
                     let max = view.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
                     let range = max - min;
@@ -244,7 +261,7 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -
                     let result = view.mapv(|x| (x - min) / range);
                     return ViewBuffer::from_array(result.into_owned());
                 }
-                NormalizeMethod::ZScore => {
+                Normalization::ZScore => {
                     let n = view.len() as f32;
                     let mean = view.iter().sum::<f32>() / n;
                     let variance = view.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / n;
@@ -256,7 +273,7 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -
                     let result = view.mapv(|x| (x - mean) / std_val);
                     return ViewBuffer::from_array(result.into_owned());
                 }
-                NormalizeMethod::Preset { mean, std } => {
+                Normalization::Preset { mean, std } => {
                     // Channel-wise normalization - need to iterate with channel awareness
                     let channels = if shape.len() == 3 { shape[2] } else { 1 };
                     assert_eq!(
@@ -295,7 +312,7 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -
     let src = contig.as_slice::<f32>();
 
     let new_data: Vec<f32> = match method {
-        NormalizeMethod::MinMax => {
+        Normalization::MinMax => {
             let min = src.iter().cloned().fold(f32::INFINITY, f32::min);
             let max = src.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             let range = max - min;
@@ -305,7 +322,7 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -
                 src.iter().map(|&x| (x - min) / range).collect()
             }
         }
-        NormalizeMethod::ZScore => {
+        Normalization::ZScore => {
             let n = count as f32;
             let mean = src.iter().sum::<f32>() / n;
             let variance = src.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / n;
@@ -316,7 +333,7 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -
                 src.iter().map(|&x| (x - mean) / std_val).collect()
             }
         }
-        NormalizeMethod::Preset { mean, std } => {
+        Normalization::Preset { mean, std } => {
             let channels = if shape.len() == 3 { shape[2] } else { 1 };
             assert_eq!(
                 mean.len(),
@@ -1532,7 +1549,7 @@ where
         }
     }
 
-    // Mirror `ComputeOp::Affine::infer_shape`, which replaces H and W and
+    // Mirror `ComputeOp::Affine`'s `shape`, which replaces H and W and
     // leaves the rest of the input shape alone. Collapsing a `[H, W, 1]` input
     // to `[H, W]` here contradicted that contract, so a single-channel affine
     // planned rank 3 and produced rank 2.
@@ -1572,7 +1589,7 @@ fn clamp_for_dtype(v: f64, dtype: DType) -> f64 {
 #[inline]
 fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
     match op.kind {
-        ImageOpKind::Threshold(thresh) => threshold_generic(work_buf, thresh),
+        ImageOpKind::Threshold { value } => threshold_generic(work_buf, value),
         ImageOpKind::Grayscale => grayscale_strided(work_buf),
         ImageOpKind::Resize {
             width,
@@ -1603,18 +1620,17 @@ fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
                 }
             }
         }
-        // Deferred resizes: dimensions come from output_hw — the same
-        // authority infer_shape declared at plan time — then the shared
-        // resize kernel runs.
+        // Deferred resizes: dimensions come from the kind's shape — the same
+        // authority the planner reads — then the shared resize kernel runs.
         ref kind @ (ImageOpKind::ResizeScale { .. }
         | ImageOpKind::ResizeToHeight { .. }
         | ImageOpKind::ResizeToWidth { .. }
         | ImageOpKind::ResizeMax { .. }
         | ImageOpKind::ResizeMin { .. }) => {
             let shape = work_buf.shape();
-            let (h, w) = kind
-                .output_hw(shape[0], shape[1])
-                .expect("deferred resize kinds always produce output dims");
+            let [h, w] = kind.shape().concrete(&[&shape[..2]])[..] else {
+                unreachable!("an H/W shape over a rank-2 input is rank 2")
+            };
             let filter = match kind {
                 ImageOpKind::ResizeScale { filter, .. }
                 | ImageOpKind::ResizeToHeight { filter, .. }
@@ -1657,7 +1673,10 @@ fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
                 value,
             )
         }
-        ImageOpKind::ChannelSwap { ref order } => apply_channel_swap(&work_buf, order),
+        ImageOpKind::ChannelSwap { ref order } => {
+            let order: Vec<usize> = order.iter().map(|&i| i as usize).collect();
+            apply_channel_swap(&work_buf, &order)
+        }
     }
 }
 
@@ -2282,7 +2301,6 @@ fn apply_canny(buf: ViewBuffer, low_threshold: f32, high_threshold: f32) -> View
         &contig,
         &ConvolveOp {
             kernel: CANNY_GAUSSIAN_5X5.to_vec(),
-            ksize: 5,
             normalize: false,
             border: BorderMode::Replicate,
         },
@@ -2619,11 +2637,14 @@ mod blur_radius_tests {
     use crate::ops::traits::Op;
 
     fn declared_radius(sigma: f32) -> usize {
-        let op = ImageOp {
+        let op: ImageOp = ImageOp {
             kind: ImageOpKind::Blur { sigma },
         };
         match op.spatial_dependency() {
-            SpatialDependency::Neighborhood(support) => support.radius,
+            SpatialDependency::Neighborhood(support) => support
+                .radius
+                .known()
+                .expect("an executed blur's radius is known"),
             other => panic!("blur must be a Neighborhood dependency, got {other:?}"),
         }
     }

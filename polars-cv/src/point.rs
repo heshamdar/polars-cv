@@ -7,64 +7,12 @@
 use polars::prelude::*;
 use polars_arrow::array::PrimitiveArray;
 use pyo3_polars::derive::polars_expr;
-use serde::Deserialize;
 
 use view_buffer::geometry::contour::Point;
 
-use crate::geom_params::{GeomParams, InputSlots};
-use crate::params::NullParamPolicy;
-
-// ============================================================================
-// Point Kwargs
-// ============================================================================
-
-/// Kwargs for point operations with optional parameters.
-///
-/// Closed for the same reason as [`GraphKwargs`]: this is a plugin-boundary
-/// struct, so a kwarg Python emits and Rust does not declare is drift, not a
-/// value to discard in silence.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PointKwargs {
-    /// Reference width for coordinate operations.
-    #[serde(default)]
-    pub ref_width: Option<f64>,
-    /// Reference height for coordinate operations.
-    #[serde(default)]
-    pub ref_height: Option<f64>,
-    /// X offset for translation.
-    #[serde(default)]
-    pub dx: Option<f64>,
-    /// Y offset for translation.
-    #[serde(default)]
-    pub dy: Option<f64>,
-    /// X scale factor.
-    #[serde(default)]
-    pub sx: Option<f64>,
-    /// Y scale factor.
-    #[serde(default)]
-    pub sy: Option<f64>,
-    /// Rotation angle in radians.
-    #[serde(default)]
-    pub angle: Option<f64>,
-    /// Interpolation parameter (0 to 1).
-    #[serde(default)]
-    pub t: Option<f64>,
-    /// Maps a named input — data operand or per-row parameter — to its index
-    /// in `inputs`. A parameter absent from the map is literal, read from the
-    /// scalar fields above. Every input beyond the namespace's own column at
-    /// index 0 must appear here; `GeomParams::new` rejects a map that does not
-    /// account for all of them, so a stale caller fails loudly instead of
-    /// silently dropping an operand.
-    #[serde(default)]
-    pub input_slots: InputSlots,
-    /// What a null in a per-row parameter column means for that row: `raise`
-    /// (default) fails the expression, `null` yields a null result for the
-    /// affected rows. Set from Python by `_PluginNamespace.on_null` and applied
-    /// by `GeomParams::row`.
-    #[serde(default)]
-    pub on_null: NullParamPolicy,
-}
+use crate::geom_fns::PointFn;
+use crate::geom_params::{parsed_as_another, GeomKwargs, GeomParams};
+use view_buffer::mode::Wire;
 
 // ============================================================================
 // Point Parsing Helpers
@@ -185,8 +133,12 @@ fn point_output_type(_input_fields: &[Field]) -> PolarsResult<Field> {
 
 /// Normalize point coordinates to [0, 1] range.
 #[polars_expr(output_type_func=point_output_type)]
-fn point_normalize(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
+fn point_normalize(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "point_normalize";
+    let (op, params) = GeomParams::parse::<PointFn<Wire>>(inputs, kwargs, NAME)?;
+    let PointFn::Normalize { width, height } = &op else {
+        return Err(parsed_as_another(NAME));
+    };
 
     let series = &inputs[0];
     let len = series.len();
@@ -201,8 +153,8 @@ fn point_normalize(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Serie
             &mut x_results,
             &mut y_results,
             || {
-                let ref_width = params.required_f64("ref_width", kwargs.ref_width, i)?;
-                let ref_height = params.required_f64("ref_height", kwargs.ref_height, i)?;
+                let ref_width = params.value(width, i)?;
+                let ref_height = params.value(height, i)?;
                 // Per-row dimensions cannot be validated once per batch, so the
                 // divide-by-zero guard moves into the loop and names the row.
                 if ref_width == 0.0 || ref_height == 0.0 {
@@ -221,8 +173,12 @@ fn point_normalize(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Serie
 
 /// Convert normalized coordinates to absolute pixel coordinates.
 #[polars_expr(output_type_func=point_output_type)]
-fn point_to_absolute(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
+fn point_to_absolute(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "point_to_absolute";
+    let (op, params) = GeomParams::parse::<PointFn<Wire>>(inputs, kwargs, NAME)?;
+    let PointFn::ToAbsolute { width, height } = &op else {
+        return Err(parsed_as_another(NAME));
+    };
 
     let series = &inputs[0];
     let len = series.len();
@@ -237,8 +193,8 @@ fn point_to_absolute(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Ser
             &mut x_results,
             &mut y_results,
             || {
-                let ref_width = params.required_f64("ref_width", kwargs.ref_width, i)?;
-                let ref_height = params.required_f64("ref_height", kwargs.ref_height, i)?;
+                let ref_width = params.value(width, i)?;
+                let ref_height = params.value(height, i)?;
                 let (x, y) = parse_point(&value)?;
                 Ok((x * ref_width, y * ref_height))
             },
@@ -250,8 +206,12 @@ fn point_to_absolute(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Ser
 
 /// Translate point by offset.
 #[polars_expr(output_type_func=point_output_type)]
-fn point_translate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
+fn point_translate(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "point_translate";
+    let (op, params) = GeomParams::parse::<PointFn<Wire>>(inputs, kwargs, NAME)?;
+    let PointFn::Translate { dx, dy } = &op else {
+        return Err(parsed_as_another(NAME));
+    };
 
     let series = &inputs[0];
     let len = series.len();
@@ -266,8 +226,8 @@ fn point_translate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Serie
             &mut x_results,
             &mut y_results,
             || {
-                let dx = params.f64("dx", kwargs.dx, 0.0, i)?;
-                let dy = params.f64("dy", kwargs.dy, 0.0, i)?;
+                let dx = params.value(dx, i)?;
+                let dy = params.value(dy, i)?;
                 let (x, y) = parse_point(&value)?;
                 Ok((x + dx, y + dy))
             },
@@ -279,8 +239,12 @@ fn point_translate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Serie
 
 /// Scale point coordinates.
 #[polars_expr(output_type_func=point_output_type)]
-fn point_scale(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
+fn point_scale(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "point_scale";
+    let (op, params) = GeomParams::parse::<PointFn<Wire>>(inputs, kwargs, NAME)?;
+    let PointFn::Scale { sx, sy } = &op else {
+        return Err(parsed_as_another(NAME));
+    };
 
     let series = &inputs[0];
     let len = series.len();
@@ -295,8 +259,8 @@ fn point_scale(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
             &mut x_results,
             &mut y_results,
             || {
-                let sx = params.f64("sx", kwargs.sx, 1.0, i)?;
-                let sy = params.f64("sy", kwargs.sy, 1.0, i)?;
+                let sx = params.value(sx, i)?;
+                let sy = params.value(sy, i)?;
                 let (x, y) = parse_point(&value)?;
                 Ok((x * sx, y * sy))
             },
@@ -312,9 +276,14 @@ fn point_scale(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
 
 /// Compute Euclidean distance between two points.
 #[polars_expr(output_type=Float64)]
-fn point_distance(inputs: &[Series]) -> PolarsResult<Series> {
+fn point_distance(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "point_distance";
+    let (op, params) = GeomParams::parse::<PointFn<Wire>>(inputs, kwargs, NAME)?;
+    let PointFn::Distance { other } = &op else {
+        return Err(parsed_as_another(NAME));
+    };
     let series_a = &inputs[0];
-    let series_b = &inputs[1];
+    let series_b = params.column(other);
     let len = series_a.len();
     let mut results = Vec::with_capacity(len);
 
@@ -341,9 +310,14 @@ fn point_distance(inputs: &[Series]) -> PolarsResult<Series> {
 
 /// Compute Manhattan (L1) distance between two points.
 #[polars_expr(output_type=Float64)]
-fn point_manhattan_distance(inputs: &[Series]) -> PolarsResult<Series> {
+fn point_manhattan_distance(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "point_manhattan_distance";
+    let (op, params) = GeomParams::parse::<PointFn<Wire>>(inputs, kwargs, NAME)?;
+    let PointFn::ManhattanDistance { other } = &op else {
+        return Err(parsed_as_another(NAME));
+    };
     let series_a = &inputs[0];
-    let series_b = &inputs[1];
+    let series_b = params.column(other);
     let len = series_a.len();
     let mut results = Vec::with_capacity(len);
 
@@ -372,9 +346,14 @@ fn point_manhattan_distance(inputs: &[Series]) -> PolarsResult<Series> {
 
 /// Compute minimum distance from point to contour boundary.
 #[polars_expr(output_type=Float64)]
-fn point_distance_to_contour(inputs: &[Series]) -> PolarsResult<Series> {
+fn point_distance_to_contour(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "point_distance_to_contour";
+    let (op, params) = GeomParams::parse::<PointFn<Wire>>(inputs, kwargs, NAME)?;
+    let PointFn::DistanceToContour { contour } = &op else {
+        return Err(parsed_as_another(NAME));
+    };
     let point_series = &inputs[0];
-    let contour_series = &inputs[1];
+    let contour_series = params.column(contour);
     let len = point_series.len();
     let mut results = Vec::with_capacity(len);
 
@@ -402,9 +381,14 @@ fn point_distance_to_contour(inputs: &[Series]) -> PolarsResult<Series> {
 /// Compute signed distance from point to contour boundary.
 /// Negative if inside, positive if outside.
 #[polars_expr(output_type=Float64)]
-fn point_signed_distance_to_contour(inputs: &[Series]) -> PolarsResult<Series> {
+fn point_signed_distance_to_contour(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "point_signed_distance_to_contour";
+    let (op, params) = GeomParams::parse::<PointFn<Wire>>(inputs, kwargs, NAME)?;
+    let PointFn::SignedDistanceToContour { contour } = &op else {
+        return Err(parsed_as_another(NAME));
+    };
     let point_series = &inputs[0];
-    let contour_series = &inputs[1];
+    let contour_series = params.column(contour);
     let len = point_series.len();
     let mut results = Vec::with_capacity(len);
 
@@ -436,9 +420,14 @@ fn point_signed_distance_to_contour(inputs: &[Series]) -> PolarsResult<Series> {
 
 /// Find nearest point on contour boundary.
 #[polars_expr(output_type_func=point_output_type)]
-fn point_nearest_on_contour(inputs: &[Series]) -> PolarsResult<Series> {
+fn point_nearest_on_contour(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "point_nearest_on_contour";
+    let (op, params) = GeomParams::parse::<PointFn<Wire>>(inputs, kwargs, NAME)?;
+    let PointFn::NearestOnContour { contour } = &op else {
+        return Err(parsed_as_another(NAME));
+    };
     let point_series = &inputs[0];
-    let contour_series = &inputs[1];
+    let contour_series = params.column(contour);
     let len = point_series.len();
     let mut x_results = Vec::with_capacity(len);
     let mut y_results = Vec::with_capacity(len);
@@ -476,9 +465,14 @@ fn point_nearest_on_contour(inputs: &[Series]) -> PolarsResult<Series> {
 
 /// Compute angle from this point to another in radians.
 #[polars_expr(output_type=Float64)]
-fn point_angle_to(inputs: &[Series]) -> PolarsResult<Series> {
+fn point_angle_to(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "point_angle_to";
+    let (op, params) = GeomParams::parse::<PointFn<Wire>>(inputs, kwargs, NAME)?;
+    let PointFn::AngleTo { other } = &op else {
+        return Err(parsed_as_another(NAME));
+    };
     let series_a = &inputs[0];
-    let series_b = &inputs[1];
+    let series_b = params.column(other);
     let len = series_a.len();
     let mut results = Vec::with_capacity(len);
 
@@ -504,17 +498,21 @@ fn point_angle_to(inputs: &[Series]) -> PolarsResult<Series> {
 
 /// Rotate point around origin by angle (radians).
 #[polars_expr(output_type_func=point_output_type)]
-fn point_rotate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
+fn point_rotate(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "point_rotate";
+    let (op, params) = GeomParams::parse::<PointFn<Wire>>(inputs, kwargs, NAME)?;
+    let PointFn::Rotate { angle, origin } = &op else {
+        return Err(parsed_as_another(NAME));
+    };
 
     let point_series = &inputs[0];
     let len = point_series.len();
     let mut x_results = Vec::with_capacity(len);
     let mut y_results = Vec::with_capacity(len);
 
-    // Looked up by name: `origin` is optional, so its position is not fixed
-    // once a per-row `angle` can also occupy an input slot.
-    let origin_series = params.slot("origin").map(|idx| &inputs[idx]);
+    // Read through its reference: `origin` is optional, so its position is
+    // not fixed once a per-row `angle` can also occupy an input slot.
+    let origin_series = params.optional_column(origin);
 
     for i in 0..len {
         let point_value = point_series.get(i)?;
@@ -526,7 +524,7 @@ fn point_rotate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> 
             &mut y_results,
             || {
                 // The angle may vary per row, so the trig moves into the loop.
-                let angle = params.f64("angle", kwargs.angle, 0.0, i)?;
+                let angle = params.value(angle, i)?;
                 let cos_a = angle.cos();
                 let sin_a = angle.sin();
 
@@ -558,9 +556,14 @@ fn point_rotate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> 
 
 /// Compute midpoint between two points.
 #[polars_expr(output_type_func=point_output_type)]
-fn point_midpoint(inputs: &[Series]) -> PolarsResult<Series> {
+fn point_midpoint(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "point_midpoint";
+    let (op, params) = GeomParams::parse::<PointFn<Wire>>(inputs, kwargs, NAME)?;
+    let PointFn::Midpoint { other } = &op else {
+        return Err(parsed_as_another(NAME));
+    };
     let series_a = &inputs[0];
-    let series_b = &inputs[1];
+    let series_b = params.column(other);
     let len = series_a.len();
     let mut x_results = Vec::with_capacity(len);
     let mut y_results = Vec::with_capacity(len);
@@ -585,14 +588,15 @@ fn point_midpoint(inputs: &[Series]) -> PolarsResult<Series> {
 
 /// Linear interpolation between two points.
 #[polars_expr(output_type_func=point_output_type)]
-fn point_interpolate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
+fn point_interpolate(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "point_interpolate";
+    let (op, params) = GeomParams::parse::<PointFn<Wire>>(inputs, kwargs, NAME)?;
+    let PointFn::Interpolate { other, t } = &op else {
+        return Err(parsed_as_another(NAME));
+    };
 
     let series_a = &inputs[0];
-    let series_b = params
-        .slot("other")
-        .map(|idx| &inputs[idx])
-        .ok_or_else(|| polars_err!(ComputeError: "missing required input 'other'"))?;
+    let series_b = params.column(other);
     let len = series_a.len();
     let mut x_results = Vec::with_capacity(len);
     let mut y_results = Vec::with_capacity(len);
@@ -608,7 +612,7 @@ fn point_interpolate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Ser
             &mut x_results,
             &mut y_results,
             || {
-                let t = params.f64("t", kwargs.t, 0.5, i)?;
+                let t = params.value(t, i)?;
                 let (x1, y1) = parse_point(&value_a)?;
                 let (x2, y2) = parse_point(&value_b)?;
                 Ok((x1 + t * (x2 - x1), y1 + t * (y2 - y1)))
@@ -621,9 +625,14 @@ fn point_interpolate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Ser
 
 /// Check if point is within bounding box.
 #[polars_expr(output_type=Boolean)]
-fn point_within_bbox(inputs: &[Series]) -> PolarsResult<Series> {
+fn point_within_bbox(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "point_within_bbox";
+    let (op, params) = GeomParams::parse::<PointFn<Wire>>(inputs, kwargs, NAME)?;
+    let PointFn::WithinBbox { bbox } = &op else {
+        return Err(parsed_as_another(NAME));
+    };
     let point_series = &inputs[0];
-    let bbox_series = &inputs[1];
+    let bbox_series = params.column(bbox);
     let len = point_series.len();
     let mut results = Vec::with_capacity(len);
 

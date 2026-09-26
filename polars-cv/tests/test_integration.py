@@ -52,7 +52,7 @@ class TestPipelineBuilderIntegration:
         import json
 
         data = json.loads(json_str)
-        assert len(data["ops"]) == 7
+        assert len(data["ops"]) == 8  # the assert_shape is an op
 
     def test_dynamic_pipeline_to_json(self) -> None:
         """Test pipeline with expressions serializes correctly."""
@@ -66,8 +66,9 @@ class TestPipelineBuilderIntegration:
         import json
 
         data = json.loads(json_str)
-        assert data["ops"][0]["height"]["type"] == "expr"
-        assert data["ops"][0]["width"]["type"] == "expr"
+        # Input 0 is the pipeline's column; expressions follow, by position.
+        assert data["ops"][0]["height"] == {"$slot": 1}
+        assert data["ops"][0]["width"] == {"$slot": 2}
 
 
 class TestPolarsNamespace:

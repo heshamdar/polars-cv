@@ -160,8 +160,8 @@ impl CloudOptions {
 /// get an unsigned or differently-signed request and no indication why.
 ///
 /// polars can afford that: `storage_options` there is a shared bag that may
-/// carry keys meant for a different layer. Ours is a checked surface and has
-/// been since `reject_inapplicable_params`, so the key check has to be ours
+/// carry keys meant for a different layer. Ours is a checked surface (a typed
+/// source refuses a setting its format does not read), so the key check has to be ours
 /// too. Validating *before* handing the map over keeps the error at the caller's
 /// spelling rather than at a request that quietly did the wrong thing.
 ///

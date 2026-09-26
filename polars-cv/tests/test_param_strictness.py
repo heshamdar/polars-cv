@@ -5,18 +5,14 @@ This binds together the canonical ``NAMED`` tables (view-buffer), the
 executor's parameter parsers, and the actual kernels — a renamed or
 mis-tabled variant fails here, not in a user's pipeline.
 
-Invalid values are rejected at two independent layers, each with its own
-tests: the Python builders raise ``ValueError`` (builder unit tests), and the
-Rust executor rejects unknown strings / wrong types / out-of-range values
-(``strict_param_tests`` in ``execute.rs``). This file also carries a source
-ratchet asserting the two historic error-swallowing idioms never return to
-``resolve_op``.
+Invalid values are rejected by each op's typed Rust definition, which refuses
+unknown strings / wrong types / out-of-range values when the pipeline is built
+(``ops::tests::an_invalid_value_is_rejected_naming_its_field``).
 """
 
 from __future__ import annotations
 
 import io
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -33,9 +29,9 @@ from polars_cv._types import (
     NormalizeMethod,
     PadMode,
     PadPosition,
-    ParamValue,
 )
 from tests._expr_param_runner import assert_matches_per_row_literals
+from tests._plan_view import EXPR, ops_of, planned
 from tests.conftest import plugin_required
 
 #: Every test here is a structural guard: it checks the *shape* of the codebase
@@ -206,7 +202,11 @@ class TestEnumValuesExecutable:
         "to_space", [c.value for c in ColorSpace if c.value != "rgb"]
     )
     def test_color_spaces(self, image_bytes: bytes, to_space: str) -> None:
-        pipe = Pipeline().source("image_bytes").convert_color("rgb", to_space)
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .convert_color(from_space="rgb", to_space=to_space)
+        )
         _run(pipe, "numpy", image_bytes)
 
     @pytest.mark.parametrize("dtype", [d.value for d in DType])
@@ -232,7 +232,7 @@ class TestEnumValuesExecutable:
             Pipeline()
             .source("image_bytes")
             .grayscale()
-            .convolve2d(kernel=kernel, ksize=3, border=border)
+            .convolve2d(kernel=kernel, border=border)
         )
         _run(pipe, "numpy", image_bytes)
 
@@ -257,44 +257,6 @@ class TestEnumValuesExecutable:
             .extract_contours(method=method)
         )
         _run(pipe, "native", image_bytes)
-
-
-class TestParamPolicyRatchet:
-    """Source ratchet: the two historic error-swallowing idioms must never
-    return to ``resolve_op``. The policy (absent optional -> default,
-    present-but-invalid -> error) is implemented by ``params::get`` and
-    behaviorally guarded by ``strict_param_tests`` in execute.rs; this scan
-    only blocks the exact known-bad shortcuts."""
-
-    def test_no_error_swallowing_in_resolve_op(self) -> None:
-        execute_rs = Path(__file__).parent.parent / "src" / "execute.rs"
-        src = execute_rs.read_text()
-
-        # The positive half. Both assertions below are "this string is absent",
-        # which is also true of a file that no longer mentions `resolve_usize`
-        # at all or no longer routes parameters through `params::get` -- a
-        # rename, a move, or a rewrite would leave this scan green while
-        # checking nothing. Confirm the idioms it is ratcheting *against* still
-        # have something to be ratcheted against.
-        assert "resolve_usize" in src, (
-            "execute.rs no longer mentions resolve_usize, so the two "
-            "assertions below hold vacuously. Either the resolver was renamed "
-            "(update this scan) or this file is no longer where parameters are "
-            "resolved (move it)."
-        )
-        assert "get::" in src, (
-            "execute.rs no longer calls params::get, which is the policy these "
-            "assertions exist to protect; this scan is guarding nothing."
-        )
-
-        assert ".resolve_usize(row_idx, ctx).ok()" not in src, (
-            "resolve_op swallows a parameter resolution error into None; "
-            "use params::get::maybe_usize instead"
-        )
-        assert ".resolve_usize(row_idx, ctx).unwrap_or(" not in src, (
-            "resolve_op swallows a parameter resolution error into a default; "
-            "use params::get::opt_* instead"
-        )
 
 
 @plugin_required
@@ -397,7 +359,7 @@ class TestListParamElementsAcceptExpressions:
     """List-valued params keep a structural *length* but per-row *values*.
 
     The element count fixes a kernel size or channel count at planning time;
-    the coefficients themselves resolve per row through ``ParamValue::List``
+    the coefficients themselves resolve per row, element by element
     (the same encoding ``warp_affine``'s matrix has always used).
     """
 
@@ -412,7 +374,7 @@ class TestListParamElementsAcceptExpressions:
             lambda k: (
                 Pipeline()
                 .source("image_bytes")
-                .convolve2d([k] * 4 + [1.0] + [k] * 4, 3)
+                .convolve2d(kernel=[k] * 4 + [1.0] + [k] * 4)
             ),
             [0.0, 1.0, 0.5],
             column="k",
@@ -448,18 +410,18 @@ class TestListParamElementsAcceptExpressions:
         )
 
     def test_convolve2d_rejects_a_non_square_kernel(self) -> None:
-        """The kernel *length* is checkable even when ``ksize`` is dynamic."""
+        """The kernel *length* is checked at build, whatever its coefficients."""
         with pytest.raises(ValueError, match="square of an odd number"):
-            Pipeline().source("image_bytes").convolve2d([1.0] * 8, pl.col("k"))
+            Pipeline().source("image_bytes").convolve2d(kernel=[pl.col("k")] * 8)
 
 
 @plugin_required
 class TestEnumParamsAcceptExpressions:
     """Enums with no shape/rank/dtype effect resolve per row.
 
-    Plan-time shape probing binds expression params to integer placeholders, so
-    these also exercise ``ParamCtx::probe`` substituting the default — if that
-    path were broken, building the pipeline would fail before execution.
+    Plan-time resolution (for an op's rules) gives each expression param a
+    placeholder, so these also exercise ``ParamCtx::planning`` — if that path
+    were broken, building the pipeline would fail before execution.
     """
 
     @pytest.fixture()
@@ -492,7 +454,7 @@ class TestEnumParamsAcceptExpressions:
         _assert_matches_per_row_literals(
             image_bytes,
             lambda b: (
-                Pipeline().source("image_bytes").convolve2d([1.0] * 9, 3, border=b)
+                Pipeline().source("image_bytes").convolve2d(kernel=[1.0] * 9, border=b)
             ),
             ["replicate", "zero", "reflect"],
             column="b",
@@ -509,8 +471,8 @@ class TestEnumParamsAcceptExpressions:
             .source("image_bytes")
             .resize(height=7, width=5, filter=pl.col("f"))
         )
-        assert pipe._shape_hints.height == ParamValue(is_expr=False, value=7)
-        assert pipe._shape_hints.width == ParamValue(is_expr=False, value=5)
+        assert planned(pipe).height == 7
+        assert planned(pipe).width == 5
 
     def test_rotate_interpolation_accepts_expr(self, image_bytes: bytes) -> None:
         _assert_matches_per_row_literals(
@@ -568,7 +530,7 @@ class TestEnumParamsAcceptExpressions:
             .source("image_bytes")
             .resize(height=8, width=8, filter=pl.col("f"))
         )
-        with pytest.raises(Exception, match="unknown value"):
+        with pytest.raises(Exception, match='unknown FilterType "not-a-filter"'):
             df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
     def test_wrong_dtype_for_enum_param_errors(self, image_bytes: bytes) -> None:
@@ -583,7 +545,7 @@ class TestEnumParamsAcceptExpressions:
             df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
     def test_literal_enum_still_validated_at_build_time(self) -> None:
-        with pytest.raises(ValueError, match="Invalid filter"):
+        with pytest.raises(ValueError, match='unknown FilterType "bogus"'):
             Pipeline().source("image_bytes").resize(height=8, width=8, filter="bogus")
 
 
@@ -680,8 +642,10 @@ class TestContourSourceFillAcceptsExpressions:
             "is_closed": True,
         }
         df = pl.DataFrame({"c": [square, square], "fv": [100, 200]})
-        pipe = Pipeline().source(
-            "contour", width=10, height=10, fill_value=pl.col("fv")
+        pipe = (
+            Pipeline()
+            .source("contour")
+            .rasterize(width=10, height=10, fill_value=pl.col("fv"))
         )
         out = df.with_columns(r=pl.col("c").cv.pipe(pipe).sink("numpy"))
         values = out["r"].to_list()
@@ -693,7 +657,7 @@ class TestFlagParamsAcceptExpressions:
     """Non-structural boolean flags resolve per row.
 
     These were declared per-row in Rust before the Python builders emitted
-    anything but a literal, leaving `get::opt_bool_dyn` unreachable and the
+    anything but a literal, leaving the per-row flag reader unreachable and the
     docs claiming a capability that did not exist.
     """
 
@@ -705,7 +669,9 @@ class TestFlagParamsAcceptExpressions:
         _assert_matches_per_row_literals(
             image_bytes,
             lambda n: (
-                Pipeline().source("image_bytes").convolve2d([1.0] * 9, 3, normalize=n)
+                Pipeline()
+                .source("image_bytes")
+                .convolve2d(kernel=[1.0] * 9, normalize=n)
             ),
             [True, False],
             column="n",
@@ -730,7 +696,7 @@ class TestFlagParamsAcceptExpressions:
             .extract_contours()
             .area(signed=pl.col("s"))
         )
-        assert pipe._ops[-1].params["signed"].is_expr
+        assert ops_of(pipe)[-1].params["signed"] == EXPR
         out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("native"))
         assert out.height == 2
 
@@ -864,11 +830,12 @@ class TestExtractContoursAndLabelReduceEnums:
 
 @plugin_required
 class TestInputSlotsAreValidated:
-    """A geometry call's `input_slots` map must account for every input.
+    """A geometry call's arguments must account for every extra input.
 
-    Both failure modes were silent or violent before: an index past the end
-    panicked on a raw `inputs[idx]`, and a map missing an entry dropped that
-    operand and computed a quietly wrong result.
+    A per-row kwarg is `{"$slot": n}`, naming its input by position. Both
+    failure modes were silent or violent before: an index past the end panicked
+    on a raw `inputs[idx]`, and an input no kwarg reads dropped that operand
+    and computed a quietly wrong result.
     """
 
     SQUARE = {
@@ -882,22 +849,44 @@ class TestInputSlotsAreValidated:
         "is_closed": True,
     }
 
-    def _call(self, slots: dict, args: list) -> pl.Expr:
+    def _call(self, kwargs: dict, args: list) -> pl.Expr:
         from polars_cv import _plugin
 
         return _plugin.call(
             "contour_normalize",
             args=[pl.col("c"), *args],
-            kwargs={"ref_width": 10.0, "ref_height": 10.0, "input_slots": slots},
+            kwargs={
+                "args": {"width": 10.0, "height": 10.0, **kwargs},
+                "on_null": "raise",
+            },
             is_elementwise=True,
         )
 
-    def test_unregistered_extra_input_is_rejected(self) -> None:
+    def test_unclaimed_extra_input_is_rejected(self) -> None:
         df = pl.DataFrame({"c": [self.SQUARE], "w": [10.0]})
-        with pytest.raises(Exception, match="input_slots"):
+        with pytest.raises(Exception, match="exactly once"):
             df.with_columns(n=self._call({}, [pl.col("w")]))
 
     def test_out_of_range_slot_is_rejected(self) -> None:
         df = pl.DataFrame({"c": [self.SQUARE], "w": [10.0]})
-        with pytest.raises(Exception, match="input slot"):
-            df.with_columns(n=self._call({"ref_width": 7}, [pl.col("w")]))
+        with pytest.raises(Exception, match="'width' reads input 7"):
+            df.with_columns(n=self._call({"width": {"$slot": 7}}, [pl.col("w")]))
+
+    def test_the_name_keyed_slot_map_is_refused(self) -> None:
+        """`input_slots` was the name→index map the typed kwargs replaced."""
+        df = pl.DataFrame({"c": [self.SQUARE], "w": [10.0]})
+        with pytest.raises(Exception, match="input_slots"):
+            df.with_columns(n=self._call({"input_slots": {"width": 1}}, [pl.col("w")]))
+
+
+def test_label_reduce_contours_must_be_an_expression() -> None:
+    """``label_reduce(contours=)`` is an operand column, never a value.
+
+    The step reads the whole row's contour list out of that input column, so a
+    literal has nowhere to go: it must be refused while the pipeline is built,
+    naming the parameter, not reach execution as a bogus slot.
+    """
+    pipe = Pipeline().source("image_bytes").grayscale()
+    for literal in ([[(0, 0), (1, 0), (1, 1)]], "contours", 3):
+        with pytest.raises(TypeError, match=r"contours.*Polars expression"):
+            pipe.label_reduce(contours=literal)  # type: ignore[arg-type]

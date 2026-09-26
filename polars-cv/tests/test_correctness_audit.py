@@ -25,6 +25,7 @@ import polars as pl
 import pytest
 
 from polars_cv import CONTOUR_SCHEMA, Pipeline, numpy_from_struct
+from tests._plan_view import ops_of
 from tests.conftest import plugin_required
 
 # ---------------------------------------------------------------------------
@@ -920,11 +921,11 @@ class TestPipelineValidation:
         """Operations without source is valid (for use with .pipe() composition)."""
         # This is the intended API: pipelines without source for continuation
         pipe = Pipeline().resize(height=100, width=100)
-        assert len(pipe._ops) == 1
+        assert len(ops_of(pipe)) == 1
 
     def test_invalid_source_format(self) -> None:
         """Invalid source format should raise."""
-        with pytest.raises(ValueError, match="Invalid source format"):
+        with pytest.raises(ValueError, match="unknown source format"):
             Pipeline().source("invalid_format")
 
     def test_contour_op_on_buffer_domain_raises(self) -> None:
@@ -933,12 +934,12 @@ class TestPipelineValidation:
             Pipeline().source("image_bytes").area()
 
     def test_contour_source_starts_in_buffer_domain(self) -> None:
-        """Contour source with dimensions rasterizes → starts in buffer domain.
+        """A contour source with a canvas rasterizes → the buffer domain.
 
-        This means buffer ops like grayscale() should work on a contour source.
+        The canvas keywords append ``rasterize()``, so buffer ops like
+        grayscale() follow it.
         """
-        # Contour source with explicit dims rasterizes automatically
-        pipe = Pipeline().source("contour", width=100, height=100)
+        pipe = Pipeline().source("contour").rasterize(width=100, height=100)
         assert pipe.current_domain() == "buffer"
         # So buffer ops should work:
         pipe_gray = pipe.grayscale()

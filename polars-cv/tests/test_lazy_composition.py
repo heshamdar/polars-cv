@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 import polars as pl
+import pytest
 
 from polars_cv import LazyPipelineExpr, Pipeline, numpy_from_struct
 
@@ -169,7 +170,7 @@ class TestLazyComposition:
         """apply_contour_mask creates rasterize node automatically."""
         img_pipe = Pipeline().source("image_bytes")
         # Contour source now requires dimensions for rasterization
-        contour_pipe = Pipeline().source("contour", width=100, height=100)
+        contour_pipe = Pipeline().source("contour").rasterize(width=100, height=100)
 
         img = pl.col("image").cv.pipe(img_pipe)
         contour = pl.col("contour").cv.pipe(contour_pipe)
@@ -306,11 +307,9 @@ class TestPipelineGraphSerialization:
         graph.add_node("node2", pipe, pl.col("col_b"))
         graph.set_output("node2", "numpy")
 
-        # Build bindings
-        graph._build_column_bindings()
-
-        assert graph._column_bindings["node1"] == 0
-        assert graph._column_bindings["node2"] == 1
+        bindings = graph._to_dict()["column_bindings"]
+        assert bindings["node1"] == 0
+        assert bindings["node2"] == 1
 
     def test_graph_deduplicates_same_column(self) -> None:
         """Same column used by multiple nodes should be deduplicated."""
@@ -323,13 +322,11 @@ class TestPipelineGraphSerialization:
         graph.add_node("node2", pipe, pl.col("same_col"))
         graph.set_output("node2", "numpy")
 
-        graph._build_column_bindings()
-        columns = graph._get_ordered_columns()
-
-        # Only one unique column
-        assert len(columns) == 1
+        # Only one unique input column
+        assert len(graph._slot_table()) == 1
         # Both nodes should point to same index
-        assert graph._column_bindings["node1"] == graph._column_bindings["node2"]
+        bindings = graph._to_dict()["column_bindings"]
+        assert bindings["node1"] == bindings["node2"]
 
 
 @plugin_required
@@ -561,7 +558,7 @@ class TestLazyCompositionExecution:
 
         img_pipe = Pipeline().source("image_bytes")
         # Contour source with explicit dimensions rasterizes the contour to a mask
-        contour_pipe = Pipeline().source("contour", width=100, height=100)
+        contour_pipe = Pipeline().source("contour").rasterize(width=100, height=100)
 
         img = pl.col("image").cv.pipe(img_pipe)
         # The contour source already produces a rasterized mask
@@ -610,7 +607,7 @@ class TestLazyCompositionExecution:
         img = pl.col("image").cv.pipe(img_pipe)
 
         # Contour source with shape= infers dimensions from the image
-        contour_pipe = Pipeline().source("contour", shape=img)
+        contour_pipe = Pipeline().source("contour").rasterize(shape=img)
         mask = pl.col("contour").cv.pipe(contour_pipe)
 
         # Apply the mask
@@ -651,7 +648,9 @@ class TestLazyCompositionExecution:
         df = pl.DataFrame({"image": [img_bytes], "contour": [contour_data]})
 
         img = pl.col("image").cv.pipe(Pipeline().source("image_bytes"))
-        mask = pl.col("contour").cv.pipe(Pipeline().source("contour", shape=img))
+        mask = pl.col("contour").cv.pipe(
+            Pipeline().source("contour").rasterize(shape=img)
+        )
 
         graph = mask.sink("numpy", return_expr=False)
         assert img._node_id in graph._to_dict()["nodes"], (
@@ -690,7 +689,9 @@ class TestLazyCompositionExecution:
 
         img_pipe = Pipeline().source("image_bytes")
         # For apply_contour_mask, we don't need dimensions - they're inferred
-        contour_pipe = Pipeline().source("contour", width=1, height=1)  # Dummy dims
+        contour_pipe = (
+            Pipeline().source("contour").rasterize(width=1, height=1)
+        )  # Dummy dims
 
         img = pl.col("image").cv.pipe(img_pipe)
         contour = pl.col("contour").cv.pipe(contour_pipe)
@@ -706,6 +707,50 @@ class TestLazyCompositionExecution:
         assert np.all(output[0, 0] == 0)
         # Pixels inside contour should have original values
         assert np.any(output[50, 50] > 0)
+
+    @pytest.mark.parametrize("fill", [None, 0])
+    def test_apply_contour_mask_keeps_the_contours_paint(
+        self,
+        create_test_png: Callable[[int, int, tuple[int, int, int]], bytes],
+        fill: int | None,
+    ) -> None:
+        """The contour pipeline's own paint is kept; only its canvas changes.
+
+        An inverted paint (``fill_value=0, background=255``) masks the
+        exterior. A bare ``source("contour")`` needs no dummy canvas and takes
+        ``rasterize()``'s defaults.
+        """
+        img_bytes = create_test_png(100, 100, (200, 100, 50))
+        square = [(25.0, 25.0), (25.0, 75.0), (75.0, 75.0), (75.0, 25.0)]
+        df = pl.DataFrame(
+            {
+                "image": [img_bytes],
+                "contour": [
+                    {
+                        "exterior": [{"x": x, "y": y} for x, y in square],
+                        "holes": [],
+                        "is_closed": True,
+                    }
+                ],
+            }
+        )
+        contour_pipe = (
+            Pipeline().source("contour")
+            if fill is None
+            else Pipeline()
+            .source("contour")
+            .rasterize(width=1, height=1, fill_value=fill, background=255)
+        )
+        img = pl.col("image").cv.pipe(Pipeline().source("image_bytes"))
+        contour = pl.col("contour").cv.pipe(contour_pipe)
+        output = numpy_from_struct(
+            df.select(o=img.apply_contour_mask(contour).sink("numpy")).row(0)[0]
+        )
+        inside, outside = output[50, 50], output[0, 0]
+        if fill is None:
+            assert np.all(outside == 0) and np.all(inside == (200, 100, 50))
+        else:
+            assert np.all(inside == 0) and np.all(outside == (200, 100, 50))
 
 
 @plugin_required

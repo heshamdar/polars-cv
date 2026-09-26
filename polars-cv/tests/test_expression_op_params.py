@@ -3,7 +3,7 @@
 ``tests/test_expression_params.py`` covers the ``.contour``/``.point``/``.bbox``
 namespaces, which carry their parameters as extra plugin *inputs*. This file
 covers the other half: the parameters that ride through the ``vb_graph`` graph
-engine as ``ParamValue``s, which is nearly every operation on ``Pipeline``.
+engine as ``{"$slot": n}`` op fields, which is nearly every operation on ``Pipeline``.
 
 The sweep is table-driven (``tests/_expr_param_cases.py``) and each case is
 checked three ways by ``tests/_expr_param_runner.py`` — against the literal
@@ -24,17 +24,9 @@ import polars as pl
 import pytest
 
 from polars_cv import Pipeline
-from polars_cv.geometry.schemas import CONTOUR_SET_SCHEMA
 from tests._expr_param_cases import (
     CASES,
-    CONTOUR_SET,
-    CONTOURS,
-    DIAMOND,
-    DIAMOND_SET,
-    IMAGE,
     NOT_SWEPT,
-    RECT,
-    RING,
     ExprCase,
     covered_keys,
     expression_eligible_parameters,
@@ -42,51 +34,16 @@ from tests._expr_param_cases import (
     varying_cases,
 )
 from tests._expr_param_runner import (
+    PARAM,
     assert_matches_per_row_literals,
     assert_rows_are_independent,
     assert_values_vary,
+    input_frame,
     run,
     sink_for,
 )
 from tests._schema_parity import assert_plan_equals_exec
-from tests.conftest import make_image_png, make_rect_png, make_ring_png, plugin_required
-
-#: 16x16 so every case's crops, pads and resizes stay inside it, and noisy so a
-#: filter, a channel permutation or a threshold actually changes the result.
-_SIDE = 16
-
-PARAM = "p"
-
-
-def _images() -> dict[str, bytes]:
-    """The input columns, built once per test that needs them."""
-    return {
-        IMAGE: make_image_png(_SIDE, _SIDE, 3, seed=7),
-        RECT: make_rect_png(_SIDE, _SIDE, 3),
-        RING: make_ring_png(_SIDE, _SIDE, 3),
-    }
-
-
-def _frame(case: ExprCase, values: "tuple | list") -> pl.DataFrame:
-    """A frame carrying every input column plus the parameter column.
-
-    All rows hold the *same* image, so the only thing varying down the frame is
-    the parameter. A case whose rows differ because their images differ would
-    pass ``assert_values_vary`` without the parameter doing anything.
-    """
-    rows = len(values)
-    images = _images()
-    data: dict[str, list] = {name: [blob] * rows for name, blob in images.items()}
-    data[CONTOURS] = [CONTOUR_SET] * rows
-    data[DIAMOND] = [DIAMOND_SET] * rows
-    data[PARAM] = list(values)
-    overrides: dict[str, pl.DataType] = {
-        CONTOURS: CONTOUR_SET_SCHEMA,
-        DIAMOND: CONTOUR_SET_SCHEMA,
-    }
-    if case.dtype is not None:
-        overrides[PARAM] = case.dtype
-    return pl.DataFrame(data, schema_overrides=overrides)
+from tests.conftest import make_image_png, plugin_required
 
 
 def _ids(cases: "list[ExprCase]") -> list[str]:
@@ -100,7 +57,7 @@ class TestExpressionParameterSweep:
     @pytest.mark.parametrize("case", literal_cases(), ids=_ids(literal_cases()))
     def test_expression_matches_the_literal(self, case: ExprCase) -> None:
         """Each row equals the pipeline built with that row's value inline."""
-        df = _frame(case, case.values)
+        df = input_frame(case, case.values)
         assert_matches_per_row_literals(
             df,
             input_column=case.column,
@@ -113,7 +70,7 @@ class TestExpressionParameterSweep:
     @pytest.mark.parametrize("case", varying_cases(), ids=_ids(varying_cases()))
     def test_the_value_reaches_the_kernel(self, case: ExprCase) -> None:
         """Distinct parameter values must produce distinct outputs."""
-        df = _frame(case, case.values)
+        df = input_frame(case, case.values)
         outputs = run(df, case.column, case.build(pl.col(PARAM)))
         assert_values_vary(outputs, label=f"{case.key}: ")
 
@@ -124,7 +81,7 @@ class TestExpressionParameterSweep:
         This is the leg that covers the parameters with no literal spelling,
         and the one a morsel-boundary or compiled-graph-cache fault breaks.
         """
-        df = _frame(case, case.values)
+        df = input_frame(case, case.values)
         assert_rows_are_independent(
             df,
             input_column=case.column,
@@ -143,7 +100,7 @@ class TestExpressionParameterSweep:
         parameter puts under most pressure: the planner cannot know the value,
         so it must publish a dtype that holds for every row.
         """
-        df = _frame(case, case.values)
+        df = input_frame(case, case.values)
         pipe = case.build(pl.col(PARAM))
         expr = pl.col(case.column).cv.pipe(pipe).sink(sink_for(pipe))
         assert_plan_equals_exec(df, expr)
@@ -215,7 +172,7 @@ class TestDerivedExpressions:
     """A parameter takes any expression, not only a bare column reference.
 
     Expression parameters are keyed on ``str(expr)`` when they cross the wire
-    (``ParamValue.to_dict``), so two derived expressions sharing a root column
+    (the op's wire form), so two derived expressions sharing a root column
     are the case that key exists to keep apart: before it, ``col("h").max()``
     and ``col("h").min()`` hashed to the same slot.
     """
@@ -314,7 +271,7 @@ class TestParameterColumnDtypes:
         pipe = (
             Pipeline()
             .source("image_bytes", dtype="u8")
-            .convolve2d([1.0] * 9, 3, normalize=pl.col("norm"))
+            .convolve2d(kernel=[1.0] * 9, normalize=pl.col("norm"))
         )
         out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("list"))["r"]
         assert out.to_list()[0] != out.to_list()[1]
@@ -405,40 +362,3 @@ class TestAssertShapeExpressions:
         # `.assert_shape()` after it already had.
         with pytest.raises(ValueError, match="needs the full output shape"):
             pl.col("image").cv.pipe(pipe).sink("array")
-
-
-@plugin_required
-class TestConvolveKsizeExpression:
-    """``convolve2d(ksize=)`` is expression-valued but pinned to the kernel.
-
-    The kernel's *length* is structural, so a per-row ``ksize`` can only
-    restate the side it implies. That makes the interesting case the
-    disagreeing one: it must be rejected at execution rather than silently
-    reading past the kernel or truncating it.
-    """
-
-    @staticmethod
-    def _frame(ksizes: list[int]) -> pl.DataFrame:
-        return pl.DataFrame(
-            {"image": [make_image_png(16, 16, 1, seed=6)] * len(ksizes), "k": ksizes}
-        )
-
-    def test_a_consistent_expression_ksize_executes(self) -> None:
-        df = self._frame([3, 3])
-        pipe = (
-            Pipeline()
-            .source("image_bytes", dtype="u8")
-            .convolve2d([0.0] * 4 + [1.0] + [0.0] * 4, pl.col("k"))
-        )
-        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("list"))
-        assert out["r"].null_count() == 0
-
-    def test_a_ksize_disagreeing_with_the_kernel_is_rejected(self) -> None:
-        df = self._frame([3, 5])
-        pipe = (
-            Pipeline()
-            .source("image_bytes", dtype="u8")
-            .convolve2d([0.0] * 4 + [1.0] + [0.0] * 4, pl.col("k"))
-        )
-        with pytest.raises(pl.exceptions.ComputeError):
-            df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("list"))

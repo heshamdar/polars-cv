@@ -52,7 +52,7 @@ OP_CASES: dict[str, tuple[str, dict] | None] = {
     "subtract_constant": (BUFFER, {"value": 2.0}),
     "trunc": (BUFFER, {}),
     "convert_color": (BUFFER, {"from_space": "rgb", "to_space": "hsv"}),
-    "convolve2d": (BUFFER, {"kernel": [0.0] * 9, "ksize": 3}),
+    "convolve2d": (BUFFER, {"kernel": [0.0] * 9}),
     "crop": (BUFFER, {"top": 0, "left": 0, "height": 50, "width": 50}),
     "dilate": (BUFFER, {"ksize": 3}),
     "equalize_histogram": (BUFFER, {}),
@@ -179,17 +179,15 @@ HISTOGRAM_OUTPUTS: tuple[str, ...] = (
 )
 
 #: Every colour space ``convert_color`` can target, for the
-#: ``StripProcessRestore`` channel rule.
+#: ``ColorChannels`` shape.
 COLOR_SPACES: tuple[str, ...] = ("rgb", "bgr", "hsv", "lab", "ycbcr", "gray")
 
 #: Ops whose engine kernel requires a single-channel buffer.
 #:
-#: Nothing rejects a three-channel pipeline for these at build or plan time —
-#: the failure is a runtime "Erode requires single-channel input, but got 3
-#: channels". The table's argument sets were only ever exercised by the
-#: eager/lazy *plan* parity sweep, which never executes, so this precondition
-#: went unnoticed until the schema matrix started collecting. Sweeps that
-#: execute must put a ``grayscale()`` in front of these.
+#: A three-channel input is refused by the op's own ``validate``: at build
+#: time when the planner knows the channel count (consolidation plan C0.5),
+#: per row otherwise. :func:`build_case` puts a ``grayscale()`` in front of
+#: these, and so must any sweep that builds its own pipelines.
 SINGLE_CHANNEL_OPS: frozenset[str] = frozenset(
     {
         "threshold",
@@ -262,4 +260,11 @@ def build_case(op: str) -> "Pipeline":
         msg = f"{op} has no callable case"
         raise ValueError(msg)
     domain, kwargs = case
-    return getattr(base_pipeline(domain), op)(**kwargs)
+    return getattr(case_base(op, domain), op)(**kwargs)
+
+
+def case_base(op: str, domain: str) -> "Pipeline":
+    """The pipeline *op*'s case is appended to: :func:`base_pipeline`, behind a
+    ``grayscale()`` for the :data:`SINGLE_CHANNEL_OPS`."""
+    base = base_pipeline(domain)
+    return base.grayscale() if op in SINGLE_CHANNEL_OPS else base

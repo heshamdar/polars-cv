@@ -59,7 +59,7 @@ img = pl.col("image").cv.pipe(
 
 # Mask pipeline (from contour)
 mask = pl.col("contour").cv.pipe(
-    Pipeline().source("contour", width=128, height=128)
+    Pipeline().source("contour").rasterize(width=128, height=128)
 )
 
 # Apply mask: pixels where mask=0 become 0
@@ -79,7 +79,7 @@ img = pl.col("image").cv.pipe(
 
 # Contour source with shape inference
 mask = pl.col("contour").cv.pipe(
-    Pipeline().source("contour", shape=img)  # Auto: 150x100
+    Pipeline().source("contour").rasterize(shape=img)  # Auto: 150x100
 )
 
 # Apply
@@ -95,7 +95,7 @@ img = pl.col("image").cv.pipe(
     Pipeline().source("image_bytes").resize(height=128, width=128)
 )
 contour = pl.col("contour").cv.pipe(
-    Pipeline().source("contour", shape=img)
+    Pipeline().source("contour").rasterize(shape=img)
 )
 
 # Convenience method handles shape inference

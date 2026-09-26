@@ -11,53 +11,69 @@ use std::sync::Arc;
 use view_buffer::geometry::Contour;
 use view_buffer::ViewBuffer;
 
+use crate::formats::sink::Sink;
+use crate::formats::source::Source;
 use crate::params::NullParamPolicy;
-use crate::pipeline::{SinkSpec, SourceSpec};
 
-use super::encode::{default_domain, default_dtype};
+use crate::plan::State;
 
-/// Output specification for a single output in the graph.
-///
-/// Closed like `GraphNode`: `deny_unknown_fields` does not descend, so this
-/// sibling of the node needed its own.
+/// One requested output as it crosses the wire: the node and its sink.
+/// Everything else about the output is planned from the graph.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct OutputRequest {
+    /// The node ID to output.
+    pub node: String,
+    /// Sink specification.
+    pub sink: Sink,
+}
+
+/// An output as planned: its sink plus the facts the planner derived for it
+/// ([`resolved_output_specs`](super::compiled::resolved_output_specs)).
+/// Never deserialized: nothing about an output's schema is taken from the
+/// wire.
+#[derive(Debug, Clone)]
 pub struct OutputSpec {
     /// The node ID to output.
     pub node: String,
     /// Sink specification.
-    pub sink: SinkSpec,
-    /// Expected output domain for validation and type inference.
-    #[serde(default = "default_domain")]
-    pub expected_domain: String,
-    /// Expected output dtype for list/array sinks.
-    #[serde(default = "default_dtype")]
-    pub expected_dtype: String,
-    /// Expected output shape for list/array sinks.
-    #[serde(default)]
+    pub sink: Sink,
+    /// Planned output domain.
+    pub expected_domain: view_buffer::ops::Domain,
+    /// Planned output element dtype.
+    pub expected_dtype: view_buffer::PlannedDType,
+    /// Planned `[H, W, C]` shape, when the output is rank 3 and all three
+    /// sizes are known.
     pub expected_shape: Option<Vec<usize>>,
-    /// Did any dimension of `expected_shape` come from a user `assert_shape`?
-    ///
-    /// Decides who [`validate_output_schema`](super::compiled) reports a
-    /// plan/exec divergence against. An inferred shape that execution
-    /// contradicts is a contract bug — a rule lying about its transform. An
-    /// *asserted* one is a claim about the caller's data, and reporting it as
-    /// "the planner's shape contract disagrees with the Rust implementation"
-    /// sent people to read plugin source over their own typo.
-    #[serde(default)]
-    pub shape_asserted: bool,
-    /// Expected number of dimensions for list sinks.
-    #[serde(default)]
+    /// Planned rank.
     pub expected_ndim: Option<usize>,
-    /// Optional sink encoding selector, independent of the output domain.
-    ///
-    /// Some outputs share a domain but need a distinct Polars schema. For
-    /// example histogram buckets are a `vector`-domain output, but are encoded
-    /// as `List(Struct[lower_edge, upper_edge, count, normalized])`. Python sets
-    /// this to `"histogram_buckets"` for that case; `None` means encode by the
-    /// (domain, format) pair as usual.
-    #[serde(default)]
-    pub expected_encoding: Option<String>,
+    /// The output is histogram buckets: a `vector`-domain output encoded as
+    /// `List(Struct[lower_edge, upper_edge, count, normalized])` rather than by
+    /// its (domain, format) pair.
+    pub histogram_buckets: bool,
+}
+
+impl OutputSpec {
+    /// The spec for `out`, whose node the planner left in `planned`.
+    pub(crate) fn planned(out: &OutputRequest, planned: &State, histogram_buckets: bool) -> Self {
+        // A shape is published only for a rank-3 `[H, W, C]` output whose three
+        // sizes are all known: the state tracks H/W/C, so at any other rank it
+        // cannot describe the shape — publishing `[H, W, C]` for a rank-2
+        // output is how `channel_select` once declared a schema execution
+        // could not produce.
+        let expected_shape = (planned.ndim == Some(3))
+            .then(|| planned.dims.iter().copied().collect::<Option<Vec<_>>>())
+            .flatten();
+        OutputSpec {
+            node: out.node.clone(),
+            sink: out.sink.clone(),
+            expected_domain: planned.domain,
+            expected_dtype: planned.dtype,
+            expected_shape,
+            expected_ndim: planned.ndim,
+            histogram_buckets,
+        }
+    }
 }
 /// Result type for individual row execution.
 ///
@@ -104,8 +120,7 @@ impl RowResult {
 /// Applies to `Result`-level errors while producing a row (source decode,
 /// op resolution/execution, output encode), including engine panics, which the
 /// executor catches per row and treats as that row's error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RowErrorPolicy {
     /// Propagate the first error and fail the whole expression (default).
     #[default]
@@ -117,13 +132,7 @@ pub enum RowErrorPolicy {
     NullWithMessage,
 }
 
-// These names must match what `#[serde(rename_all = "snake_case")]` above
-// produces, because serde is what parses the wire value while this table is
-// what Python is told to send. They are checked against each other by
-// `row_error_policy_names_match_serde` below — the deserializer stays the one
-// that reads the graph JSON, and this becomes the one that publishes the
-// vocabulary.
-view_buffer::naming::named_variants!(RowErrorPolicy {
+view_buffer::naming::named_variants!(RowErrorPolicy: "What a failing row does to a graph query.\n\nApplies to errors raised while producing a row — source decode, op\nexecution, output encode:\n- RAISE: propagate the first error, failing the whole expression.\n- NULL: a failing row yields null; other rows proceed.\n- NULL_WITH_MESSAGE: as NULL, plus an `_error` field." {
     "raise" => Raise,
     "null" => Null,
     "null_with_message" => NullWithMessage,
@@ -131,22 +140,134 @@ view_buffer::naming::named_variants!(RowErrorPolicy {
 
 #[cfg(test)]
 mod row_error_policy_tests {
-    use super::RowErrorPolicy;
+    use super::{OutputSpec, UnifiedGraph};
 
-    /// Every `NAMED` spelling must parse through serde to the variant it names.
-    ///
-    /// Two mechanisms describe one vocabulary here: serde's `rename_all` reads
-    /// the wire, and `NAMED` tells Python what to write. A rename on either
-    /// side alone would leave Python confidently sending a value the graph
-    /// cannot parse, and neither `deny_unknown_fields` nor the parity test
-    /// would notice — the parity test compares Python to `NAMED`, not `NAMED`
-    /// to serde.
+    fn graph_with(field: &str, value: &str) -> String {
+        UnifiedGraph::from_json(&format!(
+            r#"{{"nodes": {{}}, "outputs": {{}}, "{field}": "{value}"}}"#
+        ))
+        .map(|_| String::new())
+        .unwrap_or_else(|e| e.to_string())
+    }
+
+    /// The one output of a single `image_bytes` node running `ops`, as planned.
+    fn output(ops: &str) -> Result<OutputSpec, String> {
+        let graph = UnifiedGraph::from_json(&format!(
+            r#"{{"nodes": {{"n0": {{"source": {{"format": "image_bytes"}}, "ops": {ops}}}}},
+                "outputs": {{"_output": {{"node": "n0", "sink": {{"format": "numpy"}}}}}},
+                "column_bindings": {{"n0": 0}}}}"#
+        ))
+        .map_err(|e| e.to_string())?;
+        crate::graph::resolved_output_specs(&graph, &[])
+            .map(|mut specs| specs.remove(0).1)
+            .map_err(|e| e.to_string())
+    }
+
+    /// The output facts are planned from the graph's own ops: a shape only for
+    /// rank 3 with all three sizes known.
     #[test]
-    fn row_error_policy_names_match_serde() {
-        for (name, expected) in RowErrorPolicy::NAMED {
-            let parsed: RowErrorPolicy = serde_json::from_str(&format!("\"{name}\""))
-                .unwrap_or_else(|e| panic!("serde rejects the NAMED spelling {name:?}: {e}"));
-            assert_eq!(parsed, *expected, "{name} parses to the wrong variant");
+    fn output_facts_are_planned_from_the_ops() {
+        let full = output(
+            r#"[{"op": "cast", "dtype": "u8"},
+                {"op": "assert_shape", "rank": null, "dims": [4, 5, 3]}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (full.expected_domain.name(), full.expected_dtype.as_str()),
+            ("buffer", "u8")
+        );
+        assert_eq!(full.expected_shape, Some(vec![4, 5, 3]));
+        assert_eq!(full.expected_ndim, Some(3));
+        // Channels unknown: no shape, though H and W are known.
+        let partial =
+            output(r#"[{"op": "resize", "height": 4, "width": 5, "filter": "nearest"}]"#).unwrap();
+        assert_eq!(partial.expected_shape, None);
+        // Rank 2: the H/W/C state cannot describe the shape.
+        let rank2 = output(
+            r#"[{"op": "assert_shape", "rank": null, "dims": [4, 5, 3]},
+                {"op": "channel_select", "index": 0}]"#,
+        )
+        .unwrap();
+        assert_eq!((rank2.expected_shape, rank2.expected_ndim), (None, Some(2)));
+    }
+
+    /// Nothing about an output's schema is taken from the wire: the old
+    /// planned-state and expected-* fields are refused by name.
+    #[test]
+    fn an_output_carries_only_its_node_and_sink() {
+        for extra in [
+            r#""planned": {"domain": "buffer", "dtype": "u8"}"#,
+            r#""expected_dtype": "u8""#,
+        ] {
+            let err = UnifiedGraph::from_json(&format!(
+                r#"{{"nodes": {{}}, "outputs": {{"_output": {{"node": "n0",
+                    "sink": {{"format": "numpy"}}, {extra}}}}}}}"#
+            ))
+            .unwrap_err()
+            .to_string();
+            let field = extra.split('"').nth(1).unwrap();
+            assert!(err.contains(&format!("unknown field `{field}`")), "{err}");
+        }
+    }
+
+    /// Histogram buckets are recognised from the node's own last step (or its
+    /// lineage's, through an op-less node), not from a wire field Python had to
+    /// remember to set.
+    #[test]
+    fn histogram_buckets_are_read_off_the_ops() {
+        let graph = |ops: &str| {
+            let g = UnifiedGraph::from_json(&format!(
+                r#"{{"nodes": {{"n0": {{"source": {{"format": "image_bytes"}}, "ops": {ops}}},
+                     "n1": {{"source": {{"format": "blob"}}, "ops": [], "upstream": ["n0"]}}}},
+                    "outputs": {{"a": {{"node": "n0", "sink": {{"format": "native"}}}},
+                                 "b": {{"node": "n1", "sink": {{"format": "native"}}}}}},
+                    "column_bindings": {{"n0": 0}}}}"#
+            ))
+            .unwrap();
+            crate::graph::resolved_output_specs(&g, &[]).unwrap()
+        };
+        let buckets = r#"[{"op": "histogram", "bins": 4, "range": null, "closed": "left", "output": "buckets"}]"#;
+        let specs = graph(buckets);
+        assert!(specs.iter().all(|(_, s)| s.histogram_buckets));
+        let counts = buckets.replace("buckets", "counts");
+        assert!(!graph(&counts)[0].1.histogram_buckets);
+    }
+
+    /// An engine toggle the engine does not have is refused, not ignored:
+    /// `OptConfig` and the Python `OptFlags` come from one list
+    /// (`engine_passes!`), and a stray key means the two builds disagree.
+    #[test]
+    fn an_unknown_engine_toggle_is_refused() {
+        let graph = |opt: &str| {
+            UnifiedGraph::from_json(&format!(
+                r#"{{"nodes": {{}}, "outputs": {{}}, "opt": {opt}}}"#
+            ))
+            .map(|_| String::new())
+            .unwrap_or_else(|e| e.to_string())
+        };
+        assert_eq!(graph(r#"{"scalar_fusion": false}"#), "");
+        let err = graph(r#"{"scalar_fusoin": false}"#);
+        assert!(err.contains("unknown field `scalar_fusoin`"), "{err}");
+    }
+
+    /// The graph's policies parse through their `NAMED` tables, the same
+    /// spellings the generated Python enums send: one vocabulary, no serde
+    /// `rename_all` beside it to keep in step.
+    #[test]
+    fn graph_policies_parse_through_their_named_tables() {
+        for (field, enum_name, good, bad) in [
+            (
+                "on_error",
+                "RowErrorPolicy",
+                "null_with_message",
+                "NullWithMessage",
+            ),
+            ("on_null_param", "NullParamPolicy", "null", "Null"),
+        ] {
+            assert_eq!(graph_with(field, good), "", "{field}={good}");
+            let err = graph_with(field, bad);
+            let named = format!("unknown {enum_name} \"{bad}\", expected one of");
+            assert!(err.contains(&named), "{field}={bad}: {err}");
         }
     }
 }
@@ -169,13 +290,13 @@ pub struct UnifiedGraph {
     #[serde(default)]
     pub version: u32,
     /// Per-row error policy for the whole graph.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::ops::param::literal_field")]
     pub on_error: RowErrorPolicy,
     /// What a null in a per-row expression parameter means for the affected
     /// rows. Independent of [`on_error`](Self::on_error): under
     /// [`NullParamPolicy::Null`] a null parameter is not an error at all, so it
     /// yields a null result without weakening error reporting for anything else.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::ops::param::literal_field")]
     pub on_null_param: NullParamPolicy,
     /// Which engine-tier (Tier-2) optimizations to apply when executing buffer-op
     /// chains. Absent (older specs) or partially specified means all enabled, via
@@ -185,9 +306,9 @@ pub struct UnifiedGraph {
     pub opt: view_buffer::OptConfig,
     /// Named nodes in the graph.
     pub nodes: HashMap<String, GraphNode>,
-    /// Output specifications (alias -> spec).
+    /// The requested outputs (alias -> node and sink).
     /// Single output uses "_output" as key.
-    pub outputs: HashMap<String, OutputSpec>,
+    pub outputs: HashMap<String, OutputRequest>,
     /// Mapping from node IDs to input column indices.
     /// Only root nodes (no upstream) have bindings.
     #[serde(default)]
@@ -218,6 +339,44 @@ impl UnifiedGraph {
         }
         graph.cached_order = graph.compute_topological_order()?;
         Ok(graph)
+    }
+
+    /// Whether `node_id`'s buffer is histogram buckets: its last step, or, for
+    /// a node with no ops, its primary upstream's.
+    pub(crate) fn ends_in_histogram_buckets(&self, node_id: &str) -> bool {
+        let Some(node) = self.nodes.get(node_id) else {
+            return false;
+        };
+        match node.ops.last() {
+            Some(op) => matches!(
+                op,
+                crate::graph::step::GraphStep::Histogram(h)
+                    if h.output.get() == view_buffer::ops::HistogramOutput::Buckets
+            ),
+            None => node
+                .upstream
+                .first()
+                .is_some_and(|up| self.ends_in_histogram_buckets(up)),
+        }
+    }
+    /// What the input column will supply to `node_id`'s lineage, when it
+    /// starts at a root whose source takes facts from the column; `None`
+    /// when the plan holds everything already.
+    pub(crate) fn column_facts_pending(
+        &self,
+        node_id: &str,
+    ) -> Option<crate::graph::decode::ColumnFacts> {
+        let node = self.nodes.get(node_id)?;
+        match node.upstream.first() {
+            Some(up) if !self.column_bindings.contains_key(node_id) => {
+                self.column_facts_pending(up)
+            }
+            _ => node.source.resolves_from_column().then(|| {
+                crate::graph::decode::ColumnFacts::Pending {
+                    sizes: node.source.column_may_fix_sizes(),
+                }
+            }),
+        }
     }
     /// Check if this is a single-output graph (returns Binary instead of Struct).
     pub fn is_single_output(&self) -> bool {
@@ -384,27 +543,11 @@ pub(crate) enum OutputValue {
 #[serde(deny_unknown_fields)]
 pub struct GraphNode {
     /// Source specification for this node's input.
-    pub source: SourceSpec,
+    pub source: Source,
     /// Operations to apply.
     #[serde(default)]
-    pub ops: Vec<crate::pipeline::OpSpec>,
+    pub ops: Vec<crate::ops::TypedOp>,
     /// Upstream node IDs this node depends on.
     #[serde(default)]
     pub upstream: Vec<String>,
-    /// User-defined alias the Python planner attaches for multi-output. The
-    /// executor keys its outputs off `UnifiedGraph.outputs`, not this field, so
-    /// it is deserialized-but-unread — declared, like `domain`/`output_dtype`
-    /// below, only so the node stays closed under `deny_unknown_fields`.
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub alias: Option<String>,
-    /// Planner metadata for graph visualization only; the executor computes
-    /// its own schema from `ops`. Declared so the node stays closed.
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub domain: Option<String>,
-    /// See [`GraphNode::domain`].
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub output_dtype: Option<String>,
 }

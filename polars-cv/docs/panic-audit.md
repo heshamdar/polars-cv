@@ -22,7 +22,7 @@ Counts at audit time: ~103 sites in `polars-cv/src`, ~77 in `view-buffer/src`
 
 | Layer | Verdict |
 |-------|---------|
-| `polars-cv` param resolution (`params.rs`) | **Safe.** Typed downcasts (`series.u8().unwrap()`) are guarded by the matching `DataType` arm; `resolve_usize` rejects negatives; `resolve_i64/f64` return `Result`. |
+| `polars-cv` param resolution (`params.rs`) | **Safe.** Typed downcasts (`series.u8().unwrap()`) are guarded by the matching `DataType` arm; every per-row read (`ParamCol::get_*`, behind `Param<T>::resolve`) returns `Result`, and a value outside its type's range is an error. |
 | `polars-cv` op dispatch (`execute.rs`) | **Safe.** Every arm returns `PolarsResult`. The `warp_affine` matrix `try_into` is length-checked first; enum/binary lookups `.expect()` only after a membership guard; remaining `.expect()`s are in `#[cfg(test)]`. |
 | `polars-cv` source decode (`graph/decode.rs`) | **Safe.** The blob/VIEW header parse is gated by `total_len < HEADER_SIZE` (64) before any fixed-offset read, and shape/stride loops bounds-check every slice; shape-product uses `checked_mul`. |
 | `polars-cv` sink encode (`graph/encode.rs`) | **Mostly safe** (Result-returning), but a few `shape[0]`/`contours[0]` accesses assume a rank/non-empty that the planner is expected to guarantee — see triage list. |
@@ -39,7 +39,7 @@ not a scatter of local edits — so it is left for triage as agreed.
 correct, but the graph executor (`polars-cv/src/graph/compiled.rs` →
 `view-buffer` apply fns) applies ops **without calling it**. Confirmed: the only
 non-test `.validate(` call sites in the whole workspace are unit tests. So the
-shape/dtype contracts are enforced at *plan* time (Python planner, `op_schema`)
+shape/dtype contracts are enforced at *plan* time (the planner, `plan::step`)
 but not defensively re-checked at *execution* time, and per-row expression
 params (e.g. `reshape([pl.col(...), ...])`) can produce a runtime shape the
 planner never saw.
