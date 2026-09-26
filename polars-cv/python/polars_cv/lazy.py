@@ -360,26 +360,18 @@ class LazyPipelineExpr(_LazyOpsMixin):
         """
         from polars_cv.pipeline import Pipeline
 
-        # Carry the original contour source's fill/background across to the new
-        # shape-referencing source, as the values the caller passed (a
-        # per-row one as its expression).
+        # The contour pipeline's own paint, as the values the caller passed (a
+        # per-row one as its expression), when it rasterizes; the canvas
+        # becomes this image's. Absent, `rasterize()`'s defaults apply.
         orig = contour._pipeline
-        orig_source = orig._unwire(json.loads(orig._plan.source_json() or "{}"))
-
-        def _given(name: str, default: int) -> int | pl.Expr:
-            value = orig_source.get(name)
-            return default if value is None else value
-
-        fill_value = _given("fill_value", 255)
-        background = _given("background", 0)
-
-        # Create new contour source with shape= referencing this image for dimensions
-        raster_pipeline = Pipeline().source(
-            "contour",
-            shape=self,  # Infer dimensions from this image's output
-            fill_value=fill_value,
-            background=background,
+        ops = orig._plan.ops_json()
+        first = orig._unwire(json.loads(ops[0])) if ops else {}
+        paint = (
+            {k: v for k, v in first.items() if k not in ("op", "size")}
+            if first.get("op") == "rasterize"
+            else {}
         )
+        raster_pipeline = Pipeline().source("contour").rasterize(shape=self, **paint)
 
         rasterized = LazyPipelineExpr(
             column=contour._column,

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 import polars as pl
+import pytest
 
 from polars_cv import LazyPipelineExpr, Pipeline, numpy_from_struct
 
@@ -702,6 +703,50 @@ class TestLazyCompositionExecution:
         assert np.all(output[0, 0] == 0)
         # Pixels inside contour should have original values
         assert np.any(output[50, 50] > 0)
+
+    @pytest.mark.parametrize("fill", [None, 0])
+    def test_apply_contour_mask_keeps_the_contours_paint(
+        self,
+        create_test_png: Callable[[int, int, tuple[int, int, int]], bytes],
+        fill: int | None,
+    ) -> None:
+        """The contour pipeline's own paint is kept; only its canvas changes.
+
+        An inverted paint (``fill_value=0, background=255``) masks the
+        exterior. A bare ``source("contour")`` needs no dummy canvas and takes
+        ``rasterize()``'s defaults.
+        """
+        img_bytes = create_test_png(100, 100, (200, 100, 50))
+        square = [(25.0, 25.0), (25.0, 75.0), (75.0, 75.0), (75.0, 25.0)]
+        df = pl.DataFrame(
+            {
+                "image": [img_bytes],
+                "contour": [
+                    {
+                        "exterior": [{"x": x, "y": y} for x, y in square],
+                        "holes": [],
+                        "is_closed": True,
+                    }
+                ],
+            }
+        )
+        contour_pipe = (
+            Pipeline().source("contour")
+            if fill is None
+            else Pipeline().source(
+                "contour", width=1, height=1, fill_value=fill, background=255
+            )
+        )
+        img = pl.col("image").cv.pipe(Pipeline().source("image_bytes"))
+        contour = pl.col("contour").cv.pipe(contour_pipe)
+        output = numpy_from_struct(
+            df.select(o=img.apply_contour_mask(contour).sink("numpy")).row(0)[0]
+        )
+        inside, outside = output[50, 50], output[0, 0]
+        if fill is None:
+            assert np.all(outside == 0) and np.all(inside == (200, 100, 50))
+        else:
+            assert np.all(inside == 0) and np.all(outside == (200, 100, 50))
 
 
 @plugin_required

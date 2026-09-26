@@ -410,7 +410,8 @@ def test_blob_source_round_trips(pattern: str) -> None:
 @plugin_required
 @pytest.mark.parametrize("shape", ["struct", "set"])
 def test_contour_source(shape: str) -> None:
-    """The contour source rasterises geometry back into the buffer domain.
+    """A contour source with a canvas (its appended ``rasterize()``) reaches
+    the buffer domain.
 
     Both shapes a geometry column takes are swept, because both reach the same
     source: one contour per row (``Struct``), and the contour *set* per row

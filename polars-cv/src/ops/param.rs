@@ -38,7 +38,7 @@ impl Values for RowValues<'_> {
 }
 
 /// `Param::resolve` for one row, for the typed fields read outside an op —
-/// the formats' (`ContourSource`) and the geometry namespaces' kwargs.
+/// the geometry namespaces' kwargs.
 pub trait ParamExt<T> {
     /// The value at `row`: the literal, or the bound column's value.
     fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<T>;

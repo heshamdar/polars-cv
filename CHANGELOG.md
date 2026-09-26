@@ -9,6 +9,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`source("contour")` without a canvas decodes to the contour domain.** A
+  pipeline can start from a contour column and measure or transform it
+  (`Pipeline().source("contour").area()`, `.simplify(...)`, then
+  `.rasterize(...)` or a native sink). It used to raise: the source *was* a
+  rasterization.
+
 - **Arrow extension types: `polars_cv.ndarray`, `.point`, `.contour`, `.bbox`.**
   `NdArrayType`, `PointType`, `ContourType` and `BBoxType` (in
   `polars_cv.extension_types`, re-exported from `polars_cv`) tag the structs
@@ -80,6 +86,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   leaves the output byte-identical.
 
 ### Changed
+
+- **A contour source only decodes; its canvas keywords are `rasterize()`.**
+  `source("contour", width=, height=, shape=, fill_value=, background=)` is
+  `source("contour").rasterize(...)`: the plan, `repr()` and output are the
+  op's, and a canvas keyword on another format is refused by the op's input
+  domain (`rasterize() expects contour input`). The source's copy of the op —
+  its own canvas fields and defaults, per-row resolution, node-canvas lookup
+  and rasterizing decode — is gone. A per-row `width`/`height`/`fill_value`
+  that is invalid for a row now fails the query (or nulls the node under
+  `on_null_param="null"`) as it does for `rasterize()`; `source(on_error=)`
+  covers only a contour value that cannot be decoded.
+- **An op, source or sink field with a declared default may be omitted from
+  hand-built graph JSON**; the wire applies the same default the Python
+  signature shows.
 
 - **The geometry accessors are generated from their Rust definitions.** Each
   `.contour` / `.point` / `.bbox` plugin function parses its own typed

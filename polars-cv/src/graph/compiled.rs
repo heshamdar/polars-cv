@@ -34,7 +34,7 @@ use view_buffer::ops::{Domain, NodeOutput};
 use view_buffer::{Op, PlannedDType, ViewBuffer, ViewDto, ViewExpr};
 
 use crate::contour::parse_contour_list;
-use crate::execute::{decode_contour_source, decode_contour_source_with_dims, decode_image_bytes};
+use crate::execute::decode_image_bytes;
 use crate::formats::source::Source;
 use crate::ops::graph::Role;
 use crate::ops::{NodeRef, TypedOp};
@@ -693,10 +693,6 @@ impl CompiledGraph {
                 let node_id = &np.id;
                 let node_input: Option<NodeOutput> = if let Some(col_idx) = np.column {
                     let on_error_null = np.source_null;
-                    // Cleared here so `took_null` below refers only to this
-                    // node's own source-parameter resolution (a contour
-                    // source's `fill_value` / `background`).
-                    ctx.clear_null();
                     let decode_result: Result<Option<NodeOutput>, String> = (|| {
                         // Bounds are validated once per call in `execute()`.
                         let input_series = &inputs[col_idx];
@@ -718,66 +714,13 @@ impl CompiledGraph {
                             fmt => fmt,
                         };
                         if source_format == SourceFormat::Contour {
+                            // The column's contour set; a mask is the
+                            // `rasterize` op that follows, if any.
                             match input_series.get(row_idx) {
                                 Ok(value) if !value.is_null() => {
-                                    let Source::Contour(contour) = source else {
-                                        return Err(format!(
-                                            "internal: source '{node_id}' decoded as contour"
-                                        ));
-                                    };
-                                    if let RasterSize::FromNode(NodeRef(shape_node_id)) =
-                                        &contour.size
-                                    {
-                                        // The fifth cross-node operand read.
-                                        // `Ok(None)` (rather than `continue
-                                        // 'nodes`) because this sits inside the
-                                        // decode closure, whose `None` already
-                                        // means "no output for this row".
-                                        let Some(shape_output) = self.operand(
-                                            node_outputs,
-                                            shape_node_id,
-                                            "Contour source shape",
-                                        )?
-                                        else {
-                                            return Ok(None);
-                                        };
-                                        let shape_buffer = shape_output
-                                            .as_buffer()
-                                            .ok_or_else(|| {
-                                                format!(
-                                                    "Shape reference '{shape_node_id}' must be a Buffer, not {:?}",
-                                                    shape_output.domain()
-                                                )
-                                            })?;
-                                        let shape = shape_buffer.shape();
-                                        if shape.len() < 2 {
-                                            return Err(format!(
-                                                "Shape buffer has invalid dimensions: expected at least 2D, got {}D",
-                                                shape.len()
-                                            ));
-                                        }
-                                        let height = shape[0] as u32;
-                                        let width = shape[1] as u32;
-                                        let (fill_value, background) = match contour
-                                            .fill(row_idx, ctx)
-                                        {
-                                            Ok(v) => v,
-                                            Err(e) => {
-                                                return Err(format!("Contour decode error: {e}"))
-                                            }
-                                        };
-                                        match decode_contour_source_with_dims(
-                                            &value, width, height, fill_value, background,
-                                        ) {
-                                            Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
-                                            Err(e) => Err(format!("Contour decode error: {e}")),
-                                        }
-                                    } else {
-                                        match decode_contour_source(&value, row_idx, contour, ctx) {
-                                            Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
-                                            Err(e) => Err(format!("Contour decode error: {e}")),
-                                        }
-                                    }
+                                    crate::contour::parse_contour_set(&value)
+                                        .map(|set| Some(NodeOutput::from_contours(set)))
+                                        .map_err(|e| format!("Contour decode error: {e}"))
                                 }
                                 _ => Ok(None),
                             }
@@ -912,10 +855,6 @@ impl CompiledGraph {
                     );
                     match decode_result {
                         Ok(output) => output,
-                        // A null per-row *parameter* is not a decode failure:
-                        // under `on_null_param="null"` it nulls this node for
-                        // this row regardless of the source's own `on_error`.
-                        Err(_) if ctx.took_null() => None,
                         Err(_e) if on_error_null => None,
                         Err(e) => return Err(e),
                     }
@@ -1646,8 +1585,7 @@ pub(crate) fn resolved_output_specs(
         let node = &graph.nodes[node_id];
         let mut state = match graph.column_bindings.get(node_id) {
             Some(&column) => {
-                let state = crate::plan::source_state(&node.source, &states)
-                    .map_err(|e| polars_err!(ComputeError: "node '{}': {}", node_id, e))?;
+                let state = crate::plan::source_state(&node.source);
                 match input_dtypes.get(column) {
                     Some(dt) if node.source.resolves_from_column() => refine_by_column(state, dt),
                     _ => state,

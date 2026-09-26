@@ -264,10 +264,49 @@ class TestContourSourceDynamicDims:
 class TestContourSourceValidation:
     """Tests for contour source validation."""
 
-    def test_missing_dimensions_error(self) -> None:
-        """Error when neither dimensions nor shape provided."""
-        with pytest.raises(ValueError, match="Contour source requires"):
-            Pipeline().source("contour")
+    def test_a_bare_contour_source_is_the_contour_domain(self) -> None:
+        """Without a canvas the source decodes contours and stops there.
+
+        It used to refuse (a contour source *was* a rasterization). The
+        source now only decodes; rasterizing is the ``rasterize`` op, so a
+        pipeline may measure or transform the column's contours first.
+        """
+        pipe = Pipeline().source("contour")
+        assert pipe.current_domain() == "contour"
+
+        df = pl.DataFrame({"contour": [create_square_contour(10, 10, 50)]}).cast(
+            {"contour": CONTOUR_SCHEMA}
+        )
+        areas = df.select(a=pl.col("contour").cv.pipe(pipe.area()).sink("native"))["a"]
+        # One value per member of the row's set.
+        assert areas.to_list() == [[2500.0]]
+
+    def test_the_canvas_keywords_are_the_rasterize_op(self) -> None:
+        """``source("contour", width=, ...)`` *is* ``source("contour").rasterize(...)``.
+
+        One rasterization: the source's keywords append the op, so the plan,
+        the repr and the output are the op's, with its defaults.
+        """
+        sugar = Pipeline().source("contour", width=100, height=80, fill_value=7)
+        op = Pipeline().source("contour").rasterize(width=100, height=80, fill_value=7)
+        assert repr(sugar) == repr(op)
+        assert "rasterize(" in repr(sugar)
+
+        df = pl.DataFrame({"contour": [create_square_contour(10, 10, 50)]}).cast(
+            {"contour": CONTOUR_SCHEMA}
+        )
+        got = df.select(
+            s=pl.col("contour").cv.pipe(sugar).sink("numpy"),
+            o=pl.col("contour").cv.pipe(op).sink("numpy"),
+        )
+        np.testing.assert_array_equal(
+            numpy_from_struct(got["s"][0]), numpy_from_struct(got["o"][0])
+        )
+
+    def test_a_canvas_keyword_on_another_format_is_refused(self) -> None:
+        """A canvas keyword appends ``rasterize``, which a buffer cannot take."""
+        with pytest.raises(ValueError, match=r"rasterize\(\) expects contour input"):
+            Pipeline().source("image_bytes", width=8, height=8)
 
     def test_partial_dimensions_error(self) -> None:
         """Error when only width or only height provided."""

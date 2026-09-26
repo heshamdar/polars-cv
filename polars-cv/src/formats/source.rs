@@ -1,19 +1,14 @@
 //! Source formats: how a node's input column is decoded.
 
-#[allow(unused_imports)]
-use crate::ops::ParamExt as _;
 use std::collections::HashMap;
 
-use polars::prelude::*;
 use polars_cv_macros::Op;
 use serde::{Deserialize, Serialize};
 use view_buffer::DType;
 
 use super::formats;
 use crate::fetch::FetchErrorPolicy;
-type RasterSize = view_buffer::geometry::ops::RasterSize<view_buffer::mode::Wire>;
-use crate::ops::{Literal, Param};
-use crate::params::ParamCtx;
+use crate::ops::Literal;
 
 /// Infer the decode path from the column's Polars dtype: String → file_path,
 /// List/Array → list/array, Binary → blob if VIEW-tagged else image_bytes.
@@ -97,31 +92,13 @@ pub struct NestedSource {
     pub on_error: Option<Literal<FetchErrorPolicy>>,
 }
 
-/// Contour geometry, rasterized to an `[H, W, 1]` u8 mask — the same contract
-/// the `rasterize` op publishes.
+/// A contour column (one contour or a set per row), decoded as the contour
+/// set `extract_contours` produces. A mask is the `rasterize` op's.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
 #[serde(deny_unknown_fields)]
 pub struct ContourSource {
-    /// ``[height, width]`` of the mask (each may be a Polars expression), or
-    /// the node whose buffer's height and width the mask takes.
-    pub size: RasterSize,
-    /// Inside value (default 255). Accepts a Polars expression for per-row
-    /// values.
-    pub fill_value: Option<Param<u8>>,
-    /// Outside value (default 0). Accepts a Polars expression for per-row
-    /// values.
-    pub background: Option<Param<u8>>,
     /// "raise" (default) or "null": what a row that cannot be decoded does.
     pub on_error: Option<Literal<FetchErrorPolicy>>,
-}
-
-impl ContourSource {
-    /// `(fill_value, background)` at `row`; absent is 255 and 0.
-    pub fn fill(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<(u8, u8)> {
-        let at =
-            |p: &Option<Param<u8>>, absent| p.as_ref().map_or(Ok(absent), |p| p.resolve(row, ctx));
-        Ok((at(&self.fill_value, 255)?, at(&self.background, 0)?))
-    }
 }
 
 formats! {
@@ -130,8 +107,7 @@ formats! {
         "array" => Array(NestedSource) {"require_contiguous": true},
         "auto" => Auto(AutoSource) {"allowed_roots": ["/srv"], "decode_max_size": 64},
         "blob" => Blob(BlobSource) {},
-        "contour" => Contour(ContourSource)
-            {"size": [8, 6], "fill_value": {"$slot": 1}, "background": 0, "on_error": "null"},
+        "contour" => Contour(ContourSource) {"on_error": "null"},
         "file_path" => FilePath(FilePathSource)
             {"cloud_options": {"aws_region": "eu-west-1"}, "dtype": "u16"},
         "image_bytes" => ImageBytes(ImageBytesSource) {"decode_max_size": 64},
@@ -265,9 +241,7 @@ mod tests {
                 && err.contains("it applies to: auto, file_path"),
             "{err}"
         );
-        let err = parse(serde_json::json!({"format": "contour", "size": [4, 4],
-                                           "fill_value": 1, "background": 0, "dtype": "u8"}))
-        .unwrap_err();
+        let err = parse(serde_json::json!({"format": "contour", "dtype": "u8"})).unwrap_err();
         assert!(
             err.contains("'dtype' does not apply to the 'contour'"),
             "{err}"

@@ -101,8 +101,7 @@ class SourceView:
     as its expression).
 
     An absent setting reads as its default (``on_error`` is ``"raise"``,
-    everything else ``None``); a contour canvas taken from another node reads
-    as ``shape_node``, and ``cloud_options`` as a ``CloudOptions``.
+    everything else ``None``), and ``cloud_options`` as a ``CloudOptions``.
     """
 
     def __init__(self, pipeline: "Pipeline") -> None:
@@ -122,9 +121,6 @@ class SourceView:
         from polars_cv._types import normalize_cloud_options
 
         settings = self._settings
-        if name == "shape_node":
-            size = settings.get("size")
-            return size if isinstance(size, str) else None
         if name == "cloud_options":
             return normalize_cloud_options(settings.get("cloud_options"))
         value = settings.get(name)
