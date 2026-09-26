@@ -18,6 +18,7 @@
 
 use pyo3::prelude::*;
 
+use crate::formats::Format as _;
 use crate::py_value_error;
 use view_buffer::ops::{Dim, Domain, HistogramOutput, OpShape};
 use view_buffer::PlannedDType;
@@ -394,18 +395,18 @@ pub(crate) fn source_state(source: &crate::formats::source::Source) -> State {
     let dtype = source.dtype();
     match source {
         // Raw bytes decode to a flat 1-D buffer of the declared dtype.
-        Source::Raw(_) => buffer(dtype, Some(1)),
+        Source::Raw { .. } => buffer(dtype, Some(1)),
         // Decoded images are always `[H, W, C]`; the dtype is the caller's
         // assertion or unknown until decode (PNG u8, 16-bit PNG u16, TIFF ...).
-        Source::ImageBytes(_) | Source::FilePath(_) => buffer(dtype, Some(3)),
+        Source::ImageBytes { .. } | Source::FilePath { .. } => buffer(dtype, Some(3)),
         // Rank follows the column (nesting depth, blob header, or the path the
         // column's dtype routes to), known only with the input.
-        Source::Auto(_) | Source::Blob(_) | Source::List(_) | Source::Array(_) => {
+        Source::Auto { .. } | Source::Blob { .. } | Source::List { .. } | Source::Array { .. } => {
             buffer(dtype, None)
         }
         // The column's contour set, as `extract_contours` publishes one:
         // f64 coordinates, no rank. Rasterizing is the `rasterize` op's.
-        Source::Contour(_) => State::new(
+        Source::Contour { .. } => State::new(
             Domain::Contour,
             PlannedDType::Known(view_buffer::DType::F64),
             None,

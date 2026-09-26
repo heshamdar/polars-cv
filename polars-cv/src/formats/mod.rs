@@ -1,41 +1,70 @@
-//! Typed sources and sinks: one struct per format.
+//! Typed sources and sinks: one family per end, defined as the ops are.
 //!
 //! A source or sink crosses the wire as `{"format": <name>, <field>: <value>,
-//! ...}`. Each format is a struct deriving [`Op`](polars_cv_macros::Op) — the
-//! same derive the op catalogue uses — carrying exactly the fields that format
-//! reads, and one line in a [`formats!`] registry. From that:
+//! ...}`. Each end is an enum deriving [`Ops`](polars_cv_macros::Ops) — the
+//! derive the op families use — whose variants are the formats, each carrying
+//! exactly the fields that format reads, with its doc comment, declared
+//! defaults and a sample. From that:
 //!
 //! - **deserialization** rejects an unknown format, and a field the chosen
 //!   format does not read — naming the formats it *does* apply to, computed
-//!   from the definitions;
+//!   from the definitions ([`Format`]);
 //! - **the catalogue** ([`io_catalog_json`], committed as
 //!   `tests/golden/io_catalog.json`) is what `scripts/gen_ops.py` generates
 //!   Python's `SourceFormat`/`SinkFormat` from.
 //!
-//! This replaces the per-format parameter-applicability tables Python used to
-//! keep by hand (typed-op plan P4).
+//! Neither end has a per-row value (a contour canvas is the `rasterize`
+//! op's), so the families have no mode: each is its own wire form.
 
 pub mod sink;
 pub mod sink_dtype;
 pub mod source;
 
 use serde::Serialize;
+use view_buffer::mode::{OpDesc, WireOps};
 
-use crate::ops::OpDesc;
+/// One end of the pipeline: the formats of a [`WireOps`] family, tagged by a
+/// `"format"` key on the wire.
+pub trait Format: WireOps + 'static {
+    /// "source" or "sink", for messages.
+    const KIND: &'static str;
 
-/// Reject a key the format `name` does not read, saying where it does apply.
+    /// Every format's description, built once.
+    fn formats() -> &'static [OpDesc];
+
+    /// The format's wire name.
+    fn name(&self) -> &'static str {
+        self.wire_name().expect("every format has a wire name")
+    }
+}
+
+/// The wire object of `format`: its fields plus the `"format"` tag.
+fn to_wire<F: Format>(format: &F) -> serde_json::Value {
+    let mut fields = format.wire_fields().expect("every format has wire fields");
+    fields.insert("format".into(), format.name().into());
+    serde_json::Value::Object(fields)
+}
+
+/// Parse a tagged wire object as a format of `F`.
 ///
-/// `all` is every format's description, `own` the chosen one's field names.
-fn check_applies(
-    kind: &str,
-    name: &str,
-    fields: &serde_json::Map<String, serde_json::Value>,
-    all: &[OpDesc],
-) -> Result<(), String> {
-    let own = all
-        .iter()
-        .find(|d| d.name == name)
-        .expect("a registered format has a description");
+/// A key the chosen format does not read is refused naming the formats it
+/// applies to (or, when none does, every known key) — more than the derive's
+/// own unknown-field error can say, because it knows the other formats.
+fn from_wire<F: Format>(
+    mut fields: serde_json::Map<String, serde_json::Value>,
+) -> Result<F, String> {
+    let kind = F::KIND;
+    let name = match fields.remove("format") {
+        Some(serde_json::Value::String(name)) => name,
+        _ => return Err(format!("a {kind} needs a string \"format\" name")),
+    };
+    let all = F::formats();
+    let Some(own) = all.iter().find(|d| d.name == name) else {
+        let names: Vec<&str> = all.iter().map(|d| d.name).collect();
+        return Err(format!(
+            "unknown {kind} format '{name}', expected one of {names:?}"
+        ));
+    };
     for key in fields.keys() {
         if own.fields.iter().any(|f| f.name == key) {
             continue;
@@ -53,126 +82,42 @@ fn check_applies(
             known.sort_unstable();
             known.dedup();
             format!(
-                "'{key}' is not a {kind} parameter (known: {})",
+                "{kind} '{name}': '{key}' is not a {kind} parameter (known: {})",
                 known.join(", ")
             )
         } else {
             format!(
-                "'{key}' does not apply to the '{name}' {kind} (it applies to: {})",
+                "{kind} '{name}': '{key}' does not apply to the '{name}' {kind} \
+                 (it applies to: {})",
                 applies.join(", ")
             )
         });
     }
-    Ok(())
+    F::from_wire(&name, serde_json::Value::Object(fields))
+        .expect("a catalogued format parses")
+        .map_err(|e| format!("{kind} '{name}': {e}"))
 }
 
-/// Register the formats of one end of the pipeline: the enum, its wire names,
-/// its (de)serialization and its catalogue, from one line per format.
-macro_rules! formats {
-    (
-        $(#[$meta:meta])*
-        $enum:ident ($kind:literal) {
-            $($wire:literal => $variant:ident($ty:ty) $sample:tt),+ $(,)?
-        }
-    ) => {
-        $(#[$meta])*
-        #[derive(Debug, Clone, PartialEq)]
-        pub enum $enum {
-            $($variant($ty)),+
-        }
-
-        impl $enum {
-            /// Every format's wire name, sorted.
-            pub const NAMES: &'static [&'static str] = &[$($wire),+];
-
-            /// The format's wire name.
-            pub fn name(&self) -> &'static str {
-                match self {
-                    $($enum::$variant(_) => $wire),+
-                }
-            }
-
-            /// Every format's description, in `NAMES` order.
-            pub fn catalog() -> Vec<crate::ops::OpDesc> {
-                vec![$(crate::ops::op_desc::<$ty>($wire)),+]
-            }
-
-            /// See [`crate::ops::OpFields::visit_slots`].
-            #[allow(dead_code)]
-            pub fn visit_slots(&self, f: &mut dyn FnMut(&'static str, usize)) {
-                use crate::ops::OpFields;
-                match self {
-                    $($enum::$variant(spec) => spec.visit_slots(f),)+
-                }
-            }
-
-            fn from_fields(
-                name: &str,
-                fields: serde_json::Map<String, serde_json::Value>,
-            ) -> Result<Self, String> {
-                if !Self::NAMES.contains(&name) {
-                    return Err(format!(
-                        "unknown {} format '{}', expected one of {:?}",
-                        $kind, name, Self::NAMES
-                    ));
-                }
-                $crate::formats::check_applies($kind, name, &fields, &Self::catalog())?;
-                let fields = serde_json::Value::Object(fields);
-                match name {
-                    $($wire => serde_path_to_error::deserialize::<_, $ty>(fields)
-                        .map($enum::$variant)
-                        .map_err(|e| crate::ops::path_error(&e)),)+
-                    _ => unreachable!("checked against NAMES above"),
-                }
-            }
-
-            /// One valid instance of every format, in `NAMES` order.
-            #[cfg(test)]
-            pub fn samples() -> Vec<Self> {
-                vec![$(
-                    Self::from_fields($wire, match serde_json::json!($sample) {
-                        serde_json::Value::Object(m) => m,
-                        _ => unreachable!("a sample is an object"),
-                    })
-                    .unwrap_or_else(|e| panic!("sample for '{}': {e}", $wire)),
-                )+]
-            }
-        }
-
-        impl serde::Serialize for $enum {
+/// `Serialize`/`Deserialize` for a [`Format`] family, through [`to_wire`] and
+/// [`from_wire`].
+macro_rules! tagged_serde {
+    ($ty:ty) => {
+        impl serde::Serialize for $ty {
             fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-                let mut value = match self {
-                    $($enum::$variant(spec) => serde_json::to_value(spec),)+
-                }
-                .map_err(serde::ser::Error::custom)?;
-                value
-                    .as_object_mut()
-                    .expect("a format struct serializes to a JSON object")
-                    .insert("format".into(), self.name().into());
-                value.serialize(s)
+                serde::Serialize::serialize(&$crate::formats::to_wire(self), s)
             }
         }
 
-        impl<'de> serde::Deserialize<'de> for $enum {
+        impl<'de> serde::Deserialize<'de> for $ty {
             fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-                use serde::de::Error;
-                let mut fields =
-                    serde_json::Map::<String, serde_json::Value>::deserialize(d)?;
-                let name = match fields.remove("format") {
-                    Some(serde_json::Value::String(name)) => name,
-                    _ => {
-                        return Err(D::Error::custom(concat!(
-                            "a ", $kind, " needs a string \"format\" name"
-                        )))
-                    }
-                };
-                Self::from_fields(&name, fields)
-                    .map_err(|e| D::Error::custom(format!("{} '{name}': {e}", $kind)))
+                let fields: serde_json::Map<String, serde_json::Value> =
+                    serde::Deserialize::deserialize(d)?;
+                $crate::formats::from_wire(fields).map_err(serde::de::Error::custom)
             }
         }
     };
 }
-pub(crate) use formats;
+pub(crate) use tagged_serde;
 
 /// Both ends' catalogues, as committed in `tests/golden/io_catalog.json`.
 #[derive(Serialize)]
@@ -184,8 +129,8 @@ struct IoCatalog {
 /// The source/sink catalogue as committed in `tests/golden/io_catalog.json`.
 pub fn io_catalog_json() -> String {
     let catalog = IoCatalog {
-        sources: source::Source::catalog(),
-        sinks: sink::Sink::catalog(),
+        sources: <source::Source as Format>::formats().to_vec(),
+        sinks: <sink::Sink as Format>::formats().to_vec(),
     };
     let mut text = serde_json::to_string_pretty(&catalog).expect("the catalogue serializes");
     text.push('\n');

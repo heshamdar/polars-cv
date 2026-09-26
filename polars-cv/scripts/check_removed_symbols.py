@@ -525,6 +525,27 @@ REMOVED: tuple[Removed, ...] = (
         "decode_contour_source_with_dims",
         "C6c: the rasterize op's node canvas (RasterizeShapeRef)",
     ),
+    Removed("OpFields", "C6b: formats derive Ops, as the op families do"),
+    Removed("op_desc", "C6b: the derived catalogue (WireOps::catalog)"),
+    Removed("check_applies", "C6b: formats::from_wire over the static catalogue"),
+    Removed("path_error", "C6b: view_buffer::mode::take_field names the field"),
+    Removed("DEFAULT_QUALITY", "C6b: #[param(default = 85)] on Sink::Jpeg"),
+    *(
+        Removed(name, "C6b: a variant of formats::source::Source")
+        for name in (
+            "AutoSource",
+            "ImageBytesSource",
+            "FilePathSource",
+            "BlobSource",
+            "RawSource",
+            "NestedSource",
+            "ContourSource",
+        )
+    ),
+    *(
+        Removed(name, "C6b: a variant of formats::sink::Sink")
+        for name in ("TensorSink", "JpegSink", "ArraySink", "PlainSink")
+    ),
 )
 
 

@@ -32,6 +32,7 @@ use view_buffer::ImageCodec;
 
 use super::types::OutputSpec;
 use crate::formats::sink::Sink;
+use crate::formats::Format as _;
 use view_buffer::ops::Domain;
 
 /// The output shape a `(domain, format)` pair resolves to.
@@ -87,21 +88,21 @@ impl SinkKind {
             return Ok(Self::HistogramBuckets);
         }
         match (spec.expected_domain, &spec.sink) {
-            (Domain::Buffer, Sink::Numpy(_) | Sink::Torch(_)) => Ok(Self::NumpyStruct),
-            (Domain::Buffer, Sink::NdArray(_)) => Ok(Self::NdArray),
-            (Domain::Buffer, Sink::Png(_) | Sink::Jpeg(_) | Sink::WebP(_) | Sink::Tiff(_)) => {
+            (Domain::Buffer, Sink::Numpy { .. } | Sink::Torch { .. }) => Ok(Self::NumpyStruct),
+            (Domain::Buffer, Sink::NdArray { .. }) => Ok(Self::NdArray),
+            (Domain::Buffer, Sink::Png | Sink::Jpeg { .. } | Sink::WebP | Sink::Tiff) => {
                 Ok(Self::EncodedImage)
             }
-            (Domain::Buffer, Sink::Blob(_)) => Ok(Self::Blob),
-            (Domain::Buffer, Sink::List(_)) => Ok(Self::BufferList),
-            (Domain::Buffer, Sink::Array(_)) => Ok(Self::BufferArray),
-            (Domain::Scalar, Sink::Native(_)) => Ok(Self::Scalar),
-            (Domain::Vector, Sink::Native(_) | Sink::List(_)) => Ok(Self::VectorList),
-            (Domain::Vector, Sink::Array(_)) => Ok(Self::VectorArray),
-            (Domain::Contour, Sink::Native(_)) => Ok(Self::Contours),
+            (Domain::Buffer, Sink::Blob) => Ok(Self::Blob),
+            (Domain::Buffer, Sink::List) => Ok(Self::BufferList),
+            (Domain::Buffer, Sink::Array { .. }) => Ok(Self::BufferArray),
+            (Domain::Scalar, Sink::Native) => Ok(Self::Scalar),
+            (Domain::Vector, Sink::Native | Sink::List) => Ok(Self::VectorList),
+            (Domain::Vector, Sink::Array { .. }) => Ok(Self::VectorArray),
+            (Domain::Contour, Sink::Native) => Ok(Self::Contours),
             // Named separately from the catch-all so the message can say what
             // to do instead; the generic one cannot.
-            (Domain::Buffer, Sink::Native(_)) => polars_bail!(ComputeError:
+            (Domain::Buffer, Sink::Native) => polars_bail!(ComputeError:
                 "'native' sink is not defined for buffer outputs; use an explicit \
                  format (numpy, png, list, array, blob, ...)"
             ),
@@ -167,8 +168,8 @@ mod tests {
     /// need a shape, the list kinds a rank).
     fn buildable_spec(domain: &str, format: &str) -> OutputSpec {
         let mut s = spec(domain, format);
-        if let Sink::Array(array) = &mut s.sink {
-            array.shape = Some(vec![crate::ops::Literal(1)]);
+        if let Sink::Array { shape } = &mut s.sink {
+            *shape = Some(vec![crate::ops::Literal(1)]);
         }
         s.expected_ndim = Some(1);
         s

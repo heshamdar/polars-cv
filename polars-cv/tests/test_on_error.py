@@ -49,12 +49,18 @@ class TestOnErrorValidation:
         d = source_of(pipe).to_dict(SlotTable().index)
         assert d["on_error"] == "null"
 
-    def test_on_error_raise_not_serialized(self) -> None:
-        """on_error='raise' (default) is omitted from serialized dict."""
-        pipe = Pipeline().source("image_bytes")
-        assert source_of(pipe) is not None
-        d = source_of(pipe).to_dict(SlotTable().index)
-        assert "on_error" not in d
+    def test_on_error_raise_is_the_default(self) -> None:
+        """Omitting on_error and passing its default give the same source.
+
+        The wire's default is declared once (`#[param(default = "raise")]`),
+        so the canonical source carries it either way; an explicit default can
+        never make two otherwise-equal pipelines differ.
+        """
+        implicit = Pipeline().source("image_bytes")
+        explicit = Pipeline().source("image_bytes", on_error="raise")
+        index = SlotTable().index
+        assert source_of(implicit).to_dict(index) == source_of(explicit).to_dict(index)
+        assert source_of(implicit).on_error == "raise"
 
 
 # ============================================================================

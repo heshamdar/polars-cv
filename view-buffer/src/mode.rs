@@ -162,6 +162,8 @@ pub trait WireOps: Sized {
     fn from_wire(name: &str, fields: serde_json::Value) -> Option<Result<Self, String>>;
     /// The op's wire name; `None` for an engine-internal variant.
     fn wire_name(&self) -> Option<&'static str>;
+    /// The op's wire fields; `None` for an engine-internal variant.
+    fn wire_fields(&self) -> Option<serde_json::Map<String, serde_json::Value>>;
     /// Call `f(field, slot)` for every slot a field reads.
     fn visit_slots(&self, f: &mut dyn FnMut(&'static str, usize));
     /// Every op's catalogue entry, in declaration order.

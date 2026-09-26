@@ -40,7 +40,7 @@ several minutes. Reach for `--release` only when benchmarking.
 | `graph/decode.rs` | Source decoding, `dtype_for_output` schema inference, reflect/symmetric padding |
 | `graph/encode.rs` | Output encoding, geometry op execution |
 | `ops/` | The typed op catalogue: `typed_ops!` lists the op families (view-buffer's engine enums, and `ops/graph.rs`'s `GraphOp` for graph-only ops), each generic over `Mode` and deriving `Ops`/`Resolve`; `TypedOp` holds the `Wire` op, resolved per row to the `Exec` op and wrapped as a `GraphStep`; `op_catalog.json` is generated from it |
-| `formats/` | Typed sources and sinks, one struct per format (`formats!` registry, `io_catalog.json`) |
+| `formats/` | Typed sources and sinks: the `Source`/`Sink` families (`#[derive(Ops)]`, one variant per format), tagged by `"format"` (`io_catalog.json`) |
 | `execute.rs` | Decode/encode helpers shared by graph execution |
 | `graph/step.rs` | `GraphStep<M>` — a node's operation, generic over the mode: `Buffer(ViewDto)`, the domain-changing engine families (geometry, reduction, histogram, perceptual hash) and `Graph(GraphOp)`. `GraphStep<Wire>` is the typed op; its rule methods are what the planner and the FFI read |
 | `params.rs` | `ParamCtx`/`ParamCol` — the per-call view of expression-parameter columns every typed `Param<T>` reads through, with the null policy. The planner never resolves an op: it reads the `Wire` op's rules, where a per-row value is unknown |
@@ -53,9 +53,10 @@ several minutes. Reach for `--release` only when benchmarking.
 | `geom_params.rs` | `GeomParams` — per-row resolution of those namespace functions' typed kwargs (`Param<T>` fields, `ColumnRef` operands), with the shared null policy and the check that every extra input is read exactly once |
 
 **The graph wire format is closed, struct by struct.** `GraphNode`,
-`UnifiedGraph`, `OutputSpec`, `GraphKwargs`, every op struct (`ops/`) and
-every source/sink format struct (`formats/`) carry
-`#[serde(deny_unknown_fields)]` (the `#[derive(Op)]` refuses a struct without it), so anything Python sends must be declared
+`UnifiedGraph`, `OutputSpec` and `GraphKwargs` carry
+`#[serde(deny_unknown_fields)]`, and every op, geometry function, source and
+sink is a variant of a `#[derive(Ops)]` family, whose wire refuses an unknown
+field by construction — so anything Python sends must be declared
 on the Rust struct — including `domain`/`output_dtype`, which only the Python
 visualizer consumes. It was permissive before, which is how node-level
 `shape_hints` went on being serialized long after the last reader was removed,
@@ -69,8 +70,8 @@ a misspelled key deserialized to `None`, i.e. no path sandbox, silently. Adding
 a struct to the wire format means adding the attribute to it too; the node's
 being closed says nothing about its children.
 
-Op and format names are closed too: `TypedOp`'s and `formats!`' hand-written
-deserializers dispatch by name and reject one no struct registers.
+Op and format names are closed too: `TypedOp` and `formats::from_wire`
+dispatch by name and reject one no family defines.
 
 
 ## Core Architecture

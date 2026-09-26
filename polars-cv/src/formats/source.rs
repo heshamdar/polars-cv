@@ -2,119 +2,125 @@
 
 use std::collections::HashMap;
 
-use polars_cv_macros::Op;
-use serde::{Deserialize, Serialize};
+use polars_cv_macros::Ops;
 use view_buffer::DType;
 
-use super::formats;
 use crate::fetch::FetchErrorPolicy;
 use crate::ops::Literal;
 
-/// Infer the decode path from the column's Polars dtype: String → file_path,
-/// List/Array → list/array, Binary → blob if VIEW-tagged else image_bytes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
-#[serde(deny_unknown_fields)]
-pub struct AutoSource {
-    /// Asserted element dtype (a decoded image is cast to it).
-    pub dtype: Option<Literal<DType>>,
-    /// Require rectangular data when the column is a List/Array.
-    pub require_contiguous: Option<Literal<bool>>,
-    /// Cloud-storage credentials when the column is a path.
-    pub cloud_options: Option<HashMap<String, String>>,
-    /// Locations a path column may read from (unrestricted when absent).
-    pub allowed_roots: Option<Vec<String>>,
-    /// Decode only enough pixels for this long side (JPEG IDCT scaling).
-    pub decode_max_size: Option<Literal<u32>>,
-    /// "raise" (default) or "null": what a row that cannot be decoded does.
-    pub on_error: Option<Literal<FetchErrorPolicy>>,
+/// How a node's input column is decoded (see the module docs).
+#[derive(Debug, Clone, PartialEq, Ops)]
+pub enum Source {
+    /// A Polars nested `List` or fixed-size `Array` column.
+    #[op(name = "array", sample = {"require_contiguous": true})]
+    Array {
+        /// Element dtype; inferred from the column when absent.
+        dtype: Option<Literal<DType>>,
+        /// Require rectangular data (zero-copy); jagged rows are then an error.
+        #[param(default = false)]
+        require_contiguous: Literal<bool>,
+        /// "raise" or "null": what a row that cannot be decoded does.
+        #[param(default = "raise")]
+        on_error: Literal<FetchErrorPolicy>,
+    },
+    /// Infer the decode path from the column's Polars dtype: String → file_path,
+    /// List/Array → list/array, Binary → blob if VIEW-tagged else image_bytes.
+    #[op(name = "auto", sample = {"allowed_roots": ["/srv"], "decode_max_size": 64})]
+    Auto {
+        /// Asserted element dtype (a decoded image is cast to it).
+        dtype: Option<Literal<DType>>,
+        /// Require rectangular data when the column is a List/Array.
+        #[param(default = false)]
+        require_contiguous: Literal<bool>,
+        /// Cloud-storage credentials when the column is a path.
+        cloud_options: Option<HashMap<String, String>>,
+        /// Locations a path column may read from (unrestricted when absent).
+        allowed_roots: Option<Vec<String>>,
+        /// Decode only enough pixels for this long side (JPEG IDCT scaling).
+        decode_max_size: Option<Literal<u32>>,
+        /// "raise" or "null": what a row that cannot be decoded does.
+        #[param(default = "raise")]
+        on_error: Literal<FetchErrorPolicy>,
+    },
+    /// The self-describing VIEW protocol.
+    #[op(name = "blob", sample = {})]
+    Blob {
+        /// Declared element dtype. A blob carries its own, so a declaration is
+        /// checked at decode: a blob of another dtype is a row error.
+        dtype: Option<Literal<DType>>,
+        /// "raise" or "null": what a row that cannot be decoded does.
+        #[param(default = "raise")]
+        on_error: Literal<FetchErrorPolicy>,
+    },
+    /// A contour column (one contour or a set per row), decoded as the contour
+    /// set `extract_contours` produces. A mask is the `rasterize` op's.
+    #[op(name = "contour", sample = {"on_error": "null"})]
+    Contour {
+        /// "raise" or "null": what a row that cannot be decoded does.
+        #[param(default = "raise")]
+        on_error: Literal<FetchErrorPolicy>,
+    },
+    /// A path (local, s3://, gs://, az://, http://) whose contents decode like
+    /// image bytes.
+    #[op(name = "file_path",
+         sample = {"cloud_options": {"aws_region": "eu-west-1"}, "dtype": "u16"})]
+    FilePath {
+        /// Asserted element dtype: a decoded image with another dtype is cast.
+        dtype: Option<Literal<DType>>,
+        /// Cloud-storage credentials (see `cloud::CloudOptions::from_map`).
+        cloud_options: Option<HashMap<String, String>>,
+        /// Locations the path column may read from (unrestricted when absent).
+        allowed_roots: Option<Vec<String>>,
+        /// Decode only enough pixels for this long side (JPEG IDCT scaling).
+        decode_max_size: Option<Literal<u32>>,
+        /// "raise" or "null": what a row that cannot be read or decoded does.
+        #[param(default = "raise")]
+        on_error: Literal<FetchErrorPolicy>,
+    },
+    /// Encoded image bytes (PNG/JPEG/TIFF/...), always decoded to `[H, W, C]`.
+    #[op(name = "image_bytes", sample = {"decode_max_size": 64})]
+    ImageBytes {
+        /// Asserted element dtype: a decoded image with another dtype is cast.
+        dtype: Option<Literal<DType>>,
+        /// Decode only enough pixels for this long side (JPEG IDCT scaling).
+        decode_max_size: Option<Literal<u32>>,
+        /// "raise" or "null": what a row that cannot be decoded does.
+        #[param(default = "raise")]
+        on_error: Literal<FetchErrorPolicy>,
+    },
+    /// A Polars nested `List` or fixed-size `Array` column.
+    #[op(name = "list", sample = {"dtype": "f32"})]
+    List {
+        /// Element dtype; inferred from the column when absent.
+        dtype: Option<Literal<DType>>,
+        /// Require rectangular data (zero-copy); jagged rows are then an error.
+        #[param(default = false)]
+        require_contiguous: Literal<bool>,
+        /// "raise" or "null": what a row that cannot be decoded does.
+        #[param(default = "raise")]
+        on_error: Literal<FetchErrorPolicy>,
+    },
+    /// Raw bytes, decoded as a flat 1-D buffer of `dtype`.
+    #[op(name = "raw", sample = {"dtype": "u8"})]
+    Raw {
+        /// The element dtype: raw bytes carry no type metadata, so it is required.
+        dtype: Literal<DType>,
+        /// "raise" or "null": what a row that cannot be decoded does.
+        #[param(default = "raise")]
+        on_error: Literal<FetchErrorPolicy>,
+    },
 }
 
-/// Encoded image bytes (PNG/JPEG/TIFF/...), always decoded to `[H, W, C]`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
-#[serde(deny_unknown_fields)]
-pub struct ImageBytesSource {
-    /// Asserted element dtype: a decoded image with another dtype is cast.
-    pub dtype: Option<Literal<DType>>,
-    /// Decode only enough pixels for this long side (JPEG IDCT scaling).
-    pub decode_max_size: Option<Literal<u32>>,
-    /// "raise" (default) or "null": what a row that cannot be decoded does.
-    pub on_error: Option<Literal<FetchErrorPolicy>>,
-}
-
-/// A path (local, s3://, gs://, az://, http://) whose contents decode like
-/// image bytes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
-#[serde(deny_unknown_fields)]
-pub struct FilePathSource {
-    /// Asserted element dtype: a decoded image with another dtype is cast.
-    pub dtype: Option<Literal<DType>>,
-    /// Cloud-storage credentials (see `cloud::CloudOptions::from_map`).
-    pub cloud_options: Option<HashMap<String, String>>,
-    /// Locations the path column may read from (unrestricted when absent).
-    pub allowed_roots: Option<Vec<String>>,
-    /// Decode only enough pixels for this long side (JPEG IDCT scaling).
-    pub decode_max_size: Option<Literal<u32>>,
-    /// "raise" (default) or "null": what a row that cannot be read or decoded
-    /// does.
-    pub on_error: Option<Literal<FetchErrorPolicy>>,
-}
-
-/// The self-describing VIEW protocol.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
-#[serde(deny_unknown_fields)]
-pub struct BlobSource {
-    /// Declared element dtype. A blob carries its own, so a declaration is
-    /// checked at decode: a blob of another dtype is a row error.
-    pub dtype: Option<Literal<DType>>,
-    /// "raise" (default) or "null": what a row that cannot be decoded does.
-    pub on_error: Option<Literal<FetchErrorPolicy>>,
-}
-
-/// Raw bytes, decoded as a flat 1-D buffer of `dtype`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
-#[serde(deny_unknown_fields)]
-pub struct RawSource {
-    /// The element dtype: raw bytes carry no type metadata, so it is required.
-    pub dtype: Literal<DType>,
-    /// "raise" (default) or "null": what a row that cannot be decoded does.
-    pub on_error: Option<Literal<FetchErrorPolicy>>,
-}
-
-/// A Polars nested `List` or fixed-size `Array` column.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
-#[serde(deny_unknown_fields)]
-pub struct NestedSource {
-    /// Element dtype; inferred from the column when absent.
-    pub dtype: Option<Literal<DType>>,
-    /// Require rectangular data (zero-copy); jagged rows are then an error.
-    pub require_contiguous: Option<Literal<bool>>,
-    /// "raise" (default) or "null": what a row that cannot be decoded does.
-    pub on_error: Option<Literal<FetchErrorPolicy>>,
-}
-
-/// A contour column (one contour or a set per row), decoded as the contour
-/// set `extract_contours` produces. A mask is the `rasterize` op's.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
-#[serde(deny_unknown_fields)]
-pub struct ContourSource {
-    /// "raise" (default) or "null": what a row that cannot be decoded does.
-    pub on_error: Option<Literal<FetchErrorPolicy>>,
-}
-
-formats! {
-    /// How a node's input column is decoded (see the module docs).
-    Source("source") {
-        "array" => Array(NestedSource) {"require_contiguous": true},
-        "auto" => Auto(AutoSource) {"allowed_roots": ["/srv"], "decode_max_size": 64},
-        "blob" => Blob(BlobSource) {},
-        "contour" => Contour(ContourSource) {"on_error": "null"},
-        "file_path" => FilePath(FilePathSource)
-            {"cloud_options": {"aws_region": "eu-west-1"}, "dtype": "u16"},
-        "image_bytes" => ImageBytes(ImageBytesSource) {"decode_max_size": 64},
-        "list" => List(NestedSource) {"dtype": "f32"},
-        "raw" => Raw(RawSource) {"dtype": "u8"},
+impl super::Format for Source {
+    const KIND: &'static str = "source";
+    fn formats() -> &'static [view_buffer::mode::OpDesc] {
+        static CATALOG: std::sync::LazyLock<Vec<view_buffer::mode::OpDesc>> =
+            std::sync::LazyLock::new(Source::catalog);
+        &CATALOG
     }
 }
+
+super::tagged_serde!(Source);
 
 impl Source {
     /// Whether the element dtype and rank are resolved from the input column's
@@ -122,84 +128,103 @@ impl Source {
     /// column, or `auto` routing to one), rather than at build time.
     pub fn resolves_from_column(&self) -> bool {
         match self {
-            Source::List(_) | Source::Array(_) | Source::Auto(_) => true,
-            Source::Blob(_)
-            | Source::Contour(_)
-            | Source::FilePath(_)
-            | Source::ImageBytes(_)
-            | Source::Raw(_) => false,
+            Source::List { .. } | Source::Array { .. } | Source::Auto { .. } => true,
+            Source::Blob { .. }
+            | Source::Contour { .. }
+            | Source::FilePath { .. }
+            | Source::ImageBytes { .. }
+            | Source::Raw { .. } => false,
         }
     }
 
     /// Whether a row that cannot be decoded is nulled rather than failing the
     /// query.
     pub fn nulls_on_error(&self) -> bool {
-        let on_error = match self {
-            Source::Auto(s) => s.on_error,
-            Source::ImageBytes(s) => s.on_error,
-            Source::FilePath(s) => s.on_error,
-            Source::Blob(s) => s.on_error,
-            Source::Raw(s) => s.on_error,
-            Source::List(s) | Source::Array(s) => s.on_error,
-            Source::Contour(s) => s.on_error,
-        };
-        on_error.is_some_and(|p| p.get().nulls_the_row())
+        match self {
+            Source::Array { on_error, .. }
+            | Source::Auto { on_error, .. }
+            | Source::Blob { on_error, .. }
+            | Source::Contour { on_error }
+            | Source::FilePath { on_error, .. }
+            | Source::ImageBytes { on_error, .. }
+            | Source::List { on_error, .. }
+            | Source::Raw { on_error, .. } => on_error.get().nulls_the_row(),
+        }
     }
 
     /// The declared element dtype, if any.
     pub fn dtype(&self) -> Option<DType> {
-        let dtype = match self {
-            Source::Auto(s) => s.dtype,
-            Source::ImageBytes(s) => s.dtype,
-            Source::FilePath(s) => s.dtype,
-            Source::Blob(s) => s.dtype,
-            Source::Raw(s) => Some(s.dtype),
-            Source::List(s) | Source::Array(s) => s.dtype,
-            Source::Contour(_) => None,
-        };
-        dtype.map(|d| d.get())
+        match self {
+            Source::Array { dtype, .. }
+            | Source::Auto { dtype, .. }
+            | Source::Blob { dtype, .. }
+            | Source::FilePath { dtype, .. }
+            | Source::ImageBytes { dtype, .. }
+            | Source::List { dtype, .. } => dtype.map(|d| d.get()),
+            Source::Raw { dtype, .. } => Some(dtype.get()),
+            Source::Contour { .. } => None,
+        }
     }
 
     /// Whether a nested-column decode must be zero-copy.
     pub fn require_contiguous(&self) -> bool {
-        let flag = match self {
-            Source::Auto(s) => s.require_contiguous,
-            Source::List(s) | Source::Array(s) => s.require_contiguous,
-            Source::ImageBytes(_)
-            | Source::FilePath(_)
-            | Source::Blob(_)
-            | Source::Raw(_)
-            | Source::Contour(_) => None,
-        };
-        flag.is_some_and(|f| f.get())
+        match self {
+            Source::Array {
+                require_contiguous, ..
+            }
+            | Source::Auto {
+                require_contiguous, ..
+            }
+            | Source::List {
+                require_contiguous, ..
+            } => require_contiguous.get(),
+            Source::Blob { .. }
+            | Source::Contour { .. }
+            | Source::FilePath { .. }
+            | Source::ImageBytes { .. }
+            | Source::Raw { .. } => false,
+        }
     }
 
     /// The decode-scale assertion for an image decode.
     pub fn decode_max_size(&self) -> Option<u32> {
-        let size = match self {
-            Source::Auto(s) => s.decode_max_size,
-            Source::ImageBytes(s) => s.decode_max_size,
-            Source::FilePath(s) => s.decode_max_size,
-            Source::Blob(_)
-            | Source::Raw(_)
-            | Source::List(_)
-            | Source::Array(_)
-            | Source::Contour(_) => None,
-        };
-        size.map(|s| s.get())
+        match self {
+            Source::Auto {
+                decode_max_size, ..
+            }
+            | Source::FilePath {
+                decode_max_size, ..
+            }
+            | Source::ImageBytes {
+                decode_max_size, ..
+            } => decode_max_size.map(|s| s.get()),
+            Source::Array { .. }
+            | Source::Blob { .. }
+            | Source::Contour { .. }
+            | Source::List { .. }
+            | Source::Raw { .. } => None,
+        }
     }
 
     /// Cloud credentials and the path sandbox, for a source that reads paths.
     pub fn path_settings(&self) -> (Option<&HashMap<String, String>>, Option<&[String]>) {
         match self {
-            Source::Auto(s) => (s.cloud_options.as_ref(), s.allowed_roots.as_deref()),
-            Source::FilePath(s) => (s.cloud_options.as_ref(), s.allowed_roots.as_deref()),
-            Source::ImageBytes(_)
-            | Source::Blob(_)
-            | Source::Raw(_)
-            | Source::List(_)
-            | Source::Array(_)
-            | Source::Contour(_) => (None, None),
+            Source::Auto {
+                cloud_options,
+                allowed_roots,
+                ..
+            }
+            | Source::FilePath {
+                cloud_options,
+                allowed_roots,
+                ..
+            } => (cloud_options.as_ref(), allowed_roots.as_deref()),
+            Source::Array { .. }
+            | Source::Blob { .. }
+            | Source::Contour { .. }
+            | Source::ImageBytes { .. }
+            | Source::List { .. }
+            | Source::Raw { .. } => (None, None),
         }
     }
 }
@@ -207,6 +232,7 @@ impl Source {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::formats::Format as _;
 
     fn parse(v: serde_json::Value) -> Result<Source, String> {
         serde_json::from_value(v).map_err(|e| e.to_string())

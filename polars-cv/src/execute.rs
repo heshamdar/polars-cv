@@ -5,10 +5,11 @@
 
 use polars::prelude::*;
 
-use view_buffer::{ImageAdapter, ImageCodec, PlannedDType, ViewBuffer};
+use view_buffer::{ImageAdapter, PlannedDType, ViewBuffer};
 
 use crate::formats::sink::Sink;
 use crate::formats::source::Source;
+use crate::formats::Format as _;
 
 /// Decode a JPEG at a reduced IDCT scale sufficient for `max_size` pixels on
 /// the long side.
@@ -81,7 +82,7 @@ pub fn decode_image_bytes(bytes: &[u8], source: &Source) -> PolarsResult<ViewBuf
 /// nested values, both directly in `graph::encode::encode_node_output` (the
 /// sole caller).
 pub fn encode_sink(buffer: &ViewBuffer, sink: &Sink) -> PolarsResult<Vec<u8>> {
-    if let Sink::Blob(_) = sink {
+    if let Sink::Blob = sink {
         // VIEW protocol: self-describing, so no codec precondition applies.
         return Ok(buffer.to_blob());
     }
@@ -102,14 +103,19 @@ pub fn encode_sink(buffer: &ViewBuffer, sink: &Sink) -> PolarsResult<Vec<u8>> {
         )
         .map_err(|msg| polars_err!(ComputeError: "{}", msg))?;
 
-    match codec {
-        ImageCodec::Png => ImageAdapter::encode(buffer, image::ImageFormat::Png)
-            .map_err(|e| polars_err!(ComputeError: "Failed to encode PNG: {:?}", e)),
-        ImageCodec::Jpeg => ImageAdapter::encode_jpeg(buffer, sink.quality())
-            .map_err(|e| polars_err!(ComputeError: "Failed to encode JPEG: {:?}", e)),
-        ImageCodec::WebP => ImageAdapter::encode(buffer, image::ImageFormat::WebP)
-            .map_err(|e| polars_err!(ComputeError: "Failed to encode WebP: {:?}", e)),
-        ImageCodec::Tiff => ImageAdapter::encode_tiff(buffer)
-            .map_err(|e| polars_err!(ComputeError: "Failed to encode TIFF: {:?}", e)),
-    }
+    // Each codec's settings are its sink's fields.
+    let encoded = match sink {
+        Sink::Png => ImageAdapter::encode(buffer, image::ImageFormat::Png),
+        Sink::Jpeg { quality } => ImageAdapter::encode_jpeg(buffer, quality.get()),
+        Sink::WebP => ImageAdapter::encode(buffer, image::ImageFormat::WebP),
+        Sink::Tiff => ImageAdapter::encode_tiff(buffer),
+        Sink::Array { .. }
+        | Sink::Blob
+        | Sink::List
+        | Sink::Native
+        | Sink::NdArray { .. }
+        | Sink::Numpy { .. }
+        | Sink::Torch { .. } => unreachable!("only an image sink has a codec"),
+    };
+    encoded.map_err(|e| polars_err!(ComputeError: "Failed to encode {}: {:?}", codec.name(), e))
 }

@@ -539,6 +539,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - Identity elimination folds each op's entering state once (O(n), was O(n²) FFI
   calls). CSE groups nodes by a canonical source serialization instead of
   `hash(source)`, so a hash collision cannot fuse across different sources.
+- **Sources and sinks are `#[derive(Ops)]` families (consolidation C6).**
+  `formats::source::Source` and `formats::sink::Sink` are enums with one
+  variant per format, derived like the op families; the `formats!` registry,
+  the per-struct `#[derive(Op)]`, `OpFields` and the per-parse catalogue
+  rebuild are gone. A family with no per-row value has no mode parameter.
+  `#[param(default = ...)]` is applied by the wire (JPEG `quality` 85,
+  `on_error` "raise", `require_contiguous` false), replacing each
+  `Option` + `unwrap_or`; `Visibility` is an enum. Each sink format now has
+  its own docstring in the catalogue.
 
 ## [0.28.0] — 2026-09-12
 
