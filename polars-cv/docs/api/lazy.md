@@ -21,18 +21,17 @@ result = df.with_columns(output=gray.sink("png"))
 ## Mirrored `Pipeline` methods
 
 Every operation and policy setter on [`Pipeline`](pipeline.md) — `resize()`,
-`grayscale()`, `on_error()`, `on_null_param()` and the rest — is generated onto
-`LazyPipelineExpr` at import time, so it can be chained directly after
+`grayscale()`, `on_error()`, `on_null_param()` and the rest — has a generated
+`LazyPipelineExpr` counterpart, so it can be chained directly after
 `.pipe(...)`:
 
 ```python
 expr = pl.col("image").cv.pipe(pipe).resize(height=pl.col("h")).on_null_param("null")
 ```
 
-Because those methods are generated rather than written out, they do not appear
-in the reference below; their signatures live in `polars_cv/lazy.pyi` (which
-your editor reads) and their documentation on the
-[`Pipeline`](pipeline.md) page. What is listed below is the hand-written surface
+Those methods are inherited from a generated mixin, so they do not appear in the
+reference below; your editor reads their signatures from the code, and their
+documentation is on the [`Pipeline`](pipeline.md) page. What is listed below is the hand-written surface
 — composition (`pipe()`, `merge_pipe()`), sinks, the binary operators, and the
 few operations that take another `LazyPipelineExpr` as an operand.
 

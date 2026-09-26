@@ -62,20 +62,20 @@ def test_rasterize_has_no_anti_alias_parameter() -> None:
         contour_pipe.rasterize(width=8, height=8, anti_alias=True)  # type: ignore[call-arg]
 
 
-def test_anti_alias_is_gone_from_the_type_stub() -> None:
-    """The generated stub must not advertise the removed parameter.
+def test_anti_alias_is_gone_from_the_lazy_surface() -> None:
+    """The generated lazy ``rasterize`` must not advertise the removed parameter.
 
-    ``"anti_alias" not in stub`` is also true of an empty stub, a stub that
-    lost ``rasterize`` altogether, and a stub whose path this test no longer
-    finds — three ways to pass while checking nothing. Confirm the file is the
-    populated stub it claims to be first.
+    The lazy forwarders are real methods generated from ``Pipeline``'s
+    signatures (``_lazy_forwarders.py``), so the check reads that signature,
+    after confirming it is the populated one.
     """
-    stub = (Path(polars_cv.__file__).parent / "lazy.pyi").read_text()
-    assert "def rasterize" in stub, (
-        "lazy.pyi does not declare rasterize, so the assertion below holds "
-        "vacuously. Regenerate with scripts/gen_lazy_stub.py."
-    )
-    assert "anti_alias" not in stub
+    import inspect
+
+    from polars_cv import LazyPipelineExpr
+
+    params = inspect.signature(LazyPipelineExpr.rasterize).parameters
+    assert "width" in params, "the lazy rasterize lost its canvas: a vacuous check"
+    assert "anti_alias" not in params
 
 
 # ---------------------------------------------------------------------------

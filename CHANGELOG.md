@@ -553,6 +553,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `on_error` "raise", `require_contiguous` false), replacing each
   `Option` + `unwrap_or`; `Visibility` is an enum. Each sink format now has
   its own docstring in the catalogue.
+- **`LazyPipelineExpr`'s chainable methods are generated code (C7c).**
+  `scripts/gen_ops.py` writes them into `_lazy_forwarders.py` from the built
+  `Pipeline`; the import-time `setattr` forwarders, `lazy.pyi` and
+  `scripts/gen_lazy_stub.py` are gone, and `ty` now checks `lazy.py` itself.
+  That surfaced two untruthful annotations, fixed: `LazyPipelineExpr.column`
+  is `pl.Expr | None` (a continuation node has no column), and `.sink()` is
+  overloaded on `return_expr` (`pl.Expr`, or `PipelineGraph` for
+  `return_expr=False`), which retired ten `# ty: ignore` comments.
 
 ## [0.28.0] — 2026-09-12
 

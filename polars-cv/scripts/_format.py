@@ -9,7 +9,7 @@ is perfectly current.
 That makes formatting part of the generated artefact, not a cosmetic step, and
 it has two consequences this module exists to enforce:
 
-- **One resolution strategy.** `gen_lazy_stub.py` looked ruff up with
+- **One resolution strategy.** The lazy-stub generator looked ruff up with
   ``shutil.which`` (it is a dev dependency, so it is on the venv's path);
   `gen_dtype_names.py` shelled out to ``uvx ruff`` instead, which resolves
   differently and can want the network. Two spellings of one fact, and the

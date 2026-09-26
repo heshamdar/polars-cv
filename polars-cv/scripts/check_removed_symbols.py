@@ -520,7 +520,9 @@ REMOVED: tuple[Removed, ...] = (
     Removed("map_contours_with_params", "C5: map_contours"),
     Removed("contour_bbox", "C5: contour_bounding_box, the op's wire name"),
     Removed("_enum_or_expr", "C5: the definition validates (check_geom_call)"),
-    Removed("decode_contour_source", "C6c: a contour source decodes; rasterize is the op"),
+    Removed(
+        "decode_contour_source", "C6c: a contour source decodes; rasterize is the op"
+    ),
     Removed(
         "decode_contour_source_with_dims",
         "C6c: the rasterize op's node canvas (RasterizeShapeRef)",
@@ -551,6 +553,13 @@ REMOVED: tuple[Removed, ...] = (
     Removed("resolved_auto_formats", "C6d: routed_sources"),
     Removed("_validate_enum", "C7b: every enum is validated by its Rust definition"),
     Removed("_reject_expr", "C7b: _encode_field refuses an expression for a literal"),
+    Removed("gen_lazy_stub", "C7c: gen_ops.py writes the forwarders as real methods"),
+    Removed("_install_pipeline_forwarders", "C7c: _lazy_forwarders.py (generated)"),
+    Removed("_make_forwarder", "C7c: gen_ops.forwarder renders each one"),
+    Removed("__polars_cv_generated__", "C7c: a forwarder is _LazyForwardersMixin's"),
+    Removed(
+        "test_lazy_stub_is_current", "C7c: no stub; the forwarders file is checked"
+    ),
 )
 
 

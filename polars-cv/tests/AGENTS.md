@@ -226,7 +226,8 @@ themselves when the extension is absent. Because skips are quiet, a builder
 change that should have failed a parity test can look clean against an unbuilt
 or stale plugin; the guards that can run without one
 (`test_every_op_is_emitted_by_a_builder`, which reads the generated catalogue,
-and `test_lazy_stub_is_current`) exist to cover that window.
+and `test_the_committed_catalog_is_the_built_one`'s generated-module checks)
+exist to cover that window.
 
 ### Shared Fixtures (`conftest.py`)
 

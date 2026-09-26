@@ -153,12 +153,6 @@ show_missing = true
 # errors; whittle the baselined ignores down over time.
 [tool.ty.src]
 include = ["python/polars_cv"]
-# lazy.py builds LazyPipelineExpr's chainable API by setattr at import time, so
-# its type surface lives in the generated lazy.pyi (kept in sync by
-# test_lazy_stub_is_current). Checking the .py *and* its sibling .pyi makes ty
-# treat the two as distinct nominal classes; the stub is the checked contract,
-# so exclude the implementation and let importers resolve against the stub.
-exclude = ["python/polars_cv/lazy.py"]
 
 [tool.ty.environment]
 python-version = "3.10"

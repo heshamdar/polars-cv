@@ -282,13 +282,12 @@ methods by hand — let 41 of 60 builders skip the shape-hint half and publish a
 planned schema execution could not produce.) Never build or edit a
 `PlanState` by hand either; it follows from the op's Rust contract.
 
-2. **`lazy.py`**: Nothing to add. `LazyPipelineExpr` generates a forwarder for
-   every chainable `Pipeline` method at import time
-   (`_install_pipeline_forwarders`), copying the signature so `inspect`/IDEs/the
-   parity test see the real parameters, and a binary `lazy_only` op's method is
-   generated into `_LazyOpsMixin`. Only the multi-operand `lazy_only` ops
-   (`apply_mask`, `channel_merge`) are hand-written here. After changing the
-   surface, regenerate the type stub with `python scripts/gen_lazy_stub.py`.
+2. **`lazy.py`**: Nothing to add. `scripts/gen_ops.py` writes a forwarder for
+   every chainable `Pipeline` method into `_lazy_forwarders.py` (real methods
+   with the real signatures, so `inspect`, IDEs and type checkers read them),
+   and a binary `lazy_only` op's method into `_LazyOpsMixin`. Only the
+   multi-operand `lazy_only` ops (`apply_mask`, `channel_merge`) are
+   hand-written here. After changing `Pipeline`, rerun `gen_ops.py`.
 
 3. **Schema inference**: nothing to add in `_types.py` or the planner. The
    op's domain, dtype, rank and channel effects are read at planning time from
