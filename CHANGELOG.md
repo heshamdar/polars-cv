@@ -332,6 +332,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Removed
 
+- **`PipelineGraph.set_root_column()`; `Pipeline.to_graph(column)` requires
+  its column.** The two existed for a graph built before its column was
+  known, a route nothing took; the root check still refuses a graph whose
+  root has no column.
 - **Loose contour-struct matching.** A contour struct's ring is its
   `exterior` field. A `points` field was read as an alias, and a struct with
   neither had its first list field taken as the exterior — the guessing
