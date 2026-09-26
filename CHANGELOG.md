@@ -111,6 +111,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **A binary op plans each axis it can.** Its operands broadcast axis by axis,
   so two 8x8 images of unknown channel count add to a planned 8x8 (the
   planner used to drop every size when one was unknown).
+- **`apply_mask` and `channel_merge` are planned against the nodes they
+  read.** A mask that cannot broadcast against its buffer, or channels of
+  different known sizes, raise when the op is written; a merge plans the
+  H and W any of its channels knows.
 - **A contour source only decodes; rasterizing is `rasterize()`.**
   **Breaking:** `source()` no longer takes `width`, `height`, `shape`,
   `fill_value` or `background`; write `source("contour").rasterize(...)`.

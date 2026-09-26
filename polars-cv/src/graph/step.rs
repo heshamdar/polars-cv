@@ -14,7 +14,7 @@
 
 use polars_cv_macros::Resolve;
 use view_buffer::core::dtype::OutputDTypeRule;
-use view_buffer::mode::{Exec, Mode};
+use view_buffer::mode::{Exec, Mode, NodeRef};
 use view_buffer::ops::phash::PerceptualHashOp;
 use view_buffer::ops::{Domain, OpShape, SpatialDependency};
 use view_buffer::ops::{HistogramOp, ReductionOp};
@@ -122,17 +122,10 @@ impl<M: Mode> GraphStep<M> {
         }
     }
 
-    /// Whether this step reads another graph node's buffer, so a spatial
-    /// window hoisted past it would crop only this operand.
+    /// Whether this step reads another graph node (its [`operands`](Self::operands)),
+    /// so a spatial window hoisted past it would crop only this operand.
     pub fn reads_other_nodes(&self) -> bool {
-        match self {
-            GraphStep::Graph(op) => op.reads_other_nodes(),
-            GraphStep::Buffer(_)
-            | GraphStep::Geometry(_)
-            | GraphStep::Reduction(_)
-            | GraphStep::Histogram(_)
-            | GraphStep::PerceptualHash(_) => false,
-        }
+        !self.operands().is_empty()
     }
 
     /// Whether the step can run on inputs of these shapes and dtypes (its
@@ -147,6 +140,45 @@ impl<M: Mode> GraphStep<M> {
         match self.rules() {
             Rules::Engine(op) => op.validate(inputs, dtypes),
             Rules::Graph(op) => op.validate(inputs, dtypes),
+        }
+    }
+
+    /// [`validate`](Self::validate) over inputs whose every size and dtype is
+    /// known — execution's call, before the step runs on a row.
+    pub fn validate_concrete(
+        &self,
+        shapes: &[&[usize]],
+        dtypes: &[view_buffer::DType],
+    ) -> Result<(), view_buffer::ops::validation::ValidationError> {
+        let shapes: Vec<Vec<view_buffer::ops::Dim>> = shapes
+            .iter()
+            .map(|s| view_buffer::ops::shape_rule::known_dims(s))
+            .collect();
+        let shapes: Vec<&[view_buffer::ops::Dim]> = shapes.iter().map(Vec::as_slice).collect();
+        let dtypes: Vec<view_buffer::PlannedDType> = dtypes
+            .iter()
+            .map(|&d| view_buffer::PlannedDType::Known(d))
+            .collect();
+        self.validate(&shapes, &dtypes)
+    }
+
+    /// The other graph nodes this step reads by id, in input order after its
+    /// own input: a binary op's other operand, a mask, the channels a merge
+    /// stacks, a canvas taken from another node. The planner passes each
+    /// one's planned shape to [`shape`](Self::shape) and
+    /// [`validate`](Self::validate) as further inputs.
+    pub fn operands(&self) -> Vec<&NodeRef> {
+        match self {
+            GraphStep::Graph(op) => op.operands(),
+            GraphStep::Geometry(view_buffer::GeometryOp::Rasterize {
+                size: view_buffer::geometry::ops::RasterSize::FromNode(node),
+                ..
+            }) => vec![node],
+            GraphStep::Buffer(_)
+            | GraphStep::Geometry(_)
+            | GraphStep::Reduction(_)
+            | GraphStep::Histogram(_)
+            | GraphStep::PerceptualHash(_) => Vec::new(),
         }
     }
 

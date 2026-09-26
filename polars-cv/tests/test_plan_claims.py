@@ -300,3 +300,24 @@ class TestPlannedSizes:
         assert planned(left).hw == (8, 8)  # the operands' sizes are planned
         out = planned(left.add(right))
         assert out.hw == (8, 8), f"a.add(b) planned {out}"
+
+    def test_a_merge_or_mask_is_checked_against_the_nodes_it_reads(self) -> None:
+        """PLANNER_SIZES_PLAN.md S3: the nodes an op reads are its inputs to
+        the planner, so their planned sizes are checked and planned from."""
+
+        def select(height: int | None, width: int | None) -> LazyPipelineExpr:
+            pipe = Pipeline().source("image_bytes", dtype="u8")
+            if height is not None and width is not None:
+                pipe = pipe.resize(height=height, width=width)
+            return pl.col("i").cv.pipe(pipe.channel_select(0))
+
+        # Channels of different known sizes cannot be stacked.
+        err = _build_error(lambda: select(8, 6).channel_merge(select(8, 5)))
+        assert err is not None and "channel_merge()" in err, err
+        # An input of unknown size takes H and W from the operands that know.
+        assert planned(select(None, None).channel_merge(select(8, 6))).dims == (8, 6, 2)
+        # A mask that cannot broadcast against the buffer it masks.
+        image = pl.col("i").cv.pipe(_sized_image(8, 8))
+        err = _build_error(lambda: image.apply_mask(select(4, 4)))
+        assert err is not None and "apply_mask()" in err, err
+        assert planned(image.apply_mask(select(8, 8))).dims == (8, 8, 3)

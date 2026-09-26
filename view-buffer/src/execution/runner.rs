@@ -526,31 +526,55 @@ pub fn apply_channel_swap(buf: &ViewBuffer, order: &[usize]) -> ViewBuffer {
 /// Whether [`apply_channel_merge`] can merge buffers of these shapes and dtypes
 /// (CR-34): at least one input, every input `[H, W]` with the same H and W,
 /// and all of one dtype (each is read as the first input's element type).
+///
+/// Over what is known of them (the planner's call; execution passes known
+/// ones): two H (or W) sizes differ only when both are known, and two dtypes
+/// only when both are, so an error is a verdict on a known fact.
 pub fn validate_channel_merge(
-    shapes: &[&[usize]],
-    dtypes: &[DType],
+    shapes: &[&[crate::ops::Dim]],
+    dtypes: &[crate::PlannedDType],
 ) -> Result<(), crate::ops::validation::ValidationError> {
     use crate::ops::validation::ValidationError;
-    let Some(first) = shapes.first() else {
+    use crate::PlannedDType;
+    if shapes.is_empty() {
         return Err(ValidationError::InsufficientInputs {
             expected: 1,
             got: 0,
         });
-    };
-    // The first input that is not [H, W] or not the first one's H and W.
-    let offending = shapes
-        .iter()
-        .find(|s| s.len() != 2 || **s != *first)
-        .or((first.len() != 2).then_some(first));
-    if let Some(shape) = offending {
-        return Err(ValidationError::ShapeRequirement {
-            requirement: "every channel_merge input [H, W] with the same H and W",
-            got: crate::ops::shape_rule::known_dims(shape),
-        });
     }
-    if dtypes.iter().any(|d| *d != dtypes[0]) {
+    // The first input that is not [H, W], or whose known H or W differs from
+    // one known earlier.
+    let mut hw: [Option<usize>; 2] = [None, None];
+    for shape in shapes {
+        let clash = shape.len() != 2
+            || shape
+                .iter()
+                .zip(&mut hw)
+                .any(|(d, seen)| match (d.known(), *seen) {
+                    (Some(n), Some(m)) => n != m,
+                    (Some(n), None) => {
+                        *seen = Some(n);
+                        false
+                    }
+                    (None, _) => false,
+                });
+        if clash {
+            return Err(ValidationError::ShapeRequirement {
+                requirement: "every channel_merge input [H, W] with the same H and W",
+                got: shape.to_vec(),
+            });
+        }
+    }
+    let known: Vec<DType> = dtypes
+        .iter()
+        .filter_map(|d| match d {
+            PlannedDType::Known(d) => Some(*d),
+            PlannedDType::SomeFloat | PlannedDType::Unknown => None,
+        })
+        .collect();
+    if known.iter().any(|d| *d != known[0]) {
         return Err(ValidationError::Generic {
-            message: format!("channel_merge inputs must share one dtype, got {dtypes:?}"),
+            message: format!("channel_merge inputs must share one dtype, got {known:?}"),
         });
     }
     Ok(())
