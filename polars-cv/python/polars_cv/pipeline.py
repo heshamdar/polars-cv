@@ -9,11 +9,20 @@ from __future__ import annotations
 
 import json
 import math
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
+from types import FunctionType
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import polars as pl
 
-from polars_cv._ops_generated import OP_FIELDS, SOURCE_FIELDS, LogicalPass, _OpsMixin
+from polars_cv._domains import compose, domain_line, with_domain
+from polars_cv._ops_generated import (
+    OP_DOMAINS,
+    OP_FIELDS,
+    SOURCE_FIELDS,
+    LogicalPass,
+    _OpsMixin,
+)
 from polars_cv._types import (
     DType,
     FloatOrExpr,
@@ -146,6 +155,37 @@ def _encode_field(p: "Pipeline", value: Any, ty: "dict[str, Any]", where: str) -
 def _is_sequence(value: Any) -> bool:
     """A list-like argument (list, tuple, numpy array), not a string or expr."""
     return not isinstance(value, (str, bytes, pl.Expr)) and hasattr(value, "__iter__")
+
+
+#: Each hand-written sugar method: the ops it appends, in order, and the
+#: domain-preserving ops it may append after them (``_sugar``). A test holds
+#: every method to its declaration.
+SUGAR_OPS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+
+#: Hand-written methods that set a graph policy and append no op.
+POLICY_METHODS = frozenset({"on_error", "on_null_param"})
+
+_F = TypeVar("_F", bound=FunctionType)
+
+
+def _sugar(*ops: str, optional: tuple[str, ...] = ()) -> Callable[[_F], _F]:
+    """Declare a hand-written method as sugar over the typed *ops*.
+
+    Its ``Domain:`` line is composed from those ops' contracts
+    (``OP_DOMAINS``), rendered as the generated methods' are; *optional*
+    ops (a trailing ``cast``) must not change the domain.
+    """
+    line = domain_line(compose(OP_DOMAINS, ops))
+    if optional and compose(OP_DOMAINS, [*ops, *optional]) != compose(OP_DOMAINS, ops):
+        msg = f"optional ops {optional} change the domain of {ops}"
+        raise ValueError(msg)
+
+    def mark(fn: _F) -> _F:
+        SUGAR_OPS[fn.__name__] = (ops, optional)
+        fn.__doc__ = with_domain(fn.__doc__ or "", line, width=88)
+        return fn
+
+    return mark
 
 
 class Pipeline(_OpsMixin):
@@ -440,9 +480,7 @@ class Pipeline(_OpsMixin):
         explicit opt-in.
 
         Must be called after ``source(...)`` on an ``image_bytes``/``file_path``
-        source.
-
-        Domain: buffer -> buffer (source assertion; does not add an op).
+        source. It appends no op: it sets the source's ``decode_max_size``.
 
         Args:
             max_size: Maximum pixels on the decoded long side. Positive int.
@@ -485,6 +523,7 @@ class Pipeline(_OpsMixin):
 
     # --- Shape Assertions (optional, helps planner) ---
 
+    @_sugar("assert_shape")
     def assert_shape(
         self,
         *,
@@ -573,6 +612,7 @@ class Pipeline(_OpsMixin):
 
     # --- View Operations (zero-copy where possible) ---
 
+    @_sugar("flip")
     def flip_h(self) -> "Pipeline":
         """
         Flip horizontally (along width axis).
@@ -582,6 +622,7 @@ class Pipeline(_OpsMixin):
         """
         return self.flip(axes=[1])
 
+    @_sugar("flip")
     def flip_v(self) -> "Pipeline":
         """
         Flip vertically (along height axis).
@@ -654,6 +695,7 @@ class Pipeline(_OpsMixin):
             return new
         return new.cast(target)
 
+    @_sugar("scale", optional=("cast",))
     def scale(
         self,
         factor: FloatOrExpr,
@@ -685,6 +727,7 @@ class Pipeline(_OpsMixin):
         new = self._scale(factor)
         return self._apply_out_dtype(new, target)
 
+    @_sugar("clamp", optional=("cast",))
     def clamp(
         self,
         min_val: FloatOrExpr,
@@ -735,6 +778,7 @@ class Pipeline(_OpsMixin):
 
     # --- Intensity Adjustments ---
 
+    @_sugar("scale", "clamp", optional=("cast",))
     def adjust_brightness(
         self, *, factor: FloatOrExpr, preserve_dtype: bool = False
     ) -> "Pipeline":
@@ -742,8 +786,6 @@ class Pipeline(_OpsMixin):
         Adjust image brightness by scaling pixel values.
 
         Convenience method equivalent to ``.scale(factor).clamp(min_val=0, max_val=255)``.
-
-        Domain: buffer → buffer
 
         Args:
             factor: Brightness factor. 1.0 = no change, >1 = brighter, <1 = darker.
@@ -766,6 +808,7 @@ class Pipeline(_OpsMixin):
 
     # --- Color Space Conversion ---
 
+    @_sugar("cvt_color")
     def to_hsv(self) -> "Pipeline":
         """Convert from RGB to HSV color space.
 
@@ -774,6 +817,7 @@ class Pipeline(_OpsMixin):
         """
         return self.convert_color(from_space="rgb", to_space="hsv")
 
+    @_sugar("cvt_color")
     def to_lab(self) -> "Pipeline":
         """Convert from RGB to CIE LAB color space.
 
@@ -784,6 +828,7 @@ class Pipeline(_OpsMixin):
         """
         return self.convert_color(from_space="rgb", to_space="lab")
 
+    @_sugar("cvt_color")
     def to_bgr(self) -> "Pipeline":
         """Convert from RGB to BGR channel order.
 
@@ -792,6 +837,7 @@ class Pipeline(_OpsMixin):
         """
         return self.convert_color(from_space="rgb", to_space="bgr")
 
+    @_sugar("cvt_color")
     def to_ycbcr(self) -> "Pipeline":
         """Convert from RGB to YCbCr color space.
 
@@ -802,14 +848,13 @@ class Pipeline(_OpsMixin):
 
     # --- Convolution / Filtering ---
 
+    @_sugar("convolve2d")
     def sobel(self, *, axis: str = "x") -> "Pipeline":
         """
         Sobel gradient operator.
 
         Convenience method that delegates to :meth:`convolve2d` with standard
         Sobel kernels.
-
-        Domain: buffer → buffer
 
         Args:
             axis: Gradient direction — ``"x"`` (horizontal) or ``"y"`` (vertical).
@@ -831,14 +876,13 @@ class Pipeline(_OpsMixin):
             raise ValueError(msg)
         return self.convolve2d(kernel=kernels[axis], normalize=False)
 
+    @_sugar("convolve2d")
     def laplacian(self) -> "Pipeline":
         """
         Laplacian second-derivative operator.
 
         Convenience method that delegates to :meth:`convolve2d` with a standard
         Laplacian kernel (the 3x3, 4-neighbour one).
-
-        Domain: buffer → buffer
 
         Returns:
             Self for chaining.
@@ -851,6 +895,7 @@ class Pipeline(_OpsMixin):
         laplacian_3 = [0.0, 1.0, 0.0, 1.0, -4.0, 1.0, 0.0, 1.0, 0.0]
         return self.convolve2d(kernel=laplacian_3, normalize=False)
 
+    @_sugar("convolve2d")
     def sharpen(self, *, strength: FloatOrExpr = 1.0) -> "Pipeline":
         """
         Sharpen using an unsharp-mask-style kernel.
@@ -858,8 +903,6 @@ class Pipeline(_OpsMixin):
         The kernel sum is 1 (brightness-preserving) with ``strength`` controlling
         how aggressively edges are enhanced. ``strength=0`` produces the
         identity; higher values increase edge emphasis.
-
-        Domain: buffer → buffer
 
         Args:
             strength: Sharpening strength (default 1.0). Accepts a Polars
@@ -891,14 +934,13 @@ class Pipeline(_OpsMixin):
 
     # --- Morphological Operations ---
 
+    @_sugar("erode", "dilate")
     def morphology_open(self, *, ksize: IntOrExpr = 3) -> "Pipeline":
         """
         Morphological opening (erode then dilate).
 
         Removes small bright spots while preserving larger structures.
         Equivalent to ``.erode(ksize=ksize).dilate(ksize=ksize)``.
-
-        Domain: buffer → buffer
 
         Args:
             ksize: Size of the square structuring element. Must be odd and >= 1.
@@ -914,14 +956,13 @@ class Pipeline(_OpsMixin):
         """
         return self.erode(ksize=ksize).dilate(ksize=ksize)
 
+    @_sugar("dilate", "erode")
     def morphology_close(self, *, ksize: IntOrExpr = 3) -> "Pipeline":
         """
         Morphological closing (dilate then erode).
 
         Fills small dark holes while preserving larger structures.
         Equivalent to ``.dilate(ksize=ksize).erode(ksize=ksize)``.
-
-        Domain: buffer → buffer
 
         Args:
             ksize: Size of the square structuring element. Must be odd and >= 1.
@@ -941,6 +982,7 @@ class Pipeline(_OpsMixin):
 
     # --- Image Operations ---
 
+    @_sugar("resize_scale")
     def resize_scale(
         self,
         *,
@@ -955,8 +997,6 @@ class Pipeline(_OpsMixin):
         Target dimensions are computed at runtime as:
         - new_width = input_width * scale_x
         - new_height = input_height * scale_y
-
-        Domain: buffer → buffer
 
         Args:
             scale: Uniform scale factor (applies to both x and y).
@@ -1004,6 +1044,7 @@ class Pipeline(_OpsMixin):
 
     # --- Affine Transform Operations ---
 
+    @_sugar("warp_affine")
     def shear(
         self,
         *,
@@ -1016,8 +1057,6 @@ class Pipeline(_OpsMixin):
 
         Convenience wrapper that builds a shear matrix and delegates to
         :meth:`warp_affine`.
-
-        Domain: buffer → buffer
 
         Args:
             sx: Horizontal shear factor (literal or per-row Polars expression).
@@ -1045,6 +1084,7 @@ class Pipeline(_OpsMixin):
         matrix: list[FloatOrExpr] = [1.0, sx, 0.0, sy, 1.0, 0.0]
         return self.warp_affine(matrix=matrix, output_size=output_size)
 
+    @_sugar("warp_affine")
     def rotate_and_scale(
         self,
         *,
@@ -1058,8 +1098,6 @@ class Pipeline(_OpsMixin):
 
         Convenience wrapper that builds a rotation+scale matrix and delegates
         to :meth:`warp_affine`.
-
-        Domain: buffer → buffer
 
         Args:
             angle: Rotation angle in degrees (positive = clockwise). Accepts a
@@ -1092,6 +1130,7 @@ class Pipeline(_OpsMixin):
 
     # --- Contour/Geometry Operations ---
 
+    @_sugar("rasterize")
     def rasterize(
         self,
         *,
@@ -1125,7 +1164,6 @@ class Pipeline(_OpsMixin):
             background: Outside value (default 0). Accepts a Polars expression
                 for per-row dynamic values.
 
-        Domain transition: contour → buffer
         """
         has_explicit = width is not None or height is not None
         has_shape = shape is not None
