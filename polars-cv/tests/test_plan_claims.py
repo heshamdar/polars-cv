@@ -321,3 +321,21 @@ class TestPlannedSizes:
         err = _build_error(lambda: image.apply_mask(select(4, 4)))
         assert err is not None and "apply_mask()" in err, err
         assert planned(image.apply_mask(select(8, 8))).dims == (8, 8, 3)
+
+    @pytest.mark.parametrize(
+        "read",
+        [
+            lambda image, contour: image.apply_mask(contour),
+            lambda image, contour: image.add(contour),
+            lambda image, contour: image.channel_select(0).channel_merge(contour),
+        ],
+        ids=["apply_mask", "add", "channel_merge"],
+    )
+    def test_a_node_read_in_the_wrong_domain_is_refused_at_build(self, read) -> None:
+        """An operand's domain is checked where the op's own input is: at
+        build. A contour operand used to plan, sink, and then fail every row
+        with "accepts Buffer input but received Contour"."""
+        image = pl.col("i").cv.pipe(_sized_image(8, 8))
+        contour = pl.col("c").cv.pipe(Pipeline().source("contour"))
+        err = _build_error(lambda: read(image, contour))
+        assert err is not None and "contour domain" in err, err

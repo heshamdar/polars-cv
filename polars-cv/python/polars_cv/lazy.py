@@ -379,26 +379,34 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         Returns:
             New LazyPipelineExpr with the contour mask applied.
         """
-        from polars_cv.pipeline import Pipeline
-
-        # The contour pipeline's own paint, as the values the caller passed (a
-        # per-row one as its expression), when it rasterizes; the canvas
-        # becomes this image's. Absent, `rasterize()`'s defaults apply.
-        orig = contour._pipeline
-        ops = orig._plan.ops_json()
-        first = orig._unwire(json.loads(ops[0])) if ops else {}
-        paint = (
-            {k: v for k, v in first.items() if k not in ("op", "size")}
-            if first.get("op") == "rasterize"
-            else {}
-        )
-        raster_pipeline = Pipeline().source("contour").rasterize(shape=self, **paint)
+        # The contour pipeline runs whole; only its canvas becomes this
+        # image's. One that already rasterizes keeps its paint (a per-row
+        # value as its expression) and loses only that rasterize's size.
+        base = contour._pipeline
+        ops = base._plan.ops_json()
+        last = json.loads(ops[-1]) if ops else {}
+        paint: dict[str, Any] = {}
+        if last.get("op") == "rasterize":
+            paint = {
+                k: v for k, v in base._unwire(last).items() if k not in ("op", "size")
+            }
+            base = base._clone()
+            base._plan = base._plan.select(list(range(len(ops) - 1)), start=0)
+        elif base.current_domain() != "contour":
+            msg = (
+                "apply_contour_mask() takes a pipeline that ends in contours or "
+                f"in rasterize(); this one ends in the {base.current_domain()!r} "
+                "domain. Use apply_mask() for a mask that is already a buffer."
+            )
+            raise ValueError(msg)
+        raster_pipeline = base.rasterize(shape=self, **paint)
 
         rasterized = LazyPipelineExpr(
             column=contour._column,
             pipeline=raster_pipeline,
             node_id=_generate_node_id(),
-            upstream=[self],  # Depends on image for dimensions (shape inference)
+            # The contour node's own inputs, then this image for the canvas.
+            upstream=[*contour._upstream, self],
         )
 
         return self.apply_mask(rasterized, invert=invert)
