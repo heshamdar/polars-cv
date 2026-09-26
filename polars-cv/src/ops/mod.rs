@@ -98,7 +98,6 @@ macro_rules! typed_ops {
             }
 
             /// One valid instance of every typed op, in `names()` order.
-            #[cfg(test)]
             pub fn samples() -> Vec<TypedOp> {
                 let mut samples: Vec<TypedOp> = Vec::new();
                 $(samples.extend(
@@ -190,10 +189,126 @@ impl TypedOp {
     }
 }
 
+/// One op's catalogue entry: its description and its domain contract.
+#[derive(Serialize)]
+struct CatalogEntry {
+    #[serde(flatten)]
+    desc: OpDesc,
+    /// Every `input → output` domain transition the op makes.
+    domains: Vec<DomainCase>,
+}
+
+/// One domain transition, and the optional fields that must be set for it
+/// (empty for the op's minimal form).
+#[derive(Serialize, PartialEq)]
+struct DomainCase {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    with: Vec<String>,
+    input: &'static str,
+    output: &'static str,
+}
+
+/// The op's domain transitions, read off the op itself (`input_domains`,
+/// `output_domain`) — never declared beside it.
+///
+/// An output domain may depend on the op's structural parameters (a
+/// reduction with an `axis` keeps a buffer, one without makes a scalar; a
+/// `quantized` histogram is a buffer), never on a per-row one. So the op is
+/// read in its base form (the minimal one, only required fields, when it
+/// parses; else the sample) and then with each structural choice varied: an
+/// optional field set as in the sample, and every value of a literal enum or
+/// bool field. A transition the base form does not make is attributed to the
+/// choice that makes it.
+fn domain_cases(sample: &TypedOp, desc: &OpDesc) -> Vec<DomainCase> {
+    use view_buffer::mode::TypeDesc;
+    let cases = |op: &TypedOp, with: &[String]| -> Vec<DomainCase> {
+        op.input_domains()
+            .into_iter()
+            .map(|input| DomainCase {
+                with: with.to_vec(),
+                input: input.name(),
+                output: op.output_domain(input).name(),
+            })
+            .collect()
+    };
+    let parse = |fields: serde_json::Value| TypedOp::from_fields(desc.name, fields)?.ok();
+    let minimal = parse(serde_json::json!({}));
+    let base = minimal.as_ref().unwrap_or(sample);
+    let mut out = cases(base, &[]);
+    let mut add = |op: &TypedOp, with: String| {
+        for case in cases(op, &[with]) {
+            if let Some(known) = out
+                .iter_mut()
+                .find(|c| c.input == case.input && c.output == case.output)
+            {
+                if !known.with.is_empty() && !known.with.contains(&case.with[0]) {
+                    known.with.push(case.with[0].clone());
+                }
+            } else {
+                out.push(case);
+            }
+        }
+    };
+    // Optional fields the sample sets and the minimal form leaves absent.
+    if let Some(minimal) = &minimal {
+        let absent = minimal.fields_json();
+        let set: Vec<String> = sample
+            .fields_json()
+            .as_object()
+            .expect("fields are an object")
+            .keys()
+            .filter(|k| absent.get(k.as_str()).is_none())
+            .map(|k| format!("``{k}``"))
+            .collect();
+        if !set.is_empty() {
+            add(sample, set.join(", "));
+        }
+    }
+    // Every value of a literal enum or bool field, the rest as sampled.
+    for field in &desc.fields {
+        let inner = match &field.ty {
+            TypeDesc::Optional { inner } => inner.as_ref(),
+            ty => ty,
+        };
+        let values: Vec<serde_json::Value> = match inner {
+            TypeDesc::Scalar {
+                per_row: false,
+                variants,
+                ..
+            } if !variants.is_empty() => variants.iter().map(|v| (*v).into()).collect(),
+            TypeDesc::Scalar {
+                per_row: false, py, ..
+            } if *py == "bool" => vec![true.into(), false.into()],
+            _ => continue,
+        };
+        for value in values {
+            let mut fields = sample.fields_json();
+            fields[field.name] = value.clone();
+            if let Some(op) = parse(fields) {
+                add(&op, format!("``{}={value}``", field.name));
+            }
+        }
+    }
+    out
+}
+
 /// The catalogue as committed in `tests/golden/op_catalog.json`.
 pub fn catalog_json() -> String {
-    let mut text =
-        serde_json::to_string_pretty(&TypedOp::catalog()).expect("the catalogue serializes");
+    let samples = TypedOp::samples();
+    let entries: Vec<CatalogEntry> = TypedOp::catalog()
+        .into_iter()
+        .map(|desc| {
+            let sample = samples
+                .iter()
+                .find(|s| s.name() == desc.name)
+                .expect("every catalogued op has a sample");
+            CatalogEntry {
+                domains: domain_cases(sample, &desc),
+                desc,
+            }
+        })
+        .collect();
+    let mut text = serde_json::to_string_pretty(&entries).expect("the catalogue serializes");
     text.push('\n');
     text
 }
@@ -669,6 +784,50 @@ mod tests {
         );
         // Poorly conditioned but invertible is fine.
         assert!(warp([1e-6, 0.0, 0.0, 0.0, 1e-6, 0.0]).is_ok());
+    }
+
+    /// The catalogue's domain contract is read off the op, including a
+    /// transition that depends on a structural choice. Each case here was a
+    /// hand-written `Domain:` line; `contour_area`'s claimed `→ scalar`, but a
+    /// measure over a contour set is one value per member.
+    #[test]
+    fn the_domain_contract_is_read_off_the_op() {
+        let catalog: serde_json::Value = serde_json::from_str(&catalog_json()).unwrap();
+        let domains = |name: &str| -> Vec<(String, String, String)> {
+            let op = catalog
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|o| o["name"] == name)
+                .unwrap_or_else(|| panic!("{name} is catalogued"));
+            op["domains"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| {
+                    let with = c["with"].as_array().map_or(String::new(), |w| {
+                        w.iter()
+                            .map(|s| s.as_str().unwrap())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    });
+                    let side = |k: &str| c[k].as_str().unwrap().to_string();
+                    (with, side("input"), side("output"))
+                })
+                .collect()
+        };
+        let case = |w: &str, i: &str, o: &str| (w.to_string(), i.to_string(), o.to_string());
+        assert_eq!(domains("resize"), [case("", "buffer", "buffer")]);
+        assert_eq!(domains("contour_area"), [case("", "contour", "vector")]);
+        assert!(domains("reduce_max").contains(&case("", "buffer", "scalar")));
+        assert!(domains("reduce_max").contains(&case("``axis``", "buffer", "buffer")));
+        assert!(domains("histogram").contains(&case("", "buffer", "vector")));
+        assert!(domains("histogram").contains(&case(
+            "``output=\"quantized\"``",
+            "buffer",
+            "buffer"
+        )));
+        assert!(domains("add").contains(&case("", "vector", "vector")));
     }
 
     /// The committed catalogue is what `scripts/gen_ops.py` generates Python

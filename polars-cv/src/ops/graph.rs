@@ -179,8 +179,6 @@ pub enum GraphOp<M: Mode = Exec> {
         other: NodeRef,
     },
     /// Apply a binary mask to this image.
-    ///
-    /// Domain: buffer → buffer
     #[op(name = "apply_mask", visibility = LazyOnly, sample = {"mask": "n0", "invert": true})]
     ApplyMask {
         /// The mask's node.
@@ -191,7 +189,7 @@ pub enum GraphOp<M: Mode = Exec> {
     },
     /// Merge single-channel buffers into one multi-channel image.
     ///
-    /// Domain: buffer → buffer ([H, W] → [H, W, C])
+    /// Shape: ``[H, W]`` → ``[H, W, C]``.
     #[op(name = "channel_merge", visibility = LazyOnly, sample = {"others": ["n0", "n1"]})]
     ChannelMerge {
         /// The other single-channel operands' nodes, in channel order after this
@@ -214,16 +212,12 @@ pub enum GraphOp<M: Mode = Exec> {
         dims: [Option<M::V<u32>>; 3],
     },
     /// Extract buffer shape as a struct {height, width, channels}.
-    ///
-    /// Domain transition: buffer → vector
     #[op(name = "extract_shape", sample = {})]
     ExtractShape,
     /// Score contour regions against the current buffer values.
     ///
     /// This is the buffer-space variant of label reduction. It accepts contours
     /// via a Polars expression and returns one score per contour.
-    ///
-    /// Domain transition: buffer -> vector
     #[op(name = "label_reduce",
          sample = {"contours": {"$slot": 1}, "reduction": "mean", "region_mode": "bbox"})]
     LabelReduce {

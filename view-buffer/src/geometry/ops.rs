@@ -38,8 +38,6 @@ pub enum GeometryOp<M: Mode = Exec> {
     /// union of its hole rings, in either winding direction. Overlapping or
     /// nested hole rings are not double-subtracted. One value per contour for
     /// a contour set.
-    ///
-    /// Domain transition: contour → scalar
     #[op(name = "contour_area", python = "area", sample = {"signed": false})]
     Area {
         /// If True, return signed area (negative for CW winding).
@@ -47,8 +45,6 @@ pub enum GeometryOp<M: Mode = Exec> {
         signed: M::V<bool>,
     },
     /// Compute the perimeter (arc length) of the contour.
-    ///
-    /// Domain transition: contour → scalar
     #[op(name = "contour_perimeter", python = "perimeter", sample = {})]
     Perimeter,
     /// Compute the centroid (center of mass) of the contour.
@@ -57,17 +53,15 @@ pub enum GeometryOp<M: Mode = Exec> {
     /// of the hole rings — so overlapping or nested holes are not subtracted
     /// twice.
     ///
-    /// Domain transition: contour → vector (returns [x, y])
+    /// Returns ``[x, y]``.
     #[op(name = "contour_centroid", python = "centroid", sample = {})]
     Centroid,
     /// Compute the axis-aligned bounding box of the contour.
     ///
-    /// Domain transition: contour → vector (returns [x, y, width, height])
+    /// Returns ``[x, y, width, height]``.
     #[op(name = "contour_bounding_box", python = "bounding_box", sample = {})]
     BoundingBox,
     /// Translate the contour by an offset.
-    ///
-    /// Domain: contour → contour
     #[op(name = "contour_translate", python = "translate", sample = {"dx": 1.0, "dy": -2.0})]
     Translate {
         /// X offset (horizontal translation).
@@ -76,8 +70,6 @@ pub enum GeometryOp<M: Mode = Exec> {
         dy: M::V<f64>,
     },
     /// Scale the contour about *origin*.
-    ///
-    /// Domain: contour → contour
     #[op(name = "contour_scale", python = "scale_contour",
          sample = {"sx": 2.0, "sy": 0.5, "origin": "bbox_center"})]
     Scale {
@@ -94,16 +86,12 @@ pub enum GeometryOp<M: Mode = Exec> {
         origin: M::V<ScaleOrigin>,
     },
     /// Simplify the contour using the Douglas-Peucker algorithm.
-    ///
-    /// Domain: contour → contour
     #[op(name = "contour_simplify", python = "simplify", sample = {"tolerance": 1.5})]
     Simplify {
         /// Maximum distance from the original contour.
         tolerance: M::V<f64>,
     },
     /// Compute the convex hull of the contour.
-    ///
-    /// Domain: contour → contour
     #[op(name = "contour_convex_hull", python = "convex_hull", sample = {})]
     ConvexHull,
     /// Rasterize contours to a mask.
@@ -111,8 +99,6 @@ pub enum GeometryOp<M: Mode = Exec> {
     /// The builder is ``Pipeline.rasterize``, whose ``width``/``height`` or
     /// ``shape`` arguments become ``size``; it also records the shape reference's
     /// graph dependency and its canvas assertion.
-    ///
-    /// Domain transition: contour → buffer
     #[op(name = "rasterize", visibility = Internal,
          sample = {"size": [8, 6], "fill_value": 1, "background": 0})]
     Rasterize {
@@ -140,8 +126,6 @@ pub enum GeometryOp<M: Mode = Exec> {
     /// that touch or nest enclose one region between them — and reassembling a
     /// holed contour from those is the caller's job. ``mode="external"`` keeps
     /// only the outermost, discarding hole borders.
-    ///
-    /// Domain transition: buffer → contour
     #[op(name = "extract_contours", sample = {"mode": "tree", "method": "none", "min_area": 2.0})]
     ExtractContours {
         /// "external" (outer only), "tree" (full hierarchy), "all".

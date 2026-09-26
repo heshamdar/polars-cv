@@ -157,8 +157,29 @@ def _indent(text: str, prefix: str) -> str:
     return "\n".join(prefix + line if line.strip() else "" for line in text.split("\n"))
 
 
+def domain_line(op: dict[str, Any]) -> str | None:
+    """``Domain: a → b``, from the op's domain contract in the catalogue.
+
+    Transitions the op's base form makes come first; one that needs a
+    structural choice (an optional field set, an enum value) follows, after
+    the choice that makes it.
+    """
+    if "domains" not in op:
+        return None
+    groups: dict[str, list[str]] = {}
+    for case in op["domains"]:
+        key = " / ".join(case.get("with", []))
+        groups.setdefault(key, []).append(f"{case['input']} → {case['output']}")
+    parts = [
+        f"with {key}: {', '.join(arrows)}" if key else ", ".join(arrows)
+        for key, arrows in groups.items()
+    ]
+    return "Domain: " + "; ".join(parts)
+
+
 def docstring(op: dict[str, Any]) -> str:
-    """The op doc with a Google ``Args:`` block from the field docs."""
+    """The op doc with its ``Domain:`` line and a Google ``Args:`` block from
+    the field docs."""
     lines = op["doc"].split("\n")
     at = next((i for i, line in enumerate(lines) if _SECTION.match(line)), len(lines))
     args = []
@@ -175,6 +196,12 @@ def docstring(op: dict[str, Any]) -> str:
     body = lines[:at]
     while body and not body[-1].strip():
         body.pop()
+    domain = domain_line(op)
+    if domain is not None:
+        body += [
+            "",
+            *textwrap.wrap(domain, width=_DOC_WIDTH, subsequent_indent="    "),
+        ]
     tail = lines[at:]
     parts = [*body, "", *block]
     if tail:
