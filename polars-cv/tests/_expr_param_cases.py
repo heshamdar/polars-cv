@@ -192,7 +192,7 @@ DIAMOND_SET = [
 # --- The table -------------------------------------------------------------
 
 CASES: list[ExprCase] = [
-    # --- source (the contour source rasterizes onto a canvas) --------------
+    # --- source (a contour source's canvas keywords are rasterize()'s) ----
     ExprCase(
         "source",
         "width",

@@ -3,60 +3,12 @@
 //! This module handles the execution of vision pipelines on Polars Series,
 //! including parameter resolution and view-buffer integration.
 
-#[allow(unused_imports)]
-use crate::ops::ParamExt as _;
 use polars::prelude::*;
 
-use view_buffer::{
-    geometry::rasterize::rasterize, ImageAdapter, ImageCodec, PlannedDType, ViewBuffer,
-};
+use view_buffer::{ImageAdapter, ImageCodec, PlannedDType, ViewBuffer};
 
 use crate::formats::sink::Sink;
-use crate::formats::source::{ContourSource, Source};
-use crate::params::ParamCtx;
-use view_buffer::geometry::ops::RasterSize;
-
-/// Decode a contour source by parsing the geometry and rasterizing to ViewBuffer.
-///
-/// The column may hold one contour per row or a whole set (`List[Contour]`) —
-/// `parse_contour_set` accepts both, and the set is painted as a union, exactly
-/// as the `rasterize` op paints the set `extract_contours` produces.
-///
-/// For the explicit `[height, width]` canvas; a canvas taken from another node
-/// is resolved by the graph executor, which calls
-/// [`decode_contour_source_with_dims`] (see `compiled.rs`).
-pub fn decode_contour_source(
-    value: &AnyValue,
-    row_idx: usize,
-    source: &ContourSource,
-    ctx: &ParamCtx,
-) -> PolarsResult<ViewBuffer> {
-    let RasterSize::Fixed([height, width]) = &source.size else {
-        polars_bail!(ComputeError:
-            "internal: a node-sized contour source reached the fixed-size decode");
-    };
-    let (width, height) = (width.resolve(row_idx, ctx)?, height.resolve(row_idx, ctx)?);
-    let (fill_value, background) = source.fill(row_idx, ctx)?;
-    decode_contour_source_with_dims(value, width, height, fill_value, background)
-}
-
-/// Decode a contour source with explicit dimensions (for graph execution with shape inference).
-///
-/// This variant is used when dimensions are resolved from a shape reference (another node's buffer)
-/// rather than from explicit width/height parameters.
-pub fn decode_contour_source_with_dims(
-    value: &AnyValue,
-    width: u32,
-    height: u32,
-    fill_value: u8,
-    background: u8,
-) -> PolarsResult<ViewBuffer> {
-    // Parse via the plugin's single contour parser (contour.rs).
-    let contours = crate::contour::parse_contour_set(value)?;
-
-    // Rasterize the contours to a ViewBuffer
-    Ok(rasterize(&contours, width, height, fill_value, background))
-}
+use crate::formats::source::Source;
 
 /// Decode a JPEG at a reduced IDCT scale sufficient for `max_size` pixels on
 /// the long side.

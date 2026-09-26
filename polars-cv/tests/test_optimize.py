@@ -25,7 +25,7 @@ from polars_cv._optimize import (
     resolve_opt_flags,
 )
 from polars_cv._types import SlotTable
-from tests._plan_view import op_names, source_of
+from tests._plan_view import op_names, ops_of
 from tests.conftest import plugin_required
 
 
@@ -497,12 +497,13 @@ class TestShapeSubpipelineStaging:
     """
 
     def test_construction_leaves_shape_subpipeline_logical(self) -> None:
-        # No plugin: pure construction. The source references the shape node
-        # by id only, and that node's ops stay the verbatim logical chain, NOT
-        # a construction-time rewrite.
+        # No plugin: pure construction. The rasterize step references the
+        # shape node by id only, and that node's ops stay the verbatim logical
+        # chain, NOT a construction-time rewrite.
         shape = _shape_ref()
         pipe = Pipeline().source("contour", shape=shape)
-        assert source_of(pipe).shape_node == shape._node_id
+        [rasterize] = ops_of(pipe)
+        assert rasterize.params["size"] == shape._node_id
         assert op_names(shape) == ["resize", "crop"]
 
     @plugin_required

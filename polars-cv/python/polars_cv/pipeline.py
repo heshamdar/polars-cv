@@ -7,6 +7,7 @@ processing pipelines that can be applied to Polars DataFrame columns.
 
 from __future__ import annotations
 
+import inspect
 import json
 import math
 from typing import TYPE_CHECKING, Any
@@ -465,13 +466,13 @@ class Pipeline(_OpsMixin):
                 - "array": Polars fixed-size Array column
                 - "file_path": Read from path (local, s3://, gs://, az://,
                   http://); decodes like ``"image_bytes"``
-                - "contour": Rasterize geometry to a binary mask. The column
-                  may hold one contour per row (``CONTOUR_SCHEMA``) or a whole
-                  set (``List(CONTOUR_SCHEMA)``, what ``extract_contours()``
-                  sinks); a set paints the union of its members. The mask is
-                  ``[H, W, 1]`` u8 — the same contract the ``rasterize`` op
-                  publishes — so a typed ``list``/``array`` sink needs neither
-                  a dtype nor a shape.
+                - "contour": Contour geometry. The column may hold one
+                  contour per row (``CONTOUR_SCHEMA``) or a whole set
+                  (``List(CONTOUR_SCHEMA)``, what ``extract_contours()``
+                  sinks); either decodes to the contour domain. Pass a canvas
+                  (``width``/``height`` or ``shape``) to rasterize it at once:
+                  that appends :meth:`rasterize`, which paints the set's union
+                  as an ``[H, W, 1]`` u8 mask.
             dtype: For ``"raw"``: required data type of the raw bytes.
                 For ``"image_bytes"`` / ``"file_path"``: asserts the expected
                 dtype — at runtime, images with a different dtype are cast to
@@ -479,14 +480,14 @@ class Pipeline(_OpsMixin):
                 ``"array"``: override for the inferred column element type.
                 Rejected for ``"contour"``: rasterizing always produces u8, so
                 there is nothing to assert — use ``.cast(...)`` to convert.
-            width: Output mask width for "contour" format.
-            height: Output mask height for "contour" format.
-            shape: Infer dimensions from another pipeline for "contour" format.
-            fill_value: Value for pixels inside contour (default 255). Accepts
-                a Polars expression for per-row dynamic values, matching the
-                identical parameter on :meth:`rasterize`.
-            background: Value for pixels outside contour (default 0). Accepts
-                a Polars expression for per-row dynamic values.
+            width: ``rasterize(width=)``: passing any of ``width``,
+                ``height``, ``shape``, ``fill_value`` or ``background``
+                appends :meth:`rasterize` with them, which only a
+                ``"contour"`` source can feed.
+            height: ``rasterize(height=)``.
+            shape: ``rasterize(shape=)``.
+            fill_value: ``rasterize(fill_value=)``.
+            background: ``rasterize(background=)``.
             cloud_options: Credentials for cloud storage (S3, GCS, Azure).
             require_contiguous: For "list"/"array", whether to require
                 rectangular data (default ``False``).
@@ -555,8 +556,6 @@ class Pipeline(_OpsMixin):
         # passed iff it is not None.
         passed = {k: v for k, v in locals().items() if k != "self" and v is not None}
 
-        from polars_cv.lazy import LazyPipelineExpr
-
         new = self._clone()
         fmt = _validate_enum(passed.pop("format"), SourceFormat, "source format")
 
@@ -565,25 +564,14 @@ class Pipeline(_OpsMixin):
         ):
             msg = f"decode_max_size must be a positive int, got {decode_max_size!r}"
             raise ValueError(msg)
-        if fmt == SourceFormat.CONTOUR:
-            if shape is not None and (width is not None or height is not None):
-                msg = (
-                    "Cannot specify both 'shape' and explicit dimensions (width/height)"
-                )
-                raise ValueError(msg)
-            if shape is None and (width is None) != (height is None):
-                msg = "Both 'width' and 'height' must be specified together"
-                raise ValueError(msg)
-            if shape is None and width is None:
-                msg = (
-                    "Contour source requires either:\n"
-                    "  1. Both 'width' and 'height' parameters, or\n"
-                    "  2. A 'shape' LazyPipelineExpr to infer dimensions from"
-                )
-                raise ValueError(msg)
-        if shape is not None and not isinstance(shape, LazyPipelineExpr):
-            msg = "'shape' must be a LazyPipelineExpr"
-            raise TypeError(msg)
+        # The canvas keywords are the `rasterize` op's, appended after the
+        # source: a contour source only decodes. On any other format the op
+        # refuses its input domain.
+        canvas = {
+            k: passed.pop(k)
+            for k in inspect.signature(Pipeline.rasterize).parameters
+            if k in passed
+        }
 
         # Every keyword the caller passed goes into the source, whichever
         # format it is for: the format's Rust definition refuses one it does
@@ -592,17 +580,6 @@ class Pipeline(_OpsMixin):
         for name, value in passed.items():
             if name == "dtype":
                 source[name] = _validate_enum(value, DType, "dtype").value
-            elif name == "shape":
-                # The canvas node, by id: Rust takes that node's planned size
-                # and, at execution, its buffer.
-                source["size"] = value._node_id
-                new._read_node(value)
-            elif name in ("height", "width"):
-                source["size"] = [
-                    None if d is None else new._wire(d) for d in (height, width)
-                ]
-            elif name in ("fill_value", "background"):
-                source[name] = new._wire(value)
             elif name == "cloud_options":
                 options = normalize_cloud_options(value)
                 source[name] = None if options is None else options.to_dict()
@@ -610,8 +587,8 @@ class Pipeline(_OpsMixin):
                 source[name] = list(value)
             else:
                 source[name] = _to_python(value)
-        new._plan = new._plan.with_source(json.dumps(source), new._refs())
-        return new
+        new._plan = new._plan.with_source(json.dumps(source))
+        return new.rasterize(**canvas) if canvas else new
 
     def thumbnail(self, max_size: int) -> "Pipeline":
         """
@@ -670,7 +647,7 @@ class Pipeline(_OpsMixin):
         source = {**json.loads(source_json), "decode_max_size": max_size}
         new = self._clone()
         try:
-            new._plan = new._plan.with_source(json.dumps(source), new._refs())
+            new._plan = new._plan.with_source(json.dumps(source))
         except ValueError as e:
             msg = f"thumbnail() only applies where decode_max_size does: {e}"
             raise ValueError(msg) from None
@@ -1339,7 +1316,7 @@ class Pipeline(_OpsMixin):
 
         if shape is None:
             if width is None or height is None:
-                msg = "Both width and height must be specified"
+                msg = "Both 'width' and 'height' must be specified together"
                 raise ValueError(msg)
             # H/W come from `GeometryOp::Rasterize`'s `shape` and the
             # single-channel output from the op's `fixed:1` channel rule; none

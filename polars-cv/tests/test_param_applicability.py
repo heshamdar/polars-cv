@@ -17,6 +17,7 @@ same fix, and the worse of the two surfaces.
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 from pathlib import Path
 
@@ -86,19 +87,18 @@ _SOURCE_FIELDS: dict[str, set[str]] = {
     for fmt in _IO_CATALOG["sources"]
 }
 
-#: The `source()` keywords that are spelled differently on the wire: a contour
-#: canvas is one `size` field, `[height, width]` or a node.
-_WIRE_FIELD = {"width": "size", "height": "size", "shape": "size"}
+#: The `source()` keywords that are `rasterize()`'s: passing one appends that
+#: op after the source (a contour source only decodes).
+_CANVAS = set(inspect.signature(Pipeline.rasterize).parameters) - {"self"}
 
 
 def test_every_source_parameter_is_a_typed_source_field() -> None:
-    """Every `source()` keyword is a field of some typed source, and back.
+    """Every `source()` keyword is a field of some typed source or a
+    `rasterize()` parameter, and back.
 
-    A keyword that is no format's field could only be dropped; a field no
-    keyword reaches is a setting the builder cannot make.
+    A keyword that is neither could only be dropped; a field no keyword
+    reaches is a setting the builder cannot make.
     """
-    import inspect
-
     keywords = {
         name
         for name, param in inspect.signature(Pipeline.source).parameters.items()
@@ -106,10 +106,11 @@ def test_every_source_parameter_is_a_typed_source_field() -> None:
         and param.kind is not inspect.Parameter.VAR_KEYWORD
     }
     fields = set().union(*_SOURCE_FIELDS.values())
-    assert {_WIRE_FIELD.get(k, k) for k in keywords} == fields, (
-        f"keywords {sorted(keywords)} do not cover the typed source fields "
-        f"{sorted(fields)}"
+    assert keywords == fields | _CANVAS, (
+        f"keywords {sorted(keywords)} are not the typed source fields "
+        f"{sorted(fields)} plus rasterize()'s {sorted(_CANVAS)}"
     )
+    assert not fields & _CANVAS, "a keyword cannot be both a field and the op's"
     assert set(_SAMPLE_VALUES) == keywords, (
         f"the applicability sweep has no sample value for "
         f"{sorted(keywords - set(_SAMPLE_VALUES))}"
@@ -151,24 +152,30 @@ def test_a_parameter_is_rejected_by_every_format_that_ignores_it(
     """The whole (parameter x format) grid, decided by the typed sources.
 
     Applicable pairs must be accepted. Inapplicable pairs must raise, naming
-    where the field does apply: not warn, not proceed. Formats with their own requirements (`raw` needs a dtype, `contour`
-    needs a canvas) can still reject an *applicable* pair for that reason, so
-    only the rejection message is asserted, not the fact of raising.
+    where the field does apply: not warn, not proceed. A canvas keyword
+    appends `rasterize()`, so only a contour source can feed it and every
+    other format refuses it through the op's input domain. `raw` needs a
+    dtype, so the grid passes one alongside.
     """
     kwargs: dict[str, object] = {}
-    if fmt == "contour" and name != "shape":
-        # A contour source needs a canvas; `shape=` *is* one, and refuses to
-        # share with explicit dims.
+    if name in ("width", "height", "fill_value", "background"):
+        # `rasterize()` takes its canvas as a width/height pair (or `shape`).
         kwargs.update(width=8, height=8)
     if fmt == "raw" and name != "dtype":
         kwargs["dtype"] = "u8"  # raw has no type metadata to infer from
     kwargs[name] = _sample_for(name)
 
-    field = _WIRE_FIELD.get(name, name)
-    if field in _SOURCE_FIELDS[fmt]:
+    if name in _CANVAS:
+        if fmt == "contour":
+            Pipeline().source(fmt, **kwargs)  # type: ignore[arg-type]
+            return
+        with pytest.raises(ValueError, match=r"rasterize\(\) expects contour input"):
+            Pipeline().source(fmt, **kwargs)  # type: ignore[arg-type]
+        return
+    if name in _SOURCE_FIELDS[fmt]:
         Pipeline().source(fmt, **kwargs)  # type: ignore[arg-type]
         return
-    with pytest.raises(ValueError, match=f"'{field}' does not apply .*it applies to"):
+    with pytest.raises(ValueError, match=f"'{name}' does not apply .*it applies to"):
         Pipeline().source(fmt, **kwargs)  # type: ignore[arg-type]
 
 

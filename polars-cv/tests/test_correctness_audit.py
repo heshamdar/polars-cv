@@ -934,11 +934,11 @@ class TestPipelineValidation:
             Pipeline().source("image_bytes").area()
 
     def test_contour_source_starts_in_buffer_domain(self) -> None:
-        """Contour source with dimensions rasterizes → starts in buffer domain.
+        """A contour source with a canvas rasterizes → the buffer domain.
 
-        This means buffer ops like grayscale() should work on a contour source.
+        The canvas keywords append ``rasterize()``, so buffer ops like
+        grayscale() follow it.
         """
-        # Contour source with explicit dims rasterizes automatically
         pipe = Pipeline().source("contour", width=100, height=100)
         assert pipe.current_domain() == "buffer"
         # So buffer ops should work:

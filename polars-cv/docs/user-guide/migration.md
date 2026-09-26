@@ -84,6 +84,16 @@ A misspelled literal (`ensure_winding("CW")`, `scale(origin="top_left")`) still
 raises `ValueError` when the expression is built; the message now comes from
 the definition and lists every accepted spelling.
 
+## Contour sources
+
+`source("contour", width=..., height=...)` (or `shape=`) is now exactly
+`source("contour").rasterize(width=..., height=...)`, so `repr()`/`explain()`
+show the `rasterize` step, and the output is unchanged. Without a canvas,
+`source("contour")` decodes to the contour domain instead of raising. A per-row
+canvas value that is invalid for a row is a query error as it is for
+`rasterize()`; `source(on_error="null")` nulls only rows whose contour cannot be
+decoded.
+
 ## Removed
 
 - `Pipeline.output_encoding()`. The plugin reads whether an output is
@@ -101,4 +111,7 @@ Only relevant if you build the plugin's graph JSON yourself rather than through
   [d0, d1, d2]}`, checked against every row where it appears.
 - Op, source and sink fields are the Python parameter names with bare values
   (`"height": 224`) or `{"$slot": n}` for a per-row expression. Unknown fields
-  are refused by name.
+  are refused by name; a field with a default may be omitted.
+- A `contour` source has only `on_error`: it decodes the column to the contour
+  domain. Its former `size`/`fill_value`/`background` are a `rasterize` op
+  (`{"op": "rasterize", "size": [h, w]}`) as the node's first op.

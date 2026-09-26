@@ -520,6 +520,11 @@ REMOVED: tuple[Removed, ...] = (
     Removed("map_contours_with_params", "C5: map_contours"),
     Removed("contour_bbox", "C5: contour_bounding_box, the op's wire name"),
     Removed("_enum_or_expr", "C5: the definition validates (check_geom_call)"),
+    Removed("decode_contour_source", "C6c: a contour source decodes; rasterize is the op"),
+    Removed(
+        "decode_contour_source_with_dims",
+        "C6c: the rasterize op's node canvas (RasterizeShapeRef)",
+    ),
 )
 
 

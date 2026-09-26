@@ -383,13 +383,8 @@ impl State {
 /// The state a source hands the first op.
 ///
 /// Exhaustive over the formats: what each decodes to is a fact about the
-/// format. A contour source decodes by rasterizing, so its state is the
-/// `rasterize` op's over the contour domain — the source and the op cannot
-/// publish different masks.
-pub(crate) fn source_state(
-    source: &crate::formats::source::Source,
-    refs: &Refs,
-) -> Result<State, String> {
+/// format.
+pub(crate) fn source_state(source: &crate::formats::source::Source) -> State {
     use crate::formats::source::Source;
 
     let buffer = |dtype: Option<view_buffer::DType>, ndim: Option<usize>| {
@@ -397,7 +392,7 @@ pub(crate) fn source_state(
         State::new(Domain::Buffer, dtype, ndim)
     };
     let dtype = source.dtype();
-    Ok(match source {
+    match source {
         // Raw bytes decode to a flat 1-D buffer of the declared dtype.
         Source::Raw(_) => buffer(dtype, Some(1)),
         // Decoded images are always `[H, W, C]`; the dtype is the caller's
@@ -408,16 +403,14 @@ pub(crate) fn source_state(
         Source::Auto(_) | Source::Blob(_) | Source::List(_) | Source::Array(_) => {
             buffer(dtype, None)
         }
-        Source::Contour(s) => {
-            let rasterize = crate::ops::TypedOp::Geometry(view_buffer::GeometryOp::Rasterize {
-                size: s.size.clone(),
-                fill_value: s.fill_value.unwrap_or(crate::ops::Param::Lit(255)),
-                background: s.background.unwrap_or(crate::ops::Param::Lit(0)),
-            });
-            let contours = State::new(Domain::Contour, PlannedDType::Unknown, None);
-            step(&rasterize, &contours, refs)?
-        }
-    })
+        // The column's contour set, as `extract_contours` publishes one:
+        // f64 coordinates, no rank. Rasterizing is the `rasterize` op's.
+        Source::Contour(_) => State::new(
+            Domain::Contour,
+            PlannedDType::Known(view_buffer::DType::F64),
+            None,
+        ),
+    }
 }
 
 /// The shape an op consumes, symbolically: each known size, and `Input(k)`
@@ -677,13 +670,11 @@ impl Plan {
 
     /// This plan with `source_json` as its source (validated against the
     /// format's typed definition) and its ops planned again from the state the
-    /// source starts them in. `refs` are the states of the nodes the source
-    /// reads (a contour canvas's).
-    #[pyo3(signature = (source_json, refs=None))]
-    fn with_source(&self, source_json: &str, refs: Option<Refs>) -> PyResult<Plan> {
+    /// source starts them in.
+    fn with_source(&self, source_json: &str) -> PyResult<Plan> {
         let source: crate::formats::source::Source =
             serde_json::from_str(source_json).map_err(|e| py_value_error(e.to_string()))?;
-        let start = source_state(&source, &refs.unwrap_or_default()).map_err(py_value_error)?;
+        let start = source_state(&source);
         let ops = self.ops.iter().map(|p| (p.op.clone(), p.refs.clone()));
         Plan::replanned(Some(source), start, ops).map_err(py_value_error)
     }
@@ -1074,40 +1065,32 @@ mod tests {
 
     #[test]
     fn each_source_format_plans_its_own_state() {
-        let plan = |v: serde_json::Value, refs: &Refs| {
-            let source = serde_json::from_value(v).unwrap();
-            let s = source_state(&source, refs).unwrap();
+        let plan = |v: serde_json::Value| {
+            let s = source_state(&serde_json::from_value(v).unwrap());
             (s.domain.name(), s.dtype.as_str(), s.ndim, s.dims)
         };
-        let none = Refs::new();
         let buffer = |dtype, ndim| ("buffer", dtype, ndim, [None; 3]);
         assert_eq!(
-            plan(json!({"format": "raw", "dtype": "u16"}), &none),
+            plan(json!({"format": "raw", "dtype": "u16"})),
             buffer("u16", Some(1))
         );
         assert_eq!(
-            plan(json!({"format": "image_bytes"}), &none),
+            plan(json!({"format": "image_bytes"})),
             buffer("auto", Some(3))
         );
         assert_eq!(
-            plan(json!({"format": "file_path", "dtype": "f32"}), &none),
+            plan(json!({"format": "file_path", "dtype": "f32"})),
             buffer("f32", Some(3))
         );
-        assert_eq!(plan(json!({"format": "auto"}), &none), buffer("auto", None));
+        assert_eq!(plan(json!({"format": "auto"})), buffer("auto", None));
         assert_eq!(
-            plan(json!({"format": "list", "dtype": "f32"}), &none),
+            plan(json!({"format": "list", "dtype": "f32"})),
             buffer("f32", None)
         );
-        let contour = |size: serde_json::Value| json!({"format": "contour", "size": size, "fill_value": 255, "background": 0});
+        // A contour source decodes the set; rasterizing is an op.
         assert_eq!(
-            plan(contour(json!([10, 12])), &none),
-            ("buffer", "u8", Some(3), [Some(10), Some(12), Some(1)])
-        );
-        // A canvas from another node is that node's planned size.
-        let refs: Refs = [("n0".to_string(), image())].into_iter().collect();
-        assert_eq!(
-            plan(contour(json!("n0")), &refs).3,
-            [Some(100), Some(50), Some(1)]
+            plan(json!({"format": "contour"})),
+            ("contour", "f64", None, [None; 3])
         );
     }
 

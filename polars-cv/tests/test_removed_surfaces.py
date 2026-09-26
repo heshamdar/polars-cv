@@ -231,6 +231,27 @@ def test_contour_source_rejects_a_dtype_assertion() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The contour source's canvas fields: a second rasterize
+# ---------------------------------------------------------------------------
+
+
+@plugin_required
+def test_the_contour_source_has_no_canvas_fields() -> None:
+    """A contour source only decodes; the canvas belongs to ``rasterize``.
+
+    The source carried its own ``size``/``fill_value``/``background`` — a copy
+    of the op's fields with its own defaults, per-row resolution, node-canvas
+    lookup and decode path beside the op's. ``source("contour", width=, ...)``
+    now appends the ``rasterize`` op, so the wire refuses the fields on the
+    source rather than reading them a second way.
+    """
+    for field, value in (("size", [4, 4]), ("fill_value", 1), ("background", 0)):
+        wire = json.dumps({"format": "contour", field: value})
+        with pytest.raises(ValueError, match=f"'{field}' is not a source parameter"):
+            Pipeline()._plan.with_source(wire)
+
+
+# ---------------------------------------------------------------------------
 # Python-side sink spec classes: unreachable, and wrong where they disagreed
 # ---------------------------------------------------------------------------
 

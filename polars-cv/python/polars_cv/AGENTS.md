@@ -92,9 +92,9 @@ When `.sink()` is called, a `PipelineGraph` is built:
 5. The graph is serialized to JSON
 6. `_plugin.call("vb_graph", ...)` is called (the package's only route to `register_plugin_function`)
 
-**A node reference is not a dependency until it is an upstream edge.** An op or
-source that points at another `LazyPipelineExpr` by node id — `rasterize(shape=)`,
-`source("contour", shape=)`, a binary operand — is recorded in `Pipeline._node_refs`
+**A node reference is not a dependency until it is an upstream edge.** An op
+that points at another `LazyPipelineExpr` by node id — `rasterize(shape=)` (and
+so `source("contour", shape=)`), a binary operand — is recorded in `Pipeline._node_refs`
 (by `_encode_field`, for every node-typed field), because `_node_refs` is both
 what plans the op (the node's state, by id) and what `cv.pipe` /
 `LazyPipelineExpr.pipe` turn into the
@@ -180,8 +180,8 @@ rank, or dtype**. Everything else follows from that one invariant.
    crop offsets, pad amounts and values, rotate angle and `border_value`,
    warp_affine `output_size`/`border_value`, blur sigma, threshold value, canny
    thresholds, contrast/gamma/brightness/sharpen factors, morphology
-   ksize/iterations, channel_select index, convolve2d ksize, rasterize and
-   contour-source `width`/`height`/`fill_value`/`background`, histogram
+   ksize/iterations, channel_select index, convolve2d ksize, rasterize
+   `width`/`height`/`fill_value`/`background`, histogram
    `range` (both ends), extract_contours `min_area`, reduce_percentile q,
    reduce_std ddof.
 2. *Per-element lists* — the list **length** stays structural while each
@@ -359,13 +359,10 @@ keyword defaults to `None`, so passed means not `None`), and
 produced one raise, one warning and five silent drops on the source side, and an
 open keyword surface on the sink side.
 
-`source("contour")` publishes that same contract: its decode *is* a rasterize,
-so its planned state (`Plan.with_source` → `plan::source_state`) is the
-`rasterize` op's over the contour domain (rank 3, u8, one channel, the canvas),
-computed by the same `plan::step`, instead of the source hand-writing a rank.
-No op is appended to the plan — the rasterize already happens inside the
-decode. Whatever the two routes to a mask publish,
-they publish it identically (`TestContourSourcePlanTimeContract`).
+`source("contour")` decodes the column to the contour domain and nothing
+more. Its canvas keywords (`width`/`height`/`shape`/`fill_value`/`background`)
+append the `rasterize` op, so there is one route to a mask and it is planned
+and executed as that op (`TestContourSourcePlanTimeContract`).
 
 ## Common Pitfalls
 
@@ -375,5 +372,5 @@ they publish it identically (`TestContourSourcePlanTimeContract`).
   contract makes planned and executed schemas diverge (caught by the
   plan==exec tests in `test_sanitation.py`).
 - **Expression params must be slotted.** An expression reaches Rust only as a slot in the pipeline's table (`_slot()`, which `_encode_field` and `_wire()` call); a typed op's fields get this from their catalogue type.
-- **The `auto` dtype.** Sources like `image_bytes` and `file_path` have dtype `auto` because the actual dtype is only known at execution time (after decoding). Operations that need a known dtype (like `sink("list")` or `sink("array")`) must have it resolved before the sink, either via `source(..., dtype="f32")`, `.cast(...)`, or a dtype-fixing operation. `contour` is *not* one of them — rasterizing fixes u8, so it publishes u8 and rejects a `dtype=` assertion rather than accepting one it never reads.
+- **The `auto` dtype.** Sources like `image_bytes` and `file_path` have dtype `auto` because the actual dtype is only known at execution time (after decoding). Operations that need a known dtype (like `sink("list")` or `sink("array")`) must have it resolved before the sink, either via `source(..., dtype="f32")`, `.cast(...)`, or a dtype-fixing operation. `contour` is *not* one of them — it decodes f64 coordinates and `rasterize` fixes u8, so it rejects a `dtype=` assertion rather than accepting one it never reads.
 - **Continuation nodes must inherit upstream typing context.** In `LazyPipelineExpr.pipe()` for op-only continuation pipelines (a plan with no source), compute node domain/dtype/ndim using upstream state + new ops. Copying op-only pipeline typing state can cause contract drift (planned dtype mismatch at execution).
