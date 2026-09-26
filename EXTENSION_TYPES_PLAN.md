@@ -19,7 +19,7 @@ explicit and versioned.
 |---|---|---|
 | 1 — Foundation | `ExtType` (Rust, one list; storage read from `geom_schema` / `numpy_output_dtype`); `extension_types` FFI; `NdArrayType` / `PointType` / `ContourType` / `BBoxType` registered at `import polars_cv`; `_plugin.call` as the only way into the plugin; `dtype-extension` always on | `src/ext_types.rs`, `python/polars_cv/extension_types.py`, `python/polars_cv/_plugin.py` |
 | 2 — `sink("ndarray")` | `SinkKind::NdArray` across the four halves; `SinkFormat.NDARRAY`; `numpy_from_struct` / `show_images` read the tag; `sink("numpy")` unchanged | `src/graph/{sink_kind,decode,encode}.rs`, `tests/test_ndarray_sink.py` |
-| 3 — Tagged inputs | Every accessor and `vb_graph` source accepts a tagged column; swept from the accessor case tables | `tests/test_schema_parity_namespaces.py::test_accessors_accept_tagged_inputs` |
+| 3 — Tagged inputs | Every accessor and `vb_graph` source accepts a tagged column; swept from the accessor case tables. The untagged "looks-like" matching (`points` alias, first list field) is removed (§3.5) | `tests/test_schema_parity_namespaces.py::test_accessors_accept_tagged_inputs` |
 | 6 — Spike deleted | `tests/spike_point_ext/`, `src/ext_*.rs`, the `spike-ext-types` feature | — |
 
 **Where the implementation departed from §3, and why.** Building it turned up
@@ -232,7 +232,7 @@ hit a `_` arm.
 | Tagged, canonical storage | yes |
 | Tagged, wrong storage | **rejected at schema resolution** (implemented in the spike) |
 | Untagged, exactly canonical storage | yes. This is what an unregistered Parquet reader returns and what every existing user has |
-| Untagged, "looks-like" (`points` alias, "first list field", ...) | kept through Phase 3, then **removed** with a `test_removed_surfaces.py` entry. Once tags exist, this loose matching is the silent acceptance the rules forbid |
+| Untagged, "looks-like" (`points` alias, "first list field", ...) | **removed** after Phase 3 (`parse_contour` refuses a struct without `exterior`). Once tags exist, this loose matching is the silent acceptance the rules forbid |
 
 ## 4. Phases
 

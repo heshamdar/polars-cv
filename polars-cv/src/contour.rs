@@ -121,9 +121,9 @@ pub fn contour_to_anyvalue(contour: &Contour) -> AnyValue<'static> {
 /// (pinned by `parse_contour_tests` and `tests/test_contour_parsing.py`).
 ///
 /// Accepted forms:
-/// - a struct matching `{exterior: List[{x, y}], holes: List[List[{x, y}]]}`
-///   (`points` is accepted as an alias for `exterior`; with neither present,
-///   the first list field is used as the exterior)
+/// - a struct with an `exterior: List[{x, y}]` field and optional
+///   `holes: List[List[{x, y}]]` (other fields, such as `is_closed`, are not
+///   read). A struct without `exterior` is refused, not guessed at.
 /// - a bare `List[{x, y}]` (a simple contour without holes)
 pub(crate) fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
     match value {
@@ -134,7 +134,7 @@ pub(crate) fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
 
             for (i, field) in fields.iter().enumerate() {
                 match field.name().as_str() {
-                    "exterior" | "points" => {
+                    "exterior" => {
                         if let Some(AnyValue::List(series)) = values.get(i) {
                             exterior = Some(extract_points_from_series(series)?);
                         }
@@ -148,21 +148,7 @@ pub(crate) fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
                 }
             }
 
-            let exterior = if let Some(points) = exterior {
-                points
-            } else {
-                // Backward-compatible fallback: first list field as exterior.
-                let mut fallback: Option<Vec<Point>> = None;
-                for av in values.iter() {
-                    if let AnyValue::List(series) = av {
-                        fallback = Some(extract_points_from_series(series)?);
-                        break;
-                    }
-                }
-                fallback.ok_or_else(
-                    || polars_err!(ComputeError: "Contour struct missing exterior/points field"),
-                )?
-            };
+            let exterior = exterior.ok_or_else(missing_exterior)?;
 
             Ok(Contour::with_holes(exterior, holes))
         }
@@ -174,7 +160,7 @@ pub(crate) fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
             for (i, field) in fields.iter().enumerate() {
                 let column = struct_array.values()[i].clone();
                 match field.name().as_str() {
-                    "exterior" | "points" => {
+                    "exterior" => {
                         if let Some(list_arr) = column.as_any().downcast_ref::<ListArray<i64>>() {
                             let offsets = list_arr.offsets();
                             let start = offsets[*row_idx] as usize;
@@ -195,9 +181,7 @@ pub(crate) fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
                 }
             }
 
-            let exterior = exterior.ok_or_else(
-                || polars_err!(ComputeError: "Contour struct missing exterior/points field"),
-            )?;
+            let exterior = exterior.ok_or_else(missing_exterior)?;
             Ok(Contour::with_holes(exterior, holes))
         }
         AnyValue::List(series) => {
@@ -207,6 +191,10 @@ pub(crate) fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
         }
         _ => Err(polars_err!(ComputeError: "Expected Struct or List for contour, got {:?}", value)),
     }
+}
+
+fn missing_exterior() -> PolarsError {
+    polars_err!(ComputeError: "Contour struct has no 'exterior' field")
 }
 
 /// Parse geometry that may be a single contour or a whole set of them.
@@ -1329,8 +1317,10 @@ mod parse_contour_tests {
     }
 
     #[test]
-    fn parse_contour_points_field_alias() {
-        // "points" is accepted as an alias for "exterior".
+    fn a_struct_without_an_exterior_is_refused() {
+        // The ring is the `exterior` field: a struct that merely looks like a
+        // contour (a `points` field, or any first list field) is not guessed
+        // at. EXTENSION_TYPES_PLAN.md §3.5.
         let av = contour_to_anyvalue(&square_with_hole());
         let AnyValue::StructOwned(boxed) = av else {
             panic!("contour_to_anyvalue must build a struct");
@@ -1338,8 +1328,8 @@ mod parse_contour_tests {
         let (values, mut fields) = *boxed;
         fields[0] = Field::new(PlSmallStr::from_static("points"), fields[0].dtype().clone());
         let renamed = AnyValue::StructOwned(Box::new((values, fields)));
-        let parsed = parse_contour(&renamed).expect("'points' alias must parse");
-        assert_eq!(parsed.exterior.len(), 4);
+        let err = parse_contour(&renamed).expect_err("a 'points' field is not an exterior");
+        assert!(err.to_string().contains("exterior"), "{err}");
     }
 
     /// Build a `List` AnyValue over `dtype` from the given elements.
@@ -1425,7 +1415,7 @@ mod parse_contour_tests {
             )],
         )));
         let err = parse_contour(&bogus).expect_err("must reject").to_string();
-        assert!(err.contains("exterior/points"), "{err}");
+        assert!(err.contains("'exterior'"), "{err}");
     }
 }
 
