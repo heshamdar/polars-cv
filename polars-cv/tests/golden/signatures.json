@@ -934,11 +934,6 @@
     "self",
     "POSITIONAL_OR_KEYWORD",
     ""
-   ],
-   [
-    "ksize",
-    "KEYWORD_ONLY",
-    "3"
    ]
   ],
   "letterbox": [
@@ -1695,11 +1690,6 @@
     "axis",
     "KEYWORD_ONLY",
     "'x'"
-   ],
-   [
-    "ksize",
-    "KEYWORD_ONLY",
-    "3"
    ]
   ],
   "sqrt": [
@@ -2380,11 +2370,6 @@
     "self",
     "POSITIONAL_OR_KEYWORD",
     ""
-   ],
-   [
-    "ksize",
-    "KEYWORD_ONLY",
-    "3"
    ]
   ],
   "letterbox": [
@@ -3049,11 +3034,6 @@
     "axis",
     "KEYWORD_ONLY",
     "'x'"
-   ],
-   [
-    "ksize",
-    "KEYWORD_ONLY",
-    "3"
    ]
   ],
   "source": [

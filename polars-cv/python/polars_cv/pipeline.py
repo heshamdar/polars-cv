@@ -802,7 +802,7 @@ class Pipeline(_OpsMixin):
 
     # --- Convolution / Filtering ---
 
-    def sobel(self, *, axis: str = "x", ksize: int = 3) -> "Pipeline":
+    def sobel(self, *, axis: str = "x") -> "Pipeline":
         """
         Sobel gradient operator.
 
@@ -813,7 +813,6 @@ class Pipeline(_OpsMixin):
 
         Args:
             axis: Gradient direction — ``"x"`` (horizontal) or ``"y"`` (vertical).
-            ksize: Kernel size (currently only 3 is supported).
 
         Returns:
             Self for chaining.
@@ -823,26 +822,23 @@ class Pipeline(_OpsMixin):
             >>> gx = Pipeline().source("image_bytes").grayscale().sobel(axis="x")
             ```
         """
-        if ksize != 3:
-            msg = f"Only ksize=3 is currently supported for Sobel, got {ksize}"
+        kernels: dict[str, list[FloatOrExpr]] = {
+            "x": [-1.0, 0.0, 1.0, -2.0, 0.0, 2.0, -1.0, 0.0, 1.0],
+            "y": [-1.0, -2.0, -1.0, 0.0, 0.0, 0.0, 1.0, 2.0, 1.0],
+        }
+        if axis not in kernels:
+            msg = f"sobel axis must be 'x' or 'y', got {axis!r}"
             raise ValueError(msg)
+        return self.convolve2d(kernel=kernels[axis], normalize=False)
 
-        sobel_x_3: list[FloatOrExpr] = [-1.0, 0.0, 1.0, -2.0, 0.0, 2.0, -1.0, 0.0, 1.0]
-        sobel_y_3: list[FloatOrExpr] = [-1.0, -2.0, -1.0, 0.0, 0.0, 0.0, 1.0, 2.0, 1.0]
-        kernel = sobel_x_3 if axis == "x" else sobel_y_3
-        return self.convolve2d(kernel=kernel, normalize=False)
-
-    def laplacian(self, *, ksize: int = 3) -> "Pipeline":
+    def laplacian(self) -> "Pipeline":
         """
         Laplacian second-derivative operator.
 
         Convenience method that delegates to :meth:`convolve2d` with a standard
-        Laplacian kernel.
+        Laplacian kernel (the 3x3, 4-neighbour one).
 
         Domain: buffer → buffer
-
-        Args:
-            ksize: Kernel size (currently only 3 is supported).
 
         Returns:
             Self for chaining.
@@ -852,10 +848,6 @@ class Pipeline(_OpsMixin):
             >>> lap = Pipeline().source("image_bytes").grayscale().laplacian()
             ```
         """
-        if ksize != 3:
-            msg = f"Only ksize=3 is currently supported for Laplacian, got {ksize}"
-            raise ValueError(msg)
-
         laplacian_3 = [0.0, 1.0, 0.0, 1.0, -4.0, 1.0, 0.0, 1.0, 0.0]
         return self.convolve2d(kernel=laplacian_3, normalize=False)
 

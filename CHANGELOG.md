@@ -304,6 +304,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Removed
 
+- **`sobel(ksize=)` and `laplacian(ksize=)`.** Both accepted only `3` and
+  raised for anything else; the kernels are the 3x3 ones. `sobel(axis=)` now
+  refuses a value other than `"x"`/`"y"` (it computed the y gradient for any
+  of them). Guarded by `test_removed_surfaces.py`.
 - **`convolve2d(ksize=)`.** The side is the kernel's: its length must be the
   square of an odd number (9 for 3×3, 25 for 5×5, ...), and `kernel` is now
   the op's one positional parameter (`.convolve2d(k)`). `ksize` could only

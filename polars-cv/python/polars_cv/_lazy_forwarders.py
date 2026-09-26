@@ -364,12 +364,12 @@ class _LazyForwardersMixin:
             )
         )
 
-    def laplacian(self, *, ksize: int = 3) -> LazyPipelineExpr:
+    def laplacian(self) -> LazyPipelineExpr:
         """Laplacian second-derivative operator.
 
         Lazy form of :meth:`Pipeline.laplacian` on this expression's output.
         """
-        return self.pipe(self._continuation().laplacian(ksize=ksize))
+        return self.pipe(self._continuation().laplacian())
 
     def letterbox(
         self,
@@ -798,12 +798,12 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().simplify(tolerance=tolerance))
 
-    def sobel(self, *, axis: str = "x", ksize: int = 3) -> LazyPipelineExpr:
+    def sobel(self, *, axis: str = "x") -> LazyPipelineExpr:
         """Sobel gradient operator.
 
         Lazy form of :meth:`Pipeline.sobel` on this expression's output.
         """
-        return self.pipe(self._continuation().sobel(axis=axis, ksize=ksize))
+        return self.pipe(self._continuation().sobel(axis=axis))
 
     def sqrt(self) -> LazyPipelineExpr:
         """Square root (`sqrt(x)`; NaN for negative input).

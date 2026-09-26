@@ -516,15 +516,10 @@ class TestConvolveValidation:
                 kernel=[1.0] * 9, border="invalid"
             )
 
-    def test_sobel_invalid_ksize(self) -> None:
-        """Sobel with ksize != 3 should raise ValueError."""
-        with pytest.raises(ValueError, match="ksize=3"):
-            Pipeline().source("image_bytes").sobel(ksize=5)
-
-    def test_laplacian_invalid_ksize(self) -> None:
-        """Laplacian with ksize != 3 should raise ValueError."""
-        with pytest.raises(ValueError, match="ksize=3"):
-            Pipeline().source("image_bytes").laplacian(ksize=5)
+    def test_sobel_refuses_an_unknown_axis(self) -> None:
+        """Any axis other than "x" used to compute the y gradient silently."""
+        with pytest.raises(ValueError, match="axis"):
+            Pipeline().source("image_bytes").sobel(axis="z")
 
 
 # ===========================================================================
