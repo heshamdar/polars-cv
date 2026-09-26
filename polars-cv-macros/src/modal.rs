@@ -226,7 +226,8 @@ pub fn derive_resolve(input: &DeriveInput) -> syn::Result<TokenStream2> {
 struct OpAttrs {
     name: Option<String>,
     python: Option<String>,
-    visibility: String,
+    /// A `Visibility` variant; `None` is `Public`.
+    visibility: Option<Ident>,
     sample: Option<TokenStream2>,
 }
 
@@ -234,7 +235,7 @@ fn op_attrs(attrs: &[Attribute]) -> syn::Result<OpAttrs> {
     let mut out = OpAttrs {
         name: None,
         python: None,
-        visibility: "public".into(),
+        visibility: None,
         sample: None,
     };
     for attr in attrs.iter().filter(|a| a.path().is_ident("op")) {
@@ -245,17 +246,16 @@ fn op_attrs(attrs: &[Attribute]) -> syn::Result<OpAttrs> {
                 out.sample = Some(quote!(#group));
                 return Ok(());
             }
+            if m.path.is_ident("visibility") {
+                // A variant name, so the compiler checks it against the enum.
+                out.visibility = Some(m.value()?.parse()?);
+                return Ok(());
+            }
             let value: syn::LitStr = m.value()?.parse()?;
             if m.path.is_ident("name") {
                 out.name = Some(value.value());
             } else if m.path.is_ident("python") {
                 out.python = Some(value.value());
-            } else if m.path.is_ident("visibility") {
-                let v = value.value();
-                if !matches!(v.as_str(), "public" | "lazy_only" | "internal") {
-                    return Err(m.error("visibility is public, lazy_only or internal"));
-                }
-                out.visibility = v;
             } else {
                 return Err(m.error("unknown #[op] key (name, python, visibility, sample)"));
             }
@@ -362,7 +362,9 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
         };
         let python = attrs.python.unwrap_or_else(|| wire_name.clone());
-        let visibility = attrs.visibility;
+        let visibility = attrs
+            .visibility
+            .unwrap_or_else(|| Ident::new("Public", proc_macro2::Span::call_site()));
         let field_names: Vec<String> = named
             .iter()
             .map(|f| f.ident.as_ref().unwrap().to_string())
@@ -384,7 +386,17 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 ));
             }
             let wty = wire_type(&f.ty, &mode);
-            let default = match param_default(&f.attrs)? {
+            let declared = param_default(&f.attrs)?;
+            if declared.is_some() && is_option(&f.ty) {
+                return Err(syn::Error::new(
+                    f.span(),
+                    format!(
+                        "field `{fname}` is optional and declares a default: absent would \
+                         mean both `None` and the default"
+                    ),
+                ));
+            }
+            let default = match &declared {
                 Some(expr) => {
                     quote! { ::core::option::Option::Some(::serde_json::Value::from(#expr)) }
                 }
@@ -409,9 +421,21 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     }
                 });
             } else {
+                // Absent: the declared default, parsed as the field (the same
+                // value the Python signature shows), else a missing field.
+                let absent = match &declared {
+                    Some(expr) => quote! {
+                        ::view_buffer::mode::default_field(#fname, ::serde_json::Value::from(#expr))
+                    },
+                    None => quote! {
+                        ::core::result::Result::Err(::view_buffer::mode::missing_field(#fname))
+                    },
+                };
                 takes.push(quote! {
-                    let #id: #wty = ::view_buffer::mode::take_field(&mut fields, #fname)?
-                        .ok_or_else(|| ::view_buffer::mode::missing_field(#fname))?;
+                    let #id: #wty = match ::view_buffer::mode::take_field(&mut fields, #fname)? {
+                        ::core::option::Option::Some(value) => value,
+                        ::core::option::Option::None => #absent?,
+                    };
                 });
                 puts.push(quote! {
                     map.insert(#fname.into(), ::serde_json::to_value(#id)
@@ -467,7 +491,7 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
             ::view_buffer::mode::OpDesc {
                 name: #wire_name,
                 python: #python,
-                visibility: #visibility,
+                visibility: ::view_buffer::mode::Visibility::#visibility,
                 doc: #doc,
                 fields: ::std::vec![#(#field_descs),*],
             }

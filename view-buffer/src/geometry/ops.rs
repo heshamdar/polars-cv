@@ -113,7 +113,7 @@ pub enum GeometryOp<M: Mode = Exec> {
     /// graph dependency and its canvas assertion.
     ///
     /// Domain transition: contour → buffer
-    #[op(name = "rasterize", visibility = "internal",
+    #[op(name = "rasterize", visibility = Internal,
          sample = {"size": [8, 6], "fill_value": 1, "background": 0})]
     Rasterize {
         /// ``[height, width]`` of the mask (each may be a Polars expression), or

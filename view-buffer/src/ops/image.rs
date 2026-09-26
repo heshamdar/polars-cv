@@ -113,7 +113,7 @@ pub enum ImageOpKind<M: Mode = Exec> {
     ///
     /// The public `Pipeline.resize_scale` is sugar over this op that also accepts
     /// one uniform `scale`.
-    #[op(name = "resize_scale", visibility = "internal",
+    #[op(name = "resize_scale", visibility = Internal,
          sample = {"scale_x": 0.5, "scale_y": 0.5, "filter": "bilinear"})]
     ResizeScale {
         /// X (width) scale factor.
