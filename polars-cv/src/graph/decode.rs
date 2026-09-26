@@ -566,7 +566,9 @@ fn list_array_inner_dtype(
         PlannedDType::Known(dtype) => Ok(polars_dtype_for(dtype)),
         // The column will supply it; this schema is only checked, never
         // published (`check_output_before_column`).
-        PlannedDType::SomeFloat | PlannedDType::Unknown if facts == ColumnFacts::Pending => {
+        PlannedDType::SomeFloat | PlannedDType::Unknown
+            if matches!(facts, ColumnFacts::Pending { .. }) =>
+        {
             Ok(DataType::Null)
         }
         // Not labelled an internal error: the common way to get here is a
@@ -587,10 +589,11 @@ pub(crate) enum ColumnFacts {
     /// Polars is planning the query: the plan already holds everything the
     /// column reveals.
     Resolved,
-    /// `.sink()` is checking a graph whose root takes its element type or rank
-    /// from a column not yet seen. Those two facts are the column's to supply,
-    /// so an unknown one is not refused; everything else is decided now.
-    Pending,
+    /// `.sink()` is checking a graph whose root takes its element type and
+    /// rank — and, when `sizes`, its sizes — from a column not yet seen. Those
+    /// facts are the column's to supply, so an unknown one is not refused;
+    /// everything else is decided now.
+    Pending { sizes: bool },
 }
 
 /// Get the Polars DataType for a given output specification.
@@ -601,10 +604,13 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
 }
 
 /// Check an output's sink before its column is seen (see
-/// [`ColumnFacts::Pending`]). The schema is not returned: an element type or
-/// rank the column will supply is not known yet.
-pub(crate) fn check_output_before_column(spec: &OutputSpec) -> PolarsResult<()> {
-    output_schema(spec, ColumnFacts::Pending).map(|_| ())
+/// [`ColumnFacts::Pending`]). The schema is not returned: what the column
+/// will supply is not known yet.
+pub(crate) fn check_output_before_column(
+    spec: &OutputSpec,
+    facts: ColumnFacts,
+) -> PolarsResult<()> {
+    output_schema(spec, facts).map(|_| ())
 }
 
 /// The one sink-schema decision, for [`dtype_for_output`] and
@@ -642,7 +648,7 @@ fn output_schema(spec: &OutputSpec, facts: ColumnFacts) -> PolarsResult<DataType
                 .as_ref()
                 .map(|shape| shape.len())
                 .or(spec.expected_ndim)
-                .or((facts == ColumnFacts::Pending).then_some(1));
+                .or(matches!(facts, ColumnFacts::Pending { .. }).then_some(1));
             // Not a fallback to depth 1: the nesting depth *is* the schema for
             // a list sink, and guessing it is how `source("auto")` on a Binary
             // column came to publish `List(u8)` for data that executes as
@@ -678,11 +684,16 @@ fn output_schema(spec: &OutputSpec, facts: ColumnFacts) -> PolarsResult<DataType
                     dtype = DataType::Array(Box::new(dtype), dim);
                 }
                 Ok(dtype)
+            } else if facts == (ColumnFacts::Pending { sizes: true }) {
+                // A fixed-size `Array` column's type states every size, so
+                // this is decided when the query is planned with the column.
+                // The dtype is not returned for `Pending`.
+                Ok(inner)
             } else {
                 // Names what each remedy actually supplies. The advice this
                 // replaces was circular for the source that reaches it most: a
-                // list/array column's shape is not knowable until execution, so
-                // it lands here — and was told to call `.assert_shape()`, which
+                // list column's sizes vary per row, so it lands here — and was
+                // told to call `.assert_shape()`, which
                 // published nothing without a rank, and `.resize()`, which never
                 // supplies the channel count.
                 polars_bail!(ComputeError:
@@ -691,8 +702,7 @@ fn output_schema(spec: &OutputSpec, facts: ColumnFacts) -> PolarsResult<DataType
                      .sink('array', shape=[8, 8, 3])   — always works; the shape belongs \
                      to the sink\n  \
                      .assert_shape(dims=[8, 8, 3])     — when you know it and the source \
-                     does not (a list/array column's shape is only settled during \
-                     execution)\n  \
+                     does not (a list column's sizes are only settled per row)\n  \
                      .resize(height=8, width=8)        — supplies height and width only"
                 );
             }

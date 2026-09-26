@@ -359,17 +359,23 @@ impl UnifiedGraph {
                 .is_some_and(|up| self.ends_in_histogram_buckets(up)),
         }
     }
-    /// Whether `node_id`'s lineage starts at a root whose source takes its
-    /// element type or rank from the input column.
-    pub(crate) fn root_resolves_from_column(&self, node_id: &str) -> bool {
-        let Some(node) = self.nodes.get(node_id) else {
-            return false;
-        };
+    /// What the input column will supply to `node_id`'s lineage, when it
+    /// starts at a root whose source takes facts from the column; `None`
+    /// when the plan holds everything already.
+    pub(crate) fn column_facts_pending(
+        &self,
+        node_id: &str,
+    ) -> Option<crate::graph::decode::ColumnFacts> {
+        let node = self.nodes.get(node_id)?;
         match node.upstream.first() {
             Some(up) if !self.column_bindings.contains_key(node_id) => {
-                self.root_resolves_from_column(up)
+                self.column_facts_pending(up)
             }
-            _ => node.source.resolves_from_column(),
+            _ => node.source.resolves_from_column().then(|| {
+                crate::graph::decode::ColumnFacts::Pending {
+                    sizes: node.source.column_may_fix_sizes(),
+                }
+            }),
         }
     }
     /// Check if this is a single-output graph (returns Binary instead of Struct).
