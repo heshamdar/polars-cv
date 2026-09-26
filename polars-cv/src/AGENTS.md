@@ -128,7 +128,7 @@ compile time (`OpResolver::Static`); the rest resolve per row.
 
 | Source Format | Decoding |
 |---------------|----------|
-| `auto` (the Python default) | Resolved to a concrete format below by `resolve_auto_format` (`graph/compiled.rs`) from the column dtype: String → `file_path`, List/Array → `list`/`array`, Binary → `blob` if the bytes start with `protocol::MAGIC_BYTES` else `image_bytes`. Resolved once per batch (dtype is row-invariant), not per row; an unroutable dtype errors |
+| `auto` (the Python default) | Routed to the concrete source below, carrying the auto settings it reads, by `Source::route` (`formats/source.rs`) from the column dtype: String → `file_path`, List/Array → `list`/`array`, Binary → `blob` if the bytes start with `protocol::MAGIC_BYTES` else `image_bytes`. Routed once per batch (dtype is row-invariant), not per row; an unroutable dtype errors |
 | `image_bytes` | Decode PNG/JPEG/TIFF via `ImageAdapter` → `ViewBuffer` (alpha channels preserved) |
 | `blob` | VIEW protocol binary (header + data) → `ViewBuffer` |
 | `raw` | Raw bytes with explicit dtype → `ViewBuffer` |

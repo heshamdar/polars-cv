@@ -47,10 +47,9 @@ fn decode_jpeg_scaled(bytes: &[u8], max_size: u32) -> Option<ViewBuffer> {
 /// the source's decode-scale and dtype settings.
 ///
 /// Reached for `image_bytes` sources, `file_path` sources once their bytes are
-/// read, and `auto` sources that resolved to image bytes. The executor
-/// dispatches on its `SourceFormat` before calling, so this takes no format.
-/// It used to take one, which made `file_path` and `auto` rows clone their
-/// whole source spec to overwrite the format string first (CR-37). `blob`/`raw`
+/// read, and `auto` sources routed to image bytes. The executor dispatches on
+/// the (routed) `Source` before calling and passes it for its `dtype` and
+/// `decode_max_size`. `blob`/`raw`
 /// sources never reach it: they decode zero-copy via
 /// `graph::decode::decode_binary_zero_copy`.
 pub fn decode_image_bytes(bytes: &[u8], source: &Source) -> PolarsResult<ViewBuffer> {
