@@ -362,16 +362,20 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         """
         Apply a contour as a mask to this image.
 
-        The contour will be auto-rasterized to match the current image dimensions.
-        This is a convenience for:
-            mask_pipe = Pipeline().source("contour").rasterize(shape=img_expr)
-            mask = pl.col("contour").cv.pipe(mask_pipe)
+        The contour is rasterized onto this image's canvas. This is a
+        convenience for:
+            mask = contour.rasterize(shape=img)
             img.apply_mask(mask)
 
         Args:
-            contour: LazyPipelineExpr from a contour source (dimensions will be
-                inferred from this image's output shape).
+            contour: LazyPipelineExpr whose pipeline ends in contours (its ops
+                all run), or in ``rasterize()``, whose canvas is replaced by
+                this image's while its ``fill_value``/``background`` are kept.
             invert: If True, mask exterior instead of interior.
+
+        Raises:
+            ValueError: If ``contour`` ends in neither contours nor
+                ``rasterize()``.
 
         Returns:
             New LazyPipelineExpr with the contour mask applied.
