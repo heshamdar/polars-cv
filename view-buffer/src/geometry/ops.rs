@@ -220,16 +220,17 @@ impl<M: Mode> GeometryOp<M> {
             | GeometryOp::Scale { .. }
             | GeometryOp::Simplify { .. }
             | GeometryOp::ConvexHull => OpShape::Preserve,
-            GeometryOp::Rasterize { size, .. } => {
-                let (h, w) = match size {
-                    RasterSize::Fixed([h, w]) => {
-                        (crate::mode::size::<M>(h), crate::mode::size::<M>(w))
-                    }
-                    // Another node's canvas: known only once that node has run.
-                    RasterSize::FromNode(_) => (Sym::PerRow, Sym::PerRow),
-                };
-                OpShape::Fixed(vec![h, w, Sym::Known(1)])
-            }
+            GeometryOp::Rasterize { size, .. } => match size {
+                RasterSize::Fixed([h, w]) => OpShape::Fixed(vec![
+                    crate::mode::size::<M>(h),
+                    crate::mode::size::<M>(w),
+                    Sym::Known(1),
+                ]),
+                // Another node's canvas: its H and W, read from that node as
+                // the step's second input (the planner passes its planned
+                // shape; the executor sets the canvas before the op runs).
+                RasterSize::FromNode(_) => OpShape::Canvas { of: 1 },
+            },
             // ExtractContours output shape is data-dependent
             GeometryOp::ExtractContours { .. } => OpShape::Dynamic,
         }

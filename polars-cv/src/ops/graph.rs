@@ -355,8 +355,6 @@ impl<M: Mode> GraphOp<M> {
         }
     }
 
-    /// Whether this op reads another graph node's buffer, so a spatial
-    /// window hoisted past it would crop only this operand.
     /// Whether the op can run on inputs of these shapes and dtypes — this
     /// op's input first, then the operands it reads by id — over what is known
     /// of them: an error is only ever a verdict on a known fact (the engine
@@ -368,19 +366,25 @@ impl<M: Mode> GraphOp<M> {
     ) -> Result<(), view_buffer::ops::validation::ValidationError> {
         match self.role() {
             Role::Binary(op, _) => op.validate(inputs, dtypes),
-            // The operands these read are checked per row.
-            Role::ApplyMask { .. }
-            | Role::ChannelMerge { .. }
-            | Role::AssertShape { .. }
-            | Role::ExtractShape
-            | Role::LabelReduce { .. } => Ok(()),
+            Role::ApplyMask { .. } => match inputs {
+                [buffer, mask, ..] => view_buffer::validate_mask(buffer, mask),
+                _ => Ok(()),
+            },
+            Role::ChannelMerge { .. } => view_buffer::validate_channel_merge(inputs, dtypes),
+            // A declaration is applied by the planner and checked per row;
+            // the others read no size.
+            Role::AssertShape { .. } | Role::ExtractShape | Role::LabelReduce { .. } => Ok(()),
         }
     }
 
-    pub fn reads_other_nodes(&self) -> bool {
+    /// The other graph nodes this op reads by id, in input order after its
+    /// own input (see [`GraphStep::operands`](crate::graph::step::GraphStep::operands)).
+    pub fn operands(&self) -> Vec<&NodeRef> {
         match self.role() {
-            Role::Binary(..) | Role::ApplyMask { .. } | Role::ChannelMerge { .. } => true,
-            Role::AssertShape { .. } | Role::ExtractShape | Role::LabelReduce { .. } => false,
+            Role::Binary(_, other) => vec![other],
+            Role::ApplyMask { mask, .. } => vec![mask],
+            Role::ChannelMerge { others } => others.iter().collect(),
+            Role::AssertShape { .. } | Role::ExtractShape | Role::LabelReduce { .. } => Vec::new(),
         }
     }
 

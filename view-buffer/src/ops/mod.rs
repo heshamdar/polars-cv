@@ -56,7 +56,7 @@ pub use pad::{PadMode, PadPosition};
 pub use phash::{HashAlgorithm, PerceptualHashOp};
 pub use reduction::ReductionOp;
 pub use scalar::{FusedKernel, ScalarOp};
-pub use shape_rule::{Dim, OpShape, Sym};
+pub use shape_rule::{Dim, OpShape, PlannedInput, Sym};
 pub use spatial_rule::{GeometricEffect, NeighborhoodSupport, SpatialDependency};
 pub use traits::{IdentityRule, MemoryEffect, Op};
 pub use validation::ValidationError;

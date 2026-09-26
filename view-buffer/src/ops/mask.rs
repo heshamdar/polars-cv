@@ -22,20 +22,20 @@ use crate::ops::binary::BinaryOp;
 /// Reads the same two facts `apply_mask` acts on: a 2-D mask over a 3-D buffer
 /// is first expanded to the buffer's channel count, and the result is then
 /// blended with the buffer, so it must broadcast against it. Stated through
-/// `BinaryOp::Blend`'s own `validate` so the two cannot drift.
+/// `BinaryOp::Blend`'s own `validate` so the two cannot drift. Over what is
+/// known of the shapes (the planner's call; execution passes known ones), so
+/// an error is a verdict on a known size.
 pub fn validate_mask(
-    buffer_shape: &[usize],
-    mask_shape: &[usize],
+    buffer_shape: &[crate::ops::Dim],
+    mask_shape: &[crate::ops::Dim],
 ) -> Result<(), crate::ops::validation::ValidationError> {
-    let effective: Vec<usize> = match (mask_shape, buffer_shape) {
+    use crate::ops::traits::Op as _;
+    let effective: Vec<crate::ops::Dim> = match (mask_shape, buffer_shape) {
         ([h, w], [_, _, c]) => vec![*h, *w, *c],
         _ => mask_shape.to_vec(),
     };
-    crate::ops::validation::validate_concrete(
-        &BinaryOp::Blend,
-        &[buffer_shape, &effective],
-        &[DType::F32, DType::F32],
-    )
+    let f32 = crate::PlannedDType::Known(DType::F32);
+    BinaryOp::Blend.validate(&[buffer_shape, &effective], &[f32, f32])
 }
 
 pub fn apply_mask(buffer: &ViewBuffer, mask: &ViewBuffer, invert: bool) -> ViewBuffer {

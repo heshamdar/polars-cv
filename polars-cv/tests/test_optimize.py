@@ -767,8 +767,11 @@ class TestSpatialPushdownGuard:
         # Build a node whose ops are [grayscale, apply_mask, crop] directly —
         # node-splitting keeps this shape off the public API, so this is the
         # only way to exercise the barrier.
+        # The mask is a real node: an op reading a node is planned against its
+        # state, so a bare id with none is refused (PLANNER_SIZES_PLAN.md S3).
+        mask = pl.col("m").cv.pipe(Pipeline().source("image_bytes").grayscale())
         pipe = Pipeline().source("image_bytes").grayscale()
-        pipe._add_node_op("apply_mask", {"mask": "mask_node", "invert": False})
+        pipe._add_node_op("apply_mask", {"mask": mask, "invert": False})
         pipe = pipe.crop(top=0, left=0, height=8, width=8)
         assert op_names(pipe) == ["grayscale", "apply_mask", "crop"]
 

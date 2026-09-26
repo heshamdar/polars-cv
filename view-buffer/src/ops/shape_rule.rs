@@ -22,6 +22,25 @@ pub enum Dim {
     Unknown,
 }
 
+/// One input's shape as the plan holds it, for [`OpShape::dims_over`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PlannedInput<'a> {
+    /// The rank is known: one entry per axis.
+    Ranked(&'a [Dim]),
+    /// The rank is not: the sizes of the leading axes the input has, if it
+    /// has them (`None` unknown).
+    Unranked(&'a [Option<usize>]),
+}
+
+impl PlannedInput<'_> {
+    fn rank(&self) -> Option<usize> {
+        match self {
+            PlannedInput::Ranked(dims) => Some(dims.len()),
+            PlannedInput::Unranked(_) => None,
+        }
+    }
+}
+
 /// A shape as sizes, every one known (execution's view of a buffer).
 pub fn known_dims(shape: &[usize]) -> Vec<Dim> {
     shape.iter().map(|&n| Dim::Known(n)).collect()
@@ -159,11 +178,15 @@ pub enum OpShape {
     Reduce { axis: Option<usize> },
     /// The two inputs broadcast together, axis by axis from the last.
     Broadcast,
-    /// `[H, W]` inputs stacked along a new channel axis: `[H, W, n]`. No
-    /// other rank has an output.
+    /// `[H, W]` inputs stacked along a new channel axis: `[H, W, n]`, H and W
+    /// being whichever input knows them. No other rank, and no two inputs of
+    /// different known H or W, has an output.
     StackChannels(usize),
     /// The input's rank as a 1-D vector: `[rank]` (reading the dimensions).
     InputRank,
+    /// A single-channel canvas the size of input `of`'s H and W:
+    /// `[H, W, 1]`. No output when that input has fewer than two axes.
+    Canvas { of: usize },
 }
 
 impl OpShape {
@@ -316,11 +339,30 @@ impl OpShape {
                 }
                 out
             }
-            OpShape::StackChannels(n) => match input {
-                [h, w] => vec![*h, *w, Dim::Known(*n)],
+            // Every input is `[H, W]` of one H and W, so each axis is the one
+            // any input knows (two that differ have no output).
+            OpShape::StackChannels(n) => {
+                let mut hw = match input {
+                    [h, w] => [*h, *w],
+                    _ => return None,
+                };
+                for other in inputs.iter().skip(1) {
+                    let [oh, ow] = other else { return None };
+                    for (d, o) in hw.iter_mut().zip([*oh, *ow]) {
+                        match (d.known(), o.known()) {
+                            (Some(a), Some(b)) if a != b => return None,
+                            (None, Some(_)) => *d = o,
+                            _ => {}
+                        }
+                    }
+                }
+                vec![hw[0], hw[1], Dim::Known(*n)]
+            }
+            OpShape::InputRank => vec![Dim::Known(input.len())],
+            OpShape::Canvas { of } => match inputs.get(*of) {
+                Some([h, w, ..]) => vec![*h, *w, Dim::Known(1)],
                 _ => return None,
             },
-            OpShape::InputRank => vec![Dim::Known(input.len())],
             // Two known sizes that cannot broadcast have no output: `validate`
             // refuses them, and no shape is invented for them.
             OpShape::Broadcast => match inputs {
@@ -348,7 +390,7 @@ impl OpShape {
                 OpShape::Fixed(shape) => Some(shape.len()),
                 OpShape::Transpose(perm) => Some(perm.len()),
                 OpShape::Reduce { axis: None } => Some(1),
-                OpShape::StackChannels(_) => Some(3),
+                OpShape::StackChannels(_) | OpShape::Canvas { .. } => Some(3),
                 OpShape::InputRank => Some(1),
                 _ => None,
             },
@@ -361,23 +403,63 @@ impl OpShape {
     /// it covers every rank. Pinned by `a_shape_is_rank_stable_past_its_patterns`.
     pub const DISTINGUISHED_RANK: usize = 3;
 
-    /// The output sizes over an input of **unknown rank** whose leading axes'
-    /// sizes are `leading` (`None` unknown): an axis's size is known only
-    /// where every rank the input may have (and the shape has an output for)
-    /// agrees on it. Evaluated over ranks
-    /// `1..=max(leading.len(), DISTINGUISHED_RANK)`, which is every rank the
-    /// answer can differ at. Trailing unknowns are trimmed.
-    pub fn dims_over_unknown_rank(&self, leading: &[Option<usize>]) -> Vec<Option<usize>> {
-        let top = leading.len().max(Self::DISTINGUISHED_RANK);
-        let outs: Vec<Vec<Dim>> = (1..=top)
-            .filter_map(|rank| {
-                let input: Vec<Dim> = (0..rank)
-                    .map(|axis| match leading.get(axis).copied().flatten() {
-                        Some(size) => Dim::Known(size),
-                        None => Dim::Input(axis),
+    /// The known output sizes over `inputs` as the plan holds them, each
+    /// [`Ranked`](PlannedInput::Ranked) or of unknown rank with some leading
+    /// sizes: an axis's size is known only where every rank an unranked input
+    /// may have (and the shape has an output for) agrees on it. Each unranked
+    /// input is evaluated over ranks `1..=max(leading.len(), DISTINGUISHED_RANK)`,
+    /// which is every rank the answer can differ at. Trailing unknowns are
+    /// trimmed.
+    ///
+    /// Positions are counted from the first axis. With one input that is
+    /// sound whatever its rank (every single-input variant reads its input
+    /// from the front: `a_shape_is_rank_stable_past_its_patterns`). With
+    /// several, a shape may align them from the *last* axis (`Broadcast`), so
+    /// an unranked operand's rank would shift every position; sizes are then
+    /// claimed only when the output rank does not depend on the unranked
+    /// inputs' ranks.
+    pub fn dims_over(&self, inputs: &[PlannedInput<'_>]) -> Vec<Option<usize>> {
+        let unranked = |i: &PlannedInput<'_>| matches!(i, PlannedInput::Unranked(_));
+        if inputs.len() > 1 && inputs.iter().any(unranked) {
+            let ranks: Vec<Option<usize>> = inputs.iter().map(PlannedInput::rank).collect();
+            if self.rank(&ranks).is_none() {
+                return Vec::new();
+            }
+        }
+        // Every combination of the ranks each input may have.
+        let mut combos: Vec<Vec<Vec<Dim>>> = vec![Vec::new()];
+        for input in inputs {
+            let candidates: Vec<Vec<Dim>> = match input {
+                PlannedInput::Ranked(dims) => vec![dims.to_vec()],
+                PlannedInput::Unranked(leading) => {
+                    (1..=leading.len().max(Self::DISTINGUISHED_RANK))
+                        .map(|rank| {
+                            (0..rank)
+                                .map(|axis| match leading.get(axis).copied().flatten() {
+                                    Some(size) => Dim::Known(size),
+                                    None => Dim::Input(axis),
+                                })
+                                .collect()
+                        })
+                        .collect()
+                }
+            };
+            combos = combos
+                .into_iter()
+                .flat_map(|combo| {
+                    candidates.iter().map(move |c| {
+                        let mut combo = combo.clone();
+                        combo.push(c.clone());
+                        combo
                     })
-                    .collect();
-                self.dims(&[&input])
+                })
+                .collect();
+        }
+        let outs: Vec<Vec<Dim>> = combos
+            .iter()
+            .filter_map(|combo| {
+                let refs: Vec<&[Dim]> = combo.iter().map(Vec::as_slice).collect();
+                self.dims(&refs)
             })
             .collect();
         let width = outs.iter().map(Vec::len).max().unwrap_or(0);
@@ -447,7 +529,7 @@ mod symbolic_tests {
     //! `OpShape::dims` over symbolic sizes: what the planner reads instead of
     //! probing the op with placeholder values.
 
-    use super::{Dim, OpShape, Sym};
+    use super::{Dim, OpShape, PlannedInput, Sym};
     use Dim::{Input, Known, Unknown};
 
     fn dims(shape: OpShape, input: &[Dim]) -> Vec<Dim> {
@@ -640,6 +722,7 @@ mod symbolic_tests {
             OpShape::Broadcast,
             OpShape::StackChannels(2),
             OpShape::InputRank,
+            OpShape::Canvas { of: 1 },
         ];
         for shape in &samples {
             match shape {
@@ -665,13 +748,14 @@ mod symbolic_tests {
                 | OpShape::Reduce { .. }
                 | OpShape::Broadcast
                 | OpShape::StackChannels(_)
-                | OpShape::InputRank => {}
+                | OpShape::InputRank
+                | OpShape::Canvas { .. } => {}
             }
         }
         samples
     }
 
-    /// `dims_over_unknown_rank` evaluates ranks only up to
+    /// `dims_over` evaluates ranks only up to
     /// `DISTINGUISHED_RANK` (or the leading sizes' length); that is sound only
     /// if no variant tells a higher rank apart. Every size it claims must hold
     /// at every higher rank too, or the axis be absent there.
@@ -680,7 +764,7 @@ mod symbolic_tests {
         for leading in [vec![], vec![Some(7)], vec![Some(7), Some(9), Some(3)]] {
             let top = leading.len().max(OpShape::DISTINGUISHED_RANK);
             for shape in every_variant() {
-                let claimed = shape.dims_over_unknown_rank(&leading);
+                let claimed = shape.dims_over(&[PlannedInput::Unranked(&leading)]);
                 for rank in top + 1..=top + 3 {
                     let input: Vec<Dim> = (0..rank)
                         .map(|axis| match leading.get(axis).copied().flatten() {
@@ -706,6 +790,62 @@ mod symbolic_tests {
         }
     }
 
+    /// With several inputs, sizes claimed over an operand of unknown rank
+    /// must hold at every rank it may have: for every two-input variant, over
+    /// ranked first inputs and an unranked operand, every size `dims_over`
+    /// claims is the size at operand ranks past the evaluated ones too.
+    #[test]
+    fn an_unranked_operand_claims_only_what_every_rank_keeps() {
+        use PlannedInput::{Ranked, Unranked};
+        let two_input = [
+            OpShape::Broadcast,
+            OpShape::StackChannels(2),
+            OpShape::Canvas { of: 1 },
+        ];
+        let firsts: [&[Dim]; 3] = [
+            &[Known(8), Known(9)],
+            &[Known(8), Known(9), Known(3)],
+            &[Known(8), Known(9), Known(7), Known(3)],
+        ];
+        for shape in &two_input {
+            for first in firsts {
+                for leading in [vec![], vec![Some(4)], vec![Some(4), Some(5)]] {
+                    let claimed = shape.dims_over(&[Ranked(first), Unranked(&leading)]);
+                    let top = leading.len().max(OpShape::DISTINGUISHED_RANK);
+                    for rank in top + 1..=top + 3 {
+                        let operand: Vec<Dim> = (0..rank)
+                            .map(|axis| {
+                                leading
+                                    .get(axis)
+                                    .copied()
+                                    .flatten()
+                                    .map_or(Input(axis), Known)
+                            })
+                            .collect();
+                        let Some(out) = shape.dims(&[first, &operand]) else {
+                            continue;
+                        };
+                        for (axis, size) in claimed.iter().enumerate() {
+                            let Some(size) = size else { continue };
+                            assert!(
+                                out.get(axis).is_some_and(|d| d.known() == Some(*size)),
+                                "{shape:?} over {first:?} and an operand of rank {rank} \
+                                 (leading {leading:?}): claims axis {axis} is {size}, but \
+                                 it is {:?}",
+                                out.get(axis)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // A canvas of unknown rank still gives the H and W it declares.
+        assert_eq!(
+            OpShape::Canvas { of: 1 }.dims_over(&[Ranked(&[]), Unranked(&[Some(4), Some(5)])]),
+            [Some(4), Some(5), Some(1)]
+        );
+    }
+
     #[test]
     fn an_unknown_rank_knows_only_what_every_rank_agrees_on() {
         // A resize's shape sets H and W from rank 2 up and leaves a rank-1
@@ -716,16 +856,22 @@ mod symbolic_tests {
                 h: Sym::Known(4),
                 w: Sym::Known(5)
             }
-            .dims_over_unknown_rank(&[]),
+            .dims_over(&[PlannedInput::Unranked(&[])]),
             [None, Some(5)]
         );
         assert_eq!(
-            OpShape::SingleChannel.dims_over_unknown_rank(&[Some(8)]),
+            OpShape::SingleChannel.dims_over(&[PlannedInput::Unranked(&[Some(8)])]),
             [Some(8), None, Some(1)]
         );
         // A declared size past the three the keywords name is carried too.
         assert_eq!(
-            OpShape::Preserve.dims_over_unknown_rank(&[None, None, None, None, Some(6)]),
+            OpShape::Preserve.dims_over(&[PlannedInput::Unranked(&[
+                None,
+                None,
+                None,
+                None,
+                Some(6)
+            ])]),
             [None, None, None, None, Some(6)]
         );
     }
@@ -740,6 +886,7 @@ mod symbolic_tests {
             OpShape::Reduce { axis: None },
             OpShape::StackChannels(2),
             OpShape::InputRank,
+            OpShape::Canvas { of: 1 },
         ];
         for shape in shapes {
             let claimed = shape.rank(&[None]).expect("answers without the input");

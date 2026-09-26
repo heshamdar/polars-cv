@@ -1,20 +1,21 @@
 //! The planner: a pipeline's [`Plan`] and the step that extends it.
 //!
 //! [`step`] takes the state at one op boundary and one typed op and returns
-//! the state after it — the input-domain check, the schema fold (domain,
-//! dtype, rank), the sizes the op's symbolic `shape` gives, its channel rule,
-//! and the clipping of every size to the output rank. One call cannot be
-//! half-applied.
+//! the state after it — the input-domain check, the op's own validation over
+//! what the plan knows, and the schema fold (domain, dtype, and the shape the
+//! op's symbolic `shape` gives, one size per dimension of its rank). One call
+//! cannot be half-applied.
 //!
 //! [`Plan`] is a pipeline's source, its typed ops and the state at every op
 //! boundary, and the only record of them: Python holds the plan object, and
 //! every change to it (an append, a slice, a reorder, a pass, a rebase onto an
 //! upstream node) is a method here that plans each op it keeps with [`step`].
 //!
-//! A two-input op plans over both operands, so a binary op takes the other
-//! operand's state, and only a binary op may: passing one to any other op, or
-//! omitting it for a binary op, is an error rather than a fallback to the
-//! one-input rule.
+//! An op that reads other graph nodes (`GraphStep::operands`: a binary op's
+//! other operand, a mask, merged channels, a canvas node) plans over them all:
+//! each one's planned state is a further input to its `shape` and `validate`,
+//! read from the states the caller passes by node id, and a node with no
+//! planned state is refused rather than planned around.
 
 use pyo3::prelude::*;
 
@@ -76,11 +77,6 @@ impl PlannedShape {
         }
     }
 
-    /// The size of `axis`, when known.
-    pub(crate) fn size(&self, axis: usize) -> Option<usize> {
-        self.sizes().get(axis).copied().flatten()
-    }
-
     /// The whole shape, when the rank and every size are known.
     pub(crate) fn concrete(&self) -> Option<Vec<usize>> {
         match self {
@@ -101,26 +97,6 @@ impl PlannedShape {
                     .collect(),
             ),
             PlannedShape::Unranked { .. } => None,
-        }
-    }
-
-    /// This shape with `axis` set to `size` where the shape has that axis.
-    fn with_size(mut self, axis: usize, size: Option<usize>) -> Self {
-        match &mut self {
-            PlannedShape::Ranked(sizes) => {
-                if let Some(slot) = sizes.get_mut(axis) {
-                    *slot = size;
-                }
-                self
-            }
-            PlannedShape::Unranked { leading } => {
-                let mut leading = std::mem::take(leading);
-                if leading.len() <= axis {
-                    leading.resize(axis + 1, None);
-                }
-                leading[axis] = size;
-                PlannedShape::unranked(leading)
-            }
         }
     }
 
@@ -434,8 +410,8 @@ fn declare(
 
 /// The state after appending `op` to `state`. See the module docs.
 pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Result<State, String> {
-    use crate::ops::{NodeRef, TypedOp};
-    use view_buffer::geometry::ops::RasterSize;
+    use crate::ops::TypedOp;
+    use view_buffer::ops::PlannedInput;
 
     // The op is read as it is: every rule below is the step's own, over its
     // literal values, and a per-row value is unknown — never stood in for.
@@ -460,42 +436,48 @@ pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Resu
         return declare(state, dims, exact.get());
     }
 
+    // The nodes this step reads by id, as the plan holds them: its further
+    // inputs, after its own.
+    let operands: Vec<&State> = step
+        .operands()
+        .into_iter()
+        .map(|node| referenced(refs, op.name(), &node.0))
+        .collect::<Result<_, _>>()?;
     let binary = match step {
-        GraphStep::Graph(graph) => graph.binary(),
+        GraphStep::Graph(graph) => graph.binary().map(|(binary, _)| binary),
         _ => None,
     };
-    let other = match binary {
-        Some((_, other)) => Some(referenced(refs, op.name(), &other.0)?),
-        None => None,
-    };
-    let dtype = match (binary, other) {
-        (Some((op, _)), Some(other)) => binary_dtype(op, state.dtype, other.dtype),
+    let dtype = match (binary, operands.first()) {
+        (Some(binary), Some(other)) => binary_dtype(binary, state.dtype, other.dtype),
         _ => single_input_dtype(step, state.dtype),
     };
 
-    // The shape, symbolic over the op's per-row fields.
+    // Every input's shape, symbolically where its rank is known.
     let shape = step.shape();
-    let input = input_dims(step, state);
-    let other_input = other.and_then(|o| input_dims(step, o));
+    let own = input_dims(step, state);
+    let ranked: Vec<Option<Vec<Dim>>> = std::iter::once(own)
+        .chain(operands.iter().map(|o| o.shape.symbolic()))
+        .collect();
+    let held: Vec<&[Option<usize>]> = std::iter::once(state.shape.sizes())
+        .chain(operands.iter().map(|o| o.shape.sizes()))
+        .collect();
+
     // The step's own validation over what the plan knows of its inputs: every
     // error is a verdict on a known fact, so each is raised. An input of
     // unknown rank gives it nothing to decide.
-    let inputs: Option<Vec<&[Dim]>> = match (&input, other) {
-        (Some(input), None) => Some(vec![input]),
-        (Some(input), Some(_)) => other_input.as_deref().map(|o| vec![input.as_slice(), o]),
-        (None, _) => None,
-    };
-    if let Some(inputs) = inputs {
+    if let Some(inputs) = ranked
+        .iter()
+        .map(Option::as_deref)
+        .collect::<Option<Vec<&[Dim]>>>()
+    {
         let dtypes: Vec<PlannedDType> = std::iter::once(state.dtype)
-            .chain(other.map(|o| o.dtype))
+            .chain(operands.iter().map(|o| o.dtype))
             .collect();
         step.validate(&inputs, &dtypes)
             .map_err(|e| format!("{}(): {e}", op.name()))?;
     }
-    let mut ranks = vec![input.as_ref().map(Vec::len)];
-    if other.is_some() {
-        ranks.push(other_input.as_ref().map(Vec::len));
-    }
+
+    let ranks: Vec<Option<usize>> = ranked.iter().map(|d| d.as_ref().map(Vec::len)).collect();
     let out_domain = step.output_domain(state.domain);
     // Scalar and vector domains pin the rank whatever the shape says.
     let ndim = match out_domain {
@@ -503,24 +485,17 @@ pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Resu
         Domain::Vector => Some(1),
         Domain::Buffer | Domain::Contour => shape.rank(&ranks),
     };
-    let known = |out: Option<Vec<Dim>>| -> Vec<Option<usize>> {
-        out.unwrap_or_default()
-            .into_iter()
-            .map(Dim::known)
-            .collect()
-    };
-    let sizes = match (&input, other.is_some(), &other_input) {
-        (Some(input), false, _) => known(shape.dims(&[input])),
-        (Some(input), true, Some(other_input)) => known(shape.dims(&[input, other_input])),
-        // A binary operand of unknown rank: nothing to broadcast against.
-        (_, true, _) => Vec::new(),
-        // An input of unknown rank: a size is known after the op only where
-        // the shape gives it whatever the rank (a grayscale keeps a declared
-        // H; a resize replaces it).
-        (None, false, _) => shape.dims_over_unknown_rank(state.shape.sizes()),
-    };
+    let inputs: Vec<PlannedInput<'_>> = ranked
+        .iter()
+        .zip(&held)
+        .map(|(dims, sizes)| match dims {
+            Some(dims) => PlannedInput::Ranked(dims),
+            None => PlannedInput::Unranked(sizes),
+        })
+        .collect();
+    let sizes = shape.dims_over(&inputs);
     // The rank decides which sizes exist: a scalar has none, a vector its one.
-    let mut planned = match ndim {
+    let planned = match ndim {
         Some(n) => PlannedShape::Ranked(
             (0..n)
                 .map(|axis| sizes.get(axis).copied().flatten())
@@ -528,17 +503,6 @@ pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Resu
         ),
         None => PlannedShape::unranked(sizes),
     };
-    // A canvas taken from another node has that node's planned H/W.
-    if let TypedOp::Geometry(view_buffer::GeometryOp::Rasterize {
-        size: RasterSize::FromNode(NodeRef(node)),
-        ..
-    }) = op
-    {
-        let canvas = referenced(refs, op.name(), node)?;
-        planned = planned
-            .with_size(0, canvas.shape.size(0))
-            .with_size(1, canvas.shape.size(1));
-    }
 
     Ok(State {
         domain: out_domain,
@@ -1073,7 +1037,7 @@ mod tests {
 
     /// The sizes of dimensions 0, 1 and 2 (`None` unknown or absent).
     fn dims3(s: &State) -> [Option<usize>; 3] {
-        std::array::from_fn(|axis| s.shape.size(axis))
+        std::array::from_fn(|axis| s.shape.sizes().get(axis).copied().flatten())
     }
 
     fn image() -> State {
@@ -1192,6 +1156,36 @@ mod tests {
         assert_eq!(dims3(&out), [Some(100), Some(50), Some(1)]);
         let err = run(raster(json!("n0")), &s).unwrap_err();
         assert!(err.contains("reads node 'n0'"), "{err}");
+    }
+
+    #[test]
+    fn a_step_plans_and_validates_over_the_nodes_it_reads() {
+        let gray = |h, w| state("buffer", "u8", Some(2), [Some(h), Some(w), None]);
+        let merge = json!({"op": "channel_merge", "others": ["g", "b"]});
+        // The stacked shape takes H and W from whichever input knows them.
+        let unknown = state("buffer", "u8", Some(2), [None; 3]);
+        let out = run_with(
+            merge.clone(),
+            &unknown,
+            &[("g", gray(8, 6)), ("b", gray(8, 6))],
+        )
+        .unwrap();
+        assert_eq!(dims3(&out), [Some(8), Some(6), Some(3)]);
+        // Two known H that differ: no row can run it.
+        let err =
+            run_with(merge, &gray(8, 6), &[("g", gray(8, 6)), ("b", gray(7, 6))]).unwrap_err();
+        assert!(err.contains("channel_merge(): Shape requirement"), "{err}");
+        // A mask that cannot broadcast against the buffer.
+        let mask = json!({"op": "apply_mask", "mask": "m"});
+        let err = run_with(mask.clone(), &image(), &[("m", gray(4, 4))]).unwrap_err();
+        assert!(err.contains("apply_mask(): "), "{err}");
+        assert!(run_with(mask, &image(), &[("m", gray(100, 50))]).is_ok());
+        // A canvas of unknown rank gives the H and W declared for it.
+        let contour = state("contour", "f64", None, [None; 3]);
+        let hinted = state("buffer", "u8", None, [Some(4), Some(5), None]);
+        let raster = json!({"op": "rasterize", "size": "c", "fill_value": 255, "background": 0});
+        let out = run_with(raster, &contour, &[("c", hinted)]).unwrap();
+        assert_eq!(dims3(&out), [Some(4), Some(5), Some(1)]);
     }
 
     fn declare_op(exact: bool, dims: serde_json::Value) -> serde_json::Value {
@@ -1380,7 +1374,8 @@ mod validation_soundness {
 
     /// The partly known inputs `validate` refuses while some whole shape they
     /// could be is accepted, as `(partly known, whole)` — empty when sound.
-    /// `inputs` is 1, or 2 for an op over two operands.
+    /// `inputs` is the op's input count (its own, then each operand's); the
+    /// more there are, the smaller the ranks and sizes enumerated.
     fn unsound_verdicts(validate: Validate<'_>, inputs: usize) -> Vec<String> {
         let known = |shapes: &[&[usize]]| {
             let dims: Vec<Vec<Dim>> = shapes
@@ -1397,22 +1392,39 @@ mod validation_soundness {
                 found.push(format!("refused {partial:?}, but {whole:?} is accepted"));
             }
         };
-        if inputs == 1 {
-            for shape in shapes(4, &[1, 2, 3, 5]) {
-                for mask in 1..(1u32 << shape.len()) {
-                    check(&[&shape], &[masked(&shape, mask)]);
-                }
-            }
-        } else {
-            let all = shapes(3, &[1, 2, 3]);
-            for a in &all {
-                for b in &all {
-                    let bits = a.len() + b.len();
-                    for mask in 1..(1u32 << bits) {
-                        let (ma, mb) = (mask & ((1 << a.len()) - 1), mask >> a.len());
-                        check(&[a, b], &[masked(a, ma), masked(b, mb)]);
-                    }
-                }
+        let all = match inputs {
+            1 => shapes(4, &[1, 2, 3, 5]),
+            2 => shapes(3, &[1, 2, 3]),
+            _ => shapes(2, &[1, 2]),
+        };
+        // Every tuple of `inputs` shapes.
+        let mut tuples: Vec<Vec<&Vec<usize>>> = vec![Vec::new()];
+        for _ in 0..inputs {
+            tuples = tuples
+                .into_iter()
+                .flat_map(|t| {
+                    all.iter().map(move |s| {
+                        let mut t = t.clone();
+                        t.push(s);
+                        t
+                    })
+                })
+                .collect();
+        }
+        for tuple in &tuples {
+            let whole: Vec<&[usize]> = tuple.iter().map(|s| s.as_slice()).collect();
+            let bits: usize = tuple.iter().map(|s| s.len()).sum();
+            for mask in 1..(1u32 << bits) {
+                let mut offset = 0;
+                let partial: Vec<Vec<Dim>> = tuple
+                    .iter()
+                    .map(|s| {
+                        let m = (mask >> offset) & ((1 << s.len()) - 1);
+                        offset += s.len();
+                        masked(s, m)
+                    })
+                    .collect();
+                check(&whole, &partial);
             }
         }
         found
@@ -1443,10 +1455,7 @@ mod validation_soundness {
             .into_iter()
             .chain(size_sensitive())
         {
-            let inputs = match &op {
-                GraphStep::Graph(graph) if graph.binary().is_some() => 2,
-                _ => 1,
-            };
+            let inputs = 1 + op.operands().len();
             let validate = |shapes: &[&[Dim]]| op.validate(shapes, &[]);
             let found = unsound_verdicts(&validate, inputs);
             if !found.is_empty() {

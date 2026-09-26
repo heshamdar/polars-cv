@@ -915,12 +915,12 @@ impl CompiledGraph {
                                         graph_step.as_ref(),
                                         "Binary op other operand",
                                     )?;
-                                    view_buffer::ops::validation::validate_concrete(
-                                        &op,
-                                        &[current_buf.shape(), other_buf.shape()],
-                                        &[current_buf.dtype(), other_buf.dtype()],
-                                    )
-                                    .map_err(|e| format!("{}: {e}", op.name()))?;
+                                    graph_step
+                                        .validate_concrete(
+                                            &[current_buf.shape(), other_buf.shape()],
+                                            &[current_buf.dtype(), other_buf.dtype()],
+                                        )
+                                        .map_err(|e| format!("{}: {e}", op.name()))?;
                                     let result = op.execute(&current_buf, &other_buf);
                                     current_output = NodeOutput::from_buffer(result);
                                 }
@@ -942,11 +942,12 @@ impl CompiledGraph {
                                         graph_step.as_ref(),
                                         "ApplyMask mask",
                                     )?;
-                                    view_buffer::validate_mask(
-                                        current_buf.shape(),
-                                        mask_buf.shape(),
-                                    )
-                                    .map_err(|e| format!("apply_mask: {e}"))?;
+                                    graph_step
+                                        .validate_concrete(
+                                            &[current_buf.shape(), mask_buf.shape()],
+                                            &[current_buf.dtype(), mask_buf.dtype()],
+                                        )
+                                        .map_err(|e| format!("apply_mask: {e}"))?;
                                     let result =
                                         view_buffer::apply_mask(&current_buf, &mask_buf, *invert);
                                     current_output = NodeOutput::from_buffer(result);
@@ -1050,11 +1051,12 @@ impl CompiledGraph {
                                     }
                                     let all_bufs: Vec<&ViewBuffer> =
                                         owned.iter().map(|b| b.as_ref()).collect();
-                                    view_buffer::validate_channel_merge(
-                                        &all_bufs.iter().map(|b| b.shape()).collect::<Vec<_>>(),
-                                        &all_bufs.iter().map(|b| b.dtype()).collect::<Vec<_>>(),
-                                    )
-                                    .map_err(|e| format!("channel_merge: {e}"))?;
+                                    graph_step
+                                        .validate_concrete(
+                                            &all_bufs.iter().map(|b| b.shape()).collect::<Vec<_>>(),
+                                            &all_bufs.iter().map(|b| b.dtype()).collect::<Vec<_>>(),
+                                        )
+                                        .map_err(|e| format!("channel_merge: {e}"))?;
                                     let result = view_buffer::apply_channel_merge(&all_bufs);
                                     current_output = NodeOutput::from_buffer(result);
                                 }

@@ -585,6 +585,11 @@ REMOVED: tuple[Removed, ...] = (
         "depends_only_on_rank",
         "S2: validate says nothing about an unknown size, so every error is a verdict",
     ),
+    # PLANNER_SIZES_PLAN.md S3: the nodes a step reads are its inputs.
+    Removed(
+        "dims_over_unknown_rank",
+        "S3: OpShape::dims_over, over every input ranked or not",
+    ),
     Removed(
         "test_lazy_stub_is_current", "C7c: no stub; the forwarders file is checked"
     ),

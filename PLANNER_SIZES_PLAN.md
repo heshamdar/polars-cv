@@ -18,7 +18,7 @@
 | S0 — Failing tests for the review findings | **done** — 15 strict gaps in `tests/test_known_gaps.py::TestPlannedSizes` (each watched failing with `--runxfail`); 6 controls in `tests/test_plan_claims.py` (3 watched failing, 3 forward guards for S1/S2) |
 | S1 — The planned shape is one rank-N value | **done** — `PlannedShape` (`Ranked`/`Unranked`) replaces `ndim` + `dims[3]`; a buffer's shape publishes at every rank; `assert_shape` is `{dims, exact}`; one `apply_declaration` for plan and row; R2/R3/R6 gaps moved into the suite; see *S1 as done* for deviations |
 | S2 — One `validate`, over symbolic sizes | **done** — `Op::validate(&[&[Dim]], &[PlannedDType])`, every error a verdict; `check_rank`, the `1` placeholder and `depends_only_on_rank` deleted; `validate_concrete` for execution; per-axis `broadcast_dims`; binary ops validated at plan time; soundness property over the catalogue; R1/R4/R5 gaps moved into the suite; see *S2 as done* |
-| S3 — Operand reads are one mechanism | not started (in scope) |
+| S3 — Operand reads are one mechanism | **done** — `GraphStep::operands()` is the one list of nodes a step reads; the planner passes each one's planned shape to `shape()`/`validate()`; rasterize's canvas is `OpShape::Canvas`; `apply_mask`/`channel_merge` validated and planned against their operands; see *S3 as done* |
 
 ---
 
@@ -296,6 +296,40 @@ inputs. Rasterize's shape becomes `OpShape::HwOf(1)` (H/W read from input 1),
 and `apply_mask`/`channel_merge` can then validate and plan against their
 operands' sizes too. This removes the last per-op arm in `step`. In scope
 (user decision); it changes nothing user-visible beyond earlier errors.
+
+### S3 as done — deviations and findings
+
+- **One list, three readers.** `GraphStep::operands()` (a binary op's other
+  operand, `apply_mask`'s mask, `channel_merge`'s channels, rasterize's canvas
+  node) feeds the planner's inputs, and `reads_other_nodes()` (the spatial
+  pushdown's barrier) is now "has operands" rather than a second hand-kept
+  list (`GraphOp::reads_other_nodes` deleted). Rasterize from a node counts as
+  one now, which only makes the barrier more conservative (it never hoisted
+  across rasterize, a domain change).
+- **The rasterize arm in `step` is gone**, and with it
+  `PlannedShape::with_size`. Its shape is `OpShape::Canvas { of: 1 }`.
+- **Operands of unknown rank.** `OpShape::dims_over(&[PlannedInput])`
+  replaces `dims_over_unknown_rank`: every input is ranked or unranked, and
+  an unranked one is evaluated over the ranks it may have. With several
+  inputs, sizes are claimed only when the output rank does not depend on the
+  unranked ones (`Broadcast` aligns from the last axis, so a longer operand
+  shifts every position). So a canvas of unknown rank still gives its
+  declared H and W, as the special arm did. Guarded by
+  `an_unranked_operand_claims_only_what_every_rank_keeps`, watched failing
+  without the rule (`Broadcast` claimed a size a rank-4 operand shifts).
+- **`StackChannels` reads every input's H and W**, not only its own: an input
+  of unknown size takes them from the channels that know them, and two
+  different known sizes have no output (as `validate` refuses them).
+- **`validate_mask` / `validate_channel_merge` take `Dim`s and planned
+  dtypes**, so the planner calls them; execution goes through
+  `GraphStep::validate_concrete` (the same `validate`) for binary ops, masks
+  and merges alike. The soundness property enumerates `1 + operands()` inputs
+  (a three-input merge included), watched failing with
+  `validate_channel_merge` reading an unknown H as a clash.
+- **Test changed**: `test_crop_does_not_cross_apply_mask` built `apply_mask`
+  over a bare node id with no planned state, which the planner now refuses
+  as it already did for binary ops and rasterize; its mask is a real node, and
+  the barrier it pins is unchanged.
 
 ---
 
