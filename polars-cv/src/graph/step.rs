@@ -182,6 +182,22 @@ impl<M: Mode> GraphStep<M> {
         }
     }
 
+    /// The domains a node this step reads (an [`operand`](Self::operands))
+    /// may be in. The planner refuses any other at build; execution reads the
+    /// same operands through [`input_domains`](Self::input_domains), which a
+    /// graph op's operands share with its own input.
+    pub fn operand_domains(&self) -> Vec<Domain> {
+        match self {
+            GraphStep::Graph(op) => op.input_domains(),
+            // A canvas is read for its height and width.
+            GraphStep::Geometry(_) => vec![Domain::Buffer],
+            GraphStep::Buffer(_)
+            | GraphStep::Reduction(_)
+            | GraphStep::Histogram(_)
+            | GraphStep::PerceptualHash(_) => Vec::new(),
+        }
+    }
+
     /// How the step's output shape follows from its inputs — every step has
     /// one, and the planner reads the output rank (its length), channel count
     /// (its axis 2) and sizes from it. A per-row value is `Sym::PerRow`.

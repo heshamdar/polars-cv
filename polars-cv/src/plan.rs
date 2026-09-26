@@ -443,6 +443,22 @@ pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Resu
         .into_iter()
         .map(|node| referenced(refs, op.name(), &node.0))
         .collect::<Result<_, _>>()?;
+    let readable = step.operand_domains();
+    if let Some((node, other)) = step
+        .operands()
+        .into_iter()
+        .zip(&operands)
+        .find(|(_, other)| !readable.contains(&other.domain))
+    {
+        let expected: Vec<&str> = readable.iter().map(|d| d.name()).collect();
+        return Err(format!(
+            "{}() reads node '{}' as {} input, but that node is in the {} domain.",
+            op.name(),
+            node.0,
+            expected.join(" or "),
+            other.domain.name()
+        ));
+    }
     let binary = match step {
         GraphStep::Graph(graph) => graph.binary().map(|(binary, _)| binary),
         _ => None,

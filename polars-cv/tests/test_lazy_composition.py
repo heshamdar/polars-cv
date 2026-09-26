@@ -752,6 +752,56 @@ class TestLazyCompositionExecution:
         else:
             assert np.all(inside == 0) and np.all(outside == (200, 100, 50))
 
+    @pytest.mark.parametrize("form", ["contours", "rasterized", "continued"])
+    def test_apply_contour_mask_keeps_the_contours_ops(
+        self,
+        create_test_png: Callable[[int, int, tuple[int, int, int]], bytes],
+        form: str,
+    ) -> None:
+        """Every op of the contour pipeline runs; only the canvas is replaced.
+
+        The mask used to be rebuilt from the pipeline's first op alone, so a
+        ``translate`` before (or instead of) ``rasterize`` was silently dropped,
+        and a contour node continued from another node lost its input.
+        """
+        img_bytes = create_test_png(20, 20, (200, 100, 50))
+        square = [(2.0, 2.0), (6.0, 2.0), (6.0, 6.0), (2.0, 6.0)]
+        df = pl.DataFrame(
+            {
+                "image": [img_bytes],
+                "contour": [
+                    {"exterior": [{"x": x, "y": y} for x, y in square], "holes": []}
+                ],
+            }
+        )
+        translated = Pipeline().source("contour").translate(dx=10.0, dy=10.0)
+        contour = {
+            "contours": pl.col("contour").cv.pipe(translated),
+            "rasterized": pl.col("contour").cv.pipe(
+                translated.rasterize(width=1, height=1)
+            ),
+            "continued": pl.col("contour")
+            .cv.pipe(Pipeline().source("contour"))
+            .translate(dx=10.0, dy=10.0),
+        }[form]
+        img = pl.col("image").cv.pipe(Pipeline().source("image_bytes"))
+        output = numpy_from_struct(
+            df.select(o=img.apply_contour_mask(contour).sink("numpy")).row(0)[0]
+        )
+        kept = np.argwhere(output[..., 0])
+        assert kept.min(axis=0).tolist() == [12, 12]
+        assert kept.max(axis=0).tolist() == [15, 15]
+
+    def test_apply_contour_mask_refuses_a_mask_it_cannot_recanvas(self) -> None:
+        """A contour pipeline that does not end in contours or ``rasterize``
+        has no canvas to replace: refused, not partly rebuilt."""
+        img = pl.col("image").cv.pipe(Pipeline().source("image_bytes"))
+        blurred = pl.col("contour").cv.pipe(
+            Pipeline().source("contour").rasterize(width=4, height=4).blur(1.0)
+        )
+        with pytest.raises(ValueError, match="apply_contour_mask"):
+            img.apply_contour_mask(blurred)
+
 
 @plugin_required
 class TestGeneratedLazyWrappers:
