@@ -31,7 +31,7 @@ Detection metrics built from polars-cv primitives and Polars lazy expressions:
   against the `y = x` chance diagonal on the unit square, valid only when the
   x-axis is a probability in `[0, 1]`; FROC's axis (FP/image) is unbounded, LROC's
   chance line is not the diagonal, and PR's is horizontal at prevalence. Its
-  removal is pinned by `test_removed_surfaces.py`
+  removal is recorded in the CHANGELOG
 - **Weighted Mann-Whitney**: `froc_auc`/`lroc_auc(method="mann_whitney")` are
   weighted by `image_metadata.weight` (both `level="detection"` and
   `level="image"`), via `collapse_scores` (bucket by distinct score, carrying the

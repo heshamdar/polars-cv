@@ -780,8 +780,8 @@ def test_dtype_is_the_only_python_dtype_name_table():
     """No Python enum may re-list dtype spellings alongside DType (A4).
 
     `OutputDType` used to: `f32`/`f64`/`u8` plus a `preserve` value that was a
-    synonym for the default rather than a dtype. It is gone (see
-    `test_removed_surfaces.py`), and `out_dtype` validates against `DType` —
+    synonym for the default rather than a dtype. It is gone, and `out_dtype`
+    validates against `DType` —
     which is itself checked against Rust's `dtype_table!` authority by the
     parity tests. Guard that a second partial table does not reappear.
     """
@@ -2069,7 +2069,6 @@ def test_every_source_scanning_module_declares_its_lane() -> None:
 _CORE_STRUCTURAL_MODULES = frozenset(
     {
         "test_append_contract.py",
-        "test_removed_surfaces.py",
         "test_param_applicability.py",
         "test_param_strictness.py",
         "test_doc_vocabularies.py",

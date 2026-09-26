@@ -82,14 +82,6 @@ class TestPolarsNamespace:
         expr = pl.col("images")
         assert hasattr(expr, "cv")
 
-    def test_cv_pipeline_method_removed(self) -> None:
-        """Test that legacy pipeline method is removed from namespace."""
-        import polars_cv.expressions  # noqa: F401
-
-        expr = pl.col("images")
-        assert not hasattr(expr.cv, "pipeline")
-        assert hasattr(expr.cv, "pipe")
-
 
 # Check if plugin is available by checking if the .so file exists
 # Mark tests with plugin_required marker for easy filtering

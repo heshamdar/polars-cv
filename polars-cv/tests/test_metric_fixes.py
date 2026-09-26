@@ -6,7 +6,7 @@ Covers:
 - FROC iou_threshold propagation from DetectionTable
 - LROC lower-right endpoint addition
 - PR monotone-envelope AP vs raw trapezoidal AUC
-- Partial-AUC normalize correction (McClish removed; see test_removed_surfaces)
+- Partial-AUC normalize correction (McClish removed)
 - Mann-Whitney U AUC for froc_auc / lroc_auc (via method="mann_whitney")
 - Mann-Whitney AUC bootstrap support
 - ContourMatcher min_contour_area default change
@@ -661,8 +661,8 @@ class TestPartialAUCCorrection:
     """Tests for partial-AUC ``correction`` (``"normalize"`` / ``None``).
 
     The McClish standardized correction was removed (it assumes a bounded [0,1]
-    ROC axis with a ``y = x`` chance diagonal, which FROC/LROC/PR are not); its
-    removal is pinned in ``test_removed_surfaces.py``. An unknown correction is
+    ROC axis with a ``y = x`` chance diagonal, which FROC/LROC/PR are not). An
+    unknown correction is
     rejected rather than silently treated as the raw area.
     """
 

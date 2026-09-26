@@ -171,3 +171,30 @@ class TestPreserveDtypeExecution:
         assert out.dtype == np.float64  # pre-op dtype was f64
         promoted = _run(_u8_src().cast("f64").scale(1.5), png)
         np.testing.assert_allclose(out, promoted.astype(np.float64), rtol=1e-6)
+
+
+class TestOutDtypeLowering:
+    """``out_dtype=`` is a trailing ``cast``, never a field of the op."""
+
+    @pytest.mark.parametrize("op", ["scale", "clamp"])
+    def test_out_dtype_lowers_to_a_cast(self, op: str) -> None:
+        from tests._plan_view import ops_of
+
+        pipe = Pipeline().source("list", dtype="u8")
+        built = {
+            "scale": lambda: pipe.scale(2.0, out_dtype="u8"),
+            "clamp": lambda: pipe.clamp(0.0, 1.0, out_dtype="u8"),
+        }[op]()
+        ops = ops_of(built)
+        assert [o.op for o in ops] == [op, "cast"]
+        assert "out_dtype" not in ops[0].params
+
+    @pytest.mark.parametrize("op", ["scale", "clamp"])
+    def test_out_dtype_must_name_a_dtype(self, op: str) -> None:
+        pipe = Pipeline().source("list", dtype="u8")
+        build = {
+            "scale": lambda: pipe.scale(2.0, out_dtype="preserve"),
+            "clamp": lambda: pipe.clamp(0.0, 1.0, out_dtype="preserve"),
+        }[op]
+        with pytest.raises(ValueError, match="preserve"):
+            build()
