@@ -347,20 +347,23 @@ does not fit in memory.
 
 ## Contour Source and Shape Inference
 
-The `contour` source rasterizes contour structs to binary mask buffers. You can specify dimensions explicitly or infer them from another pipeline expression.
+The `contour` source decodes a column of contour structs (one per row, or a set)
+to the contour domain, where the geometry operations apply. `rasterize()` turns
+it into a binary mask buffer, with dimensions given explicitly or inferred from
+another pipeline expression.
 
 ```python
 from polars_cv import Pipeline
 
 # Explicit dimensions
-mask_pipe = Pipeline().source("contour", width=200, height=200)
+mask_pipe = Pipeline().source("contour").rasterize(width=200, height=200)
 
 # Infer dimensions from an image pipeline
 img = pl.col("image").cv.pipe(Pipeline().source("image_bytes").resize(height=200, width=200))
-mask_pipe = Pipeline().source("contour", shape=img)
+mask_pipe = Pipeline().source("contour").rasterize(shape=img)
 ```
 
-When using `shape=`, the contour mask dimensions automatically match the
+With `shape=`, the contour mask dimensions automatically match the
 referenced pipeline's output size. The referenced expression becomes an upstream
 dependency of the mask, so it executes first whether or not the graph consumes
 it anywhere else — referencing it *only* as `shape=` is fine. If its row is null

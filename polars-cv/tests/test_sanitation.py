@@ -1179,8 +1179,8 @@ _ENUM_VALIDATION_CASES = [
 def test_enum_validation_uniform(build, label: str, enum_name: str, good: str) -> None:
     """Each enum parameter rejects a bad value *and* accepts a real one.
 
-    The rejection half is the uniform ``Invalid <label> '<value>'. Valid: [...]``
-    error from ``_validate_enum``.
+    The rejection half is the Rust definition's uniform error, naming the enum
+    and every valid spelling.
 
     The acceptance half is what stops the rejection half being vacuous. On its
     own, "'bogus' raises" passes just as well when the builder rejects
@@ -1190,12 +1190,7 @@ def test_enum_validation_uniform(build, label: str, enum_name: str, good: str) -
     and asserts that variant is one the Rust enum actually publishes rather
     than a name hard-coded here that both sides might have dropped.
     """
-    # Legacy ops raise `_validate_enum`'s message; typed ops (typed-op P2+) the
-    # Rust definition's, naming the enum and its valid values. P6 replaces
-    # this with one catalogue-driven check.
-    with pytest.raises(
-        ValueError, match=rf"Invalid {label} '__bogus__'|unknown \w+ \"__bogus__\""
-    ):
+    with pytest.raises(ValueError, match=r"unknown \w+ \"__bogus__\""):
         build("__bogus__")
 
     build(good)  # must not raise

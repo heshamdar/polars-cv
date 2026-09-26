@@ -133,7 +133,7 @@ class TestMultiPhaseWorkaround:
         img_pipe = (
             Pipeline().source("image_bytes").resize(height=50, width=50).grayscale()
         )
-        contour_pipe = Pipeline().source("contour", width=50, height=50)
+        contour_pipe = Pipeline().source("contour").rasterize(width=50, height=50)
 
         img = pl.col("image").cv.pipe(img_pipe).alias("resized")
         mask = pl.col("contour").cv.pipe(contour_pipe).alias("mask")

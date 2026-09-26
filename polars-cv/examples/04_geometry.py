@@ -150,9 +150,9 @@ def transition_demo(df: pl.DataFrame) -> None:
     rasterized = df.with_columns(
         mask=pl.col("contour_a")
         .cv.pipe(
-            Pipeline().source(
-                "contour", width=96, height=96, fill_value=255, background=0
-            )
+            Pipeline()
+            .source("contour")
+            .rasterize(width=96, height=96, fill_value=255, background=0)
         )
         .sink("numpy"),
     )

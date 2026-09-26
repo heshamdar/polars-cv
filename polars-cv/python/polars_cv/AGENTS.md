@@ -93,8 +93,7 @@ When `.sink()` is called, a `PipelineGraph` is built:
 6. `_plugin.call("vb_graph", ...)` is called (the package's only route to `register_plugin_function`)
 
 **A node reference is not a dependency until it is an upstream edge.** An op
-that points at another `LazyPipelineExpr` by node id — `rasterize(shape=)` (and
-so `source("contour", shape=)`), a binary operand — is recorded in `Pipeline._node_refs`
+that points at another `LazyPipelineExpr` by node id — `rasterize(shape=)`, a binary operand — is recorded in `Pipeline._node_refs`
 (by `_encode_field`, for every node-typed field), because `_node_refs` is both
 what plans the op (the node's state, by id) and what `cv.pipe` /
 `LazyPipelineExpr.pipe` turn into the

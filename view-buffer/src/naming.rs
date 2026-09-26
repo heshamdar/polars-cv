@@ -251,6 +251,22 @@ macro_rules! wire_int {
 }
 wire_int!(u8, u32, i32, i64);
 
+/// A size that must be positive: zero is refused on the wire, by the type.
+impl WireScalar for core::num::NonZeroU32 {
+    const KIND: WireKind = WireKind::Int;
+    const PY_TYPE: &'static str = "int";
+    fn from_wire(value: WireValue<'_>) -> Result<Self, String> {
+        let n = u32::from_wire(value)?;
+        Self::new(n).ok_or_else(|| format!("{n} is not a positive int"))
+    }
+    fn to_wire(self) -> WireValue<'static> {
+        WireValue::Int(i64::from(self.get()))
+    }
+    fn spellings() -> Vec<&'static str> {
+        Vec::new()
+    }
+}
+
 macro_rules! wire_float {
     ($($t:ty),+) => {$(
         impl WireScalar for $t {

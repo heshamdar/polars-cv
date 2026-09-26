@@ -124,7 +124,7 @@ with one definition, so they always agree.
 Convert contours to binary masks:
 
 ```python
-pipe = Pipeline().source("contour", width=200, height=200)
+pipe = Pipeline().source("contour").rasterize(width=200, height=200)
 
 result = df.with_columns(
     mask=pl.col("contour").cv.pipe(pipe).sink("numpy")
@@ -145,7 +145,7 @@ contours = (
     .sink("native")                      # List(CONTOUR_SCHEMA), one set per row
 )
 
-mask = pl.col("contours").cv.pipe(Pipeline().source("contour", width=200, height=200))
+mask = pl.col("contours").cv.pipe(Pipeline().source("contour").rasterize(width=200, height=200))
 ```
 
 The trip back is lossy in one known direction: `extract_contours()` traces the
@@ -162,7 +162,7 @@ Infer dimensions from an existing image:
 
 ```python
 img = pl.col("image").cv.pipe(Pipeline().source("image_bytes").resize(height=200, width=200))
-mask = pl.col("contour").cv.pipe(Pipeline().source("contour", shape=img))
+mask = pl.col("contour").cv.pipe(Pipeline().source("contour").rasterize(shape=img))
 ```
 
 `shape=` takes a **reference pipeline** (a `LazyPipelineExpr`) instead of literal

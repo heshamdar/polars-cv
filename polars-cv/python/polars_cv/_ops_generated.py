@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import polars as pl
 
-    from polars_cv._types import BoolOrExpr, FloatOrExpr, IntOrExpr
+    from polars_cv._types import BoolOrExpr, CloudOptions, FloatOrExpr, IntOrExpr
     from polars_cv.lazy import LazyPipelineExpr
     from polars_cv.pipeline import Pipeline
 
@@ -934,6 +934,40 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     },
 }
 
+#: Each ``source()`` keyword's field type, across the formats.
+SOURCE_FIELDS: dict[str, dict[str, Any]] = {
+    "allowed_roots": {
+        "kind": "list",
+        "inner": {"kind": "scalar", "per_row": False, "py": "str"},
+    },
+    "cloud_options": {"kind": "map"},
+    "decode_max_size": {"kind": "scalar", "per_row": False, "py": "int"},
+    "dtype": {
+        "kind": "scalar",
+        "per_row": False,
+        "py": "DType",
+        "variants": [
+            "u8",
+            "i8",
+            "u16",
+            "i16",
+            "u32",
+            "i32",
+            "u64",
+            "i64",
+            "f32",
+            "f64",
+        ],
+    },
+    "on_error": {
+        "kind": "scalar",
+        "per_row": False,
+        "py": "FetchErrorPolicy",
+        "variants": ["raise", "null"],
+    },
+    "require_contiguous": {"kind": "scalar", "per_row": False, "py": "bool"},
+}
+
 
 class _OpsMixin:
     """The generated builder methods ``Pipeline`` inherits."""
@@ -941,6 +975,118 @@ class _OpsMixin:
     if TYPE_CHECKING:
 
         def _append_typed(self, op_name: str, values: dict[str, Any]) -> Pipeline: ...
+        def _with_source(self, format: str, values: dict[str, Any]) -> Pipeline: ...
+
+    def source(
+        self,
+        format: str = "auto",
+        *,
+        allowed_roots: Sequence[str] | None = None,
+        cloud_options: CloudOptions | dict[str, Any] | None = None,
+        decode_max_size: int | None = None,
+        dtype: str | None = None,
+        on_error: str | None = None,
+        require_contiguous: bool | None = None,
+    ) -> Pipeline:
+        """Define the input source format.
+
+        The default ``"auto"`` infers the decode path from the column's Polars
+        dtype at runtime. Pass an explicit format to override the inference (or
+        when the column dtype cannot be routed, such as a plain numeric column).
+
+        Image sources (``"image_bytes"`` and ``"file_path"``) auto-detect the
+        encoding and preserve its dtype: PNG/JPEG decode to u8, 16-bit PNG to u16,
+        and TIFF may produce u8, u16, f32 or f64. Decoded images are always 3D
+        ``[H, W, C]``. Until then the dtype is ``"auto"``: a ``list``/``array``
+        sink needs it known at planning time, from ``dtype=`` here, a ``cast()``,
+        or an operation that fixes it.
+
+        A ``"contour"`` source decodes to the contour domain; rasterize it with
+        :meth:`rasterize`.
+
+        Each keyword applies to some formats and not others, and defaults to
+        ``None`` (the format's own default). One that does not apply to the chosen
+        format is **rejected**, naming the formats it applies to.
+
+        ``decode_max_size`` asserts the pipeline needs at most this many pixels on
+        the decoded long side, so JPEG decoding uses IDCT scaling (1/8, 1/4 or
+        1/2) to skip work. The long side never drops below
+        ``min(decode_max_size, original)``, so a downstream resize to that size
+        never upscales; other encodings decode at full size. A scaled decode
+        followed by a resize is not bit-identical to a full decode and the same
+        resize, hence the explicit opt-in.
+
+        ``allowed_roots`` restricts which locations a path column may read from.
+        An entry that parses as a remote URI (``"s3://bucket/public/"``) is
+        matched as a URI prefix, anything else (``"/srv/images"``) as a local
+        directory. Local paths are canonicalized first, so ``..`` and symlinks
+        cannot escape, and matching is component-wise (``"/srv/images"`` does not
+        admit ``"/srv/images-private"``). A path matching no entry is refused, and
+        the refusal is subject to ``on_error``.
+
+        Args:
+            format: How to decode the input column. ``array``: A Polars fixed-size
+                `Array` column, one nesting level per axis. ``auto``: Infer the decode
+                path from the column's Polars dtype: String → file_path, List/Array →
+                list/array, Binary → blob if VIEW-tagged else image_bytes. ``blob``: The
+                self-describing VIEW protocol. ``contour``: A contour column (one
+                contour or a set per row), decoded as the contour set `extract_contours`
+                produces. A mask is the `rasterize` op's. ``file_path``: A path (local,
+                s3://, gs://, az://, http://) whose contents decode like image bytes.
+                ``image_bytes``: Encoded image bytes (PNG/JPEG/TIFF/...), always decoded
+                to `[H, W, C]`. ``list``: A Polars nested `List` column, one nesting
+                level per axis; its sizes may differ from row to row. ``raw``: Raw
+                bytes, decoded as a flat 1-D buffer of `dtype`.
+            allowed_roots: ``auto``, ``file_path``: Locations a path column may read
+                from (unrestricted when absent; see above).
+            cloud_options: ``auto``, ``file_path``: Cloud-storage credentials: a
+                ``CloudOptions`` or a dict.
+            decode_max_size: ``auto``, ``file_path``, ``image_bytes``: Decode only
+                enough pixels for this long side (JPEG IDCT scaling; see above).
+            dtype: ``array``, ``list``: Element dtype; inferred from the column when
+                absent. ``auto``: Asserted element dtype (a decoded image is cast to
+                it). ``blob``: Declared element dtype. A blob carries its own, so a
+                declaration is checked at decode: a blob of another dtype is a row
+                error. ``file_path``, ``image_bytes``: Asserted element dtype: a decoded
+                image with another dtype is cast. ``raw``: The element dtype: raw bytes
+                carry no type metadata, so it is required.
+            on_error: ``array``, ``auto``, ``blob``, ``contour``, ``image_bytes``,
+                ``list``, ``raw``: "raise" or "null": what a row that cannot be decoded
+                does. ``file_path``: "raise" or "null": what a row that cannot be read
+                or decoded does.
+            require_contiguous: ``array``, ``list``: Require rectangular data (zero-
+                copy); jagged rows are then an error. ``auto``: Require rectangular data
+                when the column is a List/Array.
+
+        Example:
+            ```python
+            >>> # Decode PNG/JPEG bytes from a column
+            >>> pipe = Pipeline().source("image_bytes").resize(height=224, width=224)
+            >>>
+            >>> # Read from file paths or URLs, sandboxed
+            >>> pipe = Pipeline().source("file_path", allowed_roots=["/srv/images"])
+            >>>
+            >>> # Assert dtype for a list sink (cast if needed at runtime)
+            >>> pipe = Pipeline().source("image_bytes", dtype="f32")
+            >>>
+            >>> # Gracefully handle corrupt images as null
+            >>> pipe = Pipeline().source("image_bytes", on_error="null")
+            >>>
+            >>> # Rasterize a contour column to a mask
+            >>> pipe = Pipeline().source("contour").rasterize(width=64, height=64)
+            ```
+        """
+        return self._with_source(
+            format,
+            {
+                "allowed_roots": allowed_roots,
+                "cloud_options": cloud_options,
+                "decode_max_size": decode_max_size,
+                "dtype": dtype,
+                "on_error": on_error,
+                "require_contiguous": require_contiguous,
+            },
+        )
 
     def abs(self) -> Pipeline:
         """Absolute value (`|x|`). Domain: buffer → buffer."""

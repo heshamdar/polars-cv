@@ -501,7 +501,7 @@ class TestShapeSubpipelineStaging:
         # shape node by id only, and that node's ops stay the verbatim logical
         # chain, NOT a construction-time rewrite.
         shape = _shape_ref()
-        pipe = Pipeline().source("contour", shape=shape)
+        pipe = Pipeline().source("contour").rasterize(shape=shape)
         [rasterize] = ops_of(pipe)
         assert rasterize.params["size"] == shape._node_id
         assert op_names(shape) == ["resize", "crop"]
@@ -513,7 +513,7 @@ class TestShapeSubpipelineStaging:
         # inspect its ops under each flag.
         shape = _shape_ref()
         shape_id = shape._node_id
-        contour = Pipeline().source("contour", shape=shape)
+        contour = Pipeline().source("contour").rasterize(shape=shape)
 
         on = (
             pl.col("c")
@@ -565,7 +565,7 @@ class TestShapeSubpipelineStaging:
                 "c": pl.Series([contour], dtype=CONTOUR_SCHEMA),
             }
         )
-        pipe = Pipeline().source("contour", shape=_shape_ref())
+        pipe = Pipeline().source("contour").rasterize(shape=_shape_ref())
 
         def run(flags: OptFlags) -> "np.ndarray":
             out = df.select(m=pl.col("c").cv.pipe(pipe).sink("numpy", opt_flags=flags))[

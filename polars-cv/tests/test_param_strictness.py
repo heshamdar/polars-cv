@@ -642,8 +642,10 @@ class TestContourSourceFillAcceptsExpressions:
             "is_closed": True,
         }
         df = pl.DataFrame({"c": [square, square], "fv": [100, 200]})
-        pipe = Pipeline().source(
-            "contour", width=10, height=10, fill_value=pl.col("fv")
+        pipe = (
+            Pipeline()
+            .source("contour")
+            .rasterize(width=10, height=10, fill_value=pl.col("fv"))
         )
         out = df.with_columns(r=pl.col("c").cv.pipe(pipe).sink("numpy"))
         values = out["r"].to_list()

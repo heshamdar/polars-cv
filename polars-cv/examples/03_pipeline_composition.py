@@ -111,7 +111,9 @@ def main() -> None:
     contour_expr = (
         pl.col("roi_contour")
         .cv.pipe(
-            Pipeline().source("contour", shape=left, fill_value=255, background=0),
+            Pipeline()
+            .source("contour")
+            .rasterize(shape=left, fill_value=255, background=0),
         )
         .alias("roi_mask")
     )

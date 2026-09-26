@@ -7,25 +7,21 @@ processing pipelines that can be applied to Polars DataFrame columns.
 
 from __future__ import annotations
 
-import inspect
 import json
 import math
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
-from polars_cv._ops_generated import OP_FIELDS, LogicalPass, _OpsMixin
+from polars_cv._ops_generated import OP_FIELDS, SOURCE_FIELDS, LogicalPass, _OpsMixin
 from polars_cv._types import (
-    CloudOptions,
     DType,
     FloatOrExpr,
     IntOrExpr,
     NullParamPolicy,
     RowErrorPolicy,
     SlotTable,
-    SourceFormat,
     _to_python,
-    _validate_enum,
     normalize_cloud_options,
 )
 
@@ -121,6 +117,11 @@ def _encode_field(p: "Pipeline", value: Any, ty: "dict[str, Any]", where: str) -
             p._read_node(value)
             return value._node_id
         return value
+    if kind == "map":
+        # The one map field, `source(cloud_options=)`: a `CloudOptions` or a
+        # dict of its fields and backend config names.
+        options = normalize_cloud_options(value)
+        return None if options is None else options.to_dict()
     if kind == "one_of":
         # The options differ in shape: a sequence picks the sequence option.
         wants_seq = _is_sequence(value)
@@ -401,194 +402,23 @@ class Pipeline(_OpsMixin):
 
     # --- Source (required, starts the chain) ---
 
-    def source(
-        self,
-        format: str = "auto",
-        *,
-        dtype: str | None = None,
-        # Contour source parameters
-        width: IntOrExpr | None = None,
-        height: IntOrExpr | None = None,
-        shape: "LazyPipelineExpr | None" = None,
-        fill_value: IntOrExpr | None = None,
-        background: IntOrExpr | None = None,
-        # Cloud storage options for file_path sources
-        cloud_options: "CloudOptions | dict[str, Any] | None" = None,
-        # Contiguity option for list/array sources
-        require_contiguous: bool | None = None,
-        # Error handling for source decoding
-        on_error: str | None = None,
-        # Explicit decode-scale assertion for image sources
-        decode_max_size: int | None = None,
-        # Path sandboxing for file_path sources
-        allowed_roots: "Sequence[str] | None" = None,
-    ) -> "Pipeline":
+    def _with_source(self, format: str, values: "dict[str, Any]") -> "Pipeline":
+        """A new pipeline reading *format*, with the given source settings.
+
+        The generated ``source()`` calls this with every keyword; an absent
+        one (``None``) is the format's own default. Each value is encoded by
+        its catalogue type, and ``Plan.with_source`` checks the whole source
+        against the format's Rust definition, refusing a setting the format
+        does not read, naming where it applies.
         """
-        Define the input source format.
-
-        The default ``"auto"`` infers the decode path from the column's Polars
-        dtype at runtime: a ``String`` column reads as ``"file_path"``, a
-        ``List``/``Array`` column as ``"list"``/``"array"``, and a ``Binary``
-        column as ``"blob"`` when it carries the VIEW protocol magic and
-        ``"image_bytes"`` otherwise. Pass an explicit format to override the
-        inference (or when the column dtype cannot be routed, such as a plain
-        numeric column).
-
-        Image sources (``"image_bytes"`` and ``"file_path"``) auto-detect the
-        format and preserve native dtype.  PNG/JPEG decode to u8, 16-bit PNG
-        to u16, and TIFF may produce u8, u16, f32, or f64.  All decoded
-        images are always 3D ``[H, W, C]``.
-
-        Each keyword below applies to some formats and not others. Every one
-        defaults to ``None`` (the format's own default), and one you pass that
-        does not apply to the format you chose is **rejected** rather than
-        ignored: a ``width`` on an image source, or ``cloud_options`` on a
-        source that never opens a path, has no effect and is a mistake worth
-        hearing about.
-
-        Because the dtype is not known until runtime, it starts as ``"auto"``
-        in the contract system.  Operations with deterministic output dtypes
-        (e.g. ``normalize`` -> f32, ``threshold`` -> u8, ``cast``) resolve it.
-        If you sink to ``"list"`` or ``"array"``, the dtype must be known at
-        planning time — either via an explicit ``dtype`` here, a ``cast()`` in
-        the pipeline, or an operation that fixes the output dtype.
-
-        Args:
-            format: How to interpret input data.
-                - "auto" (default): Infer the decode path from the column's
-                  Polars dtype (String → file_path, List/Array → list/array,
-                  Binary → blob if VIEW-tagged else image_bytes)
-                - "image_bytes": Decode PNG/JPEG/TIFF (auto-detect format
-                  and dtype; always 3D ``[H, W, C]``)
-                - "blob": VIEW protocol binary (self-describing)
-                - "raw": Raw bytes (requires dtype)
-                - "list": Polars nested List column
-                - "array": Polars fixed-size Array column
-                - "file_path": Read from path (local, s3://, gs://, az://,
-                  http://); decodes like ``"image_bytes"``
-                - "contour": Contour geometry. The column may hold one
-                  contour per row (``CONTOUR_SCHEMA``) or a whole set
-                  (``List(CONTOUR_SCHEMA)``, what ``extract_contours()``
-                  sinks); either decodes to the contour domain. Pass a canvas
-                  (``width``/``height`` or ``shape``) to rasterize it at once:
-                  that appends :meth:`rasterize`, which paints the set's union
-                  as an ``[H, W, 1]`` u8 mask.
-            dtype: For ``"raw"``: required data type of the raw bytes.
-                For ``"image_bytes"`` / ``"file_path"``: asserts the expected
-                dtype — at runtime, images with a different dtype are cast to
-                this type (no-op if already matching).  For ``"list"`` /
-                ``"array"``: override for the inferred column element type.
-                Rejected for ``"contour"``: rasterizing always produces u8, so
-                there is nothing to assert — use ``.cast(...)`` to convert.
-            width: ``rasterize(width=)``: passing any of ``width``,
-                ``height``, ``shape``, ``fill_value`` or ``background``
-                appends :meth:`rasterize` with them, which only a
-                ``"contour"`` source can feed.
-            height: ``rasterize(height=)``.
-            shape: ``rasterize(shape=)``.
-            fill_value: ``rasterize(fill_value=)``.
-            background: ``rasterize(background=)``.
-            cloud_options: Credentials for cloud storage (S3, GCS, Azure).
-            require_contiguous: For "list"/"array", whether to require
-                rectangular data (default ``False``).
-            on_error: Error handling strategy for source decoding.
-                - ``"raise"`` (default): propagate decode errors (fails the
-                  entire batch).
-                - ``"null"``: treat decode errors as null output for that row,
-                  allowing the rest of the batch to succeed.
-            decode_max_size: Explicit assertion that the pipeline only needs
-                at least this many pixels on the decoded image's long side
-                (for ``"image_bytes"`` / ``"file_path"`` sources). JPEG
-                decoding then uses IDCT scaling (1/8, 1/4 or 1/2) to skip
-                work — a large CPU and memory win for thumbnail pipelines.
-                The decoded long side never drops below
-                ``min(decode_max_size, original)``, so a downstream resize
-                down to this size never upscales. Other formats (PNG, …)
-                ignore the assertion and decode at full size. Note that a
-                scaled decode followed by a resize is not bit-identical to a
-                full decode followed by the same resize (different
-                resampling path) — hence the explicit opt-in.
-            allowed_roots: Restrict which locations the path column may read
-                from, for ``"file_path"`` (and ``"auto"`` resolving to it).
-                Default ``None`` reads whatever the column names, which is
-                right when the paths are your own and wrong when they are not.
-
-                One list covers local and remote: an entry that parses as a
-                remote URI (``"s3://bucket/public/"``) is matched as a URI
-                prefix, anything else (``"/srv/images"``) as a local directory.
-                Local paths are canonicalized before the comparison, so
-                ``"/srv/images/../../etc/passwd"`` and a symlink out of the
-                tree are both refused rather than compared as text, and
-                matching is component-wise, so ``"/srv/images"`` does not also
-                admit ``"/srv/images-private"``.
-
-                A path matching no entry is refused — the sandbox denies by
-                default once you ask for one — and the refusal is subject to
-                ``on_error``, so ``on_error="null"`` nulls those rows instead
-                of failing the query::
-
-                    >>> pipe = Pipeline().source(
-                    ...     "file_path", allowed_roots=["/srv/images"]
-                    ... )
-
-        Example:
-            ```python
-            >>> # Decode PNG/JPEG bytes from a column
-            >>> pipe = Pipeline().source("image_bytes").resize(height=224, width=224)
-            >>>
-            >>> # Read from file paths or URLs
-            >>> df = pl.DataFrame({"url": ["https://example.com/image.png"]})
-            >>> pipe = Pipeline().source("file_path").grayscale()
-            >>> expr = pl.col("url").cv.pipe(pipe).sink("numpy")
-            >>>
-            >>> # Assert dtype for list sink (cast if needed at runtime)
-            >>> pipe = Pipeline().source("image_bytes", dtype="f32").resize(height=224, width=224)
-            >>> expr = pl.col("img").cv.pipe(pipe).sink("list")
-            >>>
-            >>> # Gracefully handle corrupt images as null
-            >>> pipe = Pipeline().source("image_bytes", on_error="null").resize(height=224, width=224)
-            >>> expr = pl.col("img").cv.pipe(pipe).sink("png")
-            ```
-        """
-        # Taken before anything else binds a name: these *are* the parameters,
-        # so what is sent below cannot be a stale or partial list of them
-        # (`test_source_applicability_reads_every_parameter`). A keyword was
-        # passed iff it is not None.
-        passed = {k: v for k, v in locals().items() if k != "self" and v is not None}
-
+        source: dict[str, Any] = {"format": _to_python(format)}
         new = self._clone()
-        fmt = _validate_enum(passed.pop("format"), SourceFormat, "source format")
-
-        if decode_max_size is not None and (
-            not isinstance(decode_max_size, int) or decode_max_size <= 0
-        ):
-            msg = f"decode_max_size must be a positive int, got {decode_max_size!r}"
-            raise ValueError(msg)
-        # The canvas keywords are the `rasterize` op's, appended after the
-        # source: a contour source only decodes. On any other format the op
-        # refuses its input domain.
-        canvas = {
-            k: passed.pop(k)
-            for k in inspect.signature(Pipeline.rasterize).parameters
-            if k in passed
-        }
-
-        # Every keyword the caller passed goes into the source, whichever
-        # format it is for: the format's Rust definition refuses one it does
-        # not read, naming where it does apply (`Plan.with_source` below).
-        source: dict[str, Any] = {"format": fmt.value}
-        for name, value in passed.items():
-            if name == "dtype":
-                source[name] = _validate_enum(value, DType, "dtype").value
-            elif name == "cloud_options":
-                options = normalize_cloud_options(value)
-                source[name] = None if options is None else options.to_dict()
-            elif name == "allowed_roots":
-                source[name] = list(value)
-            else:
-                source[name] = _to_python(value)
+        for name, value in values.items():
+            if value is not None:
+                where = f"source({name}=)"
+                source[name] = _encode_field(new, value, SOURCE_FIELDS[name], where)
         new._plan = new._plan.with_source(json.dumps(source))
-        return new.rasterize(**canvas) if canvas else new
+        return new
 
     def thumbnail(self, max_size: int) -> "Pipeline":
         """
@@ -776,8 +606,8 @@ class Pipeline(_OpsMixin):
         *before* the op. Returns ``None`` when neither was asked for, leaving
         the op's own ``OutputDTypeRule`` to decide.
 
-        Raises when the request cannot be honored: both spellings at once, an
-        unrecognised dtype name, or ``preserve_dtype`` over a pipeline whose
+        Raises when the request cannot be honored: both spellings at once, or
+        ``preserve_dtype`` over a pipeline whose
         dtype is not concrete (image sources are "auto" until the source
         declares one).
         """
@@ -788,7 +618,8 @@ class Pipeline(_OpsMixin):
             )
             raise ValueError(msg)
         if out_dtype is not None:
-            return _validate_enum(out_dtype, DType, "out_dtype").value
+            # The cast it lowers to validates the name (its Rust definition).
+            return out_dtype
         if not preserve_dtype:
             return None
         pre_dtype = self._state.dtype

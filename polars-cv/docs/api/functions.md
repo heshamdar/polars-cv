@@ -52,7 +52,7 @@ from polars_cv import mask_iou, Pipeline
 import polars as pl
 
 pred_pipe = Pipeline().source("image_bytes").grayscale().threshold(128)
-gt_pipe = Pipeline().source("contour", width=256, height=256)
+gt_pipe = Pipeline().source("contour").rasterize(width=256, height=256)
 
 result = df.with_columns(
     iou=mask_iou(

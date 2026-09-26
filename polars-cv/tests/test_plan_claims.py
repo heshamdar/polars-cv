@@ -66,7 +66,7 @@ class TestADtypeClaimIsChecked:
 
 @plugin_required
 class TestACanvasFromAnotherNodeIsChecked:
-    """``source("contour", shape=)`` takes the canvas node's planned size, and
+    """``source("contour").rasterize(shape=)`` takes the canvas node's planned size, and
     that size is a checked fact: an ``assert_shape`` it rests on is checked
     where it was written, so a wrong one fails the row naming the assertion,
     with or without optimizations (consolidation plan C0.2, C2)."""
@@ -93,7 +93,10 @@ class TestACanvasFromAnotherNodeIsChecked:
             Pipeline().source("image_bytes").assert_shape(height=10, width=10)
         )
         pipe = (
-            Pipeline().source("contour", shape=shape).pad_to_size(height=10, width=10)
+            Pipeline()
+            .source("contour")
+            .rasterize(shape=shape)
+            .pad_to_size(height=10, width=10)
         )
         with pytest.raises(pl.exceptions.ComputeError) as err:
             self._frame().select(
@@ -105,7 +108,12 @@ class TestACanvasFromAnotherNodeIsChecked:
     @pytest.mark.parametrize("flags", [OptFlags.none(), OptFlags.all()])
     def test_the_canvas_is_the_nodes_size(self, flags: OptFlags) -> None:
         shape = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
-        pipe = Pipeline().source("contour", shape=shape).pad_to_size(height=6, width=8)
+        pipe = (
+            Pipeline()
+            .source("contour")
+            .rasterize(shape=shape)
+            .pad_to_size(height=6, width=8)
+        )
         out = self._frame().select(
             pl.col("c").cv.pipe(pipe).sink("numpy", opt_flags=flags)
         )
@@ -115,7 +123,10 @@ class TestACanvasFromAnotherNodeIsChecked:
         shape = pl.col("img").cv.pipe(
             Pipeline().source("image_bytes").assert_shape(height=10, width=10)
         )
-        assert planned(Pipeline().source("contour", shape=shape)).hw == (10, 10)
+        assert planned(Pipeline().source("contour").rasterize(shape=shape)).hw == (
+            10,
+            10,
+        )
 
 
 @plugin_required
