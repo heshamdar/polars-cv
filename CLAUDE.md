@@ -476,15 +476,12 @@ arm, both since removed) are documented alongside it.
 3. Re-bless the catalogue (`POLARS_CV_BLESS=1 scripts/with-pyo3-env.sh cargo
    test -p polars-cv catalog_matches`), regenerate the builder (`python
    scripts/gen_ops.py`) and `maturin develop`. The generated method appends
-   through `Pipeline._append_typed` → `_push` → `Plan.push`, the only way in. The matching `LazyPipelineExpr` method is generated automatically from
-   `Pipeline` at import time (`python/polars_cv/lazy.py`), and a `lazy_only`
-   binary op's is generated into `_LazyOpsMixin` — do **not** hand-mirror
-   either. Hand-written `Pipeline` methods are for sugar over generated
+   through `Pipeline._append_typed` → `_push` → `Plan.push`, the only way in. The same run writes the matching `LazyPipelineExpr` method into
+   `_lazy_forwarders.py` from the built `Pipeline`, and a `lazy_only` binary
+   op's into `_LazyOpsMixin` — do **not** hand-mirror either. Hand-written `Pipeline` methods are for sugar over generated
    ones (`flip_h`, `thumbnail`, …) and the `lazy_only` ops on
    `LazyPipelineExpr`.
-4. Regenerate the type stub: `python scripts/gen_lazy_stub.py` (CI guards it via
-   `test_lazy_stub_is_current`).
-5. Write tests covering both unit (builder validation) and integration (actual execution) cases.
+4. Write tests covering both unit (builder validation) and integration (actual execution) cases.
 
 **What makes an op "not implemented properly" here is not style, it is
 reachability.** The registries above are what make an op resolvable, planned,

@@ -818,11 +818,9 @@ def test_lazy_pipeline_method_parity():
     """Every chainable Pipeline method must exist on LazyPipelineExpr with an
     identical parameter list.
 
-    The lazy forwarders are generated from Pipeline at import time
-    (``polars_cv.lazy._install_pipeline_forwarders``), so parity holds by
-    construction. This test guards that the generator stays wired up — and that
-    any explicitly hand-written lazy methods (binary ops, ``apply_mask``,
-    ``channel_merge``) keep signatures aligned with their Pipeline counterparts."""
+    The lazy forwarders are generated from Pipeline (``_lazy_forwarders.py``,
+    by ``gen_ops.py``), so parity holds while that file is current; this guards
+    the generation and any hand-written lazy method against drift."""
     import inspect
 
     from polars_cv.lazy import (
@@ -861,35 +859,11 @@ def test_lazy_pipeline_method_parity():
         )
 
 
-def test_lazy_stub_is_current():
-    """The committed ``lazy.pyi`` must match what ``gen_lazy_stub.py`` produces.
-
-    The stub is generated from the runtime ``LazyPipelineExpr`` so IDEs and type
-    checkers see the auto-generated forwarders. This guards against the stub
-    drifting after a Pipeline change without a regeneration."""
-    import importlib.util
-    from pathlib import Path
-
-    script = Path(__file__).resolve().parent.parent / "scripts" / "gen_lazy_stub.py"
-    spec = importlib.util.spec_from_file_location("gen_lazy_stub", script)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    stub_path = Path(module._STUB_PATH)
-    assert stub_path.exists(), (
-        "lazy.pyi is missing; run python scripts/gen_lazy_stub.py"
-    )
-    assert stub_path.read_text() == module.generate_stub(), (
-        "lazy.pyi is out of date. Run: python scripts/gen_lazy_stub.py"
-    )
-
-
 def test_source_modifiers_are_not_generated_lazy_forwarders():
     """A Pipeline method that sets the source must be Pipeline-only.
 
-    ``_install_pipeline_forwarders`` generates a lazy forwarder for every
-    chainable Pipeline op, running it on a *sourceless* continuation
+    ``gen_ops.py`` generates a lazy forwarder for every chainable Pipeline op,
+    running it on a *sourceless* continuation
     (``_continuation()`` returns a pipeline whose plan has no source). A
     source-modifier (``source``, ``thumbnail``) would therefore unconditionally
     raise "requires a source" as a lazy method — a latent, always-failing
@@ -944,8 +918,6 @@ def test_explicit_lazy_methods_take_a_lazy_operand():
     for name, member in vars(LazyPipelineExpr).items():
         if name.startswith("_") or not callable(member):
             continue
-        if getattr(member, "__polars_cv_generated__", False):
-            continue  # auto-generated forwarder — the desired path
         if name not in chainable:
             continue  # lazy-only method (merge_pipe, statistics_lazy, …) — fine
         p_sig = inspect.signature(getattr(Pipeline, name))
@@ -1408,8 +1380,7 @@ def _load_script(name: str):
     """Import a ``scripts/`` module by path.
 
     The generators are not an importable package, and putting ``scripts/`` on
-    ``sys.path`` at module scope would reorder every import in this file. Same
-    approach ``test_lazy_stub_is_current`` already uses.
+    ``sys.path`` at module scope would reorder every import in this file.
     """
     import importlib.util
 
@@ -2558,6 +2529,9 @@ def test_the_committed_catalog_is_the_built_one() -> None:
     assert module.OUTPUT.read_text() == module.generate(), (
         "_ops_generated.py is out of date. Run: python scripts/gen_ops.py"
     )
+    assert module.FORWARDERS.read_text() == module.render_forwarders(), (
+        "_lazy_forwarders.py is out of date. Run: python scripts/gen_ops.py"
+    )
 
 
 def test_every_lazy_only_op_is_a_lazy_method_with_its_fields() -> None:
@@ -2574,6 +2548,7 @@ def test_every_lazy_only_op_is_a_lazy_method_with_its_fields() -> None:
     import inspect
     from pathlib import Path
 
+    from polars_cv._lazy_forwarders import _LazyForwardersMixin
     from polars_cv.lazy import LazyPipelineExpr
 
     root = Path(__file__).resolve().parent.parent
@@ -2584,7 +2559,7 @@ def test_every_lazy_only_op_is_a_lazy_method_with_its_fields() -> None:
         name = op["python"]
         method = getattr(LazyPipelineExpr, name, None)
         assert callable(method), f"lazy_only op {op['name']!r} has no lazy method"
-        assert not getattr(method, "__polars_cv_generated__", False), (
+        assert name not in vars(_LazyForwardersMixin), (
             f"lazy_only op {op['name']!r} is a forwarder, not a lazy method"
         )
         assert not hasattr(Pipeline, name), (
