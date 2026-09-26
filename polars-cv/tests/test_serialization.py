@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 
 import polars as pl
+import pytest
 
 from polars_cv import Pipeline
+from tests.conftest import plugin_required
 
 
 class TestParameterSerialization:
@@ -89,3 +91,58 @@ class TestJsonRustCompatibility:
         """Transpose axes are serialized as int lists."""
         data = json.loads(Pipeline().source().transpose([2, 0, 1])._to_json())
         assert data["ops"][0]["axes"] == [2, 0, 1]
+
+
+@plugin_required
+class TestTheWireIsClosed:
+    """Rust refuses a key it does not read, rather than dropping it.
+
+    A permissive wire is how unread fields (node-level ``shape_hints``, the
+    ``expr_column_names`` kwarg) went on being emitted long after their last
+    reader was gone, while entering the compiled-graph cache key.
+    """
+
+    @staticmethod
+    def _run(graph_json: str, **extra: object) -> None:
+        expr = pl.col("img").cv._plugin(  # type: ignore[attr-defined]
+            "vb_graph", kwargs={"graph_json": graph_json, **extra}
+        )
+        pl.DataFrame({"img": [b""]}).lazy().select(out=expr).collect()
+
+    @staticmethod
+    def _graph_json() -> str:
+        return (
+            pl.col("img")
+            .cv.pipe(Pipeline().source("image_bytes", dtype="u8").grayscale())
+            .sink("png", return_expr=False)
+            ._to_json()
+        )
+
+    def test_an_unknown_node_field_is_refused(self) -> None:
+        spec = json.loads(self._graph_json())
+        for node in spec["nodes"].values():
+            node["definitely_not_a_field"] = 1
+        with pytest.raises(pl.exceptions.ComputeError, match="unknown field"):
+            self._run(json.dumps(spec))
+
+    def test_an_unknown_plugin_kwarg_is_refused(self) -> None:
+        with pytest.raises(pl.exceptions.ComputeError, match="not_a_kwarg"):
+            self._run(self._graph_json(), not_a_kwarg=[])
+
+    @pytest.mark.parametrize(
+        ("field", "value"), [("size", [4, 4]), ("fill_value", 1), ("background", 0)]
+    )
+    def test_a_source_refuses_another_ops_field(
+        self, field: str, value: object
+    ) -> None:
+        """The contour source only decodes: its canvas is ``rasterize``'s."""
+        spec = json.loads(
+            pl.col("img")
+            .cv.pipe(Pipeline().source("contour").rasterize(width=4, height=4))
+            .sink("numpy", return_expr=False)
+            ._to_json()
+        )
+        for node in spec["nodes"].values():
+            node["source"][field] = value
+        with pytest.raises(pl.exceptions.ComputeError, match=field):
+            self._run(json.dumps(spec))

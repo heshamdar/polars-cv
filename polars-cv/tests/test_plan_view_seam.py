@@ -32,7 +32,6 @@ EXEMPT: dict[str, str] = {
     "test_sanitation.py": (
         "plans single ops against fabricated states (``Plan.continuing``)"
     ),
-    "test_removed_surfaces.py": "tombstones name removed internals",
     "test_plan_view_seam.py": "this guard names the fields it bans",
 }
 

@@ -312,9 +312,8 @@ their own op: there is **no plan-time fusion** of adjacent affine ops. An
 removed because folding several interpolation passes into one (and dropping the
 intermediate clip of an `expand=False` rotate) changed pixels by up to ~185/255,
 breaking the byte-for-byte on/off guarantee every optimization carries (see
-[`_optimize.py`](_optimize.py) and the CHANGELOG). `test_removed_surfaces.py`
-pins the deleted `_fuse_affine_inplace`/`_compose_affine_ops`, so do not restore
-them. `shear()` and `rotate_and_scale()` build their matrix (the literal
+[`_optimize.py`](_optimize.py) and the CHANGELOG), so do not restore
+it. `shear()` and `rotate_and_scale()` build their matrix (the literal
 rotation matrix via the `rotation_matrix_2d` FFI) and delegate to
 `warp_affine()`; `_to_spec_dict()` emits ops verbatim.
 

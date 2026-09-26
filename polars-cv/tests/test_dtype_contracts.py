@@ -486,8 +486,7 @@ class TestNormalizeOutDtypeContract:
 
     def test_out_dtype_preserve_rejected(self) -> None:
         # "preserve" is not a dtype — `parse_dtype` has no such name — so it is
-        # rejected by validating against DType rather than by a bespoke check
-        # here. See `test_removed_surfaces.py` for why it existed at all.
+        # rejected by validating against DType rather than by a bespoke check.
         with pytest.raises(ValueError, match="preserve"):
             Pipeline().source("list", dtype="f32").normalize(
                 method="minmax", out_dtype="preserve"

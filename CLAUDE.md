@@ -72,9 +72,11 @@ and the guard that enforces each one.
   no caller reaches — delete it, do not document it as "not yet implemented".
   Dead paths are not free: they enter op identity (breaking CSE and the
   compiled-graph cache), they enter every `match`, and they read as coverage.
-- Deletions get a guard too. `tests/test_removed_surfaces.py` pins each removed
-  surface with the reason, so the next author does not "restore" it. Rust-side
-  removals are guarded by the compiler.
+- A deletion is guarded by the mechanism that replaced it, not by a tombstone.
+  Rust-side removals are guarded by the compiler; a Python method, parameter or
+  wire field that no longer exists is refused by the generated signatures and
+  the closed (`deny_unknown_fields`) wire. Do not add tests that only assert a
+  name is absent — say why it went in the commit message and the CHANGELOG.
 - When a fallback arm exists only to hide the case it cannot handle, remove the
   arm and raise.
 

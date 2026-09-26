@@ -312,7 +312,7 @@ current instead.
 2. *Deleting what nothing reached.* view-buffer's pipeline-composition layer
    (`ops/io.rs`) and cost-reporting subsystem (`ops/cost.rs`),
    `rasterize(anti_alias=)`, node-level `shape_hints`, the geometry validation
-   module. Guarded by `tests/test_removed_surfaces.py`.
+   module.
 3. *One declaration per fact.* `dtype_table!`, the `naming::REGISTRY`,
    the op registry (now the typed catalogue), input domains read from the
    Rust contract.
