@@ -322,7 +322,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   different library from the one the planner had just read. It also passes each
   argument as `.ext.storage()`, which is how tagged inputs are accepted without
   any Rust input path knowing about extension types. `_graph.LIB_PATH` and
-  `_namespace._LIB_PATH` are removed (guarded in `test_removed_surfaces.py`).
+  `_namespace._LIB_PATH` are removed.
 
 - **`PipelineGraph.optimize` drives all passes from one registry
   (`OPTIMIZATION_PASSES`).** Each `PassSpec` carries a `tier` (`logical` = applied
@@ -332,15 +332,21 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Removed
 
+- **Loose contour-struct matching.** A contour struct's ring is its
+  `exterior` field. A `points` field was read as an alias, and a struct with
+  neither had its first list field taken as the exterior — the guessing
+  `EXTENSION_TYPES_PLAN.md` §3.5 schedules for removal once tagged inputs
+  shipped (Phase 3). Such a struct is now refused ("Contour struct has no
+  'exterior' field"); rename the field.
 - **`sobel(ksize=)` and `laplacian(ksize=)`.** Both accepted only `3` and
   raised for anything else; the kernels are the 3x3 ones. `sobel(axis=)` now
   refuses a value other than `"x"`/`"y"` (it computed the y gradient for any
-  of them). Guarded by `test_removed_surfaces.py`.
+  of them).
 - **`convolve2d(ksize=)`.** The side is the kernel's: its length must be the
   square of an odd number (9 for 3×3, 25 for 5×5, ...), and `kernel` is now
   the op's one positional parameter (`.convolve2d(k)`). `ksize` could only
   restate that length, and a per-row `ksize` could only fail when it
-  disagreed. Guarded by `test_removed_surfaces.py`.
+  disagreed.
 - **The resize family's `filter=` no longer accepts `"triangle"` from a
   per-row column.** It was a parser-only alias for `"bilinear"`
   (`FilterType::ALIASES`, now deleted) that the Python builder already
@@ -354,10 +360,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   could not satisfy the on/off output-equivalence guarantee every optimization
   now carries. `rotate`/`warp_affine`/`rotate_and_scale` ops are unchanged and
   still execute (unfused); only the plan-time fusion of adjacent affine ops is
-  gone. Guarded by `test_removed_surfaces.py`.
+  gone.
 
 ### Fixed
 
+- **An op reading another node checks that node's domain at build.**
+  `img.apply_mask(contours)`, `img.add(contours)` and `channel_merge` over a
+  contour-domain node built, planned a buffer schema and failed every row;
+  they are now refused while the pipeline is built, like the op's own input.
+- **`apply_contour_mask()` runs the whole contour pipeline.** It rebuilt the
+  mask from the contour pipeline's first op alone, so a `translate()` or
+  `scale_contour()` before the rasterize was silently dropped, and a contour
+  node continued from another node lost its input. Only a trailing
+  `rasterize()`'s canvas is replaced (its paint is kept); a pipeline ending
+  in neither contours nor `rasterize()` is refused.
 
 - **Optimizations can no longer turn a working query into a failing one on a
   claim.** A blob's declared `dtype` is checked at decode (a mismatch is a row

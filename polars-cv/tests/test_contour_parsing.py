@@ -128,6 +128,6 @@ class TestUniformParseErrors:
         errors.append(str(exc_info.value))
 
         for err in errors:
-            assert "exterior/points" in err, (
+            assert "'exterior'" in err, (
                 f"parser error must name the expected fields, got: {err}"
             )
