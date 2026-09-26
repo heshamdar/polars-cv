@@ -6,7 +6,7 @@ This module contains the core type definitions used throughout the package.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Union
 
 try:
@@ -324,26 +324,24 @@ class CloudOptions:
         }
     )
 
+    #: Named fields whose wire key differs from the field name.
+    _WIRE_KEYS: ClassVar[dict[str, str]] = {"gcs_bearer_token": "bearer_token"}
+
+    def _named(self) -> "list[tuple[str, str]]":
+        """The set credential fields, in declaration order."""
+        return [
+            (f.name, getattr(self, f.name))
+            for f in fields(self)
+            if f.name not in ("anonymous", "storage_options")
+            and getattr(self, f.name) is not None
+        ]
+
     def __repr__(self) -> str:
         """Return string representation with sensitive fields masked."""
-        parts: list[str] = []
-        for field_name in [
-            "aws_region",
-            "aws_access_key_id",
-            "aws_secret_access_key",
-            "aws_session_token",
-            "gcs_service_account_key",
-            "azure_storage_account",
-            "azure_storage_access_key",
-            "gcs_bearer_token",
-            "token_command",
-        ]:
-            value = getattr(self, field_name)
-            if value is not None:
-                if field_name in self._SENSITIVE_FIELDS:
-                    parts.append(f"{field_name}='***'")
-                else:
-                    parts.append(f"{field_name}={value!r}")
+        parts = [
+            f"{name}='***'" if name in self._SENSITIVE_FIELDS else f"{name}={value!r}"
+            for name, value in self._named()
+        ]
         # Pass-through options may carry secrets (inline keys, SAS tokens); show
         # only the key names with masked values.
         if self.storage_options:
@@ -364,25 +362,9 @@ class CloudOptions:
         Returns:
             Dictionary with non-None credential fields.
         """
-        result: dict[str, str] = {}
-        if self.aws_region is not None:
-            result["aws_region"] = self.aws_region
-        if self.aws_access_key_id is not None:
-            result["aws_access_key_id"] = self.aws_access_key_id
-        if self.aws_secret_access_key is not None:
-            result["aws_secret_access_key"] = self.aws_secret_access_key
-        if self.aws_session_token is not None:
-            result["aws_session_token"] = self.aws_session_token
-        if self.gcs_service_account_key is not None:
-            result["gcs_service_account_key"] = self.gcs_service_account_key
-        if self.azure_storage_account is not None:
-            result["azure_storage_account"] = self.azure_storage_account
-        if self.azure_storage_access_key is not None:
-            result["azure_storage_access_key"] = self.azure_storage_access_key
-        if self.gcs_bearer_token is not None:
-            result["bearer_token"] = self.gcs_bearer_token
-        if self.token_command is not None:
-            result["token_command"] = self.token_command
+        result = {
+            self._WIRE_KEYS.get(name, name): value for name, value in self._named()
+        }
         if self.anonymous is not None:
             result["anonymous"] = str(self.anonymous).lower()
         if self.storage_options:

@@ -429,3 +429,24 @@ def test_benchmark_list_is_current() -> None:
         f"benchmarks/AGENTS.md lists {documented}, but "
         f"get_single_op_benchmarks() returns {names}."
     )
+
+
+class TestDomainComposition:
+    """``_sugar`` composes its ``Domain:`` line from the ops it declares; a
+    chain whose ops do not connect is refused when the method is defined."""
+
+    def test_a_chain_that_does_not_connect_is_refused(self) -> None:
+        from polars_cv._domains import compose
+        from polars_cv._ops_generated import OP_DOMAINS
+
+        # `area` measures contours; `grayscale` leaves a buffer.
+        with pytest.raises(ValueError, match="contour_area does not accept the buffer"):
+            compose(OP_DOMAINS, ["grayscale", "contour_area"])
+
+    def test_a_docstring_without_sections_gets_the_line_at_its_end(self) -> None:
+        from polars_cv._domains import with_domain
+
+        doc = "\n    Summary line.\n    "
+        assert with_domain(doc, "Domain: buffer → buffer") == (
+            "\n    Summary line.\n\n    Domain: buffer → buffer\n    "
+        )
