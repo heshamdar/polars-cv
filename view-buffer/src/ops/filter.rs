@@ -32,8 +32,6 @@ crate::naming::named_variants!(BorderMode: "Border-handling mode for 2D convolut
 
 /// Apply generic 2D convolution with an arbitrary kernel.
 ///
-/// Domain: buffer → buffer
-///
 /// Example:
 ///     ```python
 ///     >>> edge = Pipeline().source("image_bytes").convolve2d(

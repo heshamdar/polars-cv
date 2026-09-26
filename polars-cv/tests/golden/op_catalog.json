@@ -3,8 +3,14 @@
     "name": "abs",
     "python": "abs",
     "visibility": "public",
-    "doc": "Absolute value (`|x|`). Domain: buffer → buffer.",
-    "fields": []
+    "doc": "Absolute value (`|x|`).",
+    "fields": [],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
   },
   {
     "name": "add",
@@ -18,6 +24,16 @@
         "type": {
           "kind": "node"
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      },
+      {
+        "input": "vector",
+        "output": "vector"
       }
     ]
   },
@@ -36,6 +52,12 @@
           "py": "float"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
@@ -52,6 +74,12 @@
           "per_row": true,
           "py": "float"
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
       }
     ]
   },
@@ -70,13 +98,19 @@
           "py": "float"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
     "name": "apply_mask",
     "python": "apply_mask",
     "visibility": "lazy_only",
-    "doc": "Apply a binary mask to this image.\n\nDomain: buffer → buffer",
+    "doc": "Apply a binary mask to this image.",
     "fields": [
       {
         "name": "mask",
@@ -94,6 +128,12 @@
           "per_row": true,
           "py": "bool"
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
       }
     ]
   },
@@ -131,6 +171,16 @@
           }
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      },
+      {
+        "input": "vector",
+        "output": "vector"
+      }
     ]
   },
   {
@@ -145,6 +195,16 @@
         "type": {
           "kind": "node"
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      },
+      {
+        "input": "vector",
+        "output": "vector"
       }
     ]
   },
@@ -161,6 +221,16 @@
           "kind": "node"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      },
+      {
+        "input": "vector",
+        "output": "vector"
+      }
     ]
   },
   {
@@ -176,6 +246,16 @@
           "kind": "node"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      },
+      {
+        "input": "vector",
+        "output": "vector"
+      }
     ]
   },
   {
@@ -190,6 +270,16 @@
         "type": {
           "kind": "node"
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      },
+      {
+        "input": "vector",
+        "output": "vector"
       }
     ]
   },
@@ -207,6 +297,12 @@
           "per_row": true,
           "py": "float"
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
       }
     ]
   },
@@ -235,6 +331,12 @@
           "per_row": true,
           "py": "float"
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
       }
     ]
   },
@@ -265,20 +367,32 @@
           ]
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
     "name": "ceil",
     "python": "ceil",
     "visibility": "public",
-    "doc": "Round toward positive infinity. Domain: buffer → buffer.",
-    "fields": []
+    "doc": "Round toward positive infinity.",
+    "fields": [],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
   },
   {
     "name": "channel_merge",
     "python": "channel_merge",
     "visibility": "lazy_only",
-    "doc": "Merge single-channel buffers into one multi-channel image.\n\nDomain: buffer → buffer ([H, W] → [H, W, C])",
+    "doc": "Merge single-channel buffers into one multi-channel image.\n\nShape: ``[H, W]`` → ``[H, W, C]``.",
     "fields": [
       {
         "name": "others",
@@ -289,6 +403,12 @@
             "kind": "node"
           }
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
       }
     ]
   },
@@ -306,6 +426,12 @@
           "per_row": true,
           "py": "int"
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
       }
     ]
   },
@@ -326,6 +452,12 @@
             "py": "int"
           }
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
       }
     ]
   },
@@ -353,6 +485,12 @@
           "py": "float"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
@@ -369,6 +507,12 @@
           "per_row": true,
           "py": "float"
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
       }
     ]
   },
@@ -387,13 +531,19 @@
           "py": "float"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
     "name": "contour_area",
     "python": "area",
     "visibility": "public",
-    "doc": "Compute the area of the contour using the Shoelace formula.\n\nThe area of the region the contour describes: the exterior minus the\nunion of its hole rings, in either winding direction. Overlapping or\nnested hole rings are not double-subtracted. One value per contour for\na contour set.\n\nDomain transition: contour → scalar",
+    "doc": "Compute the area of the contour using the Shoelace formula.\n\nThe area of the region the contour describes: the exterior minus the\nunion of its hole rings, in either winding direction. Overlapping or\nnested hole rings are not double-subtracted. One value per contour for\na contour set.",
     "fields": [
       {
         "name": "signed",
@@ -405,41 +555,71 @@
           "py": "bool"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "vector"
+      }
     ]
   },
   {
     "name": "contour_bounding_box",
     "python": "bounding_box",
     "visibility": "public",
-    "doc": "Compute the axis-aligned bounding box of the contour.\n\nDomain transition: contour → vector (returns [x, y, width, height])",
-    "fields": []
+    "doc": "Compute the axis-aligned bounding box of the contour.\n\nReturns ``[x, y, width, height]``.",
+    "fields": [],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "vector"
+      }
+    ]
   },
   {
     "name": "contour_centroid",
     "python": "centroid",
     "visibility": "public",
-    "doc": "Compute the centroid (center of mass) of the contour.\n\nMeasured on the same region as `area()` — the exterior minus the union\nof the hole rings — so overlapping or nested holes are not subtracted\ntwice.\n\nDomain transition: contour → vector (returns [x, y])",
-    "fields": []
+    "doc": "Compute the centroid (center of mass) of the contour.\n\nMeasured on the same region as `area()` — the exterior minus the union\nof the hole rings — so overlapping or nested holes are not subtracted\ntwice.\n\nReturns ``[x, y]``.",
+    "fields": [],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "vector"
+      }
+    ]
   },
   {
     "name": "contour_convex_hull",
     "python": "convex_hull",
     "visibility": "public",
-    "doc": "Compute the convex hull of the contour.\n\nDomain: contour → contour",
-    "fields": []
+    "doc": "Compute the convex hull of the contour.",
+    "fields": [],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "contour"
+      }
+    ]
   },
   {
     "name": "contour_perimeter",
     "python": "perimeter",
     "visibility": "public",
-    "doc": "Compute the perimeter (arc length) of the contour.\n\nDomain transition: contour → scalar",
-    "fields": []
+    "doc": "Compute the perimeter (arc length) of the contour.",
+    "fields": [],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "vector"
+      }
+    ]
   },
   {
     "name": "contour_scale",
     "python": "scale_contour",
     "visibility": "public",
-    "doc": "Scale the contour about *origin*.\n\nDomain: contour → contour",
+    "doc": "Scale the contour about *origin*.",
     "fields": [
       {
         "name": "sx",
@@ -474,13 +654,19 @@
           ]
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "contour"
+      }
     ]
   },
   {
     "name": "contour_simplify",
     "python": "simplify",
     "visibility": "public",
-    "doc": "Simplify the contour using the Douglas-Peucker algorithm.\n\nDomain: contour → contour",
+    "doc": "Simplify the contour using the Douglas-Peucker algorithm.",
     "fields": [
       {
         "name": "tolerance",
@@ -491,13 +677,19 @@
           "py": "float"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "contour"
+      }
     ]
   },
   {
     "name": "contour_translate",
     "python": "translate",
     "visibility": "public",
-    "doc": "Translate the contour by an offset.\n\nDomain: contour → contour",
+    "doc": "Translate the contour by an offset.",
     "fields": [
       {
         "name": "dx",
@@ -517,13 +709,19 @@
           "py": "float"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "contour"
+      }
     ]
   },
   {
     "name": "convolve2d",
     "python": "convolve2d",
     "visibility": "public",
-    "doc": "Apply generic 2D convolution with an arbitrary kernel.\n\nDomain: buffer → buffer\n\nExample:\n    ```python\n    >>> edge = Pipeline().source(\"image_bytes\").convolve2d(\n    ...     [-1, -1, -1, -1, 8, -1, -1, -1, -1]\n    ... )\n    ```",
+    "doc": "Apply generic 2D convolution with an arbitrary kernel.\n\nExample:\n    ```python\n    >>> edge = Pipeline().source(\"image_bytes\").convolve2d(\n    ...     [-1, -1, -1, -1, 8, -1, -1, -1, -1]\n    ... )\n    ```",
     "fields": [
       {
         "name": "kernel",
@@ -561,6 +759,12 @@
             "reflect"
           ]
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
       }
     ]
   },
@@ -614,13 +818,19 @@
           }
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
     "name": "cvt_color",
     "python": "convert_color",
     "visibility": "public",
-    "doc": "Convert between color spaces.\n\nDomain: buffer → buffer\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").convert_color(from_space=\"rgb\", to_space=\"hsv\")",
+    "doc": "Convert between color spaces.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").convert_color(from_space=\"rgb\", to_space=\"hsv\")",
     "fields": [
       {
         "name": "from_space",
@@ -656,6 +866,12 @@
           ]
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
@@ -684,6 +900,12 @@
           "py": "int"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
@@ -699,6 +921,16 @@
           "kind": "node"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      },
+      {
+        "input": "vector",
+        "output": "vector"
+      }
     ]
   },
   {
@@ -706,7 +938,13 @@
     "python": "equalize_histogram",
     "visibility": "public",
     "doc": "Apply histogram equalization for contrast enhancement: map each pixel\nthrough the normalized CDF, per channel. Output is U8.\n\nExample:\n    >>> eq = Pipeline().source(\"image_bytes\").grayscale().equalize_histogram()",
-    "fields": []
+    "fields": [],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
   },
   {
     "name": "erode",
@@ -734,13 +972,19 @@
           "py": "int"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
     "name": "extract_contours",
     "python": "extract_contours",
     "visibility": "public",
-    "doc": "Extract contours from binary mask.\n\nThe traced outline passes through the **centres** of the boundary pixels,\nso it sits half a pixel inside the region it describes: a blob filling\n``w x h`` pixels comes back bounding ``(w-1) x (h-1)``. Rasterizing the\nresult therefore erodes it by a pixel per round trip.\n\nBorders come back as a flat list with no hierarchy. ``mode=\"all\"`` yields\nthe exterior plus one border for each enclosed background region — holes\nthat touch or nest enclose one region between them — and reassembling a\nholed contour from those is the caller's job. ``mode=\"external\"`` keeps\nonly the outermost, discarding hole borders.\n\nDomain transition: buffer → contour",
+    "doc": "Extract contours from binary mask.\n\nThe traced outline passes through the **centres** of the boundary pixels,\nso it sits half a pixel inside the region it describes: a blob filling\n``w x h`` pixels comes back bounding ``(w-1) x (h-1)``. Rasterizing the\nresult therefore erodes it by a pixel per round trip.\n\nBorders come back as a flat list with no hierarchy. ``mode=\"all\"`` yields\nthe exterior plus one border for each enclosed background region — holes\nthat touch or nest enclose one region between them — and reassembling a\nholed contour from those is the caller's job. ``mode=\"external\"`` keeps\nonly the outermost, discarding hole borders.",
     "fields": [
       {
         "name": "mode",
@@ -784,14 +1028,26 @@
           }
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "contour"
+      }
     ]
   },
   {
     "name": "extract_shape",
     "python": "extract_shape",
     "visibility": "public",
-    "doc": "Extract buffer shape as a struct {height, width, channels}.\n\nDomain transition: buffer → vector",
-    "fields": []
+    "doc": "Extract buffer shape as a struct {height, width, channels}.",
+    "fields": [],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "vector"
+      }
+    ]
   },
   {
     "name": "flip",
@@ -811,21 +1067,39 @@
           }
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
     "name": "floor",
     "python": "floor",
     "visibility": "public",
-    "doc": "Round toward negative infinity. Domain: buffer → buffer.",
-    "fields": []
+    "doc": "Round toward negative infinity.",
+    "fields": [],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
   },
   {
     "name": "grayscale",
     "python": "grayscale",
     "visibility": "public",
     "doc": "Convert to grayscale (luminance 0.299R + 0.587G + 0.114B).",
-    "fields": []
+    "fields": [],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
   },
   {
     "name": "histogram",
@@ -903,6 +1177,19 @@
           ]
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "vector"
+      },
+      {
+        "with": [
+          "``output=\"quantized\"``"
+        ],
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
@@ -910,13 +1197,19 @@
     "python": "invert",
     "visibility": "public",
     "doc": "Invert pixel values: `255 - pixel` for u8, `1.0 - pixel` for float [0,1].",
-    "fields": []
+    "fields": [],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
   },
   {
     "name": "label_reduce",
     "python": "label_reduce",
     "visibility": "public",
-    "doc": "Score contour regions against the current buffer values.\n\nThis is the buffer-space variant of label reduction. It accepts contours\nvia a Polars expression and returns one score per contour.\n\nDomain transition: buffer -> vector",
+    "doc": "Score contour regions against the current buffer values.\n\nThis is the buffer-space variant of label reduction. It accepts contours\nvia a Polars expression and returns one score per contour.",
     "fields": [
       {
         "name": "contours",
@@ -954,6 +1247,12 @@
             "bbox"
           ]
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "vector"
       }
     ]
   },
@@ -1008,6 +1307,12 @@
           ]
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
@@ -1023,6 +1328,16 @@
           "kind": "node"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      },
+      {
+        "input": "vector",
+        "output": "vector"
+      }
     ]
   },
   {
@@ -1037,6 +1352,16 @@
         "type": {
           "kind": "node"
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      },
+      {
+        "input": "vector",
+        "output": "vector"
       }
     ]
   },
@@ -1056,6 +1381,12 @@
           "py": "int"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
@@ -1071,14 +1402,30 @@
           "kind": "node"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      },
+      {
+        "input": "vector",
+        "output": "vector"
+      }
     ]
   },
   {
     "name": "neg",
     "python": "neg",
     "visibility": "public",
-    "doc": "Negate every value (`-x`). Domain: buffer → buffer.",
-    "fields": []
+    "doc": "Negate every value (`-x`).",
+    "fields": [],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
   },
   {
     "name": "normalize",
@@ -1155,6 +1502,12 @@
           }
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
@@ -1229,6 +1582,12 @@
           ]
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
@@ -1280,6 +1639,12 @@
           "py": "float"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
@@ -1314,13 +1679,19 @@
           "py": "int"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "vector"
+      }
     ]
   },
   {
     "name": "rasterize",
     "python": "rasterize",
     "visibility": "internal",
-    "doc": "Rasterize contours to a mask.\n\nThe builder is ``Pipeline.rasterize``, whose ``width``/``height`` or\n``shape`` arguments become ``size``; it also records the shape reference's\ngraph dependency and its canvas assertion.\n\nDomain transition: contour → buffer",
+    "doc": "Rasterize contours to a mask.\n\nThe builder is ``Pipeline.rasterize``, whose ``width``/``height`` or\n``shape`` arguments become ``size``; it also records the shape reference's\ngraph dependency and its canvas assertion.",
     "fields": [
       {
         "name": "size",
@@ -1363,6 +1734,12 @@
           "py": "int"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "buffer"
+      }
     ]
   },
   {
@@ -1378,20 +1755,36 @@
           "kind": "node"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      },
+      {
+        "input": "vector",
+        "output": "vector"
+      }
     ]
   },
   {
     "name": "reciprocal",
     "python": "reciprocal",
     "visibility": "public",
-    "doc": "Reciprocal (`1 / x`; ±inf at zero). Domain: buffer → buffer.",
-    "fields": []
+    "doc": "Reciprocal (`1 / x`; ±inf at zero).",
+    "fields": [],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
   },
   {
     "name": "reduce_argmax",
     "python": "reduce_argmax",
     "visibility": "public",
-    "doc": "Index of the maximum value along an axis.\n\nUnlike other reductions it always requires an axis: a global index\nis ambiguous for a multi-dimensional array. Domain transition:\nbuffer → buffer (reduced shape, i64 dtype).",
+    "doc": "Index of the maximum value along an axis.\n\nUnlike other reductions it always requires an axis: a global index\nis ambiguous for a multi-dimensional array. The result has the reduced\nshape and an i64 dtype.",
     "fields": [
       {
         "name": "axis",
@@ -1401,6 +1794,16 @@
           "per_row": false,
           "py": "int"
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      },
+      {
+        "input": "vector",
+        "output": "buffer"
       }
     ]
   },
@@ -1408,7 +1811,7 @@
     "name": "reduce_argmin",
     "python": "reduce_argmin",
     "visibility": "public",
-    "doc": "Index of the minimum value along an axis.\n\nUnlike other reductions it always requires an axis: a global index\nis ambiguous for a multi-dimensional array. Domain transition:\nbuffer → buffer (reduced shape, i64 dtype).",
+    "doc": "Index of the minimum value along an axis.\n\nUnlike other reductions it always requires an axis: a global index\nis ambiguous for a multi-dimensional array. The result has the reduced\nshape and an i64 dtype.",
     "fields": [
       {
         "name": "axis",
@@ -1419,13 +1822,23 @@
           "py": "int"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      },
+      {
+        "input": "vector",
+        "output": "buffer"
+      }
     ]
   },
   {
     "name": "reduce_max",
     "python": "reduce_max",
     "visibility": "public",
-    "doc": "Reduce buffer by computing the maximum value.\n\nDomain transition: axis=None: buffer → scalar; axis=N: buffer →\nbuffer (reduced shape).",
+    "doc": "Reduce buffer by computing the maximum value.",
     "fields": [
       {
         "name": "axis",
@@ -1438,6 +1851,30 @@
             "py": "int"
           }
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "scalar"
+      },
+      {
+        "input": "vector",
+        "output": "scalar"
+      },
+      {
+        "with": [
+          "``axis``"
+        ],
+        "input": "buffer",
+        "output": "buffer"
+      },
+      {
+        "with": [
+          "``axis``"
+        ],
+        "input": "vector",
+        "output": "buffer"
       }
     ]
   },
@@ -1445,7 +1882,7 @@
     "name": "reduce_mean",
     "python": "reduce_mean",
     "visibility": "public",
-    "doc": "Compute arithmetic mean.\n\nDomain transition: axis=None: buffer → scalar; axis=N: buffer →\nbuffer (reduced shape).",
+    "doc": "Compute arithmetic mean.",
     "fields": [
       {
         "name": "axis",
@@ -1458,6 +1895,30 @@
             "py": "int"
           }
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "scalar"
+      },
+      {
+        "input": "vector",
+        "output": "scalar"
+      },
+      {
+        "with": [
+          "``axis``"
+        ],
+        "input": "buffer",
+        "output": "buffer"
+      },
+      {
+        "with": [
+          "``axis``"
+        ],
+        "input": "vector",
+        "output": "buffer"
       }
     ]
   },
@@ -1465,7 +1926,7 @@
     "name": "reduce_min",
     "python": "reduce_min",
     "visibility": "public",
-    "doc": "Reduce buffer by computing the minimum value.\n\nDomain transition: axis=None: buffer → scalar; axis=N: buffer →\nbuffer (reduced shape).",
+    "doc": "Reduce buffer by computing the minimum value.",
     "fields": [
       {
         "name": "axis",
@@ -1479,13 +1940,37 @@
           }
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "scalar"
+      },
+      {
+        "input": "vector",
+        "output": "scalar"
+      },
+      {
+        "with": [
+          "``axis``"
+        ],
+        "input": "buffer",
+        "output": "buffer"
+      },
+      {
+        "with": [
+          "``axis``"
+        ],
+        "input": "vector",
+        "output": "buffer"
+      }
     ]
   },
   {
     "name": "reduce_percentile",
     "python": "reduce_percentile",
     "visibility": "public",
-    "doc": "Compute the q-th percentile of all values (linear interpolation, as numpy's\ndefault).\n\nDomain transition: buffer -> scalar",
+    "doc": "Compute the q-th percentile of all values (linear interpolation, as numpy's\ndefault).",
     "fields": [
       {
         "name": "q",
@@ -1496,20 +1981,40 @@
           "py": "float"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "scalar"
+      },
+      {
+        "input": "vector",
+        "output": "scalar"
+      }
     ]
   },
   {
     "name": "reduce_popcount",
     "python": "reduce_popcount",
     "visibility": "public",
-    "doc": "Count set bits (1s) in the buffer.\n\nDomain transition: buffer → scalar",
-    "fields": []
+    "doc": "Count set bits (1s) in the buffer.",
+    "fields": [],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "scalar"
+      },
+      {
+        "input": "vector",
+        "output": "scalar"
+      }
+    ]
   },
   {
     "name": "reduce_std",
     "python": "reduce_std",
     "visibility": "public",
-    "doc": "Reduce buffer by computing the standard deviation.\n\nDomain transition: axis=None: buffer -> scalar; axis=N: buffer -> buffer\n(reduced shape).\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").reduce_std(ddof=1)",
+    "doc": "Reduce buffer by computing the standard deviation.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").reduce_std(ddof=1)",
     "fields": [
       {
         "name": "axis",
@@ -1533,21 +2038,61 @@
           "py": "int"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "scalar"
+      },
+      {
+        "input": "vector",
+        "output": "scalar"
+      },
+      {
+        "with": [
+          "``axis``"
+        ],
+        "input": "buffer",
+        "output": "buffer"
+      },
+      {
+        "with": [
+          "``axis``"
+        ],
+        "input": "vector",
+        "output": "buffer"
+      }
     ]
   },
   {
     "name": "reduce_sum",
     "python": "reduce_sum",
     "visibility": "public",
-    "doc": "Sum all elements in the buffer.\n\nDomain transition: buffer → scalar",
-    "fields": []
+    "doc": "Sum all elements in the buffer.",
+    "fields": [],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "scalar"
+      },
+      {
+        "input": "vector",
+        "output": "scalar"
+      }
+    ]
   },
   {
     "name": "relu",
     "python": "relu",
     "visibility": "public",
     "doc": "Apply ReLU activation (max(0, x)): negative values become zero.",
-    "fields": []
+    "fields": [],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
   },
   {
     "name": "reshape",
@@ -1566,6 +2111,12 @@
             "py": "int"
           }
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
       }
     ]
   },
@@ -1610,6 +2161,12 @@
           ]
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
@@ -1644,6 +2201,12 @@
           ]
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
@@ -1677,6 +2240,12 @@
             "lanczos3"
           ]
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
       }
     ]
   },
@@ -1721,6 +2290,12 @@
           ]
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
@@ -1754,6 +2329,12 @@
             "lanczos3"
           ]
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
       }
     ]
   },
@@ -1789,13 +2370,19 @@
           ]
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
     "name": "rotate",
     "python": "rotate",
     "visibility": "public",
-    "doc": "Rotate image by specified angle.\n\nFor angles of 90, 180, or 270 degrees, this uses zero-copy view operations\n(``interpolation`` and ``border_value`` do not apply: nothing is resampled\nand no out-of-bounds region is exposed). For arbitrary angles, the rotation\nis performed via an affine transformation using the specified\ninterpolation and border value. For combined rotation + scale or explicit\noutput sizing, use :meth:`rotate_and_scale` or :meth:`warp_affine`.\n\nDomain: buffer -> buffer\n\nExample:\n    ```python\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate(90)\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate(45, expand=True)\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate(pl.col(\"angle\"))\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate(30, interpolation=\"nearest\")\n    ```",
+    "doc": "Rotate image by specified angle.\n\nFor angles of 90, 180, or 270 degrees, this uses zero-copy view operations\n(``interpolation`` and ``border_value`` do not apply: nothing is resampled\nand no out-of-bounds region is exposed). For arbitrary angles, the rotation\nis performed via an affine transformation using the specified\ninterpolation and border value. For combined rotation + scale or explicit\noutput sizing, use :meth:`rotate_and_scale` or :meth:`warp_affine`.\n\nExample:\n    ```python\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate(90)\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate(45, expand=True)\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate(pl.col(\"angle\"))\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate(30, interpolation=\"nearest\")\n    ```",
     "fields": [
       {
         "name": "angle",
@@ -1840,14 +2427,26 @@
           "py": "float"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
     "name": "round",
     "python": "round",
     "visibility": "public",
-    "doc": "Round to nearest, ties to even (matches Polars/numpy). Domain: buffer → buffer.",
-    "fields": []
+    "doc": "Round to nearest, ties to even (matches Polars/numpy).",
+    "fields": [],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
   },
   {
     "name": "scale",
@@ -1864,28 +2463,52 @@
           "py": "float"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
     "name": "sign",
     "python": "sign",
     "visibility": "public",
-    "doc": "Sign: `-1`/`0`/`+1` (`0` for ±0, NaN for NaN). Domain: buffer → buffer.",
-    "fields": []
+    "doc": "Sign: `-1`/`0`/`+1` (`0` for ±0, NaN for NaN).",
+    "fields": [],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
   },
   {
     "name": "sqrt",
     "python": "sqrt",
     "visibility": "public",
-    "doc": "Square root (`sqrt(x)`; NaN for negative input). Domain: buffer → buffer.",
-    "fields": []
+    "doc": "Square root (`sqrt(x)`; NaN for negative input).",
+    "fields": [],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
   },
   {
     "name": "square",
     "python": "square",
     "visibility": "public",
-    "doc": "Square (`x * x`). Domain: buffer → buffer.",
-    "fields": []
+    "doc": "Square (`x * x`).",
+    "fields": [],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
   },
   {
     "name": "subtract",
@@ -1899,6 +2522,16 @@
         "type": {
           "kind": "node"
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      },
+      {
+        "input": "vector",
+        "output": "vector"
       }
     ]
   },
@@ -1917,6 +2550,12 @@
           "py": "float"
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
@@ -1933,6 +2572,12 @@
           "per_row": true,
           "py": "float"
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
       }
     ]
   },
@@ -1954,20 +2599,32 @@
           }
         }
       }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
     ]
   },
   {
     "name": "trunc",
     "python": "trunc",
     "visibility": "public",
-    "doc": "Round toward zero (drop the fractional part). Domain: buffer → buffer.",
-    "fields": []
+    "doc": "Round toward zero (drop the fractional part).",
+    "fields": [],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
   },
   {
     "name": "warp_affine",
     "python": "warp_affine",
     "visibility": "public",
-    "doc": "Apply a 2x3 affine transformation matrix.\n\nThe matrix ``[a, b, tx, c, d, ty]`` is a **forward** mapping from\nsource to destination (same convention as OpenCV ``warpAffine``):\n\n```text\nx_dst = a * x_src + b * y_src + tx\ny_dst = c * x_src + d * y_src + ty\n```\n\nThe kernel inverts this matrix internally for interpolation.\n\nDomain: buffer → buffer\n\nExample:\n    ```python\n    >>> # Translate image by (50, 30)\n    >>> pipe = Pipeline().source(\"image_bytes\").warp_affine(\n    ...     matrix=[1.0, 0.0, 50.0, 0.0, 1.0, 30.0],\n    ...     output_size=(224, 224),\n    ... )\n    >>>\n    >>> # Per-sample random affine: each row uses its own matrix columns\n    >>> pipe = Pipeline().source(\"image_bytes\").warp_affine(\n    ...     matrix=[pl.col(\"a\"), pl.col(\"b\"), pl.col(\"tx\"),\n    ...             pl.col(\"c\"), pl.col(\"d\"), pl.col(\"ty\")],\n    ...     output_size=(224, 224),\n    ... )\n    ```",
+    "doc": "Apply a 2x3 affine transformation matrix.\n\nThe matrix ``[a, b, tx, c, d, ty]`` is a **forward** mapping from\nsource to destination (same convention as OpenCV ``warpAffine``):\n\n```text\nx_dst = a * x_src + b * y_src + tx\ny_dst = c * x_src + d * y_src + ty\n```\n\nThe kernel inverts this matrix internally for interpolation.\n\nExample:\n    ```python\n    >>> # Translate image by (50, 30)\n    >>> pipe = Pipeline().source(\"image_bytes\").warp_affine(\n    ...     matrix=[1.0, 0.0, 50.0, 0.0, 1.0, 30.0],\n    ...     output_size=(224, 224),\n    ... )\n    >>>\n    >>> # Per-sample random affine: each row uses its own matrix columns\n    >>> pipe = Pipeline().source(\"image_bytes\").warp_affine(\n    ...     matrix=[pl.col(\"a\"), pl.col(\"b\"), pl.col(\"tx\"),\n    ...             pl.col(\"c\"), pl.col(\"d\"), pl.col(\"ty\")],\n    ...     output_size=(224, 224),\n    ... )\n    ```",
     "fields": [
       {
         "name": "matrix",
@@ -2018,6 +2675,12 @@
           "per_row": true,
           "py": "float"
         }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
       }
     ]
   }

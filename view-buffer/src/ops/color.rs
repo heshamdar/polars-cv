@@ -44,8 +44,6 @@ impl ColorSpace {
 
 /// Convert between color spaces.
 ///
-/// Domain: buffer → buffer
-///
 /// Example:
 ///     >>> pipe = Pipeline().source("image_bytes").convert_color(from_space="rgb", to_space="hsv")
 #[derive(Debug, Clone, PartialEq, Ops, Resolve)]

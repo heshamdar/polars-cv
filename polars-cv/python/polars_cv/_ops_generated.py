@@ -1089,11 +1089,16 @@ class _OpsMixin:
         )
 
     def abs(self) -> Pipeline:
-        """Absolute value (`|x|`). Domain: buffer → buffer."""
+        """Absolute value (`|x|`).
+
+        Domain: buffer → buffer
+        """
         return self._append_typed("abs", {})
 
     def add_constant(self, value: FloatOrExpr) -> Pipeline:
         """Add a constant to every value (`x + value`).
+
+        Domain: buffer → buffer
 
         Args:
             value: Constant addend (literal or per-row expression).
@@ -1102,6 +1107,8 @@ class _OpsMixin:
 
     def adjust_contrast(self, factor: FloatOrExpr) -> Pipeline:
         """Adjust image contrast: `(pixel - mean) * factor + mean`.
+
+        Domain: buffer → buffer
 
         Args:
             factor: Contrast factor. 1.0 = no change, >1 = more contrast, <1 = less.
@@ -1114,6 +1121,8 @@ class _OpsMixin:
     def adjust_gamma(self, gamma: FloatOrExpr) -> Pipeline:
         """Apply gamma (power-law) correction: normalize to [0,1], raise to `gamma`,
         denormalize.
+
+        Domain: buffer → buffer
 
         Args:
             gamma: Gamma value. <1 = brighter, >1 = darker, 1.0 = no change.
@@ -1133,6 +1142,8 @@ class _OpsMixin:
         execution checks it against every row, so everything downstream rests on a
         checked fact. The public `Pipeline.assert_shape` is sugar over this op.
 
+        Domain: buffer → buffer, vector → vector
+
         Args:
             rank: The rank, when declared (`assert_shape(dims=[...])` declares
                 `len(dims)`).
@@ -1143,6 +1154,8 @@ class _OpsMixin:
 
     def blur(self, sigma: FloatOrExpr) -> Pipeline:
         """Apply Gaussian blur.
+
+        Domain: buffer → buffer
 
         Args:
             sigma: Standard deviation for Gaussian kernel.
@@ -1155,6 +1168,8 @@ class _OpsMixin:
         """Canny edge detection: Gaussian blur, Sobel gradients, non-maximum
         suppression and double-threshold hysteresis. Output is a U8 binary edge
         map (0 or 255).
+
+        Domain: buffer → buffer
 
         Args:
             low_threshold: Lower hysteresis threshold.
@@ -1170,18 +1185,25 @@ class _OpsMixin:
     def cast(self, dtype: str) -> Pipeline:
         """Cast to a different data type.
 
+        Domain: buffer → buffer
+
         Args:
             dtype: Target data type (e.g., "f32", "u8").
         """
         return self._append_typed("cast", {"dtype": dtype})
 
     def ceil(self) -> Pipeline:
-        """Round toward positive infinity. Domain: buffer → buffer."""
+        """Round toward positive infinity.
+
+        Domain: buffer → buffer
+        """
         return self._append_typed("ceil", {})
 
     def channel_select(self, index: IntOrExpr) -> Pipeline:
         """Extract a single channel from a multi-channel image: a 2D [H, W] buffer
         from a [H, W, C] input.
+
+        Domain: buffer → buffer
 
         Args:
             index: Channel index to extract (0-based). Accepts a Polars expression for
@@ -1194,6 +1216,8 @@ class _OpsMixin:
 
     def channel_swap(self, order: Sequence[IntOrExpr]) -> Pipeline:
         """Reorder channels in a multi-channel image.
+
+        Domain: buffer → buffer
 
         Args:
             order: New channel ordering, e.g. [2, 1, 0] for RGB-to-BGR. **Each index may
@@ -1211,6 +1235,8 @@ class _OpsMixin:
         The public `Pipeline.clamp` is sugar over this op that adds
         `out_dtype`/`preserve_dtype` (a trailing cast).
 
+        Domain: buffer → buffer
+
         Args:
             min: Minimum value (literal or expression).
             max: Maximum value (literal or expression).
@@ -1220,6 +1246,8 @@ class _OpsMixin:
     def clamp_max(self, value: FloatOrExpr) -> Pipeline:
         """Cap values at `value` (`min(x, value)`); one-sided clamp.
 
+        Domain: buffer → buffer
+
         Args:
             value: Upper bound (literal or per-row expression).
         """
@@ -1227,6 +1255,8 @@ class _OpsMixin:
 
     def clamp_min(self, value: FloatOrExpr) -> Pipeline:
         """Floor values at `value` (`max(x, value)`); one-sided clamp.
+
+        Domain: buffer → buffer
 
         Args:
             value: Lower bound (literal or per-row expression).
@@ -1241,7 +1271,7 @@ class _OpsMixin:
         nested hole rings are not double-subtracted. One value per contour for
         a contour set.
 
-        Domain transition: contour → scalar
+        Domain: contour → vector
 
         Args:
             signed: If True, return signed area (negative for CW winding).
@@ -1251,7 +1281,9 @@ class _OpsMixin:
     def bounding_box(self) -> Pipeline:
         """Compute the axis-aligned bounding box of the contour.
 
-        Domain transition: contour → vector (returns [x, y, width, height])
+        Returns ``[x, y, width, height]``.
+
+        Domain: contour → vector
         """
         return self._append_typed("contour_bounding_box", {})
 
@@ -1262,7 +1294,9 @@ class _OpsMixin:
         of the hole rings — so overlapping or nested holes are not subtracted
         twice.
 
-        Domain transition: contour → vector (returns [x, y])
+        Returns ``[x, y]``.
+
+        Domain: contour → vector
         """
         return self._append_typed("contour_centroid", {})
 
@@ -1276,7 +1310,7 @@ class _OpsMixin:
     def perimeter(self) -> Pipeline:
         """Compute the perimeter (arc length) of the contour.
 
-        Domain transition: contour → scalar
+        Domain: contour → vector
         """
         return self._append_typed("contour_perimeter", {})
 
@@ -1361,6 +1395,8 @@ class _OpsMixin:
     ) -> Pipeline:
         """Extract a rectangular region.
 
+        Domain: buffer → buffer
+
         Args:
             top: Top offset.
             left: Left offset.
@@ -1390,6 +1426,8 @@ class _OpsMixin:
     def dilate(self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1) -> Pipeline:
         """Morphological dilation (local maximum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).
 
+        Domain: buffer → buffer
+
         Args:
             ksize: Size of the square structuring element. Must be odd and >= 1. Accepts
                 a Polars expression for per-row dynamic values.
@@ -1405,6 +1443,8 @@ class _OpsMixin:
         """Apply histogram equalization for contrast enhancement: map each pixel
         through the normalized CDF, per channel. Output is U8.
 
+        Domain: buffer → buffer
+
 
         Example:
             >>> eq = Pipeline().source("image_bytes").grayscale().equalize_histogram()
@@ -1413,6 +1453,8 @@ class _OpsMixin:
 
     def erode(self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1) -> Pipeline:
         """Morphological erosion (local minimum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).
+
+        Domain: buffer → buffer
 
         Args:
             ksize: Size of the square structuring element. Must be odd and >= 1. Accepts
@@ -1445,7 +1487,7 @@ class _OpsMixin:
         holed contour from those is the caller's job. ``mode="external"`` keeps
         only the outermost, discarding hole borders.
 
-        Domain transition: buffer → contour
+        Domain: buffer → contour
 
         Args:
             mode: "external" (outer only), "tree" (full hierarchy), "all".
@@ -1460,12 +1502,14 @@ class _OpsMixin:
     def extract_shape(self) -> Pipeline:
         """Extract buffer shape as a struct {height, width, channels}.
 
-        Domain transition: buffer → vector
+        Domain: buffer → vector
         """
         return self._append_typed("extract_shape", {})
 
     def flip(self, axes: Sequence[int]) -> Pipeline:
         """Flip along specified axes.
+
+        Domain: buffer → buffer
 
         Args:
             axes: Axes to flip.
@@ -1473,11 +1517,17 @@ class _OpsMixin:
         return self._append_typed("flip", {"axes": axes})
 
     def floor(self) -> Pipeline:
-        """Round toward negative infinity. Domain: buffer → buffer."""
+        """Round toward negative infinity.
+
+        Domain: buffer → buffer
+        """
         return self._append_typed("floor", {})
 
     def grayscale(self) -> Pipeline:
-        """Convert to grayscale (luminance 0.299R + 0.587G + 0.114B)."""
+        """Convert to grayscale (luminance 0.299R + 0.587G + 0.114B).
+
+        Domain: buffer → buffer
+        """
         return self._append_typed("grayscale", {})
 
     def histogram(
@@ -1489,6 +1539,8 @@ class _OpsMixin:
         output: str = "buckets",
     ) -> Pipeline:
         """Compute pixel value histogram.
+
+        Domain: buffer → vector; with ``output="quantized"``: buffer → buffer
 
         Args:
             bins: Number of bins (default 256), a Polars expression for per-row dynamic
@@ -1507,7 +1559,10 @@ class _OpsMixin:
         )
 
     def invert(self) -> Pipeline:
-        """Invert pixel values: `255 - pixel` for u8, `1.0 - pixel` for float [0,1]."""
+        """Invert pixel values: `255 - pixel` for u8, `1.0 - pixel` for float [0,1].
+
+        Domain: buffer → buffer
+        """
         return self._append_typed("invert", {})
 
     def label_reduce(
@@ -1522,7 +1577,7 @@ class _OpsMixin:
         This is the buffer-space variant of label reduction. It accepts contours
         via a Polars expression and returns one score per contour.
 
-        Domain transition: buffer -> vector
+        Domain: buffer → vector
 
         Args:
             contours: Contour-set expression (`List[Contour]`) to score.
@@ -1549,6 +1604,8 @@ class _OpsMixin:
         """Resize image maintaining aspect ratio and pad to exact target size: fit
         within the target, then pad with centered positioning.
 
+        Domain: buffer → buffer
+
         Args:
             height: Target height (literal or expression).
             width: Target width (literal or expression).
@@ -1568,6 +1625,8 @@ class _OpsMixin:
         """Morphological gradient (dilate - erode): an edge outline. Requires
         single-channel input.
 
+        Domain: buffer → buffer
+
         Args:
             ksize: Size of the square structuring element. Must be odd and >= 1. Accepts
                 a Polars expression for per-row dynamic values.
@@ -1578,7 +1637,10 @@ class _OpsMixin:
         return self._append_typed("morphology_gradient", {"ksize": ksize})
 
     def neg(self) -> Pipeline:
-        """Negate every value (`-x`). Domain: buffer → buffer."""
+        """Negate every value (`-x`).
+
+        Domain: buffer → buffer
+        """
         return self._append_typed("neg", {})
 
     def normalize(
@@ -1590,6 +1652,8 @@ class _OpsMixin:
         out_dtype: str | None = None,
     ) -> Pipeline:
         """Normalize values to a standard range.
+
+        Domain: buffer → buffer
 
         Args:
             method: Normalization method: "minmax" scales values to [0, 1] using per-
@@ -1633,6 +1697,8 @@ class _OpsMixin:
     ) -> Pipeline:
         """Add padding to the image.
 
+        Domain: buffer → buffer
+
         Args:
             top: Padding on top edge.
             bottom: Padding on bottom edge.
@@ -1669,6 +1735,8 @@ class _OpsMixin:
         """Pad image to exact target size (computed at runtime). A larger image is
         not cropped - resize first if needed.
 
+        Domain: buffer → buffer
+
         Args:
             height: Target height.
             width: Target width.
@@ -1689,6 +1757,8 @@ class _OpsMixin:
         self, *, algorithm: str = "perceptual", hash_size: int = 64
     ) -> Pipeline:
         """Compute a perceptual hash fingerprint.
+
+        Domain: buffer → vector
 
         Args:
             algorithm: "perceptual" (pHash), "average" (aHash), "difference" (dHash).
@@ -1715,7 +1785,7 @@ class _OpsMixin:
         ``shape`` arguments become ``size``; it also records the shape reference's
         graph dependency and its canvas assertion.
 
-        Domain transition: contour → buffer
+        Domain: contour → buffer
 
         Args:
             size: ``[height, width]`` of the mask (each may be a Polars expression), or
@@ -1731,15 +1801,20 @@ class _OpsMixin:
         )
 
     def reciprocal(self) -> Pipeline:
-        """Reciprocal (`1 / x`; ±inf at zero). Domain: buffer → buffer."""
+        """Reciprocal (`1 / x`; ±inf at zero).
+
+        Domain: buffer → buffer
+        """
         return self._append_typed("reciprocal", {})
 
     def reduce_argmax(self, axis: int) -> Pipeline:
         """Index of the maximum value along an axis.
 
         Unlike other reductions it always requires an axis: a global index
-        is ambiguous for a multi-dimensional array. Domain transition:
-        buffer → buffer (reduced shape, i64 dtype).
+        is ambiguous for a multi-dimensional array. The result has the reduced
+        shape and an i64 dtype.
+
+        Domain: buffer → buffer, vector → buffer
 
         Args:
             axis: Axis along which to find the index.
@@ -1750,8 +1825,10 @@ class _OpsMixin:
         """Index of the minimum value along an axis.
 
         Unlike other reductions it always requires an axis: a global index
-        is ambiguous for a multi-dimensional array. Domain transition:
-        buffer → buffer (reduced shape, i64 dtype).
+        is ambiguous for a multi-dimensional array. The result has the reduced
+        shape and an i64 dtype.
+
+        Domain: buffer → buffer, vector → buffer
 
         Args:
             axis: Axis along which to find the index.
@@ -1761,8 +1838,8 @@ class _OpsMixin:
     def reduce_max(self, *, axis: int | None = None) -> Pipeline:
         """Reduce buffer by computing the maximum value.
 
-        Domain transition: axis=None: buffer → scalar; axis=N: buffer →
-        buffer (reduced shape).
+        Domain: buffer → scalar, vector → scalar; with ``axis``: buffer → buffer, vector
+            → buffer
 
         Args:
             axis: Axis to reduce along. None for global reduction. It fixes the output
@@ -1773,8 +1850,8 @@ class _OpsMixin:
     def reduce_mean(self, *, axis: int | None = None) -> Pipeline:
         """Compute arithmetic mean.
 
-        Domain transition: axis=None: buffer → scalar; axis=N: buffer →
-        buffer (reduced shape).
+        Domain: buffer → scalar, vector → scalar; with ``axis``: buffer → buffer, vector
+            → buffer
 
         Args:
             axis: Axis to reduce along. None for global reduction. It fixes the output
@@ -1785,8 +1862,8 @@ class _OpsMixin:
     def reduce_min(self, *, axis: int | None = None) -> Pipeline:
         """Reduce buffer by computing the minimum value.
 
-        Domain transition: axis=None: buffer → scalar; axis=N: buffer →
-        buffer (reduced shape).
+        Domain: buffer → scalar, vector → scalar; with ``axis``: buffer → buffer, vector
+            → buffer
 
         Args:
             axis: Axis to reduce along. None for global reduction. It fixes the output
@@ -1798,7 +1875,7 @@ class _OpsMixin:
         """Compute the q-th percentile of all values (linear interpolation, as numpy's
         default).
 
-        Domain transition: buffer -> scalar
+        Domain: buffer → scalar, vector → scalar
 
         Args:
             q: Percentile to compute, in [0, 100]. Accepts a Polars expression for per-
@@ -1809,15 +1886,15 @@ class _OpsMixin:
     def reduce_popcount(self) -> Pipeline:
         """Count set bits (1s) in the buffer.
 
-        Domain transition: buffer → scalar
+        Domain: buffer → scalar, vector → scalar
         """
         return self._append_typed("reduce_popcount", {})
 
     def reduce_std(self, *, axis: int | None = None, ddof: IntOrExpr = 0) -> Pipeline:
         """Reduce buffer by computing the standard deviation.
 
-        Domain transition: axis=None: buffer -> scalar; axis=N: buffer -> buffer
-        (reduced shape).
+        Domain: buffer → scalar, vector → scalar; with ``axis``: buffer → buffer, vector
+            → buffer
 
         Args:
             axis: Axis to reduce along. None for global reduction.
@@ -1832,16 +1909,21 @@ class _OpsMixin:
     def reduce_sum(self) -> Pipeline:
         """Sum all elements in the buffer.
 
-        Domain transition: buffer → scalar
+        Domain: buffer → scalar, vector → scalar
         """
         return self._append_typed("reduce_sum", {})
 
     def relu(self) -> Pipeline:
-        """Apply ReLU activation (max(0, x)): negative values become zero."""
+        """Apply ReLU activation (max(0, x)): negative values become zero.
+
+        Domain: buffer → buffer
+        """
         return self._append_typed("relu", {})
 
     def reshape(self, shape: Sequence[IntOrExpr]) -> Pipeline:
         """Reshape array to new dimensions.
+
+        Domain: buffer → buffer
 
         Args:
             shape: New shape. The number of entries fixes the output rank; each entry
@@ -1853,6 +1935,8 @@ class _OpsMixin:
         self, *, height: IntOrExpr, width: IntOrExpr, filter: str | pl.Expr = "lanczos3"
     ) -> Pipeline:
         """Resize image to specified dimensions.
+
+        Domain: buffer → buffer
 
         Args:
             height: Target height.
@@ -1871,6 +1955,8 @@ class _OpsMixin:
     ) -> Pipeline:
         """Resize image so the maximum dimension equals target, preserving aspect ratio (200x100 with max_size=50 gives 50x25).
 
+        Domain: buffer → buffer
+
         Args:
             max_size: Target for the maximum dimension (literal or expression).
             filter: Resize filter ("nearest", "bilinear", "lanczos3").
@@ -1886,6 +1972,8 @@ class _OpsMixin:
         self, min_size: IntOrExpr, *, filter: str | pl.Expr = "lanczos3"
     ) -> Pipeline:
         """Resize image so the minimum dimension equals target, preserving aspect ratio (200x100 with min_size=50 gives 100x50).
+
+        Domain: buffer → buffer
 
         Args:
             min_size: Target for the minimum dimension (literal or expression).
@@ -1911,6 +1999,8 @@ class _OpsMixin:
         The public `Pipeline.resize_scale` is sugar over this op that also accepts
         one uniform `scale`.
 
+        Domain: buffer → buffer
+
         Args:
             scale_x: X (width) scale factor.
             scale_y: Y (height) scale factor.
@@ -1924,6 +2014,8 @@ class _OpsMixin:
         self, height: IntOrExpr, *, filter: str | pl.Expr = "lanczos3"
     ) -> Pipeline:
         """Resize image to target height, preserving aspect ratio (width is computed at runtime).
+
+        Domain: buffer → buffer
 
         Args:
             height: Target height (literal or expression).
@@ -1940,6 +2032,8 @@ class _OpsMixin:
         self, width: IntOrExpr, *, filter: str | pl.Expr = "lanczos3"
     ) -> Pipeline:
         """Resize image to target width, preserving aspect ratio (height is computed at runtime).
+
+        Domain: buffer → buffer
 
         Args:
             width: Target width (literal or expression).
@@ -1967,7 +2061,7 @@ class _OpsMixin:
         interpolation and border value. For combined rotation + scale or explicit
         output sizing, use :meth:`rotate_and_scale` or :meth:`warp_affine`.
 
-        Domain: buffer -> buffer
+        Domain: buffer → buffer
 
         Args:
             angle: Rotation angle in degrees (positive = clockwise). Can be a literal
@@ -1999,7 +2093,10 @@ class _OpsMixin:
         )
 
     def round(self) -> Pipeline:
-        """Round to nearest, ties to even (matches Polars/numpy). Domain: buffer → buffer."""
+        """Round to nearest, ties to even (matches Polars/numpy).
+
+        Domain: buffer → buffer
+        """
         return self._append_typed("round", {})
 
     def _scale(self, factor: FloatOrExpr) -> Pipeline:
@@ -2008,25 +2105,38 @@ class _OpsMixin:
         The public `Pipeline.scale` is sugar over this op that adds
         `out_dtype`/`preserve_dtype` (a trailing cast).
 
+        Domain: buffer → buffer
+
         Args:
             factor: Scale factor.
         """
         return self._append_typed("scale", {"factor": factor})
 
     def sign(self) -> Pipeline:
-        """Sign: `-1`/`0`/`+1` (`0` for ±0, NaN for NaN). Domain: buffer → buffer."""
+        """Sign: `-1`/`0`/`+1` (`0` for ±0, NaN for NaN).
+
+        Domain: buffer → buffer
+        """
         return self._append_typed("sign", {})
 
     def sqrt(self) -> Pipeline:
-        """Square root (`sqrt(x)`; NaN for negative input). Domain: buffer → buffer."""
+        """Square root (`sqrt(x)`; NaN for negative input).
+
+        Domain: buffer → buffer
+        """
         return self._append_typed("sqrt", {})
 
     def square(self) -> Pipeline:
-        """Square (`x * x`). Domain: buffer → buffer."""
+        """Square (`x * x`).
+
+        Domain: buffer → buffer
+        """
         return self._append_typed("square", {})
 
     def subtract_constant(self, value: FloatOrExpr) -> Pipeline:
         """Subtract a constant from every value (`x - value`).
+
+        Domain: buffer → buffer
 
         Args:
             value: Constant subtrahend (literal or per-row expression).
@@ -2037,6 +2147,8 @@ class _OpsMixin:
         """Apply binary threshold: a U8 mask, 255 where the element exceeds `value`
         and 0 elsewhere (for u8 input typically 0-255; for [0, 1] floats e.g. 0.5).
 
+        Domain: buffer → buffer
+
         Args:
             value: Threshold value (int or float, or Polars expression).
         """
@@ -2045,13 +2157,18 @@ class _OpsMixin:
     def transpose(self, axes: Sequence[int]) -> Pipeline:
         """Transpose dimensions.
 
+        Domain: buffer → buffer
+
         Args:
             axes: New order of axes: a permutation of every input axis.
         """
         return self._append_typed("transpose", {"axes": axes})
 
     def trunc(self) -> Pipeline:
-        """Round toward zero (drop the fractional part). Domain: buffer → buffer."""
+        """Round toward zero (drop the fractional part).
+
+        Domain: buffer → buffer
+        """
         return self._append_typed("trunc", {})
 
     def warp_affine(
@@ -2128,6 +2245,8 @@ class _LazyOpsMixin:
         For u8/u16: saturating addition (clamps to the maximum, e.g. 255 for
         u8). For f32/f64: standard addition.
 
+        Domain: buffer → buffer, vector → vector
+
         Args:
             other: The expression to combine with, element-wise.
 
@@ -2142,6 +2261,8 @@ class _LazyOpsMixin:
 
     def bitwise_and(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise bitwise AND: for binary masks (0/255), the intersection.
+
+        Domain: buffer → buffer, vector → vector
 
         Args:
             other: The expression to combine with, element-wise.
@@ -2158,6 +2279,8 @@ class _LazyOpsMixin:
     def bitwise_or(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise bitwise OR: for binary masks (0/255), the union.
 
+        Domain: buffer → buffer, vector → vector
+
         Args:
             other: The expression to combine with, element-wise.
 
@@ -2173,6 +2296,8 @@ class _LazyOpsMixin:
     def bitwise_xor(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise bitwise XOR: for binary masks (0/255), the symmetric
         difference.
+
+        Domain: buffer → buffer, vector → vector
 
         Args:
             other: The expression to combine with, element-wise.
@@ -2192,6 +2317,8 @@ class _LazyOpsMixin:
         For u8: (a/255) * (b/255) * 255. For u16: (a/65535) * (b/65535) *
         65535. For f32/f64: standard multiplication.
 
+        Domain: buffer → buffer, vector → vector
+
         Args:
             other: The expression to combine with, element-wise.
 
@@ -2210,6 +2337,8 @@ class _LazyOpsMixin:
         For u8/u16: integer division, with division by zero yielding 0. For
         f32/f64: standard division.
 
+        Domain: buffer → buffer, vector → vector
+
         Args:
             other: The expression to combine with, element-wise.
 
@@ -2226,6 +2355,8 @@ class _LazyOpsMixin:
         """Element-wise maximum of two arrays, for compositing, clamping and
         non-linear image processing.
 
+        Domain: buffer → buffer, vector → vector
+
         Args:
             other: The expression to combine with, element-wise.
 
@@ -2241,6 +2372,8 @@ class _LazyOpsMixin:
     def minimum(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise minimum of two arrays, for compositing, clamping and
         non-linear image processing.
+
+        Domain: buffer → buffer, vector → vector
 
         Args:
             other: The expression to combine with, element-wise.
@@ -2261,6 +2394,8 @@ class _LazyOpsMixin:
         f32/f64: standard multiplication. For normalized image blending
         (values treated as [0, 1]), use ``blend`` instead.
 
+        Domain: buffer → buffer, vector → vector
+
         Args:
             other: The expression to combine with, element-wise.
 
@@ -2279,6 +2414,8 @@ class _LazyOpsMixin:
         For u8: (a/b) * 255, clamped to [0, 255]. For u16: (a/b) * 65535,
         clamped to [0, 65535]. For f32/f64: standard division.
 
+        Domain: buffer → buffer, vector → vector
+
         Args:
             other: The expression to combine with, element-wise.
 
@@ -2296,6 +2433,8 @@ class _LazyOpsMixin:
 
         For u8/u16: saturating subtraction (clamps to 0). For f32/f64:
         standard subtraction.
+
+        Domain: buffer → buffer, vector → vector
 
         Args:
             other: The expression to combine with, element-wise.
@@ -2325,8 +2464,6 @@ class _ContourOpsMixin:
         nested hole rings are not double-subtracted. One value per contour for
         a contour set.
 
-        Domain transition: contour → scalar
-
         Args:
             signed: If True, return signed area (negative for CW winding).
         """
@@ -2335,7 +2472,7 @@ class _ContourOpsMixin:
     def bounding_box(self) -> pl.Expr:
         """Compute the axis-aligned bounding box of the contour.
 
-        Domain transition: contour → vector (returns [x, y, width, height])
+        Returns ``[x, y, width, height]``.
         """
         return self._call("contour_bounding_box", {})
 
@@ -2346,7 +2483,7 @@ class _ContourOpsMixin:
         of the hole rings — so overlapping or nested holes are not subtracted
         twice.
 
-        Domain transition: contour → vector (returns [x, y])
+        Returns ``[x, y]``.
         """
         return self._call("contour_centroid", {})
 
@@ -2363,10 +2500,7 @@ class _ContourOpsMixin:
         return self._call("contour_contains_point", {"point": point})
 
     def convex_hull(self) -> pl.Expr:
-        """Compute the convex hull of the contour.
-
-        Domain: contour → contour
-        """
+        """Compute the convex hull of the contour."""
         return self._call("contour_convex_hull", {})
 
     def correspond(
@@ -2557,18 +2691,13 @@ class _ContourOpsMixin:
         return self._call("contour_pairwise_iou", {"other": other})
 
     def perimeter(self) -> pl.Expr:
-        """Compute the perimeter (arc length) of the contour.
-
-        Domain transition: contour → scalar
-        """
+        """Compute the perimeter (arc length) of the contour."""
         return self._call("contour_perimeter", {})
 
     def scale(
         self, sx: FloatOrExpr, sy: FloatOrExpr, *, origin: str | pl.Expr = "centroid"
     ) -> pl.Expr:
         """Scale the contour about *origin*.
-
-        Domain: contour → contour
 
         Args:
             sx: X scale factor.
@@ -2582,8 +2711,6 @@ class _ContourOpsMixin:
 
     def simplify(self, tolerance: FloatOrExpr) -> pl.Expr:
         """Simplify the contour using the Douglas-Peucker algorithm.
-
-        Domain: contour → contour
 
         Args:
             tolerance: Maximum distance from the original contour.
@@ -2605,8 +2732,6 @@ class _ContourOpsMixin:
 
     def translate(self, dx: FloatOrExpr, dy: FloatOrExpr) -> pl.Expr:
         """Translate the contour by an offset.
-
-        Domain: contour → contour
 
         Args:
             dx: X offset (horizontal translation).

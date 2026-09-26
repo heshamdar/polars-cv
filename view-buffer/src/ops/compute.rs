@@ -154,34 +154,34 @@ pub enum ComputeOp<M: Mode = Exec> {
     /// Invert pixel values: `255 - pixel` for u8, `1.0 - pixel` for float [0,1].
     #[op(name = "invert", sample = {})]
     Invert,
-    /// Negate every value (`-x`). Domain: buffer → buffer.
+    /// Negate every value (`-x`).
     #[op(name = "neg", sample = {})]
     Neg,
-    /// Absolute value (`|x|`). Domain: buffer → buffer.
+    /// Absolute value (`|x|`).
     #[op(name = "abs", sample = {})]
     Abs,
-    /// Square root (`sqrt(x)`; NaN for negative input). Domain: buffer → buffer.
+    /// Square root (`sqrt(x)`; NaN for negative input).
     #[op(name = "sqrt", sample = {})]
     Sqrt,
-    /// Square (`x * x`). Domain: buffer → buffer.
+    /// Square (`x * x`).
     #[op(name = "square", sample = {})]
     Square,
-    /// Reciprocal (`1 / x`; ±inf at zero). Domain: buffer → buffer.
+    /// Reciprocal (`1 / x`; ±inf at zero).
     #[op(name = "reciprocal", sample = {})]
     Reciprocal,
-    /// Sign: `-1`/`0`/`+1` (`0` for ±0, NaN for NaN). Domain: buffer → buffer.
+    /// Sign: `-1`/`0`/`+1` (`0` for ±0, NaN for NaN).
     #[op(name = "sign", sample = {})]
     Sign,
-    /// Round toward negative infinity. Domain: buffer → buffer.
+    /// Round toward negative infinity.
     #[op(name = "floor", sample = {})]
     Floor,
-    /// Round toward positive infinity. Domain: buffer → buffer.
+    /// Round toward positive infinity.
     #[op(name = "ceil", sample = {})]
     Ceil,
-    /// Round to nearest, ties to even (matches Polars/numpy). Domain: buffer → buffer.
+    /// Round to nearest, ties to even (matches Polars/numpy).
     #[op(name = "round", sample = {})]
     Round,
-    /// Round toward zero (drop the fractional part). Domain: buffer → buffer.
+    /// Round toward zero (drop the fractional part).
     #[op(name = "trunc", sample = {})]
     Trunc,
     /// Floor values at `value` (`max(x, value)`); one-sided clamp.
@@ -219,8 +219,6 @@ pub enum ComputeOp<M: Mode = Exec> {
     /// ```
     ///
     /// The kernel inverts this matrix internally for interpolation.
-    ///
-    /// Domain: buffer → buffer
     ///
     /// Example:
     ///     ```python
@@ -266,8 +264,6 @@ pub enum ComputeOp<M: Mode = Exec> {
     /// is performed via an affine transformation using the specified
     /// interpolation and border value. For combined rotation + scale or explicit
     /// output sizing, use :meth:`rotate_and_scale` or :meth:`warp_affine`.
-    ///
-    /// Domain: buffer -> buffer
     ///
     /// Example:
     ///     ```python

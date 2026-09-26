@@ -26,7 +26,7 @@ class _LazyForwardersMixin:
         def _continuation(self) -> Pipeline: ...
 
     def abs(self) -> LazyPipelineExpr:
-        """Absolute value (`|x|`). Domain: buffer → buffer.
+        """Absolute value (`|x|`).
 
         Lazy form of :meth:`Pipeline.abs` on this expression's output.
         """
@@ -126,7 +126,7 @@ class _LazyForwardersMixin:
         return self.pipe(self._continuation().cast(dtype=dtype))
 
     def ceil(self) -> LazyPipelineExpr:
-        """Round toward positive infinity. Domain: buffer → buffer.
+        """Round toward positive infinity.
 
         Lazy form of :meth:`Pipeline.ceil` on this expression's output.
         """
@@ -309,7 +309,7 @@ class _LazyForwardersMixin:
         return self.pipe(self._continuation().flip_v())
 
     def floor(self) -> LazyPipelineExpr:
-        """Round toward negative infinity. Domain: buffer → buffer.
+        """Round toward negative infinity.
 
         Lazy form of :meth:`Pipeline.floor` on this expression's output.
         """
@@ -411,7 +411,7 @@ class _LazyForwardersMixin:
         return self.pipe(self._continuation().morphology_open(ksize=ksize))
 
     def neg(self) -> LazyPipelineExpr:
-        """Negate every value (`-x`). Domain: buffer → buffer.
+        """Negate every value (`-x`).
 
         Lazy form of :meth:`Pipeline.neg` on this expression's output.
         """
@@ -531,7 +531,7 @@ class _LazyForwardersMixin:
         )
 
     def reciprocal(self) -> LazyPipelineExpr:
-        """Reciprocal (`1 / x`; ±inf at zero). Domain: buffer → buffer.
+        """Reciprocal (`1 / x`; ±inf at zero).
 
         Lazy form of :meth:`Pipeline.reciprocal` on this expression's output.
         """
@@ -729,7 +729,7 @@ class _LazyForwardersMixin:
         )
 
     def round(self) -> LazyPipelineExpr:
-        """Round to nearest, ties to even (matches Polars/numpy). Domain: buffer → buffer.
+        """Round to nearest, ties to even (matches Polars/numpy).
 
         Lazy form of :meth:`Pipeline.round` on this expression's output.
         """
@@ -785,7 +785,7 @@ class _LazyForwardersMixin:
         )
 
     def sign(self) -> LazyPipelineExpr:
-        """Sign: `-1`/`0`/`+1` (`0` for ±0, NaN for NaN). Domain: buffer → buffer.
+        """Sign: `-1`/`0`/`+1` (`0` for ±0, NaN for NaN).
 
         Lazy form of :meth:`Pipeline.sign` on this expression's output.
         """
@@ -806,14 +806,14 @@ class _LazyForwardersMixin:
         return self.pipe(self._continuation().sobel(axis=axis, ksize=ksize))
 
     def sqrt(self) -> LazyPipelineExpr:
-        """Square root (`sqrt(x)`; NaN for negative input). Domain: buffer → buffer.
+        """Square root (`sqrt(x)`; NaN for negative input).
 
         Lazy form of :meth:`Pipeline.sqrt` on this expression's output.
         """
         return self.pipe(self._continuation().sqrt())
 
     def square(self) -> LazyPipelineExpr:
-        """Square (`x * x`). Domain: buffer → buffer.
+        """Square (`x * x`).
 
         Lazy form of :meth:`Pipeline.square` on this expression's output.
         """
@@ -876,7 +876,7 @@ class _LazyForwardersMixin:
         return self.pipe(self._continuation().transpose(axes=axes))
 
     def trunc(self) -> LazyPipelineExpr:
-        """Round toward zero (drop the fractional part). Domain: buffer → buffer.
+        """Round toward zero (drop the fractional part).
 
         Lazy form of :meth:`Pipeline.trunc` on this expression's output.
         """

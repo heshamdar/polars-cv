@@ -18,29 +18,20 @@ use polars_cv_macros::{Ops, Resolve};
 #[derive(Debug, Clone, PartialEq, Ops, Resolve)]
 pub enum ReductionOp<M: Mode = Exec> {
     /// Reduce buffer by computing the maximum value.
-    ///
-    /// Domain transition: axis=None: buffer → scalar; axis=N: buffer →
-    /// buffer (reduced shape).
-    #[op(name = "reduce_max", sample = {"axis": null})]
+    #[op(name = "reduce_max", sample = {"axis": 0})]
     Max {
         /// Axis to reduce along. None for global reduction. It fixes the
         /// output rank, so it is literal-only.
         axis: Option<M::L<u32>>,
     },
     /// Reduce buffer by computing the minimum value.
-    ///
-    /// Domain transition: axis=None: buffer → scalar; axis=N: buffer →
-    /// buffer (reduced shape).
-    #[op(name = "reduce_min", sample = {"axis": null})]
+    #[op(name = "reduce_min", sample = {"axis": 0})]
     Min {
         /// Axis to reduce along. None for global reduction. It fixes the
         /// output rank, so it is literal-only.
         axis: Option<M::L<u32>>,
     },
     /// Compute arithmetic mean.
-    ///
-    /// Domain transition: axis=None: buffer → scalar; axis=N: buffer →
-    /// buffer (reduced shape).
     #[op(name = "reduce_mean", sample = {"axis": 1})]
     Mean {
         /// Axis to reduce along. None for global reduction. It fixes the
@@ -49,12 +40,9 @@ pub enum ReductionOp<M: Mode = Exec> {
     },
     /// Reduce buffer by computing the standard deviation.
     ///
-    /// Domain transition: axis=None: buffer -> scalar; axis=N: buffer -> buffer
-    /// (reduced shape).
-    ///
     /// Example:
     ///     >>> pipe = Pipeline().source("image_bytes").reduce_std(ddof=1)
-    #[op(name = "reduce_std", sample = {"axis": null, "ddof": 1})]
+    #[op(name = "reduce_std", sample = {"axis": 0, "ddof": 1})]
     Std {
         /// Axis to reduce along. None for global reduction.
         axis: Option<M::L<u32>>,
@@ -64,15 +52,13 @@ pub enum ReductionOp<M: Mode = Exec> {
         ddof: M::V<u8>,
     },
     /// Sum all elements in the buffer.
-    ///
-    /// Domain transition: buffer → scalar
     #[op(name = "reduce_sum", sample = {})]
     Sum,
     /// Index of the maximum value along an axis.
     ///
     /// Unlike other reductions it always requires an axis: a global index
-    /// is ambiguous for a multi-dimensional array. Domain transition:
-    /// buffer → buffer (reduced shape, i64 dtype).
+    /// is ambiguous for a multi-dimensional array. The result has the reduced
+    /// shape and an i64 dtype.
     #[op(name = "reduce_argmax", sample = {"axis": 0})]
     ArgMax {
         /// Axis along which to find the index.
@@ -81,22 +67,18 @@ pub enum ReductionOp<M: Mode = Exec> {
     /// Index of the minimum value along an axis.
     ///
     /// Unlike other reductions it always requires an axis: a global index
-    /// is ambiguous for a multi-dimensional array. Domain transition:
-    /// buffer → buffer (reduced shape, i64 dtype).
+    /// is ambiguous for a multi-dimensional array. The result has the reduced
+    /// shape and an i64 dtype.
     #[op(name = "reduce_argmin", sample = {"axis": 0})]
     ArgMin {
         /// Axis along which to find the index.
         axis: M::L<u32>,
     },
     /// Count set bits (1s) in the buffer.
-    ///
-    /// Domain transition: buffer → scalar
     #[op(name = "reduce_popcount", sample = {})]
     PopCount,
     /// Compute the q-th percentile of all values (linear interpolation, as numpy's
     /// default).
-    ///
-    /// Domain transition: buffer -> scalar
     #[op(name = "reduce_percentile", sample = {"q": 50.0})]
     Percentile {
         /// Percentile to compute, in [0, 100]. Accepts a Polars expression for

@@ -56,7 +56,7 @@
     "name": "contour_area",
     "python": "area",
     "visibility": "public",
-    "doc": "Compute the area of the contour using the Shoelace formula.\n\nThe area of the region the contour describes: the exterior minus the\nunion of its hole rings, in either winding direction. Overlapping or\nnested hole rings are not double-subtracted. One value per contour for\na contour set.\n\nDomain transition: contour → scalar",
+    "doc": "Compute the area of the contour using the Shoelace formula.\n\nThe area of the region the contour describes: the exterior minus the\nunion of its hole rings, in either winding direction. Overlapping or\nnested hole rings are not double-subtracted. One value per contour for\na contour set.",
     "fields": [
       {
         "name": "signed",
@@ -75,7 +75,7 @@
     "name": "contour_bounding_box",
     "python": "bounding_box",
     "visibility": "public",
-    "doc": "Compute the axis-aligned bounding box of the contour.\n\nDomain transition: contour → vector (returns [x, y, width, height])",
+    "doc": "Compute the axis-aligned bounding box of the contour.\n\nReturns ``[x, y, width, height]``.",
     "fields": []
   },
   {
@@ -83,7 +83,7 @@
     "name": "contour_centroid",
     "python": "centroid",
     "visibility": "public",
-    "doc": "Compute the centroid (center of mass) of the contour.\n\nMeasured on the same region as `area()` — the exterior minus the union\nof the hole rings — so overlapping or nested holes are not subtracted\ntwice.\n\nDomain transition: contour → vector (returns [x, y])",
+    "doc": "Compute the centroid (center of mass) of the contour.\n\nMeasured on the same region as `area()` — the exterior minus the union\nof the hole rings — so overlapping or nested holes are not subtracted\ntwice.\n\nReturns ``[x, y]``.",
     "fields": []
   },
   {
@@ -107,7 +107,7 @@
     "name": "contour_convex_hull",
     "python": "convex_hull",
     "visibility": "public",
-    "doc": "Compute the convex hull of the contour.\n\nDomain: contour → contour",
+    "doc": "Compute the convex hull of the contour.",
     "fields": []
   },
   {
@@ -328,7 +328,7 @@
     "name": "contour_perimeter",
     "python": "perimeter",
     "visibility": "public",
-    "doc": "Compute the perimeter (arc length) of the contour.\n\nDomain transition: contour → scalar",
+    "doc": "Compute the perimeter (arc length) of the contour.",
     "fields": []
   },
   {
@@ -336,7 +336,7 @@
     "name": "contour_scale",
     "python": "scale",
     "visibility": "public",
-    "doc": "Scale the contour about *origin*.\n\nDomain: contour → contour",
+    "doc": "Scale the contour about *origin*.",
     "fields": [
       {
         "name": "sx",
@@ -378,7 +378,7 @@
     "name": "contour_simplify",
     "python": "simplify",
     "visibility": "public",
-    "doc": "Simplify the contour using the Douglas-Peucker algorithm.\n\nDomain: contour → contour",
+    "doc": "Simplify the contour using the Douglas-Peucker algorithm.",
     "fields": [
       {
         "name": "tolerance",
@@ -423,7 +423,7 @@
     "name": "contour_translate",
     "python": "translate",
     "visibility": "public",
-    "doc": "Translate the contour by an offset.\n\nDomain: contour → contour",
+    "doc": "Translate the contour by an offset.",
     "fields": [
       {
         "name": "dx",
