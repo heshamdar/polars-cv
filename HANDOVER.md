@@ -28,7 +28,7 @@ never invents a value for a per-row parameter. Ops, sources, sinks and the
 geometry accessors register through one mechanism with one default convention,
 and every Python method is generated.
 
-## State: C0–C6 done
+## State: C0–C7 done
 
 | Phase | Commit(s) | What it did |
 |---|---|---|
@@ -42,6 +42,7 @@ and every Python method is generated.
 | C4c | `aacb938` | `TypedOp = GraphStep<Wire>`; every `Op` rule generic over the mode; placeholder planning deleted |
 | C5 | `ac45f93` | geometry accessors are typed definitions; Python methods generated |
 | C6 | `634bd36` `5e72589` `820995b` `ded469c` | wire applies declared defaults; `Visibility` enum; contour source only decodes (canvas keywords are `rasterize()`); `Source`/`Sink` are `#[derive(Ops)]` families; `SourceFormat` gone, `auto` routed to a concrete `Source` |
+| C7 | `b2bb67c` `5fe7ad5` `a9734c8` `dbe0dbe` | `convolve2d(ksize=)` dropped; `source()` generated (no canvas keywords); lazy forwarders generated as real methods, stub deleted; `Domain:` lines generated from the domain contract |
 
 ### The architecture now
 
@@ -76,7 +77,9 @@ and every Python method is generated.
 - **Contour scale `origin` default: `"centroid"`** for both
   `Pipeline.scale_contour` and `.contour.scale` (done in C5).
 - **`convolve2d(ksize=)`: drop it** — the side comes from the kernel length
-  (an odd square). This is C7's row; not yet done.
+  (an odd square). Done in C7a.
+- **`source()` has no canvas keywords** (C7b): `source("contour").rasterize(...)`.
+- **No lazy stub** (C7c): the forwarders are generated as real methods.
 - **A contour source only decodes** (C6c): `source("contour", width=, …)` is
   `source("contour").rasterize(...)`, and a bare `source("contour")` is the
   contour domain.
@@ -115,26 +118,22 @@ with no mode. There is no `registry!` macro: `#[derive(Ops)]` is the one
 registry mechanism for ops, geometry functions, sources and sinks, and
 `typed_ops!` only places op families in `GraphStep`.
 
-### C7 — Python surface fully generated
+### C7 — done
 
-- `Pipeline.source()` body (`python/polars_cv/pipeline.py`, search
-  `def source`): generate from `io_catalog.json`. Its canvas keywords are
-  `rasterize()`'s (C6c): the generated method appends `rasterize(**canvas)`
-  when any is given, reading the keyword set from `rasterize`'s signature as
-  the hand-written body does now.
-- Then delete `_validate_enum` and `_reject_expr` (`_types.py`) once unused
-  (`_enum_or_expr` went in C5).
-- Runtime lazy forwarders (`lazy.py`: `_install_pipeline_forwarders`,
-  `_make_forwarder`, `_chainable_pipeline_ops`) → emitted by `gen_ops.py`;
-  fold `scripts/gen_lazy_stub.py` into `gen_ops.py` (writes `lazy.pyi`).
-- "Domain: a → b" docstring prose in op docs → generated from each op's domain
-  contract (`GraphStep::input_domains`/`output_domain`); the op-backed geometry
-  accessors currently show that prose too.
-- `convolve2d(ksize=)`: **drop** (decision above). `ConvolveOp` in
-  `view-buffer/src/ops/filter.rs` derives the side from `kernel.len()`
-  already (`side()`, `check()`); remove the field, update the migration page,
-  CHANGELOG, `signatures.json` (`scripts/gen_signature_snapshot.py`), and pin
-  the removal in `tests/test_removed_surfaces.py`.
+See the status ledger. `gen_ops.py` now writes two modules:
+`_ops_generated.py` from the catalogues, then `_lazy_forwarders.py` from the
+`Pipeline` built on it (it imports the package; no build needed). The op
+catalogue carries each op's `domains`.
+
+Open questions found on the way (not in the plan; ask the user):
+
+- `sobel(ksize=)` and `laplacian(ksize=)` accept only `3` and raise for
+  anything else: a parameter with one legal value.
+- The planner reads only the nesting depth and leaf dtype from a
+  `list`/`array` column (`refine_by_column`); an `Array` column's fixed sizes
+  could give full dims at plan time.
+- The hand-written `Pipeline` sugar methods (`sobel`, `sharpen`, ...) still
+  carry hand-written "Domain:" lines; they are not catalogue ops.
 
 ### C8 — Sweep, guards and docs
 
