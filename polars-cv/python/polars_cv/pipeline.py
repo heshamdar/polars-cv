@@ -1222,7 +1222,7 @@ class Pipeline(_OpsMixin):
 
     # --- Graph Conversion ---
 
-    def to_graph(self, column: pl.Expr | None = None) -> "PipelineGraph":
+    def to_graph(self, column: pl.Expr) -> "PipelineGraph":
         """
         Convert this linear pipeline to a graph representation.
 
@@ -1233,8 +1233,7 @@ class Pipeline(_OpsMixin):
         composition with .pipe() and .alias() instead.
 
         Args:
-            column: The input column expression. If None, must be set later
-                via graph.set_root_column().
+            column: The input column expression.
 
         Returns:
             PipelineGraph representation of this pipeline.

@@ -18,7 +18,6 @@
 //! `_GeomNamespace.on_null`) and is applied by [`GeomParams::row`], which each
 //! row loop wraps its parameter resolution in.
 
-#[allow(unused_imports)]
 use crate::ops::ParamExt as _;
 use polars::prelude::*;
 use serde::Deserialize;

@@ -100,7 +100,6 @@ FloatOrExpr: TypeAlias = Union[float, pl.Expr]
 # For non-structural flags only. A flag that changes the output shape — such as
 # ``rotate(expand)`` — stays a plain ``bool``.
 BoolOrExpr: TypeAlias = Union[bool, pl.Expr]
-StrOrExpr: TypeAlias = Union[str, pl.Expr]
 
 
 #: Polars types that reach a buffer through a *cast* rather than a numpy name.
