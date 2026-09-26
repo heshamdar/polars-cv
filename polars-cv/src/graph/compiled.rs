@@ -1511,12 +1511,21 @@ pub(crate) fn resolved_output_specs(
 /// buffer element) the dtype. A binary or string column reveals neither — a
 /// PNG decodes u8 or u16 — so its state is left as the source planned it.
 fn refine_by_column(mut state: State, column: &DataType) -> State {
-    let (leaf, depth) = peel_nesting(column);
-    if depth == 0 {
+    let (leaf, sizes) = peel_nesting(column);
+    if sizes.is_empty() {
         return state;
     }
     if state.ndim.is_none() {
-        state.ndim = Some(depth);
+        state.ndim = Some(sizes.len());
+    }
+    // Every size the column's type fixes (an `Array` level) is known; a
+    // `List` level's varies per row. Known facts are planned, never dropped.
+    if state.ndim == Some(sizes.len()) {
+        for (dim, size) in state.dims.iter_mut().zip(&sizes) {
+            if dim.is_none() {
+                *dim = *size;
+            }
+        }
     }
     if !state.dtype.is_concrete() {
         if let Some(dtype) = dtype_from_polars_leaf(&leaf) {
@@ -1526,19 +1535,17 @@ fn refine_by_column(mut state: State, column: &DataType) -> State {
     state
 }
 
-/// Recursively peel List/Array nesting to find the leaf dtype and depth.
-fn peel_nesting(dt: &DataType) -> (DataType, usize) {
-    match dt {
-        DataType::List(inner) => {
-            let (leaf, depth) = peel_nesting(inner);
-            (leaf, depth + 1)
-        }
-        DataType::Array(inner, _) => {
-            let (leaf, depth) = peel_nesting(inner);
-            (leaf, depth + 1)
-        }
-        other => (other.clone(), 0),
-    }
+/// Peel List/Array nesting: the leaf dtype, and each level's size, outermost
+/// first — `Some(n)` for a fixed-size `Array`, `None` for a `List`.
+fn peel_nesting(dt: &DataType) -> (DataType, Vec<Option<usize>>) {
+    let (inner, size) = match dt {
+        DataType::List(inner) => (inner, None),
+        DataType::Array(inner, n) => (inner, Some(*n)),
+        other => return (other.clone(), Vec::new()),
+    };
+    let (leaf, mut sizes) = peel_nesting(inner);
+    sizes.insert(0, size);
+    (leaf, sizes)
 }
 
 // ============================================================================

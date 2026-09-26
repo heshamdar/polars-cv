@@ -269,6 +269,21 @@ impl Source {
         }
     }
 
+    /// Whether the input column's type may fix the sizes too: a fixed-size
+    /// `Array` column states every one (`auto` may route to one); a `List`
+    /// column's vary per row.
+    pub fn column_may_fix_sizes(&self) -> bool {
+        match self {
+            Source::Array { .. } | Source::Auto { .. } => true,
+            Source::List { .. }
+            | Source::Blob { .. }
+            | Source::Contour { .. }
+            | Source::FilePath { .. }
+            | Source::ImageBytes { .. }
+            | Source::Raw { .. } => false,
+        }
+    }
+
     /// Whether a row that cannot be decoded is nulled rather than failing the
     /// query.
     pub fn nulls_on_error(&self) -> bool {

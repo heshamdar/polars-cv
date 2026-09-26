@@ -236,8 +236,8 @@ fn vb_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
 /// it is written rather than at `collect()`: compile it (structure, ops,
 /// planning) and resolve every output's `(domain, sink)` pair and schema.
 ///
-/// A root whose source takes its element type or rank from the input column
-/// (`Source::resolves_from_column`) leaves those two facts to the column: they
+/// A root whose source takes its element type, rank (and, for a fixed-size
+/// `Array` column, sizes) from the input column leaves those facts to it: they
 /// are decided when Polars plans the query, by the same code
 /// (`decode::ColumnFacts`); everything else is checked here.
 /// Refuse a geometry accessor call the plugin would refuse, as it is built:
@@ -255,9 +255,9 @@ fn check_graph(graph_json: &str) -> PyResult<()> {
     let compiled = crate::graph::get_or_compile(graph_json).map_err(fail)?;
     let graph = compiled.graph();
     for (alias, spec) in crate::graph::resolved_output_specs(graph, &[]).map_err(fail)? {
-        let checked = match graph.root_resolves_from_column(&spec.node) {
-            true => crate::graph::decode::check_output_before_column(&spec),
-            false => crate::graph::dtype_for_output(&spec).map(|_| ()),
+        let checked = match graph.column_facts_pending(&spec.node) {
+            Some(facts) => crate::graph::decode::check_output_before_column(&spec, facts),
+            None => crate::graph::dtype_for_output(&spec).map(|_| ()),
         };
         checked.map_err(|e| py_value_error(format!("output '{alias}': {e}")))?;
     }
