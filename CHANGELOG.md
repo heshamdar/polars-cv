@@ -87,11 +87,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
-- **A contour source only decodes; its canvas keywords are `rasterize()`.**
-  `source("contour", width=, height=, shape=, fill_value=, background=)` is
-  `source("contour").rasterize(...)`: the plan, `repr()` and output are the
-  op's, and a canvas keyword on another format is refused by the op's input
-  domain (`rasterize() expects contour input`). The source's copy of the op —
+- **A contour source only decodes; rasterizing is `rasterize()`.**
+  **Breaking:** `source()` no longer takes `width`, `height`, `shape`,
+  `fill_value` or `background`; write `source("contour").rasterize(...)`.
+  `source()` is now generated from the typed source formats
+  (`io_catalog.json`), with exactly their fields. The source's copy of the op —
   its own canvas fields and defaults, per-row resolution, node-canvas lookup
   and rasterizing decode — is gone. A per-row `width`/`height`/`fill_value`
   that is invalid for a row now fails the query (or nulls the node under

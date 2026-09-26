@@ -192,40 +192,6 @@ DIAMOND_SET = [
 # --- The table -------------------------------------------------------------
 
 CASES: list[ExprCase] = [
-    # --- source (a contour source's canvas keywords are rasterize()'s) ----
-    ExprCase(
-        "source",
-        "width",
-        lambda v: Pipeline().source("contour", width=v, height=12),
-        (10, 14, 16),
-        column=CONTOURS,
-    ),
-    ExprCase(
-        "source",
-        "height",
-        lambda v: Pipeline().source("contour", width=12, height=v),
-        (10, 14, 16),
-        column=CONTOURS,
-    ),
-    ExprCase(
-        "source",
-        "fill_value",
-        lambda v: Pipeline().source("contour", width=12, height=12, fill_value=v),
-        (255, 128, 64),
-        column=CONTOURS,
-    ),
-    ExprCase(
-        "source",
-        "background",
-        lambda v: Pipeline().source("contour", width=12, height=12, background=v),
-        (0, 32, 96),
-        column=CONTOURS,
-    ),
-    # --- assert_shape ------------------------------------------------------
-    # These three state a fact about the buffer rather than changing it, so a
-    # correct assertion is invisible in the output by construction. What they
-    # must do instead — reject the row whose buffer disagrees — is pinned by
-    # `TestAssertShapeExpressions` in test_expression_op_params.py.
     ExprCase(
         "assert_shape",
         "height",

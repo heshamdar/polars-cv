@@ -1,6 +1,7 @@
 //! Source formats: how a node's input column is decoded.
 
 use std::collections::HashMap;
+use std::num::NonZeroU32;
 
 use polars::prelude::{DataType, Series};
 use polars_cv_macros::Ops;
@@ -9,10 +10,62 @@ use view_buffer::DType;
 use crate::fetch::FetchErrorPolicy;
 use crate::ops::Literal;
 
-/// How a node's input column is decoded (see the module docs).
+/// Define the input source format.
+///
+/// The default ``"auto"`` infers the decode path from the column's Polars
+/// dtype at runtime. Pass an explicit format to override the inference (or
+/// when the column dtype cannot be routed, such as a plain numeric column).
+///
+/// Image sources (``"image_bytes"`` and ``"file_path"``) auto-detect the
+/// encoding and preserve its dtype: PNG/JPEG decode to u8, 16-bit PNG to u16,
+/// and TIFF may produce u8, u16, f32 or f64. Decoded images are always 3D
+/// ``[H, W, C]``. Until then the dtype is ``"auto"``: a ``list``/``array``
+/// sink needs it known at planning time, from ``dtype=`` here, a ``cast()``,
+/// or an operation that fixes it.
+///
+/// A ``"contour"`` source decodes to the contour domain; rasterize it with
+/// :meth:`rasterize`.
+///
+/// Each keyword applies to some formats and not others, and defaults to
+/// ``None`` (the format's own default). One that does not apply to the chosen
+/// format is **rejected**, naming the formats it applies to.
+///
+/// ``decode_max_size`` asserts the pipeline needs at most this many pixels on
+/// the decoded long side, so JPEG decoding uses IDCT scaling (1/8, 1/4 or
+/// 1/2) to skip work. The long side never drops below
+/// ``min(decode_max_size, original)``, so a downstream resize to that size
+/// never upscales; other encodings decode at full size. A scaled decode
+/// followed by a resize is not bit-identical to a full decode and the same
+/// resize, hence the explicit opt-in.
+///
+/// ``allowed_roots`` restricts which locations a path column may read from.
+/// An entry that parses as a remote URI (``"s3://bucket/public/"``) is
+/// matched as a URI prefix, anything else (``"/srv/images"``) as a local
+/// directory. Local paths are canonicalized first, so ``..`` and symlinks
+/// cannot escape, and matching is component-wise (``"/srv/images"`` does not
+/// admit ``"/srv/images-private"``). A path matching no entry is refused, and
+/// the refusal is subject to ``on_error``.
+///
+/// Example:
+///     ```python
+///     >>> # Decode PNG/JPEG bytes from a column
+///     >>> pipe = Pipeline().source("image_bytes").resize(height=224, width=224)
+///     >>>
+///     >>> # Read from file paths or URLs, sandboxed
+///     >>> pipe = Pipeline().source("file_path", allowed_roots=["/srv/images"])
+///     >>>
+///     >>> # Assert dtype for a list sink (cast if needed at runtime)
+///     >>> pipe = Pipeline().source("image_bytes", dtype="f32")
+///     >>>
+///     >>> # Gracefully handle corrupt images as null
+///     >>> pipe = Pipeline().source("image_bytes", on_error="null")
+///     >>>
+///     >>> # Rasterize a contour column to a mask
+///     >>> pipe = Pipeline().source("contour").rasterize(width=64, height=64)
+///     ```
 #[derive(Debug, Clone, PartialEq, Ops)]
 pub enum Source {
-    /// A Polars nested `List` or fixed-size `Array` column.
+    /// A Polars fixed-size `Array` column, one nesting level per axis.
     #[op(name = "array", sample = {"require_contiguous": true})]
     Array {
         /// Element dtype; inferred from the column when absent.
@@ -33,12 +86,14 @@ pub enum Source {
         /// Require rectangular data when the column is a List/Array.
         #[param(default = false)]
         require_contiguous: Literal<bool>,
-        /// Cloud-storage credentials when the column is a path.
+        /// Cloud-storage credentials: a ``CloudOptions`` or a dict.
         cloud_options: Option<HashMap<String, String>>,
-        /// Locations a path column may read from (unrestricted when absent).
+        /// Locations a path column may read from (unrestricted when absent;
+        /// see above).
         allowed_roots: Option<Vec<String>>,
-        /// Decode only enough pixels for this long side (JPEG IDCT scaling).
-        decode_max_size: Option<Literal<u32>>,
+        /// Decode only enough pixels for this long side (JPEG IDCT scaling;
+        /// see above).
+        decode_max_size: Option<Literal<NonZeroU32>>,
         /// "raise" or "null": what a row that cannot be decoded does.
         #[param(default = "raise")]
         on_error: Literal<FetchErrorPolicy>,
@@ -68,12 +123,14 @@ pub enum Source {
     FilePath {
         /// Asserted element dtype: a decoded image with another dtype is cast.
         dtype: Option<Literal<DType>>,
-        /// Cloud-storage credentials (see `cloud::CloudOptions::from_map`).
+        /// Cloud-storage credentials: a ``CloudOptions`` or a dict.
         cloud_options: Option<HashMap<String, String>>,
-        /// Locations the path column may read from (unrestricted when absent).
+        /// Locations a path column may read from (unrestricted when absent;
+        /// see above).
         allowed_roots: Option<Vec<String>>,
-        /// Decode only enough pixels for this long side (JPEG IDCT scaling).
-        decode_max_size: Option<Literal<u32>>,
+        /// Decode only enough pixels for this long side (JPEG IDCT scaling;
+        /// see above).
+        decode_max_size: Option<Literal<NonZeroU32>>,
         /// "raise" or "null": what a row that cannot be read or decoded does.
         #[param(default = "raise")]
         on_error: Literal<FetchErrorPolicy>,
@@ -83,13 +140,15 @@ pub enum Source {
     ImageBytes {
         /// Asserted element dtype: a decoded image with another dtype is cast.
         dtype: Option<Literal<DType>>,
-        /// Decode only enough pixels for this long side (JPEG IDCT scaling).
-        decode_max_size: Option<Literal<u32>>,
+        /// Decode only enough pixels for this long side (JPEG IDCT scaling;
+        /// see above).
+        decode_max_size: Option<Literal<NonZeroU32>>,
         /// "raise" or "null": what a row that cannot be decoded does.
         #[param(default = "raise")]
         on_error: Literal<FetchErrorPolicy>,
     },
-    /// A Polars nested `List` or fixed-size `Array` column.
+    /// A Polars nested `List` column, one nesting level per axis; its sizes
+    /// may differ from row to row.
     #[op(name = "list", sample = {"dtype": "f32"})]
     List {
         /// Element dtype; inferred from the column when absent.
@@ -110,6 +169,11 @@ pub enum Source {
         #[param(default = "raise")]
         on_error: Literal<FetchErrorPolicy>,
     },
+}
+
+impl Source {
+    /// The format `source()` reads when none is named.
+    pub const DEFAULT_FORMAT: &'static str = "auto";
 }
 
 impl super::Format for Source {
@@ -265,7 +329,7 @@ impl Source {
             }
             | Source::ImageBytes {
                 decode_max_size, ..
-            } => decode_max_size.map(|s| s.get()),
+            } => decode_max_size.map(|s| s.get().get()),
             Source::Array { .. }
             | Source::Blob { .. }
             | Source::Contour { .. }
@@ -342,6 +406,18 @@ mod tests {
         assert!(err.contains("cannot infer a decode path"), "{err}");
         let concrete = parse(serde_json::json!({"format": "raw", "dtype": "u8"})).unwrap();
         assert!(concrete.route(&Series::new("b".into(), [1i32])).is_none());
+    }
+
+    /// A decode scale of zero pixels is no size: refused by the field's
+    /// type, where Python used to check it beside the definition.
+    #[test]
+    fn decode_max_size_is_positive() {
+        let err =
+            parse(serde_json::json!({"format": "image_bytes", "decode_max_size": 0})).unwrap_err();
+        assert!(
+            err.contains("'decode_max_size'") && err.contains("positive"),
+            "{err}"
+        );
     }
 
     #[test]

@@ -149,7 +149,7 @@ class TestMaskedPixelStatistics:
         )
 
         # Build pipelines: rasterize contour to mask, apply to heatmap, reduce
-        mask_pipe = Pipeline().source("contour", width=100, height=100)
+        mask_pipe = Pipeline().source("contour").rasterize(width=100, height=100)
         heatmap_pipe = Pipeline().source("image_bytes").grayscale()
 
         heatmap_node = pl.col("heatmap").cv.pipe(heatmap_pipe)
@@ -183,7 +183,7 @@ class TestMaskedPixelStatistics:
             },
         )
 
-        mask_pipe = Pipeline().source("contour", width=100, height=100)
+        mask_pipe = Pipeline().source("contour").rasterize(width=100, height=100)
         heatmap_pipe = Pipeline().source("image_bytes").grayscale()
 
         heatmap_node = pl.col("heatmap").cv.pipe(heatmap_pipe)

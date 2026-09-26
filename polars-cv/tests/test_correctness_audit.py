@@ -925,7 +925,7 @@ class TestPipelineValidation:
 
     def test_invalid_source_format(self) -> None:
         """Invalid source format should raise."""
-        with pytest.raises(ValueError, match="Invalid source format"):
+        with pytest.raises(ValueError, match="unknown source format"):
             Pipeline().source("invalid_format")
 
     def test_contour_op_on_buffer_domain_raises(self) -> None:
@@ -939,7 +939,7 @@ class TestPipelineValidation:
         The canvas keywords append ``rasterize()``, so buffer ops like
         grayscale() follow it.
         """
-        pipe = Pipeline().source("contour", width=100, height=100)
+        pipe = Pipeline().source("contour").rasterize(width=100, height=100)
         assert pipe.current_domain() == "buffer"
         # So buffer ops should work:
         pipe_gray = pipe.grayscale()

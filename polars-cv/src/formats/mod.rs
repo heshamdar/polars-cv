@@ -122,6 +122,10 @@ pub(crate) use tagged_serde;
 /// Both ends' catalogues, as committed in `tests/golden/io_catalog.json`.
 #[derive(Serialize)]
 struct IoCatalog {
+    /// `Pipeline.source()`'s docstring body.
+    source_doc: &'static str,
+    /// The format `source()` reads when none is named.
+    default_source: &'static str,
     sources: Vec<OpDesc>,
     sinks: Vec<OpDesc>,
 }
@@ -129,6 +133,8 @@ struct IoCatalog {
 /// The source/sink catalogue as committed in `tests/golden/io_catalog.json`.
 pub fn io_catalog_json() -> String {
     let catalog = IoCatalog {
+        source_doc: source::Source::FAMILY_DOC,
+        default_source: source::Source::DEFAULT_FORMAT,
         sources: <source::Source as Format>::formats().to_vec(),
         sinks: <sink::Sink as Format>::formats().to_vec(),
     };

@@ -227,7 +227,7 @@ def test_contour_source_rejects_a_dtype_assertion() -> None:
     """
     for dtype in ("f32", "u8"):
         with pytest.raises(ValueError, match="'dtype' does not apply to the 'contour'"):
-            Pipeline().source("contour", width=8, height=8, dtype=dtype)
+            Pipeline().source("contour", dtype=dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +249,29 @@ def test_the_contour_source_has_no_canvas_fields() -> None:
         wire = json.dumps({"format": "contour", field: value})
         with pytest.raises(ValueError, match=f"'{field}' is not a source parameter"):
             Pipeline()._plan.with_source(wire)
+
+
+# ---------------------------------------------------------------------------
+# source()'s canvas keywords: sugar for an op the caller can name
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "keyword", ["width", "height", "shape", "fill_value", "background"]
+)
+def test_source_has_no_canvas_keywords(keyword: str) -> None:
+    """``source()`` has exactly the typed sources' fields.
+
+    After C6c the canvas keywords only appended ``rasterize()``, and they were
+    the one part of ``source()`` its catalogue could not generate. Rasterize
+    by name: ``source("contour").rasterize(width=, height=)``.
+    """
+    value: object = 8
+    if keyword == "shape":
+        # A real canvas node, so the refusal cannot be a type check on it.
+        value = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
+    with pytest.raises(TypeError, match=f"unexpected keyword argument '{keyword}'"):
+        Pipeline().source("contour", **{keyword: value})
 
 
 # ---------------------------------------------------------------------------

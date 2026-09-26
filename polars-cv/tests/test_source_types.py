@@ -240,7 +240,7 @@ class TestSourceFormatValidation:
         with pytest.raises(ValueError) as exc_info:
             Pipeline().source("invalid_format")
 
-        assert "Invalid source format" in str(exc_info.value)
+        assert "unknown source format" in str(exc_info.value)
         # Should list valid formats
         assert "image_bytes" in str(exc_info.value)
 

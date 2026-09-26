@@ -514,8 +514,13 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
         });
     }
 
+    let family_doc = doc_of(&input.attrs);
     Ok(quote! {
         impl #wire {
+            /// The family's own doc comment (a source or sink family's is the
+            /// generated `source()`/`sink()` docstring).
+            pub const FAMILY_DOC: &'static str = #family_doc;
+
             /// Every wire op name this family defines.
             pub const WIRE_NAMES: &'static [&'static str] = &[#(#names),*];
 

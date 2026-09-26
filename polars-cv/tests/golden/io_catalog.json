@@ -1,10 +1,12 @@
 {
+  "source_doc": "Define the input source format.\n\nThe default ``\"auto\"`` infers the decode path from the column's Polars\ndtype at runtime. Pass an explicit format to override the inference (or\nwhen the column dtype cannot be routed, such as a plain numeric column).\n\nImage sources (``\"image_bytes\"`` and ``\"file_path\"``) auto-detect the\nencoding and preserve its dtype: PNG/JPEG decode to u8, 16-bit PNG to u16,\nand TIFF may produce u8, u16, f32 or f64. Decoded images are always 3D\n``[H, W, C]``. Until then the dtype is ``\"auto\"``: a ``list``/``array``\nsink needs it known at planning time, from ``dtype=`` here, a ``cast()``,\nor an operation that fixes it.\n\nA ``\"contour\"`` source decodes to the contour domain; rasterize it with\n:meth:`rasterize`.\n\nEach keyword applies to some formats and not others, and defaults to\n``None`` (the format's own default). One that does not apply to the chosen\nformat is **rejected**, naming the formats it applies to.\n\n``decode_max_size`` asserts the pipeline needs at most this many pixels on\nthe decoded long side, so JPEG decoding uses IDCT scaling (1/8, 1/4 or\n1/2) to skip work. The long side never drops below\n``min(decode_max_size, original)``, so a downstream resize to that size\nnever upscales; other encodings decode at full size. A scaled decode\nfollowed by a resize is not bit-identical to a full decode and the same\nresize, hence the explicit opt-in.\n\n``allowed_roots`` restricts which locations a path column may read from.\nAn entry that parses as a remote URI (``\"s3://bucket/public/\"``) is\nmatched as a URI prefix, anything else (``\"/srv/images\"``) as a local\ndirectory. Local paths are canonicalized first, so ``..`` and symlinks\ncannot escape, and matching is component-wise (``\"/srv/images\"`` does not\nadmit ``\"/srv/images-private\"``). A path matching no entry is refused, and\nthe refusal is subject to ``on_error``.\n\nExample:\n    ```python\n    >>> # Decode PNG/JPEG bytes from a column\n    >>> pipe = Pipeline().source(\"image_bytes\").resize(height=224, width=224)\n    >>>\n    >>> # Read from file paths or URLs, sandboxed\n    >>> pipe = Pipeline().source(\"file_path\", allowed_roots=[\"/srv/images\"])\n    >>>\n    >>> # Assert dtype for a list sink (cast if needed at runtime)\n    >>> pipe = Pipeline().source(\"image_bytes\", dtype=\"f32\")\n    >>>\n    >>> # Gracefully handle corrupt images as null\n    >>> pipe = Pipeline().source(\"image_bytes\", on_error=\"null\")\n    >>>\n    >>> # Rasterize a contour column to a mask\n    >>> pipe = Pipeline().source(\"contour\").rasterize(width=64, height=64)\n    ```",
+  "default_source": "auto",
   "sources": [
     {
       "name": "array",
       "python": "array",
       "visibility": "public",
-      "doc": "A Polars nested `List` or fixed-size `Array` column.",
+      "doc": "A Polars fixed-size `Array` column, one nesting level per axis.",
       "fields": [
         {
           "name": "dtype",
@@ -98,7 +100,7 @@
         },
         {
           "name": "cloud_options",
-          "doc": "Cloud-storage credentials when the column is a path.",
+          "doc": "Cloud-storage credentials: a ``CloudOptions`` or a dict.",
           "type": {
             "kind": "optional",
             "inner": {
@@ -108,7 +110,7 @@
         },
         {
           "name": "allowed_roots",
-          "doc": "Locations a path column may read from (unrestricted when absent).",
+          "doc": "Locations a path column may read from (unrestricted when absent;\nsee above).",
           "type": {
             "kind": "optional",
             "inner": {
@@ -123,7 +125,7 @@
         },
         {
           "name": "decode_max_size",
-          "doc": "Decode only enough pixels for this long side (JPEG IDCT scaling).",
+          "doc": "Decode only enough pixels for this long side (JPEG IDCT scaling;\nsee above).",
           "type": {
             "kind": "optional",
             "inner": {
@@ -249,7 +251,7 @@
         },
         {
           "name": "cloud_options",
-          "doc": "Cloud-storage credentials (see `cloud::CloudOptions::from_map`).",
+          "doc": "Cloud-storage credentials: a ``CloudOptions`` or a dict.",
           "type": {
             "kind": "optional",
             "inner": {
@@ -259,7 +261,7 @@
         },
         {
           "name": "allowed_roots",
-          "doc": "Locations the path column may read from (unrestricted when absent).",
+          "doc": "Locations a path column may read from (unrestricted when absent;\nsee above).",
           "type": {
             "kind": "optional",
             "inner": {
@@ -274,7 +276,7 @@
         },
         {
           "name": "decode_max_size",
-          "doc": "Decode only enough pixels for this long side (JPEG IDCT scaling).",
+          "doc": "Decode only enough pixels for this long side (JPEG IDCT scaling;\nsee above).",
           "type": {
             "kind": "optional",
             "inner": {
@@ -332,7 +334,7 @@
         },
         {
           "name": "decode_max_size",
-          "doc": "Decode only enough pixels for this long side (JPEG IDCT scaling).",
+          "doc": "Decode only enough pixels for this long side (JPEG IDCT scaling;\nsee above).",
           "type": {
             "kind": "optional",
             "inner": {
@@ -362,7 +364,7 @@
       "name": "list",
       "python": "list",
       "visibility": "public",
-      "doc": "A Polars nested `List` or fixed-size `Array` column.",
+      "doc": "A Polars nested `List` column, one nesting level per axis; its sizes\nmay differ from row to row.",
       "fields": [
         {
           "name": "dtype",

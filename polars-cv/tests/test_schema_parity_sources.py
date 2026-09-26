@@ -447,7 +447,7 @@ def test_contour_source(shape: str) -> None:
             {"img": [whole, None, whole]}, schema={"img": pl.List(CONTOUR_SCHEMA)}
         )
 
-    pipe = Pipeline().source("contour", width=16, height=16).cast("u8")
+    pipe = Pipeline().source("contour").rasterize(width=16, height=16).cast("u8")
     _sweep(
         df,
         pipe,

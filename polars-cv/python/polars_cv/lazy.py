@@ -346,7 +346,7 @@ class LazyPipelineExpr(_LazyOpsMixin):
 
         The contour will be auto-rasterized to match the current image dimensions.
         This is a convenience for:
-            mask_pipe = Pipeline().source("contour", shape=img_expr)
+            mask_pipe = Pipeline().source("contour").rasterize(shape=img_expr)
             mask = pl.col("contour").cv.pipe(mask_pipe)
             img.apply_mask(mask)
 

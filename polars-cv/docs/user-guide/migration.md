@@ -86,13 +86,19 @@ the definition and lists every accepted spelling.
 
 ## Contour sources
 
-`source("contour", width=..., height=...)` (or `shape=`) is now exactly
-`source("contour").rasterize(width=..., height=...)`, so `repr()`/`explain()`
-show the `rasterize` step, and the output is unchanged. Without a canvas,
-`source("contour")` decodes to the contour domain instead of raising. A per-row
-canvas value that is invalid for a row is a query error as it is for
-`rasterize()`; `source(on_error="null")` nulls only rows whose contour cannot be
-decoded.
+A `contour` source decodes to the contour domain; rasterizing is the
+`rasterize()` operation, named explicitly:
+
+| Before | After |
+|---|---|
+| `source("contour", width=w, height=h)` | `source("contour").rasterize(width=w, height=h)` |
+| `source("contour", shape=img, fill_value=v)` | `source("contour").rasterize(shape=img, fill_value=v)` |
+
+`source()` no longer takes `width`, `height`, `shape`, `fill_value` or
+`background`. Without `rasterize()`, `source("contour")` is the contour domain,
+so geometry operations (`area()`, `simplify()`, ...) apply first. A per-row
+canvas value that is invalid for a row is a query error; `source(on_error="null")`
+nulls only rows whose contour cannot be decoded.
 
 ## Removed
 

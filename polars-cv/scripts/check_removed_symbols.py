@@ -549,6 +549,8 @@ REMOVED: tuple[Removed, ...] = (
     Removed("SourceFormat::of", "C6d: the row loop matches on Source"),
     Removed("resolve_auto_source_formats", "C6d: route_auto_sources"),
     Removed("resolved_auto_formats", "C6d: routed_sources"),
+    Removed("_validate_enum", "C7b: every enum is validated by its Rust definition"),
+    Removed("_reject_expr", "C7b: _encode_field refuses an expression for a literal"),
 )
 
 

@@ -58,11 +58,6 @@ def _pipeline_ast() -> ast.ClassDef:
 #: mode this file exists to prevent.
 _SAMPLE_VALUES: dict[str, object] = {
     "dtype": "f32",
-    "width": 32,
-    "height": 16,
-    "shape": None,  # filled in per-call: it must be a LazyPipelineExpr
-    "fill_value": 7,
-    "background": 3,
     "cloud_options": {"aws_region": "eu-west-1"},
     "allowed_roots": ["/tmp"],
     "require_contiguous": True,
@@ -72,8 +67,6 @@ _SAMPLE_VALUES: dict[str, object] = {
 
 
 def _sample_for(name: str) -> object:
-    if name == "shape":
-        return pl.col("i").cv.pipe(Pipeline().source("image_bytes"))
     return _SAMPLE_VALUES[name]
 
 
@@ -87,60 +80,24 @@ _SOURCE_FIELDS: dict[str, set[str]] = {
     for fmt in _IO_CATALOG["sources"]
 }
 
-#: The `source()` keywords that are `rasterize()`'s: passing one appends that
-#: op after the source (a contour source only decodes).
-_CANVAS = set(inspect.signature(Pipeline.rasterize).parameters) - {"self"}
-
 
 def test_every_source_parameter_is_a_typed_source_field() -> None:
-    """Every `source()` keyword is a field of some typed source or a
-    `rasterize()` parameter, and back.
+    """Every `source()` keyword is a field of some typed source, and back.
 
-    A keyword that is neither could only be dropped; a field no keyword
-    reaches is a setting the builder cannot make.
+    `source()` is generated from the catalogue, so this holds by construction;
+    the sweep below needs a sample value for each keyword.
     """
     keywords = {
         name
-        for name, param in inspect.signature(Pipeline.source).parameters.items()
+        for name in inspect.signature(Pipeline.source).parameters
         if name not in ("self", "format")
-        and param.kind is not inspect.Parameter.VAR_KEYWORD
     }
-    fields = set().union(*_SOURCE_FIELDS.values())
-    assert keywords == fields | _CANVAS, (
-        f"keywords {sorted(keywords)} are not the typed source fields "
-        f"{sorted(fields)} plus rasterize()'s {sorted(_CANVAS)}"
-    )
-    assert not fields & _CANVAS, "a keyword cannot be both a field and the op's"
+    assert keywords == set().union(*_SOURCE_FIELDS.values())
     assert set(_SAMPLE_VALUES) == keywords, (
         f"the applicability sweep has no sample value for "
         f"{sorted(keywords - set(_SAMPLE_VALUES))}"
     )
     assert set(_SOURCE_FIELDS) == {f.value for f in SourceFormat}
-
-
-def test_source_applicability_reads_every_parameter() -> None:
-    """The check must be handed the parameters, not a copy of their names.
-
-    `source()` snapshots `locals()` before binding anything else, so the list
-    cannot drift from the signature. A hand-written dict there would pass the
-    table guard above and still skip whichever parameter its author forgot.
-    """
-    source = next(
-        m
-        for m in _pipeline_ast().body
-        if isinstance(m, ast.FunctionDef) and m.name == "source"
-    )
-    first = source.body[0]
-    while isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
-        source.body.pop(0)  # the docstring
-        first = source.body[0]
-    assert isinstance(first, ast.Assign), (
-        "source() must capture its parameters as its first statement"
-    )
-    assert "locals" in ast.dump(first.value), (
-        "source() must read its parameters from locals(), so the applicability "
-        "check cannot be given a stale list of them"
-    )
 
 
 @plugin_required
@@ -152,26 +109,14 @@ def test_a_parameter_is_rejected_by_every_format_that_ignores_it(
     """The whole (parameter x format) grid, decided by the typed sources.
 
     Applicable pairs must be accepted. Inapplicable pairs must raise, naming
-    where the field does apply: not warn, not proceed. A canvas keyword
-    appends `rasterize()`, so only a contour source can feed it and every
-    other format refuses it through the op's input domain. `raw` needs a
-    dtype, so the grid passes one alongside.
+    where the field does apply: not warn, not proceed. `raw` needs a dtype, so
+    the grid passes one alongside.
     """
     kwargs: dict[str, object] = {}
-    if name in ("width", "height", "fill_value", "background"):
-        # `rasterize()` takes its canvas as a width/height pair (or `shape`).
-        kwargs.update(width=8, height=8)
     if fmt == "raw" and name != "dtype":
         kwargs["dtype"] = "u8"  # raw has no type metadata to infer from
     kwargs[name] = _sample_for(name)
 
-    if name in _CANVAS:
-        if fmt == "contour":
-            Pipeline().source(fmt, **kwargs)  # type: ignore[arg-type]
-            return
-        with pytest.raises(ValueError, match=r"rasterize\(\) expects contour input"):
-            Pipeline().source(fmt, **kwargs)  # type: ignore[arg-type]
-        return
     if name in _SOURCE_FIELDS[fmt]:
         Pipeline().source(fmt, **kwargs)  # type: ignore[arg-type]
         return

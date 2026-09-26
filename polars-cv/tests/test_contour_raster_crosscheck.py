@@ -179,8 +179,10 @@ ALL_SHAPES = {**RECTILINEAR, **CURVED}
 def _mask(contour: dict) -> np.ndarray:
     """Rasterize to a boolean mask via the pipeline's scanline filler."""
     frame = pl.DataFrame({"c": [contour]}, schema={"c": CONTOUR_SCHEMA})
-    pipe = Pipeline().source(
-        "contour", width=CANVAS, height=CANVAS, fill_value=1, background=0
+    pipe = (
+        Pipeline()
+        .source("contour")
+        .rasterize(width=CANVAS, height=CANVAS, fill_value=1, background=0)
     )
     out = frame.with_columns(m=pl.col("c").cv.pipe(pipe).sink("numpy"))
     return numpy_from_struct(out["m"][0]).reshape(CANVAS, CANVAS).astype(bool)
@@ -475,7 +477,8 @@ def _extract(
     frame = pl.DataFrame({"c": [contour]}, schema={"c": CONTOUR_SCHEMA})
     pipe = (
         Pipeline()
-        .source("contour", width=CANVAS, height=CANVAS, fill_value=255, background=0)
+        .source("contour")
+        .rasterize(width=CANVAS, height=CANVAS, fill_value=255, background=0)
         .extract_contours(mode=mode, method=method)
     )
     traced = frame.with_columns(r=pl.col("c").cv.pipe(pipe).sink("native"))["r"][0]

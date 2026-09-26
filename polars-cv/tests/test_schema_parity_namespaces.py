@@ -477,7 +477,7 @@ def test_a_tagged_contour_is_a_pipeline_source() -> None:
     """``source("contour")`` rasterizes a tagged contour like the plain one."""
     from polars_cv import Pipeline
 
-    pipe = Pipeline().source("contour", width=16, height=16)
+    pipe = Pipeline().source("contour").rasterize(width=16, height=16)
     expr = pl.col("a").cv.pipe(pipe).sink("list")
     tagged = assert_plan_equals_exec(_tagged_contour_df(), expr)
     plain = assert_plan_equals_exec(_contour_df(), expr)

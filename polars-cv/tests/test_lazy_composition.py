@@ -170,7 +170,7 @@ class TestLazyComposition:
         """apply_contour_mask creates rasterize node automatically."""
         img_pipe = Pipeline().source("image_bytes")
         # Contour source now requires dimensions for rasterization
-        contour_pipe = Pipeline().source("contour", width=100, height=100)
+        contour_pipe = Pipeline().source("contour").rasterize(width=100, height=100)
 
         img = pl.col("image").cv.pipe(img_pipe)
         contour = pl.col("contour").cv.pipe(contour_pipe)
@@ -558,7 +558,7 @@ class TestLazyCompositionExecution:
 
         img_pipe = Pipeline().source("image_bytes")
         # Contour source with explicit dimensions rasterizes the contour to a mask
-        contour_pipe = Pipeline().source("contour", width=100, height=100)
+        contour_pipe = Pipeline().source("contour").rasterize(width=100, height=100)
 
         img = pl.col("image").cv.pipe(img_pipe)
         # The contour source already produces a rasterized mask
@@ -607,7 +607,7 @@ class TestLazyCompositionExecution:
         img = pl.col("image").cv.pipe(img_pipe)
 
         # Contour source with shape= infers dimensions from the image
-        contour_pipe = Pipeline().source("contour", shape=img)
+        contour_pipe = Pipeline().source("contour").rasterize(shape=img)
         mask = pl.col("contour").cv.pipe(contour_pipe)
 
         # Apply the mask
@@ -648,7 +648,9 @@ class TestLazyCompositionExecution:
         df = pl.DataFrame({"image": [img_bytes], "contour": [contour_data]})
 
         img = pl.col("image").cv.pipe(Pipeline().source("image_bytes"))
-        mask = pl.col("contour").cv.pipe(Pipeline().source("contour", shape=img))
+        mask = pl.col("contour").cv.pipe(
+            Pipeline().source("contour").rasterize(shape=img)
+        )
 
         graph = mask.sink("numpy", return_expr=False)
         assert img._node_id in graph._to_dict()["nodes"], (
@@ -687,7 +689,9 @@ class TestLazyCompositionExecution:
 
         img_pipe = Pipeline().source("image_bytes")
         # For apply_contour_mask, we don't need dimensions - they're inferred
-        contour_pipe = Pipeline().source("contour", width=1, height=1)  # Dummy dims
+        contour_pipe = (
+            Pipeline().source("contour").rasterize(width=1, height=1)
+        )  # Dummy dims
 
         img = pl.col("image").cv.pipe(img_pipe)
         contour = pl.col("contour").cv.pipe(contour_pipe)
@@ -733,9 +737,9 @@ class TestLazyCompositionExecution:
         contour_pipe = (
             Pipeline().source("contour")
             if fill is None
-            else Pipeline().source(
-                "contour", width=1, height=1, fill_value=fill, background=255
-            )
+            else Pipeline()
+            .source("contour")
+            .rasterize(width=1, height=1, fill_value=fill, background=255)
         )
         img = pl.col("image").cv.pipe(Pipeline().source("image_bytes"))
         contour = pl.col("contour").cv.pipe(contour_pipe)

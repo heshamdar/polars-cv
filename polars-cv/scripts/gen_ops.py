@@ -14,9 +14,13 @@ compiled extension, so it runs without a build. It writes:
   ``tests/golden/io_catalog.json`` (the
   Rust ``formats`` registry, pinned by ``io_catalog_matches_the_committed_file``);
 - ``TYPED_OPS``: the op names that cross the wire in the typed form;
+- ``SOURCE_FIELDS``: each ``source()`` keyword's field type, the union of the
+  source formats' fields, which ``Pipeline._with_source`` encodes by;
 - ``OP_FIELDS``: each typed op's field types, which the builder's one encoder
   (``Pipeline._append_typed``) reads;
-- ``_OpsMixin``: one builder method per op (``_``-prefixed for an internal op
+- ``_OpsMixin``: ``source()``, from ``io_catalog.json`` (every typed source
+  field as a keyword, the ``Source`` family's doc as its docstring), and one
+  builder method per op (``_``-prefixed for an internal op
   that hand-written sugar wraps), with the signature, defaults
   and docstring the Rust definition declares. ``Pipeline`` inherits it. A
   ``lazy_only`` op (one combining this expression with other graph nodes) has
@@ -98,6 +102,7 @@ _SCALAR = {
     "int": ("IntOrExpr", "int"),
     "float": ("FloatOrExpr", "float"),
     "bool": ("BoolOrExpr", "bool"),
+    "str": ("str", "str"),
 }
 
 #: Docstring width, less the method body's eight-space indent.
@@ -125,6 +130,9 @@ def annotation(ty: dict[str, Any]) -> str:
         return "pl.Expr"
     if kind == "node":
         return "LazyPipelineExpr"
+    if kind == "map":
+        # The one map field is `source(cloud_options=)`.
+        return "CloudOptions | dict[str, Any]"
     msg = f"unknown catalogue type kind {kind!r}"
     raise ValueError(msg)
 
@@ -266,6 +274,74 @@ def geom_mixins(geom: list[dict[str, Any]]) -> str:
     return "\n\n".join(out)
 
 
+def _required(ty: dict[str, Any]) -> dict[str, Any]:
+    """A field type without its ``optional`` wrapper."""
+    return ty["inner"] if ty["kind"] == "optional" else ty
+
+
+def source_fields(io: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Each ``source()`` keyword's type: the union of the formats' fields.
+
+    A keyword is one field name across formats, so the formats declaring it
+    must agree on its type (bar being optional in some).
+    """
+    types: dict[str, dict[str, Any]] = {}
+    for fmt in io["sources"]:
+        for field in fmt["fields"]:
+            ty = _required(field["type"])
+            if types.setdefault(field["name"], ty) != ty:
+                msg = f"source field {field['name']!r} has two types across formats"
+                raise ValueError(msg)
+    return dict(sorted(types.items()))
+
+
+def source_method(io: dict[str, Any]) -> str:
+    """Render ``source()``: every typed source field, keyword-only, ``None``
+    meaning the chosen format's own default.
+
+    Each keyword's ``Args:`` entry says which formats take it, with each
+    format's doc for it; the format argument lists every format's doc.
+    """
+    by_doc: dict[str, dict[str, list[str]]] = {}
+    for fmt in io["sources"]:
+        for field in fmt["fields"]:
+            doc = " ".join(field["doc"].split())
+            by_doc.setdefault(field["name"], {}).setdefault(doc, []).append(fmt["name"])
+    fields = source_fields(io)
+    formats = " ".join(
+        f"``{f['name']}``: {' '.join(f['doc'].split())}" for f in io["sources"]
+    )
+    desc = {
+        "doc": io["source_doc"],
+        "fields": [
+            {"name": "format", "doc": f"How to decode the input column. {formats}"},
+            *(
+                {
+                    "name": name,
+                    "doc": " ".join(
+                        f"{', '.join(f'``{n}``' for n in names)}: {doc}"
+                        for doc, names in by_doc[name].items()
+                    ),
+                }
+                for name in fields
+            ),
+        ],
+    }
+    params = [
+        "self",
+        f"format: str = {io['default_source']!r}",
+        "*",
+        *(f"{name}: {annotation(ty)} | None = None" for name, ty in fields.items()),
+    ]
+    values = ", ".join(f'"{name}": {name}' for name in fields)
+    doc = _indent(docstring(desc), "        ").lstrip()
+    return (
+        f"    def source({', '.join(params)}) -> Pipeline:\n"
+        f'        """{doc}\n        """\n'
+        f"        return self._with_source(format, {{{values}}})\n"
+    )
+
+
 def is_binary(op: dict[str, Any]) -> bool:
     """A ``lazy_only`` op whose only field is the other operand's node."""
     fields = op["fields"]
@@ -292,7 +368,7 @@ def _imports(methods: str) -> str:
     """The import block: only what the rendered methods name (ruff F401)."""
     aliases = sorted(
         name
-        for name in ("BoolOrExpr", "FloatOrExpr", "IntOrExpr")
+        for name in ("BoolOrExpr", "CloudOptions", "FloatOrExpr", "IntOrExpr")
         if re.search(rf"\b{name}\b", methods)
     )
     lines = []
@@ -355,7 +431,9 @@ def render(
     fields = {
         op["name"]: {f["name"]: f["type"] for f in op["fields"]} for op in catalog
     }
-    methods = "\n".join(method(op) for op in catalog if op["visibility"] != "lazy_only")
+    methods = source_method(io) + "\n".join(
+        method(op) for op in catalog if op["visibility"] != "lazy_only"
+    )
     lazy_methods = "\n".join(lazy_method(op) for op in catalog if is_binary(op))
     geom_methods = geom_mixins(geom)
     text = (
@@ -376,11 +454,14 @@ def render(
         + opt_flag_fields(passes)
         + "\n\n"
         + "#: Each typed op's field types, as the catalogue describes them.\n"
-        + f"OP_FIELDS: dict[str, dict[str, Any]] = {json.dumps(fields)}\n\n\n"
+        + f"OP_FIELDS: dict[str, dict[str, Any]] = {json.dumps(fields)}\n\n"
+        + "#: Each ``source()`` keyword's field type, across the formats.\n"
+        + f"SOURCE_FIELDS: dict[str, dict[str, Any]] = {json.dumps(source_fields(io))}\n\n\n"
         + "class _OpsMixin:\n"
         + '    """The generated builder methods ``Pipeline`` inherits."""\n\n'
         + "    if TYPE_CHECKING:\n\n"
-        + "        def _append_typed(self, op_name: str, values: dict[str, Any]) -> Pipeline: ...\n\n"
+        + "        def _append_typed(self, op_name: str, values: dict[str, Any]) -> Pipeline: ...\n"
+        + "        def _with_source(self, format: str, values: dict[str, Any]) -> Pipeline: ...\n\n"
         + methods
         + "\n\nclass _LazyOpsMixin:\n"
         + '    """The generated binary-op methods ``LazyPipelineExpr`` inherits."""\n\n'

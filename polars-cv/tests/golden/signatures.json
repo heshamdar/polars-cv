@@ -3068,32 +3068,7 @@
     "'auto'"
    ],
    [
-    "dtype",
-    "KEYWORD_ONLY",
-    "None"
-   ],
-   [
-    "width",
-    "KEYWORD_ONLY",
-    "None"
-   ],
-   [
-    "height",
-    "KEYWORD_ONLY",
-    "None"
-   ],
-   [
-    "shape",
-    "KEYWORD_ONLY",
-    "None"
-   ],
-   [
-    "fill_value",
-    "KEYWORD_ONLY",
-    "None"
-   ],
-   [
-    "background",
+    "allowed_roots",
     "KEYWORD_ONLY",
     "None"
    ],
@@ -3103,7 +3078,12 @@
     "None"
    ],
    [
-    "require_contiguous",
+    "decode_max_size",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "dtype",
     "KEYWORD_ONLY",
     "None"
    ],
@@ -3113,12 +3093,7 @@
     "None"
    ],
    [
-    "decode_max_size",
-    "KEYWORD_ONLY",
-    "None"
-   ],
-   [
-    "allowed_roots",
+    "require_contiguous",
     "KEYWORD_ONLY",
     "None"
    ]

@@ -164,47 +164,6 @@ IMAGENET_MEAN: list[float] = [0.485, 0.456, 0.406]
 IMAGENET_STD: list[float] = [0.229, 0.224, 0.225]
 
 
-def _reject_expr(value: "Any", what: str) -> None:
-    """Reject a Polars expression for a structural parameter.
-
-    Structural parameters fix the output shape, rank, or dtype at planning
-    time, so an expression there would desync the lazy schema from the produced
-    data. Without this guard the expression fails much later and opaquely —
-    inside ``bool()`` ("the truth value of an Expr is ambiguous") or at JSON
-    serialization — instead of naming the real problem. Mirrors the message
-    ``_encode_field`` raises for a typed op's structural fields.
-    """
-    if isinstance(value, pl.Expr):
-        msg = (
-            f"{what} is structural (it fixes the output shape/rank/dtype at "
-            "planning time) and must be a literal, not a Polars expression."
-        )
-        raise TypeError(msg)
-
-
-def _validate_enum(value: str, enum_cls: type, label: str):
-    """Validate a *literal* string against a user-facing enum.
-
-    The single validation shape for every literal enum-valued parameter:
-    ``Invalid <label> '<value>'. Valid: [...]``. An op's enum parameters are
-    typed in its Rust definition and validated there; this serves the
-    geometry accessors and sources, so reaching here with an expression means
-    the parameter is structural.
-
-    Lives beside the enums rather than in ``pipeline.py`` because the geometry
-    accessors need the same check and importing it from the builder module
-    would have meant either a second copy or an import cycle. A second copy is
-    how ``.contour.scale(origin=)`` came to accept anything at all.
-    """
-    _reject_expr(value, f"'{label}'")
-    try:
-        return enum_cls(value)
-    except ValueError as e:
-        valid = [v.value for v in enum_cls]  # ty: ignore[not-iterable]
-        msg = f"Invalid {label} '{value}'. Valid: {valid}"
-        raise ValueError(msg) from e
-
-
 #: Maps an expression parameter to the plugin input it binds to.
 SlotOf = Callable[[pl.Expr], int]
 
