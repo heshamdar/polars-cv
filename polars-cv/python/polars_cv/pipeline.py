@@ -536,11 +536,11 @@ class Pipeline(_OpsMixin):
         Declare a shape the planner cannot work out for itself.
 
         Use this when the source does not reveal its shape at plan time — a
-        ``list``/``array`` column's rank and sizes are only known once the data
-        arrives, so a fixed-shape ``.sink("array")`` has nothing to publish
-        without a declaration. For a source the planner *can* read (image bytes,
-        a file path), the shape is already inferred and an assertion is at best
-        redundant.
+        ``list`` column's rank and sizes are only known once the data arrives,
+        so a fixed-shape ``.sink("array")`` has nothing to publish without a
+        declaration. For a source the planner *can* read (image bytes, a file
+        path, a fixed-size ``Array`` column), what it reveals is already
+        planned and an assertion is at best redundant.
 
         **An assertion states a fact; it does not change one.** A declaration
         that contradicts what the pipeline already knows — or that names a
@@ -551,17 +551,18 @@ class Pipeline(_OpsMixin):
 
         Two spellings:
 
-        - ``dims=[8, 8, 3]`` — positional and complete. Entry *i* is the size
-          of dimension *i*; ``None`` leaves one unknown. This also pins the
-          output **rank** to ``len(dims)``, which is what lets a list/array
+        - ``dims=[8, 8, 3]`` — positional and complete, of any rank. Entry *i*
+          is the size of dimension *i*; ``None`` leaves one unknown. This also
+          pins the output **rank** to ``len(dims)``, which is what lets a list
           source reach an ``array`` sink. An entry may be an expression: it is
           checked per row, and like any per-row size it publishes no shape.
         - ``height=``/``width=``/``channels=`` — the ``[H, W, C]`` spelling of
           dimensions 0, 1 and 2, for the common image case. The hints are
           **positional**, so these names only describe an ``[H, W, C]`` buffer:
           after a ``transpose([2, 0, 1])`` dimension 0 is the channel axis, and
-          calling it ``height`` would be a lie. They are therefore rejected once
-          the rank is known to be anything but 3 — use ``dims=`` there.
+          calling it ``height`` would be a lie. A keyword naming a dimension
+          the known rank does not have (``channels=`` on a rank-2 buffer) is
+          rejected; use ``dims=`` for anything that is not an image.
           Expressions are accepted and resolved per row, but a per-row size is
           not a plan-time fact, so it publishes no shape.
 
@@ -602,13 +603,15 @@ class Pipeline(_OpsMixin):
             )
             raise ValueError(msg)
         if dims is not None:
-            dims = list(dims)
-            # The rank is the list's length; Rust refuses one it cannot track.
-            return self._assert_shape(rank=len(dims), dims=(dims + [None] * 3)[:3])
-        if height is None and width is None and channels is None:
+            # The whole shape: the rank is the list's length.
+            return self._assert_shape(list(dims))
+        leading = [height, width, channels]
+        while leading and leading[-1] is None:
+            leading.pop()
+        if not leading:
             msg = "assert_shape() needs a declaration: dims=[...] or height=/width=/channels=."
             raise ValueError(msg)
-        return self._assert_shape(rank=None, dims=[height, width, channels])
+        return self._assert_shape(leading, exact=False)
 
     # --- View Operations (zero-copy where possible) ---
 

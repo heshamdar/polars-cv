@@ -941,7 +941,7 @@ impl CompiledGraph {
                                         view_buffer::apply_mask(&current_buf, &mask_buf, *invert);
                                     current_output = NodeOutput::from_buffer(result);
                                 }
-                                Role::AssertShape { rank, dims } => {
+                                Role::AssertShape { dims, exact } => {
                                     current_output =
                                         flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
                                     let shape: Vec<usize> = match &current_output {
@@ -955,11 +955,7 @@ impl CompiledGraph {
                                         ))
                                         }
                                     };
-                                    check_declared_shape(
-                                        &shape,
-                                        rank.map(|r| r as usize),
-                                        &dims.map(|d| d.map(|d| d as usize)),
-                                    )?;
+                                    check_declared_shape(&shape, dims, *exact)?;
                                 }
                                 Role::ExtractShape => {
                                     // Extract shape from buffer and return as vector
@@ -1511,21 +1507,21 @@ pub(crate) fn resolved_output_specs(
 /// buffer element) the dtype. A binary or string column reveals neither — a
 /// PNG decodes u8 or u16 — so its state is left as the source planned it.
 fn refine_by_column(mut state: State, column: &DataType) -> State {
+    use crate::plan::PlannedShape;
+
     let (leaf, sizes) = peel_nesting(column);
     if sizes.is_empty() {
         return state;
     }
-    if state.ndim.is_none() {
-        state.ndim = Some(sizes.len());
-    }
     // Every size the column's type fixes (an `Array` level) is known; a
     // `List` level's varies per row. Known facts are planned, never dropped.
-    if state.ndim == Some(sizes.len()) {
-        for (dim, size) in state.dims.iter_mut().zip(&sizes) {
-            if dim.is_none() {
-                *dim = *size;
-            }
+    match &state.shape {
+        PlannedShape::Unranked { .. } => state.shape = PlannedShape::Ranked(sizes),
+        PlannedShape::Ranked(planned) if planned.len() == sizes.len() => {
+            state.shape =
+                PlannedShape::Ranked(planned.iter().zip(&sizes).map(|(p, c)| p.or(*c)).collect());
         }
+        PlannedShape::Ranked(_) => {}
     }
     if !state.dtype.is_concrete() {
         if let Some(dtype) = dtype_from_polars_leaf(&leaf) {
@@ -1607,43 +1603,38 @@ pub(crate) fn get_or_compile(graph_json: &str) -> PolarsResult<Arc<CompiledGraph
     Ok(compiled)
 }
 
-/// Check one row's shape against an `assert_shape` declaration.
+/// Check one row's shape against an `assert_shape` declaration: the
+/// declaration applied to the row's shape ([`crate::plan::apply_declaration`],
+/// the reading the planner applies too).
 ///
 /// The declaration is the user's statement about their data, so a mismatch is
 /// reported as theirs: it names what they wrote and what arrived.
-fn check_declared_shape(
-    shape: &[usize],
-    rank: Option<usize>,
-    dims: &[Option<usize>; 3],
-) -> Result<(), String> {
-    let mismatch = rank.is_some_and(|r| r != shape.len())
-        || dims
-            .iter()
-            .enumerate()
-            .any(|(axis, d)| d.is_some_and(|d| shape.get(axis) != Some(&d)));
-    if !mismatch {
+fn check_declared_shape(shape: &[usize], dims: &[Option<u32>], exact: bool) -> Result<(), String> {
+    let declared: Vec<Option<usize>> = dims.iter().map(|d| d.map(|d| d as usize)).collect();
+    let row = crate::plan::PlannedShape::Ranked(shape.iter().map(|&n| Some(n)).collect());
+    if crate::plan::apply_declaration(&row, &declared, exact).is_ok() {
         return Ok(());
     }
-    let declared: Vec<String> = match rank {
-        Some(r) => vec![format!(
+    let size = |d: &Option<usize>| d.map_or("None".to_string(), |d| d.to_string());
+    let written = if exact {
+        format!(
             "dims=[{}]",
-            dims[..r.min(3)]
-                .iter()
-                .map(|d| d.map_or("None".to_string(), |d| d.to_string()))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )],
-        None => crate::plan::DIM_NAMES
+            declared.iter().map(size).collect::<Vec<_>>().join(", ")
+        )
+    } else {
+        declared
             .iter()
-            .zip(dims)
-            .filter_map(|(name, d)| d.map(|d| format!("{name}={d}")))
-            .collect(),
+            .enumerate()
+            .filter_map(|(axis, d)| {
+                d.map(|d| format!("{}={d}", crate::plan::declared_name(axis, false)))
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     };
     Err(format!(
-        "assert_shape({}) does not hold: the data is {shape:?}. An assertion states \
+        "assert_shape({written}) does not hold: the data is {shape:?}. An assertion states \
          what the data is; it does not change it. Correct the assertion, or drop it \
-         and let the planner infer the shape.",
-        declared.join(", ")
+         and let the planner infer the shape."
     ))
 }
 
@@ -2099,15 +2090,15 @@ mod tests {
             format!(
                 r#"{{
                     "nodes": {{"n0": {{"source": {{"format": "blob"}},
-                                      "ops": [{{"op": "assert_shape", "rank": 2, "dims": {dims}}}]}}}},
+                                      "ops": [{{"op": "assert_shape", "dims": {dims}}}]}}}},
                     "outputs": {{"_output": {{"node": "n0", "sink": {{"format": "blob"}}}}}},
                     "column_bindings": {{"n0": 0}}
                 }}"#
             )
         };
         let blob_input = [Series::new("b".into(), std::slice::from_ref(&f32_blob))];
-        assert_eq!(exec(&declared("[2, 2, null]"), &blob_input).null_count(), 0);
-        let err = CompiledGraph::compile(&declared("[2, 3, null]"))
+        assert_eq!(exec(&declared("[2, 2]"), &blob_input).null_count(), 0);
+        let err = CompiledGraph::compile(&declared("[2, 3]"))
             .unwrap()
             .execute(&blob_input)
             .unwrap_err()

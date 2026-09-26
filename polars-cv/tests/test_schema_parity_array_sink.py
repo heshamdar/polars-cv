@@ -17,6 +17,7 @@ though knowable" are both failures.
 
 from __future__ import annotations
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -73,12 +74,8 @@ def _numpy_shape(df: pl.DataFrame, pipe: Pipeline) -> list[int]:
 # Knowable shape: accepted, and exactly right
 # ---------------------------------------------------------------------------
 
-#: Pipelines whose shape the planner can both *know* and *express*.
-#:
-#: "Express" is the operative word: ``GraphNode.expected_shape`` reports a
-#: shape only at rank 3, because the hints track H/W/C specifically and at any
-#: other rank they cannot describe the output. So auto-shaping is a rank-3
-#: feature; the other ranks are covered by ``_KNOWN_BUT_UNEXPRESSIBLE`` below.
+#: Pipelines whose whole shape the planner knows, at any rank: each must
+#: publish it, so an ``array`` sink needs no ``shape=``.
 _KNOWN_SHAPE = {
     "rank3-identity": (lambda: _base(), [H, W, C]),
     "rank3-resize": (lambda: _base().resize(height=5, width=7), [5, 7, C]),
@@ -87,19 +84,9 @@ _KNOWN_SHAPE = {
         [H + 3, W + 7, C],
     ),
     "rank3-rotate90": (lambda: _base().rotate(angle=90), [W, H, C]),
-}
-
-#: Pipelines whose dimensions the planner *has* — they are sitting in
-#: the plan's known sizes — but cannot publish, because ``expected_shape`` is gated
-#: on rank 3. These must refuse the array sink without an explicit ``shape=``
-#: and be exact with one.
-#:
-#: This is a deliberate conservative choice, not a divergence: publishing
-#: ``[H, W, C]`` for a rank-2 output is how ``channel_select`` once declared a
-#: schema execution could not produce. It is recorded here because "refused
-#: though knowable" is a real cost — a rank-2 pipeline can never auto-shape —
-#: and because a future widening should update this table on purpose.
-_KNOWN_BUT_UNEXPRESSIBLE = {
+    # Rank 1 and 2: the planner knows these sizes and, since S1 of
+    # PLANNER_SIZES_PLAN.md, publishes them (they used to be refused as
+    # "known but unexpressible", the state holding only [H, W, C]).
     "rank2-channel_select": (lambda: _base().channel_select(index=0), [H, W]),
     "rank1-reshape": (lambda: _base().reshape([H * W * C]), [H * W * C]),
     "rank2-reshape": (lambda: _base().reshape([H, W * C]), [H, W * C]),
@@ -120,37 +107,6 @@ def test_known_shape_is_accepted_and_exact(case: str, pattern: str) -> None:
         f"{case}: planned Array dims {array_dims(series.dtype)} != {expected}"
     )
     assert leaf_dtype(series.dtype) == pl.UInt8
-
-
-@plugin_required
-@pytest.mark.parametrize("case", sorted(_KNOWN_BUT_UNEXPRESSIBLE))
-def test_non_rank3_refuses_without_a_shape_but_is_exact_with_one(case: str) -> None:
-    """The planner knows these dimensions and still cannot publish them.
-
-    Both halves are asserted: the refusal (so the gate is real and safe) and
-    the exactness once ``shape=`` supplies what the planner could not say (so
-    the dimensions really were right all along).
-    """
-    build, expected = _KNOWN_BUT_UNEXPRESSIBLE[case]
-    pipe = build()
-    df = _df("null_first")
-
-    bare = plan_or_reject(df, lambda: pl.col("img").cv.pipe(pipe).sink("array"))
-    assert not bare.ok, (
-        f"{case}: expected_shape is gated on rank 3, so this should refuse; "
-        f"it planned {bare.planned!r} instead"
-    )
-    assert "needs the full output shape" in (bare.reason or "")
-
-    series = assert_plan_equals_exec(
-        df, pl.col("img").cv.pipe(pipe).sink("array", shape=expected)
-    )
-    assert array_dims(series.dtype) == expected
-
-    # The dimensions the planner declined to publish are the right ones.
-    assert _numpy_shape(df, pipe) == expected, (
-        f"{case}: the gate is hiding a correct shape, {_numpy_shape(df, pipe)}"
-    )
 
 
 @plugin_required
@@ -176,6 +132,63 @@ def test_array_dims_agree_with_the_numpy_sinks_shape(case: str) -> None:
         f"{case}: array sink planned {array_dims(planned)} but the numpy sink "
         f"reports {_numpy_shape(df, pipe)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Any rank: a column's type or a declaration fixes the whole shape
+# ---------------------------------------------------------------------------
+
+
+def _array_column(shape: tuple[int, ...]) -> pl.DataFrame:
+    data = np.arange(int(np.prod(shape)), dtype=np.uint8).reshape(shape)
+    return pl.DataFrame(
+        {"a": pl.Series([data, data[::-1]], dtype=pl.Array(pl.UInt8, shape))}
+    )
+
+
+def _list_column(shape: tuple[int, ...]) -> pl.DataFrame:
+    data = np.arange(int(np.prod(shape)), dtype=np.uint8).reshape(shape)
+    dtype: pl.DataType = pl.UInt8()
+    for _ in shape:
+        dtype = pl.List(dtype)
+    return pl.DataFrame({"a": pl.Series([data.tolist()], dtype=dtype)})
+
+
+@plugin_required
+@pytest.mark.parametrize("shape", [(6,), (4, 5), (4, 5, 3), (2, 3, 4, 5)])
+def test_an_array_column_plans_its_shape_at_every_rank(shape: tuple[int, ...]) -> None:
+    """A fixed-size ``Array`` column's dtype states every size, at any rank."""
+    df = _array_column(shape)
+    result = plan_or_reject(
+        df, lambda: pl.col("a").cv.pipe(Pipeline().source("array")).sink("array")
+    )
+    assert result.ok, f"Array{shape} column refused: {result.reason}"
+    assert result.series is not None
+    assert array_dims(result.series.dtype) == list(shape)
+    assert result.series.to_list() == df["a"].to_list()
+
+
+@plugin_required
+@pytest.mark.parametrize("shape", [(20,), (4, 5), (2, 3, 4, 5)])
+def test_a_declared_shape_of_any_rank_reaches_an_array_sink(
+    shape: tuple[int, ...],
+) -> None:
+    """``assert_shape(dims=[...])`` pins the rank and every size it gives."""
+    df = _list_column(shape)
+    result = plan_or_reject(
+        df,
+        lambda: (
+            pl.col("a")
+            .cv.pipe(
+                Pipeline().source("list", dtype="u8").assert_shape(dims=list(shape))
+            )
+            .sink("array")
+        ),
+    )
+    assert result.ok, f"dims={list(shape)} refused: {result.reason}"
+    assert result.series is not None
+    assert array_dims(result.series.dtype) == list(shape)
+    assert result.series.to_list() == df["a"].to_list()
 
 
 # ---------------------------------------------------------------------------

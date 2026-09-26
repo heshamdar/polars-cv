@@ -196,20 +196,23 @@ pub enum GraphOp<M: Mode = Exec> {
         /// one.
         others: Vec<NodeRef>,
     },
-    /// Declare the shape of the data at this point: its rank and any of the sizes
-    /// of dimensions 0, 1 and 2.
+    /// Declare the shape of the data at this point: sizes of its dimensions,
+    /// and with them its rank when the declaration is exact.
     ///
     /// The planner applies the declaration (refusing one it contradicts), and
     /// execution checks it against every row, so everything downstream rests on a
     /// checked fact. The public `Pipeline.assert_shape` is sugar over this op.
-    #[op(name = "assert_shape", visibility = Internal, sample = {"rank": 3, "dims": [8, null, 2]})]
+    #[op(name = "assert_shape", visibility = Internal, sample = {"dims": [8, null, 2]})]
     AssertShape {
-        /// The rank, when declared (`assert_shape(dims=[...])` declares
-        /// `len(dims)`).
-        rank: Option<M::L<u32>>,
-        /// The sizes of dimensions 0, 1 and 2; `None` declares nothing about that
-        /// dimension. A per-row size is checked per row and is no plan-time fact.
-        dims: [Option<M::V<u32>>; 3],
+        /// The size of each dimension from the first; `None` declares nothing
+        /// about that dimension. A per-row size is checked per row and is no
+        /// plan-time fact.
+        dims: Vec<Option<M::V<u32>>>,
+        /// Whether `dims` is the whole shape, so the rank is its length
+        /// (`assert_shape(dims=[...])`), or only its leading dimensions
+        /// (`assert_shape(height=, width=, channels=)`).
+        #[param(default = true)]
+        exact: M::L<bool>,
     },
     /// Extract buffer shape as a struct {height, width, channels}.
     #[op(name = "extract_shape", sample = {})]
@@ -263,7 +266,7 @@ impl<M: Mode> GraphOp<M> {
             GraphOp::BitwiseXor { other } => Role::Binary(BinaryOp::BitwiseXor, other),
             GraphOp::ApplyMask { mask, invert } => Role::ApplyMask { mask, invert },
             GraphOp::ChannelMerge { others } => Role::ChannelMerge { others },
-            GraphOp::AssertShape { rank, dims } => Role::AssertShape { rank, dims },
+            GraphOp::AssertShape { dims, exact } => Role::AssertShape { dims, exact },
             GraphOp::ExtractShape => Role::ExtractShape,
             GraphOp::LabelReduce {
                 contours,
@@ -380,12 +383,29 @@ impl<M: Mode> GraphOp<M> {
     /// Refuse a parameter combination no row can execute: a channel merge
     /// needs at least one other channel.
     pub fn check(&self) -> Result<(), String> {
-        if let GraphOp::ChannelMerge { others } = self {
-            if others.is_empty() {
-                return Err("channel_merge requires at least one other channel expression".into());
+        match self {
+            GraphOp::ChannelMerge { others } if others.is_empty() => {
+                Err("channel_merge requires at least one other channel expression".into())
             }
+            GraphOp::AssertShape { dims, exact } => {
+                let exact = M::lit(exact);
+                if dims.iter().all(Option::is_none) && !(exact && !dims.is_empty()) {
+                    return Err("assert_shape() declares nothing: give dims=[...] or \
+                                height=/width=/channels="
+                        .into());
+                }
+                for (axis, d) in dims.iter().enumerate() {
+                    if d.as_ref().and_then(view_buffer::mode::known::<M, u32>) == Some(0) {
+                        return Err(format!(
+                            "assert_shape({}=0): each size must be a positive int or None",
+                            crate::plan::declared_name(axis, exact)
+                        ));
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
         }
-        Ok(())
     }
 }
 
@@ -401,8 +421,8 @@ pub enum Role<'a, M: Mode> {
         others: &'a [NodeRef],
     },
     AssertShape {
-        rank: &'a Option<M::L<u32>>,
-        dims: &'a [Option<M::V<u32>>; 3],
+        dims: &'a [Option<M::V<u32>>],
+        exact: &'a M::L<bool>,
     },
     ExtractShape,
     LabelReduce {

@@ -185,22 +185,37 @@ def test_assert_shape_has_no_batch_parameter() -> None:
     declared a batch dimension got exactly the same plan as one who did not,
     while the hints' ``to_dict`` went on emitting it.
 
-    The hints are positional and track three dimensions; a fourth had no
-    position to occupy. ``assert_shape(dims=[...])`` is the spelling for a shape
-    the H/W/C names do not describe, and it rejects a rank the planner cannot
-    track rather than accepting it and dropping the extra dimensions.
+    The keywords name dimensions 0, 1 and 2 only. ``assert_shape(dims=[...])``
+    is the spelling for any other shape, of any rank: the planner tracks every
+    dimension it declares (PLANNER_SIZES_PLAN.md S1).
     """
     with pytest.raises(TypeError, match="batch"):
         Pipeline().source("image_bytes").assert_shape(batch=4)
 
-    # The planner's state (Rust's, held as `PlanState`) tracks exactly three
-    # positional sizes; the hints class that carried `batch` is gone with it.
+    # The planner's state (Rust's, held as `PlanState`) holds one size per
+    # dimension; the hints class that carried `batch` is gone.
     from polars_cv._lib import PlanState
 
-    assert len(PlanState().dims) == 3
     assert not hasattr(PlanState(), "batch"), (
         "a `batch` size is back; it was removed because nothing read it"
     )
+
+
+@plugin_required
+def test_the_planner_state_has_no_three_size_surface() -> None:
+    """PLANNER_SIZES_PLAN.md S1: the planned shape is one rank-N value.
+
+    ``PlanState.DIM_NAMES`` gave the planner's three size slots their names;
+    the state now holds one size per dimension, so it is gone (the keyword
+    names live on in Rust's error messages). ``assert_shape``'s ``rank`` field,
+    which could contradict its ``dims`` (a rank-2 declaration of a channel
+    count), is gone too: ``dims`` with ``exact`` says the same without that.
+    """
+    from polars_cv._lib import PlanState
+
+    assert not hasattr(PlanState, "DIM_NAMES")
+    with pytest.raises(TypeError, match="rank"):
+        Pipeline()._assert_shape([8, 8], rank=2)  # type: ignore[call-arg]
 
 
 # ---------------------------------------------------------------------------

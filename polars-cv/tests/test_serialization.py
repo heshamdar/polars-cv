@@ -46,7 +46,15 @@ class TestPipelineJsonFormat:
         pipe = Pipeline().source().assert_shape(height=100, width=200)
         data = json.loads(pipe._to_json())
         assert "shape_hints" not in data
-        assert data["ops"] == [{"op": "assert_shape", "dims": [100, 200, None]}]
+        # The keywords declare leading dimensions (`exact: false`); `dims=`
+        # declares the whole shape, the wire's default.
+        assert data["ops"] == [
+            {"op": "assert_shape", "dims": [100, 200], "exact": False}
+        ]
+        exact = Pipeline().source().assert_shape(dims=[100, 200, None])
+        assert json.loads(exact._to_json())["ops"] == [
+            {"op": "assert_shape", "dims": [100, 200, None], "exact": True}
+        ]
 
 
 class TestExpressionReferencesJson:

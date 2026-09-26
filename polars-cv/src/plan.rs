@@ -20,33 +20,171 @@ use pyo3::prelude::*;
 
 use crate::formats::Format as _;
 use crate::py_value_error;
-use view_buffer::ops::{Dim, Domain, HistogramOutput, OpShape};
+use view_buffer::ops::{Dim, Domain, HistogramOutput};
 use view_buffer::PlannedDType;
 
 use crate::graph::step::GraphStep;
 
+/// What the planner knows about a buffer's shape: the one representation of
+/// its rank and sizes, so a size past the rank cannot be held.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PlannedShape {
+    /// The rank is known: one entry per axis, `None` where the size is not
+    /// (a per-row size is unknown at plan time).
+    Ranked(Vec<Option<usize>>),
+    /// The rank is not known. `leading[i]` is the size axis `i` has *if the
+    /// data has that axis* (an `assert_shape(height=...)` over a list column);
+    /// trailing unknowns are trimmed, so equal knowledge compares equal.
+    Unranked { leading: Vec<Option<usize>> },
+}
+
+impl PlannedShape {
+    /// Nothing known, not even the rank.
+    pub(crate) fn unknown() -> Self {
+        PlannedShape::Unranked {
+            leading: Vec::new(),
+        }
+    }
+
+    /// A known rank (or none) with no sizes known.
+    pub(crate) fn of_rank(rank: Option<usize>) -> Self {
+        match rank {
+            Some(n) => PlannedShape::Ranked(vec![None; n]),
+            None => PlannedShape::unknown(),
+        }
+    }
+
+    /// Leading sizes over an unknown rank, trailing unknowns trimmed.
+    fn unranked(mut leading: Vec<Option<usize>>) -> Self {
+        while leading.last() == Some(&None) {
+            leading.pop();
+        }
+        PlannedShape::Unranked { leading }
+    }
+
+    pub(crate) fn rank(&self) -> Option<usize> {
+        match self {
+            PlannedShape::Ranked(sizes) => Some(sizes.len()),
+            PlannedShape::Unranked { .. } => None,
+        }
+    }
+
+    /// The sizes held: one per axis when ranked, the leading ones otherwise.
+    pub(crate) fn sizes(&self) -> &[Option<usize>] {
+        match self {
+            PlannedShape::Ranked(sizes) | PlannedShape::Unranked { leading: sizes } => sizes,
+        }
+    }
+
+    /// The size of `axis`, when known.
+    pub(crate) fn size(&self, axis: usize) -> Option<usize> {
+        self.sizes().get(axis).copied().flatten()
+    }
+
+    /// The whole shape, when the rank and every size are known.
+    pub(crate) fn concrete(&self) -> Option<Vec<usize>> {
+        match self {
+            PlannedShape::Ranked(sizes) => sizes.iter().copied().collect(),
+            PlannedShape::Unranked { .. } => None,
+        }
+    }
+
+    /// The shape an op consumes, symbolically: each known size, and
+    /// `Input(k)` for an unknown one. `None` when the rank is unknown.
+    fn symbolic(&self) -> Option<Vec<Dim>> {
+        match self {
+            PlannedShape::Ranked(sizes) => Some(
+                sizes
+                    .iter()
+                    .enumerate()
+                    .map(|(axis, size)| size.map_or(Dim::Input(axis), Dim::Known))
+                    .collect(),
+            ),
+            PlannedShape::Unranked { .. } => None,
+        }
+    }
+
+    /// This shape with `axis` set to `size` where the shape has that axis.
+    fn with_size(mut self, axis: usize, size: Option<usize>) -> Self {
+        match &mut self {
+            PlannedShape::Ranked(sizes) => {
+                if let Some(slot) = sizes.get_mut(axis) {
+                    *slot = size;
+                }
+                self
+            }
+            PlannedShape::Unranked { leading } => {
+                let mut leading = std::mem::take(leading);
+                if leading.len() <= axis {
+                    leading.resize(axis + 1, None);
+                }
+                leading[axis] = size;
+                PlannedShape::unranked(leading)
+            }
+        }
+    }
+
+    /// The wire form: `{"ndim": n | null, "dims": [...]}` (the pickle's).
+    fn wire(&self) -> serde_json::Value {
+        serde_json::json!({"ndim": self.rank(), "dims": self.sizes()})
+    }
+}
+
 /// The planner's state at one op boundary — the one representation of it.
 ///
 /// Typed throughout: a [`Domain`], a [`PlannedDType`] (the dtype lattice the
-/// execution side resolves with too), and sizes. Python holds these objects
-/// as they are (`polars_cv._lib.PlanState`) and reads the wire spellings
-/// through its getters; it never builds or edits one. Nothing about it crosses
-/// the graph wire: the graph loader plans the graph itself
+/// execution side resolves with too), and a [`PlannedShape`]. Python holds
+/// these objects as they are (`polars_cv._lib.PlanState`) and reads the wire
+/// spellings through its getters; it never builds or edits one. Nothing about
+/// it crosses the graph wire: the graph loader plans the graph itself
 /// ([`resolved_output_specs`](crate::graph::resolved_output_specs)).
 #[pyclass(frozen, from_py_object, module = "polars_cv._lib", name = "PlanState")]
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct State {
-    #[serde(deserialize_with = "wire_domain")]
     pub domain: Domain,
-    #[serde(deserialize_with = "wire_dtype")]
     pub dtype: PlannedDType,
+    pub shape: PlannedShape,
+}
+
+/// A [`State`]'s pickle form, read strictly (an unknown field is refused).
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireState {
+    #[serde(deserialize_with = "wire_domain")]
+    domain: Domain,
+    #[serde(deserialize_with = "wire_dtype")]
+    dtype: PlannedDType,
     #[serde(default)]
-    pub ndim: Option<usize>,
-    /// Known sizes of dimensions 0..3 (`[H, W, C]` for an image); `None` is
-    /// unknown (a per-row size is unknown at plan time).
+    ndim: Option<usize>,
     #[serde(default)]
-    pub dims: [Option<usize>; 3],
+    dims: Vec<Option<usize>>,
+}
+
+impl<'de> serde::Deserialize<'de> for State {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        State::from_wire(WireState::deserialize(d)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl State {
+    fn from_wire(w: WireState) -> Result<State, String> {
+        let shape = match w.ndim {
+            Some(n) if w.dims.len() == n => PlannedShape::Ranked(w.dims),
+            Some(n) => {
+                return Err(format!(
+                    "a rank-{n} state carries {} sizes: {:?}",
+                    w.dims.len(),
+                    w.dims
+                ))
+            }
+            None => PlannedShape::unranked(w.dims),
+        };
+        Ok(State {
+            domain: w.domain,
+            dtype: w.dtype,
+            shape,
+        })
+    }
 }
 
 fn wire_domain<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Domain, D::Error> {
@@ -64,15 +202,11 @@ impl State {
     /// The state of a pipeline with no source yet: a buffer, nothing known.
     #[new]
     fn unsourced() -> Self {
-        State::new(Domain::Buffer, PlannedDType::Unknown, None)
-    }
-
-    /// The names `assert_shape` gives dimensions 0, 1 and 2.
-    #[classattr]
-    #[allow(non_snake_case)]
-    fn DIM_NAMES() -> (&'static str, &'static str, &'static str) {
-        let [h, w, c] = DIM_NAMES;
-        (h, w, c)
+        State::new(
+            Domain::Buffer,
+            PlannedDType::Unknown,
+            PlannedShape::unknown(),
+        )
     }
 
     /// ``buffer``, ``contour``, ``scalar`` or ``vector``.
@@ -91,14 +225,15 @@ impl State {
     /// The rank, or ``None`` when not known at plan time.
     #[getter(ndim)]
     fn py_ndim(&self) -> Option<usize> {
-        self.ndim
+        self.shape.rank()
     }
 
-    /// Known sizes of dimensions 0, 1, 2; ``None`` is unknown or per-row.
+    /// Known sizes, one per dimension when the rank is known (``None`` is
+    /// unknown or per-row); over an unknown rank, the sizes declared for the
+    /// leading dimensions.
     #[getter(dims)]
-    fn py_dims(&self) -> (Option<usize>, Option<usize>, Option<usize>) {
-        let [h, w, c] = self.dims;
-        (h, w, c)
+    fn py_dims<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyTuple>> {
+        pyo3::types::PyTuple::new(py, self.shape.sizes())
     }
 
     fn __eq__(&self, other: &Self) -> bool {
@@ -110,8 +245,8 @@ impl State {
             "PlanState(domain={:?}, dtype={:?}, ndim={:?}, dims={:?})",
             self.domain.name(),
             self.dtype.as_str(),
-            self.ndim,
-            self.dims,
+            self.shape.rank(),
+            self.shape.sizes(),
         )
     }
 
@@ -125,13 +260,10 @@ impl State {
 
     /// The pickled form (JSON).
     fn _wire(&self) -> String {
-        serde_json::json!({
-            "domain": self.domain.name(),
-            "dtype": self.dtype.as_str(),
-            "ndim": self.ndim,
-            "dims": self.dims,
-        })
-        .to_string()
+        let mut wire = self.shape.wire();
+        wire["domain"] = self.domain.name().into();
+        wire["dtype"] = self.dtype.as_str().into();
+        wire.to_string()
     }
 
     /// Pickled by value, through the wire form.
@@ -150,9 +282,91 @@ pub(crate) fn _plan_state_from_json(wire: &str) -> PyResult<State> {
     serde_json::from_str(wire).map_err(|e| py_value_error(e.to_string()))
 }
 
-/// The name of dimension `axis` in the `[H, W, C]` spelling `assert_shape`'s
-/// keywords use.
+/// The keyword names `assert_shape` gives dimensions 0, 1 and 2.
 pub(crate) const DIM_NAMES: [&str; 3] = ["height", "width", "channels"];
+
+/// How an `assert_shape` names dimension `axis`: its keyword for a leading
+/// (keyword) declaration, its position in `dims=` otherwise.
+pub(crate) fn declared_name(axis: usize, exact: bool) -> String {
+    match DIM_NAMES.get(axis) {
+        Some(name) if !exact => (*name).to_string(),
+        _ => format!("dims[{axis}]"),
+    }
+}
+
+/// Where an `assert_shape` declaration and a shape disagree.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Mismatch {
+    /// `dims=` pins a rank the shape does not have.
+    Rank { declared: usize, have: usize },
+    /// A declared size names an axis the shape does not have.
+    MissingAxis { axis: usize, rank: usize },
+    /// A declared size differs from the shape's.
+    Size {
+        axis: usize,
+        declared: usize,
+        have: usize,
+    },
+}
+
+/// `shape` with the declaration applied: `dims` are the declared sizes
+/// (`None` declares nothing about that axis, a per-row size included) and
+/// `exact` pins the rank to their count; otherwise they are the leading axes'.
+/// The first way the two disagree is refused.
+///
+/// The one reading of a declaration: the planner applies it to the planned
+/// shape, and execution checks each row by applying it to the row's shape.
+pub(crate) fn apply_declaration(
+    shape: &PlannedShape,
+    dims: &[Option<usize>],
+    exact: bool,
+) -> Result<PlannedShape, Mismatch> {
+    let mut sizes = match shape {
+        PlannedShape::Ranked(have) => {
+            if exact && have.len() != dims.len() {
+                return Err(Mismatch::Rank {
+                    declared: dims.len(),
+                    have: have.len(),
+                });
+            }
+            if let Some(axis) = (have.len()..dims.len()).find(|&a| dims[a].is_some()) {
+                return Err(Mismatch::MissingAxis {
+                    axis,
+                    rank: have.len(),
+                });
+            }
+            have.clone()
+        }
+        // An exact declaration pins the rank; the sizes held for axes past
+        // it described data that does not exist, so they go.
+        PlannedShape::Unranked { leading } if exact => (0..dims.len())
+            .map(|axis| leading.get(axis).copied().flatten())
+            .collect(),
+        PlannedShape::Unranked { leading } => {
+            let mut leading = leading.clone();
+            leading.resize(leading.len().max(dims.len()), None);
+            leading
+        }
+    };
+    for (axis, declared) in dims.iter().enumerate() {
+        let Some(declared) = *declared else { continue };
+        match sizes[axis] {
+            Some(have) if have != declared => {
+                return Err(Mismatch::Size {
+                    axis,
+                    declared,
+                    have,
+                })
+            }
+            _ => sizes[axis] = Some(declared),
+        }
+    }
+    Ok(match shape {
+        PlannedShape::Ranked(_) => PlannedShape::Ranked(sizes),
+        PlannedShape::Unranked { .. } if exact => PlannedShape::Ranked(sizes),
+        PlannedShape::Unranked { .. } => PlannedShape::unranked(sizes),
+    })
+}
 
 /// The planned states of the other graph nodes an op may read by id (a binary
 /// op's `other`, a canvas taken from another node). The builder passes the
@@ -170,66 +384,52 @@ fn referenced<'a>(refs: &'a Refs, op: &str, node: &str) -> Result<&'a State, Str
 /// rank does not have, or a size that disagrees with a known one. A per-row
 /// size is declared but is no plan-time fact.
 fn declare(
-    mut state: State,
-    rank: &Option<crate::ops::Literal<u32>>,
-    dims: &[Option<crate::ops::Param<u32>>; 3],
+    state: &State,
+    dims: &[Option<crate::ops::Param<u32>>],
+    exact: bool,
 ) -> Result<State, String> {
     use crate::ops::Param;
 
-    if let Some(rank) = rank.map(|r| r.get() as usize) {
-        if !(1..=DIM_NAMES.len()).contains(&rank) {
-            return Err(format!(
-                "assert_shape(dims=...) supports 1 to {} dimensions ({}), got {rank}. \
-                 Higher-rank shapes are not tracked by the planner; pass the shape to the \
-                 sink instead (.sink('array', shape=[...])).",
-                DIM_NAMES.len(),
-                DIM_NAMES.join(", ")
-            ));
+    let sizes: Vec<Option<usize>> = dims
+        .iter()
+        .map(|d| match d {
+            Some(Param::Lit(size)) => Some(*size as usize),
+            Some(Param::Slot(_)) | None => None,
+        })
+        .collect();
+    let shape = apply_declaration(&state.shape, &sizes, exact).map_err(|m| match m {
+        Mismatch::Rank { declared, have } => format!(
+            "assert_shape(dims=...) declares a rank-{declared} output, but this pipeline is \
+             already known to produce rank {have}. Drop the assertion, or correct its length."
+        ),
+        Mismatch::MissingAxis { axis, rank } => format!(
+            "assert_shape({}=...) names dimension {axis}, which a rank-{rank} output does not \
+             have. The shape keywords are positional — {} are dimensions 0, 1 and 2 — so use \
+             assert_shape(dims=[...]) for anything that is not an [H, W, C] image.",
+            declared_name(axis, exact),
+            DIM_NAMES.join(", ")
+        ),
+        Mismatch::Size {
+            axis,
+            declared,
+            have,
+        } => {
+            let name = declared_name(axis, exact);
+            let what = match DIM_NAMES.get(axis) {
+                Some(keyword) if !exact => format!("{keyword} {have}"),
+                _ => format!("size {have} of dimension {axis}"),
+            };
+            format!(
+                "assert_shape({name}={declared}) contradicts the {what} the pipeline already \
+                 establishes at this point. An assertion cannot change what the data is — \
+                 remove it, or fix the value."
+            )
         }
-        if let Some(current) = state.ndim.filter(|c| *c != rank) {
-            return Err(format!(
-                "assert_shape(dims=...) declares a rank-{rank} output, but this pipeline is \
-                 already known to produce rank {current}. Drop the assertion, or correct its \
-                 length."
-            ));
-        }
-        state.ndim = Some(rank);
-    }
-    for (axis, declared) in dims.iter().enumerate() {
-        let Some(declared) = declared else {
-            continue;
-        };
-        let name = DIM_NAMES[axis];
-        if let Some(ndim) = state.ndim.filter(|n| axis >= *n) {
-            return Err(format!(
-                "assert_shape({name}=...) names dimension {axis}, which a rank-{ndim} output \
-                 does not have. The shape hints are positional — {} are dimensions 0, 1 and \
-                 2 — so use assert_shape(dims=[...]) for anything that is not an [H, W, C] \
-                 image.",
-                DIM_NAMES.join(", ")
-            ));
-        }
-        let size = match declared {
-            Param::Lit(0) => {
-                return Err(format!(
-                    "assert_shape({name}=0): each size must be a positive int or None"
-                ))
-            }
-            Param::Lit(size) => Some(*size as usize),
-            Param::Slot(_) => None,
-        };
-        if let (Some(known), Some(size)) = (state.dims[axis], size) {
-            if known != size {
-                return Err(format!(
-                    "assert_shape({name}={size}) contradicts the {name} {known} the pipeline \
-                     already establishes at this point. An assertion cannot change what the \
-                     data is — remove it, or fix the value."
-                ));
-            }
-        }
-        state.dims[axis] = size;
-    }
-    Ok(state)
+    })?;
+    Ok(State {
+        shape,
+        ..state.clone()
+    })
 }
 
 /// The state after appending `op` to `state`. See the module docs.
@@ -256,8 +456,8 @@ pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Resu
         ));
     }
     // A declaration's whole effect is on the plan.
-    if let TypedOp::Graph(crate::ops::graph::GraphOp::AssertShape { rank, dims }) = op {
-        return declare(state.clone(), rank, dims);
+    if let TypedOp::Graph(crate::ops::graph::GraphOp::AssertShape { dims, exact }) = op {
+        return declare(state, dims, exact.get());
     }
 
     let binary = match step {
@@ -291,21 +491,31 @@ pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Resu
         Domain::Vector => Some(1),
         Domain::Buffer | Domain::Contour => shape.rank(&ranks),
     };
-    let mut dims: [Option<usize>; 3] = match (&input, other.is_some(), &other_input) {
-        (Some(input), false, _) => known_sizes(shape.dims(&[input])),
-        (Some(input), true, Some(other_input)) => known_sizes(shape.dims(&[input, other_input])),
+    let known = |out: Option<Vec<Dim>>| -> Vec<Option<usize>> {
+        out.unwrap_or_default()
+            .into_iter()
+            .map(Dim::known)
+            .collect()
+    };
+    let sizes = match (&input, other.is_some(), &other_input) {
+        (Some(input), false, _) => known(shape.dims(&[input])),
+        (Some(input), true, Some(other_input)) => known(shape.dims(&[input, other_input])),
         // A binary operand of unknown rank: nothing to broadcast against.
-        (_, true, _) => [None; 3],
+        (_, true, _) => Vec::new(),
         // An input of unknown rank: a size is known after the op only where
         // the shape gives it whatever the rank (a grayscale keeps a declared
         // H; a resize replaces it).
-        (None, false, _) => sizes_over_any_rank(&shape, &state.dims),
+        (None, false, _) => shape.dims_over_unknown_rank(state.shape.sizes()),
     };
-    // A dimension the output rank does not have has no size (a scalar's
-    // single slot, a vector's pinned rank).
-    if let Some(n) = ndim {
-        dims.iter_mut().skip(n).for_each(|d| *d = None);
-    }
+    // The rank decides which sizes exist: a scalar has none, a vector its one.
+    let mut planned = match ndim {
+        Some(n) => PlannedShape::Ranked(
+            (0..n)
+                .map(|axis| sizes.get(axis).copied().flatten())
+                .collect(),
+        ),
+        None => PlannedShape::unranked(sizes),
+    };
     // A canvas taken from another node has that node's planned H/W.
     if let TypedOp::Geometry(view_buffer::GeometryOp::Rasterize {
         size: RasterSize::FromNode(NodeRef(node)),
@@ -313,43 +523,15 @@ pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Resu
     }) = op
     {
         let canvas = referenced(refs, op.name(), node)?;
-        dims[0] = canvas.dims[0];
-        dims[1] = canvas.dims[1];
+        planned = planned
+            .with_size(0, canvas.shape.size(0))
+            .with_size(1, canvas.shape.size(1));
     }
 
     Ok(State {
         domain: out_domain,
         dtype,
-        ndim,
-        dims,
-    })
-}
-
-/// The known sizes of dimensions 0..3 of a planned output shape.
-fn known_sizes(out: Option<Vec<Dim>>) -> [Option<usize>; 3] {
-    std::array::from_fn(|axis| {
-        out.as_ref()
-            .and_then(|out| out.get(axis).copied())
-            .and_then(Dim::known)
-    })
-}
-
-/// The sizes `shape` gives over an input of unknown rank whose known sizes
-/// are `sizes`: evaluated over each rank the planner tracks, a size is known
-/// only where every rank that has the axis agrees on it.
-fn sizes_over_any_rank(shape: &OpShape, sizes: &[Option<usize>; 3]) -> [Option<usize>; 3] {
-    let outs: Vec<Vec<Dim>> = (1..=sizes.len())
-        .filter_map(|rank| {
-            let input: Vec<Dim> = (0..rank)
-                .map(|axis| sizes[axis].map_or(Dim::Input(axis), Dim::Known))
-                .collect();
-            shape.dims(&[&input])
-        })
-        .collect();
-    std::array::from_fn(|axis| {
-        let mut claims = outs.iter().filter_map(|out| out.get(axis).copied());
-        let first = claims.next()?.known()?;
-        claims.all(|d| d.known() == Some(first)).then_some(first)
+        shape: planned,
     })
 }
 
@@ -370,13 +552,11 @@ fn single_input_dtype(step: &crate::ops::TypedOp, dtype: PlannedDType) -> Planne
 }
 
 impl State {
-    /// A fresh state: nothing known about the sizes.
-    pub(crate) fn new(domain: Domain, dtype: PlannedDType, ndim: Option<usize>) -> State {
+    pub(crate) fn new(domain: Domain, dtype: PlannedDType, shape: PlannedShape) -> State {
         State {
             domain,
             dtype,
-            ndim,
-            dims: [None; 3],
+            shape,
         }
     }
 }
@@ -390,7 +570,7 @@ pub(crate) fn source_state(source: &crate::formats::source::Source) -> State {
 
     let buffer = |dtype: Option<view_buffer::DType>, ndim: Option<usize>| {
         let dtype = dtype.map_or(PlannedDType::Unknown, PlannedDType::Known);
-        State::new(Domain::Buffer, dtype, ndim)
+        State::new(Domain::Buffer, dtype, PlannedShape::of_rank(ndim))
     };
     let dtype = source.dtype();
     match source {
@@ -409,7 +589,7 @@ pub(crate) fn source_state(source: &crate::formats::source::Source) -> State {
         Source::Contour { .. } => State::new(
             Domain::Contour,
             PlannedDType::Known(view_buffer::DType::F64),
-            None,
+            PlannedShape::unknown(),
         ),
     }
 }
@@ -419,15 +599,8 @@ pub(crate) fn source_state(source: &crate::formats::source::Source) -> State {
 /// to reason about — except for a step that *builds* a buffer from another
 /// domain (`rasterize`), which consumes no buffer at all.
 pub(crate) fn input_dims(step: &crate::ops::TypedOp, state: &State) -> Option<Vec<Dim>> {
-    match state.ndim {
-        Some(n) if n >= 1 => Some(
-            (0..n)
-                .map(|axis| match state.dims.get(axis).copied().flatten() {
-                    Some(size) => Dim::Known(size),
-                    None => Dim::Input(axis),
-                })
-                .collect(),
-        ),
+    match state.shape.symbolic() {
+        Some(dims) if !dims.is_empty() => Some(dims),
         _ if !step.input_domains().contains(&Domain::Buffer)
             && step.output_domain(state.domain) == Domain::Buffer =>
         {
@@ -647,7 +820,7 @@ impl Plan {
     /// The plan of a pipeline with no source and no ops.
     #[new]
     fn empty() -> Self {
-        let start = State::new(Domain::Buffer, PlannedDType::Unknown, None);
+        let start = State::unsourced();
         Plan {
             source: None,
             start: start.clone(),
@@ -892,15 +1065,26 @@ mod tests {
         assert_eq!(back.ops_json(), plan.ops_json());
     }
 
+    /// A state of rank `ndim` (or unknown) whose first sizes are `dims`.
     fn state(domain: &str, dtype: &str, ndim: Option<usize>, dims: [Option<usize>; 3]) -> State {
-        State {
-            dims,
-            ..State::new(
-                view_buffer::naming::lookup(Domain::NAMED, domain).unwrap(),
-                PlannedDType::parse(dtype).unwrap(),
-                ndim,
-            )
-        }
+        let shape = match ndim {
+            Some(n) => PlannedShape::Ranked(
+                (0..n)
+                    .map(|axis| dims.get(axis).copied().flatten())
+                    .collect(),
+            ),
+            None => PlannedShape::unranked(dims.to_vec()),
+        };
+        State::new(
+            view_buffer::naming::lookup(Domain::NAMED, domain).unwrap(),
+            PlannedDType::parse(dtype).unwrap(),
+            shape,
+        )
+    }
+
+    /// The sizes of dimensions 0, 1 and 2 (`None` unknown or absent).
+    fn dims3(s: &State) -> [Option<usize>; 3] {
+        std::array::from_fn(|axis| s.shape.size(axis))
     }
 
     fn image() -> State {
@@ -930,9 +1114,9 @@ mod tests {
             &image(),
         )
         .unwrap();
-        assert_eq!(out.dims, [Some(4), Some(6), Some(3)]);
+        assert_eq!(dims3(&out), [Some(4), Some(6), Some(3)]);
         assert_eq!(
-            (out.domain.name(), out.dtype.as_str(), out.ndim),
+            (out.domain.name(), out.dtype.as_str(), out.shape.rank()),
             ("buffer", "u8", Some(3))
         );
     }
@@ -943,7 +1127,7 @@ mod tests {
         let s = state("buffer", "u8", None, [Some(7), None, None]);
         let out = run(json!({"op": "grayscale"}), &s).unwrap();
         assert_eq!(
-            out.dims[..2],
+            dims3(&out)[..2],
             [Some(7), None],
             "grayscale keeps H/W, so a declared H survives"
         );
@@ -959,7 +1143,7 @@ mod tests {
         )
         .unwrap();
         assert_ne!(
-            out.dims[0],
+            dims3(&out)[0],
             Some(7),
             "a stale size was carried across a resize"
         );
@@ -968,8 +1152,8 @@ mod tests {
     #[test]
     fn hints_beyond_the_output_rank_are_cleared() {
         let out = run(json!({"op": "channel_select", "index": 0}), &image()).unwrap();
-        assert_eq!(out.ndim, Some(2));
-        assert_eq!(out.dims[2], None);
+        assert_eq!(out.shape.rank(), Some(2));
+        assert_eq!(out.shape.sizes().len(), 2);
     }
 
     #[test]
@@ -992,7 +1176,7 @@ mod tests {
         // An operand of unknown rank leaves the broadcast shape unknown.
         let unranked = state("buffer", "u8", None, [None; 3]);
         let out = run_with(add, &image(), &[("n0", unranked)]).unwrap();
-        assert_eq!(out.dims[..2], [None, None]);
+        assert_eq!(dims3(&out)[..2], [None, None]);
     }
 
     #[test]
@@ -1004,7 +1188,7 @@ mod tests {
             &[("n0", hash.clone())],
         )
         .unwrap();
-        assert_eq!((out.domain, out.ndim), (Domain::Vector, Some(1)));
+        assert_eq!((out.domain, out.shape.rank()), (Domain::Vector, Some(1)));
     }
 
     #[test]
@@ -1014,35 +1198,69 @@ mod tests {
             |size| json!({"op": "rasterize", "size": size, "fill_value": 255, "background": 0});
         let out = run(raster(json!([8, 6])), &s).unwrap();
         assert_eq!(out.domain, Domain::Buffer);
-        assert_eq!(out.dims, [Some(8), Some(6), Some(1)]);
+        assert_eq!(dims3(&out), [Some(8), Some(6), Some(1)]);
         let out = run_with(raster(json!("n0")), &s, &[("n0", image())]).unwrap();
-        assert_eq!(out.dims, [Some(100), Some(50), Some(1)]);
+        assert_eq!(dims3(&out), [Some(100), Some(50), Some(1)]);
         let err = run(raster(json!("n0")), &s).unwrap_err();
         assert!(err.contains("reads node 'n0'"), "{err}");
     }
 
-    fn declare_op(rank: Option<u32>, dims: serde_json::Value) -> serde_json::Value {
-        json!({"op": "assert_shape", "rank": rank, "dims": dims})
+    fn declare_op(exact: bool, dims: serde_json::Value) -> serde_json::Value {
+        json!({"op": "assert_shape", "dims": dims, "exact": exact})
     }
 
     #[test]
     fn a_declaration_sets_what_is_unknown() {
         let s = state("buffer", "u8", None, [None; 3]);
-        let out = run(declare_op(Some(3), json!([8, null, {"$slot": 1}])), &s).unwrap();
-        assert_eq!(out.ndim, Some(3));
+        let out = run(declare_op(true, json!([8, null, {"$slot": 1}])), &s).unwrap();
+        assert_eq!(out.shape.rank(), Some(3));
         // A per-row size is declared, but no plan-time fact.
-        assert_eq!(out.dims, [Some(8), None, None]);
+        assert_eq!(dims3(&out), [Some(8), None, None]);
+    }
+
+    #[test]
+    fn a_declaration_of_any_rank_is_planned() {
+        let s = state("buffer", "u8", None, [None; 3]);
+        let out = run(declare_op(true, json!([2, 3, 4, 5])), &s).unwrap();
+        assert_eq!(
+            out.shape,
+            PlannedShape::Ranked(vec![Some(2), Some(3), Some(4), Some(5)])
+        );
+        // A rank-4 shape carries its fourth size through an op that keeps it.
+        let out = run(json!({"op": "cast", "dtype": "f32"}), &out).unwrap();
+        assert_eq!(out.shape.concrete(), Some(vec![2, 3, 4, 5]));
+        // Leading sizes over an unknown rank, then the rank: an exact
+        // declaration keeps what it agrees with and drops what its rank lacks.
+        let hinted = run(declare_op(false, json!([null, null, 3])), &s).unwrap();
+        assert_eq!(
+            hinted.shape,
+            PlannedShape::unranked(vec![None, None, Some(3)])
+        );
+        let out = run(declare_op(true, json!([4, 5])), &hinted).unwrap();
+        assert_eq!(out.shape, PlannedShape::Ranked(vec![Some(4), Some(5)]));
+    }
+
+    #[test]
+    fn a_per_row_declaration_keeps_a_known_size() {
+        let image = state("buffer", "u8", Some(3), [Some(10), Some(20), Some(3)]);
+        let out = run(declare_op(false, json!([{"$slot": 0}])), &image).unwrap();
+        assert_eq!(dims3(&out), [Some(10), Some(20), Some(3)]);
     }
 
     #[test]
     fn a_declaration_the_state_contradicts_is_refused() {
         let image = state("buffer", "u8", Some(3), [Some(10), Some(20), Some(3)]);
-        let err = run(declare_op(None, json!([11, null, null])), &image).unwrap_err();
+        let err = run(declare_op(false, json!([11])), &image).unwrap_err();
         assert!(
             err.contains("assert_shape(height=11) contradicts the height 10"),
             "{err}"
         );
-        let err = run(declare_op(Some(2), json!([null, null, null])), &image).unwrap_err();
+        let err = run(declare_op(true, json!([10, 21, 3])), &image).unwrap_err();
+        assert!(
+            err.contains("assert_shape(dims[1]=21) contradicts the size 20 of dimension 1"),
+            "{err}"
+        );
+        let err = run(declare_op(true, json!([null, null])), &image).unwrap_err();
         assert!(
             err.contains(
                 "declares a rank-2 output, but this pipeline is already known to produce rank 3"
@@ -1050,25 +1268,27 @@ mod tests {
             "{err}"
         );
         let flat = state("buffer", "u8", Some(2), [None; 3]);
-        let err = run(declare_op(None, json!([null, null, 3])), &flat).unwrap_err();
+        let err = run(declare_op(false, json!([null, null, 3])), &flat).unwrap_err();
         assert!(
             err.contains("assert_shape(channels=...) names dimension 2, which a rank-2 output"),
             "{err}"
         );
-        let err = run(declare_op(None, json!([0, null, null])), &flat).unwrap_err();
+        let err = run(declare_op(false, json!([0])), &flat).unwrap_err();
         assert!(err.contains("positive int"), "{err}");
-        let err = run(declare_op(Some(4), json!([null, null, null])), &flat).unwrap_err();
-        assert!(err.contains("supports 1 to 3 dimensions"), "{err}");
+        let err = run(declare_op(false, json!([null])), &flat).unwrap_err();
+        assert!(err.contains("declares nothing"), "{err}");
+        let err = run(declare_op(true, json!([null, null, null, null])), &flat).unwrap_err();
+        assert!(err.contains("declares a rank-4 output"), "{err}");
         // Agreeing is fine.
-        let ok = run(declare_op(None, json!([10, null, null])), &image).unwrap();
-        assert_eq!(ok.dims, [Some(10), Some(20), Some(3)]);
+        let ok = run(declare_op(false, json!([10])), &image).unwrap();
+        assert_eq!(dims3(&ok), [Some(10), Some(20), Some(3)]);
     }
 
     #[test]
     fn each_source_format_plans_its_own_state() {
         let plan = |v: serde_json::Value| {
             let s = source_state(&serde_json::from_value(v).unwrap());
-            (s.domain.name(), s.dtype.as_str(), s.ndim, s.dims)
+            (s.domain.name(), s.dtype.as_str(), s.shape.rank(), dims3(&s))
         };
         let buffer = |dtype, ndim| ("buffer", dtype, ndim, [None; 3]);
         assert_eq!(
@@ -1102,7 +1322,7 @@ mod tests {
     fn shapes_are_planned_symbolically() {
         let hw = |v: serde_json::Value, s: &State| {
             let out = run(v, s).unwrap();
-            (out.dims[0], out.dims[1])
+            (dims3(&out)[0], dims3(&out)[1])
         };
         let unknown = state("buffer", "u8", Some(3), [None, None, Some(3)]);
         let resize = |h: serde_json::Value| json!({"op": "resize", "height": h, "width": 100, "filter": "bilinear"});

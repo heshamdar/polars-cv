@@ -16,7 +16,7 @@
 | Phase | Status |
 |---|---|
 | S0 — Failing tests for the review findings | **done** — 15 strict gaps in `tests/test_known_gaps.py::TestPlannedSizes` (each watched failing with `--runxfail`); 6 controls in `tests/test_plan_claims.py` (3 watched failing, 3 forward guards for S1/S2) |
-| S1 — The planned shape is one rank-N value | not started |
+| S1 — The planned shape is one rank-N value | **done** — `PlannedShape` (`Ranked`/`Unranked`) replaces `ndim` + `dims[3]`; a buffer's shape publishes at every rank; `assert_shape` is `{dims, exact}`; one `apply_declaration` for plan and row; R2/R3/R6 gaps moved into the suite; see *S1 as done* for deviations |
 | S2 — One `validate`, over symbolic sizes | not started |
 | S3 — Operand reads are one mechanism | not started (in scope) |
 
@@ -161,6 +161,51 @@ rank-3-only claim.
   existing `plan == data` guard for free. Run the full suite plus
   `gen_golden_corpus.py` in check mode and list every corpus entry that
   changes (rank-1/2 outputs gain a shape).
+
+### S1 as done — deviations and findings
+
+- **`assert_shape` is `{dims: [...], exact: bool}`, not `Declared::Full` /
+  `Declared::Leading`.** A nested object field has no catalogue type (the
+  encoder tells `OneOf` options apart only as sequence vs scalar), so the
+  enum would have needed a new `TypeDesc` kind; a registered enum for the
+  flag would have generated a public Python class for an internal op. Both
+  fields are read in every branch and every combination means something
+  (`exact: false` is the keywords' leading dimensions, of any count), so no
+  contradictory state remains. `exact` defaults to `true`, so hand-built JSON
+  writes `{"op": "assert_shape", "dims": [...]}` for a whole shape.
+- **Channel shapes have no output at a rank their ops refuse.**
+  `SingleChannel`, `ColorChannels`, `DropChannelAxis` and `StackChannels`
+  returned "unchanged" (or three unknowns) for any rank but their patterns,
+  an output no op ever produces: every op behind them runs only on `[H, W]`
+  or `[H, W, C]`. Evaluated over an unknown rank, that invented rank-4 output
+  hid a known channel count (`assert_shape(channels=3).grayscale()` lost
+  `C = 1`; `test_assert_shape_survives_a_continuation` caught it). They now
+  give no output (`None`) there, and `dims_over_unknown_rank` skips such a
+  rank. `a_rank_known_without_the_input_holds_over_every_input` now holds
+  over every rank that has an output (it pinned `StackChannels`'s invented
+  three unknowns).
+- **The bound is `DISTINGUISHED_RANK = 3`, evaluated up to it (no `+ 1`).**
+  With the channel shapes honest, no variant tells a rank above 3 apart.
+  `a_shape_is_rank_stable_past_its_patterns` was watched failing at 2
+  (`ColorChannels` at rank 3) and passes at 3. `sizes_over_any_rank` moved
+  into view-buffer as `OpShape::dims_over_unknown_rank`, beside its bound.
+- **A per-row declaration keeps a known size.** `declare` used to overwrite
+  a known size with `None` for a per-row `assert_shape` entry; the known size
+  still holds (the row check adds to it), so it is kept
+  (`a_per_row_declaration_keeps_a_known_size`).
+- **Tests changed on purpose** (each pinned removed behaviour):
+  `test_dims_rejects_what_it_cannot_track` (its "1 to 3 dimensions" case;
+  renamed `test_assert_shape_rejects_a_malformed_declaration`),
+  `test_assert_shape_has_no_batch_parameter` (its "exactly three sizes"
+  line), `_KNOWN_BUT_UNEXPRESSIBLE` merged into `_KNOWN_SHAPE` (agreed), the
+  `assert_shape` wire in `test_serialization.py` and the Rust fixtures, and
+  `output_facts_are_planned_from_the_ops` (a rank-2 output now publishes
+  `[4, 5]`). Removed names are in `check_removed_symbols.py`; `PlanState.DIM_NAMES`
+  and `_assert_shape(rank=)` are pinned in `test_removed_surfaces.py`.
+- **Golden corpus unchanged**: no recorded case sinks a rank-1/2 buffer to
+  `array`, so no entry's plan or output moved.
+- The S0 control "blur, rank unknown" guards a path S1 did not add (the
+  planner still validates nothing over an unknown rank); it moves to S2.
 
 ### S2 — One `validate`, over symbolic sizes (deviation 1; fixes R1, R4, R5)
 

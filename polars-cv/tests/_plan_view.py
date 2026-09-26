@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from polars_cv import LazyPipelineExpr, Pipeline
+    from polars_cv._lib import PlanState
 
 #: Marker for a hint that is known to come from a per-row expression.
 EXPR = "expr"
@@ -30,12 +31,30 @@ class PlanView:
     domain: str
     dtype: str
     ndim: int | None
-    height: int | str | None
-    width: int | str | None
-    channels: int | str | None
+    #: One size per dimension when the rank is known; over an unknown rank,
+    #: the sizes declared for the leading dimensions.
+    dims: tuple[int | None, ...]
+
+    def _size(self, axis: int) -> int | None:
+        return self.dims[axis] if axis < len(self.dims) else None
 
     @property
-    def hw(self) -> tuple[int | str | None, int | str | None]:
+    def height(self) -> int | None:
+        """Dimension 0 (``None`` unknown or absent)."""
+        return self._size(0)
+
+    @property
+    def width(self) -> int | None:
+        """Dimension 1 (``None`` unknown or absent)."""
+        return self._size(1)
+
+    @property
+    def channels(self) -> int | None:
+        """Dimension 2 (``None`` unknown or absent)."""
+        return self._size(2)
+
+    @property
+    def hw(self) -> tuple[int | None, int | None]:
         return (self.height, self.width)
 
 
@@ -44,17 +63,18 @@ def _pipeline(p: "Pipeline | LazyPipelineExpr") -> "Pipeline":
     return inner if inner is not None else p  # type: ignore[return-value]
 
 
+def state_of(p: "Pipeline | LazyPipelineExpr") -> "PlanState":
+    """*p*'s planned output state as Rust holds it, for a test of the state
+    object itself (its pickle form, its equality); read facts via
+    :func:`planned`."""
+    return _pipeline(p)._state
+
+
 def planned(p: "Pipeline | LazyPipelineExpr") -> PlanView:
     """The planned output state of *p* (a ``Pipeline`` or lazy node)."""
     state = _pipeline(p)._state
-    height, width, channels = state.dims
     return PlanView(
-        domain=state.domain,
-        dtype=state.dtype,
-        ndim=state.ndim,
-        height=height,
-        width=width,
-        channels=channels,
+        domain=state.domain, dtype=state.dtype, ndim=state.ndim, dims=state.dims
     )
 
 

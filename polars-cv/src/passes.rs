@@ -181,14 +181,11 @@ mod tests {
     use serde_json::json;
 
     fn image(h: usize, w: usize) -> State {
-        State {
-            dims: [Some(h), Some(w), Some(3)],
-            ..State::new(
-                view_buffer::ops::Domain::Buffer,
-                view_buffer::PlannedDType::Known(view_buffer::DType::U8),
-                Some(3),
-            )
-        }
+        State::new(
+            view_buffer::ops::Domain::Buffer,
+            view_buffer::PlannedDType::Known(view_buffer::DType::U8),
+            crate::plan::PlannedShape::Ranked(vec![Some(h), Some(w), Some(3)]),
+        )
     }
 
     fn ops(values: &[serde_json::Value]) -> Vec<crate::ops::TypedOp> {
@@ -227,7 +224,7 @@ mod tests {
         );
         // An assertion checks every row, so it never goes, even when the
         // plan already knows it holds.
-        let o = ops(&[json!({"op": "assert_shape", "rank": null, "dims": [4, 5, null]})]);
+        let o = ops(&[json!({"op": "assert_shape", "dims": [4, 5], "exact": false})]);
         let s = [image(4, 5), image(4, 5)];
         assert_eq!(
             run(LogicalPass::IdentityElimination, &node(&o, &s)).unwrap(),
@@ -259,7 +256,7 @@ mod tests {
         );
         let o = ops(&[
             json!({"op": "invert"}),
-            json!({"op": "assert_shape", "rank": null, "dims": [4, 5, null]}),
+            json!({"op": "assert_shape", "dims": [4, 5], "exact": false}),
             CROP(),
         ]);
         let s = vec![image(4, 5); 4];

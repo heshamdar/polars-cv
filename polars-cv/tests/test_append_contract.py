@@ -271,23 +271,22 @@ def test_an_assertion_may_not_name_a_dimension_the_rank_lacks() -> None:
 def test_dims_pins_the_rank_a_list_source_could_not_supply() -> None:
     """``dims=`` is what makes ``.assert_shape()`` reach an ``array`` sink.
 
-    A list/array source leaves the rank unknown, and an output's shape only
-    publishes at rank 3 — so the H/W/C spelling set the hints and changed
-    nothing, and the sink's advice to "use .assert_shape()" was circular.
-    The output facts Rust plans from this state (the rank-3 gate) are pinned
-    by ``output_facts_are_planned_from_the_ops``.
+    A list source leaves the rank unknown, and an output's shape publishes only
+    with its rank — so the H/W/C keywords (leading dimensions, no rank) cannot
+    make one, and ``dims=`` (the whole shape) can. The output facts Rust plans
+    from this state are pinned by ``output_facts_are_planned_from_the_ops``.
     """
     pipe = Pipeline().source("list", dtype="f32").assert_shape(dims=[8, 8, 3])
     assert (pipe._state.ndim, pipe._state.dims) == (3, (8, 8, 3))
 
 
-def test_dims_rejects_what_it_cannot_track() -> None:
+def test_assert_shape_rejects_a_malformed_declaration() -> None:
+    # Any rank is a declaration the planner tracks (PLANNER_SIZES_PLAN.md S1);
+    # a rank-4 `dims=` reaching an array sink is in test_schema_parity_array_sink.
     with pytest.raises(ValueError, match="both"):
         Pipeline().source("list").assert_shape(dims=[8, 8, 3], height=8)
     with pytest.raises(ValueError, match="needs a declaration"):
         Pipeline().source("list").assert_shape()
-    with pytest.raises(ValueError, match="1 to 3 dimensions"):
-        Pipeline().source("list").assert_shape(dims=[2, 8, 8, 3])
     with pytest.raises(ValueError, match="positive int"):
         Pipeline().source("list").assert_shape(dims=[8, 0, 3])
 

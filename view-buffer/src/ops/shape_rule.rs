@@ -94,13 +94,15 @@ pub enum OpShape {
     Fixed(Vec<Sym<usize>>),
     /// Not knowable before execution (a data-dependent length).
     Dynamic,
-    /// `[H, W, C]` → `[H, W, 1]`; any other rank unchanged.
+    /// `[H, W, C]` → `[H, W, 1]`; `[H, W]` unchanged. No other rank has an
+    /// output (the ops refuse it).
     SingleChannel,
     /// A colour conversion to `channels` colour channels, plus one when the
     /// input carries alpha (2 or 4 channels). A rank-2 input gains a channel
-    /// axis unless the target is gray.
+    /// axis unless the target is gray. No rank but 2 or 3 has an output.
     ColorChannels { channels: usize, to_gray: bool },
-    /// `[H, W, C]` → `[H, W]`; any other rank unchanged.
+    /// `[H, W, C]` → `[H, W]`; `[H, W]` unchanged. No other rank has an
+    /// output.
     DropChannelAxis,
     /// H and W swap.
     SwapHw,
@@ -142,16 +144,19 @@ pub enum OpShape {
     Reduce { axis: Option<usize> },
     /// The two inputs broadcast together.
     Broadcast,
-    /// `[H, W]` inputs stacked along a new channel axis: `[H, W, n]`.
+    /// `[H, W]` inputs stacked along a new channel axis: `[H, W, n]`. No
+    /// other rank has an output.
     StackChannels(usize),
     /// The input's rank as a 1-D vector: `[rank]` (reading the dimensions).
     InputRank,
 }
 
 impl OpShape {
-    /// The output shape for `inputs`, `None` when not knowable before
-    /// execution. Total: an input of an unexpected rank yields unknown sizes,
-    /// never a panic.
+    /// The output shape for `inputs`; `None` when it is not knowable before
+    /// execution, or when there is no output — an input of a rank the shape
+    /// takes none of (a channel op over a rank-4 buffer). Total: never a
+    /// panic. A rank with no output is never stood in for, so a planner
+    /// reasoning over every rank an input may have skips it.
     pub fn dims(&self, inputs: &[&[Dim]]) -> Option<Vec<Dim>> {
         let input: &[Dim] = inputs.first().copied().unwrap_or(&[]);
         let hw = |h: Dim, w: Dim| {
@@ -184,7 +189,8 @@ impl OpShape {
             OpShape::Dynamic => return None,
             OpShape::SingleChannel => match input {
                 [h, w, _] => vec![*h, *w, Dim::Known(1)],
-                _ => input.to_vec(),
+                [_, _] => input.to_vec(),
+                _ => return None,
             },
             OpShape::ColorChannels { channels, to_gray } => match input {
                 [_, _] if *to_gray => input.to_vec(),
@@ -193,11 +199,12 @@ impl OpShape {
                     let alpha = |c: usize| usize::from(matches!(c, 2 | 4));
                     vec![*h, *w, c.map(|c| channels + alpha(c))]
                 }
-                _ => input.to_vec(),
+                _ => return None,
             },
             OpShape::DropChannelAxis => match input {
                 [h, w, _] => vec![*h, *w],
-                _ => input.to_vec(),
+                [_, _] => input.to_vec(),
+                _ => return None,
             },
             OpShape::SwapHw => hw(in_w, in_h),
             OpShape::MaybeSwapHw => match known_hw {
@@ -296,7 +303,7 @@ impl OpShape {
             }
             OpShape::StackChannels(n) => match input {
                 [h, w] => vec![*h, *w, Dim::Known(*n)],
-                _ => vec![Dim::Unknown; 3],
+                _ => return None,
             },
             OpShape::InputRank => vec![Dim::Known(input.len())],
             OpShape::Broadcast => match inputs {
@@ -339,6 +346,45 @@ impl OpShape {
                 _ => None,
             },
         }
+    }
+
+    /// The highest input rank any variant's [`dims`](Self::dims) names in a
+    /// pattern (`[H, W, C]`): past it every variant carries an extra axis
+    /// through, drops it by position, or has no output, so evaluating up to
+    /// it covers every rank. Pinned by `a_shape_is_rank_stable_past_its_patterns`.
+    pub const DISTINGUISHED_RANK: usize = 3;
+
+    /// The output sizes over an input of **unknown rank** whose leading axes'
+    /// sizes are `leading` (`None` unknown): an axis's size is known only
+    /// where every rank the input may have (and the shape has an output for)
+    /// agrees on it. Evaluated over ranks
+    /// `1..=max(leading.len(), DISTINGUISHED_RANK)`, which is every rank the
+    /// answer can differ at. Trailing unknowns are trimmed.
+    pub fn dims_over_unknown_rank(&self, leading: &[Option<usize>]) -> Vec<Option<usize>> {
+        let top = leading.len().max(Self::DISTINGUISHED_RANK);
+        let outs: Vec<Vec<Dim>> = (1..=top)
+            .filter_map(|rank| {
+                let input: Vec<Dim> = (0..rank)
+                    .map(|axis| match leading.get(axis).copied().flatten() {
+                        Some(size) => Dim::Known(size),
+                        None => Dim::Input(axis),
+                    })
+                    .collect();
+                self.dims(&[&input])
+            })
+            .collect();
+        let width = outs.iter().map(Vec::len).max().unwrap_or(0);
+        let mut sizes: Vec<Option<usize>> = (0..width)
+            .map(|axis| {
+                let mut claims = outs.iter().filter_map(|out| out.get(axis).copied());
+                let first = claims.next()?.known()?;
+                claims.all(|d| d.known() == Some(first)).then_some(first)
+            })
+            .collect();
+        while sizes.last() == Some(&None) {
+            sizes.pop();
+        }
+        sizes
     }
 
     /// The output shape for known input shapes: [`dims`](Self::dims) on known
@@ -539,8 +585,146 @@ mod symbolic_tests {
         }
     }
 
+    /// One sample of every variant (the match makes a new variant a compile
+    /// error here until it has one).
+    fn every_variant() -> Vec<OpShape> {
+        let k = |n| Sym::Known(n);
+        let samples = vec![
+            OpShape::Preserve,
+            OpShape::Fixed(vec![k(4), Sym::PerRow]),
+            OpShape::Dynamic,
+            OpShape::SingleChannel,
+            OpShape::ColorChannels {
+                channels: 3,
+                to_gray: false,
+            },
+            OpShape::ColorChannels {
+                channels: 1,
+                to_gray: true,
+            },
+            OpShape::DropChannelAxis,
+            OpShape::SwapHw,
+            OpShape::MaybeSwapHw,
+            OpShape::RotateExpand(Sym::Known(30.0)),
+            OpShape::SetHw { h: k(5), w: k(6) },
+            OpShape::ScaleHw {
+                sy: Sym::Known(2.0),
+                sx: Sym::Known(0.5),
+            },
+            OpShape::HeightTo(k(8)),
+            OpShape::WidthTo(k(8)),
+            OpShape::LongSideTo(k(8)),
+            OpShape::ShortSideTo(k(8)),
+            OpShape::Pad {
+                top: k(1),
+                bottom: k(2),
+                left: k(3),
+                right: k(0),
+            },
+            OpShape::AtLeastHw { h: k(9), w: k(9) },
+            OpShape::Transpose(vec![1, 0, 2]),
+            OpShape::Crop {
+                start: vec![k(1), k(0)],
+                len: vec![Some(k(2)), None],
+            },
+            OpShape::Reduce { axis: None },
+            OpShape::Reduce { axis: Some(0) },
+            OpShape::Reduce { axis: Some(3) },
+            OpShape::Broadcast,
+            OpShape::StackChannels(2),
+            OpShape::InputRank,
+        ];
+        for shape in &samples {
+            match shape {
+                OpShape::Preserve
+                | OpShape::Fixed(_)
+                | OpShape::Dynamic
+                | OpShape::SingleChannel
+                | OpShape::ColorChannels { .. }
+                | OpShape::DropChannelAxis
+                | OpShape::SwapHw
+                | OpShape::MaybeSwapHw
+                | OpShape::RotateExpand(_)
+                | OpShape::SetHw { .. }
+                | OpShape::ScaleHw { .. }
+                | OpShape::HeightTo(_)
+                | OpShape::WidthTo(_)
+                | OpShape::LongSideTo(_)
+                | OpShape::ShortSideTo(_)
+                | OpShape::Pad { .. }
+                | OpShape::AtLeastHw { .. }
+                | OpShape::Transpose(_)
+                | OpShape::Crop { .. }
+                | OpShape::Reduce { .. }
+                | OpShape::Broadcast
+                | OpShape::StackChannels(_)
+                | OpShape::InputRank => {}
+            }
+        }
+        samples
+    }
+
+    /// `dims_over_unknown_rank` evaluates ranks only up to
+    /// `DISTINGUISHED_RANK` (or the leading sizes' length); that is sound only
+    /// if no variant tells a higher rank apart. Every size it claims must hold
+    /// at every higher rank too, or the axis be absent there.
+    #[test]
+    fn a_shape_is_rank_stable_past_its_patterns() {
+        for leading in [vec![], vec![Some(7)], vec![Some(7), Some(9), Some(3)]] {
+            let top = leading.len().max(OpShape::DISTINGUISHED_RANK);
+            for shape in every_variant() {
+                let claimed = shape.dims_over_unknown_rank(&leading);
+                for rank in top + 1..=top + 3 {
+                    let input: Vec<Dim> = (0..rank)
+                        .map(|axis| match leading.get(axis).copied().flatten() {
+                            Some(size) => Known(size),
+                            None => Input(axis),
+                        })
+                        .collect();
+                    // No output at this rank: no claim can be false there.
+                    let Some(out) = shape.dims(&[&input]) else {
+                        continue;
+                    };
+                    for (axis, size) in claimed.iter().enumerate() {
+                        let Some(size) = size else { continue };
+                        assert!(
+                            out.get(axis).is_none_or(|d| d.known() == Some(*size)),
+                            "{shape:?} (leading {leading:?}): claims axis {axis} is {size}, \
+                             but over rank {rank} it is {:?}",
+                            out.get(axis)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_unknown_rank_knows_only_what_every_rank_agrees_on() {
+        // A resize's shape sets H and W from rank 2 up and leaves a rank-1
+        // input as it is, so only W (which a rank-1 input lacks) is known. A
+        // grayscale has an output only at ranks 2 and 3, and keeps a known H.
+        assert_eq!(
+            OpShape::SetHw {
+                h: Sym::Known(4),
+                w: Sym::Known(5)
+            }
+            .dims_over_unknown_rank(&[]),
+            [None, Some(5)]
+        );
+        assert_eq!(
+            OpShape::SingleChannel.dims_over_unknown_rank(&[Some(8)]),
+            [Some(8), None, Some(1)]
+        );
+        // A declared size past the three the keywords name is carried too.
+        assert_eq!(
+            OpShape::Preserve.dims_over_unknown_rank(&[None, None, None, None, Some(6)]),
+            [None, None, None, None, Some(6)]
+        );
+    }
+
     /// The shapes `rank` answers for over an unknown input rank really do
-    /// ignore the input: the same length over every rank `dims` is given.
+    /// ignore the input: the same length over every rank that has an output.
     #[test]
     fn a_rank_known_without_the_input_holds_over_every_input() {
         let shapes = [
@@ -552,11 +736,11 @@ mod symbolic_tests {
         ];
         for shape in shapes {
             let claimed = shape.rank(&[None]).expect("answers without the input");
-            for n in 1..=3 {
-                assert_eq!(
-                    shape.rank(&[Some(n)]),
-                    Some(claimed),
-                    "{shape:?} over rank {n}"
+            for n in 1..=4 {
+                let at = shape.rank(&[Some(n)]);
+                assert!(
+                    at.is_none_or(|at| at == claimed),
+                    "{shape:?} over rank {n}: {at:?}"
                 );
             }
         }

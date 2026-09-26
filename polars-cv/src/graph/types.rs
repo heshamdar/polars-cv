@@ -56,21 +56,22 @@ pub struct OutputSpec {
 impl OutputSpec {
     /// The spec for `out`, whose node the planner left in `planned`.
     pub(crate) fn planned(out: &OutputRequest, planned: &State, histogram_buckets: bool) -> Self {
-        // A shape is published only for a rank-3 `[H, W, C]` output whose three
-        // sizes are all known: the state tracks H/W/C, so at any other rank it
-        // cannot describe the shape — publishing `[H, W, C]` for a rank-2
-        // output is how `channel_select` once declared a schema execution
-        // could not produce.
-        let expected_shape = (planned.ndim == Some(3))
-            .then(|| planned.dims.iter().copied().collect::<Option<Vec<_>>>())
-            .flatten();
+        // A buffer's shape is published whenever its rank and every size are
+        // known, at any rank. Other domains ride a raw buffer whose shape is
+        // not the logical one (histogram buckets behind a rank-1 vector).
+        let expected_shape = match planned.domain {
+            view_buffer::ops::Domain::Buffer => planned.shape.concrete(),
+            view_buffer::ops::Domain::Vector
+            | view_buffer::ops::Domain::Scalar
+            | view_buffer::ops::Domain::Contour => None,
+        };
         OutputSpec {
             node: out.node.clone(),
             sink: out.sink.clone(),
             expected_domain: planned.domain,
             expected_dtype: planned.dtype,
             expected_shape,
-            expected_ndim: planned.ndim,
+            expected_ndim: planned.shape.rank(),
             histogram_buckets,
         }
     }
@@ -163,13 +164,13 @@ mod row_error_policy_tests {
             .map_err(|e| e.to_string())
     }
 
-    /// The output facts are planned from the graph's own ops: a shape only for
-    /// rank 3 with all three sizes known.
+    /// The output facts are planned from the graph's own ops: a buffer's shape
+    /// whenever its rank and every size are known.
     #[test]
     fn output_facts_are_planned_from_the_ops() {
         let full = output(
             r#"[{"op": "cast", "dtype": "u8"},
-                {"op": "assert_shape", "rank": null, "dims": [4, 5, 3]}]"#,
+                {"op": "assert_shape", "dims": [4, 5, 3], "exact": false}]"#,
         )
         .unwrap();
         assert_eq!(
@@ -182,13 +183,16 @@ mod row_error_policy_tests {
         let partial =
             output(r#"[{"op": "resize", "height": 4, "width": 5, "filter": "nearest"}]"#).unwrap();
         assert_eq!(partial.expected_shape, None);
-        // Rank 2: the H/W/C state cannot describe the shape.
+        // Rank 2 with every size known: the shape is published at any rank.
         let rank2 = output(
-            r#"[{"op": "assert_shape", "rank": null, "dims": [4, 5, 3]},
+            r#"[{"op": "assert_shape", "dims": [4, 5, 3], "exact": false},
                 {"op": "channel_select", "index": 0}]"#,
         )
         .unwrap();
-        assert_eq!((rank2.expected_shape, rank2.expected_ndim), (None, Some(2)));
+        assert_eq!(
+            (rank2.expected_shape, rank2.expected_ndim),
+            (Some(vec![4, 5]), Some(2))
+        );
     }
 
     /// Nothing about an output's schema is taken from the wire: the old
