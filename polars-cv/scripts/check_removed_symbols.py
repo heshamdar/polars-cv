@@ -576,6 +576,15 @@ REMOVED: tuple[Removed, ...] = (
         "test_dims_rejects_what_it_cannot_track",
         "S1: any rank is tracked; test_assert_shape_rejects_a_malformed_declaration",
     ),
+    # PLANNER_SIZES_PLAN.md S2: one `validate`, over symbolic sizes.
+    Removed(
+        "check_rank",
+        "S2: plan::step raises every error of GraphStep::validate over planned dims",
+    ),
+    Removed(
+        "depends_only_on_rank",
+        "S2: validate says nothing about an unknown size, so every error is a verdict",
+    ),
     Removed(
         "test_lazy_stub_is_current", "C7c: no stub; the forwarders file is checked"
     ),

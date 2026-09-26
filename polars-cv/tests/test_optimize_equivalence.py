@@ -623,13 +623,19 @@ class TestOptimizationRegressions:
         self, sample_df: pl.DataFrame
     ) -> None:
         # A crop whose extent equals the input's but whose origin is not (0, 0)
-        # preserves the *planned* shape while its window runs past the edge.
-        # That window is an error (CR-42; it used to be clamped), so it is not
-        # a no-op: were identity elimination to delete it, the error would
-        # turn into a successful, unchanged image under that flag subset.
-        pipe = (
+        # keeps the input's shape while its window runs past the edge. That
+        # window is an error (CR-42; it used to be clamped), so it is not a
+        # no-op: were identity elimination to delete it, the error would turn
+        # into a successful, unchanged image under that flag subset.
+        #
+        # Over a size the plan knows, the window is refused while the
+        # pipeline is built (PLANNER_SIZES_PLAN.md S2), so no flag subset
+        # reaches execution.
+        with pytest.raises(ValueError, match="outside"):
             _src().resize(height=20, width=20).crop(top=5, left=5, height=20, width=20)
-        )
+        # Over the 96x96 image's own size, which only the data states, each row
+        # refuses it — optimized or not.
+        pipe = _src().crop(top=5, left=5, height=96, width=96)
         for flags in _all_flag_subsets():
             with pytest.raises(pl.exceptions.ComputeError, match="outside"):
                 _sink_output(sample_df, pipe, flags, "numpy")

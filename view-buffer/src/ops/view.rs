@@ -196,8 +196,8 @@ impl ViewOp {
 impl<M: Mode> Op for ViewOp<M> {
     fn validate(
         &self,
-        input_shapes: &[&[usize]],
-        _input_dtypes: &[crate::DType],
+        input_shapes: &[&[crate::ops::Dim]],
+        _input_dtypes: &[crate::PlannedDType],
     ) -> Result<(), crate::ops::validation::ValidationError> {
         use crate::ops::validation::{require_axes, ValidationError};
         let shape = input_shapes[0];
@@ -229,17 +229,19 @@ impl<M: Mode> Op for ViewOp<M> {
                 else {
                     return Ok(());
                 };
-                let (have, want) = (
-                    shape.iter().product::<usize>(),
-                    new.iter().product::<usize>(),
-                );
+                // An unknown input size is checked per row.
+                let Some(have) = shape.iter().map(|d| d.known()).product::<Option<usize>>() else {
+                    return Ok(());
+                };
+                let want = new.iter().product::<usize>();
                 if have == want {
                     Ok(())
                 } else {
                     Err(ValidationError::InvalidParameter {
                         param: "shape".to_string(),
                         reason: format!(
-                            "cannot reshape {shape:?} ({have} elements) to {new:?} ({want} elements)"
+                            "cannot reshape {} ({have} elements) to {new:?} ({want} elements)",
+                            crate::ops::shape_rule::show_dims(shape)
                         ),
                     })
                 }
@@ -258,7 +260,10 @@ impl<M: Mode> Op for ViewOp<M> {
                 // rejected rather than clamped, since clamping returns a
                 // smaller region than the caller asked for (CR-42).
                 // A bound a per-row value sets is checked per row.
-                for (axis, &dim) in shape.iter().enumerate() {
+                // Each axis whose size is known; an unknown one is checked
+                // per row.
+                for (axis, dim) in shape.iter().enumerate() {
+                    let Some(dim) = dim.known() else { continue };
                     let (s, e) = (start[axis].known(), end[axis].known());
                     let past_end = |e: usize| e != usize::MAX && e > dim;
                     if s.is_some_and(|s| s > dim) || e.is_some_and(past_end) {
@@ -272,7 +277,8 @@ impl<M: Mode> Op for ViewOp<M> {
                             param: "window".to_string(),
                             reason: format!(
                                 "crop window {s}..{end_text} on axis {axis} lies outside the \
-                                 input of shape {shape:?}"
+                                 input of shape {}",
+                                crate::ops::shape_rule::show_dims(shape)
                             ),
                         });
                     }
@@ -285,16 +291,23 @@ impl<M: Mode> Op for ViewOp<M> {
                 crate::ops::validation::require_hw_or_hwc(shape)
             }
             // A per-row index is checked per row; the rank is checked now.
+            // A per-row index or an unknown channel count is checked per row;
+            // the rank is checked now.
             ViewOp::ChannelSelect { index } => match (known::<M, u32>(index), shape) {
-                (Some(index), [_, _, c]) if (index as usize) < *c => Ok(()),
+                (Some(index), [_, _, c]) if c.known().is_none_or(|c| (index as usize) < c) => {
+                    Ok(())
+                }
                 (Some(0), [_, _]) | (None, [_, _] | [_, _, _]) => Ok(()),
-                (index, _) => Err(ValidationError::InvalidParameter {
-                    param: "index".to_string(),
-                    reason: match index {
-                        Some(index) => format!("channel {index} of a buffer of shape {shape:?}"),
-                        None => format!("a channel of a buffer of shape {shape:?}"),
-                    },
-                }),
+                (index, _) => {
+                    let shape = crate::ops::shape_rule::show_dims(shape);
+                    Err(ValidationError::InvalidParameter {
+                        param: "index".to_string(),
+                        reason: match index {
+                            Some(index) => format!("channel {index} of a buffer of shape {shape}"),
+                            None => format!("a channel of a buffer of shape {shape}"),
+                        },
+                    })
+                }
             },
         }
     }

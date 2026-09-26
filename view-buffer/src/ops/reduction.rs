@@ -614,8 +614,8 @@ impl<M: Mode> Op for ReductionOp<M> {
 
     fn validate(
         &self,
-        input_shapes: &[&[usize]],
-        _input_dtypes: &[DType],
+        input_shapes: &[&[crate::ops::Dim]],
+        _input_dtypes: &[crate::PlannedDType],
     ) -> Result<(), ValidationError> {
         if let Some(ax) = self.axis() {
             if ax >= input_shapes[0].len() {

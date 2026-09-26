@@ -705,14 +705,20 @@ class TestIdentityElimination:
 
     @plugin_required
     def test_offset_crop_with_full_extent_is_kept(self) -> None:
+        # Over a known size, an offset full-extent window runs past the edge on
+        # every row, so it is refused while the pipeline is built
+        # (PLANNER_SIZES_PLAN.md S2) and never reaches the optimizer.
+        with pytest.raises(ValueError, match="outside"):
+            Pipeline().source("image_bytes").resize(height=20, width=20).crop(
+                top=5, left=5, height=20, width=20
+            )
+        # Over a size only the data states, the optimizer cannot prove the crop
+        # a no-op, so it stays and each row checks its window.
         g = _graph_of(
-            Pipeline()
-            .source("image_bytes")
-            .resize(height=20, width=20)
-            .crop(top=5, left=5, height=20, width=20)
+            Pipeline().source("image_bytes").crop(top=5, left=5, height=20, width=20)
         )
         g.optimize(OptFlags.all())
-        assert _node_ops(g) == ["resize", "crop"]
+        assert _node_ops(g) == ["crop"]
 
     @plugin_required
     def test_a_declared_shape_in_the_lineage_is_a_checked_fact(self) -> None:

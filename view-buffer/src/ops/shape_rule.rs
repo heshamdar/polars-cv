@@ -9,6 +9,7 @@
 
 /// One dimension of a shape at plan time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Dim {
     /// A size known before execution.
     Known(usize),
@@ -19,6 +20,20 @@ pub enum Dim {
     /// Not knowable before execution: it rests on data, a per-row parameter, or
     /// arithmetic on an unknown size.
     Unknown,
+}
+
+/// A shape as sizes, every one known (execution's view of a buffer).
+pub fn known_dims(shape: &[usize]) -> Vec<Dim> {
+    shape.iter().map(|&n| Dim::Known(n)).collect()
+}
+
+/// A shape rendered for a message: `[16, ?, 3]`, `?` for an unknown size.
+pub fn show_dims(dims: &[Dim]) -> String {
+    let sizes: Vec<String> = dims
+        .iter()
+        .map(|d| d.known().map_or_else(|| "?".to_string(), |n| n.to_string()))
+        .collect();
+    format!("[{}]", sizes.join(", "))
 }
 
 impl Dim {
@@ -142,7 +157,7 @@ pub enum OpShape {
     },
     /// Axis `axis` removed (a global reduction when `None`); never below rank 1.
     Reduce { axis: Option<usize> },
-    /// The two inputs broadcast together.
+    /// The two inputs broadcast together, axis by axis from the last.
     Broadcast,
     /// `[H, W]` inputs stacked along a new channel axis: `[H, W, n]`. No
     /// other rank has an output.
@@ -306,18 +321,10 @@ impl OpShape {
                 _ => return None,
             },
             OpShape::InputRank => vec![Dim::Known(input.len())],
+            // Two known sizes that cannot broadcast have no output: `validate`
+            // refuses them, and no shape is invented for them.
             OpShape::Broadcast => match inputs {
-                [a, b] => {
-                    let known = |s: &[Dim]| s.iter().map(|d| d.known()).collect::<Option<Vec<_>>>();
-                    match known(a).zip(known(b)) {
-                        Some((a, b)) => crate::ops::binary::broadcast_shapes(&a, &b)
-                            .unwrap_or(a)
-                            .into_iter()
-                            .map(Dim::Known)
-                            .collect(),
-                        None => vec![Dim::Unknown; a.len().max(b.len())],
-                    }
-                }
+                [a, b] => return crate::ops::binary::broadcast_dims(a, b),
                 _ => input.to_vec(),
             },
         })

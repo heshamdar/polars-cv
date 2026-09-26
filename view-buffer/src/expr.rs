@@ -119,7 +119,7 @@ impl ViewExpr {
         self: &Arc<Self>,
         op: ViewDto,
     ) -> Result<Arc<Self>, crate::ops::validation::ValidationError> {
-        op.as_op().validate(&[&self.shape], &[self.dtype])?;
+        crate::ops::validation::validate_concrete(op.as_op(), &[&self.shape], &[self.dtype])?;
         if let ViewDto::View(ViewOp::Reshape { .. }) = &op {
             if let Some(strides) = &self.strides {
                 let facts =

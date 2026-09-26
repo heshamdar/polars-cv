@@ -2,6 +2,7 @@
 //!
 //! Tests for the plan-time validation framework.
 
+use view_buffer::ops::validation::validate_concrete;
 use view_buffer::ops::validation::{is_2d_like, is_float_dtype, is_image_like, is_integer_dtype};
 use view_buffer::ops::{ComputeOp, Normalization, Op};
 use view_buffer::DType;
@@ -90,7 +91,10 @@ fn test_normalize_accepts_any_shape() {
         &[10, 10, 4],
         &[10],
     ] {
-        assert!(op.validate(&[shape], &[DType::F32]).is_ok(), "{shape:?}");
+        assert!(
+            validate_concrete(&op, &[shape], &[DType::F32]).is_ok(),
+            "{shape:?}"
+        );
     }
 }
 
@@ -100,12 +104,12 @@ fn test_normalize_accepts_all_numeric_dtypes() {
 
     // With dtype promotion, all numeric types are valid
     // The operation internally casts to f32 for computation
-    assert!(op.validate(&[&[10, 10]], &[DType::F32]).is_ok());
-    assert!(op.validate(&[&[10, 10]], &[DType::U8]).is_ok());
-    assert!(op.validate(&[&[10, 10]], &[DType::I32]).is_ok());
-    assert!(op.validate(&[&[10, 10]], &[DType::F64]).is_ok());
-    assert!(op.validate(&[&[10, 10]], &[DType::U16]).is_ok());
-    assert!(op.validate(&[&[10, 10]], &[DType::I16]).is_ok());
+    assert!(validate_concrete(&op, &[&[10, 10]], &[DType::F32]).is_ok());
+    assert!(validate_concrete(&op, &[&[10, 10]], &[DType::U8]).is_ok());
+    assert!(validate_concrete(&op, &[&[10, 10]], &[DType::I32]).is_ok());
+    assert!(validate_concrete(&op, &[&[10, 10]], &[DType::F64]).is_ok());
+    assert!(validate_concrete(&op, &[&[10, 10]], &[DType::U16]).is_ok());
+    assert!(validate_concrete(&op, &[&[10, 10]], &[DType::I16]).is_ok());
 }
 
 #[test]
@@ -120,7 +124,7 @@ fn test_normalize_preset_error_message_names_the_mismatch() {
     );
     let msg = format!(
         "{}",
-        op.validate(&[&[10, 10, 3]], &[DType::F32]).unwrap_err()
+        validate_concrete(&op, &[&[10, 10, 3]], &[DType::F32]).unwrap_err()
     );
     assert!(msg.contains("channel"), "{msg}");
 }
@@ -132,8 +136,8 @@ fn test_normalize_dtype_promotion_behavior() {
     let op = ComputeOp::from_normalization(Normalization::MinMax, DType::F32);
 
     // All numeric types should be accepted - the operation handles casting internally
-    assert!(op.validate(&[&[10, 10]], &[DType::U8]).is_ok());
-    assert!(op.validate(&[&[10, 10]], &[DType::F32]).is_ok());
+    assert!(validate_concrete(&op, &[&[10, 10]], &[DType::U8]).is_ok());
+    assert!(validate_concrete(&op, &[&[10, 10]], &[DType::F32]).is_ok());
 
     // The working dtype should be F32
     assert_eq!(op.working_dtype(), Some(DType::F32));
@@ -151,7 +155,7 @@ fn test_other_compute_ops_have_no_validation() {
     // These should all pass validation with any input
     for op in &ops {
         assert!(
-            op.validate(&[&[10, 10, 3]], &[DType::U8]).is_ok(),
+            validate_concrete(op, &[&[10, 10, 3]], &[DType::U8]).is_ok(),
             "Op {op:?} should have no special validation requirements"
         );
     }
@@ -162,7 +166,7 @@ fn test_zscore_normalize_validates_same_as_minmax() {
     let op = ComputeOp::from_normalization(Normalization::ZScore, DType::F32);
 
     // Same requirements as MinMax: a global statistic, any shape, any numeric dtype.
-    assert!(op.validate(&[&[10, 10]], &[DType::F32]).is_ok());
-    assert!(op.validate(&[&[10, 10, 3]], &[DType::F32]).is_ok());
-    assert!(op.validate(&[&[10, 10]], &[DType::U8]).is_ok());
+    assert!(validate_concrete(&op, &[&[10, 10]], &[DType::F32]).is_ok());
+    assert!(validate_concrete(&op, &[&[10, 10, 3]], &[DType::F32]).is_ok());
+    assert!(validate_concrete(&op, &[&[10, 10]], &[DType::U8]).is_ok());
 }

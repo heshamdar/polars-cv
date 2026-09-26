@@ -27,12 +27,15 @@ pub fn validate_mask(
     buffer_shape: &[usize],
     mask_shape: &[usize],
 ) -> Result<(), crate::ops::validation::ValidationError> {
-    use crate::ops::Op;
     let effective: Vec<usize> = match (mask_shape, buffer_shape) {
         ([h, w], [_, _, c]) => vec![*h, *w, *c],
         _ => mask_shape.to_vec(),
     };
-    BinaryOp::Blend.validate(&[buffer_shape, &effective], &[DType::F32, DType::F32])
+    crate::ops::validation::validate_concrete(
+        &BinaryOp::Blend,
+        &[buffer_shape, &effective],
+        &[DType::F32, DType::F32],
+    )
 }
 
 pub fn apply_mask(buffer: &ViewBuffer, mask: &ViewBuffer, invert: bool) -> ViewBuffer {

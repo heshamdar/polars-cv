@@ -537,10 +537,15 @@ pub fn validate_channel_merge(
             got: 0,
         });
     };
-    if first.len() != 2 || shapes.iter().any(|s| s != first) {
+    // The first input that is not [H, W] or not the first one's H and W.
+    let offending = shapes
+        .iter()
+        .find(|s| s.len() != 2 || **s != *first)
+        .or((first.len() != 2).then_some(first));
+    if let Some(shape) = offending {
         return Err(ValidationError::ShapeRequirement {
             requirement: "every channel_merge input [H, W] with the same H and W",
-            got: shapes.iter().flat_map(|s| s.iter().copied()).collect(),
+            got: crate::ops::shape_rule::known_dims(shape),
         });
     }
     if dtypes.iter().any(|d| *d != dtypes[0]) {
