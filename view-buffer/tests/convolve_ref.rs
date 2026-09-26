@@ -72,9 +72,9 @@ fn naive_convolve_reference(buf: &ViewBuffer, op: &ConvolveOp) -> ViewBuffer {
 
     let src = contig.as_slice::<f32>();
 
-    let half = (op.ksize / 2) as i64;
+    let ksize = op.side();
+    let half = (ksize / 2) as i64;
     let kernel = &op.kernel;
-    let ksize = op.ksize as usize;
 
     let norm_factor = if op.normalize {
         let abs_sum: f32 = kernel.iter().map(|k| k.abs()).sum();
@@ -194,7 +194,6 @@ fn convolve_matches_naive_reference_bit_exact() {
                         for normalize in [false, true] {
                             let op = ConvolveOp {
                                 kernel: kernel.clone(),
-                                ksize: ksize as u32,
                                 normalize,
                                 border,
                             };
@@ -225,7 +224,6 @@ fn convolve_matches_naive_reference_u8_input() {
             for &ksize in &[3usize, 5] {
                 let op = ConvolveOp {
                     kernel: test_kernels(ksize).pop().unwrap().1,
-                    ksize: ksize as u32,
                     normalize: false,
                     border: BorderMode::Replicate,
                 };
@@ -246,7 +244,6 @@ fn convolve_identity_kernel_is_identity_on_interior() {
     kernel[4] = 1.0;
     let op = ConvolveOp {
         kernel,
-        ksize: 3,
         normalize: false,
         border: BorderMode::Replicate,
     };

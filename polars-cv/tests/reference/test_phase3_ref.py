@@ -101,12 +101,7 @@ class TestConvolveIdentity:
     ) -> None:
         """An identity kernel (center=1, rest=0) should preserve the image."""
         identity = [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .grayscale()
-            .convolve2d(kernel=identity, ksize=3)
-        )
+        pipe = Pipeline().source("image_bytes").grayscale().convolve2d(kernel=identity)
         result = _run_pipe(pipe, gray_png)
 
         # Result is f32 (promote_to_float), input was u8
@@ -134,7 +129,7 @@ class TestConvolveBoxBlur:
             Pipeline()
             .source("image_bytes")
             .grayscale()
-            .convolve2d(kernel=box_kernel, ksize=3, normalize=True, border="replicate")
+            .convolve2d(kernel=box_kernel, normalize=True, border="replicate")
         )
         result = _run_pipe(pipe, gray_png)
         if result.ndim == 3 and result.shape[2] == 1:
@@ -167,7 +162,7 @@ class TestSobelRef:
         if result.ndim == 3 and result.shape[2] == 1:
             result = result.squeeze(-1)
 
-        expected = cv2.Sobel(gray_image, cv2.CV_32F, 1, 0, ksize=3)
+        expected = cv2.Sobel(gray_image, cv2.CV_32F, 1, 0)
         # Border handling differs, so compare interior only
         h, w = gray_image.shape
         margin = 2
@@ -186,7 +181,7 @@ class TestSobelRef:
         if result.ndim == 3 and result.shape[2] == 1:
             result = result.squeeze(-1)
 
-        expected = cv2.Sobel(gray_image, cv2.CV_32F, 0, 1, ksize=3)
+        expected = cv2.Sobel(gray_image, cv2.CV_32F, 0, 1)
         h, w = gray_image.shape
         margin = 2
         np.testing.assert_allclose(
@@ -476,7 +471,7 @@ class TestConvolveBorderModes:
             Pipeline()
             .source("image_bytes")
             .grayscale()
-            .convolve2d(kernel=kernel, ksize=3, border="zero")
+            .convolve2d(kernel=kernel, border="zero")
         )
         result = _run_pipe(pipe, gray_png)
         assert result is not None
@@ -488,7 +483,7 @@ class TestConvolveBorderModes:
             Pipeline()
             .source("image_bytes")
             .grayscale()
-            .convolve2d(kernel=kernel, ksize=3, normalize=True, border="reflect")
+            .convolve2d(kernel=kernel, normalize=True, border="reflect")
         )
         result = _run_pipe(pipe, gray_png)
         assert result is not None
@@ -502,15 +497,15 @@ class TestConvolveBorderModes:
 class TestConvolveValidation:
     """Test Python-side validation for convolve2d parameters."""
 
-    def test_even_ksize_rejected(self) -> None:
-        """Even ksize should raise ValueError."""
+    def test_an_even_side_is_rejected(self) -> None:
+        """A kernel whose side is even (2x2) should raise ValueError."""
         with pytest.raises(ValueError, match="odd"):
-            Pipeline().source("image_bytes").convolve2d(kernel=[1.0] * 4, ksize=2)
+            Pipeline().source("image_bytes").convolve2d(kernel=[1.0] * 4)
 
-    def test_kernel_size_mismatch(self) -> None:
-        """Kernel length not matching ksize² should raise ValueError."""
-        with pytest.raises(ValueError, match="doesn't match"):
-            Pipeline().source("image_bytes").convolve2d(kernel=[1.0, 2.0], ksize=3)
+    def test_a_non_square_kernel_is_rejected(self) -> None:
+        """A kernel length that is no square should raise ValueError."""
+        with pytest.raises(ValueError, match="square of an odd"):
+            Pipeline().source("image_bytes").convolve2d(kernel=[1.0, 2.0])
 
     def test_invalid_border_mode(self) -> None:
         """Invalid border mode should raise ValueError.
@@ -520,7 +515,7 @@ class TestConvolveValidation:
         (matching every other enum-valued parameter)."""
         with pytest.raises(ValueError, match="unknown BorderMode"):
             Pipeline().source("image_bytes").convolve2d(
-                kernel=[1.0] * 9, ksize=3, border="invalid"
+                kernel=[1.0] * 9, border="invalid"
             )
 
     def test_sobel_invalid_ksize(self) -> None:
@@ -546,7 +541,7 @@ class TestConvolveMultiChannel:
     def test_rgb_convolve(self, rgb_png: bytes, rgb_image: np.ndarray) -> None:
         """Convolution should work on RGB images (per-channel)."""
         identity = [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
-        pipe = Pipeline().source("image_bytes").convolve2d(kernel=identity, ksize=3)
+        pipe = Pipeline().source("image_bytes").convolve2d(kernel=identity)
         result = _run_pipe(pipe, rgb_png)
 
         assert result.ndim == 3

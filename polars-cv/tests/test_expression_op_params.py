@@ -271,7 +271,7 @@ class TestParameterColumnDtypes:
         pipe = (
             Pipeline()
             .source("image_bytes", dtype="u8")
-            .convolve2d(kernel=[1.0] * 9, ksize=3, normalize=pl.col("norm"))
+            .convolve2d(kernel=[1.0] * 9, normalize=pl.col("norm"))
         )
         out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("list"))["r"]
         assert out.to_list()[0] != out.to_list()[1]
@@ -362,40 +362,3 @@ class TestAssertShapeExpressions:
         # `.assert_shape()` after it already had.
         with pytest.raises(ValueError, match="needs the full output shape"):
             pl.col("image").cv.pipe(pipe).sink("array")
-
-
-@plugin_required
-class TestConvolveKsizeExpression:
-    """``convolve2d(ksize=)`` is expression-valued but pinned to the kernel.
-
-    The kernel's *length* is structural, so a per-row ``ksize`` can only
-    restate the side it implies. That makes the interesting case the
-    disagreeing one: it must be rejected at execution rather than silently
-    reading past the kernel or truncating it.
-    """
-
-    @staticmethod
-    def _frame(ksizes: list[int]) -> pl.DataFrame:
-        return pl.DataFrame(
-            {"image": [make_image_png(16, 16, 1, seed=6)] * len(ksizes), "k": ksizes}
-        )
-
-    def test_a_consistent_expression_ksize_executes(self) -> None:
-        df = self._frame([3, 3])
-        pipe = (
-            Pipeline()
-            .source("image_bytes", dtype="u8")
-            .convolve2d(kernel=[0.0] * 4 + [1.0] + [0.0] * 4, ksize=pl.col("k"))
-        )
-        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("list"))
-        assert out["r"].null_count() == 0
-
-    def test_a_ksize_disagreeing_with_the_kernel_is_rejected(self) -> None:
-        df = self._frame([3, 5])
-        pipe = (
-            Pipeline()
-            .source("image_bytes", dtype="u8")
-            .convolve2d(kernel=[0.0] * 4 + [1.0] + [0.0] * 4, ksize=pl.col("k"))
-        )
-        with pytest.raises(pl.exceptions.ComputeError):
-            df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("list"))

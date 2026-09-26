@@ -164,7 +164,7 @@ class TestOnNullParamNull:
         pipe = (
             Pipeline()
             .source("image_bytes")
-            .convolve2d(kernel=kernel, ksize=3, normalize=pl.col("norm"))
+            .convolve2d(kernel=kernel, normalize=pl.col("norm"))
             .on_null_param("null")
         )
         df = pl.DataFrame(
@@ -183,7 +183,6 @@ class TestOnNullParamNull:
             .source("image_bytes")
             .convolve2d(
                 kernel=[0.0, 0.0, 0.0, 0.0, pl.col("center"), 0.0, 0.0, 0.0, 0.0],
-                ksize=3,
             )
             .on_null_param("null")
         )

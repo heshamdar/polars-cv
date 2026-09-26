@@ -347,7 +347,7 @@ mod tests {
             (json!({"op": "grayscale"}), "pointwise"),
             (json!({"op": "threshold", "value": 128.0}), "pointwise"),
             (
-                json!({"op": "convolve2d", "kernel": [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], "ksize": 3, "normalize": false, "border": "replicate"}),
+                json!({"op": "convolve2d", "kernel": [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], "normalize": false, "border": "replicate"}),
                 "neighborhood:1",
             ),
             // ceil(3 * sigma)

@@ -2301,7 +2301,6 @@ fn apply_canny(buf: ViewBuffer, low_threshold: f32, high_threshold: f32) -> View
         &contig,
         &ConvolveOp {
             kernel: CANNY_GAUSSIAN_5X5.to_vec(),
-            ksize: 5,
             normalize: false,
             border: BorderMode::Replicate,
         },

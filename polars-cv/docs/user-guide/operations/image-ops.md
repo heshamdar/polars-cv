@@ -241,10 +241,10 @@ Apply 2D convolution with an arbitrary kernel.
 ```python
 # Custom 3x3 emboss kernel
 kernel = [-2, -1, 0, -1, 1, 1, 0, 1, 2]
-Pipeline().source("image_bytes").convolve2d(kernel=kernel, ksize=3)
+Pipeline().source("image_bytes").convolve2d(kernel=kernel)
 
 # Normalize kernel so output values stay in range
-Pipeline().source("image_bytes").convolve2d(kernel=kernel, ksize=3, normalize=True)
+Pipeline().source("image_bytes").convolve2d(kernel=kernel, normalize=True)
 ```
 
 **Border modes:** `"replicate"` (default), `"zero"`, `"reflect"`.
@@ -255,7 +255,7 @@ Sobel gradient operator (delegates to `convolve2d` with standard kernels).
 
 ```python
 Pipeline().source("image_bytes").grayscale().sobel(axis="x")
-Pipeline().source("image_bytes").grayscale().sobel(axis="y", ksize=3)
+Pipeline().source("image_bytes").grayscale().sobel(axis="y")
 ```
 
 ### Laplacian
@@ -607,7 +607,7 @@ pipe = Pipeline().source("image_bytes").crop(
 | Sharpen | `strength` |
 | Morphology | `ksize`, `iterations` |
 | Channel select / swap | `index`, `order` (each element, per-row) |
-| Convolution | `kernel` (each coefficient, per-row), `ksize`, `border` |
+| Convolution | `kernel` (each coefficient, per-row), `normalize`, `border` |
 | Flags | `apply_mask(invert)`, `convolve2d(normalize)`, `area(signed)` |
 | Reductions | `q` (percentile), `ddof` (std) |
 | Histogram | `bins` (integer form), `range` |

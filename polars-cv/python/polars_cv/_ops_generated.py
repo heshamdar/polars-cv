@@ -567,7 +567,6 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "list",
             "inner": {"kind": "scalar", "per_row": True, "py": "float"},
         },
-        "ksize": {"kind": "scalar", "per_row": True, "py": "int"},
         "normalize": {"kind": "scalar", "per_row": True, "py": "bool"},
         "border": {
             "kind": "scalar",
@@ -1177,9 +1176,8 @@ class _OpsMixin:
 
     def convolve2d(
         self,
-        *,
         kernel: Sequence[FloatOrExpr],
-        ksize: IntOrExpr,
+        *,
         normalize: BoolOrExpr = False,
         border: str | pl.Expr = "replicate",
     ) -> Pipeline:
@@ -1188,31 +1186,23 @@ class _OpsMixin:
         Domain: buffer → buffer
 
         Args:
-            kernel: Flattened kernel values (row-major, ``ksize × ksize``). **Each
-                coefficient may be a literal float or a Polars expression**, so a batch
-                can convolve with a different kernel per row. The kernel *length* is
-                structural and must be a literal odd square.
-            ksize: Kernel dimension (must be odd; kernel is ``ksize × ksize``). Accepts
-                a Polars expression for per-row dynamic values.
+            kernel: Flattened square kernel, row-major: its length is the square of an
+                odd side (9 for 3×3, 25 for 5×5, ...), which is the kernel's size.
+                **Each coefficient may be a literal float or a Polars expression**, so a
+                batch can convolve with a different kernel per row; the length is
+                structural.
             normalize: If True, divide output by the sum of absolute kernel values.
             border: Border handling mode (``"replicate"``, ``"zero"``, ``"reflect"``).
 
         Example:
             ```python
             >>> edge = Pipeline().source("image_bytes").convolve2d(
-            ...     kernel=[-1, -1, -1, -1, 8, -1, -1, -1, -1],
-            ...     ksize=3,
+            ...     [-1, -1, -1, -1, 8, -1, -1, -1, -1]
             ... )
             ```
         """
         return self._append_typed(
-            "convolve2d",
-            {
-                "kernel": kernel,
-                "ksize": ksize,
-                "normalize": normalize,
-                "border": border,
-            },
+            "convolve2d", {"kernel": kernel, "normalize": normalize, "border": border}
         )
 
     def crop(

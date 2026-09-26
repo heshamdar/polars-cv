@@ -710,12 +710,7 @@
    ],
    [
     "kernel",
-    "KEYWORD_ONLY",
-    ""
-   ],
-   [
-    "ksize",
-    "KEYWORD_ONLY",
+    "POSITIONAL_OR_KEYWORD",
     ""
    ],
    [
@@ -2142,12 +2137,7 @@
    ],
    [
     "kernel",
-    "KEYWORD_ONLY",
-    ""
-   ],
-   [
-    "ksize",
-    "KEYWORD_ONLY",
+    "POSITIONAL_OR_KEYWORD",
     ""
    ],
    [

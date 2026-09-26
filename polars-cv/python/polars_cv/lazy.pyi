@@ -118,9 +118,8 @@ class LazyPipelineExpr:
     def convex_hull(self) -> LazyPipelineExpr: ...
     def convolve2d(
         self,
-        *,
         kernel: Sequence[FloatOrExpr],
-        ksize: IntOrExpr,
+        *,
         normalize: BoolOrExpr = ...,
         border: str | pl.Expr = ...,
     ) -> LazyPipelineExpr: ...

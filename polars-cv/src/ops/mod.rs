@@ -352,7 +352,7 @@ mod tests {
                 "nearest",
             ),
             (
-                json!({"op": "convolve2d", "kernel": [0, 0, 0, 0, 1, 0, 0, 0, 0], "ksize": 3,
+                json!({"op": "convolve2d", "kernel": [0, 0, 0, 0, 1, 0, 0, 0, 0],
                     "normalize": "yes", "border": "replicate"}),
                 "'normalize'",
                 "",

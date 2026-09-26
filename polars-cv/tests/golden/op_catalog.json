@@ -523,11 +523,11 @@
     "name": "convolve2d",
     "python": "convolve2d",
     "visibility": "public",
-    "doc": "Apply generic 2D convolution with an arbitrary kernel.\n\nDomain: buffer → buffer\n\nExample:\n    ```python\n    >>> edge = Pipeline().source(\"image_bytes\").convolve2d(\n    ...     kernel=[-1, -1, -1, -1, 8, -1, -1, -1, -1],\n    ...     ksize=3,\n    ... )\n    ```",
+    "doc": "Apply generic 2D convolution with an arbitrary kernel.\n\nDomain: buffer → buffer\n\nExample:\n    ```python\n    >>> edge = Pipeline().source(\"image_bytes\").convolve2d(\n    ...     [-1, -1, -1, -1, 8, -1, -1, -1, -1]\n    ... )\n    ```",
     "fields": [
       {
         "name": "kernel",
-        "doc": "Flattened kernel values (row-major, ``ksize × ksize``). **Each\ncoefficient may be a literal float or a Polars expression**, so a batch\ncan convolve with a different kernel per row. The kernel *length* is\nstructural and must be a literal odd square.",
+        "doc": "Flattened square kernel, row-major: its length is the square of an odd\nside (9 for 3×3, 25 for 5×5, ...), which is the kernel's size. **Each\ncoefficient may be a literal float or a Polars expression**, so a batch\ncan convolve with a different kernel per row; the length is structural.",
         "type": {
           "kind": "list",
           "inner": {
@@ -535,15 +535,6 @@
             "per_row": true,
             "py": "float"
           }
-        }
-      },
-      {
-        "name": "ksize",
-        "doc": "Kernel dimension (must be odd; kernel is ``ksize × ksize``). Accepts a\nPolars expression for per-row dynamic values.",
-        "type": {
-          "kind": "scalar",
-          "per_row": true,
-          "py": "int"
         }
       },
       {

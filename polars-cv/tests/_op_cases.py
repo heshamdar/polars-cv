@@ -52,7 +52,7 @@ OP_CASES: dict[str, tuple[str, dict] | None] = {
     "subtract_constant": (BUFFER, {"value": 2.0}),
     "trunc": (BUFFER, {}),
     "convert_color": (BUFFER, {"from_space": "rgb", "to_space": "hsv"}),
-    "convolve2d": (BUFFER, {"kernel": [0.0] * 9, "ksize": 3}),
+    "convolve2d": (BUFFER, {"kernel": [0.0] * 9}),
     "crop": (BUFFER, {"top": 0, "left": 0, "height": 50, "width": 50}),
     "dilate": (BUFFER, {"ksize": 3}),
     "equalize_histogram": (BUFFER, {}),
