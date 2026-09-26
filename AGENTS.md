@@ -345,8 +345,8 @@ current instead.
 should have but does not — are pinned executably in
 `polars-cv/tests/test_known_gaps.py`, one `xfail(strict=True)` each, so a fix
 turns the suite red rather than passing unnoticed; prefer adding an entry there
-to extending a prose list. That file currently holds exactly one such defect
-(the two `scale`-contour surfaces defaulting their origin differently). The
+to extending a prose list. It currently holds the planned-size defects that
+`PLANNER_SIZES_PLAN.md` fixes (`TestPlannedSizes`). The
 broader structural-review backlog — dead code, duplicate declarations, coverage
 holes — lives in the root `CODE_REVIEW_FINDINGS.md` ledger with a stable id per
 item, since most of those are cleanups rather than xfail-able wrong-behaviour
