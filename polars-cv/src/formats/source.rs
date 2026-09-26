@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use polars::prelude::{DataType, Series};
 use polars_cv_macros::Ops;
 use view_buffer::DType;
 
@@ -123,6 +124,73 @@ impl super::Format for Source {
 super::tagged_serde!(Source);
 
 impl Source {
+    /// The concrete source an `auto` source reads `column` as: the format the
+    /// column's Polars dtype routes to, carrying the auto settings that format
+    /// reads. `None` for a source that is already concrete.
+    ///
+    /// The dtype is constant across rows, so the route is taken once per
+    /// batch. `Binary` columns are sniffed for the VIEW protocol magic to tell
+    /// self-describing blobs apart from encoded image bytes (the image decoder
+    /// auto-detects PNG/JPEG/TIFF internally, so `image_bytes` covers all
+    /// non-VIEW binary).
+    pub fn route(&self, column: &Series) -> Option<Result<Source, String>> {
+        let Source::Auto {
+            dtype,
+            require_contiguous,
+            cloud_options,
+            allowed_roots,
+            decode_max_size,
+            on_error,
+        } = self
+        else {
+            return None;
+        };
+        let (dtype, require_contiguous, decode_max_size, on_error) =
+            (*dtype, *require_contiguous, *decode_max_size, *on_error);
+        Some(match column.dtype() {
+            DataType::String => Ok(Source::FilePath {
+                dtype,
+                cloud_options: cloud_options.clone(),
+                allowed_roots: allowed_roots.clone(),
+                decode_max_size,
+                on_error,
+            }),
+            DataType::List(_) => Ok(Source::List {
+                dtype,
+                require_contiguous,
+                on_error,
+            }),
+            DataType::Array(_, _) => Ok(Source::Array {
+                dtype,
+                require_contiguous,
+                on_error,
+            }),
+            // The first present row decides: blobs carry the magic, images
+            // don't. An all-null column reads as image bytes (null rows).
+            DataType::Binary => {
+                let blob = column.binary().ok().and_then(|ca| {
+                    (0..ca.len())
+                        .find_map(|i| ca.get(i))
+                        .map(|bytes| bytes.starts_with(&view_buffer::protocol::MAGIC_BYTES))
+                });
+                Ok(if blob == Some(true) {
+                    Source::Blob { dtype, on_error }
+                } else {
+                    Source::ImageBytes {
+                        dtype,
+                        decode_max_size,
+                        on_error,
+                    }
+                })
+            }
+            other => Err(format!(
+                "auto source cannot infer a decode path for column dtype {other:?}; \
+                 specify an explicit source format (e.g. source(\"image_bytes\"), \
+                 source(\"list\"), source(\"blob\"))."
+            )),
+        })
+    }
+
     /// Whether the element dtype and rank are resolved from the input column's
     /// Polars type when the query is planned with its input (a `list`/`array`
     /// column, or `auto` routing to one), rather than at build time.
@@ -245,6 +313,35 @@ mod tests {
             assert_eq!(wire["format"], source.name());
             assert_eq!(parse(wire).unwrap(), source);
         }
+    }
+
+    /// An auto source reads a column as the format its dtype routes to,
+    /// keeping the auto settings that format reads.
+    #[test]
+    fn auto_routes_by_column_dtype_keeping_its_settings() {
+        use polars::prelude::*;
+        let auto = parse(serde_json::json!({"format": "auto", "on_error": "null",
+                                            "decode_max_size": 64, "dtype": "u8"}))
+        .unwrap();
+        let route = |s: Series| auto.route(&s).unwrap();
+        let image = route(Series::new("b".into(), [Some(&b"\x89PNG"[..])])).unwrap();
+        assert_eq!(image.name(), "image_bytes");
+        assert_eq!(image.decode_max_size(), Some(64));
+        assert!(image.nulls_on_error());
+        assert_eq!(image.dtype(), Some(DType::U8));
+        let blob = view_buffer::ViewBuffer::from_vec(vec![1u8, 2]).to_blob();
+        assert_eq!(
+            route(Series::new("b".into(), [&blob[..]])).unwrap().name(),
+            "blob"
+        );
+        assert_eq!(
+            route(Series::new("p".into(), ["/a.png"])).unwrap().name(),
+            "file_path"
+        );
+        let err = route(Series::new("i".into(), [1i32])).unwrap_err();
+        assert!(err.contains("cannot infer a decode path"), "{err}");
+        let concrete = parse(serde_json::json!({"format": "raw", "dtype": "u8"})).unwrap();
+        assert!(concrete.route(&Series::new("b".into(), [1i32])).is_none());
     }
 
     #[test]

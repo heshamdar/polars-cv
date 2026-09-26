@@ -546,6 +546,9 @@ REMOVED: tuple[Removed, ...] = (
         Removed(name, "C6b: a variant of formats::sink::Sink")
         for name in ("TensorSink", "JpegSink", "ArraySink", "PlainSink")
     ),
+    Removed("SourceFormat::of", "C6d: the row loop matches on Source"),
+    Removed("resolve_auto_source_formats", "C6d: route_auto_sources"),
+    Removed("resolved_auto_formats", "C6d: routed_sources"),
 )
 
 

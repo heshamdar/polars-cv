@@ -86,10 +86,9 @@ enum ResolvedStep<'a> {
 /// One executed node, prepared at compile time.
 struct NodePlan {
     id: String,
-    /// The node's source (its ops are compiled into `resolvers`).
+    /// The node's source (its ops are compiled into `resolvers`); an `auto`
+    /// one is routed to a concrete source once per batch.
     source: Source,
-    /// The source's decode path (`Auto` is resolved once per batch).
-    format: SourceFormat,
     /// Input column, for a root node.
     column: Option<usize>,
     /// Position in `plan` of the node this one reads, for a non-root node.
@@ -153,12 +152,12 @@ struct ExecState<'a> {
     /// per-batch latency; per-path errors surface at their row so the usual
     /// error policies apply.
     prefetched: Vec<Option<crate::fetch::FetchedBatch>>,
-    /// Concrete decode path for each `"auto"` source node, resolved once per
-    /// batch from the input column dtype (node_id → resolved format). The dtype
-    /// is constant across rows, so this avoids re-resolving per row; a
-    /// resolution error is stored and surfaced at its row so the usual error
-    /// policies apply. Non-auto nodes are absent.
-    resolved_auto_formats: Vec<Option<Result<SourceFormat, String>>>,
+    /// The concrete source each `"auto"` source node reads this batch's column
+    /// as ([`Source::route`]), aligned with `plan`. The column dtype is
+    /// constant across rows, so this is taken once per batch; a routing error
+    /// is stored and surfaced at its row so the usual error policies apply.
+    /// `None` for a concrete source.
+    routed_sources: Vec<Option<Result<Source, String>>>,
     /// Position in `plan` of each resolved output's node (aligned with
     /// `resolved_outputs`).
     output_nodes: Vec<Option<usize>>,
@@ -249,7 +248,6 @@ impl CompiledGraph {
                     .map(crate::fetch::PathPolicy::new)
                     .unwrap_or_default(),
                 resolvers,
-                format: SourceFormat::of(&node.source),
                 source: node.source.clone(),
             });
         }
@@ -315,7 +313,7 @@ impl CompiledGraph {
             inputs,
             resolved_outputs,
             prefetched: self.prefetch_remote_sources(inputs),
-            resolved_auto_formats: self.resolve_auto_source_formats(inputs),
+            routed_sources: self.route_auto_sources(inputs),
             output_nodes,
         };
 
@@ -689,170 +687,25 @@ impl CompiledGraph {
             // how a null *input* already propagates (see the `else` branch of
             // `if let Some(input)` below, and `execute_one_row`).
             'nodes: for (idx, np) in self.plan.iter().enumerate() {
-                let source = &np.source;
-                let node_id = &np.id;
                 let node_input: Option<NodeOutput> = if let Some(col_idx) = np.column {
                     let on_error_null = np.source_null;
-                    let decode_result: Result<Option<NodeOutput>, String> = (|| {
+                    // An `"auto"` source reads as the concrete source it was
+                    // routed to once per batch (`route_auto_sources`).
+                    let decode_result = match state.routed_sources[idx].as_ref() {
+                        Some(Ok(routed)) => Ok(routed),
+                        Some(Err(e)) => Err(e.clone()),
+                        None => Ok(&np.source),
+                    }
+                    .and_then(|source| {
                         // Bounds are validated once per call in `execute()`.
-                        let input_series = &inputs[col_idx];
-                        // An `"auto"` source was resolved to a concrete decode
-                        // path once per batch (see `resolve_auto_source_formats`);
-                        // reuse that result here.
-                        let source_format = match np.format {
-                            SourceFormat::Auto => match state.resolved_auto_formats[idx].as_ref() {
-                                Some(Ok(fmt)) => *fmt,
-                                Some(Err(e)) => return Err(e.clone()),
-                                // Resolved for every bound auto node; bounds were
-                                // checked in `execute()`.
-                                None => {
-                                    return Err(format!(
-                                        "internal: auto source '{node_id}' was not resolved"
-                                    ))
-                                }
-                            },
-                            fmt => fmt,
-                        };
-                        if source_format == SourceFormat::Contour {
-                            // The column's contour set; a mask is the
-                            // `rasterize` op that follows, if any.
-                            match input_series.get(row_idx) {
-                                Ok(value) if !value.is_null() => {
-                                    crate::contour::parse_contour_set(&value)
-                                        .map(|set| Some(NodeOutput::from_contours(set)))
-                                        .map_err(|e| format!("Contour decode error: {e}"))
-                                }
-                                _ => Ok(None),
-                            }
-                        // `file_path` is fetch + decode: `crate::fetch` reads the
-                        // bytes the path names (applying its `PathPolicy`
-                        // sandbox), then they decode as image bytes.
-                        } else if source_format == SourceFormat::FilePath {
-                            if input_series.dtype() == &DataType::Null {
-                                Ok(None)
-                            } else {
-                                let input_ca = match input_series.str() {
-                                    Ok(ca) => ca,
-                                    Err(_) => {
-                                        return Err(format!(
-                                            "Expected String column for file_path source '{node_id}', got {:?}",
-                                            input_series.dtype()
-                                        ));
-                                    }
-                                };
-                                match input_ca.get(row_idx) {
-                                    Some(path) => {
-                                        // Stage 1: bytes. Remote paths were fetched
-                                        // concurrently before the row loop; local
-                                        // files are read inline.
-                                        let empty;
-                                        let batch = match state.prefetched[idx].as_ref() {
-                                            Some(b) => b,
-                                            None => {
-                                                empty = crate::fetch::FetchedBatch::empty();
-                                                &empty
-                                            }
-                                        };
-                                        let bytes = crate::fetch::row_bytes(
-                                            batch,
-                                            path,
-                                            np.cloud_options.as_ref(),
-                                            &np.path_policy,
-                                        )?;
-                                        // Stage 2: file_path contents decode like
-                                        // image bytes.
-                                        match decode_image_bytes(&bytes, source) {
-                                            Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
-                                            Err(e) => {
-                                                Err(format!("Decode error for file '{path}': {e}"))
-                                            }
-                                        }
-                                    }
-                                    None => Ok(None),
-                                }
-                            }
-                        } else if matches!(source_format, SourceFormat::List | SourceFormat::Array)
-                        {
-                            if input_series.dtype() == &DataType::Null {
-                                Ok(None)
-                            } else {
-                                let dtype_opt = source.dtype();
-                                let require_contiguous = source.require_contiguous();
-                                match decode_list_or_array_source(
-                                    input_series,
-                                    row_idx,
-                                    dtype_opt,
-                                    require_contiguous,
-                                ) {
-                                    Ok(Some(buf)) => Ok(Some(NodeOutput::from_buffer(buf))),
-                                    Ok(None) => Ok(None),
-                                    Err(e) => Err(format!("List/Array decode error: {e}")),
-                                }
-                            }
-                        } else if input_series.dtype() == &DataType::Null {
-                            Ok(None)
-                        } else {
-                            let input_ca = match input_series.binary() {
-                                Ok(ca) => ca,
-                                Err(_) => {
-                                    return Err(format!(
-                                        "Expected Binary column for node '{node_id}', got {:?}",
-                                        input_series.dtype()
-                                    ));
-                                }
-                            };
-                            if matches!(source_format, SourceFormat::Blob | SourceFormat::Raw) {
-                                if let Some((buffer, offset, len)) =
-                                    get_binary_row_buffer(input_ca, row_idx)
-                                {
-                                    // Raw bytes take the declared dtype; a blob
-                                    // carries its own, which a declared one must
-                                    // match: the planner (and identity
-                                    // elimination) takes the declaration as fact.
-                                    let raw_dtype = match source_format {
-                                        SourceFormat::Raw => source.dtype(),
-                                        _ => None,
-                                    };
-                                    match decode_binary_zero_copy(buffer, offset, len, raw_dtype) {
-                                        Ok(buf) => match source.dtype() {
-                                            Some(declared) if declared != buf.dtype() => {
-                                                Err(format!(
-                                                    "the blob holds {} elements, but the source \
-                                                     declares dtype=\"{}\". A blob carries its own \
-                                                     dtype: drop the declaration, correct it, or \
-                                                     .cast(\"{}\") after the source.",
-                                                    buf.dtype().short_name(),
-                                                    declared.short_name(),
-                                                    declared.short_name()
-                                                ))
-                                            }
-                                            _ => Ok(Some(NodeOutput::from_buffer(buf))),
-                                        },
-                                        Err(e) => Err(format!("Zero-copy decode error: {e}")),
-                                    }
-                                } else {
-                                    Ok(None)
-                                }
-                            } else {
-                                // Every other format has been dispatched above;
-                                // only encoded image bytes remain.
-                                if source_format != SourceFormat::ImageBytes {
-                                    return Err(format!(
-                                        "internal: source format {:?} reached the image decoder",
-                                        source_format
-                                    ));
-                                }
-                                match input_ca.get(row_idx) {
-                                    Some(bytes) => match decode_image_bytes(bytes, source) {
-                                        Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
-                                        Err(e) => Err(format!("Decode error: {e}")),
-                                    },
-                                    None => Ok(None),
-                                }
-                            }
-                        }
-                    })(
-                    );
+                        decode_source_row(
+                            np,
+                            source,
+                            &inputs[col_idx],
+                            row_idx,
+                            state.prefetched[idx].as_ref(),
+                        )
+                    });
                     match decode_result {
                         Ok(output) => output,
                         Err(_e) if on_error_null => None,
@@ -1217,27 +1070,19 @@ impl CompiledGraph {
         Ok(())
     }
 
-    /// Resolve each `"auto"` source node's concrete decode path once per batch.
+    /// Route each `"auto"` source node to its concrete source once per batch
+    /// ([`Source::route`]).
     ///
-    /// The decode path depends only on the bound input column's dtype, which is
-    /// constant across rows, so resolving here (rather than per row) avoids
+    /// The route depends only on the bound input column's dtype, which is
+    /// constant across rows, so taking it here (rather than per row) avoids
     /// repeated work — including the O(n) magic-byte scan for `Binary` columns.
     /// Errors are stored per node and re-surfaced at their row so the batch's
-    /// row-error policy still applies. Aligned with `plan`; non-auto nodes are
-    /// `None`.
-    fn resolve_auto_source_formats(
-        &self,
-        inputs: &[Series],
-    ) -> Vec<Option<Result<SourceFormat, String>>> {
+    /// row-error policy still applies. Aligned with `plan`; concrete sources
+    /// are `None`.
+    fn route_auto_sources(&self, inputs: &[Series]) -> Vec<Option<Result<Source, String>>> {
         self.plan
             .iter()
-            .map(|np| {
-                if np.format != SourceFormat::Auto {
-                    return None;
-                }
-                let series = inputs.get(np.column?)?;
-                Some(resolve_auto_format(series))
-            })
+            .map(|np| np.source.route(inputs.get(np.column?)?))
             .collect()
     }
 
@@ -1257,7 +1102,7 @@ impl CompiledGraph {
         self.plan
             .iter()
             .map(|np| {
-                if !matches!(np.format, SourceFormat::FilePath | SourceFormat::Auto) {
+                if !matches!(np.source, Source::FilePath { .. } | Source::Auto { .. }) {
                     return None;
                 }
                 let ca = inputs.get(np.column?)?.str().ok()?;
@@ -1268,36 +1113,6 @@ impl CompiledGraph {
                 ))
             })
             .collect()
-    }
-}
-
-/// A source's decode path, derived once at compile time (and, for `Auto`,
-/// resolved once per batch) so the row loop dispatches on a value (CR-37).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SourceFormat {
-    Array,
-    Auto,
-    Blob,
-    Contour,
-    FilePath,
-    ImageBytes,
-    List,
-    Raw,
-}
-
-impl SourceFormat {
-    /// The decode path of a typed source.
-    fn of(source: &Source) -> Self {
-        match source {
-            Source::Array { .. } => SourceFormat::Array,
-            Source::Auto { .. } => SourceFormat::Auto,
-            Source::Blob { .. } => SourceFormat::Blob,
-            Source::Contour { .. } => SourceFormat::Contour,
-            Source::FilePath { .. } => SourceFormat::FilePath,
-            Source::ImageBytes { .. } => SourceFormat::ImageBytes,
-            Source::List { .. } => SourceFormat::List,
-            Source::Raw { .. } => SourceFormat::Raw,
-        }
     }
 }
 
@@ -1473,37 +1288,111 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-/// Resolve an `"auto"` source format to a concrete decode path from the input
-/// column's Polars dtype. The dtype is constant across rows, so the resolution
-/// is stable per node. `Binary` columns are sniffed for the VIEW protocol magic
-/// to tell self-describing blobs apart from encoded image bytes (the image
-/// decoder auto-detects PNG/JPEG/TIFF internally, so `"image_bytes"` covers all
-/// non-VIEW binary).
-fn resolve_auto_format(series: &Series) -> Result<SourceFormat, String> {
-    match series.dtype() {
-        DataType::String => Ok(SourceFormat::FilePath),
-        DataType::List(_) => Ok(SourceFormat::List),
-        DataType::Array(_, _) => Ok(SourceFormat::Array),
-        DataType::Binary => {
-            // Inspect the first present row: blobs carry the magic, images don't.
-            if let Ok(ca) = series.binary() {
-                for i in 0..ca.len() {
-                    if let Some(bytes) = ca.get(i) {
-                        return if bytes.starts_with(&view_buffer::protocol::MAGIC_BYTES) {
-                            Ok(SourceFormat::Blob)
-                        } else {
-                            Ok(SourceFormat::ImageBytes)
-                        };
-                    }
+/// Decode row `row` of a root node's column through its concrete `source`
+/// (an `auto` source is routed per batch before it gets here).
+fn decode_source_row(
+    np: &NodePlan,
+    source: &Source,
+    series: &Series,
+    row: usize,
+    prefetched: Option<&crate::fetch::FetchedBatch>,
+) -> Result<Option<NodeOutput>, String> {
+    if series.dtype() == &DataType::Null {
+        return Ok(None);
+    }
+    let binary = || {
+        series.binary().map_err(|_| {
+            format!(
+                "Expected Binary column for node '{}', got {:?}",
+                np.id,
+                series.dtype()
+            )
+        })
+    };
+    let buffer = |buf| Some(NodeOutput::from_buffer(buf));
+    match source {
+        // The column's contour set; a mask is the `rasterize` op that
+        // follows, if any.
+        Source::Contour { .. } => match series.get(row) {
+            Ok(value) if !value.is_null() => crate::contour::parse_contour_set(&value)
+                .map(|set| Some(NodeOutput::from_contours(set)))
+                .map_err(|e| format!("Contour decode error: {e}")),
+            _ => Ok(None),
+        },
+        // `file_path` is fetch + decode: `crate::fetch` reads the bytes the
+        // path names (applying its `PathPolicy` sandbox), then they decode as
+        // image bytes.
+        Source::FilePath { .. } => {
+            let ca = series.str().map_err(|_| {
+                format!(
+                    "Expected String column for file_path source '{}', got {:?}",
+                    np.id,
+                    series.dtype()
+                )
+            })?;
+            let Some(path) = ca.get(row) else {
+                return Ok(None);
+            };
+            // Stage 1: bytes. Remote paths were fetched concurrently before
+            // the row loop; local files are read inline.
+            let empty;
+            let batch = match prefetched {
+                Some(b) => b,
+                None => {
+                    empty = crate::fetch::FetchedBatch::empty();
+                    &empty
                 }
-            }
-            // All-null column: default to image bytes (decode yields null rows).
-            Ok(SourceFormat::ImageBytes)
+            };
+            let bytes =
+                crate::fetch::row_bytes(batch, path, np.cloud_options.as_ref(), &np.path_policy)?;
+            // Stage 2: the contents decode like image bytes.
+            decode_image_bytes(&bytes, source)
+                .map(buffer)
+                .map_err(|e| format!("Decode error for file '{path}': {e}"))
         }
-        other => Err(format!(
-            "auto source cannot infer a decode path for column dtype {other:?}; \
-             specify an explicit source format (e.g. source(\"image_bytes\"), \
-             source(\"list\"), source(\"blob\"))."
+        Source::List { .. } | Source::Array { .. } => {
+            decode_list_or_array_source(series, row, source.dtype(), source.require_contiguous())
+                .map(|buf| buf.map(NodeOutput::from_buffer))
+                .map_err(|e| format!("List/Array decode error: {e}"))
+        }
+        // Raw bytes take the declared dtype.
+        Source::Raw { dtype, .. } => {
+            let Some((bytes, offset, len)) = get_binary_row_buffer(binary()?, row) else {
+                return Ok(None);
+            };
+            decode_binary_zero_copy(bytes, offset, len, Some(dtype.get()))
+                .map(buffer)
+                .map_err(|e| format!("Zero-copy decode error: {e}"))
+        }
+        // A blob carries its own dtype, which a declared one must match: the
+        // planner (and identity elimination) takes the declaration as fact.
+        Source::Blob { dtype, .. } => {
+            let Some((bytes, offset, len)) = get_binary_row_buffer(binary()?, row) else {
+                return Ok(None);
+            };
+            let buf = decode_binary_zero_copy(bytes, offset, len, None)
+                .map_err(|e| format!("Zero-copy decode error: {e}"))?;
+            match dtype.map(|d| d.get()) {
+                Some(declared) if declared != buf.dtype() => Err(format!(
+                    "the blob holds {} elements, but the source declares dtype=\"{}\". A \
+                     blob carries its own dtype: drop the declaration, correct it, or \
+                     .cast(\"{}\") after the source.",
+                    buf.dtype().short_name(),
+                    declared.short_name(),
+                    declared.short_name()
+                )),
+                _ => Ok(buffer(buf)),
+            }
+        }
+        Source::ImageBytes { .. } => match binary()?.get(row) {
+            Some(bytes) => decode_image_bytes(bytes, source)
+                .map(buffer)
+                .map_err(|e| format!("Decode error: {e}")),
+            None => Ok(None),
+        },
+        Source::Auto { .. } => Err(format!(
+            "internal: auto source '{}' reached decoding unrouted",
+            np.id
         )),
     }
 }
