@@ -624,7 +624,8 @@ therefore fails at planning time, since that sink needs a known shape — use th
 `list` sink, or pass a literal `bins`.
 
 **Structural parameters remain literal-only**, because they fix the output
-shape, rank or dtype at planning time and the lazy schema must match what
+rank or dtype (or, like `rotate(expand)` and a kernel's length, the planned
+dimensions themselves) at planning time and the lazy schema must match what
 executes: reduction `axis`, `perceptual_hash(hash_size)`, the `axes` lists of
 `transpose`/`flip`, `reshape`'s element count, `rotate(expand)` (it changes the
 output dimensions), `cast(dtype)`, `normalize(method`/`out_dtype)` and

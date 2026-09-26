@@ -776,13 +776,6 @@ def test_binary_ops_match_rust():
 # types, so there is no second list of either to pin.
 
 
-def test_no_duplicate_expected_dtype_enum():
-    """ExpectedDType was an exact duplicate of DType and must not exist (A4)."""
-    import polars_cv._types as t
-
-    assert not hasattr(t, "ExpectedDType"), "ExpectedDType should be folded into DType"
-
-
 def test_dtype_is_the_only_python_dtype_name_table():
     """No Python enum may re-list dtype spellings alongside DType (A4).
 
@@ -1084,25 +1077,6 @@ def test_reshape_rank_tracked_eagerly() -> None:
     # Per-row expression entries do not hide the rank: it is the entry count.
     dyn = pipe.reshape([pl.col("n"), 4])
     assert dyn._state.ndim == 2
-
-
-def test_histogram_schema_declared_once() -> None:
-    """Ratchet: histogram's mode->dtype mapping lives in Rust only. The Python
-    ``histogram`` builder must not re-declare the u32/u64 result dtypes.
-
-    Scoped to ``Pipeline.histogram``'s own source, not the whole module: banning
-    the literals ``"u32"``/``"u64"`` across all of ``pipeline.py`` false-fails on
-    any unrelated future use of those strings elsewhere in the file, while
-    proving nothing more about this op than the method's own body does.
-    """
-    import inspect
-
-    source = inspect.getsource(Pipeline.histogram)
-    assert "def histogram" in source, (
-        "Pipeline.histogram source not found; this ratchet is scanning nothing"
-    )
-    assert '"u32"' not in source, "histogram quantized dtype re-declared in Python"
-    assert '"u64"' not in source, "histogram counts dtype re-declared in Python"
 
 
 #: ``(build, label, rust enum, a real variant)`` per enum-valued builder

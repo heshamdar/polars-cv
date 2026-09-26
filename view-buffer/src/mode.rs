@@ -20,8 +20,9 @@
 //! column that carries it. Deserialization is hand-written rather than
 //! `#[serde(untagged)]`, which is ambiguous for integer `T` and replaces every
 //! error with "data did not match any variant". The eligibility rule (a
-//! parameter may be per-row iff it has no effect on the output shape, rank or
-//! dtype) is a type: a `$slot` in a [`Literal`] is a deserialization error.
+//! parameter may be per-row iff it has no effect on the output rank, dtype or
+//! domain; a size it sets is then unknown at plan time) is a type: a `$slot`
+//! in a [`Literal`] is a deserialization error.
 
 use core::fmt::Debug;
 
