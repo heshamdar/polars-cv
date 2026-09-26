@@ -9,6 +9,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **A fixed-size `Array` column's shape is planned.** Its dtype states every
+  size, so `source("array")` (or `auto` over an `Array` column) now publishes
+  the whole shape: `.sink("array")` needs no `shape=`, and the ops after the
+  source plan from those sizes. A `List` column's sizes still vary per row.
 - **`source("contour")` without a canvas decodes to the contour domain.** A
   pipeline can start from a contour column and measure or transform it
   (`Pipeline().source("contour").area()`, `.simplify(...)`, then
@@ -565,6 +569,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   is `pl.Expr | None` (a continuation node has no column), and `.sink()` is
   overloaded on `return_expr` (`pl.Expr`, or `PipelineGraph` for
   `return_expr=False`), which retired ten `# ty: ignore` comments.
+- **Every "Domain:" docstring line is generated (C7d, C8).** An op's comes
+  from its Rust domain contract (`domains` in the op catalogue); a
+  hand-written sugar method declares the ops it lowers to (`@_sugar`) and its
+  line is composed from theirs, with a test holding the method to its
+  declaration. `polars_cv/_domains.py` renders both.
 
 ## [0.28.0] — 2026-09-12
 

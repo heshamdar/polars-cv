@@ -28,7 +28,7 @@ never invents a value for a per-row parameter. Ops, sources, sinks and the
 geometry accessors register through one mechanism with one default convention,
 and every Python method is generated.
 
-## State: C0–C7 done
+## State: C0–C8 done
 
 | Phase | Commit(s) | What it did |
 |---|---|---|
@@ -99,10 +99,12 @@ and every Python method is generated.
 - A family with no per-row value (`Source`, `Sink`) derives `Ops` with no
   mode parameter: it is its own wire form and has no `Resolve`.
 - `tests/test_known_gaps.py` has no open gap left (its mechanism is kept).
+- `plan::State.dims` holds three sizes, the most any op plans; a rank-4+
+  buffer's further sizes are not planned.
 
-## Next steps
+## Phases C6–C8 (done)
 
-Follow the plan's rules for each: **delete first** (every row of the phase's
+Each followed the plan's rules: **delete first** (every row of the phase's
 ledger), let the compiler/suite report dependents, wire the replacement;
 behaviour changes test-first; each Python/prose removal added to
 `polars-cv/scripts/check_removed_symbols.py`; tick the status ledger in the
@@ -125,26 +127,26 @@ See the status ledger. `gen_ops.py` now writes two modules:
 `Pipeline` built on it (it imports the package; no build needed). The op
 catalogue carries each op's `domains`.
 
-Open questions found on the way (not in the plan; ask the user):
+The three questions found on the way were decided by the user and done in C8
+(see below).
 
-- `sobel(ksize=)` and `laplacian(ksize=)` accept only `3` and raise for
-  anything else: a parameter with one legal value.
-- The planner reads only the nesting depth and leaf dtype from a
-  `list`/`array` column (`refine_by_column`); an `Array` column's fixed sizes
-  could give full dims at plan time.
-- The hand-written `Pipeline` sugar methods (`sobel`, `sharpen`, ...) still
-  carry hand-written "Domain:" lines; they are not catalogue ops.
+### C8 — done
 
-### C8 — Sweep, guards and docs
+The consolidation plan is complete. C8 swept the absence scans whose subject
+is gone, completed the removed-symbol gate, restated the per-row rule and
+updated the module and canonical-path tables. By user decision it also:
 
-- Remove absence scans whose subject no longer exists (list each in the commit
-  with the structural mechanism that replaced it).
-- `check_removed_symbols.py` complete for every phase.
-- `CLAUDE.md`, `AGENTS.md` (root, `polars-cv/src/`, `polars-cv/python/…`),
-  `docs/user-guide/migration.md`: restate the per-row rule as "no effect on rank
-  or dtype; a size may be per-row and is then unknown at plan time"; module
-  tables; the `planned` wire field gone.
-- Fill the plan's line-count ledger per phase (method below).
+- plans a fixed-size `Array` column's whole shape (`refine_by_column`, and
+  `.sink()` defers only what the root's column can supply —
+  `ColumnFacts::Pending { sizes }`);
+- dropped `sobel(ksize=)` / `laplacian(ksize=)` (`sobel(axis=)` now refuses an
+  unknown axis);
+- composes each hand-written sugar method's `Domain:` line from the ops it
+  declares (`@_sugar`), checked by a test.
+
+User rule for future work: **everything known is planned** — a fact the
+inputs or parameters fix at plan time must appear in the plan, never be
+dropped for execution to rediscover. The line-count ledger is no longer kept.
 
 ## Commands (run from the repo root unless noted)
 

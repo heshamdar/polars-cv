@@ -560,6 +560,8 @@ REMOVED: tuple[Removed, ...] = (
     Removed(
         "test_lazy_stub_is_current", "C7c: no stub; the forwarders file is checked"
     ),
+    Removed("ExpectedDType", "A4: DType is the one dtype-name enum (generated)"),
+    Removed("root_resolves_from_column", "column_facts_pending (what the column can supply)"),
 )
 
 
