@@ -240,9 +240,6 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         """
         from polars_cv._graph import PipelineGraph
 
-        # Validate no cycles
-        self._validate_no_cycles()
-
         # Collect all nodes in topological order
         all_nodes = self._collect_dependency_graph()
 
@@ -666,33 +663,6 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
 
         dfs(self)
         return order
-
-    def _validate_no_cycles(self) -> None:
-        """
-        Detect circular dependencies in the pipeline graph.
-
-        Raises:
-            ValueError: If a cycle is detected.
-        """
-        visited: set[str] = set()
-        path: set[str] = set()
-
-        def dfs(node: LazyPipelineExpr) -> None:
-            if node._node_id in path:
-                raise ValueError(
-                    f"Circular dependency detected: node '{node._node_id}' "
-                    f"depends on itself. Check your pipeline composition."
-                )
-            if node._node_id in visited:
-                return
-
-            path.add(node._node_id)
-            for upstream in node._upstream:
-                dfs(upstream)
-            path.remove(node._node_id)
-            visited.add(node._node_id)
-
-        dfs(self)
 
     # --- Prevent accidental use as pl.Expr ---
 

@@ -162,3 +162,48 @@ class TestToGraphPreservesPlannedState:
         assert planned(node.pipeline).ndim == planned(pipe).ndim
         assert planned(node.pipeline).dtype == planned(pipe).dtype
         assert planned(node.pipeline).domain == planned(pipe).domain
+
+
+class TestSugarKeywordRefusals:
+    """The hand-written sugar maps its keywords onto one op; a combination
+    that names no single value is refused at the call, naming the keywords."""
+
+    def test_resize_scale_needs_a_factor(self) -> None:
+        with pytest.raises(ValueError, match="'scale' or 'scale_x'/'scale_y'"):
+            Pipeline().source("image_bytes").resize_scale()
+
+    def test_resize_scale_needs_both_axes_without_scale(self) -> None:
+        with pytest.raises(ValueError, match="both scale factors"):
+            Pipeline().source("image_bytes").resize_scale(scale_x=0.5)
+
+    def test_resize_scale_per_axis_overrides_uniform(self) -> None:
+        pipe = Pipeline().source("image_bytes").resize_scale(scale=0.5, scale_y=2.0)
+        (op,) = ops_of(pipe)
+        assert (op.params["scale_x"], op.params["scale_y"]) == (0.5, 2.0)
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({}, "not neither"),
+            ({"width": 4}, "'width' and 'height' must be specified together"),
+            ({"height": 4}, "'width' and 'height' must be specified together"),
+        ],
+    )
+    def test_rasterize_needs_one_canvas(self, kwargs: dict, match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            Pipeline().source("contour").rasterize(**kwargs)
+
+    def test_rasterize_refuses_both_canvases(self) -> None:
+        img = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
+        with pytest.raises(ValueError, match="not both"):
+            Pipeline().source("contour").rasterize(width=4, height=4, shape=img)
+
+    def test_rasterize_shape_must_be_a_node(self) -> None:
+        with pytest.raises(TypeError, match="must be a LazyPipelineExpr"):
+            Pipeline().source("contour").rasterize(shape=(4, 4))  # type: ignore[arg-type]
+
+    def test_a_column_field_must_be_an_expression(self) -> None:
+        """``label_reduce(contours=)`` reads a column as data: a literal has
+        no column to give."""
+        with pytest.raises(TypeError, match="must be a Polars expression"):
+            Pipeline().source("image_bytes").label_reduce([1, 2])  # type: ignore[arg-type]

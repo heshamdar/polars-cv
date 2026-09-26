@@ -14,7 +14,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from polars_cv import LazyPipelineExpr, Pipeline, numpy_from_struct
+from polars_cv import LazyPipelineExpr, OptFlags, Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:
     pass
@@ -178,35 +178,6 @@ class TestLazyComposition:
         result = img.apply_contour_mask(contour)
 
         assert isinstance(result, LazyPipelineExpr)
-
-
-class TestCycleDetection:
-    """Tests for circular dependency detection."""
-
-    def test_no_cycle_simple(self) -> None:
-        """Simple composition should not raise cycle error."""
-        pipe1 = Pipeline().source("image_bytes")
-        pipe2 = Pipeline().source("image_bytes")
-
-        expr1 = pl.col("img1").cv.pipe(pipe1)
-        expr2 = pl.col("img2").cv.pipe(pipe2)
-
-        result = expr1.add(expr2)
-
-        # Should not raise
-        result._validate_no_cycles()
-
-    def test_no_cycle_complex(self) -> None:
-        """Complex but acyclic composition should not raise."""
-        pipe = Pipeline().source("image_bytes")
-
-        a = pl.col("a").cv.pipe(pipe)
-        b = pl.col("b").cv.pipe(pipe)
-        c = a.add(b)
-        d = c.multiply(a)  # Reuses 'a', but not a cycle
-
-        # Should not raise
-        d._validate_no_cycles()
 
 
 class TestDependencyGraph:
@@ -897,3 +868,43 @@ class TestGeneratedLazyWrappers:
         )
         out = df.with_columns(out=expr)
         assert out["out"].dtype == pl.Array(pl.Array(pl.Array(pl.UInt8, 3), 5), 6)
+
+
+class TestPipelineGraphRefusals:
+    """The low-level ``PipelineGraph`` route refuses what ``.sink()`` never
+    produces, rather than emitting a graph the plugin would misread."""
+
+    def _graph(self):
+        return Pipeline().source("image_bytes").grayscale().to_graph(pl.col("img"))
+
+    def test_an_unknown_output_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="'nope' not found"):
+            self._graph().set_output("nope", "numpy")
+        with pytest.raises(ValueError, match="nope"):
+            self._graph().set_multi_output({"nope": "numpy"})
+
+    def test_a_graph_with_no_output_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="[Nn]o output"):
+            self._graph().optimize(OptFlags.all()).to_expr()
+
+    def test_an_unoptimized_graph_is_refused(self) -> None:
+        graph = self._graph()
+        graph.set_output("_output", "numpy")
+        with pytest.raises(RuntimeError, match="optimization phase"):
+            graph.to_expr()
+
+    def test_a_root_without_a_column_is_refused(self) -> None:
+        from polars_cv._graph import PipelineGraph
+
+        graph = PipelineGraph()
+        graph.add_node("n0", Pipeline().source("image_bytes"))
+        graph.set_output("n0", "numpy")
+        with pytest.raises(ValueError, match="Root node 'n0' has no column"):
+            graph.optimize(OptFlags.all()).to_expr()
+
+
+def test_a_lazy_expr_displays_its_guidance(capsys: pytest.CaptureFixture[str]) -> None:
+    expr = pl.col("img").cv.pipe(Pipeline().source("image_bytes")).alias("img")
+    expr._ipython_display_()
+    out = capsys.readouterr().out
+    assert "alias='img'" in out and ".sink(format)" in out
