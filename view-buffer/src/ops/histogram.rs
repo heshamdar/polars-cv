@@ -462,8 +462,8 @@ impl<M: Mode> Op for HistogramOp<M> {
 
     fn validate(
         &self,
-        _input_shapes: &[&[usize]],
-        _input_dtypes: &[DType],
+        _input_shapes: &[&[crate::ops::Dim]],
+        _input_dtypes: &[crate::PlannedDType],
     ) -> Result<(), ValidationError> {
         // A per-row bin count is checked per row.
         if let Bins::Edges(edges) = &self.bins {

@@ -357,6 +357,26 @@ impl<M: Mode> GraphOp<M> {
 
     /// Whether this op reads another graph node's buffer, so a spatial
     /// window hoisted past it would crop only this operand.
+    /// Whether the op can run on inputs of these shapes and dtypes — this
+    /// op's input first, then the operands it reads by id — over what is known
+    /// of them: an error is only ever a verdict on a known fact (the engine
+    /// ops' [`Op::validate`] contract).
+    pub fn validate(
+        &self,
+        inputs: &[&[view_buffer::ops::Dim]],
+        dtypes: &[view_buffer::PlannedDType],
+    ) -> Result<(), view_buffer::ops::validation::ValidationError> {
+        match self.role() {
+            Role::Binary(op, _) => op.validate(inputs, dtypes),
+            // The operands these read are checked per row.
+            Role::ApplyMask { .. }
+            | Role::ChannelMerge { .. }
+            | Role::AssertShape { .. }
+            | Role::ExtractShape
+            | Role::LabelReduce { .. } => Ok(()),
+        }
+    }
+
     pub fn reads_other_nodes(&self) -> bool {
         match self.role() {
             Role::Binary(..) | Role::ApplyMask { .. } | Role::ChannelMerge { .. } => true,

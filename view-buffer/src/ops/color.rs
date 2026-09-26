@@ -85,8 +85,8 @@ impl<M: Mode> ColorConvertOp<M> {
 impl<M: Mode> Op for ColorConvertOp<M> {
     fn validate(
         &self,
-        input_shapes: &[&[usize]],
-        _input_dtypes: &[DType],
+        input_shapes: &[&[crate::ops::Dim]],
+        _input_dtypes: &[crate::PlannedDType],
     ) -> Result<(), crate::ops::validation::ValidationError> {
         let shape = input_shapes[0];
         crate::ops::validation::require_hw_or_hwc(shape)?;

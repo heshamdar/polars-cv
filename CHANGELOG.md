@@ -100,6 +100,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **Everything the plan knows about an op's input is checked where the op is
+  written.** An op no row could run on its planned input raises when it is
+  appended, naming the op, rather than failing every row: an image op on a
+  rank-1 buffer (`source("raw").blur()`), a crop window past a known edge, a
+  channel index past a known channel count, and two operands whose known
+  sizes cannot broadcast (`x.add(y)` over `(4, 5, 3)` and `(2, 5, 3)` used to
+  plan `(4, 5, 3)` and then fail each row). A size the plan does not know is
+  still checked per row. Validation messages show an unknown size as `?`.
+- **A binary op plans each axis it can.** Its operands broadcast axis by axis,
+  so two 8x8 images of unknown channel count add to a planned 8x8 (the
+  planner used to drop every size when one was unknown).
 - **A contour source only decodes; rasterizing is `rasterize()`.**
   **Breaking:** `source()` no longer takes `width`, `height`, `shape`,
   `fill_value` or `background`; write `source("contour").rasterize(...)`.

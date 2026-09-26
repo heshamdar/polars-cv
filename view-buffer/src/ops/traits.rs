@@ -1,7 +1,7 @@
 //! Core operation traits and types.
 
-use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::ops::shape_rule::OpShape;
+use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule, PlannedDType};
+use crate::ops::shape_rule::{Dim, OpShape};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::validation::ValidationError;
 
@@ -137,24 +137,27 @@ pub trait Op {
     /// requires materialization that makes input strides irrelevant.
     fn infer_strides(&self, input_shape: &[usize], input_strides: &[isize]) -> Option<Vec<isize>>;
 
-    /// Validates the operation at plan time.
+    /// Whether the op can run on inputs of these shapes and dtypes, over what
+    /// is known of them: a size is a [`Dim`] (known, or not until a row runs)
+    /// and a dtype a [`PlannedDType`].
     ///
-    /// Returns Ok(()) if the operation is valid for the given inputs,
-    /// or Err with a description of why validation failed.
+    /// **An error is only ever a verdict on a known fact.** A check that reads
+    /// a size or dtype the caller does not know says nothing; a rank check
+    /// always decides (an input's rank is the length of its shape). So the
+    /// planner raises every error this returns, over planned shapes, and the
+    /// executor calls it with everything known
+    /// ([`validate_concrete`](crate::ops::validation::validate_concrete)), so
+    /// one definition serves both and nothing classifies an error afterwards.
     ///
-    /// **Required, with no default** (CR-34): the executor calls this against
+    /// **Required, with no default** (CR-34): the executor calls it against
     /// the concrete input before running the op, so a shape the plan could not
     /// see becomes a row error instead of an index-out-of-bounds panic. An op
     /// that accepts anything says so with an explicit `Ok(())`; a new op cannot
     /// inherit "accepts anything" by omission.
-    ///
-    /// The planner also calls it with no dtypes and placeholder sizes for the
-    /// dimensions it cannot know (see `ValidationError::depends_only_on_rank`),
-    /// so an implementation must not assume `input_dtypes` is non-empty.
     fn validate(
         &self,
-        input_shapes: &[&[usize]],
-        input_dtypes: &[DType],
+        input_shapes: &[&[Dim]],
+        input_dtypes: &[PlannedDType],
     ) -> Result<(), ValidationError>;
 
     // --- Dtype Contract Methods ---

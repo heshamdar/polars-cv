@@ -646,8 +646,8 @@ impl<M: Mode> Op for ComputeOp<M> {
 
     fn validate(
         &self,
-        input_shapes: &[&[usize]],
-        input_dtypes: &[DType],
+        input_shapes: &[&[crate::ops::Dim]],
+        input_dtypes: &[crate::PlannedDType],
     ) -> Result<(), ValidationError> {
         match self {
             ComputeOp::Normalize {
@@ -665,17 +665,24 @@ impl<M: Mode> Op for ComputeOp<M> {
                             got: shape.to_vec(),
                         });
                     }
-                    let channels = if shape.len() == 3 { shape[2] } else { 1 };
-                    if mean.len() != channels || std.len() != channels {
-                        return Err(ValidationError::ShapeRequirement {
-                            requirement: "mean/std length must match channel count",
-                            got: vec![mean.len(), std.len(), channels],
-                        });
+                    // An unknown channel count is checked per row.
+                    let channels = if shape.len() == 3 {
+                        shape[2].known()
+                    } else {
+                        Some(1)
+                    };
+                    if let Some(channels) = channels {
+                        if mean.len() != channels || std.len() != channels {
+                            return Err(ValidationError::ShapeRequirement {
+                                requirement: "mean/std length must match channel count",
+                                got: shape.to_vec(),
+                            });
+                        }
                     }
                 }
 
-                // A shape-only caller (plan-time validation) passes no dtype.
-                if let Some(&dtype) = input_dtypes.first() {
+                // An unknown dtype is checked per row.
+                if let Some(crate::PlannedDType::Known(dtype)) = input_dtypes.first().copied() {
                     if !self.accepted_input_dtypes().accepts(dtype) {
                         return Err(ValidationError::DTypeRequirement {
                             expected: vec![DType::F32, DType::F64],

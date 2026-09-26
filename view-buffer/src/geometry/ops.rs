@@ -375,8 +375,8 @@ impl<M: Mode> Op for GeometryOp<M> {
 
     fn validate(
         &self,
-        _input_shapes: &[&[usize]],
-        _input_dtypes: &[DType],
+        _input_shapes: &[&[crate::ops::Dim]],
+        _input_dtypes: &[crate::PlannedDType],
     ) -> Result<(), ValidationError> {
         match self {
             // A canvas another node sets is known only once that node has

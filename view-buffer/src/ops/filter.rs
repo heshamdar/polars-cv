@@ -84,8 +84,8 @@ impl<M: Mode> ConvolveOp<M> {
 impl<M: Mode> Op for ConvolveOp<M> {
     fn validate(
         &self,
-        input_shapes: &[&[usize]],
-        _input_dtypes: &[DType],
+        input_shapes: &[&[crate::ops::Dim]],
+        _input_dtypes: &[crate::PlannedDType],
     ) -> Result<(), crate::ops::validation::ValidationError> {
         self.check()
             .map_err(|message| crate::ops::validation::ValidationError::Generic { message })?;

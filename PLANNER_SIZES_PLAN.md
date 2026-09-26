@@ -17,7 +17,7 @@
 |---|---|
 | S0 — Failing tests for the review findings | **done** — 15 strict gaps in `tests/test_known_gaps.py::TestPlannedSizes` (each watched failing with `--runxfail`); 6 controls in `tests/test_plan_claims.py` (3 watched failing, 3 forward guards for S1/S2) |
 | S1 — The planned shape is one rank-N value | **done** — `PlannedShape` (`Ranked`/`Unranked`) replaces `ndim` + `dims[3]`; a buffer's shape publishes at every rank; `assert_shape` is `{dims, exact}`; one `apply_declaration` for plan and row; R2/R3/R6 gaps moved into the suite; see *S1 as done* for deviations |
-| S2 — One `validate`, over symbolic sizes | not started |
+| S2 — One `validate`, over symbolic sizes | **done** — `Op::validate(&[&[Dim]], &[PlannedDType])`, every error a verdict; `check_rank`, the `1` placeholder and `depends_only_on_rank` deleted; `validate_concrete` for execution; per-axis `broadcast_dims`; binary ops validated at plan time; soundness property over the catalogue; R1/R4/R5 gaps moved into the suite; see *S2 as done* |
 | S3 — Operand reads are one mechanism | not started (in scope) |
 
 ---
@@ -247,6 +247,43 @@ returns an error only when that size is `Known`:
 - R1, R4 and R5 go green. The executor call sites (`expr.rs:122`,
   `compiled.rs:833/862/882/909`, `encode.rs:29`) change only to the wrapper's
   name.
+
+### S2 as done — deviations and findings
+
+- **`validate_concrete` is a free function**, not a provided trait method:
+  a provided method could be overridden and drift from `validate`; a free
+  function over `&dyn Op` cannot, so "execution calls the same `validate`" is
+  structural.
+- **`GraphStep::validate` routes every engine family**, not only `Buffer` and
+  `Geometry`: `check_rank` returned `Ok` for reductions, histograms and
+  perceptual hashes, so their rank checks (a reduction axis past the rank, a
+  hash of a rank-1 buffer) never ran at plan time. `GraphOp::validate` is an
+  exhaustive match over `Role`; a binary op validates both operands' planned
+  dims, and the other node readers wait for S3.
+- **`ValidationError::ShapeMismatch` deleted**: nothing constructed it.
+  `ShapeRequirement.got` is `Vec<Dim>`, rendered `[16, ?, 3]`; a fully known
+  shape renders exactly as before. `Normalize`'s mean/std mismatch now names
+  the input shape (it reported `[mean_len, std_len, channels]` as a "shape").
+- **An input of unknown rank is not validated** (it gives `validate` nothing
+  to decide), so the S0 control "blur, rank unknown" still guards a path the
+  planner does not take.
+- **Soundness property** `plan::validation_soundness`: every catalogue sample
+  plus seven size-sensitive ops, over every shape of rank 1–4 with sizes
+  {1, 2, 3, 5} (binary: rank 1–3, sizes {1, 2, 3}) and every mask of unknown
+  sizes. Watched failing by reading an unknown channel count as 1 in
+  `require_channels_at_least` (`cvt_color` refused `[1, 1, ?]`, though
+  `[1, 1, 3]` runs). Fixtures: a three-channel check that reads an unknown
+  channel count as 1 (caught) and the same check saying nothing (passes).
+- **Controls watched failing**: `threshold` (with `require_single_channel`
+  reading an unknown channel count as 3) and `add` with one operand unknown
+  (with `broadcast_dims` refusing a known size against an unknown one).
+- **Tests changed because the behaviour they pinned was removed**:
+  `test_offset_crop_with_full_extent_is_kept` and
+  `test_offset_crop_with_full_extent_is_not_eliminated` built a pipeline whose
+  crop runs past a known edge (every row failed); it is now refused at build,
+  which both assert, and each keeps its optimizer property over a size only
+  the data states. The R1 gap's "every row fails" precondition went with its
+  marker (building now raises first).
 
 ### S3 — Operand reads are one mechanism (optional, elegance)
 

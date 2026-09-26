@@ -19,8 +19,8 @@
 //! - All operations use standard IEEE 754 arithmetic
 
 use crate::core::buffer::ViewBuffer;
-use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule, ViewType};
-use crate::ops::shape_rule::OpShape;
+use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule, PlannedDType, ViewType};
+use crate::ops::shape_rule::{show_dims, Dim, OpShape};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
@@ -550,26 +550,25 @@ impl Op for BinaryOp {
 
     fn validate(
         &self,
-        input_shapes: &[&[usize]],
-        _input_dtypes: &[DType],
+        input_shapes: &[&[Dim]],
+        _input_dtypes: &[PlannedDType],
     ) -> Result<(), ValidationError> {
-        if input_shapes.len() < 2 {
+        let [a, b, ..] = input_shapes else {
             return Err(ValidationError::InsufficientInputs {
                 expected: 2,
                 got: input_shapes.len(),
             });
-        }
-
-        // Check shapes are broadcastable
-        if broadcast_shapes(input_shapes[0], input_shapes[1]).is_none() {
+        };
+        // Refused only where two known sizes cannot broadcast.
+        if broadcast_dims(a, b).is_none() {
             return Err(ValidationError::Generic {
                 message: format!(
-                    "shapes {:?} and {:?} cannot be broadcast together",
-                    input_shapes[0], input_shapes[1]
+                    "shapes {} and {} cannot be broadcast together",
+                    show_dims(a),
+                    show_dims(b)
                 ),
             });
         }
-
         Ok(())
     }
 
@@ -589,6 +588,32 @@ impl Op for BinaryOp {
     fn output_dtype_rule(&self) -> OutputDTypeRule {
         OutputDTypeRule::PreserveInput
     }
+}
+
+/// Two shapes broadcast together over what is known of them, aligned from the
+/// last axis; `None` when two known sizes cannot broadcast (neither is 1 and
+/// they differ).
+///
+/// Each axis on its own: two known sizes give theirs; a known 1 gives the
+/// other side; a known size `n > 1` against an unknown one gives `n` (the
+/// unknown one must be 1 or `n` for the row to run at all); two unknown sizes
+/// stay unknown — each operand numbers its own `Input(k)`, so equal symbols
+/// on the two sides are not the same size.
+pub fn broadcast_dims(a: &[Dim], b: &[Dim]) -> Option<Vec<Dim>> {
+    let rank = a.len().max(b.len());
+    let at = |s: &[Dim], i: usize| {
+        (i + s.len())
+            .checked_sub(rank)
+            .map_or(Dim::Known(1), |j| s[j])
+    };
+    (0..rank)
+        .map(|i| match (at(a, i), at(b, i)) {
+            (Dim::Known(1), d) | (d, Dim::Known(1)) => Some(d),
+            (Dim::Known(x), Dim::Known(y)) => (x == y).then_some(Dim::Known(x)),
+            (Dim::Known(n), _) | (_, Dim::Known(n)) => Some(Dim::Known(n)),
+            _ => Some(Dim::Unknown),
+        })
+        .collect()
 }
 
 /// Compute the broadcast shape of two shapes.
@@ -698,6 +723,37 @@ mod tests {
     fn test_broadcast_shapes_incompatible() {
         let result = broadcast_shapes(&[3, 4], &[3, 5]);
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn broadcast_dims_decides_each_axis_on_what_it_knows() {
+        use crate::ops::shape_rule::Dim::{Input, Known, Unknown};
+        // Two known equal sizes, and a known 1 against anything.
+        assert_eq!(
+            broadcast_dims(&[Known(8), Known(1)], &[Known(8), Input(1)]),
+            Some(vec![Known(8), Input(1)])
+        );
+        // A known size > 1 against an unknown one: the row runs only if the
+        // unknown one is 1 or that size.
+        assert_eq!(
+            broadcast_dims(&[Known(8), Input(1)], &[Input(0), Input(1)]),
+            Some(vec![Known(8), Unknown])
+        );
+        // Each operand numbers its own symbols: equal ones are not one size.
+        assert_eq!(
+            broadcast_dims(&[Input(0)], &[Input(0)]),
+            Some(vec![Unknown])
+        );
+        // Missing leading axes broadcast as 1.
+        assert_eq!(
+            broadcast_dims(&[Known(4), Known(5), Known(3)], &[Known(3)]),
+            Some(vec![Known(4), Known(5), Known(3)])
+        );
+        // Two known sizes that cannot broadcast have no output.
+        assert_eq!(
+            broadcast_dims(&[Known(4), Input(1)], &[Known(2), Input(1)]),
+            None
+        );
     }
 
     #[test]

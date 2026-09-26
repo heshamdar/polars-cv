@@ -135,6 +135,21 @@ impl<M: Mode> GraphStep<M> {
         }
     }
 
+    /// Whether the step can run on inputs of these shapes and dtypes (its
+    /// input, then any operand it reads by id), over what is known of them:
+    /// every error is a verdict on a known fact, so the planner raises each
+    /// one and execution calls it with everything known.
+    pub fn validate(
+        &self,
+        inputs: &[&[view_buffer::ops::Dim]],
+        dtypes: &[view_buffer::PlannedDType],
+    ) -> Result<(), view_buffer::ops::validation::ValidationError> {
+        match self.rules() {
+            Rules::Engine(op) => op.validate(inputs, dtypes),
+            Rules::Graph(op) => op.validate(inputs, dtypes),
+        }
+    }
+
     /// How the step's output shape follows from its inputs — every step has
     /// one, and the planner reads the output rank (its length), channel count
     /// (its axis 2) and sizes from it. A per-row value is `Sym::PerRow`.

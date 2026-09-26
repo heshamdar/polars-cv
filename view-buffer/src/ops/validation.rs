@@ -3,21 +3,23 @@
 //! Provides plan-time validation of shape and dtype constraints,
 //! allowing invalid pipelines to be rejected before execution.
 
-use crate::core::dtype::DType;
+use crate::core::dtype::{DType, PlannedDType};
+use crate::ops::shape_rule::{known_dims, show_dims, Dim};
 use thiserror::Error;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// Errors that can occur during operation validation.
+/// Why an operation cannot run on its inputs. Every variant is a verdict on
+/// a known fact (see [`Op::validate`](crate::ops::traits::Op::validate)).
 #[derive(Debug, Clone, Error)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ValidationError {
     /// Shape requirement not met.
-    #[error("Shape requirement: {requirement}. Got shape {got:?}")]
+    #[error("Shape requirement: {requirement}. Got shape {}", show_dims(.got))]
     ShapeRequirement {
         requirement: &'static str,
-        got: Vec<usize>,
+        got: Vec<Dim>,
     },
 
     /// DType requirement not met.
@@ -36,13 +38,6 @@ pub enum ValidationError {
     #[error("Operation requires {expected} inputs, got {got}")]
     InsufficientInputs { expected: usize, got: usize },
 
-    /// Shape mismatch between inputs.
-    #[error("Shape mismatch: expected {expected:?}, got {got:?}")]
-    ShapeMismatch {
-        expected: Vec<usize>,
-        got: Vec<usize>,
-    },
-
     /// Invalid axis for operation.
     #[error("Invalid axis {axis} for array with {ndim} dimensions")]
     InvalidAxis { axis: usize, ndim: usize },
@@ -56,28 +51,20 @@ pub enum ValidationError {
     NotAPermutation { axes: Vec<usize>, ndim: usize },
 }
 
-impl ValidationError {
-    /// Whether the failure is decided by the input's *rank* alone, so it holds
-    /// whatever the (possibly unknown) dimension sizes are.
-    ///
-    /// The planner validates an op against a shape whose unknown sizes are
-    /// placeholders; only a rank-level failure is a real verdict there. A
-    /// size-level one (an element count, a window past an edge) is a verdict
-    /// only once every size is known. Exhaustive, so a new variant must say
-    /// which it is.
-    pub fn depends_only_on_rank(&self) -> bool {
-        match self {
-            ValidationError::RankRequirement { .. }
-            | ValidationError::InvalidAxis { .. }
-            | ValidationError::NotAPermutation { .. }
-            | ValidationError::InsufficientInputs { .. } => true,
-            ValidationError::ShapeRequirement { .. }
-            | ValidationError::DTypeRequirement { .. }
-            | ValidationError::Generic { .. }
-            | ValidationError::ShapeMismatch { .. }
-            | ValidationError::InvalidParameter { .. } => false,
-        }
-    }
+/// [`Op::validate`](crate::ops::traits::Op::validate) over inputs whose every
+/// size and dtype is known — the executor's call, before an op runs on a row.
+pub fn validate_concrete(
+    op: &dyn crate::ops::traits::Op,
+    input_shapes: &[&[usize]],
+    input_dtypes: &[DType],
+) -> Result<(), ValidationError> {
+    let shapes: Vec<Vec<Dim>> = input_shapes.iter().map(|s| known_dims(s)).collect();
+    let shapes: Vec<&[Dim]> = shapes.iter().map(Vec::as_slice).collect();
+    let dtypes: Vec<PlannedDType> = input_dtypes
+        .iter()
+        .map(|&d| PlannedDType::Known(d))
+        .collect();
+    op.validate(&shapes, &dtypes)
 }
 
 // --- Shape Predicates ---
@@ -102,7 +89,7 @@ pub fn is_image_like(shape: &[usize]) -> bool {
 }
 
 /// `[H, W]` or `[H, W, C]`: the layout the image kernels index directly.
-pub fn require_hw_or_hwc(shape: &[usize]) -> Result<(), ValidationError> {
+pub fn require_hw_or_hwc(shape: &[Dim]) -> Result<(), ValidationError> {
     if matches!(shape.len(), 2 | 3) {
         Ok(())
     } else {
@@ -114,7 +101,7 @@ pub fn require_hw_or_hwc(shape: &[usize]) -> Result<(), ValidationError> {
 }
 
 /// At least `[H, W]`: kernels that read the first two axes as height and width.
-pub fn require_spatial(shape: &[usize]) -> Result<(), ValidationError> {
+pub fn require_spatial(shape: &[Dim]) -> Result<(), ValidationError> {
     if shape.len() >= 2 {
         Ok(())
     } else {
@@ -125,9 +112,15 @@ pub fn require_spatial(shape: &[usize]) -> Result<(), ValidationError> {
     }
 }
 
-/// `[H, W]` or `[H, W, 1]`: kernels defined on one channel.
-pub fn require_single_channel(shape: &[usize]) -> Result<(), ValidationError> {
-    if is_2d_like(shape) {
+/// `[H, W]` or `[H, W, 1]`: kernels defined on one channel. An unknown
+/// channel count is not refused.
+pub fn require_single_channel(shape: &[Dim]) -> Result<(), ValidationError> {
+    let ok = match shape {
+        [_, _] => true,
+        [_, _, c] => c.known().is_none_or(|c| c == 1),
+        _ => false,
+    };
+    if ok {
         Ok(())
     } else {
         Err(ValidationError::ShapeRequirement {
@@ -138,13 +131,15 @@ pub fn require_single_channel(shape: &[usize]) -> Result<(), ValidationError> {
     }
 }
 
-/// At least `[H, W, C]` with `C >= min_channels` in axis 2.
+/// At least `[H, W, C]` with `C >= min_channels` in axis 2. An unknown channel
+/// count is not refused.
 pub fn require_channels_at_least(
-    shape: &[usize],
+    shape: &[Dim],
     min_channels: usize,
     requirement: &'static str,
 ) -> Result<(), ValidationError> {
-    if shape.len() >= 3 && shape[2] >= min_channels {
+    let ok = shape.len() >= 3 && shape[2].known().is_none_or(|c| c >= min_channels);
+    if ok {
         Ok(())
     } else {
         Err(ValidationError::ShapeRequirement {
@@ -155,7 +150,7 @@ pub fn require_channels_at_least(
 }
 
 /// Every index in `axes` names an axis of `shape`.
-pub fn require_axes(shape: &[usize], axes: &[usize]) -> Result<(), ValidationError> {
+pub fn require_axes(shape: &[Dim], axes: &[usize]) -> Result<(), ValidationError> {
     match axes.iter().find(|&&a| a >= shape.len()) {
         Some(&axis) => Err(ValidationError::InvalidAxis {
             axis,

@@ -220,22 +220,24 @@ impl<M: Mode> Op for PerceptualHashOp<M> {
 
     fn validate(
         &self,
-        input_shapes: &[&[usize]],
-        _input_dtypes: &[DType],
+        input_shapes: &[&[crate::ops::Dim]],
+        _input_dtypes: &[crate::PlannedDType],
     ) -> Result<(), ValidationError> {
         // Validate input is an image-like shape
         let shape = input_shapes[0];
+        let show = crate::ops::shape_rule::show_dims(shape);
         if shape.len() < 2 || shape.len() > 3 {
             return Err(ValidationError::InvalidParameter {
                 param: "input_shape".to_string(),
-                reason: format!("Expected 2D or 3D image shape [H, W] or [H, W, C], got {shape:?}"),
+                reason: format!("Expected 2D or 3D image shape [H, W] or [H, W, C], got {show}"),
             });
         }
 
-        if shape.len() == 3 && shape[2] > 4 {
+        // An unknown channel count is checked per row.
+        if shape.len() == 3 && shape[2].known().is_some_and(|c| c > 4) {
             return Err(ValidationError::InvalidParameter {
                 param: "input_shape".to_string(),
-                reason: format!("at most 4 channels can be hashed as an image, got {shape:?}"),
+                reason: format!("at most 4 channels can be hashed as an image, got {show}"),
             });
         }
 
@@ -381,12 +383,13 @@ mod tests {
     #[test]
     fn test_hash_size_validation() {
         let op = PerceptualHashOp::new(HashAlgorithm::Perceptual).with_hash_size(64);
-        let result = op.validate(&[&[64, 64, 3]], &[DType::U8]);
+        let result = crate::ops::validation::validate_concrete(&op, &[&[64, 64, 3]], &[DType::U8]);
         assert!(result.is_ok());
 
         // Invalid: not power of 2
         let op_invalid = PerceptualHashOp::new(HashAlgorithm::Perceptual).with_hash_size(100);
-        let result = op_invalid.validate(&[&[64, 64, 3]], &[DType::U8]);
+        let result =
+            crate::ops::validation::validate_concrete(&op_invalid, &[&[64, 64, 3]], &[DType::U8]);
         assert!(result.is_err());
     }
 

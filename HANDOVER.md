@@ -93,12 +93,12 @@ and every Python method is generated.
   else `RotateAffine`; `warp_affine` → `Affine`), now only inside
   `ViewExpr::apply_op` (`ComputeOp::lowered`). `a_lowered_op_keeps_its_shape`
   (view-buffer) pins the lowered shape to the op's.
-- `plan::check_rank` still passes `1` for an unknown size to `validate`,
-  filtered to rank-only verdicts: `PLANNER_SIZES_PLAN.md` S2 removes it.
+- `Op::validate` takes planned sizes (`&[&[Dim]]`) and says nothing about an
+  unknown one, so the planner raises every error it returns
+  (`PLANNER_SIZES_PLAN.md` S2); the executor calls `validate_concrete`.
 - A family with no per-row value (`Source`, `Sink`) derives `Ops` with no
   mode parameter: it is its own wire form and has no `Resolve`.
-- `tests/test_known_gaps.py::TestPlannedSizes` holds the open planned-size
-  defects (`PLANNER_SIZES_PLAN.md` S2).
+- `tests/test_known_gaps.py` has no open gap (its mechanism is kept).
 - The planned shape is one rank-N value (`plan::PlannedShape`) since
   `PLANNER_SIZES_PLAN.md` S1.
 

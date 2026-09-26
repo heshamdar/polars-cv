@@ -477,8 +477,20 @@ pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Resu
     let shape = step.shape();
     let input = input_dims(step, state);
     let other_input = other.and_then(|o| input_dims(step, o));
-    if let Some(input) = &input {
-        check_rank(step, input)?;
+    // The step's own validation over what the plan knows of its inputs: every
+    // error is a verdict on a known fact, so each is raised. An input of
+    // unknown rank gives it nothing to decide.
+    let inputs: Option<Vec<&[Dim]>> = match (&input, other) {
+        (Some(input), None) => Some(vec![input]),
+        (Some(input), Some(_)) => other_input.as_deref().map(|o| vec![input.as_slice(), o]),
+        (None, _) => None,
+    };
+    if let Some(inputs) = inputs {
+        let dtypes: Vec<PlannedDType> = std::iter::once(state.dtype)
+            .chain(other.map(|o| o.dtype))
+            .collect();
+        step.validate(&inputs, &dtypes)
+            .map_err(|e| format!("{}(): {e}", op.name()))?;
     }
     let mut ranks = vec![input.as_ref().map(Vec::len)];
     if other.is_some() {
@@ -607,29 +619,6 @@ pub(crate) fn input_dims(step: &crate::ops::TypedOp, state: &State) -> Option<Ve
             Some(Vec::new())
         }
         _ => None,
-    }
-}
-
-/// The op's own `validate`, refused while the pipeline is built wherever the
-/// plan knows enough: every verdict when the whole input shape is known, and
-/// only the verdicts that depend on the rank alone (a channel op on a rank-2
-/// buffer) otherwise. Sizes the plan does not know are passed as 1, which no
-/// rank-level verdict reads; a size-level failure then stays a row error.
-fn check_rank(step: &crate::ops::TypedOp, input: &[Dim]) -> Result<(), String> {
-    let op: &dyn view_buffer::Op = match step {
-        GraphStep::Buffer(dto) => dto.as_op(),
-        GraphStep::Geometry(geo) => geo,
-        _ => return Ok(()),
-    };
-    if input.is_empty() {
-        return Ok(());
-    }
-    let known: Option<Vec<usize>> = input.iter().map(|d| d.known()).collect();
-    let fully_known = known.is_some();
-    let shape = known.unwrap_or_else(|| input.iter().map(|d| d.known().unwrap_or(1)).collect());
-    match op.validate(&[shape.as_slice()], &[]) {
-        Err(e) if fully_known || e.depends_only_on_rank() => Err(e.to_string()),
-        _ => Ok(()),
     }
 }
 
@@ -1340,5 +1329,158 @@ mod tests {
             hw(rotate(json!({"$slot": 0})), &square),
             (Some(10), Some(10))
         );
+    }
+}
+
+/// Plan-time validation is sound: a refusal over what the plan knows is a
+/// verdict every row would reach. For every catalogue op and every way of
+/// knowing only part of an input's shape, a refusal over the partly known
+/// shape implies a refusal over each whole shape it could be.
+#[cfg(test)]
+mod validation_soundness {
+    use super::*;
+    use view_buffer::ops::validation::ValidationError;
+
+    /// Every shape of rank `1..=max_rank` whose sizes are drawn from `sizes`.
+    fn shapes(max_rank: usize, sizes: &[usize]) -> Vec<Vec<usize>> {
+        let mut out: Vec<Vec<usize>> = vec![Vec::new()];
+        let mut all = Vec::new();
+        for _ in 0..max_rank {
+            out = out
+                .iter()
+                .flat_map(|s| {
+                    sizes.iter().map(move |&n| {
+                        let mut s = s.clone();
+                        s.push(n);
+                        s
+                    })
+                })
+                .collect();
+            all.extend(out.iter().cloned());
+        }
+        all
+    }
+
+    /// `shape` with the sizes `mask` selects unknown.
+    fn masked(shape: &[usize], mask: u32) -> Vec<Dim> {
+        shape
+            .iter()
+            .enumerate()
+            .map(|(axis, &n)| {
+                if mask & (1 << axis) != 0 {
+                    Dim::Input(axis)
+                } else {
+                    Dim::Known(n)
+                }
+            })
+            .collect()
+    }
+
+    type Validate<'a> = &'a dyn Fn(&[&[Dim]]) -> Result<(), ValidationError>;
+
+    /// The partly known inputs `validate` refuses while some whole shape they
+    /// could be is accepted, as `(partly known, whole)` — empty when sound.
+    /// `inputs` is 1, or 2 for an op over two operands.
+    fn unsound_verdicts(validate: Validate<'_>, inputs: usize) -> Vec<String> {
+        let known = |shapes: &[&[usize]]| {
+            let dims: Vec<Vec<Dim>> = shapes
+                .iter()
+                .map(|s| view_buffer::ops::shape_rule::known_dims(s))
+                .collect();
+            let dims: Vec<&[Dim]> = dims.iter().map(Vec::as_slice).collect();
+            validate(&dims).is_ok()
+        };
+        let mut found = Vec::new();
+        let mut check = |whole: &[&[usize]], partial: &[Vec<Dim>]| {
+            let partial_refs: Vec<&[Dim]> = partial.iter().map(Vec::as_slice).collect();
+            if validate(&partial_refs).is_err() && known(whole) && found.len() < 5 {
+                found.push(format!("refused {partial:?}, but {whole:?} is accepted"));
+            }
+        };
+        if inputs == 1 {
+            for shape in shapes(4, &[1, 2, 3, 5]) {
+                for mask in 1..(1u32 << shape.len()) {
+                    check(&[&shape], &[masked(&shape, mask)]);
+                }
+            }
+        } else {
+            let all = shapes(3, &[1, 2, 3]);
+            for a in &all {
+                for b in &all {
+                    let bits = a.len() + b.len();
+                    for mask in 1..(1u32 << bits) {
+                        let (ma, mb) = (mask & ((1 << a.len()) - 1), mask >> a.len());
+                        check(&[a, b], &[masked(a, ma), masked(b, mb)]);
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    /// Ops whose verdicts turn on sizes, beyond each op's one catalogue
+    /// sample.
+    fn size_sensitive() -> Vec<crate::ops::TypedOp> {
+        [
+            serde_json::json!({"op": "channel_select", "index": 2}),
+            serde_json::json!({"op": "channel_swap", "order": [1, 0]}),
+            serde_json::json!({"op": "normalize", "method": "preset",
+                               "mean": [0.5, 0.5, 0.5], "std": [0.2, 0.2, 0.2]}),
+            serde_json::json!({"op": "crop", "top": 2, "left": 0, "height": 1}),
+            serde_json::json!({"op": "reshape", "shape": [3, 5]}),
+            serde_json::json!({"op": "transpose", "axes": [1, 0]}),
+            serde_json::json!({"op": "reduce_max", "axis": 3}),
+        ]
+        .into_iter()
+        .map(|v| serde_json::from_value(v).unwrap())
+        .collect()
+    }
+
+    #[test]
+    fn a_refusal_over_what_the_plan_knows_holds_for_every_row() {
+        let mut unsound = Vec::new();
+        for op in crate::ops::TypedOp::samples()
+            .into_iter()
+            .chain(size_sensitive())
+        {
+            let inputs = match &op {
+                GraphStep::Graph(graph) if graph.binary().is_some() => 2,
+                _ => 1,
+            };
+            let validate = |shapes: &[&[Dim]]| op.validate(shapes, &[]);
+            let found = unsound_verdicts(&validate, inputs);
+            if !found.is_empty() {
+                unsound.push(format!("{}: {found:?}", op.name()));
+            }
+        }
+        assert!(
+            unsound.is_empty(),
+            "unsound plan-time verdicts:\n{unsound:#?}"
+        );
+    }
+
+    /// The checker, on a three-channel check that reads an unknown channel
+    /// count as 1 (the placeholder the planner used to pass), and on the same
+    /// check saying nothing about an unknown one.
+    #[test]
+    fn the_checker_catches_a_placeholder_and_passes_the_real_check() {
+        let refuse = || {
+            Err(ValidationError::Generic {
+                message: "three channels are required".into(),
+            })
+        };
+        let placeholder = |shapes: &[&[Dim]]| match shapes[0] {
+            [_, _, c] if c.known().unwrap_or(1) == 3 => Ok(()),
+            _ => refuse(),
+        };
+        assert!(
+            !unsound_verdicts(&placeholder, 1).is_empty(),
+            "the checker missed a verdict read off a placeholder size"
+        );
+        let real = |shapes: &[&[Dim]]| match shapes[0] {
+            [_, _, c] if c.known().is_none_or(|c| c == 3) => Ok(()),
+            _ => refuse(),
+        };
+        assert_eq!(unsound_verdicts(&real, 1), Vec::<String>::new());
     }
 }

@@ -8,6 +8,7 @@
 //! - allocating ops must create new storage
 //! - dtype must be preserved unless explicitly changed
 
+use view_buffer::ops::validation::validate_concrete;
 use view_buffer::ops::{ComputeOp, MemoryEffect, Normalization, Op, ViewOp};
 use view_buffer::{DType, ViewBuffer, ViewExpr};
 
@@ -229,7 +230,7 @@ fn test_cast_changes_dtype() {
 fn test_normalize_validation_accepts_2d() {
     let buf_2d = make_2d_buffer(); // [10, 10] F32
     let op = ComputeOp::from_normalization(Normalization::MinMax, DType::F32);
-    let result = op.validate(&[buf_2d.shape()], &[buf_2d.dtype()]);
+    let result = validate_concrete(&op, &[buf_2d.shape()], &[buf_2d.dtype()]);
     assert!(result.is_ok(), "Normalize should accept 2D F32 buffer");
 }
 
@@ -244,7 +245,7 @@ fn test_normalize_validation_accepts_hw1() {
         .execute();
 
     let op = ComputeOp::from_normalization(Normalization::MinMax, DType::F32);
-    let result = op.validate(&[buf_hw1.shape()], &[buf_hw1.dtype()]);
+    let result = validate_concrete(&op, &[buf_hw1.shape()], &[buf_hw1.dtype()]);
     assert!(result.is_ok(), "Normalize should accept HW1 F32 buffer");
 }
 
@@ -265,7 +266,7 @@ fn test_normalize_validation_channel_rules() {
 
     for method in [Normalization::MinMax, Normalization::ZScore] {
         let op = ComputeOp::from_normalization(method, DType::F32);
-        assert!(op.validate(&[buf_hwc.shape()], &[buf_hwc.dtype()]).is_ok());
+        assert!(validate_concrete(&op, &[buf_hwc.shape()], &[buf_hwc.dtype()]).is_ok());
     }
 
     let mismatched = ComputeOp::from_normalization(
@@ -276,9 +277,7 @@ fn test_normalize_validation_channel_rules() {
         DType::F32,
     );
     assert!(
-        mismatched
-            .validate(&[buf_hwc.shape()], &[buf_hwc.dtype()])
-            .is_err(),
+        validate_concrete(&mismatched, &[buf_hwc.shape()], &[buf_hwc.dtype()]).is_err(),
         "a preset with 2 means cannot normalize 3 channels"
     );
 }
@@ -304,7 +303,7 @@ fn test_normalize_validation_accepts_all_numeric_types() {
     ];
 
     for dtype in numeric_dtypes {
-        let result = op.validate(&[&[10, 10]], &[dtype]);
+        let result = validate_concrete(&op, &[&[10, 10]], &[dtype]);
         assert!(
             result.is_ok(),
             "Normalize should accept {dtype:?} dtype with dtype promotion"

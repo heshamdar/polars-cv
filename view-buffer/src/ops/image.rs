@@ -349,8 +349,8 @@ pub struct ImageOp<M: Mode = Exec> {
 impl<M: Mode> Op for ImageOp<M> {
     fn validate(
         &self,
-        input_shapes: &[&[usize]],
-        _input_dtypes: &[DType],
+        input_shapes: &[&[crate::ops::Dim]],
+        _input_dtypes: &[crate::PlannedDType],
     ) -> Result<(), crate::ops::validation::ValidationError> {
         use crate::ops::validation::{require_hw_or_hwc, require_single_channel, ValidationError};
         let shape = input_shapes[0];
@@ -377,8 +377,8 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::ResizeMin { .. }
             | ImageOpKind::Letterbox { .. } => {
                 require_hw_or_hwc(shape)?;
-                match shape.get(2) {
-                    Some(&c) if c > 4 => Err(ValidationError::ShapeRequirement {
+                match shape.get(2).and_then(|c| c.known()) {
+                    Some(c) if c > 4 => Err(ValidationError::ShapeRequirement {
                         requirement: "at most 4 channels for resampling",
                         got: shape.to_vec(),
                     }),
@@ -386,12 +386,15 @@ impl<M: Mode> Op for ImageOp<M> {
                 }
             }
             // A per-row index is checked per row.
+            // An unknown channel count is checked per row.
             ImageOpKind::ChannelSwap { order } => match shape {
                 [_, _, c]
-                    if order.len() == *c
-                        && order
-                            .iter()
-                            .all(|i| known::<M, u32>(i).is_none_or(|i| (i as usize) < *c)) =>
+                    if c.known().is_none_or(|c| {
+                        order.len() == c
+                            && order
+                                .iter()
+                                .all(|i| known::<M, u32>(i).is_none_or(|i| (i as usize) < c))
+                    }) =>
                 {
                     Ok(())
                 }
