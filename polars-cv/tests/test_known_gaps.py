@@ -33,7 +33,7 @@ import pytest
 
 from polars_cv import LazyPipelineExpr, Pipeline
 from tests._plan_view import planned
-from tests._schema_parity import Outcome, array_dims, plan_or_reject
+from tests._schema_parity import Outcome, plan_or_reject
 from tests.conftest import make_image_png, plugin_required
 
 # Each gap carries its own lane: a source scan is `structural` (pre-commit runs
@@ -76,21 +76,6 @@ _IMAGE_OPS_ON_RANK_1: dict[str, tuple[Callable[[Pipeline], Pipeline], str]] = {
 }
 
 
-def _array_frame(shape: tuple[int, ...]) -> pl.DataFrame:
-    data = np.arange(int(np.prod(shape)), dtype=np.uint8).reshape(shape)
-    return pl.DataFrame(
-        {"a": pl.Series([data, data[::-1]], dtype=pl.Array(pl.UInt8, shape))}
-    )
-
-
-def _list_frame(shape: tuple[int, ...]) -> pl.DataFrame:
-    data = np.arange(int(np.prod(shape)), dtype=np.uint8).reshape(shape)
-    dtype: pl.DataType = pl.UInt8()
-    for _ in shape:
-        dtype = pl.List(dtype)
-    return pl.DataFrame({"a": pl.Series([data.tolist()], dtype=dtype)})
-
-
 def _sized_image(height: int, width: int) -> Pipeline:
     """An image pipeline whose whole ``[H, W, 3]`` u8 shape is planned."""
     return (
@@ -122,75 +107,6 @@ class TestPlannedSizes:
             raw.select(pl.col("b").cv.pipe(pipe).sink(sink))
         err = _build_error(lambda: apply(Pipeline().source("raw", dtype="u8")))
         assert err is not None, f"{op}() on a rank-1 buffer built; every row fails"
-
-    @_gap(
-        "S1: OutputSpec::planned publishes a shape only at rank 3, and "
-        "refine_by_column keeps three sizes, so .sink() accepts (the column "
-        "'will supply' the sizes) and Polars planning then refuses. Fixed when "
-        "the column's own shape is planned at every rank."
-    )
-    @pytest.mark.parametrize("shape", [(6,), (4, 5), (2, 3, 4, 5)])
-    def test_an_array_column_plans_its_shape_at_every_rank(
-        self, shape: tuple[int, ...]
-    ) -> None:
-        df = _array_frame(shape)
-        result = plan_or_reject(
-            df, lambda: pl.col("a").cv.pipe(Pipeline().source("array")).sink("array")
-        )
-        assert result.ok, f"Array{shape} column refused: {result.reason}"
-        assert result.series is not None
-        assert array_dims(result.series.dtype) == list(shape)
-        assert result.series.to_list() == df["a"].to_list()
-
-    @_gap(
-        "S1: an assert_shape(dims=[...]) of rank != 3 pins every size, but the "
-        "rank-3 gate publishes none, contradicting assert_shape's docstring. "
-        "Fixed when the declared shape reaches the array sink."
-    )
-    @pytest.mark.parametrize("shape", [(20,), (4, 5)])
-    def test_a_declared_shape_of_any_rank_reaches_an_array_sink(
-        self, shape: tuple[int, ...]
-    ) -> None:
-        df = _list_frame(shape)
-        result = plan_or_reject(
-            df,
-            lambda: (
-                pl.col("a")
-                .cv.pipe(
-                    Pipeline().source("list", dtype="u8").assert_shape(dims=list(shape))
-                )
-                .sink("array")
-            ),
-        )
-        assert result.ok, f"dims={list(shape)} refused: {result.reason}"
-        assert result.series is not None
-        assert array_dims(result.series.dtype) == list(shape)
-
-    @_gap(
-        "S1: AssertShape carries dims for axes 0-2 only, so a rank-4 "
-        "declaration is refused ('supports 1 to 3 dimensions'). Fixed when it "
-        "plans and reaches an array sink."
-    )
-    def test_assert_shape_declares_a_rank_4_shape(self) -> None:
-        shape = (2, 3, 4, 5)
-        df = _list_frame(shape)
-        err = _build_error(
-            lambda: Pipeline().source("list", dtype="u8").assert_shape(dims=list(shape))
-        )
-        assert err is None, f"a rank-4 declaration was refused: {err}"
-        result = plan_or_reject(
-            df,
-            lambda: (
-                pl.col("a")
-                .cv.pipe(
-                    Pipeline().source("list", dtype="u8").assert_shape(dims=list(shape))
-                )
-                .sink("array")
-            ),
-        )
-        assert result.ok, result.reason
-        assert result.series is not None
-        assert array_dims(result.series.dtype) == list(shape)
 
     @_gap(
         "S2: OpShape::Broadcast falls back to the left operand's shape "

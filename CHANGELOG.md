@@ -9,10 +9,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
-- **A fixed-size `Array` column's shape is planned.** Its dtype states every
-  size, so `source("array")` (or `auto` over an `Array` column) now publishes
-  the whole shape: `.sink("array")` needs no `shape=`, and the ops after the
-  source plan from those sizes. A `List` column's sizes still vary per row.
+- **A fixed-size `Array` column's shape is planned, at any rank.** Its dtype
+  states every size, so `source("array")` (or `auto` over an `Array` column)
+  now publishes the whole shape: `.sink("array")` needs no `shape=`, and the
+  ops after the source plan from those sizes. A `List` column's sizes still
+  vary per row.
+- **The planner tracks every dimension, at any rank.** A pipeline's planned
+  shape is one size per dimension rather than three `[H, W, C]` slots, so
+  every output whose sizes are all known publishes its shape — a rank-1 or
+  rank-2 output (`channel_select`, `reshape`, `assert_shape(dims=[h, w])`) and
+  a rank-4 one included — and `.sink("array")` needs no `shape=` for it.
+  `assert_shape(dims=[...])` accepts any rank (it refused more than three).
+  `PlanState.dims` has one entry per dimension (the leading declared ones
+  over an unknown rank), and `PlanState.DIM_NAMES` is gone.
 - **`source("contour")` without a canvas decodes to the contour domain.** A
   pipeline can start from a contour column and measure or transform it
   (`Pipeline().source("contour").area()`, `.simplify(...)`, then

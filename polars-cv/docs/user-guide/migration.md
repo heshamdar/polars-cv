@@ -117,8 +117,12 @@ Only relevant if you build the plugin's graph JSON yourself rather than through
 - An output is only `{"node", "sink"}`: the plugin plans every output's
   schema from the graph itself. `expected_domain`, `expected_dtype`,
   `expected_shape`, `expected_ndim`, `shape_asserted` and `planned` are refused.
-- A shape declaration is an op, `{"op": "assert_shape", "rank": ..., "dims":
-  [d0, d1, d2]}`, checked against every row where it appears.
+- A shape declaration is an op, `{"op": "assert_shape", "dims": [d0, d1, ...]}`,
+  checked against every row where it appears. `dims` is the whole shape, one
+  entry per dimension (`null` declares nothing about one), so its length is
+  the rank; with `"exact": false` it declares only the leading dimensions
+  (what `height=`/`width=`/`channels=` write). The former `rank` field and
+  the three-entry `dims` are refused.
 - Op, source and sink fields are the Python parameter names with bare values
   (`"height": 224`) or `{"$slot": n}` for a per-row expression. Unknown fields
   are refused by name; a field with a default may be omitted.

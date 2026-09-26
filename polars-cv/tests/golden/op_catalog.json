@@ -141,26 +141,13 @@
     "name": "assert_shape",
     "python": "assert_shape",
     "visibility": "internal",
-    "doc": "Declare the shape of the data at this point: its rank and any of the sizes\nof dimensions 0, 1 and 2.\n\nThe planner applies the declaration (refusing one it contradicts), and\nexecution checks it against every row, so everything downstream rests on a\nchecked fact. The public `Pipeline.assert_shape` is sugar over this op.",
+    "doc": "Declare the shape of the data at this point: sizes of its dimensions,\nand with them its rank when the declaration is exact.\n\nThe planner applies the declaration (refusing one it contradicts), and\nexecution checks it against every row, so everything downstream rests on a\nchecked fact. The public `Pipeline.assert_shape` is sugar over this op.",
     "fields": [
       {
-        "name": "rank",
-        "doc": "The rank, when declared (`assert_shape(dims=[...])` declares\n`len(dims)`).",
-        "type": {
-          "kind": "optional",
-          "inner": {
-            "kind": "scalar",
-            "per_row": false,
-            "py": "int"
-          }
-        }
-      },
-      {
         "name": "dims",
-        "doc": "The sizes of dimensions 0, 1 and 2; `None` declares nothing about that\ndimension. A per-row size is checked per row and is no plan-time fact.",
+        "doc": "The size of each dimension from the first; `None` declares nothing\nabout that dimension. A per-row size is checked per row and is no\nplan-time fact.",
         "type": {
-          "kind": "array",
-          "len": 3,
+          "kind": "list",
           "inner": {
             "kind": "optional",
             "inner": {
@@ -169,6 +156,16 @@
               "py": "int"
             }
           }
+        }
+      },
+      {
+        "name": "exact",
+        "doc": "Whether `dims` is the whole shape, so the rank is its length\n(`assert_shape(dims=[...])`), or only its leading dimensions\n(`assert_shape(height=, width=, channels=)`).",
+        "default": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "bool"
         }
       }
     ],

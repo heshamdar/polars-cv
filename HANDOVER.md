@@ -94,13 +94,13 @@ and every Python method is generated.
   `ViewExpr::apply_op` (`ComputeOp::lowered`). `a_lowered_op_keeps_its_shape`
   (view-buffer) pins the lowered shape to the op's.
 - `plan::check_rank` still passes `1` for an unknown size to `validate`,
-  filtered to rank-only verdicts. Removing it needs `validate` over symbolic
-  shapes (`&[Dim]`) across every `Op` impl — optional follow-up.
+  filtered to rank-only verdicts: `PLANNER_SIZES_PLAN.md` S2 removes it.
 - A family with no per-row value (`Source`, `Sink`) derives `Ops` with no
   mode parameter: it is its own wire form and has no `Resolve`.
-- `tests/test_known_gaps.py` has no open gap left (its mechanism is kept).
-- `plan::State.dims` holds three sizes, the most any op plans; a rank-4+
-  buffer's further sizes are not planned.
+- `tests/test_known_gaps.py::TestPlannedSizes` holds the open planned-size
+  defects (`PLANNER_SIZES_PLAN.md` S2).
+- The planned shape is one rank-N value (`plan::PlannedShape`) since
+  `PLANNER_SIZES_PLAN.md` S1.
 
 ## Phases C6–C8 (done)
 

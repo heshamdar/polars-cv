@@ -41,6 +41,7 @@ HISTORY_FILES: frozenset[str] = frozenset(
         "CODE_REVIEW_FINDINGS.md",
         "EXTENSION_TYPES_PLAN.md",
         "HANDOVER.md",
+        "PLANNER_SIZES_PLAN.md",
         "TYPED_OPS_PLAN.md",
         "TYPED_OPS_CONSOLIDATION_PLAN.md",
         "polars-cv/docs/changelog.md",
@@ -557,6 +558,24 @@ REMOVED: tuple[Removed, ...] = (
     Removed("_install_pipeline_forwarders", "C7c: _lazy_forwarders.py (generated)"),
     Removed("_make_forwarder", "C7c: gen_ops.forwarder renders each one"),
     Removed("__polars_cv_generated__", "C7c: a forwarder is _LazyForwardersMixin's"),
+    # PLANNER_SIZES_PLAN.md S1: the planned shape is one rank-N value.
+    Removed(
+        "sizes_over_any_rank",
+        "S1: OpShape::dims_over_unknown_rank, bounded by DISTINGUISHED_RANK",
+    ),
+    Removed("known_sizes", "S1: PlannedShape holds the sizes, one per dimension"),
+    Removed(
+        "_KNOWN_BUT_UNEXPRESSIBLE",
+        "S1: every rank's known shape is published; merged into _KNOWN_SHAPE",
+    ),
+    Removed(
+        "test_non_rank3_refuses_without_a_shape_but_is_exact_with_one",
+        "S1: a rank-1/2 known shape reaches the array sink (_KNOWN_SHAPE)",
+    ),
+    Removed(
+        "test_dims_rejects_what_it_cannot_track",
+        "S1: any rank is tracked; test_assert_shape_rejects_a_malformed_declaration",
+    ),
     Removed(
         "test_lazy_stub_is_current", "C7c: no stub; the forwarders file is checked"
     ),

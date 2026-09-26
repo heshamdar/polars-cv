@@ -24,7 +24,6 @@ class PlanState:
     Built only by Rust (a :class:`Plan`'s steps); frozen.
     """
 
-    DIM_NAMES: tuple[str, str, str]
     def __init__(self) -> None:
         """The state of a pipeline with no source yet."""
 
@@ -35,7 +34,9 @@ class PlanState:
     @property
     def ndim(self) -> int | None: ...
     @property
-    def dims(self) -> tuple[int | None, int | None, int | None]: ...
+    def dims(self) -> tuple[int | None, ...]:
+        """One size per dimension when the rank is known (``None`` unknown);
+        over an unknown rank, the sizes declared for the leading ones."""
     def _wire(self) -> str: ...
 
 class Plan:

@@ -23,6 +23,7 @@ import polars as pl
 import pytest
 
 from polars_cv import Pipeline
+from tests._plan_view import state_of
 from tests.conftest import make_image_png, plugin_required
 
 _PKG = Path(__file__).resolve().parents[1]
@@ -88,3 +89,28 @@ def test_a_lazy_expression_survives_pickle_and_deepcopy() -> None:
         df = pl.DataFrame({"img": [make_image_png(16, 16, 3, seed=2)], "h": [6]})
         out = df.select(clone.sink("list"))
         assert out.height == 1
+
+
+@plugin_required
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(
+            lambda: (
+                Pipeline().source("list", dtype="u8").assert_shape(dims=[2, 3, 4, 5])
+            ),
+            id="rank-4",
+        ),
+        pytest.param(
+            lambda: Pipeline().source("list", dtype="u8").assert_shape(channels=3),
+            id="unranked-leading",
+        ),
+        pytest.param(lambda: Pipeline().source("image_bytes"), id="rank-3-unknown"),
+    ],
+)
+def test_a_planned_state_survives_pickle(build) -> None:
+    """The planned shape crosses its pickle form whole: rank and every size."""
+    state = state_of(build())
+    back = pickle.loads(pickle.dumps(state))
+    assert back == state
+    assert (back.ndim, back.dims) == (state.ndim, state.dims)

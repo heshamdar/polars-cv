@@ -484,18 +484,14 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         "invert": {"kind": "scalar", "per_row": True, "py": "bool"},
     },
     "assert_shape": {
-        "rank": {
-            "kind": "optional",
-            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
-        },
         "dims": {
-            "kind": "array",
-            "len": 3,
+            "kind": "list",
             "inner": {
                 "kind": "optional",
                 "inner": {"kind": "scalar", "per_row": True, "py": "int"},
             },
         },
+        "exact": {"kind": "scalar", "per_row": False, "py": "bool"},
     },
     "bitwise_and": {"other": {"kind": "node"}},
     "bitwise_or": {"other": {"kind": "node"}},
@@ -1297,10 +1293,10 @@ class _OpsMixin:
         return self._append_typed("adjust_gamma", {"gamma": gamma})
 
     def _assert_shape(
-        self, dims: Sequence[IntOrExpr | None], *, rank: int | None = None
+        self, dims: Sequence[IntOrExpr | None], *, exact: bool = True
     ) -> Pipeline:
-        """Declare the shape of the data at this point: its rank and any of the sizes
-        of dimensions 0, 1 and 2.
+        """Declare the shape of the data at this point: sizes of its dimensions,
+        and with them its rank when the declaration is exact.
 
         The planner applies the declaration (refusing one it contradicts), and
         execution checks it against every row, so everything downstream rests on a
@@ -1309,12 +1305,14 @@ class _OpsMixin:
         Domain: buffer → buffer, vector → vector
 
         Args:
-            rank: The rank, when declared (`assert_shape(dims=[...])` declares
-                `len(dims)`).
-            dims: The sizes of dimensions 0, 1 and 2; `None` declares nothing about that
-                dimension. A per-row size is checked per row and is no plan-time fact.
+            dims: The size of each dimension from the first; `None` declares nothing
+                about that dimension. A per-row size is checked per row and is no plan-
+                time fact.
+            exact: Whether `dims` is the whole shape, so the rank is its length
+                (`assert_shape(dims=[...])`), or only its leading dimensions
+                (`assert_shape(height=, width=, channels=)`).
         """
-        return self._append_typed("assert_shape", {"rank": rank, "dims": dims})
+        return self._append_typed("assert_shape", {"dims": dims, "exact": exact})
 
     def blur(self, sigma: FloatOrExpr) -> Pipeline:
         """Apply Gaussian blur.
