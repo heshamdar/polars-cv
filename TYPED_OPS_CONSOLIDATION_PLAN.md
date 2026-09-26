@@ -19,7 +19,7 @@
 > | C3 — Rust owns the op list (`Plan`) | **done** — `Plan` frozen pyclass (`push`/`select`/`with_source`/`rebased`/`continuing`/`run_pass`/`to_spec`); `OpSpec`/`ParamValue`/`SourceSpec`/`planning_slots`, `_push_op`/`_append_op`/`_replay`/`_state_at`/`_entering`/`_Position`/`_STATE_COPIERS`/`_copy_state_from`/`_create_sub_pipeline`/`_track_expr`, `plan_step`/`plan_source`/`node_pass` FFI and the AST/copy-table guards deleted. Deviations: one `select(positions, start)` serves slice, reorder and deletion; CSE compares the ops' wire form over the graph's slot table in Python (the slot table is Python's), not a Rust `common_prefix_len`; `_to_python` stays (numpy scalars at encode) |
 > | C4 — One op definition (mode-generic ops) | **done** — C4a: rank/channel rules deleted, read off `OpShape`. C4b: every wire op is a variant of a mode-generic engine family (`ImageOpKind<M>`, `ComputeOp<M>`, `ViewOp<M>`, `ColorConvertOp<M>`, `ConvolveOp<M>`, `GeometryOp<M>`, `ReductionOp<M>`, `HistogramOp<M>`, `PerceptualHashOp<M>`) or of `GraphOp<M>`; `OpDef` and every per-op typed struct deleted. C4c: `TypedOp = GraphStep<Wire>`, every `Op` rule generic over the mode; `ParamCtx::planning`, `planning_value`, `planning_step`, `Family` deleted. Deviations: rotate keeps its lowering, now inside `ViewExpr::apply_op` (`a_lowered_op_keeps_its_shape`); `check_rank` still passes 1 for an unknown size (filtered to rank-only verdicts) |
 > | C5 — Geometry namespaces on the typed ops | **done** — `ContourFn`/`PointFn`/`BBoxFn` families (`src/geom_fns.rs`) and the `GeometryOp` variants for op-backed accessors (`OP_ACCESSORS`); `ContourKwargs`/`PointKwargs`, call-site defaults, `_ArgBinder`, `_enum_or_expr`, hand-written accessor methods deleted; methods generated from `geom_catalog.json`; literals checked at build by `check_geom_call`. Decision: one `origin` default, `"centroid"` (migration page). Also: `t` in `point.interpolate` keyword-only |
-> | C6 — One registry, one default convention | not started |
+> | C6 — One registry, one default convention | **done** — C6a: the wire applies `#[param(default)]` (an optional field with a default is a compile error); `Visibility` enum, named as a variant in the attribute. C6c: a contour source only decodes (to the contour domain); `source("contour", width=, …)` appends `rasterize()`; the source's canvas fields, `fill`, `decode_contour_source*`, its node-canvas read and the source-level null handling deleted. C6b: `Source`/`Sink` are `#[derive(Ops)]` enums (a family with no per-row value has no mode); `formats!`, `#[derive(Op)]`, `OpFields`, `op_desc`, the per-parse catalogue, `DEFAULT_QUALITY` and the sink `_ =>` arms deleted. C6d: `SourceFormat` deleted; `Source::route` turns `auto` into the concrete source per batch and the row loop matches on `Source`. Deviations (user decisions): the contour source does not *carry* a Rasterize — it stops rasterizing, and a bare `source("contour")` is the contour domain; no `registry!` macro — the derive is the one registry mechanism and `typed_ops!` only places families in `GraphStep` |
 > | C7 — Python surface fully generated | not started |
 > | C8 — Sweep, guards and docs | not started |
 
@@ -286,8 +286,10 @@ come after the last family.
 
 | At | plugin | engine | macros | py-hand | py-gen | tests |
 |---|---:|---:|---:|---:|---:|---:|
+| `main` before the migration `ac2e95b` | 16,986 | 20,732 | 0 | 16,078 | 0 | 53,972 |
 | PR #99 head `0f22dd4` | 19,097 | 21,233 | 197 | 12,022 | 2,127 | 55,164 |
 | after C5 `ac45f93` | 17,448 | 22,474 | 767 | 10,496 | 2,715 | 54,992 |
+| after C6 `ded469c` | 17,254 | 22,501 | 653 | 10,465 | 2,715 | 55,111 |
 
 ---
 

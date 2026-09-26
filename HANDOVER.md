@@ -28,7 +28,7 @@ never invents a value for a per-row parameter. Ops, sources, sinks and the
 geometry accessors register through one mechanism with one default convention,
 and every Python method is generated.
 
-## State: C0–C5 done
+## State: C0–C6 done
 
 | Phase | Commit(s) | What it did |
 |---|---|---|
@@ -41,6 +41,7 @@ and every Python method is generated.
 | C4b | `0187bac` `54dc6f2` `69f631b` `9cba435` `ef374ec` | every wire op is a variant of a mode-generic family; `OpDef` and all per-op typed structs deleted |
 | C4c | `aacb938` | `TypedOp = GraphStep<Wire>`; every `Op` rule generic over the mode; placeholder planning deleted |
 | C5 | `ac45f93` | geometry accessors are typed definitions; Python methods generated |
+| C6 | `634bd36` `5e72589` `820995b` `ded469c` | wire applies declared defaults; `Visibility` enum; contour source only decodes (canvas keywords are `rasterize()`); `Source`/`Sink` are `#[derive(Ops)]` families; `SourceFormat` gone, `auto` routed to a concrete `Source` |
 
 ### The architecture now
 
@@ -76,6 +77,12 @@ and every Python method is generated.
   `Pipeline.scale_contour` and `.contour.scale` (done in C5).
 - **`convolve2d(ksize=)`: drop it** — the side comes from the kernel length
   (an odd square). This is C7's row; not yet done.
+- **A contour source only decodes** (C6c): `source("contour", width=, …)` is
+  `source("contour").rasterize(...)`, and a bare `source("contour")` is the
+  contour domain.
+- **Families with no per-row value have no mode parameter** (C6b).
+- **Elegance over the plan's letter is welcome, but ask first** when it
+  changes a public surface.
 
 ### Deviations from the plan, and open items
 
@@ -86,8 +93,8 @@ and every Python method is generated.
 - `plan::check_rank` still passes `1` for an unknown size to `validate`,
   filtered to rank-only verdicts. Removing it needs `validate` over symbolic
   shapes (`&[Dim]`) across every `Op` impl — optional follow-up.
-- `#[derive(Ops)]` refuses a *missing* field even when it declares a default
-  (the generated Python always sends every field). C6 changes that.
+- A family with no per-row value (`Source`, `Sink`) derives `Ops` with no
+  mode parameter: it is its own wire form and has no `Resolve`.
 - `tests/test_known_gaps.py` has no open gap left (its mechanism is kept).
 
 ## Next steps
@@ -99,33 +106,22 @@ behaviour changes test-first; each Python/prose removal added to
 phase commit; full `scripts/verify.sh` green at exit; golden corpus unchanged
 unless the commit says which entries change and why.
 
-### C6 — One registry, one default convention
+### C6 — done
 
-- `formats!` (`polars-cv/src/formats/mod.rs:71`) is a near copy of the old
-  per-op registry: make sources and sinks families (derive `Ops` on an enum or
-  on each struct, as ops do) or one `registry!` shared with `typed_ops!`.
-- Defaults applied by the derive when a field is missing: change
-  `polars-cv-macros/src/modal.rs` (`derive_ops`, the `takes` for a non-`Option`
-  field with `param_default`) to substitute the declared default, then delete
-  the `Option` + `unwrap_or` defaults: `JpegSink::DEFAULT_QUALITY`
-  (`formats/sink.rs:30,84-89`), `ContourSource::fill` 255/0
-  (`formats/source.rs`), `plan.rs:414` (`Param::Lit(255)`).
-- `ContourSource` carries a copy of rasterize's fields: make it carry a
-  `GeometryOp::Rasterize` (or its fields' struct).
-- `Sink::quality()/shape()/as_f16()` `_ =>` arms (`formats/sink.rs:84-110`):
-  make them data on each typed sink.
-- `SourceFormat` mirrors `Source` (`graph/compiled.rs:1338`): dispatch on
-  `Source` instead.
-- `check_applies` rebuilds the catalogue per parse (`formats/mod.rs:29`): a
-  static catalogue.
-- Stringly typed `visibility` (`"public"`/`"internal"`/`"lazy_only"`) in the
-  macros, `OpDesc` and `gen_ops.py`: a `Visibility` enum.
+See the status ledger. Two user decisions shaped it: a contour source only
+decodes (the canvas keywords append `rasterize()`, and a bare
+`source("contour")` is the contour domain), and the derive accepts a family
+with no mode. There is no `registry!` macro: `#[derive(Ops)]` is the one
+registry mechanism for ops, geometry functions, sources and sinks, and
+`typed_ops!` only places op families in `GraphStep`.
 
 ### C7 — Python surface fully generated
 
 - `Pipeline.source()` body (`python/polars_cv/pipeline.py`, search
-  `def source`): generate from `io_catalog.json`; `RasterSize` already
-  expresses the width/height vs shape exclusivity.
+  `def source`): generate from `io_catalog.json`. Its canvas keywords are
+  `rasterize()`'s (C6c): the generated method appends `rasterize(**canvas)`
+  when any is given, reading the keyword set from `rasterize`'s signature as
+  the hand-written body does now.
 - Then delete `_validate_enum` and `_reject_expr` (`_types.py`) once unused
   (`_enum_or_expr` went in C5).
 - Runtime lazy forwarders (`lazy.py`: `_install_pipeline_forwarders`,
@@ -201,8 +197,10 @@ plan's PR #99 row exactly).
 
 | At | plugin | engine | macros | py-hand | py-gen | tests |
 |---|---:|---:|---:|---:|---:|---:|
+| `main` before the migration `ac2e95b` | 16,986 | 20,732 | 0 | 16,078 | 0 | 53,972 |
 | PR #99 head `0f22dd4` | 19,097 | 21,233 | 197 | 12,022 | 2,127 | 55,164 |
 | after C5 `ac45f93` | 17,448 | 22,474 | 767 | 10,496 | 2,715 | 54,992 |
+| after C6 `ded469c` | 17,254 | 22,501 | 653 | 10,465 | 2,715 | 55,111 |
 
 Net since PR #99: hand-written plugin −1,649 and Python −1,526; the engine
 (+1,241) and macros (+570) grew because the op definitions, their modes and
