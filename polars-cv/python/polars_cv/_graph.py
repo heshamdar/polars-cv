@@ -147,20 +147,6 @@ class PipelineGraph:
         if alias is not None:
             self._alias_to_node[alias] = node_id
 
-    def set_root_column(self, column: pl.Expr) -> None:
-        """
-        Set the input column for all root nodes (nodes with no upstream).
-
-        This is used when the column is not known at graph construction time,
-        such as when converting a Pipeline to a graph.
-
-        Args:
-            column: The Polars column expression for root nodes.
-        """
-        for node in self._nodes.values():
-            if not node.upstream:
-                node.column = column
-
     def set_output(self, node_id_or_alias: str, format: str, **kwargs: Any) -> None:
         """
         Set the output node and format for single-output mode.
@@ -488,7 +474,7 @@ class PipelineGraph:
             if not node.upstream and node.column is None:
                 msg = (
                     f"Root node '{node.node_id}' has no column set. "
-                    "Call set_root_column() or pass column when adding the node."
+                    "Pass the column when adding the node."
                 )
                 raise ValueError(msg)
 

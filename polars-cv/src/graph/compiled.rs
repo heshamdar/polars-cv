@@ -829,12 +829,12 @@ impl CompiledGraph {
                                     graph_step.as_ref(),
                                     "Reduction",
                                 )?;
-                                view_buffer::ops::validation::validate_concrete(
-                                    reduction_op,
-                                    &[current_buf.shape()],
-                                    &[current_buf.dtype()],
-                                )
-                                .map_err(|e| format!("{}: {e}", reduction_op.name()))?;
+                                graph_step
+                                    .validate_concrete(
+                                        &[current_buf.shape()],
+                                        &[current_buf.dtype()],
+                                    )
+                                    .map_err(|e| format!("{}: {e}", reduction_op.name()))?;
                                 let result = reduction_op.execute(&current_buf);
                                 // The op's declared output domain (the same
                                 // authority the planner reads) decides scalar
@@ -861,12 +861,12 @@ impl CompiledGraph {
                                     graph_step.as_ref(),
                                     "Histogram",
                                 )?;
-                                view_buffer::ops::validation::validate_concrete(
-                                    histogram_op,
-                                    &[current_buf.shape()],
-                                    &[current_buf.dtype()],
-                                )
-                                .map_err(|e| format!("{}: {e}", histogram_op.name()))?;
+                                graph_step
+                                    .validate_concrete(
+                                        &[current_buf.shape()],
+                                        &[current_buf.dtype()],
+                                    )
+                                    .map_err(|e| format!("{}: {e}", histogram_op.name()))?;
                                 let result = histogram_op.execute(&current_buf);
                                 current_output = NodeOutput::from_buffer(result);
                             }
@@ -884,12 +884,12 @@ impl CompiledGraph {
                                 // result rides as a Buffer at runtime; the
                                 // planned `vector` domain (OutputSpec) selects
                                 // the List encoding at sink time.
-                                view_buffer::ops::validation::validate_concrete(
-                                    phash_op,
-                                    &[current_buf.shape()],
-                                    &[current_buf.dtype()],
-                                )
-                                .map_err(|e| format!("{}: {e}", phash_op.name()))?;
+                                graph_step
+                                    .validate_concrete(
+                                        &[current_buf.shape()],
+                                        &[current_buf.dtype()],
+                                    )
+                                    .map_err(|e| format!("{}: {e}", phash_op.name()))?;
                                 let result = view_buffer::execution::runner::apply_perceptual_hash(
                                     (*current_buf).clone(),
                                     phash_op.clone(),

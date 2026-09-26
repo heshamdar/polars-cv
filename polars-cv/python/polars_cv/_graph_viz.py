@@ -124,11 +124,13 @@ def build_dag(graph: LogicalGraph) -> nx.DiGraph:
 def _wire_label(value: Any) -> Any:
     """A field's display value: ``Expr`` for a slot, the literal otherwise.
 
-    Typed ops carry bare values (lists element by element); legacy ops wrap a
-    literal as ``{"type": "literal", "value": ...}``.
+    A field is its bare value (a list element by element); a per-row one is
+    ``{"$slot": n}``.
     """
     if isinstance(value, dict):
-        return "Expr" if "$slot" in value else _wire_label(value.get("value"))
+        if value.keys() == {"$slot"}:
+            return "Expr"
+        return {k: _wire_label(v) for k, v in value.items()}
     if isinstance(value, list):
         return [_wire_label(v) for v in value]
     return value

@@ -8,8 +8,8 @@
 > green again. A phase's commit contains both halves; the ledger rows are
 > ticked in the same commit.
 >
-> **Handover:** `HANDOVER.md` (repo root) summarises the state after C5 and the
-> next steps for a new agent.
+> **Complete.** Merged in PR #101 together with `PLANNER_SIZES_PLAN.md`. The
+> per-phase handover file was deleted after the merge (see git history).
 >
 > | Phase | Status |
 > |---|---|

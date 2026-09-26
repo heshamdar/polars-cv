@@ -1,7 +1,7 @@
 # Plan: rank-N planned shapes, and validation over partially known sizes
 
 > Follow-up to PR #100 (typed-op consolidation, C0–C8). It closes the two open
-> deviations `HANDOVER.md` records:
+> deviations the consolidation handover recorded:
 >
 > 1. `plan::check_rank` passes `1` for an unknown size to `Op::validate`: the
 >    last placeholder value in the planner.
