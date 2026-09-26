@@ -171,7 +171,7 @@ POINT_CASES: dict[str, object] = {
     "manhattan_distance": lambda: pl.col("pa").point.manhattan_distance(pl.col("pb")),
     "angle_to": lambda: pl.col("pa").point.angle_to(pl.col("pb")),
     "midpoint": lambda: pl.col("pa").point.midpoint(pl.col("pb")),
-    "interpolate": lambda: pl.col("pa").point.interpolate(pl.col("pb"), 0.5),
+    "interpolate": lambda: pl.col("pa").point.interpolate(pl.col("pb"), t=0.5),
     "translate": lambda: pl.col("pa").point.translate(1.0, 2.0),
     "scale": lambda: pl.col("pa").point.scale(2.0, 2.0),
     "rotate": lambda: pl.col("pa").point.rotate(45.0),

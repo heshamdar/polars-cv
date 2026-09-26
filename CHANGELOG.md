@@ -81,6 +81,21 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **The geometry accessors are generated from their Rust definitions.** Each
+  `.contour` / `.point` / `.bbox` plugin function parses its own typed
+  definition (`src/geom_fns.rs`) — or, for `.contour.area`, `perimeter`,
+  `centroid`, `bounding_box`, `convex_hull`, `translate`, `scale` and
+  `simplify`, the pipeline operation's — so its fields, defaults and docstring
+  are declared once; the Python methods are generated from
+  `tests/golden/geom_catalog.json`. The shared `ContourKwargs` / `PointKwargs`
+  bags, their per-call-site defaults and `_ArgBinder` are gone.
+  **Breaking:** `.contour.scale()` now defaults to `origin="centroid"`, matching
+  `Pipeline.scale_contour()` (it scaled about `(0, 0)`); and `t` in
+  `.point.interpolate(other, t=...)` is keyword-only. See the migration page.
+  `.contour.label_reduce(image)`'s `image` is required in the signature (it
+  defaulted to `None` and then raised `ValueError`); a misspelled literal enum
+  is still refused as the expression is built, by the definition itself.
+
 - **`assert_shape` is a checked operation.** It is planned where it is written
   and checked against every row there; a mismatch fails the row naming the
   assertion. Optimizations may rely on the declared shape (it is a fact once

@@ -90,3 +90,11 @@ def enum_catalog() -> str:
 def check_graph(graph_json: str) -> None:
     """Compile and plan a graph and check every output's sink, as the plugin
     will; raise ``ValueError``."""
+
+def check_geom_call(function: str, args_json: str) -> None:
+    """Parse a geometry accessor call's arguments against its function's
+    definition; raise ``ValueError``."""
+
+def geom_catalog() -> str:
+    """Return the geometry accessor catalogue as JSON (see
+    ``tests/golden/geom_catalog.json``)."""

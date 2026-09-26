@@ -526,5 +526,23 @@ pub fn derive_ops(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 ::std::vec![#(#samples),*]
             }
         }
+
+        impl ::view_buffer::mode::WireOps for #wire {
+            fn from_wire(
+                name: &str,
+                fields: ::serde_json::Value,
+            ) -> ::core::option::Option<::core::result::Result<Self, ::std::string::String>> {
+                Self::from_wire(name, fields)
+            }
+            fn wire_name(&self) -> ::core::option::Option<&'static str> {
+                Self::wire_name(self)
+            }
+            fn visit_slots(&self, f: &mut dyn FnMut(&'static str, usize)) {
+                Self::visit_slots(self, f)
+            }
+            fn catalog() -> ::std::vec::Vec<::view_buffer::mode::OpDesc> {
+                Self::catalog()
+            }
+        }
     })
 }

@@ -11,6 +11,7 @@ mod ext_types;
 mod fetch;
 mod formats;
 mod geom_arity;
+mod geom_fns;
 mod geom_params;
 mod geom_schema;
 mod graph;
@@ -56,6 +57,8 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(io_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(enum_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(check_graph, m)?)?;
+    m.add_function(wrap_pyfunction!(check_geom_call, m)?)?;
+    m.add_function(wrap_pyfunction!(geom_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(point_schema, m)?)?;
     m.add_function(wrap_pyfunction!(contour_schema, m)?)?;
     m.add_function(wrap_pyfunction!(bbox_schema, m)?)?;
@@ -165,6 +168,14 @@ fn op_catalog() -> String {
     crate::ops::catalog_json()
 }
 
+/// The geometry accessor catalogue as JSON (`tests/golden/geom_catalog.json`):
+/// every `.contour`/`.point`/`.bbox` function's definition, which
+/// `scripts/gen_ops.py` generates the accessor methods from.
+#[pyfunction]
+fn geom_catalog() -> String {
+    geom_fns::geom_catalog_json()
+}
+
 /// The source/sink catalogue as JSON (`tests/golden/io_catalog.json`): every
 /// format and the fields it reads, which `scripts/gen_ops.py` generates
 /// `SourceFormat`/`SinkFormat` from.
@@ -229,6 +240,15 @@ fn vb_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
 /// (`Source::resolves_from_column`) leaves those two facts to the column: they
 /// are decided when Polars plans the query, by the same code
 /// (`decode::ColumnFacts`); everything else is checked here.
+/// Refuse a geometry accessor call the plugin would refuse, as it is built:
+/// its arguments parsed against the function's definition (`geom_fns`).
+#[pyfunction]
+fn check_geom_call(function: &str, args_json: &str) -> PyResult<()> {
+    let args: serde_json::Value =
+        serde_json::from_str(args_json).map_err(|e| py_value_error(e.to_string()))?;
+    geom_fns::check_call(function, args).map_err(py_value_error)
+}
+
 #[pyfunction]
 fn check_graph(graph_json: &str) -> PyResult<()> {
     let fail = |e: PolarsError| py_value_error(e.to_string());

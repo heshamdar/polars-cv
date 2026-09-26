@@ -497,20 +497,23 @@ def test_the_engine_carries_no_detection_vocabulary() -> None:
 
 
 def test_the_contour_kwargs_wire_field_is_gone() -> None:
-    """``strategy`` must not come back as a Rust kwargs field either.
+    """``strategy`` must not come back as a geometry function field either.
 
-    Removing it from the Python signature alone would leave the wire field
+    Removing it from the Python signature alone would leave a wire field
     accepting a value from any other caller, which is how an unread field goes
-    on being emitted for releases (see the ``shape_hints`` guard above).
+    on being emitted for releases (see the ``shape_hints`` guard above). Every
+    accessor's fields are its Rust definition's, catalogued in
+    ``geom_catalog.json`` (the shared ``ContourKwargs`` bag is gone).
     """
-    contour_rs = (
-        Path(__file__).resolve().parents[1] / "src" / "contour.rs"
-    ).read_text()
-    assert "pub struct ContourKwargs" in contour_rs, (
-        "probe is broken: ContourKwargs not found in src/contour.rs"
+    catalog = json.loads(
+        (Path(__file__).resolve().parent / "golden" / "geom_catalog.json").read_text()
     )
-    assert "pub strategy" not in contour_rs, (
-        "ContourKwargs declares 'strategy' again -- nothing reads it."
+    assert any(fn["python"] == "correspond" for fn in catalog), (
+        "probe is broken: no geometry function catalogued"
+    )
+    fields = {(fn["name"], f["name"]) for fn in catalog for f in fn["fields"]}
+    assert not any(field == "strategy" for _, field in fields), (
+        "a geometry function declares 'strategy' again -- nothing reads it."
     )
 
 

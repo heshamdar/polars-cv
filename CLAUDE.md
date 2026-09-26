@@ -357,7 +357,8 @@ Rust: view-buffer (the engine)
 - `output.rs` — zero-copy numpy/torch struct output encoding
 - `ext_types.rs` — `ExtType`, the polars-cv extension types (`polars_cv.ndarray`/`point`/`contour`/`bbox`); builds tagged outputs such as `sink("ndarray")`, published over FFI by `extension_types`
 - `contour.rs`, `point.rs` — standalone plugin functions for geometry namespaces
-- `geom_params.rs` — `GeomParams`: per-row resolution of those standalone functions' typed kwargs (`Param<T>` fields and `ColumnRef` operands, `{"$slot": n}` on the wire as for ops), reading the extra inputs the Python `_ArgBinder` appends
+- `geom_fns.rs` — the geometry accessors' typed definitions (`ContourFn`/`PointFn`/`BBoxFn`, or the `GeometryOp` a pipeline op shares — `OP_ACCESSORS`), each a mode-generic family like the ops; `geom_catalog.json` generates the `.contour`/`.point`/`.bbox` methods
+- `geom_params.rs` — `GeomParams::parse`: a geometry call's arguments parsed strictly as its function's definition, and their per-row resolution (`{"$slot": n}` on the wire as for ops), reading the extra inputs the generated `_GeomNamespace._call` appends
 
 **view-buffer/src/** (see `view-buffer/AGENTS.md` for the full module tree)
 - `core/` — `ViewBuffer` (strided N-D array), `DType`, `Layout`

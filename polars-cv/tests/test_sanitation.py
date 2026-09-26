@@ -376,8 +376,8 @@ def test_namespace_plugin_symbols_match_registrations():
     the ``vb_graph`` graph path, so the op-catalogue tests don't cover them). Both directions are pinned, mirroring the graph-path guarantee:
 
     - Forward: every ``_plugin("name")`` call resolves to a registered Rust
-      symbol — a typo or rename (e.g. ``contour_bbox`` vs
-      ``contour_bounding_box``) fails here instead of only at execution time.
+      symbol — a typo or a rename on one side only fails here instead of only
+      at execution time.
     - Reverse: every registered namespace ``#[polars_expr]`` symbol is actually
       reached by a ``_plugin(...)`` call — a Rust namespace function left
       unconnected to the Python API (the same orphan class the graph-path
@@ -389,12 +389,12 @@ def test_namespace_plugin_symbols_match_registrations():
 
     called: set[str] = set()
     # Two spellings reach the same plugin: the direct `self._plugin("name", ...)`
-    # and `_ArgBinder.call(self, "name", ...)`, which routes through `_plugin`
-    # after partitioning literal kwargs from per-row expression inputs.
+    # and the generated geometry accessors' `self._call("name", ...)`, which
+    # routes through `_plugin` after binding each expression to its input.
     # `\s*` spans the newline for multi-line calls.
     patterns = (
         r'_plugin\(\s*"([a-z_0-9]+)"',
-        r'\.call\(\s*self,\s*"([a-z_0-9]+)"',
+        r'\._call\(\s*"([a-z_0-9]+)"',
     )
     for py in package_modules():
         text = py.read_text()
@@ -415,7 +415,7 @@ def test_namespace_plugin_symbols_match_registrations():
         # `contour_accessor! { ... <arm> fn <name> / <out_ty> ... }`, which
         # expands to exactly that pair. The arm names are matched explicitly so
         # a new arm has to be added here rather than quietly going unscanned.
-        r"(?:^|\n)\s*(?:map|map_params|zip)\s+fn\s+([a-z_0-9]+)\s*/",
+        r"(?:^|\n)\s*(?:map|zip)\s+fn\s+([a-z_0-9]+)\s*/",
     )
     for rs in ("contour.rs", "point.rs", "image_metadata.rs", "read_bytes.rs"):
         text = (src / rs).read_text()
@@ -548,6 +548,12 @@ _REQUIRED_LIB_HOOKS = (
     "op_catalog",
     # The source/sink catalogue, the same check's sibling for `io_catalog.json`.
     "io_catalog",
+    # The geometry accessor catalogue, the same check's sibling for
+    # `geom_catalog.json`.
+    "geom_catalog",
+    # Parses a geometry accessor call's literal arguments against its
+    # definition as the expression is built (`_GeomNamespace._call`).
+    "check_geom_call",
     # The enum catalogue the Python enum classes are generated from.
     "enum_catalog",
     # Compile and plan a whole graph and check its sinks, as the plugin will
@@ -1215,58 +1221,41 @@ def test_non_structural_geometry_enums_accept_an_expression() -> None:
     """A geometry enum that changes no output schema must be per-row capable.
 
     The rule for per-row eligibility is not the parameter's *type*: it is
-    whether the value affects output shape, rank or dtype. None of the contour
-    namespace's enums does — a winding, a scale origin, a reduction and a
+    whether the value affects output shape, rank or dtype. None of the geometry
+    namespaces' enums does — a winding, a scale origin, a reduction and a
     region mode all leave `List(Struct(CONTOUR_SCHEMA))` (or the reduction's
     `List(Float64)`) exactly as it was.
 
-    Two of the four were literal-only anyway, and the rejection they raised
-    claimed the opposite: "'direction' is structural (it fixes the output
-    shape/rank/dtype at planning time)". It fixes none of them. Reading the
-    live signatures makes the rule enforced rather than remembered — a new
-    non-structural enum has to be plumbed through ``_ArgBinder`` or listed
-    above with a reason.
+    Two of the four were literal-only once, and the rejection they raised
+    claimed the opposite. Each accessor's fields are its Rust definition's
+    (`src/geom_fns.rs`, or the pipeline op it shares), catalogued with whether
+    each may be per-row, so this reads the catalogue: a new literal-only enum
+    field has to be listed above with a reason.
     """
-    import inspect
-
-    from polars_cv._types import (
-        LabelReduction,
-        LabelRegionMode,
-        ScaleOrigin,
-        Winding,
+    catalog = json.loads(
+        (Path(__file__).parent / "golden" / "geom_catalog.json").read_text()
     )
-    from polars_cv.geometry.bbox import BBoxNamespace
-    from polars_cv.geometry.contours import ContourNamespace
-    from polars_cv.geometry.points import PointNamespace
-
-    geom_enum_names = {
-        cls.__name__ for cls in (Winding, ScaleOrigin, LabelReduction, LabelRegionMode)
+    found = {
+        f"{fn['namespace']}.{fn['python']}.{field['name']}": field["type"]
+        for fn in catalog
+        for field in fn["fields"]
+        if field["type"].get("variants")
     }
-    found: dict[str, str] = {}
-    for namespace in (ContourNamespace, PointNamespace, BBoxNamespace):
-        for name, method in inspect.getmembers(namespace, inspect.isfunction):
-            if name.startswith("_"):
-                continue
-            for param_name, param in inspect.signature(method).parameters.items():
-                annotation = str(param.annotation)
-                if any(enum in annotation for enum in geom_enum_names):
-                    found[f"{namespace.__name__}.{name}.{param_name}"] = annotation
-
-    # Non-vacuity: an import rename or a signature-scan bug must fail here
-    # rather than silently checking an empty set.
+    # Non-vacuity: a catalogue shape change must fail here rather than silently
+    # checking an empty set.
     assert len(found) >= 4, (
-        f"found {len(found)} enum-annotated geometry parameters — the signature "
-        f"scan is broken, not the annotations: {found}"
+        f"found {len(found)} enum geometry parameters — the catalogue scan is "
+        f"broken: {found}"
     )
     literal_only = {
-        key: annotation
-        for key, annotation in found.items()
-        if "Expr" not in annotation and key not in _LITERAL_ONLY_GEOM_ENUMS
+        key: ty
+        for key, ty in found.items()
+        if not ty["per_row"] and key not in _LITERAL_ONLY_GEOM_ENUMS
     }
     assert not literal_only, (
-        f"these geometry enum parameters reject a Polars expression but change "
-        f"no output shape, rank or dtype, so they are eligible to be per-row: "
-        f"{literal_only}. Route them through `_ArgBinder`, or add them to "
+        f"these geometry enum parameters are literal-only but change no output "
+        f"shape, rank or dtype, so they are eligible to be per-row: "
+        f"{list(literal_only)}. Declare them `M::V<_>`, or add them to "
         f"_LITERAL_ONLY_GEOM_ENUMS with the structural reason."
     )
 
@@ -2540,7 +2529,13 @@ def test_the_committed_catalog_is_the_built_one() -> None:
     import importlib.util
     from pathlib import Path
 
-    from polars_cv._lib import enum_catalog, io_catalog, op_catalog, pass_catalog
+    from polars_cv._lib import (
+        enum_catalog,
+        geom_catalog,
+        io_catalog,
+        op_catalog,
+        pass_catalog,
+    )
 
     root = Path(__file__).resolve().parent.parent
     for name, built in (
@@ -2548,6 +2543,7 @@ def test_the_committed_catalog_is_the_built_one() -> None:
         ("io_catalog", io_catalog),
         ("enum_catalog", enum_catalog),
         ("pass_catalog", pass_catalog),
+        ("geom_catalog", geom_catalog),
     ):
         committed = (root / "tests" / "golden" / f"{name}.json").read_text()
         assert built() == committed, (

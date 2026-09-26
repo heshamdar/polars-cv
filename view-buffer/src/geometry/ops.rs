@@ -34,6 +34,11 @@ pub enum ScaleOrigin {
 pub enum GeometryOp<M: Mode = Exec> {
     /// Compute the area of the contour using the Shoelace formula.
     ///
+    /// The area of the region the contour describes: the exterior minus the
+    /// union of its hole rings, in either winding direction. Overlapping or
+    /// nested hole rings are not double-subtracted. One value per contour for
+    /// a contour set.
+    ///
     /// Domain transition: contour → scalar
     #[op(name = "contour_area", python = "area", sample = {"signed": false})]
     Area {
@@ -47,6 +52,10 @@ pub enum GeometryOp<M: Mode = Exec> {
     #[op(name = "contour_perimeter", python = "perimeter", sample = {})]
     Perimeter,
     /// Compute the centroid (center of mass) of the contour.
+    ///
+    /// Measured on the same region as `area()` — the exterior minus the union
+    /// of the hole rings — so overlapping or nested holes are not subtracted
+    /// twice.
     ///
     /// Domain transition: contour → vector (returns [x, y])
     #[op(name = "contour_centroid", python = "centroid", sample = {})]
@@ -69,23 +78,18 @@ pub enum GeometryOp<M: Mode = Exec> {
     /// Scale the contour about *origin*.
     ///
     /// Domain: contour → contour
-    ///
-    /// Note:
-    ///     The default is ``"centroid"``, which is what this method has always
-    ///     done — it previously hardcoded it with no way to choose. The
-    ///     ``.contour.scale`` accessor defaults to ``"origin"`` instead; pass
-    ///     *origin* explicitly if you need the two to agree.
-    #[op(name = "contour_scale", python = "scale_contour", visibility = "internal",
+    #[op(name = "contour_scale", python = "scale_contour",
          sample = {"sx": 2.0, "sy": 0.5, "origin": "bbox_center"})]
     Scale {
         /// X scale factor.
         sx: M::V<f64>,
         /// Y scale factor.
         sy: M::V<f64>,
-        /// Point to scale about — ``"centroid"`` (the default), ``"bbox_center"``
-        /// or ``"origin"``. Accepts an expression for a per-row choice: which
-        /// point the scale is measured from changes no output shape, rank or
-        /// dtype, so it meets the eligibility rule for a per-row parameter.
+        /// Point to scale about — ``"centroid"`` (center of mass),
+        /// ``"bbox_center"`` (bounding-box center) or ``"origin"`` (the
+        /// coordinate origin ``(0, 0)``). Accepts an expression for a per-row
+        /// choice: which point the scale is measured from changes no output
+        /// shape, rank or dtype.
         #[param(default = "centroid")]
         origin: M::V<ScaleOrigin>,
     },

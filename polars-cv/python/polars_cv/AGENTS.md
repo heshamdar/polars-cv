@@ -216,12 +216,13 @@ Guarded by `TestStructuralParamsRejectExpressions` in
 `test_param_strictness.py`.
 
 **The geometry namespaces use the same wire form.** `.contour`/`.point`/`.bbox`
-bypass `vb_graph`, but `_ArgBinder` (`_namespace.py`) appends an
-expression-valued parameter or data operand as an extra argument and writes
-`{"$slot": n}` into that kwarg, which Rust reads as a typed `Param<T>` /
-`ColumnRef` via `GeomParams` (`src/geom_params.rs`). Each kwarg names its own
-position, so the optional data operands (`order`, `origin`) cannot be confused
-with an appended parameter.
+bypass `vb_graph`, but each accessor method is generated from its Rust
+definition (`src/geom_fns.rs`) as one `_GeomNamespace._call` (`_namespace.py`),
+which appends an expression-valued parameter or data operand as an extra
+argument and writes `{"$slot": n}` into that field. Rust parses the arguments
+as the function's own definition (`GeomParams::parse`, `src/geom_params.rs`).
+Each field names its own position, so the optional data operands (`order`,
+`origin`) cannot be confused with an appended parameter.
 
 **Null parameter values are a shared policy, not per-op handling.** A parameter
 column may contain nulls; `Pipeline.on_null_param("raise"|"null")` says whether
@@ -247,15 +248,14 @@ compares, or CSE will merge ops that differ only in policy.
 
 The geometry namespaces have no `Pipeline` to hang a graph-level setting on, so
 the policy lives on the accessor: `on_null(policy)` returns a copy with
-`_on_null` set, and `_ArgBinder.call` injects it into the kwargs. That keeps
-it out of all 15 geometry method signatures.
+`_on_null` set, and `_GeomNamespace._call` injects it into the kwargs. That
+keeps it out of every geometry method signature.
 
-It lives on `_GeomNullPolicy`, a mixin the three geometry namespaces add
-alongside `_PluginNamespace` — **not** on `_PluginNamespace` itself, which `.cv`
-also inherits. `.cv` routes its per-row parameters through `vb_graph`, where
+It lives on `_GeomNamespace`, the three geometry namespaces' base — **not** on
+`_PluginNamespace` itself, which `.cv` also inherits. `.cv` routes its per-row parameters through `vb_graph`, where
 only `Pipeline.on_null_param` is read, so inheriting `on_null` there would let
 `pl.col("x").cv.on_null("null")` chain and read as effective while doing
-nothing. On the mixin, that call is an `AttributeError`
+nothing. On the geometry base, that call is an `AttributeError`
 (`test_cv_does_not_expose_on_null`). Keep any future accessor-level policy on
 the same mixin unless `.cv` genuinely honours it.
 

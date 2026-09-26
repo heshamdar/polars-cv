@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 """(Re)record ``tests/golden/signatures.json``: the public builder call surface.
 
-This snapshot pins, for every public method of ``Pipeline`` and
-``LazyPipelineExpr``, each parameter's name, kind and default. Annotations are
+This snapshot pins, for every public method of ``Pipeline``,
+``LazyPipelineExpr`` and the ``.contour`` / ``.point`` / ``.bbox`` accessor
+namespaces, each parameter's name, kind and default. Annotations are
 deliberately not recorded: they are spelled by the generator and do not change
 which calls are accepted.
 
@@ -28,9 +29,18 @@ FIXTURE = _PKG / "tests" / "golden" / "signatures.json"
 def surface() -> dict[str, dict[str, list[list[str]]]]:
     """Class -> public method -> [[name, kind, default-repr], ...]."""
     from polars_cv import LazyPipelineExpr, Pipeline
+    from polars_cv.geometry.bbox import BBoxNamespace
+    from polars_cv.geometry.contours import ContourNamespace
+    from polars_cv.geometry.points import PointNamespace
 
     out: dict[str, dict[str, list[list[str]]]] = {}
-    for cls in (Pipeline, LazyPipelineExpr):
+    for cls in (
+        Pipeline,
+        LazyPipelineExpr,
+        ContourNamespace,
+        PointNamespace,
+        BBoxNamespace,
+    ):
         methods: dict[str, list[list[str]]] = {}
         for name in sorted(dir(cls)):
             if name.startswith("_"):

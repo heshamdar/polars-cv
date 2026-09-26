@@ -115,10 +115,9 @@ df.with_columns(
 )
 ```
 
-`scale` takes `origin=` — `"origin"` (the default), `"centroid"` or
-`"bbox_center"`. `Pipeline.scale_contour` takes the same parameter but defaults
-to `"centroid"`, which is what each surface has always done; pass `origin`
-explicitly if the two must agree.
+`scale` takes `origin=` — `"centroid"` (the default), `"bbox_center"` or
+`"origin"`. `.contour.scale` and `Pipeline.scale_contour` are one operation
+with one definition, so they always agree.
 
 ### Rasterization
 

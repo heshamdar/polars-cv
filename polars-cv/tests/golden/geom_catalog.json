@@ -1,0 +1,746 @@
+[
+  {
+    "namespace": "bbox",
+    "name": "bbox_correspond",
+    "python": "correspond",
+    "visibility": "public",
+    "doc": "Pair each box with at most one box in *other*, by IoU.\n\nThe bounding-box form of :meth:`ContourNamespace.correspond` — the same\ngreedy, exclusive rule, threshold and ordering, over box overlap.\n\nReturns:\n    A struct matching :data:`polars_cv.CORRESPONDENCE_SCHEMA`.",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "Bounding-box set expression to pair against.",
+        "type": {
+          "kind": "column"
+        }
+      },
+      {
+        "name": "threshold",
+        "doc": "Minimum IoU for a pairing, in [0, 1]. Accepts a Polars expression\nfor a per-row threshold.",
+        "default": 0.5,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "order",
+        "doc": "Optional per-row list of indices giving the visit sequence, a\npermutation of ``0..n``. Defaults to natural order.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "column"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "bbox",
+    "name": "bbox_pairwise_iou",
+    "python": "pairwise_iou",
+    "visibility": "public",
+    "doc": "Compute the full pairwise IoU matrix between two bounding-box sets.\n\nReturns:\n    A nested list (`List[List[Float64]]`) representing an N x M IoU matrix.",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "Ground-truth bounding-box set expression.",
+        "type": {
+          "kind": "column"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_area",
+    "python": "area",
+    "visibility": "public",
+    "doc": "Compute the area of the contour using the Shoelace formula.\n\nThe area of the region the contour describes: the exterior minus the\nunion of its hole rings, in either winding direction. Overlapping or\nnested hole rings are not double-subtracted. One value per contour for\na contour set.\n\nDomain transition: contour → scalar",
+    "fields": [
+      {
+        "name": "signed",
+        "doc": "If True, return signed area (negative for CW winding).",
+        "default": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "bool"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_bounding_box",
+    "python": "bounding_box",
+    "visibility": "public",
+    "doc": "Compute the axis-aligned bounding box of the contour.\n\nDomain transition: contour → vector (returns [x, y, width, height])",
+    "fields": []
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_centroid",
+    "python": "centroid",
+    "visibility": "public",
+    "doc": "Compute the centroid (center of mass) of the contour.\n\nMeasured on the same region as `area()` — the exterior minus the union\nof the hole rings — so overlapping or nested holes are not subtracted\ntwice.\n\nDomain transition: contour → vector (returns [x, y])",
+    "fields": []
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_contains_point",
+    "python": "contains_point",
+    "visibility": "public",
+    "doc": "Test if contour contains a point.\n\nReturns:\n    Boolean indicating if point is inside contour — `List(Boolean)`, one\n    per contour, for a contour-set column.",
+    "fields": [
+      {
+        "name": "point",
+        "doc": "Point column to test.",
+        "type": {
+          "kind": "column"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_convex_hull",
+    "python": "convex_hull",
+    "visibility": "public",
+    "doc": "Compute the convex hull of the contour.\n\nDomain: contour → contour",
+    "fields": []
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_correspond",
+    "python": "correspond",
+    "visibility": "public",
+    "doc": "Pair each contour with at most one contour in *other*, by overlap.\n\nGreedy and exclusive: contours are visited in *order* and each takes the\nhighest-IoU partner not already taken, keeping it only if that IoU is at\nleast *threshold*. A partner claimed earlier is unavailable later, so the\norder is what resolves contention. Exact ties go to the lowest index in\n*other*; the threshold bound is inclusive.\n\nThe relation carries no interpretation. Contours can represent anything,\nand whether a pairing means a \"detection\" is the caller's business --\nas is deriving *order* from confidence, and counting pairings across a\npopulation.\n\nReturns:\n    A struct matching :data:`polars_cv.CORRESPONDENCE_SCHEMA`:\n    ``right_idx`` (index into *other*, null where unpaired) and\n    ``overlap`` (the IoU of the chosen pair, 0.0 where unpaired), both\n    positionally aligned with this expression's contours.",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "Contour-set expression to pair against (`List[Contour]`).",
+        "type": {
+          "kind": "column"
+        }
+      },
+      {
+        "name": "threshold",
+        "doc": "Minimum IoU for a pairing, in [0, 1]. Accepts a Polars expression\nfor a per-row threshold.",
+        "default": 0.5,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "order",
+        "doc": "Optional per-row list of indices giving the visit sequence, a\npermutation of ``0..n``. Defaults to natural order.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "column"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_dice",
+    "python": "dice",
+    "visibility": "public",
+    "doc": "Compute Dice coefficient with another contour.\n\nDice = 2 * intersection / (area1 + area2)\n\nReturns:\n    Float64 Dice coefficient in [0, 1] — `List(Float64)` when either\n    side is a contour set.",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "Another contour column to compare with.",
+        "type": {
+          "kind": "column"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_ensure_winding",
+    "python": "ensure_winding",
+    "visibility": "public",
+    "doc": "Ensure contour has specified winding direction.\n\nFlips the contour if needed to match target winding. Use this when handing\ncontours to an external consumer that expects a convention; polars-cv's own\noperations never require one.\n\nReturns:\n    Contour with guaranteed winding direction, or a list of them for a\n    contour-set column.",
+    "fields": [
+      {
+        "name": "direction",
+        "doc": "Target winding direction. Accepts a Polars expression for a per-row\nchoice — rewinding a ring reorders its vertices and leaves the output\nschema untouched.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "Winding",
+          "variants": [
+            "ccw",
+            "counterclockwise",
+            "cw",
+            "clockwise"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_flip",
+    "python": "flip",
+    "visibility": "public",
+    "doc": "Reverse point order (flips winding direction).\n\nExterior and holes are reversed together. This changes only what\n`winding()` reports — the region the contour describes is unaffected,\nbecause no operation reads winding.\n\nReturns:\n    Contour with reversed point order, or a list of them for a\n    contour-set column.",
+    "fields": []
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_hausdorff",
+    "python": "hausdorff_distance",
+    "visibility": "public",
+    "doc": "Compute Hausdorff distance to another contour.\n\nThe maximum, over every *vertex* of either contour, of the distance to the\nnearest vertex of the other. This is a vertex-to-vertex measure, not\npoint-to-edge: two contours tracing the same outline with different vertex\nspacing have a non-zero distance. Hole vertices are included. An empty\ncontour gives `inf`.\n\nReturns:\n    Float64 Hausdorff distance — `List(Float64)` when either side is a\n    contour set.",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "Another contour column to compare with.",
+        "type": {
+          "kind": "column"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_iou",
+    "python": "iou",
+    "visibility": "public",
+    "doc": "Compute Intersection over Union with another contour.\n\nOverlap is exact for arbitrary simple polygons — concave shapes and holes\nincluded, in either winding direction. Each contour is measured as its\nexterior minus the union of its hole rings, the same region `area()`,\n`contains_point()` and rasterization use.\n\nReturns:\n    Float64 IoU value in [0, 1] — `List(Float64)` when either side is a\n    contour set (see the class docstring on broadcasting).",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "Another contour column to compare with.",
+        "type": {
+          "kind": "column"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_is_convex",
+    "python": "is_convex",
+    "visibility": "public",
+    "doc": "Check if contour is convex.\n\nReturns:\n    Boolean indicating convexity, or `List(Boolean)` for a contour-set\n    column.",
+    "fields": []
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_label_reduce",
+    "python": "label_reduce",
+    "visibility": "public",
+    "doc": "Score each contour from an image/array expression with configurable reduction.\n\nRuns the same engine routine as :meth:`polars_cv.Pipeline.label_reduce`,\nso the two agree on every reduction, region mode and edge case; this\naccessor differs only in taking an already-materialized contour column\nrather than extracting one inside a pipeline.\n\nPixels are sampled at their centres. A contour whose region catches no\npixel centre — a sub-pixel detection — is scored at its centroid rather\nthan as 0.0.\n\nReturns:\n    A list of float scores, aligned to the input contour order.",
+    "fields": [
+      {
+        "name": "image",
+        "doc": "Image/array expression aligned by row with contour sets.",
+        "type": {
+          "kind": "column"
+        }
+      },
+      {
+        "name": "reduction",
+        "doc": "Aggregation method over pixels in each contour region. Accepts a\nPolars expression for a per-row choice.",
+        "default": "max",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "LabelReduction",
+          "variants": [
+            "max",
+            "mean",
+            "sum"
+          ]
+        }
+      },
+      {
+        "name": "region_mode",
+        "doc": "Region selector - ``\"interior\"`` (pixels strictly inside),\n``\"boundary\"`` (interior plus the contour boundary) or ``\"bbox\"``\n(everything in the bounding box). Accepts a Polars expression.",
+        "default": "interior",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "LabelRegionMode",
+          "variants": [
+            "interior",
+            "boundary",
+            "bbox"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_normalize",
+    "python": "normalize",
+    "visibility": "public",
+    "doc": "Convert pixel coordinates to normalized [0,1] range.\n\nReturns:\n    Contour with coordinates in [0,1] range, or a list of them for a\n    contour-set column.",
+    "fields": [
+      {
+        "name": "width",
+        "doc": "Reference width for normalization (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "height",
+        "doc": "Reference height for normalization (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_pairwise_iou",
+    "python": "pairwise_iou",
+    "visibility": "public",
+    "doc": "Compute full pairwise IoU matrix between contour sets.\n\nReturns:\n    A nested list (`List[List[Float64]]`) representing an N x M IoU matrix.",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "Ground-truth contour-set expression (`List[Contour]`).",
+        "type": {
+          "kind": "column"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_perimeter",
+    "python": "perimeter",
+    "visibility": "public",
+    "doc": "Compute the perimeter (arc length) of the contour.\n\nDomain transition: contour → scalar",
+    "fields": []
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_scale",
+    "python": "scale",
+    "visibility": "public",
+    "doc": "Scale the contour about *origin*.\n\nDomain: contour → contour",
+    "fields": [
+      {
+        "name": "sx",
+        "doc": "X scale factor.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "sy",
+        "doc": "Y scale factor.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "origin",
+        "doc": "Point to scale about — ``\"centroid\"`` (center of mass),\n``\"bbox_center\"`` (bounding-box center) or ``\"origin\"`` (the\ncoordinate origin ``(0, 0)``). Accepts an expression for a per-row\nchoice: which point the scale is measured from changes no output\nshape, rank or dtype.",
+        "default": "centroid",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "ScaleOrigin",
+          "variants": [
+            "centroid",
+            "bbox_center",
+            "origin"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_simplify",
+    "python": "simplify",
+    "visibility": "public",
+    "doc": "Simplify the contour using the Douglas-Peucker algorithm.\n\nDomain: contour → contour",
+    "fields": [
+      {
+        "name": "tolerance",
+        "doc": "Maximum distance from the original contour.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_to_absolute",
+    "python": "to_absolute",
+    "visibility": "public",
+    "doc": "Convert normalized coordinates to pixel coordinates.\n\nReturns:\n    Contour with pixel coordinates, or a list of them for a\n    contour-set column.",
+    "fields": [
+      {
+        "name": "width",
+        "doc": "Reference width for scaling (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "height",
+        "doc": "Reference height for scaling (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_translate",
+    "python": "translate",
+    "visibility": "public",
+    "doc": "Translate the contour by an offset.\n\nDomain: contour → contour",
+    "fields": [
+      {
+        "name": "dx",
+        "doc": "X offset (horizontal translation).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "dy",
+        "doc": "Y offset (vertical translation).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_winding",
+    "python": "winding",
+    "visibility": "public",
+    "doc": "Compute the exterior ring's winding direction from point order.\n\nReturns:\n    String 'ccw' for counter-clockwise, 'cw' for clockwise — a list of\n    them for a contour-set column.\n\nNote:\n    Winding is computed using the Shoelace formula:\n    - Positive signed area = CCW\n    - Negative signed area = CW\n\n    This is purely a report on point order. Winding does not mark a ring as\n    a hole — the `holes` field does — and no other operation consults it.",
+    "fields": []
+  },
+  {
+    "namespace": "point",
+    "name": "point_angle_to",
+    "python": "angle_to",
+    "visibility": "public",
+    "doc": "Compute the angle from this point to another, in radians.\n\nReturns:\n    Float64 angle in radians, from ``atan2(dy, dx)``.",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "Target point column.",
+        "type": {
+          "kind": "column"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "point",
+    "name": "point_distance",
+    "python": "distance",
+    "visibility": "public",
+    "doc": "Compute Euclidean distance to another point.\n\nReturns:\n    Float64 distance.",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "Another point column.",
+        "type": {
+          "kind": "column"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "point",
+    "name": "point_distance_to_contour",
+    "python": "distance_to_contour",
+    "visibility": "public",
+    "doc": "Compute the minimum distance from the point to the contour boundary.\n\nReturns:\n    Float64 distance to the nearest edge of the contour.",
+    "fields": [
+      {
+        "name": "contour",
+        "doc": "Contour column.",
+        "type": {
+          "kind": "column"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "point",
+    "name": "point_interpolate",
+    "python": "interpolate",
+    "visibility": "public",
+    "doc": "Linearly interpolate between this point and another.\n\nReturns:\n    ``self + t * (other - self)``.",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "Another point column.",
+        "type": {
+          "kind": "column"
+        }
+      },
+      {
+        "name": "t",
+        "doc": "Interpolation parameter: 0 gives this point, 1 gives *other*\n(literal or expression).",
+        "default": 0.5,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "point",
+    "name": "point_manhattan_distance",
+    "python": "manhattan_distance",
+    "visibility": "public",
+    "doc": "Compute Manhattan (L1) distance to another point.\n\nReturns:\n    Float64 distance.",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "Another point column.",
+        "type": {
+          "kind": "column"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "point",
+    "name": "point_midpoint",
+    "python": "midpoint",
+    "visibility": "public",
+    "doc": "Compute the midpoint between two points.\n\nReturns:\n    The point halfway between.",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "Another point column.",
+        "type": {
+          "kind": "column"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "point",
+    "name": "point_nearest_on_contour",
+    "python": "nearest_point_on_contour",
+    "visibility": "public",
+    "doc": "Find the nearest point on the contour boundary.\n\nReturns:\n    The nearest point on the contour, or null for an empty contour.",
+    "fields": [
+      {
+        "name": "contour",
+        "doc": "Contour column.",
+        "type": {
+          "kind": "column"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "point",
+    "name": "point_normalize",
+    "python": "normalize",
+    "visibility": "public",
+    "doc": "Convert pixel coordinates to normalized [0,1] range.\n\nReturns:\n    Point with coordinates in [0,1] range.",
+    "fields": [
+      {
+        "name": "width",
+        "doc": "Reference width for normalization; non-zero (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "height",
+        "doc": "Reference height for normalization; non-zero (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "point",
+    "name": "point_rotate",
+    "python": "rotate",
+    "visibility": "public",
+    "doc": "Rotate the point about an origin by an angle in radians.\n\nReturns:\n    Rotated point.",
+    "fields": [
+      {
+        "name": "angle",
+        "doc": "Rotation angle in radians (literal or expression); positive is\ncounter-clockwise in a y-up frame.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "origin",
+        "doc": "Point column to rotate about; the coordinate origin ``(0, 0)`` when\nomitted (or null in a row).",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "column"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "point",
+    "name": "point_scale",
+    "python": "scale",
+    "visibility": "public",
+    "doc": "Scale point coordinates about the coordinate origin.\n\nReturns:\n    Scaled point.",
+    "fields": [
+      {
+        "name": "sx",
+        "doc": "X scale factor (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "sy",
+        "doc": "Y scale factor (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "point",
+    "name": "point_signed_distance_to_contour",
+    "python": "signed_distance_to_contour",
+    "visibility": "public",
+    "doc": "Compute the signed distance from the point to the contour boundary.\n\nReturns:\n    Float64 distance: negative if the point is inside the contour,\n    positive if outside.",
+    "fields": [
+      {
+        "name": "contour",
+        "doc": "Contour column.",
+        "type": {
+          "kind": "column"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "point",
+    "name": "point_to_absolute",
+    "python": "to_absolute",
+    "visibility": "public",
+    "doc": "Convert normalized coordinates to pixel coordinates.\n\nReturns:\n    Point with pixel coordinates.",
+    "fields": [
+      {
+        "name": "width",
+        "doc": "Reference width for scaling (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "height",
+        "doc": "Reference height for scaling (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "point",
+    "name": "point_translate",
+    "python": "translate",
+    "visibility": "public",
+    "doc": "Translate point by offset.\n\nReturns:\n    Translated point.",
+    "fields": [
+      {
+        "name": "dx",
+        "doc": "X offset (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "dy",
+        "doc": "Y offset (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "point",
+    "name": "point_within_bbox",
+    "python": "within_bbox",
+    "visibility": "public",
+    "doc": "Check whether the point lies within a bounding box (edges included).\n\nReturns:\n    Boolean.",
+    "fields": [
+      {
+        "name": "bbox",
+        "doc": "Bounding-box column.",
+        "type": {
+          "kind": "column"
+        }
+      }
+    ]
+  }
+]

@@ -155,6 +155,19 @@ pub trait Values {
     fn value<T: WireScalar>(&self, slot: usize) -> Result<T, Self::Error>;
 }
 
+/// What `#[derive(Ops)]` gives a family's `Wire` form, for code generic
+/// over families (the family's inherent methods of the same names).
+pub trait WireOps: Sized {
+    /// The op `name` from its wire fields; `None` when the family has none.
+    fn from_wire(name: &str, fields: serde_json::Value) -> Option<Result<Self, String>>;
+    /// The op's wire name; `None` for an engine-internal variant.
+    fn wire_name(&self) -> Option<&'static str>;
+    /// Call `f(field, slot)` for every slot a field reads.
+    fn visit_slots(&self, f: &mut dyn FnMut(&'static str, usize));
+    /// Every op's catalogue entry, in declaration order.
+    fn catalog() -> Vec<OpDesc>;
+}
+
 /// No per-row values: resolves an all-literal op, and refuses a slot.
 pub struct Literals;
 

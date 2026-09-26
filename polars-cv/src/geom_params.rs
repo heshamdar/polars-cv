@@ -6,23 +6,36 @@
 //! [`Param<T>`](crate::ops::Param) — the literal value, or `{"$slot": n}`
 //! naming the plugin input that holds it per row — and an optional data
 //! operand (`point.rotate`'s `origin`, `correspond`'s `order`) is a
-//! [`ColumnRef`]. Python's `_ArgBinder` appends each expression as an input and
-//! writes its position into the kwarg itself, so nothing is looked up by name.
+//! [`ColumnRef`]. Each function's arguments are its typed definition
+//! (`geom_fns`), parsed strictly by name; the generated Python accessor appends
+//! each expression as an input and writes its position into its field, so
+//! nothing is looked up by name.
 //!
 //! Reading is delegated to [`crate::params::ParamCol`], so these namespaces
 //! inherit the same dtype coverage, scalar broadcasting (a length-1 series from
 //! an aggregation applies to every row) and [`NullParamPolicy`] the graph
 //! engine uses. The policy arrives as an `on_null` kwarg (set from Python by
-//! `_GeomNullPolicy.on_null`) and is applied by [`GeomParams::row`], which each
+//! `_GeomNamespace.on_null`) and is applied by [`GeomParams::row`], which each
 //! row loop wraps its parameter resolution in.
 
 #[allow(unused_imports)]
 use crate::ops::ParamExt as _;
 use polars::prelude::*;
+use serde::Deserialize;
+use view_buffer::mode::WireOps;
 use view_buffer::naming::WireScalar;
 
-use crate::ops::{ColumnRef, Literal, OpFields, Param};
+use crate::ops::{ColumnRef, Literal, Param};
 use crate::params::{NullParamPolicy, ParamCtx};
+
+/// A geometry plugin call's kwargs: the function's own wire fields, and the
+/// null policy (`_GeomNamespace.on_null`) every call carries.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GeomKwargs {
+    args: serde_json::Map<String, serde_json::Value>,
+    on_null: Literal<NullParamPolicy>,
+}
 
 /// Per-row resolver over one plugin call's inputs.
 pub struct GeomParams<'a> {
@@ -31,32 +44,38 @@ pub struct GeomParams<'a> {
 }
 
 impl<'a> GeomParams<'a> {
-    /// Wrap a call's inputs and the kwargs that address them.
+    /// Parse the call's arguments as the function `name` of family `F` —
+    /// strictly: an unknown or missing field, a wrong type and a per-row value
+    /// for a structural field are refused, naming the field — and wrap its
+    /// inputs.
     ///
-    /// Checks the kwargs' slots against the inputs up front, because both ways
-    /// they can disagree fail badly otherwise: a slot past the end would panic
-    /// on a raw index, and an input no slot claims means an operand or
+    /// Checks the arguments' slots against the inputs up front, because both
+    /// ways they can disagree fail badly otherwise: a slot past the end would
+    /// panic on a raw index, and an input no slot claims means an operand or
     /// parameter was dropped between the builder and here — a quietly wrong
-    /// result rather than an error. The slots come from the kwargs' derived
-    /// visitor, so there is no list of them to keep.
-    pub fn new<K: OpFields>(
+    /// result rather than an error. The slots come from the definition's
+    /// derived visitor, so there is no list of them to keep.
+    pub fn parse<F: WireOps>(
         inputs: &'a [Series],
-        kwargs: &K,
-        on_null: Option<Literal<NullParamPolicy>>,
-    ) -> PolarsResult<Self> {
+        kwargs: GeomKwargs,
+        name: &str,
+    ) -> PolarsResult<(F, Self)> {
+        let op = F::from_wire(name, serde_json::Value::Object(kwargs.args))
+            .ok_or_else(|| polars_err!(ComputeError: "'{}' is not a function of its family", name))?
+            .map_err(|e| polars_err!(ComputeError: "{}: {}", name, e))?;
         let mut claimed: Vec<usize> = Vec::new();
         let mut bad: Option<(&'static str, usize)> = None;
-        kwargs.visit_slots(&mut |name, slot| {
+        op.visit_slots(&mut |field, slot| {
             if slot == 0 || slot >= inputs.len() {
-                bad.get_or_insert((name, slot));
+                bad.get_or_insert((field, slot));
             }
             claimed.push(slot);
         });
-        if let Some((name, slot)) = bad {
+        if let Some((field, slot)) = bad {
             polars_bail!(ComputeError:
                 "'{}' reads input {} but the call has {} inputs; the expression \
                  was built by an incompatible version",
-                name, slot, inputs.len()
+                field, slot, inputs.len()
             );
         }
         // Index 0 is the namespace's own column; every other input must be
@@ -64,15 +83,16 @@ impl<'a> GeomParams<'a> {
         claimed.sort_unstable();
         if claimed != (1..inputs.len()).collect::<Vec<_>>() {
             polars_bail!(ComputeError:
-                "call has {} inputs but its kwargs read {:?}; every operand and \
-                 per-row parameter must be passed exactly once (see `_ArgBinder`)",
+                "call has {} inputs but its arguments read {:?}; every operand \
+                 and per-row parameter must be passed exactly once",
                 inputs.len(), claimed
             );
         }
-        Ok(GeomParams {
+        let params = GeomParams {
             inputs,
-            ctx: ParamCtx::with_null_policy(inputs, on_null.map(|p| p.get()).unwrap_or_default()),
-        })
+            ctx: ParamCtx::with_null_policy(inputs, kwargs.on_null.get()),
+        };
+        Ok((op, params))
     }
 
     /// Resolve one row's parameters, applying the call's [`NullParamPolicy`].
@@ -93,46 +113,27 @@ impl<'a> GeomParams<'a> {
         }
     }
 
-    /// A parameter's value at `row`, or `default` when the caller gave none.
-    pub fn get<T: WireScalar>(
-        &self,
-        param: &Option<Param<T>>,
-        default: T,
-        row: usize,
-    ) -> PolarsResult<T> {
-        match param {
-            Some(p) => p.resolve(row, &self.ctx),
-            None => Ok(default),
-        }
+    /// A parameter's value at `row`.
+    pub fn value<T: WireScalar>(&self, param: &Param<T>, row: usize) -> PolarsResult<T> {
+        param.resolve(row, &self.ctx)
     }
 
-    /// A required parameter's value at `row`.
-    pub fn required<T: WireScalar>(
-        &self,
-        param: &Option<Param<T>>,
-        name: &str,
-        row: usize,
-    ) -> PolarsResult<T> {
-        match param {
-            Some(p) => p.resolve(row, &self.ctx),
-            None => polars_bail!(ComputeError: "{} is required", name),
-        }
+    /// A data operand's input series.
+    pub fn column(&self, column: &ColumnRef) -> &'a Series {
+        &self.inputs[column.0]
     }
 
-    /// The input series of a data operand, when the caller gave one.
-    pub fn column(&self, column: &Option<ColumnRef>) -> Option<&'a Series> {
-        column.map(|c| &self.inputs[c.0])
+    /// An optional data operand's input series, when the caller gave one.
+    pub fn optional_column(&self, column: &Option<ColumnRef>) -> Option<&'a Series> {
+        column.as_ref().map(|c| self.column(c))
     }
+}
 
-    /// The input series of a required data operand.
-    pub fn required_column(
-        &self,
-        column: &Option<ColumnRef>,
-        name: &str,
-    ) -> PolarsResult<&'a Series> {
-        self.column(column)
-            .ok_or_else(|| polars_err!(ComputeError: "missing required input '{}'", name))
-    }
+/// The error for a function whose arguments parsed as another function of
+/// its family — impossible, since [`GeomParams::parse`] parses by the
+/// function's own name, but refused rather than panicked on.
+pub fn parsed_as_another(name: &str) -> PolarsError {
+    polars_err!(ComputeError: "internal: '{}' parsed as another function", name)
 }
 
 /// Validate a resolved parameter that must lie within an inclusive range.
