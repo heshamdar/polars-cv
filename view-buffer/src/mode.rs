@@ -484,9 +484,23 @@ pub struct OpDesc {
     pub name: &'static str,
     /// The Python method name.
     pub python: &'static str,
-    pub visibility: &'static str,
+    pub visibility: Visibility,
     pub doc: &'static str,
     pub fields: Vec<FieldDesc>,
+}
+
+/// Where the Python builder exposes an op: `#[op(visibility = ...)]`, naming
+/// a variant (default `Public`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Visibility {
+    /// A generated `Pipeline` method (and its lazy forwarder).
+    Public,
+    /// A generated `LazyPipelineExpr` method only: it reads another node.
+    LazyOnly,
+    /// No generated method: reached through hand-written sugar, or planned
+    /// internally.
+    Internal,
 }
 
 /// Read field `name` out of an op's wire object, naming the field (and the
@@ -510,6 +524,17 @@ pub fn take_field<T: serde::de::DeserializeOwned>(
                 }
             }),
     }
+}
+
+/// An absent field's declared default (`#[param(default = ...)]`), read as
+/// the field. `every_field_default_is_a_valid_value` holds every declared
+/// default to parse, so the error is a definition mistake, named as such.
+pub fn default_field<T: serde::de::DeserializeOwned>(
+    name: &str,
+    default: serde_json::Value,
+) -> Result<T, String> {
+    serde_json::from_value(default)
+        .map_err(|e| format!("'{name}': the declared default is not a valid value: {e}"))
 }
 
 /// The error for a required field that is absent.

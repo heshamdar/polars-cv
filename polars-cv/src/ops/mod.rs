@@ -35,8 +35,6 @@ pub trait OpFields {
     const DOC: &'static str;
     /// The Python method name, when it differs from the wire name.
     const PYTHON_NAME: Option<&'static str>;
-    /// `public`, `lazy_only` or `internal`.
-    const VISIBILITY: &'static str;
     /// Every field, in declaration (= Python signature) order.
     fn fields() -> Vec<FieldDesc>;
     /// Call `f(field, slot)` for every slot any field reads.
@@ -48,7 +46,7 @@ pub(crate) fn op_desc<T: OpFields>(name: &'static str) -> OpDesc {
     OpDesc {
         name,
         python: T::PYTHON_NAME.unwrap_or(name),
-        visibility: T::VISIBILITY,
+        visibility: view_buffer::mode::Visibility::Public,
         doc: T::DOC,
         fields: T::fields(),
     }
@@ -273,6 +271,19 @@ mod tests {
     fn a_missing_required_field_is_rejected() {
         let err = parse_err(json!({"op": "resize", "height": 4, "filter": "nearest"}));
         assert!(err.contains("width"), "{err}");
+    }
+
+    /// A default is declared once, `#[param(default = ...)]`, and the wire
+    /// applies it: the Python signature and a hand-built graph agree on what
+    /// an absent field means. It used to reach only the Python signature, so
+    /// the wire refused the field as missing.
+    #[test]
+    fn an_absent_field_takes_its_declared_default() {
+        let op = parse(json!({"op": "resize", "height": 4, "width": 4})).unwrap();
+        assert_eq!(op.fields_json()["filter"], "lanczos3");
+        let op = parse(json!({"op": "rasterize", "size": [4, 4]})).unwrap();
+        assert_eq!(op.fields_json()["fill_value"], 255);
+        assert_eq!(op.fields_json()["background"], 0);
     }
 
     #[test]

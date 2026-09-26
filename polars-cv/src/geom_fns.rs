@@ -454,7 +454,7 @@ pub fn geom_catalog() -> Vec<GeomDesc> {
             .cloned()
             .unwrap_or_else(|| panic!("OP_ACCESSORS names '{name}', which is not an op"));
         desc.python = method;
-        desc.visibility = "public";
+        desc.visibility = view_buffer::mode::Visibility::Public;
         ("contour", desc)
     });
     let families = <ContourFn<Wire> as WireOps>::catalog()

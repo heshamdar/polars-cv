@@ -24,7 +24,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
     ///     >>> result = a.add(b).sink("numpy")
     ///     ```
-    #[op(name = "add", visibility = "lazy_only", sample = {"other": "n0"})]
+    #[op(name = "add", visibility = LazyOnly, sample = {"other": "n0"})]
     Add {
         /// The expression to combine with, element-wise.
         other: NodeRef,
@@ -40,7 +40,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
     ///     >>> result = a.subtract(b).sink("numpy")
     ///     ```
-    #[op(name = "subtract", visibility = "lazy_only", sample = {"other": "n0"})]
+    #[op(name = "subtract", visibility = LazyOnly, sample = {"other": "n0"})]
     Subtract {
         /// The expression to combine with, element-wise.
         other: NodeRef,
@@ -57,7 +57,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
     ///     >>> result = a.multiply(b).sink("numpy")
     ///     ```
-    #[op(name = "multiply", visibility = "lazy_only", sample = {"other": "n0"})]
+    #[op(name = "multiply", visibility = LazyOnly, sample = {"other": "n0"})]
     Multiply {
         /// The expression to combine with, element-wise.
         other: NodeRef,
@@ -73,7 +73,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
     ///     >>> result = a.divide(b).sink("numpy")
     ///     ```
-    #[op(name = "divide", visibility = "lazy_only", sample = {"other": "n0"})]
+    #[op(name = "divide", visibility = LazyOnly, sample = {"other": "n0"})]
     Divide {
         /// The expression to combine with, element-wise.
         other: NodeRef,
@@ -89,7 +89,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
     ///     >>> result = a.blend(b).sink("numpy")
     ///     ```
-    #[op(name = "blend", visibility = "lazy_only", sample = {"other": "n0"})]
+    #[op(name = "blend", visibility = LazyOnly, sample = {"other": "n0"})]
     Blend {
         /// The expression to combine with, element-wise.
         other: NodeRef,
@@ -105,7 +105,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
     ///     >>> result = a.ratio(b).sink("numpy")
     ///     ```
-    #[op(name = "ratio", visibility = "lazy_only", sample = {"other": "n0"})]
+    #[op(name = "ratio", visibility = LazyOnly, sample = {"other": "n0"})]
     Ratio {
         /// The expression to combine with, element-wise.
         other: NodeRef,
@@ -119,7 +119,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
     ///     >>> result = a.maximum(b).sink("numpy")
     ///     ```
-    #[op(name = "maximum", visibility = "lazy_only", sample = {"other": "n0"})]
+    #[op(name = "maximum", visibility = LazyOnly, sample = {"other": "n0"})]
     Maximum {
         /// The expression to combine with, element-wise.
         other: NodeRef,
@@ -133,7 +133,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
     ///     >>> result = a.minimum(b).sink("numpy")
     ///     ```
-    #[op(name = "minimum", visibility = "lazy_only", sample = {"other": "n0"})]
+    #[op(name = "minimum", visibility = LazyOnly, sample = {"other": "n0"})]
     Minimum {
         /// The expression to combine with, element-wise.
         other: NodeRef,
@@ -146,7 +146,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
     ///     >>> result = a.bitwise_and(b).sink("numpy")
     ///     ```
-    #[op(name = "bitwise_and", visibility = "lazy_only", sample = {"other": "n0"})]
+    #[op(name = "bitwise_and", visibility = LazyOnly, sample = {"other": "n0"})]
     BitwiseAnd {
         /// The expression to combine with, element-wise.
         other: NodeRef,
@@ -159,7 +159,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
     ///     >>> result = a.bitwise_or(b).sink("numpy")
     ///     ```
-    #[op(name = "bitwise_or", visibility = "lazy_only", sample = {"other": "n0"})]
+    #[op(name = "bitwise_or", visibility = LazyOnly, sample = {"other": "n0"})]
     BitwiseOr {
         /// The expression to combine with, element-wise.
         other: NodeRef,
@@ -173,7 +173,7 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     >>> b = pl.col("image2").cv.pipe(pipe2)
     ///     >>> result = a.bitwise_xor(b).sink("numpy")
     ///     ```
-    #[op(name = "bitwise_xor", visibility = "lazy_only", sample = {"other": "n0"})]
+    #[op(name = "bitwise_xor", visibility = LazyOnly, sample = {"other": "n0"})]
     BitwiseXor {
         /// The expression to combine with, element-wise.
         other: NodeRef,
@@ -181,7 +181,7 @@ pub enum GraphOp<M: Mode = Exec> {
     /// Apply a binary mask to this image.
     ///
     /// Domain: buffer → buffer
-    #[op(name = "apply_mask", visibility = "lazy_only", sample = {"mask": "n0", "invert": true})]
+    #[op(name = "apply_mask", visibility = LazyOnly, sample = {"mask": "n0", "invert": true})]
     ApplyMask {
         /// The mask's node.
         mask: NodeRef,
@@ -192,7 +192,7 @@ pub enum GraphOp<M: Mode = Exec> {
     /// Merge single-channel buffers into one multi-channel image.
     ///
     /// Domain: buffer → buffer ([H, W] → [H, W, C])
-    #[op(name = "channel_merge", visibility = "lazy_only", sample = {"others": ["n0", "n1"]})]
+    #[op(name = "channel_merge", visibility = LazyOnly, sample = {"others": ["n0", "n1"]})]
     ChannelMerge {
         /// The other single-channel operands' nodes, in channel order after this
         /// one.
@@ -204,7 +204,7 @@ pub enum GraphOp<M: Mode = Exec> {
     /// The planner applies the declaration (refusing one it contradicts), and
     /// execution checks it against every row, so everything downstream rests on a
     /// checked fact. The public `Pipeline.assert_shape` is sugar over this op.
-    #[op(name = "assert_shape", visibility = "internal", sample = {"rank": 3, "dims": [8, null, 2]})]
+    #[op(name = "assert_shape", visibility = Internal, sample = {"rank": 3, "dims": [8, null, 2]})]
     AssertShape {
         /// The rank, when declared (`assert_shape(dims=[...])` declares
         /// `len(dims)`).

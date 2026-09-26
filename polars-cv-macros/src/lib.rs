@@ -16,8 +16,7 @@
 //! Attributes:
 //!
 //! - struct: `#[op(python = "name")]` — the Python method name when it differs
-//!   from the wire name; `#[op(visibility = "lazy_only" | "internal")]` —
-//!   default `public`.
+//!   from the wire name.
 //! - field: `#[param(default = <literal>)]` — the Python signature default. An
 //!   `Option<_>` field defaults to `None`. Which parameters are positional is
 //!   not declared: `gen_ops.py` derives it from which fields are required.
@@ -124,20 +123,13 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     }
 
     let mut python: Option<String> = None;
-    let mut visibility = "public".to_string();
     for attr in input.attrs.iter().filter(|a| a.path().is_ident("op")) {
         attr.parse_nested_meta(|m| {
             let value: syn::LitStr = m.value()?.parse()?;
             if m.path.is_ident("python") {
                 python = Some(value.value());
-            } else if m.path.is_ident("visibility") {
-                let v = value.value();
-                if !matches!(v.as_str(), "public" | "lazy_only" | "internal") {
-                    return Err(m.error("visibility is public, lazy_only or internal"));
-                }
-                visibility = v;
             } else {
-                return Err(m.error("unknown #[op] key (python, visibility)"));
+                return Err(m.error("unknown #[op] key (python)"));
             }
             Ok(())
         })?;
@@ -202,7 +194,6 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         impl crate::ops::OpFields for #name {
             const DOC: &'static str = #doc;
             const PYTHON_NAME: ::core::option::Option<&'static str> = #python_tokens;
-            const VISIBILITY: &'static str = #visibility;
 
             fn fields() -> ::std::vec::Vec<crate::ops::FieldDesc> {
                 ::std::vec![#(#descs),*]

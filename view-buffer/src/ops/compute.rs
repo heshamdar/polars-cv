@@ -81,7 +81,7 @@ pub enum ComputeOp<M: Mode = Exec> {
     ///
     /// The public `Pipeline.scale` is sugar over this op that adds
     /// `out_dtype`/`preserve_dtype` (a trailing cast).
-    #[op(name = "scale", visibility = "internal", sample = {"factor": 2.0})]
+    #[op(name = "scale", visibility = Internal, sample = {"factor": 2.0})]
     Scale {
         /// Scale factor.
         factor: M::V<f32>,
@@ -125,7 +125,7 @@ pub enum ComputeOp<M: Mode = Exec> {
     ///
     /// The public `Pipeline.clamp` is sugar over this op that adds
     /// `out_dtype`/`preserve_dtype` (a trailing cast).
-    #[op(name = "clamp", visibility = "internal", sample = {"min": 0.0, "max": 1.0})]
+    #[op(name = "clamp", visibility = Internal, sample = {"min": 0.0, "max": 1.0})]
     Clamp {
         /// Minimum value (literal or expression).
         min: M::V<f32>,
