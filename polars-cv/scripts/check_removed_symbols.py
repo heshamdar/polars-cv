@@ -40,6 +40,7 @@ HISTORY_FILES: frozenset[str] = frozenset(
         "CHANGELOG.md",
         "CODE_REVIEW_FINDINGS.md",
         "EXTENSION_TYPES_PLAN.md",
+        "HANDOVER.md",
         "TYPED_OPS_PLAN.md",
         "TYPED_OPS_CONSOLIDATION_PLAN.md",
         "polars-cv/docs/changelog.md",
@@ -278,11 +279,17 @@ REMOVED: tuple[Removed, ...] = (
     Removed("probe_step", "P9: planning_step"),
     Removed("unknown_dim_probe", "P9: an unknown input size is Dim::Input(k)"),
     Removed("PRESERVED_DIM", "P9: an unknown input size is Dim::Input(k)"),
-    Removed("deciding_params", "P9: identity rules are value-independent; OpShape::preserves"),
+    Removed(
+        "deciding_params",
+        "P9: identity rules are value-independent; OpShape::preserves",
+    ),
     Removed("is_probe", "P9: ParamCtx::is_planning"),
     Removed("probe_value", "P9: WireScalar::planning_value"),
     Removed("output_hw", "P9: ImageOpKind::shape"),
-    Removed("_matrix_param_from_floats", "P10: dead (no caller since warp_affine is generated)"),
+    Removed(
+        "_matrix_param_from_floats",
+        "P10: dead (no caller since warp_affine is generated)",
+    ),
     Removed("get_output_nodes", "P10: dead (no caller)"),
     Removed("is_multi_output", "P10: dead (no caller)"),
     Removed("_field_names", "P10: dead (OptFlags fields come from PASS_CATALOG)"),
@@ -326,23 +333,40 @@ REMOVED: tuple[Removed, ...] = (
     ),
     # Consolidation C2: declarations are ops, Rust plans the graph itself.
     Removed("plan_assert", "C2: assert_shape is a typed op planned by plan_step"),
-    Removed("plan_sink", "C2: .sink() runs check_graph (the plugin's own compile + sink schema)"),
+    Removed(
+        "plan_sink",
+        "C2: .sink() runs check_graph (the plugin's own compile + sink schema)",
+    ),
     Removed("check_sink", "C2: decode::output_schema is the one sink check"),
     Removed("_check_sink", "C2: PipelineGraph.check -> _lib.check_graph"),
-    Removed("_assertion_window", "C2: assertions are ops; a slice keeps them like any op"),
+    Removed(
+        "_assertion_window", "C2: assertions are ops; a slice keeps them like any op"
+    ),
     Removed("_apply_assertions_at", "C2: assertions are ops, applied by plan_step"),
     Removed("_new_assertion", "C2: assertions are ops"),
     Removed("_render_assertion", "C2: repr renders the assert_shape op"),
     Removed("_asserted_rank", "C2: plan::declare checks the rank"),
     Removed("_canvas_of", "C2: a canvas node is read by id (plan::Refs)"),
     Removed("_shape_refs", "C2: Pipeline._node_refs (every node an op reads by id)"),
-    Removed("_find_node_by_alias", "C2: dead once sinks are checked on the whole graph"),
+    Removed(
+        "_find_node_by_alias", "C2: dead once sinks are checked on the whole graph"
+    ),
     Removed("WireOutput", "C2: the wire output is node + sink (OutputRequest)"),
-    Removed("fold_output_rank", "C2: resolved_output_specs plans the graph with plan::step"),
-    Removed("fold_output_dtype", "C2: resolved_output_specs plans the graph with plan::step"),
-    Removed("root_column_for", "C2: planning follows each node's lineage (no first-column fallback)"),
+    Removed(
+        "fold_output_rank", "C2: resolved_output_specs plans the graph with plan::step"
+    ),
+    Removed(
+        "fold_output_dtype", "C2: resolved_output_specs plans the graph with plan::step"
+    ),
+    Removed(
+        "root_column_for",
+        "C2: planning follows each node's lineage (no first-column fallback)",
+    ),
     Removed("has_typed_elements", "C2: dead with check_sink"),
-    Removed("the_catalogue_is_the_op_set", "C2: OP_SET restated typed_ops!; op_catalog.json is the record"),
+    Removed(
+        "the_catalogue_is_the_op_set",
+        "C2: OP_SET restated typed_ops!; op_catalog.json is the record",
+    ),
     # Consolidation C3: the Rust Plan owns the op list.
     Removed(
         "plan_step",
@@ -434,14 +458,34 @@ REMOVED: tuple[Removed, ...] = (
     Removed("_expr_refs", "C3: Pipeline._exprs (the table the plan's slots index)"),
     Removed("_OPS_MUTATORS", "C3: Python cannot mutate the plan's ops"),
     Removed("_mutates_ops", "C3: Python cannot mutate the plan's ops"),
-    Removed("test_op_append_is_structurally_exclusive", "C3: the frozen Plan is the guard"),
+    Removed(
+        "test_op_append_is_structurally_exclusive", "C3: the frozen Plan is the guard"
+    ),
     Removed("test_pipeline_state_copy_is_complete", "C3: _clone copies every field"),
-    Removed("test_every_pipeline_field_survives_a_copy", "C3: test_a_derived_pipeline_keeps_every_setting_and_shares_no_list"),
-    Removed("test_a_slice_replays_the_states_it_keeps", "C3: Rust select_plans_the_kept_ops_again_from_the_state_entering_them"),
-    Removed("test_push_op_applies_the_whole_plan_step_unconditionally", "C3: Plan.push is one Rust call"),
-    Removed("test_python_holds_no_copy_of_the_channel_rule_arithmetic", "C3: Python holds no op list to apply a rule to"),
-    Removed("test_replay_reproduces_the_tracked_state", "C3: test_replanning_reproduces_the_appended_states"),
-    Removed("test_append_cost_is_linear", "C3: Plan.push plans one op; there is no replay to count"),
+    Removed(
+        "test_every_pipeline_field_survives_a_copy",
+        "C3: test_a_derived_pipeline_keeps_every_setting_and_shares_no_list",
+    ),
+    Removed(
+        "test_a_slice_replays_the_states_it_keeps",
+        "C3: Rust select_plans_the_kept_ops_again_from_the_state_entering_them",
+    ),
+    Removed(
+        "test_push_op_applies_the_whole_plan_step_unconditionally",
+        "C3: Plan.push is one Rust call",
+    ),
+    Removed(
+        "test_python_holds_no_copy_of_the_channel_rule_arithmetic",
+        "C3: Python holds no op list to apply a rule to",
+    ),
+    Removed(
+        "test_replay_reproduces_the_tracked_state",
+        "C3: test_replanning_reproduces_the_appended_states",
+    ),
+    Removed(
+        "test_append_cost_is_linear",
+        "C3: Plan.push plans one op; there is no replay to count",
+    ),
     Removed("TestOpSpecEquality", "C3: TestCSEPrefixKey"),
     Removed("TestParamValueIdentity", "C3: TestPipelineSlots"),
     Removed("TestParamValueSerialization", "C3: TestParameterSerialization"),
@@ -452,6 +496,30 @@ REMOVED: tuple[Removed, ...] = (
     Removed("output_channel_rule", "C4a: axis 2 of OpShape::dims"),
     Removed("StripProcessRestore", "C4a: OpShape::ColorChannels"),
     Removed("PreserveChannels", "C4a: OpShape::Preserve and the H/W-only shapes"),
+    # Consolidation C4b/C4c: the typed op is the engine op; the planner reads it.
+    Removed("OpDef", "C4b: each op is a variant of a mode-generic family"),
+    Removed("engine_families", "C4c: TypedOp is GraphStep<Wire>"),
+    Removed("planned_shape", "C4c: GraphStep::shape, generic over the mode"),
+    Removed("planning_step", "C4c: the planner reads the Wire op"),
+    Removed("planning_value", "C4c: a per-row value is unknown, never stood in for"),
+    Removed("is_planning", "C4c: no op is resolved for its rules"),
+    Removed(
+        "typed_shape_is_the_resolved_steps",
+        "C4c: one generic shape; a_lowered_op_keeps_its_shape for lowering",
+    ),
+    # Consolidation C5: the geometry namespaces are typed definitions.
+    Removed(
+        "ContourKwargs",
+        "C5: each function parses its own definition (geom_fns)",
+        frozenset({"polars-cv/tests/test_removed_surfaces.py"}),
+    ),
+    Removed("PointKwargs", "C5: each function parses its own definition (geom_fns)"),
+    Removed("_ArgBinder", "C5: _GeomNamespace._call, from generated methods"),
+    Removed("_GeomNullPolicy", "C5: _GeomNamespace"),
+    Removed("map_params", "C5: contour_accessor!'s one map form"),
+    Removed("map_contours_with_params", "C5: map_contours"),
+    Removed("contour_bbox", "C5: contour_bounding_box, the op's wire name"),
+    Removed("_enum_or_expr", "C5: the definition validates (check_geom_call)"),
 )
 
 

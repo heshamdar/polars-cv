@@ -393,7 +393,7 @@
     "name": "contour_area",
     "python": "area",
     "visibility": "public",
-    "doc": "Compute the area of the contour using the Shoelace formula.\n\nDomain transition: contour → scalar",
+    "doc": "Compute the area of the contour using the Shoelace formula.\n\nThe area of the region the contour describes: the exterior minus the\nunion of its hole rings, in either winding direction. Overlapping or\nnested hole rings are not double-subtracted. One value per contour for\na contour set.\n\nDomain transition: contour → scalar",
     "fields": [
       {
         "name": "signed",
@@ -418,7 +418,7 @@
     "name": "contour_centroid",
     "python": "centroid",
     "visibility": "public",
-    "doc": "Compute the centroid (center of mass) of the contour.\n\nDomain transition: contour → vector (returns [x, y])",
+    "doc": "Compute the centroid (center of mass) of the contour.\n\nMeasured on the same region as `area()` — the exterior minus the union\nof the hole rings — so overlapping or nested holes are not subtracted\ntwice.\n\nDomain transition: contour → vector (returns [x, y])",
     "fields": []
   },
   {
@@ -438,8 +438,8 @@
   {
     "name": "contour_scale",
     "python": "scale_contour",
-    "visibility": "internal",
-    "doc": "Scale the contour about *origin*.\n\nDomain: contour → contour\n\nNote:\n    The default is ``\"centroid\"``, which is what this method has always\n    done — it previously hardcoded it with no way to choose. The\n    ``.contour.scale`` accessor defaults to ``\"origin\"`` instead; pass\n    *origin* explicitly if you need the two to agree.",
+    "visibility": "public",
+    "doc": "Scale the contour about *origin*.\n\nDomain: contour → contour",
     "fields": [
       {
         "name": "sx",
@@ -461,7 +461,7 @@
       },
       {
         "name": "origin",
-        "doc": "Point to scale about — ``\"centroid\"`` (the default), ``\"bbox_center\"``\nor ``\"origin\"``. Accepts an expression for a per-row choice: which\npoint the scale is measured from changes no output shape, rank or\ndtype, so it meets the eligibility rule for a per-row parameter.",
+        "doc": "Point to scale about — ``\"centroid\"`` (center of mass),\n``\"bbox_center\"`` (bounding-box center) or ``\"origin\"`` (the\ncoordinate origin ``(0, 0)``). Accepts an expression for a per-row\nchoice: which point the scale is measured from changes no output\nshape, rank or dtype.",
         "default": "centroid",
         "type": {
           "kind": "scalar",

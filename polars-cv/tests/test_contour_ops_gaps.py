@@ -362,7 +362,7 @@ class TestContourEnumParamsAreRejectedNotDefaulted:
 
     def test_a_miscased_winding_is_rejected(self, ccw_square: dict) -> None:
         df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
-        with pytest.raises(ValueError, match="Invalid direction 'CW'"):
+        with pytest.raises(ValueError, match="'direction': unknown Winding \"CW\""):
             df.with_columns(x=pl.col("contour").contour.ensure_winding("CW"))
 
     def test_the_long_winding_spellings_still_work(self, ccw_square: dict) -> None:
@@ -381,7 +381,9 @@ class TestContourEnumParamsAreRejectedNotDefaulted:
 
     def test_an_unknown_scale_origin_is_rejected(self, ccw_square: dict) -> None:
         df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
-        with pytest.raises(ValueError, match="Invalid origin 'top_left'"):
+        with pytest.raises(
+            ValueError, match="'origin': unknown ScaleOrigin \"top_left\""
+        ):
             df.with_columns(
                 x=pl.col("contour").contour.scale(sx=2.0, sy=2.0, origin="top_left")
             )
@@ -915,10 +917,10 @@ class TestContourEnumParamsResolvePerRow:
     opposite ("'direction' is structural"), while ``label_reduce``'s two enums
     in the same namespace were per-row already.
 
-    They now ride ``_ArgBinder`` like ``scale``'s own ``sx``/``sy``: the
-    expression is appended as a plugin input, its kwarg is ``{"$slot": n}``,
-    and Rust reads it per row as the same typed ``Param<Winding>`` a literal
-    deserializes into.
+    They are now per-row fields of their definitions, like ``scale``'s own
+    ``sx``/``sy``: the expression is appended as a plugin input, its field is
+    ``{"$slot": n}``, and Rust reads it per row as the same typed
+    ``Param<Winding>`` a literal deserializes into.
     """
 
     def test_the_winding_direction_can_vary_by_row(self, ccw_square: dict) -> None:
@@ -985,7 +987,7 @@ class TestContourEnumParamsResolvePerRow:
     def test_a_null_in_the_parameter_column_follows_on_null(
         self, ccw_square: dict, in_memory_engine: None
     ) -> None:
-        """Routing through `_ArgBinder` also buys the shared null-param policy.
+        """A per-row field also buys the shared null-param policy.
 
         `ensure_winding` used to push its own null for a null *input* and had no
         parameter column to have an opinion about. Both now go through
@@ -1003,3 +1005,39 @@ class TestContourEnumParamsResolvePerRow:
         assert nulled["x"][1] is None
         with pytest.raises(Exception, match="null value at row 1"):
             df.with_columns(x=pl.col("contour").contour.ensure_winding(pl.col("want")))
+
+
+@plugin_required
+def test_the_two_contour_scale_surfaces_agree_by_default() -> None:
+    """`Pipeline.scale_contour` and `.contour.scale` default alike: the centroid.
+
+    They used to differ — the pipeline op kept `"centroid"` (its behaviour since
+    it shipped) while `.contour.scale` kept `"origin"` — so a square at
+    (2,2)-(4,4) scaled by 2 landed at (1,1)-(5,5) one way and (4,4)-(8,8) the
+    other. The accessor now *is* the op `contour_scale`, declared once with
+    `"centroid"` (the decision recorded in the migration page).
+    """
+    from polars_cv.geometry import CONTOUR_SCHEMA
+
+    square = {
+        "exterior": [
+            {"x": 2.0, "y": 2.0},
+            {"x": 4.0, "y": 2.0},
+            {"x": 4.0, "y": 4.0},
+            {"x": 2.0, "y": 4.0},
+        ],
+        "holes": [],
+    }
+    df = pl.DataFrame({"c": [square]}, schema={"c": CONTOUR_SCHEMA})
+
+    namespace = df.select(r=pl.col("c").contour.scale(2.0, 2.0))["r"].to_list()[0]
+    namespace_pts = sorted((p["x"], p["y"]) for p in namespace["exterior"])
+    centroid = df.select(r=pl.col("c").contour.scale(2.0, 2.0, origin="centroid"))[
+        "r"
+    ].to_list()[0]
+    centroid_pts = sorted((p["x"], p["y"]) for p in centroid["exterior"])
+
+    assert namespace_pts == centroid_pts, (
+        f"the namespace default ({namespace_pts}) differs from the graph "
+        f"path's default ({centroid_pts}); the same op name means two things"
+    )

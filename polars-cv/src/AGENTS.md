@@ -160,7 +160,7 @@ Runs at Polars planning time (NOT execution time). Parses the graph JSON, resolv
 
 `tests/test_sanitation.py::test_namespace_plugin_symbols_match_registrations` pins both directions of this surface — add any new module carrying a namespace `#[polars_expr]` to the file list it scans, or the symbol silently escapes the check.
 
-These functions bypass `vb_graph` but use its per-row wire form. Their kwargs are typed structs (`ContourKwargs`, `PointKwargs`, `#[derive(Op)]` so they are closed and their slots are visited): a parameter is a `Param<T>` — the literal, or `{"$slot": n}` naming the extra input Python's `_ArgBinder` appended — and an optional data operand is a `ColumnRef`. `GeomParams` resolves them through the same `ParamCol` accessors `params.rs` uses, and rejects an out-of-range slot or an extra input no kwarg reads, so a binder/reader drift fails loudly instead of silently dropping an operand.
+These functions bypass `vb_graph` but use its per-row wire form. Each parses its own typed definition (`geom_fns.rs`: a `ContourFn`/`PointFn`/`BBoxFn` variant, or the `GeometryOp` a pipeline op shares) with `GeomParams::parse`, strictly by name: a field is `M::V<T>` — the literal, or `{"$slot": n}` naming the extra input the generated Python `_GeomNamespace._call` appended — or a `ColumnRef` data operand. `GeomParams` resolves them through the same `ParamCol` accessors `params.rs` uses, and rejects an out-of-range slot or an extra input no field reads, so a builder/reader drift fails loudly instead of silently dropping an operand. The Python methods are generated from `tests/golden/geom_catalog.json`.
 
 Key functions in `contour.rs`:
 - `contour_pairwise_iou`, `contour_correspond`, `contour_label_reduce`

@@ -21,7 +21,6 @@ from polars_cv._types import (
     IntOrExpr,
     NullParamPolicy,
     RowErrorPolicy,
-    ScaleOrigin,
     SlotTable,
     SourceFormat,
     _to_python,
@@ -1357,37 +1356,6 @@ class Pipeline(_OpsMixin):
         # The canvas is the node's: `_encode_field` records it in `_node_refs`,
         # which plans the canvas from its state and makes it an upstream edge.
         return self._rasterize(size=shape, fill_value=fill_value, background=background)
-
-    def scale_contour(
-        self,
-        *,
-        sx: FloatOrExpr,
-        sy: FloatOrExpr,
-        origin: "ScaleOrigin | str | pl.Expr" = ScaleOrigin.CENTROID,
-    ) -> "Pipeline":
-        """
-        Scale the contour about *origin*.
-
-        Domain: contour → contour
-
-        Args:
-            sx: X scale factor.
-            sy: Y scale factor.
-            origin: Point to scale about — ``"centroid"`` (the default),
-                ``"bbox_center"`` or ``"origin"``. Accepts an expression for a
-                per-row choice: which point the scale is measured from changes
-                no output shape, rank or dtype, so it meets the eligibility
-                rule for a per-row parameter.
-
-        Note:
-            The default is ``"centroid"``, which is what this method has always
-            done — it previously hardcoded it with no way to choose. The
-            ``.contour.scale`` accessor defaults to ``"origin"`` instead; pass
-            *origin* explicitly if you need the two to agree.
-        """
-        # The Rust definition validates every argument; this method only keeps
-        # the signature, whose default is the Python enum member.
-        return self._scale_contour(sx=sx, sy=sy, origin=origin)
 
     # --- Validation ---
 

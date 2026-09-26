@@ -832,7 +832,7 @@ class TestExtractContoursAndLabelReduceEnums:
 
 @plugin_required
 class TestInputSlotsAreValidated:
-    """A geometry call's kwargs must account for every extra input.
+    """A geometry call's arguments must account for every extra input.
 
     A per-row kwarg is `{"$slot": n}`, naming its input by position. Both
     failure modes were silent or violent before: an index past the end panicked
@@ -857,7 +857,10 @@ class TestInputSlotsAreValidated:
         return _plugin.call(
             "contour_normalize",
             args=[pl.col("c"), *args],
-            kwargs={"ref_width": 10.0, "ref_height": 10.0, **kwargs},
+            kwargs={
+                "args": {"width": 10.0, "height": 10.0, **kwargs},
+                "on_null": "raise",
+            },
             is_elementwise=True,
         )
 
@@ -868,16 +871,14 @@ class TestInputSlotsAreValidated:
 
     def test_out_of_range_slot_is_rejected(self) -> None:
         df = pl.DataFrame({"c": [self.SQUARE], "w": [10.0]})
-        with pytest.raises(Exception, match="'ref_width' reads input 7"):
-            df.with_columns(n=self._call({"ref_width": {"$slot": 7}}, [pl.col("w")]))
+        with pytest.raises(Exception, match="'width' reads input 7"):
+            df.with_columns(n=self._call({"width": {"$slot": 7}}, [pl.col("w")]))
 
     def test_the_name_keyed_slot_map_is_refused(self) -> None:
         """`input_slots` was the name→index map the typed kwargs replaced."""
         df = pl.DataFrame({"c": [self.SQUARE], "w": [10.0]})
         with pytest.raises(Exception, match="input_slots"):
-            df.with_columns(
-                n=self._call({"input_slots": {"ref_width": 1}}, [pl.col("w")])
-            )
+            df.with_columns(n=self._call({"input_slots": {"width": 1}}, [pl.col("w")]))
 
 
 def test_label_reduce_contours_must_be_an_expression() -> None:

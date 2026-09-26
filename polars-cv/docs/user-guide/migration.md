@@ -66,6 +66,24 @@ the plugin cannot produce (an unencodable dtype, a `vector` into `numpy`, a
 singular `warp_affine` matrix) raises `ValueError` there rather than a
 `ComputeError` at `collect()`.
 
+## Geometry accessors
+
+The `.contour`, `.point` and `.bbox` methods are generated from their Rust
+definitions too (a method that is also a pipeline operation, such as
+`.contour.area` or `.contour.scale`, *is* that operation). Two calls change:
+
+- **`.contour.scale()` scales about the centroid by default**, as
+  `Pipeline.scale_contour()` always has. The two used to disagree —
+  `.contour.scale(2, 2)` scaled away from `(0, 0)` — and now share one
+  definition. To keep the old result, pass `origin="origin"`.
+- **`.point.interpolate(other, t)` takes `t` by name**: every accessor
+  argument with a default is keyword-only. Write
+  `.point.interpolate(other, t=0.25)`.
+
+A misspelled literal (`ensure_winding("CW")`, `scale(origin="top_left")`) still
+raises `ValueError` when the expression is built; the message now comes from
+the definition and lists every accepted spelling.
+
 ## Removed
 
 - `Pipeline.output_encoding()`. The plugin reads whether an output is

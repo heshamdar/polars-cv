@@ -1,4 +1,328 @@
 {
+ "BBoxNamespace": {
+  "correspond": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "threshold",
+    "KEYWORD_ONLY",
+    "0.5"
+   ],
+   [
+    "order",
+    "KEYWORD_ONLY",
+    "None"
+   ]
+  ],
+  "on_null": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "policy",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "pairwise_iou": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ]
+ },
+ "ContourNamespace": {
+  "area": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "signed",
+    "KEYWORD_ONLY",
+    "False"
+   ]
+  ],
+  "bounding_box": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "centroid": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "contains_point": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "point",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "convex_hull": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "correspond": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "threshold",
+    "KEYWORD_ONLY",
+    "0.5"
+   ],
+   [
+    "order",
+    "KEYWORD_ONLY",
+    "None"
+   ]
+  ],
+  "dice": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "ensure_winding": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "direction",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "flip": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "hausdorff_distance": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "iou": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "is_convex": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "label_reduce": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "image",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "reduction",
+    "KEYWORD_ONLY",
+    "'max'"
+   ],
+   [
+    "region_mode",
+    "KEYWORD_ONLY",
+    "'interior'"
+   ]
+  ],
+  "normalize": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "width",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "height",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "on_null": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "policy",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "pairwise_iou": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "perimeter": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "scale": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "sx",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "sy",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "origin",
+    "KEYWORD_ONLY",
+    "'centroid'"
+   ]
+  ],
+  "simplify": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "tolerance",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "to_absolute": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "width",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "height",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "translate": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "dx",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "dy",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "winding": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ]
+ },
  "LazyPipelineExpr": {
   "abs": [
    [
@@ -1283,7 +1607,7 @@
    [
     "origin",
     "KEYWORD_ONLY",
-    "<ScaleOrigin.CENTROID: 'centroid'>"
+    "'centroid'"
    ]
   ],
   "sharpen": [
@@ -2669,7 +2993,7 @@
    [
     "origin",
     "KEYWORD_ONLY",
-    "<ScaleOrigin.CENTROID: 'centroid'>"
+    "'centroid'"
    ]
   ],
   "sharpen": [
@@ -2967,6 +3291,232 @@
     "border_value",
     "KEYWORD_ONLY",
     "0.0"
+   ]
+  ]
+ },
+ "PointNamespace": {
+  "angle_to": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "distance": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "distance_to_contour": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "contour",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "interpolate": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "t",
+    "KEYWORD_ONLY",
+    "0.5"
+   ]
+  ],
+  "manhattan_distance": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "midpoint": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "nearest_point_on_contour": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "contour",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "normalize": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "width",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "height",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "on_null": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "policy",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "rotate": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "angle",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "origin",
+    "KEYWORD_ONLY",
+    "None"
+   ]
+  ],
+  "scale": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "sx",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "sy",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "signed_distance_to_contour": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "contour",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "to_absolute": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "width",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "height",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "translate": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "dx",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "dy",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "within_bbox": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "bbox",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "x": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "y": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
    ]
   ]
  }
