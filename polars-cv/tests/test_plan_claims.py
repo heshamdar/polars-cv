@@ -153,3 +153,47 @@ def test_repr_shows_only_written_assertions() -> None:
     assert "assert_shape" not in repr(pipe)
     asserted = Pipeline().source("image_bytes").assert_shape(height=6).grayscale()
     assert repr(asserted).index("assert_shape") < repr(asserted).index("grayscale")
+
+
+#: Builder calls whose refusal would rest on a fact the plan does not have:
+#: an image's decoded channel count, a list column's rank, an operand's size.
+#: A plan-time verdict is only ever one execution would also reach, so each of
+#: these must build (PLANNER_SIZES_PLAN.md S2: validation over partially known
+#: sizes says nothing about a size it does not know).
+#:
+#: Watched failing: raising every `check_rank` verdict over its placeholder
+#: sizes turns the `channel_select`, `channel_swap` and `crop` cases red. The
+#: other three guard paths that do not exist yet — `threshold`'s channel check
+#: happens to accept the placeholder 1, an unknown rank is never validated, and
+#: a binary op is never validated — and are to be watched failing when S1/S2
+#: add them.
+_UNKNOWN_FACT_BUILDS = {
+    "threshold, channels unknown": lambda: (
+        Pipeline().source("image_bytes").threshold(128)
+    ),
+    "channel_swap, channels unknown": lambda: (
+        Pipeline().source("image_bytes").channel_swap([2, 1, 0])
+    ),
+    "channel_select, channels unknown": lambda: (
+        Pipeline().source("image_bytes").resize(height=4, width=4).channel_select(2)
+    ),
+    "blur, rank unknown": lambda: Pipeline().source("list", dtype="u8").blur(sigma=1),
+    "crop, height unknown": lambda: (
+        Pipeline()
+        .source("image_bytes")
+        .assert_shape(width=8, channels=3)
+        .crop(top=4, left=0, height=4, width=8)
+    ),
+    "add, one operand's sizes unknown": lambda: (
+        pl.col("i")
+        .cv.pipe(Pipeline().source("image_bytes").resize(height=8, width=8))
+        .add(pl.col("i").cv.pipe(Pipeline().source("image_bytes")))
+        .sink("numpy")
+    ),
+}
+
+
+@plugin_required
+@pytest.mark.parametrize("case", sorted(_UNKNOWN_FACT_BUILDS))
+def test_an_unknown_fact_is_never_refused_at_build(case: str) -> None:
+    _UNKNOWN_FACT_BUILDS[case]()

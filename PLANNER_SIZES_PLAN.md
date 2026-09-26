@@ -15,10 +15,10 @@
 
 | Phase | Status |
 |---|---|
-| S0 — Failing tests for the review findings | not started |
+| S0 — Failing tests for the review findings | **done** — 15 strict gaps in `tests/test_known_gaps.py::TestPlannedSizes` (each watched failing with `--runxfail`); 6 controls in `tests/test_plan_claims.py` (3 watched failing, 3 forward guards for S1/S2) |
 | S1 — The planned shape is one rank-N value | not started |
 | S2 — One `validate`, over symbolic sizes | not started |
-| S3 — Operand reads are one mechanism (optional) | not started |
+| S3 — Operand reads are one mechanism | not started (in scope) |
 
 ---
 
@@ -98,23 +98,34 @@ and R6 are deviation 2 (three slots).
 
 ## 3. Phases
 
-### S0 — Failing tests for the review findings (test-first)
+### S0 — Failing tests for the review findings (test-first) — done
 
-Add these at the user entry point, and watch each fail for the reason in
-section 1:
+Each finding is a strict gap in `tests/test_known_gaps.py::TestPlannedSizes`,
+at the user entry point. `_gap` now pins `raises=AssertionError`: a gap that
+breaks for any other reason (a renamed helper, say) fails the suite instead of
+reading as the defect (watched: a `NameError` injected into one gap reports
+FAILED). The module-wide `structural` mark was dropped; the gaps are runtime
+tests and carry `plugin_required`.
 
-| Test | File | Asserts |
+| Gap | Finding | Closed by |
 |---|---|---|
-| `test_a_known_rank_refuses_an_image_op_at_build` | `tests/test_plan_claims.py` | R1: `source("raw").blur()`, `.resize()`, `.perceptual_hash()` raise `ValueError` at the builder call |
-| `test_an_array_column_plans_its_shape_at_every_rank` | `tests/test_schema_parity_array_sink.py` | R2: `Array` columns of rank 1, 2, 3 and 4 plan `Array(u8, shape)` and match execution (`assert_plan_equals_exec`) |
-| `test_incompatible_known_operands_refuse_at_build` | `tests/test_plan_claims.py` | R4: raises at `.sink()`, and the schema is never `(4, 5, 3)` |
-| `test_broadcast_keeps_the_sizes_both_operands_know` | `tests/test_plan_claims.py` | R5: `a.add(c)` plans `(8, 8, None)` |
-| `test_assert_shape_declares_any_rank` | `tests/test_pipeline_builder.py` | R6 |
+| `test_a_known_rank_refuses_an_image_op_at_build[blur, channel_select, grayscale, perceptual_hash, resize, threshold]` | R1 (each op confirmed to fail every rank-1 row, asserted in the test) | S2 |
+| `test_an_array_column_plans_its_shape_at_every_rank[(6,), (4, 5), (2, 3, 4, 5)]` | R2 | S1 |
+| `test_a_declared_shape_of_any_rank_reaches_an_array_sink[(20,), (4, 5)]` | R3 | S1 |
+| `test_assert_shape_declares_a_rank_4_shape` | R6 | S1 |
+| `test_incompatible_known_operands_refuse_at_build` | R4: two `assert_shape`d image operands, `.sink()` publishes `(4, 5, 3)` | S2 |
+| `test_incompatible_array_columns_refuse_at_plan` | R4 over Array columns, whose sizes are known only once Polars plans, so the refusal is at `collect_schema()`, not `.sink()` | S2 |
+| `test_broadcast_keeps_the_sizes_both_operands_know` | R5 | S2 |
 
-R3 needs `_KNOWN_BUT_UNEXPRESSIBLE` moved into `_KNOWN_SHAPE`. That **edits
-a test pinning deliberate behaviour**, so it needs the user's agreement
-(CLAUDE.md, Verification); the table's own comment anticipates "a future
-widening". The move happens in S1, not S0.
+**Controls** (`tests/test_plan_claims.py::test_an_unknown_fact_is_never_refused_at_build`):
+builder calls whose refusal would rest on an unknown fact must build. With
+`check_rank` forced to raise every placeholder verdict, the `channel_select`,
+`channel_swap` and `crop` cases fail. `threshold` (the placeholder 1 happens
+to pass), `blur` over an unknown rank (S1's `Unranked` path) and `add` with
+one operand unknown (S2's binary validation) guard code that does not exist
+yet. **Each must be watched failing when its path lands.**
+
+`_KNOWN_BUT_UNEXPRESSIBLE` is merged into `_KNOWN_SHAPE` in S1 (agreed).
 
 ### S1 — The planned shape is one rank-N value (deviation 2; fixes R2, R3, R6)
 
@@ -201,22 +212,17 @@ Replace both with one `GraphStep::operands() -> Vec<&NodeRef>`. The planner
 passes each operand's planned dims to `shape()` and `validate()` as further
 inputs. Rasterize's shape becomes `OpShape::HwOf(1)` (H/W read from input 1),
 and `apply_mask`/`channel_merge` can then validate and plan against their
-operands' sizes too. This removes the last per-op arm in `step`. Ask before
-starting: it changes nothing user-visible beyond earlier errors, but it
-touches every node-reading op.
+operands' sizes too. This removes the last per-op arm in `step`. In scope
+(user decision); it changes nothing user-visible beyond earlier errors.
 
 ---
 
-## 4. Decisions needed from the user
+## 4. Decisions (answered)
 
-1. **Move `_KNOWN_BUT_UNEXPRESSIBLE` into `_KNOWN_SHAPE`.** This edits a
-   test pinning deliberate behaviour. Recommended: its reason (stale
-   `[H, W, C]` after `channel_select`) is gone now that sizes past the rank
-   are unrepresentable.
-2. **Change the `assert_shape` wire shape** (`Declared::Full` /
-   `Declared::Leading`). This breaks hand-built graph JSON; the typed form is
-   recommended.
-3. **S3** in scope or deferred.
+1. **Move `_KNOWN_BUT_UNEXPRESSIBLE` into `_KNOWN_SHAPE`:** yes, in S1.
+2. **`assert_shape` wire becomes `Declared::Full` / `Declared::Leading`:**
+   yes, in S1 (hand-built graph JSON migration note and CHANGELOG entry).
+3. **S3:** in scope, after S2.
 
 ## 5. Order and size
 
