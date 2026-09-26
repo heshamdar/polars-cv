@@ -252,6 +252,19 @@ def test_the_contour_source_has_no_canvas_fields() -> None:
 
 
 # ---------------------------------------------------------------------------
+# sobel(ksize=), laplacian(ksize=): a parameter with one legal value
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("method", ["sobel", "laplacian"])
+def test_sobel_and_laplacian_take_no_ksize(method: str) -> None:
+    """Both accepted ``ksize`` and raised for anything but ``3``: a parameter
+    with one legal value states nothing. The kernel is the 3x3 one."""
+    with pytest.raises(TypeError, match="unexpected keyword argument 'ksize'"):
+        getattr(Pipeline().source("image_bytes"), method)(ksize=3)
+
+
+# ---------------------------------------------------------------------------
 # source()'s canvas keywords: sugar for an op the caller can name
 # ---------------------------------------------------------------------------
 

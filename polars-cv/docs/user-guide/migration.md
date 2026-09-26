@@ -104,6 +104,8 @@ nulls only rows whose contour cannot be decoded.
 
 - `convolve2d(ksize=)`. The kernel's length decides its side; write
   `.convolve2d(k)` (or `kernel=k`).
+- `sobel(ksize=)`, `laplacian(ksize=)`: only `3` was ever accepted; drop the
+  argument.
 - `Pipeline.output_encoding()`. The plugin reads whether an output is
   histogram buckets from the ops themselves.
 
