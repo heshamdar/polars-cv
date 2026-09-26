@@ -582,42 +582,35 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
 
     def to_numpy(self, img: dict[str, Any] | bytes) -> "npt.NDArray[np.uint8]":
         """
-        Convert image struct or bytes to NumPy array.
-
-        For polars-cv, we output to numpy format which returns a struct
-        with 'data', 'dtype', and 'shape' fields. Use numpy_from_struct
-        to properly parse it.
+        Convert one polars-cv output to a NumPy array.
 
         Args:
-            img: Image struct (numpy/torch sink format) or bytes (blob format).
+            img: A numpy/torch sink struct, a VIEW blob (what
+                :meth:`run_pipeline_batch` returns: the ``blob`` sink) or
+                encoded image bytes (PNG/JPEG).
 
         Returns:
             NumPy array.
         """
-        # Use numpy_from_struct to parse the numpy/torch sink struct format
+        from polars_cv import Pipeline, numpy_from_struct
+
         if isinstance(img, dict):
-            try:
-                from polars_cv import numpy_from_struct
-
-                return numpy_from_struct(img)
-            except Exception:
-                pass
-
-        # Fallback for bytes: try to load as standard image format (PNG/JPEG)
+            return numpy_from_struct(img)
+        if isinstance(img, bytes) and img[:4] == b"VIEW":
+            # Decoded by the plugin's own blob source, the one VIEW parser.
+            blob = pl.Series("b", [img], dtype=pl.Binary)
+            struct = (
+                blob.to_frame()
+                .select(pl.col("b").cv.pipe(Pipeline().source("blob")).sink("numpy"))
+                .item()
+            )
+            return numpy_from_struct(struct)
         if isinstance(img, bytes):
-            try:
-                import io
+            import io
 
-                from PIL import Image
+            from PIL import Image
 
-                pil_img = Image.open(io.BytesIO(img))
-                return np.array(pil_img)
-            except Exception:
-                pass
-
-            # Last resort: raw bytes (likely incorrect shape)
-            return np.frombuffer(img, dtype=np.uint8)
-
+            return np.array(Image.open(io.BytesIO(img)))
         raise TypeError(f"Expected dict or bytes, got {type(img).__name__}")
 
     def run_pipeline_batch(
@@ -655,47 +648,6 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
             )
 
         return result["processed"].to_list()
-
-    def run_pipeline_batch_to_numpy(
-        self,
-        image_bytes_list: list[bytes],
-        operations: list[OperationParams],
-    ) -> list["npt.NDArray[np.float32]"]:
-        """
-        Run a pipeline and return NumPy arrays.
-
-        Args:
-            image_bytes_list: List of image bytes.
-            operations: Operations to apply.
-
-        Returns:
-            List of NumPy arrays.
-        """
-        from polars_cv import numpy_from_struct
-
-        self._ensure_expressions_registered()
-        pipe = self._build_pipeline(operations, sink_format="numpy")
-
-        df = pl.DataFrame({"images": image_bytes_list})
-
-        if self.streaming:
-            result = (
-                df.lazy()
-                .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
-                .collect(engine="streaming")
-            )
-        else:
-            result = df.with_columns(
-                processed=pl.col("images").cv.pipe(pipe).sink("blob")
-            )
-
-        # Convert struct output to numpy arrays
-        outputs = []
-        for struct_row in result["processed"]:
-            arr = numpy_from_struct(struct_row)
-            outputs.append(arr)
-
-        return outputs
 
     def prepare_decoded_images(self, png_bytes_list: list[bytes]) -> pl.DataFrame:
         """
