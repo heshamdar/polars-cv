@@ -126,7 +126,7 @@ fill it in the expression: `pl.col("target_h").fill_null(224)`.
 - **Intensity**: `adjust_contrast`, `adjust_gamma`, `adjust_brightness`, `invert`.
 - **Convolution & Edge Detection**: `convolve2d`, `sobel`, `laplacian`, `sharpen`, `canny`.
 - **Morphology**: `erode`, `dilate`, `morphology_open`, `morphology_close`, `morphology_gradient`.
-- **Affine Transforms**: `warp_affine`, `shear`, `rotate_and_scale` (with automatic pipeline fusion).
+- **Affine Transforms**: `warp_affine`, `shear`, `rotate_and_scale`.
 - **Enhancement**: `equalize_histogram`.
 - **Compute**: `normalize`, `scale`, `clamp`, `relu`, `cast`.
 - **Layout**: `transpose`, `reshape`.
@@ -164,7 +164,7 @@ pr = precision_recall_curve(table)
 ap = average_precision(table)
 
 print(f"AP: {ap:.3f}")
-print(pr.summary_table())
+print(pr.curve)  # score, precision, recall, cum_tp, cum_fp
 ```
 
 Available matchers: `ContourMatcher` (heatmap/mask), `BBoxMatcher` (bounding boxes),

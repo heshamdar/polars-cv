@@ -59,8 +59,12 @@ def test_version_sources_are_the_checkout_markers() -> None:
     assert set(VERSION_SOURCES) == set(CHECKOUT_MARKERS)
 
 
+def _read_toml(relative_path: str) -> dict:
+    return tomllib.loads((REPO_ROOT / relative_path).read_text())
+
+
 def _declared_version(relative_path: str, keys: tuple[str, ...]) -> str:
-    document = tomllib.loads((REPO_ROOT / relative_path).read_text())
+    document = _read_toml(relative_path)
     for key in keys:
         document = document[key]
     assert isinstance(document, str)
@@ -83,10 +87,25 @@ def test_declared_version_matches_dunder_version(
 
 @requires_checkout
 def test_crates_are_versioned_together() -> None:
-    """`polars-cv` and `view-buffer` are released as a pair."""
-    plugin = _declared_version("polars-cv/Cargo.toml", ("package", "version"))
-    engine = _declared_version("view-buffer/Cargo.toml", ("package", "version"))
-    assert plugin == engine
+    """Every crate in the Cargo workspace carries `polars_cv.__version__`.
+
+    The crates are released together, so the list comes from the workspace's
+    own ``members`` rather than being restated here: a crate added to the
+    workspace is checked the moment it exists. (Naming the two crates by hand
+    let ``polars-cv-macros`` carry the version unchecked.)
+    """
+    members = _read_toml("Cargo.toml")["workspace"]["members"]
+    assert members, "the root Cargo.toml lists no workspace members"
+    declared = {
+        member: _declared_version(f"{member}/Cargo.toml", ("package", "version"))
+        for member in members
+    }
+    stale = {m: v for m, v in declared.items() if v != polars_cv.__version__}
+    assert not stale, (
+        f"workspace crates disagree with polars_cv.__version__ "
+        f"{polars_cv.__version__!r}: {stale}. See the release checklist in "
+        "CONTRIBUTING.md."
+    )
 
 
 def test_build_info_reports_every_channel() -> None:

@@ -1,6 +1,6 @@
 """Expression parameters cross the plugin boundary as positional slots.
 
-Typed-op plan P1. An expression parameter used to be identified by its display
+An expression parameter used to be identified by its display
 text — with a ``#n`` suffix, from a process-wide registry, when
 two live expressions printed alike — and Rust bound that name to an input
 column through a parallel list of those names. The key depended on

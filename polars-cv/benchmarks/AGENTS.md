@@ -90,7 +90,10 @@ cd polars-cv
 # [project.optional-dependencies] extra — `pip install ".[bench]"` installs
 # nothing). Because bench is not a default group, run with `uv run --no-sync`
 # below so uv does not re-sync and drop torch/torchvision.
-uv sync --group bench
+uv sync --group bench --no-install-project
+
+# Build the extension optimised (the suite refuses a debug build)
+uv run --no-sync maturin develop --profile benchmark
 
 # Run all benchmarks (must be `-m benchmarks.run_benchmarks`, not the script
 # path, or the `benchmarks` package will not import)
@@ -131,7 +134,7 @@ Defined in `conftest.py`. Controls image counts, sizes, warmup/iterations, and o
 ## Adding a New Framework
 
 1. Create `frameworks/my_framework_adapter.py`
-2. Implement `AbstractFrameworkAdapter`
+2. Implement `BaseFrameworkAdapter` (`frameworks/base.py`)
 3. Register in `run_benchmarks.py`
 
 ## Adapter parity

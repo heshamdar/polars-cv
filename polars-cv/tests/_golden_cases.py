@@ -1,7 +1,7 @@
 """The golden behaviour corpus: every op's planned and executed result.
 
-The typed-op migration (``TYPED_OPS_PLAN.md``) rewrites how every operation is
-declared, planned and dispatched, and deletes the tests whose only job was to
+The typed-op migration (0.29.0) rewrote how every operation is
+declared, planned and dispatched, and deleted the tests whose only job was to
 keep two declarations in sync. This corpus is what makes that safe: it records
 what each operation *does* — its planned state, its output schema and its
 output values — and ``test_golden_corpus.py`` requires every later commit to
@@ -15,12 +15,11 @@ Three kinds of case, each with a stable id:
 - ``expr/<method>.<param>`` — every expression-eligible parameter from
   ``_expr_param_cases.CASES``, driven per row from a column.
 - ``reject/<name>`` — inputs that must fail, with the exception class and a
-  stable substring of the message. **Before a migration phase deletes a guard
-  test, its rejection cases are added here** (the plan's rule for every
-  deletion-matrix row).
+  stable substring of the message. **Before a change deletes a guard test,
+  its rejection cases are added here.**
 
 Recorded values are results only, never internal names, so a renamed method
-(plan phase P8) edits a builder here and not the fixture. The fixture stores
+edits a builder here and not the fixture. The fixture stores
 exact digests *and* tolerance-comparable samples: the digest is compared only
 on the platform the fixture was recorded on, the samples everywhere.
 """

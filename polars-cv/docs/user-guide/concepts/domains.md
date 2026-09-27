@@ -47,7 +47,7 @@ result = df.with_columns(
 Rasterize contours to a mask:
 
 ```python
-# Contour source rasterizes to buffer
+# The contour source decodes contours; rasterize() turns them into a buffer
 pipe = Pipeline().source("contour").rasterize(width=200, height=200)
 
 df = pl.DataFrame({"contour": [contour_data]}).cast({"contour": CONTOUR_SCHEMA})

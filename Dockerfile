@@ -3,9 +3,11 @@
 FROM debian:bookworm-slim
 
 # Install system dependencies in a single layer for better caching
+# (lld: .cargo/config.toml links with -fuse-ld=lld on x86_64 Linux)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     build-essential \
+    lld \
     pkg-config \
     libssl-dev \
     ca-certificates \

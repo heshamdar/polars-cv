@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Python 3.10+
-- Polars 1.0+
+- Polars 1.41.1+
 
 ## Installing with pip
 
@@ -19,19 +19,23 @@ uv add polars-cv
 
 ## Installing from Source
 
-If you want to build from source (e.g., for development):
+Building from source (e.g., for development) needs a Rust toolchain, 1.96 or
+newer (`rustup update stable`), and [uv](https://docs.astral.sh/uv/):
 
 ```bash
 # Clone the repository
 git clone https://github.com/heshamdar/polars-cv.git
-cd polars-cv
+cd polars-cv/polars-cv
 
-# Install with uv (recommended)
-uv sync
+# Install the Python dev dependencies (not the project itself)
+uv sync --group dev --no-install-project
 
-# Or install with pip in development mode
-pip install -e .
+# Compile the Rust plugin into the environment (debug build)
+uv run --no-sync maturin develop
 ```
+
+`maturin develop` installs the package in editable mode: Python edits take
+effect immediately, but after changing Rust you must run it again.
 
 ## Verifying Installation
 
@@ -119,12 +123,20 @@ cv.CloudOptions(
 cv.CloudOptions(gcs_bearer_token=token)
 ```
 
+### For Graph Visualization
+
+`show_graph()` needs the `viz` extra:
+
+```bash
+pip install 'polars-cv[viz]'
+```
+
 ### For Documentation (development only)
 
 When working in the project repository, install the docs dependency group:
 
 ```bash
-uv sync --group docs
+uv sync --group docs --no-install-project
 ```
 
 ### For PyTorch Integration

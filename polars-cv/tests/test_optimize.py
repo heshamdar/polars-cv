@@ -707,7 +707,7 @@ class TestIdentityElimination:
     def test_offset_crop_with_full_extent_is_kept(self) -> None:
         # Over a known size, an offset full-extent window runs past the edge on
         # every row, so it is refused while the pipeline is built
-        # (PLANNER_SIZES_PLAN.md S2) and never reaches the optimizer.
+        # and never reaches the optimizer.
         with pytest.raises(ValueError, match="outside"):
             Pipeline().source("image_bytes").resize(height=20, width=20).crop(
                 top=5, left=5, height=20, width=20
@@ -768,7 +768,7 @@ class TestSpatialPushdownGuard:
         # node-splitting keeps this shape off the public API, so this is the
         # only way to exercise the barrier.
         # The mask is a real node: an op reading a node is planned against its
-        # state, so a bare id with none is refused (PLANNER_SIZES_PLAN.md S3).
+        # state, so a bare id with none is refused.
         mask = pl.col("m").cv.pipe(Pipeline().source("image_bytes").grayscale())
         pipe = Pipeline().source("image_bytes").grayscale()
         pipe._add_node_op("apply_mask", {"mask": mask, "invert": False})

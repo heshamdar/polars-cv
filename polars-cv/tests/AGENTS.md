@@ -58,16 +58,16 @@ lands in the lane that gates every merge.
 
 #### The `structural` lane
 
-`-m "structural and not slow"` is ~650 tests in about five seconds. They check
-the *shape* of the codebase — registries, single-authority ratchets, removed
-surfaces, documented vocabularies — rather than the numerical behaviour of a
+`-m "structural and not slow"` is ~570 tests in a few seconds. They check
+the *shape* of the codebase — registries, single-authority ratchets,
+documented vocabularies — rather than the numerical behaviour of a
 pipeline, and five seconds is what makes them affordable in a pre-commit hook.
 
-**The lane needs the compiled extension.** 427 of the 651 are
+**The lane needs the compiled extension.** Most of them are
 `@plugin_required`, because a great many structural facts are only observable
 through the FFI: the catalogue checks read `enum_catalog`/`op_catalog`, and
 `test_param_applicability` sweeps real `source()`/`sink()` calls. Without a
-`.so` they do not politely skip — sixteen fail outright, and
+`.so` they do not all politely skip — some fail outright, and
 `test_schema_parity_chains.py` aborts *collection*, because its `parametrize`
 reads `_lib` at import time, which takes the whole run down before any
 `-m` filtering happens.

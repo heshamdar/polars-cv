@@ -629,7 +629,7 @@ class TestOptimizationRegressions:
         # into a successful, unchanged image under that flag subset.
         #
         # Over a size the plan knows, the window is refused while the
-        # pipeline is built (PLANNER_SIZES_PLAN.md S2), so no flag subset
+        # pipeline is built, so no flag subset
         # reaches execution.
         with pytest.raises(ValueError, match="outside"):
             _src().resize(height=20, width=20).crop(top=5, left=5, height=20, width=20)

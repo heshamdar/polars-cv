@@ -376,4 +376,4 @@ the mask for that row is null too.
 - `raw`: raw bytes, requires explicit `dtype`
 - `blob`: self-describing binary VIEW protocol
 - `list`/`array`: infer from Polars column type (or override with `dtype`)
-- `contour`: rasterizes contour structs to mask buffers (see above)
+- `contour`: decodes contour structs to the contour domain; add `.rasterize(...)` for a mask buffer (see above)

@@ -29,11 +29,11 @@ Every operation and policy setter on [`Pipeline`](pipeline.md) — `resize()`,
 expr = pl.col("image").cv.pipe(pipe).resize(height=pl.col("h")).on_null_param("null")
 ```
 
-Those methods are inherited from a generated mixin, so they do not appear in the
-reference below; your editor reads their signatures from the code, and their
-documentation is on the [`Pipeline`](pipeline.md) page. What is listed below is the hand-written surface
-— composition (`pipe()`, `merge_pipe()`), sinks, the binary operators, and the
-few operations that take another `LazyPipelineExpr` as an operand.
+Those methods are generated from the [`Pipeline`](pipeline.md) ones and
+listed in the reference below with the same documentation, alongside the
+hand-written surface — composition (`pipe()`, `merge_pipe()`), sinks, the
+binary operators, and the few operations that take another `LazyPipelineExpr`
+as an operand.
 
 ## API Reference
 

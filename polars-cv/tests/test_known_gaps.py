@@ -29,7 +29,7 @@ import pytest
 
 # Each gap carries its own lane: a source scan is `structural` (pre-commit runs
 # it with no compiled extension), a runtime one `plugin_required`. No gap is
-# open: the planned-size defects closed in PLANNER_SIZES_PLAN.md S1 and S2.
+# open: the planned-size defects closed with rank-N planned shapes (0.29.0).
 
 
 def _gap(reason: str) -> pytest.MarkDecorator:

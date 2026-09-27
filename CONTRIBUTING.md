@@ -31,17 +31,19 @@ The test script will:
 5. Run the full test suite
 6. Report which versions passed/failed
 
-## Development
+### Everyday Commands
+
+From `polars-cv/`:
 
 ```bash
-# Run Python tests
-pytest tests/
-
-# Build for development
+# Build the extension for development (debug; the only dev build)
 maturin develop
 
-# Build release
-maturin build --release
+# Run the Python tests
+uv run --no-sync pytest tests/
+
+# Run every check CI runs (from the repo root)
+../scripts/verify.sh
 ```
 
 ## CI/CD and Publishing
@@ -52,13 +54,13 @@ This project uses GitHub Actions for continuous integration and publishing to Py
 
 - **CI** (`ci.yml`): Runs on push/PR to main
   - Linting (ruff, cargo clippy, cargo fmt)
-  - Tests across Python 3.10-3.13 on Linux, macOS, Windows
+  - Tests across Python 3.10-3.13 on Linux (and macOS on pushes to main)
   - Build verification
 
 - **Publish** (`publish.yml`): Runs on release creation
-  - Builds wheels for all platforms (Linux, macOS universal2, Windows)
-  - Publishes to TestPyPI first for validation
-  - Publishes to PyPI after TestPyPI succeeds
+  - Checks the release tag against the declared version
+  - Builds `abi3` wheels (linux-x86_64, linux-aarch64, macOS-arm64) and an sdist
+  - Publishes to PyPI via trusted publishing
 
 ### Required GitHub Secrets
 
@@ -77,31 +79,28 @@ which is more secure than API tokens. To set it up:
 1. **PyPI** (https://pypi.org):
    - Go to your account → Publishing → Add a new pending publisher
    - Owner: `<your-github-username>`
-   - Repository name: `polars_plugin_dev`
+   - Repository name: `polars-cv`
    - Workflow name: `publish.yml`
    - Environment name: `pypi`
 
-2. **TestPyPI** (https://test.pypi.org):
-   - Same steps as above
-   - Environment name: `testpypi`
-
 ### GitHub Environments
 
-Create two environments in your repository (Settings → Environments):
-
-1. **testpypi** - For TestPyPI publishing
-2. **pypi** - For production PyPI publishing (consider adding required reviewers)
+Create a **pypi** environment in your repository (Settings → Environments) for
+production publishing (consider adding required reviewers).
 
 ### Release Process
 
-1. Bump the version in all six places it is recorded — they must agree.
-   `polars-cv/tests/test_version_consistency.py` checks the first four for you;
-   run it after bumping:
+1. Bump the version in all seven places it is recorded — they must agree.
+   `polars-cv/tests/test_version_consistency.py` checks the first five for you
+   (every crate in the Cargo workspace, read from its `members`); run it after
+   bumping:
    - `polars-cv/Cargo.toml`
-   - `view-buffer/Cargo.toml` (the two crates are versioned together)
+   - `view-buffer/Cargo.toml`
+   - `polars-cv-macros/Cargo.toml` (the workspace crates are versioned together)
    - `polars-cv/pyproject.toml`
    - `polars_cv.__version__` in `polars-cv/python/polars_cv/__init__.py`
-   - `Cargo.lock` — refresh with `cargo update -p polars-cv -p view-buffer`
+   - `Cargo.lock` — refresh with
+     `scripts/with-pyo3-env.sh cargo update -p polars-cv -p view-buffer -p polars-cv-macros`
    - `polars-cv/uv.lock` — refresh with `uv lock` from `polars-cv/`
 
    The compiled extension needs no action: its `__version__` and its source
@@ -130,9 +129,6 @@ If you prefer using API tokens instead of trusted publishing:
 ```bash
 # Build wheels
 maturin build --release
-
-# Publish to TestPyPI
-maturin publish --repository testpypi
 
 # Publish to PyPI
 maturin publish

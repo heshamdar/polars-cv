@@ -77,17 +77,18 @@ Registered on `pl.Expr` for columns containing `List[BBOX_SCHEMA]`. Methods:
 - `pairwise_iou(other)` -> `List[List[Float64]]`
 - `correspond(other, threshold, order)` -> `CORRESPONDENCE_SCHEMA`
 
-These delegate to Rust functions `bbox_pairwise_iou` and `bbox_correspond`
-which internally convert bounding boxes to rectangular contours and reuse the
-existing contour matching logic. Used by `BBoxMatcher` in the metrics subsystem.
+These delegate to Rust functions `bbox_pairwise_iou` and `bbox_correspond`,
+which compute box IoU analytically (`pairwise::bbox_iou_matrix`) and share the
+contour matcher's row drivers (`pairwise_rows`, `correspond_rows`), so the
+greedy matching policy lives in one place. Used by `BBoxMatcher` in the metrics subsystem.
 
 ### `.point` (PointNamespace)
 
-Registered on `pl.Expr` for columns matching `POINT_SCHEMA`. Each method calls `_plugin.call` (via `_PluginNamespace._plugin`) with a specific Rust function name (e.g., `point_normalize`, `point_distance`).
+Registered on `pl.Expr` for columns matching `POINT_SCHEMA`. Each method is generated (`_ops_generated.py`, from `geom_catalog.json`) as one `_GeomNamespace._call` of its Rust definition (e.g., `point_normalize`, `point_distance`), which reaches the plugin through `_plugin.call`.
 
 ### Important: These bypass the pipeline/graph system
 
-Point and contour namespace operations go directly through `_plugin.call` to dedicated Rust functions. Every accessor also accepts the `PointType`/`ContourType`/`BBoxType` extension types: `_plugin.call` hands the plugin `.ext.storage()`, so a tagged column computes exactly as its plain struct (`test_accessors_accept_tagged_inputs`). Accessors that work on the struct in Python (`.point.x`/`.y`) must read `.ext.storage()` themselves. They do **not** go through the `vb_graph` pipeline path. This is a design distinction — they operate on Struct columns directly rather than on binary image data.
+Point and contour namespace operations go through `_GeomNamespace._call` → `_plugin.call` to dedicated Rust functions. Every accessor also accepts the `PointType`/`ContourType`/`BBoxType` extension types: `_plugin.call` hands the plugin `.ext.storage()`, so a tagged column computes exactly as its plain struct (`test_accessors_accept_tagged_inputs`). Accessors that work on the struct in Python (`.point.x`/`.y`) must read `.ext.storage()` themselves. They do **not** go through the `vb_graph` pipeline path. This is a design distinction — they operate on Struct columns directly rather than on binary image data.
 
 ### Parameter policy: one typed definition per function, like every op
 
@@ -179,22 +180,23 @@ So the arity is **one value, read from the column dtype** (never from a row —
 declaration could not have made), and `src/geom_arity.rs` drives both halves
 from it:
 
-- `Arity::of` reads it, using `point_dtype_fields()` — the same field names the
+- `Arity::of` reads it, using `is_point_dtype()` — the same field names the
   point parser reads, so the dispatch cannot admit a struct the parser rejects.
 - `elementwise_field` / `binary_field` wrap the element type for the declaration.
 - `map_contours` / `zip_contours` wrap the results
   with the same `Arity::wrap`, and are the only decode path the accessors use.
 - `contour_accessor!` emits both halves from a single `-> <elem>` declaration.
 
-`map_contours` also owns the null-parameter policy: it wraps each
-*row* in `GeomParams::row`, so `on_null("null")` nulls the row rather than each
+`map_contours` also owns the null-parameter policy: it runs each
+*row* through `GeomParams::map_rows` (which also splits rows over the thread
+pool), so `on_null("null")` nulls the row rather than each
 contour. That is the job `contour_row` used to do, moved so it cannot be
 forgotten.
 
 `contour_contains_point` is the one accessor with its own loop: its second
 operand is a point, so neither the `map` arm (one operand) nor the `zip` arm
 (two contour operands) describes it. It still reads `Arity::of` and wraps
-through `elementwise_field`/`pack_row`, so only the loop is local.
+through `elementwise_field`/`ContourOutput`, so only the loop is local.
 
 ### Adding an accessor
 

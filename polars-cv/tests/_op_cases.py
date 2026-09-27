@@ -185,7 +185,7 @@ COLOR_SPACES: tuple[str, ...] = ("rgb", "bgr", "hsv", "lab", "ycbcr", "gray")
 #: Ops whose engine kernel requires a single-channel buffer.
 #:
 #: A three-channel input is refused by the op's own ``validate``: at build
-#: time when the planner knows the channel count (consolidation plan C0.5),
+#: time when the planner knows the channel count,
 #: per row otherwise. :func:`build_case` puts a ``grayscale()`` in front of
 #: these, and so must any sweep that builds its own pipelines.
 SINGLE_CHANNEL_OPS: frozenset[str] = frozenset(

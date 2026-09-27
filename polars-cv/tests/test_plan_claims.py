@@ -4,7 +4,7 @@ A declared dtype or size is either checked where the data arrives or carried as
 a declaration, so a pass that trusts it (identity elimination) cannot turn a
 working query into a failing one. Each case runs the same pipeline with every
 optimization off and on, at the user-facing entry point (``.sink``), and
-requires the same result. Consolidation plan C0.
+requires the same result.
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ class TestACanvasFromAnotherNodeIsChecked:
     """``source("contour").rasterize(shape=)`` takes the canvas node's planned size, and
     that size is a checked fact: an ``assert_shape`` it rests on is checked
     where it was written, so a wrong one fails the row naming the assertion,
-    with or without optimizations (consolidation plan C0.2, C2)."""
+    with or without optimizations."""
 
     CONTOUR = {
         "exterior": [
@@ -160,7 +160,7 @@ def test_repr_shows_only_written_assertions() -> None:
 #: Builder calls whose refusal would rest on a fact the plan does not have:
 #: an image's decoded channel count, a list column's rank, an operand's size.
 #: A plan-time verdict is only ever one execution would also reach, so each of
-#: these must build (PLANNER_SIZES_PLAN.md S2: validation over partially known
+#: these must build (validation over partially known
 #: sizes says nothing about a size it does not know).
 #:
 #: Watched failing: raising every verdict over placeholder sizes (the
@@ -213,7 +213,7 @@ def _build_error(build: Callable[[], object]) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Plan-time validation over what the plan knows (PLANNER_SIZES_PLAN.md S2)
+# Plan-time validation over what the plan knows
 # ---------------------------------------------------------------------------
 
 #: Image ops every row of a rank-1 buffer refuses.
@@ -302,7 +302,7 @@ class TestPlannedSizes:
         assert out.hw == (8, 8), f"a.add(b) planned {out}"
 
     def test_a_merge_or_mask_is_checked_against_the_nodes_it_reads(self) -> None:
-        """PLANNER_SIZES_PLAN.md S3: the nodes an op reads are its inputs to
+        """The nodes an op reads are its inputs to
         the planner, so their planned sizes are checked and planned from."""
 
         def select(height: int | None, width: int | None) -> LazyPipelineExpr:
