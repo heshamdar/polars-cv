@@ -47,6 +47,9 @@ src/
 │   ├── filter.rs       # ConvolveOp, BorderMode — 2D convolution
 │   ├── compute.rs      # ComputeOp (cast, scale, normalize, clamp, relu, contrast, gamma, invert, affine, rotate_affine)
 │   ├── scalar.rs       # ScalarOp — elementary f32 ops fusable into a single kernel
+│   ├── elementwise/    # The engine every per-value compute op runs through: lowering,
+│   │                   # statistics, integer / table / blocked / pass strategy, in-place writes;
+│   │                   # legacy.rs + tests.rs hold the pre-engine code as its test oracle
 │   ├── affine.rs       # AffineParams, InterpolationType, from_rotation() — affine transform parameters
 │   ├── binary.rs       # BinaryOp (add, subtract, multiply, blend, bitwise)
 │   ├── reduction.rs    # Reduction ops (sum, mean, std, min, max, argmin/argmax, percentile)
@@ -132,6 +135,17 @@ Element conversion between dtypes has one rule, `core::convert::CastFrom`
 (integer sources `as`; float → integer round-half-away then saturate; float →
 float `as`), applied in bulk by `convert_slice`. `with_dtype!` is the one
 runtime `DType` → element-type match.
+
+Per-value compute ops (the scalar family, scale, relu, clamp, invert, gamma,
+contrast, normalize, fused chains) run only through `ops::elementwise::apply`:
+it lowers the op to a `FusedKernel` (`lower_to_scalars`, shared with fusion),
+picks integer arithmetic for an integer affine kernel over 8/16-bit input into
+the same dtype (`invert`, integer shifts), a lookup table (only for work that
+cannot vectorise, such as `powf`, or per-channel kernels, over 8/16-bit input),
+blocked streaming for an integer result, or one f32 pass, and writes in place when
+`ViewBuffer::unique_contiguous_mut` allows. A table read is slower than a
+vectorised `255 - x`, so a cheap kernel never takes one. Do not add a per-op
+kernel beside it; extend the lowering.
 
 Row-wise kernels read a view where it lies through `ViewBuffer::dense_rows`
 (contiguous, crops, vertical flips) instead of calling `to_contiguous()` first.

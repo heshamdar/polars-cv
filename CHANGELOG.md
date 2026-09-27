@@ -44,6 +44,38 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   vectorised kernels over the image's rows. A contiguous, cropped or
   vertically flipped input is read where it lies instead of being copied
   first. Non-u8 grayscale is 1.4–2.9x faster.
+- **Per-value ops run through one engine that picks how per call.**
+  `invert`, `adjust_gamma`, `adjust_contrast`, `normalize`, `scale`, `clamp`,
+  the scalar math ops and fused chains of them share one element-wise engine,
+  and results are unchanged. Work that cannot vectorise (a `powf` per pixel,
+  as in gamma) or that differs per channel (preset `normalize`) runs once per
+  possible value of an 8-bit input (16-bit once an image has 65,536 values per
+  table), and each pixel becomes a table read: u8 gamma is 22–27x faster and
+  u8 ImageNet-style `normalize` 5–12x. An integer map such as `invert` runs in
+  integer arithmetic (1.3–1.9x). Everything else streams vectorised, in
+  cache-sized blocks for an integer result, with no image-sized f32
+  intermediate (u8 `adjust_contrast` 2–5.5x, z-score 2.2–4x, a fused u8 → u8
+  chain 1.8–2.5x). An op whose input nothing else reads writes it in place
+  when the output dtype is the input's (u8 `invert`, u8 → u8 chains, u8
+  `threshold`).
+- **Converting floats to 8/16-bit integers vectorises.** Rounding half away
+  from zero and saturating is now written so it compiles to vector
+  instructions, with identical results: f32 → u8 `cast` is another 1.6–2.3x
+  faster on top of the previous entry.
+
+### Changed
+
+- **`normalize(method="zscore")` computes its mean and standard deviation
+  exactly.** They used to be running f32 sums, which drift at image sizes;
+  8/16-bit images now use exact integer sums and other dtypes f64 sums. The
+  normalized values can differ from 0.29.0 in the last bits.
+
+### Internal
+
+- view-buffer: `ViewBuffer::try_apply_fused_kernel_inplace` is removed. Whether
+  a kernel may write its input is decided in one place,
+  `ViewBuffer::unique_contiguous_mut`, which the element-wise engine and the
+  u8 threshold ask; `apply_fused_kernel` remains and never writes `&self`.
 
 ### Changed
 

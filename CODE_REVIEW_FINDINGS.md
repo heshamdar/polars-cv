@@ -1095,6 +1095,84 @@ phase of that plan, closed as each lands.
 - **Guard:** `gray_alpha_grayscale_is_the_gray_channel_for_every_dtype`,
   watched failing on the old code.
 
+### CR-52 — Per-value ops ran through five near-duplicate paths, each with a full f32 copy · `Resolved` · High (perf)
+
+- **What was wrong:**
+  - The scalar family, scale/relu/clamp, invert, gamma, contrast, normalize and
+    fused chains each had their own function. Most cast a u8 image to f32 (one
+    image-sized copy) and then mapped into a second buffer.
+  - u8 gamma computed a `powf` per pixel and u8 preset normalize a divide per
+    pixel: ~50 ms at 1024²×3.
+  - Only f32 → f32 ever ran in place.
+- **Resolution:** `view-buffer/src/ops/elementwise/` is the one engine.
+  - Every op lowers to a `FusedKernel` through `lower_to_scalars`, which moved
+    out of `expr.rs` so fusion and standalone execution share it. Statistics
+    come first for normalize/contrast.
+  - `strategy` picks how the kernel runs:
+    - integer arithmetic when the kernel is exactly `clamp(±x + c)` over
+      8/16-bit input into the same dtype (`invert`, integer shifts), as fast
+      as the op written natively;
+    - a lookup table, only for work that cannot vectorise (`powf`) or that
+      differs per channel, over 8-bit input (16-bit with enough values);
+    - blocked streaming through an L1 f32 scratch for an integer result;
+    - one f32 pass for a float result.
+
+    Two candidates were measured and rejected on the way. Tabling every 8-bit
+    kernel made u8 `invert` 18x slower than `255 - x` (a table read vs a vector
+    subtract). Streaming it through f32 blocks was still 10x slower. Hence the
+    rule by cost, and the integer strategy.
+  - The float → 8/16-bit integer conversion (`convert::CastFrom`) was
+    rewritten to vectorise, with identical results, pinned by
+    `narrow_conversion_equals_round_then_saturate`. `x.round() as u8` stayed
+    scalar even in an AVX2 build (saturating `as` + no x86 round-half-away).
+  - `ViewBuffer::unique_contiguous_mut` decides in place. The u8 threshold uses
+    it too.
+  - Eleven functions were deleted, along with
+    `ViewBuffer::try_apply_fused_kernel_inplace`.
+- **Deliberate change:** z-score statistics are exact (integer sums for 8/16-bit,
+  f64 otherwise). They had been sequential f32 sums.
+- **Guards:**
+  - `elementwise::tests` compares every op × all 10 dtypes × {contiguous, crop,
+    flip_v, flip_h, transpose} × {shared, sole-owned} with the pre-engine code,
+    kept verbatim in `legacy.rs`, bit for bit (any NaN equals any NaN). It covers
+    16-bit on both sides of the table threshold. It was watched failing against
+    eight mutations: the i8 table index, the in-place table write, per-channel
+    passes, the contrast mean, the blocked path's passes and store index, and
+    the integer path's sign and clamp.
+  - Four `copy_counts.rs` allocation cases (u8 invert / u8 → u8 chain / u8
+    threshold in place, preset normalize with only its f32 output) failed on the
+    old code first.
+  - The suite also passes under `RUSTFLAGS="-C target-cpu=x86-64"`.
+
+- **Measured** (`polars-cv/benchmarks/reports/2026-09-27-phase2-elementwise/`,
+  against Phase 1, median of three interleaved rounds):
+  - u8 gamma: 22–27x faster;
+  - u8 preset normalize: 5–12x;
+  - u8 `scale`: 1.3–9.5x;
+  - u8 contrast: 2–5.5x;
+  - u8 z-score: 2.2–4x;
+  - f32 preset: 2.5–3.3x;
+  - fused u8 chain: 1.8–2.5x;
+  - u8 invert: 1.3–1.9x;
+  - f32 → u8 cast: 1.6–2.3x.
+
+  Every other kernel is within noise.
+
+### CR-53 — `invert` on other integer dtypes returns f32 against a `PreserveInput` contract · `Open` · Low
+
+- **Location:** `ComputeOp::Invert` (`output_dtype_rule` = `PreserveInput`).
+  Execution for i8/i16/u32/i32/u64/i64 reads as f32 and returns `1 - x` as
+  **f32**, which is the engine's `Invert` fallback in `elementwise::lower`.
+- **What's wrong:**
+  - The planner publishes the input dtype, and execution produces f32.
+  - The value is also meaningless for those dtypes: `1 - x` rather than the
+    type's maximum minus `x`.
+  - Phase 2 of the performance plan preserved it exactly, so the parity oracle
+    holds.
+- **Proposed fix:** a decision for the owner. Either invert those dtypes as
+  `MAX - x` in the input dtype (matching u8/u16, and the contract), or refuse
+  them in `validate`. Either way, the fallback arm goes.
+
 ## Architectural follow-up (spun out of CR-01)
 
 ### CR-27 — Extend the single-metadata-authority collapse to `Compute` and `View` builders · `Resolved`
