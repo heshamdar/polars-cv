@@ -999,7 +999,7 @@ impl CompiledGraph {
                                         ctx.col(contours.0).map_err(|e| e.to_string())?;
                                     let (contour_series, contour_row) = contour_col.at(row_idx);
                                     let contours =
-                                        crate::contour_column::ContourColumn::new(contour_series)
+                                        crate::geom_columns::ContourColumn::new(contour_series)
                                             .row(contour_row)
                                             .map_err(|e| {
                                                 format!("LabelReduce contour parsing failed: {e}")

@@ -1,10 +1,14 @@
-//! A contour column read straight from its Arrow arrays.
+//! Geometry columns read straight from their Arrow arrays.
 //!
-//! **The one contour reader of the plugin.** Every consumer of a contour
-//! column — the `.contour`/`.point` accessors, the set-level functions, the
+//! **The one reader per geometry type.** Every consumer of a contour, point
+//! or bbox column — the `.contour`/`.point`/`.bbox` functions, the
 //! pipeline's `contour` source and `label_reduce` — reads rows through
-//! [`ContourColumn::row`], so the accepted forms, hole handling and error text
-//! cannot diverge between them.
+//! [`ContourColumn`], [`PointColumn`] or [`BBoxColumn`], so the accepted
+//! forms, null handling and error text cannot diverge between them.
+//!
+//! A value's numeric fields are found by name (a struct's field order means
+//! nothing) and must be `Float64`; a null field in a non-null value is an
+//! error naming the row, never a stand-in `0.0`.
 //!
 //! It replaced a parser over `AnyValue`s, which built a `Series` per ring and
 //! per point list: 98 allocations for a two-contour row that reading the
@@ -18,8 +22,9 @@
 //! - a `List` of either, a contour set ([`Arity::Set`]), whose null elements
 //!   are skipped.
 //!
-//! A point's coordinates are its `x`/`X` and `y`/`Y` fields, by name
-//! ([`point_dtype_fields`]), and must be `Float64`. The column's layout is
+//! A point's coordinates are its `x`/`X` and `y`/`Y` fields
+//! ([`POINT_FIELD_SPELLINGS`]). A bbox's are [`BBOX_FIELD_NAMES`]. The
+//! column's layout is
 //! resolved once, but a layout it cannot read is reported only for a
 //! non-null row, so an all-null column of any dtype reads as nulls.
 
@@ -27,8 +32,10 @@ use polars::prelude::*;
 use polars_arrow::array::{Array, ListArray, PrimitiveArray, StructArray};
 use view_buffer::geometry::contour::{Contour, Point};
 
-use crate::contour::point_dtype_fields;
+use view_buffer::geometry::contour::BoundingBox;
+
 use crate::geom_arity::{is_point_dtype, Arity};
+use crate::geom_schema::{BBOX_FIELD_NAMES, POINT_FIELD_SPELLINGS};
 
 /// A contour column's rows, each as the contours it holds.
 pub(crate) struct ContourColumn<'a> {
@@ -67,10 +74,12 @@ struct Rings<'a> {
 }
 
 /// A point struct array and its `x`/`y` coordinate arrays.
-type Points<'a> = (
+type Points<'a> = Fields<'a, 2>;
+
+/// A struct array and its named `Float64` field arrays, with their names.
+type Fields<'a, const N: usize> = (
     &'a StructArray,
-    &'a PrimitiveArray<f64>,
-    &'a PrimitiveArray<f64>,
+    [(&'static str, &'a PrimitiveArray<f64>); N],
 );
 
 impl<'a> ContourColumn<'a> {
@@ -106,16 +115,7 @@ impl<'a> ContourColumn<'a> {
     /// Row `i`'s contours — exactly one for a single-contour column — or
     /// `None` for a null row.
     pub(crate) fn row(&self, row: usize) -> PolarsResult<Option<Vec<Contour>>> {
-        let mut i = row;
-        let Some((array, rows)) = self.chunks.iter().find(|(array, _)| {
-            let here = i < array.len();
-            if !here {
-                i -= array.len();
-            }
-            here
-        }) else {
-            polars_bail!(OutOfBounds: "contour row out of bounds");
-        };
+        let ((array, rows), i) = locate(&self.chunks, row)?;
         let rows = match rows {
             Ok(rows) => rows,
             Err(_) if !array.is_valid(i) => return Ok(None),
@@ -188,21 +188,18 @@ impl Rings<'_> {
         if start == end {
             return Ok(Vec::new());
         }
-        let (st, x, y) = self.points.as_ref().map_err(Clone::clone)?;
+        let points = self.points.as_ref().map_err(Clone::clone)?;
         // Sized up front: collecting `Result`s loses the length hint, and a
         // growing vector reallocates as it goes.
-        let mut points = Vec::with_capacity(end - start);
+        let mut ring = Vec::with_capacity(end - start);
         for k in start..end {
-            if !st.is_valid(k) {
+            if !points.0.is_valid(k) {
                 return Err("a contour point is null".to_string());
             }
-            match (x.get(k), y.get(k)) {
-                (Some(x), Some(y)) => points.push(Point::new(x, y)),
-                (None, _) => return Err("a contour point has a null x".to_string()),
-                (_, None) => return Err("a contour point has a null y".to_string()),
-            }
+            let [x, y] = values(points, k, "contour point")?;
+            ring.push(Point::new(x, y));
         }
-        Ok(points)
+        Ok(ring)
     }
 }
 
@@ -259,22 +256,182 @@ fn rings<'a>(array: &'a dyn Array, point: &DataType) -> Result<Rings<'a>, String
 
 /// The `x` and `y` arrays of an array of `point` structs, by field name.
 fn coordinates<'a>(array: &'a dyn Array, point: &DataType) -> Result<Points<'a>, String> {
-    let DataType::Struct(fields) = point else {
-        return Err("Expected Struct for point".to_string());
+    named_f64(array, point, POINT_FIELD_SPELLINGS, "Point")
+}
+
+/// The `Float64` field arrays of an array of `dtype` structs, the `i`th
+/// found under any of `spellings[i]` (the first being its name in errors).
+fn named_f64<'a, const N: usize>(
+    array: &'a dyn Array,
+    dtype: &DataType,
+    spellings: [&[&'static str]; N],
+    what: &str,
+) -> Result<Fields<'a, N>, String> {
+    let DataType::Struct(fields) = dtype else {
+        return Err(format!("Expected Struct for {}", what.to_lowercase()));
     };
-    let st = downcast::<StructArray>(array, "a point struct")?;
-    let [x, y] = point_dtype_fields().map(|names| {
-        let axis = names[0];
+    let st = downcast::<StructArray>(array, what)?;
+    let arrays = spellings.map(|names| {
+        let name = names[0];
         let idx = fields
             .iter()
             .position(|f| names.contains(&f.name().as_str()))
-            .ok_or_else(|| format!("Point struct missing '{axis}' field"))?;
+            .ok_or_else(|| format!("{what} struct missing '{name}' field"))?;
         if fields[idx].dtype() != &DataType::Float64 {
-            return Err(format!("{axis} field must be f64"));
+            return Err(format!("{name} field must be f64"));
         }
         downcast::<PrimitiveArray<f64>>(st.values()[idx].as_ref(), "a coordinate")
+            .map(|array| (name, array))
     });
-    Ok((st, x?, y?))
+    let mut found = Vec::with_capacity(N);
+    for array in arrays {
+        found.push(array?);
+    }
+    let found: [_; N] = found
+        .try_into()
+        .map_err(|_| "internal: field count".to_string())?;
+    Ok((st, found))
+}
+
+/// The fields of struct `k`: a null field is an error, not a stand-in 0.0.
+fn values<const N: usize>(
+    fields: &Fields<'_, N>,
+    k: usize,
+    what: &str,
+) -> Result<[f64; N], String> {
+    let mut out = [0.0; N];
+    for (slot, (name, array)) in out.iter_mut().zip(&fields.1) {
+        *slot = array
+            .get(k)
+            .ok_or_else(|| format!("a {what} has a null {name}"))?;
+    }
+    Ok(out)
+}
+
+/// The chunk holding column row `row`, and the row's index within it.
+fn locate<'c, 'a, T>(
+    chunks: &'c [(&'a dyn Array, T)],
+    row: usize,
+) -> PolarsResult<(&'c (&'a dyn Array, T), usize)> {
+    let mut i = row;
+    for chunk in chunks {
+        if i < chunk.0.len() {
+            return Ok((chunk, i));
+        }
+        i -= chunk.0.len();
+    }
+    polars_bail!(OutOfBounds: "geometry row {} out of bounds", row)
+}
+
+/// A point column's rows, each as a [`Point`].
+pub(crate) struct PointColumn<'a> {
+    chunks: Vec<(&'a dyn Array, Result<Points<'a>, String>)>,
+}
+
+impl<'a> PointColumn<'a> {
+    /// Resolve `series`'s layout, chunk by chunk. Reads no rows.
+    pub(crate) fn new(series: &'a Series) -> Self {
+        let chunks = series
+            .chunks()
+            .iter()
+            .map(|chunk| (chunk.as_ref(), coordinates(chunk.as_ref(), series.dtype())))
+            .collect();
+        PointColumn { chunks }
+    }
+
+    /// Row `row`'s point, or `None` for a null row.
+    pub(crate) fn get(&self, row: usize) -> PolarsResult<Option<Point>> {
+        let ((array, points), i) = locate(&self.chunks, row)?;
+        if !array.is_valid(i) {
+            return Ok(None);
+        }
+        points
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|points| values(points, i, "point"))
+            .map(|[x, y]| Some(Point::new(x, y)))
+            .map_err(|msg| polars_err!(ComputeError: "{} (row {})", msg, row))
+    }
+}
+
+/// Bbox `k` of an array of bbox structs.
+fn bbox_at(fields: &Fields<'_, 4>, k: usize) -> Result<BoundingBox, String> {
+    values(fields, k, "bbox").map(|[x, y, w, h]| BoundingBox::new(x, y, w, h))
+}
+
+/// A bbox column's rows: one `{x, y, width, height}` struct per row, or a
+/// list of them ([`Arity::Set`]), whose null elements are skipped.
+pub(crate) struct BBoxColumn<'a> {
+    arity: Arity,
+    chunks: Vec<(&'a dyn Array, Result<BBoxRows<'a>, String>)>,
+}
+
+enum BBoxRows<'a> {
+    Single(Fields<'a, 4>),
+    Set(&'a ListArray<i64>, Fields<'a, 4>),
+}
+
+impl<'a> BBoxColumn<'a> {
+    /// Resolve `series`'s layout, chunk by chunk. Reads no rows.
+    pub(crate) fn new(series: &'a Series) -> Self {
+        let spellings: [&[&'static str]; 4] =
+            std::array::from_fn(|i| std::slice::from_ref(&BBOX_FIELD_NAMES[i]));
+        let dtype = series.dtype();
+        // A bbox is never a list, so any list is a set of them (unlike a
+        // contour column, whose list may be one contour's ring).
+        let arity = match dtype {
+            DataType::List(_) => Arity::Set,
+            _ => Arity::Single,
+        };
+        let chunks = series
+            .chunks()
+            .iter()
+            .map(|chunk| {
+                let chunk = chunk.as_ref();
+                let rows = match (arity, dtype) {
+                    (Arity::Set, DataType::List(elem)) => {
+                        downcast::<ListArray<i64>>(chunk, "a bbox list").and_then(|list| {
+                            named_f64(list.values().as_ref(), elem, spellings, "BBox")
+                                .map(|f| BBoxRows::Set(list, f))
+                        })
+                    }
+                    _ => named_f64(chunk, dtype, spellings, "BBox").map(BBoxRows::Single),
+                };
+                (chunk, rows)
+            })
+            .collect();
+        BBoxColumn { arity, chunks }
+    }
+
+    /// Row `row`'s bboxes — exactly one for a single-bbox column — or `None`
+    /// for a null row.
+    pub(crate) fn row(&self, row: usize) -> PolarsResult<Option<Vec<BoundingBox>>> {
+        let ((array, rows), i) = locate(&self.chunks, row)?;
+        if !array.is_valid(i) {
+            return Ok(None);
+        }
+        let read = match rows.as_ref().map_err(Clone::clone) {
+            Err(msg) => Err(msg),
+            Ok(BBoxRows::Single(fields)) => bbox_at(fields, i).map(|b| vec![b]),
+            Ok(BBoxRows::Set(list, fields)) => {
+                let (start, end) = list.offsets().start_end(i);
+                (start..end)
+                    .filter(|&k| fields.0.is_valid(k))
+                    .map(|k| bbox_at(fields, k))
+                    .collect()
+            }
+        };
+        read.map(Some)
+            .map_err(|msg| polars_err!(ComputeError: "{} (row {})", msg, row))
+    }
+
+    /// Row `row`'s one bbox, or `None` for a null row. A set is refused.
+    pub(crate) fn single(&self, row: usize) -> PolarsResult<Option<BoundingBox>> {
+        if self.arity == Arity::Set {
+            polars_bail!(ComputeError: "expected one bbox per row, got a list of them");
+        }
+        Ok(self.row(row)?.and_then(|mut v| v.pop()))
+    }
 }
 
 #[cfg(test)]
@@ -558,5 +715,119 @@ mod tests {
         // 1 (row) + 1 (first exterior) + 1 (second exterior) + 1 (its holes)
         // + 2 (two hole rings).
         assert_eq!(allocations, 6);
+    }
+
+    // ---- points and bboxes -------------------------------------------------
+
+    use super::{BBoxColumn, PointColumn};
+    use view_buffer::geometry::contour::BoundingBox;
+
+    fn read_points(series: &Series) -> PolarsResult<Vec<Option<Point>>> {
+        let column = PointColumn::new(series);
+        (0..series.len()).map(|i| column.get(i)).collect()
+    }
+
+    #[test]
+    fn points_are_read_by_field_name() {
+        let expected = vec![Some(Point::new(1.0, 3.0)), Some(Point::new(2.0, 4.0))];
+        for names in [["x", "y"], ["X", "Y"]] {
+            let col = points(names, &[Some(1.0), Some(2.0)], &[Some(3.0), Some(4.0)]);
+            assert_eq!(read_points(&col).unwrap(), expected, "{names:?}");
+        }
+        // Position does not decide the axis: `{y, x}` is not `{x, y}`.
+        let swapped = points(["y", "x"], &[Some(3.0), Some(4.0)], &[Some(1.0), Some(2.0)]);
+        assert_eq!(read_points(&swapped).unwrap(), expected);
+    }
+
+    #[test]
+    fn a_null_point_row_is_none_and_a_null_coordinate_an_error() {
+        let col = points(["x", "y"], &[Some(1.0), Some(2.0)], &[Some(3.0), Some(4.0)]);
+        let nulls = Series::full_null("p".into(), 1, col.dtype());
+        let mut with_null_row = col.clone();
+        with_null_row.append(&nulls).unwrap();
+        assert_eq!(with_null_row.chunks().len(), 2);
+        assert_eq!(
+            read_points(&with_null_row).unwrap(),
+            vec![Some(Point::new(1.0, 3.0)), Some(Point::new(2.0, 4.0)), None]
+        );
+        let col = points(["x", "y"], &[Some(1.0), None], &[Some(3.0), Some(4.0)]);
+        let err = PointColumn::new(&col).get(1).unwrap_err().to_string();
+        assert!(err.contains("null x") && err.contains("row 1"), "{err}");
+    }
+
+    #[test]
+    fn a_point_needs_f64_x_and_y() {
+        let ints = StructChunked::from_series(
+            "p".into(),
+            1,
+            [
+                Series::new("x".into(), &[1i64]),
+                Series::new("y".into(), &[2i64]),
+            ]
+            .iter(),
+        )
+        .unwrap()
+        .into_series();
+        let err = PointColumn::new(&ints).get(0).unwrap_err().to_string();
+        assert!(err.contains("f64"), "{err}");
+        let only_x =
+            StructChunked::from_series("p".into(), 1, [Series::new("x".into(), &[1.0])].iter())
+                .unwrap()
+                .into_series();
+        let err = PointColumn::new(&only_x).get(0).unwrap_err().to_string();
+        assert!(err.contains("'y'"), "{err}");
+    }
+
+    /// A bbox struct column with fields in the given order.
+    fn bboxes(names: [&str; 4], values: [&[Option<f64>]; 4]) -> Series {
+        let fields: Vec<Series> = names
+            .iter()
+            .zip(values)
+            .map(|(n, v)| Series::new((*n).into(), v))
+            .collect();
+        StructChunked::from_series("b".into(), values[0].len(), fields.iter())
+            .unwrap()
+            .into_series()
+    }
+
+    #[test]
+    fn bboxes_are_read_by_field_name_single_or_as_a_set() {
+        let col = bboxes(
+            ["height", "width", "y", "x"],
+            [&[Some(4.0)], &[Some(3.0)], &[Some(2.0)], &[Some(1.0)]],
+        );
+        let expected = BoundingBox::new(1.0, 2.0, 3.0, 4.0);
+        let column = BBoxColumn::new(&col);
+        assert_eq!(column.single(0).unwrap(), Some(expected));
+        assert_eq!(column.row(0).unwrap(), Some(vec![expected]));
+
+        let set = Series::new("s".into(), &[AnyValue::List(col.clone()), AnyValue::Null]);
+        let column = BBoxColumn::new(&set);
+        assert_eq!(column.row(0).unwrap(), Some(vec![expected]));
+        assert_eq!(column.row(1).unwrap(), None);
+        assert!(column.single(0).is_err(), "a set has no single bbox");
+    }
+
+    #[test]
+    fn a_bbox_with_a_null_or_missing_field_is_refused() {
+        let col = bboxes(
+            ["x", "y", "width", "height"],
+            [&[Some(1.0)], &[Some(2.0)], &[None], &[Some(4.0)]],
+        );
+        let err = BBoxColumn::new(&col).single(0).unwrap_err().to_string();
+        assert!(err.contains("null width") && err.contains("row 0"), "{err}");
+        let three = StructChunked::from_series(
+            "b".into(),
+            1,
+            ["x", "y", "width"]
+                .iter()
+                .map(|n| Series::new((*n).into(), &[1.0]))
+                .collect::<Vec<_>>()
+                .iter(),
+        )
+        .unwrap()
+        .into_series();
+        let err = BBoxColumn::new(&three).single(0).unwrap_err().to_string();
+        assert!(err.contains("'height'"), "{err}");
     }
 }

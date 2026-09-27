@@ -54,7 +54,7 @@ pub(crate) fn decode_source_row(
     match source {
         // The column's contour set; a mask is the `rasterize` op that
         // follows, if any.
-        Source::Contour { .. } => crate::contour_column::ContourColumn::new(series)
+        Source::Contour { .. } => crate::geom_columns::ContourColumn::new(series)
             .row(row)
             .map(|set| set.map(NodeOutput::from_contours))
             .map_err(|e| format!("Contour decode error: {e}")),

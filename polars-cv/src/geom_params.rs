@@ -127,6 +127,36 @@ impl<'a> GeomParams<'a> {
     ///
     /// Wrapping resolution in this one helper is what keeps the policy a shared
     /// mechanism: no geometry function re-implements null handling.
+    /// Run `row(params, i)` for every row `0..len`, split over the plugin's
+    /// thread pool ([`run_split`](crate::row_split::run_split)), and return
+    /// the rows in order.
+    ///
+    /// **The one row loop of the geometry functions.** Each row range
+    /// resolves parameters through its own `GeomParams` (the null flag is per
+    /// thread), and each row runs under [`row`](Self::row): `Ok(None)` is a
+    /// null row (a null input), and so is a null per-row parameter under
+    /// `on_null="null"`. The first failing range's error is the earliest
+    /// failing row's, as a sequential loop would report.
+    pub fn map_rows<T: Send>(
+        &self,
+        calls: &crate::row_split::CallTracker,
+        len: usize,
+        row: impl Fn(&GeomParams, usize) -> PolarsResult<Option<T>> + Sync,
+    ) -> PolarsResult<Vec<Option<T>>> {
+        let shared = self.shared();
+        let parts = crate::row_split::run_split(calls, len, |_, range| {
+            let params = shared.params();
+            range
+                .map(|i| params.row(|| row(&params, i)).map(Option::flatten))
+                .collect::<PolarsResult<Vec<_>>>()
+        });
+        let mut rows = Vec::with_capacity(len);
+        for part in parts {
+            rows.extend(part?);
+        }
+        Ok(rows)
+    }
+
     /// What another thread's rows need to make their own `GeomParams`.
     pub fn shared(&self) -> SharedParams<'a> {
         SharedParams {

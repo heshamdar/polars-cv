@@ -107,6 +107,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **Every `.point`/`.bbox` function, and the remaining `.contour` ones
+  (`contains_point`, `pairwise_iou`, `correspond`, `label_reduce`), split
+  their rows over the thread pool** through the same row driver as the
+  other accessors (`GeomParams::map_rows`).
 - **`.contour` accessors use every core on the in-memory engine.** A
   single-column or two-column accessor (`area`, `translate`, `iou`, …) ran a
   call's rows on one thread; they now split them over the plugin's thread
@@ -417,6 +421,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   gone.
 
 ### Fixed
+
+- **Geometry values are read by field name, and a missing value is never
+  0.0.** `.contour.contains_point` read a point's first two fields by
+  position (a `{y, x}` point was tested swapped) and read a missing,
+  null or non-`Float64` coordinate as 0.0 — an integer point was tested at
+  the origin. A bbox's null or missing field read as 0.0. Every
+  `.point`/`.contour`/`.bbox` function now reads points and bboxes through one
+  reader each, by field name, refusing a null field or a non-`Float64` one.
+- **`.point.rotate(origin=...)` with a null origin is a null row.** It
+  rotated about `(0, 0)`, as if no origin had been given.
+- **A null input point gives a null result point.** Point transforms
+  returned a struct of null fields (`{"x": None, "y": None}`) for a null row;
+  they now return a null row, as every other geometry function does.
 
 - **A null contour coordinate is an error, not the origin.** A point with a
   null `x` or `y`, or a null point inside a ring, used to read as `0.0`,
