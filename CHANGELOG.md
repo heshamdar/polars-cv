@@ -422,6 +422,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **`numpy_from_struct` refuses a struct describing memory outside its
+  data.** Its strided path built the view with `as_strided`, which does not
+  bounds-check, so a hand-built struct whose shape, strides or offset reached
+  past its `data` read whatever memory followed. It now builds every array
+  through the same checked view `numpy_from_column` uses (the byte range the
+  strides reach must lie within the row), and so does its no-strides path,
+  which reported a short `data` as numpy's "cannot reshape".
+
 - **A jagged or null `List` row is refused, not misread.** The `list` source
   took each level's size from its first element and read the row's values as
   that shape: `[[1, 2], [3]]` read past the end of its values (the missing

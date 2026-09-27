@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import numpy as np
 
 from ._dtype_names import SINK_NUMPY_NAMES
@@ -287,58 +289,112 @@ def numpy_from_struct(
     else:
         offset = int(offset)  # ty: ignore[invalid-argument-type]
 
-    # The sink writes `DType::numpy_name()` into the struct, so those ten names
-    # are exactly what can legitimately arrive. Generated from `dtype_table!`
-    # rather than listed here: the hand-written list this replaced admitted
-    # numpy's *character codes* too, which meant `"u8"` (numpy uint64) sat in
-    # the same set as this project's `"u8"` (uint8) — so a caller hand-building
-    # a struct with `dtype="u8"` got a uint64 reinterpretation of the bytes,
-    # silently, with the wrong shape.
-    if dtype_str not in SINK_NUMPY_NAMES:
-        msg = f"Unsupported dtype '{dtype_str}'. Allowed: {sorted(SINK_NUMPY_NAMES)}"
-        raise ValueError(msg)
-    dtype = np.dtype(dtype_str)
-
-    # Reconstruct the array honoring the byte strides/offset the sink reports.
-    # The numpy/torch sink can hand back a *non-contiguous* view of a shared
-    # buffer (transpose -> permuted strides, flip/rotate -> negative strides),
-    # so a plain frombuffer().reshape() would silently read the bytes in C-order
-    # and mislabel the layout. `np.lib.stride_tricks.as_strided` is used rather
-    # than `np.ndarray(buffer=..., strides=...)` because the latter rejects
-    # negative strides (it would break flips/rotates).
     if strides is None:
-        # No stride metadata (older/dict callers): assume C-contiguous.
-        if copy:
-            return (
-                np.frombuffer(bytes(data), dtype=dtype, offset=offset)  # ty: ignore[invalid-argument-type]
-                .copy()
-                .reshape(shape)
-            )
-        buf = _as_buffer(data)
-        return np.frombuffer(buf, dtype=dtype, offset=offset).reshape(shape)  # ty: ignore[no-matching-overload]
+        # No stride metadata (older/dict callers): C-contiguous.
+        itemsize = _checked_dtype(str(dtype_str)).itemsize
+        c_strides: list[int] = []
+        step = itemsize
+        for n in reversed(shape):
+            c_strides.append(step)
+            step *= n
+        strides = tuple(reversed(c_strides))
 
-    itemsize = dtype.itemsize
-    if offset % itemsize != 0:
+    # The row's bytes as a uint8 array: it owns (references) `data` and
+    # names its address, and `_view` reads the row through it, checked.
+    backing = np.frombuffer(_as_buffer(data), dtype=np.uint8)  # ty: ignore[no-matching-overload]
+    return _view(
+        backing,
+        backing.__array_interface__["data"][0],
+        backing.nbytes,
+        str(dtype_str),
+        shape,
+        strides,
+        offset,
+        copy=copy,
+    )
+
+
+def _checked_dtype(dtype_name: str) -> np.dtype:
+    """The numpy dtype a sink struct names, refusing anything else.
+
+    The sink writes `DType::numpy_name()` into the struct, so those names are
+    exactly what can legitimately arrive. Generated from `dtype_table!` rather
+    than listed here: the hand-written list this replaced admitted numpy's
+    *character codes* too, which meant `"u8"` (numpy uint64) sat in the same
+    set as this project's `"u8"` (uint8) — so a caller hand-building a struct
+    with `dtype="u8"` got a uint64 reinterpretation of the bytes, silently.
+    """
+    import numpy as np
+
+    if dtype_name not in SINK_NUMPY_NAMES:
+        msg = f"Unsupported dtype '{dtype_name}'. Allowed: {sorted(SINK_NUMPY_NAMES)}"
+        raise ValueError(msg)
+    return np.dtype(dtype_name)
+
+
+def _view(
+    owner: object,
+    address: int,
+    nbytes: int,
+    dtype_name: str,
+    shape: Sequence[int],
+    strides: Sequence[int],
+    offset: int,
+    *,
+    copy: bool,
+) -> np.ndarray:
+    """A numpy array over `nbytes` of memory at `address`, as a sink struct
+    describes it: `shape`, byte `strides` (negative for a flip) and a byte
+    `offset` to element zero.
+
+    **The one way a sink struct becomes an array**, for
+    :func:`numpy_from_struct` and :func:`numpy_from_column` alike. The array is
+    built through ``__array_interface__``, which numpy does not bounds-check,
+    so the byte range the strides reach is checked against the row's `nbytes`
+    here: a struct describing memory outside its row (only a hand-built one
+    can) is refused rather than read. The view holds `owner`, which keeps the
+    memory alive, and is read-only.
+    """
+    import numpy as np
+
+    dtype = _checked_dtype(dtype_name)
+    shape, strides, offset = tuple(shape), tuple(strides), int(offset)
+    if offset % dtype.itemsize != 0:
         msg = (
-            f"Byte offset {offset} is not a multiple of itemsize {itemsize}; "
+            f"Byte offset {offset} is not a multiple of itemsize {dtype.itemsize}; "
             "cannot reconstruct a typed strided view from this struct."
         )
         raise ValueError(msg)
     if len(strides) != len(shape):
         msg = f"strides {strides} and shape {shape} have different rank"
         raise ValueError(msg)
-
-    # `_as_buffer` avoids copying for the zero-copy path; for copy=True we read
-    # through the strided view once and materialise an independent array, so the
-    # transient view over the shared buffer is fine either way. as_strided does
-    # not bounds-check, but the sink returns the full backing buffer, so every
-    # accessed byte (including backwards for negative strides) lies within it.
-    backing = _as_buffer(data)
-    base = np.frombuffer(backing, dtype=dtype)  # ty: ignore[no-matching-overload]
-    start = base[offset // itemsize :]
-    view = np.lib.stride_tricks.as_strided(start, shape=shape, strides=strides)
-    # copy=False returns the zero-copy view (kept alive by the backing buffer
-    # via the array's .base chain); copy=True returns an owned contiguous array.
+    if all(n > 0 for n in shape):
+        low = offset + sum(
+            min(0, (n - 1) * s) for n, s in zip(shape, strides, strict=True)
+        )
+        high = offset + sum(
+            max(0, (n - 1) * s) for n, s in zip(shape, strides, strict=True)
+        )
+        if low < 0 or high + dtype.itemsize > nbytes:
+            msg = (
+                f"shape {list(shape)} with strides {list(strides)} at offset {offset} "
+                f"reaches bytes [{low}, {high + dtype.itemsize}), outside the row's "
+                f"{nbytes} bytes"
+            )
+            raise ValueError(msg)
+    view = np.asarray(
+        _RowView(
+            owner,
+            {
+                "version": 3,
+                "shape": shape,
+                "strides": strides,
+                "typestr": dtype.str,
+                "data": (address + offset, True),
+            },
+        )
+    )
+    # `copy()` is C-ordered; `ascontiguousarray` would turn a 0-d scalar 1-d.
     return view.copy() if copy else view
 
 
@@ -387,8 +443,6 @@ def numpy_from_column(
             reaching outside the row's bytes (a hand-built struct; the sink
             never produces one).
     """
-    import numpy as np
-
     from ._lib import binary_rows
 
     if isinstance(column.dtype, NdArrayType):
@@ -414,41 +468,9 @@ def numpy_from_column(
             arrays.append(None)
             continue
         owner, address, nbytes = row
-        if dtype_name not in SINK_NUMPY_NAMES:
-            msg = (
-                f"Unsupported dtype '{dtype_name}'. Allowed: {sorted(SINK_NUMPY_NAMES)}"
-            )
-            raise ValueError(msg)
-        dtype = np.dtype(dtype_name)
-        # `__array_interface__` is not bounds-checked by numpy, so the extent
-        # the strides reach is checked against the row's bytes here: a
-        # hand-built struct must not read memory outside its row.
-        if all(n > 0 for n in shape):
-            low = offset + sum(
-                min(0, (n - 1) * s) for n, s in zip(shape, strides, strict=True)
-            )
-            high = offset + sum(
-                max(0, (n - 1) * s) for n, s in zip(shape, strides, strict=True)
-            )
-            if low < 0 or high + dtype.itemsize > nbytes:
-                msg = (
-                    f"shape {shape} with strides {strides} at offset {offset} reaches "
-                    f"bytes [{low}, {high + dtype.itemsize}), outside the row's {nbytes} bytes"
-                )
-                raise ValueError(msg)
-        view = np.asarray(
-            _RowView(
-                owner,
-                {
-                    "version": 3,
-                    "shape": tuple(shape),
-                    "strides": tuple(strides),
-                    "typestr": dtype.str,
-                    "data": (address + offset, True),
-                },
-            )
+        arrays.append(
+            _view(owner, address, nbytes, dtype_name, shape, strides, offset, copy=copy)
         )
-        arrays.append(np.ascontiguousarray(view).copy() if copy else view)
     return arrays
 
 

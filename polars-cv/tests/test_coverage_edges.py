@@ -97,6 +97,29 @@ class TestNumpyFromStruct:
         out = numpy_from_struct(self._struct(arr, with_strides=False))
         assert np.array_equal(out, arr)
 
+    @pytest.mark.parametrize(
+        ("shape", "strides", "offset"),
+        [
+            ([64, 64], [64, 1], 0),  # far more elements than the 6 bytes hold
+            ([2, 3], [3, 1], 4),  # starts inside, ends past the end
+            ([2, 3], [-3, 1], 0),  # walks backwards off the start
+            ([64, 64], None, 0),  # no strides: C-contiguous, still too big
+        ],
+    )
+    def test_a_view_outside_the_data_is_refused(
+        self, shape: list[int], strides: list[int] | None, offset: int
+    ) -> None:
+        # The view is built without numpy bounds-checking it, so an
+        # out-of-range struct must be refused before it reads other memory.
+        row = self._struct(np.arange(6, dtype=np.uint8).reshape(2, 3))
+        row.update(shape=shape, offset=offset)
+        if strides is None:
+            del row["strides"]
+        else:
+            row["strides"] = strides
+        with pytest.raises(ValueError, match="outside"):
+            numpy_from_struct(row, copy=False)
+
     def test_copy_false_returns_a_view_over_the_buffer(self) -> None:
         arr = np.arange(6, dtype=np.uint8).reshape(2, 3)
         out = numpy_from_struct(self._struct(arr), copy=False)
