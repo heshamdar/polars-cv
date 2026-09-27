@@ -131,3 +131,31 @@ class TestUniformParseErrors:
             assert "'exterior'" in err, (
                 f"parser error must name the expected fields, got: {err}"
             )
+
+    def test_a_null_coordinate_is_refused_everywhere(self) -> None:
+        # A point without a coordinate has no position; it used to read as the
+        # origin, silently moving the ring.
+        holed = {
+            "exterior": [
+                {"x": 0.0, "y": 0.0},
+                {"x": None, "y": 4.0},
+                {"x": 4.0, "y": 4.0},
+            ],
+            "holes": [],
+            "is_closed": True,
+        }
+        df = pl.DataFrame({"pt": [{"x": 1.0, "y": 1.0}], "contour": [holed]})
+        consumers = [
+            lambda: df.select(pl.col("contour").contour.area()),
+            lambda: df.select(
+                pl.col("pt").point.distance_to_contour(pl.col("contour"))
+            ),
+            lambda: df.select(
+                pl.col("contour")
+                .cv.pipe(Pipeline().source("contour").rasterize(width=8, height=8))
+                .sink("numpy")
+            ),
+        ]
+        for run in consumers:
+            with pytest.raises(pl.exceptions.ComputeError, match="null x"):
+                run()
