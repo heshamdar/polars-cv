@@ -28,6 +28,39 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   outline passes through that corner twice. `mode="external"` is now decided
   from the region labelling rather than a quadratic point-in-polygon scan.
 
+### Performance
+
+- **Kernels use AVX2 on CPUs that have it, whatever the wheel was built for.**
+  The published wheels target the x86-64 baseline (SSE2), where much of the
+  engine's arithmetic could not vectorise. One runtime dispatch mechanism now
+  compiles a kernel's whole body a second time with AVX2 and picks it per
+  call. Only AVX2 is enabled, never FMA, so the output is byte-identical on
+  every CPU. Blur (the one kernel that already dispatched) moved onto it.
+- **Float → integer casts are ~2x faster on the wheels.** `cast` and a fused
+  scalar chain's integer output share one conversion rule and one dispatched
+  loop; on SSE2 rounding was a `roundf` call per element (f32 → u8 at 1024²:
+  9.1 → 5.1 ms).
+- **u8 `grayscale` is 5–10x faster and u8 `threshold` 1.4–3x.** Both are
+  vectorised kernels over the image's rows. A contiguous, cropped or
+  vertically flipped input is read where it lies instead of being copied
+  first. Non-u8 grayscale is 1.4–2.9x faster.
+
+### Changed
+
+- **`ContourMatcher(min_contour_area=)` defaults to `0.0`**, down from `1.0`.
+  The `1.0` default dates from the boundary tracer that collapsed regions
+  into degenerate walks. Since the smallest extracted region now has area 1,
+  both values keep every region; `0.0` says so directly.
+- **`ContourMatcher(gt_min_contour_area=)` defaults to `1.0`** and no longer
+  follows `min_contour_area` (`None` is no longer accepted). A caller who set
+  only `min_contour_area` now gets `1.0` for ground truth; pass
+  `gt_min_contour_area` explicitly to change it.
+- **Detection metrics move** for any `ContourMatcher` evaluation. Regions
+  are measured on their full pixel extent, so IoU against ground truth rises,
+  most for small lesions. Under the default `iou_threshold` some former
+  misses become true positives, and one-pixel-thick detections now count as
+  false positives.
+
 ### Fixed
 
 - **`ContourMatcher` no longer silently drops one-pixel-thick regions.** Two
@@ -49,21 +82,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   outline passes through, in every region mode. That rule replaces the
   centroid fallback sub-pixel contours had.
 
-### Changed
-
-- **`ContourMatcher(min_contour_area=)` defaults to `0.0`**, down from `1.0`.
-  The `1.0` default dates from the boundary tracer that collapsed regions
-  into degenerate walks. Since the smallest extracted region now has area 1,
-  both values keep every region; `0.0` says so directly.
-- **`ContourMatcher(gt_min_contour_area=)` defaults to `1.0`** and no longer
-  follows `min_contour_area` (`None` is no longer accepted). A caller who set
-  only `min_contour_area` now gets `1.0` for ground truth; pass
-  `gt_min_contour_area` explicitly to change it.
-- **Detection metrics move** for any `ContourMatcher` evaluation. Regions
-  are measured on their full pixel extent, so IoU against ground truth rises,
-  most for small lesions. Under the default `iou_threshold` some former
-  misses become true positives, and one-pixel-thick detections now count as
-  false positives.
+- **`grayscale` of a non-u8 gray + alpha image mixed the alpha into the
+  intensity.** A `[H, W, 2]` u16/f32 pixel came out as
+  `0.299·gray + 0.701·alpha` (u16 (1000, 65535) → 46239). It is now the gray
+  channel, as it always was for u8 (CR-51).
 
 ## [0.29.0] — 2026-09-27
 

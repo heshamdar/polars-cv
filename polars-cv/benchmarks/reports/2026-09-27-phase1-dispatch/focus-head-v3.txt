@@ -1,0 +1,245 @@
+Gnuplot not found, using plotters backend
+Benchmarking grayscale_u8_rgb/256
+Benchmarking grayscale_u8_rgb/256: Warming up for 500.00 ms
+Benchmarking grayscale_u8_rgb/256: Collecting 20 samples in estimated 2.0145 s (26k iterations)
+Benchmarking grayscale_u8_rgb/256: Analyzing
+grayscale_u8_rgb/256    time:   [21.706 µs 25.229 µs 27.915 µs]
+                        change: [-82.624% -80.942% -79.418%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 4 outliers among 20 measurements (20.00%)
+  3 (15.00%) high mild
+  1 (5.00%) high severe
+Benchmarking grayscale_u8_rgb/512
+Benchmarking grayscale_u8_rgb/512: Warming up for 500.00 ms
+Benchmarking grayscale_u8_rgb/512: Collecting 20 samples in estimated 2.0496 s (6720 iterations)
+Benchmarking grayscale_u8_rgb/512: Analyzing
+grayscale_u8_rgb/512    time:   [78.045 µs 81.540 µs 86.045 µs]
+                        change: [-84.025% -83.428% -82.710%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking grayscale_u8_rgb/1024
+Benchmarking grayscale_u8_rgb/1024: Warming up for 500.00 ms
+Benchmarking grayscale_u8_rgb/1024: Collecting 20 samples in estimated 2.0637 s (3150 iterations)
+Benchmarking grayscale_u8_rgb/1024: Analyzing
+grayscale_u8_rgb/1024   time:   [323.89 µs 343.17 µs 364.41 µs]
+                        change: [-84.079% -83.309% -82.456%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 3 outliers among 20 measurements (15.00%)
+  3 (15.00%) high mild
+
+Benchmarking threshold_u8/256
+Benchmarking threshold_u8/256: Warming up for 500.00 ms
+Benchmarking threshold_u8/256: Collecting 20 samples in estimated 2.0008 s (249k iterations)
+Benchmarking threshold_u8/256: Analyzing
+threshold_u8/256        time:   [4.4537 µs 4.5882 µs 4.6780 µs]
+                        change: [-64.939% -61.933% -59.067%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking threshold_u8/512
+Benchmarking threshold_u8/512: Warming up for 500.00 ms
+Benchmarking threshold_u8/512: Collecting 20 samples in estimated 2.0004 s (60k iterations)
+Benchmarking threshold_u8/512: Analyzing
+threshold_u8/512        time:   [15.871 µs 16.580 µs 17.046 µs]
+                        change: [-59.346% -55.883% -52.715%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking threshold_u8/1024
+Benchmarking threshold_u8/1024: Warming up for 500.00 ms
+Benchmarking threshold_u8/1024: Collecting 20 samples in estimated 2.0173 s (11k iterations)
+Benchmarking threshold_u8/1024: Analyzing
+threshold_u8/1024       time:   [95.867 µs 97.791 µs 100.26 µs]
+                        change: [-26.337% -23.995% -21.576%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+
+Benchmarking threshold_u8_cropped/256
+Benchmarking threshold_u8_cropped/256: Warming up for 500.00 ms
+Benchmarking threshold_u8_cropped/256: Collecting 20 samples in estimated 2.0013 s (172k iterations)
+Benchmarking threshold_u8_cropped/256: Analyzing
+threshold_u8_cropped/256
+                        time:   [8.4265 µs 8.7024 µs 9.1485 µs]
+                        change: [-68.868% -66.741% -64.379%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking threshold_u8_cropped/512
+Benchmarking threshold_u8_cropped/512: Warming up for 500.00 ms
+Benchmarking threshold_u8_cropped/512: Collecting 20 samples in estimated 2.0060 s (54k iterations)
+Benchmarking threshold_u8_cropped/512: Analyzing
+threshold_u8_cropped/512
+                        time:   [24.342 µs 26.512 µs 29.430 µs]
+                        change: [-61.274% -56.692% -51.273%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking threshold_u8_cropped/1024
+Benchmarking threshold_u8_cropped/1024: Warming up for 500.00 ms
+Benchmarking threshold_u8_cropped/1024: Collecting 20 samples in estimated 2.0189 s (10k iterations)
+Benchmarking threshold_u8_cropped/1024: Analyzing
+threshold_u8_cropped/1024
+                        time:   [103.82 µs 107.00 µs 109.68 µs]
+                        change: [-48.995% -43.571% -38.199%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+
+Gnuplot not found, using plotters backend
+Benchmarking grayscale_u8_rgb/256
+Benchmarking grayscale_u8_rgb/256: Warming up for 500.00 ms
+Benchmarking grayscale_u8_rgb/256: Collecting 20 samples in estimated 2.0100 s (26k iterations)
+Benchmarking grayscale_u8_rgb/256: Analyzing
+grayscale_u8_rgb/256    time:   [20.589 µs 24.604 µs 27.618 µs]
+                        change: [-85.552% -83.537% -81.276%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 4 outliers among 20 measurements (20.00%)
+  4 (20.00%) high severe
+Benchmarking grayscale_u8_rgb/512
+Benchmarking grayscale_u8_rgb/512: Warming up for 500.00 ms
+Benchmarking grayscale_u8_rgb/512: Collecting 20 samples in estimated 2.0339 s (6300 iterations)
+Benchmarking grayscale_u8_rgb/512: Analyzing
+grayscale_u8_rgb/512    time:   [76.072 µs 79.145 µs 82.606 µs]
+                        change: [-86.733% -85.568% -84.382%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking grayscale_u8_rgb/1024
+Benchmarking grayscale_u8_rgb/1024: Warming up for 500.00 ms
+Benchmarking grayscale_u8_rgb/1024: Collecting 20 samples in estimated 2.1205 s (3150 iterations)
+Benchmarking grayscale_u8_rgb/1024: Analyzing
+grayscale_u8_rgb/1024   time:   [357.92 µs 375.03 µs 392.01 µs]
+                        change: [-84.243% -82.135% -79.791%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+
+Benchmarking threshold_u8/256
+Benchmarking threshold_u8/256: Warming up for 500.00 ms
+Benchmarking threshold_u8/256: Collecting 20 samples in estimated 2.0002 s (247k iterations)
+Benchmarking threshold_u8/256: Analyzing
+threshold_u8/256        time:   [4.7090 µs 4.8701 µs 5.0239 µs]
+                        change: [-61.427% -58.492% -55.811%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking threshold_u8/512
+Benchmarking threshold_u8/512: Warming up for 500.00 ms
+Benchmarking threshold_u8/512: Collecting 20 samples in estimated 2.0034 s (65k iterations)
+Benchmarking threshold_u8/512: Analyzing
+threshold_u8/512        time:   [17.078 µs 17.846 µs 18.529 µs]
+                        change: [-60.963% -56.132% -51.590%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 3 outliers among 20 measurements (15.00%)
+  3 (15.00%) low mild
+Benchmarking threshold_u8/1024
+Benchmarking threshold_u8/1024: Warming up for 500.00 ms
+Benchmarking threshold_u8/1024: Collecting 20 samples in estimated 2.0364 s (11k iterations)
+Benchmarking threshold_u8/1024: Analyzing
+threshold_u8/1024       time:   [96.520 µs 102.10 µs 108.24 µs]
+                        change: [-30.990% -26.785% -22.357%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high severe
+
+Benchmarking threshold_u8_cropped/256
+Benchmarking threshold_u8_cropped/256: Warming up for 500.00 ms
+Benchmarking threshold_u8_cropped/256: Collecting 20 samples in estimated 2.0017 s (164k iterations)
+Benchmarking threshold_u8_cropped/256: Analyzing
+threshold_u8_cropped/256
+                        time:   [9.1080 µs 10.062 µs 10.824 µs]
+                        change: [-65.530% -63.086% -60.295%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking threshold_u8_cropped/512
+Benchmarking threshold_u8_cropped/512: Warming up for 500.00 ms
+Benchmarking threshold_u8_cropped/512: Collecting 20 samples in estimated 2.0001 s (57k iterations)
+Benchmarking threshold_u8_cropped/512: Analyzing
+threshold_u8_cropped/512
+                        time:   [20.219 µs 20.664 µs 20.999 µs]
+                        change: [-68.780% -65.812% -62.515%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+Benchmarking threshold_u8_cropped/1024
+Benchmarking threshold_u8_cropped/1024: Warming up for 500.00 ms
+Benchmarking threshold_u8_cropped/1024: Collecting 20 samples in estimated 2.0338 s (10k iterations)
+Benchmarking threshold_u8_cropped/1024: Analyzing
+threshold_u8_cropped/1024
+                        time:   [96.744 µs 98.043 µs 99.169 µs]
+                        change: [-45.692% -42.901% -40.249%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+
+Gnuplot not found, using plotters backend
+Benchmarking grayscale_u8_rgb/256
+Benchmarking grayscale_u8_rgb/256: Warming up for 500.00 ms
+Benchmarking grayscale_u8_rgb/256: Collecting 20 samples in estimated 2.0091 s (25k iterations)
+Benchmarking grayscale_u8_rgb/256: Analyzing
+grayscale_u8_rgb/256    time:   [19.337 µs 23.457 µs 26.633 µs]
+                        change: [-85.071% -82.942% -80.685%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking grayscale_u8_rgb/512
+Benchmarking grayscale_u8_rgb/512: Warming up for 500.00 ms
+Benchmarking grayscale_u8_rgb/512: Collecting 20 samples in estimated 2.0311 s (6930 iterations)
+Benchmarking grayscale_u8_rgb/512: Analyzing
+grayscale_u8_rgb/512    time:   [73.454 µs 74.472 µs 75.211 µs]
+                        change: [-85.599% -85.045% -84.645%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking grayscale_u8_rgb/1024
+Benchmarking grayscale_u8_rgb/1024: Warming up for 500.00 ms
+Benchmarking grayscale_u8_rgb/1024: Collecting 20 samples in estimated 2.0623 s (3150 iterations)
+Benchmarking grayscale_u8_rgb/1024: Analyzing
+grayscale_u8_rgb/1024   time:   [334.15 µs 348.35 µs 362.42 µs]
+                        change: [-82.847% -82.185% -81.523%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 3 outliers among 20 measurements (15.00%)
+  2 (10.00%) low mild
+  1 (5.00%) high mild
+
+Benchmarking threshold_u8/256
+Benchmarking threshold_u8/256: Warming up for 500.00 ms
+Benchmarking threshold_u8/256: Collecting 20 samples in estimated 2.0015 s (245k iterations)
+Benchmarking threshold_u8/256: Analyzing
+threshold_u8/256        time:   [4.6426 µs 4.8400 µs 5.0435 µs]
+                        change: [-58.189% -55.556% -52.995%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking threshold_u8/512
+Benchmarking threshold_u8/512: Warming up for 500.00 ms
+Benchmarking threshold_u8/512: Collecting 20 samples in estimated 2.0046 s (66k iterations)
+Benchmarking threshold_u8/512: Analyzing
+threshold_u8/512        time:   [16.077 µs 16.643 µs 17.169 µs]
+                        change: [-59.511% -55.464% -51.167%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking threshold_u8/1024
+Benchmarking threshold_u8/1024: Warming up for 500.00 ms
+Benchmarking threshold_u8/1024: Collecting 20 samples in estimated 2.0165 s (11k iterations)
+Benchmarking threshold_u8/1024: Analyzing
+threshold_u8/1024       time:   [92.610 µs 93.846 µs 94.940 µs]
+                        change: [-27.567% -24.427% -21.498%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) low mild
+  1 (5.00%) high mild
+
+Benchmarking threshold_u8_cropped/256
+Benchmarking threshold_u8_cropped/256: Warming up for 500.00 ms
+Benchmarking threshold_u8_cropped/256: Collecting 20 samples in estimated 2.0014 s (163k iterations)
+Benchmarking threshold_u8_cropped/256: Analyzing
+threshold_u8_cropped/256
+                        time:   [8.5096 µs 9.0508 µs 9.7425 µs]
+                        change: [-69.993% -66.829% -63.720%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking threshold_u8_cropped/512
+Benchmarking threshold_u8_cropped/512: Warming up for 500.00 ms
+Benchmarking threshold_u8_cropped/512: Collecting 20 samples in estimated 2.0055 s (54k iterations)
+Benchmarking threshold_u8_cropped/512: Analyzing
+threshold_u8_cropped/512
+                        time:   [19.952 µs 20.233 µs 20.487 µs]
+                        change: [-71.041% -68.941% -67.029%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 3 outliers among 20 measurements (15.00%)
+  3 (15.00%) low severe
+Benchmarking threshold_u8_cropped/1024
+Benchmarking threshold_u8_cropped/1024: Warming up for 500.00 ms
+Benchmarking threshold_u8_cropped/1024: Collecting 20 samples in estimated 2.0253 s (11k iterations)
+Benchmarking threshold_u8_cropped/1024: Analyzing
+threshold_u8_cropped/1024
+                        time:   [97.828 µs 99.803 µs 102.08 µs]
+                        change: [-46.550% -42.364% -38.421%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
