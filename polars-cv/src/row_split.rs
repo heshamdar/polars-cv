@@ -45,36 +45,51 @@ pub(crate) fn exclusive_pool() -> std::sync::MutexGuard<'static, ()> {
 }
 
 /// Run `run(range_idx, rows)` over `0..len` in contiguous row ranges and
-/// return each range's result in row order.
-///
-/// The ranges run on the plugin's pool when this call spreads
-/// ([`Call::spreads`]), and as one range on the caller's thread otherwise.
+/// return each range's result in row order: [`CallTracker::split`] then
+/// [`Split::run`].
 pub(crate) fn run_split<R: Send>(
     calls: &CallTracker,
     len: usize,
     run: impl Fn(usize, Range<usize>) -> R + Sync,
 ) -> Vec<R> {
-    let call = calls.enter();
-    let workers = if call.spreads() {
-        THREAD_POOL.current_num_threads()
-    } else {
-        1
-    };
-    let ranges = row_ranges(len, workers);
-    if let [only] = ranges.as_slice() {
-        return vec![run(0, only.clone())];
-    }
-    let mut outcomes: Vec<Option<R>> = ranges.iter().map(|_| None).collect();
-    let run = &run;
-    THREAD_POOL.scope(|scope| {
-        for ((range_idx, rows), slot) in ranges.into_iter().enumerate().zip(outcomes.iter_mut()) {
-            scope.spawn(move |_| *slot = Some(run(range_idx, rows)));
+    calls.split().run(len, run)
+}
+
+/// One call's decision to spread over the pool or not, held for as long as
+/// the call runs: every phase of the call that splits its rows (running
+/// them, then filling the output column) splits them the same way.
+pub(crate) struct Split<'a> {
+    _call: Call<'a>,
+    workers: usize,
+}
+
+impl Split<'_> {
+    /// Run `run(range_idx, rows)` over `0..len` in contiguous row ranges and
+    /// return each range's result in row order: on the plugin's pool when
+    /// this call spreads ([`Call::spreads`]), as one range on the caller's
+    /// thread otherwise.
+    pub(crate) fn run<R: Send>(
+        &self,
+        len: usize,
+        run: impl Fn(usize, Range<usize>) -> R + Sync,
+    ) -> Vec<R> {
+        let ranges = row_ranges(len, self.workers);
+        if let [only] = ranges.as_slice() {
+            return vec![run(0, only.clone())];
         }
-    });
-    outcomes
-        .into_iter()
-        .map(|o| o.expect("every range ran to completion inside the scope"))
-        .collect()
+        let mut outcomes: Vec<Option<R>> = ranges.iter().map(|_| None).collect();
+        let run = &run;
+        THREAD_POOL.scope(|scope| {
+            for ((range_idx, rows), slot) in ranges.into_iter().enumerate().zip(outcomes.iter_mut())
+            {
+                scope.spawn(move |_| *slot = Some(run(range_idx, rows)));
+            }
+        });
+        outcomes
+            .into_iter()
+            .map(|o| o.expect("every range ran to completion inside the scope"))
+            .collect()
+    }
 }
 
 /// Contiguous row ranges covering `0..len`, for `threads` workers.
@@ -124,6 +139,20 @@ impl CallTracker {
             running: AtomicUsize::new(0),
             started: AtomicUsize::new(0),
             overlapping: AtomicBool::new(false),
+        }
+    }
+
+    /// Start a call and decide whether it spreads.
+    pub(crate) fn split(&self) -> Split<'_> {
+        let call = self.enter();
+        let workers = if call.spreads() {
+            THREAD_POOL.current_num_threads()
+        } else {
+            1
+        };
+        Split {
+            _call: call,
+            workers,
         }
     }
 

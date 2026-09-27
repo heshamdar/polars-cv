@@ -177,8 +177,14 @@ pub(crate) fn get_binary_row_buffer(
     let bytes = arr.value(i);
     let view = arr.views()[i];
     if view.length > View::MAX_INLINE_SIZE && (bytes.as_ptr() as usize).is_multiple_of(8) {
-        let buffer = arr.data_buffers()[view.buffer_idx as usize].clone();
-        return Some((buffer, view.offset as usize, bytes.len()));
+        // Sliced to the row: the data buffer is shared by the column's rows,
+        // and whatever holds this buffer downstream (a numpy sink's `data`)
+        // must hold this row's bytes, not every row's.
+        let start = view.offset as usize;
+        let buffer = arr.data_buffers()[view.buffer_idx as usize]
+            .clone()
+            .sliced(start..start + bytes.len());
+        return Some((buffer, 0, bytes.len()));
     }
     Some((aligned_copy(bytes), 0, bytes.len()))
 }
@@ -576,11 +582,10 @@ fn flatten_nested_series(series: &Series) -> Result<(Vec<usize>, Series), String
         }
         let size = match current.dtype() {
             DataType::List(_) => {
-                let lengths = current
-                    .list()
-                    .map_err(|e| format!("List error: {e}"))?
-                    .lst_lengths();
-                let mut lengths = lengths.into_no_null_iter();
+                // Read from the offsets: `lst_lengths` would allocate a
+                // lengths column per level per row.
+                let ca = current.list().map_err(|e| format!("List error: {e}"))?;
+                let mut lengths = ca.downcast_iter().flat_map(|arr| arr.offsets().lengths());
                 let first = lengths.next().unwrap_or(0);
                 if lengths.any(|len| len != first) {
                     return Err(
@@ -589,7 +594,7 @@ fn flatten_nested_series(series: &Series) -> Result<(Vec<usize>, Series), String
                             .to_string(),
                     );
                 }
-                first as usize
+                first
             }
             DataType::Array(_, width) => *width,
             _ => return Ok((shape, current)),
@@ -927,6 +932,7 @@ pub(crate) fn build_series_from_spec(
     name: PlSmallStr,
     spec: &OutputSpec,
     data: Vec<RowResult>,
+    split: Option<&crate::row_split::Split<'_>>,
 ) -> PolarsResult<Series> {
     let dtype = spec.expected_dtype;
     let kind = SinkKind::resolve(spec)?;
@@ -990,6 +996,7 @@ pub(crate) fn build_series_from_spec(
                 dtype,
                 spec.expected_shape.as_ref(),
                 spec.expected_ndim,
+                split,
             )
         }
         SinkKind::BufferArray => {
@@ -1003,6 +1010,7 @@ pub(crate) fn build_series_from_spec(
                 dtype,
                 &spec.sink.shape(),
                 spec.expected_shape.as_ref(),
+                split,
             )
         }
         SinkKind::Scalar => {
@@ -1024,6 +1032,7 @@ pub(crate) fn build_series_from_spec(
                 dtype,
                 spec.expected_shape.as_ref(),
                 spec.expected_ndim,
+                split,
             )
         }
         SinkKind::VectorArray => {
@@ -1038,6 +1047,7 @@ pub(crate) fn build_series_from_spec(
                 dtype,
                 &spec.sink.shape(),
                 spec.expected_shape.as_ref(),
+                split,
             )
         }
         SinkKind::Contours => {
@@ -1349,6 +1359,12 @@ mod tests {
                 buffer.as_slice()[offset..].as_ptr(),
                 bytes.as_ptr(),
                 "row {row} was copied"
+            );
+            // Only the row: the rest of the shared data buffer is other rows'.
+            assert_eq!(
+                (offset, buffer.len()),
+                (0, len),
+                "row {row} carries other rows"
             );
         }
     }

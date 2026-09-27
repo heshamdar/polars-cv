@@ -39,7 +39,7 @@ use crate::params::ParamCtx;
 use view_buffer::geometry::ops::RasterSize;
 
 use super::step::GraphStep;
-use crate::row_split::{run_split, CallTracker};
+use crate::row_split::CallTracker;
 
 use super::decode::{
     build_series_from_spec, decode_source_row, dtype_from_polars_leaf, null_row_result_for_spec,
@@ -343,7 +343,9 @@ impl CompiledGraph {
             })?
             .map_err(|msg| polars_err!(ComputeError : "Pipeline execution failed: {}", msg))
         };
-        let outcomes = run_split(&self.calls, len, run_range);
+        // Held until the columns are built: filling them splits the same way.
+        let split = self.calls.split();
+        let outcomes = split.run(len, run_range);
 
         // Concatenate in row order. Under `on_error="raise"` the first failing
         // range holds the earliest failing row, so its error is the one a
@@ -366,11 +368,12 @@ impl CompiledGraph {
             // Take ownership of the row results so the encoder can move each
             // row's bytes/buffers into Arrow instead of copying them.
             let data = results.swap_remove(0);
-            build_series_from_spec(inputs[0].name().clone(), spec, data)
+            build_series_from_spec(inputs[0].name().clone(), spec, data, Some(&split))
         } else {
             let mut fields: Vec<Series> = Vec::with_capacity(state.resolved_outputs.len() + 1);
             for ((alias, spec), data) in state.resolved_outputs.iter().zip(results) {
-                let field_series = build_series_from_spec(PlSmallStr::from_str(alias), spec, data)?;
+                let field_series =
+                    build_series_from_spec(PlSmallStr::from_str(alias), spec, data, Some(&split))?;
                 fields.push(field_series);
             }
             if with_message {
@@ -2166,6 +2169,31 @@ mod tests {
         });
         assert_eq!(out.null_count(), 0);
         count
+    }
+
+    /// A numpy row read in place from a blob column holds its own bytes and
+    /// no other row's: the column's rows share one data buffer, and handing a
+    /// row that whole buffer made `to_list()` of an n-row column materialise
+    /// n copies of it (the `zero_copy_blob` benchmark ran 22x slower).
+    #[test]
+    fn a_blob_row_read_in_place_carries_only_its_bytes() {
+        let blobs: Vec<Vec<u8>> = (0..4u8)
+            .map(|i| ViewBuffer::from_vec_with_shape(vec![i; 64 * 64], vec![64, 64, 1]).to_blob())
+            .collect();
+        let input = Series::new("b".into(), &blobs);
+        let graph = r#"{"nodes": {"n0": {"source": {"format": "blob", "dtype": "u8"}}},
+            "outputs": {"_output": {"node": "n0", "sink": {"format": "numpy"}}},
+            "column_bindings": {"n0": 0}}"#;
+        let out = CompiledGraph::compile(graph)
+            .unwrap()
+            .execute(&[input])
+            .unwrap();
+        let data = out.struct_().unwrap().field_by_name("data").unwrap();
+        for (i, row) in data.binary().unwrap().iter().enumerate() {
+            let row = row.unwrap();
+            assert!(row.len() < 2 * 64 * 64, "row {i} holds {} bytes", row.len());
+            assert!(row.contains(&(i as u8)), "row {i} lost its pixels");
+        }
     }
 
     /// A `list` or `array` sink copies each row's values once, into the

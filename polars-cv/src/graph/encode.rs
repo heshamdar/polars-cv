@@ -14,6 +14,9 @@ use view_buffer::{DType, GeometryOp, Op, PlannedDType, ViewBuffer};
 use super::sink_kind::SinkKind;
 use super::types::{OutputSpec, OutputValue};
 use crate::formats::Format as _;
+use crate::row_split::Split;
+use std::mem::MaybeUninit;
+use std::ops::Range;
 
 /// Execute a geometry operation with typed domain dispatch.
 ///
@@ -213,29 +216,43 @@ fn flat_values(
     rows: &[TypedListRow],
     dtype: DType,
     null_fill: Option<usize>,
+    split: Option<&Split<'_>>,
 ) -> PolarsResult<Box<dyn polars_arrow::array::Array>> {
     use polars_arrow::array::PrimitiveArray;
-    let total: usize = rows
-        .iter()
-        .map(|r| match r {
+    // Checked before anything is written, so a bad row cannot leave the
+    // values half-filled.
+    for (i, row) in rows.iter().enumerate() {
+        if let Some(other) = row.as_ref().filter(|data| data.dtype() != dtype) {
+            polars_bail!(ComputeError:
+                "row {} produced {} but the column was planned as {}. The \
+                 planner's dtype contract disagrees with the Rust implementation.",
+                i, other.dtype().short_name(), dtype.short_name()
+            );
+        }
+    }
+    // Each row's place in the values: where it starts, and how many it takes
+    // (a null row takes `null_fill` placeholders).
+    let mut starts = Vec::with_capacity(rows.len() + 1);
+    let mut total = 0usize;
+    for row in rows {
+        starts.push(total);
+        total += match row {
             Some(data) => element_count(data),
             None => null_fill.unwrap_or(0),
-        })
-        .sum();
+        };
+    }
+    starts.push(total);
     macro_rules! flat {
         ($t:ty) => {{
             let mut flat: Vec<$t> = Vec::with_capacity(total);
-            for (i, row) in rows.iter().enumerate() {
-                match row {
-                    Some(data) if data.dtype() == dtype => data.append_to(&mut flat),
-                    Some(other) => polars_bail!(ComputeError:
-                        "row {} produced {} but the column was planned as {}. The \
-                         planner's dtype contract disagrees with the Rust implementation.",
-                        i, other.dtype().short_name(), dtype.short_name()
-                    ),
-                    None => flat.resize(flat.len() + null_fill.unwrap_or(0), <$t>::default()),
-                }
-            }
+            fill_rows::<$t>(
+                rows,
+                &starts,
+                &mut flat.spare_capacity_mut()[..total],
+                split,
+            );
+            // SAFETY: `fill_rows` wrote every one of the `total` slots.
+            unsafe { flat.set_len(total) };
             Box::new(PrimitiveArray::<$t>::from_vec(flat)) as Box<dyn polars_arrow::array::Array>
         }};
     }
@@ -251,6 +268,53 @@ fn flat_values(
         DType::F32 => flat!(f32),
         DType::F64 => flat!(f64),
     })
+}
+
+/// Write every row into its slot of `out` (`starts[i]..starts[i + 1]`): a
+/// row's elements through its strides, once, or a null row's placeholders.
+///
+/// The rows are split as the call's rows were ([`Split::run`]), so the one
+/// copy each row makes — a strided gather, for a transposed row — runs on the
+/// pool, as it did when each row was copied while it was encoded.
+fn fill_rows<T: view_buffer::core::ViewType + Default + Send>(
+    rows: &[TypedListRow],
+    starts: &[usize],
+    out: &mut [MaybeUninit<T>],
+    split: Option<&Split<'_>>,
+) {
+    /// `out`, shared by the row ranges. Each writes only its own rows'
+    /// slots, which do not overlap.
+    struct Slots<T>(*mut MaybeUninit<T>);
+    // SAFETY: ranges write disjoint slots (below); `T: Send`.
+    unsafe impl<T: Send> Send for Slots<T> {}
+    unsafe impl<T: Send> Sync for Slots<T> {}
+    impl<T> Slots<T> {
+        /// Slot `start` of `out`. A method, so a closure captures the whole
+        /// `Slots` (which is `Sync`) rather than its raw pointer.
+        fn at(&self, start: usize) -> *mut MaybeUninit<T> {
+            self.0.wrapping_add(start)
+        }
+    }
+    let slots = Slots(out.as_mut_ptr());
+    let write = |range: Range<usize>| {
+        for i in range {
+            // SAFETY: `starts` is non-decreasing and ends at `out.len()`, so
+            // row `i`'s slot is in bounds and no other row's.
+            let slot = unsafe {
+                std::slice::from_raw_parts_mut(slots.at(starts[i]), starts[i + 1] - starts[i])
+            };
+            match &rows[i] {
+                Some(data) => data.write_to(slot),
+                None => slot.fill(MaybeUninit::new(T::default())),
+            }
+        }
+    };
+    match split {
+        Some(split) => {
+            split.run(rows.len(), |_, range| write(range));
+        }
+        None => write(0..rows.len()),
+    }
 }
 
 /// Row validity as a bitmap, or `None` when no row is null.
@@ -275,6 +339,7 @@ pub(super) fn build_typed_list_series_from_rows_with_dtype(
     dtype: PlannedDType,
     expected_shape: Option<&Vec<usize>>,
     expected_ndim: Option<usize>,
+    split: Option<&Split<'_>>,
 ) -> PolarsResult<Series> {
     use polars_arrow::array::ListArray;
     use polars_arrow::offset::{Offsets, OffsetsBuffer};
@@ -308,7 +373,7 @@ pub(super) fn build_typed_list_series_from_rows_with_dtype(
     // Innermost level first: level `k` holds, for every row, prod(shape[..k])
     // lists of length shape[k]. Level 0 is one list per row and carries the
     // row nulls.
-    let mut array = flat_values(rows, dtype, None)?;
+    let mut array = flat_values(rows, dtype, None, split)?;
     for level in (0..ndim).rev() {
         let mut lengths: Vec<usize> = Vec::new();
         for row in rows {
@@ -348,6 +413,7 @@ pub(super) fn build_typed_array_series_from_rows_with_dtype(
     dtype: PlannedDType,
     sink_shape: &Option<Vec<usize>>,
     expected_shape: Option<&Vec<usize>>,
+    split: Option<&Split<'_>>,
 ) -> PolarsResult<Series> {
     use polars_arrow::array::FixedSizeListArray;
 
@@ -385,7 +451,7 @@ pub(super) fn build_typed_array_series_from_rows_with_dtype(
 
     // Innermost dimension first; level `k` holds rows * prod(shape[..k]) slots
     // of size shape[k]. Lengths are explicit so a zero-sized dimension works.
-    let mut array = flat_values(rows, dtype, Some(expected_len))?;
+    let mut array = flat_values(rows, dtype, Some(expected_len), split)?;
     for level in (0..shape.len()).rev() {
         let length = rows.len() * shape[..level].iter().product::<usize>();
         let validity = if level == 0 { row_validity(rows) } else { None };
@@ -806,6 +872,7 @@ mod tensor_sink_tests {
             U8,
             &Some(shape.clone()),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(s.dtype(), &nested(DataType::UInt8, 3, Some(&shape)));
@@ -824,8 +891,15 @@ mod tensor_sink_tests {
     #[test]
     fn list_sink_rank3_ragged_rows_with_a_null() {
         let rows = vec![u8_row(0, &[2, 1, 3]), None, u8_row(50, &[1, 2, 3])];
-        let s = build_typed_list_series_from_rows_with_dtype("o".into(), &rows, U8, None, Some(3))
-            .unwrap();
+        let s = build_typed_list_series_from_rows_with_dtype(
+            "o".into(),
+            &rows,
+            U8,
+            None,
+            Some(3),
+            None,
+        )
+        .unwrap();
         assert_eq!(s.dtype(), &nested(DataType::UInt8, 3, None));
         assert_eq!(s.len(), 3);
         assert!(s.get(1).unwrap().is_null());
@@ -844,8 +918,15 @@ mod tensor_sink_tests {
     #[test]
     fn list_sink_rank1_with_a_null() {
         let rows = vec![u8_row(1, &[3]), None, u8_row(9, &[2])];
-        let s = build_typed_list_series_from_rows_with_dtype("o".into(), &rows, U8, None, Some(1))
-            .unwrap();
+        let s = build_typed_list_series_from_rows_with_dtype(
+            "o".into(),
+            &rows,
+            U8,
+            None,
+            Some(1),
+            None,
+        )
+        .unwrap();
         assert_eq!(s.dtype(), &DataType::List(Box::new(DataType::UInt8)));
         assert!(s.get(1).unwrap().is_null());
         let flat: Vec<u8> = leaves(&s.drop_nulls(), 1)
@@ -861,14 +942,21 @@ mod tensor_sink_tests {
             u8_row(0, &[2]),
             Some(ViewBuffer::from_vec(vec![0.5f32, 1.5])),
         ];
-        let list =
-            build_typed_list_series_from_rows_with_dtype("o".into(), &rows, U8, None, Some(1));
+        let list = build_typed_list_series_from_rows_with_dtype(
+            "o".into(),
+            &rows,
+            U8,
+            None,
+            Some(1),
+            None,
+        );
         assert!(list.is_err(), "list sink cast a f32 row to u8: {list:?}");
         let array = build_typed_array_series_from_rows_with_dtype(
             "o".into(),
             &rows,
             U8,
             &Some(vec![2]),
+            None,
             None,
         );
         assert!(
@@ -886,6 +974,7 @@ mod tensor_sink_tests {
             U8,
             &Some(vec![2, 3]),
             None,
+            None,
         );
         assert!(r.is_err());
     }
@@ -893,16 +982,29 @@ mod tensor_sink_tests {
     #[test]
     fn list_row_with_the_wrong_rank_is_an_error() {
         let rows = vec![u8_row(0, &[2, 3]), u8_row(0, &[6])];
-        let r = build_typed_list_series_from_rows_with_dtype("o".into(), &rows, U8, None, Some(2));
+        let r = build_typed_list_series_from_rows_with_dtype(
+            "o".into(),
+            &rows,
+            U8,
+            None,
+            Some(2),
+            None,
+        );
         assert!(r.is_err());
     }
 
     #[test]
     fn all_null_rows_keep_the_planned_nesting() {
         let rows: Vec<TypedListRow> = vec![None, None];
-        let list =
-            build_typed_list_series_from_rows_with_dtype("o".into(), &rows, F32, None, Some(3))
-                .unwrap();
+        let list = build_typed_list_series_from_rows_with_dtype(
+            "o".into(),
+            &rows,
+            F32,
+            None,
+            Some(3),
+            None,
+        )
+        .unwrap();
         assert_eq!(list.dtype(), &nested(DataType::Float32, 3, None));
         assert_eq!(list.null_count(), 2);
         let shape = vec![2, 2, 1];
@@ -911,6 +1013,7 @@ mod tensor_sink_tests {
             &rows,
             F32,
             &Some(shape.clone()),
+            None,
             None,
         )
         .unwrap();
@@ -1000,7 +1103,7 @@ mod contour_sink_tests {
         let rows = rows();
         let expected = oracle(&rows);
         let data: Vec<RowResult> = rows.into_iter().map(RowResult::Contours).collect();
-        let got = build_series_from_spec("o".into(), &spec(), data).unwrap();
+        let got = build_series_from_spec("o".into(), &spec(), data, None).unwrap();
         assert_eq!(got.dtype(), expected.dtype());
         assert!(
             got.equals_missing(&expected),
