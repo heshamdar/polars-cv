@@ -2339,6 +2339,7 @@ mod tests {
     /// (CR-32), and the rows still come back in order.
     #[test]
     fn a_call_runs_its_rows_on_several_threads() {
+        let _pool = crate::row_split::exclusive_pool();
         use pyo3_polars::export::polars_core::runtime::THREAD_POOL;
         if THREAD_POOL.current_num_threads() < 2 {
             eprintln!("skipped: the pool has a single thread");
@@ -2386,6 +2387,7 @@ mod tests {
     /// engine's one call per query).
     #[test]
     fn a_call_after_overlapping_calls_runs_inline() {
+        let _pool = crate::row_split::exclusive_pool();
         use pyo3_polars::export::polars_core::runtime::THREAD_POOL;
         if THREAD_POOL.current_num_threads() < 2 {
             eprintln!("skipped: the pool has a single thread");
