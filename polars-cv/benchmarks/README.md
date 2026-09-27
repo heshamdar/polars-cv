@@ -40,7 +40,11 @@ Install benchmark dependencies:
 
 ```bash
 cd polars-cv
-uv sync --group bench
+uv sync --group bench --no-install-project
+
+# Build the extension optimised: a debug build measures nothing useful, and
+# the suite refuses one (release with thin LTO, a fraction of a full release build)
+uv run --no-sync maturin develop --profile benchmark
 
 # Or with pip (>= 25.1, which understands dependency groups)
 pip install -e . --group bench
@@ -69,49 +73,49 @@ uv run --no-sync python -m benchmarks.run_benchmarks --list-frameworks
 
 ```bash
 # Single operation benchmarks only
-uv run python -m benchmarks.run_benchmarks --scenario single_ops
+uv run --no-sync python -m benchmarks.run_benchmarks --scenario single_ops
 
 # Pipeline benchmarks only
-uv run python -m benchmarks.run_benchmarks --scenario pipelines
+uv run --no-sync python -m benchmarks.run_benchmarks --scenario pipelines
 
 # End-to-end workflow benchmarks only
-uv run python -m benchmarks.run_benchmarks --scenario e2e
+uv run --no-sync python -m benchmarks.run_benchmarks --scenario e2e
 ```
 
 ### Select Frameworks
 
 ```bash
 # Compare only specific frameworks
-uv run python -m benchmarks.run_benchmarks --frameworks opencv,pillow
+uv run --no-sync python -m benchmarks.run_benchmarks --frameworks opencv,pillow
 
 # Compare polars-cv modes
-uv run python -m benchmarks.run_benchmarks --frameworks polars-cv-eager,polars-cv-streaming
+uv run --no-sync python -m benchmarks.run_benchmarks --frameworks polars-cv-eager,polars-cv-streaming
 ```
 
 ### Configure Image Sizes and Counts
 
 ```bash
 # Custom image counts
-uv run python -m benchmarks.run_benchmarks --counts 10,50,100
+uv run --no-sync python -m benchmarks.run_benchmarks --counts 10,50,100
 
 # Custom image sizes
-uv run python -m benchmarks.run_benchmarks --sizes 224,512,1024
+uv run --no-sync python -m benchmarks.run_benchmarks --sizes 224,512,1024
 
 # Both
-uv run python -m benchmarks.run_benchmarks --counts 100,500 --sizes 256,512
+uv run --no-sync python -m benchmarks.run_benchmarks --counts 100,500 --sizes 256,512
 ```
 
 ### Output Formats
 
 ```bash
 # Table output (default)
-uv run python -m benchmarks.run_benchmarks --output table
+uv run --no-sync python -m benchmarks.run_benchmarks --output table
 
 # JSON output (for further analysis)
-uv run python -m benchmarks.run_benchmarks --output json > results.json
+uv run --no-sync python -m benchmarks.run_benchmarks --output json > results.json
 
 # CSV output
-uv run python -m benchmarks.run_benchmarks --output csv > results.csv
+uv run --no-sync python -m benchmarks.run_benchmarks --output csv > results.csv
 ```
 
 ### Validation
@@ -120,10 +124,10 @@ Verify all frameworks produce equivalent results:
 
 ```bash
 # Recommended tolerance (accounts for implementation differences)
-uv run python -m benchmarks.run_benchmarks --validate --tolerance 0.15
+uv run --no-sync python -m benchmarks.run_benchmarks --validate --tolerance 0.15
 
 # Strict tolerance (will show minor differences)
-uv run python -m benchmarks.run_benchmarks --validate --tolerance 1e-5
+uv run --no-sync python -m benchmarks.run_benchmarks --validate --tolerance 1e-5
 ```
 
 **Validation Notes:**
@@ -153,17 +157,17 @@ uv run python -m benchmarks.run_benchmarks --validate --tolerance 1e-5
 
 ```bash
 # Only light pipelines (2 ops)
-uv run python -m benchmarks.run_benchmarks --scenario pipelines --complexity light
+uv run --no-sync python -m benchmarks.run_benchmarks --scenario pipelines --complexity light
 
 # Only heavy pipelines (6 ops)
-uv run python -m benchmarks.run_benchmarks --scenario pipelines --complexity heavy
+uv run --no-sync python -m benchmarks.run_benchmarks --scenario pipelines --complexity heavy
 ```
 
 ### Benchmark Iterations
 
 ```bash
 # More iterations for stable results
-uv run python -m benchmarks.run_benchmarks --warmup 5 --iterations 20
+uv run --no-sync python -m benchmarks.run_benchmarks --warmup 5 --iterations 20
 ```
 
 ## Benchmark Scenarios
@@ -295,10 +299,10 @@ Compare polars-cv against HuggingFace/torchvision for batch inference preprocess
 
 ```bash
 # Run the inference comparison benchmark
-uv run python -m benchmarks.inference_pipeline_comparison --num-images 1000
+uv run --no-sync python -m benchmarks.inference_pipeline_comparison --num-images 1000
 
 # With custom settings
-uv run python -m benchmarks.inference_pipeline_comparison \
+uv run --no-sync python -m benchmarks.inference_pipeline_comparison \
     --num-images 5000 \
     --batch-size 64 \
     --skip-serving  # Skip model inference portion

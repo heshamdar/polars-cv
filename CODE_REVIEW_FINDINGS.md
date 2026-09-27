@@ -32,7 +32,7 @@ The 2026-09-23 performance & streaming review opened **CR-31–CR-38** (see
 that section); CR-31 is a silent wrong-answer bug and should go first.
 The 2026-09-24 quality review opened **CR-41–CR-44** (P0: soundness, strict
 input handling, dev-loop and dependency metadata); all four are resolved.
-The typed-op-protocol work is tracked as **CR-45–CR-49** (see `TYPED_OPS_PLAN.md`).
+The typed-op-protocol work is tracked as **CR-45–CR-49**, all resolved in 0.29.0.
 
 ---
 
@@ -174,7 +174,9 @@ The typed-op-protocol work is tracked as **CR-45–CR-49** (see `TYPED_OPS_PLAN.
   `_auc_expr.interpolate_curve_lazy` directly, and no test invoked the methods.
 - **Resolution:** removed `MetricResult.interpolate` / `summary_table` (and the
   now-unused `interpolate_curve_lazy` import from `_result.py`). Guarded by
-  `tests/test_removed_surfaces.py::test_metric_result_interpolate_and_summary_table_are_gone`.
+  `tests/test_removed_surfaces.py::test_metric_result_interpolate_and_summary_table_are_gone`
+  (since deleted with the other removal tombstones; the generated signatures
+  refuse the names).
   Dropped the two from the `docs/api/metrics.md` autodoc member list (which also
   listed a `partial_auc` member `MetricResult` never had). Corrected
   `metrics/AGENTS.md` lines 21-23, 40, 133. The `_auc.py` helpers were left in
@@ -476,7 +478,8 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
 > watched failing against two deliberate mutations: reversed range order,
 > last-range error wins); the unchanged plan-count assertions in
 > `static_segments_plan_once_per_source_layout`; and
-> `test_removed_surfaces.py::test_the_single_thread_engine_warning_is_gone`.
+> `test_removed_surfaces.py::test_the_single_thread_engine_warning_is_gone`
+> (since deleted with the other removal tombstones).
 
 > **Previously resolved (re-scoped)** by improving the warning:
 > `engine_warning.rs` now decided when each call finishes. It
@@ -488,7 +491,8 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
 > seconds value, prints a one-time notice. Streaming runs with a 50 ms
 > threshold did not warn in three trials. Guarded by
 > `tests/test_engine_warning.py` (subprocess cases, watched failing) and
-> `test_removed_surfaces.py::test_the_engine_warning_reads_no_row_threshold`.
+> `test_removed_surfaces.py::test_the_engine_warning_reads_no_row_threshold`
+> — all deleted with the warning itself (see the resolution above).
 
 > **Re-scoped (2026-09-23).** The plugin's standard regime is lazy + streaming,
 > and there the morsels already spread the work across cores (3.5–3.8× on 4
@@ -944,9 +948,8 @@ parallelism) are tracked for later phases, not here.
 
 The quality review's architectural findings (#6–#9: string-typed op protocol,
 planner split across the FFI, probe-based shape inference, creation-order
-expression keys), planned in [`TYPED_OPS_PLAN.md`](TYPED_OPS_PLAN.md). That file
-carries the phase-by-phase work, the transition discipline and the deletion
-matrix; the entries here track status only.
+expression keys). The work shipped in 0.29.0 (see its CHANGELOG entry); the
+entries here track status only.
 
 ### CR-45 — Ops cross the boundary as a name plus an untyped param map · `Fixed` · Medium (design)
 
@@ -979,15 +982,14 @@ matrix; the entries here track status only.
 
 ### CR-46 — The planner is split across the FFI and folded twice · `Fixed` · Medium (design)
 
-> **Fixed** (typed-op P7, P9): the plan is Rust's — `plan_step`/`plan_source`/
+> **Fixed** (0.29.0): the plan is Rust's — `plan_step`/`plan_source`/
 > `plan_assert`/`plan_sink` return an immutable `PlanState`, `node_pass` runs
 > the node-scope passes, each output carries its `planned` state, and shapes
 > are symbolic (`OpShape`). The FFIs listed below and the Python folds are
 > deleted; `fold_output_rank`/`fold_output_dtype` became one `fold_lineage`
 > (the column-resolved rank/dtype of a list/array source, known only at
-> execution). Deviation: no `Plan` pyclass — Python keeps the op list and the
-> `PlanState` records, rewriting only through `_replay` (see
-> `TYPED_OPS_PLAN.md`).
+> execution). A later consolidation replaced the Python op list and `_replay`
+> with the Rust `Plan` pyclass (`src/plan.rs`), which owns a pipeline's ops.
 
 - **Location:** `pipeline.py` planner state and `_append_op`/`_push_op`/`_update_*`;
   `lib.rs` `op_schema`/`op_contract`/`op_infer_shape`/`op_output_channels`/
@@ -1017,7 +1019,7 @@ matrix; the entries here track status only.
 
 ### CR-49 — Plan-time shapes are inferred by probing four magic values · `Fixed` · Low (design)
 
-> **Fixed** (typed-op P9): `Op::shape() -> OpShape` is the one shape
+> **Fixed** (0.29.0): `Op::shape() -> OpShape` is the one shape
 > authority, evaluated symbolically by the planner from each typed op's
 > `OpDef::shape`; the probe, `unknown_dim_probe` and `PRESERVED_DIM` are
 > deleted. The probe had been planning unknown images as square (see the
@@ -1036,11 +1038,11 @@ matrix; the entries here track status only.
   node id in it is random per construction. Two identical pipelines built
   separately (e.g. once per loop iteration or per request) serialize
   differently, so each compiles afresh and occupies its own cache slot. Found
-  while pinning P1's JSON determinism (`test_positional_slots.py` normalizes
+  while pinning the positional-slot JSON determinism (`test_positional_slots.py` normalizes
   the ids to test the expression encoding alone).
 - **Fix:** derive node ids from content (the node's canonical spec and its
-  upstream ids) rather than `uuid4`; aliases stay user-facing names. Natural
-  home: plan phase P7, where node serialization moves to Rust `Plan`.
+  upstream ids) rather than `uuid4`; aliases stay user-facing names. Still
+  open after 0.29.0: node ids are still `uuid4` (`lazy.py` `_generate_node_id`, `_graph.py` CSE `shared_id`).
 
 ---
 

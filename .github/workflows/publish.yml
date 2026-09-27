@@ -21,9 +21,9 @@ jobs:
   # end with PyPI's "file already exists". Nothing checked the two against each
   # other. This does, before any wheel is built.
   #
-  # `polars-cv/pyproject.toml` is read as the one version source. The other
-  # three (both Cargo.toml files and `polars_cv.__version__`) are pinned to it
-  # by `test_version_consistency.py`, which `ci.yml` runs on every push to main
+  # `polars-cv/pyproject.toml` is read as the one version source. The others
+  # (every workspace crate's Cargo.toml and `polars_cv.__version__`) are pinned
+  # to it by `test_version_consistency.py`, which `ci.yml` runs on every push to main
   # — restating that comparison here would be a second authority for the same
   # fact, and the manifests are already checked by the time a release is cut.
   check-version:
@@ -66,7 +66,7 @@ jobs:
         run: |
           if [[ "$TAG" != "v$VERSION" && "$TAG" != "$VERSION" ]]; then
             echo "::error::release tag '$TAG' does not match the declared version '$VERSION'."
-            echo "Bump the version in all six places (see CONTRIBUTING.md) and re-tag,"
+            echo "Bump the version in every place it is recorded (see CONTRIBUTING.md) and re-tag,"
             echo "or delete and recreate the release with tag 'v$VERSION'."
             exit 1
           fi

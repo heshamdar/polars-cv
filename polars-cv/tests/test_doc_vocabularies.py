@@ -20,7 +20,8 @@ import polars as pl
 import pytest
 
 import polars_cv
-from polars_cv import Pipeline, metrics
+from polars_cv import OptFlags, Pipeline, metrics
+from polars_cv._graph import PipelineGraph
 from polars_cv._types import Domain, SourceFormat
 from polars_cv.expressions import CvNamespace
 from polars_cv.geometry.bbox import BBoxNamespace
@@ -114,7 +115,8 @@ def test_auto_source_table_names_real_source_formats() -> None:
 _FOREIGN_METHODS: "dict[str, str]" = {}
 
 #: Every class a documented method may belong to: the builder, its lazy twin,
-#: and the four expression namespaces (`.cv`, `.point`, `.contour`, `.bbox`).
+#: the graph `to_graph()` returns and the `OptFlags` that optimizes it, and the
+#: four expression namespaces (`.cv`, `.point`, `.contour`, `.bbox`).
 #:
 #: The geometry three are here because the docs use them heavily — the
 #: geometry page alone calls twelve of their methods — and leaving them out
@@ -122,6 +124,8 @@ _FOREIGN_METHODS: "dict[str, str]" = {}
 _OUR_SURFACES = (
     Pipeline,
     LazyPipelineExpr,
+    PipelineGraph,
+    OptFlags,
     CvNamespace,
     PointNamespace,
     ContourNamespace,
@@ -230,7 +234,7 @@ def test_documented_pipeline_calls_bind(page: str) -> None:
     ``test_documented_methods_exist`` checks a name resolves; this checks the
     call a reader would copy is accepted as written — the positional/keyword
     split, the parameter names, the arity — which is what a signature change
-    (typed-op P8) breaks while every name still resolves.
+    breaks while every name still resolves.
     """
     path = next(p for p in doc_pages() if p.name == page)
     calls = pipeline_chain_calls(path.read_text())
@@ -331,6 +335,8 @@ def test_our_surfaces_are_populated() -> None:
     required = {
         Pipeline: "resize",
         LazyPipelineExpr: "sink",
+        PipelineGraph: "to_expr",
+        OptFlags: "none",
         CvNamespace: "read_bytes",
         PointNamespace: "distance",
         ContourNamespace: "area",

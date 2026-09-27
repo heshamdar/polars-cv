@@ -219,7 +219,8 @@ changes; they explain *why* the code is shaped the way it is.
 - **Rotation/affine unification.** `rotate()` with arbitrary angles routes through
   `ComputeOp::RotateAffine` → `AffineParams::from_rotation()` → `apply_affine_warp()`,
   sharing the affine code path; 90/180/270 stay zero-copy via `ViewOp`. Consecutive
-  affine ops fuse into a single matrix at planning time.
+  affine ops are not fused: each resamples in turn (the `affine_fusion` pass was
+  removed because it changed pixels).
 - **Lazy parity.** `LazyPipelineExpr` inherits a forwarder for every chainable
   `Pipeline` method, written as real methods into `_lazy_forwarders.py` by
   `scripts/gen_ops.py` from the built `Pipeline` (freshness:
@@ -276,18 +277,17 @@ side channel.
 | Null parameter handling | `NullParamPolicy` on `ParamCtx`, via `ParamCol::on_null` | Reviewed by hand: never add per-op or per-parameter null keywords |
 | What a `(domain, sink format)` pair produces | `SinkKind::resolve` in `src/graph/sink_kind.rs` | Compile error: the four halves of the sink contract (`dtype_for_output`, `encode_node_output`, `null_row_result_for_spec`, `build_series_from_spec`) match on the enum, so a new kind is non-exhaustive in all four at once; `every_kind_is_produced_by_some_pair` rejects a kind no pair names |
 | Which files a source-scanning guard reads | `tests/_discovery.py` — every accessor raises rather than returning empty | `test_scans_go_through_discovery` (AST walk: a direct `glob`/`rglob` in `tests/` fails unless the file is in `_DISCOVERY_EXEMPT` with a reason), `test_discovery_fixtures.py` |
-| The `rotate_and_scale` matrix | `AffineParams::rotation_matrix_2d` (view-buffer), read via the `rotation_matrix_2d` FFI | `test_the_rotate_and_scale_builder_reads_the_matrix_ffi` — `_rotation_matrix`'s literal path must call the FFI, not recompute the trig (its `pl.Expr` branch is the one sanctioned copy) |
+| The `rotate_and_scale` matrix | `AffineParams::rotation_matrix_2d` (view-buffer), read via the `rotation_matrix_2d` FFI | Reviewed by hand: `_rotation_matrix`'s literal path calls the FFI rather than recomputing the trig (its `pl.Expr` branch is the one sanctioned copy); `_REQUIRED_LIB_HOOKS` in `test_sanitation.py` keeps the FFI registered |
 | A `Pipeline`'s state, when copied | `Pipeline._clone` — copies every field (lists copied, the immutable plan shared); `to_graph` and CSE derive through it, then replace the plan | `test_a_derived_pipeline_keeps_every_setting_and_shares_no_list` |
 | Whether the compiled extension matches the sources | `POLARS_CV_SOURCE_HASH` from `build.rs`, recomputed by `build_info()` | `test_compiled_plugin_matches_the_rust_sources` — the version comparison cannot fire within a release cycle |
 | Dtype spellings on the Python side | `python/polars_cv/_dtype_names.py`, generated from `dtype_table!` by `scripts/gen_dtype_names.py` | `test_dtype_names_module_is_current` (regenerate-and-diff), `test_engine_dtype_names_match_the_generated_table` pins `_types.DType` to it without the plugin |
 | Which plan-time optimizations exist | Rust: `LogicalPass` (`polars-cv/src/passes.rs`, the node-scope passes run there) and `engine_passes!` (view-buffer, which also declares `OptConfig`), via `tests/golden/pass_catalog.json` → generated `PASS_CATALOG` / `OptFlags` fields → `OPTIMIZATION_PASSES` | `pass_catalog_matches_the_committed_file` and `test_the_committed_catalog_is_the_built_one`; `OptConfig` refuses an unknown engine key (`an_unknown_engine_toggle_is_refused`), and `Plan.run_pass` an unknown or graph-scope pass. Optimization is one explicit phase (`PipelineGraph.optimize`); construction and serialization never optimize (`TestStaging`), and toggling a pass changes only the physical graph, never the output (`test_optimize_equivalence.py`) |
 | A polars-cv extension type's name and storage | Rust `ext_types::ExtType` (storage read from `geom_schema` / `output::numpy_output_dtype`), mirrored by `polars_cv.extension_types.EXTENSION_TYPES` so `import polars_cv` can register without the `.so` | `test_python_types_match_the_rust_declaration` (names, order and full storage dtype over the `extension_types` FFI, both directions); `all_lists_every_variant_once` holds `ExtType::ALL` to the enum; `ext_from_params` returns polars' generic `Extension` for our name over any other storage, so an instance of our class *is* the canonical layout |
-| How Python reaches the compiled plugin | `polars_cv._plugin.call` — pins polars to the file the import system loads and passes every argument as `.ext.storage()`, so Rust never receives an extension dtype and only builds tagged outputs (`ExtType::tag`) | `test_only_the_plugin_module_registers_plugin_functions` (AST scan of the package, fixtures in `test_plugin_entry_point.py`); `test_accessors_accept_tagged_inputs` sweeps every accessor case table with tagged inputs; `test_no_module_carries_its_own_plugin_path` |
+| How Python reaches the compiled plugin | `polars_cv._plugin.call` — pins polars to the file the import system loads and passes every argument as `.ext.storage()`, so Rust never receives an extension dtype and only builds tagged outputs (`ExtType::tag`) | `test_only_the_plugin_module_registers_plugin_functions` (AST scan of the package, fixtures in `test_plugin_entry_point.py`); `test_accessors_accept_tagged_inputs` sweeps every accessor case table with tagged inputs; `test_plugin_path_is_the_file_python_imports` |
 
 The former exception — the op spec riding its params on `#[serde(flatten)]`, which
 cannot refuse an unknown key — is gone: every op is a variant of a `#[derive(Ops)]` family, whose wire
-refuses an unknown field, and the untyped legacy spec was deleted in typed-op
-P6.
+refuses an unknown field, and the untyped legacy spec was deleted in 0.29.0.
 
 An enum that belongs to the plugin rather than the engine declares itself with
 the same exported `named_variants!` and lands in `PLUGIN_REGISTRY`, which the
@@ -319,8 +319,9 @@ current instead.
    Two planned items were examined and dropped as not real (a table-driven
    `resolve_op`, a `node_outputs` newtype) — recorded here so they are not
    re-proposed.
-4. *Guards that fail closed.* The dtype ratchet under its own fixtures, the
-   `resolve_op` arm scan, `scripts/verify.sh` as one verification entry point.
+4. *Guards that fail closed.* The dtype ratchet under its own fixtures (the
+   `resolve_op` arm scan went with `resolve_op` itself), `scripts/verify.sh` as
+   one verification entry point.
 5. *The sink contract.* `encode_node_output` keyed on the planned domain rather
    than the runtime `NodeOutput` variant, so the dtype the planner publishes and
    the value execution produces come from one key. (A1/A2/A3 sink half.)
@@ -330,23 +331,22 @@ current instead.
    take the policy as a *required* argument, so a new caller cannot reach a
    path by omitting it.
 
-7. *The typed op protocol ([`TYPED_OPS_PLAN.md`](TYPED_OPS_PLAN.md),
-   CR-45…CR-49).* One typed Rust definition per op, source and sink; a
+7. *The typed op protocol (0.29.0, CR-45…CR-49).* One typed Rust definition per op, source and sink; a
    generated Python builder, enums and pass flags; a Rust planner
    (`Plan`, `check_graph`) with
    symbolic shapes (`OpShape`). It replaces the name + untyped-param-map
    protocol. It is not the "table-driven `resolve_op`" dropped above: that
    kept the untyped map and moved the arms into a table; this removes the
    untyped map, so the registries, parity tests and read-tracker that guard it
-   are deleted rather than re-tabulated. The plan file holds the phase record,
-   the deviations and the deletion matrix.
+   are deleted rather than re-tabulated. The 0.29.0 CHANGELOG entry records
+   what changed for users.
 
 **Where deferred work is tracked.** Verified *defects* — a behaviour the code
 should have but does not — are pinned executably in
 `polars-cv/tests/test_known_gaps.py`, one `xfail(strict=True)` each, so a fix
 turns the suite red rather than passing unnoticed; prefer adding an entry there
 to extending a prose list. No gap is open (the planned-size defects closed in
-`PLANNER_SIZES_PLAN.md` S1 and S2). The
+0.29.0 with rank-N planned shapes). The
 broader structural-review backlog — dead code, duplicate declarations, coverage
 holes — lives in the root `CODE_REVIEW_FINDINGS.md` ledger with a stable id per
 item, since most of those are cleanups rather than xfail-able wrong-behaviour

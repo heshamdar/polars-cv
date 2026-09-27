@@ -419,7 +419,7 @@ mod tests {
             "{err}"
         );
         // "triangle" (a former parser-only alias, deleted) is not a spelling: the
-        // `NAMED` table is the one list of names (typed-op P2).
+        // `NAMED` table is the one list of names.
         let err = parse_err(json!({"op": "resize", "height": 4, "width": 4,
                                    "filter": "triangle"}));
         assert!(err.contains("'filter'"), "{err}");

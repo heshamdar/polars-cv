@@ -7,25 +7,80 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.29.0] — 2026-09-27
+
+Every operation, source, sink and geometry accessor is now one typed Rust
+definition from which its Python method, docstring and wire form are
+generated, and the planner that computes a pipeline's schema runs in Rust
+over the same definitions execution uses. Plan-time optimizations are one
+explicit, toggleable phase. Many silent wrong results are now errors. Upgrading
+from 0.28: see the [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration/).
+
+### Breaking changes
+
+Each item is described in full under its section below.
+
+- **Builder signatures.** One rule for every generated method: an op's only
+  required parameter is positional-or-keyword, every other parameter is
+  keyword-only (e.g. `.normalize(method="minmax")`). `source()` keywords
+  default to `None`. `perceptual_hash`'s parameters are keyword-only.
+- **Removed parameters and methods.** `convolve2d(ksize=)`, `sobel(ksize=)`,
+  `laplacian(ksize=)`; `source()`'s contour canvas keywords (`width`,
+  `height`, `shape`, `fill_value`, `background` — write
+  `.rasterize(...)`); `Pipeline.output_encoding()`;
+  `PipelineGraph.set_root_column()` (`to_graph(column)` requires its column);
+  `PlanState.DIM_NAMES`; `_graph.LIB_PATH`; the `affine_fusion` optimization
+  pass.
+- **Changed defaults and results.** `.contour.scale()` scales about the
+  centroid; `.point.interpolate(t=)` is keyword-only; `canny` matches
+  `cv2.Canny` (more edges, no pre-blur); an image with no contours yields `[]`,
+  not null; a null `numpy`/`torch`/`ndarray` sink row is a null value;
+  `output_dtype()` can return `"auto_float"`; `PipelineGraph.to_expr()` needs
+  an optimized graph (`.sink()` produces one).
+- **Stricter input checks.** `crop` windows past the edge or with negative
+  values, `raw` byte lengths that are not whole elements, `reshape`s that
+  change the element count, image ops on anything but `[H, W]`/`[H, W, C]`,
+  short `transpose` axis lists, jagged or null `List` rows, null contour
+  coordinates, contour structs without an `exterior` field, `sobel(axis=)`
+  other than `"x"`/`"y"`, per-row `"triangle"`/`"grey"` enum aliases, and
+  `list`/`array` sink rows that do not match the plan are all refused.
+- **Hand-built graph JSON.** Fields follow the typed definitions; an unknown,
+  misspelled or inapplicable field is rejected by name, as are the old
+  `alias`/`domain`/`output_dtype` node fields and the `expr_column_names`
+  kwarg.
+- **Environment and dependencies.** Requires `polars>=1.41.1`;
+  `networkx`/`graphviz`/`pydot` move to the `viz` extra. The single-thread
+  warning and `POLARS_CV_ENGINE_WARN_SECONDS` /
+  `POLARS_CV_ENGINE_WARN_ROWS` / `POLARS_CV_SILENCE_ENGINE_WARNING` are gone.
+
 ### Added
 
-- **Benchmarks build in a fraction of the time, and run only what a change
-  can move.** `maturin develop --profile benchmark` is release with thin LTO
-  (the fat-LTO link was most of a 10–18 minute release build). The regression
-  suite's `--select scenario[:glob]` runs a subset of cases by their result
-  names, and `--changed REF` (or `python -m benchmarks.regression.relevance
-  REF`, to pass the same `--select` to the base side) derives it from the
-  files a change touches, through a path → cases map that a guard holds every
-  tracked source file to. A new `targeted` scenario times what the adapter
-  scenarios never reach: the geometry accessors, the `array`/`list` sinks,
-  JPEG and re-encoding, and the blob source. `run_suite --scenarios` is
-  replaced by `--select` (a bare scenario name is a selector).
-- **The benchmark suite refuses a debug build.** Its numbers look plausible and
-  measure nothing; `run_suite` exits unless given `--allow-debug-build` (a
-  harness smoke test), and `compare` refuses results marked as such. It also
-  refuses results from two different build profiles (thin LTO runs a few
-  percent off fat LTO per case). The extension reports
-  `_lib.__debug_assertions__` and `_lib.__build_profile__` for it.
+- **A plan-time optimization phase you can see and control.** Building a
+  pipeline records the graph as written; `.sink()` then applies the
+  optimizations in one phase (`PipelineGraph.optimize(flags)`). Every pass —
+  `common_subexpression_elimination`, `identity_elimination`,
+  `spatial_window_pushdown`, and the engine rewrites `cast_chain_collapse`,
+  `cast_identity`, `view_flip_involution`, `view_transpose_merge` and
+  `scalar_fusion`, which used to run unconditionally — has an `OptFlags`
+  field (`polars_cv.OptFlags`, with `OptFlags.all()` / `OptFlags.none()`).
+  Choose them per call with `.sink(opt_flags=...)` or for the process with
+  `POLARS_CV_OPTIMIZATIONS`; all are on by default. `Pipeline.explain()`
+  shows the chain as written, or with `optimized=True` after the passes
+  `.sink()` would apply (from the same registry, so it cannot drift from
+  execution). Every pass is held to byte-identical output by an on/off
+  differential in `test_optimize_equivalence.py`.
+- **`identity_elimination` pass.** Deletes operations that are provably
+  no-ops so they never reach the engine: a zero pad (`pad(0, 0, 0, 0)`), a
+  same-dtype `cast`, and a full-frame `crop` (or a `pad_to_size` to the
+  current size). A crop is a candidate only with a literal `(0, 0)` origin (an
+  offset crop the size of its input runs past the edge). A blob's declared
+  `dtype` is checked at decode, so the pass never removes a `.cast()` on the
+  strength of a wrong declaration.
+- **`spatial_window_pushdown` pass.** Hoists an H/W crop earlier in a
+  pipeline, past the run of pointwise ops immediately before it, so they
+  process only the window. A neighbourhood, geometric or global op, an
+  `assert_shape`, and an op that reads another node (`apply_mask`,
+  `channel_merge`, binary ops) are barriers.
 - **`numpy_from_column(column)` reads a numpy/ndarray sink column without
   copying.** Every row comes back as a read-only NumPy view of the column's
   own Arrow memory, keeping its shape, dtype and byte strides; null rows are
@@ -33,25 +88,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   dicts for `numpy_from_struct` copies every row into Python `bytes` first
   (and again with its default `copy=True`). A view that would reach outside
   its row's bytes (only a hand-built struct can ask for one) raises.
-- **A fixed-size `Array` column's shape is planned, at any rank.** Its dtype
-  states every size, so `source("array")` (or `auto` over an `Array` column)
-  now publishes the whole shape: `.sink("array")` needs no `shape=`, and the
-  ops after the source plan from those sizes. A `List` column's sizes still
-  vary per row.
 - **The planner tracks every dimension, at any rank.** A pipeline's planned
   shape is one size per dimension rather than three `[H, W, C]` slots, so
   every output whose sizes are all known publishes its shape — a rank-1 or
   rank-2 output (`channel_select`, `reshape`, `assert_shape(dims=[h, w])`) and
   a rank-4 one included — and `.sink("array")` needs no `shape=` for it.
-  `assert_shape(dims=[...])` accepts any rank (it refused more than three).
-  `PlanState.dims` has one entry per dimension (the leading declared ones
-  over an unknown rank), and `PlanState.DIM_NAMES` is gone.
+  A fixed-size `Array` column's dtype states every size, so `source("array")`
+  (or `auto` over an `Array` column) publishes the whole shape too; a `List`
+  column's sizes still vary per row. `assert_shape(dims=[...])` accepts any
+  rank (it refused more than three). `PlanState.dims` has one entry per
+  dimension (the leading declared ones over an unknown rank), and
+  `PlanState.DIM_NAMES` is gone.
 - **`source("contour")` without a canvas decodes to the contour domain.** A
   pipeline can start from a contour column and measure or transform it
   (`Pipeline().source("contour").area()`, `.simplify(...)`, then
   `.rasterize(...)` or a native sink). It used to raise: the source *was* a
   rasterization.
-
 - **Arrow extension types: `polars_cv.ndarray`, `.point`, `.contour`, `.bbox`.**
   `NdArrayType`, `PointType`, `ContourType` and `BBoxType` (in
   `polars_cv.extension_types`, re-exported from `polars_cv`) tag the structs
@@ -76,291 +128,229 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `.contour` / `.bbox` accessor and every `vb_graph` source (e.g.
   `source("contour")`) takes a tagged column wherever it takes the plain struct,
   and computes exactly the same result. Geometry outputs stay plain structs.
-
-- **`identity_elimination` optimization pass (Tier-1, bit-exact).** A new
-  plan-time pass deletes operations that are provably no-ops, so they never
-  reach the engine: a zero pad (`pad(0, 0, 0, 0)`), a same-dtype `cast`, and a
-  full-frame `crop` (or a `pad_to_size` to the current size). It is on by
-  default, gated by the `identity_elimination` `OptFlags` field, and — being
-  output-preserving — is safe even inside dict-sink observed and multi-consumer
-  nodes. A node carrying an `assert_shape` is left untouched (conservative), and
-  a shape-preserving op is never proven a no-op from a *declared* H/W — one that
-  reached the node from an `assert_shape` via a CSE split or a lazy
-  continuation — since a wrong declaration would then change the output. A crop
-  is a candidate only with a literal `(0, 0)` origin: an offset crop whose
-  extent equals the input's runs past the edge and is clamped, so it is not a
-  no-op.
-- **`IdentityRule` op contract (view-buffer).** A new required, no-default
-  `Op::identity_rule` method is the single authority for whether an op is a
-  removable no-op — the algebraic-identity counterpart to `SpatialDependency`.
-  Its four variants (`Never`, `Always`, `WhenShapePreserved`,
-  `WhenDtypePreserved`) let the op declare *which* condition makes it an
-  identity while the planner evaluates that condition against the op's entering
-  shape/dtype, so no op name is matched in Python. Value preservation is
-  op-semantic (a shape-preserving `resize` still resamples), so the two
-  contextual variants are strictly opt-in. Surfaced to the planner by the new
-  `op_identity_rule` FFI, which is deliberately separate from `op_contract`
-  because the `Always` verdict depends on literal parameter values. `Always` and
-  `WhenShapePreserved` name the parameters whose values they inspected
-  (`deciding_params` — a crop's `top`/`left`), and `op_identity_rule` forces
-  `Never` whenever any of them is expression-bound —
-  so the verdict is sound structurally, not by relying on the neutralization
-  placeholder value.
-- **`is_spatial_window` op contract (view-buffer).** A new required, no-default
-  `Op::is_spatial_window` method is the single authority for "is this op a
-  hoistable H/W crop/ROI", the counterpart to `SpatialDependency` (which decides
-  what a window may *cross*). Only an H/W-only crop returns `true`; it is
-  surfaced on `op_contract` and read by the spatial-window pushdown, which no
-  longer matches an op name in Python.
-- **Per-optimization on/off toggles for the engine-lowering rewrites.** The
-  Tier-2 view-buffer rewrites (`scalar_fusion`, `cast_chain_collapse`,
-  `cast_identity`, `view_flip_involution`, `view_transpose_merge`) that used to
-  run unconditionally now each have an `OptFlags` toggle, serialized to the graph
-  as an `opt` object and gating the matching Rust `OptConfig` field. One registry
-  (`OPTIMIZATION_PASSES`, each `PassSpec` carrying a `tier`) now describes **every**
-  optimization across both tiers, and `test_optimize_equivalence.py` pins a
-  dedicated on/off differential for each — enabling any single optimization
-  leaves the output byte-identical.
+- **An op, source or sink field with a declared default may be omitted from
+  hand-built graph JSON**; the wire applies the same default the Python
+  signature shows.
+- **Benchmarks build in a fraction of the time, and run only what a change
+  can move.** `maturin develop --profile benchmark` is release with thin LTO
+  (the fat-LTO link was most of a 10–18 minute release build). The regression
+  suite's `--select scenario[:glob]` runs a subset of cases by their result
+  names, and `--changed REF` (or `python -m benchmarks.regression.relevance
+  REF`, to pass the same `--select` to the base side) derives it from the
+  files a change touches, through a path → cases map that a guard holds every
+  tracked source file to. A new `targeted` scenario times what the adapter
+  scenarios never reach: the geometry accessors, the `array`/`list` sinks,
+  JPEG and re-encoding, and the blob source. `run_suite --scenarios` is
+  replaced by `--select` (a bare scenario name is a selector).
+- **The benchmark suite refuses a debug build.** Its numbers look plausible and
+  measure nothing; `run_suite` exits unless given `--allow-debug-build` (a
+  harness smoke test), and `compare` refuses results marked as such. It also
+  refuses results from two different build profiles (thin LTO runs a few
+  percent off fat LTO per case). The extension reports
+  `_lib.__debug_assertions__` and `_lib.__build_profile__` for it.
 
 ### Changed
 
-- **`canny` computes what `cv2.Canny(image, low, high)` computes, pixel for
-  pixel.** It ran a 5×5 σ≈1.4 Gaussian blur first, used an L2 magnitude and
-  its own suppression rules, so it found 30–70% fewer edges than OpenCV on the
-  same image while its reference test asked only for 30% overlap. It now does
-  OpenCV's algorithm — 3×3 Sobel with a replicated border, L1 magnitude, no
-  pre-blur, OpenCV's fixed-point non-maximum suppression and 8-connected
-  hysteresis — and a colour image takes the strongest channel per pixel, as
-  OpenCV does, rather than its luminance. Add `.blur(sigma=...)` before
-  `canny` for the old smoothing. `tests/reference/test_canny_ref.py` asserts
-  exact equality with `cv2.Canny`; the old implementation's verbatim pin
-  (`view-buffer/tests/canny_ref.rs`) is deleted with it.
-- **Every `.point`/`.bbox` function, and the remaining `.contour` ones
-  (`contains_point`, `pairwise_iou`, `correspond`, `label_reduce`), split
-  their rows over the thread pool** through the same row driver as the
-  other accessors (`GeomParams::map_rows`).
-- **`.contour` accessors use every core on the in-memory engine.** A
-  single-column or two-column accessor (`area`, `translate`, `iou`, …) ran a
-  call's rows on one thread; they now split them over the plugin's thread
-  pool as pipelines do, and stay inline under the streaming engine, which is
-  already parallel across morsels (~3.2x for `.contour.area()` over 200k
-  contours on 4 cores).
-- **Contour columns are read straight from Arrow.** Every consumer — the
-  `.contour`/`.point` accessors, `pairwise_iou`/`correspond`/`label_reduce`,
-  and the pipeline's `contour` source and `label_reduce` step — used to build
-  a Polars `AnyValue` and a sub-`Series` per ring for every row (98
-  allocations for a two-contour row); they now share one reader over the
-  column's arrays (6 for the same row: the contours themselves). Point
-  coordinates are always matched by field name (one path used to take the
-  first two fields by position). A `.point` distance function given a
-  contour *set* now says so instead of failing to find an `x` field.
-- **`blob` and `raw` sources read aligned rows in place.** Every row used
-  to be copied to an aligned address first. A row longer than 12 bytes that
-  already starts on an 8-byte boundary in the column's memory (a `blob`
-  sink's rows always do) is now read where it lies; inline and unaligned
-  rows are still copied.
-- **f32 scalar ops write in place in pipelines, as the engine intended.**
-  The executor cloned each op segment's input out of an output it kept
-  alive, and kept every upstream node's output while its reader ran, so the
-  fused kernel's in-place path (sole owner of an f32 buffer) never applied
-  and every such op allocated a new buffer. A segment now takes its input by
-  value, and a node that is its upstream's only reader (not a graph output,
-  not an operand) moves that output instead of sharing it.
-- **`list` and `array` sinks copy each row's values once.** A row used to
-  be copied into a per-row vector (after materialising a strided row
-  contiguously) and then again into the column's values; each row's buffer
-  now goes straight into the values through its strides
-  (`ViewBuffer::append_to`, which shares its copy routine with
-  `to_contiguous`).
-- **Image decode and encode no longer copy every pixel an extra time.**
-  Decoding moved the codec's pixels into the buffer with the image crate's
-  `to_*` conversions, which allocate a new image even when the type already
-  matches; every native variant now hands its allocation over. PNG, JPEG and
-  WebP encode now read the buffer's pixels in place instead of copying them
-  into a `DynamicImage` first. Only a colour type the encoder refuses as it
-  is (JPEG's alpha layouts, whose alpha is dropped) still converts through
-  one. 16-bit PNG keeps the one image-sized buffer its big-endian byte swap
-  needs.
-
+- **Breaking: one signature rule for every generated builder method.** An op
+  with exactly one required parameter takes it positional-or-keyword; every
+  other parameter is keyword-only. Now positional: `adjust_contrast(factor)`,
+  `adjust_gamma(gamma)`, `channel_select(index)`, `channel_swap(order)`,
+  `simplify(tolerance)`, `label_reduce(contours)`, `convolve2d(kernel)`. Now
+  keyword-only (pass by name): `convert_color(from_space=, to_space=)`,
+  `histogram(bins=, range=, closed=, output=)`,
+  `normalize(method=, mean=, std=, out_dtype=)`, `reduce_max/mean/min(axis=)`,
+  `reduce_std(axis=, ddof=)`, `warp_affine(matrix=, output_size=)` and
+  `perceptual_hash(hash_size=, algorithm=)` — e.g. `.normalize("minmax")` is
+  now `.normalize(method="minmax")`. Names and defaults are otherwise
+  unchanged.
+- **Breaking: `Pipeline.source()` keywords default to `None`.**
+  `require_contiguous` and `on_error` read `None` (the format's own default:
+  `False`, `"raise"`) instead of restating it, so passing a keyword is exactly
+  passing a non-`None` value — `on_error="raise"` or `require_contiguous=False`
+  on a format that does not read them is now refused like any other
+  inapplicable keyword. `Pipeline.output_encoding()` is removed (the executor
+  reads histogram buckets off the ops).
+- **Breaking: a contour source only decodes; rasterizing is `rasterize()`.**
+  `source()` no longer takes `width`, `height`, `shape`, `fill_value` or
+  `background`; write `source("contour").rasterize(...)`. A per-row
+  `width`/`height`/`fill_value` that is invalid for a row now fails the query
+  (or nulls the node under `on_null_param="null"`) as it does for
+  `rasterize()`; `source(on_error=)` covers only a contour value that cannot
+  be decoded.
+- **Breaking: the geometry accessors are generated from their Rust
+  definitions.** Each `.contour` / `.point` / `.bbox` function parses its own
+  typed definition (`src/geom_fns.rs`) — or, for `.contour.area`,
+  `perimeter`, `centroid`, `bounding_box`, `convex_hull`, `translate`,
+  `scale` and `simplify`, the pipeline operation's — so its fields, defaults
+  and docstring are declared once. `.contour.scale()` now defaults to
+  `origin="centroid"`, matching `Pipeline.scale_contour()` (it scaled about
+  `(0, 0)`); `t` in `.point.interpolate(other, t=...)` is keyword-only; and
+  `.contour.label_reduce(image)`'s `image` is required in the signature (it
+  defaulted to `None` and then raised `ValueError`).
+- **Breaking: `canny` computes what `cv2.Canny(image, low, high)` computes,
+  pixel for pixel.** It ran a 5×5 σ≈1.4 Gaussian blur first, used an L2
+  magnitude and its own suppression rules, so it found 30–70% fewer edges than
+  OpenCV on the same image. It now does OpenCV's algorithm — 3×3 Sobel with a
+  replicated border, L1 magnitude, no pre-blur, OpenCV's fixed-point
+  non-maximum suppression and 8-connected hysteresis — and a colour image
+  takes the strongest channel per pixel, as OpenCV does, rather than its
+  luminance. Add `.blur(sigma=...)` before `canny` for the old smoothing.
+  `tests/reference/test_canny_ref.py` asserts exact equality with
+  `cv2.Canny`, for u8 and for every other input dtype.
+- **Breaking: `PipelineGraph.to_expr()` needs an optimized graph.** `.sink()`
+  runs the optimization phase and returns an executable expression as before;
+  a graph from `to_graph()` must go through `.optimize(...)` before
+  `.to_expr()`, which otherwise raises `RuntimeError`.
+- **Breaking: an image with no contours yields `[]`, not null.**
+  `extract_contours()` published an empty contour set as null, the same as a
+  null input or a failed row, so `list.len()` read null instead of 0 and the
+  `.contour` transforms (which keep `[]`) disagreed with it. Null now means
+  only "no value" (a null input, or a row failed under `on_error("null")`).
+- **Breaking: a null row of `sink("numpy")`/`"torch"`/`"ndarray"` is a null
+  value.** It used to be a struct whose five fields were all null, so
+  `is_null()` was `False` and `drop_nulls()`/`null_count()` did not see it,
+  unlike every other sink. Code that tested `row["data"] is None` should test
+  `row is None`. `numpy_from_struct(None)` raises `ValueError` (CR-39).
+- **Breaking: dependency metadata.** Requires `polars>=1.41.1` (was `>=1.0`,
+  which could not import below 1.36.1 and failed the suite below 1.41.1) and
+  `numpy>=2.0.2` (was `>=2.2.6`). `networkx`/`graphviz`/`pydot` move to a
+  `viz` extra (`pip install 'polars-cv[viz]'`), needed only by
+  `show_graph()`. Wheels are tagged `cp310-abi3` to match
+  `requires-python>=3.10`. A new CI job tests the declared floors on Python
+  3.10. (CR-44)
+- **Every `.cv.pipe(...)` call runs its rows in parallel.** Rows are split
+  into ranges on the plugin's thread pool (sized by `POLARS_MAX_THREADS`) and
+  reassembled in order, so eager `with_columns`/`select` on a single-chunk
+  column is multi-core: 3–4× faster on 4 cores in the measured cases. A call
+  spreads its rows only when it runs alone and the graph's previous call did
+  too, so the streaming engine's concurrent morsel calls stay on their own
+  threads, and a one-thread pool never splits. Under `on_error="raise"` the
+  reported error is still the earliest failing row's. **Breaking:** the
+  one-time "ran on one thread" warning and its
+  `POLARS_CV_ENGINE_WARN_SECONDS` / `POLARS_CV_ENGINE_WARN_ROWS` /
+  `POLARS_CV_SILENCE_ENGINE_WARNING` variables are removed. (CR-32)
+- **Every `.contour`, `.point` and `.bbox` function uses every core on the
+  in-memory engine.** They split a call's rows over the plugin's thread pool
+  through one row driver (`GeomParams::map_rows`), as pipelines do, and stay
+  inline under the streaming engine, which is already parallel across morsels
+  (~3.2x for `.contour.area()` over 200k contours on 4 cores).
 - **Everything the plan knows about an op's input is checked where the op is
   written.** An op no row could run on its planned input raises when it is
   appended, naming the op, rather than failing every row: an image op on a
   rank-1 buffer (`source("raw").blur()`), a crop window past a known edge, a
-  channel index past a known channel count, and two operands whose known
-  sizes cannot broadcast (`x.add(y)` over `(4, 5, 3)` and `(2, 5, 3)` used to
-  plan `(4, 5, 3)` and then fail each row). A size the plan does not know is
-  still checked per row. Validation messages show an unknown size as `?`.
+  channel index past a known channel count, a `transpose` with a repeated
+  axis, and two operands whose known sizes cannot broadcast (`x.add(y)` over
+  `(4, 5, 3)` and `(2, 5, 3)` used to plan `(4, 5, 3)` and then fail each
+  row). A size the plan does not know is still checked per row. Validation
+  messages show an unknown size as `?`.
 - **A binary op plans each axis it can.** Its operands broadcast axis by axis,
   so two 8x8 images of unknown channel count add to a planned 8x8 (the
-  planner used to drop every size when one was unknown).
+  planner used to drop every size when one was unknown). A lazy continuation
+  or binary op starts from the upstream state as planned rather than a copy
+  with the sizes dropped.
 - **`apply_mask` and `channel_merge` are planned against the nodes they
   read.** A mask that cannot broadcast against its buffer, or channels of
   different known sizes, raise when the op is written; a merge plans the
   H and W any of its channels knows.
-- **A contour source only decodes; rasterizing is `rasterize()`.**
-  **Breaking:** `source()` no longer takes `width`, `height`, `shape`,
-  `fill_value` or `background`; write `source("contour").rasterize(...)`.
-  `source()` is now generated from the typed source formats
-  (`io_catalog.json`), with exactly their fields. The source's copy of the op —
-  its own canvas fields and defaults, per-row resolution, node-canvas lookup
-  and rasterizing decode — is gone. A per-row `width`/`height`/`fill_value`
-  that is invalid for a row now fails the query (or nulls the node under
-  `on_null_param="null"`) as it does for `rasterize()`; `source(on_error=)`
-  covers only a contour value that cannot be decoded.
-- **An op, source or sink field with a declared default may be omitted from
-  hand-built graph JSON**; the wire applies the same default the Python
-  signature shows.
-
-- **The geometry accessors are generated from their Rust definitions.** Each
-  `.contour` / `.point` / `.bbox` plugin function parses its own typed
-  definition (`src/geom_fns.rs`) — or, for `.contour.area`, `perimeter`,
-  `centroid`, `bounding_box`, `convex_hull`, `translate`, `scale` and
-  `simplify`, the pipeline operation's — so its fields, defaults and docstring
-  are declared once; the Python methods are generated from
-  `tests/golden/geom_catalog.json`. The shared `ContourKwargs` / `PointKwargs`
-  bags, their per-call-site defaults and `_ArgBinder` are gone.
-  **Breaking:** `.contour.scale()` now defaults to `origin="centroid"`, matching
-  `Pipeline.scale_contour()` (it scaled about `(0, 0)`); and `t` in
-  `.point.interpolate(other, t=...)` is keyword-only. See the migration page.
-  `.contour.label_reduce(image)`'s `image` is required in the signature (it
-  defaulted to `None` and then raised `ValueError`); a misspelled literal enum
-  is still refused as the expression is built, by the definition itself.
-
-- **`assert_shape` is a checked operation.** It is planned where it is written
-  and checked against every row there; a mismatch fails the row naming the
-  assertion. Optimizations may rely on the declared shape (it is a fact once
-  checked), an assertion is never removed, and it no longer shields its node
-  from identity elimination. `dims=` entries may be per-row expressions.
-- **The plugin plans the graph itself.** An output on the wire is only its node
-  and sink; the planned-state field, the execution-side dtype/rank folds and the
-  first-input-column fallback are gone. `.sink()` validates the graph with the
-  plugin's own compile, planning and sink-schema code (`_lib.check_graph`), so
-    sink problems raise `ValueError` at `.sink()`; `plan_sink`/`plan_assert` are
-  gone.
-- **A pipeline's ops are a Rust `Plan`.** `Pipeline` holds one immutable
-  `polars_cv._lib.Plan` (its source, typed ops and the state at every op
-  boundary) plus its expression table; every append, slice, reorder, pass and
-  continuation is a `Plan` method that plans each op it keeps. The Python op
-  records (`OpSpec`, `ParamValue`, `SourceSpec`) and the per-step FFI
-  (`plan_step`, `plan_source`, `node_pass`) are gone. `repr(pipeline)` shows
-  enum arguments by their wire name (`origin=centroid`), and an absent optional
-    setting is left out of the graph JSON however it was spelled.
-- **Rank and channels come from the op's shape.** The planner reads an op's
-  output rank as the length of its `OpShape` and the channel count as its axis
-  2; the separate `OutputRankRule`/`OutputChannelRule` declarations are gone.
-  A crop, transpose or reshape now plans a known channel count, a size an op
-  replaces is no longer carried across it when the input rank is unknown, and
-  a contour measure plans one value per contour (its length is the set's
-  size) rather than a single value.
-
-
+- **Rank and channels come from the op's shape.** A crop, transpose or
+  reshape now plans a known channel count, a size an op replaces is no longer
+  carried across it when the input rank is unknown, and a contour measure
+  plans one value per contour (its length is the set's size) rather than a
+  single value.
+- **`assert_shape` is a checked operation.** It is planned where it is
+  written and checked against every row there; a mismatch fails the row
+  naming the assertion. Optimizations may rely on the declared shape (it is a
+  fact once checked), and an assertion is never removed. `dims=` entries may
+  be per-row expressions, and its sizes must be positive ints whichever
+  spelling (`dims=` or `height=`/`width=`/`channels=`) carries them.
+  `repr()`/`explain()` render the `assert_shape` calls that were written,
+  where they were written, instead of every inferred size as an
+  `assert_shape(...)`.
+- **Sinks are checked at `.sink()`.** `.sink()` validates the graph with the
+  plugin's own compile, planning and sink-schema code (`_lib.check_graph`),
+  so sink problems raise `ValueError` there.
 - **The builder's planner and the executor share one dtype lattice.** A
   float-promoting op over a dtype the plan does not know (`scale`, `sqrt`,
   `sobel`, … after `source("image_bytes")`) is planned as `auto_float` —
   "a float, which one depends on the decode" — where it was `auto`.
   `Pipeline.output_dtype()` can therefore return `"auto_float"`.
-- **`Pipeline._state` is a Rust object** (`polars_cv._lib.PlanState`, frozen,
-  built only by the planner). The Python `PlanState` dataclass, `HINT_DIMS` and
-  the hand-written `Domain` enum are gone; `Domain` is generated from the
-  registry like every other enum (the engine's `any` wildcard variant is
-  deleted, so there is no user-facing subset to maintain).
-- **A binary op plans over both operands' states**, not only the other
-  operand's dtype, and a lazy continuation or binary op starts from the upstream
-  state as planned rather than a copy with the sizes dropped.
+- **Planner state is a Rust object.** `Pipeline` holds one immutable
+  `polars_cv._lib.Plan` (its source, typed ops and the state at every op
+  boundary); `Pipeline._state` is a frozen `polars_cv._lib.PlanState`. The
+  Python `PlanState` dataclass and `HINT_DIMS` are gone; `Domain` is
+  generated from the Rust registry like every other enum. `repr(pipeline)`
+  shows enum arguments by their wire name (`origin=centroid`).
+- **Operations report errors from their Rust definition.** Errors name the
+  op, the field and the valid values (`operation 'resize': 'filter': unknown
+  FilterType "bogus", expected one of [...]`, `'top': -5 cannot be
+  negative`), and a source/sink keyword the format does not read is refused
+  naming where it does apply (`'quality' does not apply to the 'webp' sink (it
+  applies to: jpeg)`), as is a misspelled one. A per-row enum value outside
+  its table reads `unknown Winding "CW", expected one of [...]`.
+- **Hand-built graph JSON follows the typed definitions.** The wire form of a
+  field is the value itself (`"height": 224`, `"filter": "bilinear"`) or
+  `{"$slot": n}`, the index of the plugin input column that carries an
+  expression parameter; each distinct expression (by `Expr.meta.eq`) gets one
+  input, root columns first. Wire fields follow the Python signatures:
+  `warp_affine(output_size=)` (was `output_height`/`output_width`),
+  `histogram(range=)` (was `range_min`/`range_max`, where one without the
+  other was silently ignored), the binary ops' `other`, `apply_mask`'s `mask`
+  and `channel_merge`'s `others` (were `other_node`/`other_nodes`), and
+  `rasterize`'s `size`: `[height, width]` or the id of the node whose canvas
+  it takes. **Breaking:** a misspelled, extra, missing or inapplicable field
+  is rejected by name, as are a sink `dtype` other than `"f16"`/`"float16"`
+  (which Rust used to accept and ignore), the `expr_column_names` kwarg, and
+  the node fields `alias`, `domain` and `output_dtype` (the plugin read none
+  of them). The graph JSON (the compiled-graph cache key) no longer depends on
+  which other expressions are alive in the process, and carries no
+  expression text.
+- **One way into the compiled plugin.** `polars_cv._plugin.call` now builds
+  every plugin expression. It resolves the extension file the import system
+  loads and passes that to polars; before, polars was handed the package
+  directory and took the first `.so` `iterdir()` returned, which beside a stale
+  second build (`_lib.abi3.so` next to `_lib.cpython-3xx-*.so`) could be a
+  different library from the one the planner had just read. It also passes each
+  argument as `.ext.storage()`, which is how tagged inputs are accepted without
+  any Rust input path knowing about extension types. **Breaking:**
+  `_graph.LIB_PATH` and `_namespace._LIB_PATH` are removed.
+- **Point coordinates are always matched by field name.** One contour path
+  took a point's first two fields by position; a `.point` distance function
+  given a contour *set* now says so instead of failing to find an `x` field.
 
-- **Breaking: `Pipeline.source()` keywords default to `None`.** `fill_value`,
-  `background`, `require_contiguous` and `on_error` read `None` (the format's
-  own default: 255, 0, `False`, `"raise"`) instead of restating it, so passing
-  a keyword is exactly passing a non-`None` value — `on_error="raise"` or
-  `require_contiguous=False` on a format that does not read them is now
-  refused like any other inapplicable keyword. The contour colours' defaults
-  live in the Rust source definition. `perceptual_hash` is generated like
-  every other op: `algorithm`'s default is the string `"perceptual"` and both
-  parameters are keyword-only. `Pipeline.output_encoding()` is removed (the
-  executor reads histogram buckets off the ops).
-- **Breaking: one signature rule for every generated builder method.** An op
-  with exactly one required parameter takes it positional-or-keyword; every
-  other parameter is keyword-only. Now positional: `adjust_contrast(factor)`,
-  `adjust_gamma(gamma)`, `channel_select(index)`, `channel_swap(order)`,
-  `simplify(tolerance)`, `label_reduce(contours)`. Now keyword-only (pass by
-  name): `convolve2d(kernel=, ksize=)`, `convert_color(from_space=,
-  to_space=)`, `histogram(bins=, range=, closed=, output=)`,
-  `normalize(method=, mean=, std=, out_dtype=)`, `reduce_max/mean/min(axis=)`,
-  `reduce_std(axis=, ddof=)` and `warp_affine(matrix=, output_size=)` —
-  e.g. `.normalize("minmax")` is now `.normalize(method="minmax")`. The rule is
-  derived by the generator from which fields are required, so the per-field
-  `#[param(positional)]` marker is gone. Names and defaults are unchanged.
-- **Every operation is a typed op.** Each of the 85 ops is one Rust definition
-  (`polars-cv/src/ops/`) from which its Python builder method is generated
-  (hand-written sugar remains only where a signature needs it: `scale`,
-  `clamp`, `resize_scale`, `scale_contour`, `rasterize`,
-  and the `LazyPipelineExpr` methods that combine expressions); call
-  signatures change only by the signature rule below (see the migration
-  guide). The wire form of a field is the value itself
-  (`"height": 224`, `"filter": "bilinear"`) or `{"$slot": n}`, every field is
-  present, and the Rust definition is the only validator, so errors are
-  reported by it — naming the op, the field and the valid values (`operation
-  'resize': 'filter': unknown FilterType "bogus", expected one of [...]`,
-  `'top': -5 cannot be negative`). A misspelled, extra or missing field in a
-  hand-built graph is rejected by name. Wire fields follow the Python
-  signatures: `warp_affine(output_size=)` (was `output_height`/`output_width`),
-  `histogram(range=)` (was `range_min`/`range_max`, where one without the other
-  was silently ignored), the binary ops' `other`, `apply_mask`'s `mask` and
-  `channel_merge`'s `others` (were `other_node`/`other_nodes`), and
-  `rasterize`'s `size`: `[height, width]` or the id of the node whose canvas it
-  takes (was `width`/`height` or `shape_ref`). (Typed-op plan P2–P3.)
-- **Sources and sinks are typed per format.** Each `source()` and `.sink()`
-  format is one Rust definition carrying exactly the settings it reads, and the
-  builder validates what the caller passed against it, so a keyword the format
-  does not read is refused naming where it does apply (`'quality' does not
-  apply to the 'webp' sink (it applies to: jpeg)`), as is a misspelled one
-  (`'qualtiy' is not a sink parameter`). `SourceFormat`/`SinkFormat` are
-  generated from those definitions. In a hand-built graph: a contour source's
-  canvas is one `size` field (`[height, width]` or a node id; was
-  `width`/`height`/`shape_node`); an unknown or inapplicable source/sink field,
-  an unknown `on_error`, or a sink `dtype` other than `"f16"`/`"float16"` (which
-  Rust used to accept and ignore) is rejected by name. Error wording follows the
-  definitions, e.g. `source 'raw': missing field `dtype``; the `.cast` hint for
-  a contour source's `dtype` is gone. (Typed-op plan P4.)
-- **Expression parameters cross the plugin boundary as positional slots.** A
-  parameter given as a `pl.Expr` serializes as `{"$slot": n}`, the index of the
-  plugin input column that carries it; the graph assigns each distinct
-  expression (by `Expr.meta.eq`) one input, root columns first. The
-  `expr_column_names` kwarg, which bound expressions to inputs by their display
-  text, is gone and `vb_graph` rejects it; each call checks that the inputs it
-  receives cover every slot the graph reads. The graph JSON (the compiled-graph
-  cache key) no longer depends on which other expressions are alive in the
-  process, and carries no expression text. A contour source's `shape=`
-  reference is the referenced node's id (`shape_node`) instead of an embedded
-  copy of that pipeline nothing read. (Typed-op plan P1.)
-- **Graph nodes no longer serialize `alias`, `domain` or `output_dtype`.** The
-  plugin declared them only to stay closed under `deny_unknown_fields` and read
-  none of them; they only served the graph visualizer, which now reads them
-  from the Python graph. A graph JSON still carrying them is rejected.
-  (Typed-op plan P0.)
-- **Every `.cv.pipe(...)` call runs its rows in parallel.** Rows are split
-  into ranges on the plugin's thread pool (sized by `POLARS_MAX_THREADS`) and
-  reassembled in order, so eager `with_columns`/`select` on a single-chunk
-  column is multi-core: 3–4× faster on 4 cores in the measured cases, with
-  streaming unchanged. Under `on_error="raise"` the reported error is still the
-  earliest failing row's. The one-time "ran on one thread" warning and its
-  `POLARS_CV_ENGINE_WARN_SECONDS` / `POLARS_CV_SILENCE_ENGINE_WARNING`
-  variables are removed. (CR-32)
-- **`crop` rejects windows it cannot honour.** A negative `top`/`left`/`height`/
-  `width` is an error (a literal when the pipeline is built, a per-row value as
-  a row error), and so is a window that runs past the image. Previously a
-  negative offset was clamped to 0 while the extent was kept — returning a
-  *shifted* window — and an overrunning window was silently shrunk. `height`
-  and `width` are now independent: giving only one used to discard it. Row
-  errors follow `on_error`. (CR-42)
-- **`source("raw")` rejects a byte length that is not a whole number of
-  elements** instead of dropping the remainder. (CR-42)
-- **Dependency metadata.** Requires `polars>=1.41.1` (was `>=1.0`, which could
-  not import below 1.36.1 and failed the suite below 1.41.1) and `numpy>=2.0.2`
-  (was `>=2.2.6`). `networkx`/`graphviz`/`pydot` move to a `viz` extra
-  (`pip install 'polars-cv[viz]'`), needed only by `show_graph()`. Wheels are
-  tagged `cp310-abi3` to match `requires-python>=3.10`. A new CI job tests the
-  declared floors on Python 3.10. (CR-44)
+### Removed
+
+- **`PipelineGraph.set_root_column()`; `Pipeline.to_graph(column)` requires
+  its column.** The two existed for a graph built before its column was
+  known, a route nothing took; the root check still refuses a graph whose
+  root has no column.
+- **Loose contour-struct matching.** A contour struct's ring is its
+  `exterior` field. A `points` field was read as an alias, and a struct with
+  neither had its first list field taken as the exterior. Such a struct is
+  now refused ("Contour struct has no 'exterior' field"); rename the field.
+- **`sobel(ksize=)` and `laplacian(ksize=)`.** Both accepted only `3` and
+  raised for anything else; the kernels are the 3x3 ones. `sobel(axis=)` now
+  refuses a value other than `"x"`/`"y"` (it computed the y gradient for any
+  of them).
+- **`convolve2d(ksize=)`.** The side is the kernel's: its length must be the
+  square of an odd number (9 for 3×3, 25 for 5×5, ...), and `kernel` is now
+  the op's one positional parameter (`.convolve2d(k)`). `ksize` could only
+  restate that length, and a per-row `ksize` could only fail when it
+  disagreed.
+- **The resize family's `filter=` no longer accepts `"triangle"` from a
+  per-row column.** It was a parser-only alias for `"bilinear"` that the
+  Python builder already rejected as a literal, so only a column value could
+  reach it. Use `"bilinear"`. Likewise `convert_color` no longer has the
+  unreachable `"grey"`/`"grayscale"` spellings; use `"gray"`.
+- **The `affine_fusion` optimization pass, and the `rotate_affine_params` FFI it
+  used.** Collapsing a run of warps into one composed warp folds several
+  interpolation passes into one (and drops the intermediate clip of an
+  `expand=False` rotate), which changes pixels by as much as ~185/255 — so it
+  could not satisfy the on/off output-equivalence guarantee every optimization
+  now carries. `rotate`/`warp_affine`/`rotate_and_scale` ops are unchanged and
+  still execute (unfused); only the plan-time fusion of adjacent affine ops is
+  gone.
+
+### Fixed
 
 - **Inputs an op cannot handle are row errors, and some silent wrong results
   are now errors.** Every operation now checks its input shape before running,
@@ -378,107 +368,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
   `normalize(method="minmax"/"zscore")` explicitly accepts any shape, and
   `perceptual_hash` any power-of-two `hash_size` (CR-34).
-- **An image with no contours yields `[]`, not null.** `extract_contours()`
-  published an empty contour set as null, the same as a null input or a failed
-  row, so `list.len()` read null instead of 0 and the `.contour` transforms
-  (which keep `[]`) disagreed with it. Null now means only "no value"
-  (a null input, or a row failed under `on_error("null")`).
-- **The single-thread warning is based on time, not rows.** It fired when one
-  plugin call carried 50 000 rows, which image workloads rarely reach even
-  when a run takes tens of seconds on one core. It now fires once when a single
-  call runs longer than `POLARS_CV_ENGINE_WARN_SECONDS` (default 2) with no
-  other call alongside it. `POLARS_CV_ENGINE_WARN_ROWS` is no longer read, and
-  setting it prints a notice naming its replacement. The streaming docs now say
-  that the in-memory engine parallelises across chunks and only a single-chunk
-  column runs on one thread (CR-32).
-- **A null row of `sink("numpy")`/`"torch"`/`"ndarray"` is now a null value.**
-  It used to be a struct whose five fields were all null, so `is_null()` was
-  `False` and `drop_nulls()`/`null_count()` did not see it, unlike every other
-  sink. Code that tested `row["data"] is None` should test `row is None`.
-  `numpy_from_struct(None)` raises `ValueError` (CR-39).
-- **One way into the compiled plugin.** `polars_cv._plugin.call` now builds
-  every plugin expression. It resolves the extension file the import system
-  loads and passes that to polars; before, polars was handed the package
-  directory and took the first `.so` `iterdir()` returned, which beside a stale
-  second build (`_lib.abi3.so` next to `_lib.cpython-3xx-*.so`) could be a
-  different library from the one the planner had just read. It also passes each
-  argument as `.ext.storage()`, which is how tagged inputs are accepted without
-  any Rust input path knowing about extension types. `_graph.LIB_PATH` and
-  `_namespace._LIB_PATH` are removed.
-
-- **`PipelineGraph.optimize` drives all passes from one registry
-  (`OPTIMIZATION_PASSES`).** Each `PassSpec` carries a `tier` (`logical` = applied
-  in Python; `engine` = a flag serialized to Rust). Run order is the registry's
-  tuple order (data), not hand-wired branches; parity guards pin flags↔registry
-  and the logical-handler map. No behaviour change to existing passes.
-
-### Removed
-
-- **`PipelineGraph.set_root_column()`; `Pipeline.to_graph(column)` requires
-  its column.** The two existed for a graph built before its column was
-  known, a route nothing took; the root check still refuses a graph whose
-  root has no column.
-- **Loose contour-struct matching.** A contour struct's ring is its
-  `exterior` field. A `points` field was read as an alias, and a struct with
-  neither had its first list field taken as the exterior — the guessing
-  `EXTENSION_TYPES_PLAN.md` §3.5 schedules for removal once tagged inputs
-  shipped (Phase 3). Such a struct is now refused ("Contour struct has no
-  'exterior' field"); rename the field.
-- **`sobel(ksize=)` and `laplacian(ksize=)`.** Both accepted only `3` and
-  raised for anything else; the kernels are the 3x3 ones. `sobel(axis=)` now
-  refuses a value other than `"x"`/`"y"` (it computed the y gradient for any
-  of them).
-- **`convolve2d(ksize=)`.** The side is the kernel's: its length must be the
-  square of an odd number (9 for 3×3, 25 for 5×5, ...), and `kernel` is now
-  the op's one positional parameter (`.convolve2d(k)`). `ksize` could only
-  restate that length, and a per-row `ksize` could only fail when it
-  disagreed.
-- **The resize family's `filter=` no longer accepts `"triangle"` from a
-  per-row column.** It was a parser-only alias for `"bilinear"`
-  (`FilterType::ALIASES`, now deleted) that the Python builder already
-  rejected as a literal, so only a column value could reach it. Use
-  `"bilinear"`. Likewise `convert_color` no longer has the unreachable
-  `"grey"`/`"grayscale"` spellings (`ColorSpace::ALIASES`); use `"gray"`.
-- **The `affine_fusion` optimization pass, and the `rotate_affine_params` FFI it
-  used.** Collapsing a run of warps into one composed warp folds several
-  interpolation passes into one (and drops the intermediate clip of an
-  `expand=False` rotate), which changes pixels by as much as ~185/255 — so it
-  could not satisfy the on/off output-equivalence guarantee every optimization
-  now carries. `rotate`/`warp_affine`/`rotate_and_scale` ops are unchanged and
-  still execute (unfused); only the plan-time fusion of adjacent affine ops is
-  gone.
-
-### Fixed
-
-- **The OpenCV and Pillow benchmark adapters time the operation polars-cv
-  runs.** Several single-op benchmarks compared different work, and the
-  suite's output validator reported the gap as a correctness failure:
-  `resize` ran OpenCV's `INTER_AREA` against bilinear; `sharpen` an unsharp
-  mask (OpenCV) or Pillow's `SHARPEN` against polars-cv's 3×3 kernel;
-  `erode`/`dilate` thresholded to a mask on the polars-cv side only;
-  `adjust_contrast` and `adjust_brightness` truncated to u8 (Pillow's
-  contrast also took the luminance mean) against polars-cv's f32 result;
-  `blur` used another kernel size and border; `sobel_x` another border; and
-  `rotate` turned counter-clockwise (Pillow), about another centre, and
-  truncated its expanded canvas — so a 90° rotation of a non-square image
-  came out the wrong shape. Each adapter now computes polars-cv's definition
-  (the f32 ones and the rotation geometry are defined once, in
-  `benchmarks/frameworks/base.py`), and Pillow's `sharpen` raises
-  `NotImplementedError`, as its missing `canny`/`sobel_x` do, instead of
-  timing another filter. `tests/test_benchmark_adapters.py` holds every
-  single-op benchmark, per library, to a stated per-pixel tolerance against
-  both polars-cv engines — exact for most; the remaining gaps (OpenCV's
-  fixed-point grayscale, blur and warp; Pillow's box-approximated blur and
-  equalize rounding; plain vs antialiased bilinear downscaling in OpenCV)
-  are each written down.
-- **`numpy_from_struct` refuses a struct describing memory outside its
-  data.** Its strided path built the view with `as_strided`, which does not
-  bounds-check, so a hand-built struct whose shape, strides or offset reached
-  past its `data` read whatever memory followed. It now builds every array
-  through the same checked view `numpy_from_column` uses (the byte range the
-  strides reach must lie within the row), and so does its no-strides path,
-  which reported a short `data` as numpy's "cannot reshape".
-
+- **`crop` rejects windows it cannot honour.** A negative `top`/`left`/`height`/
+  `width` is an error (a literal when the pipeline is built, a per-row value as
+  a row error), and so is a window that runs past the image. Previously a
+  negative offset was clamped to 0 while the extent was kept — returning a
+  *shifted* window — and an overrunning window was silently shrunk. `height`
+  and `width` are now independent: giving only one used to discard it. Row
+  errors follow `on_error`. (CR-42)
+- **`source("raw")` rejects a byte length that is not a whole number of
+  elements** instead of dropping the remainder. (CR-42)
 - **A jagged or null `List` row is refused, not misread.** The `list` source
   took each level's size from its first element and read the row's values as
   that shape: `[[1, 2], [3]]` read past the end of its values (the missing
@@ -489,7 +387,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   (it had its own parser, which dropped null pixels and shifted the rest of
   the row); a flat, one-dimensional image is refused rather than read as one
   row, and an empty image scores a null row rather than zeros.
-
+- **A null contour coordinate is an error, not the origin.** A point with a
+  null `x` or `y`, or a null point inside a ring, used to read as `0.0`,
+  silently moving the ring (and changing its area, IoU, rasterization…). Every
+  contour consumer now refuses it, naming the row.
 - **Geometry values are read by field name, and a missing value is never
   0.0.** `.contour.contains_point` read a point's first two fields by
   position (a `{y, x}` point was tested swapped) and read a missing,
@@ -502,22 +403,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **A null input point gives a null result point.** Point transforms
   returned a struct of null fields (`{"x": None, "y": None}`) for a null row;
   they now return a null row, as every other geometry function does.
-
-- **A null contour coordinate is an error, not the origin.** A point with a
-  null `x` or `y`, or a null point inside a ring, used to read as `0.0`,
-  silently moving the ring (and changing its area, IoU, rasterization…). Every
-  contour consumer now refuses it, naming the row.
-
-- **Streaming throughput regressions from the row-parallel executor
-  (CR-32) and the aligned blob copy (CR-41) are fixed.** A binary row's
-  aligned copy assembled 8-byte words one at a time, ~7x slower than a
-  memcpy (60+ µs per 256×256×3 row); it is one copy now. And every call split
-  its rows over the plugin's thread pool, including the streaming engine's
-  concurrent morsel calls, which moved every row's buffers between threads:
-  up to 2.6x slower per row on byte-heavy streaming queries. A call now
-  spreads its rows only when it runs alone and the graph's previous call did
-  too (the in-memory engine's single call per query keeps its speedup), and a
-  one-thread pool never splits.
+- **`numpy_from_struct` refuses a struct describing memory outside its
+  data.** Its strided path built the view with `as_strided`, which does not
+  bounds-check, so a hand-built struct whose shape, strides or offset reached
+  past its `data` read whatever memory followed. It now builds every array
+  through the same checked view `numpy_from_column` uses (the byte range the
+  strides reach must lie within the row), and so does its no-strides path,
+  which reported a short `data` as numpy's "cannot reshape".
 - **An op reading another node checks that node's domain at build.**
   `img.apply_mask(contours)`, `img.add(contours)` and `channel_merge` over a
   contour-domain node built, planned a buffer schema and failed every row;
@@ -528,13 +420,6 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   node continued from another node lost its input. Only a trailing
   `rasterize()`'s canvas is replaced (its paint is kept); a pipeline ending
   in neither contours nor `rasterize()` is refused.
-
-- **Optimizations can no longer turn a working query into a failing one on a
-  claim.** A blob's declared `dtype` is checked at decode (a mismatch is a row
-  error naming both dtypes); before, identity elimination took the declaration
-  as fact and removed a `.cast()` the user wrote. `source("contour", shape=…)`
-  records its canvas as a declaration, as `rasterize(shape=…)` does, so a size
-  resting on an upstream `assert_shape` is not treated as known.
 - **A per-row parameter is no longer validated as a stand-in value.** The
   planner resolved each op with a placeholder for every expression parameter
   (`1` for an integer) to read its rules, so
@@ -544,14 +429,6 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   built, a per-row value when its row runs, and nothing is invented. A per-row
   blur `sigma` or morphology `ksize` likewise plans a per-row neighbourhood
   radius rather than the placeholder's.
-- **A fully known input shape is validated at build time**: e.g.
-  `grayscale().channel_select(2)` after `assert_shape(channels=3)` raises when
-  written, not per row.
-- `assert_shape` sizes must be positive ints, checked in Rust whichever spelling
-  (`dims=` or `height=`/`width=`/`channels=`) carries them.
-- `repr()`/`explain()` render the `assert_shape` calls that were written, where
-  they were written, instead of every inferred size as an `assert_shape(...)`.
-
 - **An image of unknown size is no longer planned as square.** The plan-time
   shape prober stood the same placeholder in for every unknown input axis, so
   an aspect-preserving resize made per-row by another parameter
@@ -559,33 +436,30 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   that executes as 7x4. Shapes are now computed symbolically: only what the op
   fixes is known (`resize_to_height(7, ...)` plans `[7, ?]`). Conversely a
   per-row rotation angle over a known square image now keeps its size.
-- **`transpose` with a repeated axis is rejected when the pipeline is built.**
-  `transpose([0, 0, 1])` passed the builder (which checked only count and
-  range) and failed per row. Axis lists for `transpose`/`flip` are now checked
-  at build time by the engine op's own `validate`, whenever the rank is known.
-  `transpose`, `reshape` and `flip` are typed ops (typed-op P3).
+- **Distinct expression parameters no longer collapse into one.** An
+  expression parameter was identified by its display text, `str(expr)`, which
+  is not unique: every `pl.lit(pl.Series("f", ...))` prints `Series[f]`, and
+  every Python UDF prints `python_udf`. Two such parameters in one pipeline
+  shared a plugin input, so the second op silently read the first op's values —
+  `.scale(pl.lit(s1)).scale(pl.lit(s2))` applied `s1` twice. The same text
+  identity decided CSE merges and root-column deduplication. Identity is now
+  `Expr.meta.eq`, through one slot table per graph (CR-31).
+- **`cast(A)→cast(B)` no longer drops a narrowing intermediate cast.** The engine
+  collapsed consecutive casts unconditionally, discarding the intermediate even
+  when it quantized — a fractional-`f32` `.cast("u8").cast("f32")` returned `0.5`
+  instead of the correct `1.0`. It now collapses only when the intermediate dtype
+  losslessly holds the input (`DType::losslessly_contains`); a narrowing
+  intermediate is kept and executes. A float intermediate between an integer
+  input and an integer target is kept too, although it is lossless: float → int
+  saturates where int → int wraps, so collapsing `u16 → cast("f32") → cast("u8")`
+  turned 300 into 44 instead of 255.
 - **A malformed VIEW blob can no longer cause undefined behaviour.** A blob
   whose `data_offset` or strides were not multiples of the element size built a
   misaligned typed slice in release builds (debug builds panicked). Both blob
   decoders now read through one validated parser (`view_buffer::parse_blob`)
-  that rejects it as a row error; binary rows are copied to 8-byte-aligned
-  storage; and `ViewBuffer::as_ptr` checks alignment in every build.
-  `ViewBuffer::from_blob` also no longer reads past its own copy for a strided
-  blob. (CR-41)
-- **`uv run` no longer builds the extension at release LTO**
-  (`[tool.uv] package = false`). (CR-43)
-
-- **`blur()` uses AVX2 when the CPU has it, in the published wheels too.**
-  The wheels target baseline x86-64; blur now dispatches at runtime to an AVX2
-  build (1.2–1.3x faster), with bit-identical output on every CPU (CR-35).
-- **Contour outputs are built straight into Arrow.** The contour sink and every
-  `.contour` transform built one `AnyValue` per point and a sub-`Series` per
-  ring. The contour sink's encode overhead drops ~10x and `.contour.translate()`
-  ~6x on a 90k-point batch; the output is unchanged (CR-36).
-- **`source("array")` is no longer quadratic in the batch size.** The
-  zero-copy path copied the column's entire values buffer on every row to
-  read that one row, so a 100k-row morsel of 8×8 arrays cost ~35 µs per row.
-  Rows are now views into the column (~1.2 µs per row, debug build) (CR-40).
+  that rejects it as a row error, and `ViewBuffer::as_ptr` checks alignment in
+  every build. `ViewBuffer::from_blob` also no longer reads past its own copy
+  for a strided blob. (CR-41)
 - **`on_error("null")` now covers failures the engine raises as panics.** Some
   data-dependent failures, such as two operands that cannot broadcast, are
   raised inside the engine as panics, which were caught once per batch. Under
@@ -597,183 +471,108 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   ever produced a row of a different kind than the sink expects,
   `build_series_from_spec` published it as null. It now raises an internal error
   naming both kinds (CR-38).
-- **`sink("list")` and `sink("array")` no longer fall onto a per-element slow
-  path.** A `list` sink of rank 2 or more, or an `array` sink with even one null
-  row, built one `AnyValue` per element and ran ~34-40x slower than
-  `sink("numpy")`. For example, a single decode failure under `on_error="null"`
-  made the whole column 40x slower. Both sinks are now built straight into
-  Arrow from one flat values buffer, cost about what the numpy sink costs,
-  and copy each value once instead of up to three times. Rows that break the
-  plan are now errors, where some used to be accepted: a row whose dtype
-  differs from the planned one was silently cast (only the first row was
-  checked), and an `array` row with the wrong element count was accepted (CR-33).
-- **Distinct expression parameters no longer collapse into one.** An
-  expression parameter was identified by its display text, `str(expr)`, which
-  is not unique: every `pl.lit(pl.Series("f", ...))` prints `Series[f]`, and
-  every Python UDF prints `python_udf`. Two such parameters in one pipeline
-  shared a plugin input, so the second op silently read the first op's values —
-  `.scale(pl.lit(s1)).scale(pl.lit(s2))` applied `s1` twice. The same text
-  identity decided CSE merges and root-column deduplication, so two such root
-  columns were read as one. Identity now has a single authority,
-  `_types.expr_key`, which keeps the readable text as the key while it is
-  unambiguous and disambiguates by `Expr.meta.eq` when it is not (CR-31).
-- **`cast(A)→cast(B)` no longer drops a narrowing intermediate cast.** The engine
-  collapsed consecutive casts unconditionally, discarding the intermediate even
-  when it quantized — a fractional-`f32` `.cast("u8").cast("f32")` returned `0.5`
-  instead of the correct `1.0`. It now collapses only when the intermediate dtype
-  losslessly holds the input (`DType::losslessly_contains`); a narrowing
-  intermediate is kept and executes. A float intermediate between an integer
-  input and an integer target is kept too, although it is lossless: float → int
-  saturates where int → int wraps, so collapsing `u16 → cast("f32") → cast("u8")`
-  turned 300 into 44 instead of 255.
-- **`Pipeline.explain(optimized=True)` now reflects every node-scope pass.** It
-  drove a hand-written list of passes and so omitted identity elimination,
-  showing ops that `.sink()` actually deletes. It now applies the node passes
-  from the same registry `optimize()` uses, so it cannot drift from execution
-  again.
-- **Spatial-window pushdown no longer crosses a multi-input op.** A crop is now
-  barred from hoisting past an op that reads a sibling node's buffer
-  (`apply_mask`, `channel_merge`, binary ops); crossing one would have shrunk
-  only one operand. Node-splitting kept this off the public API today, but the
-  guard makes the pass correct rather than merely lucky.
+- **`list` and `array` sink rows that break the plan are errors.** A row whose
+  dtype differs from the planned one was silently cast (only the first row was
+  checked), and an `array` row with the wrong element count was accepted
+  (CR-33).
+- **`uv run` no longer builds the extension at release LTO**
+  (`[tool.uv] package = false`). (CR-43)
+- **The OpenCV and Pillow benchmark adapters time the operation polars-cv
+  runs.** Several single-op benchmarks compared different work, and the
+  suite's output validator reported the gap as a correctness failure:
+  `resize` ran OpenCV's `INTER_AREA` against bilinear; `sharpen` an unsharp
+  mask (OpenCV) or Pillow's `SHARPEN` against polars-cv's 3×3 kernel;
+  `erode`/`dilate` thresholded to a mask on the polars-cv side only;
+  `adjust_contrast` and `adjust_brightness` truncated to u8 (Pillow's
+  contrast also took the luminance mean) against polars-cv's f32 result;
+  `blur` used another kernel size and border; `sobel_x` another border; and
+  `rotate` turned counter-clockwise (Pillow), about another centre, and
+  truncated its expanded canvas. Each adapter now computes polars-cv's
+  definition, and Pillow's `sharpen` raises `NotImplementedError`, as its
+  missing `canny`/`sobel_x` do, instead of timing another filter.
+  `tests/test_benchmark_adapters.py` holds every single-op benchmark, per
+  library, to a stated per-pixel tolerance against both polars-cv engines.
+
+### Performance
+
+- **Less per-row executor overhead.** A run of all-literal buffer ops is
+  planned once per input layout per call and replayed, instead of re-planned
+  on every row (a 4-op chain: 2.62 → ~1.85 µs/row), and the row loop
+  addresses nodes by position instead of hashing node-id strings (no-op rows:
+  1.16 → 0.72 µs). Debug-build figures (CR-37).
+- **`canny` on u8 input runs in integer arithmetic** over padded planes, as
+  OpenCV does.
+- **Image decode and encode no longer copy every pixel an extra time.**
+  Decoding hands the codec's allocation over instead of converting through a
+  new image; PNG, JPEG and WebP encode read the buffer's pixels in place. Only
+  a colour type the encoder refuses as it is (JPEG's alpha layouts) still
+  converts. 16-bit PNG keeps the one image-sized buffer its big-endian byte
+  swap needs.
+- **`blob` and `raw` sources read aligned rows in place.** A row longer than
+  12 bytes that already starts on an 8-byte boundary in the column's memory (a
+  `blob` sink's rows always do) is read where it lies; others are copied once,
+  at memcpy speed (the aligned copy used to assemble 8-byte words one at a
+  time, ~7x slower).
+- **f32 scalar ops write in place in pipelines, as the engine intended.** A
+  segment takes its input by value, and a node that is its upstream's only
+  reader (not a graph output, not an operand) moves that output instead of
+  sharing it, so the fused kernel's in-place path applies.
+- **`list` and `array` sinks are built straight into Arrow and copy each
+  row's values once.** A `list` sink of rank 2 or more, or an `array` sink
+  with even one null row, built one `AnyValue` per element and ran ~34–40x
+  slower than `sink("numpy")`; both now cost about what the numpy sink costs
+  (CR-33).
+- **Contour columns are read and written straight from Arrow.** Every contour
+  consumer shares one reader over the column's arrays (6 allocations for a
+  two-contour row, was 98), and the contour sink and `.contour` transforms
+  build their output directly: encode overhead drops ~10x and
+  `.contour.translate()` ~6x on a 90k-point batch (CR-36).
+- **`source("array")` is no longer quadratic in the batch size.** Rows are
+  views into the column (~1.2 µs per row, was ~35 µs on a 100k-row morsel of
+  8×8 arrays) (CR-40).
+- **`blur()` uses AVX2 when the CPU has it, in the published wheels too.**
+  The wheels target baseline x86-64; blur dispatches at runtime to an AVX2
+  build (1.2–1.3x faster), with bit-identical output on every CPU (CR-35).
+- **Plan-time passes are linear.** Identity elimination folds each op's
+  entering state once (O(n), was O(n²) FFI calls). CSE groups nodes by a
+  canonical source serialization instead of `hash(source)`, so a hash
+  collision cannot fuse across different sources.
 
 ### Internal
 
-- **Source decoding lives in `graph/decode.rs`.** `decode_source_row`, the
-  per-format match over a node's source, moved out of the executor
-  (`graph/compiled.rs`), which now hands it the node id and a `RowFetch`
-  (cloud options, path sandbox, prefetched bytes) rather than its private
-  `NodePlan`. No behaviour change.
-
-- **Typed-op migration, P0 (safety net).** See `TYPED_OPS_PLAN.md`. A golden
-  behaviour corpus (`tests/golden/op_corpus.json`, 214 cases), a frozen builder
-  call surface (`tests/golden/signatures.json`), a pickle/copy pin, the
-  removed-symbol gate (`scripts/check_removed_symbols.py`), a single test seam
-  for planner state (`tests/_plan_view.py`, 30 files migrated, guarded), and
-  performance baselines (`benchmarks/reports/2026-09-24-typed-ops-baseline/`,
-  new `benchmarks/plan_build.py`).
-- **Typed-op migration, P2 (catalogue).** New crate `polars-cv-macros`
-  (`#[derive(Op)]`) and module `polars-cv/src/ops/`: `Param<T>`/`Literal<T>`
-  fields, the `typed_ops!` registry, and `op_catalog.json` →
-  `scripts/gen_ops.py` → `python/polars_cv/_ops_generated.py`, which `Pipeline`
-  inherits. `OpSpec` deserialization dispatches by name to the typed or the
-  legacy (`LEGACY_OPS`, was `KNOWN_OPS`) path with no fallback between them.
-  The API docs render inherited members.
-- **Typed-op migration, P3 (every op typed).** All 85 ops are `typed_ops!`
-  entries; `LEGACY_OPS` is empty (it, `LegacyOpSpec` and the dispatcher's
-  legacy arm go in P6, and `resolve_op` refuses a hand-built legacy spec).
-  Deleted with the name-keyed resolution: `resolve_op_inner` and its arm-scan
-  guards, the `OpParams` read-tracker, the `get::*` enum/flag/list readers,
-  `ParamValue::resolve_{f64,bool,str,string}`, the `shape_ref` probe injection,
-  the `BINARY_OPS` alias, Python's `_enum_param`, `_add_binary_op` and
-  `_add_channel_merge` — each listed in `check_removed_symbols.py`. New field
-  types: `NodeRef` (another graph node, for `lazy_only` ops, whose builders stay
-  on `LazyPipelineExpr`) and `ColumnRef` (`label_reduce`'s contour column).
-  `ParamCtx` carries the plan-time probe value, which a node-sized `rasterize`
-  reads so its canvas plans as unknown.
-- **Typed-op migration, P10 (final sweep).** The contributor docs describe the
-  finished protocol (adding an op is a `#[derive(Op)]` struct, one `OpDef`
-  impl with `resolve` and `shape`, a `typed_ops!` line and `gen_ops.py`);
-  dead helpers found by `vulture` are deleted; CR-45…CR-49 are closed.
-- **Typed-op migration, P9 (symbolic shapes).** Each view-buffer op declares
-  its shape transform as data, `Op::shape() -> OpShape` (required, replacing
-  `infer_shape`): one authority that execution evaluates on known sizes and
-  the planner evaluates symbolically over `Dim` (`Known`, `Input(k)`,
-  `Unknown`) and `Sym` (`Known`, `PerRow`) arguments. Each typed op builds its
-  `OpShape` from its own fields (`OpDef::shape`, required), so planning never
-  binds a per-row value; `typed_shape_is_the_resolved_steps` holds it to the
-  engine op's. Deleted: the four-value shape probe (`infer_shape`,
-  `infer_shape_probe`, `unknown_dim_probe`, `PRESERVED_DIM`), the planning
-  `catch_unwind`, `ImageOpKind::output_hw`, `IdentityRule::Always` and
-  `deciding_params` (identity rules no longer depend on parameter values;
-  `OpShape::preserves` decides a pad or crop). `ParamCtx::probe` became
-  `ParamCtx::planning`, a single placeholder for reading an op's
-  value-independent rules.
-- **Typed-op migration, P7 (planner into Rust).** Every schema fact the
-  Python planner computed is now computed by `src/plan.rs`, one FFI call per
-  step: `plan_step` (an op's domain, dtype, rank, H/W and channels, the binary
-  dtype from the other operand's), `plan_source` (a source's starting state
-  from its typed format), `plan_assert` (an `assert_shape` declaration,
-  checked and applied) and `plan_sink` (a sink's keywords and the state it
-  needs). Python holds the result as an immutable `PlanState` with the Rust
-  `State`'s field names; every rewrite of an op list (CSE, sub-pipelines, the
-  passes) is one `_replay` from a recorded state. Identity elimination and
-  the spatial pushdown run in Rust (`node_pass`, dispatched on a generated
-  `LogicalPass`); the pass list is one Rust catalogue that `OptFlags` and
-  `OptConfig` are both built from, and `OptConfig` refuses an unknown key.
-  Each graph output carries its node's final state as `planned`, from which
-  Rust reads the output's schema facts (the five `expected_*` wire fields and
-  `expected_encoding` are gone). The binary `LazyPipelineExpr` methods are
-  generated from the catalogue. Deleted: the `op_schema`, `op_contract`,
-  `op_identity_rule`, `op_infer_shape`, `op_output_channels`,
-  `binary_output_dtype`, `io_check`/`sink_check` FFIs and their string
-  vocabularies, `ShapeHints`, `ShapeAssertion`, `PassSpec.bit_exact`, and the
-  Python folds, hint snapshots and rewrite helpers they fed.
-- **Typed-op migration, P6 (legacy protocol deleted).** `TypedOp` is the wire
-  op; `pipeline.rs` (`OpSpec`, `LegacyOpSpec`, the name dispatcher),
-  `LEGACY_OPS`, `resolve_op`, the untyped Rust `ParamValue`, the `known_ops`,
-  `enum_variants` and `enum_names` FFIs and Python's `OP_NAMES` are deleted.
-  The 20 user-facing enums in `polars_cv._types` (`DType`, `FilterType`,
-  `Winding`, …) are generated from the Rust `named_variants!` tables through
-  a new `enum_catalog` FFI and `tests/golden/enum_catalog.json`, docstrings
-  included, so the per-enum parity tests are gone. `RowErrorPolicy` and
-  `NullParamPolicy` parse through their `NAMED` tables instead of serde, so a
-  hand-built graph's unknown `on_error`/`on_null_param` now reads
-  `unknown RowErrorPolicy "x", expected one of [...]`.
-- **Typed-op migration, P5 (geometry namespaces).** The `.contour`/`.point`/
-  `.bbox` accessors' kwargs are typed structs (`Param<T>` parameters,
-  `ColumnRef` operands, `#[derive(Op)]`); each expression kwarg carries its own
-  `{"$slot": n}`, so the `input_slots` name→index map, `InputSlots`,
-  `parse_named`/`require_named` and the name-keyed `GeomParams` readers are
-  deleted. A hand-written call still passing `input_slots` is refused. A
-  per-row enum value outside its table now reads `unknown Winding "CW",
-  expected one of [...]` (was `Unsupported winding direction 'CW'`).
-- **Typed-op migration, P4 (typed sources and sinks).** New module
-  `polars-cv/src/formats/`: a `formats!` registry of `#[derive(Op)]` structs,
-  one per source/sink format, with its own catalogue
-  (`tests/golden/io_catalog.json`, `io_catalog` FFI) and an `io_check` FFI the
-  builder validates through. Deleted: `SOURCE_PARAM_APPLIES`,
-  `SINK_PARAM_APPLIES`, `PARAM_HINTS`, `reject_inapplicable_params`,
-  `KNOWN_SOURCE_FORMATS`, `SourceSpec`/`SinkSpec` (Rust), the hand
-  `SourceFormat`/`SinkFormat` enums, `ImageCodec::from_sink_format`, and — with
-  nothing untyped left to read — `ParamValue`'s resolvers and `params::get`.
-  `SinkDType` is the one dtype name outside `dtype_table!` (half precision is
-  only an encode-time downcast), in its own file with a stated exemption.
-- **Typed-op migration, P1 (positional slots).** `_types.SlotTable` is the one
-  expression-identity authority; the process-wide `expr_key` registry, Rust's
-  name->slot binding and the planning probe re-serializers are deleted and
-  listed in `check_removed_symbols.py`.
+- **One typed op protocol.** Every op is a variant of a mode-generic family
+  enum (`ImageOpKind<M>`, `ComputeOp<M>`, `GraphOp<M>`, …) listed in
+  `typed_ops!`; sources and sinks are `#[derive(Ops)]` families
+  (`formats::source::Source`, `formats::sink::Sink`), and the geometry
+  accessors are `ContourFn`/`PointFn`/`BBoxFn`. `TypedOp` is
+  `GraphStep<Wire>`: the planner (`src/plan.rs`, one `plan::step` per
+  appended op) reads its rules directly, and resolving it per row gives the
+  `GraphStep<Exec>` that runs. New crate `polars-cv-macros` holds the
+  derives. Each op declares its shape as data (`Op::shape() -> OpShape`,
+  evaluated on known sizes at execution and symbolically at plan time), and
+  new required `Op` contracts `identity_rule` and `is_spatial_window` drive
+  identity elimination and the spatial pushdown with no op name matched in
+  Python. The legacy name-keyed op protocol is deleted.
+- **The Python surface is generated.** `scripts/gen_ops.py` writes the
+  enums, every builder method, `source()`, the geometry accessors and
+  `LazyPipelineExpr`'s chainable methods (`_ops_generated.py`,
+  `_lazy_forwarders.py`) from the committed catalogues
+  (`tests/golden/{op,io,enum,geom}_catalog.json`); `lazy.pyi` and
+  `scripts/gen_lazy_stub.py` are gone and `ty` checks `lazy.py` itself. Every
+  "Domain:" docstring line is generated from the op's domain contract, and a
+  hand-written sugar method's is composed from the ops it declares
+  (`@_sugar`).
+- **Safety net.** A golden behaviour corpus (`tests/golden/op_corpus.json`),
+  a frozen builder call surface (`tests/golden/signatures.json`), a
+  pickle/copy pin, a single test seam for planner state
+  (`tests/_plan_view.py`) and plan-build benchmarks (`benchmarks/plan_build.py`).
+- **Source decoding lives in `graph/decode.rs`**, and geometry functions share
+  one row splitter (`row_split.rs`) and one reader per geometry type
+  (`geom_columns.rs`).
 - `scripts/verify.sh` and the pre-commit clippy hook run cargo under the PyO3
-  environment `maturin develop` sets (`scripts/with-pyo3-env.sh`). Without it the
-  two invalidated each other's builds, costing ~2 minutes of polars-stack
-  rebuilds per `verify.sh` run on an unchanged tree; `verify.sh` now also checks
-  that cargo finds maturin's build fresh, so a drift fails instead of slowing.
-
-- Identity elimination folds each op's entering state once (O(n), was O(n²) FFI
-  calls). CSE groups nodes by a canonical source serialization instead of
-  `hash(source)`, so a hash collision cannot fuse across different sources.
-- **Sources and sinks are `#[derive(Ops)]` families (consolidation C6).**
-  `formats::source::Source` and `formats::sink::Sink` are enums with one
-  variant per format, derived like the op families; the `formats!` registry,
-  the per-struct `#[derive(Op)]`, `OpFields` and the per-parse catalogue
-  rebuild are gone. A family with no per-row value has no mode parameter.
-  `#[param(default = ...)]` is applied by the wire (JPEG `quality` 85,
-  `on_error` "raise", `require_contiguous` false), replacing each
-  `Option` + `unwrap_or`; `Visibility` is an enum. Each sink format now has
-  its own docstring in the catalogue.
-- **`LazyPipelineExpr`'s chainable methods are generated code (C7c).**
-  `scripts/gen_ops.py` writes them into `_lazy_forwarders.py` from the built
-  `Pipeline`; the import-time `setattr` forwarders, `lazy.pyi` and
-  `scripts/gen_lazy_stub.py` are gone, and `ty` now checks `lazy.py` itself.
-  That surfaced two untruthful annotations, fixed: `LazyPipelineExpr.column`
-  is `pl.Expr | None` (a continuation node has no column), and `.sink()` is
-  overloaded on `return_expr` (`pl.Expr`, or `PipelineGraph` for
-  `return_expr=False`), which retired ten `# ty: ignore` comments.
-- **Every "Domain:" docstring line is generated (C7d, C8).** An op's comes
-  from its Rust domain contract (`domains` in the op catalogue); a
-  hand-written sugar method declares the ops it lowers to (`@_sugar`) and its
-  line is composed from theirs, with a test holding the method to its
-  declaration. `polars_cv/_domains.py` renders both.
+  environment `maturin develop` sets (`scripts/with-pyo3-env.sh`), so the two
+  no longer invalidate each other's builds; `verify.sh` checks that cargo
+  finds maturin's build fresh.
 
 ## [0.28.0] — 2026-09-12
 
@@ -3398,6 +3197,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
+[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.29.0...HEAD
+[0.29.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.29.0
+[0.28.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.28.0
 [0.27.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.27.0
 [0.26.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.26.0
 [0.25.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.25.0

@@ -8,6 +8,11 @@
 > op and every two-operand op over a matrix of ranks, channel counts and dtypes
 > and fails on any panic. A panic that still occurs is an engine bug; it is
 > caught per row and reported as "internal error: the engine panicked".
+>
+> This page is the historical audit record (September 2026). The code has
+> moved since: the sites below are named by file and pattern as they stood at
+> audit time, and the "Root cause" section describes the state *before* the
+> fix.
 
 Scope: find `panic!` / `unreachable!` / `unwrap()` / `expect()` / unchecked
 indexing that a **user can trigger with ordinary inputs** (bad params, malformed
@@ -61,23 +66,23 @@ inputs or it will reject currently-working pipelines — needs a test pass.
 
 Each indexes a fixed axis assuming rank ≥ 3 (HWC) with no runtime guard:
 
-- `view-buffer/src/ops/color.rs:164` — `(h, w, c) = (shape[0], shape[1], shape[2])`
-- `view-buffer/src/ops/color.rs:458`, `:485` — same pattern
-- `view-buffer/src/ops/mask.rs:30` — `c = buf_shape[2]`
-- `view-buffer/src/execution/runner.rs:115-116` — `shape()[0]/[1]`
-- `view-buffer/src/execution/runner.rs:433` — `c = shape[2]`
-- `view-buffer/src/execution/runner.rs:484-485` — `buffers[0].shape()[0]/[1]` (also assumes `buffers` non-empty for channel-merge)
+- `view-buffer/src/ops/color.rs` — `(h, w, c) = (shape[0], shape[1], shape[2])`
+- `view-buffer/src/ops/color.rs` — same pattern
+- `view-buffer/src/ops/mask.rs` — `c = buf_shape[2]`
+- `view-buffer/src/execution/runner.rs` — `shape()[0]/[1]`
+- `view-buffer/src/execution/runner.rs` — `c = shape[2]`
+- `view-buffer/src/execution/runner.rs` — `buffers[0].shape()[0]/[1]` (also assumes `buffers` non-empty for channel-merge)
 
 Sites that already guard (`if shape.len() == 3 { shape[2] } else { 1 }`) — e.g.
-`color.rs:213/259`, `compute.rs:234`, `pad.rs:170`, `runner.rs:227/286` — are
+`color.rs`, `compute.rs`, `pad.rs`, `runner.rs` — are
 **not** reachable panics and need no change.
 
 ## Secondary triage (polars-cv encode)
 
-- `graph/encode.rs:385/517/535` — `shape[0]` on the reduction/vector encode path;
+- `graph/encode.rs` — `shape[0]` on the reduction/vector encode path;
   reachable only if an empty-shape buffer arrives. Low risk (reductions produce
   rank ≥ 1) but worth a defensive `first()` check when the validate wiring lands.
-- `graph/encode.rs:69` — `&contours[0]` assumes a non-empty contour set; confirm
+- `graph/encode.rs` — `&contours[0]` assumes a non-empty contour set; confirm
   the geometry domain guarantees ≥ 1 element or guard it.
 
 ## Out of scope (confirmed safe / not user input)

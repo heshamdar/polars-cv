@@ -281,7 +281,7 @@ def test_dims_pins_the_rank_a_list_source_could_not_supply() -> None:
 
 
 def test_assert_shape_rejects_a_malformed_declaration() -> None:
-    # Any rank is a declaration the planner tracks (PLANNER_SIZES_PLAN.md S1);
+    # Any rank is a declaration the planner tracks;
     # a rank-4 `dims=` reaching an array sink is in test_schema_parity_array_sink.
     with pytest.raises(ValueError, match="both"):
         Pipeline().source("list").assert_shape(dims=[8, 8, 3], height=8)

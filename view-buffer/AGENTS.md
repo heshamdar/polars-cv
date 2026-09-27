@@ -49,11 +49,14 @@ src/
 │   ├── histogram.rs    # Histogram computation
 │   ├── phash.rs        # Perceptual hashing (aHash/pHash/dHash) ops
 │   ├── view.rs         # ViewOp enum — zero-copy layout ops (transpose, reshape, flip, crop, channel_select)
+│   ├── mask.rs         # apply_mask — mask a buffer by another
+│   ├── pad.rs          # PadMode, PadPosition — padding settings
 │   ├── shape_rule.rs   # OpShape — shape arithmetic, rank (its length) and channels (axis 2): the authority
+│   ├── spatial_rule.rs # SpatialDependency — what an output pixel reads (Pointwise/Neighborhood/Global/Geometric)
 │   ├── validation.rs   # Plan-time shape/dtype constraint checks
 │   └── util.rs         # Shared index/coordinate helpers
 ├── expr.rs             # ViewExpr — lazy expression graph builder
-├── execution/          # ExecutionPlan, runner, tiling (no-op)
+├── execution/          # ExecutionPlan (plan.rs), runner (runner.rs)
 ├── geometry/           # Contour, Point, BoundingBox, extraction, rasterization, measures, pairwise
 │                       # Polygon maths is `geo`'s throughout — this layer maps
 │                       # Contour <-> geo types and owns degenerate-input conventions.
@@ -128,25 +131,24 @@ Consecutive compute operations (scalar element-wise: scale, relu, clamp, cast) a
 
 ### Op Trait
 
-`Op` (`src/ops/traits.rs`) declares the plan-time contract every op must
-answer. Seven rule methods carry **no default**, so a new op does not compile
-until it states each one — it cannot inherit a lie:
+`Op` (`src/ops/traits.rs`) declares the contract every op must answer. Seven
+rule methods carry **no default**, so a new op does not compile until it
+states each one — it cannot inherit a lie:
 
 ```rust
 pub trait Op {
     fn name(&self) -> &'static str;
     fn infer_strides(&self, shape: &[usize], strides: &[isize]) -> Option<Vec<isize>>;
 
-    // The plan-time contract — five required rules, no defaults.
+    // The contract — seven required rules, no defaults.
     fn shape(&self) -> OpShape; // the one authority for shape arithmetic
     fn output_dtype_rule(&self) -> OutputDTypeRule;
     fn memory_effect(&self) -> MemoryEffect; // View, StridePreserving, RequiresContiguous
     fn spatial_dependency(&self) -> SpatialDependency; // Global is the safe answer
     fn identity_rule(&self) -> IdentityRule;           // Never is the safe answer
-
-    // Also required (no default): whether this op is a hoistable H/W window,
-    // read by the spatial-window pushdown.
-    fn is_spatial_window(&self) -> bool;
+    fn is_spatial_window(&self) -> bool; // a hoistable H/W window (spatial pushdown)
+    fn validate(&self, input_shapes: &[&[Dim]], input_dtypes: &[PlannedDType])
+        -> Result<(), ValidationError>; // plan time and before every row (CR-34)
 }
 ```
 
@@ -167,12 +169,11 @@ past the edge), a same-shape reshape — so a per-row parameter, being
 `Sym::PerRow`, can never prove one. Shape preservation alone never proves a
 no-op for an op that moves pixels, which is why those stay `Never`.
 
-The dtype methods that *do* carry defaults are `validate()`,
-`accepted_input_dtypes()`, `working_dtype()`, `resolve_output_dtype()` and
-`validate_output_dtype()`.
+The dtype methods that *do* carry defaults are `accepted_input_dtypes()`,
+`working_dtype()`, `resolve_output_dtype()` and `validate_output_dtype()`.
 
-The six rule methods are the ones the Python planner reads over FFI, and
-**adding a default to any of them is a regression** — an op that declines to
+The seven rule methods are what the plugin's Rust planner (`plan::step`) and
+its passes read, and **adding a default to any of them is a regression** — an op that declines to
 declare its dtype rule would silently inherit `PreserveInput` and publish a
 schema execution cannot produce. This matches the required-no-default list in
 the root `CLAUDE.md` and the Canonical Paths table in the root `AGENTS.md`.
@@ -207,22 +208,26 @@ Key implementation points:
 
 ## Implementation Notes
 
-- **Filter** (`ops/filter.rs`): `ConvolveOp` dispatched directly in graph executor (not via ViewExpr/ExecutionPlan), similar to Color.
-- **Canny** (`execution/runner.rs`): `cv2.Canny(img, low, high)` exactly (3x3 Sobel with replicated border, L1 magnitude, no pre-blur → OpenCV's fixed-point NMS → 8-connected hysteresis; colour takes the strongest channel per pixel, alpha ignored). `polars-cv/tests/reference/test_canny_ref.py` holds it to OpenCV pixel for pixel. Outputs U8 binary mask (0/255). `TilePolicy::Global`.
-- **HistogramEqualize** (`execution/runner.rs`): 256-bin histogram → CDF remap. U8 output. `TilePolicy::Global`.
+- **Filter** (`ops/filter.rs`): `ConvolveOp` runs as `ViewExpr::Filter` / `PlanStep::Filter` (`apply_convolve2d`).
+- **Canny** (`execution/runner.rs`): `cv2.Canny(img, low, high)` exactly (3x3 Sobel with replicated border, L1 magnitude, no pre-blur → OpenCV's fixed-point NMS → 8-connected hysteresis; colour takes the strongest channel per pixel, alpha ignored). `polars-cv/tests/reference/test_canny_ref.py` holds it to OpenCV pixel for pixel. Outputs U8 binary mask (0/255). `SpatialDependency::Global`.
+- **HistogramEqualize** (`execution/runner.rs`): 256-bin histogram → CDF remap. U8 output. `SpatialDependency::Global`.
 - **Affine** (`execution/runner.rs`): Forward-mapping 2×3 matrix with internal inversion for inverse-mapping interpolation. Supports Nearest and Bilinear interpolation with configurable `border_value`. Parameters in `ops/affine.rs` (`AffineParams`, `InterpolationType`). Two variants: `ComputeOp::Affine` (raw matrix) and `ComputeOp::RotateAffine` (deferred rotation, constructs `AffineParams` via `AffineParams::from_rotation()` at execution time). Both use `apply_affine_warp()`. `MemoryEffect::RequiresContiguous`.
-- **Erode/Dilate** (`execution/runner.rs`): Separable row+column min/max filter. Single-channel only. Supports multiple iterations. `TilePolicy::LocalNeighborhood`.
-- **MorphGradient** (`execution/runner.rs`): Dilate − Erode (saturating subtract). Single-channel only. `TilePolicy::LocalNeighborhood`.
+- **Erode/Dilate** (`execution/runner.rs`): Separable row+column min/max filter. Single-channel only. Supports multiple iterations. `SpatialDependency::Neighborhood`.
+- **MorphGradient** (`execution/runner.rs`): Dilate − Erode (saturating subtract). Single-channel only. `SpatialDependency::Neighborhood`.
 - **label_reduce centroid fallback** (`geometry/label.rs`): When the chosen region catches no pixel centre for a contour, falls back to sampling at the centroid. Prevents sub-pixel contours from scoring 0. `score_contours_on_buffer` is the single implementation behind both `Pipeline.label_reduce` and the `.contour.label_reduce()` accessor — the plugin must not carry its own scorer.
 
 ## Adding a New Operation
 
-1. Define the op in the appropriate `ops/` file (add variant to `ImageOpKind`, `ComputeOp`, `GeometryOp`, etc.)
-2. Implement the `Op` trait: `shape` (an `OpShape`), `memory_effect` and the other required rules
-3. Add to `ViewDto` in `ops/dto.rs`
-4. Add builder method to `ViewExpr` in `expr.rs`
-5. Add execution logic in `execution/runner.rs`
-6. Wire into polars-cv: add to `resolve_op` in `polars-cv/src/execute.rs` (as `GraphStep::Buffer(dto)`)
+1. Define the op as a variant of the appropriate mode-generic family in `ops/`
+   (`ImageOpKind<M>`, `ComputeOp<M>`, `GeometryOp<M>`, …), with its
+   `#[op(name = ..., sample = ...)]` attribute and documented fields
+2. Answer the `Op` contract: `shape` (an `OpShape`), `validate`, and the other
+   required rules
+3. Add to `ViewDto` in `ops/dto.rs` (`tests/apply_op_coverage.rs` requires a probe per variant)
+4. Add execution logic in `execution/runner.rs`
+5. Expose it to Python through the typed catalogue: re-bless, `gen_ops.py`,
+   `maturin develop` — the full procedure is "Adding a New Operation" in the
+   root `CLAUDE.md`
 
 ## Feature Flags
 
@@ -244,7 +249,7 @@ reinvent them without a consumer:
 - **Pipeline composition (`ops/io.rs`).** `SourceFormat`, `SinkFormat` and
   `PlaceholderMeta`, plus `ExprNode::LazySource` / `::Placeholder` / `::Sink`
   and their constructors. Nothing in the workspace ever called them — the
-  plugin builds its own source/sink vocabulary in `polars-cv/src/pipeline.rs`.
+  plugin builds its own source/sink vocabulary in `polars-cv/src/formats/`.
   Their only cost was not code size: every `match` over `ExprNode` carried arms
   for them, two of which were `panic!("must be resolved before building plan")`.
   Deleting them also retired the "three-way format representation split" that

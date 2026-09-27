@@ -36,7 +36,7 @@ cd polars-cv
 uv venv .venv
 source .venv/bin/activate
 uv pip install maturin
-maturin develop --release
+maturin develop            # debug: the development build
 
 # Or build wheels
 maturin build --release
@@ -44,7 +44,7 @@ maturin build --release
 
 ### Build for Specific Python Version
 
-The container includes Python 3.9+ by default. To use a specific Python version:
+The container includes Debian bookworm's Python 3.11; polars-cv needs 3.10+. To use a specific Python version:
 
 ```bash
 # Inside the container

@@ -25,7 +25,8 @@ maturin develop            # Builds cdylib (debug) and installs into .venv
 
 Debug, not `--release`: it is what CI and `scripts/verify.sh` build, every test
 passes against it, and `--release` re-optimises the whole polars stack for
-several minutes. Reach for `--release` only when benchmarking.
+several minutes. Benchmarks build with `--profile benchmark` (release with thin
+LTO); `--release` is for distributable wheels.
 
 ## Key Files
 
@@ -135,10 +136,10 @@ compile time (`OpResolver::Static`); the rest resolve per row.
 | `blob` | VIEW protocol binary (header + data) → `ViewBuffer` |
 | `raw` | Raw bytes with explicit dtype → `ViewBuffer` |
 | `file_path` | Two stages: `fetch.rs` reads the bytes from local/cloud/HTTP, then they decode as `image_bytes` (alpha channels preserved). The fetch stage is also exposed on its own as `.cv.read_bytes()` (`read_bytes.rs`) — same code, decode omitted |
-| `contour` | Parse geometry into `Contour`s and rasterize to a mask. `ContourColumn` (`geom_columns.rs`, the plugin's one contour reader, over the column's Arrow arrays) accepts either shape the column takes — one contour per row (`Struct`) or the whole set (`List(Struct)`, what `extract_contours().sink("native")` emits) — dispatching on the list's *element dtype*, since a `List` of point structs is one contour's ring. The set paints as a union via `geometry::rasterize::rasterize`, the same call the `rasterize` op makes |
+| `contour` | Decode geometry into `Contour`s, in the contour domain; a mask is the separate `rasterize` op. `ContourColumn` (`geom_columns.rs`, the plugin's one contour reader, over the column's Arrow arrays) accepts either shape the column takes — one contour per row (`Struct`) or the whole set (`List(Struct)`, what `extract_contours().sink("native")` emits) — dispatching on the list's *element dtype*, since a `List` of point structs is one contour's ring. `rasterize` paints a set as a union via `geometry::rasterize::rasterize` |
 | `list` / `array` | Zero-copy (when contiguous) or copy from Polars nested types |
 
-Alpha channels are always preserved during image decoding. RGBA → `[H, W, 4]`, GrayA → `[H, W, 2]`. Each op's `ViewDto` contract exposes a channel rule that the Python planner reads for planning-time channel inference; Rust implements the corresponding behavior based on the buffer's actual channel count.
+Alpha channels are always preserved during image decoding. RGBA → `[H, W, 4]`, GrayA → `[H, W, 2]`. Each op's `OpShape` gives its output channel count (axis 2), which the Rust planner (`plan::step`) reads for planning-time channel inference; Rust implements the corresponding behavior based on the buffer's actual channel count.
 
 ### Sink Encoding (`graph/encode.rs`)
 
@@ -169,9 +170,10 @@ Key functions in `contour.rs`:
 - `contour_pairwise_iou`, `contour_correspond`, `contour_label_reduce`
 - `bbox_pairwise_iou`, `bbox_correspond` — rectangle overlap is a two-interval
   intersection, so these stay analytic (`pairwise::bbox_iou`) rather than going
-  through general polygon boolean ops. Both share `match_from_matrix` with the
-  contour matcher, so the greedy matching policy lives in one place.
-- Graph-side `label_reduce` (`ops/label.rs`: buffer + contour column operand → vector)
+  through general polygon boolean ops. Both share `pairwise_rows` /
+  `correspond_rows` (and `pairwise::greedy_assign`) with the contour matcher,
+  so the greedy matching policy lives in one place.
+- Graph-side `label_reduce` (`GraphOp::LabelReduce` in `ops/graph.rs`: buffer + contour column operand → vector)
 
 `contour_label_reduce` and the graph-side `label_reduce` are two entry points onto
 **one** implementation: both call `view_buffer::geometry::label::score_contours_on_buffer`
@@ -201,8 +203,8 @@ encoding (`encode_sink`), shared by the graph executor.
 - `on_error="null"` on source spec: decode errors produce `None` for that node instead of propagating (parsed once at compile into `CompiledGraph::source_null_nodes`)
 - Graph-level `RowErrorPolicy` (`graph.on_error`: `raise` | `null` | `null_with_message`): any `Result` error while producing a row either fails the expression (raise), nulls all of that row's outputs (null), or additionally records the message in a reserved `_error: String` struct field (null_with_message — forces struct output even for single-output graphs; `unified_output_dtype` mirrors this so plan==exec). Set from Python via `Pipeline.on_error()`. Engine panics are covered: they are caught per row and treated as that row's error (CR-34).
 - `NullParamPolicy` (`params.rs`; `graph.on_null_param`: `raise` | `null`) — a **null in a per-row expression parameter column**, which is not the same thing as an error. It is a shared mechanism, not per-op: every null reaches `ParamCol::on_null`, the only caller of the null error, which flags the `ParamCtx` (`null_hit: Cell<bool>`) under `Null` and always returns `Err` so resolution short-circuits with no placeholder value reaching an op. Two sites in `compiled.rs` clear the flag before a fallible resolution and test it after — dynamic op resolution and shape-ref rasterize (a source has no per-row parameter) — and turn a flagged error into `continue 'nodes`, leaving the node out of `node_outputs`. That is the *existing* null-propagation path (`source(on_error="null")`), so nulling is **node-scoped**: only outputs depending on that node go null. Set from Python via `Pipeline.on_null_param()`; the geometry namespaces get it as an `on_null` kwarg applied by `GeomParams::row`. Independent of `RowErrorPolicy`, so it records no `_error` message and does not weaken any other error reporting.
-- `CompiledGraph::operand` distinguishes "node is in the graph but produced no output for this row" (→ null this node too) from "node is not in the graph" (→ error), so a null upstream propagates instead of raising "references unknown node". **Every cross-node read of `node_outputs` must go through it** — there are four (`Binary`, `ApplyMask`, `ChannelMerge` and the rasterize shape ref; a contour source's `shape=` is that rasterize). Enumerating the sites is exactly how one got missed the first time; grep for `node_outputs.get(` when adding a step that reads another node.
-- One exception, and it is not a parameter: `GraphStep::LabelReduce` reads its *contours operand* by column name through `ParamCol::at` (the column and its broadcast row, read by `ContourColumn`) and maps a null to an **empty score vector**, not a null. That is a data operand with pre-existing semantics, deliberately left alone — `at` is the one accessor with no `on_null` path.
+- `CompiledGraph::operand` distinguishes "node is in the graph but produced no output for this row" (→ null this node too) from "node is not in the graph" (→ error), so a null upstream propagates instead of raising "references unknown node". **Every cross-node read of `node_outputs` must go through it** — there are four (`Binary`, `ApplyMask`, `ChannelMerge` and the rasterize shape ref, `rasterize(shape=node)`). Enumerating the sites is exactly how one got missed the first time; grep for `node_outputs.get(` when adding a step that reads another node.
+- One exception, and it is not a parameter: `GraphOp::LabelReduce` (`Role::LabelReduce`) reads its *contours operand* by column name through `ParamCol::at` (the column and its broadcast row, read by `ContourColumn`) and maps a null to an **empty score vector**, not a null. That is a data operand with pre-existing semantics, deliberately left alone — `at` is the one accessor with no `on_null` path.
 
 ## Dependencies
 

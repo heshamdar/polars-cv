@@ -2,7 +2,7 @@
 """(Re)record ``tests/golden/op_corpus.json`` from the current build.
 
 The corpus is the behavioural arbiter for the typed-op migration
-(``TYPED_OPS_PLAN.md``). Recording it is a deliberate act: run this only when a
+(the typed-op migration, 0.29.0). Recording it is a deliberate act: run this only when a
 change is *meant* to alter an op's plan or output, and say so in the commit —
 the fixture diff is the review.
 

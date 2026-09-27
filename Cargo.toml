@@ -9,8 +9,9 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 # Use "unwind" to allow catch_unwind for graceful error handling in polars-cv plugin.
-# This is necessary because view-buffer uses panic!() for error conditions that need
-# to be caught and converted to Python exceptions instead of crashing.
+# Ops validate their input first (`Op::validate`), so a panic is an engine bug;
+# unwinding lets the executor catch one per row and report it as an error
+# instead of aborting the Python process.
 panic = "unwind"
 strip = true
 
@@ -29,7 +30,7 @@ codegen-units = 16
 # Dev profile — this is what `maturin develop`, `cargo test`, clippy and
 # `scripts/verify.sh` build, i.e. the one build the whole dev loop pays for. It
 # is tuned for iteration speed and disk footprint, never runtime speed (that is
-# `--release`, benchmarks only).
+# `--profile benchmark` for benchmarks, `--release` for wheels).
 [profile.dev]
 # Line-table debuginfo only. Backtraces keep file:line, but the polars stack's
 # full `debug = 2` DWARF — the single largest contributor to target/debug — is

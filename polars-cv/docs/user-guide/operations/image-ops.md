@@ -62,7 +62,7 @@ Pipeline().source("image_bytes").rotate(angle=30, interpolation="nearest", borde
 
 **Fast path:** 90, 180, and 270 degree rotations use zero-copy view operations (metadata-only, no allocation). The `interpolation` and `border_value` parameters are ignored for these angles.
 
-**Arbitrary angles** are executed via the same affine transform code path as `warp_affine`. When a `rotate` is followed by a `warp_affine` (or vice versa), they are [fused automatically](#pipeline-fusion).
+**Arbitrary angles** are executed via the same affine transform code path as `warp_affine`.
 
 ## Pad
 
@@ -348,7 +348,7 @@ Pipeline().source("image_bytes").grayscale().threshold(128).morphology_gradient(
 
 ## Affine Transforms
 
-Apply arbitrary 2x3 affine transformations. All methods in this family share the same Rust execution code path and can be [fused together](#pipeline-fusion). The matrix uses the **forward-mapping** convention (same as OpenCV `warpAffine`): the kernel inverts it internally for interpolation.
+Apply arbitrary 2x3 affine transformations. All methods in this family share the same Rust execution code path. Each one resamples the image, so consecutive affine ops run one after another (they are not composed into a single warp); build the combined matrix yourself and call `warp_affine` once when you want a single interpolation pass. The matrix uses the **forward-mapping** convention (same as OpenCV `warpAffine`): the kernel inverts it internally for interpolation.
 
 The affine family includes:
 
@@ -417,31 +417,6 @@ Pipeline().source("image_bytes").rotate_and_scale(
     output_size=(224, 224),
 )
 ```
-
-### Pipeline Fusion
-
-Consecutive affine operations (`warp_affine`, `rotate` with static arbitrary angle, `shear`, `rotate_and_scale`) are **automatically fused** into a single matrix multiplication at planning time, eliminating redundant interpolation passes:
-
-```python
-pipe = (
-    Pipeline()
-    .source("image_bytes")
-    .warp_affine(matrix=[1, 0, 50, 0, 1, 0], output_size=(224, 224))   # translate X
-    .warp_affine(matrix=[1, 0, 0, 0, 1, 30], output_size=(224, 224))   # translate Y
-)
-# Serializes as a single warp_affine with matrix [1, 0, 50, 0, 1, 30]
-
-pipe = (
-    Pipeline()
-    .source("image_bytes")
-    .assert_shape(height=224, width=224)
-    .rotate(45)
-    .warp_affine(matrix=[1, 0, 10, 0, 1, 10], output_size=(224, 224))  # translate after rotate
-)
-# Fused into a single warp_affine
-```
-
-**Fusion limitations:** `rotate` with an expression-based angle, or with a zero-copy angle (90/180/270), does not participate in fusion. Non-affine ops between two affine ops break the fusion run.
 
 ## Layout
 

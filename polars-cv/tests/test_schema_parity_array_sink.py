@@ -84,8 +84,8 @@ _KNOWN_SHAPE = {
         [H + 3, W + 7, C],
     ),
     "rank3-rotate90": (lambda: _base().rotate(angle=90), [W, H, C]),
-    # Rank 1 and 2: the planner knows these sizes and, since S1 of
-    # PLANNER_SIZES_PLAN.md, publishes them (they used to be refused as
+    # Rank 1 and 2: the planner knows these sizes and, since rank-N planned
+    # shapes (0.29.0), publishes them (they used to be refused as
     # "known but unexpressible", the state holding only [H, W, C]).
     "rank2-channel_select": (lambda: _base().channel_select(index=0), [H, W]),
     "rank1-reshape": (lambda: _base().reshape([H * W * C]), [H * W * C]),

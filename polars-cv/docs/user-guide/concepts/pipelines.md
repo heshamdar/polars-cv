@@ -48,7 +48,7 @@ result = df.with_columns(
 | `raw` | Binary | Raw bytes (requires `dtype`) |
 | `list` | List | Polars nested List |
 | `array` | Array | Polars fixed-size Array |
-| `contour` | Struct | Contour geometry to rasterize |
+| `contour` | Struct | Contour geometry (contour domain) |
 
 ### Auto DType for Image Sources
 

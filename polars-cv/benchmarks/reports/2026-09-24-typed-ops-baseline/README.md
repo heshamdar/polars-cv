@@ -1,6 +1,6 @@
 # Typed-op migration — P0 baseline
 
-Recorded before any typed-op change (`TYPED_OPS_PLAN.md`, phase P0), with the
+Recorded before any typed-op change (the 0.29.0 typed-op migration, before its first phase), with the
 Rust sources of commit `91d51de`. Later phases compare against it; the plan
 gates P2 and the final PR on "no regression beyond noise".
 

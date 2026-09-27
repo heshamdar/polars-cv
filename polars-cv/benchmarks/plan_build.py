@@ -1,6 +1,6 @@
 """Time how long it takes to *build* pipelines (no execution).
 
-The typed-op migration (``TYPED_OPS_PLAN.md``) changes what every builder call
+The typed-op migration (0.29.0) changes what every builder call
 does: today each append runs several FFI round-trips over JSON; afterwards it is
 one typed push into a Rust plan. The regression harness measures execution
 throughput, not this, so this script is the baseline and the check for it.

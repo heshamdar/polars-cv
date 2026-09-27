@@ -94,11 +94,9 @@ Use `apply_contour_mask()` for the common case:
 img = pl.col("image").cv.pipe(
     Pipeline().source("image_bytes").resize(height=128, width=128)
 )
-contour = pl.col("contour").cv.pipe(
-    Pipeline().source("contour").rasterize(shape=img)
-)
+contour = pl.col("contour").cv.pipe(Pipeline().source("contour"))
 
-# Convenience method handles shape inference
+# Rasterizes the contours onto the image's canvas, then applies the mask
 masked = img.apply_contour_mask(contour)
 ```
 

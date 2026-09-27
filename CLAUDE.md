@@ -168,7 +168,7 @@ and the guard that enforces each one.
   one, read that state back before acting.
 - Clean up scratchpad scripts and temporary test files at the end of a session.
 - Inspect large files surgically. Several test files exceed 1,000 lines
-  (`test_sanitation.py` is ~2,900); reading one whole to find one symbol burns
+  (`test_sanitation.py` is ~2,700); reading one whole to find one symbol burns
   tens of thousands of tokens for nothing. Grep for the symbol first, then read
   with `offset`/`limit` around the hit. Read a file whole only when you genuinely
   need the whole file.
@@ -232,7 +232,7 @@ tested nothing. Bump `rust-version` in both `Cargo.toml`s only deliberately: it
 is the pinned MSRV, not a free knob.
 
 **Use the debug build for the develop/test loop.** `maturin develop` with no
-`--release` is what `scripts/verify.sh` and both CI workflows run, and it is
+`--release` is what `scripts/verify.sh` and CI (`ci.yml`) run, and it is
 several minutes faster per iteration — the release build re-optimises the whole
 polars stack. Every test in `tests/` passes against the debug extension; the
 only things that need an optimised build are the benchmarks — `maturin develop
@@ -435,8 +435,8 @@ rejects a second declaration — lives in
 [`AGENTS.md`](AGENTS.md#canonical-paths). It is reference material you reach for
 when adding an op, enum, dtype spelling, source/sink parameter or optimization
 pass, so it loads on demand there rather than in every session's context. The
-former exceptions (the op spec's `#[serde(flatten)]` params, and the `BinaryOp`
-arm, both since removed) are documented alongside it.
+former exception (the op spec's `#[serde(flatten)]` params, since removed) is
+documented alongside it.
 
 ### Test Structure
 
