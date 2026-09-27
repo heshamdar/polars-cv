@@ -25,6 +25,7 @@ mod passes;
 mod plan;
 mod point;
 mod read_bytes;
+mod row_split;
 #[cfg(test)]
 mod test_alloc;
 

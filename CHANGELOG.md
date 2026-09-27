@@ -107,6 +107,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **`.contour` accessors use every core on the in-memory engine.** A
+  single-column or two-column accessor (`area`, `translate`, `iou`, …) ran a
+  call's rows on one thread; they now split them over the plugin's thread
+  pool as pipelines do, and stay inline under the streaming engine, which is
+  already parallel across morsels (~3.2x for `.contour.area()` over 200k
+  contours on 4 cores).
 - **Contour columns are read straight from Arrow.** Every consumer — the
   `.contour`/`.point` accessors, `pairwise_iou`/`correspond`/`label_reduce`,
   and the pipeline's `contour` source and `label_reduce` step — used to build
