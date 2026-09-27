@@ -107,6 +107,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **f32 scalar ops write in place in pipelines, as the engine intended.**
+  The executor cloned each op segment's input out of an output it kept
+  alive, and kept every upstream node's output while its reader ran, so the
+  fused kernel's in-place path (sole owner of an f32 buffer) never applied
+  and every such op allocated a new buffer. A segment now takes its input by
+  value, and a node that is its upstream's only reader (not a graph output,
+  not an operand) moves that output instead of sharing it.
 - **`list` and `array` sinks copy each row's values once.** A row used to
   be copied into a per-row vector (after materialising a strided row
   contiguously) and then again into the column's values; each row's buffer
