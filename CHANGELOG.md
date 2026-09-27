@@ -9,6 +9,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`numpy_from_column(column)` reads a numpy/ndarray sink column without
+  copying.** Every row comes back as a read-only NumPy view of the column's
+  own Arrow memory, keeping its shape, dtype and byte strides; null rows are
+  `None`, and `copy=True` returns owned, contiguous arrays. Reading rows as
+  dicts for `numpy_from_struct` copies every row into Python `bytes` first
+  (and again with its default `copy=True`). A view that would reach outside
+  its row's bytes (only a hand-built struct can ask for one) raises.
 - **A fixed-size `Array` column's shape is planned, at any rank.** Its dtype
   states every size, so `source("array")` (or `auto` over an `Array` column)
   now publishes the whole shape: `.sink("array")` needs no `shape=`, and the
