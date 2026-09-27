@@ -107,6 +107,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **`blob` and `raw` sources read aligned rows in place.** Every row used
+  to be copied to an aligned address first. A row longer than 12 bytes that
+  already starts on an 8-byte boundary in the column's memory (a `blob`
+  sink's rows always do) is now read where it lies; inline and unaligned
+  rows are still copied.
 - **f32 scalar ops write in place in pipelines, as the engine intended.**
   The executor cloned each op segment's input out of an output it kept
   alive, and kept every upstream node's output while its reader ran, so the
