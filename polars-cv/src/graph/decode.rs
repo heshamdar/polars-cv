@@ -554,18 +554,47 @@ fn decode_list_with_copy(
     let bytes = series_to_bytes(&flat_series, &dtype)?;
     Ok(Some(ViewBuffer::from_raw_bytes(bytes, shape, dtype)))
 }
-/// Recursively flatten a nested Series and extract shape.
+/// Flatten one row's nested values, checking that they form a grid.
 ///
-/// For a nested list like [[1,2,3], [4,5,6], [7,8,9]]:
-/// - First level: 3 lists -> shape starts with [3]
-/// - Check first element's length: 3 -> shape = [3, 3]
-/// - Final flat primitives: [1,2,3,4,5,6,7,8,9]
-///
-/// Assumes all inner lists have the same length (rectangular array).
+/// Every list at a level must have the same length (that length is the
+/// level's size) and nothing may be null: a jagged row has no shape, and a
+/// null has no value. Taking each level's size from its first element and
+/// then reading the values as that shape, as this used to, read past the end
+/// of `[[1, 2], [3]]` and silently re-rowed `[[1, 2], [3], [4, 5, 6]]`.
 fn flatten_nested_series(series: &Series) -> Result<(Vec<usize>, Series), String> {
-    let shape = infer_nested_shape(series)?;
+    let mut shape = vec![series.len()];
     let mut current = series.clone();
-    while matches!(current.dtype(), DataType::List(_) | DataType::Array(_, _)) {
+    loop {
+        if current.null_count() > 0 {
+            let what = match current.dtype() {
+                DataType::List(_) | DataType::Array(_, _) => "list",
+                _ => "value",
+            };
+            return Err(format!(
+                "the row holds a null {what}; a list/array row must be a grid of values"
+            ));
+        }
+        let size = match current.dtype() {
+            DataType::List(_) => {
+                let lengths = current
+                    .list()
+                    .map_err(|e| format!("List error: {e}"))?
+                    .lst_lengths();
+                let mut lengths = lengths.into_no_null_iter();
+                let first = lengths.next().unwrap_or(0);
+                if lengths.any(|len| len != first) {
+                    return Err(
+                        "the row is jagged: its lists at one level differ in length, so it has \
+                         no array shape"
+                            .to_string(),
+                    );
+                }
+                first as usize
+            }
+            DataType::Array(_, width) => *width,
+            _ => return Ok((shape, current)),
+        };
+        shape.push(size);
         current = current
             .explode(ExplodeOptions {
                 empty_as_null: false,
@@ -573,54 +602,6 @@ fn flatten_nested_series(series: &Series) -> Result<(Vec<usize>, Series), String
             })
             .map_err(|e| format!("Explode error: {e}"))?;
     }
-    Ok((shape, current))
-}
-/// Infer shape by traversing first elements at each nesting level.
-///
-/// For List(List(List(Int64))) with 2x2x3 data:
-/// 1. Series has 2 elements (outer rows) -> shape = [2]
-/// 2. First element has 2 sub-lists (columns) -> shape = [2, 2]
-/// 3. First sub-list has 3 primitives (channels) -> shape = [2, 2, 3]
-fn infer_nested_shape(series: &Series) -> Result<Vec<usize>, String> {
-    let mut shape = Vec::new();
-    let mut current = series.clone();
-    loop {
-        match current.dtype() {
-            DataType::List(_) => {
-                let list_ca = current.list().map_err(|e| format!("List error: {e}"))?;
-                let len = list_ca.len();
-                shape.push(len);
-                if len > 0 {
-                    if let Some(first) = list_ca.get_as_series(0) {
-                        current = first;
-                    } else {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
-            DataType::Array(_, _width) => {
-                let len = current.len();
-                shape.push(len);
-                let arr_ca = current.array().map_err(|e| format!("Array error: {e}"))?;
-                if len > 0 {
-                    if let Some(first) = arr_ca.get_as_series(0) {
-                        current = first;
-                    } else {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
-            _ => {
-                shape.push(current.len());
-                break;
-            }
-        }
-    }
-    Ok(shape)
 }
 /// Convert a flat primitive Series to raw bytes.
 fn series_to_bytes(series: &Series, target_dtype: &view_buffer::DType) -> Result<Vec<u8>, String> {
@@ -1073,6 +1054,94 @@ pub(crate) fn build_series_from_spec(
 /// buffer. It used to copy the chunk's entire values buffer on every row to
 /// take one row's window, which made a batch quadratic: ~35 µs per 64-byte row
 /// at 100k rows (CR-40).
+/// A `List` row decodes to a buffer only when it is a rectangular grid of
+/// values: a jagged row, a null value or a null inner list is refused. The
+/// decoder used to take each level's size from its first element and read the
+/// row's values as that shape — past the end of them for `[[1, 2], [3]]`,
+/// silently re-rowed for `[[1, 2], [3], [4, 5, 6]]` — and read a null as 0.
+#[cfg(test)]
+mod list_source_tests {
+    use polars::prelude::*;
+
+    use super::decode_list_or_array_source;
+
+    fn nested(rows: Vec<Vec<Option<f64>>>) -> Series {
+        let inner: Vec<AnyValue> = rows
+            .into_iter()
+            .map(|r| AnyValue::List(Series::new("".into(), r)))
+            .collect();
+        let row = Series::from_any_values_and_dtype(
+            "".into(),
+            &inner,
+            &DataType::List(Box::new(DataType::Float64)),
+            true,
+        )
+        .unwrap();
+        Series::new("a".into(), &[AnyValue::List(row)])
+    }
+
+    fn decode(series: &Series) -> Result<Option<view_buffer::ViewBuffer>, String> {
+        decode_list_or_array_source(series, 0, Some(view_buffer::DType::F64), false)
+    }
+
+    #[test]
+    fn a_rectangular_row_decodes_with_its_shape() {
+        let s = nested(vec![vec![Some(1.0), Some(2.0)], vec![Some(3.0), Some(4.0)]]);
+        let buf = decode(&s).unwrap().unwrap();
+        assert_eq!(buf.shape(), &[2, 2]);
+        assert_eq!(buf.as_slice::<f64>(), &[1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn a_jagged_row_is_refused() {
+        for rows in [
+            vec![vec![Some(1.0), Some(2.0)], vec![Some(3.0)]],
+            // As many values as a 3 x 2 grid, in rows of 2, 1 and 3.
+            vec![
+                vec![Some(1.0), Some(2.0)],
+                vec![Some(3.0)],
+                vec![Some(4.0), Some(5.0), Some(6.0)],
+            ],
+        ] {
+            let err = decode(&nested(rows)).unwrap_err();
+            assert!(err.contains("jagged"), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_null_value_or_inner_list_is_refused() {
+        let err = decode(&nested(vec![
+            vec![Some(1.0), None],
+            vec![Some(3.0), Some(4.0)],
+        ]))
+        .unwrap_err();
+        assert!(err.contains("null"), "{err}");
+
+        let row = Series::from_any_values_and_dtype(
+            "".into(),
+            &[
+                AnyValue::List(Series::new("".into(), &[1.0, 2.0])),
+                AnyValue::Null,
+            ],
+            &DataType::List(Box::new(DataType::Float64)),
+            true,
+        )
+        .unwrap();
+        let err = decode(&Series::new("a".into(), &[AnyValue::List(row)])).unwrap_err();
+        assert!(err.contains("null"), "{err}");
+    }
+
+    #[test]
+    fn a_sliced_column_decodes_its_own_row() {
+        let a = nested(vec![vec![Some(9.0)]]);
+        let mut both = nested(vec![vec![Some(1.0), Some(2.0)], vec![Some(3.0)]]);
+        both.append(&a).unwrap();
+        let s = both.rechunk().slice(1, 1);
+        let buf = decode(&s).unwrap().unwrap();
+        assert_eq!(buf.as_slice::<f64>(), &[9.0]);
+    }
+}
+
 #[cfg(test)]
 mod array_source_view_tests {
     use super::decode_list_or_array_source;
