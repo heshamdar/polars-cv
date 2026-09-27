@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -70,18 +71,30 @@ def load_results(path: str | Path) -> dict[ResultKey, dict[str, Any]]:
     return {_key(d): d for d in raw}
 
 
-def refuse_debug_builds(*paths: str | Path) -> None:
-    """Exit if a results file's sidecar says it measured a debug build.
+def refuse_incomparable_builds(baseline: str | Path, candidate: str | Path) -> None:
+    """Exit unless both results measured the same kind of optimised build.
 
-    ``run_suite --allow-debug-build`` exists to smoke-test the harness; its
-    numbers must never reach a verdict. Results without a sidecar predate it
-    and are compared as before.
+    Refused: a debug build (``run_suite --allow-debug-build`` exists to
+    smoke-test the harness; its numbers must never reach a verdict), and two
+    different Cargo profiles — a thin-LTO ``benchmark`` build runs a few percent
+    off a fat-LTO ``release`` one per case, which would be reported as the
+    change. A result without a sidecar (older than these fields) is compared
+    with a warning, since its build cannot be checked.
     """
-    for path in paths:
-        meta = Path(f"{path}.meta.json")
-        if meta.exists() and json.loads(meta.read_text()).get("debug_build"):
+    profiles: dict[str, str] = {}
+    for path in (baseline, candidate):
+        meta_path = Path(f"{path}.meta.json")
+        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        if meta.get("debug_build"):
             msg = f"{path} measured a debug build; rerun it against an optimised one"
             raise SystemExit(msg)
+        if "build_profile" in meta:
+            profiles[str(path)] = meta["build_profile"]
+        else:
+            print(f"warning: {path} does not record its build profile", file=sys.stderr)
+    if len(set(profiles.values())) > 1:
+        msg = f"results from different build profiles, not comparable: {profiles}"
+        raise SystemExit(msg)
 
 
 def _pct(base: float, cand: float) -> float:
@@ -239,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    refuse_debug_builds(args.baseline, args.candidate)
+    refuse_incomparable_builds(args.baseline, args.candidate)
     baseline = load_results(args.baseline)
     candidate = load_results(args.candidate)
     deltas = compare(

@@ -10,16 +10,31 @@ Case names are grouped by prefix so a selector can take a subsystem at once
 (``targeted:geom_*``): ``codec_`` (decode/encode), ``sink_`` (tensor sinks),
 ``blob_`` (the blob source), ``geom_`` (geometry accessors).
 
-Image cases run once per suite (count, size); geometry cases once per count,
-over ``count * GEOMETRY_ROWS_PER_IMAGE`` rows, and report ``image_size`` as
-``(0, 0)`` — a geometry row has no image size.
+Image cases run once per suite (count, size). Geometry cases run once per
+count, over ``count * ROWS_PER_IMAGE[kind]`` rows, and report ``image_size`` as
+``(0, 0)`` — a geometry row has no image size. Point-only cases (``points``)
+run over a 10× longer frame of points alone: at the contour frame's length a
+call takes ~5 ms, and a same-binary self-check spread them ±7.6%.
+
+Known noise: ``geom_contour_translate`` allocates its whole nested output per
+call, and which of two allocator states a process lands in moves it ~15%
+between runs of one binary (the others hold within ~5%). Confirm a verdict on
+it by rerunning both sides.
 """
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import io
+import json
+import os
+import subprocess
+import sys
+import tempfile
 from dataclasses import dataclass
 from functools import cache
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -35,8 +50,9 @@ if TYPE_CHECKING:
 
     from benchmarks.frameworks import BenchmarkResult
 
-# A geometry row is far cheaper than an image, so more of them make one call.
-GEOMETRY_ROWS_PER_IMAGE = 100
+# A geometry row is far cheaper than an image, so more of them make one call:
+# enough that each call runs tens of milliseconds or more.
+ROWS_PER_IMAGE: dict[str, int] = {"geometry": 300, "points": 3000}
 
 
 @dataclass(frozen=True)
@@ -61,10 +77,42 @@ class _Inputs:
 
     @property
     def geometry(self) -> pl.DataFrame:
-        return _geometry(self.count * GEOMETRY_ROWS_PER_IMAGE)
+        return _geometry(self.count * ROWS_PER_IMAGE["geometry"])
+
+    @property
+    def points(self) -> pl.DataFrame:
+        return _points(self.count * ROWS_PER_IMAGE["points"])
 
 
-@cache
+def _stored(build: Callable[..., pl.DataFrame]) -> Callable[..., pl.DataFrame]:
+    """Build an input frame once per machine, then read it back.
+
+    Each case runs in its own process (``run_all_targeted``), and building the
+    inputs is most of a case's cost — encoding 300 PNGs takes ~14 s. The frames
+    are deterministic, so they are written once as Arrow IPC under the temp
+    directory and read back after — into memory, not memory-mapped, so a case
+    measures heap-resident inputs as before. The key covers this module's
+    source, so changing how an input is made cannot reuse the old one.
+    """
+    root = Path(tempfile.gettempdir()) / "polars-cv-bench-inputs" / _SOURCE_KEY
+
+    @cache
+    def load(*args: Any) -> pl.DataFrame:
+        path = root / f"{build.__name__}-{'-'.join(map(str, args))}.arrow"
+        if not path.exists():
+            root.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(f".{os.getpid()}.tmp")
+            build(*args).write_ipc(tmp)
+            tmp.replace(path)
+        return pl.read_ipc(path, memory_map=False)
+
+    return load
+
+
+_SOURCE_KEY = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
+
+
+@_stored
 def _encoded(count: int, height: int, width: int, fmt: str) -> pl.DataFrame:
     rng = np.random.default_rng(0)
     out = []
@@ -77,14 +125,21 @@ def _encoded(count: int, height: int, width: int, fmt: str) -> pl.DataFrame:
     return pl.DataFrame({"img": out})
 
 
-@cache
+@_stored
 def _blobs(count: int, height: int, width: int) -> pl.DataFrame:
     png = _encoded(count, height, width, "PNG")
     pipe = Pipeline().source("image_bytes").cast("f32")
     return png.select(pl.col("img").cv.pipe(pipe).sink("blob").alias("img"))
 
 
-@cache
+@_stored
+def _points(rows: int) -> pl.DataFrame:
+    return pl.DataFrame(
+        {"p": [{"x": 10.0, "y": 10.0}] * rows, "q": [{"x": 3.0, "y": 4.0}] * rows}
+    )
+
+
+@_stored
 def _geometry(rows: int) -> pl.DataFrame:
     ts = np.linspace(0, 6.2, 40)
     ring = [
@@ -127,9 +182,11 @@ def _array(
     return build
 
 
-def _geom(expr: Callable[[], pl.Expr]) -> Callable[[_Inputs], Callable[[], Any]]:
+def _geom(
+    expr: Callable[[], pl.Expr], frame: str = "geometry"
+) -> Callable[[_Inputs], Callable[[], Any]]:
     def build(i: _Inputs) -> Callable[[], Any]:
-        df, e = i.geometry, expr()
+        df, e = getattr(i, frame), expr()
         return lambda: df.select(e)
 
     return build
@@ -138,7 +195,7 @@ def _geom(expr: Callable[[], pl.Expr]) -> Callable[[_Inputs], Callable[[], Any]]
 @dataclass(frozen=True)
 class Case:
     name: str
-    kind: Literal["image", "geometry"]
+    kind: Literal["image", "geometry", "points"]
     build: Callable[[_Inputs], Callable[[], Any]]
 
 
@@ -205,13 +262,13 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         "geom_point_translate",
-        "geometry",
-        _geom(lambda: pl.col("p").point.translate(1.0, 2.0)),
+        "points",
+        _geom(lambda: pl.col("p").point.translate(1.0, 2.0), "points"),
     ),
     Case(
         "geom_point_distance",
-        "geometry",
-        _geom(lambda: pl.col("p").point.distance(pl.col("q"))),
+        "points",
+        _geom(lambda: pl.col("p").point.distance(pl.col("q")), "points"),
     ),
     Case(
         "geom_point_distance_to_contour",
@@ -226,6 +283,22 @@ def case_names() -> list[str]:
     return [c.name for c in CASES]
 
 
+def run_case(
+    name: str,
+    count: int,
+    size: tuple[int, int],
+    warmup_iterations: int,
+    benchmark_iterations: int,
+) -> BenchmarkResult:
+    """Time one case in this process."""
+    case = next(c for c in CASES if c.name == name)
+    n = count if case.kind == "image" else count * ROWS_PER_IMAGE[case.kind]
+    inputs = _Inputs(count, *size)
+    return timed_result(
+        name, case.build(inputs), n, size, warmup_iterations, benchmark_iterations
+    )
+
+
 def run_all_targeted(
     image_counts: list[int],
     image_sizes: list[tuple[int, int]],
@@ -234,31 +307,56 @@ def run_all_targeted(
     names: Collection[str] | None = None,
     verbose: bool = True,
 ) -> list[BenchmarkResult]:
-    """Run the selected cases (all when ``names`` is None)."""
+    """Run the selected cases (all when ``names`` is None), each in its own process.
+
+    In one process a case's timing depended on the allocator state the cases
+    before it left: ``geom_contour_translate`` measured 588-597k rows/s alone
+    and 545-704k inside the suite. ``--select`` changes which cases precede
+    which, so a shared process would make a case's number depend on what else
+    was selected. The child inherits the parent's environment, thread pins
+    included; a child that fails raises here.
+    """
+    from benchmarks.frameworks import BenchmarkResult
+
     cases = [c for c in CASES if names is None or c.name in names]
-    results: list[BenchmarkResult] = []
+    runs: list[tuple[str, int, tuple[int, int]]] = []
     for count in image_counts:
-        runs: list[tuple[Case, _Inputs, tuple[int, int], int]] = []
-        for h, w in image_sizes:
-            runs += [
-                (c, _Inputs(count, h, w), (h, w), count)
-                for c in cases
-                if c.kind == "image"
-            ]
-        rows = count * GEOMETRY_ROWS_PER_IMAGE
-        geo_inputs = _Inputs(count, 0, 0)
-        runs += [(c, geo_inputs, (0, 0), rows) for c in cases if c.kind == "geometry"]
-        for case, inputs, size, n in runs:
-            if verbose:
-                print(f"    targeted/{case.name} n={n} size={size}", flush=True)
-            results.append(
-                timed_result(
-                    case.name,
-                    case.build(inputs),
-                    n,
-                    size,
-                    warmup_iterations,
-                    benchmark_iterations,
-                )
-            )
+        for size in image_sizes:
+            runs += [(c.name, count, size) for c in cases if c.kind == "image"]
+        runs += [(c.name, count, (0, 0)) for c in cases if c.kind != "image"]
+
+    results: list[BenchmarkResult] = []
+    for name, count, size in runs:
+        if verbose:
+            print(f"    targeted/{name} count={count} size={size}", flush=True)
+        spec = [name, count, list(size), warmup_iterations, benchmark_iterations]
+        proc = subprocess.run(
+            [sys.executable, "-m", "benchmarks.scenarios.targeted", json.dumps(spec)],
+            cwd=_PACKAGE_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            msg = f"targeted case {name} failed:\n{proc.stderr}"
+            raise RuntimeError(msg)
+        record = json.loads(proc.stdout.strip().splitlines()[-1])
+        record["image_size"] = tuple(record["image_size"])
+        results.append(BenchmarkResult(**record))
     return results
+
+
+# The directory `benchmarks` is importable from, for the per-case child.
+_PACKAGE_ROOT = Path(__file__).resolve().parents[2]
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Child entry point: time one case, print its result as one JSON line."""
+    name, count, size, warmup, iterations = json.loads((argv or sys.argv[1:])[0])
+    result = run_case(name, count, tuple(size), warmup, iterations)
+    print(json.dumps(dataclasses.asdict(result)))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

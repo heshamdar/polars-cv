@@ -92,7 +92,19 @@ went unmeasured. `targeted` times them directly, eager, grouped by prefix:
 sinks, including a transposed input), `blob_` (the blob source, plain and
 through a fused op) and `geom_` (the `.contour`/`.point` accessors and contour
 rasterization). Image cases use the suite's counts and sizes; geometry cases run
-`count × 100` rows and report `image_size` `(0, 0)`.
+`count × 300` rows (point-only ones `count × 3000`, so a call is not ~5 ms) and
+report `image_size` `(0, 0)`.
+
+Each case runs in **its own process**, and reports the **median** call. In a
+shared process a case's timing depended on the allocator state the cases
+before it left — `geom_contour_translate` measured 588–597k rows/s alone and
+545–704k inside the suite — and `--select` changes which cases precede which.
+The median because a call that allocates its whole output has occasional slow
+outliers that move a ten-call mean. Inputs are deterministic and built once
+per machine (Arrow IPC under the temp directory, keyed by the scenario's
+source), since encoding 300 PNGs alone takes ~14 s. Same-binary self-check of
+all 17 cases at the defaults: every one NEUTRAL, within ±5%; a full `targeted`
+run takes ~5 minutes, `targeted:geom_*` ~3.5.
 
 ### The `remote` scenario
 
@@ -125,11 +137,23 @@ with the **same `--threads`** and **`--select`**. Close other heavy processes.
 
 `maturin develop --profile benchmark` is the benchmark build: release
 (`opt-level = 3`, `panic = "unwind"`) with thin LTO and 16 codegen units
-instead of fat LTO and one. The fat-LTO link is most of a 10–18 minute release
-build here; comparing two commits only needs both optimised the same way.
+instead of fat LTO and one. Measured in a web container:
+
+| build | cold (all deps) | rebuild after a source change |
+|-------|-----------------|-------------------------------|
+| `--release` (fat LTO) | ~18 min | ~10 min |
+| `--profile benchmark` (thin LTO) | 11 min | **3.8–4.2 min** |
+
+The rebuild is what a base-vs-head loop pays twice. Thin LTO ran the
+`pipelines` cases within ±9% of a fat-LTO build (mean −2.5%), so numbers from
+the two profiles are **not comparable**: build both sides with the same one.
 `--release` still works when you want wheel-identical absolute numbers.
-`run_suite` refuses a debug extension (`--allow-debug-build` exists only to
-smoke-test the harness, and `compare` refuses its results).
+
+Each results file's `.meta.json` records the extension's `build_profile`
+(`_lib.__build_profile__`) and whether it was a debug build, and `compare`
+refuses two different profiles or any debug build. `run_suite` refuses a debug
+extension outright; `--allow-debug-build` exists only to smoke-test the
+harness.
 
 ```bash
 cd polars-cv
