@@ -5,7 +5,7 @@ bare point list). Historically three independent Rust parsers consumed them —
 the contour namespace, the point namespace, and the contour *source* decoder —
 with diverging semantics: the point parser silently dropped holes, and the
 source decoder rejected bare lists. These tests pin the unified contract:
-every consumer routes through ``contour_column.rs::ContourColumn``, so holes are
+every consumer routes through ``geom_columns.rs::ContourColumn``, so holes are
 respected everywhere, bare lists work everywhere, and a malformed contour
 produces the same error text everywhere.
 """

@@ -6,12 +6,12 @@
 mod cloud;
 mod cloud_auth;
 mod contour;
-mod contour_column;
 mod execute;
 mod ext_types;
 mod fetch;
 mod formats;
 mod geom_arity;
+mod geom_columns;
 mod geom_fns;
 mod geom_params;
 mod geom_schema;

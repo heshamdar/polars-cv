@@ -20,6 +20,16 @@
 //! their rows through [`run_split`], each with its own [`CallTracker`].
 
 use std::ops::Range;
+
+/// This call site's own [`CallTracker`], in a `static`: every plugin function
+/// that splits its rows keeps one, so its calls' overlap is its own.
+#[macro_export]
+macro_rules! geom_calls {
+    () => {{
+        static CALLS: $crate::row_split::CallTracker = $crate::row_split::CallTracker::new();
+        &CALLS
+    }};
+}
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use pyo3_polars::export::polars_core::runtime::THREAD_POOL;

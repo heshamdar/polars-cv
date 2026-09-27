@@ -40,10 +40,10 @@ use polars::prelude::*;
 
 use view_buffer::geometry::contour::Contour;
 
-use crate::contour::point_dtype_fields;
-use crate::contour_column::ContourColumn;
+use crate::geom_columns::ContourColumn;
 use crate::geom_params::GeomParams;
-use crate::row_split::{run_split, CallTracker};
+use crate::geom_schema::POINT_FIELD_SPELLINGS;
+use crate::row_split::CallTracker;
 
 /// Whether a geometry column holds one contour per row or a set per row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,14 +110,14 @@ impl Arity {
 
 /// Does this dtype describe a point (`{x, y}`) rather than a contour?
 ///
-/// Reads the field names from [`point_dtype_fields`] — the same names the point
+/// Reads the field names from [`POINT_FIELD_SPELLINGS`] — the same names the point
 /// parser reads — so the dispatch above cannot admit something the parser then
 /// rejects.
 pub(crate) fn is_point_dtype(dtype: &DataType) -> bool {
     let DataType::Struct(fields) = dtype else {
         return false;
     };
-    point_dtype_fields()
+    POINT_FIELD_SPELLINGS
         .iter()
         .all(|wanted| fields.iter().any(|f| wanted.contains(&f.name().as_str())))
 }
@@ -278,42 +278,17 @@ pub(crate) fn map_contours<R: ContourOutput + Send>(
     compute: impl Fn(&Contour, &GeomParams, usize) -> PolarsResult<R> + Sync,
 ) -> PolarsResult<Series> {
     let column = ContourColumn::new(series);
-    let arity = column.arity();
-    let shared = params.shared();
-    // Each row range resolves parameters through its own `GeomParams`: the
-    // null-parameter flag is per thread.
-    let parts = run_split(calls, series.len(), |_, range| {
-        let params = shared.params();
-        range
-            .map(|i| {
-                let Some(contours) = column.row(i)? else {
-                    return Ok(None);
-                };
-                params.row(|| {
-                    contours
-                        .iter()
-                        .map(|contour| compute(contour, &params, i))
-                        .collect::<PolarsResult<Vec<R>>>()
-                })
-            })
-            .collect::<PolarsResult<Vec<Option<Vec<R>>>>>()
-    });
-    R::column(
-        series.name().clone(),
-        concat_parts(series.len(), parts)?,
-        arity,
-        &elem,
-    )
-}
-
-/// The row ranges' results, in row order; the first failing range's error
-/// (the earliest failing row's, as a sequential run would report).
-fn concat_parts<T>(len: usize, parts: Vec<PolarsResult<Vec<T>>>) -> PolarsResult<Vec<T>> {
-    let mut rows = Vec::with_capacity(len);
-    for part in parts {
-        rows.extend(part?);
-    }
-    Ok(rows)
+    let rows = params.map_rows(calls, series.len(), |params, i| {
+        let Some(contours) = column.row(i)? else {
+            return Ok(None);
+        };
+        contours
+            .iter()
+            .map(|contour| compute(contour, params, i))
+            .collect::<PolarsResult<Vec<R>>>()
+            .map(Some)
+    })?;
+    R::column(series.name().clone(), rows, column.arity(), &elem)
 }
 
 /// Run `compute` over two contour columns, broadcasting a single against a set.
@@ -330,6 +305,7 @@ fn concat_parts<T>(len: usize, parts: Vec<PolarsResult<Vec<T>>>) -> PolarsResult
 pub(crate) fn zip_contours<R: ContourOutput + Send>(
     a: &Series,
     b: &Series,
+    params: &GeomParams,
     calls: &CallTracker,
     name: &'static str,
     elem: DataType,
@@ -367,10 +343,7 @@ pub(crate) fn zip_contours<R: ContourOutput + Send>(
         }?;
         Ok(Some(results))
     };
-    let parts = run_split(calls, a.len(), |_, range| {
-        range.map(row).collect::<PolarsResult<Vec<_>>>()
-    });
-    let rows = concat_parts(a.len(), parts)?;
+    let rows = params.map_rows(calls, a.len(), |_, i| row(i))?;
     R::column(a.name().clone(), rows, arity, &elem)
 }
 
@@ -420,8 +393,6 @@ macro_rules! contour_accessor {
         $(#[$meta])*
         #[polars_expr(output_type_func=$out_ty)]
         fn $name(inputs: &[Series], kwargs: $crate::geom_params::GeomKwargs) -> PolarsResult<Series> {
-            // This accessor's calls, for `run_split`'s spread decision.
-            static CALLS: $crate::row_split::CallTracker = $crate::row_split::CallTracker::new();
             let (op, geom_params) = $crate::geom_params::GeomParams::parse::<
                 $fam<::view_buffer::mode::Wire>,
             >(inputs, kwargs, stringify!($name))?;
@@ -432,7 +403,7 @@ macro_rules! contour_accessor {
             $crate::geom_arity::map_contours(
                 &inputs[0],
                 &geom_params,
-                &CALLS,
+                $crate::geom_calls!(),
                 $elem,
                 |$c, $params, $row| $body,
             )
@@ -457,12 +428,11 @@ macro_rules! contour_accessor {
             let $fam::$var { $other } = &op else {
                 return Err($crate::geom_params::parsed_as_another(stringify!($name)));
             };
-            // This accessor's calls, for `run_split`'s spread decision.
-            static CALLS: $crate::row_split::CallTracker = $crate::row_split::CallTracker::new();
             $crate::geom_arity::zip_contours(
                 &inputs[0],
                 params.column($other),
-                &CALLS,
+                &params,
+                $crate::geom_calls!(),
                 stringify!($name),
                 $elem,
                 |$a, $b, _row| $body,
@@ -543,6 +513,8 @@ mod split_tests {
     use view_buffer::geometry::contour::Point;
     use view_buffer::mode::Wire;
     use view_buffer::GeometryOp;
+
+    use crate::geom_fns::PointFn;
 
     use super::*;
 
@@ -642,11 +614,14 @@ mod split_tests {
             eprintln!("skipped: the pool has a single thread");
             return;
         }
-        let (a, b) = (column(256), column(256));
+        let inputs = [column(256), column(256)];
+        let (a, b) = (&inputs[0], &inputs[1]);
+        let params = params(&inputs[..1]);
         let rendezvous = Rendezvous::new(true);
         let out = zip_contours(
-            &a,
-            &b,
+            a,
+            b,
+            &params,
             &CallTracker::new(),
             "test",
             DataType::Float64,
@@ -689,5 +664,53 @@ mod split_tests {
         .unwrap();
         assert_eq!(out.len(), 256);
         assert_eq!(rendezvous.threads(), 1);
+    }
+
+    fn translate_params<'a>(
+        inputs: &'a [Series],
+        on_null: &str,
+    ) -> (PointFn<Wire>, GeomParams<'a>) {
+        let kwargs = serde_json::from_value(serde_json::json!({
+            "args": {"dx": {"$slot": 1}, "dy": 0.0},
+            "on_null": on_null
+        }))
+        .unwrap();
+        GeomParams::parse::<PointFn<Wire>>(inputs, kwargs, "point_translate").unwrap()
+    }
+
+    /// `map_rows` is the one row loop of the geometry functions: it spreads,
+    /// keeps rows in order, gives each range its own null-parameter flag, and
+    /// reports the earliest failing row, as a sequential loop would.
+    #[test]
+    fn map_rows_spreads_and_keeps_row_semantics() {
+        if THREAD_POOL.current_num_threads() < 2 {
+            eprintln!("skipped: the pool has a single thread");
+            return;
+        }
+        let dx: Vec<Option<f64>> = (0..256).map(|i| (i != 200).then_some(i as f64)).collect();
+        let inputs = [column(256), Series::new("dx".into(), dx)];
+        let (op, params) = translate_params(&inputs, "null");
+        let PointFn::Translate { dx, .. } = &op else {
+            unreachable!()
+        };
+        let rendezvous = Rendezvous::new(true);
+        let rows = params
+            .map_rows(&CallTracker::new(), 256, |params, i| {
+                rendezvous.visit(i);
+                params.value(dx, i).map(Some)
+            })
+            .unwrap();
+        let expected: Vec<Option<f64>> = (0..256).map(|i| (i != 200).then_some(i as f64)).collect();
+        assert_eq!(rows, expected, "only the null parameter's row is null");
+        let threads = rendezvous.threads();
+        assert!(threads > 1, "256 rows ran on {threads} thread(s)");
+
+        let err = params
+            .map_rows(&CallTracker::new(), 256, |_, i| match i {
+                100 | 220 => Err(polars_err!(ComputeError: "row {} failed", i)),
+                _ => Ok(Some(i)),
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("row 100"), "{err}");
     }
 }

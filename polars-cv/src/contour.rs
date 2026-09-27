@@ -6,17 +6,12 @@
 
 use polars::prelude::*;
 
-use crate::geom_schema::{
-    bbox_anyvalue, bbox_struct_dtype, parse_bbox, point_anyvalue, point_struct_dtype,
-};
-use polars_arrow::array::PrimitiveArray;
+use crate::geom_schema::{bbox_anyvalue, bbox_struct_dtype, point_anyvalue, point_struct_dtype};
 use pyo3_polars::derive::polars_expr;
 
 // Import geometry operations from view-buffer
 use view_buffer::geometry::{
-    contour::{BoundingBox, Winding},
-    label::score_contours_on_buffer,
-    measures, pairwise, predicates, transforms,
+    contour::Winding, label::score_contours_on_buffer, measures, pairwise, predicates, transforms,
 };
 use view_buffer::ViewBuffer;
 
@@ -24,8 +19,8 @@ use view_buffer::ViewBuffer;
 // regardless of module order; importing it by name avoids depending on
 // `geom_arity` being declared before `contour` in lib.rs.
 use crate::contour_accessor;
-use crate::contour_column::ContourColumn;
 use crate::geom_arity::{elementwise_field, Arity, ContourOutput};
+use crate::geom_columns::{BBoxColumn, ContourColumn, PointColumn};
 use crate::geom_fns::{BBoxFn, ContourFn};
 use crate::geom_params::{check_range, parsed_as_another, GeomKwargs, GeomParams};
 use crate::ops::{ColumnRef, Param};
@@ -112,18 +107,6 @@ pub fn contour_to_anyvalue(contour: &view_buffer::geometry::contour::Contour) ->
 // ============================================================================
 // Contour Parsing Helpers
 // ============================================================================
-
-/// The field names a point struct may spell its coordinates with, in order.
-///
-/// **The single authority for "is this a point?".** Read by
-/// [`ContourColumn`](crate::contour_column::ContourColumn), which parses them, and by
-/// [`is_point_dtype`](crate::geom_arity::is_point_dtype), which decides from the
-/// dtype whether a `List` is one contour's ring or a set of contours. The two
-/// used to spell the names separately, so a dtype test could admit a struct the
-/// parser then rejected.
-pub(crate) fn point_dtype_fields() -> [[&'static str; 2]; 2] {
-    [["x", "X"], ["y", "Y"]]
-}
 
 fn parse_numeric_series(series: &Series) -> PolarsResult<Vec<f64>> {
     let mut values = Vec::with_capacity(series.len());
@@ -396,36 +379,21 @@ fn correspond_rows<T>(
     inputs: &[Series],
     params: &GeomParams,
     (threshold, order): (&Param<f64>, &Option<ColumnRef>),
-    sides: impl Fn(usize) -> PolarsResult<Sides<T>>,
-    build_matrix: impl Fn(&[T], &[T]) -> Vec<Vec<f64>>,
+    sides: impl Fn(usize) -> PolarsResult<Sides<T>> + Sync,
+    build_matrix: impl Fn(&[T], &[T]) -> Vec<Vec<f64>> + Sync,
 ) -> PolarsResult<Series> {
-    let left_series = &inputs[0];
     // `order` is read through its reference: it is optional, so nothing here
     // may read a fixed position.
     let order_series = params.optional_column(order);
-    let len = left_series.len();
-    let dtype = DataType::Struct(correspondence_fields());
-
-    let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
-    for i in 0..len {
+    let rows = params.map_rows(crate::geom_calls!(), inputs[0].len(), |params, i| {
         let (Some(left), Some(right)) = sides(i)? else {
-            rows.push(AnyValue::Null);
-            continue;
+            return Ok(None);
         };
-
         // Per-row parameters cannot be range-checked once per batch, so the
-        // check moves into the loop and names the offending row. A null
-        // `threshold` under `on_null="null"` nulls this row instead.
-        let Some(threshold) = params.row(|| {
-            let threshold = params.value(threshold, i)?;
-            check_range("threshold", threshold, 0.0, 1.0, i)?;
-            Ok(threshold)
-        })?
-        else {
-            rows.push(AnyValue::Null);
-            continue;
-        };
-
+        // check names the offending row. A null `threshold` under
+        // `on_null="null"` nulls this row instead (`map_rows`).
+        let threshold = params.value(threshold, i)?;
+        check_range("threshold", threshold, 0.0, 1.0, i)?;
         let order = match order_series {
             Some(column) => {
                 let value = column.get(i)?;
@@ -437,13 +405,38 @@ fn correspond_rows<T>(
             }
             None => None,
         };
-
         let result =
             pairwise::greedy_assign(&build_matrix(&left, &right), threshold, order.as_deref());
-        rows.push(correspondence_anyvalue(&result));
-    }
+        Ok(Some(correspondence_anyvalue(&result)))
+    })?;
+    let rows: Vec<AnyValue> = rows
+        .into_iter()
+        .map(|r| r.unwrap_or(AnyValue::Null))
+        .collect();
+    let dtype = DataType::Struct(correspondence_fields());
+    Series::from_any_values_and_dtype(inputs[0].name().clone(), &rows, &dtype, true)
+}
 
-    Series::from_any_values_and_dtype(left_series.name().clone(), &rows, &dtype, true)
+/// Drive one pairwise-IoU entry point over its rows: the contour and bbox
+/// forms differ only in how a row's two sides are read and how the matrix is
+/// built.
+fn pairwise_rows<T>(
+    inputs: &[Series],
+    params: &GeomParams,
+    sides: impl Fn(usize) -> PolarsResult<Sides<T>> + Sync,
+    build_matrix: impl Fn(&[T], &[T]) -> Vec<Vec<f64>> + Sync,
+) -> PolarsResult<Series> {
+    let rows = params.map_rows(crate::geom_calls!(), inputs[0].len(), |_, i| {
+        let (Some(left), Some(right)) = sides(i)? else {
+            return Ok(None);
+        };
+        matrix_anyvalue(&build_matrix(&left, &right)).map(Some)
+    })?;
+    let rows: Vec<AnyValue> = rows
+        .into_iter()
+        .map(|r| r.unwrap_or(AnyValue::Null))
+        .collect();
+    build_pairwise_matrix_series(inputs[0].name().clone(), rows)
 }
 
 fn label_reduce_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
@@ -460,10 +453,6 @@ fn label_reduce_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
 // ============================================================================
 // Contour Plugin Functions - Measures
 // ============================================================================
-
-// The bbox `{x, y, width, height}` struct authority (`bbox_struct_dtype`,
-// `bbox_anyvalue`) and the per-row `parse_bbox` live in `geom_schema`, shared
-// with the point namespace so the two cannot spell the wire format differently.
 
 contour_accessor! {
     /// Compute contour area.
@@ -523,49 +512,6 @@ contour_accessor! {
     |contour, _params, _row| Ok(AnyValue::Boolean(predicates::contour_is_convex(contour)))
 }
 
-/// Read one `{x, y}` struct value.
-fn parse_point_value(point_value: &AnyValue) -> PolarsResult<(f64, f64)> {
-    {
-        {
-            // Parse point from struct
-            let (x, y) = match point_value {
-                AnyValue::StructOwned(boxed) => {
-                    let (values, _) = boxed.as_ref();
-                    let x = values
-                        .first()
-                        .and_then(|v| v.try_extract::<f64>().ok())
-                        .unwrap_or(0.0);
-                    let y = values
-                        .get(1)
-                        .and_then(|v| v.try_extract::<f64>().ok())
-                        .unwrap_or(0.0);
-                    (x, y)
-                }
-                AnyValue::Struct(row_idx, struct_arr, _) => {
-                    let values = struct_arr.values();
-                    if values.len() >= 2 {
-                        let x_arr = values[0].as_any().downcast_ref::<PrimitiveArray<f64>>();
-                        let y_arr = values[1].as_any().downcast_ref::<PrimitiveArray<f64>>();
-                        match (x_arr, y_arr) {
-                            (Some(x), Some(y)) => (
-                                x.get(*row_idx).unwrap_or(0.0),
-                                y.get(*row_idx).unwrap_or(0.0),
-                            ),
-                            _ => (0.0, 0.0),
-                        }
-                    } else {
-                        (0.0, 0.0)
-                    }
-                }
-                _ => {
-                    return Err(polars_err!(ComputeError: "Expected Struct for point"));
-                }
-            };
-            Ok((x, y))
-        }
-    }
-}
-
 /// Declared type of `contour_contains_point`: one bool per contour.
 fn contour_contains_point_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
     elementwise_field(input_fields, "contour_contains_point", DataType::Boolean)
@@ -589,35 +535,25 @@ fn contour_contains_point(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult
     let ContourFn::ContainsPoint { point } = &op else {
         return Err(parsed_as_another(NAME));
     };
-    let contour_series = &inputs[0];
-    let point_series = params.column(point);
-    let contours = ContourColumn::new(contour_series);
-    let arity = contours.arity();
-    let len = contour_series.len();
-    let mut rows: Vec<Option<Vec<AnyValue<'static>>>> = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let point_value = point_series.get(i)?;
-        let row = match point_value.is_null() {
-            true => None,
-            false => contours.row(i)?,
+    let contours = ContourColumn::new(&inputs[0]);
+    let points = PointColumn::new(params.column(point));
+    let rows = params.map_rows(crate::geom_calls!(), inputs[0].len(), |_, i| {
+        let Some(p) = points.get(i)? else {
+            return Ok(None);
         };
-        let Some(row) = row else {
-            rows.push(None);
-            continue;
+        let Some(row) = contours.row(i)? else {
+            return Ok(None);
         };
-        let (x, y) = parse_point_value(&point_value)?;
-        let results = row
-            .iter()
-            .map(|contour| AnyValue::Boolean(predicates::contains_point(contour, x, y)))
-            .collect();
-        rows.push(Some(results));
-    }
-
+        Ok(Some(
+            row.iter()
+                .map(|c| AnyValue::Boolean(predicates::contains_point(c, p.x, p.y)))
+                .collect(),
+        ))
+    })?;
     AnyValue::column(
-        contour_series.name().clone(),
+        inputs[0].name().clone(),
         rows,
-        arity,
+        contours.arity(),
         &DataType::Boolean,
     )
 }
@@ -634,24 +570,16 @@ fn contour_pairwise_iou(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<S
     let ContourFn::PairwiseIou { other } = &op else {
         return Err(parsed_as_another(NAME));
     };
-    let pred_series = &inputs[0];
-    let (preds_column, gts_column) = (
-        ContourColumn::new(pred_series),
+    let (preds, gts) = (
+        ContourColumn::new(&inputs[0]),
         ContourColumn::new(params.column(other)),
     );
-    let len = pred_series.len();
-    let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let (Some(preds), Some(gts)) = (preds_column.row(i)?, gts_column.row(i)?) else {
-            rows.push(AnyValue::Null);
-            continue;
-        };
-        let matrix = pairwise::iou_matrix(&preds, &gts);
-        rows.push(matrix_anyvalue(&matrix)?);
-    }
-
-    build_pairwise_matrix_series(pred_series.name().clone(), rows)
+    pairwise_rows(
+        inputs,
+        &params,
+        |i| Ok((preds.row(i)?, gts.row(i)?)),
+        pairwise::iou_matrix,
+    )
 }
 
 /// One-to-one correspondence between two contour sets by overlap.
@@ -702,46 +630,34 @@ fn contour_label_reduce(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<S
     else {
         return Err(parsed_as_another(NAME));
     };
-    let contour_series = &inputs[0];
-    let contour_column = ContourColumn::new(contour_series);
+    let contours = ContourColumn::new(&inputs[0]);
     let heatmap_series = params.column(image);
-    let len = contour_series.len();
-    let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
-
-    for i in 0..len {
+    let rows = params.map_rows(crate::geom_calls!(), inputs[0].len(), |params, i| {
         let heatmap_value = heatmap_series.get(i)?;
-        let contours = match heatmap_value.is_null() {
-            true => None,
-            false => contour_column.row(i)?,
+        if heatmap_value.is_null() {
+            return Ok(None);
+        }
+        let Some(contours) = contours.row(i)? else {
+            return Ok(None);
         };
-        let Some(contours) = contours else {
-            rows.push(AnyValue::Null);
-            continue;
-        };
-
         // Per-row capable, matching `Pipeline.label_reduce`: neither choice
         // affects the output's shape or dtype.
-        let Some((reduction, region_mode)) = params.row(|| {
-            let reduction = params.value(reduction, i)?;
-            let region_mode = params.value(region_mode, i)?;
-            Ok((reduction, region_mode))
-        })?
-        else {
-            rows.push(AnyValue::Null);
-            continue;
-        };
-
+        let reduction = params.value(reduction, i)?;
+        let region_mode = params.value(region_mode, i)?;
         let heatmap = parse_heatmap(&heatmap_value)?;
         let scores = score_contours_on_buffer(&heatmap, &contours, reduction, region_mode)
             .map_err(|err| polars_err!(ComputeError: "{}", err))?;
-        rows.push(float_list_anyvalue(
+        Ok(Some(float_list_anyvalue(
             &scores,
             PlSmallStr::from_static("scores"),
-        ));
-    }
-
+        )))
+    })?;
+    let rows: Vec<AnyValue> = rows
+        .into_iter()
+        .map(|r| r.unwrap_or(AnyValue::Null))
+        .collect();
     let dtype = DataType::List(Box::new(DataType::Float64));
-    Series::from_any_values_and_dtype(contour_series.name().clone(), &rows, &dtype, true)
+    Series::from_any_values_and_dtype(inputs[0].name().clone(), &rows, &dtype, true)
 }
 
 contour_accessor! {
@@ -875,63 +791,6 @@ contour_accessor! {
 // BBox Matching Plugin Functions
 // ============================================================================
 
-// A single bbox struct parses via `geom_schema::parse_bbox` (imported above) --
-// the one per-row bbox parser, shared with the point namespace.
-
-/// Parse a List[BBOX_SCHEMA] AnyValue into a Vec<BoundingBox>.
-fn parse_bbox_list(value: &AnyValue) -> PolarsResult<Vec<BoundingBox>> {
-    match value {
-        AnyValue::List(series) => {
-            if let Ok(struct_ca) = series.struct_() {
-                let x_col = struct_ca
-                    .field_by_name("x")
-                    .map_err(|_| polars_err!(ComputeError: "Bbox struct missing 'x' field"))?;
-                let y_col = struct_ca
-                    .field_by_name("y")
-                    .map_err(|_| polars_err!(ComputeError: "Bbox struct missing 'y' field"))?;
-                let w_col = struct_ca
-                    .field_by_name("width")
-                    .map_err(|_| polars_err!(ComputeError: "Bbox struct missing 'width' field"))?;
-                let h_col = struct_ca
-                    .field_by_name("height")
-                    .map_err(|_| polars_err!(ComputeError: "Bbox struct missing 'height' field"))?;
-
-                let x_ca = x_col
-                    .f64()
-                    .map_err(|_| polars_err!(ComputeError: "x must be f64"))?;
-                let y_ca = y_col
-                    .f64()
-                    .map_err(|_| polars_err!(ComputeError: "y must be f64"))?;
-                let w_ca = w_col
-                    .f64()
-                    .map_err(|_| polars_err!(ComputeError: "width must be f64"))?;
-                let h_ca = h_col
-                    .f64()
-                    .map_err(|_| polars_err!(ComputeError: "height must be f64"))?;
-
-                let mut bboxes = Vec::with_capacity(series.len());
-                for i in 0..series.len() {
-                    bboxes.push(BoundingBox::new(
-                        x_ca.get(i).unwrap_or(0.0),
-                        y_ca.get(i).unwrap_or(0.0),
-                        w_ca.get(i).unwrap_or(0.0),
-                        h_ca.get(i).unwrap_or(0.0),
-                    ));
-                }
-                Ok(bboxes)
-            } else {
-                let mut bboxes = Vec::with_capacity(series.len());
-                for i in 0..series.len() {
-                    let item = series.get(i)?;
-                    bboxes.push(parse_bbox(&item)?);
-                }
-                Ok(bboxes)
-            }
-        }
-        _ => Err(polars_err!(ComputeError: "Expected List of bbox structs, got {:?}", value)),
-    }
-}
-
 /// Pairwise IoU matrix between two sets of bounding boxes.
 #[polars_expr(output_type_func=pairwise_iou_output_type)]
 fn bbox_pairwise_iou(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
@@ -940,26 +799,16 @@ fn bbox_pairwise_iou(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Seri
     let BBoxFn::PairwiseIou { other } = &op else {
         return Err(parsed_as_another(NAME));
     };
-    let pred_series = &inputs[0];
-    let gt_series = params.column(other);
-    let len = pred_series.len();
-    let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let preds_value = pred_series.get(i)?;
-        let gts_value = gt_series.get(i)?;
-        if preds_value.is_null() || gts_value.is_null() {
-            rows.push(AnyValue::Null);
-            continue;
-        }
-
-        let preds = parse_bbox_list(&preds_value)?;
-        let gts = parse_bbox_list(&gts_value)?;
-        let matrix = pairwise::bbox_iou_matrix(&preds, &gts);
-        rows.push(matrix_anyvalue(&matrix)?);
-    }
-
-    build_pairwise_matrix_series(pred_series.name().clone(), rows)
+    let (preds, gts) = (
+        BBoxColumn::new(&inputs[0]),
+        BBoxColumn::new(params.column(other)),
+    );
+    pairwise_rows(
+        inputs,
+        &params,
+        |i| Ok((preds.row(i)?, gts.row(i)?)),
+        pairwise::bbox_iou_matrix,
+    )
 }
 
 /// One-to-one correspondence between two bbox sets by overlap.
@@ -978,19 +827,15 @@ fn bbox_correspond(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series
     else {
         return Err(parsed_as_another(NAME));
     };
-    let (left, right) = (&inputs[0], params.column(other));
-    let bboxes = |series: &Series, i: usize| -> PolarsResult<Option<Vec<BoundingBox>>> {
-        let value = series.get(i)?;
-        match value.is_null() {
-            true => Ok(None),
-            false => parse_bbox_list(&value).map(Some),
-        }
-    };
+    let (left, right) = (
+        BBoxColumn::new(&inputs[0]),
+        BBoxColumn::new(params.column(other)),
+    );
     correspond_rows(
         inputs,
         &params,
         (threshold, order),
-        |i| Ok((bboxes(left, i)?, bboxes(right, i)?)),
+        |i| Ok((left.row(i)?, right.row(i)?)),
         pairwise::bbox_iou_matrix,
     )
 }

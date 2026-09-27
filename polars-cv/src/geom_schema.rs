@@ -21,7 +21,6 @@
 //! chaining them would silently drag a point rename into the bbox wire format.
 
 use polars::prelude::*;
-use polars_arrow::array::PrimitiveArray;
 use view_buffer::geometry::contour::BoundingBox;
 
 /// The field names of an `{x, y}` point, in wire order.
@@ -29,6 +28,16 @@ use view_buffer::geometry::contour::BoundingBox;
 /// Separate from [`point_fields`] so the FFI can publish the names without
 /// constructing polars types, and so a rename has exactly one site.
 pub(crate) const POINT_FIELD_NAMES: [&str; 2] = ["x", "y"];
+
+/// The spellings an *input* point struct may give each coordinate, in axis
+/// order, the canonical [`POINT_FIELD_NAMES`] first.
+///
+/// **The single authority for "is this a point?".** Read by the geometry
+/// column readers (`geom_columns`), which parse by these names, and by
+/// [`is_point_dtype`](crate::geom_arity::is_point_dtype), which decides from
+/// the dtype whether a `List` is one contour's ring or a set of contours.
+pub(crate) const POINT_FIELD_SPELLINGS: [&[&str]; 2] =
+    [&[POINT_FIELD_NAMES[0], "X"], &[POINT_FIELD_NAMES[1], "Y"]];
 
 /// The `{x, y}` fields a point-valued result publishes.
 ///
@@ -195,55 +204,6 @@ pub(crate) fn bbox_anyvalue(bbox: Option<BoundingBox>) -> AnyValue<'static> {
     )))
 }
 
-/// Parse a `{x, y, width, height}` bbox struct from any supported AnyValue form.
-///
-/// The one per-row bbox parser. `point.rs` and `contour.rs` each carried their
-/// own and the two had drifted — one accepted the borrowed `Struct` variant the
-/// other rejected — so this handles both the owned and borrowed struct forms.
-/// A missing field defaults to `0.0`, as both predecessors did.
-pub(crate) fn parse_bbox(value: &AnyValue) -> PolarsResult<BoundingBox> {
-    match value {
-        AnyValue::StructOwned(boxed) => {
-            let (values, fields) = boxed.as_ref();
-            let (mut x, mut y, mut w, mut h) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
-            for (i, field) in fields.iter().enumerate() {
-                let v = values
-                    .get(i)
-                    .and_then(|v| v.try_extract::<f64>().ok())
-                    .unwrap_or(0.0);
-                match field.name().as_str() {
-                    "x" => x = v,
-                    "y" => y = v,
-                    "width" => w = v,
-                    "height" => h = v,
-                    _ => {}
-                }
-            }
-            Ok(BoundingBox::new(x, y, w, h))
-        }
-        AnyValue::Struct(row_idx, struct_arr, fields) => {
-            let arr_values = struct_arr.values();
-            let (mut x, mut y, mut w, mut h) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
-            for (i, field) in fields.iter().enumerate() {
-                if let Some(arr) = arr_values.get(i) {
-                    if let Some(f64_arr) = arr.as_any().downcast_ref::<PrimitiveArray<f64>>() {
-                        let v = f64_arr.get(*row_idx).unwrap_or(0.0);
-                        match field.name().as_str() {
-                            "x" => x = v,
-                            "y" => y = v,
-                            "width" => w = v,
-                            "height" => h = v,
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            Ok(BoundingBox::new(x, y, w, h))
-        }
-        _ => Err(polars_err!(ComputeError: "Expected bbox struct, got {:?}", value)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,14 +280,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_bbox_round_trips_an_emitted_bbox() {
-        // Emit via the authority, parse via the authority: the two agree, and
-        // the borrowed-`Struct` arm no longer diverges from the owned one.
+    fn an_emitted_bbox_reads_back() {
+        // Emit via the authority, read via the one bbox reader: the two agree.
         let source = BoundingBox::new(5.0, 6.0, 7.0, 8.0);
-        let parsed = parse_bbox(&bbox_anyvalue(Some(source))).expect("parse must succeed");
-        assert_eq!(
-            (parsed.x, parsed.y, parsed.width, parsed.height),
-            (5.0, 6.0, 7.0, 8.0)
-        );
+        let column = Series::from_any_values_and_dtype(
+            "b".into(),
+            &[bbox_anyvalue(Some(source)), bbox_anyvalue(None)],
+            &bbox_struct_dtype(),
+            true,
+        )
+        .unwrap();
+        let reader = crate::geom_columns::BBoxColumn::new(&column);
+        assert_eq!(reader.single(0).unwrap(), Some(source));
+        assert_eq!(reader.single(1).unwrap(), None);
     }
 }

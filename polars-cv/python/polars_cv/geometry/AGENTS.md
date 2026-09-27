@@ -164,7 +164,7 @@ the N×M matrix (`pairwise_iou`) or an index-wise pairing (`.explode()` one
 side), and guessing between two different answers is the fallback behaviour this
 codebase removes. The set-level accessors (`pairwise_iou`, `correspond`,
 `label_reduce`) run the same rule backwards: a lone contour is read as a set of
-one, via `ContourColumn::row` (`src/contour_column.rs`).
+one, via `ContourColumn::row` (`src/geom_columns.rs`).
 
 ### Why it is a mechanism and not a per-accessor `if`
 

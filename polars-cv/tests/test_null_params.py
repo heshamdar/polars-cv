@@ -418,9 +418,8 @@ class TestGeometryNamespaces:
         assert out[1] is None
 
     def test_point_on_null_matches_a_null_input_point(self) -> None:
-        # Point transforms build their struct from two Float64 columns, so a
-        # null row is a struct of null fields. The policy must produce exactly
-        # what a null *input* point already produces — not some third shape.
+        # A null row is a null point. The policy must produce exactly what a
+        # null *input* point already produces — not some third shape.
         point = {"x": 10.0, "y": 10.0}
         df = pl.DataFrame(
             {"p": [point, point, None], "dx": [5.0, None, 5.0]},
@@ -434,7 +433,7 @@ class TestGeometryNamespaces:
         )["t"].to_list()
         assert out[0]["x"] == 15.0
         # [1] null parameter, [2] null input — identical results.
-        assert out[1] == out[2] == {"x": None, "y": None}
+        assert out[1] is None and out[2] is None
 
     def test_bbox_on_null_nulls_the_row(self) -> None:
         box = [{"x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0}]

@@ -539,9 +539,8 @@ class TestNullHandling:
         result = df.with_columns(translated=pl.col("pt").point.translate(5.0, 5.0))
 
         assert result["translated"][0]["x"] == 15.0
-        # Polars represents null structs as structs with null fields
-        assert result["translated"][1]["x"] is None
-        assert result["translated"][1]["y"] is None
+        # A null input point is a null result point.
+        assert result["translated"][1] is None
         assert result["translated"][2]["x"] == 35.0
 
     @plugin_required
