@@ -1445,6 +1445,29 @@ impl ViewBuffer {
         }
     }
 
+    /// Write this buffer's elements, in row-major order, into `out`, which
+    /// must hold exactly as many elements — one copy through the view's
+    /// strides, as [`append_to`](Self::append_to) makes, into a slice the
+    /// caller owns (a row's place in a column's values).
+    ///
+    /// # Panics
+    /// Panics if `T` is not this buffer's dtype or `out` has another length.
+    pub fn write_to<T: ViewType>(&self, out: &mut [std::mem::MaybeUninit<T>]) {
+        assert_eq!(
+            T::DTYPE,
+            self.dtype(),
+            "write_to: the slice holds {:?} but the buffer's dtype is {:?}",
+            T::DTYPE,
+            self.dtype()
+        );
+        let count: usize = self.layout.shape.iter().product();
+        assert_eq!(out.len(), count, "write_to: the slice has the wrong length");
+        // SAFETY: `out` holds exactly `count` `T`s (checked), which is
+        // `logical_len_bytes()` bytes of this dtype (checked), and cannot
+        // overlap this buffer's data, which is only borrowed immutably.
+        unsafe { self.copy_elements_into(out.as_mut_ptr().cast::<u8>()) };
+    }
+
     /// The bytes this view's elements occupy when packed row-major.
     fn logical_len_bytes(&self) -> usize {
         // Checked, so an overflowing shape fails with a clear message.
