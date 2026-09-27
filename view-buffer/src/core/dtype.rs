@@ -102,6 +102,60 @@ dtype_table!(
     (F64, "f64", 8, "float64"),
 );
 
+/// Evaluate `$body` with `$T` bound to the Rust element type of `$dtype`.
+///
+/// **The one runtime match from a [`DType`] to its element type.** The match
+/// is exhaustive, so a dtype added to `dtype_table!` fails to compile here
+/// rather than falling through to a default arm. Nest it for dtype pairs:
+/// `with_dtype!(src, S => with_dtype!(dst, D => convert::<S, D>(..)))`.
+macro_rules! with_dtype {
+    ($dtype:expr, $T:ident => $body:expr) => {
+        match $dtype {
+            $crate::core::dtype::DType::U8 => {
+                type $T = u8;
+                $body
+            }
+            $crate::core::dtype::DType::I8 => {
+                type $T = i8;
+                $body
+            }
+            $crate::core::dtype::DType::U16 => {
+                type $T = u16;
+                $body
+            }
+            $crate::core::dtype::DType::I16 => {
+                type $T = i16;
+                $body
+            }
+            $crate::core::dtype::DType::U32 => {
+                type $T = u32;
+                $body
+            }
+            $crate::core::dtype::DType::I32 => {
+                type $T = i32;
+                $body
+            }
+            $crate::core::dtype::DType::U64 => {
+                type $T = u64;
+                $body
+            }
+            $crate::core::dtype::DType::I64 => {
+                type $T = i64;
+                $body
+            }
+            $crate::core::dtype::DType::F32 => {
+                type $T = f32;
+                $body
+            }
+            $crate::core::dtype::DType::F64 => {
+                type $T = f64;
+                $body
+            }
+        }
+    };
+}
+pub(crate) use with_dtype;
+
 /// Categories of data types that operations can accept as input.
 ///
 /// This enables operations to declare what types they can work with,

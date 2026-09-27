@@ -7,6 +7,30 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Performance
+
+- **Kernels use AVX2 on CPUs that have it, whatever the wheel was built for.**
+  The published wheels target the x86-64 baseline (SSE2), where much of the
+  engine's arithmetic could not vectorise. One runtime dispatch mechanism now
+  compiles a kernel's whole body a second time with AVX2 and picks it per
+  call. Only AVX2 is enabled, never FMA, so the output is byte-identical on
+  every CPU. Blur (the one kernel that already dispatched) moved onto it.
+- **Float → integer casts are ~2x faster on the wheels.** `cast` and a fused
+  scalar chain's integer output share one conversion rule and one dispatched
+  loop; on SSE2 rounding was a `roundf` call per element (f32 → u8 at 1024²:
+  9.1 → 5.1 ms).
+- **u8 `grayscale` is 5–10x faster and u8 `threshold` 1.4–3x.** Both are
+  vectorised kernels over the image's rows. A contiguous, cropped or
+  vertically flipped input is read where it lies instead of being copied
+  first. Non-u8 grayscale is 1.4–2.9x faster.
+
+### Fixed
+
+- **`grayscale` of a non-u8 gray + alpha image mixed the alpha into the
+  intensity.** A `[H, W, 2]` u16/f32 pixel came out as
+  `0.299·gray + 0.701·alpha` (u16 (1000, 65535) → 46239). It is now the gray
+  channel, as it always was for u8 (CR-51).
+
 ## [0.29.0] — 2026-09-27
 
 Every operation, source, sink and geometry accessor is now one typed Rust

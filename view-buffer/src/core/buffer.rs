@@ -35,7 +35,8 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::core::bytes::AlignedBytes;
-use crate::core::dtype::{DType, ViewType};
+use crate::core::convert::convert_slice;
+use crate::core::dtype::{with_dtype, DType, ViewType};
 use crate::core::layout::{ExternalLayout, Layout, LayoutFacts};
 use crate::ops::scalar::{FusedKernel, ScalarOp};
 use crate::protocol::{dtype_to_u8, ViewHeader, HEADER_SIZE, MAGIC_BYTES, VERSION};
@@ -285,149 +286,14 @@ impl ViewBuffer {
             return self.clone();
         }
 
+        // The conversion rule (integer sources `as`; float → integer rounds
+        // to nearest then saturates; float → float `as`) lives once, in
+        // `convert::CastFrom`, and the bulk loop is its dispatched kernel.
         let contig = self.to_contiguous();
         let shape = contig.shape().to_vec();
-        let _len: usize = shape.iter().product();
-
-        // Macro to handle all dtype combinations.
-        //
-        // Two variants by source kind:
-        // - `int`:   integer source -> plain `as` (no fractional part to round).
-        // - `float`: float source -> **round to nearest** before narrowing to an
-        //            integer target, so e.g. 140.75_f32 -> 141_u8 rather than 140.
-        //            Rust's float->int `as` already saturates out-of-range values
-        //            and maps NaN -> 0, so clamping behaviour is preserved.
-        //            Float->float targets keep plain `as` (no rounding).
-        macro_rules! cast_impl {
-            (int $src:ty, $dst_dtype:expr) => {{
-                let src_data = contig.as_slice::<$src>();
-                match $dst_dtype {
-                    DType::U8 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as u8).collect::<Vec<u8>>(),
-                        shape,
-                    ),
-                    DType::I8 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as i8).collect::<Vec<i8>>(),
-                        shape,
-                    ),
-                    DType::U16 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as u16).collect::<Vec<u16>>(),
-                        shape,
-                    ),
-                    DType::I16 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as i16).collect::<Vec<i16>>(),
-                        shape,
-                    ),
-                    DType::U32 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as u32).collect::<Vec<u32>>(),
-                        shape,
-                    ),
-                    DType::I32 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as i32).collect::<Vec<i32>>(),
-                        shape,
-                    ),
-                    DType::U64 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as u64).collect::<Vec<u64>>(),
-                        shape,
-                    ),
-                    DType::I64 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as i64).collect::<Vec<i64>>(),
-                        shape,
-                    ),
-                    DType::F32 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as f32).collect::<Vec<f32>>(),
-                        shape,
-                    ),
-                    DType::F64 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as f64).collect::<Vec<f64>>(),
-                        shape,
-                    ),
-                }
-            }};
-            (float $src:ty, $dst_dtype:expr) => {{
-                let src_data = contig.as_slice::<$src>();
-                match $dst_dtype {
-                    DType::U8 => Self::from_vec_with_shape(
-                        src_data
-                            .iter()
-                            .map(|&x| x.round() as u8)
-                            .collect::<Vec<u8>>(),
-                        shape,
-                    ),
-                    DType::I8 => Self::from_vec_with_shape(
-                        src_data
-                            .iter()
-                            .map(|&x| x.round() as i8)
-                            .collect::<Vec<i8>>(),
-                        shape,
-                    ),
-                    DType::U16 => Self::from_vec_with_shape(
-                        src_data
-                            .iter()
-                            .map(|&x| x.round() as u16)
-                            .collect::<Vec<u16>>(),
-                        shape,
-                    ),
-                    DType::I16 => Self::from_vec_with_shape(
-                        src_data
-                            .iter()
-                            .map(|&x| x.round() as i16)
-                            .collect::<Vec<i16>>(),
-                        shape,
-                    ),
-                    DType::U32 => Self::from_vec_with_shape(
-                        src_data
-                            .iter()
-                            .map(|&x| x.round() as u32)
-                            .collect::<Vec<u32>>(),
-                        shape,
-                    ),
-                    DType::I32 => Self::from_vec_with_shape(
-                        src_data
-                            .iter()
-                            .map(|&x| x.round() as i32)
-                            .collect::<Vec<i32>>(),
-                        shape,
-                    ),
-                    DType::U64 => Self::from_vec_with_shape(
-                        src_data
-                            .iter()
-                            .map(|&x| x.round() as u64)
-                            .collect::<Vec<u64>>(),
-                        shape,
-                    ),
-                    DType::I64 => Self::from_vec_with_shape(
-                        src_data
-                            .iter()
-                            .map(|&x| x.round() as i64)
-                            .collect::<Vec<i64>>(),
-                        shape,
-                    ),
-                    // Float -> float: no rounding.
-                    DType::F32 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as f32).collect::<Vec<f32>>(),
-                        shape,
-                    ),
-                    DType::F64 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as f64).collect::<Vec<f64>>(),
-                        shape,
-                    ),
-                }
-            }};
-        }
-
-        match self.layout.dtype {
-            DType::U8 => cast_impl!(int u8, target_dtype),
-            DType::I8 => cast_impl!(int i8, target_dtype),
-            DType::U16 => cast_impl!(int u16, target_dtype),
-            DType::I16 => cast_impl!(int i16, target_dtype),
-            DType::U32 => cast_impl!(int u32, target_dtype),
-            DType::I32 => cast_impl!(int i32, target_dtype),
-            DType::U64 => cast_impl!(int u64, target_dtype),
-            DType::I64 => cast_impl!(int i64, target_dtype),
-            DType::F32 => cast_impl!(float f32, target_dtype),
-            DType::F64 => cast_impl!(float f64, target_dtype),
-        }
+        with_dtype!(contig.dtype(), S => with_dtype!(target_dtype, D => {
+            Self::from_vec_with_shape(convert_slice::<S, D>(contig.as_slice::<S>()), shape)
+        }))
     }
 
     /// Returns true if the buffer data is aligned to the specified boundary.
@@ -1202,6 +1068,50 @@ impl ViewBuffer {
         LayoutFacts::from(&self.layout)
     }
 
+    /// The view's rows as slices, when its elements are packed within each
+    /// row ([`LayoutFacts::is_dense_rows`]): rank 2 with a unit column stride,
+    /// or rank 3 channels-last with packed pixels. Each slice is one row's
+    /// `W` (or `W * C`) elements.
+    ///
+    /// The row stride may be anything, negative included, so a crop or a
+    /// vertical flip is read where it lies instead of being copied to a
+    /// contiguous buffer first. `None` for any other layout (a transpose, a
+    /// horizontal flip), which the caller must materialise.
+    ///
+    /// # Panics
+    /// Panics if `T` is not this buffer's dtype.
+    pub(crate) fn dense_rows<T: ViewType>(&self) -> Option<Vec<&[T]>> {
+        assert_eq!(
+            T::DTYPE,
+            self.dtype(),
+            "dense_rows: asked for {:?} rows of a {:?} buffer",
+            T::DTYPE,
+            self.dtype()
+        );
+        if !self.layout_facts().is_dense_rows() {
+            return None;
+        }
+        let shape = &self.layout.shape;
+        let row_len = shape[1] * shape.get(2).copied().unwrap_or(1);
+        let row_stride = self.layout.strides[0];
+        // SAFETY: the offset is inside the data (layouts are validated when
+        // built), and every row `y < H` starts `y * row_stride` bytes from it
+        // and spans `row_len` packed elements, which the layout keeps inside
+        // the data. Offsets and strides are whole elements, so each row is
+        // aligned for `T` (CR-41).
+        let base = unsafe { self.data.as_ptr().add(self.layout.offset) };
+        Some(
+            (0..shape[0])
+                .map(|y| unsafe {
+                    std::slice::from_raw_parts(
+                        base.offset(y as isize * row_stride).cast::<T>(),
+                        row_len,
+                    )
+                })
+                .collect(),
+        )
+    }
+
     /// Returns true if the buffer is compatible with the target external layout.
     pub fn is_compatible_with(&self, target: ExternalLayout) -> bool {
         self.layout_facts().compatible_with(target)
@@ -1824,40 +1734,22 @@ fn apply_fused_op_passes(data: &mut [f32], ops: &[ScalarOp]) {
 
 /// Materialize the kernel's f32 result as a contiguous buffer of `out_dtype`.
 ///
-/// Integer targets round to nearest then saturate (`x.round() as T`), exactly
-/// mirroring [`ViewBuffer::cast_to`]'s float→int semantics; `F32` reuses the
-/// accumulator allocation without copying.
+/// Other targets convert through [`convert_slice`], the rule
+/// [`ViewBuffer::cast_to`] uses, so a fused trailing cast and a standalone
+/// cast cannot round differently; `F32` reuses the accumulator allocation
+/// without copying.
 fn finish_fused_output(acc: Vec<f32>, shape: Vec<usize>, out_dtype: DType) -> ViewBuffer {
-    macro_rules! convert_out {
-        (int $t:ty) => {
-            ViewBuffer::from_vec_with_shape(
-                acc.iter().map(|&x| x.round() as $t).collect::<Vec<$t>>(),
-                shape,
-            )
+    if out_dtype == DType::F32 {
+        // Reuse the accumulator allocation: AlignedBytes takes it over and
+        // deallocates with f32 alignment.
+        return ViewBuffer {
+            data: BufferStorage::Rust(Arc::new(AlignedBytes::from_typed_vec(acc))),
+            layout: Layout::new_contiguous(shape, DType::F32),
         };
     }
-    match out_dtype {
-        DType::F32 => {
-            // Reuse the accumulator allocation: AlignedBytes takes it over
-            // and deallocates with f32 alignment.
-            ViewBuffer {
-                data: BufferStorage::Rust(Arc::new(AlignedBytes::from_typed_vec(acc))),
-                layout: Layout::new_contiguous(shape, DType::F32),
-            }
-        }
-        DType::F64 => ViewBuffer::from_vec_with_shape(
-            acc.iter().map(|&x| x as f64).collect::<Vec<f64>>(),
-            shape,
-        ),
-        DType::U8 => convert_out!(int u8),
-        DType::I8 => convert_out!(int i8),
-        DType::U16 => convert_out!(int u16),
-        DType::I16 => convert_out!(int i16),
-        DType::U32 => convert_out!(int u32),
-        DType::I32 => convert_out!(int i32),
-        DType::U64 => convert_out!(int u64),
-        DType::I64 => convert_out!(int i64),
-    }
+    with_dtype!(out_dtype, T => {
+        ViewBuffer::from_vec_with_shape(convert_slice::<f32, T>(&acc), shape)
+    })
 }
 
 #[cfg(test)]

@@ -11,7 +11,7 @@
 //! input to 3-D (matching the `PreserveRank` contract).
 
 use crate::core::buffer::ViewBuffer;
-use crate::core::dtype::{DType, ViewType};
+use crate::core::dtype::ViewType;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -75,24 +75,6 @@ macro_rules! impl_fill_value {
 }
 impl_fill_value!(u8, i8, u16, i16, u32, i32, u64, i64, f32, f64);
 
-/// Dispatch a generic padding function over the buffer's dtype.
-macro_rules! dispatch_dtype {
-    ($buffer:expr, $call:ident($($arg:expr),*)) => {
-        match $buffer.dtype() {
-            DType::U8 => $call::<u8>($($arg),*),
-            DType::I8 => $call::<i8>($($arg),*),
-            DType::U16 => $call::<u16>($($arg),*),
-            DType::I16 => $call::<i16>($($arg),*),
-            DType::U32 => $call::<u32>($($arg),*),
-            DType::I32 => $call::<i32>($($arg),*),
-            DType::U64 => $call::<u64>($($arg),*),
-            DType::I64 => $call::<i64>($($arg),*),
-            DType::F32 => $call::<f32>($($arg),*),
-            DType::F64 => $call::<f64>($($arg),*),
-        }
-    };
-}
-
 /// Pad a `[H, W]` or `[H, W, C]` buffer.
 ///
 /// COST: full data copy — O(output_H × output_W × C); always allocates.
@@ -105,10 +87,9 @@ pub fn pad(
     value: f32,
     mode: PadMode,
 ) -> ViewBuffer {
-    dispatch_dtype!(
-        buffer,
-        pad_generic(buffer, top, bottom, left, right, value, mode)
-    )
+    crate::core::dtype::with_dtype!(buffer.dtype(), T => {
+        pad_generic::<T>(buffer, top, bottom, left, right, value, mode)
+    })
 }
 
 /// The `(top, bottom, left, right)` amounts that pad an `in_h × in_w` buffer
@@ -258,6 +239,7 @@ fn reflect_index(idx: isize, len: usize, symmetric: bool) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::dtype::DType;
 
     fn buf_u8(data: Vec<u8>, shape: Vec<usize>) -> ViewBuffer {
         ViewBuffer::from_vec_with_shape(data, shape)

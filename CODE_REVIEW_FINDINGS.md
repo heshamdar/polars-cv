@@ -33,6 +33,8 @@ that section); CR-31 is a silent wrong-answer bug and should go first.
 The 2026-09-24 quality review opened **CR-41–CR-44** (P0: soundness, strict
 input handling, dev-loop and dependency metadata); all four are resolved.
 The typed-op-protocol work is tracked as **CR-45–CR-49**, all resolved in 0.29.0.
+The 2026-09-27 kernel performance work (`PERFORMANCE_PLAN.md`) is tracked from
+**CR-50** on.
 
 ---
 
@@ -1045,6 +1047,53 @@ entries here track status only.
   open after 0.29.0: node ids are still `uuid4` (`lazy.py` `_generate_node_id`, `_graph.py` CSE `shared_id`).
 
 ---
+
+## Performance review (2026-09-27)
+
+Kernel-level follow-up to CR-31–40, planned in `PERFORMANCE_PLAN.md` and measured
+by `view-buffer/benches/kernels.rs` (baseline:
+`polars-cv/benchmarks/reports/2026-09-27-kernel-baseline/`). One entry per
+phase of that plan, closed as each lands.
+
+### CR-50 — Wheels run most kernels without SIMD; float → int casts call `roundf` per element · `Resolved` · Medium (perf)
+
+- **What was wrong:** the wheels target x86-64 (SSE2). There, `f32::round` is a
+  libcall per element, so every float → int cast (`cast`, a fused chain's
+  integer output) ran 2.1–2.2x slower than an AVX2 build. The u8 grayscale
+  loop pushed into a `Vec` and did not vectorise at all, on any target, and
+  the u8 threshold allocated a `Vec` per row for strided input. CR-35's
+  runtime dispatch covered blur only, as a hand-rolled pair of functions.
+- **Resolution:**
+  - `core::dispatch` (`SimdKernel` + `dispatch()`) is now the one way a kernel
+    gets an AVX2 build. Blur moved onto it.
+  - `core::convert` (`CastFrom` + `convert_slice`) is the one element-conversion
+    rule. `cast_to` and `finish_fused_output` both use it.
+  - Grayscale and threshold are dispatched kernels over `ViewBuffer::dense_rows`,
+    so contiguous, cropped and vertically flipped inputs are read where they lie.
+- **Guards:**
+  - In every debug build, `dispatch` asserts the two builds' outputs are
+    byte-identical (`the_parity_check_rejects_outputs_that_differ`).
+  - `convert::tests` was watched failing against a truncating rule.
+  - `grayscale_threshold_parity_tests`, including an exhaustive `luma_u8`
+    check, was watched failing against `+127` rounding, a nudged coefficient
+    and `>=`. Its first input pattern could not reach a rounding boundary and
+    was replaced.
+  - The view-buffer suite passes under `RUSTFLAGS="-C target-cpu=x86-64"`.
+- **Measured:** `polars-cv/benchmarks/reports/2026-09-27-phase1-dispatch/`. On the
+  wheel target, u8 grayscale is 6.7–10x faster, u8 threshold 1.8–3.2x, and f32 → u8
+  casts 1.8–2.1x. A first candidate zero-filled its outputs and lost ~15% on a 1024²
+  threshold; it now writes into spare capacity (`map_pixel_rows`).
+
+### CR-51 — Non-u8 gray + alpha grayscale mixed alpha into the intensity · `Resolved` · Medium
+
+- **What was wrong:** `grayscale_typed` read a `[H, W, 2]` pixel as
+  (gray, alpha, alpha) and returned `0.299·gray + 0.701·alpha`. The u8 kernel
+  (and the `SingleChannel` contract) take the gray channel. A u16 gray + alpha
+  pixel of (1000, 65535) came out 46239.
+- **Resolution:** a two-channel pixel's grayscale is its gray channel for
+  every dtype.
+- **Guard:** `gray_alpha_grayscale_is_the_gray_channel_for_every_dtype`,
+  watched failing on the old code.
 
 ## Architectural follow-up (spun out of CR-01)
 
