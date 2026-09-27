@@ -366,68 +366,42 @@ impl ImageAdapter {
     /// Alpha channels are preserved: RGBA produces `[H, W, 4]`, LumaA produces `[H, W, 2]`.
     pub fn from_dynamic_image(img: DynamicImage) -> ViewBuffer {
         let (w, h) = img.dimensions();
-
-        match &img {
-            // 16-bit RGBA
-            DynamicImage::ImageRgba16(_) => {
-                let rgba16 = img.to_rgba16();
-                let shape = vec![h as usize, w as usize, 4];
-                ViewBuffer::from_vec(rgba16.into_raw()).reshape(shape)
+        let (h, w) = (h as usize, w as usize);
+        // Each native variant moves its pixel `Vec` into the buffer. The
+        // `to_*` conversions would allocate and copy the whole image again
+        // even when the variant already matches.
+        match img {
+            DynamicImage::ImageRgba16(b) => {
+                ViewBuffer::from_vec(b.into_raw()).reshape(vec![h, w, 4])
             }
-            // 16-bit RGB
-            DynamicImage::ImageRgb16(_) => {
-                let rgb16 = img.to_rgb16();
-                let shape = vec![h as usize, w as usize, 3];
-                ViewBuffer::from_vec(rgb16.into_raw()).reshape(shape)
+            DynamicImage::ImageRgb16(b) => {
+                ViewBuffer::from_vec(b.into_raw()).reshape(vec![h, w, 3])
             }
-            // 16-bit grayscale+alpha
-            DynamicImage::ImageLumaA16(_) => {
-                let lumaa16 = img.to_luma_alpha16();
-                let shape = vec![h as usize, w as usize, 2];
-                ViewBuffer::from_vec(lumaa16.into_raw()).reshape(shape)
+            DynamicImage::ImageLumaA16(b) => {
+                ViewBuffer::from_vec(b.into_raw()).reshape(vec![h, w, 2])
             }
-            // 16-bit grayscale
-            DynamicImage::ImageLuma16(_) => {
-                let luma16 = img.to_luma16();
-                let shape = vec![h as usize, w as usize, 1];
-                ViewBuffer::from_vec(luma16.into_raw()).reshape(shape)
+            DynamicImage::ImageLuma16(b) => {
+                ViewBuffer::from_vec(b.into_raw()).reshape(vec![h, w, 1])
             }
-            // 8-bit grayscale+alpha
-            DynamicImage::ImageLumaA8(_) => {
-                let lumaa8 = img.to_luma_alpha8();
-                let shape = vec![h as usize, w as usize, 2];
-                ViewBuffer::from_vec(lumaa8.into_raw()).reshape(shape)
+            DynamicImage::ImageLumaA8(b) => {
+                ViewBuffer::from_vec(b.into_raw()).reshape(vec![h, w, 2])
             }
-            // 8-bit grayscale
-            DynamicImage::ImageLuma8(_) => {
-                let luma8 = img.to_luma8();
-                let shape = vec![h as usize, w as usize, 1];
-                ViewBuffer::from_vec(luma8.into_raw()).reshape(shape)
+            DynamicImage::ImageLuma8(b) => {
+                ViewBuffer::from_vec(b.into_raw()).reshape(vec![h, w, 1])
             }
-            // 32-bit float RGB
-            DynamicImage::ImageRgb32F(_) => {
-                let rgb32f = img.to_rgb32f();
-                let shape = vec![h as usize, w as usize, 3];
-                ViewBuffer::from_vec(rgb32f.into_raw()).reshape(shape)
+            DynamicImage::ImageRgb32F(b) => {
+                ViewBuffer::from_vec(b.into_raw()).reshape(vec![h, w, 3])
             }
-            // 32-bit float RGBA
-            DynamicImage::ImageRgba32F(_) => {
-                let rgba32f = img.to_rgba32f();
-                let shape = vec![h as usize, w as usize, 4];
-                ViewBuffer::from_vec(rgba32f.into_raw()).reshape(shape)
+            DynamicImage::ImageRgba32F(b) => {
+                ViewBuffer::from_vec(b.into_raw()).reshape(vec![h, w, 4])
             }
-            // 8-bit RGBA
-            DynamicImage::ImageRgba8(_) => {
-                let rgba8 = img.to_rgba8();
-                let shape = vec![h as usize, w as usize, 4];
-                ViewBuffer::from_vec(rgba8.into_raw()).reshape(shape)
+            DynamicImage::ImageRgba8(b) => {
+                ViewBuffer::from_vec(b.into_raw()).reshape(vec![h, w, 4])
             }
-            // 8-bit RGB (common case)
-            _ => {
-                let rgb_img = img.to_rgb8();
-                let shape = vec![h as usize, w as usize, 3];
-                ViewBuffer::from_vec(rgb_img.into_raw()).reshape(shape)
-            }
+            DynamicImage::ImageRgb8(b) => ViewBuffer::from_vec(b.into_raw()).reshape(vec![h, w, 3]),
+            // `DynamicImage` is non-exhaustive: a variant added upstream
+            // converts to 8-bit RGB, as every unknown variant did before.
+            other => ViewBuffer::from_vec(other.into_rgb8().into_raw()).reshape(vec![h, w, 3]),
         }
     }
 
@@ -438,24 +412,96 @@ impl ImageAdapter {
         buffer: &ViewBuffer,
         format: image::ImageFormat,
     ) -> Result<Vec<u8>, image::ImageError> {
-        let dynamic_image = Self::to_dynamic_image(buffer)?;
-        let mut bytes: Vec<u8> = Vec::new();
-        let mut cursor = std::io::Cursor::new(&mut bytes);
-        dynamic_image.write_to(&mut cursor, format)?;
-        Ok(bytes)
+        Self::encode_in_place(
+            buffer,
+            |pixels, w, h, color| {
+                let mut bytes = Vec::new();
+                image::write_buffer_with_format(
+                    &mut std::io::Cursor::new(&mut bytes),
+                    pixels,
+                    w,
+                    h,
+                    color,
+                    format,
+                )?;
+                Ok(bytes)
+            },
+            |image| {
+                let mut bytes = Vec::new();
+                image.write_to(&mut std::io::Cursor::new(&mut bytes), format)?;
+                Ok(bytes)
+            },
+        )
     }
 
     /// Encodes a ViewBuffer as JPEG with specified quality (1-100).
     pub fn encode_jpeg(buffer: &ViewBuffer, quality: u8) -> Result<Vec<u8>, image::ImageError> {
         use image::codecs::jpeg::JpegEncoder;
+        use image::ImageEncoder;
 
-        let dynamic_image = Self::to_dynamic_image(buffer)?;
-        let mut bytes: Vec<u8> = Vec::new();
-        let mut cursor = std::io::Cursor::new(&mut bytes);
+        Self::encode_in_place(
+            buffer,
+            |pixels, w, h, color| {
+                let mut bytes = Vec::new();
+                JpegEncoder::new_with_quality(&mut bytes, quality)
+                    .write_image(pixels, w, h, color)?;
+                Ok(bytes)
+            },
+            |image| {
+                let mut bytes = Vec::new();
+                image.write_with_encoder(JpegEncoder::new_with_quality(&mut bytes, quality))?;
+                Ok(bytes)
+            },
+        )
+    }
 
-        let encoder = JpegEncoder::new_with_quality(&mut cursor, quality);
-        dynamic_image.write_with_encoder(encoder)?;
-        Ok(bytes)
+    /// Encode `buffer`'s pixels where they lie, with `native`, whenever the
+    /// encoder takes the buffer's colour type as it is.
+    ///
+    /// Going through a `DynamicImage` would copy every pixel into a new image
+    /// first. That copy is only worth paying when the encoder needs a
+    /// conversion (JPEG has no alpha, so a `GrayA`/`RGBA` buffer loses it):
+    /// the encoder refuses such a colour type with
+    /// `UnsupportedErrorKind::Color`, and only then does `converted` run on
+    /// the `DynamicImage`, whose conversion rules are the image crate's own.
+    /// Whether a colour type needs converting is the encoder's answer, not a
+    /// table kept here.
+    fn encode_in_place(
+        buffer: &ViewBuffer,
+        native: impl FnOnce(&[u8], u32, u32, image::ExtendedColorType) -> image::ImageResult<Vec<u8>>,
+        converted: impl FnOnce(&DynamicImage) -> image::ImageResult<Vec<u8>>,
+    ) -> Result<Vec<u8>, image::ImageError> {
+        use image::error::UnsupportedErrorKind;
+        use image::ExtendedColorType as C;
+
+        let channels = Self::check_encodable(buffer)?;
+        let (h, w) = (buffer.shape()[0] as u32, buffer.shape()[1] as u32);
+        let contiguous = buffer.to_contiguous();
+        let (pixels, color): (&[u8], C) = match contiguous.dtype() {
+            DType::U8 => (
+                contiguous.as_slice::<u8>(),
+                [C::L8, C::La8, C::Rgb8, C::Rgba8][channels - 1],
+            ),
+            DType::U16 => {
+                let samples = contiguous.as_slice::<u16>();
+                // SAFETY: a `u16` slice is readable as twice as many bytes,
+                // and every byte pattern is a valid `u8`. The encoders take
+                // 16-bit samples in native byte order, as they are held here.
+                let bytes = unsafe {
+                    std::slice::from_raw_parts(samples.as_ptr().cast::<u8>(), samples.len() * 2)
+                };
+                (bytes, [C::L16, C::La16, C::Rgb16, C::Rgba16][channels - 1])
+            }
+            other => unreachable!("check_encodable admits U8 and U16 only, not {other:?}"),
+        };
+        match native(pixels, w, h, color) {
+            Err(image::ImageError::Unsupported(e))
+                if matches!(e.kind(), UnsupportedErrorKind::Color(_)) =>
+            {
+                converted(&Self::to_dynamic_image(buffer)?)
+            }
+            result => result,
+        }
     }
 
     /// Encodes a ViewBuffer as TIFF with native support for floating-point data.
@@ -687,6 +733,38 @@ impl ImageAdapter {
         dynamic_image.save(path)
     }
 
+    /// The gate every 8/16-bit image encode passes, returning the buffer's
+    /// channel count (1 to 4).
+    ///
+    /// The dtype/channel rule is ImageCodec's, not this function's: the
+    /// planner refuses unencodable queries from the same table, and a second
+    /// copy here is how the two would come to disagree. PNG is the widest of
+    /// the 8/16-bit codecs, so it is the right gate for the shared path; JPEG
+    /// and WebP narrow it further at their own entry points.
+    fn check_encodable(buffer: &ViewBuffer) -> Result<usize, image::ImageError> {
+        ImageCodec::Png
+            .check_shape(
+                PlannedDType::Known(buffer.dtype()),
+                Some(buffer.shape()),
+                None,
+            )
+            .map_err(|msg| {
+                image::ImageError::Parameter(image::error::ParameterError::from_kind(
+                    image::error::ParameterErrorKind::Generic(msg),
+                ))
+            })?;
+        let shape = buffer.shape();
+        let channels = if shape.len() == 3 { shape[2] } else { 1 };
+        if !matches!(channels, 1..=4) {
+            return Err(image::ImageError::Parameter(
+                image::error::ParameterError::from_kind(
+                    image::error::ParameterErrorKind::DimensionMismatch,
+                ),
+            ));
+        }
+        Ok(channels)
+    }
+
     /// Convert ViewBuffer -> DynamicImage.
     ///
     /// This is useful for interoperating with the image crate's APIs.
@@ -696,37 +774,8 @@ impl ImageAdapter {
     /// 16-bit buffer round-trips to a 16-bit PNG).
     pub fn to_dynamic_image(buffer: &ViewBuffer) -> Result<DynamicImage, image::ImageError> {
         let dtype = buffer.dtype();
-        // The dtype/channel rule is ImageCodec's, not this function's: the
-        // planner refuses unencodable queries from the same table, and a second
-        // copy here is how the two would come to disagree. PNG is the widest of
-        // the `to_dynamic_image` consumers (8- or 16-bit), so it is the right
-        // gate for the shared conversion; JPEG and WebP narrow it further at
-        // their own entry points.
-        ImageCodec::Png
-            .check_shape(PlannedDType::Known(dtype), Some(buffer.shape()), None)
-            .map_err(|msg| {
-                image::ImageError::Parameter(image::error::ParameterError::from_kind(
-                    image::error::ParameterErrorKind::Generic(msg),
-                ))
-            })?;
-
+        let channels = Self::check_encodable(buffer)?;
         let shape = buffer.shape();
-        let channels = if shape.len() == 3 {
-            shape[2]
-        } else if shape.len() == 2 {
-            1
-        } else {
-            0
-        };
-
-        if !matches!(channels, 1..=4) {
-            return Err(image::ImageError::Parameter(
-                image::error::ParameterError::from_kind(
-                    image::error::ParameterErrorKind::DimensionMismatch,
-                ),
-            ));
-        }
-
         let (h, w) = (shape[0] as u32, shape[1] as u32);
         let contiguous = buffer.to_contiguous();
 
@@ -1085,5 +1134,39 @@ mod tests {
         // Verify data is preserved exactly
         let decoded_data = decoded_buffer.as_slice::<u8>();
         assert_eq!(decoded_data, &original_data);
+    }
+
+    /// A decoded image's pixels become the buffer: every native variant hands
+    /// its allocation over, so decoding costs the codec's one write and no
+    /// second full-image copy.
+    #[test]
+    fn from_dynamic_image_takes_the_decoded_allocation() {
+        use image::{ImageBuffer, Luma, LumaA, Rgb, Rgba};
+        let (w, h) = (3u32, 2u32);
+        let cases: Vec<(&str, DynamicImage, *const u8)> = {
+            let mut v: Vec<(&str, DynamicImage, *const u8)> = Vec::new();
+            macro_rules! case {
+                ($name:literal, $px:ty, $t:ty, $variant:ident) => {{
+                    let img = ImageBuffer::<$px, Vec<$t>>::new(w, h);
+                    let ptr = img.as_raw().as_ptr() as *const u8;
+                    v.push(($name, DynamicImage::$variant(img), ptr));
+                }};
+            }
+            case!("luma8", Luma<u8>, u8, ImageLuma8);
+            case!("lumaa8", LumaA<u8>, u8, ImageLumaA8);
+            case!("rgb8", Rgb<u8>, u8, ImageRgb8);
+            case!("rgba8", Rgba<u8>, u8, ImageRgba8);
+            case!("luma16", Luma<u16>, u16, ImageLuma16);
+            case!("lumaa16", LumaA<u16>, u16, ImageLumaA16);
+            case!("rgb16", Rgb<u16>, u16, ImageRgb16);
+            case!("rgba16", Rgba<u16>, u16, ImageRgba16);
+            case!("rgb32f", Rgb<f32>, f32, ImageRgb32F);
+            case!("rgba32f", Rgba<f32>, f32, ImageRgba32F);
+            v
+        };
+        for (name, img, ptr) in cases {
+            let buf = ImageAdapter::from_dynamic_image(img);
+            assert_eq!(buf.data.as_ptr(), ptr, "{name}: decoded pixels were copied");
+        }
     }
 }
