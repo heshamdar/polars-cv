@@ -2216,244 +2216,132 @@ fn morph_subtract(a: &ViewBuffer, b: &ViewBuffer) -> ViewBuffer {
 // Canny Edge Detection
 // ============================================================
 
-/// The 5×5 σ≈1.4 Gaussian used by Canny. NOT separable (center 15/159 differs
-/// from the outer product of any 1-D kernel), so it runs through the
-/// vectorized 2-D convolution rather than a two-pass separable blur.
-#[cfg(feature = "image_interop")]
-#[rustfmt::skip]
-const CANNY_GAUSSIAN_5X5: [f32; 25] = [
-    2.0/159.0,  4.0/159.0,  5.0/159.0,  4.0/159.0,  2.0/159.0,
-    4.0/159.0,  9.0/159.0, 12.0/159.0,  9.0/159.0,  4.0/159.0,
-    5.0/159.0, 12.0/159.0, 15.0/159.0, 12.0/159.0,  5.0/159.0,
-    4.0/159.0,  9.0/159.0, 12.0/159.0,  9.0/159.0,  4.0/159.0,
-    2.0/159.0,  4.0/159.0,  5.0/159.0,  4.0/159.0,  2.0/159.0,
-];
-
-/// Quantize a gradient direction into the 4 Canny bins without `atan2`.
+/// Canny edge detection, computed as `cv2.Canny(image, low, high)` computes it
+/// (aperture 3, L1 gradient) — `tests/reference/test_canny_ref.py` holds the
+/// two to the same edge map, pixel for pixel:
 ///
-/// Replaces `atan2(gy, gx).to_degrees()` binning (bin0 = horizontal
-/// [0°,22.5°)∪[157.5°,180°), bin1 = 45° [22.5°,67.5°), bin2 = vertical
-/// [67.5°,112.5°), bin3 = 135° [112.5°,157.5°)) with sign/ratio comparisons
-/// against tan(22.5°) = √2−1 and tan(67.5°) = √2+1.
+/// 1. 3×3 Sobel `dx`, `dy` with a replicated border, and no pre-blur (blur
+///    first with `.blur()`, as with OpenCV). A multi-channel input takes, per
+///    pixel, the colour channel whose `|dx| + |dy|` is largest (the first on a
+///    tie); an alpha channel ([`color_channels`]) is not an input.
+/// 2. Non-maximum suppression over four directions, chosen by OpenCV's
+///    fixed-point tangent test (`|dy|·2¹⁵` against `|dx|·TG22`), with its
+///    asymmetric comparisons (`>` towards one neighbour, `>=` towards the
+///    other; `>` both ways on a diagonal). Magnitude outside the image is 0.
+/// 3. Double threshold (`m > low` is a candidate, `m > high` a seed; a low
+///    threshold above the high one is swapped) and 8-connected hysteresis.
 ///
-/// Boundary inclusivity differs by sign case because the fold θ = 180°−θ'
-/// flips which side of each boundary is inclusive:
-/// - same sign (θ = θ'): bin0 ⇔ ay <  t22·ax; bin2 ⇔ ay ≥ t67·ax; else bin1
-/// - opposite     (θ = 180−θ'): bin0 ⇔ ay ≤ t22·ax; bin2 ⇔ ay > t67·ax; else bin3
-///
-/// `gx == 0 && gy == 0` is special-cased to bin0 (atan2(0,0) = 0). Agreement
-/// with the atan2 quantizer is exact except where floating-point rounding
-/// puts the computed angle within ~1 ulp of a bin boundary, where the old
-/// answer was itself rounding-determined (see tests/canny_ref.rs grid test).
-#[cfg(feature = "image_interop")]
-#[inline(always)]
-fn canny_direction(gx: f32, gy: f32) -> u8 {
-    const T22: f32 = 0.41421356; // tan(22.5°) = √2 − 1
-    const T67: f32 = 2.4142137; // tan(67.5°) = √2 + 1
-
-    if gx == 0.0 && gy == 0.0 {
-        return 0;
-    }
-    let ax = gx.abs();
-    let ay = gy.abs();
-    let same_sign = (gx >= 0.0) == (gy >= 0.0);
-    let t22ax = T22 * ax;
-    let t67ax = T67 * ax;
-    if same_sign {
-        if ay < t22ax {
-            0
-        } else if ay >= t67ax {
-            2
-        } else {
-            1
-        }
-    } else if ay <= t22ax {
-        0
-    } else if ay > t67ax {
-        2
-    } else {
-        3
-    }
-}
-
-/// Canny edge detection: Gaussian blur → Sobel gradients → NMS → double-threshold hysteresis.
-///
-/// Operates on a single-channel image. For multi-channel input, converts to
-/// grayscale first. Output is always U8 (0 or 255).
-///
-/// Optimized from the original naive implementation (preserved in
-/// tests/canny_ref.rs) while keeping identical output:
-/// - the 5×5 blur runs through the vectorized `apply_convolve2d` (same tap
-///   order and replicate border ⇒ bit-exact, ~10–20× faster);
-/// - direction quantization avoids the per-pixel `atan2` (see
-///   [`canny_direction`]);
-/// - magnitude keeps `sqrt` (squared-threshold comparisons would not be
-///   bit-exact: f32 sqrt rounding can flip the tie-inclusive `>=` NMS
-///   comparisons);
-/// - double-thresholding is folded into the NMS loop (the `nms` plane is
-///   never materialized; non-maxima and border pixels classify the implicit
-///   0.0 exactly as before — including the degenerate `high ≤ 0` case where
-///   borders become STRONG);
-/// - hysteresis is a single-pass worklist flood fill from STRONG seeds
-///   instead of whole-image sweeps to a fixpoint (identical transitive
-///   closure: a WEAK interior pixel is promoted iff it is 8-connected to a
-///   STRONG pixel through WEAK interior pixels).
+/// The arithmetic runs in f64, exact for every integer input, so a u8 image
+/// matches OpenCV's integer implementation bit for bit; other dtypes follow
+/// the same definition. Output is U8 `[H, W, 1]`, 0 or 255.
 #[cfg(feature = "image_interop")]
 fn apply_canny(buf: ViewBuffer, low_threshold: f32, high_threshold: f32) -> ViewBuffer {
-    use crate::ops::filter::{apply_convolve2d, BorderMode, ConvolveOp};
+    // OpenCV's `TG22 = (int)(tan(22.5°) · 2¹⁵ + 0.5)`.
+    const TG22: f64 = 13573.0;
+    const SHIFT: f64 = 32768.0; // 2¹⁵
 
-    let shape = buf.shape();
+    let shape = buf.shape().to_vec();
+    let (h, w) = (shape[0], shape[1]);
     let channels = shape.get(2).copied().unwrap_or(1);
-
-    // Convert to single-channel grayscale f32
-    let gray = if channels > 1 {
-        let gs = grayscale_strided(buf);
-        if gs.dtype() != DType::F32 {
-            gs.cast(DType::F32)
+    let used = crate::ops::color::color_channels(channels);
+    let plane = buf.cast(DType::F64).to_contiguous();
+    let src = plane.as_slice::<f64>();
+    let (low, high) = {
+        let (a, b) = (f64::from(low_threshold), f64::from(high_threshold));
+        if a > b {
+            (b, a)
         } else {
-            gs
+            (a, b)
         }
-    } else if buf.dtype() != DType::F32 {
-        buf.cast(DType::F32)
-    } else {
-        buf.clone()
-    };
-    let contig = gray.to_contiguous();
-    let gray_shape = contig.shape();
-    let gh = gray_shape[0];
-    let gw = gray_shape[1];
-    let count = gh * gw;
-
-    // Step 1: Gaussian blur (5×5, sigma ≈ 1.4) via the vectorized 2-D
-    // convolution. Replicate border matches the original's clamped gather.
-    let blurred_buf = apply_convolve2d(
-        &contig,
-        &ConvolveOp {
-            kernel: CANNY_GAUSSIAN_5X5.to_vec(),
-            normalize: false,
-            border: BorderMode::Replicate,
-        },
-    );
-    let blurred = blurred_buf.as_slice::<f32>();
-
-    // Step 2: Sobel gradients
-    let (gx, gy) = sobel_gradients(blurred, gh, gw);
-
-    // Step 3: Magnitude and direction (no atan2)
-    let mut magnitude = vec![0.0f32; count];
-    let mut direction = vec![0u8; count]; // quantized to 4 directions (0,1,2,3)
-    for i in 0..count {
-        magnitude[i] = (gx[i] * gx[i] + gy[i] * gy[i]).sqrt();
-        direction[i] = canny_direction(gx[i], gy[i]);
-    }
-
-    const STRONG: u8 = 255;
-    const WEAK: u8 = 128;
-
-    // Classification of a suppressed (0.0) magnitude — applies to border
-    // pixels and non-maxima, exactly like the original's zero-filled `nms`
-    // plane fed through the threshold loop.
-    let zero_class = if 0.0 >= high_threshold {
-        STRONG
-    } else if 0.0 >= low_threshold {
-        WEAK
-    } else {
-        0
     };
 
-    // Steps 4+5 fused: non-maximum suppression classifying directly into the
-    // edge map (same `>=` comparisons; the nms plane is never materialized).
-    let mut edges = vec![zero_class; count];
-    for y in 1..gh.saturating_sub(1) {
-        for x in 1..gw - 1 {
-            let idx = y * gw + x;
-            let mag = magnitude[idx];
-            let (n1, n2) = match direction[idx] {
-                0 => (magnitude[idx - 1], magnitude[idx + 1]), // horizontal: left, right
-                1 => (
-                    magnitude[(y - 1) * gw + x + 1],
-                    magnitude[(y + 1) * gw + x - 1],
-                ), // 45°
-                2 => (magnitude[(y - 1) * gw + x], magnitude[(y + 1) * gw + x]), // vertical
-                _ => (
-                    magnitude[(y - 1) * gw + x - 1],
-                    magnitude[(y + 1) * gw + x + 1],
-                ), // 135°
-            };
-            if mag >= n1 && mag >= n2 {
-                edges[idx] = if mag >= high_threshold {
-                    STRONG
-                } else if mag >= low_threshold {
-                    WEAK
-                } else {
-                    0
-                };
-            }
-        }
-    }
-
-    // Step 6: Hysteresis — single-pass worklist flood fill from STRONG seeds.
-    // Only WEAK pixels at interior coordinates are ever promoted (the
-    // original sweep iterated `1..h-1 × 1..w-1`); STRONG border pixels still
-    // act as seeds, as they did as neighbors in the original sweep.
-    if gh > 2 && gw > 2 {
-        let mut stack: Vec<u32> = edges
-            .iter()
-            .enumerate()
-            .filter(|(_, &e)| e == STRONG)
-            .map(|(i, _)| i as u32)
-            .collect();
-        while let Some(idx) = stack.pop() {
-            let idx = idx as usize;
-            let y = idx / gw;
-            let x = idx % gw;
-            let y0 = y.saturating_sub(1).max(1);
-            let y1 = (y + 1).min(gh - 2);
-            let x0 = x.saturating_sub(1).max(1);
-            let x1 = (x + 1).min(gw - 2);
-            for ny in y0..=y1 {
-                for nx in x0..=x1 {
-                    let nidx = ny * gw + nx;
-                    if edges[nidx] == WEAK {
-                        edges[nidx] = STRONG;
-                        stack.push(nidx as u32);
-                    }
+    // 1. Gradients of the strongest channel, replicated border.
+    let px = |y: usize, x: usize, k: usize| src[(y * w + x) * channels + k];
+    let mut dx = vec![0.0f64; h * w];
+    let mut dy = vec![0.0f64; h * w];
+    let mut mag = vec![0.0f64; h * w];
+    for y in 0..h {
+        let (ym, yp) = (y.saturating_sub(1), (y + 1).min(h - 1));
+        for x in 0..w {
+            let (xm, xp) = (x.saturating_sub(1), (x + 1).min(w - 1));
+            let i = y * w + x;
+            for k in 0..used {
+                let gx = (px(ym, xp, k) + 2.0 * px(y, xp, k) + px(yp, xp, k))
+                    - (px(ym, xm, k) + 2.0 * px(y, xm, k) + px(yp, xm, k));
+                let gy = (px(yp, xm, k) + 2.0 * px(yp, x, k) + px(yp, xp, k))
+                    - (px(ym, xm, k) + 2.0 * px(ym, x, k) + px(ym, xp, k));
+                let m = gx.abs() + gy.abs();
+                if k == 0 || m > mag[i] {
+                    (dx[i], dy[i], mag[i]) = (gx, gy, m);
                 }
             }
         }
     }
-    // Suppress remaining weak edges
-    for e in &mut edges {
-        if *e == WEAK {
-            *e = 0;
+
+    // 2 + 3. Suppression and classification. 0 = candidate, 1 = none, 2 = edge.
+    const CANDIDATE: u8 = 0;
+    const NONE: u8 = 1;
+    const EDGE: u8 = 2;
+    let at = |y: isize, x: isize| -> f64 {
+        if y < 0 || x < 0 || y >= h as isize || x >= w as isize {
+            0.0
+        } else {
+            mag[y as usize * w + x as usize]
+        }
+    };
+    let mut map = vec![NONE; h * w];
+    let mut stack: Vec<usize> = Vec::new();
+    for y in 0..h as isize {
+        for x in 0..w as isize {
+            let i = y as usize * w + x as usize;
+            let m = mag[i];
+            if m <= low {
+                continue;
+            }
+            let (ax, ay) = (dx[i].abs(), dy[i].abs() * SHIFT);
+            let tg22x = ax * TG22;
+            let is_max = if ay < tg22x {
+                m > at(y, x - 1) && m >= at(y, x + 1)
+            } else if ay > tg22x + ax * 2.0 * SHIFT {
+                m > at(y - 1, x) && m >= at(y + 1, x)
+            } else {
+                let s = if (dx[i] < 0.0) != (dy[i] < 0.0) {
+                    -1
+                } else {
+                    1
+                };
+                m > at(y - 1, x - s) && m > at(y + 1, x + s)
+            };
+            if is_max {
+                if m > high {
+                    map[i] = EDGE;
+                    stack.push(i);
+                } else {
+                    map[i] = CANDIDATE;
+                }
+            }
         }
     }
 
-    ViewBuffer::from_vec_with_shape(edges, vec![gh, gw, 1])
-}
-
-/// Compute Sobel gradients (Gx, Gy) for single-channel image.
-#[cfg(feature = "image_interop")]
-fn sobel_gradients(src: &[f32], h: usize, w: usize) -> (Vec<f32>, Vec<f32>) {
-    let mut gx = vec![0.0f32; h * w];
-    let mut gy = vec![0.0f32; h * w];
-
-    for y in 1..h - 1 {
-        for x in 1..w - 1 {
-            let tl = src[(y - 1) * w + x - 1];
-            let tc = src[(y - 1) * w + x];
-            let tr = src[(y - 1) * w + x + 1];
-            let ml = src[y * w + x - 1];
-            let mr = src[y * w + x + 1];
-            let bl = src[(y + 1) * w + x - 1];
-            let bc = src[(y + 1) * w + x];
-            let br = src[(y + 1) * w + x + 1];
-
-            gx[y * w + x] = -tl + tr - 2.0 * ml + 2.0 * mr - bl + br;
-            gy[y * w + x] = -tl - 2.0 * tc - tr + bl + 2.0 * bc + br;
+    // Hysteresis: grow every edge through 8-connected candidates.
+    while let Some(i) = stack.pop() {
+        let (y, x) = (i / w, i % w);
+        for ny in y.saturating_sub(1)..=(y + 1).min(h - 1) {
+            for nx in x.saturating_sub(1)..=(x + 1).min(w - 1) {
+                let n = ny * w + nx;
+                if map[n] == CANDIDATE {
+                    map[n] = EDGE;
+                    stack.push(n);
+                }
+            }
         }
     }
-    (gx, gy)
+
+    let edges = map
+        .into_iter()
+        .map(|e| if e == EDGE { 255u8 } else { 0 })
+        .collect();
+    ViewBuffer::from_vec_with_shape(edges, vec![h, w, 1])
 }
 
 // ============================================================
@@ -2544,110 +2432,6 @@ pub fn apply_perceptual_hash(
     _op: crate::ops::phash::PerceptualHashOp,
 ) -> ViewBuffer {
     panic!("Perceptual hash operations require the 'perceptual_hash' feature");
-}
-
-#[cfg(all(test, feature = "image_interop"))]
-mod canny_direction_tests {
-    use super::canny_direction;
-
-    /// The original atan2-based quantizer, kept verbatim as the reference.
-    fn atan2_direction(gx: f32, gy: f32) -> u8 {
-        let angle = gy.atan2(gx).to_degrees();
-        let angle = if angle < 0.0 { angle + 180.0 } else { angle };
-        if !(22.5..157.5).contains(&angle) {
-            0
-        } else if angle < 67.5 {
-            1
-        } else if angle < 112.5 {
-            2
-        } else {
-            3
-        }
-    }
-
-    /// Degrees-distance from the nearest direction-bin boundary, in f64.
-    fn boundary_distance_deg(gx: f32, gy: f32) -> f64 {
-        let angle = (gy as f64).atan2(gx as f64).to_degrees();
-        let angle = if angle < 0.0 { angle + 180.0 } else { angle };
-        [22.5f64, 67.5, 112.5, 157.5]
-            .iter()
-            .map(|b| (angle - b).abs())
-            .fold(f64::INFINITY, f64::min)
-    }
-
-    fn check(gx: f32, gy: f32, divergences: &mut Vec<(f32, f32, u8, u8)>) {
-        let got = canny_direction(gx, gy);
-        let want = atan2_direction(gx, gy);
-        if got != want {
-            // Divergence is only acceptable where the angle sits within
-            // rounding distance of a bin boundary, where the atan2 answer
-            // was itself rounding-determined.
-            assert!(
-                boundary_distance_deg(gx, gy) < 1e-4,
-                "direction mismatch away from a bin boundary: \
-                 gx={gx:?} gy={gy:?} got={got} want={want}"
-            );
-            divergences.push((gx, gy, got, want));
-        }
-    }
-
-    #[test]
-    fn direction_quantizer_matches_atan2_reference() {
-        let mut divergences = Vec::new();
-
-        // Exhaustive grid (65×65 including signed values and zeros).
-        let mut v = -8.0f32;
-        let mut grid = Vec::new();
-        while v <= 8.0 {
-            grid.push(v);
-            v += 0.25;
-        }
-        for &gx in &grid {
-            for &gy in &grid {
-                check(gx, gy, &mut divergences);
-            }
-        }
-
-        // Constructed boundary ratios, exact diagonals, axes, signed zeros.
-        const T22: f32 = 0.41421356;
-        const T67: f32 = 2.4142137;
-        for a in [0.5f32, 1.0, 3.0, 100.0, 1e-3] {
-            for (gx, gy) in [
-                (a, T22 * a),
-                (a, -(T22 * a)),
-                (-a, T22 * a),
-                (-a, -(T22 * a)),
-                (a, T67 * a),
-                (a, -(T67 * a)),
-                (-a, T67 * a),
-                (-a, -(T67 * a)),
-                (a, a),
-                (a, -a),
-                (-a, a),
-                (-a, -a),
-                (a, 0.0),
-                (-a, 0.0),
-                (0.0, a),
-                (0.0, -a),
-                (a, -0.0),
-                (-0.0, a),
-            ] {
-                check(gx, gy, &mut divergences);
-            }
-        }
-        check(0.0, 0.0, &mut divergences);
-        check(-0.0, 0.0, &mut divergences);
-        check(0.0, -0.0, &mut divergences);
-        check(-0.0, -0.0, &mut divergences);
-
-        // Bound the rounding-determined divergence set: the grid contains no
-        // exact-boundary ratios, so only the constructed boundary points may
-        // diverge (and only within the 1e-4° band asserted above).
-        assert!(
-            divergences.len() <= 40,
-            "too many boundary divergences: {divergences:?}"
-        );
-    }
 }
 
 #[cfg(all(test, feature = "image_interop"))]

@@ -265,42 +265,6 @@ class TestCannyRef:
             "Interior of uniform rectangle should be mostly edge-free"
         )
 
-    def test_canny_vs_opencv_structure(
-        self, gray_png: bytes, gray_image: np.ndarray
-    ) -> None:
-        """Canny edges should overlap significantly with OpenCV Canny edges."""
-        cv2 = pytest.importorskip("cv2")
-
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .canny(low_threshold=50.0, high_threshold=150.0)
-        )
-        result = _run_pipe(pipe, gray_png)
-        if result.ndim == 3:
-            result = result.squeeze(-1)
-
-        expected = cv2.Canny(gray_image, 50, 150)
-
-        # Both should detect edges in similar areas; due to implementation
-        # differences (Gaussian sigma, exact NMS), we check structural overlap.
-        result_edges = result > 0
-        expected_edges = expected > 0
-
-        if expected_edges.sum() > 0:
-            # Dilate expected edges to allow 1-pixel tolerance
-            kernel = np.ones((3, 3), np.uint8)
-            expected_dilated = (
-                cv2.dilate(expected.astype(np.uint8), kernel, iterations=1) > 0
-            )
-
-            # At least 30% of our detected edges should be near OpenCV edges
-            overlap = (result_edges & expected_dilated).sum()
-            coverage = overlap / max(result_edges.sum(), 1)
-            assert coverage > 0.3, (
-                f"Only {coverage:.1%} of polars-cv Canny edges are near OpenCV edges"
-            )
-
 
 # ===========================================================================
 # Sharpen

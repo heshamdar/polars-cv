@@ -208,7 +208,7 @@ Key implementation points:
 ## Implementation Notes
 
 - **Filter** (`ops/filter.rs`): `ConvolveOp` dispatched directly in graph executor (not via ViewExpr/ExecutionPlan), similar to Color.
-- **Canny** (`execution/runner.rs`): Fused pipeline (5x5 Gaussian → Sobel gradients → NMS → hysteresis). Outputs U8 binary mask (0/255). `TilePolicy::Global`.
+- **Canny** (`execution/runner.rs`): `cv2.Canny(img, low, high)` exactly (3x3 Sobel with replicated border, L1 magnitude, no pre-blur → OpenCV's fixed-point NMS → 8-connected hysteresis; colour takes the strongest channel per pixel, alpha ignored). `polars-cv/tests/reference/test_canny_ref.py` holds it to OpenCV pixel for pixel. Outputs U8 binary mask (0/255). `TilePolicy::Global`.
 - **HistogramEqualize** (`execution/runner.rs`): 256-bin histogram → CDF remap. U8 output. `TilePolicy::Global`.
 - **Affine** (`execution/runner.rs`): Forward-mapping 2×3 matrix with internal inversion for inverse-mapping interpolation. Supports Nearest and Bilinear interpolation with configurable `border_value`. Parameters in `ops/affine.rs` (`AffineParams`, `InterpolationType`). Two variants: `ComputeOp::Affine` (raw matrix) and `ComputeOp::RotateAffine` (deferred rotation, constructs `AffineParams` via `AffineParams::from_rotation()` at execution time). Both use `apply_affine_warp()`. `MemoryEffect::RequiresContiguous`.
 - **Erode/Dilate** (`execution/runner.rs`): Separable row+column min/max filter. Single-channel only. Supports multiple iterations. `TilePolicy::LocalNeighborhood`.

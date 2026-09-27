@@ -351,17 +351,17 @@ CASES: list[ExprCase] = [
     ExprCase(
         "canny",
         "low_threshold",
-        lambda v: gray().canny(low_threshold=v, high_threshold=200.0),
-        (10.0, 60.0, 120.0),
-        column=RECT,
+        # Canny's L1 Sobel magnitude on the noise image runs to several
+        # hundred; the low threshold decides which weak pixels hysteresis
+        # keeps below a high threshold of 400 (80 / 55 / 48 edge pixels).
+        lambda v: gray().canny(low_threshold=v, high_threshold=400.0),
+        (10.0, 300.0, 350.0),
     ),
     ExprCase(
         "canny",
         "high_threshold",
         lambda v: gray().canny(low_threshold=10.0, high_threshold=v),
-        # Above ~120 the noise image has no gradient left to keep, so a third
-        # value would duplicate the second rather than add a case.
-        (40.0, 120.0),
+        (300.0, 500.0, 700.0),  # 90 / 75 / 17 edge pixels
     ),
     # --- morphology (single-channel kernels) -------------------------------
     ExprCase("erode", "ksize", lambda v: mask().erode(ksize=v), (3, 5), column=RECT),

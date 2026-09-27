@@ -124,6 +124,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **`canny` computes what `cv2.Canny(image, low, high)` computes, pixel for
+  pixel.** It ran a 5×5 σ≈1.4 Gaussian blur first, used an L2 magnitude and
+  its own suppression rules, so it found 30–70% fewer edges than OpenCV on the
+  same image while its reference test asked only for 30% overlap. It now does
+  OpenCV's algorithm — 3×3 Sobel with a replicated border, L1 magnitude, no
+  pre-blur, OpenCV's fixed-point non-maximum suppression and 8-connected
+  hysteresis — and a colour image takes the strongest channel per pixel, as
+  OpenCV does, rather than its luminance. Add `.blur(sigma=...)` before
+  `canny` for the old smoothing. `tests/reference/test_canny_ref.py` asserts
+  exact equality with `cv2.Canny`; the old implementation's verbatim pin
+  (`view-buffer/tests/canny_ref.rs`) is deleted with it.
 - **Every `.point`/`.bbox` function, and the remaining `.contour` ones
   (`contains_point`, `pairwise_iou`, `correspond`, `label_reduce`), split
   their rows over the thread pool** through the same row driver as the

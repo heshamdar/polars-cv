@@ -150,6 +150,18 @@ impl<M: Mode> Op for ColorConvertOp<M> {
     }
 }
 
+/// How many leading channels of a `C`-channel image are colour: all but the
+/// last when `C` is 2 (GrayA) or 4 (RGBA), where the last is alpha; else all.
+/// The one rule for "which channels are alpha", read by every op that sets
+/// alpha aside.
+pub fn color_channels(channels: usize) -> usize {
+    if matches!(channels, 2 | 4) {
+        channels - 1
+    } else {
+        channels
+    }
+}
+
 /// Split alpha channel from a buffer.
 ///
 /// `[H, W, 4]` -> `([H, W, 3], [H, W, 1])` (color, alpha)
@@ -158,7 +170,7 @@ pub fn split_alpha(buf: &ViewBuffer) -> (ViewBuffer, ViewBuffer) {
     let contig = buf.to_contiguous();
     let shape = contig.shape();
     let (h, w, c) = (shape[0], shape[1], shape[2]);
-    let color_c = c - 1;
+    let color_c = color_channels(c);
 
     match buf.dtype() {
         DType::U8 => split_alpha_typed::<u8>(&contig, h, w, c, color_c),
@@ -253,7 +265,7 @@ pub fn apply_color_convert(buf: &ViewBuffer, op: &ColorConvertOp) -> ViewBuffer 
 
     let shape = buf.shape();
     let channels = if shape.len() == 3 { shape[2] } else { 1 };
-    let has_alpha = matches!(channels, 2 | 4);
+    let has_alpha = color_channels(channels) < channels;
 
     let result = if has_alpha {
         let (color_buf, alpha_buf) = split_alpha(buf);
