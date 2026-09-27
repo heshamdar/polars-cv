@@ -6,6 +6,7 @@
 mod cloud;
 mod cloud_auth;
 mod contour;
+mod contour_column;
 mod execute;
 mod ext_types;
 mod fetch;

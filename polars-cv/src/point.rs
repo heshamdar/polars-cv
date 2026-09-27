@@ -353,19 +353,23 @@ fn point_distance_to_contour(inputs: &[Series], kwargs: GeomKwargs) -> PolarsRes
         return Err(parsed_as_another(NAME));
     };
     let point_series = &inputs[0];
-    let contour_series = params.column(contour);
+    let contour_column = crate::contour_column::ContourColumn::new(params.column(contour));
     let len = point_series.len();
     let mut results = Vec::with_capacity(len);
 
     for i in 0..len {
         let point_value = point_series.get(i)?;
-        let contour_value = contour_series.get(i)?;
 
-        if point_value.is_null() || contour_value.is_null() {
+        let contour = match point_value.is_null() {
+            true => None,
+            false => contour_column.single(i)?,
+        };
+        let Some(contour) = contour else {
             results.push(None);
-        } else {
+            continue;
+        };
+        {
             let (px, py) = parse_point(&point_value)?;
-            let contour = crate::contour::parse_contour(&contour_value)?;
             let point = Point::new(px, py);
             let dist = view_buffer::geometry::measures::distance_to_contour(&point, &contour);
             results.push(Some(dist));
@@ -388,19 +392,23 @@ fn point_signed_distance_to_contour(inputs: &[Series], kwargs: GeomKwargs) -> Po
         return Err(parsed_as_another(NAME));
     };
     let point_series = &inputs[0];
-    let contour_series = params.column(contour);
+    let contour_column = crate::contour_column::ContourColumn::new(params.column(contour));
     let len = point_series.len();
     let mut results = Vec::with_capacity(len);
 
     for i in 0..len {
         let point_value = point_series.get(i)?;
-        let contour_value = contour_series.get(i)?;
 
-        if point_value.is_null() || contour_value.is_null() {
+        let contour = match point_value.is_null() {
+            true => None,
+            false => contour_column.single(i)?,
+        };
+        let Some(contour) = contour else {
             results.push(None);
-        } else {
+            continue;
+        };
+        {
             let (px, py) = parse_point(&point_value)?;
-            let contour = crate::contour::parse_contour(&contour_value)?;
             let point = Point::new(px, py);
             let dist = view_buffer::geometry::measures::distance_to_contour(&point, &contour);
 
@@ -427,21 +435,25 @@ fn point_nearest_on_contour(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResu
         return Err(parsed_as_another(NAME));
     };
     let point_series = &inputs[0];
-    let contour_series = params.column(contour);
+    let contour_column = crate::contour_column::ContourColumn::new(params.column(contour));
     let len = point_series.len();
     let mut x_results = Vec::with_capacity(len);
     let mut y_results = Vec::with_capacity(len);
 
     for i in 0..len {
         let point_value = point_series.get(i)?;
-        let contour_value = contour_series.get(i)?;
 
-        if point_value.is_null() || contour_value.is_null() {
+        let contour = match point_value.is_null() {
+            true => None,
+            false => contour_column.single(i)?,
+        };
+        let Some(contour) = contour else {
             x_results.push(None);
             y_results.push(None);
-        } else {
+            continue;
+        };
+        {
             let (px, py) = parse_point(&point_value)?;
-            let contour = crate::contour::parse_contour(&contour_value)?;
             let point = Point::new(px, py);
 
             if let Some(nearest) =

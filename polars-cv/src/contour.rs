@@ -9,12 +9,12 @@ use polars::prelude::*;
 use crate::geom_schema::{
     bbox_anyvalue, bbox_struct_dtype, parse_bbox, point_anyvalue, point_struct_dtype,
 };
-use polars_arrow::array::{ListArray, PrimitiveArray, StructArray as ArrowStructArray};
+use polars_arrow::array::PrimitiveArray;
 use pyo3_polars::derive::polars_expr;
 
 // Import geometry operations from view-buffer
 use view_buffer::geometry::{
-    contour::{BoundingBox, Contour, Point, Winding},
+    contour::{BoundingBox, Winding},
     label::score_contours_on_buffer,
     measures, pairwise, predicates, transforms,
 };
@@ -24,7 +24,8 @@ use view_buffer::ViewBuffer;
 // regardless of module order; importing it by name avoids depending on
 // `geom_arity` being declared before `contour` in lib.rs.
 use crate::contour_accessor;
-use crate::geom_arity::{elementwise_field, row_contours, Arity, ContourOutput};
+use crate::contour_column::ContourColumn;
+use crate::geom_arity::{elementwise_field, Arity, ContourOutput};
 use crate::geom_fns::{BBoxFn, ContourFn};
 use crate::geom_params::{check_range, parsed_as_another, GeomKwargs, GeomParams};
 use crate::ops::{ColumnRef, Param};
@@ -48,7 +49,7 @@ use view_buffer::GeometryOp;
 /// `geom_schema::contour_array` (CR-36). This per-value construction stays as
 /// the independent oracle the equivalence tests compare that builder against.
 #[cfg(test)]
-pub fn contour_to_anyvalue(contour: &Contour) -> AnyValue<'static> {
+pub fn contour_to_anyvalue(contour: &view_buffer::geometry::contour::Contour) -> AnyValue<'static> {
     // Build exterior points as list of structs
     let exterior_points: Vec<AnyValue> = contour
         .exterior
@@ -112,302 +113,16 @@ pub fn contour_to_anyvalue(contour: &Contour) -> AnyValue<'static> {
 // Contour Parsing Helpers
 // ============================================================================
 
-/// Parse a contour from a Polars value.
-///
-/// The **single** Struct/List -> `Contour` parser for the whole plugin:
-/// the contour namespace, the point namespace (`point.rs`), and the contour
-/// source decoder (`execute.rs`) all route through it, so hole handling,
-/// accepted input forms, and error text cannot diverge between consumers
-/// (pinned by `parse_contour_tests` and `tests/test_contour_parsing.py`).
-///
-/// Accepted forms:
-/// - a struct with an `exterior: List[{x, y}]` field and optional
-///   `holes: List[List[{x, y}]]` (other fields, such as `is_closed`, are not
-///   read). A struct without `exterior` is refused, not guessed at.
-/// - a bare `List[{x, y}]` (a simple contour without holes)
-pub(crate) fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
-    match value {
-        AnyValue::StructOwned(boxed) => {
-            let (values, fields) = boxed.as_ref();
-            let mut exterior: Option<Vec<Point>> = None;
-            let mut holes: Vec<Vec<Point>> = Vec::new();
-
-            for (i, field) in fields.iter().enumerate() {
-                match field.name().as_str() {
-                    "exterior" => {
-                        if let Some(AnyValue::List(series)) = values.get(i) {
-                            exterior = Some(extract_points_from_series(series)?);
-                        }
-                    }
-                    "holes" => {
-                        if let Some(AnyValue::List(series)) = values.get(i) {
-                            holes = extract_holes_from_series(series)?;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            let exterior = exterior.ok_or_else(missing_exterior)?;
-
-            Ok(Contour::with_holes(exterior, holes))
-        }
-        // Handle AnyValue::Struct (non-owned variant with row index and array reference)
-        AnyValue::Struct(row_idx, struct_array, fields) => {
-            let mut exterior: Option<Vec<Point>> = None;
-            let mut holes: Vec<Vec<Point>> = Vec::new();
-
-            for (i, field) in fields.iter().enumerate() {
-                let column = struct_array.values()[i].clone();
-                match field.name().as_str() {
-                    "exterior" => {
-                        if let Some(list_arr) = column.as_any().downcast_ref::<ListArray<i64>>() {
-                            let offsets = list_arr.offsets();
-                            let start = offsets[*row_idx] as usize;
-                            let end = offsets[*row_idx + 1] as usize;
-                            let values_arr = list_arr.values();
-                            if let Some(struct_arr) =
-                                values_arr.as_any().downcast_ref::<ArrowStructArray>()
-                            {
-                                exterior =
-                                    Some(extract_points_from_struct_array(struct_arr, start, end)?);
-                            }
-                        }
-                    }
-                    "holes" => {
-                        holes = extract_holes_from_arrow_array(column.as_ref(), *row_idx)?;
-                    }
-                    _ => {}
-                }
-            }
-
-            let exterior = exterior.ok_or_else(missing_exterior)?;
-            Ok(Contour::with_holes(exterior, holes))
-        }
-        AnyValue::List(series) => {
-            // Direct list of points (simpler format)
-            let points = extract_points_from_series(series)?;
-            Ok(Contour::new(points))
-        }
-        _ => Err(polars_err!(ComputeError: "Expected Struct or List for contour, got {:?}", value)),
-    }
-}
-
-fn missing_exterior() -> PolarsError {
-    polars_err!(ComputeError: "Contour struct has no 'exterior' field")
-}
-
-/// Parse geometry that may be a single contour or a whole set of them.
-///
-/// The repack that lets one code path serve both shapes a geometry column takes:
-/// `extract_contours().sink("native")` emits `List[Contour]`, while a
-/// hand-written contour column is one `Struct` per row. Both arrive here and
-/// leave as a set. Used by the contour *source* (whose rasterizer paints their
-/// union) and by the set-level accessors (`pairwise_iou`, `correspond`,
-/// `label_reduce`), which therefore accept a single contour as a one-element
-/// set — the mirror of the `.contour` accessors accepting a set.
-///
-/// The two list forms are told apart by the element dtype — via
-/// [`Arity::of`](crate::geom_arity::Arity::of), the same reading the accessors'
-/// declared output types use — not by trying one and falling back: a `List`
-/// whose elements are point structs is one contour's ring, anything else in a
-/// `List` is a set of contours. A fallback would have to guess, and guessing
-/// wrong on a contour set is what used to surface as
-/// `Point struct missing 'x' field`.
-///
-/// Accepted forms:
-/// - `List[Contour]` — a contour set (elements are parsed by [`parse_contour`])
-/// - anything [`parse_contour`] accepts — a single contour, as a one-element set
-/// - null — the empty set, which rasterizes to an all-background mask
-pub(crate) fn parse_contour_set(value: &AnyValue) -> PolarsResult<Vec<Contour>> {
-    match value {
-        AnyValue::Null => Ok(Vec::new()),
-        AnyValue::List(series) if !crate::geom_arity::is_point_dtype(series.dtype()) => {
-            parse_contour_list(value)
-        }
-        _ => Ok(vec![parse_contour(value)?]),
-    }
-}
-
 /// The field names a point struct may spell its coordinates with, in order.
 ///
 /// **The single authority for "is this a point?".** Read by
-/// [`extract_points_from_series`], which parses them, and by
+/// [`ContourColumn`](crate::contour_column::ContourColumn), which parses them, and by
 /// [`is_point_dtype`](crate::geom_arity::is_point_dtype), which decides from the
 /// dtype whether a `List` is one contour's ring or a set of contours. The two
 /// used to spell the names separately, so a dtype test could admit a struct the
 /// parser then rejected.
 pub(crate) fn point_dtype_fields() -> [[&'static str; 2]; 2] {
     [["x", "X"], ["y", "Y"]]
-}
-
-/// Parse a list of contours from an AnyValue list expression.
-pub(crate) fn parse_contour_list(value: &AnyValue) -> PolarsResult<Vec<Contour>> {
-    match value {
-        AnyValue::List(series) => {
-            let mut contours = Vec::with_capacity(series.len());
-            for i in 0..series.len() {
-                let item = series.get(i)?;
-                if item.is_null() {
-                    continue;
-                }
-                contours.push(parse_contour(&item)?);
-            }
-            Ok(contours)
-        }
-        AnyValue::Null => Ok(Vec::new()),
-        _ => Err(polars_err!(ComputeError: "Expected List[Contour], got {:?}", value)),
-    }
-}
-
-/// Parse optional score list aligned with contour list.
-/// Parse holes from a Series where each element is a ring list of points.
-fn extract_holes_from_series(series: &Series) -> PolarsResult<Vec<Vec<Point>>> {
-    let mut holes: Vec<Vec<Point>> = Vec::with_capacity(series.len());
-    for i in 0..series.len() {
-        let value = series.get(i)?;
-        if value.is_null() {
-            continue;
-        }
-        match value {
-            AnyValue::List(ring_series) => {
-                holes.push(extract_points_from_series(&ring_series)?);
-            }
-            _ => {
-                return Err(polars_err!(
-                    ComputeError: "Expected hole ring as List[Point], got {:?}", value
-                ));
-            }
-        }
-    }
-    Ok(holes)
-}
-
-/// Parse holes from Arrow representation of nested lists at a specific row index.
-fn extract_holes_from_arrow_array(
-    array: &dyn polars_arrow::array::Array,
-    row_idx: usize,
-) -> PolarsResult<Vec<Vec<Point>>> {
-    let Some(outer_list) = array.as_any().downcast_ref::<ListArray<i64>>() else {
-        return Ok(Vec::new());
-    };
-
-    let outer_offsets = outer_list.offsets();
-    let hole_start = outer_offsets[row_idx] as usize;
-    let hole_end = outer_offsets[row_idx + 1] as usize;
-    if hole_start == hole_end {
-        return Ok(Vec::new());
-    }
-
-    let inner_values = outer_list.values();
-    let Some(inner_list) = inner_values.as_any().downcast_ref::<ListArray<i64>>() else {
-        return Err(polars_err!(ComputeError: "holes field must be List[List[Point]]"));
-    };
-
-    let inner_offsets = inner_list.offsets();
-    let point_values = inner_list.values();
-    let Some(point_struct_arr) = point_values.as_any().downcast_ref::<ArrowStructArray>() else {
-        return Err(polars_err!(ComputeError: "holes rings must contain point structs"));
-    };
-
-    let mut holes: Vec<Vec<Point>> = Vec::with_capacity(hole_end - hole_start);
-    for ring_idx in hole_start..hole_end {
-        let start = inner_offsets[ring_idx] as usize;
-        let end = inner_offsets[ring_idx + 1] as usize;
-        holes.push(extract_points_from_struct_array(
-            point_struct_arr,
-            start,
-            end,
-        )?);
-    }
-    Ok(holes)
-}
-
-/// Extract points from a StructArray slice (for use with AnyValue::Struct variant).
-fn extract_points_from_struct_array(
-    struct_arr: &ArrowStructArray,
-    start: usize,
-    end: usize,
-) -> PolarsResult<Vec<Point>> {
-    let mut points = Vec::with_capacity(end - start);
-
-    // Get x and y arrays from the struct
-    let values = struct_arr.values();
-    if values.len() < 2 {
-        return Err(polars_err!(ComputeError: "Point struct must have x and y fields"));
-    }
-
-    // Try to get x and y as Float64 arrays
-    let x_arr = values[0].as_any().downcast_ref::<PrimitiveArray<f64>>();
-    let y_arr = values[1].as_any().downcast_ref::<PrimitiveArray<f64>>();
-
-    match (x_arr, y_arr) {
-        (Some(x), Some(y)) => {
-            for i in start..end {
-                let x_val = x.get(i).unwrap_or(0.0);
-                let y_val = y.get(i).unwrap_or(0.0);
-                points.push(Point::new(x_val, y_val));
-            }
-            Ok(points)
-        }
-        _ => Err(polars_err!(ComputeError: "Point x/y fields must be Float64")),
-    }
-}
-
-/// Extract points from a Series of point structs.
-fn extract_points_from_series(series: &Series) -> PolarsResult<Vec<Point>> {
-    let len = series.len();
-    let mut points = Vec::with_capacity(len);
-
-    // Try to get the struct columns directly
-    if let Ok(struct_ca) = series.struct_() {
-        // Get x and y columns from the struct
-        let x_col = struct_ca
-            .field_by_name("x")
-            .or_else(|_| struct_ca.field_by_name("X"))
-            .map_err(|_| polars_err!(ComputeError: "Point struct missing 'x' field"))?;
-        let y_col = struct_ca
-            .field_by_name("y")
-            .or_else(|_| struct_ca.field_by_name("Y"))
-            .map_err(|_| polars_err!(ComputeError: "Point struct missing 'y' field"))?;
-
-        let x_ca = x_col
-            .f64()
-            .map_err(|_| polars_err!(ComputeError: "x field must be f64"))?;
-        let y_ca = y_col
-            .f64()
-            .map_err(|_| polars_err!(ComputeError: "y field must be f64"))?;
-
-        for i in 0..len {
-            let x = x_ca.get(i).unwrap_or(0.0);
-            let y = y_ca.get(i).unwrap_or(0.0);
-            points.push(Point::new(x, y));
-        }
-    } else {
-        // Fallback: iterate through values
-        for i in 0..len {
-            let value = series.get(i)?;
-            match value {
-                AnyValue::StructOwned(boxed) => {
-                    let (values, _) = boxed.as_ref();
-                    let x = values
-                        .first()
-                        .and_then(|v| v.try_extract::<f64>().ok())
-                        .unwrap_or(0.0);
-                    let y = values
-                        .get(1)
-                        .and_then(|v| v.try_extract::<f64>().ok())
-                        .unwrap_or(0.0);
-                    points.push(Point::new(x, y));
-                }
-                _ => {
-                    return Err(polars_err!(ComputeError: "Expected Struct for point"));
-                }
-            }
-        }
-    }
-
-    Ok(points)
 }
 
 fn parse_numeric_series(series: &Series) -> PolarsResult<Vec<f64>> {
@@ -670,33 +385,33 @@ fn parse_order_list(value: &AnyValue, n_left: usize, row: usize) -> PolarsResult
 
 /// Drive one correspondence entry point over its rows.
 ///
-/// The contour and bbox accessors differ only in how a row parses and how its
-/// overlap matrix is built, so those are the two parameters; everything else —
+/// The contour and bbox accessors differ only in how a row's two sides are read
+/// (`sides`: `None` for a null side) and how its overlap matrix is built, so
+/// those are the two parameters; everything else —
 /// the null handling, the per-row threshold, the order, the output struct —
 /// is shared. The two functions this replaced were near-verbatim duplicates.
+type Sides<T> = (Option<Vec<T>>, Option<Vec<T>>);
+
 fn correspond_rows<T>(
     inputs: &[Series],
     params: &GeomParams,
-    (other, threshold, order): (&ColumnRef, &Param<f64>, &Option<ColumnRef>),
-    parse: impl Fn(&AnyValue) -> PolarsResult<Vec<T>>,
+    (threshold, order): (&Param<f64>, &Option<ColumnRef>),
+    sides: impl Fn(usize) -> PolarsResult<Sides<T>>,
     build_matrix: impl Fn(&[T], &[T]) -> Vec<Vec<f64>>,
 ) -> PolarsResult<Series> {
     let left_series = &inputs[0];
-    // Both operands are read through their references: `order` is optional,
-    // so nothing here may read a fixed position.
-    let right_series = params.column(other);
+    // `order` is read through its reference: it is optional, so nothing here
+    // may read a fixed position.
     let order_series = params.optional_column(order);
     let len = left_series.len();
     let dtype = DataType::Struct(correspondence_fields());
 
     let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
     for i in 0..len {
-        let left_value = left_series.get(i)?;
-        let right_value = right_series.get(i)?;
-        if left_value.is_null() || right_value.is_null() {
+        let (Some(left), Some(right)) = sides(i)? else {
             rows.push(AnyValue::Null);
             continue;
-        }
+        };
 
         // Per-row parameters cannot be range-checked once per batch, so the
         // check moves into the loop and names the offending row. A null
@@ -710,9 +425,6 @@ fn correspond_rows<T>(
             rows.push(AnyValue::Null);
             continue;
         };
-
-        let left = parse(&left_value)?;
-        let right = parse(&right_value)?;
 
         let order = match order_series {
             Some(column) => {
@@ -879,19 +591,23 @@ fn contour_contains_point(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult
     };
     let contour_series = &inputs[0];
     let point_series = params.column(point);
-    let arity = Arity::of(contour_series.dtype());
+    let contours = ContourColumn::new(contour_series);
+    let arity = contours.arity();
     let len = contour_series.len();
     let mut rows: Vec<Option<Vec<AnyValue<'static>>>> = Vec::with_capacity(len);
 
     for i in 0..len {
-        let contour_value = contour_series.get(i)?;
         let point_value = point_series.get(i)?;
-        if contour_value.is_null() || point_value.is_null() {
+        let row = match point_value.is_null() {
+            true => None,
+            false => contours.row(i)?,
+        };
+        let Some(row) = row else {
             rows.push(None);
             continue;
-        }
+        };
         let (x, y) = parse_point_value(&point_value)?;
-        let results = row_contours(&contour_value, arity)?
+        let results = row
             .iter()
             .map(|contour| AnyValue::Boolean(predicates::contains_point(contour, x, y)))
             .collect();
@@ -919,20 +635,18 @@ fn contour_pairwise_iou(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<S
         return Err(parsed_as_another(NAME));
     };
     let pred_series = &inputs[0];
-    let gt_series = params.column(other);
+    let (preds_column, gts_column) = (
+        ContourColumn::new(pred_series),
+        ContourColumn::new(params.column(other)),
+    );
     let len = pred_series.len();
     let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
 
     for i in 0..len {
-        let preds_value = pred_series.get(i)?;
-        let gts_value = gt_series.get(i)?;
-        if preds_value.is_null() || gts_value.is_null() {
+        let (Some(preds), Some(gts)) = (preds_column.row(i)?, gts_column.row(i)?) else {
             rows.push(AnyValue::Null);
             continue;
-        }
-
-        let preds = parse_contour_set(&preds_value)?;
-        let gts = parse_contour_set(&gts_value)?;
+        };
         let matrix = pairwise::iou_matrix(&preds, &gts);
         rows.push(matrix_anyvalue(&matrix)?);
     }
@@ -958,11 +672,15 @@ fn contour_correspond(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Ser
     else {
         return Err(parsed_as_another(NAME));
     };
+    let (left, right) = (
+        ContourColumn::new(&inputs[0]),
+        ContourColumn::new(params.column(other)),
+    );
     correspond_rows(
         inputs,
         &params,
-        (other, threshold, order),
-        parse_contour_set,
+        (threshold, order),
+        |i| Ok((left.row(i)?, right.row(i)?)),
         pairwise::iou_matrix,
     )
 }
@@ -985,17 +703,21 @@ fn contour_label_reduce(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<S
         return Err(parsed_as_another(NAME));
     };
     let contour_series = &inputs[0];
+    let contour_column = ContourColumn::new(contour_series);
     let heatmap_series = params.column(image);
     let len = contour_series.len();
     let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
 
     for i in 0..len {
-        let contours_value = contour_series.get(i)?;
         let heatmap_value = heatmap_series.get(i)?;
-        if contours_value.is_null() || heatmap_value.is_null() {
+        let contours = match heatmap_value.is_null() {
+            true => None,
+            false => contour_column.row(i)?,
+        };
+        let Some(contours) = contours else {
             rows.push(AnyValue::Null);
             continue;
-        }
+        };
 
         // Per-row capable, matching `Pipeline.label_reduce`: neither choice
         // affects the output's shape or dtype.
@@ -1009,7 +731,6 @@ fn contour_label_reduce(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<S
             continue;
         };
 
-        let contours = parse_contour_set(&contours_value)?;
         let heatmap = parse_heatmap(&heatmap_value)?;
         let scores = score_contours_on_buffer(&heatmap, &contours, reduction, region_mode)
             .map_err(|err| polars_err!(ComputeError: "{}", err))?;
@@ -1257,166 +978,21 @@ fn bbox_correspond(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series
     else {
         return Err(parsed_as_another(NAME));
     };
+    let (left, right) = (&inputs[0], params.column(other));
+    let bboxes = |series: &Series, i: usize| -> PolarsResult<Option<Vec<BoundingBox>>> {
+        let value = series.get(i)?;
+        match value.is_null() {
+            true => Ok(None),
+            false => parse_bbox_list(&value).map(Some),
+        }
+    };
     correspond_rows(
         inputs,
         &params,
-        (other, threshold, order),
-        parse_bbox_list,
+        (threshold, order),
+        |i| Ok((bboxes(left, i)?, bboxes(right, i)?)),
         pairwise::bbox_iou_matrix,
     )
-}
-
-#[cfg(test)]
-mod parse_contour_tests {
-    //! `parse_contour` is the single Struct/List -> Contour parser for the
-    //! whole plugin (contour source decoding, point-namespace ops, and the
-    //! contour namespace itself route through it). These tests pin its full
-    //! contract so the consumers cannot re-diverge.
-
-    use super::*;
-
-    fn square_with_hole() -> Contour {
-        Contour::with_holes(
-            vec![
-                Point::new(0.0, 0.0),
-                Point::new(10.0, 0.0),
-                Point::new(10.0, 10.0),
-                Point::new(0.0, 10.0),
-            ],
-            vec![vec![
-                Point::new(4.0, 4.0),
-                Point::new(6.0, 4.0),
-                Point::new(6.0, 6.0),
-                Point::new(4.0, 6.0),
-            ]],
-        )
-    }
-
-    #[test]
-    fn parse_contour_struct_with_holes_round_trips() {
-        let contour = square_with_hole();
-        let av = contour_to_anyvalue(&contour);
-        let parsed = parse_contour(&av).expect("round trip must parse");
-        assert_eq!(parsed.exterior, contour.exterior);
-        assert_eq!(parsed.holes, contour.holes);
-    }
-
-    #[test]
-    fn parse_contour_bare_list() {
-        // A bare List[{x, y}] (no wrapping struct) is a valid simple contour.
-        let av = contour_to_anyvalue(&square_with_hole());
-        let AnyValue::StructOwned(boxed) = av else {
-            panic!("contour_to_anyvalue must build a struct");
-        };
-        let (values, _) = *boxed;
-        let exterior_list = values[0].clone();
-        assert!(matches!(exterior_list, AnyValue::List(_)));
-        let parsed = parse_contour(&exterior_list).expect("bare list must parse");
-        assert_eq!(parsed.exterior.len(), 4);
-        assert!(parsed.holes.is_empty());
-    }
-
-    #[test]
-    fn a_struct_without_an_exterior_is_refused() {
-        // The ring is the `exterior` field: a struct that merely looks like a
-        // contour (a `points` field, or any first list field) is not guessed
-        // at. EXTENSION_TYPES_PLAN.md §3.5.
-        let av = contour_to_anyvalue(&square_with_hole());
-        let AnyValue::StructOwned(boxed) = av else {
-            panic!("contour_to_anyvalue must build a struct");
-        };
-        let (values, mut fields) = *boxed;
-        fields[0] = Field::new(PlSmallStr::from_static("points"), fields[0].dtype().clone());
-        let renamed = AnyValue::StructOwned(Box::new((values, fields)));
-        let err = parse_contour(&renamed).expect_err("a 'points' field is not an exterior");
-        assert!(err.to_string().contains("exterior"), "{err}");
-    }
-
-    /// Build a `List` AnyValue over `dtype` from the given elements.
-    fn list_of(elements: Vec<AnyValue<'static>>, dtype: &DataType) -> AnyValue<'static> {
-        let series =
-            Series::from_any_values_and_dtype(PlSmallStr::from_static("s"), &elements, dtype, true)
-                .expect("test list must build");
-        AnyValue::List(series)
-    }
-
-    /// The dtype `extract_contours().sink("native")` emits, element-wise.
-    fn contour_dtype() -> DataType {
-        // Reads the authority rather than restating it. The whole
-        // `{exterior, holes, is_closed}` layout lives in
-        // `geom_schema::contour_fields`; a second spelling here would only add
-        // a place for a rename to miss. Python's `CONTOUR_SCHEMA` is held to
-        // the same authority by `test_contour_schema_matches_the_rust_declaration`.
-        DataType::Struct(crate::geom_schema::contour_fields())
-    }
-
-    #[test]
-    fn parse_contour_set_reads_a_list_of_contours() {
-        let a = square_with_hole();
-        let b = Contour::new(vec![
-            Point::new(20.0, 20.0),
-            Point::new(30.0, 20.0),
-            Point::new(30.0, 30.0),
-        ]);
-        let value = list_of(
-            vec![contour_to_anyvalue(&a), contour_to_anyvalue(&b)],
-            &contour_dtype(),
-        );
-
-        let parsed = parse_contour_set(&value).expect("a contour set must parse");
-        assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed[0].holes.len(), 1);
-        assert_eq!(parsed[1].exterior.len(), 3);
-    }
-
-    #[test]
-    fn parse_contour_set_reads_a_bare_ring_as_one_contour() {
-        // The dispatch is by element dtype: a list of *points* is one contour's
-        // ring, not a set. Guessing here is what surfaced as "Point struct
-        // missing 'x' field" when a genuine set arrived.
-        let av = contour_to_anyvalue(&square_with_hole());
-        let AnyValue::StructOwned(boxed) = av else {
-            panic!("contour_to_anyvalue must build a struct");
-        };
-        let (values, _) = *boxed;
-        let parsed = parse_contour_set(&values[0]).expect("a ring must parse");
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].exterior.len(), 4);
-    }
-
-    #[test]
-    fn parse_contour_set_reads_a_lone_struct_as_a_set_of_one() {
-        let contour = square_with_hole();
-        let parsed =
-            parse_contour_set(&contour_to_anyvalue(&contour)).expect("a struct must parse");
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].exterior, contour.exterior);
-    }
-
-    #[test]
-    fn parse_contour_set_reads_null_and_empty_as_the_empty_set() {
-        assert!(parse_contour_set(&AnyValue::Null)
-            .expect("null must parse")
-            .is_empty());
-        assert!(parse_contour_set(&list_of(vec![], &contour_dtype()))
-            .expect("an empty list must parse")
-            .is_empty());
-    }
-
-    #[test]
-    fn parse_contour_missing_exterior_errors() {
-        // A struct with no list field cannot be a contour; the error names
-        // the expected fields (shared verbatim by every consumer).
-        let bogus = AnyValue::StructOwned(Box::new((
-            vec![AnyValue::Float64(1.0)],
-            vec![Field::new(
-                PlSmallStr::from_static("not_a_contour"),
-                DataType::Float64,
-            )],
-        )));
-        let err = parse_contour(&bogus).expect_err("must reject").to_string();
-        assert!(err.contains("'exterior'"), "{err}");
-    }
 }
 
 #[cfg(test)]

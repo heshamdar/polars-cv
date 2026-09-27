@@ -54,12 +54,10 @@ pub(crate) fn decode_source_row(
     match source {
         // The column's contour set; a mask is the `rasterize` op that
         // follows, if any.
-        Source::Contour { .. } => match series.get(row) {
-            Ok(value) if !value.is_null() => crate::contour::parse_contour_set(&value)
-                .map(|set| Some(NodeOutput::from_contours(set)))
-                .map_err(|e| format!("Contour decode error: {e}")),
-            _ => Ok(None),
-        },
+        Source::Contour { .. } => crate::contour_column::ContourColumn::new(series)
+            .row(row)
+            .map(|set| set.map(NodeOutput::from_contours))
+            .map_err(|e| format!("Contour decode error: {e}")),
         // `file_path` is fetch + decode: `crate::fetch` reads the bytes the
         // path names (applying its `PathPolicy` sandbox), then they decode as
         // image bytes.

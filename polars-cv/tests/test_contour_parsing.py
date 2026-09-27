@@ -5,7 +5,7 @@ bare point list). Historically three independent Rust parsers consumed them —
 the contour namespace, the point namespace, and the contour *source* decoder —
 with diverging semantics: the point parser silently dropped holes, and the
 source decoder rejected bare lists. These tests pin the unified contract:
-every consumer routes through ``contour.rs::parse_contour``, so holes are
+every consumer routes through ``contour_column.rs::ContourColumn``, so holes are
 respected everywhere, bare lists work everywhere, and a malformed contour
 produces the same error text everywhere.
 """
@@ -78,7 +78,7 @@ class TestPointOpsRespectHoles:
 
 @plugin_required
 class TestContourSourceFormats:
-    """The contour source decoder accepts every parse_contour input form."""
+    """The contour source decoder accepts every ContourColumn input form."""
 
     def test_contour_source_accepts_bare_point_list(self) -> None:
         """A bare List[{x, y}] column decodes as a simple contour."""

@@ -33,7 +33,6 @@ use view_buffer::geometry::label::score_contours_on_buffer;
 use view_buffer::ops::{Domain, NodeOutput};
 use view_buffer::{Op, PlannedDType, ViewBuffer, ViewDto, ViewExpr};
 
-use crate::contour::parse_contour_list;
 use crate::formats::source::Source;
 use crate::ops::graph::Role;
 use crate::ops::{NodeRef, TypedOp};
@@ -1028,19 +1027,17 @@ impl CompiledGraph {
                                     )?;
                                     let contour_col =
                                         ctx.col(contours.0).map_err(|e| e.to_string())?;
-                                    let contour_value = contour_col.get_any(row_idx).map_err(|e| {
-                                        format!(
-                                            "LabelReduce failed to read contours at row {row_idx}: {e}"
-                                        )
-                                    })?;
-                                    if contour_value.is_null() {
+                                    let (contour_series, contour_row) = contour_col.at(row_idx);
+                                    let contours =
+                                        crate::contour_column::ContourColumn::new(contour_series)
+                                            .row(contour_row)
+                                            .map_err(|e| {
+                                                format!("LabelReduce contour parsing failed: {e}")
+                                            })?;
+                                    let Some(contours) = contours else {
                                         current_output = NodeOutput::from_vector(Vec::new());
                                         continue;
-                                    }
-                                    let contours =
-                                        parse_contour_list(&contour_value).map_err(|e| {
-                                            format!("LabelReduce contour parsing failed: {e}")
-                                        })?;
+                                    };
                                     let scores = score_contours_on_buffer(
                                         &current_buf,
                                         &contours,
