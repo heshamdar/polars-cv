@@ -2231,21 +2231,15 @@ fn morph_subtract(a: &ViewBuffer, b: &ViewBuffer) -> ViewBuffer {
 /// 3. Double threshold (`m > low` is a candidate, `m > high` a seed; a low
 ///    threshold above the high one is swapped) and 8-connected hysteresis.
 ///
-/// The arithmetic runs in f64, exact for every integer input, so a u8 image
-/// matches OpenCV's integer implementation bit for bit; other dtypes follow
-/// the same definition. Output is U8 `[H, W, 1]`, 0 or 255.
+/// A u8 image runs in `i32`, OpenCV's own arithmetic, and so matches it bit
+/// for bit; other dtypes run the same definition in `f64` ([`canny_core`]).
+/// Output is U8 `[H, W, 1]`, 0 or 255.
 #[cfg(feature = "image_interop")]
 fn apply_canny(buf: ViewBuffer, low_threshold: f32, high_threshold: f32) -> ViewBuffer {
-    // OpenCV's `TG22 = (int)(tan(22.5°) · 2¹⁵ + 0.5)`.
-    const TG22: f64 = 13573.0;
-    const SHIFT: f64 = 32768.0; // 2¹⁵
-
     let shape = buf.shape().to_vec();
     let (h, w) = (shape[0], shape[1]);
     let channels = shape.get(2).copied().unwrap_or(1);
     let used = crate::ops::color::color_channels(channels);
-    let plane = buf.cast(DType::F64).to_contiguous();
-    let src = plane.as_slice::<f64>();
     let (low, high) = {
         let (a, b) = (f64::from(low_threshold), f64::from(high_threshold));
         if a > b {
@@ -2254,23 +2248,109 @@ fn apply_canny(buf: ViewBuffer, low_threshold: f32, high_threshold: f32) -> View
             (a, b)
         }
     };
+    let contig = buf.to_contiguous();
+    let edges = if contig.dtype() == DType::U8 {
+        // OpenCV's own arithmetic: exact integers. For an integer magnitude,
+        // `m > t` and OpenCV's `m > floor(t)` agree for every threshold t.
+        let src = contig.as_slice::<u8>();
+        canny_core::<i32>(h, w, channels, used, |i| i32::from(src[i]), low, high)
+    } else {
+        let plane = contig.cast(DType::F64);
+        let src = plane.as_slice::<f64>();
+        canny_core::<f64>(h, w, channels, used, |i| src[i], low, high)
+    };
+    ViewBuffer::from_vec_with_shape(edges, vec![h, w, 1])
+}
 
-    // 1. Gradients of the strongest channel, replicated border.
-    let px = |y: usize, x: usize, k: usize| src[(y * w + x) * channels + k];
-    let mut dx = vec![0.0f64; h * w];
-    let mut dy = vec![0.0f64; h * w];
-    let mut mag = vec![0.0f64; h * w];
-    for y in 0..h {
-        let (ym, yp) = (y.saturating_sub(1), (y + 1).min(h - 1));
-        for x in 0..w {
-            let (xm, xp) = (x.saturating_sub(1), (x + 1).min(w - 1));
-            let i = y * w + x;
-            for k in 0..used {
-                let gx = (px(ym, xp, k) + 2.0 * px(y, xp, k) + px(yp, xp, k))
-                    - (px(ym, xm, k) + 2.0 * px(y, xm, k) + px(yp, xm, k));
-                let gy = (px(yp, xm, k) + 2.0 * px(yp, x, k) + px(yp, xp, k))
-                    - (px(ym, xm, k) + 2.0 * px(ym, x, k) + px(ym, xp, k));
+/// The arithmetic Canny needs: `i32` for u8 input (OpenCV's own), `f64` for
+/// every other dtype. Both are exact on integer input.
+#[cfg(feature = "image_interop")]
+trait CannyNum:
+    Copy
+    + Default
+    + PartialOrd
+    + std::ops::Add<Output = Self>
+    + std::ops::Sub<Output = Self>
+    + std::ops::Mul<Output = Self>
+{
+    const TWO: Self;
+    /// OpenCV's `TG22 = (int)(tan(22.5°) · 2¹⁵ + 0.5)`.
+    const TG22: Self;
+    const SHIFT: Self; // 2¹⁵
+    fn abs(self) -> Self;
+    fn above(self, threshold: f64) -> bool;
+}
+
+#[cfg(feature = "image_interop")]
+impl CannyNum for i32 {
+    const TWO: Self = 2;
+    const TG22: Self = 13573;
+    const SHIFT: Self = 1 << 15;
+    fn abs(self) -> Self {
+        i32::abs(self)
+    }
+    fn above(self, threshold: f64) -> bool {
+        f64::from(self) > threshold
+    }
+}
+
+#[cfg(feature = "image_interop")]
+impl CannyNum for f64 {
+    const TWO: Self = 2.0;
+    const TG22: Self = 13573.0;
+    const SHIFT: Self = 32768.0;
+    fn abs(self) -> Self {
+        f64::abs(self)
+    }
+    fn above(self, threshold: f64) -> bool {
+        self > threshold
+    }
+}
+
+/// Canny over an `[h, w, channels]` image read through `at(flat index)`; see
+/// [`apply_canny`]. Every plane is padded by one pixel — the source by
+/// replication (Sobel's border), the magnitude by zeros and the edge map by
+/// "not an edge" (OpenCV's) — so no inner loop tests a bound.
+#[cfg(feature = "image_interop")]
+fn canny_core<T: CannyNum>(
+    h: usize,
+    w: usize,
+    channels: usize,
+    used: usize,
+    at: impl Fn(usize) -> T,
+    low: f64,
+    high: f64,
+) -> Vec<u8> {
+    if h == 0 || w == 0 {
+        return Vec::new();
+    }
+    let pw = w + 2;
+    let padded = |y: usize, x: usize| (y + 1) * pw + (x + 1);
+
+    // 1. Sobel per colour channel on a replicate-padded plane; keep, per
+    //    pixel, the channel with the largest |dx| + |dy| (the first on a tie).
+    let mut src = vec![T::default(); (h + 2) * pw];
+    let mut dx = vec![T::default(); (h + 2) * pw];
+    let mut dy = vec![T::default(); (h + 2) * pw];
+    let mut mag = vec![T::default(); (h + 2) * pw]; // zero border
+    for k in 0..used {
+        for py in 0..h + 2 {
+            let y = py.saturating_sub(1).min(h - 1);
+            for px in 0..pw {
+                let x = px.saturating_sub(1).min(w - 1);
+                src[py * pw + px] = at((y * w + x) * channels + k);
+            }
+        }
+        for y in 0..h {
+            let (up, row, down) = (y * pw, (y + 1) * pw, (y + 2) * pw);
+            for x in 0..w {
+                let c = x + 1;
+                let gx = (src[up + c + 1] + T::TWO * src[row + c + 1] + src[down + c + 1])
+                    - (src[up + c - 1] + T::TWO * src[row + c - 1] + src[down + c - 1]);
+                let gy = (src[down + c - 1] + T::TWO * src[down + c] + src[down + c + 1])
+                    - (src[up + c - 1] + T::TWO * src[up + c] + src[up + c + 1]);
                 let m = gx.abs() + gy.abs();
+                let i = row + c;
                 if k == 0 || m > mag[i] {
                     (dx[i], dy[i], mag[i]) = (gx, gy, m);
                 }
@@ -2282,38 +2362,28 @@ fn apply_canny(buf: ViewBuffer, low_threshold: f32, high_threshold: f32) -> View
     const CANDIDATE: u8 = 0;
     const NONE: u8 = 1;
     const EDGE: u8 = 2;
-    let at = |y: isize, x: isize| -> f64 {
-        if y < 0 || x < 0 || y >= h as isize || x >= w as isize {
-            0.0
-        } else {
-            mag[y as usize * w + x as usize]
-        }
-    };
-    let mut map = vec![NONE; h * w];
+    let mut map = vec![NONE; (h + 2) * pw];
     let mut stack: Vec<usize> = Vec::new();
-    for y in 0..h as isize {
-        for x in 0..w as isize {
-            let i = y as usize * w + x as usize;
+    for y in 0..h {
+        for x in 0..w {
+            let i = padded(y, x);
             let m = mag[i];
-            if m <= low {
+            if !m.above(low) {
                 continue;
             }
-            let (ax, ay) = (dx[i].abs(), dy[i].abs() * SHIFT);
-            let tg22x = ax * TG22;
+            let (ax, ay) = (dx[i].abs(), dy[i].abs() * T::SHIFT);
+            let tg22x = ax * T::TG22;
             let is_max = if ay < tg22x {
-                m > at(y, x - 1) && m >= at(y, x + 1)
-            } else if ay > tg22x + ax * 2.0 * SHIFT {
-                m > at(y - 1, x) && m >= at(y + 1, x)
+                m > mag[i - 1] && m >= mag[i + 1]
+            } else if ay > tg22x + ax * T::TWO * T::SHIFT {
+                m > mag[i - pw] && m >= mag[i + pw]
+            } else if (dx[i] < T::default()) != (dy[i] < T::default()) {
+                m > mag[i - pw + 1] && m > mag[i + pw - 1]
             } else {
-                let s = if (dx[i] < 0.0) != (dy[i] < 0.0) {
-                    -1
-                } else {
-                    1
-                };
-                m > at(y - 1, x - s) && m > at(y + 1, x + s)
+                m > mag[i - pw - 1] && m > mag[i + pw + 1]
             };
             if is_max {
-                if m > high {
+                if m.above(high) {
                     map[i] = EDGE;
                     stack.push(i);
                 } else {
@@ -2323,25 +2393,32 @@ fn apply_canny(buf: ViewBuffer, low_threshold: f32, high_threshold: f32) -> View
         }
     }
 
-    // Hysteresis: grow every edge through 8-connected candidates.
+    // Hysteresis: grow every edge through 8-connected candidates. The border
+    // is NONE, so a neighbour index never leaves the padded plane.
     while let Some(i) = stack.pop() {
-        let (y, x) = (i / w, i % w);
-        for ny in y.saturating_sub(1)..=(y + 1).min(h - 1) {
-            for nx in x.saturating_sub(1)..=(x + 1).min(w - 1) {
-                let n = ny * w + nx;
-                if map[n] == CANDIDATE {
-                    map[n] = EDGE;
-                    stack.push(n);
-                }
+        for n in [
+            i - pw - 1,
+            i - pw,
+            i - pw + 1,
+            i - 1,
+            i + 1,
+            i + pw - 1,
+            i + pw,
+            i + pw + 1,
+        ] {
+            if map[n] == CANDIDATE {
+                map[n] = EDGE;
+                stack.push(n);
             }
         }
     }
 
-    let edges = map
-        .into_iter()
-        .map(|e| if e == EDGE { 255u8 } else { 0 })
-        .collect();
-    ViewBuffer::from_vec_with_shape(edges, vec![h, w, 1])
+    let mut edges = Vec::with_capacity(h * w);
+    for y in 0..h {
+        let row = &map[padded(y, 0)..padded(y, 0) + w];
+        edges.extend(row.iter().map(|&e| if e == EDGE { 255u8 } else { 0 }));
+    }
+    edges
 }
 
 // ============================================================

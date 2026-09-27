@@ -119,3 +119,21 @@ def test_gray_alpha_uses_the_gray_channel() -> None:
     alpha = rng.integers(0, 256, (60, 70)).astype(np.uint8)
     la = np.stack([gray, alpha], axis=2)
     np.testing.assert_array_equal(_canny(la, 30.0, 90.0), cv2.Canny(gray, 30.0, 90.0))
+
+
+@pytest.mark.parametrize("dtype", ["f32", "u16"])
+def test_a_non_u8_image_of_the_same_values_matches_opencv(dtype: str) -> None:
+    # u8 runs OpenCV's integer arithmetic; every other dtype the same
+    # definition in f64, which is exact on these values.
+    img = GRAY["rectangle_on_noise"]
+    pipe = (
+        Pipeline()
+        .source("image_bytes")
+        .cast(dtype)
+        .canny(low_threshold=50.0, high_threshold=150.0)
+    )
+    df = pl.DataFrame({"img": [_png(img)]})
+    got = numpy_from_struct(
+        df.select(pl.col("img").cv.pipe(pipe).sink("numpy"))["img"][0]
+    )
+    np.testing.assert_array_equal(got[..., 0], cv2.Canny(img, 50.0, 150.0))
