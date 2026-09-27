@@ -36,7 +36,7 @@ rm -f "$DONE"
 # Mirror everything below to the log as well as the harness's async output.
 exec > >(tee "$LOG") 2>&1
 
-# 0. Reclaim disk from any stale `--release` tree. The dev loop builds *only*
+# 0. Reclaim disk from any stale `--release` (or `--profile benchmark`) tree. The dev loop builds *only*
 #    debug (`maturin develop`, below) — release artifacts come from benchmarks
 #    or an accidental project-install build, are never used by tests or the
 #    prompt-facing loop, and a full release build of this stack is ~2 GB. In an
@@ -45,6 +45,10 @@ exec > >(tee "$LOG") 2>&1
 if [ -d target/release ]; then
   echo "session-start: reclaiming stale target/release ($(du -sh target/release 2>/dev/null | cut -f1))"
   cargo clean --release 2>/dev/null || rm -rf target/release
+fi
+if [ -d target/benchmark ]; then
+  echo "session-start: reclaiming stale target/benchmark ($(du -sh target/benchmark 2>/dev/null | cut -f1))"
+  cargo clean --profile benchmark 2>/dev/null || rm -rf target/benchmark
 fi
 
 # 1. Rust toolchain. `rust-toolchain.toml` pins `channel = "stable"`, and both

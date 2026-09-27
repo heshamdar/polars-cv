@@ -4,13 +4,13 @@
 #
 # The dev loop builds one thing: the debug extension (`maturin develop`), whose
 # artifacts live in `target/debug`. Everything else in `target/` is reclaimable:
-# a `--release` tree (benchmarks, or an accidental project-install build) is
-# ~2 GB of the whole polars stack the dev loop never touches, and `target/wheels`
-# holds distributables. Deleting `target/debug` too just forces the next
+# a `--release` or `--profile benchmark` tree (benchmarks, or an accidental
+# project-install build) is ~2 GB of the whole polars stack the dev loop never
+# touches, and `target/wheels` holds distributables. Deleting `target/debug` too just forces the next
 # `maturin develop` to recompile from scratch — so by default we keep it.
 #
 # Usage:
-#   scripts/dev-clean.sh            # remove target/release + target/wheels (keep debug)
+#   scripts/dev-clean.sh            # remove target/release, target/benchmark, target/wheels (keep debug)
 #   scripts/dev-clean.sh --all      # also remove target/debug (full cold rebuild next time)
 #
 # Run from anywhere; paths resolve relative to the repo root.
@@ -31,6 +31,11 @@ echo "target/ before: ${before}"
 if [ -d target/release ]; then
     cargo clean --release 2>/dev/null || rm -rf target/release
     echo "removed target/release"
+fi
+
+if [ -d target/benchmark ]; then
+    cargo clean --profile benchmark 2>/dev/null || rm -rf target/benchmark
+    echo "removed target/benchmark"
 fi
 
 if [ -d target/wheels ]; then

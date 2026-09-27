@@ -70,6 +70,20 @@ def load_results(path: str | Path) -> dict[ResultKey, dict[str, Any]]:
     return {_key(d): d for d in raw}
 
 
+def refuse_debug_builds(*paths: str | Path) -> None:
+    """Exit if a results file's sidecar says it measured a debug build.
+
+    ``run_suite --allow-debug-build`` exists to smoke-test the harness; its
+    numbers must never reach a verdict. Results without a sidecar predate it
+    and are compared as before.
+    """
+    for path in paths:
+        meta = Path(f"{path}.meta.json")
+        if meta.exists() and json.loads(meta.read_text()).get("debug_build"):
+            msg = f"{path} measured a debug build; rerun it against an optimised one"
+            raise SystemExit(msg)
+
+
 def _pct(base: float, cand: float) -> float:
     """Signed percent change from base to cand. +inf if base is 0 and cand > 0."""
     if base == 0:
@@ -225,6 +239,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    refuse_debug_builds(args.baseline, args.candidate)
     baseline = load_results(args.baseline)
     candidate = load_results(args.candidate)
     deltas = compare(

@@ -21,7 +21,7 @@ from benchmarks.utils.data_gen import generate_image_set
 from benchmarks.utils.memory import run_timed_with_memory
 
 if TYPE_CHECKING:
-    pass
+    from collections.abc import Collection
 
 
 @dataclass
@@ -424,6 +424,7 @@ def run_all_single_ops(
     warmup_iterations: int = 3,
     benchmark_iterations: int = 10,
     verbose: bool = True,
+    names: Collection[str] | None = None,
 ) -> list[BenchmarkResult]:
     """
     Run all single operation benchmarks across all adapters and configurations.
@@ -435,20 +436,26 @@ def run_all_single_ops(
         warmup_iterations: Number of warmup runs.
         benchmark_iterations: Number of timed runs.
         verbose: Whether to print progress output.
+        names: If set, only the cases with these result names (``None``: all).
 
     Returns:
         List of all benchmark results.
     """
     results: list[BenchmarkResult] = []
 
-    sample_benchmarks = get_single_op_benchmarks()
+    def selected(
+        benchmarks: list[SingleOpBenchmarkConfig],
+    ) -> list[SingleOpBenchmarkConfig]:
+        return [b for b in benchmarks if names is None or b.name in names]
+
+    sample_benchmarks = selected(get_single_op_benchmarks())
     total_combinations = (
         len(image_sizes) * len(image_counts) * len(sample_benchmarks) * len(adapters)
     )
     current = 0
 
     for size_idx, size in enumerate(image_sizes):
-        benchmarks = get_single_op_benchmarks(size[1], size[0])
+        benchmarks = selected(get_single_op_benchmarks(size[1], size[0]))
 
         if verbose:
             print(

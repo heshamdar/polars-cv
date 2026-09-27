@@ -9,6 +9,21 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **Benchmarks build in a fraction of the time, and run only what a change
+  can move.** `maturin develop --profile benchmark` is release with thin LTO
+  (the fat-LTO link was most of a 10–18 minute release build). The regression
+  suite's `--select scenario[:glob]` runs a subset of cases by their result
+  names, and `--changed REF` (or `python -m benchmarks.regression.relevance
+  REF`, to pass the same `--select` to the base side) derives it from the
+  files a change touches, through a path → cases map that a guard holds every
+  tracked source file to. A new `targeted` scenario times what the adapter
+  scenarios never reach: the geometry accessors, the `array`/`list` sinks,
+  JPEG and re-encoding, and the blob source. `run_suite --scenarios` is
+  replaced by `--select` (a bare scenario name is a selector).
+- **The benchmark suite refuses a debug build.** Its numbers look plausible and
+  measure nothing; `run_suite` exits unless given `--allow-debug-build` (a
+  harness smoke test), and `compare` refuses results marked as such. The
+  extension reports `_lib.__debug_assertions__` for it.
 - **`numpy_from_column(column)` reads a numpy/ndarray sink column without
   copying.** Every row comes back as a read-only NumPy view of the column's
   own Arrow memory, keeping its shape, dtype and byte strides; null rows are

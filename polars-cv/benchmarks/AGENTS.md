@@ -51,7 +51,8 @@ benchmarks/
 │   ├── pipelines.py                # Multi-op pipeline benchmarks
 │   ├── e2e_workflow.py             # End-to-end file-to-memory
 │   ├── zero_copy_ingestion.py      # Zero-copy path benchmarks
-│   └── remote_source.py            # Remote/cloud fetch path (loopback HTTP)
+│   ├── remote_source.py            # Remote/cloud fetch path (loopback HTTP)
+│   └── targeted.py                 # Geometry, tensor sinks, codecs, blob (direct, eager)
 ├── utils/                          # Shared utilities
 │   ├── data_gen.py                 # Synthetic test data generation
 │   ├── memory.py                   # Memory measurement
@@ -60,6 +61,8 @@ benchmarks/
 ├── regression/                     # Performance-regression harness (commit-to-commit)
 │   ├── run_suite.py                # Run the regression suite
 │   ├── compare.py                  # Compare runs / flag regressions
+│   ├── selection.py                # `scenario[:glob]` selectors (--select)
+│   ├── relevance.py                # Changed files -> selection (--changed)
 │   ├── config.py                   # Regression thresholds + config
 │   └── README.md                   # Regression framework docs
 └── reports/                        # Dated benchmark runs + analysis writeups
@@ -137,8 +140,12 @@ Defined in `conftest.py`. Controls image counts, sizes, warmup/iterations, and o
 2. Define benchmark functions that accept adapters and config
 3. Register in `run_benchmarks.py`
 4. To make it selectable from the regression suite, add its name to
-   `regression/config.py`'s `ALL_SCENARIOS` **and** a branch in
-   `regression/run_suite.py`'s `_run_once`. Return
+   `regression/config.py`'s `ALL_SCENARIOS`, a runner to
+   `regression/run_suite.py`'s `_RUNNERS` and a case lister to
+   `regression/selection.py`'s `_CASE_LISTS` (`None` if it runs as a whole) —
+   both modules refuse to import while their keys differ from
+   `ALL_SCENARIOS` — and point the relevant `regression/relevance.py` rules at
+   it. Return
    `benchmarks.frameworks.BenchmarkResult` — a scenario with its own result type
    must convert at that branch (see `zero_copy_ingestion.to_suite_results`).
    `_run_once` rejects anything else, because appending a foreign record used to

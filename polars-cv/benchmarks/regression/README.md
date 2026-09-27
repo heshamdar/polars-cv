@@ -12,7 +12,10 @@ they belong to `benchmarks.run_benchmarks` for competitive context.
 
 - `config.py` — the frozen, reproducible matrix (size, count, pinned threads)
   and the regression thresholds. Single source of truth.
-- `run_suite.py` — runs the configured scenarios for the two polars-cv adapters,
+- `selection.py` — `scenario[:glob]` selectors: which cases a run executes.
+- `relevance.py` — maps changed files to the selection that can move
+  (`--changed REF`).
+- `run_suite.py` — runs the selected cases for the two polars-cv adapters,
   repeats the whole suite (best-of per result), and writes a results JSON (plus
   a `.meta.json` sidecar with git SHA / config / threads).
 - `compare.py` — loads two result files, computes per-result `%Δ` in
@@ -44,12 +47,56 @@ For broader across-the-board coverage add the other scenarios (slower):
 
 ```bash
 python -m benchmarks.regression.run_suite --out candidate.json \
-    --scenarios single_ops,pipelines,e2e
+    --select single_ops,pipelines,e2e,targeted
 ```
+
+## Running only what a change can move
+
+`--select` takes comma-separated `scenario[:glob]` selectors. A bare scenario
+runs all of its cases; a glob (`fnmatch`) picks cases by the `operation` name
+their results carry — the names `compare` prints:
+
+```bash
+--select single_ops:rotate_*,pipelines:medium_pipeline
+--select targeted:geom_*          # every geometry accessor case
+--select targeted:sink_*,zero_copy
+```
+
+`zero_copy` and `remote` run as a unit (their own fixed matrix) and take no
+glob. An unknown scenario, a glob matching no case, or a glob on a unit
+scenario is an error, never a run of less than asked.
+
+`--changed REF` derives the selection from the files that differ from REF's
+merge base (committed, uncommitted and untracked), via `relevance.RULES`:
+a CODEOWNERS-style map, last match wins, from source paths to the selectors
+whose cases execute them. Tests, docs and the harness select nothing; a
+dependency or toolchain change selects everything; a code file no rule covers
+is an error (add a rule — `""` if no scenario measures it). A guard test holds
+every tracked source file to a rule and parses every rule's selectors.
+
+The base side must run the **same** selection, but after checking out the base
+`--changed` sees no change. So resolve it once, on the change:
+
+```bash
+SEL=$(python -m benchmarks.regression.relevance origin/main)
+```
+
+and pass `--select "$SEL"` to both runs (the `.meta.json` records the
+`selection` each run used, too).
+
+### The `targeted` scenario
+
+The adapter scenarios always decode PNG and sink to numpy, so whole subsystems
+went unmeasured. `targeted` times them directly, eager, grouped by prefix:
+`codec_` (PNG/JPEG decode and re-encode), `sink_` (the `array`/`list` tensor
+sinks, including a transposed input), `blob_` (the blob source, plain and
+through a fused op) and `geom_` (the `.contour`/`.point` accessors and contour
+rasterization). Image cases use the suite's counts and sizes; geometry cases run
+`count × 100` rows and report `image_size` `(0, 0)`.
 
 ### The `remote` scenario
 
-`--scenarios remote` measures the `file_path` **fetch** stage — the one every
+`--select remote` measures the `file_path` **fetch** stage — the one every
 `s3://`, `gs://`, `az://` and `http://` source goes through, and the one no
 other scenario touches, since they are all handed bytes that are already in
 memory. It serves a generated corpus over loopback HTTP, so it needs no
@@ -73,21 +120,30 @@ python -m benchmarks.scenarios.remote_source --count 300 --latency-ms 20  # mode
 
 ## Workflow
 
-Use a **release build** for both runs, on the **same machine**, with the
-**same `--threads`**. Close other heavy processes.
+Build both sides with the **same optimised profile**, on the **same machine**,
+with the **same `--threads`** and **`--select`**. Close other heavy processes.
+
+`maturin develop --profile benchmark` is the benchmark build: release
+(`opt-level = 3`, `panic = "unwind"`) with thin LTO and 16 codegen units
+instead of fat LTO and one. The fat-LTO link is most of a 10–18 minute release
+build here; comparing two commits only needs both optimised the same way.
+`--release` still works when you want wheel-identical absolute numbers.
+`run_suite` refuses a debug extension (`--allow-debug-build` exists only to
+smoke-test the harness, and `compare` refuses its results).
 
 ```bash
 cd polars-cv
+SEL=$(python -m benchmarks.regression.relevance origin/main)   # or pick by hand
 
 # 1) Baseline: the code BEFORE your change
 git stash            # or check out the base commit
-maturin develop --release
-python -m benchmarks.regression.run_suite --out baseline.json
+maturin develop --profile benchmark
+python -m benchmarks.regression.run_suite --select "$SEL" --out baseline.json
 
 # 2) Candidate: the code WITH your change
 git stash pop        # or check out your branch
-maturin develop --release
-python -m benchmarks.regression.run_suite --out candidate.json
+maturin develop --profile benchmark
+python -m benchmarks.regression.run_suite --select "$SEL" --out candidate.json
 
 # 3) Gate: non-zero exit if anything regressed
 python -m benchmarks.regression.compare baseline.json candidate.json
@@ -110,9 +166,14 @@ python -m benchmarks.regression.compare a.json b.json   # expect all NEUTRAL, ex
 
 ## Options
 
-`run_suite`: `--out` (required), `--scenarios single_ops,pipelines,e2e[,zero_copy][,remote]`,
-`--counts`, `--sizes`, `--threads`, `--repeats`, `--warmup`, `--iterations`,
-`--quiet`.
+`run_suite`: `--out` (required), `--select scenario[:glob],...` or
+`--changed REF`, `--counts`, `--sizes`, `--threads`, `--repeats`, `--warmup`,
+`--iterations`, `--quiet`, `--allow-debug-build`.
+
+For a quick directional read while iterating, cut the repeats rather than
+the count (below 300, streaming noise reaches ±12%): `--repeats 1
+--iterations 5` runs 8 timed-or-warmup passes per case instead of 39. It is
+noisier than the default — read it for direction, gate on the defaults.
 
 `compare`: `baseline candidate`, `--throughput-threshold` (default 5),
 `--latency-threshold` (5), `--memory-threshold` (15), `--gate-memory`
@@ -121,7 +182,8 @@ python -m benchmarks.regression.compare a.json b.json   # expect all NEUTRAL, ex
 ## CI (manual, advisory)
 
 `.github/workflows/benchmark.yml` runs this suite on demand
-(`workflow_dispatch`, inputs: scenarios / counts / threads), builds release,
+(`workflow_dispatch`, inputs: select / counts / threads), builds the benchmark
+profile,
 and uploads the results JSON as an artifact. It is **not** a PR gate —
 shared CI runners are too noisy to gate on absolute timings. Download two runs'
 artifacts and `compare` them locally.

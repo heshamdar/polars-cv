@@ -52,6 +52,9 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // literal until the next bump, which is the whole window the check exists
     // for. This moves whenever the built artifact could differ.
     m.add("__source_hash__", env!("POLARS_CV_SOURCE_HASH"))?;
+    // Whether this extension is an unoptimised (debug) build. The benchmark
+    // harness refuses one: its numbers look plausible and measure nothing.
+    m.add("__debug_assertions__", cfg!(debug_assertions))?;
     m.add_class::<plan::State>()?;
     m.add_class::<plan::Plan>()?;
     m.add_function(wrap_pyfunction!(_plan_from_json, m)?)?;
