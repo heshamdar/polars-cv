@@ -56,10 +56,16 @@ pub(crate) trait KernelOutput {
 
 impl<T: ViewType> KernelOutput for Vec<T> {
     fn output_bytes(&self) -> &[u8] {
+        self.as_slice().output_bytes()
+    }
+}
+
+impl<T: ViewType> KernelOutput for [T] {
+    fn output_bytes(&self) -> &[u8] {
         // SAFETY: every `ViewType` is a plain numeric type with no padding,
         // so its elements are readable as `size_of::<T>()` bytes each.
         unsafe {
-            std::slice::from_raw_parts(self.as_ptr().cast::<u8>(), std::mem::size_of_val(&self[..]))
+            std::slice::from_raw_parts(self.as_ptr().cast::<u8>(), std::mem::size_of_val(self))
         }
     }
 }
@@ -110,6 +116,60 @@ fn run_portable_aside<K: SimdKernel>(kernel: K) -> K::Output {
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
+/// A kernel that rewrites a slice in place, for [`dispatch_mut`].
+///
+/// The in-place counterpart of [`SimdKernel`], under the same rules: the
+/// whole body in an `#[inline(always)]` [`run_mut`](Self::run_mut), AVX2
+/// only.
+pub(crate) trait SimdKernelMut<T: ViewType>: Sync {
+    fn run_mut(&self, data: &mut [T]);
+}
+
+/// Run `kernel` over `data` in place: its AVX2 build when the CPU supports
+/// AVX2, else as written. In a debug build the portable build also runs, on a
+/// copy made on a helper thread (outside this thread's allocation
+/// accounting), and the two results must be byte-identical.
+#[inline]
+pub(crate) fn dispatch_mut<T: ViewType, K: SimdKernelMut<T>>(kernel: &K, data: &mut [T]) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            #[cfg(debug_assertions)]
+            let portable = {
+                let input: &[T] = data;
+                std::thread::scope(|scope| {
+                    scope
+                        .spawn(|| {
+                            let mut copy = input.to_vec();
+                            kernel.run_mut(&mut copy);
+                            copy
+                        })
+                        .join()
+                })
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            };
+            // SAFETY: the CPU supports AVX2, checked just above.
+            unsafe { run_mut_avx2(kernel, data) };
+            #[cfg(debug_assertions)]
+            assert_bit_identical(portable.as_slice(), &*data);
+            return;
+        }
+    }
+    kernel.run_mut(data)
+}
+
+/// [`SimdKernelMut::run_mut`] compiled with AVX2 enabled.
+///
+/// # Safety
+/// The caller must have checked that the CPU supports AVX2.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn run_mut_avx2<T: ViewType, K: SimdKernelMut<T>>(kernel: &K, data: &mut [T]) {
+    #[cfg(test)]
+    tests::AVX2_RUNS.with(|n| n.set(n.get() + 1));
+    kernel.run_mut(data)
+}
+
 /// [`SimdKernel::run`] compiled with AVX2 enabled.
 ///
 /// # Safety
@@ -124,7 +184,7 @@ unsafe fn run_avx2<K: SimdKernel>(kernel: K) -> K::Output {
 
 /// Panic unless the two builds of a kernel produced the same bytes.
 #[cfg(any(test, debug_assertions))]
-fn assert_bit_identical<O: KernelOutput>(portable: &O, dispatched: &O) {
+fn assert_bit_identical<O: KernelOutput + ?Sized>(portable: &O, dispatched: &O) {
     let (a, b) = (portable.output_bytes(), dispatched.output_bytes());
     if a != b {
         let first = a.iter().zip(b).position(|(x, y)| x != y);
@@ -168,6 +228,34 @@ pub(crate) mod tests {
         let out = dispatch(Doubled(&input));
         let expected: Vec<f32> = input.iter().map(|&x| x * 2.0 + 1.0).collect();
         assert_eq!(out, expected);
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx2") {
+            assert_eq!(
+                AVX2_RUNS.with(Cell::get),
+                before + 1,
+                "the AVX2 build did not run"
+            );
+        }
+    }
+
+    struct Halve;
+
+    impl SimdKernelMut<f32> for Halve {
+        #[inline(always)]
+        fn run_mut(&self, data: &mut [f32]) {
+            for x in data.iter_mut() {
+                *x *= 0.5;
+            }
+        }
+    }
+
+    #[test]
+    fn dispatch_mut_rewrites_in_place_through_the_avx2_build() {
+        let mut data: Vec<f32> = (0..41).map(|i| i as f32).collect();
+        let before = AVX2_RUNS.with(Cell::get);
+        dispatch_mut(&Halve, &mut data);
+        let expected: Vec<f32> = (0..41).map(|i| i as f32 * 0.5).collect();
+        assert_eq!(data, expected);
         #[cfg(target_arch = "x86_64")]
         if std::arch::is_x86_feature_detected!("avx2") {
             assert_eq!(

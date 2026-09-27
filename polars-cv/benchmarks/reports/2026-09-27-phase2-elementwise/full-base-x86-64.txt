@@ -1,0 +1,547 @@
+Gnuplot not found, using plotters backend
+Benchmarking grayscale_u8_rgb/256
+Benchmarking grayscale_u8_rgb/256: Warming up for 500.00 ms
+Benchmarking grayscale_u8_rgb/256: Collecting 20 samples in estimated 2.0018 s (28k iterations)
+Benchmarking grayscale_u8_rgb/256: Analyzing
+grayscale_u8_rgb/256    time:   [15.720 µs 17.403 µs 18.467 µs]
+Benchmarking grayscale_u8_rgb/512
+Benchmarking grayscale_u8_rgb/512: Warming up for 500.00 ms
+Benchmarking grayscale_u8_rgb/512: Collecting 20 samples in estimated 2.0328 s (10k iterations)
+Benchmarking grayscale_u8_rgb/512: Analyzing
+grayscale_u8_rgb/512    time:   [51.450 µs 55.398 µs 61.431 µs]
+Found 3 outliers among 20 measurements (15.00%)
+  1 (5.00%) high mild
+  2 (10.00%) high severe
+Benchmarking grayscale_u8_rgb/1024
+Benchmarking grayscale_u8_rgb/1024: Warming up for 500.00 ms
+Benchmarking grayscale_u8_rgb/1024: Collecting 20 samples in estimated 2.0285 s (4830 iterations)
+Benchmarking grayscale_u8_rgb/1024: Analyzing
+grayscale_u8_rgb/1024   time:   [219.52 µs 230.64 µs 242.45 µs]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high severe
+
+Benchmarking grayscale_f32_rgb/256
+Benchmarking grayscale_f32_rgb/256: Warming up for 500.00 ms
+Benchmarking grayscale_f32_rgb/256: Collecting 20 samples in estimated 2.0113 s (17k iterations)
+Benchmarking grayscale_f32_rgb/256: Analyzing
+grayscale_f32_rgb/256   time:   [75.710 µs 77.832 µs 79.475 µs]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking grayscale_f32_rgb/512
+Benchmarking grayscale_f32_rgb/512: Warming up for 500.00 ms
+Benchmarking grayscale_f32_rgb/512: Collecting 20 samples in estimated 2.0171 s (3570 iterations)
+Benchmarking grayscale_f32_rgb/512: Analyzing
+grayscale_f32_rgb/512   time:   [307.34 µs 317.68 µs 337.22 µs]
+Found 4 outliers among 20 measurements (20.00%)
+  3 (15.00%) high mild
+  1 (5.00%) high severe
+Benchmarking grayscale_f32_rgb/1024
+Benchmarking grayscale_f32_rgb/1024: Warming up for 500.00 ms
+Benchmarking grayscale_f32_rgb/1024: Collecting 20 samples in estimated 2.5275 s (630 iterations)
+Benchmarking grayscale_f32_rgb/1024: Analyzing
+grayscale_f32_rgb/1024  time:   [1.8372 ms 2.0401 ms 2.2425 ms]
+
+Benchmarking threshold_u8/256
+Benchmarking threshold_u8/256: Warming up for 500.00 ms
+Benchmarking threshold_u8/256: Collecting 20 samples in estimated 2.0009 s (310k iterations)
+Benchmarking threshold_u8/256: Analyzing
+threshold_u8/256        time:   [3.1847 µs 3.3136 µs 3.3904 µs]
+Benchmarking threshold_u8/512
+Benchmarking threshold_u8/512: Warming up for 500.00 ms
+Benchmarking threshold_u8/512: Collecting 20 samples in estimated 2.0003 s (86k iterations)
+Benchmarking threshold_u8/512: Analyzing
+threshold_u8/512        time:   [12.314 µs 12.811 µs 13.215 µs]
+Benchmarking threshold_u8/1024
+Benchmarking threshold_u8/1024: Warming up for 500.00 ms
+Benchmarking threshold_u8/1024: Collecting 20 samples in estimated 2.0022 s (15k iterations)
+Benchmarking threshold_u8/1024: Analyzing
+threshold_u8/1024       time:   [68.886 µs 70.321 µs 71.829 µs]
+Found 3 outliers among 20 measurements (15.00%)
+  2 (10.00%) high mild
+  1 (5.00%) high severe
+
+Benchmarking threshold_u8_cropped/256
+Benchmarking threshold_u8_cropped/256: Warming up for 500.00 ms
+Benchmarking threshold_u8_cropped/256: Collecting 20 samples in estimated 2.0011 s (215k iterations)
+Benchmarking threshold_u8_cropped/256: Analyzing
+threshold_u8_cropped/256
+                        time:   [5.4337 µs 5.5411 µs 5.6187 µs]
+Benchmarking threshold_u8_cropped/512
+Benchmarking threshold_u8_cropped/512: Warming up for 500.00 ms
+Benchmarking threshold_u8_cropped/512: Collecting 20 samples in estimated 2.0020 s (73k iterations)
+Benchmarking threshold_u8_cropped/512: Analyzing
+threshold_u8_cropped/512
+                        time:   [15.035 µs 16.109 µs 17.522 µs]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+Benchmarking threshold_u8_cropped/1024
+Benchmarking threshold_u8_cropped/1024: Warming up for 500.00 ms
+Benchmarking threshold_u8_cropped/1024: Collecting 20 samples in estimated 2.0096 s (14k iterations)
+Benchmarking threshold_u8_cropped/1024: Analyzing
+threshold_u8_cropped/1024
+                        time:   [72.614 µs 74.757 µs 77.244 µs]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+
+Benchmarking cast_f32_to_u8/256
+Benchmarking cast_f32_to_u8/256: Warming up for 500.00 ms
+Benchmarking cast_f32_to_u8/256: Collecting 20 samples in estimated 2.0353 s (7770 iterations)
+Benchmarking cast_f32_to_u8/256: Analyzing
+cast_f32_to_u8/256      time:   [210.69 µs 217.31 µs 223.56 µs]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking cast_f32_to_u8/512
+Benchmarking cast_f32_to_u8/512: Warming up for 500.00 ms
+Benchmarking cast_f32_to_u8/512: Collecting 20 samples in estimated 2.0548 s (1890 iterations)
+Benchmarking cast_f32_to_u8/512: Analyzing
+cast_f32_to_u8/512      time:   [840.39 µs 873.32 µs 921.56 µs]
+Found 4 outliers among 20 measurements (20.00%)
+  2 (10.00%) high mild
+  2 (10.00%) high severe
+Benchmarking cast_f32_to_u8/1024
+Benchmarking cast_f32_to_u8/1024: Warming up for 500.00 ms
+Benchmarking cast_f32_to_u8/1024: Collecting 20 samples in estimated 2.5866 s (420 iterations)
+Benchmarking cast_f32_to_u8/1024: Analyzing
+cast_f32_to_u8/1024     time:   [3.6942 ms 3.8120 ms 3.9571 ms]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+
+Benchmarking cast_u8_to_f32/256
+Benchmarking cast_u8_to_f32/256: Warming up for 500.00 ms
+Benchmarking cast_u8_to_f32/256: Collecting 20 samples in estimated 2.0002 s (43k iterations)
+Benchmarking cast_u8_to_f32/256: Analyzing
+cast_u8_to_f32/256      time:   [35.280 µs 36.005 µs 36.463 µs]
+Found 4 outliers among 20 measurements (20.00%)
+  4 (20.00%) low severe
+Benchmarking cast_u8_to_f32/512
+Benchmarking cast_u8_to_f32/512: Warming up for 500.00 ms
+Benchmarking cast_u8_to_f32/512: Collecting 20 samples in estimated 2.0271 s (9240 iterations)
+Benchmarking cast_u8_to_f32/512: Analyzing
+cast_u8_to_f32/512      time:   [138.73 µs 143.33 µs 148.96 µs]
+Benchmarking cast_u8_to_f32/1024
+Benchmarking cast_u8_to_f32/1024: Warming up for 500.00 ms
+Benchmarking cast_u8_to_f32/1024: Collecting 20 samples in estimated 2.0782 s (2100 iterations)
+Benchmarking cast_u8_to_f32/1024: Analyzing
+cast_u8_to_f32/1024     time:   [675.45 µs 727.12 µs 790.55 µs]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) low mild
+  1 (5.00%) high mild
+
+Benchmarking invert_u8/256
+Benchmarking invert_u8/256: Warming up for 500.00 ms
+Benchmarking invert_u8/256: Collecting 20 samples in estimated 2.0013 s (118k iterations)
+Benchmarking invert_u8/256: Analyzing
+invert_u8/256           time:   [9.0511 µs 9.4892 µs 9.8642 µs]
+Benchmarking invert_u8/512
+Benchmarking invert_u8/512: Warming up for 500.00 ms
+Benchmarking invert_u8/512: Collecting 20 samples in estimated 2.0112 s (21k iterations)
+Benchmarking invert_u8/512: Analyzing
+invert_u8/512           time:   [49.655 µs 51.583 µs 53.673 µs]
+Benchmarking invert_u8/1024
+Benchmarking invert_u8/1024: Warming up for 500.00 ms
+Benchmarking invert_u8/1024: Collecting 20 samples in estimated 2.0708 s (4410 iterations)
+Benchmarking invert_u8/1024: Analyzing
+invert_u8/1024          time:   [214.94 µs 218.88 µs 224.25 µs]
+
+Benchmarking adjust_gamma_u8/256
+Benchmarking adjust_gamma_u8/256: Warming up for 500.00 ms
+Benchmarking adjust_gamma_u8/256: Collecting 20 samples in estimated 2.1255 s (1260 iterations)
+Benchmarking adjust_gamma_u8/256: Analyzing
+adjust_gamma_u8/256     time:   [1.6618 ms 1.6643 ms 1.6681 ms]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+Benchmarking adjust_gamma_u8/512
+Benchmarking adjust_gamma_u8/512: Warming up for 500.00 ms
+Benchmarking adjust_gamma_u8/512: Collecting 20 samples in estimated 2.8760 s (420 iterations)
+Benchmarking adjust_gamma_u8/512: Analyzing
+adjust_gamma_u8/512     time:   [6.9197 ms 6.9851 ms 7.0482 ms]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking adjust_gamma_u8/1024
+Benchmarking adjust_gamma_u8/1024: Warming up for 500.00 ms
+Benchmarking adjust_gamma_u8/1024: Collecting 20 samples in estimated 2.3675 s (60 iterations)
+Benchmarking adjust_gamma_u8/1024: Analyzing
+adjust_gamma_u8/1024    time:   [38.254 ms 39.730 ms 41.391 ms]
+
+Benchmarking normalize_preset_u8_to_f32/256
+Benchmarking normalize_preset_u8_to_f32/256: Warming up for 500.00 ms
+Benchmarking normalize_preset_u8_to_f32/256: Collecting 20 samples in estimated 2.1567 s (1890 iterations)
+Benchmarking normalize_preset_u8_to_f32/256: Analyzing
+normalize_preset_u8_to_f32/256
+                        time:   [1.0196 ms 1.0646 ms 1.1263 ms]
+Found 3 outliers among 20 measurements (15.00%)
+  1 (5.00%) high mild
+  2 (10.00%) high severe
+Benchmarking normalize_preset_u8_to_f32/512
+Benchmarking normalize_preset_u8_to_f32/512: Warming up for 500.00 ms
+Benchmarking normalize_preset_u8_to_f32/512: Collecting 20 samples in estimated 2.6905 s (630 iterations)
+Benchmarking normalize_preset_u8_to_f32/512: Analyzing
+normalize_preset_u8_to_f32/512
+                        time:   [4.3114 ms 4.5530 ms 4.7788 ms]
+Benchmarking normalize_preset_u8_to_f32/1024
+Benchmarking normalize_preset_u8_to_f32/1024: Warming up for 500.00 ms
+Benchmarking normalize_preset_u8_to_f32/1024: Collecting 20 samples in estimated 2.4780 s (80 iterations)
+Benchmarking normalize_preset_u8_to_f32/1024: Analyzing
+normalize_preset_u8_to_f32/1024
+                        time:   [25.717 ms 26.878 ms 28.447 ms]
+Found 3 outliers among 20 measurements (15.00%)
+  2 (10.00%) high mild
+  1 (5.00%) high severe
+
+Benchmarking normalize_zscore_u8/256
+Benchmarking normalize_zscore_u8/256: Warming up for 500.00 ms
+Benchmarking normalize_zscore_u8/256: Collecting 20 samples in estimated 2.0080 s (3360 iterations)
+Benchmarking normalize_zscore_u8/256: Analyzing
+normalize_zscore_u8/256 time:   [573.34 µs 579.34 µs 585.84 µs]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking normalize_zscore_u8/512
+Benchmarking normalize_zscore_u8/512: Warming up for 500.00 ms
+Benchmarking normalize_zscore_u8/512: Collecting 20 samples in estimated 2.1367 s (840 iterations)
+Benchmarking normalize_zscore_u8/512: Analyzing
+normalize_zscore_u8/512 time:   [2.4201 ms 2.4526 ms 2.4864 ms]
+Benchmarking normalize_zscore_u8/1024
+Benchmarking normalize_zscore_u8/1024: Warming up for 500.00 ms
+Benchmarking normalize_zscore_u8/1024: Collecting 20 samples in estimated 2.4600 s (100 iterations)
+Benchmarking normalize_zscore_u8/1024: Analyzing
+normalize_zscore_u8/1024
+                        time:   [19.862 ms 20.478 ms 21.215 ms]
+Found 3 outliers among 20 measurements (15.00%)
+  2 (10.00%) high mild
+  1 (5.00%) high severe
+
+Benchmarking adjust_contrast_u8/256
+Benchmarking adjust_contrast_u8/256: Warming up for 500.00 ms
+Benchmarking adjust_contrast_u8/256: Collecting 20 samples in estimated 2.0532 s (6300 iterations)
+Benchmarking adjust_contrast_u8/256: Analyzing
+adjust_contrast_u8/256  time:   [315.69 µs 321.45 µs 327.27 µs]
+Benchmarking adjust_contrast_u8/512
+Benchmarking adjust_contrast_u8/512: Warming up for 500.00 ms
+Benchmarking adjust_contrast_u8/512: Collecting 20 samples in estimated 2.1549 s (1470 iterations)
+Benchmarking adjust_contrast_u8/512: Analyzing
+adjust_contrast_u8/512  time:   [1.3506 ms 1.3573 ms 1.3656 ms]
+Benchmarking adjust_contrast_u8/1024
+Benchmarking adjust_contrast_u8/1024: Warming up for 500.00 ms
+
+Warning: Unable to complete 20 samples in 2.0s. You may wish to increase target time to 3.8s, enable flat sampling, or reduce sample count to 10.
+Benchmarking adjust_contrast_u8/1024: Collecting 20 samples in estimated 3.8204 s (210 iterations)
+Benchmarking adjust_contrast_u8/1024: Analyzing
+adjust_contrast_u8/1024 time:   [15.565 ms 16.065 ms 16.772 ms]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+
+Benchmarking scale_u8/256
+Benchmarking scale_u8/256: Warming up for 500.00 ms
+Benchmarking scale_u8/256: Collecting 20 samples in estimated 2.0055 s (23k iterations)
+Benchmarking scale_u8/256: Analyzing
+scale_u8/256            time:   [72.124 µs 75.082 µs 77.829 µs]
+Benchmarking scale_u8/512
+Benchmarking scale_u8/512: Warming up for 500.00 ms
+Benchmarking scale_u8/512: Collecting 20 samples in estimated 2.0766 s (4830 iterations)
+Benchmarking scale_u8/512: Analyzing
+scale_u8/512            time:   [360.64 µs 377.43 µs 399.24 µs]
+Found 7 outliers among 20 measurements (35.00%)
+  4 (20.00%) low mild
+  1 (5.00%) high mild
+  2 (10.00%) high severe
+Benchmarking scale_u8/1024
+Benchmarking scale_u8/1024: Warming up for 500.00 ms
+
+Warning: Unable to complete 20 samples in 2.0s. You may wish to increase target time to 3.0s, enable flat sampling, or reduce sample count to 10.
+Benchmarking scale_u8/1024: Collecting 20 samples in estimated 3.0356 s (210 iterations)
+Benchmarking scale_u8/1024: Analyzing
+scale_u8/1024           time:   [11.191 ms 11.486 ms 11.809 ms]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+
+Benchmarking normalize_preset_f32/256
+Benchmarking normalize_preset_f32/256: Warming up for 500.00 ms
+Benchmarking normalize_preset_f32/256: Collecting 20 samples in estimated 2.1289 s (2100 iterations)
+Benchmarking normalize_preset_f32/256: Analyzing
+normalize_preset_f32/256
+                        time:   [980.44 µs 1.0180 ms 1.0526 ms]
+Found 4 outliers among 20 measurements (20.00%)
+  1 (5.00%) high mild
+  3 (15.00%) high severe
+Benchmarking normalize_preset_f32/512
+Benchmarking normalize_preset_f32/512: Warming up for 500.00 ms
+Benchmarking normalize_preset_f32/512: Collecting 20 samples in estimated 2.8232 s (630 iterations)
+Benchmarking normalize_preset_f32/512: Analyzing
+normalize_preset_f32/512
+                        time:   [3.8443 ms 3.9193 ms 4.0394 ms]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+Benchmarking normalize_preset_f32/1024
+Benchmarking normalize_preset_f32/1024: Warming up for 500.00 ms
+Benchmarking normalize_preset_f32/1024: Collecting 20 samples in estimated 2.3105 s (80 iterations)
+Benchmarking normalize_preset_f32/1024: Analyzing
+normalize_preset_f32/1024
+                        time:   [20.178 ms 20.819 ms 21.653 ms]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+
+Benchmarking fused_chain_u8/256
+Benchmarking fused_chain_u8/256: Warming up for 500.00 ms
+Benchmarking fused_chain_u8/256: Collecting 20 samples in estimated 2.0012 s (6300 iterations)
+Benchmarking fused_chain_u8/256: Analyzing
+fused_chain_u8/256      time:   [286.34 µs 286.78 µs 287.34 µs]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking fused_chain_u8/512
+Benchmarking fused_chain_u8/512: Warming up for 500.00 ms
+Benchmarking fused_chain_u8/512: Collecting 20 samples in estimated 2.0776 s (1470 iterations)
+Benchmarking fused_chain_u8/512: Analyzing
+fused_chain_u8/512      time:   [1.2922 ms 1.3142 ms 1.3450 ms]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+Benchmarking fused_chain_u8/1024
+Benchmarking fused_chain_u8/1024: Warming up for 500.00 ms
+Benchmarking fused_chain_u8/1024: Collecting 20 samples in estimated 3.4042 s (420 iterations)
+Benchmarking fused_chain_u8/1024: Analyzing
+fused_chain_u8/1024     time:   [6.6712 ms 6.8239 ms 6.9935 ms]
+
+Benchmarking materialize_flip_h_u8/256
+Benchmarking materialize_flip_h_u8/256: Warming up for 500.00 ms
+Benchmarking materialize_flip_h_u8/256: Collecting 20 samples in estimated 2.0574 s (6720 iterations)
+Benchmarking materialize_flip_h_u8/256: Analyzing
+materialize_flip_h_u8/256
+                        time:   [295.16 µs 311.66 µs 335.29 µs]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high severe
+Benchmarking materialize_flip_h_u8/512
+Benchmarking materialize_flip_h_u8/512: Warming up for 500.00 ms
+Benchmarking materialize_flip_h_u8/512: Collecting 20 samples in estimated 2.1737 s (1680 iterations)
+Benchmarking materialize_flip_h_u8/512: Analyzing
+materialize_flip_h_u8/512
+                        time:   [1.2368 ms 1.3229 ms 1.4321 ms]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high severe
+Benchmarking materialize_flip_h_u8/1024
+Benchmarking materialize_flip_h_u8/1024: Warming up for 500.00 ms
+Benchmarking materialize_flip_h_u8/1024: Collecting 20 samples in estimated 2.8122 s (420 iterations)
+Benchmarking materialize_flip_h_u8/1024: Analyzing
+materialize_flip_h_u8/1024
+                        time:   [5.1705 ms 5.5275 ms 5.9598 ms]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+
+Benchmarking materialize_flip_v_u8/256
+Benchmarking materialize_flip_v_u8/256: Warming up for 500.00 ms
+Benchmarking materialize_flip_v_u8/256: Collecting 20 samples in estimated 2.0277 s (6510 iterations)
+Benchmarking materialize_flip_v_u8/256: Analyzing
+materialize_flip_v_u8/256
+                        time:   [301.39 µs 313.51 µs 331.27 µs]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+Benchmarking materialize_flip_v_u8/512
+Benchmarking materialize_flip_v_u8/512: Warming up for 500.00 ms
+Benchmarking materialize_flip_v_u8/512: Collecting 20 samples in estimated 2.2660 s (1680 iterations)
+Benchmarking materialize_flip_v_u8/512: Analyzing
+materialize_flip_v_u8/512
+                        time:   [1.1983 ms 1.2806 ms 1.3738 ms]
+Found 4 outliers among 20 measurements (20.00%)
+  3 (15.00%) high mild
+  1 (5.00%) high severe
+Benchmarking materialize_flip_v_u8/1024
+Benchmarking materialize_flip_v_u8/1024: Warming up for 500.00 ms
+Benchmarking materialize_flip_v_u8/1024: Collecting 20 samples in estimated 2.2683 s (420 iterations)
+Benchmarking materialize_flip_v_u8/1024: Analyzing
+materialize_flip_v_u8/1024
+                        time:   [5.2913 ms 5.6074 ms 5.9031 ms]
+
+Benchmarking materialize_transpose_u8/256
+Benchmarking materialize_transpose_u8/256: Warming up for 500.00 ms
+Benchmarking materialize_transpose_u8/256: Collecting 20 samples in estimated 2.0445 s (6510 iterations)
+Benchmarking materialize_transpose_u8/256: Analyzing
+materialize_transpose_u8/256
+                        time:   [298.48 µs 304.22 µs 310.65 µs]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking materialize_transpose_u8/512
+Benchmarking materialize_transpose_u8/512: Warming up for 500.00 ms
+Benchmarking materialize_transpose_u8/512: Collecting 20 samples in estimated 2.0702 s (1680 iterations)
+Benchmarking materialize_transpose_u8/512: Analyzing
+materialize_transpose_u8/512
+                        time:   [1.1831 ms 1.1944 ms 1.2060 ms]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+Benchmarking materialize_transpose_u8/1024
+Benchmarking materialize_transpose_u8/1024: Warming up for 500.00 ms
+Benchmarking materialize_transpose_u8/1024: Collecting 20 samples in estimated 3.0467 s (420 iterations)
+Benchmarking materialize_transpose_u8/1024: Analyzing
+materialize_transpose_u8/1024
+                        time:   [6.5289 ms 6.7357 ms 6.9247 ms]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+
+Benchmarking resize_224_u8/256
+Benchmarking resize_224_u8/256: Warming up for 500.00 ms
+Benchmarking resize_224_u8/256: Collecting 20 samples in estimated 2.0280 s (10k iterations)
+Benchmarking resize_224_u8/256: Analyzing
+resize_224_u8/256       time:   [193.15 µs 197.65 µs 205.91 µs]
+Found 3 outliers among 20 measurements (15.00%)
+  2 (10.00%) high mild
+  1 (5.00%) high severe
+Benchmarking resize_224_u8/512
+Benchmarking resize_224_u8/512: Warming up for 500.00 ms
+Benchmarking resize_224_u8/512: Collecting 20 samples in estimated 2.0239 s (5670 iterations)
+Benchmarking resize_224_u8/512: Analyzing
+resize_224_u8/512       time:   [301.13 µs 321.08 µs 347.48 µs]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+Benchmarking resize_224_u8/1024
+Benchmarking resize_224_u8/1024: Warming up for 500.00 ms
+Benchmarking resize_224_u8/1024: Collecting 20 samples in estimated 2.0193 s (2520 iterations)
+Benchmarking resize_224_u8/1024: Analyzing
+resize_224_u8/1024      time:   [598.23 µs 617.93 µs 637.95 µs]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high severe
+
+Benchmarking crop_then_resize_224_u8/256
+Benchmarking crop_then_resize_224_u8/256: Warming up for 500.00 ms
+Benchmarking crop_then_resize_224_u8/256: Collecting 20 samples in estimated 2.0747 s (5670 iterations)
+Benchmarking crop_then_resize_224_u8/256: Analyzing
+crop_then_resize_224_u8/256
+                        time:   [329.49 µs 342.34 µs 356.07 µs]
+Found 3 outliers among 20 measurements (15.00%)
+  3 (15.00%) high severe
+Benchmarking crop_then_resize_224_u8/512
+Benchmarking crop_then_resize_224_u8/512: Warming up for 500.00 ms
+Benchmarking crop_then_resize_224_u8/512: Collecting 20 samples in estimated 2.1888 s (1890 iterations)
+Benchmarking crop_then_resize_224_u8/512: Analyzing
+crop_then_resize_224_u8/512
+                        time:   [1.0803 ms 1.1093 ms 1.1668 ms]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+Benchmarking crop_then_resize_224_u8/1024
+Benchmarking crop_then_resize_224_u8/1024: Warming up for 500.00 ms
+Benchmarking crop_then_resize_224_u8/1024: Collecting 20 samples in estimated 2.2412 s (630 iterations)
+Benchmarking crop_then_resize_224_u8/1024: Analyzing
+crop_then_resize_224_u8/1024
+                        time:   [3.2364 ms 3.2563 ms 3.2837 ms]
+Found 3 outliers among 20 measurements (15.00%)
+  2 (10.00%) high mild
+  1 (5.00%) high severe
+
+Benchmarking blur_sigma2_u8_rgb/256
+Benchmarking blur_sigma2_u8_rgb/256: Warming up for 500.00 ms
+Benchmarking blur_sigma2_u8_rgb/256: Collecting 20 samples in estimated 2.1485 s (2100 iterations)
+Benchmarking blur_sigma2_u8_rgb/256: Analyzing
+blur_sigma2_u8_rgb/256  time:   [879.28 µs 889.33 µs 902.05 µs]
+Benchmarking blur_sigma2_u8_rgb/512
+Benchmarking blur_sigma2_u8_rgb/512: Warming up for 500.00 ms
+Benchmarking blur_sigma2_u8_rgb/512: Collecting 20 samples in estimated 2.4820 s (630 iterations)
+Benchmarking blur_sigma2_u8_rgb/512: Analyzing
+blur_sigma2_u8_rgb/512  time:   [3.4231 ms 3.4576 ms 3.5054 ms]
+Benchmarking blur_sigma2_u8_rgb/1024
+Benchmarking blur_sigma2_u8_rgb/1024: Warming up for 500.00 ms
+
+Warning: Unable to complete 20 samples in 2.0s. You may wish to increase target time to 3.7s, enable flat sampling, or reduce sample count to 10.
+Benchmarking blur_sigma2_u8_rgb/1024: Collecting 20 samples in estimated 3.6612 s (210 iterations)
+Benchmarking blur_sigma2_u8_rgb/1024: Analyzing
+blur_sigma2_u8_rgb/1024 time:   [17.165 ms 17.615 ms 18.280 ms]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+
+Benchmarking erode_k3_x3_u8/256
+Benchmarking erode_k3_x3_u8/256: Warming up for 500.00 ms
+Benchmarking erode_k3_x3_u8/256: Collecting 20 samples in estimated 2.0109 s (24k iterations)
+Benchmarking erode_k3_x3_u8/256: Analyzing
+erode_k3_x3_u8/256      time:   [75.090 µs 75.786 µs 76.800 µs]
+Found 3 outliers among 20 measurements (15.00%)
+  3 (15.00%) high severe
+Benchmarking erode_k3_x3_u8/512
+Benchmarking erode_k3_x3_u8/512: Warming up for 500.00 ms
+Benchmarking erode_k3_x3_u8/512: Collecting 20 samples in estimated 2.0112 s (6930 iterations)
+Benchmarking erode_k3_x3_u8/512: Analyzing
+erode_k3_x3_u8/512      time:   [237.57 µs 239.29 µs 241.37 µs]
+Found 3 outliers among 20 measurements (15.00%)
+  1 (5.00%) high mild
+  2 (10.00%) high severe
+Benchmarking erode_k3_x3_u8/1024
+Benchmarking erode_k3_x3_u8/1024: Warming up for 500.00 ms
+Benchmarking erode_k3_x3_u8/1024: Collecting 20 samples in estimated 2.2402 s (1680 iterations)
+Benchmarking erode_k3_x3_u8/1024: Analyzing
+erode_k3_x3_u8/1024     time:   [1.1911 ms 1.2791 ms 1.3691 ms]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+
+Benchmarking rotate_30_bilinear_u8_rgb/256
+Benchmarking rotate_30_bilinear_u8_rgb/256: Warming up for 500.00 ms
+Benchmarking rotate_30_bilinear_u8_rgb/256: Collecting 20 samples in estimated 2.2523 s (840 iterations)
+Benchmarking rotate_30_bilinear_u8_rgb/256: Analyzing
+rotate_30_bilinear_u8_rgb/256
+                        time:   [2.6688 ms 2.7693 ms 2.8974 ms]
+Found 3 outliers among 20 measurements (15.00%)
+  1 (5.00%) high mild
+  2 (10.00%) high severe
+Benchmarking rotate_30_bilinear_u8_rgb/512
+Benchmarking rotate_30_bilinear_u8_rgb/512: Warming up for 500.00 ms
+
+Warning: Unable to complete 20 samples in 2.0s. You may wish to increase target time to 2.4s, enable flat sampling, or reduce sample count to 10.
+Benchmarking rotate_30_bilinear_u8_rgb/512: Collecting 20 samples in estimated 2.4111 s (210 iterations)
+Benchmarking rotate_30_bilinear_u8_rgb/512: Analyzing
+rotate_30_bilinear_u8_rgb/512
+                        time:   [10.795 ms 11.168 ms 11.814 ms]
+Found 3 outliers among 20 measurements (15.00%)
+  3 (15.00%) high mild
+Benchmarking rotate_30_bilinear_u8_rgb/1024
+Benchmarking rotate_30_bilinear_u8_rgb/1024: Warming up for 500.00 ms
+Benchmarking rotate_30_bilinear_u8_rgb/1024: Collecting 20 samples in estimated 2.7931 s (60 iterations)
+Benchmarking rotate_30_bilinear_u8_rgb/1024: Analyzing
+rotate_30_bilinear_u8_rgb/1024
+                        time:   [43.704 ms 44.214 ms 44.808 ms]
+Found 3 outliers among 20 measurements (15.00%)
+  2 (10.00%) high mild
+  1 (5.00%) high severe
+
+Benchmarking encode_jpeg_q90_rgb/256
+Benchmarking encode_jpeg_q90_rgb/256: Warming up for 500.00 ms
+Benchmarking encode_jpeg_q90_rgb/256: Collecting 20 samples in estimated 2.3890 s (1260 iterations)
+Benchmarking encode_jpeg_q90_rgb/256: Analyzing
+encode_jpeg_q90_rgb/256 time:   [1.9108 ms 1.9771 ms 2.0508 ms]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+Benchmarking encode_jpeg_q90_rgb/512
+Benchmarking encode_jpeg_q90_rgb/512: Warming up for 500.00 ms
+Benchmarking encode_jpeg_q90_rgb/512: Collecting 20 samples in estimated 3.4935 s (420 iterations)
+Benchmarking encode_jpeg_q90_rgb/512: Analyzing
+encode_jpeg_q90_rgb/512 time:   [7.6555 ms 7.7771 ms 7.9872 ms]
+Found 4 outliers among 20 measurements (20.00%)
+  1 (5.00%) high mild
+  3 (15.00%) high severe
+Benchmarking encode_jpeg_q90_rgb/1024
+Benchmarking encode_jpeg_q90_rgb/1024: Warming up for 500.00 ms
+Benchmarking encode_jpeg_q90_rgb/1024: Collecting 20 samples in estimated 2.0405 s (60 iterations)
+Benchmarking encode_jpeg_q90_rgb/1024: Analyzing
+encode_jpeg_q90_rgb/1024
+                        time:   [32.062 ms 33.035 ms 34.101 ms]
+
+Benchmarking encode_png_rgb/256
+Benchmarking encode_png_rgb/256: Warming up for 500.00 ms
+Benchmarking encode_png_rgb/256: Collecting 20 samples in estimated 2.0077 s (4830 iterations)
+Benchmarking encode_png_rgb/256: Analyzing
+encode_png_rgb/256      time:   [411.52 µs 439.57 µs 483.87 µs]
+Found 3 outliers among 20 measurements (15.00%)
+  3 (15.00%) high severe
+Benchmarking encode_png_rgb/512
+Benchmarking encode_png_rgb/512: Warming up for 500.00 ms
+Benchmarking encode_png_rgb/512: Collecting 20 samples in estimated 2.3356 s (1050 iterations)
+Benchmarking encode_png_rgb/512: Analyzing
+encode_png_rgb/512      time:   [1.7318 ms 1.8655 ms 2.0539 ms]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+Benchmarking encode_png_rgb/1024
+Benchmarking encode_png_rgb/1024: Warming up for 500.00 ms
+Benchmarking encode_png_rgb/1024: Collecting 20 samples in estimated 3.3504 s (420 iterations)
+Benchmarking encode_png_rgb/1024: Analyzing
+encode_png_rgb/1024     time:   [7.4012 ms 7.6396 ms 7.9929 ms]
+Found 3 outliers among 20 measurements (15.00%)
+  1 (5.00%) high mild
+  2 (10.00%) high severe
