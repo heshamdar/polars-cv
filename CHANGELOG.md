@@ -107,6 +107,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **Contour columns are read straight from Arrow.** Every consumer — the
+  `.contour`/`.point` accessors, `pairwise_iou`/`correspond`/`label_reduce`,
+  and the pipeline's `contour` source and `label_reduce` step — used to build
+  a Polars `AnyValue` and a sub-`Series` per ring for every row (98
+  allocations for a two-contour row); they now share one reader over the
+  column's arrays (6 for the same row: the contours themselves). Point
+  coordinates are always matched by field name (one path used to take the
+  first two fields by position). A `.point` distance function given a
+  contour *set* now says so instead of failing to find an `x` field.
 - **`blob` and `raw` sources read aligned rows in place.** Every row used
   to be copied to an aligned address first. A row longer than 12 bytes that
   already starts on an 8-byte boundary in the column's memory (a `blob`

@@ -235,17 +235,16 @@ impl<'a> ParamCol<'a> {
         }
     }
 
-    /// Read the value at `row_idx` as an `AnyValue`, for columns carrying
-    /// *data* rather than a parameter value — currently only `label_reduce`'s
-    /// contour operand (a `ColumnRef`).
+    /// The column and the index `row_idx` reads in it, after scalar
+    /// broadcasting — for a data operand read as a whole (`label_reduce`'s
+    /// contour column) rather than one typed value per row.
     ///
-    /// Deliberately outside [`NullParamPolicy`]: it returns `AnyValue::Null`
-    /// rather than routing through [`on_null`](Self::on_null), and its caller
-    /// gives that its own meaning (an empty score vector). Do not reach for
-    /// this accessor for an actual parameter — the typed accessors are what
-    /// make the null policy uniform.
-    pub fn get_any(&self, row_idx: usize) -> PolarsResult<AnyValue<'a>> {
-        self.series.get(self.value_index(row_idx))
+    /// Deliberately outside [`NullParamPolicy`]: a null row is the caller's to
+    /// give meaning to (an empty score vector), not routed through
+    /// [`on_null`](Self::on_null). Do not reach for this for an actual
+    /// parameter — the typed accessors are what make the null policy uniform.
+    pub fn at(&self, row_idx: usize) -> (&'a Series, usize) {
+        (self.series, self.value_index(row_idx))
     }
 }
 
