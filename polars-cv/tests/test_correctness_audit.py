@@ -977,9 +977,10 @@ class TestNumpyFromStructValidation:
 
     def test_mismatched_data_size_raises(self) -> None:
         """Data size that doesn't match shape should raise."""
-        # Shape says 10 elements, but data is only 2 bytes
+        # Shape says 10 elements, but data is only 2 bytes. Refused by the
+        # bounds check every struct passes, before any view is built.
         struct = {"data": b"\x00\x00", "dtype": "uint8", "shape": [10]}
-        with pytest.raises(ValueError, match="cannot reshape"):
+        with pytest.raises(ValueError, match="outside the row's 2 bytes"):
             numpy_from_struct(struct)
 
 
