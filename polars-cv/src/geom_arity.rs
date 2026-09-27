@@ -43,6 +43,7 @@ use view_buffer::geometry::contour::Contour;
 use crate::contour::point_dtype_fields;
 use crate::contour_column::ContourColumn;
 use crate::geom_params::GeomParams;
+use crate::row_split::{run_split, CallTracker};
 
 /// Whether a geometry column holds one contour per row or a set per row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,28 +270,50 @@ impl ContourOutput for Contour {
 /// row, exactly as a null input contour already does. Routing it through here
 /// keeps it from being re-implemented per accessor — the job `contour_row` did
 /// for the single-contour accessors, which this replaces.
-pub(crate) fn map_contours<R: ContourOutput>(
+pub(crate) fn map_contours<R: ContourOutput + Send>(
     series: &Series,
     params: &GeomParams,
+    calls: &CallTracker,
     elem: DataType,
-    mut compute: impl FnMut(&Contour, usize) -> PolarsResult<R>,
+    compute: impl Fn(&Contour, &GeomParams, usize) -> PolarsResult<R> + Sync,
 ) -> PolarsResult<Series> {
     let column = ContourColumn::new(series);
     let arity = column.arity();
-    let mut rows: Vec<Option<Vec<R>>> = Vec::with_capacity(series.len());
-    for i in 0..series.len() {
-        let Some(contours) = column.row(i)? else {
-            rows.push(None);
-            continue;
-        };
-        rows.push(params.row(|| {
-            contours
-                .iter()
-                .map(|contour| compute(contour, i))
-                .collect::<PolarsResult<Vec<R>>>()
-        })?);
+    let shared = params.shared();
+    // Each row range resolves parameters through its own `GeomParams`: the
+    // null-parameter flag is per thread.
+    let parts = run_split(calls, series.len(), |_, range| {
+        let params = shared.params();
+        range
+            .map(|i| {
+                let Some(contours) = column.row(i)? else {
+                    return Ok(None);
+                };
+                params.row(|| {
+                    contours
+                        .iter()
+                        .map(|contour| compute(contour, &params, i))
+                        .collect::<PolarsResult<Vec<R>>>()
+                })
+            })
+            .collect::<PolarsResult<Vec<Option<Vec<R>>>>>()
+    });
+    R::column(
+        series.name().clone(),
+        concat_parts(series.len(), parts)?,
+        arity,
+        &elem,
+    )
+}
+
+/// The row ranges' results, in row order; the first failing range's error
+/// (the earliest failing row's, as a sequential run would report).
+fn concat_parts<T>(len: usize, parts: Vec<PolarsResult<Vec<T>>>) -> PolarsResult<Vec<T>> {
+    let mut rows = Vec::with_capacity(len);
+    for part in parts {
+        rows.extend(part?);
     }
-    R::column(series.name().clone(), rows, arity, &elem)
+    Ok(rows)
 }
 
 /// Run `compute` over two contour columns, broadcasting a single against a set.
@@ -304,12 +327,13 @@ pub(crate) fn map_contours<R: ContourOutput>(
 ///
 /// The refusal reads dtypes, so it fires before any row is parsed rather than
 /// part-way through a batch.
-pub(crate) fn zip_contours<R: ContourOutput>(
+pub(crate) fn zip_contours<R: ContourOutput + Send>(
     a: &Series,
     b: &Series,
+    calls: &CallTracker,
     name: &'static str,
     elem: DataType,
-    mut compute: impl FnMut(&Contour, &Contour, usize) -> PolarsResult<R>,
+    compute: impl Fn(&Contour, &Contour, usize) -> PolarsResult<R> + Sync,
 ) -> PolarsResult<Series> {
     let (a_arity, b_arity) = (Arity::of(a.dtype()), Arity::of(b.dtype()));
     if a_arity == Arity::Set && b_arity == Arity::Set {
@@ -323,11 +347,9 @@ pub(crate) fn zip_contours<R: ContourOutput>(
     }
     let arity = a_arity.combine(b_arity);
     let (a_column, b_column) = (ContourColumn::new(a), ContourColumn::new(b));
-    let mut rows: Vec<Option<Vec<R>>> = Vec::with_capacity(a.len());
-    for i in 0..a.len() {
+    let row = |i: usize| -> PolarsResult<Option<Vec<R>>> {
         let (Some(left), Some(right)) = (a_column.row(i)?, b_column.row(i)?) else {
-            rows.push(None);
-            continue;
+            return Ok(None);
         };
         // Exactly one side is a set, so the other side's single contour is
         // repeated against it; when neither is, both are one-element. A set
@@ -343,8 +365,12 @@ pub(crate) fn zip_contours<R: ContourOutput>(
             },
             (Arity::Single, Arity::Single) => compute(&left[0], &right[0], i).map(|r| vec![r]),
         }?;
-        rows.push(Some(results));
-    }
+        Ok(Some(results))
+    };
+    let parts = run_split(calls, a.len(), |_, range| {
+        range.map(row).collect::<PolarsResult<Vec<_>>>()
+    });
+    let rows = concat_parts(a.len(), parts)?;
     R::column(a.name().clone(), rows, arity, &elem)
 }
 
@@ -394,19 +420,21 @@ macro_rules! contour_accessor {
         $(#[$meta])*
         #[polars_expr(output_type_func=$out_ty)]
         fn $name(inputs: &[Series], kwargs: $crate::geom_params::GeomKwargs) -> PolarsResult<Series> {
-            let (op, $params) = $crate::geom_params::GeomParams::parse::<
+            // This accessor's calls, for `run_split`'s spread decision.
+            static CALLS: $crate::row_split::CallTracker = $crate::row_split::CallTracker::new();
+            let (op, geom_params) = $crate::geom_params::GeomParams::parse::<
                 $fam<::view_buffer::mode::Wire>,
             >(inputs, kwargs, stringify!($name))?;
             let $fam::$var $({ $($field),* })? = &op else {
                 return Err($crate::geom_params::parsed_as_another(stringify!($name)));
             };
             let $ity = inputs[0].dtype();
-            let $params = &$params;
             $crate::geom_arity::map_contours(
                 &inputs[0],
-                $params,
+                &geom_params,
+                &CALLS,
                 $elem,
-                |$c, $row| $body,
+                |$c, $params, $row| $body,
             )
         }
     };
@@ -429,9 +457,12 @@ macro_rules! contour_accessor {
             let $fam::$var { $other } = &op else {
                 return Err($crate::geom_params::parsed_as_another(stringify!($name)));
             };
+            // This accessor's calls, for `run_split`'s spread decision.
+            static CALLS: $crate::row_split::CallTracker = $crate::row_split::CallTracker::new();
             $crate::geom_arity::zip_contours(
                 &inputs[0],
                 params.column($other),
+                &CALLS,
                 stringify!($name),
                 $elem,
                 |$a, $b, _row| $body,
@@ -495,5 +526,168 @@ mod contour_output_tests {
         );
         assert_eq!(got.dtype(), expected.dtype());
         assert!(got.equals_missing(&expected), "{got:?}\n{expected:?}");
+    }
+}
+
+/// The single-column accessors spread a call's rows over the plugin's thread
+/// pool, as the pipeline executor does (CR-32): without it a `.contour`
+/// accessor used one core however many rows it held.
+#[cfg(test)]
+mod split_tests {
+    use std::collections::HashSet;
+    use std::sync::{Condvar, Mutex};
+    use std::thread::ThreadId;
+    use std::time::Duration;
+
+    use pyo3_polars::export::polars_core::runtime::THREAD_POOL;
+    use view_buffer::geometry::contour::Point;
+    use view_buffer::mode::Wire;
+    use view_buffer::GeometryOp;
+
+    use super::*;
+
+    /// Threads seen, and a first row that waits (bounded) for a second
+    /// thread: a call that runs on one thread waits out the timeout and
+    /// reports one.
+    struct Rendezvous {
+        seen: Mutex<HashSet<ThreadId>>,
+        arrived: Condvar,
+        /// Whether row 0 waits for a second thread.
+        wait: bool,
+    }
+
+    impl Rendezvous {
+        fn new(wait: bool) -> Self {
+            Rendezvous {
+                seen: Mutex::new(HashSet::new()),
+                arrived: Condvar::new(),
+                wait,
+            }
+        }
+
+        fn visit(&self, row: usize) {
+            let mut seen = self.seen.lock().unwrap();
+            seen.insert(std::thread::current().id());
+            self.arrived.notify_all();
+            if row == 0 && self.wait {
+                let _ = self
+                    .arrived
+                    .wait_timeout_while(seen, Duration::from_secs(5), |s| s.len() < 2)
+                    .unwrap();
+            }
+        }
+
+        fn threads(&self) -> usize {
+            self.seen.lock().unwrap().len()
+        }
+    }
+
+    fn column(rows: usize) -> Series {
+        let elem = DataType::Struct(crate::geom_schema::contour_fields());
+        let rows = (0..rows)
+            .map(|i| {
+                let x = i as f64;
+                Some(vec![Contour::new(vec![
+                    Point::new(x, 0.0),
+                    Point::new(x + 1.0, 0.0),
+                    Point::new(x, 1.0),
+                ])])
+            })
+            .collect();
+        Contour::column("c".into(), rows, Arity::Single, &elem).unwrap()
+    }
+
+    fn params(inputs: &[Series]) -> GeomParams<'_> {
+        let kwargs = serde_json::from_value(serde_json::json!({
+            "args": {"signed": false},
+            "on_null": "raise"
+        }))
+        .unwrap();
+        GeomParams::parse::<GeometryOp<Wire>>(inputs, kwargs, "contour_area")
+            .unwrap()
+            .1
+    }
+
+    #[test]
+    fn a_contour_accessor_call_runs_its_rows_on_several_threads() {
+        if THREAD_POOL.current_num_threads() < 2 {
+            eprintln!("skipped: the pool has a single thread");
+            return;
+        }
+        let inputs = [column(256)];
+        let params = params(&inputs);
+        let rendezvous = Rendezvous::new(true);
+        let calls = CallTracker::new();
+        let out = map_contours(
+            &inputs[0],
+            &params,
+            &calls,
+            DataType::Float64,
+            |c, _, row| {
+                rendezvous.visit(row);
+                Ok(AnyValue::Float64(c.exterior[0].x))
+            },
+        )
+        .unwrap();
+        // Rows come back in order.
+        let xs: Vec<f64> = out.f64().unwrap().into_no_null_iter().collect();
+        assert_eq!(xs, (0..256).map(f64::from).collect::<Vec<_>>());
+        let threads = rendezvous.threads();
+        assert!(threads > 1, "256 rows ran on {threads} thread(s)");
+    }
+
+    #[test]
+    fn a_two_column_accessor_call_runs_its_rows_on_several_threads() {
+        if THREAD_POOL.current_num_threads() < 2 {
+            eprintln!("skipped: the pool has a single thread");
+            return;
+        }
+        let (a, b) = (column(256), column(256));
+        let rendezvous = Rendezvous::new(true);
+        let out = zip_contours(
+            &a,
+            &b,
+            &CallTracker::new(),
+            "test",
+            DataType::Float64,
+            |l, r, row| {
+                rendezvous.visit(row);
+                Ok(AnyValue::Float64(l.exterior[0].x + r.exterior[0].x))
+            },
+        )
+        .unwrap();
+        let sums: Vec<f64> = out.f64().unwrap().into_no_null_iter().collect();
+        assert_eq!(
+            sums,
+            (0..256).map(|i| f64::from(i) * 2.0).collect::<Vec<_>>()
+        );
+        let threads = rendezvous.threads();
+        assert!(threads > 1, "256 rows ran on {threads} thread(s)");
+    }
+
+    /// Under the streaming engine an accessor's morsels are concurrent calls,
+    /// already parallel: a call that overlaps another runs its rows inline.
+    #[test]
+    fn a_call_overlapping_another_runs_inline() {
+        let inputs = [column(256)];
+        let params = params(&inputs);
+        let calls = CallTracker::new();
+        calls
+            .running
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst); // another call
+        let rendezvous = Rendezvous::new(false);
+        let out = map_contours(
+            &inputs[0],
+            &params,
+            &calls,
+            DataType::Float64,
+            |c, _, row| {
+                rendezvous.visit(row);
+                Ok(AnyValue::Float64(c.exterior[0].x))
+            },
+        )
+        .unwrap();
+        assert_eq!(out.len(), 256);
+        assert_eq!(rendezvous.threads(), 1);
     }
 }

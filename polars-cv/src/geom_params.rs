@@ -39,7 +39,31 @@ pub struct GeomKwargs {
 /// Per-row resolver over one plugin call's inputs.
 pub struct GeomParams<'a> {
     inputs: &'a [Series],
+    policy: NullParamPolicy,
     ctx: ParamCtx<'a>,
+}
+
+/// What a [`GeomParams`] is made from, shareable across threads.
+///
+/// A `GeomParams` carries its row's null-parameter flag in a `Cell`, so it
+/// belongs to one thread; a call split over the pool
+/// ([`run_split`](crate::row_split::run_split)) hands each row range this
+/// instead, and the range makes its own with [`params`](Self::params).
+#[derive(Clone, Copy)]
+pub struct SharedParams<'a> {
+    inputs: &'a [Series],
+    policy: NullParamPolicy,
+}
+
+impl<'a> SharedParams<'a> {
+    /// A `GeomParams` of its own, for one thread's rows.
+    pub fn params(&self) -> GeomParams<'a> {
+        GeomParams {
+            inputs: self.inputs,
+            policy: self.policy,
+            ctx: ParamCtx::with_null_policy(self.inputs, self.policy),
+        }
+    }
 }
 
 impl<'a> GeomParams<'a> {
@@ -87,11 +111,11 @@ impl<'a> GeomParams<'a> {
                 inputs.len(), claimed
             );
         }
-        let params = GeomParams {
+        let shared = SharedParams {
             inputs,
-            ctx: ParamCtx::with_null_policy(inputs, kwargs.on_null.get()),
+            policy: kwargs.on_null.get(),
         };
-        Ok((op, params))
+        Ok((op, shared.params()))
     }
 
     /// Resolve one row's parameters, applying the call's [`NullParamPolicy`].
@@ -103,6 +127,14 @@ impl<'a> GeomParams<'a> {
     ///
     /// Wrapping resolution in this one helper is what keeps the policy a shared
     /// mechanism: no geometry function re-implements null handling.
+    /// What another thread's rows need to make their own `GeomParams`.
+    pub fn shared(&self) -> SharedParams<'a> {
+        SharedParams {
+            inputs: self.inputs,
+            policy: self.policy,
+        }
+    }
+
     pub fn row<T>(&self, f: impl FnOnce() -> PolarsResult<T>) -> PolarsResult<Option<T>> {
         self.ctx.clear_null();
         match f() {
