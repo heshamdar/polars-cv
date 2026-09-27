@@ -34,6 +34,16 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use pyo3_polars::export::polars_core::runtime::THREAD_POOL;
 
+/// Exclusive use of the pool, for a test that holds a pool thread waiting for
+/// a second one to join its call (a rendezvous). Several such tests at once
+/// can occupy every pool thread with waits, so a call finds no free thread
+/// and runs on one: the tests take this lock so only one waits at a time.
+#[cfg(test)]
+pub(crate) fn exclusive_pool() -> std::sync::MutexGuard<'static, ()> {
+    static POOL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    POOL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Run `run(range_idx, rows)` over `0..len` in contiguous row ranges and
 /// return each range's result in row order.
 ///

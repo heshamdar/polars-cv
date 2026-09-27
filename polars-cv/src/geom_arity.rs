@@ -518,14 +518,20 @@ mod split_tests {
 
     use super::*;
 
-    /// Threads seen, and a first row that waits (bounded) for a second
-    /// thread: a call that runs on one thread waits out the timeout and
-    /// reports one.
+    /// Threads seen, and a first-executed row that waits (bounded) for a
+    /// second thread: a call that runs on one thread waits out the timeout
+    /// and reports one.
+    ///
+    /// The *first row to run* waits, not row 0: rayon may run range 0 last,
+    /// and with rows this cheap one thread can drain every other range before
+    /// another wakes, leaving row 0 waiting with no work left for anyone else.
+    /// (The executor's own rendezvous, `CompiledGraph::rendezvous`, is the
+    /// same.)
     struct Rendezvous {
         seen: Mutex<HashSet<ThreadId>>,
         arrived: Condvar,
-        /// Whether row 0 waits for a second thread.
-        wait: bool,
+        /// Whether the first row waits for a second thread; cleared by it.
+        wait: std::sync::atomic::AtomicBool,
     }
 
     impl Rendezvous {
@@ -533,15 +539,15 @@ mod split_tests {
             Rendezvous {
                 seen: Mutex::new(HashSet::new()),
                 arrived: Condvar::new(),
-                wait,
+                wait: std::sync::atomic::AtomicBool::new(wait),
             }
         }
 
-        fn visit(&self, row: usize) {
+        fn visit(&self, _row: usize) {
             let mut seen = self.seen.lock().unwrap();
             seen.insert(std::thread::current().id());
             self.arrived.notify_all();
-            if row == 0 && self.wait {
+            if self.wait.swap(false, std::sync::atomic::Ordering::Relaxed) {
                 let _ = self
                     .arrived
                     .wait_timeout_while(seen, Duration::from_secs(5), |s| s.len() < 2)
@@ -582,6 +588,7 @@ mod split_tests {
 
     #[test]
     fn a_contour_accessor_call_runs_its_rows_on_several_threads() {
+        let _pool = crate::row_split::exclusive_pool();
         if THREAD_POOL.current_num_threads() < 2 {
             eprintln!("skipped: the pool has a single thread");
             return;
@@ -610,6 +617,7 @@ mod split_tests {
 
     #[test]
     fn a_two_column_accessor_call_runs_its_rows_on_several_threads() {
+        let _pool = crate::row_split::exclusive_pool();
         if THREAD_POOL.current_num_threads() < 2 {
             eprintln!("skipped: the pool has a single thread");
             return;
@@ -683,6 +691,7 @@ mod split_tests {
     /// reports the earliest failing row, as a sequential loop would.
     #[test]
     fn map_rows_spreads_and_keeps_row_semantics() {
+        let _pool = crate::row_split::exclusive_pool();
         if THREAD_POOL.current_num_threads() < 2 {
             eprintln!("skipped: the pool has a single thread");
             return;
