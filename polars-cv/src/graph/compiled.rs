@@ -104,6 +104,10 @@ struct NodePlan {
     path_policy: crate::fetch::PathPolicy,
     /// Op resolvers, aligned with the node's `ops`.
     resolvers: Vec<OpResolver>,
+    /// This node is its upstream's only reader ([`node_readers`]), so it
+    /// moves the upstream output out of the row's outputs instead of sharing
+    /// it.
+    takes_upstream: bool,
 }
 
 /// A pipeline graph compiled for repeated execution.
@@ -193,6 +197,7 @@ impl CompiledGraph {
             .enumerate()
             .map(|(i, id)| (id.clone(), i))
             .collect();
+        let readers = node_readers(&graph, &order, &node_index);
         let mut plan: Vec<NodePlan> = Vec::with_capacity(order.len());
         for node_id in &order {
             let node = &graph.nodes[node_id];
@@ -235,6 +240,7 @@ impl CompiledGraph {
                 Some(_) => None,
                 None => Some(node_index[&node.upstream[0]]),
             };
+            let takes_upstream = upstream.is_some_and(|u| readers[u] == 1);
             plan.push(NodePlan {
                 id: node_id.clone(),
                 column,
@@ -253,6 +259,7 @@ impl CompiledGraph {
                     .unwrap_or_default(),
                 resolvers,
                 source: node.source.clone(),
+                takes_upstream,
             });
         }
 
@@ -724,7 +731,16 @@ impl CompiledGraph {
                         Err(e) => return Err(e),
                     }
                 } else {
-                    np.upstream.and_then(|u| node_outputs[u].clone())
+                    // A node that is its upstream's only reader moves the
+                    // output out (its buffer may then be written in place);
+                    // otherwise it shares it.
+                    np.upstream.and_then(|u| {
+                        if np.takes_upstream {
+                            node_outputs[u].take()
+                        } else {
+                            node_outputs[u].clone()
+                        }
+                    })
                 };
                 if let Some(input) = node_input {
                     // Static ops are borrowed from the compiled graph; dynamic
@@ -1218,10 +1234,19 @@ fn run_segment(
     if ops.is_empty() {
         return Ok((output, false));
     }
-    let buf = output
-        .as_buffer()
-        .ok_or_else(|| format!("Expected Buffer for pending ops, got {:?}", output.domain()))?;
-    let source = (**buf).clone();
+    // Taken by value, so a buffer nothing else holds reaches the segment as
+    // its sole owner and a fused kernel can write it in place. Cloning it out
+    // of a still-live `output` held a second reference for the whole run,
+    // and in place was never possible.
+    let source = match output {
+        NodeOutput::Buffer(buf) => Arc::try_unwrap(buf).unwrap_or_else(|shared| (*shared).clone()),
+        other => {
+            return Err(format!(
+                "Expected Buffer for pending ops, got {:?}",
+                other.domain()
+            ))
+        }
+    };
     let key = (
         source.dtype(),
         source.shape().to_vec(),
@@ -1475,6 +1500,45 @@ fn decode_source_row(
             np.id
         )),
     }
+}
+
+/// How many times each node's output is read, by position in `order`: as a
+/// node's input (its first upstream), as an operand of a step
+/// ([`GraphStep::operands`], the one list of the other nodes a step reads)
+/// and as a graph output.
+///
+/// A node read exactly once, as another node's input, is that node's to
+/// consume: nothing reads it afterwards, so its buffer can be moved rather
+/// than shared. Anything else keeps it shared, so an unrecognised reader can
+/// only cost a copy, never corrupt a value another reader sees.
+fn node_readers(
+    graph: &UnifiedGraph,
+    order: &[String],
+    node_index: &HashMap<String, usize>,
+) -> Vec<usize> {
+    let mut readers = vec![0usize; order.len()];
+    let mut read = |id: &str| {
+        if let Some(&i) = node_index.get(id) {
+            readers[i] += 1;
+        }
+    };
+    for node_id in order {
+        let node = &graph.nodes[node_id];
+        if !graph.column_bindings.contains_key(node_id) {
+            if let Some(input) = node.upstream.first() {
+                read(input);
+            }
+        }
+        for op in &node.ops {
+            for operand in op.operands() {
+                read(&operand.0);
+            }
+        }
+    }
+    for spec in graph.outputs.values() {
+        read(&spec.node);
+    }
+    readers
 }
 
 /// Validate the structural invariants the executor relies on, at compile time.
@@ -2368,6 +2432,123 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// f32 `[h, w, c]` image-sized allocations one single-row call makes, and
+    /// its output.
+    fn f32_copies_in_call(graph: &str, input: &Series, elems: usize) -> (Series, usize) {
+        let compiled = CompiledGraph::compile(graph).unwrap();
+        crate::test_alloc::large_allocations(elems * 4, || {
+            compiled.execute(std::slice::from_ref(input)).unwrap()
+        })
+    }
+
+    /// A row's values as f32, whichever numpy-struct field holds them.
+    fn f32_values(out: &Series, field: Option<&str>) -> Vec<f32> {
+        let s = match field {
+            Some(name) => out.struct_().unwrap().field_by_name(name).unwrap(),
+            None => out.clone(),
+        };
+        let data = s.struct_().unwrap().field_by_name("data").unwrap();
+        let bytes = data
+            .binary()
+            .unwrap()
+            .get(0)
+            .expect("a null row: a reader lost the output another node consumed")
+            .to_vec();
+        bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_ne_bytes(*b))
+            .collect()
+    }
+
+    /// A fused f32 op runs in place on a buffer its node owns: at the start
+    /// of a node's ops, and on an upstream node's output that nothing else
+    /// reads. An output some other reader still needs (a graph output, an
+    /// operand) is neither written nor taken from that reader.
+    #[test]
+    fn scalar_ops_run_in_place_on_an_owned_buffer() {
+        let elems = 32 * 24 * 3;
+        let values: Vec<u8> = (0..elems).map(|i| (i % 200) as u8).collect();
+        let blob = ViewBuffer::from_vec_with_shape(values.clone(), vec![32, 24, 3]).to_blob();
+        let input = Series::new("b".into(), std::slice::from_ref(&blob));
+        let doubled: Vec<f32> = values.iter().map(|&v| v as f32 * 2.0).collect();
+        let cast: Vec<f32> = values.iter().map(|&v| v as f32).collect();
+
+        // n0 casts (one f32 allocation); n1 scales n0's buffer, which only n1
+        // reads, so it writes in place.
+        let chain = r#"{
+            "nodes": {
+                "n0": {"source": {"format": "blob", "dtype": "u8"},
+                       "ops": [{"op": "cast", "dtype": "f32"}]},
+                "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
+                       "ops": [{"op": "scale", "factor": 2.0}]}
+            },
+            "outputs": {"_output": {"node": "n1", "sink": {"format": "numpy"}}},
+            "column_bindings": {"n0": 0}
+        }"#;
+        let (out, copies) = f32_copies_in_call(chain, &input, elems);
+        assert_eq!(f32_values(&out, None), doubled);
+        assert_eq!(copies, 1, "the scale copied a buffer only it reads");
+
+        // n0 is an output too: n1 must not write into it.
+        let shared = r#"{
+            "nodes": {
+                "n0": {"source": {"format": "blob", "dtype": "u8"},
+                       "ops": [{"op": "cast", "dtype": "f32"}]},
+                "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
+                       "ops": [{"op": "scale", "factor": 2.0}]}
+            },
+            "outputs": {"a": {"node": "n0", "sink": {"format": "numpy"}},
+                        "b": {"node": "n1", "sink": {"format": "numpy"}}},
+            "column_bindings": {"n0": 0}
+        }"#;
+        let (out, copies) = f32_copies_in_call(shared, &input, elems);
+        assert_eq!(
+            f32_values(&out, Some("a")),
+            cast,
+            "n0's output was overwritten"
+        );
+        assert_eq!(f32_values(&out, Some("b")), doubled);
+        assert_eq!(copies, 2);
+
+        // n1 reads n0 twice (as its input and as the other operand): n0's
+        // buffer is not n1's to consume.
+        let operand = r#"{
+            "nodes": {
+                "n0": {"source": {"format": "blob", "dtype": "u8"},
+                       "ops": [{"op": "cast", "dtype": "f32"}]},
+                "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
+                       "ops": [{"op": "scale", "factor": 2.0}, {"op": "add", "other": "n0"}]}
+            },
+            "outputs": {"_output": {"node": "n1", "sink": {"format": "numpy"}}},
+            "column_bindings": {"n0": 0}
+        }"#;
+        let (out, _) = f32_copies_in_call(operand, &input, elems);
+        let tripled: Vec<f32> = values.iter().map(|&v| v as f32 * 3.0).collect();
+        assert_eq!(
+            f32_values(&out, None),
+            tripled,
+            "the operand saw the scaled buffer"
+        );
+
+        // One node: the cast's fresh buffer is the scale's to write.
+        let single = r#"{
+            "nodes": {"n0": {"source": {"format": "blob", "dtype": "u8"},
+                             "ops": [{"op": "cast", "dtype": "f32"},
+                                     {"op": "assert_shape", "dims": [32, 24, 3]},
+                                     {"op": "scale", "factor": 2.0}]}},
+            "outputs": {"_output": {"node": "n0", "sink": {"format": "numpy"}}},
+            "column_bindings": {"n0": 0}
+        }"#;
+        let (out, copies) = f32_copies_in_call(single, &input, elems);
+        assert_eq!(f32_values(&out, None), doubled);
+        assert_eq!(
+            copies, 1,
+            "the scale after a segment boundary copied its own buffer"
+        );
     }
 
     /// One call spreads its rows over the plugin's thread pool, so a
