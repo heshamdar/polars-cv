@@ -18,15 +18,16 @@ use super::types::{OutputSpec, RowResult};
 
 /// Extract binary data from a BinaryChunked at a specific row.
 ///
-/// Returns the row as a polars-arrow buffer. This is a copy: Polars stores
-/// binary as a `BinaryViewArray`, whose short values live inline in the view
-/// and whose long ones sit at arbitrary offsets in shared data buffers.
+/// Returns the row as a polars-arrow buffer whose bytes at `offset` start on
+/// an 8-byte-aligned address (the largest element size). `parse_blob`
+/// validates a blob's offsets and strides *relative to its first byte*, and
+/// the typed views built over it are `&[T]`, so the blob's own start must be
+/// aligned for those checks to mean anything (CR-41).
 ///
-/// The copy is placed at an 8-byte-aligned address (the largest element
-/// size). `parse_blob` validates a blob's offsets and strides *relative to
-/// its first byte*, and the typed views built over it are `&[T]`, so the
-/// blob's own start must be aligned for those checks to mean anything. A
-/// `Vec<u8>` only promises alignment 1 (CR-41).
+/// Polars stores binary as a `BinaryViewArray`: a value longer than 12 bytes
+/// sits in one of the array's shared data buffers, and when it starts on an
+/// aligned address the row is that buffer, sliced — no copy. A value inline
+/// in its view, or at an unaligned address, is copied to an aligned one.
 ///
 /// # Arguments
 /// * `binary_ca` - The binary chunked array.
@@ -39,9 +40,26 @@ pub(crate) fn get_binary_row_buffer(
     binary_ca: &BinaryChunked,
     row_idx: usize,
 ) -> Option<(polars_buffer::Buffer<u8>, usize, usize)> {
-    // `get` returns `None` for null (or out-of-bounds) rows, so it doubles as the
-    // null check — no need to materialise a validity mask for the whole column.
-    let bytes = binary_ca.get(row_idx)?;
+    use polars_arrow::array::{Array, View};
+
+    // The chunk holding the row, and the row's index within it.
+    let mut i = row_idx;
+    let arr = binary_ca.downcast_iter().find(|arr| {
+        let here = i < arr.len();
+        if !here {
+            i -= arr.len();
+        }
+        here
+    })?;
+    if !arr.is_valid(i) {
+        return None;
+    }
+    let bytes = arr.value(i);
+    let view = arr.views()[i];
+    if view.length > View::MAX_INLINE_SIZE && (bytes.as_ptr() as usize).is_multiple_of(8) {
+        let buffer = arr.data_buffers()[view.buffer_idx as usize].clone();
+        return Some((buffer, view.offset as usize, bytes.len()));
+    }
     Some((aligned_copy(bytes), 0, bytes.len()))
 }
 
@@ -1082,8 +1100,87 @@ mod tests {
         assert!(err.contains("not aligned"), "{err}");
     }
 
+    /// A one-chunk Binary column over one 8-byte-aligned data buffer holding
+    /// the bytes 0..64, with a row per `(offset, len)` window of it (a window
+    /// of 12 bytes or fewer is stored inline, as Arrow requires).
+    fn windows_column(windows: &[(usize, usize)]) -> polars::prelude::BinaryChunked {
+        use polars_arrow::array::{BinaryViewArrayGeneric, View};
+        use polars_arrow::datatypes::ArrowDataType;
+        let mut words = vec![0u64; 8];
+        for (i, b) in bytemuck::cast_slice_mut::<u64, u8>(&mut words)
+            .iter_mut()
+            .enumerate()
+        {
+            *b = i as u8;
+        }
+        let data = polars_buffer::Buffer::from(words)
+            .try_transmute::<u8>()
+            .unwrap();
+        assert_eq!(data.as_slice().as_ptr() as usize % 8, 0);
+        let views: Vec<View> = windows
+            .iter()
+            .map(|&(offset, len)| {
+                let bytes = &data.as_slice()[offset..offset + len];
+                if len <= 12 {
+                    View::new_inline(bytes)
+                } else {
+                    View::new_from_bytes(bytes, 0, offset as u32)
+                }
+            })
+            .collect();
+        let total: usize = windows.iter().map(|w| w.1).sum();
+        // Safety: every view is in bounds of buffer 0 or inline, built above.
+        let array = unsafe {
+            BinaryViewArrayGeneric::<[u8]>::new_unchecked(
+                ArrowDataType::BinaryView,
+                views.into(),
+                std::iter::once(data).collect(),
+                None,
+                Some(total),
+                64,
+            )
+        };
+        polars::prelude::BinaryChunked::with_chunk("b".into(), array)
+    }
+
+    /// A row stored at an 8-byte-aligned address in the column's data is read
+    /// where it lies: the decoded buffer is the column's memory, not a copy.
     #[test]
-    fn binary_rows_are_copied_to_an_aligned_address() {
+    fn aligned_binary_rows_are_read_in_place() {
+        // Two chunks, so the rows of the second are found by their index
+        // within it.
+        let mut ca = windows_column(&[(0, 24), (16, 40)]);
+        ca.append(&windows_column(&[(8, 13), (24, 16)])).unwrap();
+        assert_eq!(ca.chunks().len(), 2);
+        for row in 0..ca.len() {
+            let (buffer, offset, len) = super::get_binary_row_buffer(&ca, row).unwrap();
+            let bytes = ca.get(row).unwrap();
+            assert_eq!(len, bytes.len());
+            assert_eq!(
+                buffer.as_slice()[offset..].as_ptr(),
+                bytes.as_ptr(),
+                "row {row} was copied"
+            );
+        }
+    }
+
+    /// A row that is inline in its view, or misaligned in the data, is copied
+    /// to an aligned address, which is what the typed views need.
+    #[test]
+    fn unaligned_and_inline_binary_rows_are_copied_aligned() {
+        let ca = windows_column(&[(3, 20), (0, 5), (9, 12)]);
+        for row in 0..ca.len() {
+            let (buffer, offset, len) = super::get_binary_row_buffer(&ca, row).unwrap();
+            let bytes = ca.get(row).unwrap();
+            let got = &buffer.as_slice()[offset..offset + len];
+            assert_eq!(got, bytes, "row {row}");
+            assert_eq!(got.as_ptr() as usize % 8, 0, "row {row} is unaligned");
+            assert_ne!(got.as_ptr(), bytes.as_ptr(), "row {row}");
+        }
+    }
+
+    #[test]
+    fn binary_rows_are_read_at_an_aligned_address() {
         use polars::prelude::*;
         // Odd lengths and a sliced column, so no row starts on a natural
         // boundary in the source.
@@ -1100,9 +1197,9 @@ mod tests {
         .slice(1, 4);
         for row in 0..ca.len() {
             let (buffer, offset, len) = super::get_binary_row_buffer(&ca, row).unwrap();
-            assert_eq!(offset, 0);
-            assert_eq!(&buffer.as_slice()[..len], ca.get(row).unwrap());
-            assert_eq!(buffer.as_slice().as_ptr() as usize % 8, 0);
+            let got = &buffer.as_slice()[offset..offset + len];
+            assert_eq!(got, ca.get(row).unwrap());
+            assert_eq!(got.as_ptr() as usize % 8, 0);
         }
     }
 
