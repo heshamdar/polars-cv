@@ -34,7 +34,6 @@ use view_buffer::ops::{Domain, NodeOutput};
 use view_buffer::{Op, PlannedDType, ViewBuffer, ViewDto, ViewExpr};
 
 use crate::contour::parse_contour_list;
-use crate::execute::decode_image_bytes;
 use crate::formats::source::Source;
 use crate::ops::graph::Role;
 use crate::ops::{NodeRef, TypedOp};
@@ -44,8 +43,8 @@ use view_buffer::geometry::ops::RasterSize;
 use super::step::GraphStep;
 
 use super::decode::{
-    build_series_from_spec, decode_binary_zero_copy, decode_list_or_array_source,
-    dtype_from_polars_leaf, get_binary_row_buffer, null_row_result_for_spec,
+    build_series_from_spec, decode_source_row, dtype_from_polars_leaf, null_row_result_for_spec,
+    RowFetch,
 };
 use super::encode::{encode_node_output, execute_geometry_op};
 use super::types::{OutputSpec, OutputValue, RowErrorPolicy, RowResult, UnifiedGraph};
@@ -718,11 +717,15 @@ impl CompiledGraph {
                     .and_then(|source| {
                         // Bounds are validated once per call in `execute()`.
                         decode_source_row(
-                            np,
+                            &np.id,
                             source,
                             &inputs[col_idx],
                             row_idx,
-                            state.prefetched[idx].as_ref(),
+                            RowFetch {
+                                cloud_options: np.cloud_options.as_ref(),
+                                path_policy: &np.path_policy,
+                                prefetched: state.prefetched[idx].as_ref(),
+                            },
                         )
                     });
                     match decode_result {
@@ -1393,115 +1396,6 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-/// Decode row `row` of a root node's column through its concrete `source`
-/// (an `auto` source is routed per batch before it gets here).
-fn decode_source_row(
-    np: &NodePlan,
-    source: &Source,
-    series: &Series,
-    row: usize,
-    prefetched: Option<&crate::fetch::FetchedBatch>,
-) -> Result<Option<NodeOutput>, String> {
-    if series.dtype() == &DataType::Null {
-        return Ok(None);
-    }
-    let binary = || {
-        series.binary().map_err(|_| {
-            format!(
-                "Expected Binary column for node '{}', got {:?}",
-                np.id,
-                series.dtype()
-            )
-        })
-    };
-    let buffer = |buf| Some(NodeOutput::from_buffer(buf));
-    match source {
-        // The column's contour set; a mask is the `rasterize` op that
-        // follows, if any.
-        Source::Contour { .. } => match series.get(row) {
-            Ok(value) if !value.is_null() => crate::contour::parse_contour_set(&value)
-                .map(|set| Some(NodeOutput::from_contours(set)))
-                .map_err(|e| format!("Contour decode error: {e}")),
-            _ => Ok(None),
-        },
-        // `file_path` is fetch + decode: `crate::fetch` reads the bytes the
-        // path names (applying its `PathPolicy` sandbox), then they decode as
-        // image bytes.
-        Source::FilePath { .. } => {
-            let ca = series.str().map_err(|_| {
-                format!(
-                    "Expected String column for file_path source '{}', got {:?}",
-                    np.id,
-                    series.dtype()
-                )
-            })?;
-            let Some(path) = ca.get(row) else {
-                return Ok(None);
-            };
-            // Stage 1: bytes. Remote paths were fetched concurrently before
-            // the row loop; local files are read inline.
-            let empty;
-            let batch = match prefetched {
-                Some(b) => b,
-                None => {
-                    empty = crate::fetch::FetchedBatch::empty();
-                    &empty
-                }
-            };
-            let bytes =
-                crate::fetch::row_bytes(batch, path, np.cloud_options.as_ref(), &np.path_policy)?;
-            // Stage 2: the contents decode like image bytes.
-            decode_image_bytes(&bytes, source)
-                .map(buffer)
-                .map_err(|e| format!("Decode error for file '{path}': {e}"))
-        }
-        Source::List { .. } | Source::Array { .. } => {
-            decode_list_or_array_source(series, row, source.dtype(), source.require_contiguous())
-                .map(|buf| buf.map(NodeOutput::from_buffer))
-                .map_err(|e| format!("List/Array decode error: {e}"))
-        }
-        // Raw bytes take the declared dtype.
-        Source::Raw { dtype, .. } => {
-            let Some((bytes, offset, len)) = get_binary_row_buffer(binary()?, row) else {
-                return Ok(None);
-            };
-            decode_binary_zero_copy(bytes, offset, len, Some(dtype.get()))
-                .map(buffer)
-                .map_err(|e| format!("Zero-copy decode error: {e}"))
-        }
-        // A blob carries its own dtype, which a declared one must match: the
-        // planner (and identity elimination) takes the declaration as fact.
-        Source::Blob { dtype, .. } => {
-            let Some((bytes, offset, len)) = get_binary_row_buffer(binary()?, row) else {
-                return Ok(None);
-            };
-            let buf = decode_binary_zero_copy(bytes, offset, len, None)
-                .map_err(|e| format!("Zero-copy decode error: {e}"))?;
-            match dtype.map(|d| d.get()) {
-                Some(declared) if declared != buf.dtype() => Err(format!(
-                    "the blob holds {} elements, but the source declares dtype=\"{}\". A \
-                     blob carries its own dtype: drop the declaration, correct it, or \
-                     .cast(\"{}\") after the source.",
-                    buf.dtype().short_name(),
-                    declared.short_name(),
-                    declared.short_name()
-                )),
-                _ => Ok(buffer(buf)),
-            }
-        }
-        Source::ImageBytes { .. } => match binary()?.get(row) {
-            Some(bytes) => decode_image_bytes(bytes, source)
-                .map(buffer)
-                .map_err(|e| format!("Decode error: {e}")),
-            None => Ok(None),
-        },
-        Source::Auto { .. } => Err(format!(
-            "internal: auto source '{}' reached decoding unrouted",
-            np.id
-        )),
-    }
-}
-
 /// How many times each node's output is read, by position in `order`: as a
 /// node's input (its first upstream), as an operand of a step
 /// ([`GraphStep::operands`], the one list of the other nodes a step reads)
@@ -1881,7 +1775,8 @@ mod tests {
     }"#;
 
     /// Pin the live decode path for `blob` and `raw` sources: both are decoded
-    /// by the zero-copy branch in `run_row_nodes` (`decode_binary_zero_copy`),
+    /// by the zero-copy branch of `decode::decode_source_row`
+    /// (`decode_binary_zero_copy`),
     /// NOT by `execute::decode_image_bytes` — its blob/raw arms are deliberately
     /// absent. This end-to-end test must keep passing when those dead arms are
     /// deleted.

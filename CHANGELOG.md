@@ -534,6 +534,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Internal
 
+- **Source decoding lives in `graph/decode.rs`.** `decode_source_row`, the
+  per-format match over a node's source, moved out of the executor
+  (`graph/compiled.rs`), which now hands it the node id and a `RowFetch`
+  (cloud options, path sandbox, prefetched bytes) rather than its private
+  `NodePlan`. No behaviour change.
+
 - **Typed-op migration, P0 (safety net).** See `TYPED_OPS_PLAN.md`. A golden
   behaviour corpus (`tests/golden/op_corpus.json`, 214 cases), a frozen builder
   call surface (`tests/golden/signatures.json`), a pickle/copy pin, the

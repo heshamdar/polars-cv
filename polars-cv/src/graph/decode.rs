@@ -7,7 +7,11 @@
 //! - Padding and masking operations
 
 use polars::prelude::*;
+use view_buffer::ops::NodeOutput;
 use view_buffer::{PlannedDType, ViewBuffer};
+
+use crate::execute::decode_image_bytes;
+use crate::formats::source::Source;
 
 use super::encode::{
     build_typed_array_series_from_rows_with_dtype, build_typed_list_series_from_rows_with_dtype,
@@ -15,6 +19,124 @@ use super::encode::{
 };
 use super::sink_kind::SinkKind;
 use super::types::{OutputSpec, RowResult};
+
+/// What a path-based source (`file_path`) needs to fetch a row's bytes: the
+/// node's cloud options and path sandbox, and the remote bytes this call
+/// prefetched for the node's column.
+pub(crate) struct RowFetch<'a> {
+    pub(crate) cloud_options: Option<&'a crate::cloud::CloudOptions>,
+    pub(crate) path_policy: &'a crate::fetch::PathPolicy,
+    pub(crate) prefetched: Option<&'a crate::fetch::FetchedBatch>,
+}
+
+/// Decode row `row` of a root node's column through its concrete `source`
+/// (an `auto` source is routed per batch before it gets here).
+pub(crate) fn decode_source_row(
+    node_id: &str,
+    source: &Source,
+    series: &Series,
+    row: usize,
+    fetch: RowFetch<'_>,
+) -> Result<Option<NodeOutput>, String> {
+    if series.dtype() == &DataType::Null {
+        return Ok(None);
+    }
+    let binary = || {
+        series.binary().map_err(|_| {
+            format!(
+                "Expected Binary column for node '{}', got {:?}",
+                node_id,
+                series.dtype()
+            )
+        })
+    };
+    let buffer = |buf| Some(NodeOutput::from_buffer(buf));
+    match source {
+        // The column's contour set; a mask is the `rasterize` op that
+        // follows, if any.
+        Source::Contour { .. } => match series.get(row) {
+            Ok(value) if !value.is_null() => crate::contour::parse_contour_set(&value)
+                .map(|set| Some(NodeOutput::from_contours(set)))
+                .map_err(|e| format!("Contour decode error: {e}")),
+            _ => Ok(None),
+        },
+        // `file_path` is fetch + decode: `crate::fetch` reads the bytes the
+        // path names (applying its `PathPolicy` sandbox), then they decode as
+        // image bytes.
+        Source::FilePath { .. } => {
+            let ca = series.str().map_err(|_| {
+                format!(
+                    "Expected String column for file_path source '{}', got {:?}",
+                    node_id,
+                    series.dtype()
+                )
+            })?;
+            let Some(path) = ca.get(row) else {
+                return Ok(None);
+            };
+            // Stage 1: bytes. Remote paths were fetched concurrently before
+            // the row loop; local files are read inline.
+            let empty;
+            let batch = match fetch.prefetched {
+                Some(b) => b,
+                None => {
+                    empty = crate::fetch::FetchedBatch::empty();
+                    &empty
+                }
+            };
+            let bytes =
+                crate::fetch::row_bytes(batch, path, fetch.cloud_options, fetch.path_policy)?;
+            // Stage 2: the contents decode like image bytes.
+            decode_image_bytes(&bytes, source)
+                .map(buffer)
+                .map_err(|e| format!("Decode error for file '{path}': {e}"))
+        }
+        Source::List { .. } | Source::Array { .. } => {
+            decode_list_or_array_source(series, row, source.dtype(), source.require_contiguous())
+                .map(|buf| buf.map(NodeOutput::from_buffer))
+                .map_err(|e| format!("List/Array decode error: {e}"))
+        }
+        // Raw bytes take the declared dtype.
+        Source::Raw { dtype, .. } => {
+            let Some((bytes, offset, len)) = get_binary_row_buffer(binary()?, row) else {
+                return Ok(None);
+            };
+            decode_binary_zero_copy(bytes, offset, len, Some(dtype.get()))
+                .map(buffer)
+                .map_err(|e| format!("Zero-copy decode error: {e}"))
+        }
+        // A blob carries its own dtype, which a declared one must match: the
+        // planner (and identity elimination) takes the declaration as fact.
+        Source::Blob { dtype, .. } => {
+            let Some((bytes, offset, len)) = get_binary_row_buffer(binary()?, row) else {
+                return Ok(None);
+            };
+            let buf = decode_binary_zero_copy(bytes, offset, len, None)
+                .map_err(|e| format!("Zero-copy decode error: {e}"))?;
+            match dtype.map(|d| d.get()) {
+                Some(declared) if declared != buf.dtype() => Err(format!(
+                    "the blob holds {} elements, but the source declares dtype=\"{}\". A \
+                     blob carries its own dtype: drop the declaration, correct it, or \
+                     .cast(\"{}\") after the source.",
+                    buf.dtype().short_name(),
+                    declared.short_name(),
+                    declared.short_name()
+                )),
+                _ => Ok(buffer(buf)),
+            }
+        }
+        Source::ImageBytes { .. } => match binary()?.get(row) {
+            Some(bytes) => decode_image_bytes(bytes, source)
+                .map(buffer)
+                .map_err(|e| format!("Decode error: {e}")),
+            None => Ok(None),
+        },
+        Source::Auto { .. } => Err(format!(
+            "internal: auto source '{}' reached decoding unrouted",
+            node_id
+        )),
+    }
+}
 
 /// Extract binary data from a BinaryChunked at a specific row.
 ///
