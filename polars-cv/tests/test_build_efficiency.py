@@ -237,3 +237,36 @@ def test_uv_never_builds_the_project() -> None:
         "polars-cv/pyproject.toml needs `[tool.uv] package = false`: without it "
         "`uv run` builds the extension at release LTO"
     )
+
+
+# ---------------------------------------------------------------------------
+# The benchmark build: optimised like release, linked in a fraction of the time
+# ---------------------------------------------------------------------------
+
+
+def test_benchmark_profile_is_release_with_thin_lto() -> None:
+    """``[profile.benchmark]`` is release, minus the fat-LTO link.
+
+    A release build of this stack takes 10-18 minutes here, almost all of it
+    the single-codegen-unit fat-LTO link; a benchmark only needs the kernels
+    optimised. It inherits release so ``panic = "unwind"`` (which the plugin's
+    ``catch_unwind`` relies on) and ``opt-level = 3`` cannot drift apart.
+    """
+    profiles = tomllib.loads((_ROOT / "Cargo.toml").read_text())["profile"]
+    bench = profiles.get("benchmark")
+    assert bench is not None, "no [profile.benchmark] in the workspace Cargo.toml"
+    assert bench.get("inherits") == "release", bench
+    assert bench.get("lto") == "thin", bench
+    assert bench.get("codegen-units", 16) > 1, bench
+
+
+def test_benchmark_artifacts_are_reclaimed_like_release() -> None:
+    """``target/benchmark`` is as large as ``target/release``; both get cleared."""
+    for script in (
+        _ROOT / "scripts" / "dev-clean.sh",
+        _ROOT / ".claude" / "hooks" / "session-start.sh",
+    ):
+        text = script.read_text()
+        assert "cargo clean --profile benchmark" in text, (
+            f"{script.relative_to(_ROOT)} must reclaim target/benchmark"
+        )

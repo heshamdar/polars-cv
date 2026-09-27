@@ -14,6 +14,18 @@ codegen-units = 1
 panic = "unwind"
 strip = true
 
+# Benchmark profile — `maturin develop --profile benchmark`. Release, minus the
+# fat-LTO link: a release build of this stack takes 10-18 minutes, almost all of
+# it the single-codegen-unit fat-LTO link of the polars stack, while comparing
+# two commits only needs the kernels optimised the same way on both sides.
+# Inheriting release keeps `panic = "unwind"` and `opt-level` from drifting.
+# Absolute numbers can differ slightly from a fat-LTO wheel; a base-vs-head
+# comparison built with this profile on both sides is what it is for.
+[profile.benchmark]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+
 # Dev profile — this is what `maturin develop`, `cargo test`, clippy and
 # `scripts/verify.sh` build, i.e. the one build the whole dev loop pays for. It
 # is tuned for iteration speed and disk footprint, never runtime speed (that is

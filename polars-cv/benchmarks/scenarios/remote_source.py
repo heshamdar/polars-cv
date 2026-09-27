@@ -52,7 +52,7 @@ import polars as pl
 
 from benchmarks.frameworks import BenchmarkResult
 from benchmarks.utils.data_gen import temporary_image_set
-from benchmarks.utils.memory import run_timed_with_memory
+from benchmarks.utils.timing import timed_result
 from polars_cv import Pipeline
 
 if TYPE_CHECKING:
@@ -197,38 +197,6 @@ def _pipeline() -> Pipeline:
     )
 
 
-def _timed(
-    label: str,
-    call: Any,
-    image_count: int,
-    image_size: tuple[int, int],
-    warmup_iterations: int,
-    benchmark_iterations: int,
-) -> BenchmarkResult:
-    """Run *call* warmup+timed times and shape the result like every scenario."""
-    for _ in range(warmup_iterations):
-        call()
-
-    total_time = 0.0
-    peak_memory = 0.0
-    for _ in range(benchmark_iterations):
-        _, elapsed, mem_stats = run_timed_with_memory(call)
-        total_time += elapsed
-        peak_memory = max(peak_memory, mem_stats.peak_memory_mb)
-
-    avg_time = total_time / benchmark_iterations
-    return BenchmarkResult(
-        framework="polars-cv-eager",
-        operation=label,
-        image_count=image_count,
-        image_size=image_size,
-        total_time_seconds=avg_time,
-        throughput_images_per_second=image_count / avg_time,
-        latency_ms_per_image=(avg_time / image_count) * 1000,
-        peak_memory_mb=peak_memory,
-    )
-
-
 def run_remote_source(
     image_count: int = 300,
     image_size: tuple[int, int] = (256, 256),
@@ -262,7 +230,7 @@ def run_remote_source(
             )
 
         results.append(
-            _timed(
+            timed_result(
                 "remote_local_paths",
                 run_local,
                 image_count,
@@ -293,7 +261,7 @@ def run_remote_source(
                 )
 
             results.append(
-                _timed(
+                timed_result(
                     "remote_http_paths",
                     run_http,
                     image_count,
@@ -310,7 +278,7 @@ def run_remote_source(
             server.stats = ServeStats(connections=0, requests=0)
 
             results.append(
-                _timed(
+                timed_result(
                     "remote_http_read_bytes",
                     run_http_bytes,
                     image_count,

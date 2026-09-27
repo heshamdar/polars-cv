@@ -22,7 +22,7 @@ from benchmarks.utils.data_gen import temporary_image_set
 from benchmarks.utils.memory import run_timed_with_memory
 
 if TYPE_CHECKING:
-    pass
+    from collections.abc import Collection
 
 
 @dataclass
@@ -321,6 +321,7 @@ def run_all_e2e_workflows(
     warmup_iterations: int = 3,
     benchmark_iterations: int = 10,
     verbose: bool = True,
+    names: Collection[str] | None = None,
 ) -> list[BenchmarkResult]:
     """
     Run all end-to-end workflow benchmarks.
@@ -332,12 +333,16 @@ def run_all_e2e_workflows(
         warmup_iterations: Number of warmup runs.
         benchmark_iterations: Number of timed runs.
         verbose: Whether to print progress output.
+        names: If set, only the cases with these result names (``None``: all).
 
     Returns:
         List of all benchmark results.
     """
     results: list[BenchmarkResult] = []
-    workflows = get_e2e_workflows()
+    # Selected by result name, which is `e2e_<workflow>`.
+    workflows = [
+        w for w in get_e2e_workflows() if names is None or f"e2e_{w.name}" in names
+    ]
 
     # Count total combinations for progress
     total_combinations = (

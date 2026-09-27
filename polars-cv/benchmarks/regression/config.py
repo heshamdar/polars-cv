@@ -9,6 +9,10 @@ coverage; the broader sweeps live in ``benchmarks.run_benchmarks``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from benchmarks.regression.selection import Selection
 
 # Exact registration names from benchmarks.frameworks.get_adapter. The
 # regression gate compares polars-cv against itself (before vs after), so we
@@ -17,7 +21,11 @@ POLARS_CV_ADAPTERS: list[str] = ["polars-cv-eager", "polars-cv-streaming"]
 
 # All scenarios the suite knows how to run. "zero_copy" and "remote" are opt-in
 # (each has its own matrix and its own result shape); the others share the
-# (counts, sizes, warmup, iterations) signature.
+# (counts, sizes, warmup, iterations) signature. Which cases of them run is a
+# `selection.Selection` (`--select scenario[:glob]`, or `--changed REF`).
+#
+# "targeted" times the subsystems the adapter scenarios never reach: geometry
+# accessors, tensor sinks, JPEG, re-encoding and the blob source.
 #
 # "remote" measures the `file_path` fetch path — the stage every `s3://`,
 # `gs://`, `az://` and `http://` source goes through — against a loopback HTTP
@@ -27,15 +35,22 @@ ALL_SCENARIOS: tuple[str, ...] = (
     "single_ops",
     "pipelines",
     "e2e",
+    "targeted",
     "zero_copy",
     "remote",
 )
 # Default to pipelines only: they exercise the full decode -> multi-op -> encode
 # hot path across light/medium/heavy/imagenet/medical configs, run in ~3.5
 # min/run, and were measured all-NEUTRAL on a same-binary self-check at the
-# default count (see README). single_ops / e2e are opt-in via --scenarios for
-# broader across-the-board coverage (slower).
-DEFAULT_SCENARIOS: tuple[str, ...] = ("pipelines",)
+# default count (see README). single_ops / e2e / targeted are opt-in via
+# --select for broader across-the-board coverage (slower).
+DEFAULT_SELECTION = "pipelines"
+
+
+def _default_selection() -> Selection:
+    from benchmarks.regression.selection import parse
+
+    return parse(DEFAULT_SELECTION)
 
 
 @dataclass(frozen=True)
@@ -57,7 +72,7 @@ class SuiteConfig:
     # benchmark_iterations, so repeating the entire suite and taking the
     # best-of per result is the only lever we have for noise rejection.
     suite_repeats: int = 3
-    scenarios: tuple[str, ...] = DEFAULT_SCENARIOS
+    selection: Selection = field(default_factory=_default_selection)
     # Pin the thread count so eager/streaming numbers are comparable between
     # runs and not at the mercy of whatever else the machine is doing.
     num_threads: int = 1

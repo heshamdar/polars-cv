@@ -235,9 +235,12 @@ is the pinned MSRV, not a free knob.
 `--release` is what `scripts/verify.sh` and both CI workflows run, and it is
 several minutes faster per iteration — the release build re-optimises the whole
 polars stack. Every test in `tests/` passes against the debug extension; the
-only things that need `--release` are the benchmarks (see
-`benchmarks/regression/README.md`), where an unoptimised build measures nothing
-useful, and the wheels you distribute.
+only things that need an optimised build are the benchmarks — `maturin develop
+--profile benchmark` (release with thin LTO, a fraction of the fat-LTO link;
+see `benchmarks/regression/README.md`), where an unoptimised build measures
+nothing useful and `run_suite` refuses one — and the wheels you distribute
+(`--release`). Run only the cases a change can move: `--changed REF`, or
+`--select "$(python -m benchmarks.regression.relevance REF)"` on both sides.
 
 This project installs **editable**: `.venv` carries a `.pth` pointing at
 `python/`, and `maturin develop` writes `_lib.abi3.so` into `python/polars_cv/`.

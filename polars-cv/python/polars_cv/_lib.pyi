@@ -19,6 +19,7 @@ import polars as pl
 
 __version__: str
 __source_hash__: str
+__debug_assertions__: bool
 
 class PlanState:
     """The planner's state at one op boundary (``src/plan.rs``'s ``State``).

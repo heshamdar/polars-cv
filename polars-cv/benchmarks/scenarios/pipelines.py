@@ -21,7 +21,7 @@ from benchmarks.utils.data_gen import generate_image_set
 from benchmarks.utils.memory import run_timed_with_memory
 
 if TYPE_CHECKING:
-    pass
+    from collections.abc import Collection
 
 
 @dataclass
@@ -337,6 +337,7 @@ def run_all_pipelines(
     benchmark_iterations: int = 10,
     complexity_filter: str | None = None,
     verbose: bool = True,
+    names: Collection[str] | None = None,
 ) -> list[BenchmarkResult]:
     """
     Run all pipeline benchmarks across all adapters and configurations.
@@ -349,6 +350,7 @@ def run_all_pipelines(
         benchmark_iterations: Number of timed runs.
         complexity_filter: If set, only run pipelines of this complexity.
         verbose: Whether to print progress output.
+        names: If set, only the cases with these result names (``None``: all).
 
     Returns:
         List of all benchmark results.
@@ -356,7 +358,12 @@ def run_all_pipelines(
     results: list[BenchmarkResult] = []
 
     # Count total combinations for progress
-    sample_benchmarks = get_pipeline_benchmarks()
+    def selected(
+        benchmarks: list[PipelineBenchmarkConfig],
+    ) -> list[PipelineBenchmarkConfig]:
+        return [b for b in benchmarks if names is None or b.name in names]
+
+    sample_benchmarks = selected(get_pipeline_benchmarks())
     if complexity_filter:
         sample_benchmarks = [
             b for b in sample_benchmarks if b.complexity == complexity_filter
@@ -367,7 +374,7 @@ def run_all_pipelines(
     current = 0
 
     for size_idx, size in enumerate(image_sizes):
-        benchmarks = get_pipeline_benchmarks(size[1], size[0])
+        benchmarks = selected(get_pipeline_benchmarks(size[1], size[0]))
 
         # Filter by complexity if requested
         if complexity_filter:

@@ -9,8 +9,8 @@ name: Benchmark (manual)
 on:
   workflow_dispatch:
     inputs:
-      scenarios:
-        description: "Comma-separated scenarios (single_ops,pipelines,e2e,zero_copy,remote)"
+      select:
+        description: "Comma-separated scenario[:glob] selectors (single_ops,pipelines,e2e,targeted,zero_copy,remote; e.g. targeted:geom_*)"
         default: "pipelines"
         type: string
       counts:
@@ -68,17 +68,17 @@ jobs:
       - name: Install dependencies
         working-directory: ${{ steps.package_dir.outputs.dir }}
         # --no-install-project: skip uv's implicit project build; the explicit
-        # `maturin develop --release` step below is the one build this job wants
+        # `maturin develop --profile benchmark` step below is the one build this job wants
         # (benchmarks need the optimized extension). A plain `uv sync` would
-        # compile the release stack once here only to rebuild it there.
+        # compile the fat-LTO release stack here only to rebuild it there.
         run: uv sync --group dev --no-install-project
 
-      - name: Build extension (release)
+      - name: "Build extension (benchmark profile: release with thin LTO)"
         working-directory: ${{ steps.package_dir.outputs.dir }}
         shell: bash
         run: |
           source .venv/bin/activate
-          maturin develop --release
+          maturin develop --profile benchmark
 
       - name: Run regression suite
         working-directory: ${{ steps.package_dir.outputs.dir }}
@@ -87,7 +87,7 @@ jobs:
           source .venv/bin/activate
           python -m benchmarks.regression.run_suite \
             --out "results-${GITHUB_SHA::8}.json" \
-            --scenarios "${{ inputs.scenarios }}" \
+            --select "${{ inputs.select }}" \
             --counts "${{ inputs.counts }}" \
             --threads "${{ inputs.threads }}"
 
