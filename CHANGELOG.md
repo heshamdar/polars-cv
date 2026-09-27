@@ -450,6 +450,27 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **The OpenCV and Pillow benchmark adapters time the operation polars-cv
+  runs.** Several single-op benchmarks compared different work, and the
+  suite's output validator reported the gap as a correctness failure:
+  `resize` ran OpenCV's `INTER_AREA` against bilinear; `sharpen` an unsharp
+  mask (OpenCV) or Pillow's `SHARPEN` against polars-cv's 3×3 kernel;
+  `erode`/`dilate` thresholded to a mask on the polars-cv side only;
+  `adjust_contrast` and `adjust_brightness` truncated to u8 (Pillow's
+  contrast also took the luminance mean) against polars-cv's f32 result;
+  `blur` used another kernel size and border; `sobel_x` another border; and
+  `rotate` turned counter-clockwise (Pillow), about another centre, and
+  truncated its expanded canvas — so a 90° rotation of a non-square image
+  came out the wrong shape. Each adapter now computes polars-cv's definition
+  (the f32 ones and the rotation geometry are defined once, in
+  `benchmarks/frameworks/base.py`), and Pillow's `sharpen` raises
+  `NotImplementedError`, as its missing `canny`/`sobel_x` do, instead of
+  timing another filter. `tests/test_benchmark_adapters.py` holds every
+  single-op benchmark, per library, to a stated per-pixel tolerance against
+  both polars-cv engines — exact for most; the remaining gaps (OpenCV's
+  fixed-point grayscale, blur and warp; Pillow's box-approximated blur and
+  equalize rounding; plain vs antialiased bilinear downscaling in OpenCV)
+  are each written down.
 - **`numpy_from_struct` refuses a struct describing memory outside its
   data.** Its strided path built the view with `as_strided`, which does not
   bounds-check, so a hand-built struct whose shape, strides or offset reached

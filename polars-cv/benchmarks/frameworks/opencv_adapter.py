@@ -11,7 +11,13 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from .base import BaseFrameworkAdapter, OperationParams
+from .base import (
+    BaseFrameworkAdapter,
+    OperationParams,
+    brightness_f32,
+    contrast_f32,
+    rotation_matrix,
+)
 
 if TYPE_CHECKING:
     import numpy.typing as npt
@@ -108,8 +114,10 @@ class OpenCVAdapter(BaseFrameworkAdapter):
             Resized image.
         """
         cv2 = self._get_cv2()
-        # Use bilinear interpolation for consistency across frameworks
-        return cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
+        # Bilinear, as every adapter uses. OpenCV has no antialiased bilinear:
+        # on a downscale polars-cv and Pillow antialias and this does not
+        # (tests/test_benchmark_adapters.py bounds the difference).
+        return cv2.resize(img, (width, height), interpolation=cv2.INTER_LINEAR)
 
     def grayscale(self, img: "npt.NDArray[np.uint8]") -> "npt.NDArray[np.uint8]":
         """
@@ -207,11 +215,11 @@ class OpenCVAdapter(BaseFrameworkAdapter):
             Blurred image.
         """
         cv2 = self._get_cv2()
-        # Kernel size should be odd and related to sigma
-        ksize = int(sigma * 6) | 1  # Ensure odd
-        if ksize < 3:
-            ksize = 3
-        return cv2.GaussianBlur(img, (ksize, ksize), sigma)
+        # polars-cv's kernel: radius ceil(3 sigma), replicated border.
+        ksize = 2 * int(np.ceil(3 * sigma)) + 1
+        return cv2.GaussianBlur(
+            img, (ksize, ksize), sigma, borderType=cv2.BORDER_REPLICATE
+        )
 
     def threshold(
         self, img: "npt.NDArray[np.uint8]", value: int
@@ -236,20 +244,26 @@ class OpenCVAdapter(BaseFrameworkAdapter):
     def rotate(
         self, img: "npt.NDArray[np.uint8]", angle: float, *, expand: bool = False
     ) -> "npt.NDArray[np.uint8]":
-        """Rotate image by angle degrees using OpenCV warpAffine."""
+        """Rotate clockwise by ``angle`` degrees, as polars-cv's ``rotate``.
+
+        A multiple of 90° is a pixel permutation (``cv2.rotate``, which swaps
+        the sides of a non-square image whatever ``expand`` says); any other
+        angle resamples about the image centre with ``warpAffine``, the
+        expanded canvas rounded to the nearest pixel.
+        """
         cv2 = self._get_cv2()
-        h, w = img.shape[:2]
-        center = (w / 2, h / 2)
-        mat = cv2.getRotationMatrix2D(center, -angle, 1.0)
-        if expand:
-            rad = np.radians(angle)
-            cos_a, sin_a = abs(np.cos(rad)), abs(np.sin(rad))
-            new_w = int(w * cos_a + h * sin_a)
-            new_h = int(h * cos_a + w * sin_a)
-            mat[0, 2] += (new_w - w) / 2
-            mat[1, 2] += (new_h - h) / 2
-            return cv2.warpAffine(img, mat, (new_w, new_h))
-        return cv2.warpAffine(img, mat, (w, h))
+        lattice = {
+            90: cv2.ROTATE_90_CLOCKWISE,
+            180: cv2.ROTATE_180,
+            270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+        }
+        quarter = angle % 360
+        if quarter == 0:
+            return img.copy()
+        if quarter in lattice:
+            return cv2.rotate(img, lattice[quarter])
+        mat, (out_h, out_w) = rotation_matrix(*img.shape[:2], angle, expand=expand)
+        return cv2.warpAffine(img, mat, (out_w, out_h))
 
     def erode(self, img: Any, ksize: int, iterations: int = 1) -> Any:
         """Apply morphological erosion."""
@@ -273,21 +287,27 @@ class OpenCVAdapter(BaseFrameworkAdapter):
         return cv2.bitwise_not(img)
 
     def adjust_contrast(self, img: Any, factor: float) -> Any:
-        """Adjust contrast: (pixel - mean) * factor + mean."""
-        mean = img.mean()
-        result = np.clip((img.astype(np.float32) - mean) * factor + mean, 0, 255)
-        return result.astype(np.uint8)
+        """``(pixel - mean) * factor + mean`` over all channels, as f32, unclipped."""
+        return contrast_f32(img, factor)
 
     def adjust_brightness(self, img: Any, factor: float) -> Any:
-        """Adjust brightness by scaling pixel values."""
-        result = np.clip(img.astype(np.float32) * factor, 0, 255)
-        return result.astype(np.uint8)
+        """``pixel * factor`` clamped to [0, 255], as f32."""
+        return brightness_f32(img, factor)
 
     def sharpen(self, img: Any, strength: float = 1.0) -> Any:
-        """Apply unsharp mask sharpening."""
+        """3x3 sharpening kernel (sum 1), replicated border, as f32.
+
+        polars-cv's ``sharpen``: ``-strength`` around ``1 + 8·strength``.
+        """
         cv2 = self._get_cv2()
-        blurred = cv2.GaussianBlur(img, (0, 0), 3)
-        return cv2.addWeighted(img, 1.0 + strength, blurred, -strength, 0)
+        kernel = np.full((3, 3), -strength, dtype=np.float32)
+        kernel[1, 1] = 1 + 8 * strength
+        return cv2.filter2D(
+            img.astype(np.float32),
+            cv2.CV_32F,
+            kernel,
+            borderType=cv2.BORDER_REPLICATE,
+        )
 
     def pad(
         self, img: Any, top: int, bottom: int, left: int, right: int, value: int = 0
@@ -318,7 +338,9 @@ class OpenCVAdapter(BaseFrameworkAdapter):
         if img.ndim == 3:
             img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
         dx, dy = (1, 0) if axis == "x" else (0, 1)
-        return cv2.Sobel(img, cv2.CV_64F, dx, dy, ksize=3)
+        return cv2.Sobel(
+            img, cv2.CV_32F, dx, dy, ksize=3, borderType=cv2.BORDER_REPLICATE
+        )
 
     def to_numpy(
         self, img: "npt.NDArray[np.uint8] | npt.NDArray[np.float32]"

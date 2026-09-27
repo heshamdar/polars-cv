@@ -147,16 +147,12 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
             elif op.operation == OperationType.ROTATE:
                 pipe = pipe.rotate(angle=op.angle, expand=op.expand)
             elif op.operation == OperationType.ERODE:
-                pipe = (
-                    pipe.grayscale()
-                    .threshold(128)
-                    .erode(ksize=op.ksize, iterations=op.iterations or 1)
+                pipe = pipe.grayscale().erode(
+                    ksize=op.ksize, iterations=op.iterations or 1
                 )
             elif op.operation == OperationType.DILATE:
-                pipe = (
-                    pipe.grayscale()
-                    .threshold(128)
-                    .dilate(ksize=op.ksize, iterations=op.iterations or 1)
+                pipe = pipe.grayscale().dilate(
+                    ksize=op.ksize, iterations=op.iterations or 1
                 )
             elif op.operation == OperationType.INVERT:
                 pipe = pipe.invert()
@@ -234,16 +230,12 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
             elif op.operation == OperationType.ROTATE:
                 pipe = pipe.rotate(angle=op.angle, expand=op.expand)
             elif op.operation == OperationType.ERODE:
-                pipe = (
-                    pipe.grayscale()
-                    .threshold(128)
-                    .erode(ksize=op.ksize, iterations=op.iterations or 1)
+                pipe = pipe.grayscale().erode(
+                    ksize=op.ksize, iterations=op.iterations or 1
                 )
             elif op.operation == OperationType.DILATE:
-                pipe = (
-                    pipe.grayscale()
-                    .threshold(128)
-                    .dilate(ksize=op.ksize, iterations=op.iterations or 1)
+                pipe = pipe.grayscale().dilate(
+                    ksize=op.ksize, iterations=op.iterations or 1
                 )
             elif op.operation == OperationType.INVERT:
                 pipe = pipe.invert()

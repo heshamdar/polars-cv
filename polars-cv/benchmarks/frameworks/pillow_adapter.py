@@ -12,7 +12,14 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from .base import BaseFrameworkAdapter, OperationParams, OperationType
+from .base import (
+    BaseFrameworkAdapter,
+    OperationParams,
+    OperationType,
+    brightness_f32,
+    contrast_f32,
+    rotation_matrix,
+)
 
 if TYPE_CHECKING:
     import numpy.typing as npt
@@ -228,8 +235,40 @@ class PillowAdapter(BaseFrameworkAdapter):
         return img.point(lambda p: 255 if p > value else 0)
 
     def rotate(self, img: Any, angle: float, *, expand: bool = False) -> Any:
-        """Rotate image by angle degrees."""
-        return img.rotate(-angle, expand=expand)
+        """Rotate clockwise by ``angle`` degrees, as polars-cv's ``rotate``.
+
+        A multiple of 90° is a pixel permutation (``transpose``, which swaps
+        the sides of a non-square image whatever ``expand`` says); any other
+        angle resamples bilinearly with polars-cv's centre and canvas —
+        ``Image.rotate`` sizes its expanded canvas differently.
+        """
+        import numpy as np
+        from PIL import Image
+
+        lattice = {
+            90: Image.Transpose.ROTATE_270,
+            180: Image.Transpose.ROTATE_180,
+            270: Image.Transpose.ROTATE_90,
+        }
+        quarter = angle % 360
+        if quarter == 0:
+            return img.copy()
+        if quarter in lattice:
+            return img.transpose(lattice[quarter])
+        mat, (out_h, out_w) = rotation_matrix(
+            img.height, img.width, angle, expand=expand
+        )
+        # Pillow wants the output-to-input map in pixel-corner coordinates;
+        # the matrix is in pixel-centre ones (a centre is corner + 0.5).
+        inv = np.linalg.inv(np.vstack([mat, [0.0, 0.0, 1.0]]))
+        to_corner = np.array([[1, 0, 0.5], [0, 1, 0.5], [0, 0, 1]])
+        data = (to_corner @ inv @ np.linalg.inv(to_corner))[:2].ravel()
+        return img.transform(
+            (out_w, out_h),
+            Image.Transform.AFFINE,
+            tuple(data),
+            Image.Resampling.BILINEAR,
+        )
 
     def invert(self, img: Any) -> Any:
         """Invert pixel values."""
@@ -238,21 +277,23 @@ class PillowAdapter(BaseFrameworkAdapter):
         return ImageOps.invert(img)
 
     def adjust_contrast(self, img: Any, factor: float) -> Any:
-        """Adjust contrast."""
-        from PIL import ImageEnhance
+        """polars-cv's contrast (f32, all-channel mean); ``ImageEnhance`` uses
+        the luminance mean and truncates to u8."""
+        import numpy as np
 
-        return ImageEnhance.Contrast(img).enhance(factor)
+        return contrast_f32(np.asarray(img), factor)
 
     def adjust_brightness(self, img: Any, factor: float) -> Any:
-        """Adjust brightness."""
-        from PIL import ImageEnhance
+        """polars-cv's brightness (f32, clamped); ``ImageEnhance`` truncates."""
+        import numpy as np
 
-        return ImageEnhance.Brightness(img).enhance(factor)
+        return brightness_f32(np.asarray(img), factor)
 
     def sharpen(self, img: Any, strength: float = 1.0) -> Any:
-        """Apply sharpening filter."""
-        _, ImageFilter = self._get_modules()
-        return img.filter(ImageFilter.SHARPEN)
+        """Not computable here: polars-cv's sharpen is an unclipped f32 3x3
+        kernel, and Pillow filters only 8-bit images (``ImageFilter.SHARPEN``
+        is a different, clipped kernel)."""
+        raise NotImplementedError
 
     def pad(
         self, img: Any, top: int, bottom: int, left: int, right: int, value: int = 0

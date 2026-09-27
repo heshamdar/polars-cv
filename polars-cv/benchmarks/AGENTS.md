@@ -134,6 +134,18 @@ Defined in `conftest.py`. Controls image counts, sizes, warmup/iterations, and o
 2. Implement `AbstractFrameworkAdapter`
 3. Register in `run_benchmarks.py`
 
+## Adapter parity
+
+A benchmark compares frameworks doing the *same* work.
+`tests/test_benchmark_adapters.py` runs every single-op benchmark through the
+OpenCV and Pillow adapters and both polars-cv engines, and holds each pair to a
+stated per-pixel tolerance — or lists the op as unsupported by that library,
+whose adapter must then raise `NotImplementedError`. Adding a single-op
+benchmark means adding its row there; an op missing from the tables fails.
+Definitions a library has no call for (polars-cv's f32 contrast and brightness,
+its rotation geometry) live once in `frameworks/base.py`. The torchvision
+adapters are not covered: torch is not a dev dependency.
+
 ## Adding a New Scenario
 
 1. Create `scenarios/my_scenario.py`
