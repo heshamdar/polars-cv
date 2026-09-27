@@ -1,4 +1,7 @@
-//! Image encoding reads the buffer's pixels in place.
+//! Copies of a buffer's elements, counted.
+//!
+//! Image encoding reads the buffer's pixels in place, and appending a buffer
+//! to a flat values vector copies each element once.
 //!
 //! A copy of the pixels is one allocation the size of the image, so the
 //! number of image-sized allocations made while encoding a flat (highly
@@ -131,4 +134,49 @@ fn jpeg_with_alpha_still_encodes_by_conversion() {
         assert_eq!(decoded.color().channel_count(), decoded_channels, "x{c}");
         assert_eq!((decoded.width(), decoded.height()), (W as u32, H as u32));
     }
+}
+
+/// Every layout a view can have: contiguous, permuted, flipped (negative
+/// strides) and a sliced window with an offset.
+fn layouts() -> Vec<(&'static str, ViewBuffer)> {
+    let base =
+        ViewBuffer::from_vec((0..(6 * 5 * 3) as u16).collect::<Vec<_>>()).reshape(vec![6, 5, 3]);
+    vec![
+        ("contiguous", base.clone()),
+        ("permuted", base.permute(&[1, 0, 2])),
+        ("inner permuted", base.permute(&[2, 1, 0])),
+        ("flipped", base.flip(&[0, 1])),
+        ("sliced", base.slice(&[1, 1, 0], &[5, 4, 2])),
+    ]
+}
+
+#[test]
+fn append_to_appends_the_row_major_elements() {
+    for (label, buf) in layouts() {
+        let mut out: Vec<u16> = vec![9, 9];
+        buf.append_to(&mut out);
+        let expected = buf.to_contiguous();
+        assert_eq!(&out[..2], &[9, 9], "{label}: existing elements kept");
+        assert_eq!(&out[2..], expected.as_slice::<u16>(), "{label}");
+    }
+}
+
+#[test]
+fn append_to_copies_each_element_once() {
+    for (label, buf) in layouts() {
+        let n = buf.shape().iter().product::<usize>();
+        let mut out: Vec<u16> = Vec::with_capacity(n);
+        // Anything the size of the view is an intermediate copy: the
+        // destination is already reserved.
+        let ((), count) = large_allocations(n * 2, || buf.append_to(&mut out));
+        assert_eq!(count, 0, "{label}: an intermediate copy");
+        assert_eq!(out.len(), n, "{label}");
+    }
+}
+
+#[test]
+#[should_panic(expected = "dtype")]
+fn append_to_refuses_another_element_type() {
+    let buf = ViewBuffer::from_vec(vec![1u8, 2, 3]);
+    buf.append_to(&mut Vec::<u16>::new());
 }

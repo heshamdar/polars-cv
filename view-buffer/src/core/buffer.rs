@@ -1401,115 +1401,125 @@ impl ViewBuffer {
         if self.layout.is_contiguous() {
             return self.clone();
         }
+        let total_bytes = self.logical_len_bytes();
+        let mut new_data: Vec<u8> = Vec::with_capacity(total_bytes);
+        // SAFETY: `new_data` has room for `total_bytes`, which
+        // `copy_elements_into` writes in full before the length is set.
+        unsafe {
+            self.copy_elements_into(new_data.as_mut_ptr());
+            new_data.set_len(total_bytes);
+        }
+        let new_layout = Layout::new_contiguous(self.layout.shape.clone(), self.dtype());
+        Self {
+            data: BufferStorage::Rust(Arc::new(AlignedBytes::from(new_data))),
+            layout: new_layout,
+        }
+    }
 
-        // Use checked arithmetic to detect overflow early with a clear error message
-        let total_elems: usize = self
-            .layout
+    /// Append this buffer's elements, in row-major order, to `out`.
+    ///
+    /// Each element is copied once, straight from wherever the view's strides
+    /// put it, so a strided view is not first materialised by
+    /// [`to_contiguous`](Self::to_contiguous). This is how a buffer joins a
+    /// flat values array (a `list`/`array` column's) without an intermediate.
+    ///
+    /// # Panics
+    /// Panics if `T` is not this buffer's dtype.
+    pub fn append_to<T: ViewType>(&self, out: &mut Vec<T>) {
+        assert_eq!(
+            T::DTYPE,
+            self.dtype(),
+            "append_to: the vector holds {:?} but the buffer's dtype is {:?}",
+            T::DTYPE,
+            self.dtype()
+        );
+        let count: usize = self.layout.shape.iter().product();
+        out.reserve(count);
+        let len = out.len();
+        // SAFETY: `reserve` made room for `count` more `T`s past `len`, and
+        // `copy_elements_into` writes exactly `count * size_of::<T>()` bytes
+        // of `T`s (the dtype check above) there before the length grows.
+        unsafe {
+            self.copy_elements_into(out.as_mut_ptr().add(len).cast::<u8>());
+            out.set_len(len + count);
+        }
+    }
+
+    /// The bytes this view's elements occupy when packed row-major.
+    fn logical_len_bytes(&self) -> usize {
+        // Checked, so an overflowing shape fails with a clear message.
+        self.layout
             .shape
             .iter()
             .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
-            .expect("shape product overflow: buffer dimensions are too large");
+            .and_then(|elems| elems.checked_mul(self.dtype().size_of()))
+            .expect("allocation size overflow: buffer is too large to materialize")
+    }
 
+    /// Copy this view's elements, row-major, to `dst`: the one routine that
+    /// reads a view through its strides into packed memory.
+    ///
+    /// # Safety
+    /// `dst` must be valid for writes of [`logical_len_bytes`](Self::logical_len_bytes)
+    /// bytes and must not overlap this buffer's data.
+    unsafe fn copy_elements_into(&self, dst: *mut u8) {
+        let total_bytes = self.logical_len_bytes();
         let dtype_size = self.dtype().size_of();
-        let total_bytes = total_elems
-            .checked_mul(dtype_size)
-            .expect("allocation size overflow: buffer is too large to materialize");
-
         let shape = &self.layout.shape;
         let strides = &self.layout.strides;
         let ndim = shape.len();
+        let ptr = self.data.as_ptr();
+        let base_offset = self.layout.offset;
+        let data_len = self.data.len();
 
-        // Optimization: check if innermost dimension is contiguous (stride == dtype_size).
-        // If so, we can copy entire rows at once using memcpy instead of element-by-element.
+        if total_bytes == 0 {
+            return;
+        }
+        if self.layout.is_contiguous() {
+            // SAFETY: a contiguous view's elements are `total_bytes` packed
+            // bytes from its offset; the caller guarantees `dst`.
+            unsafe { std::ptr::copy_nonoverlapping(ptr.add(base_offset), dst, total_bytes) };
+            return;
+        }
+
+        // When the innermost dimension is packed (stride == element size),
+        // each innermost row is one `memcpy`; otherwise element by element.
         let inner_contiguous = ndim > 0 && strides[ndim - 1] == dtype_size as isize;
-
-        if inner_contiguous && ndim >= 2 {
-            // Fast path: copy row-by-row
-            let row_len = shape[ndim - 1];
-            let row_bytes = row_len * dtype_size;
-            // Number of rows = product of all outer dimensions
-            let num_rows: usize = shape[..ndim - 1].iter().product();
-
-            let mut new_data = Vec::with_capacity(total_bytes);
-            let ptr = self.data.as_ptr();
-            let base_offset = self.layout.offset;
-            let data_len = self.data.len();
-
-            let mut indices = vec![0usize; ndim - 1]; // Only outer dims
-
-            for _ in 0..num_rows {
-                // Compute offset for this row's first element
-                let mut offset = base_offset as isize;
-                for (dim, &idx) in indices.iter().enumerate() {
-                    offset += (idx as isize) * strides[dim];
-                }
-
-                debug_assert!(offset >= 0, "Negative offset in row-copy path");
-                debug_assert!(
-                    (offset as usize) + row_bytes <= data_len,
-                    "Row read overrun: offset={offset}, row_bytes={row_bytes}, data_len={data_len}"
-                );
-
-                unsafe {
-                    let src = ptr.offset(offset);
-                    new_data.extend_from_slice(std::slice::from_raw_parts(src, row_bytes));
-                }
-
-                // Increment outer indices
-                for dim in (0..indices.len()).rev() {
-                    indices[dim] += 1;
-                    if indices[dim] < shape[dim] {
-                        break;
-                    }
-                    indices[dim] = 0;
-                }
-            }
-
-            let new_layout = Layout::new_contiguous(self.layout.shape.clone(), self.dtype());
-            Self {
-                data: BufferStorage::Rust(Arc::new(AlignedBytes::from(new_data))),
-                layout: new_layout,
-            }
+        let (outer, chunk_bytes) = if inner_contiguous {
+            (ndim - 1, shape[ndim - 1] * dtype_size)
         } else {
-            // Slow path: element-by-element copy for non-contiguous innermost dim
-            let mut new_data = Vec::with_capacity(total_bytes);
-            let mut indices = vec![0; ndim];
-            let ptr = self.data.as_ptr();
-            let base_offset = self.layout.offset;
-            let data_len = self.data.len();
-
-            for _ in 0..total_elems {
-                let mut offset = base_offset as isize;
-                for (dim, &idx) in indices.iter().enumerate() {
-                    offset += (idx as isize) * strides[dim];
-                }
-
-                debug_assert!(offset >= 0, "Negative offset calculation");
-                debug_assert!(
-                    (offset as usize) + dtype_size <= data_len,
-                    "Read overrun during compaction: offset={offset}, dtype_size={dtype_size}, data_len={data_len}"
-                );
-
-                unsafe {
-                    let src = ptr.offset(offset);
-                    new_data.extend_from_slice(std::slice::from_raw_parts(src, dtype_size));
-                }
-
-                for dim in (0..ndim).rev() {
-                    indices[dim] += 1;
-                    if indices[dim] < shape[dim] {
-                        break;
-                    }
-                    indices[dim] = 0;
-                }
+            (ndim, dtype_size)
+        };
+        let chunks: usize = shape[..outer].iter().product();
+        let mut indices = vec![0usize; outer];
+        let mut written = 0usize;
+        for _ in 0..chunks {
+            let mut offset = base_offset as isize;
+            for (dim, &idx) in indices.iter().enumerate() {
+                offset += (idx as isize) * strides[dim];
             }
-
-            let new_layout = Layout::new_contiguous(self.layout.shape.clone(), self.dtype());
-            Self {
-                data: BufferStorage::Rust(Arc::new(AlignedBytes::from(new_data))),
-                layout: new_layout,
+            debug_assert!(offset >= 0, "negative offset while packing a view");
+            debug_assert!(
+                (offset as usize) + chunk_bytes <= data_len,
+                "read overrun while packing a view: offset={offset}, \
+                 chunk_bytes={chunk_bytes}, data_len={data_len}"
+            );
+            // SAFETY: the layout's strides keep every element inside the
+            // data (checked in debug above); `written + chunk_bytes` never
+            // exceeds `total_bytes`, which the caller guarantees `dst` holds.
+            unsafe {
+                std::ptr::copy_nonoverlapping(ptr.offset(offset), dst.add(written), chunk_bytes);
+            }
+            written += chunk_bytes;
+            for dim in (0..outer).rev() {
+                indices[dim] += 1;
+                if indices[dim] < shape[dim] {
+                    break;
+                }
+                indices[dim] = 0;
             }
         }
+        debug_assert_eq!(written, total_bytes);
     }
 
     /// Applies a fused kernel of scalar operations in-place, without allocation.
