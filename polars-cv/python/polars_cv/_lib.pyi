@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import polars as pl
+
 __version__: str
 __source_hash__: str
 
@@ -99,3 +101,9 @@ def check_geom_call(function: str, args_json: str) -> None:
 def geom_catalog() -> str:
     """Return the geometry accessor catalogue as JSON (see
     ``tests/golden/geom_catalog.json``)."""
+
+class ArrowBytes:
+    """An Arrow buffer of a column, kept alive for the arrays viewing it."""
+
+def binary_rows(series: pl.Series) -> list[tuple[ArrowBytes, int, int] | None]:
+    """Each row of a Binary column as ``(owner, address, length)``; no copies."""

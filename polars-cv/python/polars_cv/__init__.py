@@ -206,6 +206,9 @@ def numpy_from_struct(
     is the same dict, and a single-row Series may be the plain struct or the
     ``polars_cv.ndarray`` type over it.
 
+    To read a whole column, use :func:`numpy_from_column`, which views each
+    row in the column's own memory instead of copying it through a ``dict``.
+
     Args:
         row: Struct value from output column.
         copy: Whether to copy data (default True). If False, returns a view.
@@ -337,6 +340,116 @@ def numpy_from_struct(
     # copy=False returns the zero-copy view (kept alive by the backing buffer
     # via the array's .base chain); copy=True returns an owned contiguous array.
     return view.copy() if copy else view
+
+
+class _RowView:
+    """One row's bytes, described to numpy through ``__array_interface__``.
+
+    ``np.asarray`` over this object views the address it names and keeps the
+    object as the array's ``.base``, so the Arrow buffer the object holds (an
+    ``ArrowBytes`` from the plugin) lives exactly as long as the array.
+    """
+
+    __slots__ = ("__array_interface__", "_owner")
+
+    def __init__(self, owner: object, interface: dict[str, object]) -> None:
+        self._owner = owner
+        self.__array_interface__ = interface
+
+
+def numpy_from_column(
+    column: pl.Series,
+    *,
+    copy: bool = False,
+) -> list[np.ndarray | None]:
+    """
+    Read every row of a ``sink("numpy")`` / ``sink("ndarray")`` column as a
+    NumPy array, without copying.
+
+    Each array is a view of the column's own Arrow memory, with the row's
+    shape, dtype and byte strides (a transposed or flipped output stays a
+    strided view). Nothing passes through Python ``bytes``, which is what
+    reading rows as dicts and calling :func:`numpy_from_struct` costs: one copy
+    of every row into ``bytes``, and another with ``copy=True``. The views are
+    read-only, since Polars memory is immutable, and each keeps the memory it
+    reads alive after the column is gone.
+
+    Args:
+        column: A numpy- or ndarray-sink output column.
+        copy: Return owned, writable, C-contiguous arrays instead of views.
+
+    Returns:
+        One array per row, and ``None`` for a null row.
+
+    Raises:
+        TypeError: The column is not a numpy/ndarray sink column.
+        ValueError: A row names a dtype the sink does not emit, or a view
+            reaching outside the row's bytes (a hand-built struct; the sink
+            never produces one).
+    """
+    import numpy as np
+
+    from ._lib import binary_rows
+
+    if isinstance(column.dtype, NdArrayType):
+        column = column.ext.storage()
+    if column.dtype != NUMPY_OUTPUT_SCHEMA:
+        msg = (
+            f"numpy_from_column reads a numpy/ndarray sink column "
+            f"({NUMPY_OUTPUT_SCHEMA}), got {column.dtype}"
+        )
+        raise TypeError(msg)
+
+    fields = column.struct.unnest()
+    arrays: list[np.ndarray | None] = []
+    for row, dtype_name, shape, strides, offset in zip(
+        binary_rows(fields["data"]),
+        fields["dtype"].to_list(),
+        fields["shape"].to_list(),
+        fields["strides"].to_list(),
+        fields["offset"].to_list(),
+        strict=True,
+    ):
+        if row is None:
+            arrays.append(None)
+            continue
+        owner, address, nbytes = row
+        if dtype_name not in SINK_NUMPY_NAMES:
+            msg = (
+                f"Unsupported dtype '{dtype_name}'. Allowed: {sorted(SINK_NUMPY_NAMES)}"
+            )
+            raise ValueError(msg)
+        dtype = np.dtype(dtype_name)
+        # `__array_interface__` is not bounds-checked by numpy, so the extent
+        # the strides reach is checked against the row's bytes here: a
+        # hand-built struct must not read memory outside its row.
+        if all(n > 0 for n in shape):
+            low = offset + sum(
+                min(0, (n - 1) * s) for n, s in zip(shape, strides, strict=True)
+            )
+            high = offset + sum(
+                max(0, (n - 1) * s) for n, s in zip(shape, strides, strict=True)
+            )
+            if low < 0 or high + dtype.itemsize > nbytes:
+                msg = (
+                    f"shape {shape} with strides {strides} at offset {offset} reaches "
+                    f"bytes [{low}, {high + dtype.itemsize}), outside the row's {nbytes} bytes"
+                )
+                raise ValueError(msg)
+        view = np.asarray(
+            _RowView(
+                owner,
+                {
+                    "version": 3,
+                    "shape": tuple(shape),
+                    "strides": tuple(strides),
+                    "typestr": dtype.str,
+                    "data": (address + offset, True),
+                },
+            )
+        )
+        arrays.append(np.ascontiguousarray(view).copy() if copy else view)
+    return arrays
 
 
 def _as_buffer(data: object) -> object:
@@ -492,6 +605,7 @@ __all__ = [
     "IMAGENET_STD",
     # NumPy conversion utilities
     "numpy_from_struct",
+    "numpy_from_column",
     "NUMPY_OUTPUT_SCHEMA",
     # Arrow extension types
     "NdArrayType",

@@ -29,6 +29,24 @@ print(f"Shape: {arr.shape}, dtype: {arr.dtype}")
 arr = numpy_from_struct(result["tensor"])
 ```
 
+### numpy_from_column
+
+Read every row of a numpy/ndarray sink column as a NumPy array, without
+copying. Each array is a read-only view of the column's own Arrow memory, with
+the row's shape, dtype and byte strides, and keeps that memory alive after the
+column is gone; null rows are `None`. Pass `copy=True` for owned, writable,
+C-contiguous arrays.
+
+```python
+from polars_cv import numpy_from_column
+
+arrays = numpy_from_column(result["tensor"])
+batch = [a for a in arrays if a is not None]
+```
+
+Prefer it to `numpy_from_struct` over `.to_list()` rows, which copies every
+row into Python `bytes` first.
+
 ## Extension Types
 
 ::: polars_cv.extension_types

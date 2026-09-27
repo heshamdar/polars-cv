@@ -30,6 +30,7 @@
 use polars::prelude::*;
 use polars_arrow::array::{BinaryViewArrayGeneric, View};
 use polars_arrow::bitmap::MutableBitmap;
+use pyo3::prelude::*;
 use view_buffer::{DType as VbDType, ViewBuffer};
 
 /// Get the Polars DataType for numpy/torch sink output.
@@ -264,6 +265,94 @@ fn build_data_column(rows: &[Option<NumpyRowOutput>]) -> PolarsResult<Series> {
 
     let ca = BinaryChunked::with_chunk(PlSmallStr::from_static("data"), array);
     Ok(ca.into_series())
+}
+
+/// An Arrow buffer of a `Binary` column, kept alive for the numpy arrays that
+/// view it (`polars_cv.numpy_from_column`).
+///
+/// Opaque to Python: an array built over a row's address holds one of these
+/// (through its `.base`), and the buffer lives as long as that array does.
+#[pyclass(frozen, module = "polars_cv._lib")]
+pub(crate) struct ArrowBytes {
+    _owner: ArrowBytesOwner,
+}
+
+/// Where a `BinaryView` row's bytes live: in the views buffer itself (a value
+/// of 12 bytes or fewer is stored inline) or in one of the data buffers.
+#[expect(
+    dead_code,
+    reason = "held, never read: owning the buffer is what keeps the memory alive"
+)]
+enum ArrowBytesOwner {
+    Views(polars_buffer::Buffer<View>),
+    Data(polars_buffer::Buffer<u8>),
+}
+
+/// One row of a `Binary` column as `(owner, address, length)`: the address of
+/// its first byte in the column's own memory and the buffer that holds it,
+/// or `None` for a null row. Nothing is copied.
+type BinaryRow = Option<(Py<ArrowBytes>, usize, usize)>;
+
+/// Every row of a `Binary` column, as the address of its bytes in the
+/// column's Arrow memory (see [`BinaryRow`]).
+///
+/// The column crosses from Python through polars' own series export, which
+/// shares its buffers rather than copying them, so the addresses are the
+/// Python column's. One owner is created per buffer and shared by the rows
+/// that live in it.
+#[pyfunction]
+pub(crate) fn binary_rows(
+    py: Python<'_>,
+    series: pyo3_polars::PySeries,
+) -> PyResult<Vec<BinaryRow>> {
+    let ca = series.0.binary().map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err(format!(
+            "binary_rows reads a Binary column, got {}",
+            series.0.dtype()
+        ))
+    })?;
+    let mut rows: Vec<BinaryRow> = Vec::with_capacity(ca.len());
+    for arr in ca.downcast_iter() {
+        let mut views_owner: Option<Py<ArrowBytes>> = None;
+        let mut data_owners: Vec<Option<Py<ArrowBytes>>> =
+            (0..arr.data_buffers().len()).map(|_| None).collect();
+        for i in 0..arr.len() {
+            if !polars_arrow::array::Array::is_valid(arr, i) {
+                rows.push(None);
+                continue;
+            }
+            let bytes = arr.value(i);
+            let view = arr.views()[i];
+            let owner = if view.length <= View::MAX_INLINE_SIZE {
+                views_owner.get_or_insert_with(|| {
+                    Py::new(
+                        py,
+                        ArrowBytes {
+                            _owner: ArrowBytesOwner::Views(arr.views().clone()),
+                        },
+                    )
+                    .expect("allocating a Python object")
+                })
+            } else {
+                let idx = view.buffer_idx as usize;
+                data_owners[idx].get_or_insert_with(|| {
+                    Py::new(
+                        py,
+                        ArrowBytes {
+                            _owner: ArrowBytesOwner::Data(arr.data_buffers()[idx].clone()),
+                        },
+                    )
+                    .expect("allocating a Python object")
+                })
+            };
+            rows.push(Some((
+                owner.clone_ref(py),
+                bytes.as_ptr() as usize,
+                bytes.len(),
+            )));
+        }
+    }
+    Ok(rows)
 }
 
 /// Build a `Binary` series from owned per-row blobs without copying the bytes

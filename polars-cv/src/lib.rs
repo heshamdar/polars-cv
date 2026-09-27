@@ -66,6 +66,8 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bbox_schema, m)?)?;
     m.add_function(wrap_pyfunction!(extension_types, m)?)?;
     m.add_function(wrap_pyfunction!(rotation_matrix_2d, m)?)?;
+    m.add_class::<output::ArrowBytes>()?;
+    m.add_function(wrap_pyfunction!(output::binary_rows, m)?)?;
     Ok(())
 }
 
