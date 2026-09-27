@@ -22,8 +22,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   replaced by `--select` (a bare scenario name is a selector).
 - **The benchmark suite refuses a debug build.** Its numbers look plausible and
   measure nothing; `run_suite` exits unless given `--allow-debug-build` (a
-  harness smoke test), and `compare` refuses results marked as such. The
-  extension reports `_lib.__debug_assertions__` for it.
+  harness smoke test), and `compare` refuses results marked as such. It also
+  refuses results from two different build profiles (thin LTO runs a few
+  percent off fat LTO per case). The extension reports
+  `_lib.__debug_assertions__` and `_lib.__build_profile__` for it.
 - **`numpy_from_column(column)` reads a numpy/ndarray sink column without
   copying.** Every row comes back as a read-only NumPy view of the column's
   own Arrow memory, keeping its shape, dtype and byte strides; null rows are

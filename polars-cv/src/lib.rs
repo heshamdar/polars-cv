@@ -55,6 +55,9 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Whether this extension is an unoptimised (debug) build. The benchmark
     // harness refuses one: its numbers look plausible and measure nothing.
     m.add("__debug_assertions__", cfg!(debug_assertions))?;
+    // The Cargo profile it was built with (`debug`, `release`, `benchmark`):
+    // benchmark results from two different profiles must not be compared.
+    m.add("__build_profile__", env!("POLARS_CV_BUILD_PROFILE"))?;
     m.add_class::<plan::State>()?;
     m.add_class::<plan::Plan>()?;
     m.add_function(wrap_pyfunction!(_plan_from_json, m)?)?;

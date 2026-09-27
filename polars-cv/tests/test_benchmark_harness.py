@@ -196,10 +196,13 @@ def test_every_targeted_case_runs() -> None:
 
 
 @plugin_required
-def test_the_suite_refuses_a_debug_build(tmp_path: Path) -> None:
-    import polars_cv._lib as lib
+def test_the_suite_refuses_a_debug_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from benchmarks.regression import run_suite as module
 
-    assert lib.__debug_assertions__ is True  # the test build is debug
+    # Pinned to "debug" so this holds whatever profile the suite runs against.
+    monkeypatch.setattr(module, "is_debug_build", lambda: True)
     with pytest.raises(SystemExit, match="--profile benchmark"):
         run_suite_main(
             ["--out", str(tmp_path / "r.json"), "--select", "single_ops:invert"]
@@ -207,7 +210,14 @@ def test_the_suite_refuses_a_debug_build(tmp_path: Path) -> None:
 
 
 @plugin_required
-def test_compare_refuses_debug_build_results(tmp_path: Path) -> None:
+def test_compare_refuses_debug_build_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from benchmarks.regression import run_suite as module
+
+    import polars_cv._lib as lib
+
+    monkeypatch.setattr(module, "is_debug_build", lambda: True)
     out = tmp_path / "r.json"
     args = ["--out", str(out), "--select", "single_ops:invert", "--allow-debug-build"]
     args += ["--counts", "4", "--sizes", "32", "--repeats", "1", "--warmup", "0"]
@@ -215,6 +225,7 @@ def test_compare_refuses_debug_build_results(tmp_path: Path) -> None:
     assert run_suite_main(args) == 0
     meta = json.loads(out.with_suffix(".json.meta.json").read_text())
     assert meta["debug_build"] is True
+    assert meta["build_profile"] == lib.__build_profile__
     assert meta["selection"] == "single_ops:invert"
     with pytest.raises(SystemExit, match="debug build"):
         compare_main([str(out), str(out)])
@@ -248,3 +259,47 @@ def test_a_deleted_or_renamed_file_is_not_a_changed_file(tmp_path: Path) -> None
     subprocess.run(["git", "rm", "-q", "gone.rs"], cwd=tmp_path, check=True)
     subprocess.run([*git, "commit", "-qm", "b"], cwd=tmp_path, check=True)
     assert relevance.changed_files("HEAD~1", cwd=tmp_path) == ["new.rs"]
+
+
+@plugin_required
+def test_the_extension_names_the_profile_it_was_built_with() -> None:
+    import polars_cv._lib as lib
+
+    # Cargo's profile directory: `debug` for `maturin develop`, else the
+    # `--profile`/`--release` name. Only the dev profile keeps debug assertions.
+    assert lib.__build_profile__ in {"debug", "release", "benchmark"}
+    assert lib.__debug_assertions__ is (lib.__build_profile__ == "debug")
+
+
+def _results(tmp_path: Path, name: str, profile: str | None) -> Path:
+    row = {
+        "framework": "polars-cv-eager",
+        "operation": "invert",
+        "image_count": 4,
+        "image_size": [32, 32],
+        "total_time_seconds": 1.0,
+        "throughput_images_per_second": 4.0,
+        "latency_ms_per_image": 250.0,
+        "peak_memory_mb": 1.0,
+    }
+    path = tmp_path / name
+    path.write_text(json.dumps([row]))
+    if profile is not None:
+        meta = {"debug_build": False, "build_profile": profile}
+        Path(f"{path}.meta.json").write_text(json.dumps(meta))
+    return path
+
+
+def test_compare_refuses_results_from_different_build_profiles(tmp_path: Path) -> None:
+    # Thin- and fat-LTO builds differ by several percent per case: comparing
+    # across them reports the profile, not the change.
+    base = _results(tmp_path, "base.json", "release")
+    head = _results(tmp_path, "head.json", "benchmark")
+    with pytest.raises(SystemExit, match="build profile"):
+        compare_main([str(base), str(head)])
+
+
+def test_compare_accepts_results_from_the_same_profile(tmp_path: Path) -> None:
+    base = _results(tmp_path, "base.json", "benchmark")
+    head = _results(tmp_path, "head.json", "benchmark")
+    assert compare_main([str(base), str(head)]) == 0

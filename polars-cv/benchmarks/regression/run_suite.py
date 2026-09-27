@@ -264,6 +264,12 @@ def is_debug_build() -> bool:
     return bool(_lib.__debug_assertions__)
 
 
+def _build_profile() -> str:
+    from polars_cv import _lib
+
+    return str(_lib.__build_profile__)
+
+
 def run_suite(
     cfg: SuiteConfig, *, quiet: bool = True, allow_debug_build: bool = False
 ) -> list[BenchmarkResult]:
@@ -303,6 +309,8 @@ def _write_meta(out_path: Path, cfg: SuiteConfig, num_threads: int) -> None:
         "git_sha": _git_sha(),
         # `compare` refuses results whose build was unoptimised.
         "debug_build": is_debug_build(),
+        # `compare` refuses results from two different profiles (thin vs fat LTO).
+        "build_profile": _build_profile(),
         # Pass this back as `--select` to run the same cases on the other side.
         "selection": cfg.selection.render(),
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
