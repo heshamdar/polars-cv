@@ -418,6 +418,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **A null contour coordinate is an error, not the origin.** A point with a
+  null `x` or `y`, or a null point inside a ring, used to read as `0.0`,
+  silently moving the ring (and changing its area, IoU, rasterization…). Every
+  contour consumer now refuses it, naming the row.
+
 - **Streaming throughput regressions from the row-parallel executor
   (CR-32) and the aligned blob copy (CR-41) are fixed.** A binary row's
   aligned copy assembled 8-byte words one at a time, ~7x slower than a

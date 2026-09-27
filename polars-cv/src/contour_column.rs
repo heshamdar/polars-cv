@@ -63,8 +63,15 @@ enum Contours<'a> {
 /// that Polars inferred from `[]`) is simply empty.
 struct Rings<'a> {
     list: &'a ListArray<i64>,
-    points: Result<(&'a PrimitiveArray<f64>, &'a PrimitiveArray<f64>), String>,
+    points: Result<Points<'a>, String>,
 }
+
+/// A point struct array and its `x`/`y` coordinate arrays.
+type Points<'a> = (
+    &'a StructArray,
+    &'a PrimitiveArray<f64>,
+    &'a PrimitiveArray<f64>,
+);
 
 impl<'a> ContourColumn<'a> {
     /// Resolve `series`'s layout, chunk by chunk. Reads no rows.
@@ -98,7 +105,8 @@ impl<'a> ContourColumn<'a> {
 
     /// Row `i`'s contours — exactly one for a single-contour column — or
     /// `None` for a null row.
-    pub(crate) fn row(&self, mut i: usize) -> PolarsResult<Option<Vec<Contour>>> {
+    pub(crate) fn row(&self, row: usize) -> PolarsResult<Option<Vec<Contour>>> {
+        let mut i = row;
         let Some((array, rows)) = self.chunks.iter().find(|(array, _)| {
             let here = i < array.len();
             if !here {
@@ -127,7 +135,7 @@ impl<'a> ContourColumn<'a> {
             }
             _ => Ok(None),
         };
-        contours.map_err(|msg| polars_err!(ComputeError: "{}", msg))
+        contours.map_err(|msg| polars_err!(ComputeError: "{} (row {})", msg, row))
     }
 
     /// Row `i`'s one contour, for a function of a single contour, or `None`
@@ -172,17 +180,29 @@ impl Contours<'_> {
 }
 
 impl Rings<'_> {
-    /// The `j`th ring's points. A null coordinate reads as 0.0, as it always
-    /// has.
+    /// The `j`th ring's points. A null point, or a point with a null
+    /// coordinate, is refused: it has no position, and reading one as the
+    /// origin (as this once did) moves the ring silently.
     fn get(&self, j: usize) -> Result<Vec<Point>, String> {
         let (start, end) = self.list.offsets().start_end(j);
         if start == end {
             return Ok(Vec::new());
         }
-        let (x, y) = self.points.as_ref().map_err(Clone::clone)?;
-        Ok((start..end)
-            .map(|k| Point::new(x.get(k).unwrap_or(0.0), y.get(k).unwrap_or(0.0)))
-            .collect())
+        let (st, x, y) = self.points.as_ref().map_err(Clone::clone)?;
+        // Sized up front: collecting `Result`s loses the length hint, and a
+        // growing vector reallocates as it goes.
+        let mut points = Vec::with_capacity(end - start);
+        for k in start..end {
+            if !st.is_valid(k) {
+                return Err("a contour point is null".to_string());
+            }
+            match (x.get(k), y.get(k)) {
+                (Some(x), Some(y)) => points.push(Point::new(x, y)),
+                (None, _) => return Err("a contour point has a null x".to_string()),
+                (_, None) => return Err("a contour point has a null y".to_string()),
+            }
+        }
+        Ok(points)
     }
 }
 
@@ -238,10 +258,7 @@ fn rings<'a>(array: &'a dyn Array, point: &DataType) -> Result<Rings<'a>, String
 }
 
 /// The `x` and `y` arrays of an array of `point` structs, by field name.
-fn coordinates<'a>(
-    array: &'a dyn Array,
-    point: &DataType,
-) -> Result<(&'a PrimitiveArray<f64>, &'a PrimitiveArray<f64>), String> {
+fn coordinates<'a>(array: &'a dyn Array, point: &DataType) -> Result<Points<'a>, String> {
     let DataType::Struct(fields) = point else {
         return Err("Expected Struct for point".to_string());
     };
@@ -257,7 +274,7 @@ fn coordinates<'a>(
         }
         downcast::<PrimitiveArray<f64>>(st.values()[idx].as_ref(), "a coordinate")
     });
-    Ok((x?, y?))
+    Ok((st, x?, y?))
 }
 
 #[cfg(test)]
@@ -433,6 +450,34 @@ mod tests {
         assert_eq!(read_all(&nulls), vec![None, None]);
     }
 
+    /// A point with no coordinate is not a point at the origin: a null `x`
+    /// or `y`, or a null point in a ring, is refused, naming the row.
+    #[test]
+    fn a_null_coordinate_is_refused() {
+        let ok = points(["x", "y"], &[Some(1.0), Some(2.0)], &[Some(3.0), Some(4.0)]);
+        for (xs, ys) in [
+            ([Some(1.0), None], [Some(3.0), Some(4.0)]),
+            ([Some(1.0), Some(2.0)], [None, Some(4.0)]),
+        ] {
+            let col = rings(vec![Some(ok.clone()), Some(points(["x", "y"], &xs, &ys))]);
+            let column = ContourColumn::new(&col);
+            assert!(column.row(0).is_ok());
+            let err = column.row(1).unwrap_err().to_string();
+            assert!(err.contains("null") && err.contains("row 1"), "{err}");
+        }
+        // A null point struct in the ring.
+        let null_point =
+            Series::from_any_values_and_dtype("p".into(), &[AnyValue::Null], ok.dtype(), true)
+                .unwrap();
+        let mut ring = ok.clone();
+        ring.append(&null_point).unwrap();
+        let err = ContourColumn::new(&rings(vec![Some(ring)]))
+            .row(0)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("null"), "{err}");
+    }
+
     #[test]
     fn coordinates_that_are_not_f64_are_refused() {
         let ring = Series::new("x".into(), &[1i64]);
@@ -498,7 +543,14 @@ mod tests {
     /// of a contour that has holes). No per-row `Series`/`AnyValue` scaffolding.
     #[test]
     fn reading_a_row_allocates_only_its_contours() {
-        let rows = vec![Some(vec![square(0.0, false), square(20.0, true)])];
+        // A 40-point exterior, so a ring vector that grew instead of being
+        // sized up front would show as extra reallocations.
+        let big = Contour::new(
+            (0..40)
+                .map(|i| Point::new(i as f64, (i * i) as f64))
+                .collect(),
+        );
+        let rows = vec![Some(vec![big, square(20.0, true)])];
         let col = written(rows, Arity::Set);
         let column = ContourColumn::new(&col);
         let (row, allocations) = crate::test_alloc::large_allocations(1, || column.row(0));
