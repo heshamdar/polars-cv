@@ -13,7 +13,6 @@ use pyo3_polars::derive::polars_expr;
 use view_buffer::geometry::{
     contour::Winding, label::score_contours_on_buffer, measures, pairwise, predicates, transforms,
 };
-use view_buffer::ViewBuffer;
 
 // `contour_accessor!` is `#[macro_export]`ed, so it lives at the crate root
 // regardless of module order; importing it by name avoids depending on
@@ -102,142 +101,6 @@ pub fn contour_to_anyvalue(contour: &view_buffer::geometry::contour::Contour) ->
         ],
         crate::geom_schema::contour_fields(),
     )))
-}
-
-// ============================================================================
-// Contour Parsing Helpers
-// ============================================================================
-
-fn parse_numeric_series(series: &Series) -> PolarsResult<Vec<f64>> {
-    let mut values = Vec::with_capacity(series.len());
-    for i in 0..series.len() {
-        let av = series.get(i)?;
-        if av.is_null() {
-            continue;
-        }
-        let value = av.try_extract::<f64>().map_err(
-            |_| polars_err!(ComputeError: "Image/array values must be numeric, found {:?}", av),
-        )?;
-        values.push(value);
-    }
-    Ok(values)
-}
-
-fn parse_row_values_with_optional_channel(series: &Series) -> PolarsResult<Vec<f64>> {
-    let mut first_non_null: Option<AnyValue> = None;
-    for i in 0..series.len() {
-        let item = series.get(i)?;
-        if !item.is_null() {
-            first_non_null = Some(item);
-            break;
-        }
-    }
-    let Some(sample) = first_non_null else {
-        return Ok(Vec::new());
-    };
-
-    if matches!(sample, AnyValue::List(_) | AnyValue::Array(_, _)) {
-        let mut values = Vec::with_capacity(series.len());
-        for i in 0..series.len() {
-            let pixel = series.get(i)?;
-            if pixel.is_null() {
-                continue;
-            }
-            let pixel_series = match pixel {
-                AnyValue::List(inner) => inner,
-                AnyValue::Array(inner, _) => inner,
-                _ => {
-                    return Err(polars_err!(
-                        ComputeError: "Expected pixel channel values as list/array, found {:?}",
-                        pixel
-                    ))
-                }
-            };
-            let channels = parse_numeric_series(&pixel_series)?;
-            if channels.len() != 1 {
-                return Err(polars_err!(
-                    ComputeError: "Only single-channel row values are supported, found {} channels",
-                    channels.len()
-                ));
-            }
-            values.push(channels[0]);
-        }
-        return Ok(values);
-    }
-
-    parse_numeric_series(series)
-}
-
-fn parse_grid_rows(series: &Series) -> PolarsResult<Vec<Vec<f64>>> {
-    let mut rows = Vec::with_capacity(series.len());
-    for i in 0..series.len() {
-        let row = series.get(i)?;
-        if row.is_null() {
-            continue;
-        }
-        let row_series = match row {
-            AnyValue::List(inner) => inner,
-            AnyValue::Array(inner, _) => inner,
-            _ => {
-                return Err(polars_err!(
-                    ComputeError: "Image rows must be list/array values, found {:?}",
-                    row
-                ))
-            }
-        };
-        rows.push(parse_row_values_with_optional_channel(&row_series)?);
-    }
-    if rows.windows(2).any(|w| w[0].len() != w[1].len()) {
-        return Err(polars_err!(
-            ComputeError: "Image rows must have uniform width"
-        ));
-    }
-    Ok(rows)
-}
-
-/// Parse a nested list/array image column value into a `[H, W, 1]` `ViewBuffer`.
-///
-/// A buffer, rather than a row-of-rows grid, because that is what
-/// [`score_contours_on_buffer`] consumes — the same engine entry point
-/// `Pipeline.label_reduce` reaches through the graph. An empty or null value
-/// yields a `[0, 0, 1]` buffer, which scores every contour 0.0.
-fn parse_heatmap(value: &AnyValue) -> PolarsResult<ViewBuffer> {
-    let rows: Vec<Vec<f64>> = match value {
-        AnyValue::List(series) | AnyValue::Array(series, _) => {
-            let mut first_non_null: Option<AnyValue> = None;
-            for i in 0..series.len() {
-                let item = series.get(i)?;
-                if !item.is_null() {
-                    first_non_null = Some(item);
-                    break;
-                }
-            }
-
-            match first_non_null {
-                // Rows of pixels: a full [H, W] grid. A flat list of scalars is a
-                // single row, and an empty/all-null column has no rows at all.
-                Some(AnyValue::List(_) | AnyValue::Array(_, _)) => parse_grid_rows(series)?,
-                Some(_) => vec![parse_numeric_series(series)?],
-                None => Vec::new(),
-            }
-        }
-        AnyValue::Null => Vec::new(),
-        _ => {
-            return Err(polars_err!(
-                ComputeError: "Expected image/array values as list/array, got {:?}",
-                value
-            ))
-        }
-    };
-
-    let height = rows.len();
-    let width = rows.first().map_or(0, Vec::len);
-    let data: Vec<f64> = rows.into_iter().flatten().collect();
-
-    Ok(ViewBuffer::from_vec_with_shape(
-        data,
-        vec![height, width, 1],
-    ))
 }
 
 fn float_list_anyvalue(values: &[f64], name: PlSmallStr) -> AnyValue<'static> {
@@ -633,10 +496,15 @@ fn contour_label_reduce(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<S
     let contours = ContourColumn::new(&inputs[0]);
     let heatmap_series = params.column(image);
     let rows = params.map_rows(crate::geom_calls!(), inputs[0].len(), |params, i| {
-        let heatmap_value = heatmap_series.get(i)?;
-        if heatmap_value.is_null() {
+        // The heatmap decodes as the pipeline's `list`/`array` source does:
+        // a grid of values, `[H, W]` or `[H, W, 1]`, refused if jagged or
+        // holding a null. A null or empty heatmap is a null row.
+        let Some(heatmap) =
+            crate::graph::decode::decode_list_or_array_source(heatmap_series, i, None, false)
+                .map_err(|e| polars_err!(ComputeError: "label_reduce image, row {}: {}", i, e))?
+        else {
             return Ok(None);
-        }
+        };
         let Some(contours) = contours.row(i)? else {
             return Ok(None);
         };
@@ -644,7 +512,6 @@ fn contour_label_reduce(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<S
         // affects the output's shape or dtype.
         let reduction = params.value(reduction, i)?;
         let region_mode = params.value(region_mode, i)?;
-        let heatmap = parse_heatmap(&heatmap_value)?;
         let scores = score_contours_on_buffer(&heatmap, &contours, reduction, region_mode)
             .map_err(|err| polars_err!(ComputeError: "{}", err))?;
         Ok(Some(float_list_anyvalue(

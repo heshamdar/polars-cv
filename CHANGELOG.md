@@ -422,6 +422,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **A jagged or null `List` row is refused, not misread.** The `list` source
+  took each level's size from its first element and read the row's values as
+  that shape: `[[1, 2], [3]]` read past the end of its values (the missing
+  slot held whatever memory followed), `[[1, 2], [3], [4, 5, 6]]` came back
+  silently re-rowed as `[[1, 2], [3, 4], [5, 6]]`, and a null value read as
+  0. A row must now be a grid of values; anything else is an error naming
+  what is wrong. `.contour.label_reduce`'s image operand decodes the same way
+  (it had its own parser, which dropped null pixels and shifted the rest of
+  the row); a flat, one-dimensional image is refused rather than read as one
+  row, and an empty image scores a null row rather than zeros.
+
 - **Geometry values are read by field name, and a missing value is never
   0.0.** `.contour.contains_point` read a point's first two fields by
   position (a `{y, x}` point was tested swapped) and read a missing,
