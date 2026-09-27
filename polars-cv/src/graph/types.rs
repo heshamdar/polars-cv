@@ -91,9 +91,9 @@ pub(crate) enum RowResult {
     /// Contour geometry data
     Contours(Option<Vec<Contour>>),
     /// Typed list for "list" sink (variable length, preserves dtype).
-    TypedList(Option<(TypedBufferData, Vec<usize>)>),
+    TypedList(Option<ViewBuffer>),
     /// Typed fixed-size array for "array" sink (fixed shape, preserves dtype).
-    TypedArray(Option<(TypedBufferData, Vec<usize>)>),
+    TypedArray(Option<ViewBuffer>),
     /// Numpy/Torch struct output (zero-copy ViewBuffer ownership transfer).
     NumpyStruct(Option<ViewBuffer>),
     /// Histogram buckets data [lower_edge, upper_edge, count, normalized] flattened
@@ -433,83 +433,6 @@ impl UnifiedGraph {
         Ok(order)
     }
 }
-/// Typed buffer data for dtype-preserving list/array outputs.
-#[derive(Debug, Clone)]
-pub(crate) enum TypedBufferData {
-    U8(Vec<u8>),
-    I8(Vec<i8>),
-    U16(Vec<u16>),
-    I16(Vec<i16>),
-    U32(Vec<u32>),
-    I32(Vec<i32>),
-    U64(Vec<u64>),
-    I64(Vec<i64>),
-    F32(Vec<f32>),
-    F64(Vec<f64>),
-}
-impl TypedBufferData {
-    /// Get the number of elements in this typed buffer.
-    pub(crate) fn len(&self) -> usize {
-        match self {
-            TypedBufferData::U8(v) => v.len(),
-            TypedBufferData::I8(v) => v.len(),
-            TypedBufferData::U16(v) => v.len(),
-            TypedBufferData::I16(v) => v.len(),
-            TypedBufferData::U32(v) => v.len(),
-            TypedBufferData::I32(v) => v.len(),
-            TypedBufferData::U64(v) => v.len(),
-            TypedBufferData::I64(v) => v.len(),
-            TypedBufferData::F32(v) => v.len(),
-            TypedBufferData::F64(v) => v.len(),
-        }
-    }
-    /// Extract typed data from a buffer that is already contiguous.
-    ///
-    /// This avoids the redundant `to_contiguous()` call when the caller
-    /// has already materialized the buffer.
-    ///
-    /// # Panics
-    /// Panics if the buffer is not contiguous (via `as_slice` assertion).
-    pub(crate) fn from_contiguous_buffer(buf: &ViewBuffer) -> Self {
-        // as_slice asserts contiguity internally
-        match buf.dtype() {
-            view_buffer::DType::U8 => TypedBufferData::U8(buf.as_slice::<u8>().to_vec()),
-            view_buffer::DType::I8 => TypedBufferData::I8(buf.as_slice::<i8>().to_vec()),
-            view_buffer::DType::U16 => TypedBufferData::U16(buf.as_slice::<u16>().to_vec()),
-            view_buffer::DType::I16 => TypedBufferData::I16(buf.as_slice::<i16>().to_vec()),
-            view_buffer::DType::U32 => TypedBufferData::U32(buf.as_slice::<u32>().to_vec()),
-            view_buffer::DType::I32 => TypedBufferData::I32(buf.as_slice::<i32>().to_vec()),
-            view_buffer::DType::U64 => TypedBufferData::U64(buf.as_slice::<u64>().to_vec()),
-            view_buffer::DType::I64 => TypedBufferData::I64(buf.as_slice::<i64>().to_vec()),
-            view_buffer::DType::F32 => TypedBufferData::F32(buf.as_slice::<f32>().to_vec()),
-            view_buffer::DType::F64 => TypedBufferData::F64(buf.as_slice::<f64>().to_vec()),
-        }
-    }
-    /// The view-buffer dtype this variant holds.
-    pub(crate) fn dtype(&self) -> view_buffer::DType {
-        use view_buffer::DType;
-        match self {
-            TypedBufferData::U8(_) => DType::U8,
-            TypedBufferData::I8(_) => DType::I8,
-            TypedBufferData::U16(_) => DType::U16,
-            TypedBufferData::I16(_) => DType::I16,
-            TypedBufferData::U32(_) => DType::U32,
-            TypedBufferData::I32(_) => DType::I32,
-            TypedBufferData::U64(_) => DType::U64,
-            TypedBufferData::I64(_) => DType::I64,
-            TypedBufferData::F32(_) => DType::F32,
-            TypedBufferData::F64(_) => DType::F64,
-        }
-    }
-
-    /// Get the dtype string for this typed data.
-    ///
-    /// Spelled by `dtype_table!`, not here: this maps a variant to a dtype and
-    /// lets that dtype name itself.
-    pub(crate) fn dtype_str(&self) -> &'static str {
-        self.dtype().short_name()
-    }
-}
 /// Output value from encoding - can be binary, contour struct, scalar, or array.
 #[derive(Debug, Clone)]
 pub(crate) enum OutputValue {
@@ -517,20 +440,13 @@ pub(crate) enum OutputValue {
     Contours(Arc<Vec<Contour>>),
     Scalar(f64),
     Vector(Arc<Vec<f64>>),
-    /// Typed list representation for "list" sink - preserves buffer dtype.
-    TypedList {
-        /// Typed data preserving original buffer dtype.
-        data: TypedBufferData,
-        /// Original shape of the buffer.
-        shape: Vec<usize>,
-    },
-    /// Typed fixed-size array representation for "array" sink.
-    TypedArray {
-        /// Typed data preserving original buffer dtype.
-        data: TypedBufferData,
-        /// Fixed shape (validated against buffer).
-        shape: Vec<usize>,
-    },
+    /// A row of the "list" sink: its buffer, in any layout and shape. The
+    /// elements are copied once, straight into the column's values
+    /// (`ViewBuffer::append_to`); the buffer's shape is the row's.
+    TypedList(ViewBuffer),
+    /// A row of the "array" sink, its shape already checked against the
+    /// sink's (see `TypedList`).
+    TypedArray(ViewBuffer),
     /// Numpy/Torch struct output (zero-copy ViewBuffer for struct encoding).
     NumpyStruct(ViewBuffer),
     /// Histogram buckets data [lower_edge, upper_edge, count, normalized] flattened

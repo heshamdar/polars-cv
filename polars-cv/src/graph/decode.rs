@@ -14,7 +14,7 @@ use super::encode::{
     contour_set_series, histogram_buckets_to_polars_value, histogram_struct_dtype, TypedListRow,
 };
 use super::sink_kind::SinkKind;
-use super::types::{OutputSpec, RowResult, TypedBufferData};
+use super::types::{OutputSpec, RowResult};
 
 /// Extract binary data from a BinaryChunked at a specific row.
 ///
@@ -793,9 +793,8 @@ fn convert_rows<T>(
 }
 
 /// A vector row as typed list data.
-fn vector_row(vals: Vec<f64>) -> (TypedBufferData, Vec<usize>) {
-    let len = vals.len();
-    (TypedBufferData::F64(vals), vec![len])
+fn vector_row(vals: Vec<f64>) -> ViewBuffer {
+    ViewBuffer::from_vec(vals)
 }
 
 /// Build a series from row results using the OutputSpec to determine the type.

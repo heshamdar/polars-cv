@@ -100,6 +100,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **`list` and `array` sinks copy each row's values once.** A row used to
+  be copied into a per-row vector (after materialising a strided row
+  contiguously) and then again into the column's values; each row's buffer
+  now goes straight into the values through its strides
+  (`ViewBuffer::append_to`, which shares its copy routine with
+  `to_contiguous`).
 - **Image decode and encode no longer copy every pixel an extra time.**
   Decoding moved the codec's pixels into the buffer with the image crate's
   `to_*` conversions, which allocate a new image even when the type already

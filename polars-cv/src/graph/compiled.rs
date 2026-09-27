@@ -554,12 +554,8 @@ impl CompiledGraph {
                             OutputValue::Contours(contours) => {
                                 RowResult::Contours(Some((*contours).clone()))
                             }
-                            OutputValue::TypedList { data, shape } => {
-                                RowResult::TypedList(Some((data, shape)))
-                            }
-                            OutputValue::TypedArray { data, shape } => {
-                                RowResult::TypedArray(Some((data, shape)))
-                            }
+                            OutputValue::TypedList(buf) => RowResult::TypedList(Some(buf)),
+                            OutputValue::TypedArray(buf) => RowResult::TypedArray(Some(buf)),
                             OutputValue::NumpyStruct(buf) => RowResult::NumpyStruct(Some(buf)),
                             OutputValue::HistogramBuckets(buckets) => {
                                 RowResult::HistogramBuckets(Some(buckets))
@@ -2311,6 +2307,66 @@ mod tests {
                 alone.binary().unwrap().get(0),
                 "row {i}"
             );
+        }
+    }
+
+    /// Image-sized allocations one single-row call of `graph` makes (one
+    /// row runs inline, so the per-thread count sees all of it).
+    fn copies_in_call(graph: &str, input: &Series, image_bytes: usize) -> usize {
+        let compiled = CompiledGraph::compile(graph).unwrap();
+        let (out, count) = crate::test_alloc::large_allocations(image_bytes, || {
+            compiled.execute(std::slice::from_ref(input)).unwrap()
+        });
+        assert_eq!(out.null_count(), 0);
+        count
+    }
+
+    /// A `list` or `array` sink copies each row's values once, into the
+    /// column's flat values buffer, whatever the row's layout: it costs one
+    /// values-sized allocation more than the zero-copy `numpy` sink over the
+    /// same graph, never a per-row intermediate. (f64 elements, so a list's
+    /// offsets — one 8-byte offset per innermost list — stay below the
+    /// values' size and only copies of the values are counted.)
+    #[test]
+    fn tensor_sinks_copy_each_row_once() {
+        let (h, w, c) = (64usize, 48usize, 3usize);
+        let image_bytes = h * w * c * 8;
+        let blob = ViewBuffer::from_vec_with_shape(
+            (0..h * w * c).map(|i| i as f64).collect::<Vec<f64>>(),
+            vec![h, w, c],
+        )
+        .to_blob();
+        let input = Series::new("b".into(), std::slice::from_ref(&blob));
+        let graph = |ops: &str, sink: &str| {
+            format!(
+                r#"{{"nodes": {{"n0": {{"source": {{"format": "blob", "dtype": "f64"}},
+                                     "ops": [{ops}]}}}},
+                    "outputs": {{"_output": {{"node": "n0", "sink": {sink}}}}},
+                    "column_bindings": {{"n0": 0}}}}"#
+            )
+        };
+        for (layout, ops, shape) in [
+            ("contiguous", "", format!("[{h}, {w}, {c}]")),
+            (
+                "transposed",
+                r#"{"op": "transpose", "axes": [1, 0, 2]}"#,
+                format!("[{w}, {h}, {c}]"),
+            ),
+        ] {
+            let baseline =
+                copies_in_call(&graph(ops, r#"{"format": "numpy"}"#), &input, image_bytes);
+            for sink in [
+                r#"{"format": "list"}"#.to_string(),
+                format!(r#"{{"format": "array", "shape": {shape}}}"#),
+            ] {
+                let copies = copies_in_call(&graph(ops, &sink), &input, image_bytes);
+                assert_eq!(
+                    copies,
+                    baseline + 1,
+                    "{layout} row, sink {sink}: {copies} image-sized allocations, \
+                     the numpy sink makes {baseline}"
+                );
+            }
         }
     }
 

@@ -24,6 +24,8 @@ mod passes;
 mod plan;
 mod point;
 mod read_bytes;
+#[cfg(test)]
+mod test_alloc;
 
 use polars::prelude::*;
 use pyo3::prelude::*;

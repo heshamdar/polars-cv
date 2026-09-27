@@ -12,7 +12,7 @@ use view_buffer::ops::NodeOutput;
 use view_buffer::{DType, GeometryOp, Op, PlannedDType, ViewBuffer};
 
 use super::sink_kind::SinkKind;
-use super::types::{OutputSpec, OutputValue, TypedBufferData};
+use super::types::{OutputSpec, OutputValue};
 use crate::formats::Format as _;
 
 /// Execute a geometry operation with typed domain dispatch.
@@ -161,13 +161,20 @@ pub(crate) fn execute_geometry_op(
         }
     }
 }
-/// Helper type for list row data: (TypedBufferData, shape)
-pub(crate) type TypedListRow = Option<(TypedBufferData, Vec<usize>)>;
+/// One row of a tensor sink: the row's buffer, in any layout. Its shape is
+/// the row's shape in the column.
+pub(crate) type TypedListRow = Option<ViewBuffer>;
+
+/// The number of elements a row's buffer holds.
+fn element_count(buf: &ViewBuffer) -> usize {
+    buf.shape().iter().product()
+}
 
 // The tensor sinks (`list`, `array`) are built straight into Arrow: one flat
 // primitive values buffer holding every row, wrapped in one offsets (list) or
 // fixed-size (array) level per dimension, with the row nulls as the outermost
-// validity. Each value is copied once, from the row into the flat buffer.
+// validity. Each value is copied once, from the row's buffer — through its
+// strides, whatever its layout — into the flat buffer.
 //
 // They used to build one `AnyValue` per *element* whenever the column was not
 // perfectly regular — every rank >= 2 list sink, and any array sink with a single
@@ -182,7 +189,7 @@ pub(crate) type TypedListRow = Option<(TypedBufferData, Vec<usize>)>;
 /// callers of the executor reach it — the first row's. Every row must then
 /// carry exactly this dtype (see [`flat_values`]).
 fn element_dtype(rows: &[TypedListRow], dtype: PlannedDType) -> PolarsResult<DType> {
-    let first_row = || rows.iter().find_map(|r| r.as_ref()).map(|(d, _)| d.dtype());
+    let first_row = || rows.iter().find_map(|r| r.as_ref()).map(ViewBuffer::dtype);
     match dtype {
         PlannedDType::Known(dtype) => Ok(dtype),
         PlannedDType::Unknown | PlannedDType::SomeFloat => first_row().ok_or_else(|| {
@@ -211,20 +218,20 @@ fn flat_values(
     let total: usize = rows
         .iter()
         .map(|r| match r {
-            Some((data, _)) => data.len(),
+            Some(data) => element_count(data),
             None => null_fill.unwrap_or(0),
         })
         .sum();
     macro_rules! flat {
-        ($variant:ident, $t:ty) => {{
+        ($t:ty) => {{
             let mut flat: Vec<$t> = Vec::with_capacity(total);
             for (i, row) in rows.iter().enumerate() {
                 match row {
-                    Some((TypedBufferData::$variant(values), _)) => flat.extend_from_slice(values),
-                    Some((other, _)) => polars_bail!(ComputeError:
+                    Some(data) if data.dtype() == dtype => data.append_to(&mut flat),
+                    Some(other) => polars_bail!(ComputeError:
                         "row {} produced {} but the column was planned as {}. The \
                          planner's dtype contract disagrees with the Rust implementation.",
-                        i, other.dtype_str(), dtype.short_name()
+                        i, other.dtype().short_name(), dtype.short_name()
                     ),
                     None => flat.resize(flat.len() + null_fill.unwrap_or(0), <$t>::default()),
                 }
@@ -233,16 +240,16 @@ fn flat_values(
         }};
     }
     Ok(match dtype {
-        DType::U8 => flat!(U8, u8),
-        DType::I8 => flat!(I8, i8),
-        DType::U16 => flat!(U16, u16),
-        DType::I16 => flat!(I16, i16),
-        DType::U32 => flat!(U32, u32),
-        DType::I32 => flat!(I32, i32),
-        DType::U64 => flat!(U64, u64),
-        DType::I64 => flat!(I64, i64),
-        DType::F32 => flat!(F32, f32),
-        DType::F64 => flat!(F64, f64),
+        DType::U8 => flat!(u8),
+        DType::I8 => flat!(i8),
+        DType::U16 => flat!(u16),
+        DType::I16 => flat!(i16),
+        DType::U32 => flat!(u32),
+        DType::I32 => flat!(i32),
+        DType::U64 => flat!(u64),
+        DType::I64 => flat!(i64),
+        DType::F32 => flat!(f32),
+        DType::F64 => flat!(f64),
     })
 }
 
@@ -279,17 +286,21 @@ pub(super) fn build_typed_list_series_from_rows_with_dtype(
     let ndim = expected_shape
         .map(|shape| shape.len())
         .or(expected_ndim)
-        .or_else(|| rows.iter().find_map(|r| r.as_ref()).map(|(_, s)| s.len()));
+        .or_else(|| {
+            rows.iter()
+                .find_map(|r| r.as_ref())
+                .map(|b| b.shape().len())
+        });
     let Some(ndim) = ndim.filter(|&n| n > 0) else {
         polars_bail!(ComputeError: "cannot build a list series without a known output rank");
     };
     for (i, row) in rows.iter().enumerate() {
-        if let Some((data, shape)) = row {
+        if let Some(data) = row {
             polars_ensure!(
-                shape.len() == ndim && shape.iter().product::<usize>() == data.len(),
+                data.shape().len() == ndim,
                 ComputeError:
-                "row {} has shape {:?} ({} values) but the list column was planned with rank {}",
-                i, shape, data.len(), ndim
+                "row {} has shape {:?} but the list column was planned with rank {}",
+                i, data.shape(), ndim
             );
         }
     }
@@ -302,7 +313,8 @@ pub(super) fn build_typed_list_series_from_rows_with_dtype(
         let mut lengths: Vec<usize> = Vec::new();
         for row in rows {
             match row {
-                Some((_, shape)) => {
+                Some(data) => {
+                    let shape = data.shape();
                     let repeats: usize = shape[..level].iter().product();
                     lengths.extend(std::iter::repeat_n(shape[level], repeats));
                 }
@@ -361,12 +373,12 @@ pub(super) fn build_typed_array_series_from_rows_with_dtype(
     let dtype = element_dtype(rows, dtype)?;
     let expected_len: usize = shape.iter().product();
     for (i, row) in rows.iter().enumerate() {
-        if let Some((data, _)) = row {
+        if let Some(data) = row {
             polars_ensure!(
-                data.len() == expected_len,
+                element_count(data) == expected_len,
                 ComputeError:
                 "row {} has {} values but the array column was planned with shape {:?} ({} values)",
-                i, data.len(), shape, expected_len
+                i, element_count(data), shape, expected_len
             );
         }
     }
@@ -402,38 +414,22 @@ fn require_buffer<'a>(
     })
 }
 
-/// `[H, W, …]`-shaped list encoding of a buffer.
-fn typed_list_of(buf: &ViewBuffer) -> OutputValue {
-    let contig = buf.to_contiguous();
-    let shape = contig.shape().to_vec();
-    OutputValue::TypedList {
-        data: TypedBufferData::from_contiguous_buffer(&contig),
-        shape,
-    }
-}
-
 /// Fixed-shape array encoding of a buffer, validated against the sink's shape.
+/// The buffer is shared, not copied: its values are copied once, when the
+/// column is built.
 fn typed_array_of(
     buf: &ViewBuffer,
     spec_shape: Option<&Vec<usize>>,
 ) -> Result<OutputValue, String> {
-    let contig = buf.to_contiguous();
-    let buffer_shape = contig.shape().to_vec();
-    let shape = match spec_shape {
-        Some(s) if s != &buffer_shape => {
-            return Err(format!(
-                "Array sink shape {s:?} does not match buffer shape {buffer_shape:?}. \
-                 Use squeeze() or expand_dims() to adjust dimensions, \
-                 or omit shape to infer from buffer."
-            ));
-        }
-        Some(s) => s.clone(),
-        None => buffer_shape,
-    };
-    Ok(OutputValue::TypedArray {
-        data: TypedBufferData::from_contiguous_buffer(&contig),
-        shape,
-    })
+    if let Some(s) = spec_shape.filter(|s| s.as_slice() != buf.shape()) {
+        return Err(format!(
+            "Array sink shape {s:?} does not match buffer shape {:?}. \
+             Use squeeze() or expand_dims() to adjust dimensions, \
+             or omit shape to infer from buffer.",
+            buf.shape()
+        ));
+    }
+    Ok(OutputValue::TypedArray(buf.clone()))
 }
 
 /// Encode a NodeOutput to an output value, keyed on the resolved [`SinkKind`].
@@ -489,7 +485,9 @@ pub(crate) fn encode_node_output(
                 .map(OutputValue::Binary)
                 .map_err(|e| format!("Encode error: {e}"))
         }
-        SinkKind::BufferList => Ok(typed_list_of(require_buffer(output, domain, format)?)),
+        SinkKind::BufferList => Ok(OutputValue::TypedList(
+            require_buffer(output, domain, format)?.clone(),
+        )),
         SinkKind::BufferArray => typed_array_of(
             require_buffer(output, domain, format)?,
             sink.shape().as_ref(),
@@ -499,7 +497,9 @@ pub(crate) fn encode_node_output(
         // both encode the same way here.
         SinkKind::VectorList => match output {
             NodeOutput::Vector(vals) => Ok(OutputValue::Vector(vals.clone())),
-            _ => Ok(typed_list_of(require_buffer(output, domain, format)?)),
+            _ => Ok(OutputValue::TypedList(
+                require_buffer(output, domain, format)?.clone(),
+            )),
         },
         SinkKind::VectorArray => match output {
             NodeOutput::Vector(vals) => {
@@ -513,10 +513,9 @@ pub(crate) fn encode_node_output(
                         values.len()
                     ));
                 }
-                Ok(OutputValue::TypedArray {
-                    data: TypedBufferData::F64(values),
-                    shape,
-                })
+                Ok(OutputValue::TypedArray(
+                    ViewBuffer::from_vec(values).reshape(shape),
+                ))
             }
             _ => typed_array_of(
                 require_buffer(output, domain, format)?,
@@ -749,15 +748,19 @@ mod tensor_sink_tests {
         build_typed_array_series_from_rows_with_dtype,
         build_typed_list_series_from_rows_with_dtype, TypedListRow,
     };
-    use crate::graph::types::TypedBufferData;
     use polars::prelude::*;
+    use view_buffer::ViewBuffer;
 
     fn u8_row(start: u8, shape: &[usize]) -> TypedListRow {
         let n: usize = shape.iter().product();
-        Some((
-            TypedBufferData::U8((0..n).map(|i| start.wrapping_add(i as u8)).collect()),
-            shape.to_vec(),
-        ))
+        Some(
+            ViewBuffer::from_vec(
+                (0..n)
+                    .map(|i| start.wrapping_add(i as u8))
+                    .collect::<Vec<u8>>(),
+            )
+            .reshape(shape.to_vec()),
+        )
     }
 
     const EXPLODE: ExplodeOptions = ExplodeOptions {
@@ -856,7 +859,7 @@ mod tensor_sink_tests {
     fn a_later_row_with_another_dtype_is_an_error_not_a_cast() {
         let rows = vec![
             u8_row(0, &[2]),
-            Some((TypedBufferData::F32(vec![0.5, 1.5]), vec![2])),
+            Some(ViewBuffer::from_vec(vec![0.5f32, 1.5])),
         ];
         let list =
             build_typed_list_series_from_rows_with_dtype("o".into(), &rows, U8, None, Some(1));
