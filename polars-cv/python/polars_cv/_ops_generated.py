@@ -1327,9 +1327,12 @@ class _OpsMixin:
     def canny(
         self, *, low_threshold: FloatOrExpr = 50.0, high_threshold: FloatOrExpr = 150.0
     ) -> Pipeline:
-        """Canny edge detection: Gaussian blur, Sobel gradients, non-maximum
-        suppression and double-threshold hysteresis. Output is a U8 binary edge
-        map (0 or 255).
+        """Canny edge detection, as ``cv2.Canny(image, low, high)`` computes it:
+        3x3 Sobel gradients (L1 magnitude), non-maximum suppression and
+        double-threshold hysteresis. There is no pre-blur — add ``.blur()``
+        first for a smoothed edge map, as with OpenCV. A colour image uses, per
+        pixel, the channel with the strongest gradient; alpha is ignored. Output
+        is a U8 binary edge map (0 or 255).
 
         Domain: buffer → buffer
 
@@ -1338,7 +1341,7 @@ class _OpsMixin:
             high_threshold: Upper hysteresis threshold.
 
         Example:
-            >>> edges = Pipeline().source("image_bytes").canny(low_threshold=50, high_threshold=150)
+            >>> edges = Pipeline().source("image_bytes").blur(sigma=1.4).canny(low_threshold=50, high_threshold=150)
         """
         return self._append_typed(
             "canny", {"low_threshold": low_threshold, "high_threshold": high_threshold}

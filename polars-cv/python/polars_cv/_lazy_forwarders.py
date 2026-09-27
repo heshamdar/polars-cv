@@ -108,7 +108,7 @@ class _LazyForwardersMixin:
     def canny(
         self, *, low_threshold: FloatOrExpr = 50.0, high_threshold: FloatOrExpr = 150.0
     ) -> LazyPipelineExpr:
-        """Canny edge detection: Gaussian blur, Sobel gradients, non-maximum
+        """Canny edge detection, as ``cv2.Canny(image, low, high)`` computes it:
 
         Lazy form of :meth:`Pipeline.canny` on this expression's output.
         """

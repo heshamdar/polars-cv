@@ -307,7 +307,7 @@
     "name": "canny",
     "python": "canny",
     "visibility": "public",
-    "doc": "Canny edge detection: Gaussian blur, Sobel gradients, non-maximum\nsuppression and double-threshold hysteresis. Output is a U8 binary edge\nmap (0 or 255).\n\nExample:\n    >>> edges = Pipeline().source(\"image_bytes\").canny(low_threshold=50, high_threshold=150)",
+    "doc": "Canny edge detection, as ``cv2.Canny(image, low, high)`` computes it:\n3x3 Sobel gradients (L1 magnitude), non-maximum suppression and\ndouble-threshold hysteresis. There is no pre-blur — add ``.blur()``\nfirst for a smoothed edge map, as with OpenCV. A colour image uses, per\npixel, the channel with the strongest gradient; alpha is ignored. Output\nis a U8 binary edge map (0 or 255).\n\nExample:\n    >>> edges = Pipeline().source(\"image_bytes\").blur(sigma=1.4).canny(low_threshold=50, high_threshold=150)",
     "fields": [
       {
         "name": "low_threshold",
