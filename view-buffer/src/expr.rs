@@ -5,7 +5,7 @@ use crate::core::dtype::{DType, DTypeCategory};
 use crate::core::layout::Layout;
 use crate::execution::{ExecutionPlan, PlanStep};
 use crate::ops::affine::AffineParams;
-use crate::ops::scalar::{FusedKernel, ScalarOp};
+use crate::ops::scalar::FusedKernel;
 use crate::ops::traits::MemoryEffect;
 use crate::ops::{
     ColorConvertOp, ComputeOp, ConvolveOp, FilterType, ImageOp, ImageOpKind, Normalization, Op,
@@ -720,100 +720,6 @@ fn plan_ends_in_view(plan: &ExecutionPlan) -> bool {
 
 // --- Helper for Fusion ---
 
-/// Lowers one `ComputeOp` into the scalar ops a `FusedKernel` runs.
-///
-/// `input_dtype` is needed because some lowerings are dtype-dependent:
-/// `Invert` and the gamma family use the dtype's value range, so the same op
-/// becomes different scalar work for `u8` than for `f32`.
-///
-/// `is_outer` marks the op at the end of the chain. An outer `Cast` lowers to
-/// *no* scalar ops at all: the kernel already converts its `f32` result to
-/// `FusedKernel::out_dtype` on write, and `try_fuse` pins that dtype to what
-/// the unfused chain would have produced — so emitting a cast here would apply
-/// the conversion twice.
-fn extract_ops(
-    op: &ComputeOp,
-    input_dtype: DType,
-    is_outer: bool,
-    list: &mut Vec<ScalarOp>,
-) -> bool {
-    // The float-promoting scalar family is excluded for f64 inputs: the
-    // dtype contract preserves f64 (and the unfused runtime now computes in
-    // f64), but the fused kernel computes in f32 — fusing would silently
-    // drop precision. f64 chains simply stay unfused.
-    let promote_family_fusable = input_dtype != DType::F64;
-    match op {
-        ComputeOp::Scale { factor } if promote_family_fusable => {
-            list.push(ScalarOp::Mul(*factor));
-            true
-        }
-        ComputeOp::Relu if promote_family_fusable => {
-            list.push(ScalarOp::Relu);
-            true
-        }
-        ComputeOp::Clamp { min, max } if promote_family_fusable => {
-            list.push(ScalarOp::Clamp(*min, *max));
-            true
-        }
-        // The core math primitives: each is already a single `ScalarOp`, so
-        // lowering is a direct push. f64 stays unfused (the kernel is f32),
-        // via the same promote-family gate as the ops above.
-        op if promote_family_fusable && op.scalar().is_some() => {
-            list.extend(op.scalar());
-            true
-        }
-        // Gamma is scan-free and lowers exactly to its unfused formula:
-        // `((x / max).clamp(0, 1)).powf(g) * max`, max = the input dtype's
-        // value range for integers, 1 for float inputs (matching
-        // `apply_adjust_gamma` via the same `norm_range_max_f32`).
-        ComputeOp::AdjustGamma { gamma: g } if promote_family_fusable => {
-            let max_val: f32 = input_dtype.norm_range_max_f32();
-            if max_val != 1.0 {
-                list.push(ScalarOp::Div(max_val));
-            }
-            list.push(ScalarOp::Clamp(0.0, 1.0));
-            list.push(ScalarOp::Pow(*g));
-            if max_val != 1.0 {
-                list.push(ScalarOp::Mul(max_val));
-            }
-            true
-        }
-        // Invert is `max - x`, which is `-x + max` (bit-identical in IEEE
-        // arithmetic for the float case, exact integers for u8/u16 in f32).
-        // Only the dtypes whose unfused output round-trips exactly through
-        // the kernel's f32 compute are fused: f64 would lose precision, and
-        // the remaining integer dtypes take an unfused fallback path with
-        // different output-dtype behavior.
-        ComputeOp::Invert => {
-            let max_val: f32 = match input_dtype {
-                DType::U8 => 255.0,
-                DType::U16 => 65535.0,
-                DType::F32 => 1.0,
-                _ => return false,
-            };
-            list.push(ScalarOp::Mul(-1.0));
-            list.push(ScalarOp::Add(max_val));
-            true
-        }
-        // A cast is the kernel's own read/write conversion:
-        // - as the chain's last op, the kernel's out_dtype performs it;
-        // - mid-chain, only cast-to-f32 is a no-op (the kernel computes in
-        //   f32 anyway); other mid-chain casts quantize and must materialize.
-        ComputeOp::Cast { dtype: target } => is_outer || *target == DType::F32,
-        // An existing kernel can be extended only while its result is still
-        // raw f32 — a non-f32 out_dtype is a quantization step that later
-        // ops must observe.
-        ComputeOp::Fused(k) => {
-            if !is_outer && k.out_dtype != DType::F32 {
-                return false;
-            }
-            list.extend(k.ops.iter().cloned());
-            true
-        }
-        _ => false,
-    }
-}
-
 /// Try to fuse two adjacent compute ops into a single `FusedKernel`.
 ///
 /// `inner` runs first (on data of `inner_input_dtype`), then `outer` (on
@@ -830,11 +736,11 @@ fn try_fuse(
 ) -> Option<ComputeOp> {
     let mut ops = Vec::new();
 
-    if !extract_ops(inner, inner_input_dtype, false, &mut ops) {
+    if !crate::ops::elementwise::lower_to_scalars(inner, inner_input_dtype, false, &mut ops) {
         return None;
     }
 
-    if !extract_ops(outer, outer_input_dtype, true, &mut ops) {
+    if !crate::ops::elementwise::lower_to_scalars(outer, outer_input_dtype, true, &mut ops) {
         return None;
     }
 
@@ -998,6 +904,7 @@ mod dtype_contract_tests {
 mod scalar_op_tests {
     use super::*;
     use crate::ops::scalar::signum_numpy;
+    use crate::ops::scalar::ScalarOp;
 
     /// numpy-style comparison tolerant of NaN/inf equality.
     fn approx(got: f32, exp: f32) -> bool {

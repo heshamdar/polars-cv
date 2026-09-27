@@ -21,6 +21,7 @@
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use std::hint::black_box;
 use std::time::Duration;
+use view_buffer::execution::ExecutionPlan;
 use view_buffer::ops::scalar::{FusedKernel, ScalarOp};
 use view_buffer::{
     ComputeOp, DType, FilterType, ImageAdapter, InterpolationType, Normalization, ViewBuffer,
@@ -101,11 +102,15 @@ impl OwnedCopy for ViewBuffer {
     }
 }
 
+/// Run `build` on `buf` as the plugin's executor does: plan from a clone,
+/// drop it, and execute with the source moved in, so a kernel that may write
+/// its input in place (the buffer's sole owner) does.
 fn exec(
     buf: ViewBuffer,
     build: impl Fn(&std::sync::Arc<ViewExpr>) -> std::sync::Arc<ViewExpr>,
 ) -> ViewBuffer {
-    build(&ViewExpr::new_source(buf)).plan().execute()
+    let steps = build(&ViewExpr::new_source(buf.clone())).plan().steps;
+    ExecutionPlan { source: buf, steps }.execute()
 }
 
 fn color_kernels(c: &mut Criterion) {
@@ -145,6 +150,26 @@ fn value_kernels(c: &mut Criterion) {
         exec(b, |e| e.adjust_gamma(0.7))
     });
     bench_sizes(c, "normalize_preset_u8_to_f32", rgb, |b| {
+        exec(b, |e| {
+            e.normalize(
+                Normalization::Preset {
+                    mean: vec![123.7, 116.3, 103.5],
+                    std: vec![58.4, 57.1, 57.4],
+                },
+                DType::F32,
+            )
+        })
+    });
+    bench_sizes(c, "normalize_zscore_u8", rgb, |b| {
+        exec(b, |e| e.normalize(Normalization::ZScore, DType::F32))
+    });
+    bench_sizes(c, "adjust_contrast_u8", rgb, |b| {
+        exec(b, |e| e.adjust_contrast(1.4))
+    });
+    // A standalone float-promoting op: u8 in, f32 out.
+    bench_sizes(c, "scale_u8", rgb, |b| exec(b, |e| e.scale(0.5)));
+    // The per-channel float path (no lookup table for f32 input).
+    bench_sizes(c, "normalize_preset_f32", rgb_f32, |b| {
         exec(b, |e| {
             e.normalize(
                 Normalization::Preset {

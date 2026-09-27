@@ -180,3 +180,113 @@ fn append_to_refuses_another_element_type() {
     let buf = ViewBuffer::from_vec(vec![1u8, 2, 3]);
     buf.append_to(&mut Vec::<u16>::new());
 }
+
+// --- Element-wise ops: which allocations a solely owned buffer pays ---
+
+use std::sync::Arc;
+use view_buffer::execution::ExecutionPlan;
+use view_buffer::ops::scalar::{FusedKernel, ScalarOp};
+use view_buffer::{DType, Normalization, ViewExpr};
+
+/// Run `build` on `buf` the way the plugin's executor does: plan from a
+/// clone, drop the plan's copy, and execute with the source moved in, so the
+/// buffer reaches the op as its sole owner.
+fn run_owned(buf: ViewBuffer, build: impl Fn(&Arc<ViewExpr>) -> Arc<ViewExpr>) -> ViewBuffer {
+    let steps = build(&ViewExpr::new_source(buf.clone())).plan().steps;
+    ExecutionPlan { source: buf, steps }.execute()
+}
+
+/// A patterned `[H, W, c]` u8 image (not flat, so a wrong in-place result
+/// would show in the values).
+fn pattern_u8(channels: usize) -> ViewBuffer {
+    let data: Vec<u8> = (0..H * W * channels)
+        .map(|i| (i * 31 % 251) as u8)
+        .collect();
+    ViewBuffer::from_vec(data).reshape(vec![H, W, channels])
+}
+
+/// How many allocations the size of `buf`'s u8 pixels running `build` on a
+/// solely owned `buf` makes, with the result.
+fn owned_u8_allocations(
+    buf: ViewBuffer,
+    build: impl Fn(&Arc<ViewExpr>) -> Arc<ViewExpr>,
+) -> (ViewBuffer, usize) {
+    let image_bytes = buf.shape().iter().product::<usize>();
+    large_allocations(image_bytes, || run_owned(buf, build))
+}
+
+#[test]
+fn a_solely_owned_u8_invert_writes_in_place() {
+    let (out, count) = owned_u8_allocations(pattern_u8(3), |e| e.invert());
+    assert_eq!(out.dtype(), DType::U8);
+    assert_eq!(out.as_slice::<u8>()[..4], [255, 224, 193, 162]);
+    assert_eq!(count, 0, "invert allocated a buffer only it reads");
+}
+
+#[test]
+fn a_shared_u8_invert_allocates_its_output_once() {
+    let buf = pattern_u8(3);
+    let keep = buf.clone();
+    let image_bytes = buf.shape().iter().product::<usize>();
+    let (out, count) = large_allocations(image_bytes, || run_owned(buf, |e| e.invert()));
+    assert_eq!(count, 1, "a shared input must be copied once, not written");
+    assert_eq!(
+        keep.as_slice::<u8>()[..2],
+        [0, 31],
+        "the shared input was written"
+    );
+    assert_eq!(out.as_slice::<u8>()[..2], [255, 224]);
+}
+
+#[test]
+fn a_solely_owned_u8_to_u8_fused_chain_writes_in_place() {
+    let mut kernel = FusedKernel::new();
+    kernel.push(ScalarOp::Mul(1.2));
+    kernel.push(ScalarOp::Add(-10.0));
+    kernel.push(ScalarOp::Clamp(0.0, 255.0));
+    kernel.out_dtype = DType::U8;
+    let (out, count) = owned_u8_allocations(pattern_u8(3), |e| e.fused(kernel.clone()));
+    assert_eq!(out.dtype(), DType::U8);
+    // 31 * 1.2 - 10 = 27.2 -> 27; 62 * 1.2 - 10 = 64.4 -> 64.
+    assert_eq!(out.as_slice::<u8>()[..3], [0, 27, 64]);
+    assert_eq!(
+        count, 0,
+        "a u8 -> u8 chain allocated a buffer only it reads"
+    );
+}
+
+#[test]
+fn a_solely_owned_u8_threshold_writes_in_place() {
+    let (out, count) = owned_u8_allocations(pattern_u8(1), |e| e.threshold(100.0));
+    assert_eq!(out.as_slice::<u8>()[..5], [0, 0, 0, 0, 255]);
+    assert_eq!(count, 0, "threshold allocated a buffer only it reads");
+}
+
+/// u8 -> f32 needs exactly one new buffer: the f32 output. The old path
+/// cast to f32 first and then mapped into a second f32 buffer.
+#[test]
+fn a_u8_preset_normalize_allocates_only_its_f32_output() {
+    let preset = Normalization::Preset {
+        mean: vec![123.7, 116.3, 103.5],
+        std: vec![58.4, 57.1, 57.4],
+    };
+    let (out, count) =
+        owned_u8_allocations(pattern_u8(3), |e| e.normalize(preset.clone(), DType::F32));
+    assert_eq!(out.dtype(), DType::F32);
+    assert_eq!(out.as_slice::<f32>()[0], (0.0 - 123.7f32) / 58.4);
+    assert_eq!(
+        count, 1,
+        "{count} image-sized allocations, the f32 output is the only one needed"
+    );
+}
+
+/// Unchanged behaviour, pinned beside the new cases: an f32 scale on a
+/// solely owned buffer writes in place.
+#[test]
+fn a_solely_owned_f32_scale_writes_in_place() {
+    let data: Vec<f32> = (0..H * W).map(|i| i as f32).collect();
+    let buf = ViewBuffer::from_vec(data).reshape(vec![H, W]);
+    let (out, count) = large_allocations(H * W * 4, || run_owned(buf, |e| e.scale(2.0)));
+    assert_eq!(out.as_slice::<f32>()[..3], [0.0, 2.0, 4.0]);
+    assert_eq!(count, 0);
+}

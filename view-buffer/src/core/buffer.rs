@@ -38,7 +38,7 @@ use crate::core::bytes::AlignedBytes;
 use crate::core::convert::convert_slice;
 use crate::core::dtype::{with_dtype, DType, ViewType};
 use crate::core::layout::{ExternalLayout, Layout, LayoutFacts};
-use crate::ops::scalar::{FusedKernel, ScalarOp};
+use crate::ops::scalar::FusedKernel;
 use crate::protocol::{dtype_to_u8, ViewHeader, HEADER_SIZE, MAGIC_BYTES, VERSION};
 
 /// Errors that can occur during buffer operations.
@@ -1455,147 +1455,51 @@ impl ViewBuffer {
         debug_assert_eq!(written, total_bytes);
     }
 
-    /// Applies a fused kernel of scalar operations in-place, without allocation.
+    /// The elements as a mutable slice, when this buffer may be written in
+    /// place: contiguous, of dtype `T`, in its own Rust allocation, and the
+    /// allocation's sole owner (no other `ViewBuffer`, and no Arrow or Polars
+    /// column, can see the write).
     ///
-    /// Succeeds only when no dtype conversion is involved on either end
-    /// (F32 buffer, F32 kernel output), the buffer is contiguous, and this
-    /// `Arc` has exactly one strong reference (i.e. the caller holds exclusive
-    /// ownership). In that case the inner `Vec<u8>` is mutated directly —
-    /// zero heap allocation.
+    /// **The one sole-owner check**: every kernel that writes its input in
+    /// place asks here, rather than re-deriving ownership.
     ///
-    /// Returns `true` if the in-place path was taken, `false` if the caller should
-    /// fall back to the allocating [`apply_fused_kernel`] path.
-    pub fn try_apply_fused_kernel_inplace(&mut self, kernel: &FusedKernel) -> bool {
-        if self.dtype() != DType::F32
-            || kernel.out_dtype != DType::F32
-            || !self.layout.is_contiguous()
-        {
-            return false;
+    /// # Panics
+    /// Panics if `T` is not this buffer's dtype.
+    pub(crate) fn unique_contiguous_mut<T: ViewType>(&mut self) -> Option<&mut [T]> {
+        assert_eq!(
+            T::DTYPE,
+            self.dtype(),
+            "unique_contiguous_mut: asked for {:?} elements of a {:?} buffer",
+            T::DTYPE,
+            self.dtype()
+        );
+        if !self.layout.is_contiguous() {
+            return None;
         }
         let BufferStorage::Rust(ref mut arc) = self.data else {
-            return false;
+            return None;
         };
-        let Some(vec) = Arc::get_mut(arc) else {
-            return false;
-        };
-
-        let total_elems: usize = self.layout.shape.iter().product();
-        let data = unsafe {
+        let bytes = Arc::get_mut(arc)?;
+        let count: usize = self.layout.shape.iter().product();
+        // SAFETY: the view is contiguous, so its `count` elements are packed
+        // from `offset` inside the allocation this buffer solely owns;
+        // offsets are whole, aligned elements (CR-41).
+        Some(unsafe {
             std::slice::from_raw_parts_mut(
-                vec.as_mut_ptr().add(self.layout.offset) as *mut f32,
-                total_elems,
+                bytes.as_mut_ptr().add(self.layout.offset).cast::<T>(),
+                count,
             )
-        };
-
-        // One full-array pass per op — the inner loop is a simple scalar
-        // operation that LLVM can auto-vectorize with SIMD (the closure is
-        // known at compile time within each match arm, unlike the old
-        // chunk-then-ops order which blocked auto-vectorization).
-        apply_fused_op_passes(data, &kernel.ops);
-        true
+        })
     }
 
     /// Applies a fused kernel of scalar operations element-wise.
     ///
-    /// Accepts any numeric input dtype: the input is converted to `f32`
-    /// during the gather (equivalent to a fused leading `Cast`), the ops run
-    /// as SIMD-friendly full-array `f32` passes, and the result is converted
-    /// to `kernel.out_dtype` while writing the output buffer (equivalent to a
-    /// fused trailing `Cast`, matching [`ViewBuffer::cast_to`] semantics).
-    /// Compared to bracketing the kernel with separate casts, this removes
-    /// the intermediate materializations.
+    /// Accepts any numeric input dtype: each element is read as `f32`, the
+    /// ops run as `f32` passes, and the result is converted to
+    /// `kernel.out_dtype` (the rule `cast` uses). Runs through the
+    /// element-wise engine (`ops::elementwise`); `&self` is never written.
     pub fn apply_fused_kernel(&self, kernel: &FusedKernel) -> ViewBuffer {
-        let total_elems: usize = self.layout.shape.iter().product();
-
-        // Gather to f32 (handles dtype conversion and striding in one pass).
-        let mut acc: Vec<f32> = self.gather_to_f32(total_elems);
-
-        // One full-array pass per op (auto-vectorized; see inplace docs).
-        apply_fused_op_passes(&mut acc, &kernel.ops);
-
-        // Convert to the kernel's output dtype while writing the result.
-        finish_fused_output(acc, self.layout.shape.clone(), kernel.out_dtype)
-    }
-
-    /// Read every element as `f32`, in logical (row-major) order.
-    ///
-    /// Contiguous buffers convert with a monomorphic per-dtype loop; strided
-    /// buffers gather through the stride walk (also monomorphic per dtype).
-    fn gather_to_f32(&self, total_elems: usize) -> Vec<f32> {
-        if self.layout.is_contiguous() {
-            macro_rules! convert_contig {
-                ($t:ty) => {{
-                    let src_ptr =
-                        unsafe { self.data.as_ptr().add(self.layout.offset) as *const $t };
-                    let src = unsafe { std::slice::from_raw_parts(src_ptr, total_elems) };
-                    src.iter().map(|&x| x as f32).collect()
-                }};
-            }
-            return match self.dtype() {
-                DType::F32 => {
-                    let src_ptr =
-                        unsafe { self.data.as_ptr().add(self.layout.offset) as *const f32 };
-                    let src = unsafe { std::slice::from_raw_parts(src_ptr, total_elems) };
-                    src.to_vec()
-                }
-                DType::U8 => convert_contig!(u8),
-                DType::I8 => convert_contig!(i8),
-                DType::U16 => convert_contig!(u16),
-                DType::I16 => convert_contig!(i16),
-                DType::U32 => convert_contig!(u32),
-                DType::I32 => convert_contig!(i32),
-                DType::U64 => convert_contig!(u64),
-                DType::I64 => convert_contig!(i64),
-                DType::F64 => convert_contig!(f64),
-            };
-        }
-
-        // Strided gather: walk logical indices, reading each element at its
-        // byte offset. The walk is monomorphized per dtype so the inner read
-        // has no per-element dispatch.
-        macro_rules! gather_strided {
-            ($t:ty) => {{
-                let mut out: Vec<f32> = Vec::with_capacity(total_elems);
-                let mut indices = vec![0; self.layout.shape.len()];
-                let shape = &self.layout.shape;
-                let strides = &self.layout.strides;
-                let ptr = self.data.as_ptr();
-                let base_offset = self.layout.offset;
-                let data_len = self.data.len();
-                for _ in 0..total_elems {
-                    let mut offset = base_offset as isize;
-                    for (dim, &idx) in indices.iter().enumerate() {
-                        offset += (idx as isize) * strides[dim];
-                    }
-                    debug_assert!(
-                        offset >= 0 && (offset as usize) + std::mem::size_of::<$t>() <= data_len,
-                        "Fused kernel read OOB"
-                    );
-                    let value = unsafe { *(ptr.offset(offset) as *const $t) };
-                    out.push(value as f32);
-                    for dim in (0..shape.len()).rev() {
-                        indices[dim] += 1;
-                        if indices[dim] < shape[dim] {
-                            break;
-                        }
-                        indices[dim] = 0;
-                    }
-                }
-                out
-            }};
-        }
-        match self.dtype() {
-            DType::U8 => gather_strided!(u8),
-            DType::I8 => gather_strided!(i8),
-            DType::U16 => gather_strided!(u16),
-            DType::I16 => gather_strided!(i16),
-            DType::U32 => gather_strided!(u32),
-            DType::I32 => gather_strided!(i32),
-            DType::U64 => gather_strided!(u64),
-            DType::I64 => gather_strided!(i64),
-            DType::F32 => gather_strided!(f32),
-            DType::F64 => gather_strided!(f64),
-        }
+        crate::ops::elementwise::run_kernel(self.clone(), kernel)
     }
 
     /// Casts the buffer to a different data type.
@@ -1622,134 +1526,6 @@ impl ViewBuffer {
         self.layout = Layout::new_contiguous(self.layout.shape, self.layout.dtype);
         self
     }
-}
-
-/// Apply each fused scalar op as a full-array pass over `f32` data.
-///
-/// One pass per op (vs one pass total) costs slightly more bandwidth but lets
-/// LLVM auto-vectorize each inner loop with AVX/AVX2/NEON — the inner loop is
-/// a simple scalar operation with no enum dispatch. The bandwidth tradeoff
-/// breaks even at ~2 ops for typical L2-resident sizes.
-fn apply_fused_op_passes(data: &mut [f32], ops: &[ScalarOp]) {
-    for op in ops {
-        match op {
-            ScalarOp::Add(c) => {
-                for x in data.iter_mut() {
-                    *x += *c;
-                }
-            }
-            ScalarOp::Sub(c) => {
-                for x in data.iter_mut() {
-                    *x -= *c;
-                }
-            }
-            ScalarOp::Mul(c) => {
-                for x in data.iter_mut() {
-                    *x *= *c;
-                }
-            }
-            ScalarOp::Div(c) => {
-                for x in data.iter_mut() {
-                    *x /= *c;
-                }
-            }
-            ScalarOp::Pow(c) => {
-                for x in data.iter_mut() {
-                    *x = x.powf(*c);
-                }
-            }
-            ScalarOp::Neg => {
-                for x in data.iter_mut() {
-                    *x = -*x;
-                }
-            }
-            ScalarOp::Abs => {
-                for x in data.iter_mut() {
-                    *x = x.abs();
-                }
-            }
-            ScalarOp::Sqrt => {
-                for x in data.iter_mut() {
-                    *x = x.sqrt();
-                }
-            }
-            ScalarOp::Square => {
-                for x in data.iter_mut() {
-                    *x *= *x;
-                }
-            }
-            ScalarOp::Recip => {
-                for x in data.iter_mut() {
-                    *x = 1.0 / *x;
-                }
-            }
-            ScalarOp::Min(c) => {
-                for x in data.iter_mut() {
-                    *x = x.min(*c);
-                }
-            }
-            ScalarOp::Max(c) => {
-                for x in data.iter_mut() {
-                    *x = x.max(*c);
-                }
-            }
-            ScalarOp::Sign => {
-                for x in data.iter_mut() {
-                    *x = crate::ops::scalar::signum_numpy(*x);
-                }
-            }
-            ScalarOp::Floor => {
-                for x in data.iter_mut() {
-                    *x = x.floor();
-                }
-            }
-            ScalarOp::Ceil => {
-                for x in data.iter_mut() {
-                    *x = x.ceil();
-                }
-            }
-            ScalarOp::Round => {
-                for x in data.iter_mut() {
-                    *x = x.round_ties_even();
-                }
-            }
-            ScalarOp::Trunc => {
-                for x in data.iter_mut() {
-                    *x = x.trunc();
-                }
-            }
-            ScalarOp::Relu => {
-                for x in data.iter_mut() {
-                    *x = x.max(0.0);
-                }
-            }
-            ScalarOp::Clamp(lo, hi) => {
-                for x in data.iter_mut() {
-                    *x = x.clamp(*lo, *hi);
-                }
-            }
-        }
-    }
-}
-
-/// Materialize the kernel's f32 result as a contiguous buffer of `out_dtype`.
-///
-/// Other targets convert through [`convert_slice`], the rule
-/// [`ViewBuffer::cast_to`] uses, so a fused trailing cast and a standalone
-/// cast cannot round differently; `F32` reuses the accumulator allocation
-/// without copying.
-fn finish_fused_output(acc: Vec<f32>, shape: Vec<usize>, out_dtype: DType) -> ViewBuffer {
-    if out_dtype == DType::F32 {
-        // Reuse the accumulator allocation: AlignedBytes takes it over and
-        // deallocates with f32 alignment.
-        return ViewBuffer {
-            data: BufferStorage::Rust(Arc::new(AlignedBytes::from_typed_vec(acc))),
-            layout: Layout::new_contiguous(shape, DType::F32),
-        };
-    }
-    with_dtype!(out_dtype, T => {
-        ViewBuffer::from_vec_with_shape(convert_slice::<f32, T>(&acc), shape)
-    })
 }
 
 #[cfg(test)]
