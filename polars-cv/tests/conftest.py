@@ -18,6 +18,12 @@ import pytest
 python_src = Path(__file__).parent.parent / "python"
 sys.path.insert(0, str(python_src))
 
+# Every test sees the `.cv`/`.contour`/`.point`/`.bbox` namespaces, which
+# importing the package registers: no test file may depend on another having
+# imported it first (`test_expression_params.py` did, and failed run alone).
+# Pure Python; importing it loads no compiled code.
+import polars_cv  # noqa: E402, F401
+
 # Streaming is the project's default execution engine (see
 # docs/user-guide/concepts/streaming.md): the plugin only runs multi-threaded
 # when the streaming engine slices input into morsels, and the two engines chunk
