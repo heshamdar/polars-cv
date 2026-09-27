@@ -102,6 +102,59 @@ class BenchmarkResult:
         )
 
 
+# --- Definitions shared by adapters whose library has no call for them -----
+#
+# polars-cv's `adjust_contrast` and `adjust_brightness` promote to f32; OpenCV
+# and Pillow have no call that computes either without truncating to u8, so
+# their adapters compute the op here, once, rather than each restating it.
+
+
+def contrast_f32(img: "npt.NDArray[Any]", factor: float) -> "npt.NDArray[np.float32]":
+    """``(pixel - mean) * factor + mean`` over all channels, as f32, unclipped."""
+    import numpy as np
+
+    f = img.astype(np.float32)
+    mean = np.float32(f.mean(dtype=np.float64))
+    return (f - mean) * np.float32(factor) + mean
+
+
+def brightness_f32(img: "npt.NDArray[Any]", factor: float) -> "npt.NDArray[np.float32]":
+    """``pixel * factor`` clamped to [0, 255], as f32."""
+    import numpy as np
+
+    return np.clip(img.astype(np.float32) * np.float32(factor), 0, 255)
+
+
+def rotation_matrix(
+    height: int, width: int, angle: float, *, expand: bool
+) -> tuple["npt.NDArray[np.float64]", tuple[int, int]]:
+    """polars-cv's ``rotate`` geometry: a clockwise rotation by ``angle`` degrees
+    about ``(w/2, h/2)``, and the output ``(height, width)`` — the input's, or
+    with ``expand`` the rotated bounds rounded to the nearest pixel.
+
+    Returns the 2x3 matrix mapping input pixel coordinates to output ones.
+    """
+    import numpy as np
+
+    rad = np.radians(angle)
+    cos_a, sin_a = np.cos(rad), np.sin(rad)
+    cx, cy = width / 2, height / 2
+    # OpenCV's getRotationMatrix2D(center, -angle, 1).
+    mat = np.array(
+        [
+            [cos_a, -sin_a, (1 - cos_a) * cx + sin_a * cy],
+            [sin_a, cos_a, -sin_a * cx + (1 - cos_a) * cy],
+        ]
+    )
+    if not expand:
+        return mat, (height, width)
+    new_w = round(width * abs(cos_a) + height * abs(sin_a))
+    new_h = round(height * abs(cos_a) + width * abs(sin_a))
+    mat[0, 2] += (new_w - width) / 2
+    mat[1, 2] += (new_h - height) / 2
+    return mat, (new_h, new_w)
+
+
 class BaseFrameworkAdapter(ABC):
     """
     Abstract base class for framework adapters.
