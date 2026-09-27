@@ -100,6 +100,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **Image decode and encode no longer copy every pixel an extra time.**
+  Decoding moved the codec's pixels into the buffer with the image crate's
+  `to_*` conversions, which allocate a new image even when the type already
+  matches; every native variant now hands its allocation over. PNG, JPEG and
+  WebP encode now read the buffer's pixels in place instead of copying them
+  into a `DynamicImage` first. Only a colour type the encoder refuses as it
+  is (JPEG's alpha layouts, whose alpha is dropped) still converts through
+  one. 16-bit PNG keeps the one image-sized buffer its big-endian byte swap
+  needs.
+
 - **Everything the plan knows about an op's input is checked where the op is
   written.** An op no row could run on its planned input raises when it is
   appended, naming the op, rather than failing every row: an image op on a
