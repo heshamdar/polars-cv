@@ -34,6 +34,10 @@ While originally designed as an independent crate, it is currently **tightly cou
 src/
 ├── lib.rs              # Crate root, re-exports
 ├── core/               # ViewBuffer, DType, Layout
+│   ├── dispatch.rs     # SimdKernel + dispatch(): the one way a kernel gets an AVX2 build
+│   │                   # (debug builds assert both builds' outputs are byte-identical)
+│   └── convert.rs      # CastFrom + convert_slice: the one element-conversion rule
+│                       # (cast_to and the fused kernel's output both use it)
 ├── ops/                # Operations
 │   ├── mod.rs          # Module aggregator / re-exports for all op types
 │   ├── dto.rs          # ViewDto — serializable operation enum
@@ -111,6 +115,26 @@ pub enum ViewDto {
 
 `tests/apply_op_coverage.rs` executes one probe per variant against its own
 contract and fails to compile when a variant is added without a probe.
+
+### Kernels and CPU dispatch
+
+Published wheels target the x86-64 baseline (SSE2). A kernel that should use
+AVX2 is a `core::dispatch::SimdKernel` (its whole body in an
+`#[inline(always)] fn run`) called through `dispatch()`; do not hand-roll
+`is_x86_feature_detected!` + `#[target_feature]` pairs. Only AVX2 is enabled,
+never FMA, so both builds are bit-identical, and every debug-build call asserts
+it. That check is meaningful under the wheels' flags, so run the suite once as
+`RUSTFLAGS="-C target-cpu=x86-64" cargo test -p view-buffer --all-features`
+(with its own `CARGO_TARGET_DIR`) after touching a kernel: the local
+`.cargo/config.toml` builds for `x86-64-v3`, where the two builds coincide.
+
+Element conversion between dtypes has one rule, `core::convert::CastFrom`
+(integer sources `as`; float → integer round-half-away then saturate; float →
+float `as`), applied in bulk by `convert_slice`. `with_dtype!` is the one
+runtime `DType` → element-type match.
+
+Row-wise kernels read a view where it lies through `ViewBuffer::dense_rows`
+(contiguous, crops, vertical flips) instead of calling `to_contiguous()` first.
 
 ### Operation Categories
 
