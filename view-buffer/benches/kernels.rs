@@ -230,6 +230,24 @@ fn layout_kernels(c: &mut Criterion) {
                 .resize(224, 224, FilterType::Triangle)
         })
     });
+    // The same crop handed to resize already packed: the difference from
+    // `crop_then_resize_224_u8` is what packing the view costs.
+    bench_sizes(
+        c,
+        "packed_crop_resize_224_u8",
+        |s| {
+            rgb(s)
+                .slice(&[s / 8, s / 8, 0], &[s - s / 8, s - s / 8, 3])
+                .to_contiguous()
+        },
+        |b| exec(b, |e| e.resize(224, 224, FilterType::Triangle)),
+    );
+    // A vertical flip reaching resize: against `resize_224_u8`, the pack.
+    bench_sizes(c, "flip_v_then_resize_224_u8", rgb, |b| {
+        exec(b, |e| {
+            e.flip(vec![0]).resize(224, 224, FilterType::Triangle)
+        })
+    });
 }
 
 fn spatial_kernels(c: &mut Criterion) {

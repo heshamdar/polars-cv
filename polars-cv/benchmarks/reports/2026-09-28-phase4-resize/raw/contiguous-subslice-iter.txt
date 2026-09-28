@@ -1,0 +1,45 @@
+== base
+packed_crop_resize_224_u8/1024
+                        time:   [451.20 µs 467.79 µs 487.09 µs]
+== head
+packed_crop_resize_224_u8/1024
+                        time:   [461.86 µs 481.51 µs 509.96 µs]
+== expB
+packed_crop_resize_224_u8/1024
+                        time:   [453.39 µs 463.74 µs 473.83 µs]
+== base
+packed_crop_resize_224_u8/1024
+                        time:   [442.58 µs 452.60 µs 465.53 µs]
+== head
+packed_crop_resize_224_u8/1024
+                        time:   [435.05 µs 465.17 µs 505.50 µs]
+== expB
+packed_crop_resize_224_u8/1024
+                        time:   [434.64 µs 444.63 µs 457.01 µs]
+== base
+packed_crop_resize_224_u8/1024
+                        time:   [441.69 µs 459.33 µs 482.86 µs]
+== head
+packed_crop_resize_224_u8/1024
+                        time:   [439.62 µs 470.25 µs 511.01 µs]
+== expB
+packed_crop_resize_224_u8/1024
+                        time:   [443.12 µs 464.49 µs 490.41 µs]
+== base
+packed_crop_resize_224_u8/1024
+                        time:   [435.46 µs 439.22 µs 442.48 µs]
+== head
+packed_crop_resize_224_u8/1024
+                        time:   [446.98 µs 480.51 µs 523.94 µs]
+== expB
+packed_crop_resize_224_u8/1024
+                        time:   [430.07 µs 432.72 µs 435.48 µs]
+== base
+packed_crop_resize_224_u8/1024
+                        time:   [443.08 µs 468.68 µs 501.29 µs]
+== head
+packed_crop_resize_224_u8/1024
+                        time:   [430.29 µs 439.07 µs 454.24 µs]
+== expB
+packed_crop_resize_224_u8/1024
+                        time:   [467.87 µs 489.51 µs 511.77 µs]

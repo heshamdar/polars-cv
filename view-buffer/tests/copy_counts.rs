@@ -186,7 +186,7 @@ fn append_to_refuses_another_element_type() {
 use std::sync::Arc;
 use view_buffer::execution::ExecutionPlan;
 use view_buffer::ops::scalar::{FusedKernel, ScalarOp};
-use view_buffer::{DType, Normalization, ViewExpr};
+use view_buffer::{DType, FilterType, Normalization, ViewExpr};
 
 /// Run `build` on `buf` the way the plugin's executor does: plan from a
 /// clone, drop the plan's copy, and execute with the source moved in, so the
@@ -289,4 +289,33 @@ fn a_solely_owned_f32_scale_writes_in_place() {
     let (out, count) = large_allocations(H * W * 4, || run_owned(buf, |e| e.scale(2.0)));
     assert_eq!(out.as_slice::<f32>()[..3], [0.0, 2.0, 4.0]);
     assert_eq!(count, 0);
+}
+
+/// Resize reads a crop or a vertical flip where it lies: the output is the
+/// only buffer the size of the view's pixels. Packing the view first, as
+/// resize once did, is a second one. The output is made larger than the view
+/// so it is counted; fast_image_resize's own scratch is warmed up first (it
+/// keeps it per thread, across calls).
+#[test]
+fn resizing_a_view_with_packed_rows_allocates_only_its_output() {
+    let views = [
+        ("crop", pattern_u8(3).slice(&[64, 32, 0], &[448, 416, 3])),
+        (
+            "flip_v",
+            pattern_u8(3).slice(&[0, 0, 0], &[384, 384, 3]).flip(&[0]),
+        ),
+    ];
+    for (label, view) in views {
+        let (h, w) = (view.shape()[0] as u32 + 16, view.shape()[1] as u32 + 16);
+        run_owned(view.clone(), |e| e.resize(w, h, FilterType::Triangle));
+        let view_bytes = view.shape().iter().product::<usize>();
+        let (out, count) = large_allocations(view_bytes, || {
+            run_owned(view, |e| e.resize(w, h, FilterType::Triangle))
+        });
+        assert_eq!(out.shape(), [h as usize, w as usize, 3], "{label}");
+        assert_eq!(
+            count, 1,
+            "{label}: {count} view-sized allocations, the output is the only one needed"
+        );
+    }
 }

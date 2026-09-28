@@ -72,7 +72,7 @@ src/
 │                       # contour-column ops live in the plugin's `.contour` namespace
 │                       # and call measures/predicates/pairwise/transforms directly.
 ├── protocol.rs         # VIEW binary protocol (header + data serialization)
-└── interop/            # Arrow, ndarray, image crate, Polars-arrow integration
+└── interop/            # Arrow, ndarray, image crate, fast_image_resize, Polars-arrow integration
 ```
 
 ## Core Concepts
@@ -157,6 +157,9 @@ kernel beside it; extend the lowering.
 
 Row-wise kernels read a view where it lies through `ViewBuffer::dense_rows`
 (contiguous, crops, vertical flips) instead of calling `to_contiguous()` first.
+Resize hands such a view to fast_image_resize through
+`interop::fir::FirViewAdapter`, so the resizes declare
+`MemoryEffect::StridePreserving` and pack only a layout the adapter refuses.
 
 ### Operation Categories
 
@@ -164,7 +167,7 @@ Row-wise kernels read a view where it lies through `ViewBuffer::dense_rows`
 |----------|-----------|-------------|
 | **View** | Yes | Transpose, reshape, flip, crop, channel_select — metadata only |
 | **Compute** | No | Element-wise ops (cast, scale, normalize, clamp, contrast, gamma, invert) — can be fused. Includes `ComputeOp::Affine` and `ComputeOp::RotateAffine` (not fused with scalar ops). |
-| **Image** | No | Resize, blur, grayscale, threshold, canny, histogram equalize, erode, dilate, morph gradient — require materialization |
+| **Image** | No | Resize, blur, grayscale, threshold, canny, histogram equalize, erode, dilate, morph gradient — allocate their output; resize and threshold read strided input, the rest require materialization |
 | **Filter** | No | 2D convolution with `Replicate`/`Zero`/`Reflect` border modes — contiguous output, promotes to f32 |
 | **Color** | No | Color space conversions — route through f32 RGB internally. LAB uses D65/sRGB. HSV follows OpenCV (H=[0,180] for U8) |
 | **Binary** | No | Pixel-wise operations between two buffers |
