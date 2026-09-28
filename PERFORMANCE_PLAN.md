@@ -175,6 +175,13 @@ Each phase is one or more commits on `claude/codebase-performance-assessment-36x
 
 ### Phase 4 — M4 resize adapter (resize after crop/flip is zero-copy)
 
+> **Done** (CR-56; report `polars-cv/benchmarks/reports/2026-09-28-phase4-resize/`).
+> Crop then resize 1.34x, flip_v then resize 1.52x at 1024² on the wheels. The
+> destination is not fir's `Image::new`: in fast_image_resize 5.6 it zero-fills
+> too and returns a `Vec<u8>` a u16/f32 output cannot reuse. The planner's
+> materialize before resize had to go too (`StridePreserving`); grayscale has the
+> same one (CR-57).
+
 - **Tests first:**
   - `resize(crop(x)) == resize(to_contiguous(crop(x)))` byte for byte, for u8/u16/f32 ×
     C ∈ {1, 2, 3, 4}, including flip_v and negative row strides.

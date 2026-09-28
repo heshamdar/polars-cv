@@ -1210,6 +1210,63 @@ phase of that plan, closed as each lands.
   1024² (2.5 vs 0.3 ms). A kernel specialised for small units (an in-register
   3-/4-byte block transpose) is the remaining lever.
 
+### CR-56 — Resize packed every crop and vertical flip into a new image first · `Resolved` · Medium (perf)
+
+- **What was wrong:**
+  - `ImageOp::Resize` (and every resize variant, and `Letterbox`) declared
+    `MemoryEffect::RequiresContiguous`, so `build_plan` put a
+    `MaterializeContiguous` in front of it whenever its input was a view.
+  - `ExternalLayout::FastImageResize` was `is_contiguous()`, and the kernel
+    handed fast_image_resize one packed slice. fast_image_resize reads its
+    source row by row, so it never needed that.
+  - The pack was a quarter of a 1024² RGB u8 crop or flip then resize to 224².
+  - The kernel was written three times (`resize_typed_u8/u16/f32`).
+- **Resolution:**
+  - `view-buffer/src/interop/fir.rs`: `FirViewAdapter<P>` gives fast_image_resize
+    a view whose rows come from `ViewBuffer::dense_rows`, any row stride
+    included.
+  - `FastImageResize` is `is_dense_rows()`.
+  - One generic `resize_pixels::<P>` packs only what the adapter refuses (a
+    transpose, a horizontal flip).
+  - The resize family declares `StridePreserving`.
+  - Output is byte-identical.
+- **Guards:**
+  - `tests/resize_views.rs` compares crop / flip_v / both, over u8/u16/f32 ×
+    rank 2 and 1–4 channels × three filters, against fir's own `ImageRef`
+    over the packed pixels. It was watched failing against two mutated row
+    reads (rows from 0, rows reversed). A first version compared against the
+    engine's own packed path and passed both mutations, since both sides
+    went through the adapter.
+  - `copy_counts.rs` (`resizing_a_view_with_packed_rows_allocates_only_its_output`)
+    was watched failing at 2 allocations before the change.
+  - The fixture `fast_image_resize_takes_any_view_with_packed_rows`
+    (`core/layout.rs`) was watched failing on the crop.
+- **Measured** (`polars-cv/benchmarks/reports/2026-09-28-phase4-resize/`,
+  1024², wheel target): crop then resize 1.34x, flip_v then resize 1.52x;
+  contiguous input within noise.
+
+### CR-57 — The planner packs a crop or vertical flip before grayscale, which reads it in place · `Open` · Low (perf)
+
+- **Location:** `ImageOpKind::Grayscale`'s `memory_effect`
+  (`RequiresContiguous`, `view-buffer/src/ops/image.rs`) and `grayscale_u8`
+  (`execution/runner.rs`).
+- **What is wrong:**
+  - `grayscale_u8` reads dense rows where they lie (CR-54, Phase 1), and the
+    CHANGELOG says a cropped or flipped input is not copied first.
+  - But `build_plan` inserts `MaterializeContiguous` before grayscale whenever
+    its input is a view, so every planned pipeline, the plugin included, still
+    packs it: `flip(0).grayscale()` plans as
+    `[View(Flip), MaterializeContiguous, Image(Grayscale)]`.
+  - The `grayscale_u8_flip_h` benchmark cannot show it, since a horizontal
+    flip has to be packed anyway.
+- **Why it is not the one-line fix resize got:** `grayscale_strided` returns
+  1-channel input unchanged. Declared `StridePreserving`, it would hand a
+  view onward while the planner (`infer_strides` → `None`) records a
+  contiguous output, and ops after it decide whether to materialise from that
+  record.
+- **Fix:** make the 1-channel case return a contiguous buffer, declare
+  `StridePreserving`, and add a `copy_counts` case for grayscale of a crop.
+
 ### CR-53 — `invert` on other integer dtypes returns f32 against a `PreserveInput` contract · `Resolved` · Low
 
 - **Location:** `ComputeOp::Invert` (`output_dtype_rule` = `PreserveInput`).

@@ -371,38 +371,11 @@ fn to_fir_algorithm(filter: &FilterType) -> fir::ResizeAlg {
     }
 }
 
-/// Map (channels, element-size) to the appropriate `fir::PixelType`.
-///
-/// `fast_image_resize` natively supports U8, U16, and F32 pixel types
-/// (with 1, 2, 3, and 4 channel variants for U8/U16/F32 plus a single-channel I32).
-#[cfg(feature = "image_interop")]
-fn pixel_type_for(dtype: DType, channels: usize) -> fir::PixelType {
-    match (dtype, channels) {
-        (DType::U8, 1) => fir::PixelType::U8,
-        (DType::U8, 2) => fir::PixelType::U8x2,
-        (DType::U8, 3) => fir::PixelType::U8x3,
-        (DType::U8, 4) => fir::PixelType::U8x4,
-        (DType::U16, 1) => fir::PixelType::U16,
-        (DType::U16, 2) => fir::PixelType::U16x2,
-        (DType::U16, 3) => fir::PixelType::U16x3,
-        (DType::U16, 4) => fir::PixelType::U16x4,
-        (DType::F32, 1) => fir::PixelType::F32,
-        (DType::F32, 2) => fir::PixelType::F32x2,
-        (DType::F32, 3) => fir::PixelType::F32x3,
-        (DType::F32, 4) => fir::PixelType::F32x4,
-        (DType::I32, 1) => fir::PixelType::I32,
-        _ => panic!("fast_image_resize does not support dtype {dtype:?} with {channels} channels"),
-    }
-}
-
 /// Resize using fast_image_resize with SIMD optimization.
 ///
-/// Supports U8, U16, and F32 dtypes natively via ``fast_image_resize``.
-/// For other dtypes the buffer is cast to F32, resized, then cast back to
-/// the original dtype so that the output always preserves the input dtype.
-///
-/// Non-contiguous inputs are materialized first as fast_image_resize
-/// requires contiguous memory.
+/// U8, U16 and F32 with 1–4 channels are fast_image_resize's own pixel types
+/// ([`resize_pixels`]). Any other dtype is cast to F32, resized, then cast
+/// back, so the output always keeps the input's dtype and rank.
 #[cfg(feature = "image_interop")]
 fn resize_strided(
     buf: ViewBuffer,
@@ -410,40 +383,76 @@ fn resize_strided(
     target_height: u32,
     filter: FilterType,
 ) -> ViewBuffer {
-    // Ensure contiguous input (fast_image_resize requires contiguous memory)
-    let contig_buf = if buf.layout.is_contiguous() {
-        buf
-    } else {
-        buf.to_contiguous()
-    };
-
-    let dtype = contig_buf.dtype();
-    let shape = contig_buf.shape();
-    let input_rank = shape.len();
-    let (h, w) = (shape[0], shape[1]);
-    let c = shape.get(2).copied().unwrap_or(1);
-
-    // Dtypes natively supported by fast_image_resize
-    let resized = match dtype {
-        DType::U8 => resize_typed_u8(&contig_buf, h, w, c, target_height, target_width, &filter),
-        DType::U16 => resize_typed_u16(&contig_buf, h, w, c, target_height, target_width, &filter),
-        DType::F32 => resize_typed_f32(&contig_buf, h, w, c, target_height, target_width, &filter),
-        // Unsupported by fast_image_resize: cast to F32, resize, cast back.
-        other => {
-            let f32_buf = contig_buf.cast(DType::F32);
-            let r = resize_typed_f32(&f32_buf, h, w, c, target_height, target_width, &filter);
-            r.cast(other)
+    use fir::pixels::{F32x2, F32x3, F32x4, U16x2, U16x3, U16x4, U8x2, U8x3, U8x4, F32, U16, U8};
+    let (w, h) = (target_width, target_height);
+    let channels = buf.shape().get(2).copied().unwrap_or(1);
+    match (buf.dtype(), channels) {
+        (DType::U8, 1) => resize_pixels::<U8>(buf, w, h, filter),
+        (DType::U8, 2) => resize_pixels::<U8x2>(buf, w, h, filter),
+        (DType::U8, 3) => resize_pixels::<U8x3>(buf, w, h, filter),
+        (DType::U8, 4) => resize_pixels::<U8x4>(buf, w, h, filter),
+        (DType::U16, 1) => resize_pixels::<U16>(buf, w, h, filter),
+        (DType::U16, 2) => resize_pixels::<U16x2>(buf, w, h, filter),
+        (DType::U16, 3) => resize_pixels::<U16x3>(buf, w, h, filter),
+        (DType::U16, 4) => resize_pixels::<U16x4>(buf, w, h, filter),
+        (DType::F32, 1) => resize_pixels::<F32>(buf, w, h, filter),
+        (DType::F32, 2) => resize_pixels::<F32x2>(buf, w, h, filter),
+        (DType::F32, 3) => resize_pixels::<F32x3>(buf, w, h, filter),
+        (DType::F32, 4) => resize_pixels::<F32x4>(buf, w, h, filter),
+        (dtype @ (DType::U8 | DType::U16 | DType::F32), _) => {
+            panic!("fast_image_resize does not support dtype {dtype:?} with {channels} channels")
         }
+        (other, _) => resize_strided(buf.cast(DType::F32), w, h, filter).cast(other),
+    }
+}
+
+/// Resize an image of fast_image_resize pixel type `P` into a new buffer of
+/// the same dtype and rank.
+///
+/// A view whose pixels are packed within each row (contiguous, a crop, a
+/// vertical flip) is read where it lies ([`FirViewAdapter`]); any other layout
+/// is packed first.
+#[cfg(feature = "image_interop")]
+fn resize_pixels<P>(
+    buf: ViewBuffer,
+    target_width: u32,
+    target_height: u32,
+    filter: FilterType,
+) -> ViewBuffer
+where
+    P: fir::PixelTrait,
+    P::Component: crate::core::dtype::ViewType + Default,
+{
+    use crate::interop::fir::{as_pixels_mut, FirViewAdapter};
+    use crate::interop::ExternalView;
+
+    let packed;
+    let src = match FirViewAdapter::<P>::try_view(&buf) {
+        Ok(view) => view,
+        Err(crate::core::buffer::BufferError::IncompatibleLayout { .. }) => {
+            packed = buf.to_contiguous();
+            FirViewAdapter::<P>::try_view(&packed).expect("a packed buffer has packed rows")
+        }
+        Err(e) => panic!("resize: {e}"),
     };
 
-    // Preserve input rank: 2D input must produce 2D output.  The typed
-    // resize functions always produce [H, W, C]; squeeze the trailing
-    // dimension when the input was 2D.
-    if input_rank == 2 {
-        resized.reshape(vec![target_height as usize, target_width as usize])
-    } else {
-        resized
-    }
+    let mut out_shape = buf.shape().to_vec();
+    out_shape[0] = target_height as usize;
+    out_shape[1] = target_width as usize;
+    let mut out = vec![P::Component::default(); out_shape.iter().product()];
+    let mut dst = fir::images::TypedImage::<P>::from_pixels_slice(
+        target_width,
+        target_height,
+        as_pixels_mut::<P>(&mut out),
+    )
+    .expect("the output holds target_width * target_height pixels");
+    let options = fir::ResizeOptions::new().resize_alg(to_fir_algorithm(&filter));
+    FIR_RESIZER.with(|cell| {
+        cell.borrow_mut()
+            .resize_typed(&src, &mut dst, &options)
+            .expect("Resize failed");
+    });
+    ViewBuffer::from_vec_with_shape(out, out_shape)
 }
 
 #[cfg(feature = "image_interop")]
@@ -462,129 +471,6 @@ thread_local! {
     /// O(1) allocation like TILE_EXTRACT_BUF in tiling.rs.
     static BLUR_HORIZ_BUF: std::cell::RefCell<Vec<f32>> =
         const { std::cell::RefCell::new(Vec::new()) };
-}
-
-/// Perform a typed resize for U8 data.
-#[cfg(feature = "image_interop")]
-fn resize_typed_u8(
-    contig_buf: &ViewBuffer,
-    h: usize,
-    w: usize,
-    c: usize,
-    target_height: u32,
-    target_width: u32,
-    filter: &FilterType,
-) -> ViewBuffer {
-    let fir_filter = to_fir_algorithm(filter);
-    let pixel_type = pixel_type_for(DType::U8, c);
-    let src_len = h * w * c;
-    let dst_size = (target_height as usize) * (target_width as usize) * c;
-    let mut dst_data = vec![0u8; dst_size];
-
-    let src_slice = unsafe { std::slice::from_raw_parts(contig_buf.as_ptr::<u8>(), src_len) };
-    let src_image = fir::images::ImageRef::new(w as u32, h as u32, src_slice, pixel_type)
-        .expect("Failed to create source image");
-    let mut dst_image =
-        fir::images::Image::from_slice_u8(target_width, target_height, &mut dst_data, pixel_type)
-            .expect("Failed to create dest image");
-
-    FIR_RESIZER.with(|cell| {
-        cell.borrow_mut()
-            .resize(
-                &src_image,
-                &mut dst_image,
-                &fir::ResizeOptions::new().resize_alg(fir_filter),
-            )
-            .expect("Resize failed");
-    });
-
-    ViewBuffer::from_vec(dst_data).reshape(vec![target_height as usize, target_width as usize, c])
-}
-
-/// Perform a typed resize for U16 data.
-#[cfg(feature = "image_interop")]
-fn resize_typed_u16(
-    contig_buf: &ViewBuffer,
-    h: usize,
-    w: usize,
-    c: usize,
-    target_height: u32,
-    target_width: u32,
-    filter: &FilterType,
-) -> ViewBuffer {
-    let fir_filter = to_fir_algorithm(filter);
-    let pixel_type = pixel_type_for(DType::U16, c);
-    let src_len = h * w * c;
-    let dst_size = (target_height as usize) * (target_width as usize) * c;
-    let mut dst_data: Vec<u16> = vec![0u16; dst_size];
-
-    let src_slice = unsafe { std::slice::from_raw_parts(contig_buf.as_ptr::<u16>(), src_len) };
-    // Reinterpret the u16 slices as byte slices for fir API
-    let src_bytes =
-        unsafe { std::slice::from_raw_parts(src_slice.as_ptr() as *const u8, src_len * 2) };
-    let dst_bytes =
-        unsafe { std::slice::from_raw_parts_mut(dst_data.as_mut_ptr() as *mut u8, dst_size * 2) };
-
-    let src_image = fir::images::ImageRef::new(w as u32, h as u32, src_bytes, pixel_type)
-        .expect("Failed to create source image");
-    let mut dst_image =
-        fir::images::Image::from_slice_u8(target_width, target_height, dst_bytes, pixel_type)
-            .expect("Failed to create dest image");
-
-    FIR_RESIZER.with(|cell| {
-        cell.borrow_mut()
-            .resize(
-                &src_image,
-                &mut dst_image,
-                &fir::ResizeOptions::new().resize_alg(fir_filter),
-            )
-            .expect("Resize failed");
-    });
-
-    ViewBuffer::from_vec(dst_data).reshape(vec![target_height as usize, target_width as usize, c])
-}
-
-/// Perform a typed resize for F32 data.
-#[cfg(feature = "image_interop")]
-fn resize_typed_f32(
-    contig_buf: &ViewBuffer,
-    h: usize,
-    w: usize,
-    c: usize,
-    target_height: u32,
-    target_width: u32,
-    filter: &FilterType,
-) -> ViewBuffer {
-    let fir_filter = to_fir_algorithm(filter);
-    let pixel_type = pixel_type_for(DType::F32, c);
-    let src_len = h * w * c;
-    let dst_size = (target_height as usize) * (target_width as usize) * c;
-    let mut dst_data: Vec<f32> = vec![0.0f32; dst_size];
-
-    let src_slice = unsafe { std::slice::from_raw_parts(contig_buf.as_ptr::<f32>(), src_len) };
-    // Reinterpret as byte slices for fir API
-    let src_bytes =
-        unsafe { std::slice::from_raw_parts(src_slice.as_ptr() as *const u8, src_len * 4) };
-    let dst_bytes =
-        unsafe { std::slice::from_raw_parts_mut(dst_data.as_mut_ptr() as *mut u8, dst_size * 4) };
-
-    let src_image = fir::images::ImageRef::new(w as u32, h as u32, src_bytes, pixel_type)
-        .expect("Failed to create source image");
-    let mut dst_image =
-        fir::images::Image::from_slice_u8(target_width, target_height, dst_bytes, pixel_type)
-            .expect("Failed to create dest image");
-
-    FIR_RESIZER.with(|cell| {
-        cell.borrow_mut()
-            .resize(
-                &src_image,
-                &mut dst_image,
-                &fir::ResizeOptions::new().resize_alg(fir_filter),
-            )
-            .expect("Resize failed");
-    });
-
-    ViewBuffer::from_vec(dst_data).reshape(vec![target_height as usize, target_width as usize, c])
 }
 
 /// Grayscale of any layout: BT.601, `Y = 0.299R + 0.587G + 0.114B` (u8 in

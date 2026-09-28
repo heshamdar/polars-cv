@@ -39,6 +39,9 @@ pub mod arrow;
 pub mod arrow_ffi;
 
 #[cfg(feature = "image_interop")]
+pub mod fir;
+
+#[cfg(feature = "image_interop")]
 pub mod image;
 
 #[cfg(feature = "polars_interop")]

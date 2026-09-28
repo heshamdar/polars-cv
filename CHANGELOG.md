@@ -72,6 +72,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   materialising a vertical flip is ~22x faster, a horizontal flip ~5x, a
   transpose ~5.5x, grayscale of a flipped image ~4.7x, crop then resize ~4.5x
   and a cast of a flipped view ~3.4x.
+- **Resize reads a crop or a vertical flip where it lies.** It used to pack
+  any view into a new image first. Rows packed within themselves, whatever
+  their spacing or order, now go to the resizer as they are, so the output is
+  the only image-sized allocation. At 1024² RGB u8 → 224² on the wheels, crop
+  then resize is 1.3x faster and a vertical flip then resize 1.5x. Output is
+  byte-identical. Other layouts (a transpose, a horizontal flip) are still
+  packed first, as before.
 
 ### Changed
 
@@ -90,6 +97,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   the packing loop in `copy_elements_into`, the element-wise engine's strided
   f32 read and grayscale's per-pixel strided fallback (a non-dense layout is
   now packed, then takes the dense kernel).
+- view-buffer: the resizes (`resize`, `resize_scale`, `resize_to_*`,
+  `resize_max`/`min`, `letterbox`) declare `MemoryEffect::StridePreserving`,
+  so the planner no longer inserts a `MaterializeContiguous` before them. They
+  read their input through `interop::fir::FirViewAdapter`, the
+  `ExternalLayout::FastImageResize` adapter, which accepts any layout with
+  packed rows (`LayoutFacts::is_dense_rows`), and one generic
+  `resize_pixels::<P>` replaces the u8/u16/f32 copies of the resize kernel.
 
 ### Changed
 
