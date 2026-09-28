@@ -51,3 +51,35 @@ def test_a_warped_64_bit_maximum_stays_the_maximum(
     )
     out = df.select(pl.col("a").cv.pipe(pipe).sink("list"))["a"][0].to_list()
     assert out == [[top] * 4] * 4
+
+
+@pytest.mark.parametrize(
+    ("dtype", "name", "border", "fill"),
+    [
+        (pl.UInt8, "u8", 7.5, 8),
+        (pl.UInt8, "u8", 7.4, 7),
+        (pl.UInt8, "u8", 300.0, 255),
+        (pl.UInt8, "u8", -1.0, 0),
+        (pl.Int8, "i8", -200.0, -128),
+        (pl.Float32, "f32", 7.5, 7.5),
+    ],
+)
+def test_the_border_fill_is_stored_like_every_other_pixel(
+    dtype: pl.DataType, name: str, border: float, fill: float
+) -> None:
+    # A translation far off the image: every output pixel is border. It is
+    # stored by the conversion rule, rounded and saturated for an integer
+    # dtype, as blended pixels are; it was truncated (7.5 -> 7) and an
+    # out-of-range border became 0.
+    df = pl.DataFrame({"a": [[[1] * 2] * 2]}, schema={"a": pl.List(pl.List(dtype))})
+    pipe = (
+        Pipeline()
+        .source("list", dtype=name)
+        .warp_affine(
+            matrix=[1.0, 0.0, -400.0, 0.0, 1.0, -400.0],
+            output_size=[3, 2],
+            border_value=border,
+        )
+    )
+    out = df.select(pl.col("a").cv.pipe(pipe).sink("list"))["a"][0].to_list()
+    assert out == [[fill] * 2] * 3

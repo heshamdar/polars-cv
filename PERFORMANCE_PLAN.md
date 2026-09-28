@@ -314,7 +314,7 @@ Each phase is one or more commits on `claude/codebase-performance-assessment-36x
 > **JPEG eval done** (report `2026-09-28-phase9-jpeg-eval/`), as a standalone
 > crate (IJG must not enter `cargo deny`'s graph unless adopted): the gate
 > passes (1.62–1.65x, ΔPSNR ≤ 0.04 dB), but files are 5–13% larger on smooth
-> content, so adoption is left to the owner.
+> content, and the owner declined the swap: image's encoder stays.
 
 - **Eval gate first:** `view-buffer/tests/jpeg_encode_eval.rs`, mirroring
   `png_decode_eval.rs`.

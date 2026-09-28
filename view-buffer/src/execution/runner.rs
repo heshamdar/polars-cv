@@ -408,9 +408,10 @@ fn resize_strided(
         (DType::F32, 2) => resize_pixels::<F32x2>(buf, w, h, filter),
         (DType::F32, 3) => resize_pixels::<F32x3>(buf, w, h, filter),
         (DType::F32, 4) => resize_pixels::<F32x4>(buf, w, h, filter),
-        (dtype @ (DType::U8 | DType::U16 | DType::F32), _) => {
-            panic!("fast_image_resize does not support dtype {dtype:?} with {channels} channels")
-        }
+        (dtype @ (DType::U8 | DType::U16 | DType::F32), _) => unreachable!(
+            "resize's contract (`ImageOp::validate`) refuses more than 4 channels, \
+             so {dtype:?} with {channels} cannot reach the resampler"
+        ),
         (other, _) => resize_strided(buf.cast(DType::F32), w, h, filter).cast(other),
     }
 }

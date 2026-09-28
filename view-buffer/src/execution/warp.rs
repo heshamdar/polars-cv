@@ -15,7 +15,6 @@ use crate::core::convert::CastFrom;
 use crate::core::dispatch::{dispatch, SimdKernel};
 use crate::core::dtype::{DType, ViewType};
 use crate::ops::affine::{AffineParams, InterpolationType};
-use num_traits::NumCast;
 
 /// Rotate `buf` about its centre, as `ComputeOp::RotateAffine` lowers it.
 ///
@@ -162,7 +161,7 @@ impl<'a, T> Warp<'a, T, 0> {
 /// The element types a warp reads as `f64` and stores back from it, both
 /// through the crate's one conversion rule (M5, `core::convert`): exact to
 /// `f64`, and round-then-saturate back to an integer.
-pub(crate) trait WarpElem: ViewType + Default + NumCast + CastFrom<f64>
+pub(crate) trait WarpElem: ViewType + Default + CastFrom<f64>
 where
     f64: CastFrom<Self>,
 {
@@ -170,7 +169,7 @@ where
 
 impl<T> WarpElem for T
 where
-    T: ViewType + Default + NumCast + CastFrom<f64>,
+    T: ViewType + Default + CastFrom<f64>,
     f64: CastFrom<T>,
 {
 }
@@ -203,7 +202,8 @@ where
     #[inline(always)]
     fn run(self) -> Vec<T> {
         let ch = if C == 0 { self.ch } else { C };
-        let border: T = NumCast::from(self.border_value).unwrap_or(T::default());
+        // Stored by the conversion rule, as every blended pixel is.
+        let border: T = T::cast_from(self.border_value);
         let mut dst = vec![border; self.out_h * self.out_w * ch];
         if dst.is_empty() {
             return dst;
@@ -357,7 +357,7 @@ mod tests {
         params: &crate::ops::affine::AffineParams,
     ) -> ViewBuffer
     where
-        T: crate::core::dtype::ViewType + Default + num_traits::NumCast,
+        T: crate::core::dtype::ViewType + Default + num_traits::NumCast + CastFrom<f64>,
     {
         use crate::ops::affine::InterpolationType;
         use num_traits::NumCast;
@@ -406,7 +406,11 @@ mod tests {
         let src_data: &[T] = contig_buf.as_slice::<T>();
 
         let output_size = out_h * out_w * channels;
-        let border_val: T = NumCast::from(params.border_value).unwrap_or(T::default());
+        // The one deliberate change to this oracle (2026-09-28, the owner's
+        // decision): the border fill is stored by the conversion rule, as
+        // the new kernel's is. It was `NumCast::from(border).unwrap_or(0)`,
+        // truncating 7.5 to 7 and storing 0 for an out-of-range border.
+        let border_val: T = <T as CastFrom<f64>>::cast_from(params.border_value);
         let mut dst_data: Vec<T> = vec![border_val; output_size];
 
         let is_float = matches!(T::DTYPE, crate::DType::F32 | crate::DType::F64);
@@ -674,6 +678,42 @@ mod tests {
         let i = ViewBuffer::from_vec_with_shape(vec![i64::MAX; 16], vec![4, 4]);
         let got = apply_affine_warp(i, params);
         assert_eq!(got.as_slice::<i64>(), &[i64::MAX; 16]);
+    }
+
+    /// Pixels off the image are the border value stored by the conversion
+    /// rule, as every blended pixel is: rounded and saturated for an integer
+    /// dtype. It used a truncating `NumCast`, so a u8 border of 7.5 filled 7
+    /// while pixels at the edge blended toward 7.5, and an out-of-range
+    /// border (300 for u8) filled 0.
+    #[test]
+    fn the_border_fill_is_stored_by_the_conversion_rule() {
+        // A translation far off the image: every output pixel is border.
+        let params = |border_value| AffineParams {
+            matrix: [1.0, 0.0, 400.0, 0.0, 1.0, 400.0],
+            output_height: 3,
+            output_width: 2,
+            interpolation: InterpolationType::Bilinear,
+            border_value,
+        };
+        let warp_u8 = |border| {
+            let buf = ViewBuffer::from_vec_with_shape(vec![1u8; 4], vec![2, 2]);
+            apply_affine_warp(buf, params(border))
+                .as_slice::<u8>()
+                .to_vec()
+        };
+        assert_eq!(warp_u8(7.5), [8; 6], "7.5 rounds half away from zero");
+        assert_eq!(warp_u8(7.4), [7; 6]);
+        assert_eq!(warp_u8(300.0), [255; 6], "saturates, not 0");
+        assert_eq!(warp_u8(-1.0), [0; 6]);
+        let buf = ViewBuffer::from_vec_with_shape(vec![1i8; 4], vec![2, 2]);
+        let got = apply_affine_warp(buf, params(-200.0));
+        assert_eq!(got.as_slice::<i8>(), [i8::MIN; 6]);
+        let buf = ViewBuffer::from_vec_with_shape(vec![1u16; 4], vec![2, 2]);
+        let got = apply_affine_warp(buf, params(70_000.0));
+        assert_eq!(got.as_slice::<u16>(), [u16::MAX; 6]);
+        let buf = ViewBuffer::from_vec_with_shape(vec![1.0f32; 4], vec![2, 2]);
+        let got = apply_affine_warp(buf, params(7.5));
+        assert_eq!(got.as_slice::<f32>(), [7.5; 6]);
     }
 
     /// A 0° rotation is its input: the data is shared, not warped.
