@@ -220,6 +220,10 @@ fn layout_kernels(c: &mut Criterion) {
     bench_sizes(c, "grayscale_u8_flip_h", rgb, |b| {
         exec(b, |e| e.flip(vec![1]).grayscale())
     });
+    // A vertical flip reaching grayscale: read where it lies (CR-57).
+    bench_sizes(c, "grayscale_u8_flip_v", rgb, |b| {
+        exec(b, |e| e.flip(vec![0]).grayscale())
+    });
     bench_sizes(c, "resize_224_u8", rgb, |b| {
         exec(b, |e| e.resize(224, 224, FilterType::Triangle))
     });
