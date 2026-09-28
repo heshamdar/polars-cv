@@ -47,7 +47,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   packed runs it has (a whole buffer, a row, a pixel) and copies each run
   once. This covers `to_contiguous` and every list/array sink. A `cast` of a
   view converts straight from those runs, with no packed copy first, and so
-  does a per-value op's read of a strided view.
+  does a per-value op's read of a strided view. At 1024² RGB u8 on the wheels,
+  materialising a vertical flip is ~22x faster, a horizontal flip ~5x, a
+  transpose ~5.5x, grayscale of a flipped image ~4.7x, crop then resize ~4.5x
+  and a cast of a flipped view ~3.4x.
 
 ### Changed
 
