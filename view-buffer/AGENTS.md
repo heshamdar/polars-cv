@@ -140,8 +140,7 @@ view). `with_dtype!` is the one runtime `DType` → element-type match.
 A view's elements are read in logical order only through `core::strided::Walk`:
 it coalesces the layout once into packed units, evenly spaced rows and outer
 axes, then packs them (`copy_to`, behind `to_contiguous`/`append_to`/
-`write_to`) or hands out runs (`for_each_run`, behind `convert_view`). A
-transpose large enough to thrash the cache (`Walk::tiled`) is copied in tiles. Do not
+`write_to`) or hands out runs (`for_each_run`, behind `convert_view`). Do not
 write another index odometer over strides; a kernel that cannot read a view in
 place packs it with `to_contiguous()` and runs its dense path.
 
