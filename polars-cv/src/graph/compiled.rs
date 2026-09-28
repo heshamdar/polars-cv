@@ -1680,7 +1680,7 @@ mod tests {
 
     /// Pin the live decode path for `blob` and `raw` sources: both are decoded
     /// by the zero-copy branch of `decode::decode_source_row`
-    /// (`decode_binary_zero_copy`),
+    /// (`decode_binary_row`),
     /// NOT by `execute::decode_image_bytes` — its blob/raw arms are deliberately
     /// absent. This end-to-end test must keep passing when those dead arms are
     /// deleted.
