@@ -9,17 +9,20 @@
 //!   0 and out-of-range values clamp to the target's bounds;
 //! - float → float: plain `as`.
 //!
-//! [`ViewBuffer::cast_to`](crate::ViewBuffer::cast_to) and the fused scalar
-//! kernel's output conversion both go through [`convert_slice`] (or, for a
-//! view, [`convert_view`]), so a cast and a fused trailing cast cannot round
-//! differently. The bulk loop is a
-//! [`SimdKernel`]: on the wheels' SSE2 baseline `f32::round` is a `roundf`
-//! call per element, while the AVX2 build rounds a vector at a time.
+//! [`ViewBuffer::cast_to`](crate::ViewBuffer::cast_to) and every kernel that
+//! stores a computed value (the element-wise engine, the warp, the blur,
+//! grayscale) convert by [`CastFrom`], so a cast and a fused trailing cast
+//! cannot round differently. The bulk conversion is the element map
+//! `Convert`, run by the one traversal (`core::map`), which dispatches it:
+//! on the wheels' SSE2 baseline `f32::round` is a `roundf` call per element,
+//! while the AVX2 build rounds a vector at a time.
+
+use std::marker::PhantomData;
+use std::mem::MaybeUninit;
 
 use crate::core::buffer::ViewBuffer;
-use crate::core::dispatch::{dispatch, SimdKernel};
 use crate::core::dtype::ViewType;
-use crate::core::strided::Walk;
+use crate::core::map::{map_new, map_slice, ElementMap};
 
 /// `Self` from an `S`, by the crate's conversion rule (module docs).
 pub trait CastFrom<S>: Sized {
@@ -125,83 +128,190 @@ cast_from!(int i64);
 cast_from!(float f32);
 cast_from!(double f64);
 
+/// The conversion rule as an element map: each value of `S` to `D` by
+/// [`CastFrom`], through the one traversal (`core::map`).
+pub(crate) struct Convert<S, D>(PhantomData<fn(S) -> D>);
+
+impl<S, D> Convert<S, D> {
+    pub(crate) const fn new() -> Self {
+        Convert(PhantomData)
+    }
+}
+
+// SAFETY: `map_into` writes every element of `dst`.
+unsafe impl<S: ViewType, D: ViewType + CastFrom<S>> ElementMap<S, D> for Convert<S, D> {
+    #[inline(always)]
+    fn map_into(&self, src: &[S], dst: &mut [MaybeUninit<D>], _at: usize) {
+        for (d, &x) in dst.iter_mut().zip(src) {
+            d.write(D::cast_from(x));
+        }
+    }
+}
+
 /// Every element of `src` converted to `D` by the crate's rule.
 pub fn convert_slice<S: ViewType, D: ViewType + CastFrom<S>>(src: &[S]) -> Vec<D> {
-    dispatch(Convert::<S, D> {
-        src,
-        _to: std::marker::PhantomData,
-    })
+    map_slice(src, &Convert::<S, D>::new())
 }
 
 /// Every element of `view`, in logical order, converted to `D` by the
-/// crate's rule: a contiguous view through [`convert_slice`], any other in
-/// one pass over its runs ([`Walk`]), with no packed intermediate.
+/// crate's rule, as a new packed buffer of the view's shape: a view is read
+/// in the runs its layout has, with no packed intermediate.
 ///
 /// # Panics
 /// Panics if `S` is not the view's dtype.
-pub(crate) fn convert_view<S: ViewType, D: ViewType + CastFrom<S>>(view: &ViewBuffer) -> Vec<D> {
-    if view.layout.is_contiguous() {
-        return convert_slice(view.as_slice::<S>());
-    }
-    dispatch(ConvertView::<S, D> {
-        view,
-        _types: std::marker::PhantomData,
-    })
+pub(crate) fn convert_view<S: ViewType, D: ViewType + CastFrom<S>>(
+    view: &ViewBuffer,
+) -> ViewBuffer {
+    map_new(view, &Convert::<S, D>::new())
 }
 
-struct ConvertView<'a, S, D> {
-    view: &'a ViewBuffer,
-    _types: std::marker::PhantomData<(S, D)>,
-}
+/// Elements per block of [`HalfBits`]: an 8 KiB f32 scratch on the stack.
+const HALF_BLOCK: usize = 2048;
 
-impl<S, D> Clone for ConvertView<'_, S, D> {
-    fn clone(&self) -> Self {
-        ConvertView {
-            view: self.view,
-            _types: std::marker::PhantomData,
+/// Each value as an IEEE-754 binary16 bit pattern: read as f32 by the
+/// conversion rule, then rounded to nearest-even by `half` in bulk (F16C
+/// eight at a time when the CPU has it, detected once per block, else its
+/// software conversion). Per value, exactly `f16::from_f32(f32::cast_from(x))`.
+pub(crate) struct HalfBits<S>(PhantomData<fn(S)>);
+
+// SAFETY: every block of `dst` is written from the scratch of its block.
+unsafe impl<S: ViewType> ElementMap<S, u16> for HalfBits<S>
+where
+    f32: CastFrom<S>,
+{
+    #[inline(always)]
+    fn map_into(&self, src: &[S], dst: &mut [MaybeUninit<u16>], _at: usize) {
+        use half::slice::HalfFloatSliceExt;
+        for (src, dst) in src.chunks(HALF_BLOCK).zip(dst.chunks_mut(HALF_BLOCK)) {
+            let mut wide = [0.0f32; HALF_BLOCK];
+            let wide = &mut wide[..src.len()];
+            for (w, &x) in wide.iter_mut().zip(src) {
+                *w = f32::cast_from(x);
+            }
+            let mut narrow = [half::f16::ZERO; HALF_BLOCK];
+            let narrow = &mut narrow[..src.len()];
+            narrow.convert_from_f32_slice(wide);
+            for (d, h) in dst.iter_mut().zip(narrow.iter()) {
+                d.write(h.to_bits());
+            }
         }
     }
 }
 
-impl<S: ViewType, D: ViewType + CastFrom<S>> SimdKernel for ConvertView<'_, S, D> {
-    type Output = Vec<D>;
-
-    #[inline(always)]
-    fn run(self) -> Vec<D> {
-        let mut out = Vec::with_capacity(self.view.shape().iter().product());
-        Walk::of(self.view)
-            .for_each_run::<S>(|run| out.extend(run.iter().map(|&x| D::cast_from(x))));
-        out
-    }
-}
-
-struct Convert<'a, S, D> {
-    src: &'a [S],
-    _to: std::marker::PhantomData<D>,
-}
-
-// Derived `Clone` would demand `D: Clone` of the marker's parameter.
-impl<S, D> Clone for Convert<'_, S, D> {
-    fn clone(&self) -> Self {
-        Convert {
-            src: self.src,
-            _to: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<S: ViewType, D: ViewType + CastFrom<S>> SimdKernel for Convert<'_, S, D> {
-    type Output = Vec<D>;
-
-    #[inline(always)]
-    fn run(self) -> Vec<D> {
-        self.src.iter().map(|&x| D::cast_from(x)).collect()
-    }
+/// [`ViewBuffer::to_f16_bits`]: `view`'s elements as binary16 bit patterns
+/// in a new packed u16 buffer of its shape.
+pub(crate) fn f16_bits<S: ViewType>(view: &ViewBuffer) -> ViewBuffer
+where
+    f32: CastFrom<S>,
+{
+    map_new(view, &HalfBits::<S>(PhantomData))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// f32 values at every edge of binary16: NaN payloads (quiet and
+    /// signalling, both signs), ±0, ±inf, f16's largest finite value and
+    /// the values either side of where rounding overflows to infinity,
+    /// f16 subnormals and the underflow edge, and ties to even.
+    fn half_edge_values() -> Vec<f32> {
+        let mut v = vec![
+            f32::NAN,
+            -f32::NAN,
+            f32::from_bits(0x7F80_0001), // signalling NaN, low payload
+            f32::from_bits(0x7FC0_1234),
+            f32::from_bits(0xFFBF_FFFF),
+            0.0,
+            -0.0,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            65504.0,  // f16::MAX
+            65519.99, // rounds to f16::MAX
+            65520.0,  // the tie above f16::MAX: rounds to infinity
+            -65520.0,
+            1e10,
+            6.103_515_6e-5, // smallest normal f16
+            5.960_464_5e-8, // smallest subnormal f16
+            2.980_232_2e-8, // half of it: ties to zero (even)
+            2.980_233e-8,   // just above: rounds up to the smallest
+            1e-30,
+            1.0 + 1.0 / 2048.0, // tie between 1 and the next f16: to even
+            1.0 + 3.0 / 2048.0, // tie: rounds up to even
+            0.1,
+            -1234.567,
+        ];
+        let mut state = 0x1234_5678u32;
+        for _ in 0..5000 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            v.push(f32::from_bits(state));
+        }
+        v
+    }
+
+    fn per_element_f16(values: &[f32]) -> Vec<u16> {
+        values
+            .iter()
+            .map(|&x| half::f16::from_f32(x).to_bits())
+            .collect()
+    }
+
+    /// The half-precision bits of a buffer are what `f16::from_f32` gives
+    /// for each element read as f32 (the conversion rule), for every edge
+    /// value, over more than one block.
+    #[test]
+    fn f16_bits_are_the_per_element_conversion() {
+        let values = half_edge_values();
+        let buf = ViewBuffer::from_vec_with_shape(values.clone(), vec![values.len()]);
+        let got = buf.to_f16_bits();
+        assert_eq!(got.dtype(), crate::core::dtype::DType::U16);
+        assert_eq!(got.shape(), buf.shape());
+        assert_eq!(got.as_slice::<u16>(), &per_element_f16(&values)[..]);
+    }
+
+    /// Any dtype is read as f32 first (so f64 rounds to f32, then to f16,
+    /// as `cast(F32)` then `from_f32` always did), and any layout is read
+    /// in logical order.
+    #[test]
+    fn f16_bits_read_every_dtype_and_layout() {
+        let (h, w, c) = (37, 29, 3);
+        let n = h * w * c;
+        let seed: Vec<f64> = (0..n).map(|i| (i as f64 * 7.37).sin() * 70_000.0).collect();
+        let parents = [
+            ViewBuffer::from_vec_with_shape(seed.clone(), vec![h, w, c]),
+            ViewBuffer::from_vec_with_shape(
+                seed.iter().map(|&x| x as f32).collect::<Vec<_>>(),
+                vec![h, w, c],
+            ),
+            ViewBuffer::from_vec_with_shape(
+                seed.iter().map(|&x| x as i32).collect::<Vec<_>>(),
+                vec![h, w, c],
+            ),
+            ViewBuffer::from_vec_with_shape(
+                seed.iter().map(|&x| x.abs() as u16).collect::<Vec<_>>(),
+                vec![h, w, c],
+            ),
+        ];
+        for parent in parents {
+            for (layout, view) in [
+                ("contiguous", parent.clone()),
+                ("flip_h", parent.flip(&[1])),
+                ("transpose", parent.permute(&[1, 0, 2])),
+                ("crop", parent.slice(&[2, 3, 0], &[30, 20, 3])),
+            ] {
+                let as_f32 = view.cast_to(crate::core::dtype::DType::F32).to_contiguous();
+                let want = per_element_f16(as_f32.as_slice::<f32>());
+                let got = view.to_f16_bits();
+                assert_eq!(got.shape(), view.shape(), "{:?} {layout}", parent.dtype());
+                assert_eq!(
+                    got.as_slice::<u16>(),
+                    &want[..],
+                    "{:?} {layout}",
+                    parent.dtype()
+                );
+            }
+        }
+    }
 
     #[test]
     fn float_to_int_rounds_half_away_from_zero_then_saturates() {

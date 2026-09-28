@@ -26,6 +26,9 @@ use std::mem::MaybeUninit;
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, ViewType};
 
+/// The outer axes of a [`Geometry`]: at most rank − 1 of them.
+pub(crate) type Outer = smallvec::SmallVec<[(usize, isize); 4]>;
+
 /// A view's layout coalesced into units, rows and outer axes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Geometry {
@@ -36,7 +39,9 @@ pub(crate) struct Geometry {
     /// Bytes from one unit of a row to the next (any sign).
     pub(crate) step: isize,
     /// The remaining axes, outermost first, as `(extent, stride in bytes)`.
-    pub(crate) outer: Vec<(usize, isize)>,
+    /// Inline for any image or batch of images: walking a view allocates
+    /// nothing.
+    pub(crate) outer: Outer,
 }
 
 impl Geometry {
@@ -67,9 +72,7 @@ impl Geometry {
         }
         // The outer axes, each merged into the one inside it when evenly
         // spaced; outermost first.
-        // Sized exactly: a packing copy makes no allocation near a small
-        // view's own size (`copy_counts::append_to_copies_each_element_once`).
-        let mut outer: Vec<(usize, isize)> = Vec::with_capacity(dims.clone().count());
+        let mut outer = Outer::new();
         for (n, stride) in dims {
             match outer.last_mut() {
                 Some(inner) if stride == inner.1 * inner.0 as isize => inner.0 *= n,
@@ -160,40 +163,26 @@ impl<'a> Walk<'a> {
         &self.geometry
     }
 
-    /// Call `f` with the first unit of every row, in logical order.
+    /// The first unit of every row, in logical order.
+    ///
+    /// An iterator rather than a function taking a closure: a loop over it
+    /// keeps its body in the caller, so inside a dispatched kernel the body
+    /// is compiled with the kernel's instruction set. A closure is a function
+    /// of its own that does not inherit it unless LLVM chooses to inline it,
+    /// which it declines for a large body (measured: a map over a view ran
+    /// its baseline build, 4x slower on the wheels).
     #[inline(always)]
-    fn for_each_row(&self, mut f: impl FnMut(*const u8)) {
-        if self.empty {
-            return;
-        }
-        let outer = &self.geometry.outer;
-        match outer.as_slice() {
-            [] => f(self.base),
-            &[(n, stride)] => {
-                let mut row = self.base;
-                for _ in 0..n {
-                    f(row);
-                    row = row.wrapping_offset(stride);
-                }
-            }
-            _ => {
-                let rows: usize = outer.iter().map(|&(n, _)| n).product();
-                let mut index = vec![0usize; outer.len()];
-                let mut row = self.base;
-                for _ in 0..rows {
-                    f(row);
-                    // The odometer: step the innermost outer axis, carrying.
-                    for (i, &(n, stride)) in outer.iter().enumerate().rev() {
-                        index[i] += 1;
-                        row = row.wrapping_offset(stride);
-                        if index[i] < n {
-                            break;
-                        }
-                        index[i] = 0;
-                        row = row.wrapping_offset(-stride * n as isize);
-                    }
-                }
-            }
+    fn rows(&self) -> Rows<'_> {
+        let outer = self.geometry.outer.as_slice();
+        Rows {
+            row: self.base,
+            left: if self.empty {
+                0
+            } else {
+                outer.iter().map(|&(n, _)| n).product()
+            },
+            outer,
+            index: smallvec::smallvec![0; outer.len()],
         }
     }
 
@@ -214,7 +203,7 @@ impl<'a> Walk<'a> {
         // One match per call, not per row: each arm is its own loop.
         macro_rules! rows {
             ($copy:expr) => {
-                self.for_each_row(|row| {
+                for row in self.rows() {
                     // SAFETY: `row` is a row of the view, whose `row_len`
                     // units lie inside its data; `out` advances by one
                     // packed row per row, inside what the caller provides.
@@ -222,7 +211,7 @@ impl<'a> Walk<'a> {
                         $copy(row, out, row_len, step);
                         out = out.add(row_bytes);
                     }
-                })
+                }
             };
         }
         match unit {
@@ -238,14 +227,22 @@ impl<'a> Walk<'a> {
         }
     }
 
-    /// Call `f` with runs of `T` whose concatenation is every element in
-    /// logical order. Long units are handed out where they lie; short ones
-    /// are packed into a stack scratch first.
+    /// Hand `sink` runs of `T` whose concatenation is every element in
+    /// logical order, each run a whole number of `grain`s (a pixel's
+    /// channels, say; 1 for any run). Long units are handed out where they
+    /// lie; short ones are packed into a stack scratch first.
+    ///
+    /// `sink` is called directly, never through a `dyn` pointer, and a
+    /// dispatched consumer implements [`RunSink`] with an
+    /// `#[inline(always)]` method rather than passing a closure: it is the
+    /// consumer's kernel, and inside a dispatched build it must inline to
+    /// get that build's instruction set.
     ///
     /// # Panics
-    /// Panics if `T` is not the view's dtype.
+    /// Panics if `T` is not the view's dtype, or if the view's element count
+    /// is not a whole number of `grain`s.
     #[inline(always)]
-    pub(crate) fn for_each_run<T: ViewType>(&self, mut f: impl FnMut(&[T])) {
+    pub(crate) fn for_each_run<T: ViewType>(&self, grain: usize, sink: &mut impl RunSink<T>) {
         assert_eq!(
             T::DTYPE,
             self.dtype,
@@ -264,34 +261,46 @@ impl<'a> Walk<'a> {
         } = self.geometry;
         let elem = std::mem::size_of::<T>();
         let unit_elems = unit / elem;
-        if unit_elems >= DIRECT_ELEMS {
-            self.for_each_row(|row| {
+        if unit_elems >= DIRECT_ELEMS && unit_elems.is_multiple_of(grain) {
+            for row in self.rows() {
                 for k in 0..row_len {
+                    // Opaque to the optimiser: otherwise LLVM hoists the
+                    // consumer's vector-loop overlap check out of this loop,
+                    // over every unit at once, and gives up whenever `step`
+                    // is negative (a vertical flip), so each unit ran the
+                    // scalar loop (5x slower grayscale). Made per unit, the
+                    // check passes.
+                    let unit_ptr = std::hint::black_box(row.wrapping_offset(k as isize * step));
                     // SAFETY: unit `k` of a row is `unit_elems` packed
                     // elements inside the view's data, aligned for `T`
                     // (offsets and strides are whole elements, CR-41).
-                    f(unsafe {
-                        std::slice::from_raw_parts(
-                            row.wrapping_offset(k as isize * step).cast::<T>(),
-                            unit_elems,
-                        )
+                    sink.take(unsafe {
+                        std::slice::from_raw_parts(unit_ptr.cast::<T>(), unit_elems)
                     });
                 }
-            });
+            }
             return;
         }
         // Pack short units into an aligned stack scratch, handing it out
-        // whenever it fills.
+        // whenever it fills. A full scratch holds a whole number of grains:
+        // `per_block` units is a multiple of the units a grain spans (a unit
+        // is either a whole number of grains, or divides one, since the
+        // packed innermost axes either include a pixel's channels or are
+        // one element; asserted).
+        let per_grain = grain / gcd(grain, unit_elems);
+        assert!(
+            grain.is_multiple_of(unit_elems) || unit_elems.is_multiple_of(grain),
+            "for_each_run: {unit_elems}-element units cannot form {grain}-element grains"
+        );
+        let per_block = (SCRATCH_BYTES / unit) / per_grain * per_grain;
+        assert!(
+            per_block > 0,
+            "for_each_run: a {grain}-element grain exceeds the scratch"
+        );
         let mut scratch = [MaybeUninit::<u64>::uninit(); SCRATCH_BYTES / 8];
         let scratch = scratch.as_mut_ptr().cast::<u8>();
-        let per_block = SCRATCH_BYTES / unit;
         let mut filled = 0usize;
-        let flush = |filled: usize, f: &mut dyn FnMut(&[T])| {
-            // SAFETY: the first `filled` units of the scratch were written
-            // with whole elements of `T`, and the scratch is 8-byte aligned.
-            f(unsafe { std::slice::from_raw_parts(scratch.cast::<T>(), filled * unit_elems) });
-        };
-        self.for_each_row(|row| {
+        for row in self.rows() {
             let mut done = 0;
             while done < row_len {
                 let take = (row_len - done).min(per_block - filled);
@@ -310,15 +319,83 @@ impl<'a> Walk<'a> {
                 filled += take;
                 done += take;
                 if filled == per_block {
-                    flush(filled, &mut f);
+                    // SAFETY: the scratch's first `per_block` units were
+                    // written with whole elements of `T`; it is 8-byte
+                    // aligned.
+                    sink.take(unsafe {
+                        std::slice::from_raw_parts(scratch.cast::<T>(), per_block * unit_elems)
+                    });
                     filled = 0;
                 }
             }
-        });
+        }
         if filled > 0 {
-            flush(filled, &mut f);
+            let len = filled * unit_elems;
+            assert!(
+                len.is_multiple_of(grain),
+                "for_each_run: {len} trailing elements are not whole {grain}-element grains"
+            );
+            // SAFETY: as for a full scratch, over its first `filled` units.
+            sink.take(unsafe { std::slice::from_raw_parts(scratch.cast::<T>(), len) });
         }
     }
+}
+
+/// The consumer of [`Walk::for_each_run`]'s runs.
+///
+/// A dispatched kernel implements it on a struct with an `#[inline(always)]`
+/// [`take`](Self::take), so its body is compiled into the dispatched build;
+/// any `FnMut(&[T])` closure also is one, for code that is not dispatched.
+pub(crate) trait RunSink<T> {
+    fn take(&mut self, run: &[T]);
+}
+
+impl<T, F: FnMut(&[T])> RunSink<T> for F {
+    #[inline(always)]
+    fn take(&mut self, run: &[T]) {
+        self(run)
+    }
+}
+
+/// The rows of a [`Walk`]: each row's first unit, the outer axes stepped
+/// by an odometer that moves the row pointer by adding strides.
+struct Rows<'w> {
+    row: *const u8,
+    left: usize,
+    outer: &'w [(usize, isize)],
+    index: smallvec::SmallVec<[usize; 4]>,
+}
+
+impl Iterator for Rows<'_> {
+    type Item = *const u8;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<*const u8> {
+        if self.left == 0 {
+            return None;
+        }
+        self.left -= 1;
+        let row = self.row;
+        // Step the innermost outer axis, carrying.
+        for (i, &(n, stride)) in self.outer.iter().enumerate().rev() {
+            self.index[i] += 1;
+            self.row = self.row.wrapping_offset(stride);
+            if self.index[i] < n {
+                break;
+            }
+            self.index[i] = 0;
+            self.row = self.row.wrapping_offset(-stride * n as isize);
+        }
+        Some(row)
+    }
+}
+
+/// The greatest common divisor of two positive counts.
+const fn gcd(mut a: usize, mut b: usize) -> usize {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
 }
 
 /// Copy `n` units of `N` bytes, `step` bytes apart from `src`, packed to
@@ -386,7 +463,7 @@ mod tests {
             unit,
             row_len,
             step,
-            outer: outer.to_vec(),
+            outer: outer.iter().copied().collect(),
         }
     }
 
@@ -542,7 +619,7 @@ mod tests {
 
     fn run_bytes(view: &ViewBuffer) -> Vec<u8> {
         let mut out = Vec::new();
-        with_dtype!(view.dtype(), T => Walk::of(view).for_each_run::<T>(|run: &[T]| {
+        with_dtype!(view.dtype(), T => Walk::of(view).for_each_run::<T>(1, &mut |run: &[T]| {
             for x in run {
                 out.extend_from_slice(&x.to_ne_bytes());
             }
@@ -598,6 +675,44 @@ mod tests {
             for view in [buf.flip(&[1]), buf.permute(&[1, 0, 2]), buf.flip(&[0])] {
                 assert_eq!(run_bytes(&view), naive_bytes(&view), "{h}x{w}x{c}");
             }
+        }
+    }
+
+    /// Runs of `grain`-element pieces (a pixel's channels) never split one,
+    /// whatever the layout, and still concatenate to every element in order.
+    /// The channel-strided case (an image stored channel-first, viewed
+    /// channels-last) packs one element at a time into a scratch that holds
+    /// no whole number of 3-channel pixels.
+    #[test]
+    fn a_run_holds_whole_grains_in_every_layout() {
+        let mut views: Vec<(String, ViewBuffer)> = Vec::new();
+        let chw = ViewBuffer::from_vec_with_shape(
+            (0..3 * 40 * 700).map(|i| i as u8).collect::<Vec<u8>>(),
+            vec![3, 40, 700],
+        );
+        views.push((
+            "channel-first as channels-last".into(),
+            chw.permute(&[1, 2, 0]),
+        ));
+        let mut rng = Lcg(0x6A1E);
+        for case in 0..400 {
+            let view = random_view(&mut rng, DType::U16);
+            views.push((format!("random case {case}"), view));
+        }
+        for (label, view) in views {
+            let grain = view.shape().last().copied().unwrap_or(1).max(1);
+            let mut out = Vec::new();
+            with_dtype!(view.dtype(), T => Walk::of(&view).for_each_run::<T>(grain, &mut |run: &[T]| {
+                assert!(
+                    run.len().is_multiple_of(grain),
+                    "{label}: a run of {} elements splits a {grain}-element grain",
+                    run.len()
+                );
+                for x in run {
+                    out.extend_from_slice(&x.to_ne_bytes());
+                }
+            }));
+            assert_eq!(out, naive_bytes(&view), "{label}");
         }
     }
 

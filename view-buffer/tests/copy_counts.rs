@@ -340,6 +340,114 @@ fn grayscale_of_a_view_with_packed_rows_allocates_only_its_output() {
     }
 }
 
+/// Views of a patterned image that no kernel can read as packed rows or as
+/// one slice: a horizontal flip, a transpose, and a crop (packed rows, but
+/// not one run).
+fn views_u8(channels: usize) -> Vec<(&'static str, ViewBuffer)> {
+    vec![
+        ("flip_h", pattern_u8(channels).flip(&[1])),
+        ("transpose", pattern_u8(channels).permute(&[1, 0, 2])),
+        (
+            "crop",
+            pattern_u8(channels).slice(&[64, 32, 0], &[448, 416, channels]),
+        ),
+    ]
+}
+
+/// Allocations at least the size of `view`'s u8 elements running `build` on
+/// it, with the result.
+fn view_allocations(
+    view: ViewBuffer,
+    build: impl Fn(&Arc<ViewExpr>) -> Arc<ViewExpr>,
+) -> (ViewBuffer, usize) {
+    let view_bytes = view.shape().iter().product::<usize>();
+    large_allocations(view_bytes, || run_owned(view, build))
+}
+
+/// A per-value op reads a view where it lies, whatever strategy runs it (an
+/// integer map, a table, blocks of f32 passes, a statistic first): its output
+/// is the only allocation the size of the view. Packing the view first, in
+/// the planner (`RequiresContiguous`) or the kernel, is a second.
+#[test]
+fn per_value_ops_on_a_view_allocate_only_their_output() {
+    let preset = Normalization::Preset {
+        mean: vec![123.7, 116.3, 103.5],
+        std: vec![58.4, 57.1, 57.4],
+    };
+    let mut chain = FusedKernel::new();
+    chain.push(ScalarOp::Mul(1.2));
+    chain.push(ScalarOp::Add(-10.0));
+    chain.push(ScalarOp::Clamp(0.0, 255.0));
+    chain.out_dtype = DType::U8;
+    type Build = Box<dyn Fn(&Arc<ViewExpr>) -> Arc<ViewExpr>>;
+    let ops: Vec<(&str, Build)> = vec![
+        ("invert", Box::new(|e| e.invert())),
+        ("adjust_gamma", Box::new(|e| e.adjust_gamma(0.7))),
+        ("fused u8 chain", Box::new(move |e| e.fused(chain.clone()))),
+        ("scale", Box::new(|e| e.scale(0.5))),
+        (
+            "preset normalize",
+            Box::new(move |e| e.normalize(preset.clone(), DType::F32)),
+        ),
+        (
+            "z-score normalize",
+            Box::new(|e| e.normalize(Normalization::ZScore, DType::F32)),
+        ),
+        (
+            "min-max normalize",
+            Box::new(|e| e.normalize(Normalization::MinMax, DType::U8)),
+        ),
+        ("adjust_contrast", Box::new(|e| e.adjust_contrast(1.4))),
+        ("cast", Box::new(|e| e.cast(DType::U16))),
+    ];
+    for (op, build) in &ops {
+        for (layout, view) in views_u8(3) {
+            let (h, w) = (view.shape()[0], view.shape()[1]);
+            let (out, count) = view_allocations(view, build);
+            assert_eq!(out.shape(), [h, w, 3], "{op} of {layout}");
+            assert_eq!(
+                count, 1,
+                "{op} of {layout}: {count} view-sized allocations, the output is the only one needed"
+            );
+        }
+    }
+}
+
+/// Threshold reads any view where it lies: its u8 output is the only
+/// allocation the size of the view.
+#[test]
+fn threshold_of_any_view_allocates_only_its_output() {
+    for (layout, view) in views_u8(1) {
+        let (out, count) = view_allocations(view, |e| e.threshold(100.0));
+        assert_eq!(out.dtype(), DType::U8, "{layout}");
+        assert_eq!(count, 1, "{layout}: {count} view-sized allocations");
+    }
+}
+
+/// Grayscale reads any view where it lies, not only one with packed rows:
+/// the gray output is the only allocation the size of the gray image. A
+/// horizontal flip or a transpose was packed first (three times the size).
+#[test]
+fn grayscale_of_any_view_allocates_only_its_output() {
+    for channels in [3, 4] {
+        for (layout, view) in views_u8(channels) {
+            let (h, w) = (view.shape()[0], view.shape()[1]);
+            let (out, count) = large_allocations(h * w, || run_owned(view, |e| e.grayscale()));
+            assert_eq!(out.shape(), [h, w, 1], "{channels} channels, {layout}");
+            assert_eq!(
+                count, 1,
+                "{channels} channels, {layout}: {count} gray-image-sized allocations"
+            );
+        }
+    }
+    // Any dtype: the typed kernel packed every input that was not contiguous.
+    let data: Vec<u16> = (0..H * W * 3).map(|i| (i * 31 % 65521) as u16).collect();
+    let view = ViewBuffer::from_vec(data).reshape(vec![H, W, 3]).flip(&[1]);
+    let (out, count) = large_allocations(H * W * 2, || run_owned(view, |e| e.grayscale()));
+    assert_eq!(out.dtype(), DType::U16);
+    assert_eq!(count, 1, "u16 flip_h: {count} gray-image-sized allocations");
+}
+
 // --- Layout bookkeeping: what a row pays before any pixel moves ---
 
 /// Cloning a buffer and asking its layout questions allocates nothing, at

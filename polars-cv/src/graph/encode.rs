@@ -543,9 +543,17 @@ pub(crate) fn encode_node_output(
                 contig.as_slice::<f64>().to_vec(),
             ))
         }
-        SinkKind::NumpyStruct | SinkKind::NdArray => Ok(OutputValue::NumpyStruct(
-            require_buffer(output, domain, format)?.clone(),
-        )),
+        SinkKind::NumpyStruct | SinkKind::NdArray => {
+            let buf = require_buffer(output, domain, format)?;
+            // A half-precision sink converts here, on the row's thread,
+            // not in the serial column build; the row then holds the f16
+            // bits (`crate::output::NumpyRowOutput::from_f16_bits`).
+            Ok(OutputValue::NumpyStruct(if sink.as_f16() {
+                buf.to_f16_bits()
+            } else {
+                buf.clone()
+            }))
+        }
         SinkKind::EncodedImage | SinkKind::Blob => {
             crate::execute::encode_sink(require_buffer(output, domain, format)?, sink)
                 .map(OutputValue::Binary)

@@ -589,9 +589,9 @@ impl<M: Mode> Op for ComputeOp<M> {
             | ComputeOp::RotateAffine { .. }
             | ComputeOp::WarpAffine { .. }
             | ComputeOp::Rotate { .. } => MemoryEffect::RequiresContiguous,
-            ComputeOp::Normalize { .. } | ComputeOp::AdjustContrast { .. } => {
-                MemoryEffect::RequiresContiguous
-            }
+            // Every per-value op, `normalize` and `adjust_contrast` included
+            // (their statistics too), reads a view where it lies
+            // (`core::map`), so a planned pack would only copy it.
             _ => MemoryEffect::StridePreserving,
         }
     }

@@ -348,6 +348,54 @@ fn every_per_value_op_matches_the_legacy_code_on_every_dtype_and_layout() {
     }
 }
 
+/// `parent`'s elements stored channel-first (`[c, h, w]`) and viewed
+/// channels-last again: the same logical buffer with its channels
+/// `h · w` elements apart, so nothing but single elements is packed.
+fn channel_first(parent: &ViewBuffer) -> ViewBuffer {
+    let s = parent.shape().to_vec();
+    let packed = parent.to_contiguous();
+    with_dtype!(parent.dtype(), T => {
+        let src = packed.as_slice::<T>();
+        let mut chw = Vec::with_capacity(src.len());
+        for c in 0..s[2] {
+            chw.extend(src.iter().skip(c).step_by(s[2]).copied());
+        }
+        ViewBuffer::from_vec_with_shape(chw, vec![s[2], s[0], s[1]]).permute(&[1, 2, 0])
+    })
+}
+
+/// Per-channel kernels (a preset normalize: a table for 8-bit input, blocks
+/// of passes otherwise) read an element's channel from its position in the
+/// buffer. A block or a run of a view can start inside a pixel: blocks are
+/// 2,048 elements, not a whole number of 3-channel pixels, and a
+/// channel-first view is handed out in scratch-sized runs. Images big enough
+/// for several blocks and runs, on every layout, must agree with the oracle.
+#[test]
+fn per_channel_kernels_match_the_legacy_code_across_blocks_and_runs() {
+    let ops: Vec<ComputeOp> = [DType::F32, DType::U8, DType::I16]
+        .into_iter()
+        .map(|out| {
+            ComputeOp::from_normalization(
+                Normalization::Preset {
+                    mean: vec![100.5, -3.25, 17.0],
+                    std: vec![57.1, 3.0, 0.5],
+                },
+                out,
+            )
+        })
+        .collect();
+    for dtype in [DType::U8, DType::I16, DType::U32, DType::F32] {
+        let parent = sample(dtype, 61, 53, 3);
+        let mut views = layouts(&parent, true);
+        views.push(("channel_first", channel_first(&parent)));
+        for (layout, view) in views {
+            for op in &ops {
+                check(op, &view, &format!("{op:?} on {dtype:?} 61x53x3 {layout}"));
+            }
+        }
+    }
+}
+
 /// 16-bit input switches to a lookup table at 65,536 elements per table;
 /// both sides of the threshold must agree with the oracle.
 #[test]
@@ -444,7 +492,7 @@ fn the_strategy_tables_only_costly_kernels_over_enumerable_input() {
             DType::U8,
             10,
             cheap_f32(),
-            Strategy::Pass,
+            Strategy::Blocked,
         ),
         ("u8 gamma", DType::U8, 10, gamma(), Strategy::Lut),
         ("i8 preset", DType::I8, 12, preset(), Strategy::Lut),
@@ -453,7 +501,7 @@ fn the_strategy_tables_only_costly_kernels_over_enumerable_input() {
             DType::U16,
             65_535,
             gamma(),
-            Strategy::Pass,
+            Strategy::Blocked,
         ),
         (
             "large u16 gamma",
@@ -467,7 +515,7 @@ fn the_strategy_tables_only_costly_kernels_over_enumerable_input() {
             DType::I16,
             3 * 65_536 - 3,
             preset(),
-            Strategy::Pass,
+            Strategy::Blocked,
         ),
         (
             "large i16 preset",
@@ -476,7 +524,7 @@ fn the_strategy_tables_only_costly_kernels_over_enumerable_input() {
             preset(),
             Strategy::Lut,
         ),
-        ("u32 gamma", DType::U32, 1 << 20, gamma(), Strategy::Pass),
+        ("u32 gamma", DType::U32, 1 << 20, gamma(), Strategy::Blocked),
         (
             "f32 -> u8 chain",
             DType::F32,
@@ -484,7 +532,7 @@ fn the_strategy_tables_only_costly_kernels_over_enumerable_input() {
             cheap_u8(),
             Strategy::Blocked,
         ),
-        ("f64 preset", DType::F64, 9, preset(), Strategy::Pass),
+        ("f64 preset", DType::F64, 9, preset(), Strategy::Blocked),
     ];
     for (label, dtype, n, kernels, want) in table {
         assert_eq!(strategy(dtype, n, &kernels), want, "{label}");

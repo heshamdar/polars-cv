@@ -94,7 +94,8 @@ pub(crate) enum RowResult {
     TypedList(Option<ViewBuffer>),
     /// Typed fixed-size array for "array" sink (fixed shape, preserves dtype).
     TypedArray(Option<ViewBuffer>),
-    /// Numpy/Torch struct output (zero-copy ViewBuffer ownership transfer).
+    /// Numpy/Torch struct output (zero-copy ViewBuffer ownership transfer),
+    /// as `OutputValue::NumpyStruct`.
     NumpyStruct(Option<ViewBuffer>),
     /// Histogram buckets data [lower_edge, upper_edge, count, normalized] flattened
     HistogramBuckets(Option<Vec<f64>>),
@@ -447,7 +448,9 @@ pub(crate) enum OutputValue {
     /// A row of the "array" sink, its shape already checked against the
     /// sink's (see `TypedList`).
     TypedArray(ViewBuffer),
-    /// Numpy/Torch struct output (zero-copy ViewBuffer for struct encoding).
+    /// Numpy/Torch struct output (zero-copy ViewBuffer for struct encoding):
+    /// the row's buffer, or for a half-precision sink its f16 bits
+    /// (`ViewBuffer::to_f16_bits`).
     NumpyStruct(ViewBuffer),
     /// Histogram buckets data [lower_edge, upper_edge, count, normalized] flattened
     HistogramBuckets(Vec<f64>),
