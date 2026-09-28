@@ -1,6 +1,15 @@
 //! Memory layout types for view-buffer.
 
 use crate::core::dtype::DType;
+use smallvec::SmallVec;
+
+/// A layout's sizes, one per axis. Inline up to rank 4 (an image, or a batch
+/// of them), so copying a layout or asking it a question allocates nothing:
+/// the executor does both several times per row.
+pub type Dims = SmallVec<[usize; 4]>;
+
+/// A layout's strides in bytes, one per axis; inline like [`Dims`].
+pub type Strides = SmallVec<[isize; 4]>;
 
 /// External layout requirements for different libraries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,8 +24,8 @@ pub enum ExternalLayout {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LayoutFacts {
     pub rank: usize,
-    pub shape: Vec<usize>,
-    pub strides: Vec<isize>, // Strides in BYTES
+    pub shape: Dims,
+    pub strides: Strides, // Strides in BYTES
     pub dtype: DType,
     pub offset: usize, // Offset in BYTES
 }
@@ -26,8 +35,8 @@ impl LayoutFacts {
     pub fn new(shape: &[usize], strides: &[isize], dtype: DType, offset: usize) -> Self {
         Self {
             rank: shape.len(),
-            shape: shape.to_vec(),
-            strides: strides.to_vec(),
+            shape: Dims::from_slice(shape),
+            strides: Strides::from_slice(strides),
             dtype,
             offset,
         }
@@ -35,16 +44,7 @@ impl LayoutFacts {
 
     /// Returns true if the layout is contiguous (C-order/row-major).
     pub fn is_contiguous(&self) -> bool {
-        let mut expected_strides = vec![0; self.rank];
-        let mut current = self.dtype.size_of() as isize;
-
-        // Compute standard C-order (row-major) strides
-        for i in (0..self.rank).rev() {
-            expected_strides[i] = current;
-            current *= self.shape[i] as isize;
-        }
-
-        self.strides == expected_strides
+        is_c_contiguous(&self.shape, &self.strides, self.dtype)
     }
 
     /// Returns true if the layout is channels-last (HWC format).
@@ -99,26 +99,43 @@ impl LayoutFacts {
                     && self.has_positive_strides()
             }
             ExternalLayout::FastImageResize => {
-                // fast_image_resize usually requires strictly contiguous buffers
-                self.is_contiguous()
+                // fast_image_resize reads one row at a time, so only the
+                // pixels within a row must be packed: the row stride may be
+                // anything (a crop's gap, a vertical flip's negative stride).
+                self.is_dense_rows()
             }
         }
     }
 }
 
+/// Whether `strides` are the C-order (row-major) strides of `shape` for
+/// `dtype`: the one contiguity rule, read by [`LayoutFacts`] and [`Layout`]
+/// alike, compared innermost first and without allocating.
+fn is_c_contiguous(shape: &[usize], strides: &[isize], dtype: DType) -> bool {
+    let mut expected = dtype.size_of() as isize;
+    for (&size, &stride) in shape.iter().zip(strides).rev() {
+        if stride != expected {
+            return false;
+        }
+        expected *= size as isize;
+    }
+    true
+}
+
 /// Persistent storage for layout information.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layout {
-    pub shape: Vec<usize>,
-    pub strides: Vec<isize>,
+    pub shape: Dims,
+    pub strides: Strides,
     pub offset: usize,
     pub dtype: DType,
 }
 
 impl Layout {
     /// Creates a new contiguous layout with the given shape and dtype.
-    pub fn new_contiguous(shape: Vec<usize>, dtype: DType) -> Self {
-        let mut strides = vec![0; shape.len()];
+    pub fn new_contiguous(shape: impl Into<Dims>, dtype: DType) -> Self {
+        let shape = shape.into();
+        let mut strides = Strides::from_elem(0, shape.len());
         let mut current_stride = dtype.size_of() as isize;
 
         for i in (0..shape.len()).rev() {
@@ -141,7 +158,7 @@ impl Layout {
 
     /// Returns true if the layout is contiguous.
     pub fn is_contiguous(&self) -> bool {
-        LayoutFacts::from(self).is_contiguous()
+        is_c_contiguous(&self.shape, &self.strides, self.dtype)
     }
 
     /// Returns true if the layout is compatible with the target external layout.
@@ -154,5 +171,56 @@ impl Layout {
 impl From<&Layout> for LayoutFacts {
     fn from(l: &Layout) -> Self {
         Self::new(&l.shape, &l.strides, l.dtype, l.offset)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `[8, 6, 3]` f32 facts with the given byte strides and offset.
+    fn f32_hwc(shape: &[usize], strides: &[isize], offset: usize) -> LayoutFacts {
+        LayoutFacts::new(shape, strides, DType::F32, offset)
+    }
+
+    /// fast_image_resize reads a view row by row, so any layout whose pixels
+    /// are packed within each row is resized where it lies: a crop (padded
+    /// rows) and a vertical flip (negative row stride) included. Anything
+    /// that is not packed within a row — a horizontal flip, a transpose, a
+    /// channel subset — has to be packed first.
+    #[test]
+    fn fast_image_resize_takes_any_view_with_packed_rows() {
+        let accepted = [
+            ("contiguous", f32_hwc(&[8, 6, 3], &[72, 12, 4], 0)),
+            ("crop", f32_hwc(&[4, 3, 3], &[72, 12, 4], 84)),
+            ("flip_v", f32_hwc(&[8, 6, 3], &[-72, 12, 4], 504)),
+            (
+                "rank 2 crop",
+                LayoutFacts::new(&[4, 3], &[24, 4], DType::F32, 28),
+            ),
+        ];
+        for (label, facts) in accepted {
+            assert!(
+                facts.compatible_with(ExternalLayout::FastImageResize),
+                "{label} was refused"
+            );
+        }
+        let refused = [
+            ("flip_h", f32_hwc(&[8, 6, 3], &[72, -12, 4], 60)),
+            ("transpose", f32_hwc(&[6, 8, 3], &[12, 72, 4], 0)),
+            ("channel subset", f32_hwc(&[8, 6, 2], &[72, 12, 4], 0)),
+            ("reversed channels", f32_hwc(&[8, 6, 3], &[72, 12, -4], 8)),
+            ("rank 1", LayoutFacts::new(&[8], &[4], DType::F32, 0)),
+            (
+                "rank 4",
+                LayoutFacts::new(&[1, 8, 6, 3], &[576, 72, 12, 4], DType::F32, 0),
+            ),
+        ];
+        for (label, facts) in refused {
+            assert!(
+                !facts.compatible_with(ExternalLayout::FastImageResize),
+                "{label} was accepted"
+            );
+        }
     }
 }

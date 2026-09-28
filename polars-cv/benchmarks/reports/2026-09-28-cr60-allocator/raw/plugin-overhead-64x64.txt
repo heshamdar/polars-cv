@@ -1,0 +1,72 @@
+== sys
+case                     best (s)  median (s)       rows/s
+noop    eager              0.070       0.081       716981
+noop    streaming          0.054       0.062       923271
+invert  eager              0.100       0.104       502214
+invert  streaming          0.063       0.074       796213
+static  eager              0.191       0.224       261948
+static  streaming          0.244       0.269       204504
+dynamic eager              0.219       0.242       227978
+dynamic streaming          0.266       0.277       187828
+static->array eager              0.262       0.270       190504
+static->array streaming          0.310       0.564       161056
+== alloc
+case                     best (s)  median (s)       rows/s
+noop    eager              0.052       0.072       957539
+noop    streaming          0.037       0.045      1342766
+invert  eager              0.062       0.067       805108
+invert  streaming          0.050       0.055      1006454
+static  eager              0.104       0.126       482148
+static  streaming          0.106       0.180       469693
+dynamic eager              0.149       0.192       335744
+dynamic streaming          0.160       0.188       312832
+static->array eager              0.148       0.310       338039
+static->array streaming          0.266       0.321       188073
+== sys
+case                     best (s)  median (s)       rows/s
+noop    eager              0.062       0.085       801362
+noop    streaming          0.059       0.070       853585
+invert  eager              0.092       0.111       541815
+invert  streaming          0.067       0.070       747164
+static  eager              0.219       0.229       227969
+static  streaming          0.236       0.260       212023
+dynamic eager              0.210       0.217       238309
+dynamic streaming          0.251       0.282       199223
+static->array eager              0.300       0.319       166945
+static->array streaming          0.255       0.372       196239
+== alloc
+case                     best (s)  median (s)       rows/s
+noop    eager              0.047       0.056      1054451
+noop    streaming          0.035       0.039      1413521
+invert  eager              0.055       0.062       913589
+invert  streaming          0.047       0.055      1054915
+static  eager              0.135       0.171       370013
+static  streaming          0.084       0.187       592749
+dynamic eager              0.138       0.170       362528
+dynamic streaming          0.120       0.217       416009
+static->array eager              0.185       0.376       269661
+static->array streaming          0.249       0.297       201181
+== sys
+case                     best (s)  median (s)       rows/s
+noop    eager              0.079       0.086       631183
+noop    streaming          0.064       0.068       781095
+invert  eager              0.101       0.112       496927
+invert  streaming          0.070       0.085       713174
+static  eager              0.215       0.224       232191
+static  streaming          0.210       0.240       237967
+dynamic eager              0.207       0.220       241476
+dynamic streaming          0.240       0.268       207902
+static->array eager              0.279       0.318       178965
+static->array streaming          0.274       0.312       182788
+== alloc
+case                     best (s)  median (s)       rows/s
+noop    eager              0.047       0.058      1067021
+noop    streaming          0.039       0.054      1293515
+invert  eager              0.063       0.070       797199
+invert  streaming          0.044       0.056      1134885
+static  eager              0.110       0.148       456300
+static  streaming          0.101       0.135       493622
+dynamic eager              0.149       0.197       336248
+dynamic streaming          0.134       0.192       373266
+static->array eager              0.286       0.322       174826
+static->array streaming          0.253       0.347       197618

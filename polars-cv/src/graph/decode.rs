@@ -96,21 +96,14 @@ pub(crate) fn decode_source_row(
         }
         // Raw bytes take the declared dtype.
         Source::Raw { dtype, .. } => {
-            let Some((bytes, offset, len)) = get_binary_row_buffer(binary()?, row) else {
-                return Ok(None);
-            };
-            decode_binary_zero_copy(bytes, offset, len, Some(dtype.get()))
-                .map(buffer)
-                .map_err(|e| format!("Zero-copy decode error: {e}"))
+            Ok(decode_binary_row(binary()?, row, Some(dtype.get()))?.and_then(buffer))
         }
         // A blob carries its own dtype, which a declared one must match: the
         // planner (and identity elimination) takes the declaration as fact.
         Source::Blob { dtype, .. } => {
-            let Some((bytes, offset, len)) = get_binary_row_buffer(binary()?, row) else {
+            let Some(buf) = decode_binary_row(binary()?, row, None)? else {
                 return Ok(None);
             };
-            let buf = decode_binary_zero_copy(bytes, offset, len, None)
-                .map_err(|e| format!("Zero-copy decode error: {e}"))?;
             match dtype.map(|d| d.get()) {
                 Some(declared) if declared != buf.dtype() => Err(format!(
                     "the blob holds {} elements, but the source declares dtype=\"{}\". A \
@@ -136,22 +129,65 @@ pub(crate) fn decode_source_row(
     }
 }
 
-/// Extract binary data from a BinaryChunked at a specific row.
+/// Decode row `row` of a binary column: a raw row as `raw_dtype`, or (with
+/// `None`) a VIEW blob. `None` for a null row.
 ///
-/// Returns the row as a polars-arrow buffer whose bytes at `offset` start on
-/// an 8-byte-aligned address (the largest element size). `parse_blob`
-/// validates a blob's offsets and strides *relative to its first byte*, and
-/// the typed views built over it are `&[T]`, so the blob's own start must be
-/// aligned for those checks to mean anything (CR-41).
+/// A row is read where it lies whenever its elements are aligned there for
+/// their dtype: a raw row's first byte, a blob's payload. Only a row they
+/// are not aligned in (or one stored inline in its view) is copied.
+pub(crate) fn decode_binary_row(
+    ca: &BinaryChunked,
+    row: usize,
+    raw_dtype: Option<view_buffer::DType>,
+) -> Result<Option<ViewBuffer>, String> {
+    let decoded = match raw_dtype {
+        Some(dtype) => {
+            let elem = dtype.size_of();
+            let Some((bytes, offset, len)) =
+                get_binary_row_buffer(ca, row, |b| (b.as_ptr() as usize).is_multiple_of(elem))
+            else {
+                return Ok(None);
+            };
+            decode_raw(bytes, offset, len, dtype)
+        }
+        None => {
+            // Parsed once, where the row lies. The layout is relative to the
+            // blob's first byte, so it holds for a copy of the blob too.
+            let mut parsed = None;
+            let Some((bytes, offset, _)) = get_binary_row_buffer(ca, row, |b| {
+                let blob = view_buffer::parse_blob(b);
+                let payload =
+                    (b.as_ptr() as usize).wrapping_add(blob.as_ref().map_or(0, |l| l.data_offset));
+                let in_place = blob
+                    .as_ref()
+                    .is_ok_and(|l| payload.is_multiple_of(l.dtype.size_of()));
+                parsed = Some(blob);
+                in_place
+            }) else {
+                return Ok(None);
+            };
+            parsed
+                .expect("get_binary_row_buffer asks about every non-null row")
+                .and_then(|blob| decode_blob_zero_copy(bytes, offset, blob))
+        }
+    };
+    decoded
+        .map(Some)
+        .map_err(|e| format!("Zero-copy decode error: {e}"))
+}
+
+/// Row `row` of a binary column as a buffer: read where it lies when
+/// `in_place` accepts its bytes there, else copied to an 8-byte-aligned
+/// address (the largest element size). `in_place` is asked about every
+/// non-null row, including one stored inline in its view, which is copied
+/// whatever it answers.
 ///
 /// Polars stores binary as a `BinaryViewArray`: a value longer than 12 bytes
-/// sits in one of the array's shared data buffers, and when it starts on an
-/// aligned address the row is that buffer, sliced — no copy. A value inline
-/// in its view, or at an unaligned address, is copied to an aligned one.
-///
-/// # Arguments
-/// * `binary_ca` - The binary chunked array.
-/// * `row_idx` - The row index to extract.
+/// sits in one of the array's shared data buffers, and reading it in place is
+/// that buffer, sliced. The typed views built over a row are `&[T]`, so what
+/// `in_place` checks is that `T`'s alignment holds where the row lies: an
+/// unconditional 8-byte rule copied every u8 row at an odd address (CR-41
+/// made alignment a requirement; this makes it the dtype's).
 ///
 /// # Returns
 /// `Some((buffer, offset, len))` if the row is valid and not null.
@@ -159,6 +195,7 @@ pub(crate) fn decode_source_row(
 pub(crate) fn get_binary_row_buffer(
     binary_ca: &BinaryChunked,
     row_idx: usize,
+    in_place: impl FnOnce(&[u8]) -> bool,
 ) -> Option<(polars_buffer::Buffer<u8>, usize, usize)> {
     use polars_arrow::array::{Array, View};
 
@@ -176,7 +213,7 @@ pub(crate) fn get_binary_row_buffer(
     }
     let bytes = arr.value(i);
     let view = arr.views()[i];
-    if view.length > View::MAX_INLINE_SIZE && (bytes.as_ptr() as usize).is_multiple_of(8) {
+    if in_place(bytes) && view.length > View::MAX_INLINE_SIZE {
         // Sliced to the row: the data buffer is shared by the column's rows,
         // and whatever holds this buffer downstream (a numpy sink's `data`)
         // must hold this row's bytes, not every row's.
@@ -203,57 +240,42 @@ fn aligned_copy(bytes: &[u8]) -> polars_buffer::Buffer<u8> {
         .try_transmute::<u8>()
         .expect("u64 -> u8 reinterpretation cannot fail")
 }
-/// Decode a binary source (blob or raw) with zero-copy when possible.
-///
-/// For blob format: parses the VIEW protocol header, creates ViewBuffer pointing to data.
-/// For raw format: creates ViewBuffer directly from the buffer reference.
-///
-/// # Arguments
-/// * `buffer` - The polars-arrow buffer containing the data.
-/// * `offset` - Byte offset into the buffer.
-/// * `len` - Length of the data in bytes.
-/// * `raw_dtype` - `Some` for a raw source (its declared element dtype),
-///   `None` for a blob (the dtype is in its header).
-pub(crate) fn decode_binary_zero_copy(
+/// A raw row's bytes as a flat buffer of `dtype`, read where they lie.
+fn decode_raw(
     buffer: polars_buffer::Buffer<u8>,
     offset: usize,
     len: usize,
-    raw_dtype: Option<view_buffer::DType>,
+    dtype: view_buffer::DType,
 ) -> Result<ViewBuffer, String> {
-    match raw_dtype {
-        None => decode_blob_zero_copy(buffer, offset, len),
-        Some(dtype) => {
-            let element_size = dtype.size_of();
-            // A remainder is bytes the caller supplied that no element would
-            // read; dropping them silently is a truncation, not a decode.
-            if !len.is_multiple_of(element_size) {
-                return Err(format!(
-                    "Raw source: {len} bytes is not a multiple of the {} element \
-                     size ({element_size} bytes)",
-                    dtype.short_name()
-                ));
-            }
-            let num_elements = len / element_size;
-            Ok(ViewBuffer::from_polars_buffer(
-                buffer,
-                offset,
-                vec![num_elements],
-                dtype,
-            ))
-        }
+    let element_size = dtype.size_of();
+    // A remainder is bytes the caller supplied that no element would
+    // read; dropping them silently is a truncation, not a decode.
+    if !len.is_multiple_of(element_size) {
+        return Err(format!(
+            "Raw source: {len} bytes is not a multiple of the {} element \
+             size ({element_size} bytes)",
+            dtype.short_name()
+        ));
     }
+    Ok(ViewBuffer::from_polars_buffer(
+        buffer,
+        offset,
+        vec![len / element_size],
+        dtype,
+    ))
 }
 /// Decode a blob (VIEW protocol) with zero-copy.
 ///
-/// The header is parsed and validated by [`view_buffer::parse_blob`] — the
-/// same parser `ViewBuffer::from_blob` uses — and the resulting ViewBuffer
-/// points directly into `buffer`. A strided layout keeps its stored strides.
+/// `blob` is the blob's header as parsed and validated by
+/// [`view_buffer::parse_blob`] — the same parser `ViewBuffer::from_blob`
+/// uses — from the bytes at `base_offset` in `buffer`, and the resulting
+/// ViewBuffer points directly into `buffer`. A strided layout keeps its
+/// stored strides.
 fn decode_blob_zero_copy(
     buffer: polars_buffer::Buffer<u8>,
     base_offset: usize,
-    total_len: usize,
+    blob: view_buffer::BlobLayout,
 ) -> Result<ViewBuffer, String> {
-    let blob = view_buffer::parse_blob(&buffer.as_slice()[base_offset..base_offset + total_len])?;
     let abs_data_offset = base_offset
         .checked_add(blob.data_offset)
         .ok_or_else(|| "Blob data offset overflow".to_string())?;
@@ -352,15 +374,153 @@ pub(crate) fn decode_list_or_array_source(
     if let Some(result) = try_decode_array_zero_copy(series, row_idx, dtype)? {
         return Ok(Some(result));
     }
+    let Some(grid) = list_row_grid(series, row_idx)? else {
+        return Ok(None);
+    };
+    if grid.values.is_empty() {
+        return Ok(None);
+    }
+    let elem = dtype.size_of();
+    if let Some(buffer) = get_primitive_buffer(grid.leaf, dtype) {
+        // The row's values where the column holds them.
+        return Ok(Some(ViewBuffer::from_polars_buffer_slice(
+            buffer,
+            grid.values.start * elem,
+            grid.values.len() * elem,
+            grid.shape,
+            dtype,
+        )));
+    }
     if require_contiguous {
         return Err(format!(
-            "Source 'require_contiguous=true' requires rectangular data with zero-copy access, \
-            but row {row_idx} has data that cannot be zero-copied (possibly jagged nested lists or \
-            variable-size List type). Use require_contiguous=false to allow copy-based flattening, \
-            or use Polars Array type (fixed-size) instead of List."
+            "Source 'require_contiguous=true' reads rows in place, but row {row_idx} holds \
+             {:?} values, not {}: they would have to be converted. Declare the column's own \
+             dtype (and .cast() after the source), cast the column, or use \
+             require_contiguous=false.",
+            grid.leaf.dtype(),
+            dtype.short_name()
         ));
     }
-    decode_list_with_copy(series, row_idx, dtype)
+    convert_row_values(grid, dtype).map(Some)
+}
+
+/// One row of a `List`/`Array` column as a grid: its shape, and the leaf
+/// array range holding its values in row-major order.
+struct RowGrid<'a> {
+    shape: Vec<usize>,
+    leaf: &'a dyn polars_arrow::array::Array,
+    values: std::ops::Range<usize>,
+}
+
+/// Walk row `row_idx` of a `List`/`Array` column level by level through its
+/// Arrow arrays, checking that it is a grid. `None` for a null row.
+///
+/// Every list at a level must have the same length (that length is the
+/// level's size) and nothing may be null: a jagged row has no shape, and a
+/// null has no value. Taking each level's size from its first element and
+/// then reading the values as that shape, as an earlier version did, read
+/// past the end of `[[1, 2], [3]]` and silently re-rowed
+/// `[[1, 2], [3], [4, 5, 6]]`. Nothing is copied: a level is its offsets.
+fn list_row_grid(series: &Series, row_idx: usize) -> Result<Option<RowGrid<'_>>, String> {
+    use polars_arrow::array::{Array, FixedSizeListArray, ListArray};
+    // The chunk holding the row, and the row's index within it.
+    let mut i = row_idx;
+    let Some(chunk) = series.chunks().iter().find(|arr| {
+        let here = i < arr.len();
+        if !here {
+            i -= arr.len();
+        }
+        here
+    }) else {
+        return Err(format!("row {row_idx} is past the end of the column"));
+    };
+    if chunk.is_null(i) {
+        return Ok(None);
+    }
+    let null_in = |arr: &dyn Array, range: &std::ops::Range<usize>| {
+        arr.validity()
+            .is_some_and(|v| range.clone().any(|j| !v.get_bit(j)))
+    };
+    let mut shape = Vec::new();
+    let mut arr: &dyn Array = chunk.as_ref();
+    // The entries of `arr` that make up the row (at the top, the row itself).
+    let mut range = i..i + 1;
+    loop {
+        if let Some(list) = arr.as_any().downcast_ref::<ListArray<i64>>() {
+            if null_in(arr, &range) {
+                return Err(null_row_part("list"));
+            }
+            let offsets = list.offsets().as_slice();
+            let len = |j: usize| (offsets[j + 1] - offsets[j]) as usize;
+            let size = if range.is_empty() {
+                0
+            } else {
+                len(range.start)
+            };
+            if range.clone().any(|j| len(j) != size) {
+                return Err(
+                    "the row is jagged: its lists at one level differ in length, so \
+                            it has no array shape"
+                        .to_string(),
+                );
+            }
+            shape.push(size);
+            range = offsets[range.start] as usize..offsets[range.end] as usize;
+            arr = list.values().as_ref();
+        } else if let Some(fixed) = arr.as_any().downcast_ref::<FixedSizeListArray>() {
+            if null_in(arr, &range) {
+                return Err(null_row_part("list"));
+            }
+            let width = fixed.size();
+            shape.push(width);
+            range = range.start * width..range.end * width;
+            arr = fixed.values().as_ref();
+        } else {
+            if null_in(arr, &range) {
+                return Err(null_row_part("value"));
+            }
+            return Ok(Some(RowGrid {
+                shape,
+                leaf: arr,
+                values: range,
+            }));
+        }
+    }
+}
+
+fn null_row_part(what: &str) -> String {
+    format!("the row holds a null {what}; a list/array row must be a grid of values")
+}
+
+/// A row whose values are not `dtype`, converted once by polars' strict
+/// cast: a value `dtype` cannot hold is an error naming it. Polars'
+/// non-strict cast, which this used, left 0 in its place (CR-61).
+fn convert_row_values(grid: RowGrid<'_>, dtype: view_buffer::DType) -> Result<ViewBuffer, String> {
+    let values = grid.leaf.sliced(grid.values.start, grid.values.len());
+    let converted = Series::from_arrow(PlSmallStr::EMPTY, values)
+        .and_then(|s| s.strict_cast(&polars_dtype_for(dtype)))
+        .and_then(|s| {
+            s.rechunk()
+                .chunks()
+                .first()
+                .cloned()
+                .ok_or_else(|| polars_err!(ComputeError: "a cast produced no chunk"))
+        })
+        .map_err(|e| format!("the row's values cannot all be {}: {e}", dtype.short_name()))?;
+    let buffer = get_primitive_buffer(converted.as_ref(), dtype).ok_or_else(|| {
+        format!(
+            "internal: a cast to {} produced {:?}",
+            dtype.short_name(),
+            converted.dtype()
+        )
+    })?;
+    Ok(ViewBuffer::from_polars_buffer_slice(
+        buffer,
+        0,
+        grid.values.len() * dtype.size_of(),
+        grid.shape,
+        dtype,
+    ))
 }
 /// Try zero-copy decoding for fixed-size Array types.
 ///
@@ -524,124 +684,6 @@ fn get_primitive_buffer(
         view_buffer::DType::I64 => view_bytes!(i64),
         view_buffer::DType::F32 => view_bytes!(f32),
         view_buffer::DType::F64 => view_bytes!(f64),
-    }
-}
-/// Decode list with copy (fallback path).
-fn decode_list_with_copy(
-    series: &Series,
-    row_idx: usize,
-    dtype: view_buffer::DType,
-) -> Result<Option<ViewBuffer>, String> {
-    let element_series = match series.dtype() {
-        DataType::List(_) => {
-            let list_ca = series
-                .list()
-                .map_err(|e| format!("List access error: {e}"))?;
-            list_ca.get_as_series(row_idx)
-        }
-        DataType::Array(_, _) => {
-            let arr_ca = series
-                .array()
-                .map_err(|e| format!("Array access error: {e}"))?;
-            arr_ca.get_as_series(row_idx)
-        }
-        other => {
-            return Err(format!("Expected List or Array column, got {other:?}"));
-        }
-    };
-    let element = match element_series {
-        Some(s) => s,
-        None => return Ok(None),
-    };
-    let (shape, flat_series) = flatten_nested_series(&element)?;
-    if flat_series.is_empty() {
-        return Ok(None);
-    }
-    let bytes = series_to_bytes(&flat_series, &dtype)?;
-    Ok(Some(ViewBuffer::from_raw_bytes(bytes, shape, dtype)))
-}
-/// Flatten one row's nested values, checking that they form a grid.
-///
-/// Every list at a level must have the same length (that length is the
-/// level's size) and nothing may be null: a jagged row has no shape, and a
-/// null has no value. Taking each level's size from its first element and
-/// then reading the values as that shape, as this used to, read past the end
-/// of `[[1, 2], [3]]` and silently re-rowed `[[1, 2], [3], [4, 5, 6]]`.
-fn flatten_nested_series(series: &Series) -> Result<(Vec<usize>, Series), String> {
-    let mut shape = vec![series.len()];
-    let mut current = series.clone();
-    loop {
-        if current.null_count() > 0 {
-            let what = match current.dtype() {
-                DataType::List(_) | DataType::Array(_, _) => "list",
-                _ => "value",
-            };
-            return Err(format!(
-                "the row holds a null {what}; a list/array row must be a grid of values"
-            ));
-        }
-        let size = match current.dtype() {
-            DataType::List(_) => {
-                // Read from the offsets: `lst_lengths` would allocate a
-                // lengths column per level per row.
-                let ca = current.list().map_err(|e| format!("List error: {e}"))?;
-                let mut lengths = ca.downcast_iter().flat_map(|arr| arr.offsets().lengths());
-                let first = lengths.next().unwrap_or(0);
-                if lengths.any(|len| len != first) {
-                    return Err(
-                        "the row is jagged: its lists at one level differ in length, so it has \
-                         no array shape"
-                            .to_string(),
-                    );
-                }
-                first
-            }
-            DataType::Array(_, width) => *width,
-            _ => return Ok((shape, current)),
-        };
-        shape.push(size);
-        current = current
-            .explode(ExplodeOptions {
-                empty_as_null: false,
-                keep_nulls: true,
-            })
-            .map_err(|e| format!("Explode error: {e}"))?;
-    }
-}
-/// Convert a flat primitive Series to raw bytes.
-fn series_to_bytes(series: &Series, target_dtype: &view_buffer::DType) -> Result<Vec<u8>, String> {
-    macro_rules! convert_series {
-        ($series:expr, $method:ident, $rust_type:ty) => {{
-            let ca = $series.$method().map_err(|e| format!("Cast error: {e}"))?;
-            let values: Vec<$rust_type> = ca.into_no_null_iter().collect();
-            let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
-            Ok(bytes)
-        }};
-    }
-    let casted = match target_dtype {
-        view_buffer::DType::U8 => series.cast(&DataType::UInt8),
-        view_buffer::DType::I8 => series.cast(&DataType::Int8),
-        view_buffer::DType::U16 => series.cast(&DataType::UInt16),
-        view_buffer::DType::I16 => series.cast(&DataType::Int16),
-        view_buffer::DType::U32 => series.cast(&DataType::UInt32),
-        view_buffer::DType::I32 => series.cast(&DataType::Int32),
-        view_buffer::DType::U64 => series.cast(&DataType::UInt64),
-        view_buffer::DType::I64 => series.cast(&DataType::Int64),
-        view_buffer::DType::F32 => series.cast(&DataType::Float32),
-        view_buffer::DType::F64 => series.cast(&DataType::Float64),
-    }
-    .map_err(|e| format!("Cast to {target_dtype:?} failed: {e}"))?;
-    match target_dtype {
-        view_buffer::DType::U8 => convert_series!(casted, u8, u8),
-        view_buffer::DType::I8 => convert_series!(casted, i8, i8),
-        view_buffer::DType::U16 => convert_series!(casted, u16, u16),
-        view_buffer::DType::I16 => convert_series!(casted, i16, i16),
-        view_buffer::DType::U32 => convert_series!(casted, u32, u32),
-        view_buffer::DType::I32 => convert_series!(casted, i32, i32),
-        view_buffer::DType::U64 => convert_series!(casted, u64, u64),
-        view_buffer::DType::I64 => convert_series!(casted, i64, i64),
-        view_buffer::DType::F32 => convert_series!(casted, f32, f32),
-        view_buffer::DType::F64 => convert_series!(casted, f64, f64),
     }
 }
 /// The Polars spelling of an engine dtype.
@@ -896,25 +938,32 @@ pub(crate) fn null_row_result_for_spec(spec: &OutputSpec) -> PolarsResult<RowRes
 /// `encode_node_output` and [`SinkKind`] are two halves of one contract, so
 /// reaching this means they disagree. Publishing the row as null (the former
 /// `_ => None` arms) would pass the bug off as data (CR-38).
-fn foreign_row(kind: SinkKind, row: &RowResult) -> PolarsError {
+fn foreign_row(kind: SinkKind, variant: &str) -> PolarsError {
     polars_err!(ComputeError:
         "internal: a {:?} sink received a {} row. The encode half and the sink \
          kind disagree about this output.",
-        kind, row.variant_name()
+        kind, variant
     )
 }
 
-/// Convert every row with `accept`, which returns `None` for a variant the
-/// kind does not accept; that becomes an error rather than a null.
+/// Convert every row with `accept`, which returns the variant's name for a
+/// variant the kind does not accept; that becomes an error rather than a null.
 fn convert_rows<T>(
     kind: SinkKind,
-    data: Vec<RowResult>,
-    accept: impl Fn(RowResult) -> Result<Option<T>, RowResult>,
+    data: RowParts,
+    accept: impl Fn(RowResult) -> Result<Option<T>, &'static str>,
 ) -> PolarsResult<Vec<Option<T>>> {
-    data.into_iter()
-        .map(|row| accept(row).map_err(|row| foreign_row(kind, &row)))
-        .collect()
+    let mut rows = Vec::with_capacity(data.iter().map(Vec::len).sum());
+    for row in data.into_iter().flatten() {
+        rows.push(accept(row).map_err(|variant| foreign_row(kind, variant))?);
+    }
+    Ok(rows)
 }
+
+/// A column's row results in row order, as the row ranges that computed
+/// them left them: converted straight from the parts, never concatenated
+/// into one call-sized vector of (large) `RowResult`s first.
+pub(crate) type RowParts = Vec<Vec<RowResult>>;
 
 /// A vector row as typed list data.
 fn vector_row(vals: Vec<f64>) -> ViewBuffer {
@@ -931,7 +980,7 @@ fn vector_row(vals: Vec<f64>) -> ViewBuffer {
 pub(crate) fn build_series_from_spec(
     name: PlSmallStr,
     spec: &OutputSpec,
-    data: Vec<RowResult>,
+    data: RowParts,
     split: Option<&crate::row_split::Split<'_>>,
 ) -> PolarsResult<Series> {
     let dtype = spec.expected_dtype;
@@ -942,7 +991,7 @@ pub(crate) fn build_series_from_spec(
         SinkKind::HistogramBuckets => {
             let rows = convert_rows(kind, data, |r| match r {
                 RowResult::HistogramBuckets(b) => Ok(b),
-                other => Err(other),
+                other => Err(other.variant_name()),
             })?;
             let values = rows
                 .iter()
@@ -964,7 +1013,7 @@ pub(crate) fn build_series_from_spec(
             // correctly without materialising to contiguous here.
             let buffers = convert_rows(kind, data, |r| match r {
                 RowResult::NumpyStruct(b) => Ok(b),
-                other => Err(other),
+                other => Err(other.variant_name()),
             })?;
             let series = crate::output::build_numpy_series(name, buffers, spec.sink.as_f16())?;
             match kind {
@@ -978,7 +1027,7 @@ pub(crate) fn build_series_from_spec(
             // `crate::output::binary_view_series_from_rows`.
             let rows = convert_rows(kind, data, |r| match r {
                 RowResult::Binary(b) => Ok(b),
-                other => Err(other),
+                other => Err(other.variant_name()),
             })?;
             Ok(crate::output::binary_view_series_from_rows(
                 name,
@@ -988,7 +1037,7 @@ pub(crate) fn build_series_from_spec(
         SinkKind::BufferList => {
             let rows = convert_rows(kind, data, |r| match r {
                 RowResult::TypedList(t) => Ok(t),
-                other => Err(other),
+                other => Err(other.variant_name()),
             })?;
             build_typed_list_series_from_rows_with_dtype(
                 name,
@@ -1002,7 +1051,7 @@ pub(crate) fn build_series_from_spec(
         SinkKind::BufferArray => {
             let rows = convert_rows(kind, data, |r| match r {
                 RowResult::TypedArray(t) => Ok(t),
-                other => Err(other),
+                other => Err(other.variant_name()),
             })?;
             build_typed_array_series_from_rows_with_dtype(
                 name,
@@ -1016,7 +1065,7 @@ pub(crate) fn build_series_from_spec(
         SinkKind::Scalar => {
             let rows = convert_rows(kind, data, |r| match r {
                 RowResult::Scalar(s) => Ok(s),
-                other => Err(other),
+                other => Err(other.variant_name()),
             })?;
             Ok(Float64Chunked::from_iter_options(name, rows.into_iter()).into_series())
         }
@@ -1024,7 +1073,7 @@ pub(crate) fn build_series_from_spec(
             let rows: Vec<TypedListRow> = convert_rows(kind, data, |r| match r {
                 RowResult::TypedList(t) => Ok(t),
                 RowResult::Vector(v) => Ok(v.map(vector_row)),
-                other => Err(other),
+                other => Err(other.variant_name()),
             })?;
             build_typed_list_series_from_rows_with_dtype(
                 name,
@@ -1039,7 +1088,7 @@ pub(crate) fn build_series_from_spec(
             let rows: Vec<TypedListRow> = convert_rows(kind, data, |r| match r {
                 RowResult::TypedList(t) | RowResult::TypedArray(t) => Ok(t),
                 RowResult::Vector(v) => Ok(v.map(vector_row)),
-                other => Err(other),
+                other => Err(other.variant_name()),
             })?;
             build_typed_array_series_from_rows_with_dtype(
                 name,
@@ -1053,7 +1102,7 @@ pub(crate) fn build_series_from_spec(
         SinkKind::Contours => {
             let rows = convert_rows(kind, data, |r| match r {
                 RowResult::Contours(c) => Ok(c),
-                other => Err(other),
+                other => Err(other.variant_name()),
             })?;
             contour_set_series(name, &rows)
         }
@@ -1139,6 +1188,139 @@ mod list_source_tests {
         .unwrap();
         let err = decode(&Series::new("a".into(), &[AnyValue::List(row)])).unwrap_err();
         assert!(err.contains("null"), "{err}");
+    }
+
+    /// A `List[List[T]]` column of `rows` rows, each `h` lists of `w` values:
+    /// `flat` in row-major order.
+    fn list_grid<T: NumericNative>(flat: Vec<T>, h: i64, w: i64) -> Series
+    where
+        Series: NamedFrom<Vec<T>, [T]>,
+    {
+        let dims = [-1, h, w].map(ReshapeDimension::new);
+        let array = Series::new("a".into(), flat).reshape_array(&dims).unwrap();
+        let leaf = array.dtype().leaf_dtype().clone();
+        array
+            .cast(&DataType::List(Box::new(DataType::List(Box::new(leaf)))))
+            .unwrap()
+    }
+
+    /// Pointer to element 0 of chunk `chunk`'s leaf values, through every
+    /// list level.
+    fn leaf_ptr<T: NumericNative>(s: &Series, chunk: usize) -> *const T {
+        use polars_arrow::array::{Array, ListArray, PrimitiveArray};
+        let mut arr: &dyn Array = s.chunks()[chunk].as_ref();
+        while let Some(list) = arr.as_any().downcast_ref::<ListArray<i64>>() {
+            arr = list.values().as_ref();
+        }
+        let prim = arr.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap();
+        prim.values().as_ptr()
+    }
+
+    fn decode_as(
+        s: &Series,
+        row: usize,
+        dtype: view_buffer::DType,
+        require_contiguous: bool,
+    ) -> Result<Option<view_buffer::ViewBuffer>, String> {
+        decode_list_or_array_source(s, row, Some(dtype), require_contiguous)
+    }
+
+    #[test]
+    fn rectangular_list_rows_point_into_the_column_values() {
+        let flat: Vec<u8> = (0..24).collect();
+        let s = list_grid(flat.clone(), 3, 4);
+        let base = leaf_ptr::<u8>(&s, 0);
+        for row in 0..2 {
+            let vb = decode_as(&s, row, view_buffer::DType::U8, true)
+                .unwrap()
+                .unwrap();
+            assert_eq!(vb.shape(), &[3, 4]);
+            assert_eq!(vb.as_slice::<u8>(), &flat[row * 12..row * 12 + 12]);
+            assert_eq!(vb.as_slice::<u8>().as_ptr(), base.wrapping_add(row * 12));
+        }
+    }
+
+    #[test]
+    fn flat_list_rows_and_later_chunks_are_views_too() {
+        let flat: Vec<f32> = (0..8).map(|i| i as f32).collect();
+        let list = |v: Vec<f32>| {
+            Series::new("a".into(), v)
+                .reshape_array(&[-1, 4].map(ReshapeDimension::new))
+                .unwrap()
+                .cast(&DataType::List(Box::new(DataType::Float32)))
+                .unwrap()
+        };
+        let mut s = list(flat.clone());
+        s.append(&list((100..108).map(|i| i as f32).collect()))
+            .unwrap();
+        assert_eq!(s.n_chunks(), 2);
+        let vb = decode_as(&s, 1, view_buffer::DType::F32, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(vb.shape(), &[4]);
+        assert_eq!(vb.as_slice::<f32>(), &flat[4..8]);
+        assert_eq!(
+            vb.as_slice::<f32>().as_ptr(),
+            leaf_ptr::<f32>(&s, 0).wrapping_add(4)
+        );
+        let vb = decode_as(&s, 3, view_buffer::DType::F32, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(vb.as_slice::<f32>(), &[104.0, 105.0, 106.0, 107.0]);
+        assert_eq!(
+            vb.as_slice::<f32>().as_ptr(),
+            leaf_ptr::<f32>(&s, 1).wrapping_add(4)
+        );
+    }
+
+    #[test]
+    fn require_contiguous_refuses_only_a_jagged_list() {
+        let err = decode_as(
+            &nested(vec![vec![Some(1.0), Some(2.0)], vec![Some(3.0)]]),
+            0,
+            view_buffer::DType::F64,
+            true,
+        )
+        .unwrap_err();
+        assert!(err.contains("jagged"), "{err}");
+    }
+
+    #[test]
+    fn another_dtype_is_converted_to_the_declared_one() {
+        let s = list_grid((0..12).collect::<Vec<i64>>(), 3, 2);
+        let vb = decode_as(&s, 1, view_buffer::DType::U8, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(vb.shape(), &[3, 2]);
+        assert_eq!(vb.as_slice::<u8>(), &[6, 7, 8, 9, 10, 11]);
+    }
+
+    /// A value the declared dtype cannot hold is refused, never stored as
+    /// the 0 polars' non-strict cast leaves in its place (CR-61).
+    #[test]
+    fn a_value_the_declared_dtype_cannot_hold_is_refused() {
+        for (values, what) in [(vec![7i64, 300, 1, 2], "300"), (vec![7i64, -1, 1, 2], "-1")] {
+            let s = list_grid(values, 2, 2);
+            let err = decode_as(&s, 0, view_buffer::DType::U8, false).unwrap_err();
+            assert!(err.contains(what) && err.contains("u8"), "{err}");
+        }
+        let s = nested(vec![vec![Some(1.5), Some(f64::NAN)]]);
+        let err = decode_as(&s, 0, view_buffer::DType::U8, false).unwrap_err();
+        assert!(err.contains("NaN") && err.contains("u8"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_row_is_null() {
+        let s = Series::new(
+            "a".into(),
+            &[AnyValue::List(Series::new_empty(
+                "".into(),
+                &DataType::UInt8,
+            ))],
+        );
+        assert!(decode_as(&s, 0, view_buffer::DType::U8, true)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -1237,7 +1419,7 @@ mod array_source_view_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::decode_binary_zero_copy;
+    use super::decode_blob_zero_copy;
     use view_buffer::protocol::HEADER_SIZE;
 
     /// Build a VIEW-protocol blob byte-by-byte so malformed headers can be
@@ -1270,9 +1452,8 @@ mod tests {
     }
 
     fn decode(blob: Vec<u8>) -> Result<view_buffer::ViewBuffer, String> {
-        let len = blob.len();
-        let buffer = polars_buffer::Buffer::from(blob);
-        decode_binary_zero_copy(buffer, 0, len, None)
+        let layout = view_buffer::parse_blob(&blob)?;
+        decode_blob_zero_copy(polars_buffer::Buffer::from(blob), 0, layout)
     }
 
     /// data_offset for a blob whose payload directly follows shape+strides.
@@ -1342,6 +1523,12 @@ mod tests {
         polars::prelude::BinaryChunked::with_chunk("b".into(), array)
     }
 
+    /// The rule these tests hold rows to: in place at an 8-byte boundary,
+    /// what an f64 or 64-bit integer row needs.
+    fn eight_aligned(bytes: &[u8]) -> bool {
+        (bytes.as_ptr() as usize).is_multiple_of(8)
+    }
+
     /// A row stored at an 8-byte-aligned address in the column's data is read
     /// where it lies: the decoded buffer is the column's memory, not a copy.
     #[test]
@@ -1352,7 +1539,8 @@ mod tests {
         ca.append(&windows_column(&[(8, 13), (24, 16)])).unwrap();
         assert_eq!(ca.chunks().len(), 2);
         for row in 0..ca.len() {
-            let (buffer, offset, len) = super::get_binary_row_buffer(&ca, row).unwrap();
+            let (buffer, offset, len) =
+                super::get_binary_row_buffer(&ca, row, eight_aligned).unwrap();
             let bytes = ca.get(row).unwrap();
             assert_eq!(len, bytes.len());
             assert_eq!(
@@ -1375,7 +1563,8 @@ mod tests {
     fn unaligned_and_inline_binary_rows_are_copied_aligned() {
         let ca = windows_column(&[(3, 20), (0, 5), (9, 12)]);
         for row in 0..ca.len() {
-            let (buffer, offset, len) = super::get_binary_row_buffer(&ca, row).unwrap();
+            let (buffer, offset, len) =
+                super::get_binary_row_buffer(&ca, row, eight_aligned).unwrap();
             let bytes = ca.get(row).unwrap();
             let got = &buffer.as_slice()[offset..offset + len];
             assert_eq!(got, bytes, "row {row}");
@@ -1401,10 +1590,96 @@ mod tests {
         )
         .slice(1, 4);
         for row in 0..ca.len() {
-            let (buffer, offset, len) = super::get_binary_row_buffer(&ca, row).unwrap();
+            let (buffer, offset, len) =
+                super::get_binary_row_buffer(&ca, row, eight_aligned).unwrap();
             let got = &buffer.as_slice()[offset..offset + len];
             assert_eq!(got, ca.get(row).unwrap());
             assert_eq!(got.as_ptr() as usize % 8, 0);
+        }
+    }
+
+    /// A one-row binary column whose row is `bytes`, stored `offset` bytes
+    /// into an 8-byte-aligned data buffer.
+    fn row_at(bytes: &[u8], offset: usize) -> polars::prelude::BinaryChunked {
+        use polars_arrow::array::{BinaryViewArrayGeneric, View};
+        use polars_arrow::datatypes::ArrowDataType;
+        assert!(bytes.len() > 12, "a row of 12 bytes or fewer is inline");
+        let mut words = vec![0u64; (offset + bytes.len()).div_ceil(8)];
+        bytemuck::cast_slice_mut::<u64, u8>(&mut words)[offset..offset + bytes.len()]
+            .copy_from_slice(bytes);
+        let data = polars_buffer::Buffer::from(words)
+            .try_transmute::<u8>()
+            .unwrap();
+        let view = View::new_from_bytes(bytes, 0, offset as u32);
+        // Safety: the view is in bounds of buffer 0, built above.
+        let array = unsafe {
+            BinaryViewArrayGeneric::<[u8]>::new_unchecked(
+                ArrowDataType::BinaryView,
+                vec![view].into(),
+                std::iter::once(data).collect(),
+                None,
+                Some(bytes.len()),
+                bytes.len(),
+            )
+        };
+        polars::prelude::BinaryChunked::with_chunk("b".into(), array)
+    }
+
+    /// A raw row needs only its own dtype's alignment: u8 rows anywhere, f32
+    /// rows at a multiple of 4, are read where they lie.
+    #[test]
+    fn raw_rows_aligned_for_their_dtype_are_read_in_place() {
+        use view_buffer::DType;
+        let bytes: Vec<u8> = (0..16).collect();
+        for (offset, dtype, in_place) in [
+            (3, DType::U8, true),
+            (4, DType::F32, true),
+            (2, DType::F32, false),
+            (4, DType::F64, false),
+        ] {
+            let ca = row_at(&bytes, offset);
+            let buf = super::decode_binary_row(&ca, 0, Some(dtype))
+                .unwrap()
+                .unwrap();
+            // SAFETY: the pointer is only compared, never read.
+            let start = unsafe { buf.as_ptr::<u8>() };
+            assert_eq!(
+                start == ca.get(0).unwrap().as_ptr(),
+                in_place,
+                "{dtype:?} row at offset {offset}"
+            );
+            assert!((start as usize).is_multiple_of(dtype.size_of()));
+            assert_eq!(buf.shape(), &[16 / dtype.size_of()]);
+        }
+    }
+
+    /// A blob is read where it lies when its payload is aligned for the
+    /// blob's dtype, wherever the blob itself starts; otherwise it is copied.
+    #[test]
+    fn blobs_with_an_aligned_payload_are_read_in_place() {
+        let u8_blob = craft_blob(1, payload_offset(1), 1, &[20], &[1], &[7u8; 20]);
+        let ca = row_at(&u8_blob, 3);
+        let buf = super::decode_binary_row(&ca, 0, None).unwrap().unwrap();
+        let row = ca.get(0).unwrap();
+        assert_eq!(buf.as_slice::<u8>(), &[7u8; 20]);
+        assert_eq!(
+            buf.as_slice::<u8>().as_ptr(),
+            row[payload_offset(1) as usize..].as_ptr()
+        );
+
+        let values: Vec<u8> = bytemuck::cast_slice(&[1.5f32, 2.5, 3.5, 4.5]).to_vec();
+        let f32_blob = craft_blob(7, payload_offset(1), 1, &[4], &[4], &values);
+        for (offset, in_place) in [(4, true), (2, false)] {
+            let ca = row_at(&f32_blob, offset);
+            let buf = super::decode_binary_row(&ca, 0, None).unwrap().unwrap();
+            let row = ca.get(0).unwrap();
+            assert_eq!(buf.as_slice::<f32>(), &[1.5, 2.5, 3.5, 4.5]);
+            assert_eq!(
+                buf.as_slice::<f32>().as_ptr().cast::<u8>()
+                    == row[payload_offset(1) as usize..].as_ptr(),
+                in_place,
+                "f32 blob at offset {offset}"
+            );
         }
     }
 

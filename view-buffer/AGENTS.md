@@ -34,6 +34,11 @@ While originally designed as an independent crate, it is currently **tightly cou
 src/
 ├── lib.rs              # Crate root, re-exports
 ├── core/               # ViewBuffer, DType, Layout
+│   ├── dispatch.rs     # SimdKernel + dispatch(): the one way a kernel gets an AVX2 build
+│   │                   # (debug builds assert both builds' outputs are byte-identical)
+│   ├── convert.rs      # CastFrom + convert_slice/convert_view: the one element-conversion
+│   │                   # rule (cast_to, the engine's f32 read and fused output use it)
+│   └── strided.rs      # Walk: the one walk over a view's memory (packing, strided reads)
 ├── ops/                # Operations
 │   ├── mod.rs          # Module aggregator / re-exports for all op types
 │   ├── dto.rs          # ViewDto — serializable operation enum
@@ -43,6 +48,9 @@ src/
 │   ├── filter.rs       # ConvolveOp, BorderMode — 2D convolution
 │   ├── compute.rs      # ComputeOp (cast, scale, normalize, clamp, relu, contrast, gamma, invert, affine, rotate_affine)
 │   ├── scalar.rs       # ScalarOp — elementary f32 ops fusable into a single kernel
+│   ├── elementwise/    # The engine every per-value compute op runs through: lowering,
+│   │                   # statistics, integer / table / blocked / pass strategy, in-place writes;
+│   │                   # legacy.rs + tests.rs hold the pre-engine code as its test oracle
 │   ├── affine.rs       # AffineParams, InterpolationType, from_rotation() — affine transform parameters
 │   ├── binary.rs       # BinaryOp (add, subtract, multiply, blend, bitwise)
 │   ├── reduction.rs    # Reduction ops (sum, mean, std, min, max, argmin/argmax, percentile)
@@ -64,7 +72,7 @@ src/
 │                       # contour-column ops live in the plugin's `.contour` namespace
 │                       # and call measures/predicates/pairwise/transforms directly.
 ├── protocol.rs         # VIEW binary protocol (header + data serialization)
-└── interop/            # Arrow, ndarray, image crate, Polars-arrow integration
+└── interop/            # Arrow, ndarray, image crate, fast_image_resize, Polars-arrow integration
 ```
 
 ## Core Concepts
@@ -112,13 +120,60 @@ pub enum ViewDto {
 `tests/apply_op_coverage.rs` executes one probe per variant against its own
 contract and fails to compile when a variant is added without a probe.
 
+### Kernels and CPU dispatch
+
+Published wheels target the x86-64 baseline (SSE2). A kernel that should use
+AVX2 is a `core::dispatch::SimdKernel` (its whole body in an
+`#[inline(always)] fn run`) called through `dispatch()`; do not hand-roll
+`is_x86_feature_detected!` + `#[target_feature]` pairs. Only AVX2 is enabled,
+never FMA, so both builds are bit-identical, and every debug-build call asserts
+it. That check is meaningful under the wheels' flags, so run the suite once as
+`RUSTFLAGS="-C target-cpu=x86-64" cargo test -p view-buffer --all-features`
+(with its own `CARGO_TARGET_DIR`) after touching a kernel: the local
+`.cargo/config.toml` builds for `x86-64-v3`, where the two builds coincide.
+
+Element conversion between dtypes has one rule, `core::convert::CastFrom`
+(integer sources `as`; float → integer round-half-away then saturate; float →
+float `as`), applied in bulk by `convert_slice` (`convert_view` for a strided
+view). `with_dtype!` is the one runtime `DType` → element-type match.
+
+A view's elements are read in logical order only through `core::strided::Walk`:
+it coalesces the layout once into packed units, evenly spaced rows and outer
+axes, then packs them (`copy_to`, behind `to_contiguous`/`append_to`/
+`write_to`) or hands out runs (`for_each_run`, behind `convert_view`). Do not
+write another index odometer over strides; a kernel that cannot read a view in
+place packs it with `to_contiguous()` and runs its dense path.
+
+Per-value compute ops (the scalar family, scale, relu, clamp, invert, gamma,
+contrast, normalize, fused chains) run only through `ops::elementwise::apply`:
+it lowers the op to a `FusedKernel` (`lower_to_scalars`, shared with fusion),
+picks integer arithmetic for an integer affine kernel over 8/16-bit input into
+the same dtype (`invert`, integer shifts), a lookup table (only for work that
+cannot vectorise, such as `powf`, or per-channel kernels, over 8/16-bit input),
+blocked streaming for an integer result, or one f32 pass, and writes in place when
+`ViewBuffer::unique_contiguous_mut` allows. A table read is slower than a
+vectorised `255 - x`, so a cheap kernel never takes one. Do not add a per-op
+kernel beside it; extend the lowering.
+
+A layout's shape and strides are `core::layout::{Dims, Strides}`, inline up
+to rank 4, so cloning a `ViewBuffer` or asking its layout a question never
+allocates; contiguity has one allocation-free rule (`is_c_contiguous`). Keep
+it that way: the executor does both several times per row, and on small rows
+a heap copy per call was most of the row (`layout_bookkeeping_allocates_nothing`).
+
+Row-wise kernels read a view where it lies through `ViewBuffer::dense_rows`
+(contiguous, crops, vertical flips) instead of calling `to_contiguous()` first.
+Resize hands such a view to fast_image_resize through
+`interop::fir::FirViewAdapter`, so the resizes declare
+`MemoryEffect::StridePreserving` and pack only a layout the adapter refuses.
+
 ### Operation Categories
 
 | Category | Zero-Copy? | Description |
 |----------|-----------|-------------|
 | **View** | Yes | Transpose, reshape, flip, crop, channel_select — metadata only |
 | **Compute** | No | Element-wise ops (cast, scale, normalize, clamp, contrast, gamma, invert) — can be fused. Includes `ComputeOp::Affine` and `ComputeOp::RotateAffine` (not fused with scalar ops). |
-| **Image** | No | Resize, blur, grayscale, threshold, canny, histogram equalize, erode, dilate, morph gradient — require materialization |
+| **Image** | No | Resize, blur, grayscale, threshold, canny, histogram equalize, erode, dilate, morph gradient — allocate their output; resize, grayscale and threshold read strided input, the rest require materialization |
 | **Filter** | No | 2D convolution with `Replicate`/`Zero`/`Reflect` border modes — contiguous output, promotes to f32 |
 | **Color** | No | Color space conversions — route through f32 RGB internally. LAB uses D65/sRGB. HSV follows OpenCV (H=[0,180] for U8) |
 | **Binary** | No | Pixel-wise operations between two buffers |
@@ -211,8 +266,8 @@ Key implementation points:
 - **Filter** (`ops/filter.rs`): `ConvolveOp` runs as `ViewExpr::Filter` / `PlanStep::Filter` (`apply_convolve2d`).
 - **Canny** (`execution/runner.rs`): `cv2.Canny(img, low, high)` exactly (3x3 Sobel with replicated border, L1 magnitude, no pre-blur → OpenCV's fixed-point NMS → 8-connected hysteresis; colour takes the strongest channel per pixel, alpha ignored). `polars-cv/tests/reference/test_canny_ref.py` holds it to OpenCV pixel for pixel. Outputs U8 binary mask (0/255). `SpatialDependency::Global`.
 - **HistogramEqualize** (`execution/runner.rs`): 256-bin histogram → CDF remap. U8 output. `SpatialDependency::Global`.
-- **Affine** (`execution/runner.rs`): Forward-mapping 2×3 matrix with internal inversion for inverse-mapping interpolation. Supports Nearest and Bilinear interpolation with configurable `border_value`. Parameters in `ops/affine.rs` (`AffineParams`, `InterpolationType`). Two variants: `ComputeOp::Affine` (raw matrix) and `ComputeOp::RotateAffine` (deferred rotation, constructs `AffineParams` via `AffineParams::from_rotation()` at execution time). Both use `apply_affine_warp()`. `MemoryEffect::RequiresContiguous`.
-- **Erode/Dilate** (`execution/runner.rs`): Separable row+column min/max filter. Single-channel only. Supports multiple iterations. `SpatialDependency::Neighborhood`.
+- **Affine** (`execution/warp.rs`): Forward-mapping 2×3 matrix with internal inversion for inverse-mapping interpolation. Supports Nearest and Bilinear interpolation with configurable `border_value`. Parameters in `ops/affine.rs` (`AffineParams`, `InterpolationType`). Two variants: `ComputeOp::Affine` (raw matrix, `apply_affine_warp()`) and `ComputeOp::RotateAffine` (deferred rotation, `warp::rotate()`: `AffineParams::from_rotation()` at execution time, and at exactly 0° — the identity lowering — the packed input itself). A `SimdKernel` per channel count; loads/stores through M5. Its tests keep the pre-Phase-7 kernel as a bit-parity oracle: any change must keep them byte-identical or say why. `MemoryEffect::RequiresContiguous`.
+- **Erode/Dilate** (`execution/runner.rs`): Separable row+column min/max filter. Single-channel only. `iterations=n` is one pass of radius `n * (k / 2)` for integer dtypes (`morph_iterated`; exact), and `n` passes for floats, whose NaN/signed-zero fold depends on the pass structure. `tests/morph_ref.rs` holds both to an iterated naive reference. `SpatialDependency::Neighborhood`.
 - **MorphGradient** (`execution/runner.rs`): Dilate − Erode (saturating subtract). Single-channel only. `SpatialDependency::Neighborhood`.
 - **label_reduce centroid fallback** (`geometry/label.rs`): When the chosen region catches no pixel centre for a contour, falls back to sampling at the centroid. Prevents sub-pixel contours from scoring 0. `score_contours_on_buffer` is the single implementation behind both `Pipeline.label_reduce` and the `.contour.label_reduce()` accessor — the plugin must not carry its own scorer.
 

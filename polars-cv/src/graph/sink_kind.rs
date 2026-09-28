@@ -191,14 +191,14 @@ mod tests {
             } else {
                 RowResult::Scalar(Some(1.0))
             };
-            let result = build_series_from_spec("o".into(), &spec, vec![foreign], None);
+            let result = build_series_from_spec("o".into(), &spec, vec![vec![foreign]], None);
             assert!(
                 result.is_err(),
                 "({domain}, {format}) published a foreign row instead of failing"
             );
             // The kind's own null row is still a null, not an error.
             let null = null_row_result_for_spec(&spec).unwrap();
-            let series = build_series_from_spec("o".into(), &spec, vec![null], None)
+            let series = build_series_from_spec("o".into(), &spec, vec![vec![null]], None)
                 .unwrap_or_else(|e| panic!("({domain}, {format}) null row failed: {e}"));
             assert_eq!(series.null_count(), 1, "({domain}, {format})");
         }

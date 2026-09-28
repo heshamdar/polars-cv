@@ -35,9 +35,10 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::core::bytes::AlignedBytes;
-use crate::core::dtype::{DType, ViewType};
-use crate::core::layout::{ExternalLayout, Layout, LayoutFacts};
-use crate::ops::scalar::{FusedKernel, ScalarOp};
+use crate::core::convert::convert_view;
+use crate::core::dtype::{with_dtype, DType, ViewType};
+use crate::core::layout::{Dims, ExternalLayout, Layout, LayoutFacts, Strides};
+use crate::ops::scalar::FusedKernel;
 use crate::protocol::{dtype_to_u8, ViewHeader, HEADER_SIZE, MAGIC_BYTES, VERSION};
 
 /// Errors that can occur during buffer operations.
@@ -252,7 +253,8 @@ impl ViewBuffer {
     ///
     /// # Panics
     /// Panics if the data length doesn't match the shape product.
-    pub fn from_vec_with_shape<T: ViewType>(data: Vec<T>, shape: Vec<usize>) -> Self {
+    pub fn from_vec_with_shape<T: ViewType>(data: Vec<T>, shape: impl Into<Dims>) -> Self {
+        let shape: Dims = shape.into();
         let expected_len: usize = shape.iter().product();
         assert_eq!(
             data.len(),
@@ -285,149 +287,14 @@ impl ViewBuffer {
             return self.clone();
         }
 
-        let contig = self.to_contiguous();
-        let shape = contig.shape().to_vec();
-        let _len: usize = shape.iter().product();
-
-        // Macro to handle all dtype combinations.
-        //
-        // Two variants by source kind:
-        // - `int`:   integer source -> plain `as` (no fractional part to round).
-        // - `float`: float source -> **round to nearest** before narrowing to an
-        //            integer target, so e.g. 140.75_f32 -> 141_u8 rather than 140.
-        //            Rust's float->int `as` already saturates out-of-range values
-        //            and maps NaN -> 0, so clamping behaviour is preserved.
-        //            Float->float targets keep plain `as` (no rounding).
-        macro_rules! cast_impl {
-            (int $src:ty, $dst_dtype:expr) => {{
-                let src_data = contig.as_slice::<$src>();
-                match $dst_dtype {
-                    DType::U8 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as u8).collect::<Vec<u8>>(),
-                        shape,
-                    ),
-                    DType::I8 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as i8).collect::<Vec<i8>>(),
-                        shape,
-                    ),
-                    DType::U16 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as u16).collect::<Vec<u16>>(),
-                        shape,
-                    ),
-                    DType::I16 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as i16).collect::<Vec<i16>>(),
-                        shape,
-                    ),
-                    DType::U32 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as u32).collect::<Vec<u32>>(),
-                        shape,
-                    ),
-                    DType::I32 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as i32).collect::<Vec<i32>>(),
-                        shape,
-                    ),
-                    DType::U64 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as u64).collect::<Vec<u64>>(),
-                        shape,
-                    ),
-                    DType::I64 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as i64).collect::<Vec<i64>>(),
-                        shape,
-                    ),
-                    DType::F32 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as f32).collect::<Vec<f32>>(),
-                        shape,
-                    ),
-                    DType::F64 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as f64).collect::<Vec<f64>>(),
-                        shape,
-                    ),
-                }
-            }};
-            (float $src:ty, $dst_dtype:expr) => {{
-                let src_data = contig.as_slice::<$src>();
-                match $dst_dtype {
-                    DType::U8 => Self::from_vec_with_shape(
-                        src_data
-                            .iter()
-                            .map(|&x| x.round() as u8)
-                            .collect::<Vec<u8>>(),
-                        shape,
-                    ),
-                    DType::I8 => Self::from_vec_with_shape(
-                        src_data
-                            .iter()
-                            .map(|&x| x.round() as i8)
-                            .collect::<Vec<i8>>(),
-                        shape,
-                    ),
-                    DType::U16 => Self::from_vec_with_shape(
-                        src_data
-                            .iter()
-                            .map(|&x| x.round() as u16)
-                            .collect::<Vec<u16>>(),
-                        shape,
-                    ),
-                    DType::I16 => Self::from_vec_with_shape(
-                        src_data
-                            .iter()
-                            .map(|&x| x.round() as i16)
-                            .collect::<Vec<i16>>(),
-                        shape,
-                    ),
-                    DType::U32 => Self::from_vec_with_shape(
-                        src_data
-                            .iter()
-                            .map(|&x| x.round() as u32)
-                            .collect::<Vec<u32>>(),
-                        shape,
-                    ),
-                    DType::I32 => Self::from_vec_with_shape(
-                        src_data
-                            .iter()
-                            .map(|&x| x.round() as i32)
-                            .collect::<Vec<i32>>(),
-                        shape,
-                    ),
-                    DType::U64 => Self::from_vec_with_shape(
-                        src_data
-                            .iter()
-                            .map(|&x| x.round() as u64)
-                            .collect::<Vec<u64>>(),
-                        shape,
-                    ),
-                    DType::I64 => Self::from_vec_with_shape(
-                        src_data
-                            .iter()
-                            .map(|&x| x.round() as i64)
-                            .collect::<Vec<i64>>(),
-                        shape,
-                    ),
-                    // Float -> float: no rounding.
-                    DType::F32 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as f32).collect::<Vec<f32>>(),
-                        shape,
-                    ),
-                    DType::F64 => Self::from_vec_with_shape(
-                        src_data.iter().map(|&x| x as f64).collect::<Vec<f64>>(),
-                        shape,
-                    ),
-                }
-            }};
-        }
-
-        match self.layout.dtype {
-            DType::U8 => cast_impl!(int u8, target_dtype),
-            DType::I8 => cast_impl!(int i8, target_dtype),
-            DType::U16 => cast_impl!(int u16, target_dtype),
-            DType::I16 => cast_impl!(int i16, target_dtype),
-            DType::U32 => cast_impl!(int u32, target_dtype),
-            DType::I32 => cast_impl!(int i32, target_dtype),
-            DType::U64 => cast_impl!(int u64, target_dtype),
-            DType::I64 => cast_impl!(int i64, target_dtype),
-            DType::F32 => cast_impl!(float f32, target_dtype),
-            DType::F64 => cast_impl!(float f64, target_dtype),
-        }
+        // The conversion rule (integer sources `as`; float → integer rounds
+        // to nearest then saturates; float → float `as`) lives once, in
+        // `convert::CastFrom`, and the bulk loop is its dispatched kernel,
+        // reading a view's runs where they lie (no packed copy first).
+        let shape = self.shape().to_vec();
+        with_dtype!(self.dtype(), S => with_dtype!(target_dtype, D => {
+            Self::from_vec_with_shape(convert_view::<S, D>(self), shape)
+        }))
     }
 
     /// Returns true if the buffer data is aligned to the specified boundary.
@@ -470,9 +337,10 @@ impl ViewBuffer {
     pub fn from_polars_buffer(
         buffer: polars_buffer::Buffer<u8>,
         offset: usize,
-        shape: Vec<usize>,
+        shape: impl Into<Dims>,
         dtype: DType,
     ) -> Self {
+        let shape: Dims = shape.into();
         let num_elements: usize = shape.iter().product();
         let required_bytes = num_elements * dtype.size_of();
 
@@ -514,9 +382,10 @@ impl ViewBuffer {
         buffer: polars_buffer::Buffer<u8>,
         offset: usize,
         len: usize,
-        shape: Vec<usize>,
+        shape: impl Into<Dims>,
         dtype: DType,
     ) -> Self {
+        let shape: Dims = shape.into();
         let num_elements: usize = shape.iter().product();
         let expected_bytes = num_elements * dtype.size_of();
 
@@ -558,10 +427,12 @@ impl ViewBuffer {
         buffer: polars_buffer::Buffer<u8>,
         offset: usize,
         len: usize,
-        shape: Vec<usize>,
-        strides: Vec<isize>,
+        shape: impl Into<Dims>,
+        strides: impl Into<Strides>,
         dtype: DType,
     ) -> Self {
+        let shape: Dims = shape.into();
+        let strides: Strides = strides.into();
         assert!(
             offset + len <= buffer.len(),
             "Polars buffer slice out of bounds: offset={offset}, len={len}, buffer_len={}",
@@ -800,7 +671,7 @@ impl ViewBuffer {
         self,
         policy: SlicePolicy,
     ) -> (polars_buffer::Buffer<u8>, Vec<usize>, DType) {
-        let shape = self.layout.shape.clone();
+        let shape = self.layout.shape.to_vec();
         let dtype = self.layout.dtype;
         let offset = self.layout.offset;
         let required_bytes: usize = shape.iter().product::<usize>() * dtype.size_of();
@@ -945,8 +816,8 @@ impl ViewBuffer {
         usize,
         DType,
     ) {
-        let shape = self.layout.shape.clone();
-        let strides = self.layout.strides.clone();
+        let shape = self.layout.shape.to_vec();
+        let strides = self.layout.strides.to_vec();
         let dtype = self.layout.dtype;
         let offset = self.layout.offset;
         let required_bytes = self.layout.num_elements() * dtype.size_of();
@@ -983,8 +854,8 @@ impl ViewBuffer {
                         layout: self.layout,
                     }
                     .to_contiguous();
-                    let contig_shape = contig.layout.shape.clone();
-                    let contig_strides = contig.layout.strides.clone();
+                    let contig_shape = contig.layout.shape.to_vec();
+                    let contig_strides = contig.layout.strides.to_vec();
                     let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
                     let slice =
                         unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
@@ -1026,8 +897,8 @@ impl ViewBuffer {
                                 layout: self.layout,
                             }
                             .to_contiguous();
-                            let contig_shape = contig.layout.shape.clone();
-                            let contig_strides = contig.layout.strides.clone();
+                            let contig_shape = contig.layout.shape.to_vec();
+                            let contig_strides = contig.layout.strides.to_vec();
                             let data_len =
                                 contig.layout.num_elements() * contig.layout.dtype.size_of();
                             let slice = unsafe {
@@ -1044,8 +915,8 @@ impl ViewBuffer {
                         layout: self.layout,
                     }
                     .to_contiguous();
-                    let contig_shape = contig.layout.shape.clone();
-                    let contig_strides = contig.layout.strides.clone();
+                    let contig_shape = contig.layout.shape.to_vec();
+                    let contig_strides = contig.layout.strides.to_vec();
                     let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
                     let slice =
                         unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
@@ -1062,8 +933,8 @@ impl ViewBuffer {
                     layout: self.layout,
                 }
                 .to_contiguous();
-                let contig_shape = contig.layout.shape.clone();
-                let contig_strides = contig.layout.strides.clone();
+                let contig_shape = contig.layout.shape.to_vec();
+                let contig_strides = contig.layout.strides.to_vec();
                 let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
                 let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
                 let buffer = polars_buffer::Buffer::from(slice.to_vec());
@@ -1202,6 +1073,50 @@ impl ViewBuffer {
         LayoutFacts::from(&self.layout)
     }
 
+    /// The view's rows as slices, when its elements are packed within each
+    /// row ([`LayoutFacts::is_dense_rows`]): rank 2 with a unit column stride,
+    /// or rank 3 channels-last with packed pixels. Each slice is one row's
+    /// `W` (or `W * C`) elements.
+    ///
+    /// The row stride may be anything, negative included, so a crop or a
+    /// vertical flip is read where it lies instead of being copied to a
+    /// contiguous buffer first. `None` for any other layout (a transpose, a
+    /// horizontal flip), which the caller must materialise.
+    ///
+    /// # Panics
+    /// Panics if `T` is not this buffer's dtype.
+    pub(crate) fn dense_rows<T: ViewType>(&self) -> Option<Vec<&[T]>> {
+        assert_eq!(
+            T::DTYPE,
+            self.dtype(),
+            "dense_rows: asked for {:?} rows of a {:?} buffer",
+            T::DTYPE,
+            self.dtype()
+        );
+        if !self.layout_facts().is_dense_rows() {
+            return None;
+        }
+        let shape = &self.layout.shape;
+        let row_len = shape[1] * shape.get(2).copied().unwrap_or(1);
+        let row_stride = self.layout.strides[0];
+        // SAFETY: the offset is inside the data (layouts are validated when
+        // built), and every row `y < H` starts `y * row_stride` bytes from it
+        // and spans `row_len` packed elements, which the layout keeps inside
+        // the data. Offsets and strides are whole elements, so each row is
+        // aligned for `T` (CR-41).
+        let base = unsafe { self.data.as_ptr().add(self.layout.offset) };
+        Some(
+            (0..shape[0])
+                .map(|y| unsafe {
+                    std::slice::from_raw_parts(
+                        base.offset(y as isize * row_stride).cast::<T>(),
+                        row_len,
+                    )
+                })
+                .collect(),
+        )
+    }
+
     /// Returns true if the buffer is compatible with the target external layout.
     pub fn is_compatible_with(&self, target: ExternalLayout) -> bool {
         self.layout_facts().compatible_with(target)
@@ -1253,7 +1168,9 @@ impl ViewBuffer {
             reserved: [0; 40],
         };
 
-        let data_len = buffer.data.len();
+        // The view's elements: a contiguous view may cover only part of its
+        // storage (leading or middle rows), so the storage length is not it.
+        let data_len = buffer.logical_len_bytes();
         out.reserve((data_offset as usize) + data_len);
 
         // 3. Write Parts
@@ -1313,8 +1230,8 @@ impl ViewBuffer {
 
     /// Permutes the dimensions of the buffer.
     pub fn permute(&self, dims: &[usize]) -> Self {
-        let mut new_shape = vec![0; self.layout.shape.len()];
-        let mut new_strides = vec![0; self.layout.strides.len()];
+        let mut new_shape = Dims::from_elem(0, self.layout.shape.len());
+        let mut new_strides = Strides::from_elem(0, self.layout.strides.len());
 
         for (i, &p) in dims.iter().enumerate() {
             new_shape[i] = self.layout.shape[p];
@@ -1340,7 +1257,7 @@ impl ViewBuffer {
     /// the resulting dimension will have size 0.
     pub fn slice(&self, start: &[usize], end: &[usize]) -> Self {
         let mut new_offset = self.layout.offset as isize;
-        let mut new_shape = Vec::new();
+        let mut new_shape = Dims::new();
 
         for i in 0..self.layout.shape.len() {
             let dim_size = self.layout.shape[i];
@@ -1392,8 +1309,9 @@ impl ViewBuffer {
 
     /// Converts the buffer to a contiguous layout, copying if necessary.
     ///
-    /// When the innermost dimension has contiguous stride, copies entire rows
-    /// at once (memcpy) instead of element-by-element for much better performance.
+    /// The copy coalesces the layout into the longest packed runs it has (one
+    /// `memcpy` for a contiguous view, one per row for a crop or a vertical
+    /// flip, constant-size pixel copies for a horizontal flip or transpose).
     ///
     /// # Panics
     /// Panics if the total allocation size would overflow `usize`.
@@ -1479,213 +1397,62 @@ impl ViewBuffer {
             .expect("allocation size overflow: buffer is too large to materialize")
     }
 
-    /// Copy this view's elements, row-major, to `dst`: the one routine that
-    /// reads a view through its strides into packed memory.
+    /// Copy this view's elements, row-major, to `dst`, through the one walk
+    /// over a view's memory ([`Walk`](crate::core::strided::Walk)).
     ///
     /// # Safety
     /// `dst` must be valid for writes of [`logical_len_bytes`](Self::logical_len_bytes)
     /// bytes and must not overlap this buffer's data.
     unsafe fn copy_elements_into(&self, dst: *mut u8) {
-        let total_bytes = self.logical_len_bytes();
-        let dtype_size = self.dtype().size_of();
-        let shape = &self.layout.shape;
-        let strides = &self.layout.strides;
-        let ndim = shape.len();
-        let ptr = self.data.as_ptr();
-        let base_offset = self.layout.offset;
-        let data_len = self.data.len();
-
-        if total_bytes == 0 {
-            return;
-        }
-        if self.layout.is_contiguous() {
-            // SAFETY: a contiguous view's elements are `total_bytes` packed
-            // bytes from its offset; the caller guarantees `dst`.
-            unsafe { std::ptr::copy_nonoverlapping(ptr.add(base_offset), dst, total_bytes) };
-            return;
-        }
-
-        // When the innermost dimension is packed (stride == element size),
-        // each innermost row is one `memcpy`; otherwise element by element.
-        let inner_contiguous = ndim > 0 && strides[ndim - 1] == dtype_size as isize;
-        let (outer, chunk_bytes) = if inner_contiguous {
-            (ndim - 1, shape[ndim - 1] * dtype_size)
-        } else {
-            (ndim, dtype_size)
-        };
-        let chunks: usize = shape[..outer].iter().product();
-        let mut indices = vec![0usize; outer];
-        let mut written = 0usize;
-        for _ in 0..chunks {
-            let mut offset = base_offset as isize;
-            for (dim, &idx) in indices.iter().enumerate() {
-                offset += (idx as isize) * strides[dim];
-            }
-            debug_assert!(offset >= 0, "negative offset while packing a view");
-            debug_assert!(
-                (offset as usize) + chunk_bytes <= data_len,
-                "read overrun while packing a view: offset={offset}, \
-                 chunk_bytes={chunk_bytes}, data_len={data_len}"
-            );
-            // SAFETY: the layout's strides keep every element inside the
-            // data (checked in debug above); `written + chunk_bytes` never
-            // exceeds `total_bytes`, which the caller guarantees `dst` holds.
-            unsafe {
-                std::ptr::copy_nonoverlapping(ptr.offset(offset), dst.add(written), chunk_bytes);
-            }
-            written += chunk_bytes;
-            for dim in (0..outer).rev() {
-                indices[dim] += 1;
-                if indices[dim] < shape[dim] {
-                    break;
-                }
-                indices[dim] = 0;
-            }
-        }
-        debug_assert_eq!(written, total_bytes);
+        // SAFETY: the caller's contract is the walk's.
+        unsafe { crate::core::strided::Walk::of(self).copy_to(dst) };
     }
 
-    /// Applies a fused kernel of scalar operations in-place, without allocation.
+    /// The elements as a mutable slice, when this buffer may be written in
+    /// place: contiguous, of dtype `T`, in its own Rust allocation, and the
+    /// allocation's sole owner (no other `ViewBuffer`, and no Arrow or Polars
+    /// column, can see the write).
     ///
-    /// Succeeds only when no dtype conversion is involved on either end
-    /// (F32 buffer, F32 kernel output), the buffer is contiguous, and this
-    /// `Arc` has exactly one strong reference (i.e. the caller holds exclusive
-    /// ownership). In that case the inner `Vec<u8>` is mutated directly —
-    /// zero heap allocation.
+    /// **The one sole-owner check**: every kernel that writes its input in
+    /// place asks here, rather than re-deriving ownership.
     ///
-    /// Returns `true` if the in-place path was taken, `false` if the caller should
-    /// fall back to the allocating [`apply_fused_kernel`] path.
-    pub fn try_apply_fused_kernel_inplace(&mut self, kernel: &FusedKernel) -> bool {
-        if self.dtype() != DType::F32
-            || kernel.out_dtype != DType::F32
-            || !self.layout.is_contiguous()
-        {
-            return false;
+    /// # Panics
+    /// Panics if `T` is not this buffer's dtype.
+    pub(crate) fn unique_contiguous_mut<T: ViewType>(&mut self) -> Option<&mut [T]> {
+        assert_eq!(
+            T::DTYPE,
+            self.dtype(),
+            "unique_contiguous_mut: asked for {:?} elements of a {:?} buffer",
+            T::DTYPE,
+            self.dtype()
+        );
+        if !self.layout.is_contiguous() {
+            return None;
         }
         let BufferStorage::Rust(ref mut arc) = self.data else {
-            return false;
+            return None;
         };
-        let Some(vec) = Arc::get_mut(arc) else {
-            return false;
-        };
-
-        let total_elems: usize = self.layout.shape.iter().product();
-        let data = unsafe {
+        let bytes = Arc::get_mut(arc)?;
+        let count: usize = self.layout.shape.iter().product();
+        // SAFETY: the view is contiguous, so its `count` elements are packed
+        // from `offset` inside the allocation this buffer solely owns;
+        // offsets are whole, aligned elements (CR-41).
+        Some(unsafe {
             std::slice::from_raw_parts_mut(
-                vec.as_mut_ptr().add(self.layout.offset) as *mut f32,
-                total_elems,
+                bytes.as_mut_ptr().add(self.layout.offset).cast::<T>(),
+                count,
             )
-        };
-
-        // One full-array pass per op — the inner loop is a simple scalar
-        // operation that LLVM can auto-vectorize with SIMD (the closure is
-        // known at compile time within each match arm, unlike the old
-        // chunk-then-ops order which blocked auto-vectorization).
-        apply_fused_op_passes(data, &kernel.ops);
-        true
+        })
     }
 
     /// Applies a fused kernel of scalar operations element-wise.
     ///
-    /// Accepts any numeric input dtype: the input is converted to `f32`
-    /// during the gather (equivalent to a fused leading `Cast`), the ops run
-    /// as SIMD-friendly full-array `f32` passes, and the result is converted
-    /// to `kernel.out_dtype` while writing the output buffer (equivalent to a
-    /// fused trailing `Cast`, matching [`ViewBuffer::cast_to`] semantics).
-    /// Compared to bracketing the kernel with separate casts, this removes
-    /// the intermediate materializations.
+    /// Accepts any numeric input dtype: each element is read as `f32`, the
+    /// ops run as `f32` passes, and the result is converted to
+    /// `kernel.out_dtype` (the rule `cast` uses). Runs through the
+    /// element-wise engine (`ops::elementwise`); `&self` is never written.
     pub fn apply_fused_kernel(&self, kernel: &FusedKernel) -> ViewBuffer {
-        let total_elems: usize = self.layout.shape.iter().product();
-
-        // Gather to f32 (handles dtype conversion and striding in one pass).
-        let mut acc: Vec<f32> = self.gather_to_f32(total_elems);
-
-        // One full-array pass per op (auto-vectorized; see inplace docs).
-        apply_fused_op_passes(&mut acc, &kernel.ops);
-
-        // Convert to the kernel's output dtype while writing the result.
-        finish_fused_output(acc, self.layout.shape.clone(), kernel.out_dtype)
-    }
-
-    /// Read every element as `f32`, in logical (row-major) order.
-    ///
-    /// Contiguous buffers convert with a monomorphic per-dtype loop; strided
-    /// buffers gather through the stride walk (also monomorphic per dtype).
-    fn gather_to_f32(&self, total_elems: usize) -> Vec<f32> {
-        if self.layout.is_contiguous() {
-            macro_rules! convert_contig {
-                ($t:ty) => {{
-                    let src_ptr =
-                        unsafe { self.data.as_ptr().add(self.layout.offset) as *const $t };
-                    let src = unsafe { std::slice::from_raw_parts(src_ptr, total_elems) };
-                    src.iter().map(|&x| x as f32).collect()
-                }};
-            }
-            return match self.dtype() {
-                DType::F32 => {
-                    let src_ptr =
-                        unsafe { self.data.as_ptr().add(self.layout.offset) as *const f32 };
-                    let src = unsafe { std::slice::from_raw_parts(src_ptr, total_elems) };
-                    src.to_vec()
-                }
-                DType::U8 => convert_contig!(u8),
-                DType::I8 => convert_contig!(i8),
-                DType::U16 => convert_contig!(u16),
-                DType::I16 => convert_contig!(i16),
-                DType::U32 => convert_contig!(u32),
-                DType::I32 => convert_contig!(i32),
-                DType::U64 => convert_contig!(u64),
-                DType::I64 => convert_contig!(i64),
-                DType::F64 => convert_contig!(f64),
-            };
-        }
-
-        // Strided gather: walk logical indices, reading each element at its
-        // byte offset. The walk is monomorphized per dtype so the inner read
-        // has no per-element dispatch.
-        macro_rules! gather_strided {
-            ($t:ty) => {{
-                let mut out: Vec<f32> = Vec::with_capacity(total_elems);
-                let mut indices = vec![0; self.layout.shape.len()];
-                let shape = &self.layout.shape;
-                let strides = &self.layout.strides;
-                let ptr = self.data.as_ptr();
-                let base_offset = self.layout.offset;
-                let data_len = self.data.len();
-                for _ in 0..total_elems {
-                    let mut offset = base_offset as isize;
-                    for (dim, &idx) in indices.iter().enumerate() {
-                        offset += (idx as isize) * strides[dim];
-                    }
-                    debug_assert!(
-                        offset >= 0 && (offset as usize) + std::mem::size_of::<$t>() <= data_len,
-                        "Fused kernel read OOB"
-                    );
-                    let value = unsafe { *(ptr.offset(offset) as *const $t) };
-                    out.push(value as f32);
-                    for dim in (0..shape.len()).rev() {
-                        indices[dim] += 1;
-                        if indices[dim] < shape[dim] {
-                            break;
-                        }
-                        indices[dim] = 0;
-                    }
-                }
-                out
-            }};
-        }
-        match self.dtype() {
-            DType::U8 => gather_strided!(u8),
-            DType::I8 => gather_strided!(i8),
-            DType::U16 => gather_strided!(u16),
-            DType::I16 => gather_strided!(i16),
-            DType::U32 => gather_strided!(u32),
-            DType::I32 => gather_strided!(i32),
-            DType::U64 => gather_strided!(u64),
-            DType::I64 => gather_strided!(i64),
-            DType::F32 => gather_strided!(f32),
-            DType::F64 => gather_strided!(f64),
-        }
+        crate::ops::elementwise::run_kernel(self.clone(), kernel)
     }
 
     /// Casts the buffer to a different data type.
@@ -1697,7 +1464,8 @@ impl ViewBuffer {
     }
 
     /// Reshapes the buffer to a new shape.
-    pub fn reshape(mut self, shape: Vec<usize>) -> Self {
+    pub fn reshape(mut self, shape: impl Into<Dims>) -> Self {
+        let shape: Dims = shape.into();
         // A different element count would describe memory this buffer does
         // not own. `ViewOp::Reshape::validate` rejects it before execution;
         // this is the backstop for direct callers.
@@ -1708,155 +1476,8 @@ impl ViewBuffer {
             self.layout.shape,
             shape
         );
-        self.layout.shape = shape;
-        self.layout = Layout::new_contiguous(self.layout.shape, self.layout.dtype);
+        self.layout = Layout::new_contiguous(shape, self.layout.dtype);
         self
-    }
-}
-
-/// Apply each fused scalar op as a full-array pass over `f32` data.
-///
-/// One pass per op (vs one pass total) costs slightly more bandwidth but lets
-/// LLVM auto-vectorize each inner loop with AVX/AVX2/NEON — the inner loop is
-/// a simple scalar operation with no enum dispatch. The bandwidth tradeoff
-/// breaks even at ~2 ops for typical L2-resident sizes.
-fn apply_fused_op_passes(data: &mut [f32], ops: &[ScalarOp]) {
-    for op in ops {
-        match op {
-            ScalarOp::Add(c) => {
-                for x in data.iter_mut() {
-                    *x += *c;
-                }
-            }
-            ScalarOp::Sub(c) => {
-                for x in data.iter_mut() {
-                    *x -= *c;
-                }
-            }
-            ScalarOp::Mul(c) => {
-                for x in data.iter_mut() {
-                    *x *= *c;
-                }
-            }
-            ScalarOp::Div(c) => {
-                for x in data.iter_mut() {
-                    *x /= *c;
-                }
-            }
-            ScalarOp::Pow(c) => {
-                for x in data.iter_mut() {
-                    *x = x.powf(*c);
-                }
-            }
-            ScalarOp::Neg => {
-                for x in data.iter_mut() {
-                    *x = -*x;
-                }
-            }
-            ScalarOp::Abs => {
-                for x in data.iter_mut() {
-                    *x = x.abs();
-                }
-            }
-            ScalarOp::Sqrt => {
-                for x in data.iter_mut() {
-                    *x = x.sqrt();
-                }
-            }
-            ScalarOp::Square => {
-                for x in data.iter_mut() {
-                    *x *= *x;
-                }
-            }
-            ScalarOp::Recip => {
-                for x in data.iter_mut() {
-                    *x = 1.0 / *x;
-                }
-            }
-            ScalarOp::Min(c) => {
-                for x in data.iter_mut() {
-                    *x = x.min(*c);
-                }
-            }
-            ScalarOp::Max(c) => {
-                for x in data.iter_mut() {
-                    *x = x.max(*c);
-                }
-            }
-            ScalarOp::Sign => {
-                for x in data.iter_mut() {
-                    *x = crate::ops::scalar::signum_numpy(*x);
-                }
-            }
-            ScalarOp::Floor => {
-                for x in data.iter_mut() {
-                    *x = x.floor();
-                }
-            }
-            ScalarOp::Ceil => {
-                for x in data.iter_mut() {
-                    *x = x.ceil();
-                }
-            }
-            ScalarOp::Round => {
-                for x in data.iter_mut() {
-                    *x = x.round_ties_even();
-                }
-            }
-            ScalarOp::Trunc => {
-                for x in data.iter_mut() {
-                    *x = x.trunc();
-                }
-            }
-            ScalarOp::Relu => {
-                for x in data.iter_mut() {
-                    *x = x.max(0.0);
-                }
-            }
-            ScalarOp::Clamp(lo, hi) => {
-                for x in data.iter_mut() {
-                    *x = x.clamp(*lo, *hi);
-                }
-            }
-        }
-    }
-}
-
-/// Materialize the kernel's f32 result as a contiguous buffer of `out_dtype`.
-///
-/// Integer targets round to nearest then saturate (`x.round() as T`), exactly
-/// mirroring [`ViewBuffer::cast_to`]'s float→int semantics; `F32` reuses the
-/// accumulator allocation without copying.
-fn finish_fused_output(acc: Vec<f32>, shape: Vec<usize>, out_dtype: DType) -> ViewBuffer {
-    macro_rules! convert_out {
-        (int $t:ty) => {
-            ViewBuffer::from_vec_with_shape(
-                acc.iter().map(|&x| x.round() as $t).collect::<Vec<$t>>(),
-                shape,
-            )
-        };
-    }
-    match out_dtype {
-        DType::F32 => {
-            // Reuse the accumulator allocation: AlignedBytes takes it over
-            // and deallocates with f32 alignment.
-            ViewBuffer {
-                data: BufferStorage::Rust(Arc::new(AlignedBytes::from_typed_vec(acc))),
-                layout: Layout::new_contiguous(shape, DType::F32),
-            }
-        }
-        DType::F64 => ViewBuffer::from_vec_with_shape(
-            acc.iter().map(|&x| x as f64).collect::<Vec<f64>>(),
-            shape,
-        ),
-        DType::U8 => convert_out!(int u8),
-        DType::I8 => convert_out!(int i8),
-        DType::U16 => convert_out!(int u16),
-        DType::I16 => convert_out!(int i16),
-        DType::U32 => convert_out!(int u32),
-        DType::I32 => convert_out!(int i32),
-        DType::U64 => convert_out!(int u64),
-        DType::I64 => convert_out!(int i64),
     }
 }
 

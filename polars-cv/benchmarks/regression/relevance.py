@@ -107,6 +107,8 @@ RULES: tuple[tuple[str, str], ...] = (
     ("polars-cv/src/cloud_auth.rs", "remote"),
     ("polars-cv/src/read_bytes.rs", "remote"),
     ("polars-cv/src/image_metadata.rs", _NONE),
+    # The global allocator: every allocation any case makes (CR-60).
+    ("polars-cv/src/allocator.rs", _ALL),
     ("polars-cv/src/test_alloc.rs", _NONE),  # test-only allocator
     # --- the Python builder: plan, serialize and dispatch run on every call ---
     ("polars-cv/python/polars_cv/*.py", _OPS),

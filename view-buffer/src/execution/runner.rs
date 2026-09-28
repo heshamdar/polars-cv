@@ -6,25 +6,18 @@
 //! same implementations.
 
 use crate::core::buffer::ViewBuffer;
+#[cfg(feature = "image_interop")]
+use crate::core::convert::CastFrom;
+#[cfg(feature = "image_interop")]
+use crate::core::dispatch::{dispatch, dispatch_mut, SimdKernel, SimdKernelMut};
 use crate::core::dtype::DType;
 use crate::expr::ViewExpr;
-use crate::ops::affine::AffineParams;
 use crate::ops::dto::ViewDto;
-use crate::ops::scalar::{FusedKernel, ScalarOp};
 use crate::ops::traits::Op;
 use crate::ops::{ComputeOp, ImageOp, ViewOp};
 
 #[cfg(feature = "image_interop")]
 use crate::ops::{FilterType, ImageOpKind};
-
-#[cfg(feature = "image_interop")]
-use crate::interop::image::AsImageView;
-
-#[cfg(feature = "ndarray_interop")]
-use crate::interop::ndarray::{AsNdarray, FromNdarray};
-
-#[cfg(feature = "image_interop")]
-use image::Luma;
 
 #[cfg(feature = "image_interop")]
 use fast_image_resize as fir;
@@ -52,7 +45,12 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
             if !buf.layout.is_contiguous() {
                 panic!("Reshape on non-contiguous view not supported without copy");
             }
-            buf.reshape(shape.iter().map(|&d| d as usize).collect())
+            buf.reshape(
+                shape
+                    .iter()
+                    .map(|&d| d as usize)
+                    .collect::<crate::core::layout::Dims>(),
+            )
         }
         ViewOp::Flip { .. } => buf.flip(&op.axes()),
         ViewOp::Crop { .. } | ViewOp::Slice { .. } => unreachable!("windows are sliced above"),
@@ -108,367 +106,18 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
 /// Applies a compute operation to a buffer.
 #[inline]
 pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
-    if let Some(op) = op.scalar() {
-        return apply_scalar_op(buf, op);
-    }
     match op {
         ComputeOp::Cast { dtype } => buf.cast(dtype),
-        ComputeOp::Affine(params) => apply_affine_warp(buf, params),
+        ComputeOp::Affine(params) => super::warp::apply_affine_warp(buf, params),
         ComputeOp::RotateAffine {
             angle_deg,
             expand,
             interpolation,
             border_value,
-        } => {
-            let h = buf.shape()[0] as u32;
-            let w = buf.shape()[1] as u32;
-            let params =
-                AffineParams::from_rotation(angle_deg, h, w, expand, interpolation, border_value);
-            apply_affine_warp(buf, params)
-        }
-        ComputeOp::Scale { factor } => apply_scalar_owned_with(
-            buf,
-            move |x: f32| x * factor,
-            move |x: f64| x * factor as f64,
-        ),
-        ComputeOp::Relu => apply_scalar_owned_with(
-            buf,
-            |x: f32| if x > 0.0 { x } else { 0.0 },
-            |x: f64| if x > 0.0 { x } else { 0.0 },
-        ),
-        ComputeOp::Fused(ref kernel) => {
-            // The kernel reads any numeric dtype (converting to f32 during
-            // the gather) and converts to its out_dtype while writing — no
-            // separate cast materializations. The in-place path applies when
-            // no conversion is involved on either end (f32 → f32).
-            let mut buf = buf;
-            if buf.try_apply_fused_kernel_inplace(kernel) {
-                buf
-            } else {
-                buf.apply_fused_kernel(kernel)
-            }
-        }
-        ComputeOp::Normalize {
-            method,
-            ref mean,
-            ref std,
-            out_dtype,
-        } => apply_normalize(
-            &buf,
-            &ComputeOp::normalization(method, mean, std),
-            out_dtype.unwrap_or(DType::F32),
-        ),
-        ComputeOp::Clamp { min, max } => apply_scalar_owned_with(
-            buf,
-            move |x: f32| x.clamp(min, max),
-            move |x: f64| x.clamp(min as f64, max as f64),
-        ),
-        ComputeOp::AdjustContrast { factor } => apply_adjust_contrast(&buf, factor),
-        ComputeOp::AdjustGamma { gamma } => apply_adjust_gamma(&buf, gamma),
-        ComputeOp::Invert => apply_invert(&buf),
-        _ => unreachable!("every other compute op is a scalar op, applied above"),
-    }
-}
-
-/// A lone scalar op, routed through the fused kernel so it and a fused one
-/// share the identical f32 arithmetic (the "route through the kernel"
-/// design). f64 preserves precision on its own cold path (`PromoteToFloat`
-/// keeps f64; the kernel is f32-only), mirroring how the promote-family ops
-/// keep f64 unfused.
-fn apply_scalar_op(buf: ViewBuffer, op: ScalarOp) -> ViewBuffer {
-    if buf.dtype() == DType::F64 {
-        return apply_scalar_op_f64(&buf, &op);
-    }
-    let kernel = FusedKernel {
-        ops: vec![op],
-        out_dtype: DType::F32,
-    };
-    let mut buf = buf;
-    if buf.try_apply_fused_kernel_inplace(&kernel) {
-        buf
-    } else {
-        buf.apply_fused_kernel(&kernel)
-    }
-}
-
-/// Apply a single scalar op to an `f64` buffer, computing in `f64`.
-///
-/// The unfused f64 cold path for [`ComputeOp::Scalar`]: `PromoteToFloat`
-/// preserves f64, but the bulk kernel computes in f32, so f64 evaluates here
-/// through [`ScalarOp::apply_f64`] — the shared f64 arithmetic authority.
-fn apply_scalar_op_f64(buf: &ViewBuffer, op: &ScalarOp) -> ViewBuffer {
-    let contig = buf.to_contiguous();
-    let src = contig.as_slice::<f64>();
-    let new_data: Vec<f64> = src.iter().map(|&x| op.apply_f64(x)).collect();
-    ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())
-}
-
-/// Apply normalization and cast the f32 result to the configured output dtype.
-///
-/// Normalization always computes in f32 (see [`apply_normalize_f32`]); the
-/// `out_dtype` is the target the planner resolved from the op's `Fixed`
-/// rule (defaulting to f32). Casting here is what keeps the produced dtype equal to the planned
-/// dtype — without it the planner could declare, say, `u8` while execution
-/// emitted `f32` (a plan/execution contract violation guarded by the
-/// dtype-contract tests).
-fn apply_normalize(
-    buf: &ViewBuffer,
-    method: &crate::ops::Normalization,
-    out_dtype: DType,
-) -> ViewBuffer {
-    let normalized = apply_normalize_f32(buf, method);
-    if out_dtype == DType::F32 {
-        normalized
-    } else {
-        normalized.cast(out_dtype)
-    }
-}
-
-/// Apply normalization to a buffer, accepting any numeric input type.
-///
-/// This function automatically casts the input to f32 for computation,
-/// as per the dtype promotion contract. The output is always f32.
-///
-/// ## Edge Case Behavior
-/// - **Constant array (min == max)**: Returns 0.0 for all elements (MinMax) or 0.0 (ZScore)
-/// - **NaN values**: Propagated according to IEEE 754 semantics
-/// - **Inf values**: Handled naturally by min/max/mean calculations
-fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::Normalization) -> ViewBuffer {
-    use crate::ops::Normalization;
-
-    // Cast to f32 working dtype if needed (dtype promotion)
-    let work_buf = if buf.dtype() != DType::F32 {
-        buf.cast(DType::F32)
-    } else {
-        buf.clone()
-    };
-
-    let shape = work_buf.shape().to_vec();
-
-    // Try ndarray path first (handles negative strides via invert_axis in ndarray 0.17+)
-    #[cfg(feature = "ndarray_interop")]
-    {
-        if let Ok(view) = work_buf.as_array_view::<f32>() {
-            match method {
-                Normalization::MinMax => {
-                    let min = view.iter().cloned().fold(f32::INFINITY, f32::min);
-                    let max = view.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                    let range = max - min;
-                    if range == 0.0 {
-                        let result: ndarray::ArrayD<f32> = ndarray::Array::zeros(view.raw_dim());
-                        return ViewBuffer::from_array(result);
-                    }
-                    let result = view.mapv(|x| (x - min) / range);
-                    return ViewBuffer::from_array(result.into_owned());
-                }
-                Normalization::ZScore => {
-                    let n = view.len() as f32;
-                    let mean = view.iter().sum::<f32>() / n;
-                    let variance = view.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / n;
-                    let std_val = variance.sqrt();
-                    if std_val == 0.0 {
-                        let result: ndarray::ArrayD<f32> = ndarray::Array::zeros(view.raw_dim());
-                        return ViewBuffer::from_array(result);
-                    }
-                    let result = view.mapv(|x| (x - mean) / std_val);
-                    return ViewBuffer::from_array(result.into_owned());
-                }
-                Normalization::Preset { mean, std } => {
-                    // Channel-wise normalization - need to iterate with channel awareness
-                    let channels = if shape.len() == 3 { shape[2] } else { 1 };
-                    assert_eq!(
-                        mean.len(),
-                        channels,
-                        "Mean length {} must match channel count {}",
-                        mean.len(),
-                        channels
-                    );
-                    assert_eq!(
-                        std.len(),
-                        channels,
-                        "Std length {} must match channel count {}",
-                        std.len(),
-                        channels
-                    );
-
-                    // Collect all values with channel-wise normalization
-                    let new_data: Vec<f32> = view
-                        .iter()
-                        .enumerate()
-                        .map(|(i, &x)| {
-                            let c = i % channels;
-                            (x - mean[c]) / std[c]
-                        })
-                        .collect();
-                    return ViewBuffer::from_vec(new_data).reshape(shape);
-                }
-            }
-        }
-    }
-
-    // Fallback: use contiguous buffer
-    let contig = work_buf.to_contiguous();
-    let count = contig.layout.num_elements();
-    let src = contig.as_slice::<f32>();
-
-    let new_data: Vec<f32> = match method {
-        Normalization::MinMax => {
-            let min = src.iter().cloned().fold(f32::INFINITY, f32::min);
-            let max = src.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            let range = max - min;
-            if range == 0.0 {
-                vec![0.0; count]
-            } else {
-                src.iter().map(|&x| (x - min) / range).collect()
-            }
-        }
-        Normalization::ZScore => {
-            let n = count as f32;
-            let mean = src.iter().sum::<f32>() / n;
-            let variance = src.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / n;
-            let std_val = variance.sqrt();
-            if std_val == 0.0 {
-                vec![0.0; count]
-            } else {
-                src.iter().map(|&x| (x - mean) / std_val).collect()
-            }
-        }
-        Normalization::Preset { mean, std } => {
-            let channels = if shape.len() == 3 { shape[2] } else { 1 };
-            assert_eq!(
-                mean.len(),
-                channels,
-                "Mean length {} must match channel count {}",
-                mean.len(),
-                channels
-            );
-            assert_eq!(
-                std.len(),
-                channels,
-                "Std length {} must match channel count {}",
-                std.len(),
-                channels
-            );
-            src.iter()
-                .enumerate()
-                .map(|(i, &x)| {
-                    let c = i % channels;
-                    (x - mean[c]) / std[c]
-                })
-                .collect()
-        }
-    };
-
-    ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())
-}
-
-/// Adjust contrast: `(pixel - mean) * factor + mean`.
-///
-/// Computes the global mean, then scales each pixel's deviation from it.
-/// Input is cast to f32; output is f32.
-fn apply_adjust_contrast(buf: &ViewBuffer, factor: f32) -> ViewBuffer {
-    // f64 input computes (and stays) in f64, per the PromoteToFloat contract.
-    if buf.dtype() == DType::F64 {
-        let contig = buf.to_contiguous();
-        let count = contig.layout.num_elements();
-        let src = contig.as_slice::<f64>();
-        let mean: f64 = if count > 0 {
-            src.iter().sum::<f64>() / count as f64
-        } else {
-            0.0
-        };
-        let factor = factor as f64;
-        let new_data: Vec<f64> = src.iter().map(|&x| (x - mean) * factor + mean).collect();
-        return ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec());
-    }
-    let work_buf = if buf.dtype() != DType::F32 {
-        buf.cast(DType::F32)
-    } else {
-        buf.clone()
-    };
-    let contig = work_buf.to_contiguous();
-    let count = contig.layout.num_elements();
-    let src = contig.as_slice::<f32>();
-
-    let mean: f32 = if count > 0 {
-        src.iter().map(|&x| x as f64).sum::<f64>() as f32 / count as f32
-    } else {
-        0.0
-    };
-    let new_data: Vec<f32> = src.iter().map(|&x| (x - mean) * factor + mean).collect();
-    ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())
-}
-
-/// Adjust gamma (power-law): normalize to [0,1], apply `pixel^gamma`, denormalize.
-///
-/// For u8 input the [0,255] range is used; for float [0,1] is assumed.
-/// Integer inputs promote to f32; f64 input computes (and stays) in f64,
-/// per the PromoteToFloat contract.
-fn apply_adjust_gamma(buf: &ViewBuffer, gamma: f32) -> ViewBuffer {
-    let input_dtype = buf.dtype();
-    if input_dtype == DType::F64 {
-        let contig = buf.to_contiguous();
-        let src = contig.as_slice::<f64>();
-        let gamma = gamma as f64;
-        let new_data: Vec<f64> = src.iter().map(|&x| x.clamp(0.0, 1.0).powf(gamma)).collect();
-        return ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec());
-    }
-    let work_buf = if input_dtype != DType::F32 {
-        buf.cast(DType::F32)
-    } else {
-        buf.clone()
-    };
-    let contig = work_buf.to_contiguous();
-    let src = contig.as_slice::<f32>();
-
-    // Normalize by the input dtype's value range (255 for u8, 65535 for
-    // u16, ...; 1.0 for floats). A hardcoded 255 would clamp every u16+
-    // pixel above 255 to the ceiling and flatten the image to a constant.
-    let max_val: f32 = input_dtype.norm_range_max_f32();
-
-    let new_data: Vec<f32> = src
-        .iter()
-        .map(|&x| {
-            let normalized = (x / max_val).clamp(0.0, 1.0);
-            normalized.powf(gamma) * max_val
-        })
-        .collect();
-    ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())
-}
-
-/// Invert pixel values: `max_val - pixel`.
-///
-/// For u8: `255 - pixel`. For float: `1.0 - pixel`. Preserves input dtype.
-fn apply_invert(buf: &ViewBuffer) -> ViewBuffer {
-    let contig = buf.to_contiguous();
-    let shape = contig.shape().to_vec();
-
-    match buf.dtype() {
-        DType::U8 => {
-            let src = contig.as_slice::<u8>();
-            let new_data: Vec<u8> = src.iter().map(|&x| 255u8 - x).collect();
-            ViewBuffer::from_vec_with_shape(new_data, shape)
-        }
-        DType::U16 => {
-            let src = contig.as_slice::<u16>();
-            let new_data: Vec<u16> = src.iter().map(|&x| 65535u16 - x).collect();
-            ViewBuffer::from_vec_with_shape(new_data, shape)
-        }
-        DType::F32 => {
-            let src = contig.as_slice::<f32>();
-            let new_data: Vec<f32> = src.iter().map(|&x| 1.0f32 - x).collect();
-            ViewBuffer::from_vec_with_shape(new_data, shape)
-        }
-        DType::F64 => {
-            let src = contig.as_slice::<f64>();
-            let new_data: Vec<f64> = src.iter().map(|&x| 1.0f64 - x).collect();
-            ViewBuffer::from_vec_with_shape(new_data, shape)
-        }
-        _ => {
-            // For other dtypes, cast to f32, invert as 1.0 - x, return f32
-            let f32_buf = buf.cast(DType::F32);
-            apply_invert(&f32_buf)
-        }
+        } => super::warp::rotate(buf, angle_deg, expand, interpolation, border_value),
+        // Every per-value op: the scalar family, scale, relu, clamp, invert,
+        // gamma, contrast, normalize and fused chains.
+        ref per_value => crate::ops::elementwise::apply(buf, per_value),
     }
 }
 
@@ -642,107 +291,6 @@ pub fn apply_channel_merge(buffers: &[&ViewBuffer]) -> ViewBuffer {
     }
 }
 
-/// Apply a scalar operation element-wise, honoring the float-promotion
-/// dtype contract (`OutputDTypeRule::PromoteToFloat`):
-///
-/// - f64 input computes in f64 and returns f64 (the rule preserves f64);
-/// - every other numeric input is promoted to f32, computed in f32, and
-///   returned as f32.
-///
-/// This follows the pattern used by NumPy, PyTorch, and other numeric
-/// libraries. Both closures must implement the same operation at their
-/// respective precision.
-fn apply_scalar_op_with<F32Op, F64Op>(buf: &ViewBuffer, op32: F32Op, op64: F64Op) -> ViewBuffer
-where
-    F32Op: Fn(f32) -> f32,
-    F64Op: Fn(f64) -> f64,
-{
-    if buf.dtype() == DType::F64 {
-        // Try to use ndarray if available for efficient strided iteration
-        #[cfg(feature = "ndarray_interop")]
-        {
-            if let Ok(view) = buf.as_array_view::<f64>() {
-                let result_array = view.mapv(&op64);
-                return ViewBuffer::from_array(result_array);
-            }
-        }
-        let contig = buf.to_contiguous();
-        let src = contig.as_slice::<f64>();
-        let new_data: Vec<f64> = src.iter().map(|&x| op64(x)).collect();
-        return ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec());
-    }
-
-    // Cast to f32 working dtype if needed (dtype promotion)
-    let work_buf = if buf.dtype() != DType::F32 {
-        buf.cast(DType::F32)
-    } else {
-        buf.clone()
-    };
-
-    // Try to use ndarray if available for efficient strided iteration
-    // (ndarray 0.17+ handles negative strides via invert_axis)
-    #[cfg(feature = "ndarray_interop")]
-    {
-        if let Ok(view) = work_buf.as_array_view::<f32>() {
-            let result_array = view.mapv(&op32);
-            return ViewBuffer::from_array(result_array);
-        }
-    }
-
-    // Fallback: use contiguous buffer
-    let contig = work_buf.to_contiguous();
-    let src = contig.as_slice::<f32>();
-    let new_data: Vec<f32> = src.iter().map(|&x| op32(x)).collect();
-    ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())
-}
-
-/// Scalar op applied to an owned buffer.
-///
-/// When the buffer is already a contiguous float (f32 or f64) with a sole
-/// strong reference (refcount == 1), the data is mutated in-place — no heap
-/// allocation. Falls back to [`apply_scalar_op_with`] for all other cases
-/// (dtype promotion, non-contiguous layout, or shared Arc).
-fn apply_scalar_owned_with<F32Op, F64Op>(
-    mut buf: ViewBuffer,
-    op32: F32Op,
-    op64: F64Op,
-) -> ViewBuffer
-where
-    F32Op: Fn(f32) -> f32 + Copy,
-    F64Op: Fn(f64) -> f64 + Copy,
-{
-    use crate::core::buffer::BufferStorage;
-    use std::sync::Arc;
-
-    let dtype = buf.dtype();
-    if matches!(dtype, DType::F32 | DType::F64) && buf.layout.is_contiguous() {
-        if let BufferStorage::Rust(ref mut arc) = buf.data {
-            if let Some(vec) = Arc::get_mut(arc) {
-                let count = buf.layout.num_elements();
-                let base = unsafe { vec.as_mut_ptr().add(buf.layout.offset) };
-                match dtype {
-                    DType::F32 => {
-                        let data =
-                            unsafe { std::slice::from_raw_parts_mut(base as *mut f32, count) };
-                        for x in data.iter_mut() {
-                            *x = op32(*x);
-                        }
-                    }
-                    _ => {
-                        let data =
-                            unsafe { std::slice::from_raw_parts_mut(base as *mut f64, count) };
-                        for x in data.iter_mut() {
-                            *x = op64(*x);
-                        }
-                    }
-                }
-                return buf;
-            }
-        }
-    }
-    apply_scalar_op_with(&buf, op32, op64)
-}
-
 /// Convert a buffer to U8 for image operations.
 ///
 /// This handles dtype promotion for image operations:
@@ -757,7 +305,7 @@ fn convert_to_u8_for_image(buf: ViewBuffer) -> ViewBuffer {
     }
 
     let contig = buf.to_contiguous();
-    let shape = contig.shape().to_vec();
+    let shape = crate::core::layout::Dims::from_slice(contig.shape());
 
     match contig.dtype() {
         DType::F32 => {
@@ -823,38 +371,11 @@ fn to_fir_algorithm(filter: &FilterType) -> fir::ResizeAlg {
     }
 }
 
-/// Map (channels, element-size) to the appropriate `fir::PixelType`.
-///
-/// `fast_image_resize` natively supports U8, U16, and F32 pixel types
-/// (with 1, 2, 3, and 4 channel variants for U8/U16/F32 plus a single-channel I32).
-#[cfg(feature = "image_interop")]
-fn pixel_type_for(dtype: DType, channels: usize) -> fir::PixelType {
-    match (dtype, channels) {
-        (DType::U8, 1) => fir::PixelType::U8,
-        (DType::U8, 2) => fir::PixelType::U8x2,
-        (DType::U8, 3) => fir::PixelType::U8x3,
-        (DType::U8, 4) => fir::PixelType::U8x4,
-        (DType::U16, 1) => fir::PixelType::U16,
-        (DType::U16, 2) => fir::PixelType::U16x2,
-        (DType::U16, 3) => fir::PixelType::U16x3,
-        (DType::U16, 4) => fir::PixelType::U16x4,
-        (DType::F32, 1) => fir::PixelType::F32,
-        (DType::F32, 2) => fir::PixelType::F32x2,
-        (DType::F32, 3) => fir::PixelType::F32x3,
-        (DType::F32, 4) => fir::PixelType::F32x4,
-        (DType::I32, 1) => fir::PixelType::I32,
-        _ => panic!("fast_image_resize does not support dtype {dtype:?} with {channels} channels"),
-    }
-}
-
 /// Resize using fast_image_resize with SIMD optimization.
 ///
-/// Supports U8, U16, and F32 dtypes natively via ``fast_image_resize``.
-/// For other dtypes the buffer is cast to F32, resized, then cast back to
-/// the original dtype so that the output always preserves the input dtype.
-///
-/// Non-contiguous inputs are materialized first as fast_image_resize
-/// requires contiguous memory.
+/// U8, U16 and F32 with 1–4 channels are fast_image_resize's own pixel types
+/// ([`resize_pixels`]). Any other dtype is cast to F32, resized, then cast
+/// back, so the output always keeps the input's dtype and rank.
 #[cfg(feature = "image_interop")]
 fn resize_strided(
     buf: ViewBuffer,
@@ -862,40 +383,76 @@ fn resize_strided(
     target_height: u32,
     filter: FilterType,
 ) -> ViewBuffer {
-    // Ensure contiguous input (fast_image_resize requires contiguous memory)
-    let contig_buf = if buf.layout.is_contiguous() {
-        buf
-    } else {
-        buf.to_contiguous()
-    };
-
-    let dtype = contig_buf.dtype();
-    let shape = contig_buf.shape();
-    let input_rank = shape.len();
-    let (h, w) = (shape[0], shape[1]);
-    let c = shape.get(2).copied().unwrap_or(1);
-
-    // Dtypes natively supported by fast_image_resize
-    let resized = match dtype {
-        DType::U8 => resize_typed_u8(&contig_buf, h, w, c, target_height, target_width, &filter),
-        DType::U16 => resize_typed_u16(&contig_buf, h, w, c, target_height, target_width, &filter),
-        DType::F32 => resize_typed_f32(&contig_buf, h, w, c, target_height, target_width, &filter),
-        // Unsupported by fast_image_resize: cast to F32, resize, cast back.
-        other => {
-            let f32_buf = contig_buf.cast(DType::F32);
-            let r = resize_typed_f32(&f32_buf, h, w, c, target_height, target_width, &filter);
-            r.cast(other)
+    use fir::pixels::{F32x2, F32x3, F32x4, U16x2, U16x3, U16x4, U8x2, U8x3, U8x4, F32, U16, U8};
+    let (w, h) = (target_width, target_height);
+    let channels = buf.shape().get(2).copied().unwrap_or(1);
+    match (buf.dtype(), channels) {
+        (DType::U8, 1) => resize_pixels::<U8>(buf, w, h, filter),
+        (DType::U8, 2) => resize_pixels::<U8x2>(buf, w, h, filter),
+        (DType::U8, 3) => resize_pixels::<U8x3>(buf, w, h, filter),
+        (DType::U8, 4) => resize_pixels::<U8x4>(buf, w, h, filter),
+        (DType::U16, 1) => resize_pixels::<U16>(buf, w, h, filter),
+        (DType::U16, 2) => resize_pixels::<U16x2>(buf, w, h, filter),
+        (DType::U16, 3) => resize_pixels::<U16x3>(buf, w, h, filter),
+        (DType::U16, 4) => resize_pixels::<U16x4>(buf, w, h, filter),
+        (DType::F32, 1) => resize_pixels::<F32>(buf, w, h, filter),
+        (DType::F32, 2) => resize_pixels::<F32x2>(buf, w, h, filter),
+        (DType::F32, 3) => resize_pixels::<F32x3>(buf, w, h, filter),
+        (DType::F32, 4) => resize_pixels::<F32x4>(buf, w, h, filter),
+        (dtype @ (DType::U8 | DType::U16 | DType::F32), _) => {
+            panic!("fast_image_resize does not support dtype {dtype:?} with {channels} channels")
         }
+        (other, _) => resize_strided(buf.cast(DType::F32), w, h, filter).cast(other),
+    }
+}
+
+/// Resize an image of fast_image_resize pixel type `P` into a new buffer of
+/// the same dtype and rank.
+///
+/// A view whose pixels are packed within each row (contiguous, a crop, a
+/// vertical flip) is read where it lies ([`FirViewAdapter`]); any other layout
+/// is packed first.
+#[cfg(feature = "image_interop")]
+fn resize_pixels<P>(
+    buf: ViewBuffer,
+    target_width: u32,
+    target_height: u32,
+    filter: FilterType,
+) -> ViewBuffer
+where
+    P: fir::PixelTrait,
+    P::Component: crate::core::dtype::ViewType + Default,
+{
+    use crate::interop::fir::{as_pixels_mut, FirViewAdapter};
+    use crate::interop::ExternalView;
+
+    let packed;
+    let src = match FirViewAdapter::<P>::try_view(&buf) {
+        Ok(view) => view,
+        Err(crate::core::buffer::BufferError::IncompatibleLayout { .. }) => {
+            packed = buf.to_contiguous();
+            FirViewAdapter::<P>::try_view(&packed).expect("a packed buffer has packed rows")
+        }
+        Err(e) => panic!("resize: {e}"),
     };
 
-    // Preserve input rank: 2D input must produce 2D output.  The typed
-    // resize functions always produce [H, W, C]; squeeze the trailing
-    // dimension when the input was 2D.
-    if input_rank == 2 {
-        resized.reshape(vec![target_height as usize, target_width as usize])
-    } else {
-        resized
-    }
+    let mut out_shape = crate::core::layout::Dims::from_slice(buf.shape());
+    out_shape[0] = target_height as usize;
+    out_shape[1] = target_width as usize;
+    let mut out = vec![P::Component::default(); out_shape.iter().product()];
+    let mut dst = fir::images::TypedImage::<P>::from_pixels_slice(
+        target_width,
+        target_height,
+        as_pixels_mut::<P>(&mut out),
+    )
+    .expect("the output holds target_width * target_height pixels");
+    let options = fir::ResizeOptions::new().resize_alg(to_fir_algorithm(&filter));
+    FIR_RESIZER.with(|cell| {
+        cell.borrow_mut()
+            .resize_typed(&src, &mut dst, &options)
+            .expect("Resize failed");
+    });
+    ViewBuffer::from_vec_with_shape(out, out_shape)
 }
 
 #[cfg(feature = "image_interop")]
@@ -916,148 +473,22 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Perform a typed resize for U8 data.
-#[cfg(feature = "image_interop")]
-fn resize_typed_u8(
-    contig_buf: &ViewBuffer,
-    h: usize,
-    w: usize,
-    c: usize,
-    target_height: u32,
-    target_width: u32,
-    filter: &FilterType,
-) -> ViewBuffer {
-    let fir_filter = to_fir_algorithm(filter);
-    let pixel_type = pixel_type_for(DType::U8, c);
-    let src_len = h * w * c;
-    let dst_size = (target_height as usize) * (target_width as usize) * c;
-    let mut dst_data = vec![0u8; dst_size];
-
-    let src_slice = unsafe { std::slice::from_raw_parts(contig_buf.as_ptr::<u8>(), src_len) };
-    let src_image = fir::images::ImageRef::new(w as u32, h as u32, src_slice, pixel_type)
-        .expect("Failed to create source image");
-    let mut dst_image =
-        fir::images::Image::from_slice_u8(target_width, target_height, &mut dst_data, pixel_type)
-            .expect("Failed to create dest image");
-
-    FIR_RESIZER.with(|cell| {
-        cell.borrow_mut()
-            .resize(
-                &src_image,
-                &mut dst_image,
-                &fir::ResizeOptions::new().resize_alg(fir_filter),
-            )
-            .expect("Resize failed");
-    });
-
-    ViewBuffer::from_vec(dst_data).reshape(vec![target_height as usize, target_width as usize, c])
-}
-
-/// Perform a typed resize for U16 data.
-#[cfg(feature = "image_interop")]
-fn resize_typed_u16(
-    contig_buf: &ViewBuffer,
-    h: usize,
-    w: usize,
-    c: usize,
-    target_height: u32,
-    target_width: u32,
-    filter: &FilterType,
-) -> ViewBuffer {
-    let fir_filter = to_fir_algorithm(filter);
-    let pixel_type = pixel_type_for(DType::U16, c);
-    let src_len = h * w * c;
-    let dst_size = (target_height as usize) * (target_width as usize) * c;
-    let mut dst_data: Vec<u16> = vec![0u16; dst_size];
-
-    let src_slice = unsafe { std::slice::from_raw_parts(contig_buf.as_ptr::<u16>(), src_len) };
-    // Reinterpret the u16 slices as byte slices for fir API
-    let src_bytes =
-        unsafe { std::slice::from_raw_parts(src_slice.as_ptr() as *const u8, src_len * 2) };
-    let dst_bytes =
-        unsafe { std::slice::from_raw_parts_mut(dst_data.as_mut_ptr() as *mut u8, dst_size * 2) };
-
-    let src_image = fir::images::ImageRef::new(w as u32, h as u32, src_bytes, pixel_type)
-        .expect("Failed to create source image");
-    let mut dst_image =
-        fir::images::Image::from_slice_u8(target_width, target_height, dst_bytes, pixel_type)
-            .expect("Failed to create dest image");
-
-    FIR_RESIZER.with(|cell| {
-        cell.borrow_mut()
-            .resize(
-                &src_image,
-                &mut dst_image,
-                &fir::ResizeOptions::new().resize_alg(fir_filter),
-            )
-            .expect("Resize failed");
-    });
-
-    ViewBuffer::from_vec(dst_data).reshape(vec![target_height as usize, target_width as usize, c])
-}
-
-/// Perform a typed resize for F32 data.
-#[cfg(feature = "image_interop")]
-fn resize_typed_f32(
-    contig_buf: &ViewBuffer,
-    h: usize,
-    w: usize,
-    c: usize,
-    target_height: u32,
-    target_width: u32,
-    filter: &FilterType,
-) -> ViewBuffer {
-    let fir_filter = to_fir_algorithm(filter);
-    let pixel_type = pixel_type_for(DType::F32, c);
-    let src_len = h * w * c;
-    let dst_size = (target_height as usize) * (target_width as usize) * c;
-    let mut dst_data: Vec<f32> = vec![0.0f32; dst_size];
-
-    let src_slice = unsafe { std::slice::from_raw_parts(contig_buf.as_ptr::<f32>(), src_len) };
-    // Reinterpret as byte slices for fir API
-    let src_bytes =
-        unsafe { std::slice::from_raw_parts(src_slice.as_ptr() as *const u8, src_len * 4) };
-    let dst_bytes =
-        unsafe { std::slice::from_raw_parts_mut(dst_data.as_mut_ptr() as *mut u8, dst_size * 4) };
-
-    let src_image = fir::images::ImageRef::new(w as u32, h as u32, src_bytes, pixel_type)
-        .expect("Failed to create source image");
-    let mut dst_image =
-        fir::images::Image::from_slice_u8(target_width, target_height, dst_bytes, pixel_type)
-            .expect("Failed to create dest image");
-
-    FIR_RESIZER.with(|cell| {
-        cell.borrow_mut()
-            .resize(
-                &src_image,
-                &mut dst_image,
-                &fir::ResizeOptions::new().resize_alg(fir_filter),
-            )
-            .expect("Resize failed");
-    });
-
-    ViewBuffer::from_vec(dst_data).reshape(vec![target_height as usize, target_width as usize, c])
-}
-
-/// Strided grayscale conversion that works on non-contiguous buffers.
+/// Grayscale of any layout: BT.601, `Y = 0.299R + 0.587G + 0.114B` (u8 in
+/// fixed point, `Y = (77R + 150G + 29B + 128) >> 8`), or a gray + alpha
+/// image's gray channel.
 ///
-/// Uses ndarray for strided access when available, falling back to manual
-/// strided iteration. This avoids the need to call `to_contiguous()` for
-/// flipped, cropped, or transposed buffers.
-///
-/// Uses BT.601 coefficients: Y = 0.299*R + 0.587*G + 0.114*B
-/// Implemented with fixed-point math: Y = (77*R + 150*G + 29*B + 128) >> 8
-///
-/// This implementation uses direct pointer arithmetic which is faster than
-/// ndarray per-pixel indexing due to avoiding bounds checks.
+/// u8 rows that are packed (contiguous, a crop, a vertical flip) are read
+/// where they lie; any other layout is packed first (`grayscale_u8`,
+/// `grayscale_typed`).
 #[cfg(feature = "image_interop")]
 fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
     let shape = buf.shape();
     let channels = shape.get(2).copied().unwrap_or(1);
 
     if channels == 1 {
-        // Already grayscale
-        return buf;
+        // Already gray. Packed, since every image op's output is planned
+        // contiguous (a no-op when it already is).
+        return buf.to_contiguous();
     }
 
     let dtype = buf.dtype();
@@ -1082,140 +513,181 @@ fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
     }
 }
 
-/// Fast U8 grayscale using fixed-point BT.601 coefficients.
+/// Fast u8 grayscale: fixed-point BT.601, `Y = (77R + 150G + 29B + 128) >> 8`,
+/// or the intensity channel of a gray + alpha image.
 ///
-/// This preserves the original optimized path for the common u8 case.
-/// Supports both contiguous and strided input buffers.
+/// Rows whose pixels are packed ([`ViewBuffer::dense_rows`]: contiguous, a
+/// crop, a vertical flip) run the dispatched [`GrayscaleU8`] kernel where
+/// they lie. Any other layout (a transpose, a horizontal flip) is packed
+/// first, and more than four channels are reduced to the first three (BT.601
+/// reads no others): one kernel, whatever the layout.
 #[cfg(feature = "image_interop")]
 fn grayscale_u8(buf: ViewBuffer) -> ViewBuffer {
     let shape = buf.shape();
     let (h, w) = (shape[0], shape[1]);
     let channels = shape.get(2).copied().unwrap_or(1);
-    let strides = buf.strides_bytes();
-
-    // Fast path: contiguous 3-channel or 4-channel (RGBA) buffer
-    if buf.layout.is_contiguous() && (channels == 3 || channels == 4) {
-        let data = unsafe { std::slice::from_raw_parts(buf.as_ptr::<u8>(), h * w * channels) };
-        let mut gray_data: Vec<u8> = Vec::with_capacity(h * w);
-
-        for pixel in data.chunks_exact(channels) {
-            let r = pixel[0] as u32;
-            let g = pixel[1] as u32;
-            let b = pixel[2] as u32;
-            let gray = ((77 * r + 150 * g + 29 * b + 128) >> 8).min(255) as u8;
-            gray_data.push(gray);
-        }
-
-        return ViewBuffer::from_vec(gray_data).reshape(vec![h, w, 1]);
+    if channels > 4 {
+        return grayscale_u8(buf.slice(&[0, 0, 0], &[h, w, 3]).to_contiguous());
     }
+    let Some(rows) = buf.dense_rows::<u8>() else {
+        return grayscale_u8(buf.to_contiguous());
+    };
+    let gray = match channels {
+        2 => dispatch(GrayscaleU8::<2> {
+            rows: &rows,
+            width: w,
+        }),
+        3 => dispatch(GrayscaleU8::<3> {
+            rows: &rows,
+            width: w,
+        }),
+        4 => dispatch(GrayscaleU8::<4> {
+            rows: &rows,
+            width: w,
+        }),
+        other => unreachable!("grayscale_strided returns {other}-channel input unchanged"),
+    };
+    ViewBuffer::from_vec_with_shape(gray, vec![h, w, 1])
+}
 
-    // Fast path: contiguous 2-channel (GrayA) — take the intensity channel
-    if buf.layout.is_contiguous() && channels == 2 {
-        let data = unsafe { std::slice::from_raw_parts(buf.as_ptr::<u8>(), h * w * 2) };
-        let mut gray_data: Vec<u8> = Vec::with_capacity(h * w);
+/// Fixed-point BT.601 luma of one u8 pixel. The sum peaks at
+/// `256 * 255 + 128 = 65408`, so it fits in `u16`, which gives the vector
+/// loop twice the lanes of `u32`.
+#[cfg(feature = "image_interop")]
+#[inline(always)]
+fn luma_u8(r: u8, g: u8, b: u8) -> u8 {
+    ((77 * u16::from(r) + 150 * u16::from(g) + 29 * u16::from(b) + 128) >> 8) as u8
+}
 
-        for pixel in data.as_chunks::<2>().0 {
-            gray_data.push(pixel[0]);
-        }
+/// u8 grayscale over packed rows of `C`-channel pixels, one output row per
+/// input row. `C == 2` is gray + alpha, whose grayscale is the gray channel.
+#[cfg(feature = "image_interop")]
+#[derive(Clone)]
+struct GrayscaleU8<'a, const C: usize> {
+    rows: &'a [&'a [u8]],
+    width: usize,
+}
 
-        return ViewBuffer::from_vec(gray_data).reshape(vec![h, w, 1]);
+#[cfg(feature = "image_interop")]
+impl<const C: usize> SimdKernel for GrayscaleU8<'_, C> {
+    type Output = Vec<u8>;
+
+    #[inline(always)]
+    fn run(self) -> Vec<u8> {
+        map_pixel_rows::<u8, u8, C>(self.rows, self.width, |p| {
+            // `C` is a constant, so each instance keeps one arm. The blue
+            // index is written `C.min(3) - 1` (2 for every `C >= 3`) only so
+            // the discarded arm of `C == 2` stays in bounds.
+            if C == 2 {
+                p[0]
+            } else {
+                luma_u8(p[0], p[1], p[C.min(3) - 1])
+            }
+        })
     }
+}
 
-    // Strided path: handles non-contiguous buffers (crop, flip, etc.)
-    let (stride_h, stride_w, stride_c) =
-        (strides[0], strides[1], strides.get(2).copied().unwrap_or(1));
-    let base_ptr = unsafe { buf.as_ptr::<u8>() };
-
-    let mut gray_data: Vec<u8> = Vec::with_capacity(h * w);
-
-    if channels == 2 {
-        // GrayA: take the intensity channel only
-        for y in 0..h {
-            for x in 0..w {
-                let pixel_offset = y as isize * stride_h + x as isize * stride_w;
-                unsafe {
-                    let pixel_ptr = base_ptr.offset(pixel_offset);
-                    gray_data.push(*pixel_ptr);
-                }
+/// One output value per `C`-element pixel of each row, rows in order.
+///
+/// Writes straight into the vector's spare capacity: a zeroed image-sized
+/// buffer (`vec![0; n]`) costs a full extra pass once the allocation comes
+/// from the heap rather than fresh pages, which measured ~15% of a u8
+/// threshold at 1024². Every row must hold exactly `width` pixels (asserted),
+/// so every slot is written before the length is set.
+#[cfg(feature = "image_interop")]
+#[inline(always)]
+fn map_pixel_rows<S: Copy, T, const C: usize>(
+    rows: &[&[S]],
+    width: usize,
+    f: impl Fn(&[S; C]) -> T,
+) -> Vec<T> {
+    let n = rows.len() * width;
+    let mut out = Vec::with_capacity(n);
+    if width > 0 {
+        for (dst, row) in out.spare_capacity_mut()[..n]
+            .chunks_exact_mut(width)
+            .zip(rows)
+        {
+            let (pixels, rest) = row.as_chunks::<C>();
+            assert!(
+                pixels.len() == width && rest.is_empty(),
+                "a row holds {} values, not {width} pixels of {C}",
+                row.len()
+            );
+            for (d, p) in dst.iter_mut().zip(pixels) {
+                d.write(f(p));
             }
         }
-    } else {
-        // RGB or RGBA: BT.601 on first 3 channels, alpha ignored
-        for y in 0..h {
-            for x in 0..w {
-                let pixel_offset = y as isize * stride_h + x as isize * stride_w;
-                unsafe {
-                    let pixel_ptr = base_ptr.offset(pixel_offset);
-                    let r = *pixel_ptr as u32;
-                    let g = *pixel_ptr.offset(stride_c) as u32;
-                    let b = *pixel_ptr.offset(2 * stride_c) as u32;
-                    let gray = ((77 * r + 150 * g + 29 * b + 128) >> 8).min(255) as u8;
-                    gray_data.push(gray);
-                }
-            }
-        }
     }
-
-    ViewBuffer::from_vec(gray_data).reshape(vec![h, w, 1])
+    // SAFETY: the loop visited all `rows.len()` rows (`chunks_exact_mut`
+    // yields exactly that many `width`-slot chunks of the `n` slots), and each
+    // row wrote all `width` of its slots (asserted `width` pixels).
+    unsafe { out.set_len(n) };
+    out
 }
 
 /// Dtype-generic grayscale using float BT.601 coefficients.
 ///
 /// Reads multichannel data as type `T`, applies `Y = 0.299*R + 0.587*G + 0.114*B`
-/// in `f64` arithmetic, then casts back to `T`. Preserves the input dtype.
+/// in `f64` arithmetic, then converts back to `T` (integer targets rounded and
+/// clamped). Preserves the input dtype. A gray + alpha image's grayscale is
+/// its gray channel, as in the u8 kernel.
 #[cfg(feature = "image_interop")]
 fn grayscale_typed<T>(buf: ViewBuffer) -> ViewBuffer
 where
     T: crate::core::dtype::ViewType + Default + num_traits::NumCast,
 {
-    use num_traits::NumCast;
-
-    // BT.601 luma coefficients
-    const R_COEFF: f64 = 0.299;
-    const G_COEFF: f64 = 0.587;
-    const B_COEFF: f64 = 0.114;
-
     let shape = buf.shape();
     let (h, w) = (shape[0], shape[1]);
     let channels = shape.get(2).copied().unwrap_or(1);
 
-    // Ensure contiguous for typed slice access
     let contig_buf = if buf.layout.is_contiguous() {
         buf
     } else {
         buf.to_contiguous()
     };
+    let src: &[T] = contig_buf.as_slice::<T>();
+    let gray: Vec<T> = match channels {
+        2 => src.as_chunks::<2>().0.iter().map(|p| p[0]).collect(),
+        3 => src
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|p| luma_typed(p[0], p[1], p[2]))
+            .collect(),
+        4 => src
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| luma_typed(p[0], p[1], p[2]))
+            .collect(),
+        c => src
+            .chunks_exact(c)
+            .map(|p| luma_typed(p[0], p[1], p[2]))
+            .collect(),
+    };
+    ViewBuffer::from_vec_with_shape(gray, vec![h, w, 1])
+}
 
-    let src_data: &[T] = contig_buf.as_slice::<T>();
-    let mut gray_data: Vec<T> = Vec::with_capacity(h * w);
-
-    for pixel in src_data.chunks_exact(channels) {
-        let r: f64 = NumCast::from(pixel[0]).unwrap_or(0.0);
-        let g: f64 = if channels > 1 {
-            NumCast::from(pixel[1]).unwrap_or(0.0)
-        } else {
-            r
-        };
-        let b: f64 = if channels > 2 {
-            NumCast::from(pixel[2]).unwrap_or(0.0)
-        } else {
-            g
-        };
-
-        let luma = R_COEFF * r + G_COEFF * g + B_COEFF * b;
-
-        // For integer types, clamp to valid range
-        let is_float = matches!(T::DTYPE, DType::F32 | DType::F64);
-        let clamped = if is_float {
-            luma
-        } else {
-            clamp_for_dtype(luma, T::DTYPE)
-        };
-
-        gray_data.push(NumCast::from(clamped).unwrap_or(T::default()));
-    }
-
-    ViewBuffer::from_vec(gray_data).reshape(vec![h, w, 1])
+/// BT.601 luma of one pixel in `f64`, converted back to `T`.
+#[cfg(feature = "image_interop")]
+#[inline(always)]
+fn luma_typed<T>(r: T, g: T, b: T) -> T
+where
+    T: crate::core::dtype::ViewType + Default + num_traits::NumCast,
+{
+    use num_traits::NumCast;
+    const R_COEFF: f64 = 0.299;
+    const G_COEFF: f64 = 0.587;
+    const B_COEFF: f64 = 0.114;
+    let f = |v: T| -> f64 { NumCast::from(v).unwrap_or(0.0) };
+    let luma = R_COEFF * f(r) + G_COEFF * f(g) + B_COEFF * f(b);
+    let value = if matches!(T::DTYPE, DType::F32 | DType::F64) {
+        luma
+    } else {
+        clamp_for_dtype(luma, T::DTYPE)
+    };
+    NumCast::from(value).unwrap_or(T::default())
 }
 
 /// Applies an image operation to a buffer.
@@ -1257,43 +729,46 @@ pub(crate) fn apply_image_inner(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
     result
 }
 
-/// SIMD-friendly threshold implementation for contiguous u8 data.
-///
-/// Processes in chunks of 32 bytes (256 bits = AVX) to enable auto-vectorization.
-/// The compiler can vectorize the comparison and conditional select operations.
+/// u8 threshold over packed rows: `255` where a pixel exceeds `thresh`,
+/// else `0`, one output row per input row.
 #[cfg(feature = "image_interop")]
-#[inline]
-fn threshold_simd(src: &[u8], thresh: u8) -> Vec<u8> {
-    let count = src.len();
-    let mut new_data: Vec<u8> = Vec::with_capacity(count);
+#[derive(Clone)]
+struct ThresholdU8<'a> {
+    rows: &'a [&'a [u8]],
+    width: usize,
+    thresh: u8,
+}
 
-    // Process in chunks of 32 for SIMD (u8 x 32 = 256 bits = AVX)
-    const CHUNK_SIZE: usize = 32;
-    let chunks = count / CHUNK_SIZE;
-    let remainder = count % CHUNK_SIZE;
+#[cfg(feature = "image_interop")]
+impl SimdKernel for ThresholdU8<'_> {
+    type Output = Vec<u8>;
 
-    // Process main chunks - compiler can auto-vectorize this pattern
-    for chunk_idx in 0..chunks {
-        let base = chunk_idx * CHUNK_SIZE;
-        let chunk = &src[base..base + CHUNK_SIZE];
+    #[inline(always)]
+    fn run(self) -> Vec<u8> {
+        let thresh = self.thresh;
+        map_pixel_rows::<u8, u8, 1>(
+            self.rows,
+            self.width,
+            |&[p]| if p > thresh { 255 } else { 0 },
+        )
+    }
+}
 
-        // Fixed-size array enables SIMD optimization
-        let mut out = [0u8; CHUNK_SIZE];
-        for (i, &p) in chunk.iter().enumerate() {
-            // Simple comparison that vectorizes well
-            out[i] = if p > thresh { 255 } else { 0 };
+/// u8 threshold of a buffer written in place (see [`ThresholdU8`]).
+#[cfg(feature = "image_interop")]
+struct ThresholdU8InPlace {
+    thresh: u8,
+}
+
+#[cfg(feature = "image_interop")]
+impl SimdKernelMut<u8> for ThresholdU8InPlace {
+    #[inline(always)]
+    fn run_mut(&self, data: &mut [u8]) {
+        let thresh = self.thresh;
+        for p in data.iter_mut() {
+            *p = if *p > thresh { 255 } else { 0 };
         }
-        new_data.extend_from_slice(&out);
     }
-
-    // Handle remainder elements
-    let remainder_start = chunks * CHUNK_SIZE;
-    for i in 0..remainder {
-        let p = src[remainder_start + i];
-        new_data.push(if p > thresh { 255 } else { 0 });
-    }
-
-    new_data
 }
 
 /// Dtype-generic threshold that compares each element against `f64` threshold.
@@ -1302,10 +777,10 @@ fn threshold_simd(src: &[u8], thresh: u8) -> Vec<u8> {
 /// the threshold, else `0u8`. The output is always `Vec<u8>` regardless of
 /// input dtype.
 ///
-/// For U8 input where the threshold fits in u8 range, delegates to the
-/// SIMD-optimized `threshold_simd` fast path.
+/// For U8 input where the threshold fits in u8 range, runs the dispatched
+/// [`ThresholdU8`] kernel.
 #[cfg(feature = "image_interop")]
-fn threshold_generic(buf: ViewBuffer, thresh: f64) -> ViewBuffer {
+fn threshold_generic(mut buf: ViewBuffer, thresh: f64) -> ViewBuffer {
     let shape = buf.shape();
 
     // Validate: threshold only works on single-channel data
@@ -1319,37 +794,34 @@ fn threshold_generic(buf: ViewBuffer, thresh: f64) -> ViewBuffer {
 
     let dtype = buf.dtype();
 
-    // U8 SIMD fast path: when input is u8 and threshold fits in u8 range
+    // u8 fast path, when the threshold is inside the u8 range: `p > t` for
+    // an integer `p` is `p > floor(t)`. Packed rows (contiguous, a crop, a
+    // vertical flip) are read where they lie; other layouts are packed first.
     if dtype == DType::U8 && (0.0..=255.0).contains(&thresh) {
-        let thresh_u8 = thresh as u8;
-
-        // Try image view path for strided u8 data
-        if let Ok(view) = buf.as_image_view::<Luma<u8>>() {
-            let total_pixels = (view.width * view.height) as usize;
-            let mut new_data: Vec<u8> = Vec::with_capacity(total_pixels);
-
-            for y in 0..view.height {
-                let row_start = (y as usize) * view.row_stride;
-                let row_slice = &view.data[row_start..row_start + view.width as usize];
-                let thresholded = threshold_simd(row_slice, thresh_u8);
-                new_data.extend_from_slice(&thresholded);
-            }
-
-            // Threshold's shape contract is rank-preserving: a [H, W]
-            // input yields [H, W], a [H, W, 1] input yields [H, W, 1].
-            let out_shape = buf.shape().to_vec();
-            return ViewBuffer::from_vec(new_data).reshape(out_shape);
+        let thresh = thresh as u8;
+        // A buffer only this op reads is thresholded where it lies.
+        if let Some(data) = buf.unique_contiguous_mut::<u8>() {
+            dispatch_mut(&ThresholdU8InPlace { thresh }, data);
+            return buf;
         }
-
-        // Fallback contiguous u8 path
-        let contig_buf = if buf.layout.is_contiguous() {
-            buf
-        } else {
-            buf.to_contiguous()
+        let shape = crate::core::layout::Dims::from_slice(buf.shape());
+        let out = match buf.dense_rows::<u8>() {
+            Some(rows) => dispatch(ThresholdU8 {
+                rows: &rows,
+                width: shape[1],
+                thresh,
+            }),
+            None => {
+                let packed = buf.to_contiguous();
+                let all = packed.as_slice::<u8>();
+                dispatch(ThresholdU8 {
+                    rows: &[all],
+                    width: all.len(),
+                    thresh,
+                })
+            }
         };
-        let src_slice = contig_buf.as_slice::<u8>();
-        let new_data = threshold_simd(src_slice, thresh_u8);
-        return ViewBuffer::from_vec(new_data).reshape(contig_buf.shape().to_vec());
+        return ViewBuffer::from_vec_with_shape(out, shape);
     }
 
     // Generic path: dispatch by dtype, compare in f64 space
@@ -1382,7 +854,7 @@ where
         buf.to_contiguous()
     };
 
-    let out_shape = contig_buf.shape().to_vec();
+    let out_shape = crate::core::layout::Dims::from_slice(contig_buf.shape());
     let src_data: &[T] = contig_buf.as_slice::<T>();
 
     let new_data: Vec<u8> = src_data
@@ -1429,166 +901,204 @@ fn get_channel_count(shape: &[usize]) -> usize {
     }
 }
 
-/// Apply a 2D affine warp to a `ViewBuffer`.
-///
-/// Dispatches to `affine_warp_typed` based on the buffer's dtype.
-fn apply_affine_warp(buf: ViewBuffer, params: crate::ops::affine::AffineParams) -> ViewBuffer {
-    let shape = buf.shape();
-    if shape.len() < 2 {
-        return buf;
+/// Grayscale and threshold against independent scalar references, over every
+/// layout the kernels read differently: contiguous, cropped (dense rows with
+/// a row stride), vertically flipped (negative row stride), horizontally
+/// flipped and transposed (not dense rows, so materialised or walked per
+/// pixel). Odd widths put a remainder after every vector loop.
+#[cfg(all(test, feature = "image_interop"))]
+mod grayscale_threshold_parity_tests {
+    use super::apply_image_inner;
+    use crate::core::buffer::ViewBuffer;
+    use crate::core::dtype::DType;
+    use crate::ops::{ImageOp, ImageOpKind};
+
+    const SIZES: [(usize, usize); 5] = [(1, 1), (3, 5), (7, 33), (16, 17), (9, 64)];
+
+    /// Pseudo-random bytes (an LCG's high bits). An arithmetic sequence such
+    /// as `(i * 7919) % 256` correlates neighbouring channels so strongly
+    /// that no pixel of it lands on a rounding boundary of the luma sum.
+    fn pattern(len: usize) -> Vec<u8> {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        (0..len)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                (state >> 56) as u8
+            })
+            .collect()
     }
 
-    let dtype = buf.dtype();
-    match dtype {
-        DType::U8 => affine_warp_typed::<u8>(buf, &params),
-        DType::I8 => affine_warp_typed::<i8>(buf, &params),
-        DType::U16 => affine_warp_typed::<u16>(buf, &params),
-        DType::I16 => affine_warp_typed::<i16>(buf, &params),
-        DType::U32 => affine_warp_typed::<u32>(buf, &params),
-        DType::I32 => affine_warp_typed::<i32>(buf, &params),
-        DType::F32 => affine_warp_typed::<f32>(buf, &params),
-        DType::F64 => affine_warp_typed::<f64>(buf, &params),
-        DType::U64 => affine_warp_typed::<u64>(buf, &params),
-        DType::I64 => affine_warp_typed::<i64>(buf, &params),
-    }
-}
-
-/// Typed affine warp: bilinear or nearest interpolation in `f64` arithmetic.
-fn affine_warp_typed<T>(buf: ViewBuffer, params: &crate::ops::affine::AffineParams) -> ViewBuffer
-where
-    T: crate::core::dtype::ViewType + Default + num_traits::NumCast,
-{
-    use crate::ops::affine::InterpolationType;
-    use num_traits::NumCast;
-
-    let shape = buf.shape();
-    let in_h = shape[0];
-    let in_w = shape[1];
-    let channels = shape.get(2).copied().unwrap_or(1);
-    // Whether the input carried an explicit channel axis, as distinct from a
-    // channel *count* of 1: `[H, W]` and `[H, W, 1]` have the same count but
-    // different ranks, and the output must keep whichever the input had.
-    let has_channel_axis = shape.len() >= 3;
-
-    let out_h = params.output_height as usize;
-    let out_w = params.output_width as usize;
-
-    // The user-facing matrix follows OpenCV convention (forward mapping).
-    // Invert the 2x3 matrix for inverse-mapping interpolation.
-    let [a_fwd, b_fwd, tx_fwd, c_fwd, d_fwd, ty_fwd] = params.matrix;
-    // A singular matrix is rejected where the user supplies it (the plugin's
-    // `warp_affine` arm, via `AffineParams::is_invertible`), so it cannot reach
-    // here. This used to substitute the identity instead, which handed back the
-    // input and reported a transform that had not happened — a fallback that
-    // hid the one case inverse mapping cannot express. `debug_assert` pins the
-    // invariant at its consumer without a release-build branch; the arithmetic
-    // below has no other way to fail.
-    debug_assert!(
-        params.is_invertible(),
-        "affine warp reached the runner with a singular matrix (det = {}); \
-         invertibility is enforced when the matrix is accepted",
-        params.determinant()
-    );
-    let inv_det = 1.0 / params.determinant();
-    let a = d_fwd * inv_det;
-    let b = -b_fwd * inv_det;
-    let c = -c_fwd * inv_det;
-    let d = a_fwd * inv_det;
-    let tx = -(a * tx_fwd + b * ty_fwd);
-    let ty = -(c * tx_fwd + d * ty_fwd);
-
-    let contig_buf = if buf.layout.is_contiguous() {
-        buf
-    } else {
-        buf.to_contiguous()
-    };
-    let src_data: &[T] = contig_buf.as_slice::<T>();
-
-    let output_size = out_h * out_w * channels;
-    let border_val: T = NumCast::from(params.border_value).unwrap_or(T::default());
-    let mut dst_data: Vec<T> = vec![border_val; output_size];
-
-    let is_float = matches!(T::DTYPE, DType::F32 | DType::F64);
-
-    for y_dst in 0..out_h {
-        for x_dst in 0..out_w {
-            let x_src = a * x_dst as f64 + b * y_dst as f64 + tx;
-            let y_src = c * x_dst as f64 + d * y_dst as f64 + ty;
-
-            match params.interpolation {
-                InterpolationType::Nearest => {
-                    let sx = x_src.round() as i64;
-                    let sy = y_src.round() as i64;
-                    if sx >= 0 && sy >= 0 && (sx as usize) < in_w && (sy as usize) < in_h {
-                        let src_idx = (sy as usize * in_w + sx as usize) * channels;
-                        let dst_idx = (y_dst * out_w + x_dst) * channels;
-                        dst_data[dst_idx..dst_idx + channels]
-                            .copy_from_slice(&src_data[src_idx..src_idx + channels]);
-                    }
-                }
-                InterpolationType::Bilinear => {
-                    let x0 = x_src.floor() as i64;
-                    let y0 = y_src.floor() as i64;
-                    let x1 = x0 + 1;
-                    let y1 = y0 + 1;
-
-                    // Fully out of bounds — dst already filled with border_val
-                    if x1 < 0 || y1 < 0 || x0 >= in_w as i64 || y0 >= in_h as i64 {
-                        continue;
-                    }
-
-                    let dx = x_src - x0 as f64;
-                    let dy = y_src - y0 as f64;
-
-                    let bv: f64 = params.border_value;
-
-                    let in_bounds = |px: i64, py: i64| -> bool {
-                        px >= 0 && py >= 0 && (px as usize) < in_w && (py as usize) < in_h
-                    };
-
-                    let dst_idx = (y_dst * out_w + x_dst) * channels;
-                    for ch in 0..channels {
-                        let sample = |px: i64, py: i64| -> f64 {
-                            if in_bounds(px, py) {
-                                let idx = (py as usize * in_w + px as usize) * channels + ch;
-                                NumCast::from(src_data[idx]).unwrap_or(bv)
-                            } else {
-                                bv
-                            }
-                        };
-
-                        let v00 = sample(x0, y0);
-                        let v10 = sample(x1, y0);
-                        let v01 = sample(x0, y1);
-                        let v11 = sample(x1, y1);
-
-                        let v0 = v00 * (1.0 - dx) + v10 * dx;
-                        let v1 = v01 * (1.0 - dx) + v11 * dx;
-                        let v = v0 * (1.0 - dy) + v1 * dy;
-
-                        let clamped = if is_float {
-                            v
-                        } else {
-                            clamp_for_dtype(v, T::DTYPE)
-                        };
-                        dst_data[dst_idx + ch] = NumCast::from(clamped).unwrap_or(T::default());
-                    }
+    /// The u16 fixed-point luma equals the u32 formula on every RGB triple.
+    #[test]
+    fn luma_u8_matches_the_u32_formula_on_every_pixel() {
+        for r in 0..=255u8 {
+            for g in 0..=255u8 {
+                for b in 0..=255u8 {
+                    let (r32, g32, b32) = (u32::from(r), u32::from(g), u32::from(b));
+                    let expected = ((77 * r32 + 150 * g32 + 29 * b32 + 128) >> 8) as u8;
+                    assert_eq!(super::luma_u8(r, g, b), expected, "({r}, {g}, {b})");
                 }
             }
         }
     }
 
-    // Mirror `ComputeOp::Affine`'s `shape`, which replaces H and W and
-    // leaves the rest of the input shape alone. Collapsing a `[H, W, 1]` input
-    // to `[H, W]` here contradicted that contract, so a single-channel affine
-    // planned rank 3 and produced rank 2.
-    let output_shape = if has_channel_axis {
-        vec![out_h, out_w, channels]
-    } else {
-        vec![out_h, out_w]
-    };
+    /// The layouts a `[h, w, c]` (or `[h, w]`) buffer reaches a kernel in,
+    /// each a view over a larger or reordered parent.
+    fn layouts(parent: &ViewBuffer) -> Vec<(&'static str, ViewBuffer)> {
+        let shape = crate::core::layout::Dims::from_slice(parent.shape());
+        let (h, w) = (shape[0], shape[1]);
+        let mut out = vec![
+            ("contiguous", parent.clone()),
+            ("flip_v", parent.flip(&[0])),
+            ("flip_h", parent.flip(&[1])),
+        ];
+        if h > 2 && w > 2 {
+            let mut start = vec![1, 1];
+            let mut end = vec![h - 1, w - 1];
+            if shape.len() == 3 {
+                start.push(0);
+                end.push(shape[2]);
+            }
+            out.push(("crop", parent.slice(&start, &end)));
+        }
+        let mut perm: Vec<usize> = vec![1, 0];
+        if shape.len() == 3 {
+            perm.push(2);
+        }
+        out.push(("transpose", parent.permute(&perm)));
+        out
+    }
 
-    ViewBuffer::from_vec(dst_data).reshape(output_shape)
+    fn run(buf: ViewBuffer, kind: ImageOpKind) -> ViewBuffer {
+        apply_image_inner(buf, ImageOp { kind })
+    }
+
+    fn reference_luma_u8(p: &[u8]) -> u8 {
+        if p.len() == 2 {
+            return p[0];
+        }
+        let (r, g, b) = (u32::from(p[0]), u32::from(p[1]), u32::from(p[2]));
+        ((77 * r + 150 * g + 29 * b + 128) >> 8) as u8
+    }
+
+    #[test]
+    fn u8_grayscale_matches_the_fixed_point_reference() {
+        for (h, w) in SIZES {
+            for c in [2usize, 3, 4] {
+                let parent = ViewBuffer::from_vec_with_shape(pattern(h * w * c), vec![h, w, c]);
+                for (layout, view) in layouts(&parent) {
+                    let packed = view.to_contiguous();
+                    let expected: Vec<u8> = packed
+                        .as_slice::<u8>()
+                        .chunks_exact(c)
+                        .map(reference_luma_u8)
+                        .collect();
+                    let got = run(view.clone(), ImageOpKind::Grayscale);
+                    let (vh, vw) = (view.shape()[0], view.shape()[1]);
+                    assert_eq!(got.shape(), &[vh, vw, 1], "{layout} {h}x{w}x{c}");
+                    assert_eq!(
+                        got.to_contiguous().as_slice::<u8>(),
+                        &expected[..],
+                        "{layout} {h}x{w}x{c}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Non-u8 grayscale computes BT.601 in f64 and converts back, rounding
+    /// and clamping integer targets.
+    #[test]
+    fn typed_grayscale_matches_the_f64_reference() {
+        for (h, w) in SIZES {
+            for c in [3usize, 4] {
+                let src: Vec<f32> = pattern(h * w * c)
+                    .iter()
+                    .map(|&v| f32::from(v) * 1.37 - 20.25)
+                    .collect();
+                let parent = ViewBuffer::from_vec_with_shape(src, vec![h, w, c]);
+                for (layout, view) in layouts(&parent) {
+                    let packed = view.to_contiguous();
+                    let expected: Vec<f32> = packed
+                        .as_slice::<f32>()
+                        .chunks_exact(c)
+                        .map(|p| {
+                            (0.299 * f64::from(p[0])
+                                + 0.587 * f64::from(p[1])
+                                + 0.114 * f64::from(p[2])) as f32
+                        })
+                        .collect();
+                    let got = run(view, ImageOpKind::Grayscale);
+                    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                    assert_eq!(
+                        bits(got.to_contiguous().as_slice::<f32>()),
+                        bits(&expected),
+                        "{layout} {h}x{w}x{c}"
+                    );
+                }
+                let u16s: Vec<u16> = pattern(h * w * c)
+                    .iter()
+                    .map(|&v| u16::from(v) * 257)
+                    .collect();
+                let parent = ViewBuffer::from_vec_with_shape(u16s.clone(), vec![h, w, c]);
+                let expected: Vec<u16> = u16s
+                    .chunks_exact(c)
+                    .map(|p| {
+                        let l = 0.299 * f64::from(p[0])
+                            + 0.587 * f64::from(p[1])
+                            + 0.114 * f64::from(p[2]);
+                        l.round().clamp(0.0, 65535.0) as u16
+                    })
+                    .collect();
+                let got = run(parent, ImageOpKind::Grayscale);
+                assert_eq!(got.as_slice::<u16>(), &expected[..], "u16 {h}x{w}x{c}");
+            }
+        }
+    }
+
+    /// A gray + alpha image's grayscale is its gray channel, for every dtype:
+    /// the u8 kernel always did this, while the typed one computed BT.601
+    /// over (gray, alpha, alpha), mixing opacity into intensity.
+    #[test]
+    fn gray_alpha_grayscale_is_the_gray_channel_for_every_dtype() {
+        let gray_alpha: Vec<u16> = vec![1000, 65535, 20, 0, 40000, 7];
+        let buf = ViewBuffer::from_vec_with_shape(gray_alpha, vec![1, 3, 2]);
+        let got = run(buf, ImageOpKind::Grayscale);
+        assert_eq!(got.as_slice::<u16>(), &[1000, 20, 40000]);
+        let buf = ViewBuffer::from_vec_with_shape(vec![0.25f32, 1.0, 0.5, 0.0], vec![2, 1, 2]);
+        let got = run(buf, ImageOpKind::Grayscale);
+        assert_eq!(got.as_slice::<f32>(), &[0.25, 0.5]);
+    }
+
+    #[test]
+    fn threshold_matches_the_comparison_reference() {
+        for (h, w) in SIZES {
+            for rank3 in [false, true] {
+                let shape = if rank3 { vec![h, w, 1] } else { vec![h, w] };
+                let parent = ViewBuffer::from_vec_with_shape(pattern(h * w), shape);
+                for (layout, view) in layouts(&parent) {
+                    let packed = view.to_contiguous();
+                    for t in [-1.0f64, 0.0, 127.5, 128.0, 254.9, 255.0, 300.0] {
+                        let expected: Vec<u8> = packed
+                            .as_slice::<u8>()
+                            .iter()
+                            .map(|&v| if f64::from(v) > t { 255 } else { 0 })
+                            .collect();
+                        let got = run(view.clone(), ImageOpKind::Threshold { value: t });
+                        assert_eq!(got.shape(), view.shape(), "{layout} rank3={rank3}");
+                        assert_eq!(got.dtype(), DType::U8);
+                        assert_eq!(
+                            got.to_contiguous().as_slice::<u8>(),
+                            &expected[..],
+                            "{layout} {h}x{w} rank3={rank3} t={t}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Clamp an `f64` value to the representable range of the given integer `DType`.
@@ -1596,7 +1106,7 @@ where
 /// `#[inline(always)]`: hot loops call this with a compile-time-constant
 /// dtype from monomorphized contexts, so inlining folds the match away.
 #[inline(always)]
-fn clamp_for_dtype(v: f64, dtype: DType) -> f64 {
+pub(super) fn clamp_for_dtype(v: f64, dtype: DType) -> f64 {
     match dtype {
         // Round before clamping so that e.g. 127.9999 → 128, not 127.
         // NumCast::from truncates (floor) for positive floats, so without rounding
@@ -1747,51 +1257,254 @@ fn gaussian_kernel_1d(sigma: f32) -> Vec<f32> {
 /// (`BLUR_HORIZ_BUF`) that grows to fit the largest image seen per thread and
 /// is never shrunk — zero allocator round-trip on warm paths.
 #[cfg(feature = "image_interop")]
-/// The separable Gaussian blur, dispatched once per call to an AVX2 build on
-/// x86_64 CPUs that have it (CR-35).
-///
-/// Published wheels target baseline x86-64 (SSE2), and blur is the one kernel
-/// measured to gain from AVX2 (~1.4x at `x86-64-v3`). The gain comes from the
-/// whole function — conversion, both passes, the output clamp — compiled for
-/// AVX2, so the whole body is duplicated, not one inner loop (dispatching per
-/// row-sized axpy measured *slower* than baseline). Only `avx2` is enabled,
-/// not `fma`: Rust never contracts `a * b + c` into a fused multiply-add by
-/// itself, so both builds perform identical IEEE operations and the output is
-/// bit-identical on every CPU (`blur_dispatch_is_bit_identical`).
+/// The separable Gaussian blur, run through [`dispatch`] so the whole body
+/// (conversion, both passes, the output clamp) has an AVX2 build (CR-35:
+/// ~1.4x over the wheels' SSE2 baseline; dispatching only the row axpy
+/// measured slower).
 fn separable_gaussian_blur_typed<T>(contig_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
 where
-    T: crate::core::dtype::ViewType + Default + Copy + num_traits::NumCast,
+    T: crate::core::dtype::ViewType + Default + Copy + CastFrom<f32>,
+    f32: CastFrom<T>,
 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("avx2") {
-            // SAFETY: the CPU supports AVX2, checked just above.
-            return unsafe { separable_gaussian_blur_avx2::<T>(contig_buf, sigma) };
+    dispatch(SeparableBlur::<T> {
+        buf: contig_buf,
+        sigma,
+        _elem: std::marker::PhantomData,
+    })
+}
+
+#[cfg(feature = "image_interop")]
+struct SeparableBlur<'a, T> {
+    buf: &'a ViewBuffer,
+    sigma: f32,
+    _elem: std::marker::PhantomData<T>,
+}
+
+#[cfg(feature = "image_interop")]
+// Derived `Clone` would demand `T: Clone` of the marker's parameter.
+impl<T> Clone for SeparableBlur<'_, T> {
+    fn clone(&self) -> Self {
+        SeparableBlur {
+            buf: self.buf,
+            sigma: self.sigma,
+            _elem: std::marker::PhantomData,
         }
     }
-    separable_gaussian_blur_body::<T>(contig_buf, sigma)
 }
 
-/// [`separable_gaussian_blur_body`] compiled with AVX2 enabled.
-///
-/// # Safety
-/// The caller must have checked that the CPU supports AVX2.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn separable_gaussian_blur_avx2<T>(contig_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
+#[cfg(feature = "image_interop")]
+impl<T> SimdKernel for SeparableBlur<'_, T>
 where
-    T: crate::core::dtype::ViewType + Default + Copy + num_traits::NumCast,
+    T: crate::core::dtype::ViewType + Default + Copy + CastFrom<f32>,
+    f32: CastFrom<T>,
 {
-    separable_gaussian_blur_body::<T>(contig_buf, sigma)
+    type Output = ViewBuffer;
+
+    #[inline(always)]
+    fn run(self) -> ViewBuffer {
+        separable_gaussian_blur_body::<T>(self.buf, self.sigma)
+    }
 }
 
+#[cfg(feature = "image_interop")]
 #[cfg(test)]
 mod blur_dispatch_tests {
     use super::{separable_gaussian_blur_body, separable_gaussian_blur_typed};
     use crate::core::buffer::ViewBuffer;
 
+    use super::{clamp_for_dtype, gaussian_kernel_1d, DType, ImageOp, ImageOpKind, BLUR_HORIZ_BUF};
+
+    /// The blur as it was before Phase 8, kept verbatim as the parity oracle.
+    pub(super) fn reference_blur_body<T>(contig_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
+    where
+        T: crate::core::dtype::ViewType + Default + Copy + num_traits::NumCast,
+    {
+        use num_traits::NumCast;
+
+        let shape = contig_buf.shape();
+        let h = shape[0];
+        let w = shape[1];
+        let c = shape.get(2).copied().unwrap_or(1);
+        let n = h * w * c;
+        let wc = w * c;
+
+        let kernel = gaussian_kernel_1d(sigma);
+        let radius = kernel.len() / 2;
+        let src: &[T] = contig_buf.as_slice::<T>();
+
+        // ── Convert input to f32 once ────────────────────────────────────────
+        let mut input_f32: Vec<f32> = Vec::with_capacity(n);
+        input_f32.extend(src.iter().map(|&v| {
+            let v: f32 = NumCast::from(v).unwrap_or(0.0);
+            v
+        }));
+
+        // The scratch slab is taken out of the thread-local for the duration of
+        // the call rather than used inside a `with` closure: the passes must be in
+        // this function's own body to be compiled with its target features (a
+        // closure is a separate function and does not inherit them).
+        let mut slab = BLUR_HORIZ_BUF.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+        if slab.len() < n {
+            slab.resize(n, 0.0f32);
+        }
+        let result = {
+            let horiz = &mut slab[..n];
+
+            // ── Horizontal pass (f32 → f32) ──────────────────────────────────
+            for y in 0..h {
+                let row_in = &input_f32[y * wc..(y + 1) * wc];
+                let row_out = &mut horiz[y * wc..(y + 1) * wc];
+
+                if w <= 2 * radius {
+                    // Image narrower than the kernel: clamped gather everywhere.
+                    for x in 0..w {
+                        for ch in 0..c {
+                            let mut sum = 0.0f32;
+                            for (ki, &kw) in kernel.iter().enumerate() {
+                                let sx = (x as i64 + ki as i64 - radius as i64)
+                                    .clamp(0, w as i64 - 1)
+                                    as usize;
+                                sum += kw * row_in[sx * c + ch];
+                            }
+                            row_out[x * c + ch] = sum;
+                        }
+                    }
+                    continue;
+                }
+
+                // Interior: per-tap shifted-slice multiply-add over contiguous
+                // memory — the inner zip vectorizes.
+                let lo = radius * c;
+                let hi = (w - radius) * c;
+                row_out[lo..hi].fill(0.0);
+                for (ki, &kw) in kernel.iter().enumerate() {
+                    let shift = (ki as i64 - radius as i64) * c as i64;
+                    let src_start = (lo as i64 + shift) as usize;
+                    let src_slice = &row_in[src_start..src_start + (hi - lo)];
+                    for (o, &v) in row_out[lo..hi].iter_mut().zip(src_slice) {
+                        *o += kw * v;
+                    }
+                }
+                // Borders: clamped gather for `radius` columns on each side.
+                for x in (0..radius).chain(w - radius..w) {
+                    for ch in 0..c {
+                        let mut sum = 0.0f32;
+                        for (ki, &kw) in kernel.iter().enumerate() {
+                            let sx = (x as i64 + ki as i64 - radius as i64).clamp(0, w as i64 - 1)
+                                as usize;
+                            sum += kw * row_in[sx * c + ch];
+                        }
+                        row_out[x * c + ch] = sum;
+                    }
+                }
+            }
+
+            // ── Vertical pass (f32 → f32 row accumulation) → T ───────────────
+            let is_float = matches!(T::DTYPE, DType::F32 | DType::F64);
+            let mut acc_row = vec![0.0f32; wc];
+            let mut out: Vec<T> = Vec::with_capacity(n);
+            for y in 0..h {
+                acc_row.fill(0.0);
+                for (ki, &kw) in kernel.iter().enumerate() {
+                    let sy = (y as i64 + ki as i64 - radius as i64).clamp(0, h as i64 - 1) as usize;
+                    let src_row = &horiz[sy * wc..(sy + 1) * wc];
+                    for (o, &v) in acc_row.iter_mut().zip(src_row) {
+                        *o += kw * v;
+                    }
+                }
+                if is_float {
+                    out.extend(
+                        acc_row
+                            .iter()
+                            .map(|&v| NumCast::from(v).unwrap_or(T::default())),
+                    );
+                } else {
+                    out.extend(acc_row.iter().map(|&v| {
+                        NumCast::from(clamp_for_dtype(v as f64, T::DTYPE)).unwrap_or(T::default())
+                    }));
+                }
+            }
+
+            ViewBuffer::from_vec_with_shape(out, shape.to_vec())
+        };
+        BLUR_HORIZ_BUF.with(|cell| *cell.borrow_mut() = slab);
+        result
+    }
+
+    /// Every dtype the typed blur runs (others cast to f32 around it), with
+    /// NaN, infinities and the integer extremes, over 1-5 channels, sizes
+    /// down to narrower than the kernel, and several sigmas: the blur equals
+    /// the pre-Phase-8 kernel byte for byte.
+    #[test]
+    fn blur_matches_the_reference_kernel_bit_for_bit() {
+        let shapes: [&[usize]; 7] = [
+            &[1, 1],
+            &[3, 2, 3],
+            &[9, 5, 1],
+            &[16, 23],
+            &[20, 17, 2],
+            &[11, 30, 4],
+            &[7, 13, 5],
+        ];
+        let wave = |i: usize| ((i * 7919 + 13) % 256) as f32;
+        for shape in shapes {
+            let n: usize = shape.iter().product();
+            let u8s: Vec<u8> = (0..n)
+                .map(|i| if i % 11 == 0 { 255 } else { wave(i) as u8 })
+                .collect();
+            let u16s: Vec<u16> = (0..n)
+                .map(|i| {
+                    if i % 7 == 0 {
+                        u16::MAX
+                    } else {
+                        (wave(i) * 251.0) as u16
+                    }
+                })
+                .collect();
+            let f32s: Vec<f32> = (0..n)
+                .map(|i| match i % 17 {
+                    3 => f32::NAN,
+                    8 => f32::INFINITY,
+                    12 => -0.0,
+                    _ => wave(i) / 7.0 - 11.0,
+                })
+                .collect();
+            let bufs = [
+                ViewBuffer::from_vec_with_shape(u8s, shape.to_vec()),
+                ViewBuffer::from_vec_with_shape(u16s, shape.to_vec()),
+                ViewBuffer::from_vec_with_shape(f32s, shape.to_vec()),
+            ];
+            for buf in &bufs {
+                for sigma in [0.3f32, 0.8, 2.0, 5.5] {
+                    let got = super::apply_image_inner(
+                        buf.clone(),
+                        ImageOp {
+                            kind: ImageOpKind::Blur { sigma },
+                        },
+                    );
+                    let want = match buf.dtype() {
+                        DType::U8 => reference_blur_body::<u8>(buf, sigma),
+                        DType::U16 => reference_blur_body::<u16>(buf, sigma),
+                        _ => reference_blur_body::<f32>(buf, sigma),
+                    };
+                    let bytes = |b: &ViewBuffer| {
+                        use crate::core::dispatch::KernelOutput;
+                        b.output_bytes().to_vec()
+                    };
+                    assert_eq!(got.shape(), want.shape());
+                    assert!(
+                        bytes(&got) == bytes(&want),
+                        "{:?} {shape:?} sigma {sigma}: the blur differs from the reference",
+                        buf.dtype()
+                    );
+                }
+            }
+        }
+    }
+
     /// The dispatched blur (AVX2 build when the CPU has it) and the portable
-    /// build agree bit for bit.
+    /// build agree bit for bit. `dispatch` asserts the same in every debug
+    /// build; this pins it on odd sizes and several radii.
     #[test]
     fn blur_dispatch_is_bit_identical() {
         let (h, w, c) = (37usize, 53usize, 3usize);
@@ -1822,10 +1535,9 @@ mod blur_dispatch_tests {
 #[inline(always)]
 fn separable_gaussian_blur_body<T>(contig_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
 where
-    T: crate::core::dtype::ViewType + Default + Copy + num_traits::NumCast,
+    T: crate::core::dtype::ViewType + Default + Copy + CastFrom<f32>,
+    f32: CastFrom<T>,
 {
-    use num_traits::NumCast;
-
     let shape = contig_buf.shape();
     let h = shape[0];
     let w = shape[1];
@@ -1837,13 +1549,6 @@ where
     let radius = kernel.len() / 2;
     let src: &[T] = contig_buf.as_slice::<T>();
 
-    // ── Convert input to f32 once ────────────────────────────────────────
-    let mut input_f32: Vec<f32> = Vec::with_capacity(n);
-    input_f32.extend(src.iter().map(|&v| {
-        let v: f32 = NumCast::from(v).unwrap_or(0.0);
-        v
-    }));
-
     // The scratch slab is taken out of the thread-local for the duration of
     // the call rather than used inside a `with` closure: the passes must be in
     // this function's own body to be compiled with its target features (a
@@ -1854,10 +1559,16 @@ where
     }
     let result = {
         let horiz = &mut slab[..n];
+        // One input row in f32, converted as the horizontal pass reaches it:
+        // converting the whole image first allocated and wrote 4 bytes per
+        // element that were read once.
+        let mut row_in = vec![0.0f32; wc];
 
-        // ── Horizontal pass (f32 → f32) ──────────────────────────────────
+        // ── Horizontal pass (T → f32 row → f32) ─────────────────────────
         for y in 0..h {
-            let row_in = &input_f32[y * wc..(y + 1) * wc];
+            for (dst, &v) in row_in.iter_mut().zip(&src[y * wc..(y + 1) * wc]) {
+                *dst = f32::cast_from(v);
+            }
             let row_out = &mut horiz[y * wc..(y + 1) * wc];
 
             if w <= 2 * radius {
@@ -1904,7 +1615,7 @@ where
         }
 
         // ── Vertical pass (f32 → f32 row accumulation) → T ───────────────
-        let is_float = matches!(T::DTYPE, DType::F32 | DType::F64);
+        // Stored through M5: round-then-saturate to an integer, as is to f32.
         let mut acc_row = vec![0.0f32; wc];
         let mut out: Vec<T> = Vec::with_capacity(n);
         for y in 0..h {
@@ -1916,17 +1627,7 @@ where
                     *o += kw * v;
                 }
             }
-            if is_float {
-                out.extend(
-                    acc_row
-                        .iter()
-                        .map(|&v| NumCast::from(v).unwrap_or(T::default())),
-                );
-            } else {
-                out.extend(acc_row.iter().map(|&v| {
-                    NumCast::from(clamp_for_dtype(v as f64, T::DTYPE)).unwrap_or(T::default())
-                }));
-            }
+            out.extend(acc_row.iter().map(|&v| T::cast_from(v)));
         }
 
         ViewBuffer::from_vec_with_shape(out, shape.to_vec())
@@ -1959,11 +1660,7 @@ fn apply_erode(buf: ViewBuffer, ksize: u32, iterations: u32) -> ViewBuffer {
              Consider using .grayscale() or .threshold() first."
         );
     }
-    let mut result = buf;
-    for _ in 0..iterations {
-        result = morph_minmax_pass(&result, ksize, MorphKind::Min);
-    }
-    result
+    morph_iterated(buf, ksize, iterations, MorphKind::Min)
 }
 
 /// Morphological dilation: output = local maximum over ksize×ksize neighborhood.
@@ -1981,11 +1678,35 @@ fn apply_dilate(buf: ViewBuffer, ksize: u32, iterations: u32) -> ViewBuffer {
              Consider using .grayscale() or .threshold() first."
         );
     }
-    let mut result = buf;
-    for _ in 0..iterations {
-        result = morph_minmax_pass(&result, ksize, MorphKind::Max);
+    morph_iterated(buf, ksize, iterations, MorphKind::Max)
+}
+
+/// `iterations` min (or max) passes of a `ksize` window.
+///
+/// For an integer dtype, **one** pass of radius `iterations * (ksize / 2)`.
+/// Growing a window by radius `r` and then by `r` again reaches every pixel
+/// within `2r` and nothing further, and the min of mins is the min over the
+/// union. That holds at the border too — replicating the edge clamps each
+/// step's index, and a clamp of a clamped interval is the clamp of the wider
+/// interval — and for the separable passes, since row and column minima
+/// commute. The taps are about the same in number; the passes over the whole
+/// image are what it saves.
+///
+/// A float dtype keeps the passes: its fold keeps a NaN incumbent, ignores a
+/// NaN candidate and keeps the incumbent of two equal signed zeros, so its
+/// result depends on the passes' structure, and one wide pass differs
+/// (`tests/morph_ref.rs`, NaN and signed-zero cases).
+#[cfg(feature = "image_interop")]
+fn morph_iterated(buf: ViewBuffer, ksize: u32, iterations: u32, kind: MorphKind) -> ViewBuffer {
+    let radius = (ksize / 2) as usize;
+    if matches!(buf.dtype(), DType::F32 | DType::F64) {
+        let mut result = buf;
+        for _ in 0..iterations {
+            result = morph_minmax_pass(&result, radius, kind);
+        }
+        return result;
     }
-    result
+    morph_minmax_pass(&buf, radius * iterations as usize, kind)
 }
 
 /// Morphological gradient: dilate(input) − erode(input), clamped to valid range.
@@ -2002,8 +1723,9 @@ fn apply_morph_gradient(buf: ViewBuffer, ksize: u32) -> ViewBuffer {
              Consider using .grayscale() or .threshold() first."
         );
     }
-    let dilated = morph_minmax_pass(&buf, ksize, MorphKind::Max);
-    let eroded = morph_minmax_pass(&buf, ksize, MorphKind::Min);
+    let radius = (ksize / 2) as usize;
+    let dilated = morph_minmax_pass(&buf, radius, MorphKind::Max);
+    let eroded = morph_minmax_pass(&buf, radius, MorphKind::Min);
 
     morph_subtract(&dilated, &eroded)
 }
@@ -2015,39 +1737,40 @@ enum MorphKind {
     Max,
 }
 
-/// Single-pass min or max filter over a ksize×ksize rectangular structuring element.
+/// Single-pass min or max filter over a `(2 * radius + 1)`-square
+/// rectangular structuring element.
 ///
 /// Uses a separable approach (row pass then column pass) for efficiency.
 /// Border handling: replicate edge pixels.
 #[cfg(feature = "image_interop")]
-fn morph_minmax_pass(buf: &ViewBuffer, ksize: u32, kind: MorphKind) -> ViewBuffer {
-    if ksize <= 1 {
+fn morph_minmax_pass(buf: &ViewBuffer, radius: usize, kind: MorphKind) -> ViewBuffer {
+    if radius == 0 {
         return buf.clone();
     }
     let dtype = buf.dtype();
     match dtype {
-        DType::U8 => morph_dispatch::<u8>(buf, ksize, kind),
-        DType::I8 => morph_dispatch::<i8>(buf, ksize, kind),
-        DType::U16 => morph_dispatch::<u16>(buf, ksize, kind),
-        DType::I16 => morph_dispatch::<i16>(buf, ksize, kind),
-        DType::U32 => morph_dispatch::<u32>(buf, ksize, kind),
-        DType::I32 => morph_dispatch::<i32>(buf, ksize, kind),
-        DType::F32 => morph_dispatch::<f32>(buf, ksize, kind),
-        DType::F64 => morph_dispatch::<f64>(buf, ksize, kind),
-        DType::U64 => morph_dispatch::<u64>(buf, ksize, kind),
-        DType::I64 => morph_dispatch::<i64>(buf, ksize, kind),
+        DType::U8 => morph_dispatch::<u8>(buf, radius, kind),
+        DType::I8 => morph_dispatch::<i8>(buf, radius, kind),
+        DType::U16 => morph_dispatch::<u16>(buf, radius, kind),
+        DType::I16 => morph_dispatch::<i16>(buf, radius, kind),
+        DType::U32 => morph_dispatch::<u32>(buf, radius, kind),
+        DType::I32 => morph_dispatch::<i32>(buf, radius, kind),
+        DType::F32 => morph_dispatch::<f32>(buf, radius, kind),
+        DType::F64 => morph_dispatch::<f64>(buf, radius, kind),
+        DType::U64 => morph_dispatch::<u64>(buf, radius, kind),
+        DType::I64 => morph_dispatch::<i64>(buf, radius, kind),
     }
 }
 
 /// Select the const-generic Min/Max instantiation for one element type.
 #[cfg(feature = "image_interop")]
-fn morph_dispatch<T>(buf: &ViewBuffer, ksize: u32, kind: MorphKind) -> ViewBuffer
+fn morph_dispatch<T>(buf: &ViewBuffer, radius: usize, kind: MorphKind) -> ViewBuffer
 where
     T: crate::core::dtype::ViewType + Default + Copy + PartialOrd,
 {
     match kind {
-        MorphKind::Min => morph_minmax_typed::<T, true>(buf, ksize),
-        MorphKind::Max => morph_minmax_typed::<T, false>(buf, ksize),
+        MorphKind::Min => morph_minmax_typed::<T, true>(buf, radius),
+        MorphKind::Max => morph_minmax_typed::<T, false>(buf, radius),
     }
 }
 
@@ -2089,7 +1812,7 @@ fn morph_select<T: PartialOrd + Copy, const IS_MIN: bool>(val: T, candidate: T) 
 ///
 /// Bit-exact vs the pre-split implementation (see tests/morph_ref.rs).
 #[cfg(feature = "image_interop")]
-fn morph_minmax_typed<T, const IS_MIN: bool>(buf: &ViewBuffer, ksize: u32) -> ViewBuffer
+fn morph_minmax_typed<T, const IS_MIN: bool>(buf: &ViewBuffer, radius: usize) -> ViewBuffer
 where
     T: crate::core::dtype::ViewType + Default + Copy + PartialOrd,
 {
@@ -2097,7 +1820,6 @@ where
     let shape = contig.shape();
     let h = shape[0];
     let w = shape[1];
-    let radius = (ksize / 2) as usize;
     let src: &[T] = contig.as_slice::<T>();
 
     // ── Row pass ─────────────────────────────────────────────────────────
@@ -2166,7 +1888,7 @@ fn morph_subtract(a: &ViewBuffer, b: &ViewBuffer) -> ViewBuffer {
     let dtype = a.dtype();
     let ca = a.to_contiguous();
     let cb = b.to_contiguous();
-    let shape = ca.shape().to_vec();
+    let shape = crate::core::layout::Dims::from_slice(ca.shape());
     let count = ca.layout.num_elements();
 
     match dtype {
@@ -2236,7 +1958,7 @@ fn morph_subtract(a: &ViewBuffer, b: &ViewBuffer) -> ViewBuffer {
 /// Output is U8 `[H, W, 1]`, 0 or 255.
 #[cfg(feature = "image_interop")]
 fn apply_canny(buf: ViewBuffer, low_threshold: f32, high_threshold: f32) -> ViewBuffer {
-    let shape = buf.shape().to_vec();
+    let shape = crate::core::layout::Dims::from_slice(buf.shape());
     let (h, w) = (shape[0], shape[1]);
     let channels = shape.get(2).copied().unwrap_or(1);
     let used = crate::ops::color::color_channels(channels);

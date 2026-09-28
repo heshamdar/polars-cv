@@ -151,7 +151,8 @@ pub enum ComputeOp<M: Mode = Exec> {
         /// Gamma value. <1 = brighter, >1 = darker, 1.0 = no change.
         gamma: M::V<f32>,
     },
-    /// Invert pixel values: `255 - pixel` for u8, `1.0 - pixel` for float [0,1].
+    /// Invert values, keeping the dtype: `MAX + MIN - x` for an integer
+    /// (`255 - x` for u8, `-1 - x` for a signed dtype), `1 - x` for a float.
     #[op(name = "invert", sample = {})]
     Invert,
     /// Negate every value (`-x`).
@@ -452,7 +453,10 @@ impl ComputeOp {
                 Rotation::Lattice(view) => ViewDto::View(view),
                 // The lattice rotations and the 0° no-op are exact
                 // permutations of the input pixels; `interpolation` and
-                // `border_value` apply only to the resampling branch.
+                // `border_value` apply only to the resampling branch. A
+                // `RotateAffine` of exactly 0° is how the identity is spelled:
+                // it returns its (packed) input, sharing its data, and never
+                // warps (`execution::warp::rotate`).
                 Rotation::Identity => ViewDto::Compute(ComputeOp::RotateAffine {
                     angle_deg: 0.0,
                     expand: false,

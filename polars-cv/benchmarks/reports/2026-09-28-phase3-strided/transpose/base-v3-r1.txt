@@ -1,0 +1,70 @@
+Gnuplot not found, using plotters backend
+Benchmarking materialize_transpose_u8/256
+Benchmarking materialize_transpose_u8/256: Warming up for 500.00 ms
+Benchmarking materialize_transpose_u8/256: Collecting 20 samples in estimated 2.0746 s (4830 iterations)
+Benchmarking materialize_transpose_u8/256: Analyzing
+materialize_transpose_u8/256
+                        time:   [375.04 µs 392.68 µs 413.08 µs]
+                        change: [+319.74% +364.40% +413.20%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+Benchmarking materialize_transpose_u8/512
+Benchmarking materialize_transpose_u8/512: Warming up for 500.00 ms
+Benchmarking materialize_transpose_u8/512: Collecting 20 samples in estimated 2.1807 s (1260 iterations)
+Benchmarking materialize_transpose_u8/512: Analyzing
+materialize_transpose_u8/512
+                        time:   [1.5822 ms 1.6121 ms 1.6489 ms]
+                        change: [+362.67% +391.15% +418.34%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 3 outliers among 20 measurements (15.00%)
+  2 (10.00%) high mild
+  1 (5.00%) high severe
+Benchmarking materialize_transpose_u8/1024
+Benchmarking materialize_transpose_u8/1024: Warming up for 500.00 ms
+
+Warning: Unable to complete 20 samples in 2.0s. You may wish to increase target time to 2.6s, enable flat sampling, or reduce sample count to 10.
+Benchmarking materialize_transpose_u8/1024: Collecting 20 samples in estimated 2.5519 s (210 iterations)
+Benchmarking materialize_transpose_u8/1024: Analyzing
+materialize_transpose_u8/1024
+                        time:   [11.845 ms 12.634 ms 13.591 ms]
+                        change: [+346.28% +384.62% +431.02%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+
+Benchmarking scale_f32_transposed/256
+Benchmarking scale_f32_transposed/256: Warming up for 500.00 ms
+Benchmarking scale_f32_transposed/256: Collecting 20 samples in estimated 2.1459 s (1470 iterations)
+Benchmarking scale_f32_transposed/256: Analyzing
+scale_f32_transposed/256
+                        time:   [1.2404 ms 1.2630 ms 1.2962 ms]
+                        change: [+515.98% +534.62% +552.08%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+Benchmarking scale_f32_transposed/512
+Benchmarking scale_f32_transposed/512: Warming up for 500.00 ms
+
+Warning: Unable to complete 20 samples in 2.0s. You may wish to increase target time to 2.4s, enable flat sampling, or reduce sample count to 10.
+Benchmarking scale_f32_transposed/512: Collecting 20 samples in estimated 2.4215 s (210 iterations)
+Benchmarking scale_f32_transposed/512: Analyzing
+scale_f32_transposed/512
+                        time:   [8.6257 ms 9.0831 ms 9.6986 ms]
+                        change: [+175.42% +202.75% +233.36%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking scale_f32_transposed/1024
+Benchmarking scale_f32_transposed/1024: Warming up for 500.00 ms
+Benchmarking scale_f32_transposed/1024: Collecting 20 samples in estimated 2.8334 s (40 iterations)
+Benchmarking scale_f32_transposed/1024: Analyzing
+scale_f32_transposed/1024
+                        time:   [58.133 ms 61.088 ms 64.714 ms]
+                        change: [+172.41% +187.59% +203.70%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 4 outliers among 20 measurements (20.00%)
+  3 (15.00%) high mild
+  1 (5.00%) high severe

@@ -3,6 +3,7 @@
 //! This crate provides expression functions for applying image and array
 //! processing pipelines to Polars DataFrame columns, powered by view-buffer.
 
+mod allocator;
 mod cloud;
 mod cloud_auth;
 mod contour;
@@ -58,6 +59,8 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // The Cargo profile it was built with (`debug`, `release`, `benchmark`):
     // benchmark results from two different profiles must not be compared.
     m.add("__build_profile__", env!("POLARS_CV_BUILD_PROFILE"))?;
+    // The allocator the plugin's allocations actually go to (CR-60).
+    m.add("__allocator__", allocator::allocator_name())?;
     m.add_class::<plan::State>()?;
     m.add_class::<plan::Plan>()?;
     m.add_function(wrap_pyfunction!(_plan_from_json, m)?)?;

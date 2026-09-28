@@ -439,24 +439,28 @@ impl<M: Mode> Op for ImageOp<M> {
     fn memory_effect(&self) -> MemoryEffect {
         match &self.kind {
             ImageOpKind::Threshold { .. } => MemoryEffect::StridePreserving,
-            // Resize uses fast_image_resize which requires contiguous input
-            ImageOpKind::Resize { .. } => MemoryEffect::RequiresContiguous,
+            // The resizes read rows packed within themselves (a crop, a
+            // vertical flip) where they lie and pack any other layout
+            // themselves (`resize_pixels`), so a planned materialize would
+            // only copy a view they can read.
+            ImageOpKind::Resize { .. }
+            | ImageOpKind::ResizeScale { .. }
+            | ImageOpKind::ResizeToHeight { .. }
+            | ImageOpKind::ResizeToWidth { .. }
+            | ImageOpKind::ResizeMax { .. }
+            | ImageOpKind::ResizeMin { .. }
+            | ImageOpKind::Letterbox { .. } => MemoryEffect::StridePreserving,
             ImageOpKind::Blur { .. } => MemoryEffect::RequiresContiguous,
-            // Grayscale changes shape (removes channel dim) so needs allocation
-            ImageOpKind::Grayscale => MemoryEffect::RequiresContiguous,
+            // Reads rows packed within themselves in place and packs any
+            // other layout itself (`grayscale_strided`).
+            ImageOpKind::Grayscale => MemoryEffect::StridePreserving,
             ImageOpKind::Canny { .. } => MemoryEffect::RequiresContiguous,
             ImageOpKind::HistogramEqualize => MemoryEffect::RequiresContiguous,
             ImageOpKind::Erode { .. } => MemoryEffect::RequiresContiguous,
             ImageOpKind::Dilate { .. } => MemoryEffect::RequiresContiguous,
             ImageOpKind::MorphGradient { .. } => MemoryEffect::RequiresContiguous,
-            ImageOpKind::ResizeScale { .. }
-            | ImageOpKind::ResizeToHeight { .. }
-            | ImageOpKind::ResizeToWidth { .. }
-            | ImageOpKind::ResizeMax { .. }
-            | ImageOpKind::ResizeMin { .. }
-            | ImageOpKind::Pad { .. }
+            ImageOpKind::Pad { .. }
             | ImageOpKind::PadToSize { .. }
-            | ImageOpKind::Letterbox { .. }
             | ImageOpKind::ChannelSwap { .. } => MemoryEffect::RequiresContiguous,
         }
     }

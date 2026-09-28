@@ -1724,7 +1724,8 @@ class _OpsMixin:
         )
 
     def invert(self) -> Pipeline:
-        """Invert pixel values: `255 - pixel` for u8, `1.0 - pixel` for float [0,1].
+        """Invert values, keeping the dtype: `MAX + MIN - x` for an integer
+        (`255 - x` for u8, `-1 - x` for a signed dtype), `1 - x` for a float.
 
         Domain: buffer → buffer
         """

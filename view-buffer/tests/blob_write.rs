@@ -21,7 +21,14 @@ fn cases() -> Vec<(&'static str, ViewBuffer)> {
         vec![8, 8],
     );
 
+    // Contiguous views over part of a larger buffer: the blob holds the
+    // view's elements, not the storage's.
+    let leading_rows = contiguous.slice(&[0, 0, 0], &[2, 8, 3]);
+    let middle_rows = contiguous.slice(&[2, 0, 0], &[4, 8, 3]);
+
     vec![
+        ("leading_rows_u8", leading_rows),
+        ("middle_rows_u8", middle_rows),
         ("contiguous_u8", contiguous),
         ("transposed_u8", transposed),
         ("f32_2d", f32_buf),

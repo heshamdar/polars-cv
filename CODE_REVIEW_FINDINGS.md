@@ -33,6 +33,8 @@ that section); CR-31 is a silent wrong-answer bug and should go first.
 The 2026-09-24 quality review opened **CR-41–CR-44** (P0: soundness, strict
 input handling, dev-loop and dependency metadata); all four are resolved.
 The typed-op-protocol work is tracked as **CR-45–CR-49**, all resolved in 0.29.0.
+The 2026-09-27 kernel performance work (`PERFORMANCE_PLAN.md`) is tracked from
+**CR-50** on.
 
 ---
 
@@ -1045,6 +1047,373 @@ entries here track status only.
   open after 0.29.0: node ids are still `uuid4` (`lazy.py` `_generate_node_id`, `_graph.py` CSE `shared_id`).
 
 ---
+
+## Performance review (2026-09-27)
+
+Kernel-level follow-up to CR-31–40, planned in `PERFORMANCE_PLAN.md` and measured
+by `view-buffer/benches/kernels.rs` (baseline:
+`polars-cv/benchmarks/reports/2026-09-27-kernel-baseline/`). One entry per
+phase of that plan, closed as each lands.
+
+### CR-54 — Wheels run most kernels without SIMD; float → int casts call `roundf` per element · `Resolved` · Medium (perf)
+
+> Filed as a second CR-50 in `bdce7ee`, which duplicated the existing CR-50
+> above; renumbered to the next free id.
+
+- **What was wrong:** the wheels target x86-64 (SSE2). There, `f32::round` is a
+  libcall per element, so every float → int cast (`cast`, a fused chain's
+  integer output) ran 2.1–2.2x slower than an AVX2 build. The u8 grayscale
+  loop pushed into a `Vec` and did not vectorise at all, on any target, and
+  the u8 threshold allocated a `Vec` per row for strided input. CR-35's
+  runtime dispatch covered blur only, as a hand-rolled pair of functions.
+- **Resolution:**
+  - `core::dispatch` (`SimdKernel` + `dispatch()`) is now the one way a kernel
+    gets an AVX2 build. Blur moved onto it.
+  - `core::convert` (`CastFrom` + `convert_slice`) is the one element-conversion
+    rule. `cast_to` and `finish_fused_output` both use it.
+  - Grayscale and threshold are dispatched kernels over `ViewBuffer::dense_rows`,
+    so contiguous, cropped and vertically flipped inputs are read where they lie.
+- **Guards:**
+  - In every debug build, `dispatch` asserts the two builds' outputs are
+    byte-identical (`the_parity_check_rejects_outputs_that_differ`).
+  - `convert::tests` was watched failing against a truncating rule.
+  - `grayscale_threshold_parity_tests`, including an exhaustive `luma_u8`
+    check, was watched failing against `+127` rounding, a nudged coefficient
+    and `>=`. Its first input pattern could not reach a rounding boundary and
+    was replaced.
+  - The view-buffer suite passes under `RUSTFLAGS="-C target-cpu=x86-64"`.
+- **Measured:** `polars-cv/benchmarks/reports/2026-09-27-phase1-dispatch/`. On the
+  wheel target, u8 grayscale is 6.7–10x faster, u8 threshold 1.8–3.2x, and f32 → u8
+  casts 1.8–2.1x. A first candidate zero-filled its outputs and lost ~15% on a 1024²
+  threshold; it now writes into spare capacity (`map_pixel_rows`).
+
+### CR-51 — Non-u8 gray + alpha grayscale mixed alpha into the intensity · `Resolved` · Medium
+
+- **What was wrong:** `grayscale_typed` read a `[H, W, 2]` pixel as
+  (gray, alpha, alpha) and returned `0.299·gray + 0.701·alpha`. The u8 kernel
+  (and the `SingleChannel` contract) take the gray channel. A u16 gray + alpha
+  pixel of (1000, 65535) came out 46239.
+- **Resolution:** a two-channel pixel's grayscale is its gray channel for
+  every dtype.
+- **Guard:** `gray_alpha_grayscale_is_the_gray_channel_for_every_dtype`,
+  watched failing on the old code.
+
+### CR-52 — Per-value ops ran through five near-duplicate paths, each with a full f32 copy · `Resolved` · High (perf)
+
+- **What was wrong:**
+  - The scalar family, scale/relu/clamp, invert, gamma, contrast, normalize and
+    fused chains each had their own function. Most cast a u8 image to f32 (one
+    image-sized copy) and then mapped into a second buffer.
+  - u8 gamma computed a `powf` per pixel and u8 preset normalize a divide per
+    pixel: ~50 ms at 1024²×3.
+  - Only f32 → f32 ever ran in place.
+- **Resolution:** `view-buffer/src/ops/elementwise/` is the one engine.
+  - Every op lowers to a `FusedKernel` through `lower_to_scalars`, which moved
+    out of `expr.rs` so fusion and standalone execution share it. Statistics
+    come first for normalize/contrast.
+  - `strategy` picks how the kernel runs:
+    - integer arithmetic when the kernel is exactly `clamp(±x + c)` over
+      8/16-bit input into the same dtype (`invert`, integer shifts), as fast
+      as the op written natively;
+    - a lookup table, only for work that cannot vectorise (`powf`) or that
+      differs per channel, over 8-bit input (16-bit with enough values);
+    - blocked streaming through an L1 f32 scratch for an integer result;
+    - one f32 pass for a float result.
+
+    Two candidates were measured and rejected on the way. Tabling every 8-bit
+    kernel made u8 `invert` 18x slower than `255 - x` (a table read vs a vector
+    subtract). Streaming it through f32 blocks was still 10x slower. Hence the
+    rule by cost, and the integer strategy.
+  - The float → 8/16-bit integer conversion (`convert::CastFrom`) was
+    rewritten to vectorise, with identical results, pinned by
+    `narrow_conversion_equals_round_then_saturate`. `x.round() as u8` stayed
+    scalar even in an AVX2 build (saturating `as` + no x86 round-half-away).
+  - `ViewBuffer::unique_contiguous_mut` decides in place. The u8 threshold uses
+    it too.
+  - Eleven functions were deleted, along with
+    `ViewBuffer::try_apply_fused_kernel_inplace`.
+- **Deliberate change:** z-score statistics are exact (integer sums for 8/16-bit,
+  f64 otherwise). They had been sequential f32 sums.
+- **Guards:**
+  - `elementwise::tests` compares every op × all 10 dtypes × {contiguous, crop,
+    flip_v, flip_h, transpose} × {shared, sole-owned} with the pre-engine code,
+    kept verbatim in `legacy.rs`, bit for bit (any NaN equals any NaN). It covers
+    16-bit on both sides of the table threshold. It was watched failing against
+    eight mutations: the i8 table index, the in-place table write, per-channel
+    passes, the contrast mean, the blocked path's passes and store index, and
+    the integer path's sign and clamp.
+  - Four `copy_counts.rs` allocation cases (u8 invert / u8 → u8 chain / u8
+    threshold in place, preset normalize with only its f32 output) failed on the
+    old code first.
+  - The suite also passes under `RUSTFLAGS="-C target-cpu=x86-64"`.
+
+- **Measured** (`polars-cv/benchmarks/reports/2026-09-27-phase2-elementwise/`,
+  against Phase 1, median of three interleaved rounds):
+  - u8 gamma: 22–27x faster;
+  - u8 preset normalize: 5–12x;
+  - u8 `scale`: 1.3–9.5x;
+  - u8 contrast: 2–5.5x;
+  - u8 z-score: 2.2–4x;
+  - f32 preset: 2.5–3.3x;
+  - fused u8 chain: 1.8–2.5x;
+  - u8 invert: 1.3–1.9x;
+  - f32 → u8 cast: 1.6–2.3x.
+
+  Every other kernel is within noise.
+
+### CR-55 — Materialising a strided view copied a few bytes at a time · `Resolved` · High (perf)
+
+- **What was wrong:**
+  - `ViewBuffer::copy_elements_into` merged only the innermost axis. A u8 HWC
+    flip or crop copied 3 bytes per `memcpy` call and recomputed the N-d offset
+    for each: 5–7 ms to materialise a 1024² RGB flip, where one copy is 0.3 ms.
+    Every `to_contiguous`, list/array sink and encode of a view paid it.
+  - `gather_strided_f32` (the element-wise engine's read of a view)
+    recomputed the offset per element.
+  - `cast_to` on a view packed it first, then converted: two passes.
+  - Grayscale kept its own per-pixel strided loop.
+- **Resolution:** `view-buffer/src/core/strided.rs`, `Walk`, the one walk over
+  a view's memory. It coalesces the layout once into packed units, evenly
+  spaced rows and odometer-walked outer axes (size-1 axes dropped, evenly
+  spaced outer axes merged).
+  - `copy_to` packs, with constant-size unit copies. It is `copy_elements_into`.
+  - `for_each_run` hands out runs: long units in place, short ones packed into
+    an 8 KiB stack scratch. `convert::convert_view` converts a view in one
+    dispatched pass from them, for `cast_to` and the engine's f32 read.
+  - `gather_strided_f32` and grayscale's per-pixel fallback are deleted.
+- **Guards** (`strided::tests`):
+  - the coalescing fixture table;
+  - a random-view property test (rank 1–4, permutes/flips/slices,
+    u8/u16/f32/f64) against a per-element reference, over `copy_to`,
+    `for_each_run`, `to_contiguous` and `cast_to`.
+
+  Both were watched failing against three under-merging mutations (the fixture
+  table) and two output-corrupting ones (the property test). A debug-build
+  bound check on every walk turns a coalescing fault into a panic naming the
+  geometry, instead of a wild read. The suite also passes on the wheels'
+  x86-64 target.
+- **Measured** (`polars-cv/benchmarks/reports/2026-09-28-phase3-strided/`,
+  1024², wheel target):
+  - flip_v materialise: 21.7x;
+  - flip_h materialise: 5.2x;
+  - transpose materialise: 5.5x;
+  - grayscale of a flipped image: 4.7x;
+  - crop then resize: 4.5x;
+  - cast of a flipped view: 3.4x;
+  - scale of a transposed f32 view: 2.8x.
+
+  Up to 35x at 256². Everything else is within noise.
+- **Tried and rejected:** a tiled transpose (`80d3b52`, reverted in `c4475b6`).
+  It made u8 transpose 1.7x slower at 1024² and only helped 12-byte units at
+  1024² (1.27x).
+- **Open follow-up (not planned):** transpose is still ~8x a vertical flip at
+  1024² (2.5 vs 0.3 ms). A kernel specialised for small units (an in-register
+  3-/4-byte block transpose) is the remaining lever.
+
+### CR-56 — Resize packed every crop and vertical flip into a new image first · `Resolved` · Medium (perf)
+
+- **What was wrong:**
+  - `ImageOp::Resize` (and every resize variant, and `Letterbox`) declared
+    `MemoryEffect::RequiresContiguous`, so `build_plan` put a
+    `MaterializeContiguous` in front of it whenever its input was a view.
+  - `ExternalLayout::FastImageResize` was `is_contiguous()`, and the kernel
+    handed fast_image_resize one packed slice. fast_image_resize reads its
+    source row by row, so it never needed that.
+  - The pack was a quarter of a 1024² RGB u8 crop or flip then resize to 224².
+  - The kernel was written three times (`resize_typed_u8/u16/f32`).
+- **Resolution:**
+  - `view-buffer/src/interop/fir.rs`: `FirViewAdapter<P>` gives fast_image_resize
+    a view whose rows come from `ViewBuffer::dense_rows`, any row stride
+    included.
+  - `FastImageResize` is `is_dense_rows()`.
+  - One generic `resize_pixels::<P>` packs only what the adapter refuses (a
+    transpose, a horizontal flip).
+  - The resize family declares `StridePreserving`.
+  - Output is byte-identical.
+- **Guards:**
+  - `tests/resize_views.rs` compares crop / flip_v / both, over u8/u16/f32 ×
+    rank 2 and 1–4 channels × three filters, against fir's own `ImageRef`
+    over the packed pixels. It was watched failing against two mutated row
+    reads (rows from 0, rows reversed). A first version compared against the
+    engine's own packed path and passed both mutations, since both sides
+    went through the adapter.
+  - `copy_counts.rs` (`resizing_a_view_with_packed_rows_allocates_only_its_output`)
+    was watched failing at 2 allocations before the change.
+  - The fixture `fast_image_resize_takes_any_view_with_packed_rows`
+    (`core/layout.rs`) was watched failing on the crop.
+- **Measured** (`polars-cv/benchmarks/reports/2026-09-28-phase4-resize/`,
+  1024², wheel target): crop then resize 1.34x, flip_v then resize 1.52x;
+  contiguous input within noise.
+
+### CR-57 — The planner packed a crop or vertical flip before grayscale, which reads it in place · `Resolved` · Low (perf)
+
+- **Location:** `ImageOpKind::Grayscale`'s `memory_effect`
+  (`RequiresContiguous`, `view-buffer/src/ops/image.rs`) and `grayscale_u8`
+  (`execution/runner.rs`).
+- **What is wrong:**
+  - `grayscale_u8` reads dense rows where they lie (CR-54, Phase 1), and the
+    CHANGELOG says a cropped or flipped input is not copied first.
+  - But `build_plan` inserts `MaterializeContiguous` before grayscale whenever
+    its input is a view, so every planned pipeline, the plugin included, still
+    packs it: `flip(0).grayscale()` plans as
+    `[View(Flip), MaterializeContiguous, Image(Grayscale)]`.
+  - The `grayscale_u8_flip_h` benchmark cannot show it, since a horizontal
+    flip has to be packed anyway.
+- **Why it is not the one-line fix resize got:** `grayscale_strided` returns
+  1-channel input unchanged. Declared `StridePreserving`, it would hand a
+  view onward while the planner (`infer_strides` → `None`) records a
+  contiguous output, and ops after it decide whether to materialise from that
+  record.
+- **Resolution:** `grayscale_strided` returns 1-channel input packed
+  (`to_contiguous()`, free when it already is), and `Grayscale` declares
+  `StridePreserving`.
+- **Guards:**
+  - `copy_counts.rs` (`grayscale_of_a_view_with_packed_rows_allocates_only_its_output`)
+    was watched failing at 2 allocations before the change.
+  - `strided_ops.rs` (`test_grayscale_of_a_one_channel_view_is_packed`) was
+    watched failing ("flip_v: not packed") with the contract changed and the
+    1-channel case not yet.
+- **Measured** (`polars-cv/benchmarks/reports/2026-09-28-cr57-grayscale/`,
+  wheel target): grayscale of a vertically flipped RGB u8 image 1.65x at
+  1024², 1.5x at 512².
+
+### CR-58 — A cheap row spent most of its time allocating layout copies · `Resolved` · Medium (perf)
+
+- **What was wrong:** `Layout` kept its shape and strides in two heap `Vec`s.
+  Every `ViewBuffer::clone`, every `to_contiguous()` of a contiguous buffer
+  (a clone) and every `is_contiguous()` (which rebuilt a `LayoutFacts` from
+  copies, plus a scratch vector) allocated, several times per row. `invert`
+  on an 8×8 u8 row made 27 allocations and spent 58% of its instructions in
+  the allocator; the kernel was ~2%. The plan-cache hit added three more (a
+  key and a step-list copy), and the executor copied every row result into
+  one call-sized vector before building the column.
+- **Resolution:**
+  - `core::layout::{Dims, Strides}` (`SmallVec<[_; 4]>`): layouts of rank ≤ 4
+    are inline; `is_c_contiguous` is the one contiguity rule, allocation-free.
+  - A plan-cache hit compares slices and shares an `Arc<[PlanStep]>`
+    (`ExecutionPlan::execute_steps`).
+  - `PendingSegment::ops` is inline; row results reach the column builder
+    as per-range parts (`RowParts`), not concatenated.
+- **Guards:** `copy_counts.rs` (`layout_bookkeeping_allocates_nothing`,
+  watched failing at 20 allocations) and `compiled.rs`
+  (`a_cache_hit_allocates_nothing`, watched failing at 1, the step-list copy).
+- **Measured** (`polars-cv/benchmarks/reports/2026-09-28-phase5-per-row/`):
+  instructions per 8×8 `invert` row 10,400 → 5,750; `invert` 1.29x eager and
+  1.38x streaming at 8×8, 4 threads.
+
+### CR-59 — The blob of a contiguous part of a buffer carried the whole buffer · `Resolved` · High
+
+- **Location:** `ViewBuffer::write_blob_into` (`to_blob`, the `blob` sink).
+- **What was wrong:** the payload length was the storage's length
+  (`data.len()`), not the view's. A contiguous view of part of a buffer — a
+  `crop` of whole rows — wrote every byte of the storage after its offset:
+  too long for leading rows, and **a read past the end of the allocation**
+  for rows further down. Found while profiling Phase 5.
+- **Resolution:** the payload is `logical_len_bytes()`, the view's elements.
+- **Guards:** `tests/blob_write.rs` gains leading- and middle-row slices (the
+  length check failed on them); `test_zero_copy_encode.py`
+  (`test_blob_of_a_full_width_crop_holds_only_the_crop`) checks the blob
+  length and pixels through `crop` → `sink("blob")`, and failed against the
+  unfixed extension (292 bytes for a 172-byte blob).
+
+### CR-62 — The affine warp stored a 64-bit maximum as 0 · `Resolved` · Low
+
+- **Location:** the warp's store (`runner.rs`'s `affine_warp_typed`, now
+  `execution/warp.rs`): `clamp_for_dtype` then `NumCast`.
+- **What was wrong:** `clamp_for_dtype` clamps a u64 to `u64::MAX as f64`,
+  which is 2^64, one past the range (and an i64 to 2^63); `NumCast` then
+  refuses the value and the store falls back to 0. A `warp_affine`/`rotate`
+  of a u64/i64 image at the top of its range came back 0 there.
+- **Resolution:** the warp stores through M5 (`CastFrom<f64>`,
+  round-then-saturate), as every other float→integer store does. For every
+  other dtype and value that is the old result (the parity tests compare).
+- **Guards:** `sixty_four_bit_values_saturate_rather_than_become_zero`
+  (Rust) and `test_a_warped_64_bit_maximum_stays_the_maximum` (Python), both
+  watched failing.
+- **Still latent:** `clamp_for_dtype` + `NumCast` remains in the typed
+  grayscale (`luma_typed`) and the Gaussian blur's store. Neither reaches 2^64
+  (their weights sum below 1: 1,200 blur sigma/shape cases and a white u64
+  image all stayed in range), so there is no failing test to fix them against.
+
+### CR-63 — `rotate(0)` spread NaN and infinity into neighbouring pixels · `Resolved` · Low
+
+- **What was wrong:** a 0° rotation lowered to a full bilinear warp. For
+  finite pixels it returned the input, but each output pixel blends its right
+  and lower neighbours with weight 0, and `NaN * 0` and `inf * 0` are NaN: one
+  NaN and one infinity in a 3×3 image came back as five NaNs. It also cost a
+  whole warp (36 ms at 1024² RGB).
+- **Resolution:** `execution::warp::rotate` returns the (packed) input for
+  the 0° lowering, sharing its data. `Rotate` declares `RequiresContiguous`,
+  so a planned input is already packed and the planner's record holds.
+- **Guards:** `a_zero_degree_rotation_shares_its_input`,
+  `a_zero_degree_rotation_leaves_every_value_where_it_was` (Rust, through
+  the engine) and `test_rotate_zero_leaves_every_value_where_it_was`
+  (Python), all watched failing.
+
+### CR-61 — A `list` value the declared dtype cannot hold became 0 · `Resolved` · Medium
+
+- **Location:** `graph/decode.rs`, the `list`/`array` source's converting
+  path (`series_to_bytes`, now `convert_row_values`).
+- **What was wrong:** a row whose values were not the declared dtype was
+  converted by polars' non-strict cast, which nulls a value the target cannot
+  hold, and the nulls were then read as the values under them: `300`, `-1`,
+  `NaN` and `1e10` declared `u8` all became `0`, silently. Found while
+  replacing the path in Phase 6.
+- **Resolution:** the conversion is polars' strict cast of the row's values:
+  such a value is an error naming it (and the row is null under
+  `on_error="null"`). Float → integer still truncates, as polars' cast does.
+- **Guards:** `a_value_the_declared_dtype_cannot_hold_is_refused` (Rust) and
+  `test_a_value_the_declared_dtype_cannot_hold_is_refused` (Python), both
+  watched failing on the old path.
+
+### CR-60 — The plugin allocated with the system `malloc`, not polars' allocator · `Resolved` · Low (perf)
+
+- **Location:** `polars-cv/src/lib.rs` declared no `#[global_allocator]`.
+- **What was wrong:** pyo3-polars (0.27) provides `PolarsAllocator` so that a
+  plugin shares polars' allocator. Without it, glibc decided when row buffers
+  went back to the OS. Once CR-58 removed the small allocations that happened
+  to pin glibc's heap, a call holding many large rows until the column was
+  built (a 64×64 f32 `array` sink over 50k rows, one thread) had its freed
+  memory trimmed and re-faulted by the next call: ~40% slower from the second
+  call on.
+- **Resolution:** `polars-cv/src/allocator.rs`: `PolarsAllocator`, wrapped to
+  record that it is in use, is the global allocator outside the lib's unit
+  tests (which keep `test_alloc`'s counting allocator). The installed polars
+  ships its binary as `_polars_runtime_32`, but the capsule still resolves
+  under its old name `polars.polars._allocator`: checked, not assumed.
+- **Guard:** `_lib.__allocator__` and `tests/test_allocator.py`, watched
+  failing both ways `PolarsAllocator` could quietly not apply: the
+  `#[global_allocator]` line removed, and the capsule name changed.
+- **Measured** (`polars-cv/benchmarks/reports/2026-09-28-cr60-allocator/`):
+  the `array` case is back to 0.68–0.89 s from call 2 on (0.76–1.19 s on
+  glibc); a `blob` sink of the same rows is 2x faster from call 2 on; the
+  64×64 plugin cases are 1.15–1.66x faster at 4 threads, and nothing is
+  slower. Peak RSS is ~10% higher.
+
+### CR-53 — `invert` on other integer dtypes returns f32 against a `PreserveInput` contract · `Resolved` · Low
+
+- **Location:** `ComputeOp::Invert` (`output_dtype_rule` = `PreserveInput`).
+  Execution for i8/i16/u32/i32/u64/i64 read as f32 and returned `1 - x` as
+  **f32**, the engine's `Invert` fallback in `elementwise::lower`.
+- **What was wrong:**
+  - The planner published the input dtype, and execution produced f32. Through
+    the plugin this was not a silent wrong dtype but an error:
+    `planned dtype i8 but execution produced F32`.
+  - The value was also meaningless for those dtypes: `1 - x` rather than the
+    range's mirror image.
+- **Resolution (owner's decision: the `MAX - x` family):** every integer dtype
+  inverts as `MAX + MIN - x`, in its own dtype. That is `255 - x` for u8
+  (unchanged), `-1 - x` for a signed dtype (a literal `MAX - x` overflows
+  there), and the bitwise complement `!x` for all of them.
+  - `lower_to_scalars` lowers i8/i16 like u8/u16 (`-x + (MAX + MIN)`, exact in
+    f32), so they fuse and run on the integer affine path.
+  - u32/i32/u64/i64 are not exact in f32 and lower to `Lowered::IntNot` (`!x`,
+    in place for a sole owner). The f32 fallback arm is deleted.
+- **Guards:** `elementwise::tests::integer_invert_keeps_its_dtype`, the parity
+  matrix (which checks those dtypes against `!x` instead of the legacy oracle),
+  `fused_ops.rs::signed_invert_fuses_in_its_own_dtype`, and
+  `reference/test_phase1_ref.py::test_invert_integer_keeps_dtype` through the
+  plugin. Each was watched failing on the old code.
 
 ## Architectural follow-up (spun out of CR-01)
 

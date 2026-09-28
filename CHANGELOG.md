@@ -7,6 +7,164 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Performance
+
+- **Kernels use AVX2 on CPUs that have it, whatever the wheel was built for.**
+  The published wheels target the x86-64 baseline (SSE2), where much of the
+  engine's arithmetic could not vectorise. One runtime dispatch mechanism now
+  compiles a kernel's whole body a second time with AVX2 and picks it per
+  call. Only AVX2 is enabled, never FMA, so the output is byte-identical on
+  every CPU. Blur (the one kernel that already dispatched) moved onto it.
+- **Float → integer casts are ~2x faster on the wheels.** `cast` and a fused
+  scalar chain's integer output share one conversion rule and one dispatched
+  loop; on SSE2 rounding was a `roundf` call per element (f32 → u8 at 1024²:
+  9.1 → 5.1 ms).
+- **u8 `grayscale` is 5–10x faster and u8 `threshold` 1.4–3x.** Both are
+  vectorised kernels over the image's rows. A contiguous, cropped or
+  vertically flipped input is read where it lies instead of being copied
+  first. Non-u8 grayscale is 1.4–2.9x faster.
+- **Per-value ops run through one engine that picks how per call.**
+  `invert`, `adjust_gamma`, `adjust_contrast`, `normalize`, `scale`, `clamp`,
+  the scalar math ops and fused chains of them share one element-wise engine,
+  and results are unchanged. Work that cannot vectorise (a `powf` per pixel,
+  as in gamma) or that differs per channel (preset `normalize`) runs once per
+  possible value of an 8-bit input (16-bit once an image has 65,536 values per
+  table), and each pixel becomes a table read: u8 gamma is 22–27x faster and
+  u8 ImageNet-style `normalize` 5–12x. An integer map such as `invert` runs in
+  integer arithmetic (1.3–1.9x). Everything else streams vectorised, in
+  cache-sized blocks for an integer result, with no image-sized f32
+  intermediate (u8 `adjust_contrast` 2–5.5x, z-score 2.2–4x, a fused u8 → u8
+  chain 1.8–2.5x). An op whose input nothing else reads writes it in place
+  when the output dtype is the input's (u8 `invert`, u8 → u8 chains, u8
+  `threshold`).
+- **Converting floats to 8/16-bit integers vectorises.** Rounding half away
+  from zero and saturating is now written so it compiles to vector
+  instructions, with identical results: f32 → u8 `cast` is another 1.6–2.3x
+  faster on top of the previous entry.
+- **Materialising a strided view copies runs, not elements.** A crop, flip or
+  transpose used to be copied a few bytes at a time with an N-d offset
+  recomputed per copy. One walk now coalesces the layout into the longest
+  packed runs it has (a whole buffer, a row, a pixel) and copies each run
+  once. This covers `to_contiguous` and every list/array sink. A `cast` of a
+  view converts straight from those runs, with no packed copy first, and so
+  does a per-value op's read of a strided view. At 1024² RGB u8 on the wheels,
+  materialising a vertical flip is ~22x faster, a horizontal flip ~5x, a
+  transpose ~5.5x, grayscale of a flipped image ~4.7x, crop then resize ~4.5x
+  and a cast of a flipped view ~3.4x.
+- **Resize reads a crop or a vertical flip where it lies.** It used to pack
+  any view into a new image first. Rows packed within themselves, whatever
+  their spacing or order, now go to the resizer as they are, so the output is
+  the only image-sized allocation. At 1024² RGB u8 → 224² on the wheels, crop
+  then resize is 1.3x faster and a vertical flip then resize 1.5x. Output is
+  byte-identical. Other layouts (a transpose, a horizontal flip) are still
+  packed first, as before.
+- **`grayscale` of a crop or vertical flip is no longer copied first.** The
+  u8 grayscale entry above already said so, but the planner packed such a
+  view before the kernel could read it. u8 grayscale after a vertical flip is
+  1.65x faster at 1024² on the wheels (CR-57).
+- **Cheap rows cost about half as much.** A buffer's shape and strides used
+  to live on the heap, so copying a buffer or asking whether it was
+  contiguous allocated, several times per row: `invert` on an 8×8 image made
+  27 allocations per row and spent more than half its time in the
+  allocator. Layouts of up to four dimensions are now stored inline, a
+  cached plan is replayed without copying it, and row results are no longer
+  gathered into one call-sized vector before the column is built. `invert`
+  on 8×8 rows is 1.3x faster eager and 1.4x streaming (CR-58).
+- **The plugin allocates through polars' allocator.** It used the system
+  `malloc`, which gave a call's freed row buffers back to the OS for the next
+  call to fault in again. It now shares polars' allocator (jemalloc on
+  Linux), as pyo3-polars intends: 64×64 pipelines are 1.15–1.66x faster, a
+  repeated large `blob` sink 2x faster, and peak memory ~10% higher (CR-60).
+- **`erode`/`dilate` with `iterations` and `blur` are faster**, with
+  identical output: integer images erode or dilate `n` times in one wider
+  pass (1.1–1.7x for 3–4 iterations; float images keep the passes, which
+  NaN and signed zeros depend on), and blur converts its input a row at a
+  time instead of copying the whole image to f32 first (1.1–1.3x).
+- **Rotation and `warp_affine` are 1.4–2.2x faster**, with bit-identical
+  output: the warp takes a bounds-check-free path for pixels whose
+  neighbours are all inside the image and is compiled per channel count and
+  for AVX2. A rotation by 0° (or 360°) now returns its input instead of
+  warping it.
+- **`List` columns are read in place.** A `list` source row whose values
+  are already the declared dtype is now a view of the column, as an `Array`
+  row already was, instead of a per-row copy through several intermediate
+  Series: 3.6x faster for 64×64 u8 rows, 2x for flat f32 rows, and a row of
+  another dtype is converted in one pass (1.5x). Raw and blob rows are read
+  in place whenever they are aligned for their own dtype, rather than only
+  at 8-byte boundaries.
+
+### Changed
+
+- **`source("list", require_contiguous=True)` accepts rectangular `List`
+  rows.** It refused every `List` row, although it documents refusing only
+  jagged ones; rectangular rows are now read in place. A row that would need
+  converting to the declared dtype is still refused, as for `array`.
+
+- **`normalize(method="zscore")` computes its mean and standard deviation
+  exactly.** They used to be running f32 sums, which drift at image sizes;
+  8/16-bit images now use exact integer sums and other dtypes f64 sums. The
+  normalized values can differ from 0.29.0 in the last bits.
+
+### Internal
+
+- view-buffer: `ViewBuffer::try_apply_fused_kernel_inplace` is removed. Whether
+  a kernel may write its input is decided in one place,
+  `ViewBuffer::unique_contiguous_mut`, which the element-wise engine and the
+  u8 threshold ask; `apply_fused_kernel` remains and never writes `&self`.
+- view-buffer: one walk over a view's memory, `core::strided::Walk`, replaces
+  the packing loop in `copy_elements_into`, the element-wise engine's strided
+  f32 read and grayscale's per-pixel strided fallback (a non-dense layout is
+  now packed, then takes the dense kernel).
+- view-buffer: the affine warp lives in `execution/warp.rs`, and M5's
+  `CastFrom<f64>` for 8/16-bit targets is `round().clamp() as T` (the same
+  values as before, in a form the compiler vectorises across a pixel's
+  channels).
+- view-buffer: `Layout` and `LayoutFacts` store shape and strides as
+  `core::layout::{Dims, Strides}` (inline up to rank 4), and the constructors
+  (`from_vec_with_shape`, `reshape`, `from_polars_buffer*`, `new_contiguous`)
+  take `impl Into<Dims>`, so existing `Vec` arguments still work.
+  `ExecutionPlan::execute_steps` replays borrowed steps.
+- view-buffer: the resizes (`resize`, `resize_scale`, `resize_to_*`,
+  `resize_max`/`min`, `letterbox`) and `grayscale` declare
+  `MemoryEffect::StridePreserving`,
+  so the planner no longer inserts a `MaterializeContiguous` before them. They
+  read their input through `interop::fir::FirViewAdapter`, the
+  `ExternalLayout::FastImageResize` adapter, which accepts any layout with
+  packed rows (`LayoutFacts::is_dense_rows`), and one generic
+  `resize_pixels::<P>` replaces the u8/u16/f32 copies of the resize kernel.
+
+### Fixed
+
+- **`rotate(0)` no longer spreads NaN or infinity.** It ran a full bilinear
+  warp, which turned a NaN or infinite pixel's left and upper neighbours into
+  NaN. It now returns the image unchanged (CR-63).
+- **A warped u64/i64 image keeps its maximum values.** `rotate` and
+  `warp_affine` stored a value at the top of the 64-bit range as 0; it now
+  saturates, as every other conversion does (CR-62).
+
+- **A `list`/`array` value the declared dtype cannot hold is an error, not
+  0.** Converting a row to its declared dtype stored 0 for any value out of
+  range (`300` or `-1` as `u8`) or undefined (`NaN`). It now fails naming the
+  value, or nulls the row under `on_error="null"`. Float values declared as
+  an integer dtype are still truncated (CR-61).
+
+- **`sink("blob")` of a whole-row crop wrote the rest of the image after
+  it.** A crop that keeps every column is a contiguous view of part of the
+  image, and its blob's payload was the whole image's length from the crop's
+  first byte on: too long, and for a crop below the top row a read past the
+  end of the image's memory. The blob now holds exactly the crop (CR-59).
+
+- **`grayscale` of a non-u8 gray + alpha image mixed the alpha into the
+  intensity.** A `[H, W, 2]` u16/f32 pixel came out as
+  `0.299·gray + 0.701·alpha` (u16 (1000, 65535) → 46239). It is now the gray
+  channel, as it always was for u8 (CR-51).
+- **`invert` on an integer dtype other than u8/u16 failed.** i8/i16/u32/i32/
+  u64/i64 input computed `1 - x` as f32 against a schema promising the input
+  dtype, so the query raised `planned dtype … but execution produced F32`.
+  Every integer dtype now inverts as `MAX + MIN - x` in its own dtype: `255 - x`
+  for u8 (unchanged), `-1 - x` for a signed dtype, which is NumPy's `~x`
+  (CR-53). Signed 8/16-bit invert now also fuses with neighbouring scalar ops.
+
 ## [0.29.0] — 2026-09-27
 
 Every operation, source, sink and geometry accessor is now one typed Rust

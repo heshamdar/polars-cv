@@ -1103,7 +1103,7 @@ mod contour_sink_tests {
         let rows = rows();
         let expected = oracle(&rows);
         let data: Vec<RowResult> = rows.into_iter().map(RowResult::Contours).collect();
-        let got = build_series_from_spec("o".into(), &spec(), data, None).unwrap();
+        let got = build_series_from_spec("o".into(), &spec(), vec![data], None).unwrap();
         assert_eq!(got.dtype(), expected.dtype());
         assert!(
             got.equals_missing(&expected),

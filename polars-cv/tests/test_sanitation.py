@@ -1604,7 +1604,7 @@ def test_contour_source_accepts_boolean_masks() -> None:
 
     Regression guard. It briefly raised, on the theory that Boolean is not a
     buffer element type and declaring one was a silent lie. The source decoder
-    *casts* rather than reinterprets (``series_to_bytes`` in graph/decode.rs),
+    *casts* rather than reinterprets (``convert_row_values`` in graph/decode.rs),
     so the declared dtype was always honest and boolean masks worked; the
     rejection broke them.
     """

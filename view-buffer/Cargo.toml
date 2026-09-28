@@ -19,6 +19,8 @@ crate-type = ["rlib"]
 [dependencies]
 thiserror = "1.0"
 num-traits = "0.2"
+# Inline layout dimensions (`core::layout::Dims`): a layout copy allocates nothing.
+smallvec = "1.15"
 # Exact polygon geometry: boolean ops (via i_overlay), area, centroid, distance,
 # simplification, convex hull, winding. `default-features = false` drops the
 # earcut/spade triangulators and `multithreading` — the latter matters because this
@@ -60,6 +62,13 @@ serde_json = "1.0"
 criterion = { version = "0.5", features = ["html_reports"] }
 # PNG-decoder evaluation (tests/png_decode_eval.rs); dev-only, ships nothing.
 zune-png = "0.4"
+
+[[bench]]
+# Kernel micro-benchmarks (`benches/kernels.rs`): the baseline and gate for
+# PERFORMANCE_PLAN.md. Needs the image codecs, hence the feature.
+name = "kernels"
+harness = false
+required-features = ["image_interop"]
 
 [features]
 # Enable ndarray by default for strided scalar operations
