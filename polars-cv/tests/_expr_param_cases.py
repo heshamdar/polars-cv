@@ -735,7 +735,10 @@ CASES: list[ExprCase] = [
         "simplify",
         "tolerance",
         lambda v: contour().simplify(tolerance=v),
-        (0.01, 5.0),
+        # The fixture's block traces to an 8x8 square, whose off-diagonal
+        # corners sit 8/sqrt(2) ~ 5.66 from the diagonal: 6.0 drops one, 0.01
+        # keeps all four.
+        (0.01, 6.0),
         column=RECT,
     ),
     # --- reductions and vectors -------------------------------------------

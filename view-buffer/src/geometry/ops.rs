@@ -116,10 +116,14 @@ pub enum GeometryOp<M: Mode = Exec> {
     },
     /// Extract contours from binary mask.
     ///
-    /// The traced outline passes through the **centres** of the boundary pixels,
-    /// so it sits half a pixel inside the region it describes: a blob filling
-    /// ``w x h`` pixels comes back bounding ``(w-1) x (h-1)``. Rasterizing the
-    /// result therefore erodes it by a pixel per round trip.
+    /// The traced outline runs along the **edges** of the boundary pixels (pixel
+    /// ``(x, y)`` is the square ``[x, x+1] x [y, y+1]``), so it bounds exactly
+    /// the pixels of its region: a blob filling ``w x h`` pixels comes back
+    /// bounding ``w x h``, a single pixel as its unit square, and every region's
+    /// area is its pixel count. Rasterizing the result gives back the mask.
+    ///
+    /// Regions are 8-connected: pixels touching only at a corner are one region,
+    /// whose outline passes through that corner twice.
     ///
     /// Borders come back as a flat list with no hierarchy. ``mode="all"`` yields
     /// the exterior plus one border for each enclosed background region — holes

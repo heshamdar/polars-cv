@@ -472,17 +472,13 @@ class ContourMatcher:
         iou_threshold: IoU threshold for TP matching.
         extraction_threshold: Threshold for contour extraction from heatmaps.
         min_contour_area: Minimum polygon area of an extracted prediction
-            contour. Contours are traced through pixel centres, so a filled
-            ``w x h`` block has area ``(w-1)*(h-1)`` and a one-pixel-thick
-            region (a single pixel, a ``1 x n`` line) has area 0. The default
-            ``0.0`` keeps those: each is scored on its own pixels, but having
-            no area it overlaps no ground truth, so it can only count as a
-            false positive. Any value above 0 drops them.
+            contour. Contours are traced along pixel edges, so a region's area
+            is its pixel count (for a region with holes, including the hole
+            pixels). The default ``0.0`` keeps every region.
         auto_resize: Whether to resize heatmaps to mask shapes automatically.
         gt_min_contour_area: Minimum polygon area of a ground-truth contour,
-            independent of ``min_contour_area``. The default ``1.0`` drops
-            one-pixel-thick GT regions: with no area, no prediction could
-            match one, so keeping it would count a guaranteed miss.
+            independent of ``min_contour_area``. The smallest region, one
+            pixel, has area 1, so the default ``1.0`` keeps every region.
     """
 
     def __init__(

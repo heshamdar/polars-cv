@@ -239,7 +239,7 @@
     "name": "contour_label_reduce",
     "python": "label_reduce",
     "visibility": "public",
-    "doc": "Score each contour from an image/array expression with configurable reduction.\n\nRuns the same engine routine as :meth:`polars_cv.Pipeline.label_reduce`,\nso the two agree on every reduction, region mode and edge case; this\naccessor differs only in taking an already-materialized contour column\nrather than extracting one inside a pipeline.\n\nPixels are sampled at their centres. A contour with no area (the point\nor line a one-pixel-thick region traces to) or whose region catches no\npixel centre (a sub-pixel contour) is scored on the pixels its outline\npasses through, in every region mode, rather than as 0.0.\n\nReturns:\n    A list of float scores, aligned to the input contour order.",
+    "doc": "Score each contour from an image/array expression with configurable reduction.\n\nRuns the same engine routine as :meth:`polars_cv.Pipeline.label_reduce`,\nso the two agree on every reduction, region mode and edge case; this\naccessor differs only in taking an already-materialized contour column\nrather than extracting one inside a pipeline.\n\nPixels are sampled at their centres. A contour with no area (a point or\na line) or whose region catches no pixel centre (a sub-pixel contour) is\nscored on the pixels its outline passes through, in every region mode,\nrather than as 0.0.\n\nReturns:\n    A list of float scores, aligned to the input contour order.",
     "fields": [
       {
         "name": "image",

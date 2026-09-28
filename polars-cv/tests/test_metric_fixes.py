@@ -703,19 +703,14 @@ class TestContourMatcherDefaults:
         """Predictions keep every extracted contour by default.
 
         The default was 1.0 while the boundary tracer collapsed regions into
-        degenerate walks; with that fixed it only dropped real one-pixel-thick
-        detections (area 0 under centre tracing), so it is back to 0.0.
+        degenerate walks; with that fixed it only dropped real detections.
         """
         assert ContourMatcher()._min_contour_area == 0.0
 
     def test_gt_min_contour_area_default_is_one_whatever_min_contour_area(
         self,
     ) -> None:
-        """Ground truth keeps its 1.0 default independently of predictions.
-
-        A zero-area GT contour can never be matched, so keeping it would count
-        a guaranteed miss; lowering the prediction default must not do that.
-        """
+        """Ground truth keeps its own 1.0 default, not the prediction value."""
         assert ContourMatcher()._gt_min_contour_area == 1.0
         assert ContourMatcher(min_contour_area=2.0)._gt_min_contour_area == 1.0
 

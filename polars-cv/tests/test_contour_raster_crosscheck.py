@@ -20,10 +20,9 @@ Rasterization is at 512x512 with shapes ~400px across, keeping the boundary a
 small fraction of the interior.
 
 The last section closes the loop the other way: contour -> mask -> contour,
-through `extract_contours`. That leg has a systematic bias rather than a random
-one — see `TestRoundTripThroughExtraction` — and its assertions are written
-around the exact size of that bias, not around a tolerance wide enough to hide
-it.
+through `extract_contours`. The tracer walks pixel edges, so that leg returns
+exactly the region the mask holds — see `TestRoundTripThroughExtraction` — and
+its assertions are exact equalities, not tolerances.
 """
 
 from __future__ import annotations
@@ -533,12 +532,17 @@ class TestRoundTripThroughExtraction:
     """
     A contour survives being rasterized and traced back.
 
-    The trip is lossy in one specific, predictable way: the tracer reports the
-    **centres of the boundary pixels**, so the polygon that comes back is inset
-    by half a pixel all round. A `w x h` box returns as `(w-1) x (h-1)`. The
-    tests below assert that inset rather than tolerate it — a bug that shifted
-    the outline the other way, or collapsed it, would have to survive an exact
-    equality to go unnoticed.
+    The tracer walks the **edges** of the boundary pixels, so the polygon that
+    comes back bounds exactly the pixels the rasterizer painted: every painted
+    pixel's centre strictly inside, every other one strictly outside. A shape
+    that rasterizes exactly — the rectilinear ones — therefore returns as
+    itself, and every shape returns with an area equal to its mask's pixel
+    count. The assertions are exact equalities; a trace that shifted, inset or
+    collapsed the outline cannot pass them.
+
+    (The tracer used to walk pixel *centres*, which inset every region by half
+    a pixel: a `w x h` box came back `(w-1) x (h-1)`, and a region one pixel
+    thick came back with no area at all.)
     """
 
     @pytest.mark.parametrize("name", sorted(ALL_SHAPES))
@@ -581,54 +585,33 @@ class TestRoundTripThroughExtraction:
         ("name", "width", "height"),
         [("square", 400, 400), ("wide_rect", 470, 120)],
     )
-    def test_box_round_trips_to_an_exact_one_pixel_inset(
+    def test_box_round_trips_to_its_own_size(
         self, name: str, width: int, height: int
     ) -> None:
         """
-        The traced outline runs through the centres of the rim pixels, so a box
-        filling `w x h` pixels returns bounding `(w-1) x (h-1)`. Exact, not
+        The traced outline runs along the rim pixels' outer edges, so a box
+        filling `w x h` pixels returns bounding `w x h`. Exact, not
         approximate — this is the assertion that pins the tracer's convention.
         """
         traced = _as_contour(_extract(RECTILINEAR[name])[0])
-        assert _analytic_area(traced) == pytest.approx(
-            (width - 1) * (height - 1), abs=1e-9
-        )
+        assert _analytic_area(traced) == width * height
 
     def test_box_round_trips_to_four_corners(self) -> None:
         """`method="simple"` drops the collinear rim points, leaving the corners."""
         traced = _extract(RECTILINEAR["square"])[0]
         assert len(traced["exterior"]) == 4
 
-    @pytest.mark.parametrize(
-        ("name", "slack"),
-        # Half a pixel along each unit of boundary. On an axis-aligned edge that
-        # bound is tight. A sloped edge rasterizes to a staircase whose length runs
-        # up to sqrt(2) times the edge it approximates, and the inset follows the
-        # staircase, so the sloped shapes get that factor and nothing more.
-        [(name, 1.0) for name in sorted(RECTILINEAR) if not RECTILINEAR[name]["holes"]]
-        + [
-            (name, math.sqrt(2.0))
-            for name in sorted(CURVED)
-            if not CURVED[name]["holes"]
-        ],
-    )
-    def test_round_trip_loses_area_but_never_gains_it(
-        self, name: str, slack: float
-    ) -> None:
+    @pytest.mark.parametrize("name", sorted(HOLE_FREE))
+    def test_traced_area_is_the_mask_pixel_count(self, name: str) -> None:
         """
-        The inset can only shrink the shape, and only by so much. A trace that
-        wandered into the interior, or one that overshot the rim, breaks these
-        bounds from one side or the other.
+        Whatever the shape, the trace bounds exactly the pixels its mask holds.
+        Curved and diagonal shapes rasterize to a staircase, so their traced
+        area differs from the analytic one — but never from the pixel count. A
+        trace that wandered into the interior, or overshot the rim, would.
         """
-        contour = ALL_SHAPES[name]
-        original = _analytic_area(contour)
+        contour = HOLE_FREE[name]
         traced = _analytic_area(_as_contour(_extract(contour)[0]))
-        deficit = original - traced
-
-        assert deficit >= -1.0, f"{name}: round trip gained {-deficit} of area"
-        assert deficit <= _perimeter(contour) / 2 * slack + 1.0, (
-            f"{name}: lost {deficit}, more than the inset can account for"
-        )
+        assert traced == int(_mask(contour).sum())
 
     @pytest.mark.parametrize("name", sorted(HOLE_FREE))
     def test_round_trip_iou_is_high(self, name: str) -> None:
@@ -637,26 +620,19 @@ class TestRoundTripThroughExtraction:
         assert _pair_measure(contour, traced, lambda a, b: a.contour.iou(b)) > 0.98
 
     @pytest.mark.parametrize("name", sorted(RECTILINEAR))
-    def test_traced_outline_lies_inside_the_original(self, name: str) -> None:
+    def test_rectilinear_outline_comes_back_as_itself(self, name: str) -> None:
         """
-        Inset, never outset. Where the trace lies wholly inside the original, the
-        intersection *is* the traced area and IoU collapses to the ratio of the two
-        areas — so asserting that identity checks containment and pins the size at
-        once. An outset or wandering trace drives IoU well below the ratio.
-
-        The tolerance is for reflex corners, where the 8-connected walk cuts the
-        inner angle and pokes a pixel or two outside; `plus_shape`, with four of
-        them, is the case that needs it.
+        A rectilinear shape rasterizes exactly, so its traced outline is the
+        original region: same area, IoU exactly 1. Reflex corners included —
+        `plus_shape` has four, which the centre tracer used to cut.
         """
         contour = RECTILINEAR[name]
         traced = _as_contour(_extract(contour)[0])
         # Compare against the solid outline: `external` mode drops hole borders.
         solid = {"exterior": contour["exterior"], "holes": [], "is_closed": True}
 
-        ratio = _analytic_area(traced) / _analytic_area(solid)
-        assert _pair_measure(solid, traced, lambda a, b: a.contour.iou(b)) == (
-            pytest.approx(ratio, abs=1e-4)
-        )
+        assert _analytic_area(traced) == _analytic_area(solid)
+        assert _pair_measure(solid, traced, lambda a, b: a.contour.iou(b)) == 1.0
 
     @pytest.mark.parametrize("name", sorted(CONNECTED_HOLE_COUNT))
     def test_hole_borders_come_back_as_separate_borders(self, name: str) -> None:
@@ -675,21 +651,17 @@ class TestRoundTripThroughExtraction:
         rebuilt = _reassemble(_extract(contour, mode="all"))
 
         assert _pair_measure(contour, rebuilt, lambda a, b: a.contour.iou(b)) > 0.98
-        # The inset applies to the exterior and to each hole rim, and they pull in
-        # opposite directions, so the net area stays within a perimeter's worth.
-        assert _analytic_area(rebuilt) == pytest.approx(
-            _analytic_area(contour), abs=_perimeter(contour)
-        )
+        # The exterior and each hole border bound exactly their pixels, so the
+        # rebuilt region holds exactly the mask's pixels.
+        assert _analytic_area(rebuilt) == int(_mask(contour).sum())
 
-    def test_each_pass_erodes_by_exactly_one_pixel(self) -> None:
+    @pytest.mark.parametrize("name", sorted(HOLE_FREE))
+    def test_round_trip_is_idempotent(self, name: str) -> None:
         """
-        The trip is not idempotent, and shouldn't be claimed to be: every pass
-        insets by half a pixel on each side. Pinning the erosion exactly is what
-        keeps that a known property rather than a drifting one.
+        A traced outline rasterizes to the mask it came from, so tracing it
+        again returns the same outline — however many passes. The centre
+        tracer eroded every region by a pixel per pass.
         """
-        contour = RECTILINEAR["square"]  # fills 400 x 400 pixels
-        for expected_side in (399, 398, 397):
-            contour = _as_contour(_extract(contour)[0])
-            assert _analytic_area(contour) == pytest.approx(
-                expected_side**2, abs=1e-9
-            ), f"expected a {expected_side}px square"
+        once = _as_contour(_extract(HOLE_FREE[name])[0])
+        twice = _as_contour(_extract(once)[0])
+        assert twice == once
