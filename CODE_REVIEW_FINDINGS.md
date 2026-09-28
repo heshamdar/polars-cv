@@ -1158,20 +1158,30 @@ phase of that plan, closed as each lands.
 
   Every other kernel is within noise.
 
-### CR-53 — `invert` on other integer dtypes returns f32 against a `PreserveInput` contract · `Open` · Low
+### CR-53 — `invert` on other integer dtypes returns f32 against a `PreserveInput` contract · `Resolved` · Low
 
 - **Location:** `ComputeOp::Invert` (`output_dtype_rule` = `PreserveInput`).
-  Execution for i8/i16/u32/i32/u64/i64 reads as f32 and returns `1 - x` as
-  **f32**, which is the engine's `Invert` fallback in `elementwise::lower`.
-- **What's wrong:**
-  - The planner publishes the input dtype, and execution produces f32.
-  - The value is also meaningless for those dtypes: `1 - x` rather than the
-    type's maximum minus `x`.
-  - Phase 2 of the performance plan preserved it exactly, so the parity oracle
-    holds.
-- **Proposed fix:** a decision for the owner. Either invert those dtypes as
-  `MAX - x` in the input dtype (matching u8/u16, and the contract), or refuse
-  them in `validate`. Either way, the fallback arm goes.
+  Execution for i8/i16/u32/i32/u64/i64 read as f32 and returned `1 - x` as
+  **f32**, the engine's `Invert` fallback in `elementwise::lower`.
+- **What was wrong:**
+  - The planner published the input dtype, and execution produced f32. Through
+    the plugin this was not a silent wrong dtype but an error:
+    `planned dtype i8 but execution produced F32`.
+  - The value was also meaningless for those dtypes: `1 - x` rather than the
+    range's mirror image.
+- **Resolution (owner's decision: the `MAX - x` family):** every integer dtype
+  inverts as `MAX + MIN - x`, in its own dtype. That is `255 - x` for u8
+  (unchanged), `-1 - x` for a signed dtype (a literal `MAX - x` overflows
+  there), and the bitwise complement `!x` for all of them.
+  - `lower_to_scalars` lowers i8/i16 like u8/u16 (`-x + (MAX + MIN)`, exact in
+    f32), so they fuse and run on the integer affine path.
+  - u32/i32/u64/i64 are not exact in f32 and lower to `Lowered::IntNot` (`!x`,
+    in place for a sole owner). The f32 fallback arm is deleted.
+- **Guards:** `elementwise::tests::integer_invert_keeps_its_dtype`, the parity
+  matrix (which checks those dtypes against `!x` instead of the legacy oracle),
+  `fused_ops.rs::signed_invert_fuses_in_its_own_dtype`, and
+  `reference/test_phase1_ref.py::test_invert_integer_keeps_dtype` through the
+  plugin. Each was watched failing on the old code.
 
 ## Architectural follow-up (spun out of CR-01)
 
