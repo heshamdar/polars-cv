@@ -290,6 +290,12 @@ Each phase is one or more commits on `claude/codebase-performance-assessment-36x
 
 ### Phase 8 — Morphology iterations, blur input conversion
 
+> **Done** (report `polars-cv/benchmarks/reports/2026-09-28-phase8-morph-blur/`).
+> Blur 1.1–1.3x; integer morphology iterations 1.1–1.7x. The single-pass collapse is
+> **integer-only**: the plan's "exact" holds for integers, but float NaN and signed-zero
+> handling depends on the passes' structure (the parity tests caught it), so floats
+> keep `n` passes. The blur's row scratch is a per-call row, not a thread-local.
+
 - `erode/dilate(ksize=k, iterations=n)` becomes one pass with k' = n(k−1)+1. This is exact
   for the rectangular element with replicate border; the plan includes the proof sketch in
   the doc comment.
