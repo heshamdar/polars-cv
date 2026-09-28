@@ -8,7 +8,7 @@
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::DType;
 use crate::geometry::contour::{Contour, Point};
-use crate::geometry::{measures, predicates};
+use crate::geometry::{measures, pairwise, predicates};
 
 /// Reduction applied over the pixel values of a contour's region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,8 +23,7 @@ pub enum LabelReduction {
 pub enum LabelRegionMode {
     /// Only pixels strictly inside the contour polygon.
     Interior,
-    /// Interior pixels plus pixels on the contour boundary (avoids
-    /// zero-score artifacts for sub-pixel contours).
+    /// Interior pixels plus pixels whose centre lies on the contour boundary.
     Boundary,
     /// All pixels within the contour's bounding box.
     Bbox,
@@ -45,10 +44,12 @@ crate::naming::named_variants!(LabelRegionMode: "Region selection for ``label_re
 /// Score every contour's region over a single-channel `[H, W]`/`[H, W, 1]`
 /// buffer, returning one value per contour.
 ///
-/// Pixels are sampled at their centers (`x + 0.5`, `y + 0.5`). When a
-/// contour's region contains no pixel (sub-pixel contours), the value at the
-/// contour centroid is returned instead so single-pixel detections receive
-/// their actual pixel value.
+/// Pixels are sampled at their centers (`x + 0.5`, `y + 0.5`). A contour with
+/// no area — the point or line a one-pixel-thick region traces to, since
+/// extraction traces through pixel centres — or whose region contains no pixel
+/// centre is scored on the pixels its outline passes through instead, in every
+/// region mode, so such a detection gets its own pixel values rather than 0.0.
+/// A contour that touches no in-bounds pixel scores 0.0.
 pub fn score_contours_on_buffer(
     buffer: &ViewBuffer,
     contours: &[Contour],
@@ -113,13 +114,17 @@ fn score_one(
         return 0.0;
     };
 
+    // A point or a line — what a one-pixel-thick region traces to — has no
+    // region to scan in any mode: its pixels are the ones its path covers.
+    // Deciding that by area rather than by an empty scan matters for a
+    // diagonal line, whose path runs through pixel centres that `Boundary`
+    // would otherwise pick up (all but the last).
+    let degenerate = measures::area(contour, false) < pairwise::EPSILON;
     let x0 = bbox.x.floor().max(0.0) as usize;
     let y0 = bbox.y.floor().max(0.0) as usize;
     let x1 = (bbox.x + bbox.width).ceil().min(width as f64).max(0.0) as usize;
     let y1 = (bbox.y + bbox.height).ceil().min(height as f64).max(0.0) as usize;
-    if x0 >= x1 || y0 >= y1 {
-        return 0.0;
-    }
+    let (x1, y1) = if degenerate { (x0, y0) } else { (x1, y1) };
 
     let mut acc = 0.0;
     let mut max_val = f64::NEG_INFINITY;
@@ -149,22 +154,89 @@ fn score_one(
         }
     }
     if count == 0 {
-        // Centroid fallback: sub-pixel contours have an empty rasterized
-        // interior. Sample the buffer at the contour centroid instead so
-        // that single-pixel detections receive their actual pixel value.
-        let c = measures::centroid(contour);
-        let cx = c.x.floor() as usize;
-        let cy = c.y.floor() as usize;
-        if cy < height && cx < width {
-            return at(cy, cx);
+        // A degenerate contour, or a sub-pixel one whose region holds no
+        // pixel centre: its pixels are the ones its outline passes through.
+        for (x, y) in path_pixels(&contour.exterior, width, height) {
+            let val = at(y, x);
+            acc += val;
+            max_val = max_val.max(val);
+            count += 1;
         }
-        return 0.0;
+        if count == 0 {
+            return 0.0;
+        }
     }
     match reduction {
         LabelReduction::Max => max_val,
         LabelReduction::Mean => acc / count as f64,
         LabelReduction::Sum => acc,
     }
+}
+
+/// The in-bounds pixels `(x, y)` a closed ring passes through, each once.
+///
+/// Pixel `(x, y)` covers `[x, x + 1) x [y, y + 1)`, the cell whose centre the
+/// region scan samples. Each segment is clipped to the buffer first, so a
+/// contour reaching far outside it costs no more than one that does not, then
+/// sampled at least once per pixel of travel along its longer axis — exactly
+/// the cells of the axis-aligned and diagonal segments contour extraction
+/// produces.
+fn path_pixels(ring: &[Point], width: usize, height: usize) -> Vec<(usize, usize)> {
+    let (w, h) = (width as f64, height as f64);
+    let mut pixels = Vec::new();
+    for (i, a) in ring.iter().enumerate() {
+        let b = &ring[(i + 1) % ring.len()];
+        let Some((a, b)) = clip_segment(a, b, w, h) else {
+            continue;
+        };
+        let steps = (b.x - a.x).abs().max((b.y - a.y).abs()).ceil() as usize;
+        for k in 0..=steps {
+            let t = if steps == 0 {
+                0.0
+            } else {
+                k as f64 / steps as f64
+            };
+            let (x, y) = (
+                (a.x + t * (b.x - a.x)).floor(),
+                (a.y + t * (b.y - a.y)).floor(),
+            );
+            if (0.0..w).contains(&x) && (0.0..h).contains(&y) {
+                pixels.push((x as usize, y as usize));
+            }
+        }
+    }
+    pixels.sort_unstable();
+    pixels.dedup();
+    pixels
+}
+
+/// The part of segment `a`-`b` inside `[0, w] x [0, h]` (Liang–Barsky), or
+/// `None` when no part of it is.
+fn clip_segment(a: &Point, b: &Point, w: f64, h: f64) -> Option<(Point, Point)> {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    for (p, q) in [(-dx, a.x), (dx, w - a.x), (-dy, a.y), (dy, h - a.y)] {
+        if p == 0.0 {
+            // Parallel to this edge: inside or out for the whole segment.
+            if q < 0.0 {
+                return None;
+            }
+        } else {
+            let r = q / p;
+            if p < 0.0 {
+                t0 = t0.max(r);
+            } else {
+                t1 = t1.min(r);
+            }
+        }
+    }
+    // `max`/`min` discard NaN, so `t0`/`t1` stay finite; a NaN endpoint then
+    // yields NaN pixels, which `path_pixels`' bounds check drops.
+    if t0 > t1 {
+        return None;
+    }
+    let at = |t: f64| Point::new(a.x + t * dx, a.y + t * dy);
+    Some((at(t0), at(t1)))
 }
 
 #[cfg(test)]
@@ -245,12 +317,12 @@ mod tests {
     }
 
     #[test]
-    fn subpixel_contour_falls_back_to_centroid() {
+    fn subpixel_contour_is_scored_on_the_pixel_it_lies_in() {
         let mut data = vec![0.0f32; 16];
         data[2 * 4 + 2] = 9.0;
         let buffer = ViewBuffer::from_vec_with_shape(data, vec![4, 4, 1]);
         // Sub-pixel contour centered on pixel (2, 2): interior catches no
-        // pixel-center sample, so the centroid value must be returned.
+        // pixel-center sample, so the pixel its outline lies in scores it.
         let tiny = square(2.3, 2.3, 0.2);
         let scores = score_contours_on_buffer(
             &buffer,
@@ -260,6 +332,90 @@ mod tests {
         )
         .unwrap();
         assert_eq!(scores[0], 9.0);
+    }
+
+    /// A region one pixel thick traces to a point or a line: zero area, a
+    /// zero-width or zero-height bounding box, no pixel centre inside. It is
+    /// scored on the pixels its path passes through, in every region mode —
+    /// the thin case used to return 0.0 before the fallback was reached, so
+    /// `ContourMatcher` filtered such detections out as unevidenced.
+    #[test]
+    fn thin_contour_is_scored_on_the_pixels_it_passes_through() {
+        let (h, w) = (8usize, 8usize);
+        let data: Vec<f32> = (0..h * w).map(|i| i as f32).collect();
+        let buffer = ViewBuffer::from_vec_with_shape(data, vec![h, w, 1]);
+        let value = |x: usize, y: usize| (y * w + x) as f64;
+
+        // (contour, the pixels it covers as (x, y))
+        let cases: Vec<(Contour, Vec<(usize, usize)>)> = vec![
+            (Contour::from_tuples(&[(5.0, 5.0)]), vec![(5, 5)]),
+            (
+                Contour::from_tuples(&[(5.0, 5.0), (6.0, 5.0)]),
+                vec![(5, 5), (6, 5)],
+            ),
+            // A `method="simple"` 1x5 line: two end vertices, three pixels
+            // between them that only the segment covers.
+            (
+                Contour::from_tuples(&[(2.0, 3.0), (6.0, 3.0)]),
+                (2..=6).map(|x| (x, 3)).collect(),
+            ),
+            (
+                Contour::from_tuples(&[(4.0, 1.0), (4.0, 4.0)]),
+                (1..=4).map(|y| (4, y)).collect(),
+            ),
+            (
+                Contour::from_tuples(&[(1.0, 1.0), (3.0, 3.0)]),
+                vec![(1, 1), (2, 2), (3, 3)],
+            ),
+        ];
+
+        for (contour, pixels) in &cases {
+            let values: Vec<f64> = pixels.iter().map(|&(x, y)| value(x, y)).collect();
+            let sum: f64 = values.iter().sum();
+            for mode in [
+                LabelRegionMode::Interior,
+                LabelRegionMode::Boundary,
+                LabelRegionMode::Bbox,
+            ] {
+                for (reduction, expected) in [
+                    (
+                        LabelReduction::Max,
+                        values.iter().copied().fold(f64::MIN, f64::max),
+                    ),
+                    (LabelReduction::Mean, sum / values.len() as f64),
+                    (LabelReduction::Sum, sum),
+                ] {
+                    let scores = score_contours_on_buffer(
+                        &buffer,
+                        std::slice::from_ref(contour),
+                        reduction,
+                        mode,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        scores[0], expected,
+                        "{:?} {reduction:?}/{mode:?}",
+                        contour.exterior
+                    );
+                }
+            }
+        }
+    }
+
+    /// Only the in-bounds part of a thin contour's path is read.
+    #[test]
+    fn thin_contour_path_is_clipped_to_the_buffer() {
+        let buffer = ViewBuffer::from_vec_with_shape(vec![1.0f32; 16], vec![4, 4, 1]);
+        let line = Contour::from_tuples(&[(2.0, 1.0), (9.0, 1.0)]);
+        let outside = Contour::from_tuples(&[(7.0, 7.0)]);
+        let scores = score_contours_on_buffer(
+            &buffer,
+            &[line, outside],
+            LabelReduction::Sum,
+            LabelRegionMode::Interior,
+        )
+        .unwrap();
+        assert_eq!(scores, vec![2.0, 0.0]);
     }
 
     #[test]

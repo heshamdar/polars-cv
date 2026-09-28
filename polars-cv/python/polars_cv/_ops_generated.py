@@ -1742,6 +1742,11 @@ class _OpsMixin:
         This is the buffer-space variant of label reduction. It accepts contours
         via a Polars expression and returns one score per contour.
 
+        Pixels are sampled at their centres. A contour with no area (the point
+        or line a one-pixel-thick region traces to) or whose region catches no
+        pixel centre (a sub-pixel contour) is scored on the pixels its outline
+        passes through, in every region mode, rather than as 0.0.
+
         Domain: buffer → vector
 
         Args:
@@ -1750,8 +1755,8 @@ class _OpsMixin:
                 `"sum"`).
             region_mode: Region selection mode. ``"interior"`` — only pixels strictly
                 inside the contour polygon. ``"boundary"`` — interior pixels *plus*
-                pixels on the contour boundary (avoids zero-score artifacts for sub-
-                pixel contours). ``"bbox"`` — all pixels within the bounding box.
+                pixels whose centre lies on the contour boundary. ``"bbox"`` — all
+                pixels within the bounding box.
         """
         return self._append_typed(
             "label_reduce",
@@ -2811,9 +2816,10 @@ class _ContourOpsMixin:
         accessor differs only in taking an already-materialized contour column
         rather than extracting one inside a pipeline.
 
-        Pixels are sampled at their centres. A contour whose region catches no
-        pixel centre — a sub-pixel detection — is scored at its centroid rather
-        than as 0.0.
+        Pixels are sampled at their centres. A contour with no area (the point
+        or line a one-pixel-thick region traces to) or whose region catches no
+        pixel centre (a sub-pixel contour) is scored on the pixels its outline
+        passes through, in every region mode, rather than as 0.0.
 
         Args:
             image: Image/array expression aligned by row with contour sets.

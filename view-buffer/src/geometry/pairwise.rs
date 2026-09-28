@@ -12,8 +12,9 @@
 use super::contour::{BoundingBox, Contour};
 use geo::{Area, BooleanOps, BoundingRect, HausdorffDistance, Intersects, MultiPolygon};
 
-/// Areas below this are treated as degenerate.
-const EPSILON: f64 = 1e-10;
+/// Areas below this are treated as degenerate — here and by
+/// [`super::label`], which scores a region this small on its outline's pixels.
+pub(crate) const EPSILON: f64 = 1e-10;
 
 /// Areas of both regions and of their exact intersection.
 ///

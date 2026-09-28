@@ -22,6 +22,7 @@ from polars_cv.metrics._types import (
     COL_IMAGE_ID,
     COL_IS_TP,
     COL_N_GTS,
+    COL_SCORE,
 )
 from tests.conftest import plugin_required
 
@@ -268,3 +269,66 @@ def test_contour_matcher_still_reads_a_view_blob() -> None:
     frame = pl.DataFrame({"pred": blob, "gt": blob})
     table = ContourMatcher().match(frame, pred_col="pred", gt_col="gt")
     assert table.detections.collect(engine="streaming").height == 1
+
+
+# ---------------------------------------------------------------------------
+# One-pixel-thick regions
+# ---------------------------------------------------------------------------
+
+#: One region of value 0.5 per image, on a zero background.
+_THIN_REGIONS = {
+    "single pixel": [(5, 5)],
+    "2-px horizontal": [(5, 5), (5, 6)],
+    "1x5 line": [(5, c) for c in range(3, 8)],
+    "5x1 line": [(r, 5) for r in range(3, 8)],
+    "2x2 block": [(5, 5), (5, 6), (6, 5), (6, 6)],
+}
+
+
+@plugin_required
+def test_contour_matcher_keeps_one_pixel_thick_regions() -> None:
+    """An above-threshold region one pixel thick is a detection, not nothing.
+
+    Contours are traced through pixel centres, so a one-pixel-thick region
+    traces to a point or a line. `label_reduce` returned 0.0 for it — its
+    zero-width bounding box short-circuited before the no-pixel-centre fallback
+    — and `_filter_zero_score_detections` then dropped it before matching, so
+    with an empty ground truth these images reported no false positive at all.
+    With extraction's area filter off, every region must come back as one false
+    positive carrying the region's own value.
+    """
+    frame = pl.DataFrame(
+        {
+            "image": list(_THIN_REGIONS),
+            "pred": [
+                _heatmap_with(pixels).tolist() for pixels in _THIN_REGIONS.values()
+            ],
+            "gt": [np.zeros((16, 16), np.float32).tolist() for _ in _THIN_REGIONS],
+        },
+        schema={
+            "image": pl.String,
+            "pred": pl.List(pl.List(pl.Float32)),
+            "gt": pl.List(pl.List(pl.Float32)),
+        },
+    )
+    table = ContourMatcher(
+        iou_threshold=0.1, extraction_threshold=0.1, min_contour_area=0.0
+    ).match(frame, pred_col="pred", gt_col="gt", image_id_col="image")
+    detections = table.detections.collect()
+
+    got = {
+        row[COL_IMAGE_ID]: (row["n"], row["score"])
+        for row in detections.group_by(COL_IMAGE_ID)
+        .agg(n=pl.len(), score=pl.col(COL_SCORE).max())
+        .iter_rows(named=True)
+    }
+    assert got == dict.fromkeys(_THIN_REGIONS, (1, 0.5))
+    assert not detections[COL_IS_TP].any()
+
+
+def _heatmap_with(pixels: list[tuple[int, int]]) -> np.ndarray:
+    """A 16x16 zero heatmap with 0.5 at each ``(row, col)`` in *pixels*."""
+    heatmap = np.zeros((16, 16), dtype=np.float32)
+    for r, c in pixels:
+        heatmap[r, c] = 0.5
+    return heatmap
