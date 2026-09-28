@@ -1674,6 +1674,10 @@ def test_verify_script_covers_every_ci_check() -> None:
         ("ruff format --check", "ruff format --check"),
         ("ty check", "ty check"),
         ("cargo deny", "cargo deny"),
+        (
+            "cargo check -p view-buffer --no-default-features",
+            "cargo check -p view-buffer --no-default-features",
+        ),
         ("mkdocs build --strict", "mkdocs build --strict"),
     ]
     missing = [
@@ -1714,6 +1718,7 @@ _CI_COMMAND_CLASSIFICATION: "dict[str, str | None]" = {
     "cargo clippy": "cargo clippy",
     "cargo test": "cargo test",
     "cargo deny": "cargo deny",
+    "cargo check": "cargo check -p view-buffer",
     "maturin develop": "maturin develop",
     "pytest": "pytest",
     "uvx ruff check": "ruff check",

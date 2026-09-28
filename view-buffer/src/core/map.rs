@@ -58,6 +58,7 @@ pub(crate) trait ElementMapInPlace<T: ViewType>: ElementMap<T, T> {
 ///
 /// # Safety
 /// As [`ElementMap`]: [`map_into`](Self::map_into) initialises all of `dst`.
+#[cfg(feature = "image_interop")] // Grayscale, its one user, needs it.
 pub(crate) unsafe trait PixelMap<S: ViewType, D: ViewType, const C: usize>:
     Sync
 {
@@ -116,6 +117,7 @@ where
 ///
 /// # Panics
 /// Panics unless `buf`'s last axis has `C` elements.
+#[cfg(feature = "image_interop")] // Grayscale, its one user, needs it.
 pub(crate) fn map_pixels<S, D, const C: usize, M>(buf: &ViewBuffer, map: &M) -> ViewBuffer
 where
     S: ViewType,
@@ -180,6 +182,7 @@ impl<S: ViewType, D: ViewType, M: ElementMap<S, D>> RunSink<S> for MapRuns<'_, S
 
 /// The runs of a walk, whole `C`-element pixels, written through a pixel
 /// map into consecutive output slots.
+#[cfg(feature = "image_interop")] // Grayscale, its one user, needs it.
 struct PixelRuns<'a, S, D, const C: usize, M> {
     map: &'a M,
     dst: &'a mut [MaybeUninit<D>],
@@ -187,6 +190,7 @@ struct PixelRuns<'a, S, D, const C: usize, M> {
     _source: PhantomData<fn(S)>,
 }
 
+#[cfg(feature = "image_interop")] // Grayscale, its one user, needs it.
 impl<S, D, const C: usize, M> RunSink<S> for PixelRuns<'_, S, D, C, M>
 where
     S: ViewType,
@@ -204,6 +208,7 @@ where
 
 /// `run` as whole `C`-element pixels: every run a pixel map is handed is a
 /// whole number of them.
+#[cfg(feature = "image_interop")] // Grayscale, its one user, needs it.
 #[inline(always)]
 fn pixels<S, const C: usize>(run: &[S]) -> &[[S; C]] {
     let (pixels, rest) = run.as_chunks::<C>();
@@ -306,12 +311,14 @@ impl<T: ViewType, M: ElementMapInPlace<T>> SimdKernelMut<T> for InPlace<'_, M> {
     }
 }
 
+#[cfg(feature = "image_interop")] // Grayscale, its one user, needs it.
 struct MapPixels<'a, S, D, const C: usize, M> {
     buf: &'a ViewBuffer,
     map: &'a M,
     _types: PhantomData<(S, D)>,
 }
 
+#[cfg(feature = "image_interop")] // Grayscale, its one user, needs it.
 impl<S, D, const C: usize, M> Clone for MapPixels<'_, S, D, C, M> {
     fn clone(&self) -> Self {
         MapPixels {
@@ -322,6 +329,7 @@ impl<S, D, const C: usize, M> Clone for MapPixels<'_, S, D, C, M> {
     }
 }
 
+#[cfg(feature = "image_interop")] // Grayscale, its one user, needs it.
 impl<S, D, const C: usize, M> SimdKernel for MapPixels<'_, S, D, C, M>
 where
     S: ViewType,
