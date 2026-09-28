@@ -5,8 +5,9 @@ State of the kernel-performance effort planned in
 Read this, then the plan's phase you are starting, then `CLAUDE.md`'s
 Working Agreements (they bind every change here).
 
-Branch: `claude/codebase-performance-assessment-36x2p3`. Last commit at handover:
-`6c7bc8c`. Everything is committed and pushed; there is no work in progress.
+Branch: `claude/codebase-performance-assessment-36x2p3`. Last code commit:
+`72fd1d1` (Phase 4). Everything is committed and pushed; there is no work in
+progress.
 
 ## Where it stands
 
@@ -17,8 +18,8 @@ Branch: `claude/codebase-performance-assessment-36x2p3`. Last commit at handover
 | 2: element-wise engine | done | `5fc5fea` | `2026-09-27-phase2-elementwise/` | CR-52 |
 | CR-53: integer `invert` keeps its dtype | done | `0ecfe8f` | — | CR-53 |
 | 3: strided walk | done | `bf64725`; tiling `80d3b52`, reverted in `c4475b6`; docs in `6c7bc8c` | `2026-09-28-phase3-strided/` | CR-55 |
-| 4: resize adapter (resize after crop/flip is zero-copy) | **next** | — | — | — |
-| 5: per-row executor overhead | not started | | | |
+| 4: resize adapter (resize after crop/flip is zero-copy) | done | `72fd1d1` | `2026-09-28-phase4-resize/` | CR-56; CR-57 filed (open) |
+| 5: per-row executor overhead | **next** | | | |
 | 6: `List` source zero-copy, raw/blob alignment | not started | | | |
 | 7: rotation / affine | not started | | | |
 | 8: morphology iterations, blur input conversion | not started | | | |
@@ -26,7 +27,7 @@ Branch: `claude/codebase-performance-assessment-36x2p3`. Last commit at handover
 
 Reports live under `polars-cv/benchmarks/reports/`; findings are in
 `CODE_REVIEW_FINDINGS.md` under "Performance review (2026-09-27)". The next free
-finding id is **CR-56**; check with `grep -o '^### CR-[0-9]*' CODE_REVIEW_FINDINGS.md | sort -t- -k2 -n | tail -1`
+finding id is **CR-58**; check with `grep -o '^### CR-[0-9]*' CODE_REVIEW_FINDINGS.md | sort -t- -k2 -n | tail -1`
 before filing one. CR-50 was duplicated once.
 
 ## What exists now (the mechanisms later phases must use)
@@ -61,6 +62,13 @@ not write a second one beside it; extend it.
   - A debug-build bound check guards every walk.
 - **`ViewBuffer::dense_rows`**: row-wise kernels read crops and vertical flips
   where they lie.
+- **`view-buffer/src/interop/fir.rs`** (`FirViewAdapter<P>`): the one way a
+  buffer reaches fast_image_resize. `resize_pixels::<P>` (`runner.rs`) is the
+  one resize kernel; it packs only a layout the adapter refuses.
+- **`MemoryEffect` is what makes a planned pipeline pack.** A kernel that reads
+  views is not enough: `build_plan` inserts `MaterializeContiguous` before any
+  op declaring `RequiresContiguous`. Check the plan's steps
+  (`expr.plan().steps`), not just the kernel, when claiming "read in place".
 
 The plan text predates these. Where it names `execution/dispatch.rs`,
 `simd_dispatch!`, `ops/elementwise.rs`, `RowWalk` or `f32_slice_to`, read them
@@ -157,30 +165,28 @@ before building either side):
 - **u8 preset normalize is slower in the v3 build than on the wheel target**
   (4.0 vs 2.2 ms at 1024², Phase 2 report). Not investigated.
 - **Transpose is still ~8× a vertical flip** (CR-55 follow-up).
+- **Grayscale of a crop or flip is still packed by the planner** (CR-57, open).
+  Phase 1's CHANGELOG line says it is not; the kernel can read it in place, but
+  `Grayscale` declares `RequiresContiguous`. Not a one-line fix: its 1-channel
+  case returns its input unchanged, so it would pass a view on while the
+  planner records a contiguous output. Ask the user before taking it on.
+- **Resize of more than 4 channels panics at run time** (as it did before
+  Phase 4): fast_image_resize has no such pixel type and resize's `check()`
+  accepts any channel count. Not filed.
 
-## Starting Phase 4
+## Starting Phase 5
 
-Plan: `PERFORMANCE_PLAN.md`, "Phase 4 — M4 resize adapter". In short:
-1. Make `fast_image_resize` read a dense-rows view (crop, flip_v) in place
-   through an `ExternalView` adapter (`interop/`, `ExternalLayout::FastImageResize`)
-   instead of `to_contiguous()` first.
-2. Change `LayoutFacts::compatible_with(FastImageResize)` to accept dense rows.
-3. Collapse `resize_typed_u8/u16/f32` into one generic function.
+Plan: `PERFORMANCE_PLAN.md`, "Phase 5 — Per-row executor overhead". Its line
+numbers are stale; grep for the symbols (`compiled.rs`'s cached-plan lookup,
+`decode.rs`'s `get_binary_row_buffer`/`is_array_row_null`/`get_array_row_buffer`).
 
-First fetch current docs for the `fast_image_resize` version in
-`view-buffer/Cargo.toml` (`ImageView` / `iter_rows`); CLAUDE.md requires it.
-
-Tests come first:
-- byte parity of `resize(crop(x))` vs `resize(to_contiguous(crop(x)))` over
-  u8/u16/f32 × C ∈ {1, 2, 3, 4}, including negative row strides;
-- a `copy_counts` case: exactly one image-sized allocation for resize of a crop;
-- a layout fixture test.
-
-**Check the payoff first.** Phase 3's faster packing already brought
-`crop_then_resize_224_u8` to about the cost of plain `resize_224_u8`: 0.84 vs
-0.86 ms at 1024² on the wheel target (the crop is smaller input). So what
-Phase 4 has left is one packing copy and one image-sized allocation per row.
-Add a `flip_v_then_resize` case, then measure what the pack still costs inside
-those two benchmarks before building the adapter. If it is a few percent, tell
-the user and propose skipping to Phase 5 (per-row overhead), which the plan
-expected to matter for cheap rows.
+Lessons from Phase 4 that apply:
+- **A parity test needs an oracle outside the code under test.** Comparing
+  the new path with "the same op on packed input" was blind to both mutations
+  tried, because the packed input went through the new adapter too. Compare
+  against something that shares no code with the change.
+- **This container's benchmark noise is about ±5% between rounds.** A
+  one-sided 5–9% shift over five alternating rounds was real (a `skip` in a
+  hot iterator); a mixed-sign ±5% over three was not.
+- The base worktree has no `.venv`: run the main repo's
+  `scripts/with-pyo3-env.sh` by absolute path from inside it.
