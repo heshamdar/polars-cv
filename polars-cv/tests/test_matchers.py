@@ -326,6 +326,35 @@ def test_contour_matcher_keeps_one_pixel_thick_regions() -> None:
     assert not detections[COL_IS_TP].any()
 
 
+@plugin_required
+def test_contour_matcher_defaults_keep_thin_predictions_and_drop_thin_gt() -> None:
+    """By default a one-pixel prediction is a detection; one-pixel GT is not.
+
+    A thin prediction is evidence the model marked something, so it counts as
+    a false positive. A thin ground-truth region has no area, so no
+    prediction could ever match it; keeping it would count a guaranteed miss.
+    """
+    thin = _heatmap_with([(5, 5)]).tolist()
+    empty = np.zeros((16, 16), np.float32).tolist()
+    frame = pl.DataFrame(
+        {"image": ["thin pred", "thin gt"], "pred": [thin, empty], "gt": [empty, thin]},
+        schema={
+            "image": pl.String,
+            "pred": pl.List(pl.List(pl.Float32)),
+            "gt": pl.List(pl.List(pl.Float32)),
+        },
+    )
+    table = ContourMatcher().match(
+        frame, pred_col="pred", gt_col="gt", image_id_col="image"
+    )
+
+    detections = table.detections.collect()
+    assert detections[COL_IMAGE_ID].to_list() == ["thin pred"]
+    assert detections[COL_SCORE].to_list() == [0.5]
+    n_gts = dict(table.image_metadata.select(COL_IMAGE_ID, COL_N_GTS).collect().rows())
+    assert n_gts == {"thin pred": 0, "thin gt": 0}
+
+
 def _heatmap_with(pixels: list[tuple[int, int]]) -> np.ndarray:
     """A 16x16 zero heatmap with 0.5 at each ``(row, col)`` in *pixels*."""
     heatmap = np.zeros((16, 16), dtype=np.float32)

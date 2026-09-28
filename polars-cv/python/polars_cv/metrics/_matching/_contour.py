@@ -474,22 +474,24 @@ class ContourMatcher:
         min_contour_area: Minimum polygon area of an extracted prediction
             contour. Contours are traced through pixel centres, so a filled
             ``w x h`` block has area ``(w-1)*(h-1)`` and a one-pixel-thick
-            region (a single pixel, a ``1 x n`` line) has area 0: the default
-            ``1.0`` drops those. Pass ``0.0`` to keep them — each is then
-            scored on its own pixels, but having no area it overlaps no
-            ground truth, so it can only count as a false positive.
+            region (a single pixel, a ``1 x n`` line) has area 0. The default
+            ``0.0`` keeps those: each is scored on its own pixels, but having
+            no area it overlaps no ground truth, so it can only count as a
+            false positive. Any value above 0 drops them.
         auto_resize: Whether to resize heatmaps to mask shapes automatically.
-        gt_min_contour_area: Separate min area for GT contours (defaults to
-            ``min_contour_area``).
+        gt_min_contour_area: Minimum polygon area of a ground-truth contour,
+            independent of ``min_contour_area``. The default ``1.0`` drops
+            one-pixel-thick GT regions: with no area, no prediction could
+            match one, so keeping it would count a guaranteed miss.
     """
 
     def __init__(
         self,
         iou_threshold: float = 0.5,
         extraction_threshold: float = 0.1,
-        min_contour_area: float = 1.0,
+        min_contour_area: float = 0.0,
         auto_resize: bool = True,
-        gt_min_contour_area: float | None = None,
+        gt_min_contour_area: float = 1.0,
     ) -> None:
         if not (0.0 < iou_threshold <= 1.0):
             raise ValueError("`iou_threshold` must be in (0, 1].")
@@ -629,16 +631,11 @@ class ContourMatcher:
             )
             aligned_handle = pred_handle
 
-        gt_area = (
-            self._gt_min_contour_area
-            if self._gt_min_contour_area is not None
-            else self._min_contour_area
-        )
         prepared = _extract_contours_via(
             prepared,
             gt_handle,
             threshold=0.5,
-            min_area=gt_area,
+            min_area=self._gt_min_contour_area,
             output_col="_gt_contours",
         )
 

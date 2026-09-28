@@ -9,7 +9,7 @@ Covers:
 - Partial-AUC normalize correction (McClish removed)
 - Mann-Whitney U AUC for froc_auc / lroc_auc (via method="mann_whitney")
 - Mann-Whitney AUC bootstrap support
-- ContourMatcher min_contour_area default change
+- ContourMatcher min_contour_area / gt_min_contour_area defaults
 - Zero-score detection filtering
 - Source format auto-detection for ContourMatcher
 """
@@ -697,29 +697,27 @@ class TestPartialAUCCorrection:
 
 
 class TestContourMatcherDefaults:
-    """Verify ContourMatcher defaults were changed correctly."""
+    """Pin ContourMatcher's contour-area defaults."""
 
-    def test_min_contour_area_default_is_one(self) -> None:
-        """Default min_contour_area changed from 0.0 to 1.0."""
-        matcher = ContourMatcher()
-        assert matcher._min_contour_area == 1.0
+    def test_min_contour_area_default_is_zero(self) -> None:
+        """Predictions keep every extracted contour by default.
 
-    def test_gt_min_contour_area_defaults_to_min_contour_area(self) -> None:
-        """gt_min_contour_area defaults to min_contour_area when None."""
-        matcher = ContourMatcher(min_contour_area=2.0)
-        assert matcher._gt_min_contour_area is None
-        # At match time, gt_area = gt_min_contour_area or min_contour_area
-        gt_area = (
-            matcher._gt_min_contour_area
-            if matcher._gt_min_contour_area is not None
-            else matcher._min_contour_area
-        )
-        assert gt_area == 2.0
+        The default was 1.0 while the boundary tracer collapsed regions into
+        degenerate walks; with that fixed it only dropped real one-pixel-thick
+        detections (area 0 under centre tracing), so it is back to 0.0.
+        """
+        assert ContourMatcher()._min_contour_area == 0.0
 
-    def test_explicit_min_contour_area_still_works(self) -> None:
-        """Explicit min_contour_area=0.0 is still allowed."""
-        matcher = ContourMatcher(min_contour_area=0.0)
-        assert matcher._min_contour_area == 0.0
+    def test_gt_min_contour_area_default_is_one_whatever_min_contour_area(
+        self,
+    ) -> None:
+        """Ground truth keeps its 1.0 default independently of predictions.
+
+        A zero-area GT contour can never be matched, so keeping it would count
+        a guaranteed miss; lowering the prediction default must not do that.
+        """
+        assert ContourMatcher()._gt_min_contour_area == 1.0
+        assert ContourMatcher(min_contour_area=2.0)._gt_min_contour_area == 1.0
 
 
 # ---------------------------------------------------------------------------
