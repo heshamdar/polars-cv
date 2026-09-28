@@ -1,0 +1,57 @@
+Gnuplot not found, using plotters backend
+Benchmarking materialize_transpose_u8/256
+Benchmarking materialize_transpose_u8/256: Warming up for 500.00 ms
+Benchmarking materialize_transpose_u8/256: Collecting 20 samples in estimated 2.0262 s (14k iterations)
+Benchmarking materialize_transpose_u8/256: Analyzing
+materialize_transpose_u8/256
+                        time:   [87.867 µs 98.781 µs 105.60 µs]
+                        change: [-79.748% -78.177% -76.441%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking materialize_transpose_u8/512
+Benchmarking materialize_transpose_u8/512: Warming up for 500.00 ms
+Benchmarking materialize_transpose_u8/512: Collecting 20 samples in estimated 2.0591 s (3780 iterations)
+Benchmarking materialize_transpose_u8/512: Analyzing
+materialize_transpose_u8/512
+                        time:   [317.59 µs 321.81 µs 329.52 µs]
+                        change: [-82.319% -80.515% -78.640%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 4 outliers among 20 measurements (20.00%)
+  4 (20.00%) high severe
+Benchmarking materialize_transpose_u8/1024
+Benchmarking materialize_transpose_u8/1024: Warming up for 500.00 ms
+Benchmarking materialize_transpose_u8/1024: Collecting 20 samples in estimated 2.5075 s (840 iterations)
+Benchmarking materialize_transpose_u8/1024: Analyzing
+materialize_transpose_u8/1024
+                        time:   [2.3206 ms 2.6795 ms 3.0493 ms]
+                        change: [-81.481% -79.374% -77.225%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking scale_f32_transposed/256
+Benchmarking scale_f32_transposed/256: Warming up for 500.00 ms
+Benchmarking scale_f32_transposed/256: Collecting 20 samples in estimated 2.0147 s (7770 iterations)
+Benchmarking scale_f32_transposed/256: Analyzing
+scale_f32_transposed/256
+                        time:   [185.30 µs 189.71 µs 195.75 µs]
+                        change: [-85.106% -84.769% -84.363%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+Benchmarking scale_f32_transposed/512
+Benchmarking scale_f32_transposed/512: Warming up for 500.00 ms
+Benchmarking scale_f32_transposed/512: Collecting 20 samples in estimated 2.7879 s (630 iterations)
+Benchmarking scale_f32_transposed/512: Analyzing
+scale_f32_transposed/512
+                        time:   [2.3608 ms 2.5058 ms 2.6614 ms]
+                        change: [-74.446% -73.091% -71.595%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 3 outliers among 20 measurements (15.00%)
+  3 (15.00%) high mild
+Benchmarking scale_f32_transposed/1024
+Benchmarking scale_f32_transposed/1024: Warming up for 500.00 ms
+Benchmarking scale_f32_transposed/1024: Collecting 20 samples in estimated 2.0627 s (60 iterations)
+Benchmarking scale_f32_transposed/1024: Analyzing
+scale_f32_transposed/1024
+                        time:   [20.618 ms 21.402 ms 22.252 ms]
+                        change: [-66.799% -63.709% -60.990%] (p = 0.00 < 0.05)
+                        Performance has improved.

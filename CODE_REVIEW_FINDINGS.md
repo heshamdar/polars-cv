@@ -1161,6 +1161,55 @@ phase of that plan, closed as each lands.
 
   Every other kernel is within noise.
 
+### CR-55 — Materialising a strided view copied a few bytes at a time · `Resolved` · High (perf)
+
+- **What was wrong:**
+  - `ViewBuffer::copy_elements_into` merged only the innermost axis. A u8 HWC
+    flip or crop copied 3 bytes per `memcpy` call and recomputed the N-d offset
+    for each: 5–7 ms to materialise a 1024² RGB flip, where one copy is 0.3 ms.
+    Every `to_contiguous`, list/array sink and encode of a view paid it.
+  - `gather_strided_f32` (the element-wise engine's read of a view)
+    recomputed the offset per element.
+  - `cast_to` on a view packed it first, then converted: two passes.
+  - Grayscale kept its own per-pixel strided loop.
+- **Resolution:** `view-buffer/src/core/strided.rs`, `Walk`, the one walk over
+  a view's memory. It coalesces the layout once into packed units, evenly
+  spaced rows and odometer-walked outer axes (size-1 axes dropped, evenly
+  spaced outer axes merged).
+  - `copy_to` packs, with constant-size unit copies. It is `copy_elements_into`.
+  - `for_each_run` hands out runs: long units in place, short ones packed into
+    an 8 KiB stack scratch. `convert::convert_view` converts a view in one
+    dispatched pass from them, for `cast_to` and the engine's f32 read.
+  - `gather_strided_f32` and grayscale's per-pixel fallback are deleted.
+- **Guards** (`strided::tests`):
+  - the coalescing fixture table;
+  - a random-view property test (rank 1–4, permutes/flips/slices,
+    u8/u16/f32/f64) against a per-element reference, over `copy_to`,
+    `for_each_run`, `to_contiguous` and `cast_to`.
+
+  Both were watched failing against three under-merging mutations (the fixture
+  table) and two output-corrupting ones (the property test). A debug-build
+  bound check on every walk turns a coalescing fault into a panic naming the
+  geometry, instead of a wild read. The suite also passes on the wheels'
+  x86-64 target.
+- **Measured** (`polars-cv/benchmarks/reports/2026-09-28-phase3-strided/`,
+  1024², wheel target):
+  - flip_v materialise: 21.7x;
+  - flip_h materialise: 5.2x;
+  - transpose materialise: 5.5x;
+  - grayscale of a flipped image: 4.7x;
+  - crop then resize: 4.5x;
+  - cast of a flipped view: 3.4x;
+  - scale of a transposed f32 view: 2.8x.
+
+  Up to 35x at 256². Everything else is within noise.
+- **Tried and rejected:** a tiled transpose (`80d3b52`, reverted in `c4475b6`).
+  It made u8 transpose 1.7x slower at 1024² and only helped 12-byte units at
+  1024² (1.27x).
+- **Open follow-up (not planned):** transpose is still ~8x a vertical flip at
+  1024² (2.5 vs 0.3 ms). A kernel specialised for small units (an in-register
+  3-/4-byte block transpose) is the remaining lever.
+
 ### CR-53 — `invert` on other integer dtypes returns f32 against a `PreserveInput` contract · `Resolved` · Low
 
 - **Location:** `ComputeOp::Invert` (`output_dtype_rule` = `PreserveInput`).
