@@ -58,6 +58,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   then resize is 1.3x faster and a vertical flip then resize 1.5x. Output is
   byte-identical. Other layouts (a transpose, a horizontal flip) are still
   packed first, as before.
+- **`grayscale` of a crop or vertical flip is no longer copied first.** The
+  u8 grayscale entry above already said so, but the planner packed such a
+  view before the kernel could read it. u8 grayscale after a vertical flip is
+  1.65x faster at 1024² on the wheels (CR-57).
 
 ### Changed
 
@@ -77,7 +81,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   f32 read and grayscale's per-pixel strided fallback (a non-dense layout is
   now packed, then takes the dense kernel).
 - view-buffer: the resizes (`resize`, `resize_scale`, `resize_to_*`,
-  `resize_max`/`min`, `letterbox`) declare `MemoryEffect::StridePreserving`,
+  `resize_max`/`min`, `letterbox`) and `grayscale` declare
+  `MemoryEffect::StridePreserving`,
   so the planner no longer inserts a `MaterializeContiguous` before them. They
   read their input through `interop::fir::FirViewAdapter`, the
   `ExternalLayout::FastImageResize` adapter, which accepts any layout with

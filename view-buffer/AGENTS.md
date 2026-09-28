@@ -167,7 +167,7 @@ Resize hands such a view to fast_image_resize through
 |----------|-----------|-------------|
 | **View** | Yes | Transpose, reshape, flip, crop, channel_select — metadata only |
 | **Compute** | No | Element-wise ops (cast, scale, normalize, clamp, contrast, gamma, invert) — can be fused. Includes `ComputeOp::Affine` and `ComputeOp::RotateAffine` (not fused with scalar ops). |
-| **Image** | No | Resize, blur, grayscale, threshold, canny, histogram equalize, erode, dilate, morph gradient — allocate their output; resize and threshold read strided input, the rest require materialization |
+| **Image** | No | Resize, blur, grayscale, threshold, canny, histogram equalize, erode, dilate, morph gradient — allocate their output; resize, grayscale and threshold read strided input, the rest require materialization |
 | **Filter** | No | 2D convolution with `Replicate`/`Zero`/`Reflect` border modes — contiguous output, promotes to f32 |
 | **Color** | No | Color space conversions — route through f32 RGB internally. LAB uses D65/sRGB. HSV follows OpenCV (H=[0,180] for U8) |
 | **Binary** | No | Pixel-wise operations between two buffers |

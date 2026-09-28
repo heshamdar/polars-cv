@@ -1,0 +1,114 @@
+== base
+Benchmarking grayscale_u8_rgb/256: Analyzing
+grayscale_u8_rgb/256    time:   [16.099 µs 18.001 µs 19.253 µs]
+Benchmarking grayscale_u8_rgb/512: Analyzing
+grayscale_u8_rgb/512    time:   [55.497 µs 56.566 µs 58.193 µs]
+Benchmarking grayscale_u8_rgb/1024: Analyzing
+grayscale_u8_rgb/1024   time:   [231.00 µs 242.61 µs 254.70 µs]
+Benchmarking grayscale_u8_flip_h/256: Analyzing
+grayscale_u8_flip_h/256 time:   [50.751 µs 55.161 µs 61.098 µs]
+Benchmarking grayscale_u8_flip_h/512: Analyzing
+grayscale_u8_flip_h/512 time:   [235.33 µs 254.32 µs 276.46 µs]
+grayscale_u8_flip_h/1024
+                        time:   [1.1292 ms 1.1701 ms 1.2148 ms]
+Benchmarking grayscale_u8_flip_v/256: Analyzing
+grayscale_u8_flip_v/256 time:   [22.555 µs 23.572 µs 24.462 µs]
+Benchmarking grayscale_u8_flip_v/512: Analyzing
+grayscale_u8_flip_v/512 time:   [104.42 µs 108.36 µs 111.70 µs]
+grayscale_u8_flip_v/1024
+                        time:   [422.18 µs 436.20 µs 451.08 µs]
+== head
+Benchmarking grayscale_u8_rgb/256: Analyzing
+grayscale_u8_rgb/256    time:   [16.931 µs 20.304 µs 22.695 µs]
+Benchmarking grayscale_u8_rgb/512: Analyzing
+grayscale_u8_rgb/512    time:   [51.272 µs 51.524 µs 51.840 µs]
+Benchmarking grayscale_u8_rgb/1024: Analyzing
+grayscale_u8_rgb/1024   time:   [212.86 µs 223.91 µs 238.13 µs]
+Benchmarking grayscale_u8_flip_h/256: Analyzing
+grayscale_u8_flip_h/256 time:   [48.632 µs 49.815 µs 51.888 µs]
+Benchmarking grayscale_u8_flip_h/512: Analyzing
+grayscale_u8_flip_h/512 time:   [217.00 µs 231.48 µs 250.46 µs]
+grayscale_u8_flip_h/1024
+                        time:   [1.0892 ms 1.1256 ms 1.1607 ms]
+Benchmarking grayscale_u8_flip_v/256: Analyzing
+grayscale_u8_flip_v/256 time:   [17.479 µs 18.470 µs 19.289 µs]
+Benchmarking grayscale_u8_flip_v/512: Analyzing
+grayscale_u8_flip_v/512 time:   [74.948 µs 77.857 µs 80.624 µs]
+grayscale_u8_flip_v/1024
+                        time:   [255.90 µs 269.77 µs 280.72 µs]
+== base
+Benchmarking grayscale_u8_rgb/256: Analyzing
+grayscale_u8_rgb/256    time:   [18.452 µs 20.079 µs 21.088 µs]
+Benchmarking grayscale_u8_rgb/512: Analyzing
+grayscale_u8_rgb/512    time:   [50.883 µs 51.079 µs 51.313 µs]
+Benchmarking grayscale_u8_rgb/1024: Analyzing
+grayscale_u8_rgb/1024   time:   [205.03 µs 214.57 µs 226.73 µs]
+Benchmarking grayscale_u8_flip_h/256: Analyzing
+grayscale_u8_flip_h/256 time:   [50.879 µs 52.252 µs 53.840 µs]
+Benchmarking grayscale_u8_flip_h/512: Analyzing
+grayscale_u8_flip_h/512 time:   [223.72 µs 242.19 µs 266.23 µs]
+grayscale_u8_flip_h/1024
+                        time:   [1.1113 ms 1.1547 ms 1.2081 ms]
+Benchmarking grayscale_u8_flip_v/256: Analyzing
+grayscale_u8_flip_v/256 time:   [22.750 µs 23.867 µs 24.776 µs]
+Benchmarking grayscale_u8_flip_v/512: Analyzing
+grayscale_u8_flip_v/512 time:   [106.27 µs 109.03 µs 111.40 µs]
+grayscale_u8_flip_v/1024
+                        time:   [424.09 µs 435.29 µs 450.42 µs]
+== head
+Benchmarking grayscale_u8_rgb/256: Analyzing
+grayscale_u8_rgb/256    time:   [16.868 µs 19.295 µs 20.767 µs]
+Benchmarking grayscale_u8_rgb/512: Analyzing
+grayscale_u8_rgb/512    time:   [54.410 µs 57.486 µs 61.228 µs]
+Benchmarking grayscale_u8_rgb/1024: Analyzing
+grayscale_u8_rgb/1024   time:   [215.65 µs 222.87 µs 230.95 µs]
+Benchmarking grayscale_u8_flip_h/256: Analyzing
+grayscale_u8_flip_h/256 time:   [51.739 µs 53.752 µs 56.498 µs]
+Benchmarking grayscale_u8_flip_h/512: Analyzing
+grayscale_u8_flip_h/512 time:   [220.20 µs 225.36 µs 234.77 µs]
+grayscale_u8_flip_h/1024
+                        time:   [1.0091 ms 1.0527 ms 1.1119 ms]
+Benchmarking grayscale_u8_flip_v/256: Analyzing
+grayscale_u8_flip_v/256 time:   [17.685 µs 18.771 µs 19.698 µs]
+Benchmarking grayscale_u8_flip_v/512: Analyzing
+grayscale_u8_flip_v/512 time:   [67.691 µs 70.259 µs 72.191 µs]
+grayscale_u8_flip_v/1024
+                        time:   [251.02 µs 263.55 µs 274.84 µs]
+== base
+Benchmarking grayscale_u8_rgb/256: Analyzing
+grayscale_u8_rgb/256    time:   [15.808 µs 18.486 µs 20.486 µs]
+Benchmarking grayscale_u8_rgb/512: Analyzing
+grayscale_u8_rgb/512    time:   [55.455 µs 58.316 µs 61.189 µs]
+Benchmarking grayscale_u8_rgb/1024: Analyzing
+grayscale_u8_rgb/1024   time:   [222.62 µs 233.84 µs 246.79 µs]
+Benchmarking grayscale_u8_flip_h/256: Analyzing
+grayscale_u8_flip_h/256 time:   [49.156 µs 49.847 µs 50.663 µs]
+Benchmarking grayscale_u8_flip_h/512: Analyzing
+grayscale_u8_flip_h/512 time:   [219.23 µs 223.42 µs 231.21 µs]
+grayscale_u8_flip_h/1024
+                        time:   [975.68 µs 1.0133 ms 1.0597 ms]
+Benchmarking grayscale_u8_flip_v/256: Analyzing
+grayscale_u8_flip_v/256 time:   [22.373 µs 23.768 µs 25.029 µs]
+Benchmarking grayscale_u8_flip_v/512: Analyzing
+grayscale_u8_flip_v/512 time:   [105.48 µs 110.11 µs 115.36 µs]
+grayscale_u8_flip_v/1024
+                        time:   [430.40 µs 455.22 µs 483.77 µs]
+== head
+Benchmarking grayscale_u8_rgb/256: Analyzing
+grayscale_u8_rgb/256    time:   [16.768 µs 20.165 µs 22.722 µs]
+Benchmarking grayscale_u8_rgb/512: Analyzing
+grayscale_u8_rgb/512    time:   [54.831 µs 57.763 µs 61.405 µs]
+Benchmarking grayscale_u8_rgb/1024: Analyzing
+grayscale_u8_rgb/1024   time:   [214.92 µs 227.47 µs 239.78 µs]
+Benchmarking grayscale_u8_flip_h/256: Analyzing
+grayscale_u8_flip_h/256 time:   [48.905 µs 50.461 µs 52.279 µs]
+Benchmarking grayscale_u8_flip_h/512: Analyzing
+grayscale_u8_flip_h/512 time:   [222.92 µs 228.92 µs 237.13 µs]
+grayscale_u8_flip_h/1024
+                        time:   [1.0994 ms 1.1792 ms 1.2503 ms]
+Benchmarking grayscale_u8_flip_v/256: Analyzing
+grayscale_u8_flip_v/256 time:   [17.860 µs 19.348 µs 20.776 µs]
+Benchmarking grayscale_u8_flip_v/512: Analyzing
+grayscale_u8_flip_v/512 time:   [68.372 µs 72.118 µs 75.010 µs]
+grayscale_u8_flip_v/1024
+                        time:   [250.40 µs 263.85 µs 284.14 µs]

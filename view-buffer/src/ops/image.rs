@@ -451,8 +451,9 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::ResizeMin { .. }
             | ImageOpKind::Letterbox { .. } => MemoryEffect::StridePreserving,
             ImageOpKind::Blur { .. } => MemoryEffect::RequiresContiguous,
-            // Grayscale changes shape (removes channel dim) so needs allocation
-            ImageOpKind::Grayscale => MemoryEffect::RequiresContiguous,
+            // Reads rows packed within themselves in place and packs any
+            // other layout itself (`grayscale_strided`).
+            ImageOpKind::Grayscale => MemoryEffect::StridePreserving,
             ImageOpKind::Canny { .. } => MemoryEffect::RequiresContiguous,
             ImageOpKind::HistogramEqualize => MemoryEffect::RequiresContiguous,
             ImageOpKind::Erode { .. } => MemoryEffect::RequiresContiguous,
