@@ -38,6 +38,26 @@ macro_rules! cast_from {
         cast_from!(@round $src => u32, i32, u64, i64);
         cast_from!(@plain $src => f32, f64);
     };
+    // f64 source: as `float`, but the 8/16-bit targets clamp (`clamp_narrow`).
+    (double $src:ty) => {
+        cast_from!(@clamp $src => u8, i8, u16, i16);
+        cast_from!(@round $src => u32, i32, u64, i64);
+        cast_from!(@plain $src => f32, f64);
+    };
+    (@clamp $src:ty => $($dst:ty),+) => {
+        $(impl CastFrom<$src> for $dst {
+            /// `value.round() as $dst`, clamped to the target first: the
+            /// same result (the clamped value is in range, and NaN passes
+            /// the clamp to become 0), in the form the compiler vectorises
+            /// across the values of a per-pixel loop, such as the four
+            /// channels a warp blends (`round_narrow`'s did not: 1.8x slower
+            /// for RGBA there).
+            #[inline(always)]
+            fn cast_from(value: $src) -> $dst {
+                value.round().clamp(<$dst>::MIN as $src, <$dst>::MAX as $src) as $dst
+            }
+        })+
+    };
     (@narrow $src:ty => $($dst:ty),+) => {
         $(impl CastFrom<$src> for $dst {
             #[inline(always)]
@@ -103,7 +123,7 @@ cast_from!(int i32);
 cast_from!(int u64);
 cast_from!(int i64);
 cast_from!(float f32);
-cast_from!(float f64);
+cast_from!(double f64);
 
 /// Every element of `src` converted to `D` by the crate's rule.
 pub fn convert_slice<S: ViewType, D: ViewType + CastFrom<S>>(src: &[S]) -> Vec<D> {
@@ -242,8 +262,8 @@ mod tests {
         assert_eq!(convert_slice::<f64, f32>(&[0.1]), vec![0.1f64 as f32]);
     }
 
-    /// The vectorisable 8/16-bit form equals `x.round() as T` on a spread of
-    /// every f32 bit pattern (and every special value).
+    /// The 8/16-bit forms equal `x.round() as T` on a spread of every f32 and
+    /// f64 bit pattern (and every special value).
     #[test]
     fn narrow_conversion_equals_round_then_saturate() {
         let specials = [
@@ -272,9 +292,30 @@ mod tests {
             assert_eq!(u16::cast_from(x), x.round() as u16, "u16 {x:e}");
             assert_eq!(i16::cast_from(x), x.round() as i16, "i16 {x:e}");
             let d = f64::from(x) * 1.000_000_1;
-            assert_eq!(u8::cast_from(d), d.round() as u8, "u8 {d:e}");
-            assert_eq!(i16::cast_from(d), d.round() as i16, "i16 {d:e}");
+            assert_f64_narrow_rule(d);
         }
+        let f64_specials = [
+            0.499_999_999_999_999_94,
+            -0.499_999_999_999_999_94,
+            4_503_599_627_370_497.0,
+            f64::MAX,
+            f64::MIN_POSITIVE,
+            255.499_999_999_999_97,
+            -32_768.500_000_000_01,
+        ];
+        let spread = (0..=u64::MAX)
+            .step_by(0x0000_7FF3_9A5B_C001)
+            .map(f64::from_bits);
+        for d in f64_specials.into_iter().chain(spread) {
+            assert_f64_narrow_rule(d);
+        }
+    }
+
+    fn assert_f64_narrow_rule(d: f64) {
+        assert_eq!(u8::cast_from(d), d.round() as u8, "u8 {d:e}");
+        assert_eq!(i8::cast_from(d), d.round() as i8, "i8 {d:e}");
+        assert_eq!(u16::cast_from(d), d.round() as u16, "u16 {d:e}");
+        assert_eq!(i16::cast_from(d), d.round() as i16, "i16 {d:e}");
     }
 
     /// Every length a vector loop splits differently: empty, shorter than a

@@ -1316,6 +1316,40 @@ phase of that plan, closed as each lands.
   length and pixels through `crop` → `sink("blob")`, and failed against the
   unfixed extension (292 bytes for a 172-byte blob).
 
+### CR-62 — The affine warp stored a 64-bit maximum as 0 · `Resolved` · Low
+
+- **Location:** the warp's store (`runner.rs`'s `affine_warp_typed`, now
+  `execution/warp.rs`): `clamp_for_dtype` then `NumCast`.
+- **What was wrong:** `clamp_for_dtype` clamps a u64 to `u64::MAX as f64`,
+  which is 2^64, one past the range (and an i64 to 2^63); `NumCast` then
+  refuses the value and the store falls back to 0. A `warp_affine`/`rotate`
+  of a u64/i64 image at the top of its range came back 0 there.
+- **Resolution:** the warp stores through M5 (`CastFrom<f64>`,
+  round-then-saturate), as every other float→integer store does. For every
+  other dtype and value that is the old result (the parity tests compare).
+- **Guards:** `sixty_four_bit_values_saturate_rather_than_become_zero`
+  (Rust) and `test_a_warped_64_bit_maximum_stays_the_maximum` (Python), both
+  watched failing.
+- **Still latent:** `clamp_for_dtype` + `NumCast` remains in the typed
+  grayscale (`luma_typed`) and the Gaussian blur's store. Neither reaches 2^64
+  (their weights sum below 1: 1,200 blur sigma/shape cases and a white u64
+  image all stayed in range), so there is no failing test to fix them against.
+
+### CR-63 — `rotate(0)` spread NaN and infinity into neighbouring pixels · `Resolved` · Low
+
+- **What was wrong:** a 0° rotation lowered to a full bilinear warp. For
+  finite pixels it returned the input, but each output pixel blends its right
+  and lower neighbours with weight 0, and `NaN * 0` and `inf * 0` are NaN: one
+  NaN and one infinity in a 3×3 image came back as five NaNs. It also cost a
+  whole warp (36 ms at 1024² RGB).
+- **Resolution:** `execution::warp::rotate` returns the (packed) input for
+  the 0° lowering, sharing its data. `Rotate` declares `RequiresContiguous`,
+  so a planned input is already packed and the planner's record holds.
+- **Guards:** `a_zero_degree_rotation_shares_its_input`,
+  `a_zero_degree_rotation_leaves_every_value_where_it_was` (Rust, through
+  the engine) and `test_rotate_zero_leaves_every_value_where_it_was`
+  (Python), all watched failing.
+
 ### CR-61 — A `list` value the declared dtype cannot hold became 0 · `Resolved` · Medium
 
 - **Location:** `graph/decode.rs`, the `list`/`array` source's converting

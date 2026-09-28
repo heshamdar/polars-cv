@@ -7,6 +7,7 @@
 
 pub mod plan;
 pub mod runner;
+mod warp;
 
 pub use plan::{ExecutionPlan, PlanStep};
 pub use runner::{apply_channel_merge, apply_channel_swap, execute_plan, validate_channel_merge};
