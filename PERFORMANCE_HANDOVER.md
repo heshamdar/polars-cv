@@ -14,7 +14,9 @@ merged in. Everything is committed and pushed; there is no work in progress.
 found that each phase had re-solved how a kernel reads a view and where it
 writes; that is now one mechanism (`core::map`, CR-64) that later work must
 use. Phase 9 is done (f16 sink; JPEG eval recorded). **What is left: the
-open items at the end, three of which need the owner's decision.**
+open items at the end.** The owner decided the three that needed it
+(2026-09-28): keep image's JPEG encoder, refuse a >4-channel resize (already
+so), and store the warp's border fill by the conversion rule (done).
 
 ## Review (2026-09-28)
 
@@ -58,9 +60,10 @@ it shipped.
 7. *Test gaps:* no parity test had a per-channel kernel cross a block or run
    boundary, and typed threshold had no Rust test. Both added and watched
    failing.
-8. *Still open, owner's decision:* resize of > 4 channels panics (open item
-   4); the warp's border fill truncates (open item 7); whether to adopt
-   jpeg-encoder, whose eval gate passes but whose files are larger (item 11).
+8. *Decided by the owner:* keep image's JPEG encoder (item 11); a
+   >4-channel resize is refused by the contract, as it already was (item 4,
+   now pinned by tests); the warp's border fill stores by the conversion rule
+   (item 7, CR-66).
 
 ## Where it stands
 
@@ -81,11 +84,12 @@ it shipped.
 | review: one traversal (`core::map`) | done | `0614576` | `2026-09-28-review-traversal/` | CR-64 |
 | 9a: f16 sink | done | `0614576` | `2026-09-28-review-traversal/` | CR-65 |
 | open item 5: view-buffer without `image_interop` | done | `6229fbe` | — | — |
-| 9b: JPEG encoder eval | done (see below) | this commit | `2026-09-28-phase9-jpeg-eval/` | — |
+| 9b: JPEG encoder eval | done; not adopted (owner) | `8e580fd` | `2026-09-28-phase9-jpeg-eval/` | — |
+| owner's decisions: warp border fill, resize > 4 channels | done | this commit | — | CR-66 |
 
 Reports live under `polars-cv/benchmarks/reports/`; findings are in
 `CODE_REVIEW_FINDINGS.md` under "Performance review (2026-09-27)". The next free
-finding id is **CR-66**; check with `grep -o '^### CR-[0-9]*' CODE_REVIEW_FINDINGS.md | sort -t- -k2 -n | tail -1`
+finding id is **CR-67**; check with `grep -o '^### CR-[0-9]*' CODE_REVIEW_FINDINGS.md | sort -t- -k2 -n | tail -1`
 before filing one. CR-50 was duplicated once.
 
 ## Phase 9: sinks (done)
@@ -103,8 +107,8 @@ before filing one. CR-50 was duplicated once.
   and a view-buffer test would have needed IJG allowed. **The gate passes**
   (geomean 1.62–1.65× over three runs, worst ΔPSNR 0.04 dB), but the files
   are 5–13% larger on smooth content at the same quality. That was not part
-  of the gate, so the swap was **not made; it is the owner's decision**. If
-  adopted:
+  of the gate; put to the owner, **they declined the swap** (2026-09-28).
+  Should it be revisited, adoption means:
   - the dependency goes in `view-buffer/Cargo.toml` under `image_interop`,
     and `IJG` in `deny.toml`'s `allow` with a comment;
   - it plugs in as the `native` closure of `ImageAdapter::encode_in_place`
@@ -137,19 +141,19 @@ ones marked **ask** change behaviour or scope and need the user's go-ahead.
    over a run-time channel count compiled badly in the AVX2 build; it is now
    specialised for 3 and 4 channels (1.5–1.9× on the wheels, CR-64). Recheck
    on v3 before closing.
-4. **Resize of more than 4 channels panics at run time.** fast_image_resize
-   has no such pixel type, and resize's `check()` accepts any channel count.
-   The fix belongs in the op's contract (`check()` refuses it at plan time,
-   per "a bypass must fail"), or in a per-channel-group resize. **Ask** which.
+4. ~~Resize of more than 4 channels panics~~: stale. The resize family's
+   contract (`ImageOp::validate`) already refuses more than 4 channels, at
+   plan time when the count is known and per row when it is not; the
+   kernel's arm is an `unreachable!` naming that contract.
+   `TestResizeChannelLimit` (`tests/test_resize_gaps.py`) now pins it,
+   watched failing with the contract's arm disabled (the engine panicked).
 5. ~~view-buffer does not build without `image_interop`~~: fixed (`6229fbe`);
    CI and `verify.sh` check `--no-default-features` and the defaults.
 6. ~~Typed grayscale stores with `clamp_for_dtype` + `NumCast`~~: grayscale
    is a pixel map storing by `CastFrom` (CR-64), 1.5–2.1× faster;
    `clamp_for_dtype` is test-only (the warp and blur oracles).
-7. **The warp's border fill converts with `NumCast`**, truncating: a u8
-   `border_value=7.5` fills 7 but blends toward 7.5 at the edge, and an
-   out-of-range value fills 0 (the CR-62 pattern). M5 would round and
-   saturate. Changing it changes output: **ask**.
+7. ~~The warp's border fill truncates~~: the owner chose the conversion
+   rule; done (CR-66).
 8. **A converting `list` row goes through polars' `strict_cast`** (Phase 6):
    15.8 µs per 64×64 `i64 → u8` row against 2.2 for an in-place one. It is a
    convenience path, and a typed pass would need a second copy of polars'
@@ -165,8 +169,9 @@ ones marked **ask** change behaviour or scope and need the user's go-ahead.
     ~2,600 instructions. Nothing measured slower for it, but the binary grew.
     A table lookup gains nothing from AVX2 (it is scalar loads), so it could
     skip dispatch if size ever matters.
-11. **Adopt jpeg-encoder?** The eval gate passes but files grow 5–13% on
-    smooth content (Phase 9 above). **Ask.**
+11. **jpeg-encoder: not adopted** (the owner's decision, 2026-09-28): the
+    gate passed, but the owner kept image's encoder over 5–13% larger files
+    on smooth content. The eval stays in its report for a later look.
 
 ## What exists now (the mechanisms later work must use)
 
@@ -265,12 +270,16 @@ Line numbers in the plan (`runner.rs:921`, …) are stale; grep for the symbol.
   - z-score statistics exact (done);
   - contrast mean exact (done, and it turned out bit-identical anyway);
   - JPEG bytes, only if Phase 9's encoder passes its eval gate (≥ 1.5× geomean
-    speedup, PSNR within 0.5 dB). In that case IJG is added to `deny.toml`, and
-    only then.
+    speedup, PSNR within 0.5 dB). It passed, and **the owner declined it**
+    (2026-09-28) over 5–13% larger files on smooth content: image's encoder
+    stays, and IJG stays out of `deny.toml`.
+  - The warp's border fill stores by the conversion rule (CR-66, 2026-09-28).
 
   Each change gets a CHANGELOG entry. Bug fixes found on the way (CR-59,
-  CR-61, CR-62, CR-63) changed output where the old output was wrong; each is
-  a finding, a CHANGELOG "Fixed" entry and a guard.
+  CR-61, CR-62, CR-63, CR-66) changed output where the old output was wrong;
+  each is a finding, a CHANGELOG "Fixed" entry and a guard.
+- **A resize of more than 4 channels is refused** by its contract (not split
+  into channel groups), as it already was; pinned by tests (2026-09-28).
 - **Integer `invert` is `MAX + MIN − x`** (= `!x`) in the input dtype (CR-53).
 - **Transpose tiling was tried and reverted** (see open item 2).
 - **The user's preferences:** TDD (watch every new guard fail for the reason it

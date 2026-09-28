@@ -1522,6 +1522,24 @@ phase of that plan, closed as each lands.
   faster for f32 rows, 6.1–6.4x for u8 rows and 2.9–3.4x for a transposed
   view, and it now runs in parallel with the other rows.
 
+### CR-66 — The warp's border fill truncated, and stored 0 for an out-of-range border · `Resolved` · Low
+
+- **Location:** the affine warp's output fill (`execution/warp.rs`), behind
+  `rotate` and `warp_affine`.
+- **What was wrong:** pixels off the image were filled with
+  `NumCast::from(border_value).unwrap_or(0)`, while pixels at the edge blend
+  toward `border_value` as an f64 and store by the conversion rule. A u8
+  border of 7.5 filled 7 but edges blended toward 7.5; a border the dtype
+  cannot hold (300 for u8, −200 for i8) filled 0, the CR-62 pattern. Listed
+  as open item 7 in the performance handover; the owner chose the fix.
+- **Resolution:** the fill is stored by `CastFrom` (round half away from
+  zero, then saturate), like every other store: 7.5 → 8, 300 → 255,
+  −200 → −128 for i8. The warp's verbatim parity oracle takes the same line,
+  deliberately, with a comment saying so; nothing else in it changes.
+- **Guards:** `the_border_fill_is_stored_by_the_conversion_rule` (Rust) and
+  `test_the_border_fill_is_stored_like_every_other_pixel` (Python, through
+  the plugin), both watched failing on the truncating fill.
+
 ## Architectural follow-up (spun out of CR-01)
 
 ### CR-27 — Extend the single-metadata-authority collapse to `Compute` and `View` builders · `Resolved`

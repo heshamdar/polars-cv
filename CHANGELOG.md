@@ -197,6 +197,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **`rotate`/`warp_affine` fill pixels off the image with the border value
+  rounded and saturated, like every other pixel.** The fill truncated it: a
+  u8 `border_value=7.5` filled 7 while pixels at the edge blended toward 7.5,
+  and a value the dtype cannot hold (300 for u8) filled 0. It now fills 8
+  and 255. Integer border values inside the dtype's range are unchanged
+  (CR-66).
 - **`ContourMatcher` no longer silently drops one-pixel-thick regions.** Two
   causes, both fixed:
   - Traced through pixel centres, a single pixel, a two-pixel pair or a

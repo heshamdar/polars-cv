@@ -197,3 +197,43 @@ class TestResizeFilterQuality:
         assert arr1.shape == arr2.shape == (128, 128, 3)
         # They should differ (bilinear interpolates, nearest doesn't)
         assert not np.array_equal(arr1, arr2)
+
+
+# ---------------------------------------------------------------------------
+# Channel count
+# ---------------------------------------------------------------------------
+
+
+@plugin_required
+class TestResizeChannelLimit:
+    """The resampler takes one to four interleaved channels.
+
+    More is refused by the op's contract with an error naming the limit: at
+    plan time when the channel count is known there, per row when it is not.
+    The kernel below it has no pixel type for more and would panic.
+    """
+
+    RESIZES = {
+        "resize": lambda p: p.resize(height=8, width=8),
+        "resize_scale": lambda p: p.resize_scale(scale=2.0),
+        "resize_max": lambda p: p.resize_max(max_size=8),
+        "letterbox": lambda p: p.letterbox(height=8, width=8),
+    }
+
+    @pytest.mark.parametrize("op", sorted(RESIZES))
+    def test_five_channels_are_refused_when_known_at_plan_time(self, op: str) -> None:
+        img = np.arange(4 * 5 * 5, dtype=np.uint8).reshape(4, 5, 5)
+        df = pl.DataFrame({"x": [img]}, schema={"x": pl.Array(pl.UInt8, (4, 5, 5))})
+        pipe = self.RESIZES[op](Pipeline().source("array", dtype="u8"))
+        with pytest.raises(pl.exceptions.ComputeError, match="at most 4 channels"):
+            df.with_columns(o=pl.col("x").cv.pipe(pipe).sink("numpy"))
+
+    @pytest.mark.parametrize("op", sorted(RESIZES))
+    def test_five_channels_are_refused_per_row(self, op: str) -> None:
+        img = np.arange(4 * 5 * 5, dtype=np.uint8).reshape(4, 5, 5)
+        df = pl.DataFrame(
+            {"x": [img.tolist()]}, schema={"x": pl.List(pl.List(pl.List(pl.UInt8)))}
+        )
+        pipe = self.RESIZES[op](Pipeline().source("list", dtype="u8"))
+        with pytest.raises(pl.exceptions.ComputeError, match="at most 4 channels"):
+            df.with_columns(o=pl.col("x").cv.pipe(pipe).sink("numpy"))

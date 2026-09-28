@@ -39,13 +39,12 @@ Per cell (run 1; `raw/` has all three):
 | noise | Rgb8 | 1024 | 75 | 58.11 | 34.32 | 1.69x | 17.49 | 22.27 | 22.27 | 1,313,993 | 1,315,976 (+0.2%) |
 | noise | Rgb8 | 1024 | 90 | 65.33 | 35.00 | 1.87x | 17.66 | 29.94 | 29.96 | 1,957,891 | 1,960,856 (+0.2%) |
 
-## Outcome: the gate passes; adoption is the owner's call
+## Outcome: the gate passes; not adopted (the owner's decision)
 
 The gate the owner set passes in all three runs. One cost the gate does not
 measure: **at the same quality setting, jpeg-encoder's files are 5–13%
 larger on smooth content** (0.1–0.3% on noise), for the same PSNR (±0.04
-dB). That is new information for an output-changing decision, so the swap
-is not made here; it is put to the owner. If adopted, the handover's
-"If adopted" list applies (dependency under `image_interop`, IJG in
-`deny.toml` with a comment, the `native` closure of `encode_in_place` for
-L8/Rgb8, a CHANGELOG'd byte change).
+dB). Put to the owner as new information for an output-changing decision,
+they kept image's encoder (2026-09-28). IJG stays out of `deny.toml`, and
+JPEG bytes are unchanged. Should it be revisited, the handover's Phase 9
+section lists what adoption involves.
