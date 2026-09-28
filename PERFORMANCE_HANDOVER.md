@@ -6,7 +6,7 @@ Read this, then the plan's phase you are starting, then `CLAUDE.md`'s
 Working Agreements (they bind every change here).
 
 Branch: `claude/codebase-performance-assessment-36x2p3`. Last code commit:
-`72fd1d1` (Phase 4). Everything is committed and pushed; there is no work in
+`dbe23ee` (Phase 5). Everything is committed and pushed; there is no work in
 progress.
 
 ## Where it stands
@@ -18,16 +18,17 @@ progress.
 | 2: element-wise engine | done | `5fc5fea` | `2026-09-27-phase2-elementwise/` | CR-52 |
 | CR-53: integer `invert` keeps its dtype | done | `0ecfe8f` | — | CR-53 |
 | 3: strided walk | done | `bf64725`; tiling `80d3b52`, reverted in `c4475b6`; docs in `6c7bc8c` | `2026-09-28-phase3-strided/` | CR-55 |
-| 4: resize adapter (resize after crop/flip is zero-copy) | done | `72fd1d1` | `2026-09-28-phase4-resize/` | CR-56; CR-57 filed (open) |
-| 5: per-row executor overhead | **next** | | | |
-| 6: `List` source zero-copy, raw/blob alignment | not started | | | |
+| 4: resize adapter (resize after crop/flip is zero-copy) | done | `72fd1d1` | `2026-09-28-phase4-resize/` | CR-56 |
+| CR-57: grayscale reads crops/flips in place | done | `7134c75` | `2026-09-28-cr57-grayscale/` | CR-57 |
+| 5: per-row executor overhead | done | `dbe23ee` | `2026-09-28-phase5-per-row/` | CR-58; CR-59 (blob bug, fixed); CR-60 (allocator, open) |
+| 6: `List` source zero-copy, raw/blob alignment | **next** | | | |
 | 7: rotation / affine | not started | | | |
 | 8: morphology iterations, blur input conversion | not started | | | |
 | 9: JPEG encoder (eval-gated), f16 sink | not started | | | |
 
 Reports live under `polars-cv/benchmarks/reports/`; findings are in
 `CODE_REVIEW_FINDINGS.md` under "Performance review (2026-09-27)". The next free
-finding id is **CR-58**; check with `grep -o '^### CR-[0-9]*' CODE_REVIEW_FINDINGS.md | sort -t- -k2 -n | tail -1`
+finding id is **CR-61**; check with `grep -o '^### CR-[0-9]*' CODE_REVIEW_FINDINGS.md | sort -t- -k2 -n | tail -1`
 before filing one. CR-50 was duplicated once.
 
 ## What exists now (the mechanisms later phases must use)
@@ -65,6 +66,13 @@ not write a second one beside it; extend it.
 - **`view-buffer/src/interop/fir.rs`** (`FirViewAdapter<P>`): the one way a
   buffer reaches fast_image_resize. `resize_pixels::<P>` (`runner.rs`) is the
   one resize kernel; it packs only a layout the adapter refuses.
+- **`core::layout::{Dims, Strides}`** (inline up to rank 4) and
+  `is_c_contiguous`: cloning a buffer or asking its layout a question
+  allocates nothing. Don't reintroduce a `Vec` copy of a shape or strides on
+  a per-row path; `layout_bookkeeping_allocates_nothing` pins it.
+- **`ExecutionPlan::execute_steps`** replays a cached `Arc<[PlanStep]>`.
+- **Row results reach the column builder as per-range parts** (`RowParts`,
+  `decode.rs`); never concatenate them (a `RowResult` is 168 bytes).
 - **`MemoryEffect` is what makes a planned pipeline pack.** A kernel that reads
   views is not enough: `build_plan` inserts `MaterializeContiguous` before any
   op declaring `RequiresContiguous`. Check the plan's steps
@@ -165,28 +173,62 @@ before building either side):
 - **u8 preset normalize is slower in the v3 build than on the wheel target**
   (4.0 vs 2.2 ms at 1024², Phase 2 report). Not investigated.
 - **Transpose is still ~8× a vertical flip** (CR-55 follow-up).
-- **Grayscale of a crop or flip is still packed by the planner** (CR-57, open).
-  Phase 1's CHANGELOG line says it is not; the kernel can read it in place, but
-  `Grayscale` declares `RequiresContiguous`. Not a one-line fix: its 1-channel
-  case returns its input unchanged, so it would pass a view on while the
-  planner records a contiguous output. Ask the user before taking it on.
+- **The plugin allocates with the system `malloc`** (CR-60, open). Since
+  Phase 5, glibc trims freed row buffers between calls, so a call holding
+  many large rows (a 64×64 f32 `array` sink, 50k rows, one thread) re-faults
+  ~800 MB on every call after the first: ~40% slower from the second call.
+  pyo3-polars' `PolarsAllocator` is the likely fix; `test_alloc.rs` installs
+  its own global allocator for tests, so that needs care. Ask the user first:
+  it changes the allocator for the whole plugin.
+- **Eager calls scale poorly across threads**: an 8×8 `invert` over 200k rows
+  in one chunk is 1.7x faster on 4 threads than on 1, and the same rows split
+  into 100 chunks run ~2x faster than one chunk. Some per-call work is serial
+  (the column build is the first suspect). Not investigated.
 - **Resize of more than 4 channels panics at run time** (as it did before
   Phase 4): fast_image_resize has no such pixel type and resize's `check()`
   accepts any channel count. Not filed.
 
-## Starting Phase 5
+## Starting Phase 6
 
-Plan: `PERFORMANCE_PLAN.md`, "Phase 5 — Per-row executor overhead". Its line
-numbers are stale; grep for the symbols (`compiled.rs`'s cached-plan lookup,
-`decode.rs`'s `get_binary_row_buffer`/`is_array_row_null`/`get_array_row_buffer`).
+Plan: `PERFORMANCE_PLAN.md`, "Phase 6 — Ingestion". Measure first, as Phases 4
+and 5 did: Phase 5's profile showed the plan's own candidates were a small part
+of the cost, and the real one was elsewhere.
 
-Lessons from Phase 4 that apply:
+**Profiling the plugin** (what worked in Phase 5):
+- There is no `perf`, and `py-spy` sees only threads with Python state (the
+  plugin runs on polars' pool). Use callgrind.
+- The release and benchmark profiles strip symbols (`strip = true`). Build an
+  unstripped copy in its own target dir so the benchmark cache survives:
+  `CARGO_TARGET_DIR=$SCRATCH/target-prof CARGO_PROFILE_BENCHMARK_STRIP=false
+  CARGO_PROFILE_BENCHMARK_DEBUG=line-tables-only scripts/with-pyo3-env.sh cargo
+  build -p polars-cv --lib --profile benchmark --features pyo3-extension`
+  (~11 min cold, ~4 incremental, ~5 GB), and copy `libpolars_cv.so` over
+  `polars-cv/python/polars_cv/_lib.abi3.so`.
+- `POLARS_MAX_THREADS=1 valgrind --tool=callgrind --toggle-collect='*execute_rows*'
+  .venv/bin/python script.py`, then `callgrind_annotate --inclusive=yes` and
+  `--tree=caller` on `malloc` for who allocates. Use ~20k small rows.
+- Callgrind counts instructions: it cannot see lock contention, page faults
+  or allocator trimming. Check those with timings (`POLARS_MAX_THREADS=1` vs
+  4) and `resource.getrusage` page-fault counts.
+
+**Plugin A/B:** build each side with `maturin develop --profile benchmark` in
+the main tree, copy `_lib.abi3.so` aside after each, and swap them between
+alternating rounds of `benchmarks/plugin_overhead.py` (`--size`, `--only`).
+The Python side must be identical on both sides.
+
+**Disk:** the session allowance is ~38 GB. `target/debug` grew to 20 GB with
+stale flag variants and filled it twice. `rm -rf target/debug/incremental`
+is always safe; a whole `target/debug` is only build cache. Never build
+`-p polars-cv --all-features`: it is a different feature set and rebuilds the
+whole polars stack in debug.
+
+Lessons from Phase 4 that still apply:
 - **A parity test needs an oracle outside the code under test.** Comparing
   the new path with "the same op on packed input" was blind to both mutations
   tried, because the packed input went through the new adapter too. Compare
   against something that shares no code with the change.
-- **This container's benchmark noise is about ±5% between rounds.** A
-  one-sided 5–9% shift over five alternating rounds was real (a `skip` in a
-  hot iterator); a mixed-sign ±5% over three was not.
+- **This container's benchmark noise is about ±5% between rounds** (±10% for
+  the 64×64 plugin cases). Confirm a one-sided shift over more rounds, and
+  single-threaded, before acting on it.
 - The base worktree has no `.venv`: run the main repo's
   `scripts/with-pyo3-env.sh` by absolute path from inside it.
