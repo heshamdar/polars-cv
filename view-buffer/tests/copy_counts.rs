@@ -319,3 +319,23 @@ fn resizing_a_view_with_packed_rows_allocates_only_its_output() {
         );
     }
 }
+
+/// Grayscale reads a crop or a vertical flip where it lies: the output is the
+/// only allocation the size of the gray image. A planned pack of the view in
+/// front of it (CR-57) is a second one, three times the size.
+#[test]
+fn grayscale_of_a_view_with_packed_rows_allocates_only_its_output() {
+    let views = [
+        ("crop", pattern_u8(3).slice(&[64, 32, 0], &[448, 416, 3])),
+        ("flip_v", pattern_u8(3).flip(&[0])),
+    ];
+    for (label, view) in views {
+        let (h, w) = (view.shape()[0], view.shape()[1]);
+        let (out, count) = large_allocations(h * w, || run_owned(view, |e| e.grayscale()));
+        assert_eq!(out.shape(), [h, w, 1], "{label}");
+        assert_eq!(
+            count, 1,
+            "{label}: {count} gray-image-sized allocations, the output is the only one needed"
+        );
+    }
+}

@@ -1245,7 +1245,7 @@ phase of that plan, closed as each lands.
   1024², wheel target): crop then resize 1.34x, flip_v then resize 1.52x;
   contiguous input within noise.
 
-### CR-57 — The planner packs a crop or vertical flip before grayscale, which reads it in place · `Open` · Low (perf)
+### CR-57 — The planner packed a crop or vertical flip before grayscale, which reads it in place · `Resolved` · Low (perf)
 
 - **Location:** `ImageOpKind::Grayscale`'s `memory_effect`
   (`RequiresContiguous`, `view-buffer/src/ops/image.rs`) and `grayscale_u8`
@@ -1264,8 +1264,18 @@ phase of that plan, closed as each lands.
   view onward while the planner (`infer_strides` → `None`) records a
   contiguous output, and ops after it decide whether to materialise from that
   record.
-- **Fix:** make the 1-channel case return a contiguous buffer, declare
-  `StridePreserving`, and add a `copy_counts` case for grayscale of a crop.
+- **Resolution:** `grayscale_strided` returns 1-channel input packed
+  (`to_contiguous()`, free when it already is), and `Grayscale` declares
+  `StridePreserving`.
+- **Guards:**
+  - `copy_counts.rs` (`grayscale_of_a_view_with_packed_rows_allocates_only_its_output`)
+    was watched failing at 2 allocations before the change.
+  - `strided_ops.rs` (`test_grayscale_of_a_one_channel_view_is_packed`) was
+    watched failing ("flip_v: not packed") with the contract changed and the
+    1-channel case not yet.
+- **Measured** (`polars-cv/benchmarks/reports/2026-09-28-cr57-grayscale/`,
+  wheel target): grayscale of a vertically flipped RGB u8 image 1.65x at
+  1024², 1.5x at 512².
 
 ### CR-53 — `invert` on other integer dtypes returns f32 against a `PreserveInput` contract · `Resolved` · Low
 

@@ -486,8 +486,9 @@ fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
     let channels = shape.get(2).copied().unwrap_or(1);
 
     if channels == 1 {
-        // Already grayscale
-        return buf;
+        // Already gray. Packed, since every image op's output is planned
+        // contiguous (a no-op when it already is).
+        return buf.to_contiguous();
     }
 
     let dtype = buf.dtype();

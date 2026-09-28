@@ -98,6 +98,25 @@ fn test_crop_then_grayscale() {
     assert_eq!(gray.shape(), &[50, 50, 1]);
 }
 
+/// Grayscale of an image that is already one channel is that image, but
+/// packed: every image op's planned output is contiguous (`infer_strides`),
+/// and ops after it decide whether to pack from that plan, so handing the
+/// input view on unchanged would break it once grayscale reads views (CR-57).
+#[test]
+fn test_grayscale_of_a_one_channel_view_is_packed() {
+    let gray = make_gray_image(6, 5);
+    for (label, view) in [
+        ("flip_v", gray.flip(&[0])),
+        ("crop", gray.slice(&[1, 1, 0], &[5, 4, 1])),
+    ] {
+        let want = view.to_contiguous();
+        let out = ViewExpr::new_source(view).grayscale().plan().execute();
+        assert!(out.layout_facts().is_contiguous(), "{label}: not packed");
+        assert_eq!(out.shape(), want.shape(), "{label}");
+        assert_eq!(out.as_slice::<u8>(), want.as_slice::<u8>(), "{label}");
+    }
+}
+
 // ============================================================
 // Flip + Resize Tests
 // ============================================================
