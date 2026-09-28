@@ -35,7 +35,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::core::bytes::AlignedBytes;
-use crate::core::convert::convert_slice;
+use crate::core::convert::convert_view;
 use crate::core::dtype::{with_dtype, DType, ViewType};
 use crate::core::layout::{ExternalLayout, Layout, LayoutFacts};
 use crate::ops::scalar::FusedKernel;
@@ -288,11 +288,11 @@ impl ViewBuffer {
 
         // The conversion rule (integer sources `as`; float → integer rounds
         // to nearest then saturates; float → float `as`) lives once, in
-        // `convert::CastFrom`, and the bulk loop is its dispatched kernel.
-        let contig = self.to_contiguous();
-        let shape = contig.shape().to_vec();
-        with_dtype!(contig.dtype(), S => with_dtype!(target_dtype, D => {
-            Self::from_vec_with_shape(convert_slice::<S, D>(contig.as_slice::<S>()), shape)
+        // `convert::CastFrom`, and the bulk loop is its dispatched kernel,
+        // reading a view's runs where they lie (no packed copy first).
+        let shape = self.shape().to_vec();
+        with_dtype!(self.dtype(), S => with_dtype!(target_dtype, D => {
+            Self::from_vec_with_shape(convert_view::<S, D>(self), shape)
         }))
     }
 
@@ -1302,8 +1302,9 @@ impl ViewBuffer {
 
     /// Converts the buffer to a contiguous layout, copying if necessary.
     ///
-    /// When the innermost dimension has contiguous stride, copies entire rows
-    /// at once (memcpy) instead of element-by-element for much better performance.
+    /// The copy coalesces the layout into the longest packed runs it has (one
+    /// `memcpy` for a contiguous view, one per row for a crop or a vertical
+    /// flip, constant-size pixel copies for a horizontal flip or transpose).
     ///
     /// # Panics
     /// Panics if the total allocation size would overflow `usize`.
@@ -1389,70 +1390,15 @@ impl ViewBuffer {
             .expect("allocation size overflow: buffer is too large to materialize")
     }
 
-    /// Copy this view's elements, row-major, to `dst`: the one routine that
-    /// reads a view through its strides into packed memory.
+    /// Copy this view's elements, row-major, to `dst`, through the one walk
+    /// over a view's memory ([`Walk`](crate::core::strided::Walk)).
     ///
     /// # Safety
     /// `dst` must be valid for writes of [`logical_len_bytes`](Self::logical_len_bytes)
     /// bytes and must not overlap this buffer's data.
     unsafe fn copy_elements_into(&self, dst: *mut u8) {
-        let total_bytes = self.logical_len_bytes();
-        let dtype_size = self.dtype().size_of();
-        let shape = &self.layout.shape;
-        let strides = &self.layout.strides;
-        let ndim = shape.len();
-        let ptr = self.data.as_ptr();
-        let base_offset = self.layout.offset;
-        let data_len = self.data.len();
-
-        if total_bytes == 0 {
-            return;
-        }
-        if self.layout.is_contiguous() {
-            // SAFETY: a contiguous view's elements are `total_bytes` packed
-            // bytes from its offset; the caller guarantees `dst`.
-            unsafe { std::ptr::copy_nonoverlapping(ptr.add(base_offset), dst, total_bytes) };
-            return;
-        }
-
-        // When the innermost dimension is packed (stride == element size),
-        // each innermost row is one `memcpy`; otherwise element by element.
-        let inner_contiguous = ndim > 0 && strides[ndim - 1] == dtype_size as isize;
-        let (outer, chunk_bytes) = if inner_contiguous {
-            (ndim - 1, shape[ndim - 1] * dtype_size)
-        } else {
-            (ndim, dtype_size)
-        };
-        let chunks: usize = shape[..outer].iter().product();
-        let mut indices = vec![0usize; outer];
-        let mut written = 0usize;
-        for _ in 0..chunks {
-            let mut offset = base_offset as isize;
-            for (dim, &idx) in indices.iter().enumerate() {
-                offset += (idx as isize) * strides[dim];
-            }
-            debug_assert!(offset >= 0, "negative offset while packing a view");
-            debug_assert!(
-                (offset as usize) + chunk_bytes <= data_len,
-                "read overrun while packing a view: offset={offset}, \
-                 chunk_bytes={chunk_bytes}, data_len={data_len}"
-            );
-            // SAFETY: the layout's strides keep every element inside the
-            // data (checked in debug above); `written + chunk_bytes` never
-            // exceeds `total_bytes`, which the caller guarantees `dst` holds.
-            unsafe {
-                std::ptr::copy_nonoverlapping(ptr.offset(offset), dst.add(written), chunk_bytes);
-            }
-            written += chunk_bytes;
-            for dim in (0..outer).rev() {
-                indices[dim] += 1;
-                if indices[dim] < shape[dim] {
-                    break;
-                }
-                indices[dim] = 0;
-            }
-        }
-        debug_assert_eq!(written, total_bytes);
+        // SAFETY: the caller's contract is the walk's.
+        unsafe { crate::core::strided::Walk::of(self).copy_to(dst) };
     }
 
     /// The elements as a mutable slice, when this buffer may be written in

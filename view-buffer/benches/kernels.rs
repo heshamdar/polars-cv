@@ -206,6 +206,20 @@ fn layout_kernels(c: &mut Criterion) {
     bench_sizes(c, "materialize_transpose_u8", rgb, |b| {
         b.permute(&[1, 0, 2]).to_contiguous()
     });
+    // A cast of a view: converted straight from its runs, no packed copy.
+    bench_sizes(c, "cast_u8_to_f32_flip_h", rgb, |b| {
+        exec(b, |e| e.flip(vec![1]).cast(DType::F32))
+    });
+    // A per-value op on a transposed float view: the engine's strided read.
+    bench_sizes(
+        c,
+        "scale_f32_transposed",
+        |s| owned_f32(&image_u8(s, 3), s, 3),
+        |b| exec(b, |e| e.transpose(vec![1, 0, 2]).scale(0.5)),
+    );
+    bench_sizes(c, "grayscale_u8_flip_h", rgb, |b| {
+        exec(b, |e| e.flip(vec![1]).grayscale())
+    });
     bench_sizes(c, "resize_224_u8", rgb, |b| {
         exec(b, |e| e.resize(224, 224, FilterType::Triangle))
     });
