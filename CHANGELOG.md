@@ -75,6 +75,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   call to fault in again. It now shares polars' allocator (jemalloc on
   Linux), as pyo3-polars intends: 64×64 pipelines are 1.15–1.66x faster, a
   repeated large `blob` sink 2x faster, and peak memory ~10% higher (CR-60).
+- **`erode`/`dilate` with `iterations` and `blur` are faster**, with
+  identical output: integer images erode or dilate `n` times in one wider
+  pass (1.1–1.7x for 3–4 iterations; float images keep the passes, which
+  NaN and signed zeros depend on), and blur converts its input a row at a
+  time instead of copying the whole image to f32 first (1.1–1.3x).
 - **Rotation and `warp_affine` are 1.4–2.2x faster**, with bit-identical
   output: the warp takes a bounds-check-free path for pixels whose
   neighbours are all inside the image and is compiled per channel count and
