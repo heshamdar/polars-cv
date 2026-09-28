@@ -1415,6 +1415,113 @@ phase of that plan, closed as each lands.
   `reference/test_phase1_ref.py::test_invert_integer_keeps_dtype` through the
   plugin. Each was watched failing on the old code.
 
+### CR-64 — Each kernel re-solved how it reads a view and where it writes · `Resolved` · Medium (perf, design)
+
+> Found reviewing Phases 1–8 as a whole (2026-09-28).
+
+- **What was wrong:** "read a view where it lies, write in place when the
+  buffer is yours" was implemented five ways, one per phase:
+  - `core::strided::Walk` (any view): packing, `cast`, the engine's f32 pass;
+  - `ViewBuffer::dense_rows` (crop and vertical flip only, a `Vec<&[T]>`
+    per call): u8 grayscale, u8 threshold, resize;
+  - `unique_contiguous_mut` plus a hand-written in-place loop: six engine
+    paths and threshold;
+  - `to_contiguous()` then a slice loop: four of the engine's six execution
+    paths, the statistics, typed threshold and typed grayscale;
+  - the planner's `RequiresContiguous`: `normalize`, `adjust_contrast`.
+
+  Whether a view was copied therefore depended on op × dtype × strategy: a
+  u8 `scale` of a transpose was read in place, a u8 `invert` of the same view
+  was packed first; u8 grayscale read a crop in place, u16 packed it. Each
+  in-place / into / pack triple was its own place for a bug.
+- **Two latent faults in the walk itself:**
+  - `for_each_run` handed runs to a closure and flushed its scratch through
+    `&mut dyn FnMut`. Both are functions of their own, compiled without the
+    AVX2 build unless LLVM inlines them, which is the rule `core::dispatch`
+    states. It went unnoticed because its one consumer (a u8 → f32 cast)
+    vectorises on SSE2 anyway; the first version of the fix reproduced it at
+    scale (f32 → u8 cast 4.5x slower, u8 grayscale 3x on the wheels).
+  - A run could split a pixel, so pixel kernels could not use the walk.
+    That is why `dense_rows` existed.
+- **Resolution:** `view-buffer/src/core/map.rs`, the one traversal. A kernel
+  is an `ElementMap` (one value to one value, told where its run starts, for
+  per-channel maps) or a `PixelMap` (a `C`-channel pixel to one value).
+  `map_owned` writes in place when `unique_contiguous_mut` allows; otherwise
+  `map_new`/`map_pixels` write into spare capacity, reading a contiguous
+  input as one run and any other view in `Walk` runs (whole pixels for a
+  pixel map). Everything runs through `dispatch`.
+  - The engine's strategies (integer affine, table, blocked f32 passes; the
+    f32 "pass" merged into "blocked"), `cast`, `threshold`, `grayscale` and
+    the f16 sink's conversion (CR-65) are maps. The hand-written
+    traversals, `map_pixel_rows` and the typed grayscale and threshold
+    kernels are deleted, and grayscale stores by `CastFrom` (so
+    `clamp_for_dtype` is left only in the warp and blur oracles).
+  - Statistics read runs (`map::for_each_run`), so `normalize` and
+    `adjust_contrast` declare `StridePreserving` and the planner no longer
+    packs before them.
+  - `Walk` yields rows from an iterator and hands runs to a `RunSink`, whose
+    `#[inline(always)]` method keeps the consumer inside the dispatched
+    build. Runs are whole multiples of a grain (a pixel's channels), and the
+    coalesced geometry is inline (a walk allocates nothing).
+  - A unit's address is opaque to the optimiser (`black_box`). Otherwise
+    LLVM hoisted a consumer's vector-loop overlap check out of the per-unit
+    loop, and a negative row step (a vertical flip) failed the hoisted check
+    for the whole image: u8 grayscale of a flipped image ran the scalar loop,
+    5x slower. The old code avoided it by accident (row slices loaded from a
+    `Vec`).
+- **Guards:**
+  - `copy_counts.rs`: `per_value_ops_on_a_view_allocate_only_their_output`
+    (9 ops, 3 layouts), `threshold_of_any_view_allocates_only_its_output`
+    and `grayscale_of_any_view_allocates_only_its_output`. Each was watched
+    failing at 2 allocations: the view's pack and the output.
+  - `strided::tests::a_run_holds_whole_grains_in_every_layout`, and a
+    channel-first layout in the element-wise and grayscale parity tests,
+    watched failing with the grain ignored.
+  - `elementwise::tests::per_channel_kernels_match_the_legacy_code_across_blocks_and_runs`.
+    No existing parity test had a per-channel kernel cross a 2,048-element
+    block or a scratch-sized run. Each of the two position mutations
+    (blocked, table) passed every other test and failed this one, at element
+    2,048 and 8,192.
+  - `typed_threshold_matches_the_comparison_reference` (typed threshold had
+    no Rust test), watched failing against `>=`.
+- **Measured** (`polars-cv/benchmarks/reports/2026-09-28-review-traversal/`,
+  wheel target, three interleaved rounds): see the report. Views of per-value
+  ops are 1.1–1.3x faster and non-u8 grayscale 1.6–2.2x. u8 preset normalize
+  is 1.6–1.7x and u8 `adjust_contrast` 1.1–1.3x. An in-place f32 chain is
+  1.2–1.75x and f32 z-score up to 2.1x. Contiguous u8 kernels are
+  unchanged.
+
+### CR-65 — The half-precision sink converted in the serial column build, one element at a time · `Resolved` · Low (perf)
+
+- **Location:** `NumpyRowOutput::from_buffer_f16` (`polars-cv/src/output.rs`),
+  called from `build_numpy_series`.
+- **What was wrong:**
+  - `.sink("numpy"|"torch", dtype="f16")` converted each row after all rows
+    had been computed, in the column build, which runs on one thread. It was
+    a per-row O(pixels) job in the serial tail of every call (the
+    handover's open item 1, eager calls scaling poorly, in miniature).
+  - The conversion made three passes: a cast to an f32 buffer, a pack, and
+    `f16::from_f32` plus a 2-byte `extend_from_slice` per element. On the
+    wheels, `from_f32` also checks for F16C at run time per element.
+- **Resolution:** `ViewBuffer::to_f16_bits`, an element map (CR-64) that
+  reads any view once, converts each 2,048-element block to f32 by the
+  conversion rule, then to f16 with `half`'s bulk conversion (F16C eight at a
+  time, detected once per block). The encode half calls it on the row's own
+  thread; the column build only labels the rows `float16`
+  (`NumpyRowOutput::from_f16_bits`). The output is bit-identical: the same
+  instruction, or the same software fallback, per value.
+- **Guards:** `convert::tests::f16_bits_are_the_per_element_conversion`
+  (binary16's edges: NaN payloads, ±0, ±inf, the overflow tie at 65,520,
+  subnormals and the underflow tie, ties to even, 5,000 random bit patterns)
+  and `f16_bits_read_every_dtype_and_layout`. In Python,
+  `test_f16_matches_numpy_rounding_on_edge_values` and
+  `test_f16_of_an_integer_image_reads_it_as_f32`, against NumPy's own
+  conversion, through the plugin. All four were watched failing against a
+  truncating conversion.
+- **Measured** (same report, wheel target): the conversion is 4.4–6x faster
+  for f32 rows, 6.5–7x for u8 rows and 3–4x for a transposed view, and it
+  now runs in parallel with the other rows.
+
 ## Architectural follow-up (spun out of CR-01)
 
 ### CR-27 — Extend the single-metadata-authority collapse to `Compute` and `View` builders · `Resolved`

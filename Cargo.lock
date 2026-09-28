@@ -4686,6 +4686,7 @@ dependencies = [
  "criterion",
  "fast_image_resize",
  "geo",
+ "half",
  "image",
  "image_hasher",
  "ndarray",

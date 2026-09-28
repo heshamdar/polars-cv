@@ -113,6 +113,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   another dtype is converted in one pass (1.5x). Raw and blob rows are read
   in place whenever they are aligned for their own dtype, rather than only
   at 8-byte boundaries.
+- **Every per-value op, `threshold` and `grayscale` read any view where it
+  lies.** Whether a crop, flip or transpose was copied first used to depend
+  on the op, the dtype and which strategy ran it: u8 `invert` or `gamma` of
+  a horizontal flip packed it, `normalize` and `adjust_contrast` were always
+  packed by the planner, and grayscale read a crop in place for u8 but not
+  for u16. One traversal now runs all of them, reading a view in the runs its
+  layout has and writing into place when nothing else holds the buffer. The
+  output is the only image-sized allocation, and results are unchanged. On
+  the wheels: per-value ops on a flipped or transposed view 1.1–1.3x, non-u8
+  grayscale 1.6–2.2x, u8 preset `normalize` 1.6–1.7x, u8 `adjust_contrast`
+  1.1–1.3x, an f32 scalar chain written in place 1.2–1.75x (CR-64).
+- **The half-precision tensor sink is 3–7x faster and runs in parallel.**
+  `sink("numpy"|"torch", dtype="f16")` converted every row one element at a
+  time after all rows were computed, on one thread. Each row is now
+  converted on its own thread, in one pass with the CPU's F16C instructions
+  when it has them. The bytes are unchanged (CR-65).
 
 ### Changed
 
@@ -129,12 +145,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   most for small lesions. Under the default `iou_threshold` some former
   misses become true positives, and one-pixel-thick detections now count as
   false positives.
-
 - **`source("list", require_contiguous=True)` accepts rectangular `List`
   rows.** It refused every `List` row, although it documents refusing only
   jagged ones; rectangular rows are now read in place. A row that would need
   converting to the declared dtype is still refused, as for `array`.
-
 - **`normalize(method="zscore")` computes its mean and standard deviation
   exactly.** They used to be running f32 sums, which drift at image sizes;
   8/16-bit images now use exact integer sums and other dtypes f64 sums. The
@@ -167,6 +181,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `ExternalLayout::FastImageResize` adapter, which accepts any layout with
   packed rows (`LayoutFacts::is_dense_rows`), and one generic
   `resize_pixels::<P>` replaces the u8/u16/f32 copies of the resize kernel.
+- view-buffer: `core::map` is the one traversal of a per-value
+  (`ElementMap`) or per-pixel (`PixelMap`) kernel. The element-wise engine's
+  strategies, `cast`, `threshold`, `grayscale` and `to_f16_bits` are maps;
+  their per-kernel in-place / into / pack code, `map_pixel_rows` and the
+  typed threshold and grayscale kernels are deleted. The engine's f32 "pass"
+  strategy is merged into "blocked". `normalize` and `adjust_contrast`
+  declare `MemoryEffect::StridePreserving`. `Walk::for_each_run` takes a
+  `RunSink` and a grain (runs never split a pixel), and `clamp_for_dtype` is
+  test-only (the warp and blur oracles).
+- view-buffer: `ViewBuffer::to_f16_bits` returns a buffer's elements as
+  IEEE-754 half-precision bit patterns (a `U16` buffer); `half` is a
+  view-buffer dependency. polars-cv's `NumpyRowOutput::from_buffer_f16` is
+  replaced by `from_f16_bits`.
 
 ### Fixed
 

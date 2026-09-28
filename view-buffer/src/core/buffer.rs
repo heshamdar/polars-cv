@@ -291,10 +291,20 @@ impl ViewBuffer {
         // to nearest then saturates; float → float `as`) lives once, in
         // `convert::CastFrom`, and the bulk loop is its dispatched kernel,
         // reading a view's runs where they lie (no packed copy first).
-        let shape = self.shape().to_vec();
         with_dtype!(self.dtype(), S => with_dtype!(target_dtype, D => {
-            Self::from_vec_with_shape(convert_view::<S, D>(self), shape)
+            convert_view::<S, D>(self)
         }))
+    }
+
+    /// The elements as IEEE-754 half precision (binary16), stored as their
+    /// bit patterns in a new packed `U16` buffer of this shape: the engine
+    /// has no f16 dtype, and this is the half-precision tensor sink's
+    /// conversion. Each element is read as f32 by the conversion rule (as
+    /// [`cast_to`](Self::cast_to) `F32` does), then rounded to nearest-even,
+    /// so NaN stays NaN, values beyond f16's range become infinite and tiny
+    /// ones subnormal or zero. Any view is read where it lies.
+    pub fn to_f16_bits(&self) -> Self {
+        with_dtype!(self.dtype(), S => crate::core::convert::f16_bits::<S>(self))
     }
 
     /// Returns true if the buffer data is aligned to the specified boundary.

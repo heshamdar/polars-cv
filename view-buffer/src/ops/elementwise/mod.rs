@@ -14,28 +14,31 @@
 //! over the resulting constants. f64 input to the float-preserving ops
 //! computes in f64 instead ([`F64Step`], via `ScalarOp::apply_f64`).
 //!
-//! How a kernel runs is decided once, here ([`strategy`]):
+//! How a kernel computes is decided once, here ([`strategy`]):
+//! - **Integer affine** when the kernel is exactly `clamp(±x + c)` over
+//!   8/16-bit input into the same dtype (`invert`, an integer shift).
 //! - **Lookup table** for 8-bit input, and 16-bit input with at least 65,536
-//!   elements per table: the kernel runs over every possible input value once
-//!   and each element becomes a table read. The table is built by the same
-//!   passes and conversion, so the result is identical by construction, and
-//!   a `powf` per pixel becomes one per possible value.
-//! - **Passes** otherwise: gather to f32, run the passes (dispatched, so the
-//!   wheels get AVX2), convert.
+//!   elements per table, when the work cannot vectorise (`powf`) or differs
+//!   per channel: the kernel runs over every possible input value once and
+//!   each element becomes a table read. The table is built by the same
+//!   passes and conversion, so the result is identical by construction.
+//! - **Blocked** otherwise: blocks of elements read as f32 into an L1
+//!   scratch, run through the passes, stored by the conversion rule.
 //!
-//! Either writes **in place** when the buffer is its own sole owner
-//! ([`ViewBuffer::unique_contiguous_mut`]) and the output dtype is the input
-//! dtype, as a u8 `invert` or a u8 → u8 chain is.
+//! Each strategy is an element map; *where* it reads and writes is the one
+//! traversal's decision (`core::map`): **in place** when the buffer is its
+//! own sole owner and the output dtype is the input dtype, else into a new
+//! buffer, reading a view (a crop, a flip, a transpose) where it lies.
+//! Statistics are read the same way.
 
-use std::any::Any;
-use std::sync::Arc;
+use std::marker::PhantomData;
+use std::mem::MaybeUninit;
 
-use crate::core::buffer::{BufferStorage, ViewBuffer};
-use crate::core::bytes::AlignedBytes;
-use crate::core::convert::{convert_slice, convert_view, CastFrom};
-use crate::core::dispatch::{dispatch, dispatch_mut, SimdKernel, SimdKernelMut};
+use crate::core::buffer::ViewBuffer;
+use crate::core::convert::{convert_slice, CastFrom};
+use crate::core::dispatch::{dispatch_mut, SimdKernelMut};
 use crate::core::dtype::{with_dtype, DType, ViewType};
-use crate::core::layout::Layout;
+use crate::core::map::{map_new, map_owned, ElementMap, ElementMapInPlace};
 use crate::ops::compute::{ComputeOp, Normalization};
 use crate::ops::scalar::{FusedKernel, ScalarOp};
 use crate::ops::traits::Op;
@@ -52,13 +55,13 @@ mod tests;
 pub(crate) fn apply(buf: ViewBuffer, op: &ComputeOp) -> ViewBuffer {
     match lower(op, &buf) {
         Lowered::Kernels(kernels) => run_kernels(buf, &kernels),
-        Lowered::F64(steps) => run_f64(buf, &steps),
+        Lowered::F64(steps) => map_owned::<f64, _>(buf, &F64Map(&steps)),
         Lowered::Zeros(out) => zeros(out, buf.shape()),
         Lowered::IntNot => match buf.dtype() {
-            DType::U32 => run_not::<u32>(buf),
-            DType::I32 => run_not::<i32>(buf),
-            DType::U64 => run_not::<u64>(buf),
-            DType::I64 => run_not::<i64>(buf),
+            DType::U32 => map_owned::<u32, _>(buf, &Not),
+            DType::I32 => map_owned::<i32, _>(buf, &Not),
+            DType::U64 => map_owned::<u64, _>(buf, &Not),
+            DType::I64 => map_owned::<i64, _>(buf, &Not),
             other => {
                 unreachable!("invert lowers to a complement only for 32/64-bit, not {other:?}")
             }
@@ -220,7 +223,9 @@ fn zeros(out_dtype: DType, shape: &[usize]) -> ViewBuffer {
     with_dtype!(out_dtype, T => ViewBuffer::from_vec_with_shape(vec![0 as T; n], shape.to_vec()))
 }
 
-/// How a kernel runs over a buffer.
+/// How a kernel computes each element. Every strategy is an element map run
+/// by the one traversal (`core::map`), which decides whether it writes in
+/// place and how a view is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Strategy {
     /// The kernel is `clamp(sign·x + offset)` exactly: integer adds,
@@ -230,13 +235,9 @@ pub(crate) enum Strategy {
     IntAffine { sign: i32, offset: i32 },
     /// Evaluate the kernel once per possible input value, then read a table.
     Lut,
-    /// Stream fixed-size blocks through an f32 scratch: convert in, run the
-    /// passes, convert out, into the input (sole owner, same dtype) or a new
-    /// output of the integer dtype. No image-sized f32 intermediate.
+    /// Stream fixed-size blocks through an f32 scratch in L1: convert in,
+    /// run the passes, convert out. No image-sized f32 intermediate.
     Blocked,
-    /// Gather every element to f32, run the passes over the whole buffer,
-    /// convert: the f32 buffer *is* the output for a float result.
-    Pass,
 }
 
 /// **The one decision** of how a kernel runs.
@@ -249,8 +250,7 @@ pub(crate) enum Strategy {
 /// normalize. It needs an enumerable input (8-bit; 16-bit once there are at
 /// least as many elements per table as entries). A vectorisable kernel such
 /// as `255 - x` streams faster than a table read (measured 0.23 vs 4.1 ms
-/// for a 1024² RGB u8 invert). Among streaming kernels, an integer result
-/// runs in blocks and a float result in one f32 pass.
+/// for a 1024² RGB u8 invert). Everything else streams in blocks.
 pub(crate) fn strategy(in_dtype: DType, n_elems: usize, kernels: &[FusedKernel]) -> Strategy {
     let tables = kernels.len();
     if let [kernel] = kernels {
@@ -273,10 +273,8 @@ pub(crate) fn strategy(in_dtype: DType, n_elems: usize, kernels: &[FusedKernel])
             .any(|k| k.ops.iter().any(scalar_op_is_costly));
     if enumerable && costly {
         Strategy::Lut
-    } else if tables == 1 && !matches!(kernels[0].out_dtype, DType::F32 | DType::F64) {
-        Strategy::Blocked
     } else {
-        Strategy::Pass
+        Strategy::Blocked
     }
 }
 
@@ -323,35 +321,32 @@ fn run_kernels(buf: ViewBuffer, kernels: &[FusedKernel]) -> ViewBuffer {
         kernels.len()
     );
     let in_dtype = buf.dtype();
-    match (strategy(in_dtype, n, kernels), in_dtype) {
-        (Strategy::IntAffine { sign, offset }, _) => {
+    match strategy(in_dtype, n, kernels) {
+        Strategy::IntAffine { sign, offset } => {
             let map = IntAffine { sign, offset };
             match in_dtype {
-                DType::U8 => run_int_affine::<u8>(buf, map),
-                DType::I8 => run_int_affine::<i8>(buf, map),
-                DType::U16 => run_int_affine::<u16>(buf, map),
-                DType::I16 => run_int_affine::<i16>(buf, map),
+                DType::U8 => map_owned::<u8, _>(buf, &map),
+                DType::I8 => map_owned::<i8, _>(buf, &map),
+                DType::U16 => map_owned::<u16, _>(buf, &map),
+                DType::I16 => map_owned::<i16, _>(buf, &map),
                 other => {
                     unreachable!("strategy picks integer affine only for 8/16-bit, not {other:?}")
                 }
             }
         }
-        (Strategy::Lut, DType::U8) => run_lut_from::<u8>(buf, kernels),
-        (Strategy::Lut, DType::I8) => run_lut_from::<i8>(buf, kernels),
-        (Strategy::Lut, DType::U16) => run_lut_from::<u16>(buf, kernels),
-        (Strategy::Lut, DType::I16) => run_lut_from::<i16>(buf, kernels),
-        (Strategy::Lut, other) => {
-            unreachable!("strategy picks a table only for 8/16-bit, not {other:?}")
+        Strategy::Lut => match in_dtype {
+            DType::U8 => run_lut::<u8>(buf, kernels),
+            DType::I8 => run_lut::<i8>(buf, kernels),
+            DType::U16 => run_lut::<u16>(buf, kernels),
+            DType::I16 => run_lut::<i16>(buf, kernels),
+            other => unreachable!("strategy picks a table only for 8/16-bit, not {other:?}"),
+        },
+        Strategy::Blocked if in_dtype == out_dtype => {
+            with_dtype!(in_dtype, S => map_owned::<S, _>(buf, &Blocked::<S, S>::new(kernels)))
         }
-        (Strategy::Blocked, _) if in_dtype == out_dtype => {
-            with_dtype!(in_dtype, S => run_blocked_same::<S>(buf, &kernels[0]))
-        }
-        (Strategy::Blocked, _) => {
-            with_dtype!(in_dtype, S => with_dtype!(out_dtype, D => {
-                run_blocked_into::<S, D>(&buf, &kernels[0])
-            }))
-        }
-        (Strategy::Pass, _) => run_pass(buf, kernels),
+        Strategy::Blocked => with_dtype!(in_dtype, S => with_dtype!(out_dtype, D => {
+            map_new(&buf, &Blocked::<S, D>::new(kernels))
+        })),
     }
 }
 
@@ -359,8 +354,8 @@ fn run_kernels(buf: ViewBuffer, kernels: &[FusedKernel]) -> ViewBuffer {
 trait SmallInt: ViewType {
     /// `data[i] = clamp(sign·data[i] + offset)`.
     fn affine_in_place(data: &mut [Self], sign: i32, offset: i32);
-    /// `clamp(sign·x + offset)` for every `x` of `src`.
-    fn affine_into(src: &[Self], sign: i32, offset: i32) -> Vec<Self>;
+    /// `dst[i] = clamp(sign·src[i] + offset)`.
+    fn affine_into(src: &[Self], dst: &mut [MaybeUninit<Self>], sign: i32, offset: i32);
 }
 
 /// The affine map on one element type, in the narrowest lanes that are
@@ -393,18 +388,21 @@ macro_rules! small_int {
             }
 
             #[inline(always)]
-            fn affine_into(src: &[Self], sign: i32, offset: i32) -> Vec<Self> {
+            fn affine_into(src: &[Self], dst: &mut [MaybeUninit<Self>], sign: i32, offset: i32) {
                 let (min, max) = (i32::from(<$t>::MIN), i32::from(<$t>::MAX));
                 if sign == -1 && offset == max + min {
                     let o = offset as $t;
-                    return src.iter().map(|&x| o.wrapping_sub(x)).collect();
+                    for (d, &x) in dst.iter_mut().zip(src) {
+                        d.write(o.wrapping_sub(x));
+                    }
+                    return;
                 }
                 let span = 2 * (max - min);
                 let (s, o) = (sign as $wide, offset.clamp(-span, span) as $wide);
                 let (lo, hi) = (min as $wide, max as $wide);
-                src.iter()
-                    .map(|&x| (s * (x as $wide) + o).clamp(lo, hi) as $t)
-                    .collect()
+                for (d, &x) in dst.iter_mut().zip(src) {
+                    d.write((s * (x as $wide) + o).clamp(lo, hi) as $t);
+                }
             }
         }
     };
@@ -414,159 +412,147 @@ small_int!(i8, i16);
 small_int!(u16, i32);
 small_int!(i16, i32);
 
+/// The integer affine strategy's map.
 #[derive(Debug, Clone, Copy)]
 struct IntAffine {
     sign: i32,
     offset: i32,
 }
 
-impl<S: SmallInt> SimdKernelMut<S> for IntAffine {
+// SAFETY: `affine_into` writes every element of `dst`.
+unsafe impl<S: SmallInt> ElementMap<S, S> for IntAffine {
     #[inline(always)]
-    fn run_mut(&self, data: &mut [S]) {
+    fn map_into(&self, src: &[S], dst: &mut [MaybeUninit<S>], _at: usize) {
+        S::affine_into(src, dst, self.sign, self.offset);
+    }
+}
+
+impl<S: SmallInt> ElementMapInPlace<S> for IntAffine {
+    #[inline(always)]
+    fn map_in_place(&self, data: &mut [S]) {
         S::affine_in_place(data, self.sign, self.offset);
     }
 }
 
-#[derive(Clone)]
-struct IntAffineInto<'a, S> {
-    src: &'a [S],
-    map: IntAffine,
-}
-
-impl<S: SmallInt> SimdKernel for IntAffineInto<'_, S> {
-    type Output = Vec<S>;
-
-    #[inline(always)]
-    fn run(self) -> Vec<S> {
-        S::affine_into(self.src, self.map.sign, self.map.offset)
-    }
-}
-
-/// Integer affine strategy: in place for a sole owner, else into a new buffer.
-fn run_int_affine<S: SmallInt>(mut buf: ViewBuffer, map: IntAffine) -> ViewBuffer {
-    if let Some(data) = buf.unique_contiguous_mut::<S>() {
-        dispatch_mut(&map, data);
-        return buf;
-    }
-    let shape = crate::core::layout::Dims::from_slice(buf.shape());
-    let packed = buf.to_contiguous();
-    let out = dispatch(IntAffineInto {
-        src: packed.as_slice::<S>(),
-        map,
-    });
-    ViewBuffer::from_vec_with_shape(out, shape)
-}
-
-/// `!x` over a slice, in place.
+/// The integer complement `!x` (`invert` of a 32/64-bit integer).
 struct Not;
 
-impl<T: ViewType + std::ops::Not<Output = T>> SimdKernelMut<T> for Not {
+// SAFETY: `map_into` writes every element of `dst`.
+unsafe impl<T: ViewType + std::ops::Not<Output = T>> ElementMap<T, T> for Not {
     #[inline(always)]
-    fn run_mut(&self, data: &mut [T]) {
+    fn map_into(&self, src: &[T], dst: &mut [MaybeUninit<T>], _at: usize) {
+        for (d, &x) in dst.iter_mut().zip(src) {
+            d.write(!x);
+        }
+    }
+}
+
+impl<T: ViewType + std::ops::Not<Output = T>> ElementMapInPlace<T> for Not {
+    #[inline(always)]
+    fn map_in_place(&self, data: &mut [T]) {
         for x in data.iter_mut() {
             *x = !*x;
         }
     }
 }
 
-#[derive(Clone)]
-struct NotInto<'a, T>(&'a [T]);
-
-impl<T: ViewType + std::ops::Not<Output = T>> SimdKernel for NotInto<'_, T> {
-    type Output = Vec<T>;
-
-    #[inline(always)]
-    fn run(self) -> Vec<T> {
-        self.0.iter().map(|&x| !x).collect()
-    }
-}
-
-/// The integer complement (`invert` of a 32/64-bit integer): in place for a
-/// sole owner, else into a new buffer.
-fn run_not<T: ViewType + std::ops::Not<Output = T>>(mut buf: ViewBuffer) -> ViewBuffer {
-    if let Some(data) = buf.unique_contiguous_mut::<T>() {
-        dispatch_mut(&Not, data);
-        return buf;
-    }
-    let shape = crate::core::layout::Dims::from_slice(buf.shape());
-    let packed = buf.to_contiguous();
-    let out = dispatch(NotInto(packed.as_slice::<T>()));
-    ViewBuffer::from_vec_with_shape(out, shape)
-}
-
 /// Elements per block of the blocked strategy: an 8 KiB f32 scratch on the
 /// stack, well inside L1.
 const BLOCK: usize = 2048;
 
-/// Blocked strategy, output dtype = input dtype: in place when the buffer is
-/// its sole owner, into a new buffer otherwise.
-fn run_blocked_same<S>(mut buf: ViewBuffer, kernel: &FusedKernel) -> ViewBuffer
-where
-    S: ViewType + CastFrom<f32>,
-    f32: CastFrom<S>,
-{
-    if let Some(data) = buf.unique_contiguous_mut::<S>() {
-        dispatch_mut(&BlockedInPlace { ops: &kernel.ops }, data);
-        return buf;
-    }
-    run_blocked_into::<S, S>(&buf, kernel)
+/// The blocked strategy's map: each block of elements is read as f32 into a
+/// stack scratch, run through the kernels' passes, and stored as `D`. One
+/// kernel applies to every element; `C` kernels apply per channel of a
+/// channels-last buffer, element `i` of the buffer being channel `i % C`.
+struct Blocked<'a, S, D> {
+    kernels: &'a [FusedKernel],
+    _types: PhantomData<fn(S) -> D>,
 }
 
-/// Blocked strategy into a new buffer of the kernel's output dtype.
-fn run_blocked_into<S, D>(buf: &ViewBuffer, kernel: &FusedKernel) -> ViewBuffer
+impl<'a, S, D> Blocked<'a, S, D> {
+    fn new(kernels: &'a [FusedKernel]) -> Self {
+        Blocked {
+            kernels,
+            _types: PhantomData,
+        }
+    }
+
+    /// The kernels' passes over one block of f32 values, the first being
+    /// element `at` of the buffer.
+    #[inline(always)]
+    fn passes(&self, acc: &mut [f32], at: usize) {
+        let kernels = self.kernels;
+        if let [kernel] = kernels {
+            apply_fused_op_passes(acc, &kernel.ops);
+            return;
+        }
+        // Per channel: channel `c`'s values in the block, gathered into a
+        // second scratch, run, and scattered back, so the passes stay the
+        // single f32 arithmetic.
+        let channels = kernels.len();
+        let mut lane = [0.0f32; BLOCK];
+        for (c, kernel) in kernels.iter().enumerate() {
+            let first = (c + channels - at % channels) % channels;
+            let values = acc.iter().skip(first).step_by(channels);
+            let len = values.len();
+            for (l, &v) in lane.iter_mut().zip(values) {
+                *l = v;
+            }
+            apply_fused_op_passes(&mut lane[..len], &kernel.ops);
+            for (v, &l) in acc.iter_mut().skip(first).step_by(channels).zip(&lane) {
+                *v = l;
+            }
+        }
+    }
+}
+
+// SAFETY: the blocks of `dst` pair up with those of `src`, and each block
+// writes one value per element.
+unsafe impl<S, D> ElementMap<S, D> for Blocked<'_, S, D>
 where
     S: ViewType,
     D: ViewType + CastFrom<f32>,
     f32: CastFrom<S>,
 {
-    let shape = crate::core::layout::Dims::from_slice(buf.shape());
-    let packed = buf.to_contiguous();
-    let out = dispatch(BlockedInto::<S, D> {
-        src: packed.as_slice::<S>(),
-        ops: &kernel.ops,
-        _to: std::marker::PhantomData,
-    });
-    ViewBuffer::from_vec_with_shape(out, shape)
-}
-
-/// One block: `dst[i] = D(passes(f32(src[i])))`, the same per-element
-/// conversions and passes as a whole-buffer pass.
-#[inline(always)]
-fn run_block<S, D>(src: &[S], ops: &[ScalarOp], mut store: impl FnMut(usize, D))
-where
-    S: ViewType,
-    D: ViewType + CastFrom<f32>,
-    f32: CastFrom<S>,
-{
-    let mut acc = [0.0f32; BLOCK];
-    let acc = &mut acc[..src.len()];
-    for (a, &x) in acc.iter_mut().zip(src) {
-        *a = f32::cast_from(x);
-    }
-    apply_fused_op_passes(acc, ops);
-    for (i, &a) in acc.iter().enumerate() {
-        store(i, D::cast_from(a));
+    #[inline(always)]
+    fn map_into(&self, src: &[S], dst: &mut [MaybeUninit<D>], at: usize) {
+        for (k, (src, dst)) in src.chunks(BLOCK).zip(dst.chunks_mut(BLOCK)).enumerate() {
+            let mut acc = [0.0f32; BLOCK];
+            let acc = &mut acc[..src.len()];
+            for (a, &x) in acc.iter_mut().zip(src) {
+                *a = f32::cast_from(x);
+            }
+            self.passes(acc, at + k * BLOCK);
+            for (d, &a) in dst.iter_mut().zip(acc.iter()) {
+                d.write(D::cast_from(a));
+            }
+        }
     }
 }
 
-struct BlockedInPlace<'a> {
-    ops: &'a [ScalarOp],
-}
-
-impl<S> SimdKernelMut<S> for BlockedInPlace<'_>
+impl<S> ElementMapInPlace<S> for Blocked<'_, S, S>
 where
     S: ViewType + CastFrom<f32>,
     f32: CastFrom<S>,
 {
     #[inline(always)]
-    fn run_mut(&self, data: &mut [S]) {
-        for block in data.chunks_mut(BLOCK) {
+    fn map_in_place(&self, data: &mut [S]) {
+        if let Some(data) = as_f32_mut(data) {
+            // Already f32: the passes run on the buffer's own blocks, with no
+            // copy into the scratch and back (the conversions would be the
+            // identity). Blocked, so a chain of passes stays in L1.
+            for (k, block) in data.chunks_mut(BLOCK).enumerate() {
+                self.passes(block, k * BLOCK);
+            }
+            return;
+        }
+        for (k, block) in data.chunks_mut(BLOCK).enumerate() {
             let mut acc = [0.0f32; BLOCK];
             let acc = &mut acc[..block.len()];
             for (a, &x) in acc.iter_mut().zip(block.iter()) {
                 *a = f32::cast_from(x);
             }
-            apply_fused_op_passes(acc, self.ops);
+            self.passes(acc, k * BLOCK);
             for (x, &a) in block.iter_mut().zip(acc.iter()) {
                 *x = S::cast_from(a);
             }
@@ -574,46 +560,14 @@ where
     }
 }
 
-struct BlockedInto<'a, S, D> {
-    src: &'a [S],
-    ops: &'a [ScalarOp],
-    _to: std::marker::PhantomData<D>,
-}
-
-// Derived `Clone` would demand `D: Clone` of the marker's parameter.
-impl<S, D> Clone for BlockedInto<'_, S, D> {
-    fn clone(&self) -> Self {
-        BlockedInto {
-            src: self.src,
-            ops: self.ops,
-            _to: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<S, D> SimdKernel for BlockedInto<'_, S, D>
-where
-    S: ViewType,
-    D: ViewType + CastFrom<f32>,
-    f32: CastFrom<S>,
-{
-    type Output = Vec<D>;
-
-    #[inline(always)]
-    fn run(self) -> Vec<D> {
-        let n = self.src.len();
-        let mut out: Vec<D> = Vec::with_capacity(n);
-        let spare = &mut out.spare_capacity_mut()[..n];
-        for (dst, src) in spare.chunks_mut(BLOCK).zip(self.src.chunks(BLOCK)) {
-            run_block::<S, D>(src, self.ops, |i, v| {
-                dst[i].write(v);
-            });
-        }
-        // SAFETY: the blocks cover all `n` slots, and `run_block` stores one
-        // value per source element of its block.
-        unsafe { out.set_len(n) };
-        out
-    }
+/// `data` as f32, when that is its element type.
+#[inline(always)]
+fn as_f32_mut<S: ViewType>(data: &mut [S]) -> Option<&mut [f32]> {
+    (S::DTYPE == DType::F32).then(|| {
+        // SAFETY: `S::DTYPE` is `F32` only for `S = f32` (`ViewType`'s one
+        // implementation per dtype), so this is the same slice.
+        unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast::<f32>(), data.len()) }
+    })
 }
 
 /// An element type small enough to enumerate: a table index per value.
@@ -646,67 +600,133 @@ lut_index!(i8, u8);
 lut_index!(u16, u16);
 lut_index!(i16, u16);
 
-fn run_lut_from<S: LutIndex>(buf: ViewBuffer, kernels: &[FusedKernel]) -> ViewBuffer {
-    with_dtype!(kernels[0].out_dtype, D => run_lut::<S, D>(buf, kernels))
+/// Table strategy: the kernels over every possible value of `S`, then a
+/// table read per element, in place when the output dtype is `S`.
+fn run_lut<S: LutIndex + CastFrom<f32>>(buf: ViewBuffer, kernels: &[FusedKernel]) -> ViewBuffer {
+    let out_dtype = kernels[0].out_dtype;
+    if out_dtype == S::DTYPE {
+        return map_owned::<S, _>(buf, &Lut::<S, S>::new(kernels));
+    }
+    with_dtype!(out_dtype, D => map_new(&buf, &Lut::<S, D>::new(kernels)))
 }
 
-/// Table strategy: `tables[c * S::DOMAIN + x.index()]` is the kernel for
+/// A lookup table: `table[c * S::DOMAIN + x.index()]` is the kernel for
 /// channel `c` applied to value `x`, computed by the kernel's own passes and
-/// conversion.
-fn run_lut<S: LutIndex, D: ViewType + CastFrom<f32>>(
-    mut buf: ViewBuffer,
-    kernels: &[FusedKernel],
-) -> ViewBuffer {
-    let domain: Vec<f32> = (0..S::DOMAIN).map(S::value_f32).collect();
-    let mut table: Vec<D> = Vec::with_capacity(kernels.len() * S::DOMAIN);
-    for kernel in kernels {
-        let mut values = domain.clone();
-        run_passes(&mut values, &kernel.ops);
-        table.extend(convert_slice::<f32, D>(&values));
-    }
-    let channels = kernels.len();
+/// conversion, so a read equals the computation by construction.
+struct Lut<S, D> {
+    table: Vec<D>,
+    channels: usize,
+    _source: PhantomData<fn(S)>,
+}
 
-    // Same dtype in and out, sole owner: rewrite the elements where they are.
-    if let Some(same) = (&table as &dyn Any).downcast_ref::<Vec<S>>() {
-        if let Some(data) = buf.unique_contiguous_mut::<S>() {
-            if channels == 1 {
-                for x in data.iter_mut() {
-                    *x = lookup(same, x.index());
-                }
-            } else {
-                for px in data.chunks_exact_mut(channels) {
-                    for (c, x) in px.iter_mut().enumerate() {
-                        *x = lookup(same, c * S::DOMAIN + x.index());
+impl<S: LutIndex, D: ViewType + CastFrom<f32>> Lut<S, D> {
+    fn new(kernels: &[FusedKernel]) -> Self {
+        let domain: Vec<f32> = (0..S::DOMAIN).map(S::value_f32).collect();
+        let mut table: Vec<D> = Vec::with_capacity(kernels.len() * S::DOMAIN);
+        for kernel in kernels {
+            let mut values = domain.clone();
+            run_passes(&mut values, &kernel.ops);
+            table.extend(convert_slice::<f32, D>(&values));
+        }
+        Lut {
+            table,
+            channels: kernels.len(),
+            _source: PhantomData,
+        }
+    }
+}
+
+// SAFETY: every branch writes one value per element of `dst`.
+unsafe impl<S: LutIndex, D: ViewType> ElementMap<S, D> for Lut<S, D> {
+    #[inline(always)]
+    fn map_into(&self, src: &[S], dst: &mut [MaybeUninit<D>], at: usize) {
+        // A slice, not `&Vec`: the lookups then read its pointer from a
+        // register rather than reloading it past every store.
+        let (table, channels): (&[D], usize) = (&self.table, self.channels);
+        if channels == 1 {
+            for (d, &x) in dst.iter_mut().zip(src) {
+                d.write(lookup(table, x.index()));
+            }
+        } else if at.is_multiple_of(channels) && src.len().is_multiple_of(channels) {
+            // Whole pixels: the channel is the position in the pixel, a
+            // constant for 3 or 4 channels (a loop over a run-time count
+            // compiled 20% slower in the AVX2 build).
+            match channels {
+                3 => lut_pixels::<S, D, 3>(table, src, dst),
+                4 => lut_pixels::<S, D, 4>(table, src, dst),
+                _ => {
+                    for (d, px) in dst
+                        .chunks_exact_mut(channels)
+                        .zip(src.chunks_exact(channels))
+                    {
+                        for (c, (d, &x)) in d.iter_mut().zip(px).enumerate() {
+                            d.write(lookup(table, c * S::DOMAIN + x.index()));
+                        }
                     }
                 }
             }
-            return buf;
-        }
-    }
-
-    let shape = crate::core::layout::Dims::from_slice(buf.shape());
-    let packed = buf.to_contiguous();
-    let src = packed.as_slice::<S>();
-    let mut out: Vec<D> = Vec::with_capacity(src.len());
-    let spare = &mut out.spare_capacity_mut()[..src.len()];
-    if channels == 1 {
-        for (d, &x) in spare.iter_mut().zip(src) {
-            d.write(lookup(&table, x.index()));
-        }
-    } else {
-        for (dst, px) in spare
-            .chunks_exact_mut(channels)
-            .zip(src.chunks_exact(channels))
-        {
-            for (c, (d, &x)) in dst.iter_mut().zip(px).enumerate() {
-                d.write(lookup(&table, c * S::DOMAIN + x.index()));
+        } else {
+            let mut c = at % channels;
+            for (d, &x) in dst.iter_mut().zip(src) {
+                d.write(lookup(table, c * S::DOMAIN + x.index()));
+                c += 1;
+                if c == channels {
+                    c = 0;
+                }
             }
         }
     }
-    // SAFETY: `src.len()` is a whole number of `channels`-element pixels
-    // (asserted in `run_kernels`), so the loop wrote every slot.
-    unsafe { out.set_len(src.len()) };
-    ViewBuffer::from_vec_with_shape(out, shape)
+}
+
+impl<S: LutIndex> ElementMapInPlace<S> for Lut<S, S> {
+    #[inline(always)]
+    fn map_in_place(&self, data: &mut [S]) {
+        let (table, channels): (&[S], usize) = (&self.table, self.channels);
+        if channels == 1 {
+            for x in data.iter_mut() {
+                *x = lookup(table, x.index());
+            }
+        } else {
+            // As in `map_into`: a constant channel count for 3 or 4.
+            // Inlined, so it is compiled into the dispatched build.
+            #[inline(always)]
+            fn pixels<S: LutIndex, const C: usize>(table: &[S], data: &mut [S]) {
+                for px in data.as_chunks_mut::<C>().0 {
+                    for (c, x) in px.iter_mut().enumerate() {
+                        *x = lookup(table, c * S::DOMAIN + x.index());
+                    }
+                }
+            }
+            match channels {
+                3 => pixels::<S, 3>(table, data),
+                4 => pixels::<S, 4>(table, data),
+                _ => {
+                    for px in data.chunks_exact_mut(channels) {
+                        for (c, x) in px.iter_mut().enumerate() {
+                            *x = lookup(table, c * S::DOMAIN + x.index());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Table reads over whole `C`-channel pixels: `dst[i] = table[c * DOMAIN +
+/// src[i]]` for element `i`, channel `c = i % C`.
+#[inline(always)]
+fn lut_pixels<S: LutIndex, D: Copy, const C: usize>(
+    table: &[D],
+    src: &[S],
+    dst: &mut [MaybeUninit<D>],
+) {
+    let (src, _) = src.as_chunks::<C>();
+    let (dst, _) = dst.as_chunks_mut::<C>();
+    for (d, p) in dst.iter_mut().zip(src) {
+        for c in 0..C {
+            d[c].write(lookup(table, c * S::DOMAIN + p[c].index()));
+        }
+    }
 }
 
 /// `table[i]`, for an index built from a `LutIndex` value and a channel.
@@ -719,42 +739,6 @@ fn lookup<D: Copy>(table: &[D], i: usize) -> D {
     debug_assert!(i < table.len());
     // SAFETY: see above; every caller indexes as `c * DOMAIN + index()`.
     unsafe { *table.get_unchecked(i) }
-}
-
-/// Pass strategy: gather to f32, run the passes, convert to `out_dtype`.
-fn run_pass(mut buf: ViewBuffer, kernels: &[FusedKernel]) -> ViewBuffer {
-    let out_dtype = kernels[0].out_dtype;
-    if buf.dtype() == DType::F32 && out_dtype == DType::F32 {
-        if let Some(data) = buf.unique_contiguous_mut::<f32>() {
-            run_kernel_passes(data, kernels);
-            return buf;
-        }
-    }
-    let shape = crate::core::layout::Dims::from_slice(buf.shape());
-    let mut acc = gather_f32(&buf);
-    run_kernel_passes(&mut acc, kernels);
-    finish_fused_output(acc, shape, out_dtype)
-}
-
-/// Run each kernel's passes over its elements: all of them, or channel `c`
-/// of a channels-last buffer for the `c`th of several kernels. A channel is
-/// gathered into a scratch, run and scattered back, so the passes stay the
-/// single f32 arithmetic.
-fn run_kernel_passes(data: &mut [f32], kernels: &[FusedKernel]) {
-    if let [kernel] = kernels {
-        run_passes(data, &kernel.ops);
-        return;
-    }
-    let channels = kernels.len();
-    let mut scratch: Vec<f32> = Vec::with_capacity(data.len() / channels);
-    for (c, kernel) in kernels.iter().enumerate() {
-        scratch.clear();
-        scratch.extend(data.iter().skip(c).step_by(channels));
-        run_passes(&mut scratch, &kernel.ops);
-        for (d, &v) in data.iter_mut().skip(c).step_by(channels).zip(&scratch) {
-            *d = v;
-        }
-    }
 }
 
 /// The scalar passes, dispatched so the wheels get AVX2 (vector rounding for
@@ -774,35 +758,48 @@ impl SimdKernelMut<f32> for Passes<'_> {
     }
 }
 
-/// f64 path: each element through the steps in order, in f64.
-fn run_f64(mut buf: ViewBuffer, steps: &[F64Step]) -> ViewBuffer {
-    let apply = |x: f64| steps.iter().fold(x, |v, step| step.apply(v));
-    if let Some(data) = buf.unique_contiguous_mut::<f64>() {
-        for x in data.iter_mut() {
-            *x = apply(*x);
-        }
-        return buf;
+/// f64 input to a float-preserving op: each element through the steps in
+/// order, in f64.
+struct F64Map<'a>(&'a [F64Step]);
+
+impl F64Map<'_> {
+    #[inline(always)]
+    fn apply(&self, x: f64) -> f64 {
+        self.0.iter().fold(x, |v, step| step.apply(v))
     }
-    let shape = crate::core::layout::Dims::from_slice(buf.shape());
-    let packed = buf.to_contiguous();
-    let out: Vec<f64> = packed.as_slice::<f64>().iter().map(|&x| apply(x)).collect();
-    ViewBuffer::from_vec_with_shape(out, shape)
 }
 
-/// Every element as f32, in logical (row-major) order, by the conversion rule.
-fn gather_f32(buf: &ViewBuffer) -> Vec<f32> {
-    with_dtype!(buf.dtype(), S => convert_view::<S, f32>(buf))
+// SAFETY: `map_into` writes every element of `dst`.
+unsafe impl ElementMap<f64, f64> for F64Map<'_> {
+    #[inline(always)]
+    fn map_into(&self, src: &[f64], dst: &mut [MaybeUninit<f64>], _at: usize) {
+        for (d, &x) in dst.iter_mut().zip(src) {
+            d.write(self.apply(x));
+        }
+    }
+}
+
+impl ElementMapInPlace<f64> for F64Map<'_> {
+    #[inline(always)]
+    fn map_in_place(&self, data: &mut [f64]) {
+        for x in data.iter_mut() {
+            *x = self.apply(*x);
+        }
+    }
 }
 
 /// Statistics a per-value op needs before it can lower to a kernel, read in
-/// logical element order.
+/// logical element order from the buffer's runs, never from a packed copy.
 pub(crate) mod stats {
     use crate::core::buffer::ViewBuffer;
-    use crate::core::dtype::DType;
+    use crate::core::convert::CastFrom;
+    use crate::core::dtype::{with_dtype, DType, ViewType};
+    use crate::core::map::for_each_run;
 
-    /// The elements as f32, contiguous (the value the kernel reads).
-    fn as_f32(buf: &ViewBuffer) -> Vec<f32> {
-        super::gather_f32(buf)
+    /// The starting value of `f64`'s `Sum`, so a sum carried across runs
+    /// adds exactly what one `sum()` over the elements would.
+    fn sum_start() -> f64 {
+        std::iter::empty::<f64>().sum()
     }
 
     /// Minimum and maximum of the elements as f32 read them. Integers take
@@ -810,75 +807,106 @@ pub(crate) mod stats {
     /// over the converted values); floats fold in element order with
     /// `f32::min`/`max`, which skip NaN. `(inf, -inf)` for no elements.
     pub(crate) fn min_max_f32(buf: &ViewBuffer) -> (f32, f32) {
-        macro_rules! int_extremes {
-            ($t:ty) => {{
-                let packed = buf.to_contiguous();
-                let src = packed.as_slice::<$t>();
-                match (src.iter().min(), src.iter().max()) {
-                    (Some(&lo), Some(&hi)) => (lo as f32, hi as f32),
-                    _ => (f32::INFINITY, f32::NEG_INFINITY),
+        fn int_extremes<T: ViewType + Ord>(buf: &ViewBuffer) -> Option<(T, T)> {
+            let mut extremes: Option<(T, T)> = None;
+            for_each_run::<T>(buf, |run| {
+                if let (Some(&lo), Some(&hi)) = (run.iter().min(), run.iter().max()) {
+                    extremes = Some(match extremes {
+                        Some((a, b)) => (a.min(lo), b.max(hi)),
+                        None => (lo, hi),
+                    });
                 }
-            }};
+            });
+            extremes
+        }
+        fn float_extremes<T: ViewType>(buf: &ViewBuffer) -> (f32, f32)
+        where
+            f32: CastFrom<T>,
+        {
+            let (mut min, mut max) = (f32::INFINITY, f32::NEG_INFINITY);
+            for_each_run::<T>(buf, |run| {
+                for &x in run {
+                    let v = f32::cast_from(x);
+                    min = min.min(v);
+                    max = max.max(v);
+                }
+            });
+            (min, max)
+        }
+        macro_rules! ints {
+            ($t:ty) => {
+                int_extremes::<$t>(buf).map_or((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi)| {
+                    (lo as f32, hi as f32)
+                })
+            };
         }
         match buf.dtype() {
-            DType::U8 => int_extremes!(u8),
-            DType::I8 => int_extremes!(i8),
-            DType::U16 => int_extremes!(u16),
-            DType::I16 => int_extremes!(i16),
-            DType::U32 => int_extremes!(u32),
-            DType::I32 => int_extremes!(i32),
-            DType::U64 => int_extremes!(u64),
-            DType::I64 => int_extremes!(i64),
-            DType::F32 | DType::F64 => {
-                let values = as_f32(buf);
-                let min = values.iter().copied().fold(f32::INFINITY, f32::min);
-                let max = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-                (min, max)
-            }
+            DType::U8 => ints!(u8),
+            DType::I8 => ints!(i8),
+            DType::U16 => ints!(u16),
+            DType::I16 => ints!(i16),
+            DType::U32 => ints!(u32),
+            DType::I32 => ints!(i32),
+            DType::U64 => ints!(u64),
+            DType::I64 => ints!(i64),
+            DType::F32 => float_extremes::<f32>(buf),
+            DType::F64 => float_extremes::<f64>(buf),
         }
     }
 
     /// The exact sum of an 8/16-bit buffer.
     fn small_int_sum(buf: &ViewBuffer) -> Option<i64> {
-        macro_rules! sum {
-            ($t:ty) => {{
-                let packed = buf.to_contiguous();
-                Some(packed.as_slice::<$t>().iter().map(|&x| i64::from(x)).sum())
-            }};
+        fn sum<T: ViewType + Into<i64>>(buf: &ViewBuffer) -> i64 {
+            let mut sum = 0i64;
+            for_each_run::<T>(buf, |run| sum += run.iter().map(|&x| x.into()).sum::<i64>());
+            sum
         }
         match buf.dtype() {
-            DType::U8 => sum!(u8),
-            DType::I8 => sum!(i8),
-            DType::U16 => sum!(u16),
-            DType::I16 => sum!(i16),
+            DType::U8 => Some(sum::<u8>(buf)),
+            DType::I8 => Some(sum::<i8>(buf)),
+            DType::U16 => Some(sum::<u16>(buf)),
+            DType::I16 => Some(sum::<i16>(buf)),
             _ => None,
         }
     }
 
     /// Exact sums of an 8/16-bit buffer: `(n, Σx, Σx²)`.
     fn small_int_sums(buf: &ViewBuffer) -> Option<(usize, i128, i128)> {
-        macro_rules! sums {
-            ($t:ty) => {{
-                let packed = buf.to_contiguous();
-                let src = packed.as_slice::<$t>();
-                let sum: i64 = src.iter().map(|&x| i64::from(x)).sum();
-                let sum_sq: u128 = src
+        fn sums<T: ViewType + Into<i64>>(buf: &ViewBuffer) -> (usize, i128, i128) {
+            let (mut n, mut sum, mut sum_sq) = (0usize, 0i64, 0u128);
+            for_each_run::<T>(buf, |run| {
+                n += run.len();
+                sum += run.iter().map(|&x| x.into()).sum::<i64>();
+                sum_sq += run
                     .iter()
                     .map(|&x| {
-                        let x = i64::from(x);
+                        let x: i64 = x.into();
                         (x * x) as u64
                     })
                     .fold(0u128, |acc, sq| acc + u128::from(sq));
-                Some((src.len(), i128::from(sum), sum_sq as i128))
-            }};
+            });
+            (n, i128::from(sum), sum_sq as i128)
         }
         match buf.dtype() {
-            DType::U8 => sums!(u8),
-            DType::I8 => sums!(i8),
-            DType::U16 => sums!(u16),
-            DType::I16 => sums!(i16),
+            DType::U8 => Some(sums::<u8>(buf)),
+            DType::I8 => Some(sums::<i8>(buf)),
+            DType::U16 => Some(sums::<u16>(buf)),
+            DType::I16 => Some(sums::<i16>(buf)),
             _ => None,
         }
+    }
+
+    /// The f64 sum of the elements read as f32, in element order: what
+    /// `as_f32(buf).iter().map(|&x| x as f64).sum()` computes, without the
+    /// f32 copy.
+    fn f32_read_sum(buf: &ViewBuffer, term: impl Fn(f64) -> f64) -> f64 {
+        let mut sum = sum_start();
+        with_dtype!(buf.dtype(), T => for_each_run::<T>(buf, |run| {
+            for &x in run {
+                sum += term(f32::cast_from(x) as f64);
+            }
+        }));
+        sum
     }
 
     /// `adjust_contrast`'s mean, as it has always been computed: the f64 sum
@@ -892,20 +920,24 @@ pub(crate) mod stats {
         }
         let sum = match small_int_sum(buf) {
             Some(sum) => sum as f64,
-            None => as_f32(buf).iter().map(|&x| x as f64).sum::<f64>(),
+            None => f32_read_sum(buf, |x| x),
         };
         sum as f32 / n as f32
     }
 
     /// The f64 mean of an f64 buffer, summed in element order.
     pub(crate) fn mean_f64(buf: &ViewBuffer) -> f64 {
-        let packed = buf.to_contiguous();
-        let src = packed.as_slice::<f64>();
-        if src.is_empty() {
-            0.0
-        } else {
-            src.iter().sum::<f64>() / src.len() as f64
+        let n = buf.shape().iter().product::<usize>();
+        if n == 0 {
+            return 0.0;
         }
+        let mut sum = sum_start();
+        for_each_run::<f64>(buf, |run| {
+            for &x in run {
+                sum += x;
+            }
+        });
+        sum / n as f64
     }
 
     /// Mean and (population) variance for `normalize(method="zscore")`, in
@@ -923,17 +955,12 @@ pub(crate) mod stats {
             let n_f = n as f64;
             return (sum as f64 / n_f, numerator as f64 / (n_f * n_f));
         }
-        let values = as_f32(buf);
-        let n = values.len() as f64;
-        let mean = values.iter().map(|&x| x as f64).sum::<f64>() / n;
-        let var = values
-            .iter()
-            .map(|&x| {
-                let d = x as f64 - mean;
-                d * d
-            })
-            .sum::<f64>()
-            / n;
+        let n = buf.shape().iter().product::<usize>() as f64;
+        let mean = f32_read_sum(buf, |x| x) / n;
+        let var = f32_read_sum(buf, |x| {
+            let d = x - mean;
+            d * d
+        }) / n;
         (mean, var)
     }
 }
@@ -1145,29 +1172,4 @@ pub(crate) fn apply_fused_op_passes(data: &mut [f32], ops: &[ScalarOp]) {
             }
         }
     }
-}
-
-/// Materialize the kernel's f32 result as a contiguous buffer of `out_dtype`.
-///
-/// Other targets convert through [`convert_slice`], the rule
-/// [`ViewBuffer::cast_to`] uses, so a fused trailing cast and a standalone
-/// cast cannot round differently; `F32` reuses the accumulator allocation
-/// without copying.
-pub(crate) fn finish_fused_output(
-    acc: Vec<f32>,
-    shape: impl Into<crate::core::layout::Dims>,
-    out_dtype: DType,
-) -> ViewBuffer {
-    let shape = shape.into();
-    if out_dtype == DType::F32 {
-        // Reuse the accumulator allocation: AlignedBytes takes it over and
-        // deallocates with f32 alignment.
-        return ViewBuffer {
-            data: BufferStorage::Rust(Arc::new(AlignedBytes::from_typed_vec(acc))),
-            layout: Layout::new_contiguous(shape, DType::F32),
-        };
-    }
-    with_dtype!(out_dtype, T => {
-        ViewBuffer::from_vec_with_shape(convert_slice::<f32, T>(&acc), shape)
-    })
 }

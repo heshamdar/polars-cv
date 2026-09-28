@@ -9,12 +9,20 @@ use crate::core::buffer::ViewBuffer;
 #[cfg(feature = "image_interop")]
 use crate::core::convert::CastFrom;
 #[cfg(feature = "image_interop")]
-use crate::core::dispatch::{dispatch, dispatch_mut, SimdKernel, SimdKernelMut};
+use crate::core::dispatch::{dispatch, SimdKernel};
 use crate::core::dtype::DType;
+#[cfg(feature = "image_interop")]
+use crate::core::dtype::{with_dtype, ViewType};
+#[cfg(feature = "image_interop")]
+use crate::core::map::{map_new, map_owned, map_pixels, ElementMap, ElementMapInPlace, PixelMap};
 use crate::expr::ViewExpr;
 use crate::ops::dto::ViewDto;
 use crate::ops::traits::Op;
 use crate::ops::{ComputeOp, ImageOp, ViewOp};
+#[cfg(feature = "image_interop")]
+use std::marker::PhantomData;
+#[cfg(feature = "image_interop")]
+use std::mem::MaybeUninit;
 
 #[cfg(feature = "image_interop")]
 use crate::ops::{FilterType, ImageOpKind};
@@ -475,219 +483,91 @@ thread_local! {
 
 /// Grayscale of any layout: BT.601, `Y = 0.299R + 0.587G + 0.114B` (u8 in
 /// fixed point, `Y = (77R + 150G + 29B + 128) >> 8`), or a gray + alpha
-/// image's gray channel.
-///
-/// u8 rows that are packed (contiguous, a crop, a vertical flip) are read
-/// where they lie; any other layout is packed first (`grayscale_u8`,
-/// `grayscale_typed`).
+/// image's gray channel, as a per-pixel map (`core::map`): any view is read
+/// where it lies. More than four channels are read as the first three (BT.601
+/// reads no others), through a view of them.
 #[cfg(feature = "image_interop")]
 fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
     let shape = buf.shape();
     let channels = shape.get(2).copied().unwrap_or(1);
-
     if channels == 1 {
         // Already gray. Packed, since every image op's output is planned
         // contiguous (a no-op when it already is).
         return buf.to_contiguous();
     }
-
-    let dtype = buf.dtype();
-
-    // U8 fast path: uses fixed-point integer math (original optimized path)
-    if dtype == DType::U8 {
-        return grayscale_u8(buf);
+    if channels > 4 {
+        let (h, w) = (shape[0], shape[1]);
+        return grayscale_strided(buf.slice(&[0, 0, 0], &[h, w, 3]));
     }
-
-    // Generic path for all other dtypes: uses f64 BT.601 coefficients
-    match dtype {
-        DType::U8 => unreachable!(), // Handled above
-        DType::I8 => grayscale_typed::<i8>(buf),
-        DType::U16 => grayscale_typed::<u16>(buf),
-        DType::I16 => grayscale_typed::<i16>(buf),
-        DType::U32 => grayscale_typed::<u32>(buf),
-        DType::I32 => grayscale_typed::<i32>(buf),
-        DType::F32 => grayscale_typed::<f32>(buf),
-        DType::F64 => grayscale_typed::<f64>(buf),
-        DType::U64 => grayscale_typed::<u64>(buf),
-        DType::I64 => grayscale_typed::<i64>(buf),
+    fn gray<T: Luma>(buf: &ViewBuffer, channels: usize) -> ViewBuffer {
+        match channels {
+            2 => map_pixels::<T, T, 2, _>(buf, &Grayscale),
+            3 => map_pixels::<T, T, 3, _>(buf, &Grayscale),
+            4 => map_pixels::<T, T, 4, _>(buf, &Grayscale),
+            other => unreachable!("grayscale maps 2-4 channels, not {other}"),
+        }
     }
+    with_dtype!(buf.dtype(), T => gray::<T>(&buf, channels))
 }
 
-/// Fast u8 grayscale: fixed-point BT.601, `Y = (77R + 150G + 29B + 128) >> 8`,
-/// or the intensity channel of a gray + alpha image.
-///
-/// Rows whose pixels are packed ([`ViewBuffer::dense_rows`]: contiguous, a
-/// crop, a vertical flip) run the dispatched [`GrayscaleU8`] kernel where
-/// they lie. Any other layout (a transpose, a horizontal flip) is packed
-/// first, and more than four channels are reduced to the first three (BT.601
-/// reads no others): one kernel, whatever the layout.
+/// An element type's BT.601 luma.
 #[cfg(feature = "image_interop")]
-fn grayscale_u8(buf: ViewBuffer) -> ViewBuffer {
-    let shape = buf.shape();
-    let (h, w) = (shape[0], shape[1]);
-    let channels = shape.get(2).copied().unwrap_or(1);
-    if channels > 4 {
-        return grayscale_u8(buf.slice(&[0, 0, 0], &[h, w, 3]).to_contiguous());
-    }
-    let Some(rows) = buf.dense_rows::<u8>() else {
-        return grayscale_u8(buf.to_contiguous());
-    };
-    let gray = match channels {
-        2 => dispatch(GrayscaleU8::<2> {
-            rows: &rows,
-            width: w,
-        }),
-        3 => dispatch(GrayscaleU8::<3> {
-            rows: &rows,
-            width: w,
-        }),
-        4 => dispatch(GrayscaleU8::<4> {
-            rows: &rows,
-            width: w,
-        }),
-        other => unreachable!("grayscale_strided returns {other}-channel input unchanged"),
-    };
-    ViewBuffer::from_vec_with_shape(gray, vec![h, w, 1])
+trait Luma: ViewType {
+    fn luma(r: Self, g: Self, b: Self) -> Self;
 }
 
 /// Fixed-point BT.601 luma of one u8 pixel. The sum peaks at
 /// `256 * 255 + 128 = 65408`, so it fits in `u16`, which gives the vector
 /// loop twice the lanes of `u32`.
 #[cfg(feature = "image_interop")]
-#[inline(always)]
-fn luma_u8(r: u8, g: u8, b: u8) -> u8 {
-    ((77 * u16::from(r) + 150 * u16::from(g) + 29 * u16::from(b) + 128) >> 8) as u8
-}
-
-/// u8 grayscale over packed rows of `C`-channel pixels, one output row per
-/// input row. `C == 2` is gray + alpha, whose grayscale is the gray channel.
-#[cfg(feature = "image_interop")]
-#[derive(Clone)]
-struct GrayscaleU8<'a, const C: usize> {
-    rows: &'a [&'a [u8]],
-    width: usize,
-}
-
-#[cfg(feature = "image_interop")]
-impl<const C: usize> SimdKernel for GrayscaleU8<'_, C> {
-    type Output = Vec<u8>;
-
+impl Luma for u8 {
     #[inline(always)]
-    fn run(self) -> Vec<u8> {
-        map_pixel_rows::<u8, u8, C>(self.rows, self.width, |p| {
+    fn luma(r: u8, g: u8, b: u8) -> u8 {
+        ((77 * u16::from(r) + 150 * u16::from(g) + 29 * u16::from(b) + 128) >> 8) as u8
+    }
+}
+
+/// BT.601 luma in `f64`, stored by the conversion rule (M5): rounded and
+/// saturated for an integer dtype, as is for a float one.
+macro_rules! luma_f64 {
+    ($($t:ty),+) => {$(
+        #[cfg(feature = "image_interop")]
+        impl Luma for $t {
+            #[inline(always)]
+            fn luma(r: $t, g: $t, b: $t) -> $t {
+                const R_COEFF: f64 = 0.299;
+                const G_COEFF: f64 = 0.587;
+                const B_COEFF: f64 = 0.114;
+                let f = f64::cast_from;
+                <$t>::cast_from(R_COEFF * f(r) + G_COEFF * f(g) + B_COEFF * f(b))
+            }
+        }
+    )+};
+}
+luma_f64!(i8, u16, i16, u32, i32, u64, i64, f32, f64);
+
+/// Grayscale as a pixel map: the luma of a colour pixel (its first three
+/// channels), the gray channel of a gray + alpha one (`C == 2`).
+#[cfg(feature = "image_interop")]
+struct Grayscale;
+
+// SAFETY: `map_into` writes one value per pixel of `src`, into `dst`'s
+// matching slot.
+#[cfg(feature = "image_interop")]
+unsafe impl<T: Luma, const C: usize> PixelMap<T, T, C> for Grayscale {
+    #[inline(always)]
+    fn map_into(&self, src: &[[T; C]], dst: &mut [MaybeUninit<T>]) {
+        for (d, p) in dst.iter_mut().zip(src) {
             // `C` is a constant, so each instance keeps one arm. The blue
             // index is written `C.min(3) - 1` (2 for every `C >= 3`) only so
             // the discarded arm of `C == 2` stays in bounds.
-            if C == 2 {
+            d.write(if C == 2 {
                 p[0]
             } else {
-                luma_u8(p[0], p[1], p[C.min(3) - 1])
-            }
-        })
-    }
-}
-
-/// One output value per `C`-element pixel of each row, rows in order.
-///
-/// Writes straight into the vector's spare capacity: a zeroed image-sized
-/// buffer (`vec![0; n]`) costs a full extra pass once the allocation comes
-/// from the heap rather than fresh pages, which measured ~15% of a u8
-/// threshold at 1024². Every row must hold exactly `width` pixels (asserted),
-/// so every slot is written before the length is set.
-#[cfg(feature = "image_interop")]
-#[inline(always)]
-fn map_pixel_rows<S: Copy, T, const C: usize>(
-    rows: &[&[S]],
-    width: usize,
-    f: impl Fn(&[S; C]) -> T,
-) -> Vec<T> {
-    let n = rows.len() * width;
-    let mut out = Vec::with_capacity(n);
-    if width > 0 {
-        for (dst, row) in out.spare_capacity_mut()[..n]
-            .chunks_exact_mut(width)
-            .zip(rows)
-        {
-            let (pixels, rest) = row.as_chunks::<C>();
-            assert!(
-                pixels.len() == width && rest.is_empty(),
-                "a row holds {} values, not {width} pixels of {C}",
-                row.len()
-            );
-            for (d, p) in dst.iter_mut().zip(pixels) {
-                d.write(f(p));
-            }
+                T::luma(p[0], p[1], p[C.min(3) - 1])
+            });
         }
     }
-    // SAFETY: the loop visited all `rows.len()` rows (`chunks_exact_mut`
-    // yields exactly that many `width`-slot chunks of the `n` slots), and each
-    // row wrote all `width` of its slots (asserted `width` pixels).
-    unsafe { out.set_len(n) };
-    out
-}
-
-/// Dtype-generic grayscale using float BT.601 coefficients.
-///
-/// Reads multichannel data as type `T`, applies `Y = 0.299*R + 0.587*G + 0.114*B`
-/// in `f64` arithmetic, then converts back to `T` (integer targets rounded and
-/// clamped). Preserves the input dtype. A gray + alpha image's grayscale is
-/// its gray channel, as in the u8 kernel.
-#[cfg(feature = "image_interop")]
-fn grayscale_typed<T>(buf: ViewBuffer) -> ViewBuffer
-where
-    T: crate::core::dtype::ViewType + Default + num_traits::NumCast,
-{
-    let shape = buf.shape();
-    let (h, w) = (shape[0], shape[1]);
-    let channels = shape.get(2).copied().unwrap_or(1);
-
-    let contig_buf = if buf.layout.is_contiguous() {
-        buf
-    } else {
-        buf.to_contiguous()
-    };
-    let src: &[T] = contig_buf.as_slice::<T>();
-    let gray: Vec<T> = match channels {
-        2 => src.as_chunks::<2>().0.iter().map(|p| p[0]).collect(),
-        3 => src
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .map(|p| luma_typed(p[0], p[1], p[2]))
-            .collect(),
-        4 => src
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|p| luma_typed(p[0], p[1], p[2]))
-            .collect(),
-        c => src
-            .chunks_exact(c)
-            .map(|p| luma_typed(p[0], p[1], p[2]))
-            .collect(),
-    };
-    ViewBuffer::from_vec_with_shape(gray, vec![h, w, 1])
-}
-
-/// BT.601 luma of one pixel in `f64`, converted back to `T`.
-#[cfg(feature = "image_interop")]
-#[inline(always)]
-fn luma_typed<T>(r: T, g: T, b: T) -> T
-where
-    T: crate::core::dtype::ViewType + Default + num_traits::NumCast,
-{
-    use num_traits::NumCast;
-    const R_COEFF: f64 = 0.299;
-    const G_COEFF: f64 = 0.587;
-    const B_COEFF: f64 = 0.114;
-    let f = |v: T| -> f64 { NumCast::from(v).unwrap_or(0.0) };
-    let luma = R_COEFF * f(r) + G_COEFF * f(g) + B_COEFF * f(b);
-    let value = if matches!(T::DTYPE, DType::F32 | DType::F64) {
-        luma
-    } else {
-        clamp_for_dtype(luma, T::DTYPE)
-    };
-    NumCast::from(value).unwrap_or(T::default())
 }
 
 /// Applies an image operation to a buffer.
@@ -729,58 +609,15 @@ pub(crate) fn apply_image_inner(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
     result
 }
 
-/// u8 threshold over packed rows: `255` where a pixel exceeds `thresh`,
-/// else `0`, one output row per input row.
-#[cfg(feature = "image_interop")]
-#[derive(Clone)]
-struct ThresholdU8<'a> {
-    rows: &'a [&'a [u8]],
-    width: usize,
-    thresh: u8,
-}
-
-#[cfg(feature = "image_interop")]
-impl SimdKernel for ThresholdU8<'_> {
-    type Output = Vec<u8>;
-
-    #[inline(always)]
-    fn run(self) -> Vec<u8> {
-        let thresh = self.thresh;
-        map_pixel_rows::<u8, u8, 1>(
-            self.rows,
-            self.width,
-            |&[p]| if p > thresh { 255 } else { 0 },
-        )
-    }
-}
-
-/// u8 threshold of a buffer written in place (see [`ThresholdU8`]).
-#[cfg(feature = "image_interop")]
-struct ThresholdU8InPlace {
-    thresh: u8,
-}
-
-#[cfg(feature = "image_interop")]
-impl SimdKernelMut<u8> for ThresholdU8InPlace {
-    #[inline(always)]
-    fn run_mut(&self, data: &mut [u8]) {
-        let thresh = self.thresh;
-        for p in data.iter_mut() {
-            *p = if *p > thresh { 255 } else { 0 };
-        }
-    }
-}
-
-/// Dtype-generic threshold that compares each element against `f64` threshold.
+/// Threshold: `255` where an element exceeds `thresh`, else `0`, as a u8
+/// element map (`core::map`): a u8 buffer only this op reads is written in
+/// place, and any view is read where it lies.
 ///
-/// For each element, outputs `255u8` if the element (cast to `f64`) exceeds
-/// the threshold, else `0u8`. The output is always `Vec<u8>` regardless of
-/// input dtype.
-///
-/// For U8 input where the threshold fits in u8 range, runs the dispatched
-/// [`ThresholdU8`] kernel.
+/// A u8 input with the threshold inside the u8 range compares in u8 (`p > t`
+/// for an integer `p` is `p > floor(t)`); any other compares the element
+/// read as `f64`.
 #[cfg(feature = "image_interop")]
-fn threshold_generic(mut buf: ViewBuffer, thresh: f64) -> ViewBuffer {
+fn threshold_generic(buf: ViewBuffer, thresh: f64) -> ViewBuffer {
     let shape = buf.shape();
 
     // Validate: threshold only works on single-channel data
@@ -792,84 +629,63 @@ fn threshold_generic(mut buf: ViewBuffer, thresh: f64) -> ViewBuffer {
         );
     }
 
-    let dtype = buf.dtype();
-
-    // u8 fast path, when the threshold is inside the u8 range: `p > t` for
-    // an integer `p` is `p > floor(t)`. Packed rows (contiguous, a crop, a
-    // vertical flip) are read where they lie; other layouts are packed first.
-    if dtype == DType::U8 && (0.0..=255.0).contains(&thresh) {
-        let thresh = thresh as u8;
-        // A buffer only this op reads is thresholded where it lies.
-        if let Some(data) = buf.unique_contiguous_mut::<u8>() {
-            dispatch_mut(&ThresholdU8InPlace { thresh }, data);
-            return buf;
-        }
-        let shape = crate::core::layout::Dims::from_slice(buf.shape());
-        let out = match buf.dense_rows::<u8>() {
-            Some(rows) => dispatch(ThresholdU8 {
-                rows: &rows,
-                width: shape[1],
-                thresh,
-            }),
-            None => {
-                let packed = buf.to_contiguous();
-                let all = packed.as_slice::<u8>();
-                dispatch(ThresholdU8 {
-                    rows: &[all],
-                    width: all.len(),
-                    thresh,
-                })
-            }
-        };
-        return ViewBuffer::from_vec_with_shape(out, shape);
+    if buf.dtype() == DType::U8 && (0.0..=255.0).contains(&thresh) {
+        return map_owned::<u8, _>(buf, &ThresholdU8(thresh as u8));
     }
+    with_dtype!(buf.dtype(), T => map_new(&buf, &Threshold::<T>::new(thresh)))
+}
 
-    // Generic path: dispatch by dtype, compare in f64 space
-    match dtype {
-        DType::U8 => threshold_typed::<u8>(buf, thresh),
-        DType::I8 => threshold_typed::<i8>(buf, thresh),
-        DType::U16 => threshold_typed::<u16>(buf, thresh),
-        DType::I16 => threshold_typed::<i16>(buf, thresh),
-        DType::U32 => threshold_typed::<u32>(buf, thresh),
-        DType::I32 => threshold_typed::<i32>(buf, thresh),
-        DType::F32 => threshold_typed::<f32>(buf, thresh),
-        DType::F64 => threshold_typed::<f64>(buf, thresh),
-        DType::U64 => threshold_typed::<u64>(buf, thresh),
-        DType::I64 => threshold_typed::<i64>(buf, thresh),
+/// u8 threshold compared in u8.
+#[cfg(feature = "image_interop")]
+struct ThresholdU8(u8);
+
+// SAFETY: `map_into` writes every element of `dst`.
+#[cfg(feature = "image_interop")]
+unsafe impl ElementMap<u8, u8> for ThresholdU8 {
+    #[inline(always)]
+    fn map_into(&self, src: &[u8], dst: &mut [MaybeUninit<u8>], _at: usize) {
+        let t = self.0;
+        for (d, &p) in dst.iter_mut().zip(src) {
+            d.write(if p > t { 255 } else { 0 });
+        }
     }
 }
 
-/// Typed threshold helper: reads elements as `T`, compares against `f64` threshold,
-/// outputs `Vec<u8>` with 0 or 255 values.
 #[cfg(feature = "image_interop")]
-fn threshold_typed<T>(buf: ViewBuffer, thresh: f64) -> ViewBuffer
+impl ElementMapInPlace<u8> for ThresholdU8 {
+    #[inline(always)]
+    fn map_in_place(&self, data: &mut [u8]) {
+        let t = self.0;
+        for p in data.iter_mut() {
+            *p = if *p > t { 255 } else { 0 };
+        }
+    }
+}
+
+/// Threshold of any dtype, compared in `f64`.
+#[cfg(feature = "image_interop")]
+struct Threshold<T>(f64, PhantomData<fn(T)>);
+
+#[cfg(feature = "image_interop")]
+impl<T> Threshold<T> {
+    fn new(thresh: f64) -> Self {
+        Threshold(thresh, PhantomData)
+    }
+}
+
+// SAFETY: `map_into` writes every element of `dst`.
+#[cfg(feature = "image_interop")]
+unsafe impl<T: ViewType> ElementMap<T, u8> for Threshold<T>
 where
-    T: crate::core::dtype::ViewType + Default + num_traits::NumCast,
+    f64: CastFrom<T>,
 {
-    use num_traits::NumCast;
-
-    let contig_buf = if buf.layout.is_contiguous() {
-        buf
-    } else {
-        buf.to_contiguous()
-    };
-
-    let out_shape = crate::core::layout::Dims::from_slice(contig_buf.shape());
-    let src_data: &[T] = contig_buf.as_slice::<T>();
-
-    let new_data: Vec<u8> = src_data
-        .iter()
-        .map(|x| {
-            let v: f64 = NumCast::from(*x).unwrap_or(0.0);
-            if v > thresh {
-                255u8
-            } else {
-                0u8
-            }
-        })
-        .collect();
-
-    ViewBuffer::from_vec(new_data).reshape(out_shape)
+    #[inline(always)]
+    fn map_into(&self, src: &[T], dst: &mut [MaybeUninit<u8>], _at: usize) {
+        let t = self.0;
+        for (d, &x) in dst.iter_mut().zip(src) {
+            d.write(if f64::cast_from(x) > t { 255 } else { 0 });
+        }
+    }
 }
 
 /// Check if a shape represents a single-channel image.
@@ -913,7 +729,9 @@ mod grayscale_threshold_parity_tests {
     use crate::core::dtype::DType;
     use crate::ops::{ImageOp, ImageOpKind};
 
-    const SIZES: [(usize, usize); 5] = [(1, 1), (3, 5), (7, 33), (16, 17), (9, 64)];
+    // (48, 70): more pixels than one walk scratch holds (8 KiB), so a
+    // channel-first view is handed out in several runs.
+    const SIZES: [(usize, usize); 6] = [(1, 1), (3, 5), (7, 33), (16, 17), (9, 64), (48, 70)];
 
     /// Pseudo-random bytes (an LCG's high bits). An arithmetic sequence such
     /// as `(i * 7919) % 256` correlates neighbouring channels so strongly
@@ -938,7 +756,11 @@ mod grayscale_threshold_parity_tests {
                 for b in 0..=255u8 {
                     let (r32, g32, b32) = (u32::from(r), u32::from(g), u32::from(b));
                     let expected = ((77 * r32 + 150 * g32 + 29 * b32 + 128) >> 8) as u8;
-                    assert_eq!(super::luma_u8(r, g, b), expected, "({r}, {g}, {b})");
+                    assert_eq!(
+                        <u8 as super::Luma>::luma(r, g, b),
+                        expected,
+                        "({r}, {g}, {b})"
+                    );
                 }
             }
         }
@@ -968,6 +790,23 @@ mod grayscale_threshold_parity_tests {
             perm.push(2);
         }
         out.push(("transpose", parent.permute(&perm)));
+        if shape.len() == 3 && shape[2] > 1 {
+            // Stored channel-first, viewed channels-last: channels
+            // `h · w` elements apart, so the walk packs single elements and
+            // a scratch-sized run need not end on a pixel boundary.
+            let c = shape[2];
+            let packed = parent.to_contiguous();
+            out.push((
+                "channel_first",
+                crate::core::dtype::with_dtype!(parent.dtype(), T => {
+                    let src = packed.as_slice::<T>();
+                    let chw: Vec<T> = (0..c)
+                        .flat_map(|k| src.iter().skip(k).step_by(c).copied())
+                        .collect();
+                    ViewBuffer::from_vec_with_shape(chw, vec![c, h, w]).permute(&[1, 2, 0])
+                }),
+            ));
+        }
         out
     }
 
@@ -1099,13 +938,62 @@ mod grayscale_threshold_parity_tests {
             }
         }
     }
+
+    /// Any other dtype compares the element read as `f64`, and still writes
+    /// u8, for every layout.
+    #[test]
+    fn typed_threshold_matches_the_comparison_reference() {
+        for (h, w) in SIZES {
+            let values: Vec<f64> = pattern(h * w)
+                .iter()
+                .map(|&v| f64::from(v) * 3.5 - 200.0)
+                .collect();
+            let parents = [
+                ViewBuffer::from_vec_with_shape(
+                    values.iter().map(|&v| v as i16).collect::<Vec<_>>(),
+                    vec![h, w, 1],
+                ),
+                ViewBuffer::from_vec_with_shape(
+                    values.iter().map(|&v| v as f32).collect::<Vec<_>>(),
+                    vec![h, w],
+                ),
+                ViewBuffer::from_vec_with_shape(
+                    values
+                        .iter()
+                        .map(|&v| (v + 200.0) as u64)
+                        .collect::<Vec<_>>(),
+                    vec![h, w, 1],
+                ),
+            ];
+            for parent in parents {
+                for (layout, view) in layouts(&parent) {
+                    let as_f64: Vec<f64> = crate::core::dtype::with_dtype!(view.dtype(), T => {
+                        view.to_contiguous().as_slice::<T>().iter().map(|x| num_traits::ToPrimitive::to_f64(x).unwrap()).collect()
+                    });
+                    for t in [-50.0f64, 0.0, 99.5, 300.0] {
+                        let expected: Vec<u8> = as_f64
+                            .iter()
+                            .map(|&v| if v > t { 255 } else { 0 })
+                            .collect();
+                        let got = run(view.clone(), ImageOpKind::Threshold { value: t });
+                        assert_eq!(got.dtype(), DType::U8);
+                        assert_eq!(
+                            got.to_contiguous().as_slice::<u8>(),
+                            &expected[..],
+                            "{:?} {layout} {h}x{w} t={t}",
+                            view.dtype()
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
-/// Clamp an `f64` value to the representable range of the given integer `DType`.
-///
-/// `#[inline(always)]`: hot loops call this with a compile-time-constant
-/// dtype from monomorphized contexts, so inlining folds the match away.
-#[inline(always)]
+/// Clamp an `f64` value to the representable range of the given integer
+/// `DType`: the store the pre-M5 kernels used, kept for the verbatim oracles
+/// of the warp and blur tests. Every kernel now stores by `CastFrom`.
+#[cfg(test)]
 pub(super) fn clamp_for_dtype(v: f64, dtype: DType) -> f64 {
     match dtype {
         // Round before clamping so that e.g. 127.9999 → 128, not 127.

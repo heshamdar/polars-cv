@@ -96,8 +96,9 @@ impl OwnedCopy for ViewBuffer {
         }
         match self.dtype() {
             DType::U8 => copy!(u8),
+            DType::U16 => copy!(u16),
             DType::F32 => copy!(f32),
-            other => panic!("bench inputs are u8 or f32, not {other:?}"),
+            other => panic!("bench inputs are u8, u16 or f32, not {other:?}"),
         }
     }
 }
@@ -190,6 +191,17 @@ fn value_kernels(c: &mut Criterion) {
         k.out_dtype = DType::U8;
         exec(b, |e| e.fused(k.clone()))
     });
+    // The same chain over a solely owned f32 image, written in place.
+    bench_sizes(c, "fused_chain_f32", rgb_f32, |b| {
+        let mut k = FusedKernel::new();
+        k.push(ScalarOp::Mul(1.2));
+        k.push(ScalarOp::Add(-10.0));
+        k.push(ScalarOp::Clamp(0.0, 255.0));
+        exec(b, |e| e.fused(k.clone()))
+    });
+    bench_sizes(c, "normalize_zscore_f32", rgb_f32, |b| {
+        exec(b, |e| e.normalize(Normalization::ZScore, DType::F32))
+    });
 }
 
 fn layout_kernels(c: &mut Criterion) {
@@ -224,6 +236,31 @@ fn layout_kernels(c: &mut Criterion) {
     bench_sizes(c, "grayscale_u8_flip_v", rgb, |b| {
         exec(b, |e| e.flip(vec![0]).grayscale())
     });
+    bench_sizes(c, "grayscale_u8_transpose", rgb, |b| {
+        exec(b, |e| e.transpose(vec![1, 0, 2]).grayscale())
+    });
+    bench_sizes(
+        c,
+        "grayscale_u16_flip_v",
+        |s| {
+            let v: Vec<u16> = image_u8(s, 3).iter().map(|&x| u16::from(x) * 257).collect();
+            ViewBuffer::from_vec_with_shape(v, vec![s, s, 3])
+        },
+        |b| exec(b, |e| e.flip(vec![0]).grayscale()),
+    );
+    // Per-value ops on views: an integer map and a table, into a new buffer.
+    bench_sizes(c, "invert_u8_flip_h", rgb, |b| {
+        exec(b, |e| e.flip(vec![1]).invert())
+    });
+    bench_sizes(c, "adjust_gamma_u8_flip_v", rgb, |b| {
+        exec(b, |e| e.flip(vec![0]).adjust_gamma(0.7))
+    });
+    bench_sizes(
+        c,
+        "threshold_u8_flip_h",
+        |s| owned_u8(&image_u8(s, 1), s, 1),
+        |b| exec(b, |e| e.flip(vec![1]).threshold(128.0)),
+    );
     bench_sizes(c, "resize_224_u8", rgb, |b| {
         exec(b, |e| e.resize(224, 224, FilterType::Triangle))
     });
@@ -332,6 +369,39 @@ fn codec_kernels(c: &mut Criterion) {
     }
 }
 
+/// The half-precision tensor sink's conversion (`sink("numpy", dtype="f16")`).
+/// `f16_per_element_*` is the plugin's former row conversion, verbatim (cast
+/// to f32, pack, then `f16::from_f32` and a 2-byte `extend_from_slice` per
+/// element); `f16_bits_*` is `ViewBuffer::to_f16_bits`, which replaced it.
+fn sink_kernels(c: &mut Criterion) {
+    fn per_element(buffer: ViewBuffer) -> Vec<u8> {
+        let f32_buf = buffer.cast(DType::F32).to_contiguous();
+        let f32_slice = f32_buf.as_slice::<f32>();
+        let mut bytes: Vec<u8> = Vec::with_capacity(f32_slice.len() * 2);
+        for &v in f32_slice {
+            bytes.extend_from_slice(&half::f16::from_f32(v).to_le_bytes());
+        }
+        bytes
+    }
+    let rgb = |s| owned_u8(&image_u8(s, 3), s, 3);
+    let rgb_f32 = |s| owned_f32(&image_u8(s, 3), s, 3);
+    for (name, make) in [
+        ("f32", &rgb_f32 as &dyn Fn(usize) -> ViewBuffer),
+        ("u8", &rgb),
+    ] {
+        bench_sizes(c, &format!("f16_per_element_{name}"), make, |b| {
+            ViewBuffer::from_vec(per_element(b))
+        });
+        bench_sizes(c, &format!("f16_bits_{name}"), make, |b| b.to_f16_bits());
+    }
+    bench_sizes(c, "f16_per_element_f32_transposed", rgb_f32, |b| {
+        ViewBuffer::from_vec(per_element(b.permute(&[1, 0, 2])))
+    });
+    bench_sizes(c, "f16_bits_f32_transposed", rgb_f32, |b| {
+        b.permute(&[1, 0, 2]).to_f16_bits()
+    });
+}
+
 fn config() -> Criterion {
     Criterion::default()
         .sample_size(20)
@@ -342,6 +412,6 @@ fn config() -> Criterion {
 criterion_group! {
     name = benches;
     config = config();
-    targets = color_kernels, value_kernels, layout_kernels, spatial_kernels, codec_kernels
+    targets = color_kernels, value_kernels, layout_kernels, spatial_kernels, codec_kernels, sink_kernels
 }
 criterion_main!(benches);

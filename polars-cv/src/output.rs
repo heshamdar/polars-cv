@@ -92,37 +92,25 @@ impl NumpyRowOutput {
         }
     }
 
-    /// Create a half-precision (`float16`) row by downcasting from float.
+    /// A half-precision (`float16`) row from its f16 bits, as
+    /// `ViewBuffer::to_f16_bits` gives them: zero-copy like any other row,
+    /// labelled `float16`. That conversion, which backs
+    /// `.sink("numpy"|"torch", dtype="f16")` (the engine has no f16 dtype),
+    /// runs on the row's own thread in the encode half
+    /// (`graph::encode::encode_node_output`), not here in the serial column
+    /// build.
     ///
-    /// The engine has no native f16 dtype, so this is the encode-time downcast
-    /// backing `.sink("numpy"|"torch", dtype="f16")`: the buffer is cast to a
-    /// contiguous f32 and each element converted to IEEE-754 half. The result is
-    /// C-contiguous (offset 0, 2-byte strides), halving the output-tensor bytes
-    /// and H2D transfer. `numpy_from_struct` already understands `"float16"`.
-    pub fn from_buffer_f16(buffer: ViewBuffer) -> Self {
-        let f32_buf = buffer.cast(VbDType::F32).to_contiguous();
-        let dims: Vec<usize> = f32_buf.shape().to_vec();
-        let f32_slice = f32_buf.as_slice::<f32>();
-
-        let mut bytes: Vec<u8> = Vec::with_capacity(f32_slice.len() * 2);
-        for &v in f32_slice {
-            bytes.extend_from_slice(&half::f16::from_f32(v).to_le_bytes());
-        }
-
-        // Row-major contiguous byte strides for 2-byte (f16) elements.
-        let mut strides = vec![0i64; dims.len()];
-        let mut acc: i64 = 2;
-        for i in (0..dims.len()).rev() {
-            strides[i] = acc;
-            acc *= dims[i] as i64;
-        }
-
+    /// # Panics
+    /// Panics unless `bits` is a `U16` buffer.
+    pub fn from_f16_bits(bits: ViewBuffer) -> Self {
+        assert_eq!(
+            bits.dtype(),
+            VbDType::U16,
+            "internal: a float16 row holds its f16 bits as u16"
+        );
         Self {
-            data: polars_buffer::Buffer::from(bytes),
             dtype: "float16",
-            shape: dims.into_iter().map(|d| d as u64).collect(),
-            strides,
-            offset: 0,
+            ..Self::from_buffer(bits)
         }
     }
 }
@@ -145,8 +133,9 @@ pub fn build_numpy_series(
 ) -> PolarsResult<Series> {
     let len = rows.len();
 
-    // A half-precision request (`formats::sink::SinkDType`) downcasts at the
-    // encode boundary: the engine has no native f16 dtype.
+    // A half-precision request (`formats::sink::SinkDType`) was converted
+    // on each row's thread (`NumpyRowOutput::from_f16_bits`): its rows are
+    // f16 bits, labelled here.
 
     // Convert each row to NumpyRowOutput
     let encoded: Vec<Option<NumpyRowOutput>> = rows
@@ -154,7 +143,7 @@ pub fn build_numpy_series(
         .map(|opt| {
             opt.map(|b| {
                 if as_f16 {
-                    NumpyRowOutput::from_buffer_f16(b)
+                    NumpyRowOutput::from_f16_bits(b)
                 } else {
                     NumpyRowOutput::from_buffer(b)
                 }
@@ -581,7 +570,7 @@ mod tests {
         // A float buffer downcast to f16: 2 bytes/element, "float16", contiguous.
         let buffer = ViewBuffer::from_vec(vec![0.0f32, 1.0, 2.0, 3.0]).reshape(vec![2, 2]);
 
-        let output = NumpyRowOutput::from_buffer_f16(buffer);
+        let output = NumpyRowOutput::from_f16_bits(buffer.to_f16_bits());
 
         assert_eq!(output.dtype, "float16");
         assert_eq!(output.shape, vec![2, 2]);

@@ -18,6 +18,8 @@ Reports eager and streaming-engine timings for:
   - invert:  blob source -> invert                     (one cheap op)
   - static:  blob source -> scale -> clamp -> relu     (all-literal params)
   - dynamic: blob source -> scale(pl.col) -> clamp -> relu (per-row param)
+  - static->array / ->numpy / ->f16: the static chain's f32 result through
+    the typed Array, numpy and half-precision numpy sinks
 """
 
 from __future__ import annotations
@@ -98,13 +100,19 @@ def main() -> None:
         .clamp(min_val=0.0, max_val=255.0)
         .relu()
     )
+    # Tensor sinks of the same f32 result: numpy (zero-copy rows) and its
+    # half-precision downcast (a conversion per element).
+    cases["static->numpy"] = cases["static->array"]
+    cases["static->f16"] = cases["static->array"]
+    sinks = {
+        "array": (("array",), {"shape": [args.size, args.size]}),
+        "numpy": (("numpy",), {}),
+        "f16": (("numpy",), {"dtype": "f16"}),
+    }
     for name, pipe in cases.items():
         if args.only and args.only not in name:
             continue
-        sink_args = ("array",) if name.endswith("array") else ("blob",)
-        sink_kwargs = (
-            {"shape": [args.size, args.size]} if name.endswith("array") else {}
-        )
+        sink_args, sink_kwargs = sinks.get(name.rpartition(">")[2], (("blob",), {}))
         expr = pl.col("img").cv.pipe(pipe).sink(*sink_args, **sink_kwargs)
 
         def eager(expr=expr):

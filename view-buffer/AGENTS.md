@@ -36,9 +36,13 @@ src/
 ├── core/               # ViewBuffer, DType, Layout
 │   ├── dispatch.rs     # SimdKernel + dispatch(): the one way a kernel gets an AVX2 build
 │   │                   # (debug builds assert both builds' outputs are byte-identical)
-│   ├── convert.rs      # CastFrom + convert_slice/convert_view: the one element-conversion
-│   │                   # rule (cast_to, the engine's f32 read and fused output use it)
-│   └── strided.rs      # Walk: the one walk over a view's memory (packing, strided reads)
+│   ├── convert.rs      # CastFrom: the one element-conversion rule (every kernel's store),
+│   │                   # its bulk map (cast_to) and the f16 sink's conversion (to_f16_bits)
+│   ├── map.rs          # ElementMap/PixelMap + map_owned/map_new/map_pixels: the one
+│   │                   # traversal of a per-value or per-pixel kernel (in place when
+│   │                   # sole owner, any view read where it lies, dispatched)
+│   └── strided.rs      # Walk: the one walk over a view's memory (packing, runs of whole
+│                       # pixels for the maps)
 ├── ops/                # Operations
 │   ├── mod.rs          # Module aggregator / re-exports for all op types
 │   ├── dto.rs          # ViewDto — serializable operation enum

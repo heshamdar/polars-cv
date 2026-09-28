@@ -21,6 +21,9 @@ thiserror = "1.0"
 num-traits = "0.2"
 # Inline layout dimensions (`core::layout::Dims`): a layout copy allocates nothing.
 smallvec = "1.15"
+# IEEE-754 binary16 for the half-precision tensor sink (`to_f16_bits`), in
+# bulk: F16C, detected at run time, eight values per instruction.
+half = "2"
 # Exact polygon geometry: boolean ops (via i_overlay), area, centroid, distance,
 # simplification, convex hull, winding. `default-features = false` drops the
 # earcut/spade triangulators and `multithreading` — the latter matters because this

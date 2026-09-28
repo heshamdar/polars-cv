@@ -522,7 +522,31 @@ pub(super) fn apply_fused_kernel(this: &ViewBuffer, kernel: &FusedKernel) -> Vie
     crate::ops::elementwise::apply_fused_op_passes(&mut acc, &kernel.ops);
 
     // Convert to the kernel's output dtype while writing the result.
-    crate::ops::elementwise::finish_fused_output(acc, this.layout.shape.clone(), kernel.out_dtype)
+    finish_fused_output(acc, this.layout.shape.clone(), kernel.out_dtype)
+}
+
+/// The engine's former `finish_fused_output`, which the pre-engine code
+/// called and the engine no longer has (its blocked strategy stores as it
+/// goes): moved here verbatim so this oracle stays the code it was.
+fn finish_fused_output(
+    acc: Vec<f32>,
+    shape: impl Into<crate::core::layout::Dims>,
+    out_dtype: DType,
+) -> ViewBuffer {
+    let shape = shape.into();
+    if out_dtype == DType::F32 {
+        // Reuse the accumulator allocation: AlignedBytes takes it over and
+        // deallocates with f32 alignment.
+        return ViewBuffer {
+            data: BufferStorage::Rust(Arc::new(crate::core::bytes::AlignedBytes::from_typed_vec(
+                acc,
+            ))),
+            layout: crate::core::layout::Layout::new_contiguous(shape, DType::F32),
+        };
+    }
+    crate::core::dtype::with_dtype!(out_dtype, T => {
+        ViewBuffer::from_vec_with_shape(crate::core::convert::convert_slice::<f32, T>(&acc), shape)
+    })
 }
 
 /// Read every element as `f32`, in logical (row-major) order.
