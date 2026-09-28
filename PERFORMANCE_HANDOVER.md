@@ -5,9 +5,10 @@ State of the kernel-performance effort planned in
 Read this, then the plan's phase you are starting, then `CLAUDE.md`'s
 Working Agreements (they bind every change here).
 
-Branch: `claude/codebase-performance-assessment-36x2p3`. Last code commit:
-`dbe23ee` (Phase 5). Everything is committed and pushed; there is no work in
-progress.
+Branch: `claude/performance-optimization-handover-97vxoc` (Phases 1–5 were on
+`claude/codebase-performance-assessment-36x2p3`, which it continues). Last code
+commit: `f0428bb` (Phase 6). Everything is committed and pushed; there is no
+work in progress.
 
 ## Where it stands
 
@@ -20,15 +21,16 @@ progress.
 | 3: strided walk | done | `bf64725`; tiling `80d3b52`, reverted in `c4475b6`; docs in `6c7bc8c` | `2026-09-28-phase3-strided/` | CR-55 |
 | 4: resize adapter (resize after crop/flip is zero-copy) | done | `72fd1d1` | `2026-09-28-phase4-resize/` | CR-56 |
 | CR-57: grayscale reads crops/flips in place | done | `7134c75` | `2026-09-28-cr57-grayscale/` | CR-57 |
-| 5: per-row executor overhead | done | `dbe23ee` | `2026-09-28-phase5-per-row/` | CR-58; CR-59 (blob bug, fixed); CR-60 (allocator, open) |
-| 6: `List` source zero-copy, raw/blob alignment | **next** | | | |
-| 7: rotation / affine | not started | | | |
+| 5: per-row executor overhead | done | `dbe23ee` | `2026-09-28-phase5-per-row/` | CR-58; CR-59 (blob bug, fixed) |
+| CR-60: the plugin allocates through polars' allocator | done | `1e7ad74`, `f0428bb` | `2026-09-28-cr60-allocator/` | CR-60 |
+| 6: `List` source zero-copy, raw/blob alignment | done | `f944fc9` | `2026-09-28-phase6-ingestion/` | CR-61 (silent 0 on cast, fixed) |
+| 7: rotation / affine | **next** | | | |
 | 8: morphology iterations, blur input conversion | not started | | | |
 | 9: JPEG encoder (eval-gated), f16 sink | not started | | | |
 
 Reports live under `polars-cv/benchmarks/reports/`; findings are in
 `CODE_REVIEW_FINDINGS.md` under "Performance review (2026-09-27)". The next free
-finding id is **CR-61**; check with `grep -o '^### CR-[0-9]*' CODE_REVIEW_FINDINGS.md | sort -t- -k2 -n | tail -1`
+finding id is **CR-62**; check with `grep -o '^### CR-[0-9]*' CODE_REVIEW_FINDINGS.md | sort -t- -k2 -n | tail -1`
 before filing one. CR-50 was duplicated once.
 
 ## What exists now (the mechanisms later phases must use)
@@ -73,6 +75,14 @@ not write a second one beside it; extend it.
 - **`ExecutionPlan::execute_steps`** replays a cached `Arc<[PlanStep]>`.
 - **Row results reach the column builder as per-range parts** (`RowParts`,
   `decode.rs`); never concatenate them (a `RowResult` is 168 bytes).
+- **The global allocator is polars'** (`polars-cv/src/allocator.rs`).
+  `_lib.__allocator__` must read `"polars"` (`tests/test_allocator.py`).
+  Benchmark A/Bs of the plugin now measure jemalloc, not glibc.
+- **`list_row_grid`** (`graph/decode.rs`) is the one way a `List`/`Array` row
+  becomes a grid; **`decode_binary_row`** the one binary-row decode, with
+  `get_binary_row_buffer`'s `in_place` predicate deciding copy vs view.
+- **`benchmarks/ingestion_overhead.py`**: per-row source cost, `array` as the
+  in-place reference.
 - **`MemoryEffect` is what makes a planned pipeline pack.** A kernel that reads
   views is not enough: `build_plan` inserts `MaterializeContiguous` before any
   op declaring `RequiresContiguous`. Check the plan's steps
@@ -173,13 +183,6 @@ before building either side):
 - **u8 preset normalize is slower in the v3 build than on the wheel target**
   (4.0 vs 2.2 ms at 1024², Phase 2 report). Not investigated.
 - **Transpose is still ~8× a vertical flip** (CR-55 follow-up).
-- **The plugin allocates with the system `malloc`** (CR-60, open). Since
-  Phase 5, glibc trims freed row buffers between calls, so a call holding
-  many large rows (a 64×64 f32 `array` sink, 50k rows, one thread) re-faults
-  ~800 MB on every call after the first: ~40% slower from the second call.
-  pyo3-polars' `PolarsAllocator` is the likely fix; `test_alloc.rs` installs
-  its own global allocator for tests, so that needs care. Ask the user first:
-  it changes the allocator for the whole plugin.
 - **Eager calls scale poorly across threads**: an 8×8 `invert` over 200k rows
   in one chunk is 1.7x faster on 4 threads than on 1, and the same rows split
   into 100 chunks run ~2x faster than one chunk. Some per-call work is serial
@@ -188,11 +191,20 @@ before building either side):
   Phase 4): fast_image_resize has no such pixel type and resize's `check()`
   accepts any channel count. Not filed.
 
-## Starting Phase 6
+- **A converting `list` row goes through polars' `strict_cast`** (Phase 6):
+  15.8 µs per 64×64 `i64 → u8` row against 2.2 for an in-place one, most of
+  it the Series wrapper and cast. Fine for a path that exists for
+  convenience; a typed pass would need its own range checks, a second copy of
+  polars' cast rules. Not worth it without a user asking.
 
-Plan: `PERFORMANCE_PLAN.md`, "Phase 6 — Ingestion". Measure first, as Phases 4
-and 5 did: Phase 5's profile showed the plan's own candidates were a small part
-of the cost, and the real one was elsewhere.
+## Starting Phase 7
+
+Plan: `PERFORMANCE_PLAN.md`, "Phase 7 — Rotation / affine". Its line numbers
+are stale; grep for `affine_warp_typed` and `Rotation::Identity`. It is a
+kernel phase, so the kernel benchmarks (`benchmarks/regression`, the
+`rotate`/`affine` cases) are the A/B, not the plugin micro-benchmarks. Measure
+first, as Phases 4–6 did: each found its real cost somewhere other than the
+plan's first guess.
 
 **Profiling the plugin** (what worked in Phase 5):
 - There is no `perf`, and `py-spy` sees only threads with Python state (the
@@ -222,7 +234,13 @@ is always safe; a whole `target/debug` is only build cache. Never build
 `-p polars-cv --all-features`: it is a different feature set and rebuilds the
 whole polars stack in debug.
 
-Lessons from Phase 4 that still apply:
+Lessons from Phases 4–6 that still apply:
+- **Verify with nothing unstaged or untracked.** `verify.sh` passed for the
+  CR-60 commit while its new `allocator.rs` was untracked, so the relevance
+  guard (which reads tracked files) never saw it; the next run failed. And
+  pre-commit stashes unstaged changes, so committing part of a tree whose
+  Rust changed fails the source-hash check: commit in an order that leaves
+  nothing unstaged.
 - **A parity test needs an oracle outside the code under test.** Comparing
   the new path with "the same op on packed input" was blind to both mutations
   tried, because the packed input went through the new adapter too. Compare
