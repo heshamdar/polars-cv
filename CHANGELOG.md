@@ -62,6 +62,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   from zero and saturating is now written so it compiles to vector
   instructions, with identical results: f32 → u8 `cast` is another 1.6–2.3x
   faster on top of the previous entry.
+- **Materialising a strided view copies runs, not elements.** A crop, flip or
+  transpose used to be copied a few bytes at a time with an N-d offset
+  recomputed per copy. One walk now coalesces the layout into the longest
+  packed runs it has (a whole buffer, a row, a pixel) and copies each run
+  once. This covers `to_contiguous` and every list/array sink. A `cast` of a
+  view converts straight from those runs, with no packed copy first, and so
+  does a per-value op's read of a strided view.
 
 ### Changed
 
@@ -76,6 +83,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   a kernel may write its input is decided in one place,
   `ViewBuffer::unique_contiguous_mut`, which the element-wise engine and the
   u8 threshold ask; `apply_fused_kernel` remains and never writes `&self`.
+- view-buffer: one walk over a view's memory, `core::strided::Walk`, replaces
+  the packing loop in `copy_elements_into`, the element-wise engine's strided
+  f32 read and grayscale's per-pixel strided fallback (a non-dense layout is
+  now packed, then takes the dense kernel).
 
 ### Changed
 
