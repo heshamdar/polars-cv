@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use crate::core::buffer::{BufferStorage, ViewBuffer};
 use crate::core::bytes::AlignedBytes;
-use crate::core::convert::{convert_slice, CastFrom};
+use crate::core::convert::{convert_slice, convert_view, CastFrom};
 use crate::core::dispatch::{dispatch, dispatch_mut, SimdKernel, SimdKernelMut};
 use crate::core::dtype::{with_dtype, DType, ViewType};
 use crate::core::layout::Layout;
@@ -791,63 +791,7 @@ fn run_f64(mut buf: ViewBuffer, steps: &[F64Step]) -> ViewBuffer {
 
 /// Every element as f32, in logical (row-major) order, by the conversion rule.
 fn gather_f32(buf: &ViewBuffer) -> Vec<f32> {
-    if buf.layout.is_contiguous() {
-        return with_dtype!(buf.dtype(), S => convert_slice::<S, f32>(buf.as_slice::<S>()));
-    }
-    let total_elems = buf.shape().iter().product::<usize>();
-    gather_strided_f32(buf, total_elems)
-}
-
-/// Every element of a non-contiguous view as f32, in logical order, read
-/// through the strides (no packed intermediate). Phase 3's strided walk
-/// replaces the per-element index arithmetic.
-fn gather_strided_f32(buf: &ViewBuffer, total_elems: usize) -> Vec<f32> {
-    // Strided gather: walk logical indices, reading each element at its
-    // byte offset. The walk is monomorphized per dtype so the inner read
-    // has no per-element dispatch.
-    macro_rules! gather_strided {
-        ($t:ty) => {{
-            let mut out: Vec<f32> = Vec::with_capacity(total_elems);
-            let mut indices = vec![0; buf.layout.shape.len()];
-            let shape = &buf.layout.shape;
-            let strides = &buf.layout.strides;
-            let ptr = buf.data.as_ptr();
-            let base_offset = buf.layout.offset;
-            let data_len = buf.data.len();
-            for _ in 0..total_elems {
-                let mut offset = base_offset as isize;
-                for (dim, &idx) in indices.iter().enumerate() {
-                    offset += (idx as isize) * strides[dim];
-                }
-                debug_assert!(
-                    offset >= 0 && (offset as usize) + std::mem::size_of::<$t>() <= data_len,
-                    "Fused kernel read OOB"
-                );
-                let value = unsafe { *(ptr.offset(offset) as *const $t) };
-                out.push(value as f32);
-                for dim in (0..shape.len()).rev() {
-                    indices[dim] += 1;
-                    if indices[dim] < shape[dim] {
-                        break;
-                    }
-                    indices[dim] = 0;
-                }
-            }
-            out
-        }};
-    }
-    match buf.dtype() {
-        DType::U8 => gather_strided!(u8),
-        DType::I8 => gather_strided!(i8),
-        DType::U16 => gather_strided!(u16),
-        DType::I16 => gather_strided!(i16),
-        DType::U32 => gather_strided!(u32),
-        DType::I32 => gather_strided!(i32),
-        DType::U64 => gather_strided!(u64),
-        DType::I64 => gather_strided!(i64),
-        DType::F32 => gather_strided!(f32),
-        DType::F64 => gather_strided!(f64),
-    }
+    with_dtype!(buf.dtype(), S => convert_view::<S, f32>(buf))
 }
 
 /// Statistics a per-value op needs before it can lower to a kernel, read in

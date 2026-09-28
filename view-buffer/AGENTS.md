@@ -36,8 +36,9 @@ src/
 ├── core/               # ViewBuffer, DType, Layout
 │   ├── dispatch.rs     # SimdKernel + dispatch(): the one way a kernel gets an AVX2 build
 │   │                   # (debug builds assert both builds' outputs are byte-identical)
-│   └── convert.rs      # CastFrom + convert_slice: the one element-conversion rule
-│                       # (cast_to and the fused kernel's output both use it)
+│   ├── convert.rs      # CastFrom + convert_slice/convert_view: the one element-conversion
+│   │                   # rule (cast_to, the engine's f32 read and fused output use it)
+│   └── strided.rs      # Walk: the one walk over a view's memory (packing, strided reads)
 ├── ops/                # Operations
 │   ├── mod.rs          # Module aggregator / re-exports for all op types
 │   ├── dto.rs          # ViewDto — serializable operation enum
@@ -133,8 +134,15 @@ it. That check is meaningful under the wheels' flags, so run the suite once as
 
 Element conversion between dtypes has one rule, `core::convert::CastFrom`
 (integer sources `as`; float → integer round-half-away then saturate; float →
-float `as`), applied in bulk by `convert_slice`. `with_dtype!` is the one
-runtime `DType` → element-type match.
+float `as`), applied in bulk by `convert_slice` (`convert_view` for a strided
+view). `with_dtype!` is the one runtime `DType` → element-type match.
+
+A view's elements are read in logical order only through `core::strided::Walk`:
+it coalesces the layout once into packed units, evenly spaced rows and outer
+axes, then packs them (`copy_to`, behind `to_contiguous`/`append_to`/
+`write_to`) or hands out runs (`for_each_run`, behind `convert_view`). Do not
+write another index odometer over strides; a kernel that cannot read a view in
+place packs it with `to_contiguous()` and runs its dense path.
 
 Per-value compute ops (the scalar family, scale, relu, clamp, invert, gamma,
 contrast, normalize, fused chains) run only through `ops::elementwise::apply`:

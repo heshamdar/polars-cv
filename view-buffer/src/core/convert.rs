@@ -10,13 +10,16 @@
 //! - float → float: plain `as`.
 //!
 //! [`ViewBuffer::cast_to`](crate::ViewBuffer::cast_to) and the fused scalar
-//! kernel's output conversion both go through [`convert_slice`], so a cast
-//! and a fused trailing cast cannot round differently. The bulk loop is a
+//! kernel's output conversion both go through [`convert_slice`] (or, for a
+//! view, [`convert_view`]), so a cast and a fused trailing cast cannot round
+//! differently. The bulk loop is a
 //! [`SimdKernel`]: on the wheels' SSE2 baseline `f32::round` is a `roundf`
 //! call per element, while the AVX2 build rounds a vector at a time.
 
+use crate::core::buffer::ViewBuffer;
 use crate::core::dispatch::{dispatch, SimdKernel};
 use crate::core::dtype::ViewType;
+use crate::core::strided::Walk;
 
 /// `Self` from an `S`, by the crate's conversion rule (module docs).
 pub trait CastFrom<S>: Sized {
@@ -108,6 +111,48 @@ pub fn convert_slice<S: ViewType, D: ViewType + CastFrom<S>>(src: &[S]) -> Vec<D
         src,
         _to: std::marker::PhantomData,
     })
+}
+
+/// Every element of `view`, in logical order, converted to `D` by the
+/// crate's rule: a contiguous view through [`convert_slice`], any other in
+/// one pass over its runs ([`Walk`]), with no packed intermediate.
+///
+/// # Panics
+/// Panics if `S` is not the view's dtype.
+pub(crate) fn convert_view<S: ViewType, D: ViewType + CastFrom<S>>(view: &ViewBuffer) -> Vec<D> {
+    if view.layout.is_contiguous() {
+        return convert_slice(view.as_slice::<S>());
+    }
+    dispatch(ConvertView::<S, D> {
+        view,
+        _types: std::marker::PhantomData,
+    })
+}
+
+struct ConvertView<'a, S, D> {
+    view: &'a ViewBuffer,
+    _types: std::marker::PhantomData<(S, D)>,
+}
+
+impl<S, D> Clone for ConvertView<'_, S, D> {
+    fn clone(&self) -> Self {
+        ConvertView {
+            view: self.view,
+            _types: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<S: ViewType, D: ViewType + CastFrom<S>> SimdKernel for ConvertView<'_, S, D> {
+    type Output = Vec<D>;
+
+    #[inline(always)]
+    fn run(self) -> Vec<D> {
+        let mut out = Vec::with_capacity(self.view.shape().iter().product());
+        Walk::of(self.view)
+            .for_each_run::<S>(|run| out.extend(run.iter().map(|&x| D::cast_from(x))));
+        out
+    }
 }
 
 struct Convert<'a, S, D> {

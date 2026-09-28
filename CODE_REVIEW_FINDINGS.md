@@ -1055,7 +1055,10 @@ by `view-buffer/benches/kernels.rs` (baseline:
 `polars-cv/benchmarks/reports/2026-09-27-kernel-baseline/`). One entry per
 phase of that plan, closed as each lands.
 
-### CR-50 — Wheels run most kernels without SIMD; float → int casts call `roundf` per element · `Resolved` · Medium (perf)
+### CR-54 — Wheels run most kernels without SIMD; float → int casts call `roundf` per element · `Resolved` · Medium (perf)
+
+> Filed as a second CR-50 in `bdce7ee`, which duplicated the existing CR-50
+> above; renumbered to the next free id.
 
 - **What was wrong:** the wheels target x86-64 (SSE2). There, `f32::round` is a
   libcall per element, so every float → int cast (`cast`, a fused chain's

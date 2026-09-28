@@ -587,17 +587,13 @@ fn resize_typed_f32(
     ViewBuffer::from_vec(dst_data).reshape(vec![target_height as usize, target_width as usize, c])
 }
 
-/// Strided grayscale conversion that works on non-contiguous buffers.
+/// Grayscale of any layout: BT.601, `Y = 0.299R + 0.587G + 0.114B` (u8 in
+/// fixed point, `Y = (77R + 150G + 29B + 128) >> 8`), or a gray + alpha
+/// image's gray channel.
 ///
-/// Uses ndarray for strided access when available, falling back to manual
-/// strided iteration. This avoids the need to call `to_contiguous()` for
-/// flipped, cropped, or transposed buffers.
-///
-/// Uses BT.601 coefficients: Y = 0.299*R + 0.587*G + 0.114*B
-/// Implemented with fixed-point math: Y = (77*R + 150*G + 29*B + 128) >> 8
-///
-/// This implementation uses direct pointer arithmetic which is faster than
-/// ndarray per-pixel indexing due to avoiding bounds checks.
+/// u8 rows that are packed (contiguous, a crop, a vertical flip) are read
+/// where they lie; any other layout is packed first (`grayscale_u8`,
+/// `grayscale_typed`).
 #[cfg(feature = "image_interop")]
 fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
     let shape = buf.shape();
@@ -635,57 +631,35 @@ fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
 ///
 /// Rows whose pixels are packed ([`ViewBuffer::dense_rows`]: contiguous, a
 /// crop, a vertical flip) run the dispatched [`GrayscaleU8`] kernel where
-/// they lie. Any other layout (a transpose, a horizontal flip) is walked per
-/// pixel through its strides.
+/// they lie. Any other layout (a transpose, a horizontal flip) is packed
+/// first, and more than four channels are reduced to the first three (BT.601
+/// reads no others): one kernel, whatever the layout.
 #[cfg(feature = "image_interop")]
 fn grayscale_u8(buf: ViewBuffer) -> ViewBuffer {
     let shape = buf.shape();
     let (h, w) = (shape[0], shape[1]);
     let channels = shape.get(2).copied().unwrap_or(1);
-
-    if let Some(rows) = buf.dense_rows::<u8>() {
-        let gray = match channels {
-            2 => Some(dispatch(GrayscaleU8::<2> {
-                rows: &rows,
-                width: w,
-            })),
-            3 => Some(dispatch(GrayscaleU8::<3> {
-                rows: &rows,
-                width: w,
-            })),
-            4 => Some(dispatch(GrayscaleU8::<4> {
-                rows: &rows,
-                width: w,
-            })),
-            _ => None,
-        };
-        if let Some(gray) = gray {
-            return ViewBuffer::from_vec_with_shape(gray, vec![h, w, 1]);
-        }
+    if channels > 4 {
+        return grayscale_u8(buf.slice(&[0, 0, 0], &[h, w, 3]).to_contiguous());
     }
-
-    // Per-pixel walk: channel-strided layouts, and more than four channels
-    // (BT.601 over the first three).
-    let strides = buf.strides_bytes();
-    let (stride_h, stride_w, stride_c) =
-        (strides[0], strides[1], strides.get(2).copied().unwrap_or(1));
-    let base_ptr = unsafe { buf.as_ptr::<u8>() };
-    let mut gray = vec![0u8; h * w];
-    for y in 0..h {
-        for x in 0..w {
-            let offset = y as isize * stride_h + x as isize * stride_w;
-            // SAFETY: (y, x) is inside the view, whose strides keep every
-            // element inside the data.
-            gray[y * w + x] = unsafe {
-                let px = base_ptr.offset(offset);
-                if channels == 2 {
-                    *px
-                } else {
-                    luma_u8(*px, *px.offset(stride_c), *px.offset(2 * stride_c))
-                }
-            };
-        }
-    }
+    let Some(rows) = buf.dense_rows::<u8>() else {
+        return grayscale_u8(buf.to_contiguous());
+    };
+    let gray = match channels {
+        2 => dispatch(GrayscaleU8::<2> {
+            rows: &rows,
+            width: w,
+        }),
+        3 => dispatch(GrayscaleU8::<3> {
+            rows: &rows,
+            width: w,
+        }),
+        4 => dispatch(GrayscaleU8::<4> {
+            rows: &rows,
+            width: w,
+        }),
+        other => unreachable!("grayscale_strided returns {other}-channel input unchanged"),
+    };
     ViewBuffer::from_vec_with_shape(gray, vec![h, w, 1])
 }
 
