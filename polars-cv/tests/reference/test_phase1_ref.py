@@ -249,6 +249,24 @@ class TestInvert:
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_array_equal(actual, rgb_image)
 
+    @pytest.mark.parametrize(
+        "dtype", ["u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64"]
+    )
+    def test_invert_integer_keeps_dtype(self, dtype: str) -> None:
+        """Integer invert is ``MAX + MIN - x`` (NumPy's ``~x``) in the input dtype."""
+        np_dtype = np.dtype({"u": "uint", "i": "int"}[dtype[0]] + dtype[1:])
+        info = np.iinfo(np_dtype)
+        rng = np.random.default_rng(7)
+        data = rng.integers(info.min, info.max, (4, 5), dtype=np_dtype, endpoint=True)
+        data[0, :2] = [info.min, info.max]
+
+        df = pl.DataFrame({"buf": [data.tolist()]})
+        pipe = Pipeline().source("list", dtype=dtype).invert()
+        result = df.select(out=pl.col("buf").cv.pipe(pipe).sink("numpy"))
+        actual = numpy_from_struct(result.row(0)[0])
+        assert actual.dtype == np_dtype
+        np.testing.assert_array_equal(actual, ~data)
+
 
 @plugin_required
 class TestAdjustBrightness:

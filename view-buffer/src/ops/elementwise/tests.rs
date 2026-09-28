@@ -243,6 +243,15 @@ fn per_value_ops() -> Vec<ComputeOp> {
 /// Run `op` through the engine and the oracle on `buf` (shared) and on a
 /// solely owned copy, and require the same result.
 fn check(op: &ComputeOp, buf: &ViewBuffer, label: &str) {
+    if let Some(want) = changed_from_legacy(op, buf) {
+        assert_same(&apply(buf.clone(), op), &want, &format!("{label} shared"));
+        assert_same(
+            &apply(sole_owned(buf), op),
+            &want,
+            &format!("{label} owned"),
+        );
+        return;
+    }
     let want = legacy::apply(buf.clone(), op.clone());
     assert_same(&apply(buf.clone(), op), &want, &format!("{label} shared"));
     let want = legacy::apply(sole_owned(buf), op.clone());
@@ -251,6 +260,80 @@ fn check(op: &ComputeOp, buf: &ViewBuffer, label: &str) {
         &want,
         &format!("{label} owned"),
     );
+}
+
+/// The bitwise complement of every element of an integer buffer, in logical
+/// order and the buffer's own dtype; `None` for a float buffer.
+fn complement(buf: &ViewBuffer) -> Option<ViewBuffer> {
+    let packed = buf.to_contiguous();
+    macro_rules! not {
+        ($t:ty) => {
+            ViewBuffer::from_vec_with_shape(
+                packed
+                    .as_slice::<$t>()
+                    .iter()
+                    .map(|&x| !x)
+                    .collect::<Vec<$t>>(),
+                buf.shape().to_vec(),
+            )
+        };
+    }
+    Some(match buf.dtype() {
+        DType::U8 => not!(u8),
+        DType::I8 => not!(i8),
+        DType::U16 => not!(u16),
+        DType::I16 => not!(i16),
+        DType::U32 => not!(u32),
+        DType::I32 => not!(i32),
+        DType::U64 => not!(u64),
+        DType::I64 => not!(i64),
+        DType::F32 | DType::F64 => return None,
+    })
+}
+
+/// The expected result where the engine deliberately departs from the legacy
+/// code (CR-53): `invert` on an integer dtype other than u8/u16 used to
+/// return f32 `1 - x`; it now keeps the dtype as `MAX + MIN - x`, which is
+/// `!x`.
+fn changed_from_legacy(op: &ComputeOp, buf: &ViewBuffer) -> Option<ViewBuffer> {
+    match (op, buf.dtype()) {
+        (ComputeOp::Invert, DType::U8 | DType::U16) => None,
+        (ComputeOp::Invert, _) => complement(buf),
+        _ => None,
+    }
+}
+
+/// `invert` maps every integer dtype's range onto itself as
+/// `MAX + MIN - x` (`255 - x` for u8, `-1 - x` for a signed dtype): the
+/// bitwise complement, in the input dtype, as its `PreserveInput` contract
+/// says. Extremes swap.
+#[test]
+fn integer_invert_keeps_its_dtype() {
+    for dtype in DType::ALL
+        .iter()
+        .copied()
+        .filter(|d| !matches!(d, DType::F32 | DType::F64))
+    {
+        let parent = sample(dtype, 5, 7, 3);
+        let want = complement(&parent).expect("an integer dtype");
+        for owned in [false, true] {
+            let input = if owned {
+                sole_owned(&parent)
+            } else {
+                parent.clone()
+            };
+            let got = apply(input, &ComputeOp::Invert);
+            assert_same(&got, &want, &format!("invert {dtype:?} owned={owned}"));
+        }
+        macro_rules! extremes {
+            ($t:ty) => {{
+                let buf = ViewBuffer::from_vec_with_shape(vec![<$t>::MIN, <$t>::MAX], vec![2]);
+                let got = apply(buf, &ComputeOp::Invert);
+                assert_eq!(got.as_slice::<$t>(), &[<$t>::MAX, <$t>::MIN], "{dtype:?}");
+            }};
+        }
+        with_dtype!(dtype, T => extremes!(T));
+    }
 }
 
 #[test]

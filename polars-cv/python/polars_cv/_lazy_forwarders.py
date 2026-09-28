@@ -341,7 +341,7 @@ class _LazyForwardersMixin:
         )
 
     def invert(self) -> LazyPipelineExpr:
-        """Invert pixel values: `255 - pixel` for u8, `1.0 - pixel` for float [0,1].
+        """Invert values, keeping the dtype: `MAX + MIN - x` for an integer
 
         Lazy form of :meth:`Pipeline.invert` on this expression's output.
         """
