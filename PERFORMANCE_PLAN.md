@@ -309,6 +309,13 @@ Each phase is one or more commits on `claude/codebase-performance-assessment-36x
 
 ### Phase 9 — Sinks: JPEG encoder (eval-gated), f16
 
+> **f16 done** (CR-65; report `polars-cv/benchmarks/reports/2026-09-28-review-traversal/`),
+> as an element map on the row's thread rather than a pass in the column build.
+> **JPEG eval done** (report `2026-09-28-phase9-jpeg-eval/`), as a standalone
+> crate (IJG must not enter `cargo deny`'s graph unless adopted): the gate
+> passes (1.62–1.65x, ΔPSNR ≤ 0.04 dB), but files are 5–13% larger on smooth
+> content, so adoption is left to the owner.
+
 - **Eval gate first:** `view-buffer/tests/jpeg_encode_eval.rs`, mirroring
   `png_decode_eval.rs`.
   - It compares `image::codecs::jpeg::JpegEncoder` against `jpeg-encoder 0.7.1`

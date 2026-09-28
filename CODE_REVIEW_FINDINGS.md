@@ -1485,11 +1485,11 @@ phase of that plan, closed as each lands.
   - `typed_threshold_matches_the_comparison_reference` (typed threshold had
     no Rust test), watched failing against `>=`.
 - **Measured** (`polars-cv/benchmarks/reports/2026-09-28-review-traversal/`,
-  wheel target, three interleaved rounds): see the report. Views of per-value
-  ops are 1.1–1.3x faster and non-u8 grayscale 1.6–2.2x. u8 preset normalize
-  is 1.6–1.7x and u8 `adjust_contrast` 1.1–1.3x. An in-place f32 chain is
-  1.2–1.75x and f32 z-score up to 2.1x. Contiguous u8 kernels are
-  unchanged.
+  wheel target, three interleaved rounds, five for the cases near 1.0):
+  views of per-value ops 1.0–1.2x, non-u8 grayscale 1.5–2.1x, u8 preset
+  normalize 1.5–1.9x, u8 `adjust_contrast` 1.1–1.5x, an in-place f32 chain
+  1.1–2.0x, f32 z-score 1.2–3x. Contiguous u8 kernels are unchanged
+  (0.94–1.08x).
 
 ### CR-65 — The half-precision sink converted in the serial column build, one element at a time · `Resolved` · Low (perf)
 
@@ -1518,9 +1518,9 @@ phase of that plan, closed as each lands.
   `test_f16_of_an_integer_image_reads_it_as_f32`, against NumPy's own
   conversion, through the plugin. All four were watched failing against a
   truncating conversion.
-- **Measured** (same report, wheel target): the conversion is 4.4–6x faster
-  for f32 rows, 6.5–7x for u8 rows and 3–4x for a transposed view, and it
-  now runs in parallel with the other rows.
+- **Measured** (same report, wheel target): the conversion is 4.3–5.2x
+  faster for f32 rows, 6.1–6.4x for u8 rows and 2.9–3.4x for a transposed
+  view, and it now runs in parallel with the other rows.
 
 ## Architectural follow-up (spun out of CR-01)
 

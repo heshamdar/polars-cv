@@ -1,0 +1,218 @@
+Gnuplot not found, using plotters backend
+Benchmarking cast_f32_to_u8/256
+Benchmarking cast_f32_to_u8/256: Warming up for 500.00 ms
+Benchmarking cast_f32_to_u8/256: Collecting 20 samples in estimated 2.0094 s (7350 iterations)
+Benchmarking cast_f32_to_u8/256: Analyzing
+cast_f32_to_u8/256      time:   [91.389 µs 96.243 µs 101.42 µs]
+                        change: [-5.9543% -1.4075% +2.9145%] (p = 0.55 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking cast_f32_to_u8/512
+Benchmarking cast_f32_to_u8/512: Warming up for 500.00 ms
+Benchmarking cast_f32_to_u8/512: Collecting 20 samples in estimated 2.1302 s (3150 iterations)
+Benchmarking cast_f32_to_u8/512: Analyzing
+cast_f32_to_u8/512      time:   [383.13 µs 400.02 µs 416.00 µs]
+                        change: [-10.443% -4.3939% +1.3592%] (p = 0.17 > 0.05)
+                        No change in performance detected.
+Benchmarking cast_f32_to_u8/1024
+Benchmarking cast_f32_to_u8/1024: Warming up for 500.00 ms
+Benchmarking cast_f32_to_u8/1024: Collecting 20 samples in estimated 2.4426 s (840 iterations)
+Benchmarking cast_f32_to_u8/1024: Analyzing
+cast_f32_to_u8/1024     time:   [1.8012 ms 1.9134 ms 2.0186 ms]
+                        change: [+13.409% +22.157% +31.884%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+
+Benchmarking invert_u8/256
+Benchmarking invert_u8/256: Warming up for 500.00 ms
+Benchmarking invert_u8/256: Collecting 20 samples in estimated 2.0032 s (106k iterations)
+Benchmarking invert_u8/256: Analyzing
+invert_u8/256           time:   [6.5566 µs 7.1571 µs 7.6545 µs]
+                        change: [-14.270% -4.3442% +6.6296%] (p = 0.45 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking invert_u8/512
+Benchmarking invert_u8/512: Warming up for 500.00 ms
+Benchmarking invert_u8/512: Collecting 20 samples in estimated 2.0041 s (24k iterations)
+Benchmarking invert_u8/512: Analyzing
+invert_u8/512           time:   [26.675 µs 29.389 µs 31.489 µs]
+                        change: [-15.143% -3.5196% +9.9009%] (p = 0.60 > 0.05)
+                        No change in performance detected.
+Benchmarking invert_u8/1024
+Benchmarking invert_u8/1024: Warming up for 500.00 ms
+Benchmarking invert_u8/1024: Collecting 20 samples in estimated 2.0668 s (4620 iterations)
+Benchmarking invert_u8/1024: Analyzing
+invert_u8/1024          time:   [154.89 µs 164.69 µs 173.26 µs]
+                        change: [+2.9801% +8.5782% +14.494%] (p = 0.01 < 0.05)
+                        Performance has regressed.
+
+Benchmarking adjust_gamma_u8/256
+Benchmarking adjust_gamma_u8/256: Warming up for 500.00 ms
+Benchmarking adjust_gamma_u8/256: Collecting 20 samples in estimated 2.0034 s (22k iterations)
+Benchmarking adjust_gamma_u8/256: Analyzing
+adjust_gamma_u8/256     time:   [63.881 µs 67.560 µs 72.118 µs]
+                        change: [-6.6367% +1.7874% +10.721%] (p = 0.70 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking adjust_gamma_u8/512
+Benchmarking adjust_gamma_u8/512: Warming up for 500.00 ms
+Benchmarking adjust_gamma_u8/512: Collecting 20 samples in estimated 2.0337 s (5880 iterations)
+Benchmarking adjust_gamma_u8/512: Analyzing
+adjust_gamma_u8/512     time:   [272.15 µs 283.12 µs 301.09 µs]
+                        change: [+12.603% +22.975% +32.750%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking adjust_gamma_u8/1024
+Benchmarking adjust_gamma_u8/1024: Warming up for 500.00 ms
+Benchmarking adjust_gamma_u8/1024: Collecting 20 samples in estimated 2.2058 s (1470 iterations)
+Benchmarking adjust_gamma_u8/1024: Analyzing
+adjust_gamma_u8/1024    time:   [1.1737 ms 1.2336 ms 1.3102 ms]
+                        change: [-10.861% -4.7056% +1.5021%] (p = 0.16 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high severe
+
+Benchmarking normalize_zscore_u8/256
+Benchmarking normalize_zscore_u8/256: Warming up for 500.00 ms
+Benchmarking normalize_zscore_u8/256: Collecting 20 samples in estimated 2.0097 s (7140 iterations)
+Benchmarking normalize_zscore_u8/256: Analyzing
+normalize_zscore_u8/256 time:   [241.63 µs 246.04 µs 250.98 µs]
+                        change: [-11.384% -7.6420% -3.6013%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking normalize_zscore_u8/512
+Benchmarking normalize_zscore_u8/512: Warming up for 500.00 ms
+Benchmarking normalize_zscore_u8/512: Collecting 20 samples in estimated 2.1582 s (1890 iterations)
+Benchmarking normalize_zscore_u8/512: Analyzing
+normalize_zscore_u8/512 time:   [1.1101 ms 1.1406 ms 1.1706 ms]
+                        change: [-0.7363% +2.1756% +5.3567%] (p = 0.16 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking normalize_zscore_u8/1024
+Benchmarking normalize_zscore_u8/1024: Warming up for 500.00 ms
+Benchmarking normalize_zscore_u8/1024: Collecting 20 samples in estimated 2.2339 s (420 iterations)
+Benchmarking normalize_zscore_u8/1024: Analyzing
+normalize_zscore_u8/1024
+                        time:   [4.5349 ms 4.5749 ms 4.6443 ms]
+                        change: [-6.2549% -1.2834% +3.4062%] (p = 0.64 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+
+Benchmarking scale_u8/256
+Benchmarking scale_u8/256: Warming up for 500.00 ms
+Benchmarking scale_u8/256: Collecting 20 samples in estimated 2.0118 s (24k iterations)
+Benchmarking scale_u8/256: Analyzing
+scale_u8/256            time:   [59.527 µs 64.685 µs 68.924 µs]
+                        change: [-7.9110% -0.2078% +8.1968%] (p = 0.96 > 0.05)
+                        No change in performance detected.
+Benchmarking scale_u8/512
+Benchmarking scale_u8/512: Warming up for 500.00 ms
+Benchmarking scale_u8/512: Collecting 20 samples in estimated 2.0369 s (5040 iterations)
+Benchmarking scale_u8/512: Analyzing
+scale_u8/512            time:   [323.46 µs 325.71 µs 328.32 µs]
+                        change: [+7.3414% +9.5313% +11.572%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking scale_u8/1024
+Benchmarking scale_u8/1024: Warming up for 500.00 ms
+Benchmarking scale_u8/1024: Collecting 20 samples in estimated 2.2603 s (1260 iterations)
+Benchmarking scale_u8/1024: Analyzing
+scale_u8/1024           time:   [1.4563 ms 1.4872 ms 1.5146 ms]
+                        change: [+7.4857% +11.656% +15.438%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) low mild
+  1 (5.00%) high mild
+
+Benchmarking normalize_preset_f32/256
+Benchmarking normalize_preset_f32/256: Warming up for 500.00 ms
+Benchmarking normalize_preset_f32/256: Collecting 20 samples in estimated 2.0545 s (4410 iterations)
+Benchmarking normalize_preset_f32/256: Analyzing
+normalize_preset_f32/256
+                        time:   [371.87 µs 390.26 µs 418.08 µs]
+                        change: [-6.3998% +1.0744% +9.6626%] (p = 0.79 > 0.05)
+                        No change in performance detected.
+Benchmarking normalize_preset_f32/512
+Benchmarking normalize_preset_f32/512: Warming up for 500.00 ms
+Benchmarking normalize_preset_f32/512: Collecting 20 samples in estimated 2.3285 s (1260 iterations)
+Benchmarking normalize_preset_f32/512: Analyzing
+normalize_preset_f32/512
+                        time:   [1.4889 ms 1.5371 ms 1.6092 ms]
+                        change: [-0.8781% +3.9118% +8.6878%] (p = 0.14 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high severe
+Benchmarking normalize_preset_f32/1024
+Benchmarking normalize_preset_f32/1024: Warming up for 500.00 ms
+
+Warning: Unable to complete 20 samples in 2.0s. You may wish to increase target time to 2.1s, enable flat sampling, or reduce sample count to 10.
+Benchmarking normalize_preset_f32/1024: Collecting 20 samples in estimated 2.0846 s (210 iterations)
+Benchmarking normalize_preset_f32/1024: Analyzing
+normalize_preset_f32/1024
+                        time:   [8.5248 ms 8.9565 ms 9.4620 ms]
+                        change: [+39.722% +55.056% +74.364%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+
+Benchmarking scale_f32_transposed/256
+Benchmarking scale_f32_transposed/256: Warming up for 500.00 ms
+Benchmarking scale_f32_transposed/256: Collecting 20 samples in estimated 2.0221 s (9030 iterations)
+Benchmarking scale_f32_transposed/256: Analyzing
+scale_f32_transposed/256
+                        time:   [155.08 µs 162.48 µs 170.26 µs]
+                        change: [-4.2365% +0.2828% +4.7749%] (p = 0.91 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking scale_f32_transposed/512
+Benchmarking scale_f32_transposed/512: Warming up for 500.00 ms
+Benchmarking scale_f32_transposed/512: Collecting 20 samples in estimated 2.1961 s (1680 iterations)
+Benchmarking scale_f32_transposed/512: Analyzing
+scale_f32_transposed/512
+                        time:   [807.22 µs 835.88 µs 870.26 µs]
+                        change: [-0.8384% +4.9322% +11.979%] (p = 0.14 > 0.05)
+                        No change in performance detected.
+Found 4 outliers among 20 measurements (20.00%)
+  3 (15.00%) high mild
+  1 (5.00%) high severe
+Benchmarking scale_f32_transposed/1024
+Benchmarking scale_f32_transposed/1024: Warming up for 500.00 ms
+Benchmarking scale_f32_transposed/1024: Collecting 20 samples in estimated 2.2952 s (100 iterations)
+Benchmarking scale_f32_transposed/1024: Analyzing
+scale_f32_transposed/1024
+                        time:   [14.695 ms 15.491 ms 16.291 ms]
+                        change: [+2.5398% +10.717% +18.956%] (p = 0.01 < 0.05)
+                        Performance has regressed.
+
+Benchmarking grayscale_u8_flip_v/256
+Benchmarking grayscale_u8_flip_v/256: Warming up for 500.00 ms
+Benchmarking grayscale_u8_flip_v/256: Collecting 20 samples in estimated 2.0053 s (67k iterations)
+Benchmarking grayscale_u8_flip_v/256: Analyzing
+grayscale_u8_flip_v/256 time:   [17.393 µs 19.384 µs 21.304 µs]
+                        change: [-5.5091% +2.7253% +12.647%] (p = 0.57 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking grayscale_u8_flip_v/512
+Benchmarking grayscale_u8_flip_v/512: Warming up for 500.00 ms
+Benchmarking grayscale_u8_flip_v/512: Collecting 20 samples in estimated 2.0223 s (16k iterations)
+Benchmarking grayscale_u8_flip_v/512: Analyzing
+grayscale_u8_flip_v/512 time:   [69.940 µs 75.901 µs 80.024 µs]
+                        change: [-4.6443% +4.8135% +14.870%] (p = 0.34 > 0.05)
+                        No change in performance detected.
+Benchmarking grayscale_u8_flip_v/1024
+Benchmarking grayscale_u8_flip_v/1024: Warming up for 500.00 ms
+Benchmarking grayscale_u8_flip_v/1024: Collecting 20 samples in estimated 2.0488 s (3990 iterations)
+Benchmarking grayscale_u8_flip_v/1024: Analyzing
+grayscale_u8_flip_v/1024
+                        time:   [273.41 µs 280.32 µs 289.00 µs]
+                        change: [-6.5123% -1.2686% +3.6694%] (p = 0.65 > 0.05)
+                        No change in performance detected.
