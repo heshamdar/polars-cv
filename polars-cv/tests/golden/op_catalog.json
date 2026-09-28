@@ -1206,7 +1206,7 @@
     "name": "label_reduce",
     "python": "label_reduce",
     "visibility": "public",
-    "doc": "Score contour regions against the current buffer values.\n\nThis is the buffer-space variant of label reduction. It accepts contours\nvia a Polars expression and returns one score per contour.",
+    "doc": "Score contour regions against the current buffer values.\n\nThis is the buffer-space variant of label reduction. It accepts contours\nvia a Polars expression and returns one score per contour.\n\nPixels are sampled at their centres. A contour with no area (the point\nor line a one-pixel-thick region traces to) or whose region catches no\npixel centre (a sub-pixel contour) is scored on the pixels its outline\npasses through, in every region mode, rather than as 0.0.",
     "fields": [
       {
         "name": "contours",
@@ -1232,7 +1232,7 @@
       },
       {
         "name": "region_mode",
-        "doc": "Region selection mode. ``\"interior\"`` — only pixels strictly inside the\ncontour polygon. ``\"boundary\"`` — interior pixels *plus* pixels on the\ncontour boundary (avoids zero-score artifacts for sub-pixel contours).\n``\"bbox\"`` — all pixels within the bounding box.",
+        "doc": "Region selection mode. ``\"interior\"`` — only pixels strictly inside the\ncontour polygon. ``\"boundary\"`` — interior pixels *plus* pixels whose\ncentre lies on the contour boundary.\n``\"bbox\"`` — all pixels within the bounding box.",
         "default": "interior",
         "type": {
           "kind": "scalar",

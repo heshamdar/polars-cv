@@ -7,6 +7,24 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ContourMatcher` no longer silently drops one-pixel-thick regions.**
+  Contours are traced through pixel centres, so a single pixel, a two-pixel
+  pair or a `1 x n` line traces to a point or a line with no area.
+  `label_reduce` (both `Pipeline.label_reduce` and `.contour.label_reduce`)
+  returned 0.0 for such a contour in every region mode: its zero-width or
+  zero-height bounding box returned early, before the documented
+  "no pixel centre" fallback ran. `ContourMatcher` then removed it as a
+  zero-score detection, so with `min_contour_area=0` the region was neither a
+  detection nor reported anywhere. A contour with no area, or whose region
+  catches no pixel centre, is now scored on the pixels its outline passes
+  through, in every region mode. That rule replaces the centroid fallback
+  sub-pixel contours had. With `min_contour_area=0` each such region is now
+  a detection that carries its own value. It still has no area, so it can
+  only be a false positive. The default `min_contour_area=1.0` still drops
+  these regions, and its docstring now says so.
+
 ## [0.29.0] — 2026-09-27
 
 Every operation, source, sink and geometry accessor is now one typed Rust
