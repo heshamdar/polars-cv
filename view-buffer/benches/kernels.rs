@@ -260,16 +260,47 @@ fn spatial_kernels(c: &mut Criterion) {
 
     bench_sizes(c, "blur_sigma2_u8_rgb", rgb, |b| exec(b, |e| e.blur(2.0)));
     bench_sizes(c, "erode_k3_x3_u8", gray, |b| exec(b, |e| e.erode(3, 3)));
-    bench_sizes(c, "rotate_30_bilinear_u8_rgb", rgb, |b| {
-        exec(b, |e| {
-            e.apply_op(ViewDto::Compute(ComputeOp::Rotate {
-                angle: 30.0,
-                expand: false,
-                interpolation: InterpolationType::Bilinear,
-                border_value: 0.0,
-            }))
-        })
-    });
+    let rotate = |angle: f32, interpolation| {
+        move |b| {
+            exec(b, |e| {
+                e.apply_op(ViewDto::Compute(ComputeOp::Rotate {
+                    angle,
+                    expand: false,
+                    interpolation,
+                    border_value: 0.0,
+                }))
+            })
+        }
+    };
+    let rgba = |s| owned_u8(&image_u8(s, 4), s, 4);
+    let rgb_f32 = |s| owned_f32(&image_u8(s, 3), s, 3);
+    let bilinear = InterpolationType::Bilinear;
+    bench_sizes(c, "rotate_30_bilinear_u8_rgb", rgb, rotate(30.0, bilinear));
+    bench_sizes(
+        c,
+        "rotate_30_bilinear_u8_gray",
+        gray,
+        rotate(30.0, bilinear),
+    );
+    bench_sizes(
+        c,
+        "rotate_30_bilinear_u8_rgba",
+        rgba,
+        rotate(30.0, bilinear),
+    );
+    bench_sizes(
+        c,
+        "rotate_30_bilinear_f32_rgb",
+        rgb_f32,
+        rotate(30.0, bilinear),
+    );
+    bench_sizes(
+        c,
+        "rotate_30_nearest_u8_rgb",
+        rgb,
+        rotate(30.0, InterpolationType::Nearest),
+    );
+    bench_sizes(c, "rotate_0_u8_rgb", rgb, rotate(0.0, bilinear));
 }
 
 fn codec_kernels(c: &mut Criterion) {

@@ -453,7 +453,10 @@ impl ComputeOp {
                 Rotation::Lattice(view) => ViewDto::View(view),
                 // The lattice rotations and the 0° no-op are exact
                 // permutations of the input pixels; `interpolation` and
-                // `border_value` apply only to the resampling branch.
+                // `border_value` apply only to the resampling branch. A
+                // `RotateAffine` of exactly 0° is how the identity is spelled:
+                // it returns its (packed) input, sharing its data, and never
+                // warps (`execution::warp::rotate`).
                 Rotation::Identity => ViewDto::Compute(ComputeOp::RotateAffine {
                     angle_deg: 0.0,
                     expand: false,

@@ -10,7 +10,6 @@ use crate::core::buffer::ViewBuffer;
 use crate::core::dispatch::{dispatch, dispatch_mut, SimdKernel, SimdKernelMut};
 use crate::core::dtype::DType;
 use crate::expr::ViewExpr;
-use crate::ops::affine::AffineParams;
 use crate::ops::dto::ViewDto;
 use crate::ops::traits::Op;
 use crate::ops::{ComputeOp, ImageOp, ViewOp};
@@ -107,19 +106,13 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
 pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
     match op {
         ComputeOp::Cast { dtype } => buf.cast(dtype),
-        ComputeOp::Affine(params) => apply_affine_warp(buf, params),
+        ComputeOp::Affine(params) => super::warp::apply_affine_warp(buf, params),
         ComputeOp::RotateAffine {
             angle_deg,
             expand,
             interpolation,
             border_value,
-        } => {
-            let h = buf.shape()[0] as u32;
-            let w = buf.shape()[1] as u32;
-            let params =
-                AffineParams::from_rotation(angle_deg, h, w, expand, interpolation, border_value);
-            apply_affine_warp(buf, params)
-        }
+        } => super::warp::rotate(buf, angle_deg, expand, interpolation, border_value),
         // Every per-value op: the scalar family, scale, relu, clamp, invert,
         // gamma, contrast, normalize and fused chains.
         ref per_value => crate::ops::elementwise::apply(buf, per_value),
@@ -1106,174 +1099,12 @@ mod grayscale_threshold_parity_tests {
     }
 }
 
-/// Apply a 2D affine warp to a `ViewBuffer`.
-///
-/// Dispatches to `affine_warp_typed` based on the buffer's dtype.
-fn apply_affine_warp(buf: ViewBuffer, params: crate::ops::affine::AffineParams) -> ViewBuffer {
-    let shape = buf.shape();
-    if shape.len() < 2 {
-        return buf;
-    }
-
-    let dtype = buf.dtype();
-    match dtype {
-        DType::U8 => affine_warp_typed::<u8>(buf, &params),
-        DType::I8 => affine_warp_typed::<i8>(buf, &params),
-        DType::U16 => affine_warp_typed::<u16>(buf, &params),
-        DType::I16 => affine_warp_typed::<i16>(buf, &params),
-        DType::U32 => affine_warp_typed::<u32>(buf, &params),
-        DType::I32 => affine_warp_typed::<i32>(buf, &params),
-        DType::F32 => affine_warp_typed::<f32>(buf, &params),
-        DType::F64 => affine_warp_typed::<f64>(buf, &params),
-        DType::U64 => affine_warp_typed::<u64>(buf, &params),
-        DType::I64 => affine_warp_typed::<i64>(buf, &params),
-    }
-}
-
-/// Typed affine warp: bilinear or nearest interpolation in `f64` arithmetic.
-fn affine_warp_typed<T>(buf: ViewBuffer, params: &crate::ops::affine::AffineParams) -> ViewBuffer
-where
-    T: crate::core::dtype::ViewType + Default + num_traits::NumCast,
-{
-    use crate::ops::affine::InterpolationType;
-    use num_traits::NumCast;
-
-    let shape = buf.shape();
-    let in_h = shape[0];
-    let in_w = shape[1];
-    let channels = shape.get(2).copied().unwrap_or(1);
-    // Whether the input carried an explicit channel axis, as distinct from a
-    // channel *count* of 1: `[H, W]` and `[H, W, 1]` have the same count but
-    // different ranks, and the output must keep whichever the input had.
-    let has_channel_axis = shape.len() >= 3;
-
-    let out_h = params.output_height as usize;
-    let out_w = params.output_width as usize;
-
-    // The user-facing matrix follows OpenCV convention (forward mapping).
-    // Invert the 2x3 matrix for inverse-mapping interpolation.
-    let [a_fwd, b_fwd, tx_fwd, c_fwd, d_fwd, ty_fwd] = params.matrix;
-    // A singular matrix is rejected where the user supplies it (the plugin's
-    // `warp_affine` arm, via `AffineParams::is_invertible`), so it cannot reach
-    // here. This used to substitute the identity instead, which handed back the
-    // input and reported a transform that had not happened — a fallback that
-    // hid the one case inverse mapping cannot express. `debug_assert` pins the
-    // invariant at its consumer without a release-build branch; the arithmetic
-    // below has no other way to fail.
-    debug_assert!(
-        params.is_invertible(),
-        "affine warp reached the runner with a singular matrix (det = {}); \
-         invertibility is enforced when the matrix is accepted",
-        params.determinant()
-    );
-    let inv_det = 1.0 / params.determinant();
-    let a = d_fwd * inv_det;
-    let b = -b_fwd * inv_det;
-    let c = -c_fwd * inv_det;
-    let d = a_fwd * inv_det;
-    let tx = -(a * tx_fwd + b * ty_fwd);
-    let ty = -(c * tx_fwd + d * ty_fwd);
-
-    let contig_buf = if buf.layout.is_contiguous() {
-        buf
-    } else {
-        buf.to_contiguous()
-    };
-    let src_data: &[T] = contig_buf.as_slice::<T>();
-
-    let output_size = out_h * out_w * channels;
-    let border_val: T = NumCast::from(params.border_value).unwrap_or(T::default());
-    let mut dst_data: Vec<T> = vec![border_val; output_size];
-
-    let is_float = matches!(T::DTYPE, DType::F32 | DType::F64);
-
-    for y_dst in 0..out_h {
-        for x_dst in 0..out_w {
-            let x_src = a * x_dst as f64 + b * y_dst as f64 + tx;
-            let y_src = c * x_dst as f64 + d * y_dst as f64 + ty;
-
-            match params.interpolation {
-                InterpolationType::Nearest => {
-                    let sx = x_src.round() as i64;
-                    let sy = y_src.round() as i64;
-                    if sx >= 0 && sy >= 0 && (sx as usize) < in_w && (sy as usize) < in_h {
-                        let src_idx = (sy as usize * in_w + sx as usize) * channels;
-                        let dst_idx = (y_dst * out_w + x_dst) * channels;
-                        dst_data[dst_idx..dst_idx + channels]
-                            .copy_from_slice(&src_data[src_idx..src_idx + channels]);
-                    }
-                }
-                InterpolationType::Bilinear => {
-                    let x0 = x_src.floor() as i64;
-                    let y0 = y_src.floor() as i64;
-                    let x1 = x0 + 1;
-                    let y1 = y0 + 1;
-
-                    // Fully out of bounds — dst already filled with border_val
-                    if x1 < 0 || y1 < 0 || x0 >= in_w as i64 || y0 >= in_h as i64 {
-                        continue;
-                    }
-
-                    let dx = x_src - x0 as f64;
-                    let dy = y_src - y0 as f64;
-
-                    let bv: f64 = params.border_value;
-
-                    let in_bounds = |px: i64, py: i64| -> bool {
-                        px >= 0 && py >= 0 && (px as usize) < in_w && (py as usize) < in_h
-                    };
-
-                    let dst_idx = (y_dst * out_w + x_dst) * channels;
-                    for ch in 0..channels {
-                        let sample = |px: i64, py: i64| -> f64 {
-                            if in_bounds(px, py) {
-                                let idx = (py as usize * in_w + px as usize) * channels + ch;
-                                NumCast::from(src_data[idx]).unwrap_or(bv)
-                            } else {
-                                bv
-                            }
-                        };
-
-                        let v00 = sample(x0, y0);
-                        let v10 = sample(x1, y0);
-                        let v01 = sample(x0, y1);
-                        let v11 = sample(x1, y1);
-
-                        let v0 = v00 * (1.0 - dx) + v10 * dx;
-                        let v1 = v01 * (1.0 - dx) + v11 * dx;
-                        let v = v0 * (1.0 - dy) + v1 * dy;
-
-                        let clamped = if is_float {
-                            v
-                        } else {
-                            clamp_for_dtype(v, T::DTYPE)
-                        };
-                        dst_data[dst_idx + ch] = NumCast::from(clamped).unwrap_or(T::default());
-                    }
-                }
-            }
-        }
-    }
-
-    // Mirror `ComputeOp::Affine`'s `shape`, which replaces H and W and
-    // leaves the rest of the input shape alone. Collapsing a `[H, W, 1]` input
-    // to `[H, W]` here contradicted that contract, so a single-channel affine
-    // planned rank 3 and produced rank 2.
-    let output_shape = if has_channel_axis {
-        vec![out_h, out_w, channels]
-    } else {
-        vec![out_h, out_w]
-    };
-
-    ViewBuffer::from_vec(dst_data).reshape(output_shape)
-}
-
 /// Clamp an `f64` value to the representable range of the given integer `DType`.
 ///
 /// `#[inline(always)]`: hot loops call this with a compile-time-constant
 /// dtype from monomorphized contexts, so inlining folds the match away.
 #[inline(always)]
-fn clamp_for_dtype(v: f64, dtype: DType) -> f64 {
+pub(super) fn clamp_for_dtype(v: f64, dtype: DType) -> f64 {
     match dtype {
         // Round before clamping so that e.g. 127.9999 → 128, not 127.
         // NumCast::from truncates (floor) for positive floats, so without rounding
