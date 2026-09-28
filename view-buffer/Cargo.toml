@@ -19,6 +19,8 @@ crate-type = ["rlib"]
 [dependencies]
 thiserror = "1.0"
 num-traits = "0.2"
+# Inline layout dimensions (`core::layout::Dims`): a layout copy allocates nothing.
+smallvec = "1.15"
 # Exact polygon geometry: boolean ops (via i_overlay), area, centroid, distance,
 # simplification, convex hull, winding. `default-features = false` drops the
 # earcut/spade triangulators and `multithreading` — the latter matters because this

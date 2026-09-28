@@ -5,13 +5,17 @@ Measures the fixed per-call and per-row costs of the `vb_graph` plugin
 (graph compilation, parameter resolution, op dispatch) rather than kernel
 time: 64x64 u8 buffers are small enough that interpreter overhead is a
 meaningful fraction of the work. This is the benchmark that motivated and
-gates the compiled-graph cache + parameter slot binding work.
+gates the compiled-graph cache + parameter slot binding work, and the per-row
+executor work of the performance plan's Phase 5 (``--size 8``, where the
+kernels cost next to nothing and what is left is the executor).
 
 Run directly:
 
-    uv run python benchmarks/plugin_overhead.py [--rows 100000] [--repeat 5]
+    uv run python benchmarks/plugin_overhead.py [--rows 100000] [--repeat 5] [--size 64]
 
 Reports eager and streaming-engine timings for:
+  - noop:    blob source -> blob sink                  (no op at all)
+  - invert:  blob source -> invert                     (one cheap op)
   - static:  blob source -> scale -> clamp -> relu     (all-literal params)
   - dynamic: blob source -> scale(pl.col) -> clamp -> relu (per-row param)
 """
@@ -28,9 +32,9 @@ import polars as pl
 from polars_cv import Pipeline
 
 
-def _make_df(rows: int) -> pl.DataFrame:
+def _make_df(rows: int, size: int) -> pl.DataFrame:
     rng = np.random.default_rng(0)
-    img = rng.integers(0, 255, size=(64, 64), dtype=np.uint8)
+    img = rng.integers(0, 255, size=(size, size), dtype=np.uint8)
     # VIEW-protocol blob round-trips without decode cost.
     blob = pl.DataFrame({"arr": [img.tolist()]}).with_columns(
         blob=pl.col("arr").cv.pipe(Pipeline().source("array", dtype="u8")).sink("blob")
@@ -56,9 +60,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rows", type=int, default=100_000)
     parser.add_argument("--repeat", type=int, default=5)
+    parser.add_argument("--size", type=int, default=64, help="square u8 buffer side")
+    parser.add_argument(
+        "--only", default=None, help="run only cases whose name contains this"
+    )
     args = parser.parse_args()
 
-    df = _make_df(args.rows)
+    df = _make_df(args.rows, args.size)
 
     static_pipe = (
         Pipeline().source("blob").scale(1.5).clamp(min_val=0.0, max_val=255.0).relu()
@@ -72,11 +80,13 @@ def main() -> None:
     )
 
     cases = {
+        "noop   ": Pipeline().source("blob"),
+        "invert ": Pipeline().source("blob").invert(),
         "static ": static_pipe,
         "dynamic": dynamic_pipe,
     }
 
-    print(f"rows={args.rows} buffer=64x64 u8 repeat={args.repeat}")
+    print(f"rows={args.rows} buffer={args.size}x{args.size} u8 repeat={args.repeat}")
     print(f"{'case':<22} {'best (s)':>10} {'median (s)':>11} {'rows/s':>12}")
     # Typed Array sink: exercises the tensor-output path (per-element
     # construction vs flat reshape) on top of the same kernel chain. The
@@ -89,8 +99,12 @@ def main() -> None:
         .relu()
     )
     for name, pipe in cases.items():
+        if args.only and args.only not in name:
+            continue
         sink_args = ("array",) if name.endswith("array") else ("blob",)
-        sink_kwargs = {"shape": [64, 64]} if name.endswith("array") else {}
+        sink_kwargs = (
+            {"shape": [args.size, args.size]} if name.endswith("array") else {}
+        )
         expr = pl.col("img").cv.pipe(pipe).sink(*sink_args, **sink_kwargs)
 
         def eager(expr=expr):

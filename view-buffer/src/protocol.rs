@@ -1,4 +1,5 @@
 use crate::core::dtype::DType;
+use crate::core::layout::{Dims, Strides};
 #[cfg(feature = "serde")]
 use bytemuck::{Pod, Zeroable};
 
@@ -59,9 +60,9 @@ pub fn u8_to_dtype(code: u8) -> Option<DType> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlobLayout {
     pub dtype: DType,
-    pub shape: Vec<usize>,
+    pub shape: Dims,
     /// Byte strides of a non-contiguous layout; `None` means contiguous.
-    pub strides: Option<Vec<isize>>,
+    pub strides: Option<Strides>,
     /// Start of the payload, in bytes from the start of the blob.
     pub data_offset: usize,
     /// Bytes from `data_offset` the layout may address: exactly the element
@@ -104,10 +105,10 @@ pub fn parse_blob(data: &[u8]) -> Result<BlobLayout, String> {
 
     let shape = (0..rank)
         .map(|i| Ok(u64_at(HEADER_SIZE + i * 8, "shape")? as usize))
-        .collect::<Result<Vec<usize>, String>>()?;
+        .collect::<Result<Dims, String>>()?;
     let strides = (0..rank)
         .map(|i| Ok(u64_at(HEADER_SIZE + (rank + i) * 8, "strides")? as i64 as isize))
-        .collect::<Result<Vec<isize>, String>>()?;
+        .collect::<Result<Strides, String>>()?;
 
     let elem = dtype.size_of();
     let num_elements = shape

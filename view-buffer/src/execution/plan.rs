@@ -36,6 +36,17 @@ impl ExecutionPlan {
         }
         current
     }
+
+    /// Executes `steps` on `source` without owning them: a plan replayed on
+    /// every row that shares its source's layout. Each step is cloned only
+    /// as it is applied, and most own nothing on the heap.
+    pub fn execute_steps(source: ViewBuffer, steps: &[PlanStep]) -> ViewBuffer {
+        let mut current = source;
+        for step in steps {
+            current = apply_step(current, step.clone());
+        }
+        current
+    }
 }
 
 /// Applies a single plan step to the full buffer.

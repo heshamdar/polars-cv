@@ -44,7 +44,12 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
             if !buf.layout.is_contiguous() {
                 panic!("Reshape on non-contiguous view not supported without copy");
             }
-            buf.reshape(shape.iter().map(|&d| d as usize).collect())
+            buf.reshape(
+                shape
+                    .iter()
+                    .map(|&d| d as usize)
+                    .collect::<crate::core::layout::Dims>(),
+            )
         }
         ViewOp::Flip { .. } => buf.flip(&op.axes()),
         ViewOp::Crop { .. } | ViewOp::Slice { .. } => unreachable!("windows are sliced above"),
@@ -305,7 +310,7 @@ fn convert_to_u8_for_image(buf: ViewBuffer) -> ViewBuffer {
     }
 
     let contig = buf.to_contiguous();
-    let shape = contig.shape().to_vec();
+    let shape = crate::core::layout::Dims::from_slice(contig.shape());
 
     match contig.dtype() {
         DType::F32 => {
@@ -436,7 +441,7 @@ where
         Err(e) => panic!("resize: {e}"),
     };
 
-    let mut out_shape = buf.shape().to_vec();
+    let mut out_shape = crate::core::layout::Dims::from_slice(buf.shape());
     out_shape[0] = target_height as usize;
     out_shape[1] = target_width as usize;
     let mut out = vec![P::Component::default(); out_shape.iter().product()];
@@ -804,7 +809,7 @@ fn threshold_generic(mut buf: ViewBuffer, thresh: f64) -> ViewBuffer {
             dispatch_mut(&ThresholdU8InPlace { thresh }, data);
             return buf;
         }
-        let shape = buf.shape().to_vec();
+        let shape = crate::core::layout::Dims::from_slice(buf.shape());
         let out = match buf.dense_rows::<u8>() {
             Some(rows) => dispatch(ThresholdU8 {
                 rows: &rows,
@@ -854,7 +859,7 @@ where
         buf.to_contiguous()
     };
 
-    let out_shape = contig_buf.shape().to_vec();
+    let out_shape = crate::core::layout::Dims::from_slice(contig_buf.shape());
     let src_data: &[T] = contig_buf.as_slice::<T>();
 
     let new_data: Vec<u8> = src_data
@@ -947,7 +952,7 @@ mod grayscale_threshold_parity_tests {
     /// The layouts a `[h, w, c]` (or `[h, w]`) buffer reaches a kernel in,
     /// each a view over a larger or reordered parent.
     fn layouts(parent: &ViewBuffer) -> Vec<(&'static str, ViewBuffer)> {
-        let shape = parent.shape().to_vec();
+        let shape = crate::core::layout::Dims::from_slice(parent.shape());
         let (h, w) = (shape[0], shape[1]);
         let mut out = vec![
             ("contiguous", parent.clone()),
@@ -1849,7 +1854,7 @@ fn morph_subtract(a: &ViewBuffer, b: &ViewBuffer) -> ViewBuffer {
     let dtype = a.dtype();
     let ca = a.to_contiguous();
     let cb = b.to_contiguous();
-    let shape = ca.shape().to_vec();
+    let shape = crate::core::layout::Dims::from_slice(ca.shape());
     let count = ca.layout.num_elements();
 
     match dtype {
@@ -1919,7 +1924,7 @@ fn morph_subtract(a: &ViewBuffer, b: &ViewBuffer) -> ViewBuffer {
 /// Output is U8 `[H, W, 1]`, 0 or 255.
 #[cfg(feature = "image_interop")]
 fn apply_canny(buf: ViewBuffer, low_threshold: f32, high_threshold: f32) -> ViewBuffer {
-    let shape = buf.shape().to_vec();
+    let shape = crate::core::layout::Dims::from_slice(buf.shape());
     let (h, w) = (shape[0], shape[1]);
     let channels = shape.get(2).copied().unwrap_or(1);
     let used = crate::ops::color::color_channels(channels);
