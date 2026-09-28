@@ -205,6 +205,15 @@ Each phase is one or more commits on `claude/codebase-performance-assessment-36x
 
 ### Phase 5 — Per-row executor overhead (cheap rows, 1–3 µs/row)
 
+> **Done** (CR-58; report `polars-cv/benchmarks/reports/2026-09-28-phase5-per-row/`).
+> Profiled first (callgrind; no `perf` here): the cost was layout bookkeeping, 20
+> of 27 allocations per row, not the items below. Done: inline layouts, the
+> allocation-free cache hit with `Arc<[PlanStep]>` + `execute_steps`, no
+> concatenation of row results. Not done, measured unnecessary: the per-range
+> local cache (streaming `invert` is ~0.08 µs/row over a no-op) and the chunk
+> table (1,000 chunks run faster than one). Found on the way: CR-59 (blob of a
+> partial contiguous view), CR-60 (allocator, open).
+
 - **Tests first:**
   - Keep `static_segments_plan_once_per_source_layout` and `dynamic_segments_are_not_cached`
     (`compiled.rs`).

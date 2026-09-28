@@ -252,7 +252,7 @@ impl ViewExpr {
             if res.is_none() {
                 let new_dtype = op.resolve_output_dtype(self.dtype);
                 let l = Layout::new_contiguous(new_shape.to_vec(), new_dtype);
-                return Some(l.strides);
+                return Some(l.strides.into_vec());
             }
 
             res
@@ -262,7 +262,7 @@ impl ViewExpr {
             if op.memory_effect() != MemoryEffect::View {
                 let new_dtype = op.resolve_output_dtype(self.dtype);
                 let l = Layout::new_contiguous(new_shape.to_vec(), new_dtype);
-                return Some(l.strides);
+                return Some(l.strides.into_vec());
             }
             None
         }
@@ -333,7 +333,7 @@ impl ViewExpr {
         // Since Reshape implies contiguous -> contiguous, we generate new contiguous strides.
         let new_strides = if self.strides.is_some() {
             let l = Layout::new_contiguous(new_shape.clone(), self.dtype);
-            Some(l.strides)
+            Some(l.strides.into_vec())
         } else {
             None
         };
@@ -367,9 +367,11 @@ impl ViewExpr {
         let new_strides = if target == self.dtype {
             self.strides.clone()
         } else {
-            self.strides
-                .as_ref()
-                .map(|_| Layout::new_contiguous(new_shape.clone(), target).strides)
+            self.strides.as_ref().map(|_| {
+                Layout::new_contiguous(new_shape.clone(), target)
+                    .strides
+                    .into_vec()
+            })
         };
 
         Arc::new(Self {

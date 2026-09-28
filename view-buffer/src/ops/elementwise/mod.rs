@@ -448,7 +448,7 @@ fn run_int_affine<S: SmallInt>(mut buf: ViewBuffer, map: IntAffine) -> ViewBuffe
         dispatch_mut(&map, data);
         return buf;
     }
-    let shape = buf.shape().to_vec();
+    let shape = crate::core::layout::Dims::from_slice(buf.shape());
     let packed = buf.to_contiguous();
     let out = dispatch(IntAffineInto {
         src: packed.as_slice::<S>(),
@@ -488,7 +488,7 @@ fn run_not<T: ViewType + std::ops::Not<Output = T>>(mut buf: ViewBuffer) -> View
         dispatch_mut(&Not, data);
         return buf;
     }
-    let shape = buf.shape().to_vec();
+    let shape = crate::core::layout::Dims::from_slice(buf.shape());
     let packed = buf.to_contiguous();
     let out = dispatch(NotInto(packed.as_slice::<T>()));
     ViewBuffer::from_vec_with_shape(out, shape)
@@ -519,7 +519,7 @@ where
     D: ViewType + CastFrom<f32>,
     f32: CastFrom<S>,
 {
-    let shape = buf.shape().to_vec();
+    let shape = crate::core::layout::Dims::from_slice(buf.shape());
     let packed = buf.to_contiguous();
     let out = dispatch(BlockedInto::<S, D> {
         src: packed.as_slice::<S>(),
@@ -684,7 +684,7 @@ fn run_lut<S: LutIndex, D: ViewType + CastFrom<f32>>(
         }
     }
 
-    let shape = buf.shape().to_vec();
+    let shape = crate::core::layout::Dims::from_slice(buf.shape());
     let packed = buf.to_contiguous();
     let src = packed.as_slice::<S>();
     let mut out: Vec<D> = Vec::with_capacity(src.len());
@@ -730,7 +730,7 @@ fn run_pass(mut buf: ViewBuffer, kernels: &[FusedKernel]) -> ViewBuffer {
             return buf;
         }
     }
-    let shape = buf.shape().to_vec();
+    let shape = crate::core::layout::Dims::from_slice(buf.shape());
     let mut acc = gather_f32(&buf);
     run_kernel_passes(&mut acc, kernels);
     finish_fused_output(acc, shape, out_dtype)
@@ -783,7 +783,7 @@ fn run_f64(mut buf: ViewBuffer, steps: &[F64Step]) -> ViewBuffer {
         }
         return buf;
     }
-    let shape = buf.shape().to_vec();
+    let shape = crate::core::layout::Dims::from_slice(buf.shape());
     let packed = buf.to_contiguous();
     let out: Vec<f64> = packed.as_slice::<f64>().iter().map(|&x| apply(x)).collect();
     ViewBuffer::from_vec_with_shape(out, shape)
@@ -1155,9 +1155,10 @@ pub(crate) fn apply_fused_op_passes(data: &mut [f32], ops: &[ScalarOp]) {
 /// without copying.
 pub(crate) fn finish_fused_output(
     acc: Vec<f32>,
-    shape: Vec<usize>,
+    shape: impl Into<crate::core::layout::Dims>,
     out_dtype: DType,
 ) -> ViewBuffer {
+    let shape = shape.into();
     if out_dtype == DType::F32 {
         // Reuse the accumulator allocation: AlignedBytes takes it over and
         // deallocates with f32 alignment.

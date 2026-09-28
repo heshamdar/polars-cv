@@ -37,7 +37,7 @@ use thiserror::Error;
 use crate::core::bytes::AlignedBytes;
 use crate::core::convert::convert_view;
 use crate::core::dtype::{with_dtype, DType, ViewType};
-use crate::core::layout::{ExternalLayout, Layout, LayoutFacts};
+use crate::core::layout::{Dims, ExternalLayout, Layout, LayoutFacts, Strides};
 use crate::ops::scalar::FusedKernel;
 use crate::protocol::{dtype_to_u8, ViewHeader, HEADER_SIZE, MAGIC_BYTES, VERSION};
 
@@ -253,7 +253,8 @@ impl ViewBuffer {
     ///
     /// # Panics
     /// Panics if the data length doesn't match the shape product.
-    pub fn from_vec_with_shape<T: ViewType>(data: Vec<T>, shape: Vec<usize>) -> Self {
+    pub fn from_vec_with_shape<T: ViewType>(data: Vec<T>, shape: impl Into<Dims>) -> Self {
+        let shape: Dims = shape.into();
         let expected_len: usize = shape.iter().product();
         assert_eq!(
             data.len(),
@@ -336,9 +337,10 @@ impl ViewBuffer {
     pub fn from_polars_buffer(
         buffer: polars_buffer::Buffer<u8>,
         offset: usize,
-        shape: Vec<usize>,
+        shape: impl Into<Dims>,
         dtype: DType,
     ) -> Self {
+        let shape: Dims = shape.into();
         let num_elements: usize = shape.iter().product();
         let required_bytes = num_elements * dtype.size_of();
 
@@ -380,9 +382,10 @@ impl ViewBuffer {
         buffer: polars_buffer::Buffer<u8>,
         offset: usize,
         len: usize,
-        shape: Vec<usize>,
+        shape: impl Into<Dims>,
         dtype: DType,
     ) -> Self {
+        let shape: Dims = shape.into();
         let num_elements: usize = shape.iter().product();
         let expected_bytes = num_elements * dtype.size_of();
 
@@ -424,10 +427,12 @@ impl ViewBuffer {
         buffer: polars_buffer::Buffer<u8>,
         offset: usize,
         len: usize,
-        shape: Vec<usize>,
-        strides: Vec<isize>,
+        shape: impl Into<Dims>,
+        strides: impl Into<Strides>,
         dtype: DType,
     ) -> Self {
+        let shape: Dims = shape.into();
+        let strides: Strides = strides.into();
         assert!(
             offset + len <= buffer.len(),
             "Polars buffer slice out of bounds: offset={offset}, len={len}, buffer_len={}",
@@ -666,7 +671,7 @@ impl ViewBuffer {
         self,
         policy: SlicePolicy,
     ) -> (polars_buffer::Buffer<u8>, Vec<usize>, DType) {
-        let shape = self.layout.shape.clone();
+        let shape = self.layout.shape.to_vec();
         let dtype = self.layout.dtype;
         let offset = self.layout.offset;
         let required_bytes: usize = shape.iter().product::<usize>() * dtype.size_of();
@@ -811,8 +816,8 @@ impl ViewBuffer {
         usize,
         DType,
     ) {
-        let shape = self.layout.shape.clone();
-        let strides = self.layout.strides.clone();
+        let shape = self.layout.shape.to_vec();
+        let strides = self.layout.strides.to_vec();
         let dtype = self.layout.dtype;
         let offset = self.layout.offset;
         let required_bytes = self.layout.num_elements() * dtype.size_of();
@@ -849,8 +854,8 @@ impl ViewBuffer {
                         layout: self.layout,
                     }
                     .to_contiguous();
-                    let contig_shape = contig.layout.shape.clone();
-                    let contig_strides = contig.layout.strides.clone();
+                    let contig_shape = contig.layout.shape.to_vec();
+                    let contig_strides = contig.layout.strides.to_vec();
                     let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
                     let slice =
                         unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
@@ -892,8 +897,8 @@ impl ViewBuffer {
                                 layout: self.layout,
                             }
                             .to_contiguous();
-                            let contig_shape = contig.layout.shape.clone();
-                            let contig_strides = contig.layout.strides.clone();
+                            let contig_shape = contig.layout.shape.to_vec();
+                            let contig_strides = contig.layout.strides.to_vec();
                             let data_len =
                                 contig.layout.num_elements() * contig.layout.dtype.size_of();
                             let slice = unsafe {
@@ -910,8 +915,8 @@ impl ViewBuffer {
                         layout: self.layout,
                     }
                     .to_contiguous();
-                    let contig_shape = contig.layout.shape.clone();
-                    let contig_strides = contig.layout.strides.clone();
+                    let contig_shape = contig.layout.shape.to_vec();
+                    let contig_strides = contig.layout.strides.to_vec();
                     let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
                     let slice =
                         unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
@@ -928,8 +933,8 @@ impl ViewBuffer {
                     layout: self.layout,
                 }
                 .to_contiguous();
-                let contig_shape = contig.layout.shape.clone();
-                let contig_strides = contig.layout.strides.clone();
+                let contig_shape = contig.layout.shape.to_vec();
+                let contig_strides = contig.layout.strides.to_vec();
                 let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
                 let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
                 let buffer = polars_buffer::Buffer::from(slice.to_vec());
@@ -1163,7 +1168,9 @@ impl ViewBuffer {
             reserved: [0; 40],
         };
 
-        let data_len = buffer.data.len();
+        // The view's elements: a contiguous view may cover only part of its
+        // storage (leading or middle rows), so the storage length is not it.
+        let data_len = buffer.logical_len_bytes();
         out.reserve((data_offset as usize) + data_len);
 
         // 3. Write Parts
@@ -1223,8 +1230,8 @@ impl ViewBuffer {
 
     /// Permutes the dimensions of the buffer.
     pub fn permute(&self, dims: &[usize]) -> Self {
-        let mut new_shape = vec![0; self.layout.shape.len()];
-        let mut new_strides = vec![0; self.layout.strides.len()];
+        let mut new_shape = Dims::from_elem(0, self.layout.shape.len());
+        let mut new_strides = Strides::from_elem(0, self.layout.strides.len());
 
         for (i, &p) in dims.iter().enumerate() {
             new_shape[i] = self.layout.shape[p];
@@ -1250,7 +1257,7 @@ impl ViewBuffer {
     /// the resulting dimension will have size 0.
     pub fn slice(&self, start: &[usize], end: &[usize]) -> Self {
         let mut new_offset = self.layout.offset as isize;
-        let mut new_shape = Vec::new();
+        let mut new_shape = Dims::new();
 
         for i in 0..self.layout.shape.len() {
             let dim_size = self.layout.shape[i];
@@ -1457,7 +1464,8 @@ impl ViewBuffer {
     }
 
     /// Reshapes the buffer to a new shape.
-    pub fn reshape(mut self, shape: Vec<usize>) -> Self {
+    pub fn reshape(mut self, shape: impl Into<Dims>) -> Self {
+        let shape: Dims = shape.into();
         // A different element count would describe memory this buffer does
         // not own. `ViewOp::Reshape::validate` rejects it before execution;
         // this is the backstop for direct callers.
@@ -1468,8 +1476,7 @@ impl ViewBuffer {
             self.layout.shape,
             shape
         );
-        self.layout.shape = shape;
-        self.layout = Layout::new_contiguous(self.layout.shape, self.layout.dtype);
+        self.layout = Layout::new_contiguous(shape, self.layout.dtype);
         self
     }
 }

@@ -43,7 +43,7 @@ use crate::row_split::CallTracker;
 
 use super::decode::{
     build_series_from_spec, decode_source_row, dtype_from_polars_leaf, null_row_result_for_spec,
-    RowFetch,
+    RowFetch, RowParts,
 };
 use super::encode::{encode_node_output, execute_geometry_op};
 use super::types::{OutputSpec, OutputValue, RowErrorPolicy, RowResult, UnifiedGraph};
@@ -349,15 +349,17 @@ impl CompiledGraph {
 
         // Concatenate in row order. Under `on_error="raise"` the first failing
         // range holds the earliest failing row, so its error is the one a
-        // sequential run would have reported.
-        let mut results: Vec<Vec<RowResult>> = (0..state.resolved_outputs.len())
-            .map(|_| Vec::with_capacity(len))
+        // sequential run would have reported. Each output keeps its ranges'
+        // parts, which the column builder converts in order: concatenating
+        // them first was a serial, call-sized copy of every row result.
+        let mut results: Vec<RowParts> = (0..state.resolved_outputs.len())
+            .map(|_| Vec::new())
             .collect();
         let mut error_messages: Vec<Option<String>> = Vec::new();
         for outcome in outcomes {
             let (range_results, range_messages) = outcome?;
-            for (all, part) in results.iter_mut().zip(range_results) {
-                all.extend(part);
+            for (parts, part) in results.iter_mut().zip(range_results) {
+                parts.push(part);
             }
             error_messages.extend(range_messages);
         }
@@ -1130,8 +1132,8 @@ impl CompiledGraph {
 #[derive(Default)]
 struct PendingSegment<'s> {
     /// The ops, borrowed from the row's resolved steps; cloned only when the
-    /// segment has to be planned.
-    ops: Vec<&'s ViewDto>,
+    /// segment has to be planned. Inline, since one is built per node per row.
+    ops: smallvec::SmallVec<[&'s ViewDto; 8]>,
     /// Index of the segment's first op in the node's op list: its cache slot.
     start: Option<usize>,
     /// Every op is static (all-literal), so its plan is the same for every
@@ -1168,7 +1170,8 @@ struct CachedPlan {
     dtype: view_buffer::DType,
     shape: Vec<usize>,
     strides: Vec<isize>,
-    steps: Vec<view_buffer::execution::PlanStep>,
+    /// Shared, so a hit hands the list out without copying it.
+    steps: Arc<[view_buffer::execution::PlanStep]>,
 }
 
 /// Distinct source layouts remembered per segment. A column whose rows keep
@@ -1196,6 +1199,21 @@ impl PlanCache {
     }
 }
 
+/// The steps planned for `source`'s layout, if `plans` holds them.
+fn cached_steps(
+    plans: &[CachedPlan],
+    source: &ViewBuffer,
+) -> Option<Arc<[view_buffer::execution::PlanStep]>> {
+    plans
+        .iter()
+        .find(|p| {
+            p.dtype == source.dtype()
+                && p.shape == source.shape()
+                && p.strides == source.strides_bytes()
+        })
+        .map(|p| p.steps.clone())
+}
+
 /// Plan (or replay the cached plan of) one op segment and execute it.
 /// Returns the output and whether the segment had to be planned.
 fn run_segment(
@@ -1220,17 +1238,12 @@ fn run_segment(
             ))
         }
     };
-    let key = (
-        source.dtype(),
-        source.shape().to_vec(),
-        source.strides_bytes().to_vec(),
-    );
-    let matches = |c: &CachedPlan| c.dtype == key.0 && c.shape == key.1 && c.strides == key.2;
-    let execute = |source: ViewBuffer, steps| {
-        let plan = view_buffer::execution::ExecutionPlan { source, steps };
-        NodeOutput::from_buffer(plan.execute())
+    let execute = |source: ViewBuffer, steps: &[view_buffer::execution::PlanStep]| {
+        NodeOutput::from_buffer(view_buffer::execution::ExecutionPlan::execute_steps(
+            source, steps,
+        ))
     };
-    let plan = |source: ViewBuffer| -> Result<Vec<view_buffer::execution::PlanStep>, String> {
+    let plan = |source: ViewBuffer| -> Result<Arc<[view_buffer::execution::PlanStep]>, String> {
         let mut expr = ViewExpr::new_source(source);
         for op in ops {
             // The validated entry point: an op that cannot run on the
@@ -1239,16 +1252,16 @@ fn run_segment(
                 .try_apply_op((*op).clone())
                 .map_err(|e| format!("{}: {e}", op.as_op().name()))?;
         }
-        Ok(expr.plan_with(cfg).steps)
+        Ok(expr.plan_with(cfg).steps.into())
     };
-    let cached = |plans: &[CachedPlan]| plans.iter().find(|p| matches(p)).map(|p| p.steps.clone());
+    let cached = |plans: &[CachedPlan]| cached_steps(plans, &source);
 
     let Some(cache) = cache else {
         let steps = plan(source.clone())?;
-        return Ok((execute(source, steps), true));
+        return Ok((execute(source, &steps), true));
     };
     if let Some(steps) = cached(&cache.read().unwrap()) {
-        return Ok((execute(source, steps), false));
+        return Ok((execute(source, &steps), false));
     }
     // Planned under the write lock: a range that misses on the same layout
     // meanwhile waits here and then finds this plan, rather than planning
@@ -1256,19 +1269,19 @@ fn run_segment(
     let mut plans = cache.write().unwrap();
     if let Some(steps) = cached(&plans) {
         drop(plans);
-        return Ok((execute(source, steps), false));
+        return Ok((execute(source, &steps), false));
     }
     let steps = plan(source.clone())?;
     if plans.len() < PLAN_CACHE_LAYOUTS {
         plans.push(CachedPlan {
-            dtype: key.0,
-            shape: key.1.clone(),
-            strides: key.2.clone(),
-            steps: steps.clone(),
+            dtype: source.dtype(),
+            shape: source.shape().to_vec(),
+            strides: source.strides_bytes().to_vec(),
+            steps: Arc::clone(&steps),
         });
     }
     drop(plans);
-    Ok((execute(source, steps), true))
+    Ok((execute(source, &steps), true))
 }
 
 /// One row range's rows (one vector per resolved output) and error messages.
@@ -2158,6 +2171,33 @@ mod tests {
                 "row {i}"
             );
         }
+    }
+
+    /// Replaying a cached plan allocates nothing: a hit is compared against
+    /// the source's own shape and strides and hands out a shared step list.
+    /// It runs once per segment per row, and on a small row a key copy and a
+    /// step-list copy were a measurable share of the row (performance plan,
+    /// phase 5).
+    #[test]
+    fn a_cache_hit_allocates_nothing() {
+        let source = ViewBuffer::from_vec_with_shape(vec![1u8; 8 * 8 * 3], vec![8, 8, 3]);
+        let ops = [ViewDto::Compute(view_buffer::ComputeOp::Invert)];
+        let refs: Vec<&ViewDto> = ops.iter().collect();
+        let cache = RwLock::default();
+        let cfg = view_buffer::OptConfig::default();
+        run_segment(
+            NodeOutput::from_buffer(source.clone()),
+            &refs,
+            Some(&cache),
+            &cfg,
+        )
+        .unwrap();
+
+        let plans = cache.read().unwrap();
+        let (hit, count) =
+            crate::test_alloc::large_allocations(1, || cached_steps(&plans, &source).is_some());
+        assert!(hit, "the layout planned above was not found");
+        assert_eq!(count, 0, "{count} allocations to find a cached plan");
     }
 
     /// Image-sized allocations one single-row call of `graph` makes (one
