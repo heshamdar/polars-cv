@@ -220,6 +220,27 @@ fn invert_preserving_int_dtype_through_kernel() {
 }
 
 #[test]
+fn signed_invert_fuses_in_its_own_dtype() {
+    // i8/i16 invert is `-1 - x` (`MAX + MIN - x`), exact in f32, so it fuses
+    // like u8's; invert -> invert is the identity, and a single invert agrees
+    // with the unfused op, extremes included.
+    let buf8 = ViewBuffer::from_vec((i8::MIN..=i8::MAX).collect::<Vec<i8>>());
+    let buf16 = ViewBuffer::from_vec(vec![i16::MIN, -1234, -1, 0, 1, 777, i16::MAX]);
+    for buf in [buf8, buf16] {
+        let (fused, kernels) = run_fused(&buf, |e| e.invert().invert());
+        assert_eq!(kernels, 1, "{:?} invert -> invert must fuse", buf.dtype());
+        assert_buffers_equal(&fused, &buf);
+        let (fused, kernels) = run_fused(&buf, |e| e.invert().relu());
+        assert_eq!(kernels, 1);
+        let stepwise = run_stepwise(
+            &buf,
+            &[&|e: Arc<ViewExpr>| e.invert(), &|e: Arc<ViewExpr>| e.relu()],
+        );
+        assert_buffers_equal(&fused, &stepwise);
+    }
+}
+
+#[test]
 fn gamma_fuses_bit_identically() {
     let buf = u8_ramp();
     let (fused, kernels) = run_fused(&buf, |e| e.adjust_gamma(2.2).scale(1.0));

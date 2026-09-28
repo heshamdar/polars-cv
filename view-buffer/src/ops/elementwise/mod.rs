@@ -54,6 +54,15 @@ pub(crate) fn apply(buf: ViewBuffer, op: &ComputeOp) -> ViewBuffer {
         Lowered::Kernels(kernels) => run_kernels(buf, &kernels),
         Lowered::F64(steps) => run_f64(buf, &steps),
         Lowered::Zeros(out) => zeros(out, buf.shape()),
+        Lowered::IntNot => match buf.dtype() {
+            DType::U32 => run_not::<u32>(buf),
+            DType::I32 => run_not::<i32>(buf),
+            DType::U64 => run_not::<u64>(buf),
+            DType::I64 => run_not::<i64>(buf),
+            other => {
+                unreachable!("invert lowers to a complement only for 32/64-bit, not {other:?}")
+            }
+        },
     }
 }
 
@@ -73,6 +82,10 @@ enum Lowered {
     F64(Vec<F64Step>),
     /// Every element is zero of this dtype (a normalize with no spread).
     Zeros(DType),
+    /// `invert` of a 32/64-bit integer: `MAX + MIN - x`, the bitwise
+    /// complement, in the input dtype. Those dtypes are not exact in f32, so
+    /// they cannot take the scalar lowering the 8/16-bit ones do.
+    IntNot,
 }
 
 /// One step of the f64 path. `ScalarOp` constants are f32; contrast's mean
@@ -159,12 +172,14 @@ fn lower(op: &ComputeOp, buf: &ViewBuffer) -> Lowered {
             if lower_to_scalars(op, dtype, true, &mut ops) {
                 return one(ops, out_dtype);
             }
-            match op {
-                // An integer invert the fused form does not cover reads the
-                // element as f32 and returns `1 - x` as f32 (CR-53: its
-                // contract says the input dtype).
-                ComputeOp::Invert => one(vec![ScalarOp::Mul(-1.0), ScalarOp::Add(1.0)], DType::F32),
-                _ => panic!("internal: `{}` has no scalar lowering", op.name()),
+            match (op, dtype) {
+                (ComputeOp::Invert, DType::U32 | DType::I32 | DType::U64 | DType::I64) => {
+                    Lowered::IntNot
+                }
+                _ => panic!(
+                    "internal: `{}` has no scalar lowering for {dtype:?}",
+                    op.name()
+                ),
             }
         }
     }
@@ -439,6 +454,43 @@ fn run_int_affine<S: SmallInt>(mut buf: ViewBuffer, map: IntAffine) -> ViewBuffe
         src: packed.as_slice::<S>(),
         map,
     });
+    ViewBuffer::from_vec_with_shape(out, shape)
+}
+
+/// `!x` over a slice, in place.
+struct Not;
+
+impl<T: ViewType + std::ops::Not<Output = T>> SimdKernelMut<T> for Not {
+    #[inline(always)]
+    fn run_mut(&self, data: &mut [T]) {
+        for x in data.iter_mut() {
+            *x = !*x;
+        }
+    }
+}
+
+#[derive(Clone)]
+struct NotInto<'a, T>(&'a [T]);
+
+impl<T: ViewType + std::ops::Not<Output = T>> SimdKernel for NotInto<'_, T> {
+    type Output = Vec<T>;
+
+    #[inline(always)]
+    fn run(self) -> Vec<T> {
+        self.0.iter().map(|&x| !x).collect()
+    }
+}
+
+/// The integer complement (`invert` of a 32/64-bit integer): in place for a
+/// sole owner, else into a new buffer.
+fn run_not<T: ViewType + std::ops::Not<Output = T>>(mut buf: ViewBuffer) -> ViewBuffer {
+    if let Some(data) = buf.unique_contiguous_mut::<T>() {
+        dispatch_mut(&Not, data);
+        return buf;
+    }
+    let shape = buf.shape().to_vec();
+    let packed = buf.to_contiguous();
+    let out = dispatch(NotInto(packed.as_slice::<T>()));
     ViewBuffer::from_vec_with_shape(out, shape)
 }
 
@@ -1004,16 +1056,18 @@ pub(crate) fn lower_to_scalars(
             }
             true
         }
-        // Invert is `max - x`, which is `-x + max` (bit-identical in IEEE
-        // arithmetic for the float case, exact integers for u8/u16 in f32).
-        // Only the dtypes whose unfused output round-trips exactly through
-        // the kernel's f32 compute are fused: f64 would lose precision, and
-        // the remaining integer dtypes take an unfused fallback path with
-        // different output-dtype behavior.
+        // Invert maps the value range onto itself: `MAX + MIN - x` for an
+        // integer dtype (`255 - x` for u8, `-1 - x` for a signed one, i.e.
+        // `!x`), `1 - x` for a float. Written `-x + (MAX + MIN)`: exact in f32
+        // for the 8/16-bit dtypes and bit-identical in IEEE for f32. f64 would
+        // lose precision in the f32 kernel, and 32/64-bit integers are not
+        // exact in f32, so those stay unfused (`Lowered::IntNot`).
         ComputeOp::Invert => {
             let max_val: f32 = match input_dtype {
                 DType::U8 => 255.0,
                 DType::U16 => 65535.0,
+                DType::I8 => -1.0,
+                DType::I16 => -1.0,
                 DType::F32 => 1.0,
                 _ => return false,
             };

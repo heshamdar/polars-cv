@@ -151,7 +151,8 @@ pub enum ComputeOp<M: Mode = Exec> {
         /// Gamma value. <1 = brighter, >1 = darker, 1.0 = no change.
         gamma: M::V<f32>,
     },
-    /// Invert pixel values: `255 - pixel` for u8, `1.0 - pixel` for float [0,1].
+    /// Invert values, keeping the dtype: `MAX + MIN - x` for an integer
+    /// (`255 - x` for u8, `-1 - x` for a signed dtype), `1 - x` for a float.
     #[op(name = "invert", sample = {})]
     Invert,
     /// Negate every value (`-x`).

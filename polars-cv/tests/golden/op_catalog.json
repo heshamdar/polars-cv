@@ -1193,7 +1193,7 @@
     "name": "invert",
     "python": "invert",
     "visibility": "public",
-    "doc": "Invert pixel values: `255 - pixel` for u8, `1.0 - pixel` for float [0,1].",
+    "doc": "Invert values, keeping the dtype: `MAX + MIN - x` for an integer\n(`255 - x` for u8, `-1 - x` for a signed dtype), `1 - x` for a float.",
     "fields": [],
     "domains": [
       {

@@ -62,6 +62,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   intensity.** A `[H, W, 2]` u16/f32 pixel came out as
   `0.299·gray + 0.701·alpha` (u16 (1000, 65535) → 46239). It is now the gray
   channel, as it always was for u8 (CR-51).
+- **`invert` on an integer dtype other than u8/u16 failed.** i8/i16/u32/i32/
+  u64/i64 input computed `1 - x` as f32 against a schema promising the input
+  dtype, so the query raised `planned dtype … but execution produced F32`.
+  Every integer dtype now inverts as `MAX + MIN - x` in its own dtype: `255 - x`
+  for u8 (unchanged), `-1 - x` for a signed dtype, which is NumPy's `~x`
+  (CR-53). Signed 8/16-bit invert now also fuses with neighbouring scalar ops.
 
 ## [0.29.0] — 2026-09-27
 
