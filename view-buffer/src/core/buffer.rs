@@ -1095,6 +1095,7 @@ impl ViewBuffer {
     ///
     /// # Panics
     /// Panics if `T` is not this buffer's dtype.
+    #[cfg(feature = "image_interop")]
     pub(crate) fn dense_rows<T: ViewType>(&self) -> Option<Vec<&[T]>> {
         assert_eq!(
             T::DTYPE,
@@ -1439,10 +1440,15 @@ impl ViewBuffer {
         if !self.layout.is_contiguous() {
             return None;
         }
-        let BufferStorage::Rust(ref mut arc) = self.data else {
-            return None;
+        // Only a Rust allocation can be written; Arrow and polars memory
+        // is shared.
+        let bytes = match self.data {
+            BufferStorage::Rust(ref mut arc) => Arc::get_mut(arc)?,
+            #[cfg(feature = "arrow_interop")]
+            BufferStorage::Arrow(_) => return None,
+            #[cfg(feature = "polars_interop")]
+            BufferStorage::PolarsArrow { .. } => return None,
         };
-        let bytes = Arc::get_mut(arc)?;
         let count: usize = self.layout.shape.iter().product();
         // SAFETY: the view is contiguous, so its `count` elements are packed
         // from `offset` inside the allocation this buffer solely owns;

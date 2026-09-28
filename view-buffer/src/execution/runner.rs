@@ -17,6 +17,7 @@ use crate::core::dtype::{with_dtype, ViewType};
 use crate::core::map::{map_new, map_owned, map_pixels, ElementMap, ElementMapInPlace, PixelMap};
 use crate::expr::ViewExpr;
 use crate::ops::dto::ViewDto;
+#[cfg(feature = "image_interop")]
 use crate::ops::traits::Op;
 use crate::ops::{ComputeOp, ImageOp, ViewOp};
 #[cfg(feature = "image_interop")]
@@ -1420,6 +1421,7 @@ mod blur_dispatch_tests {
     }
 }
 
+#[cfg(feature = "image_interop")]
 #[inline(always)]
 fn separable_gaussian_blur_body<T>(contig_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
 where

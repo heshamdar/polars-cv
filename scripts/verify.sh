@@ -70,6 +70,12 @@ echo "Verifying at $(git rev-parse --short HEAD 2>/dev/null || echo 'unknown') .
 run_check "cargo fmt --check"        cargo fmt --all -- --check
 run_check "cargo clippy -D warnings" cargo clippy --workspace --all-targets --all-features -- -D warnings
 run_check "cargo test view-buffer"   cargo test -p view-buffer --all-features
+# view-buffer is otherwise only built with --all-features or polars-cv's
+# feature set, so code outside its feature's gate went unnoticed (the blur
+# body did). Mirrors ci.yml's "Build view-buffer without its optional features".
+run_check "cargo check view-buffer (no default features)" \
+    cargo check -p view-buffer --no-default-features
+run_check "cargo check view-buffer (default features)" cargo check -p view-buffer
 run_check "cargo test polars-cv"     cargo test -p polars-cv
 
 # Supply-chain / license gate over the whole dependency tree (cloud transports
