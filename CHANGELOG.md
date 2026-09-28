@@ -47,8 +47,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   packed runs it has (a whole buffer, a row, a pixel) and copies each run
   once. This covers `to_contiguous` and every list/array sink. A `cast` of a
   view converts straight from those runs, with no packed copy first, and so
-  does a per-value op's read of a strided view. A large transpose is copied
-  in cache-sized tiles rather than a column at a time.
+  does a per-value op's read of a strided view.
 
 ### Changed
 
