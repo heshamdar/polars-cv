@@ -162,39 +162,38 @@ impl<'a> Walk<'a> {
 
     /// Call `f` with the first unit of every row, in logical order.
     #[inline(always)]
-    fn for_each_row(&self, mut f: impl FnMut(*const u8)) {
-        if self.empty {
-            return;
+    fn for_each_row(&self, f: impl FnMut(*const u8)) {
+        if !self.empty {
+            for_each_offset(&self.geometry.outer, self.base, f);
         }
-        let outer = &self.geometry.outer;
-        match outer.as_slice() {
-            [] => f(self.base),
-            &[(n, stride)] => {
-                let mut row = self.base;
-                for _ in 0..n {
-                    f(row);
-                    row = row.wrapping_offset(stride);
-                }
-            }
-            _ => {
-                let rows: usize = outer.iter().map(|&(n, _)| n).product();
-                let mut index = vec![0usize; outer.len()];
-                let mut row = self.base;
-                for _ in 0..rows {
-                    f(row);
-                    // The odometer: step the innermost outer axis, carrying.
-                    for (i, &(n, stride)) in outer.iter().enumerate().rev() {
-                        index[i] += 1;
-                        row = row.wrapping_offset(stride);
-                        if index[i] < n {
-                            break;
-                        }
-                        index[i] = 0;
-                        row = row.wrapping_offset(-stride * n as isize);
-                    }
-                }
-            }
-        }
+    }
+
+    /// Whether [`copy_to`](Self::copy_to) and
+    /// [`for_each_run`](Self::for_each_run) copy tile by tile: a transpose,
+    /// whose units lie a far `step` apart along a row but adjacent along the
+    /// innermost outer axis. Walking such a view row by row touches a new
+    /// cache line per unit; a tile reads adjacent units and writes a few
+    /// output rows at once.
+    pub(crate) fn tiled(&self) -> bool {
+        let Geometry {
+            unit,
+            row_len,
+            step,
+            ref outer,
+        } = self.geometry;
+        !self.empty
+            && matches!(outer.last(), Some(&(n, stride))
+                if stride.unsigned_abs() == unit && n >= 2 * tile_rows(unit))
+            && row_len >= 2 * TILE_UNITS
+            && step.unsigned_abs() >= TILE_MIN_STEP
+    }
+
+    /// The tiled plan: the innermost outer axis (`n` rows, `across` = ±unit
+    /// bytes apart), and the axes outside it, each of whose offsets starts a
+    /// plane of `n` rows.
+    fn tile_plan(&self) -> (usize, isize, &[(usize, isize)]) {
+        let (&(n, across), planes) = self.geometry.outer.split_last().expect("tiled() checked");
+        (n, across, planes)
     }
 
     /// Copy every element, packed row-major, to `dst`.
@@ -210,6 +209,26 @@ impl<'a> Walk<'a> {
             ..
         } = self.geometry;
         let row_bytes = unit * row_len;
+        if self.tiled() {
+            let (rows, across, planes) = self.tile_plan();
+            let strip_shape = Strip {
+                row_len,
+                step,
+                across,
+                unit,
+            };
+            let mut out = dst;
+            for_each_offset(planes, self.base, |plane| {
+                // SAFETY: the plane's `rows` rows are rows of the view, and
+                // `out` advances by one packed plane per plane, inside what
+                // the caller provides.
+                unsafe {
+                    copy_strip(plane, out, 0, rows, strip_shape);
+                    out = out.add(rows * row_bytes);
+                }
+            });
+            return;
+        }
         let mut out = dst;
         // One match per call, not per row: each arm is its own loop.
         macro_rules! rows {
@@ -264,6 +283,32 @@ impl<'a> Walk<'a> {
         } = self.geometry;
         let elem = std::mem::size_of::<T>();
         let unit_elems = unit / elem;
+        if self.tiled() {
+            // Strips of `tile_rows` output rows, each copied tile by tile
+            // into one buffer (a strip, not the image) and handed out whole.
+            let (rows, across, planes) = self.tile_plan();
+            let strip_shape = Strip {
+                row_len,
+                step,
+                across,
+                unit,
+            };
+            let strip_rows = tile_rows(unit);
+            let mut strip: Vec<T> = Vec::with_capacity(strip_rows * row_len * unit_elems);
+            for_each_offset(planes, self.base, |plane| {
+                for r0 in (0..rows).step_by(strip_rows) {
+                    let r1 = (r0 + strip_rows).min(rows);
+                    // SAFETY: rows `r0..r1` of the plane are rows of the
+                    // view, and the strip holds `strip_rows` packed rows.
+                    let run = unsafe {
+                        copy_strip(plane, strip.as_mut_ptr().cast::<u8>(), r0, r1, strip_shape);
+                        std::slice::from_raw_parts(strip.as_ptr(), (r1 - r0) * row_len * unit_elems)
+                    };
+                    f(run);
+                }
+            });
+            return;
+        }
         if unit_elems >= DIRECT_ELEMS {
             self.for_each_row(|row| {
                 for k in 0..row_len {
@@ -317,6 +362,129 @@ impl<'a> Walk<'a> {
         });
         if filled > 0 {
             flush(filled, &mut f);
+        }
+    }
+}
+
+/// Output rows per tile: enough adjacent units to fill a few cache lines.
+fn tile_rows(unit: usize) -> usize {
+    (256 / unit).clamp(8, 64)
+}
+
+/// Units (output columns) per tile.
+const TILE_UNITS: usize = 64;
+
+/// A row step at least this long puts consecutive units on different cache
+/// lines: below it, the row-by-row copy is as good.
+const TILE_MIN_STEP: usize = 256;
+
+/// Call `f` with every offset from `base` that `axes` (outermost first,
+/// `(extent, stride in bytes)`) reach, in logical order.
+#[inline(always)]
+fn for_each_offset(axes: &[(usize, isize)], base: *const u8, mut f: impl FnMut(*const u8)) {
+    match axes {
+        [] => f(base),
+        &[(n, stride)] => {
+            let mut at = base;
+            for _ in 0..n {
+                f(at);
+                at = at.wrapping_offset(stride);
+            }
+        }
+        _ => {
+            let count: usize = axes.iter().map(|&(n, _)| n).product();
+            let mut index = vec![0usize; axes.len()];
+            let mut at = base;
+            for _ in 0..count {
+                f(at);
+                // The odometer: step the innermost axis, carrying.
+                for (i, &(n, stride)) in axes.iter().enumerate().rev() {
+                    index[i] += 1;
+                    at = at.wrapping_offset(stride);
+                    if index[i] < n {
+                        break;
+                    }
+                    index[i] = 0;
+                    at = at.wrapping_offset(-stride * n as isize);
+                }
+            }
+        }
+    }
+}
+
+/// A tiled plane's fixed geometry: `row_len` units per row, `step` bytes
+/// apart; rows `across` (= ±`unit`) bytes apart.
+#[derive(Clone, Copy)]
+struct Strip {
+    row_len: usize,
+    step: isize,
+    across: isize,
+    unit: usize,
+}
+
+/// Copy rows `r0..r1` of a tiled plane (row `r` starts `r * across` bytes
+/// from `plane`, `across` = ±`unit`, its units `step` apart) packed to `dst`, row `r` at row
+/// `r - r0`, tile by tile: each tile reads a run of adjacent units per
+/// column and writes a few output rows.
+///
+/// # Safety
+/// The rows must be rows of the view, and `dst` writable for
+/// `(r1 - r0) * row_len * unit` bytes, not overlapping them.
+#[inline(always)]
+unsafe fn copy_strip(plane: *const u8, dst: *mut u8, r0: usize, r1: usize, shape: Strip) {
+    #[inline(always)]
+    unsafe fn strip<const N: usize>(
+        plane: *const u8,
+        dst: *mut u8,
+        r0: usize,
+        r1: usize,
+        shape: Strip,
+    ) {
+        let Strip {
+            row_len,
+            step,
+            across,
+            unit,
+        } = shape;
+        let size = if N == 0 { unit } else { N };
+        let tr = tile_rows(size);
+        let mut t0 = r0;
+        while t0 < r1 {
+            let t1 = (t0 + tr).min(r1);
+            let mut k0 = 0;
+            while k0 < row_len {
+                let k1 = (k0 + TILE_UNITS).min(row_len);
+                for k in k0..k1 {
+                    let src = plane.wrapping_offset(k as isize * step + t0 as isize * across);
+                    for r in t0..t1 {
+                        // SAFETY: unit `k` of row `r` is in the view, and
+                        // its place in the packed strip is inside `dst`.
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                src.wrapping_offset((r - t0) as isize * across),
+                                dst.add(((r - r0) * row_len + k) * size),
+                                if N == 0 { unit } else { N },
+                            )
+                        };
+                    }
+                }
+                k0 = k1;
+            }
+            t0 = t1;
+        }
+    }
+    // SAFETY (every arm): the caller's contract.
+    unsafe {
+        match shape.unit {
+            1 => strip::<1>(plane, dst, r0, r1, shape),
+            2 => strip::<2>(plane, dst, r0, r1, shape),
+            3 => strip::<3>(plane, dst, r0, r1, shape),
+            4 => strip::<4>(plane, dst, r0, r1, shape),
+            6 => strip::<6>(plane, dst, r0, r1, shape),
+            8 => strip::<8>(plane, dst, r0, r1, shape),
+            12 => strip::<12>(plane, dst, r0, r1, shape),
+            16 => strip::<16>(plane, dst, r0, r1, shape),
+            _ => strip::<0>(plane, dst, r0, r1, shape),
         }
     }
 }
@@ -598,6 +766,44 @@ mod tests {
             for view in [buf.flip(&[1]), buf.permute(&[1, 0, 2]), buf.flip(&[0])] {
                 assert_eq!(run_bytes(&view), naive_bytes(&view), "{h}x{w}x{c}");
             }
+        }
+    }
+
+    /// Transposes large enough to tile are copied tile by tile, in logical
+    /// order, whatever the unit size or batch axes, and across partial tiles.
+    #[test]
+    fn large_transposes_take_the_tiled_path_in_logical_order() {
+        let mut cases: Vec<(String, ViewBuffer)> = Vec::new();
+        for c in [1usize, 3, 4, 5] {
+            for (h, w) in [(300, 311), (130, 1030)] {
+                let n = h * w * c;
+                let u8s = ViewBuffer::from_vec_with_shape(
+                    (0..n).map(|i| (i * 7 % 251) as u8).collect::<Vec<u8>>(),
+                    vec![h, w, c],
+                );
+                let f32s = ViewBuffer::from_vec_with_shape(
+                    (0..n).map(|i| i as f32).collect::<Vec<f32>>(),
+                    vec![h, w, c],
+                );
+                cases.push((format!("u8 {h}x{w}x{c}"), u8s.permute(&[1, 0, 2])));
+                cases.push((format!("f32 {h}x{w}x{c}"), f32s.permute(&[1, 0, 2])));
+                cases.push((
+                    format!("u8 {h}x{w}x{c} transposed and flipped"),
+                    u8s.permute(&[1, 0, 2]).flip(&[0, 1]),
+                ));
+            }
+        }
+        // A batch of transposes: an outer axis before the tiled plane.
+        let batch = ViewBuffer::from_vec_with_shape(
+            (0..3 * 140 * 150).map(|i| i as u16).collect::<Vec<u16>>(),
+            vec![3, 140, 150],
+        );
+        cases.push(("u16 batch".into(), batch.permute(&[0, 2, 1])));
+        for (label, view) in cases {
+            assert!(Walk::of(&view).tiled(), "{label}: expected the tiled path");
+            let want = naive_bytes(&view);
+            assert_eq!(walk_bytes(&view), want, "copy_to, {label}");
+            assert_eq!(run_bytes(&view), want, "for_each_run, {label}");
         }
     }
 
