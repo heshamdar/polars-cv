@@ -981,7 +981,7 @@
     "name": "extract_contours",
     "python": "extract_contours",
     "visibility": "public",
-    "doc": "Extract contours from binary mask.\n\nThe traced outline passes through the **centres** of the boundary pixels,\nso it sits half a pixel inside the region it describes: a blob filling\n``w x h`` pixels comes back bounding ``(w-1) x (h-1)``. Rasterizing the\nresult therefore erodes it by a pixel per round trip.\n\nBorders come back as a flat list with no hierarchy. ``mode=\"all\"`` yields\nthe exterior plus one border for each enclosed background region — holes\nthat touch or nest enclose one region between them — and reassembling a\nholed contour from those is the caller's job. ``mode=\"external\"`` keeps\nonly the outermost, discarding hole borders.",
+    "doc": "Extract contours from binary mask.\n\nThe traced outline runs along the **edges** of the boundary pixels (pixel\n``(x, y)`` is the square ``[x, x+1] x [y, y+1]``), so it bounds exactly\nthe pixels of its region: a blob filling ``w x h`` pixels comes back\nbounding ``w x h``, a single pixel as its unit square, and every region's\narea is its pixel count. Rasterizing the result gives back the mask.\n\nRegions are 8-connected: pixels touching only at a corner are one region,\nwhose outline passes through that corner twice.\n\nBorders come back as a flat list with no hierarchy. ``mode=\"all\"`` yields\nthe exterior plus one border for each enclosed background region — holes\nthat touch or nest enclose one region between them — and reassembling a\nholed contour from those is the caller's job. ``mode=\"external\"`` keeps\nonly the outermost, discarding hole borders.",
     "fields": [
       {
         "name": "mode",
@@ -1206,7 +1206,7 @@
     "name": "label_reduce",
     "python": "label_reduce",
     "visibility": "public",
-    "doc": "Score contour regions against the current buffer values.\n\nThis is the buffer-space variant of label reduction. It accepts contours\nvia a Polars expression and returns one score per contour.\n\nPixels are sampled at their centres. A contour with no area (the point\nor line a one-pixel-thick region traces to) or whose region catches no\npixel centre (a sub-pixel contour) is scored on the pixels its outline\npasses through, in every region mode, rather than as 0.0.",
+    "doc": "Score contour regions against the current buffer values.\n\nThis is the buffer-space variant of label reduction. It accepts contours\nvia a Polars expression and returns one score per contour.\n\nPixels are sampled at their centres. A contour with no area (a point or\na line) or whose region catches no pixel centre (a sub-pixel contour) is\nscored on the pixels its outline passes through, in every region mode,\nrather than as 0.0.",
     "fields": [
       {
         "name": "contours",

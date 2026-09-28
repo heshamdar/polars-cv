@@ -148,9 +148,9 @@ contours = (
 mask = pl.col("contours").cv.pipe(Pipeline().source("contour").rasterize(width=200, height=200))
 ```
 
-The trip back is lossy in one known direction: `extract_contours()` traces the
-*centres* of the boundary pixels, so a region filling `w x h` pixels returns
-bounding `(w-1) x (h-1)` and re-rasterizing erodes it by a pixel per round trip.
+The trip back is lossless: `extract_contours()` traces the *edges* of the
+boundary pixels, so a region filling `w x h` pixels returns bounding `w x h`,
+its area is its pixel count, and re-rasterizing gives back the same mask.
 
 Staying inside one pipeline — `extract_contours().rasterize(...)` — produces the
 same mask as sinking the set and reading it back through `source("contour")`.

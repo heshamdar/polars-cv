@@ -44,12 +44,13 @@ crate::naming::named_variants!(LabelRegionMode: "Region selection for ``label_re
 /// Score every contour's region over a single-channel `[H, W]`/`[H, W, 1]`
 /// buffer, returning one value per contour.
 ///
-/// Pixels are sampled at their centers (`x + 0.5`, `y + 0.5`). A contour with
-/// no area — the point or line a one-pixel-thick region traces to, since
-/// extraction traces through pixel centres — or whose region contains no pixel
-/// centre is scored on the pixels its outline passes through instead, in every
-/// region mode, so such a detection gets its own pixel values rather than 0.0.
-/// A contour that touches no in-bounds pixel scores 0.0.
+/// Pixels are sampled at their centers (`x + 0.5`, `y + 0.5`). A contour
+/// extracted from a mask bounds exactly its region's pixels, so its region is
+/// those pixels in `Interior` and `Boundary` mode alike. A contour with no area
+/// (a point or a line) or whose region contains no pixel centre (a sub-pixel
+/// contour) is scored on the pixels its outline passes through instead, in
+/// every region mode, rather than as 0.0. A contour that touches no in-bounds
+/// pixel scores 0.0.
 pub fn score_contours_on_buffer(
     buffer: &ViewBuffer,
     contours: &[Contour],
@@ -114,8 +115,8 @@ fn score_one(
         return 0.0;
     };
 
-    // A point or a line — what a one-pixel-thick region traces to — has no
-    // region to scan in any mode: its pixels are the ones its path covers.
+    // A point or a line has no region to scan in any mode: its pixels are the
+    // ones its path covers.
     // Deciding that by area rather than by an empty scan matters for a
     // diagonal line, whose path runs through pixel centres that `Boundary`
     // would otherwise pick up (all but the last).
@@ -334,11 +335,11 @@ mod tests {
         assert_eq!(scores[0], 9.0);
     }
 
-    /// A region one pixel thick traces to a point or a line: zero area, a
-    /// zero-width or zero-height bounding box, no pixel centre inside. It is
-    /// scored on the pixels its path passes through, in every region mode —
-    /// the thin case used to return 0.0 before the fallback was reached, so
-    /// `ContourMatcher` filtered such detections out as unevidenced.
+    /// A point or a line — zero area, a zero-width or zero-height bounding
+    /// box, no pixel centre inside — is scored on the pixels its path passes
+    /// through, in every region mode. It used to return 0.0 before the
+    /// fallback was reached; when extraction traced pixel centres, that is
+    /// what every one-pixel-thick region became.
     #[test]
     fn thin_contour_is_scored_on_the_pixels_it_passes_through() {
         let (h, w) = (8usize, 8usize);

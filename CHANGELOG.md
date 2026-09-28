@@ -7,38 +7,63 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **`extract_contours` traces along pixel edges, not pixel centres.** Pixel
+  `(x, y)` is the unit square `[x, x+1] x [y, y+1]`, and every extracted
+  outline runs along those squares' edges, so it bounds exactly its region's
+  pixels. The centre-traced outline sat half a pixel inside its region:
+  - A `w x h` blob came back bounding `(w-1) x (h-1)`; it now comes back
+    `w x h`.
+  - A single pixel came back as a one-point contour and a `1 x n` line as a
+    segment, both with area 0; they are now the unit square (area 1) and a
+    `1 x n` rectangle.
+  - `mask -> extract_contours -> rasterize` eroded the mask by a pixel per
+    round trip; it now returns the mask unchanged.
+
+  Vertex coordinates, `area`, `perimeter`, `bounding_box` and IoU of
+  extracted contours all change accordingly, and so does `min_area`, which
+  now filters on the pixel count. Connectivity is unchanged: regions are
+  8-connected, so pixels touching only at a corner are one region, whose
+  outline passes through that corner twice. `mode="external"` is now decided
+  from the region labelling rather than a quadratic point-in-polygon scan.
+
 ### Fixed
 
-- **`ContourMatcher` no longer silently drops one-pixel-thick regions.**
-  Contours are traced through pixel centres, so a single pixel, a two-pixel
-  pair or a `1 x n` line traces to a point or a line with no area.
-  `label_reduce` (both `Pipeline.label_reduce` and `.contour.label_reduce`)
-  returned 0.0 for such a contour in every region mode: its zero-width or
-  zero-height bounding box returned early, before the documented
-  "no pixel centre" fallback ran. `ContourMatcher` then removed it as a
-  zero-score detection, so with `min_contour_area=0` the region was neither a
-  detection nor reported anywhere. A contour with no area, or whose region
-  catches no pixel centre, is now scored on the pixels its outline passes
-  through, in every region mode. That rule replaces the centroid fallback
-  sub-pixel contours had. With `min_contour_area=0` each such region is now
-  a detection that carries its own value. It still has no area, so it can
-  only be a false positive.
+- **`ContourMatcher` no longer silently drops one-pixel-thick regions.** Two
+  causes, both fixed:
+  - Traced through pixel centres, a single pixel, a two-pixel pair or a
+    `1 x n` line had no area, so the default `min_contour_area=1.0` dropped
+    it. Even kept (`min_contour_area=0`), it overlapped nothing, so it could
+    never be a true positive.
+  - `label_reduce` (both `Pipeline.label_reduce` and `.contour.label_reduce`)
+    returned 0.0 for a zero-area contour in every region mode. Its zero-width
+    or zero-height bounding box returned early, before the documented
+    "no pixel centre" fallback ran, so `ContourMatcher` removed the region as
+    a zero-score detection.
+
+  Edge tracing gives every region an area equal to its pixel count, so thin
+  regions are now scored, measured and matched on their own pixels: over a
+  matching lesion they are true positives. A contour supplied with no area,
+  or whose region catches no pixel centre, is now scored on the pixels its
+  outline passes through, in every region mode. That rule replaces the
+  centroid fallback sub-pixel contours had.
 
 ### Changed
 
-- **`ContourMatcher(min_contour_area=)` defaults to `0.0`**, up from `1.0`, so
-  the one-pixel-thick predictions above count as false positives by default.
+- **`ContourMatcher(min_contour_area=)` defaults to `0.0`**, down from `1.0`.
   The `1.0` default dates from the boundary tracer that collapsed regions
-  into degenerate walks. With that fixed, it only discarded real
-  detections: a five-pixel line was dropped while a four-pixel 2×2 block was
-  kept. FROC/LROC false-positive counts rise wherever a heatmap has such
-  regions. Pass `min_contour_area=1.0` for the old behaviour.
+  into degenerate walks. Since the smallest extracted region now has area 1,
+  both values keep every region; `0.0` says so directly.
 - **`ContourMatcher(gt_min_contour_area=)` defaults to `1.0`** and no longer
-  follows `min_contour_area` (`None` is no longer accepted). One-pixel-thick
-  ground-truth regions are still dropped by default, as before: with no area,
-  no prediction could match one, so keeping it would count a guaranteed
-  miss. A caller who set only `min_contour_area` now gets `1.0` for ground
-  truth; pass `gt_min_contour_area` explicitly to change it.
+  follows `min_contour_area` (`None` is no longer accepted). A caller who set
+  only `min_contour_area` now gets `1.0` for ground truth; pass
+  `gt_min_contour_area` explicitly to change it.
+- **Detection metrics move** for any `ContourMatcher` evaluation. Regions
+  are measured on their full pixel extent, so IoU against ground truth rises,
+  most for small lesions. Under the default `iou_threshold` some former
+  misses become true positives, and one-pixel-thick detections now count as
+  false positives.
 
 ## [0.29.0] — 2026-09-27
 

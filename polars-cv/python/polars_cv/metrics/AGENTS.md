@@ -198,10 +198,10 @@ metrics/
 ### Null and edge-case handling
 - Contour extraction returns an empty list when an image has no contours, and `null` only for a null input or a failed row. Matchers keep `.fill_null(0)` on `list.len()` for `n_gts`, which now only affects those null rows.
 - Zero-score contours are filtered *before* matching via `_filter_zero_score_detections` to prevent them from claiming GT objects.
-- `label_reduce` scores a zero-area contour (a one-pixel-thick region, traced through pixel centres) or one with no interior pixel centre on the pixels its outline passes through, so such detections keep their own value and survive `_filter_zero_score_detections`.
+- `extract_contours` traces along pixel edges, so every extracted region — one pixel included — has an area equal to its pixel count and overlaps ground truth exactly as its pixels do. `label_reduce` scores a zero-area or sub-pixel contour (only user-supplied ones can be) on the pixels its outline passes through, never as 0.0.
 
 ### ContourMatcher behavior
-- `min_contour_area` defaults to 0.0: one-pixel-thick predictions (polygon area 0) are kept, scored on their own pixels, and can only be false positives. `gt_min_contour_area` defaults to 1.0 independently, dropping one-pixel-thick GT regions that no prediction could ever match.
+- `min_contour_area` defaults to 0.0 and `gt_min_contour_area` to 1.0, independently. The smallest extracted region (one pixel) has area 1, so both defaults keep every region.
 - Auto-detects source format (`Binary`/`List`/`Array`) from column dtypes via `_detect_source_info`.
 - `auto_resize=True` (default) resizes predictions to GT dimensions via fused pipeline. `auto_resize=False` assumes shapes match.
 - Three `label_reduce` region modes: `"interior"` (default), `"boundary"` (interior + boundary pixels), `"bbox"`.

@@ -20,6 +20,7 @@ from polars_cv.metrics._matching._protocol import Matcher
 from polars_cv.metrics._types import (
     COL_CLASS_ID,
     COL_IMAGE_ID,
+    COL_IOU,
     COL_IS_TP,
     COL_N_GTS,
     COL_SCORE,
@@ -289,13 +290,11 @@ _THIN_REGIONS = {
 def test_contour_matcher_keeps_one_pixel_thick_regions() -> None:
     """An above-threshold region one pixel thick is a detection, not nothing.
 
-    Contours are traced through pixel centres, so a one-pixel-thick region
-    traces to a point or a line. `label_reduce` returned 0.0 for it — its
-    zero-width bounding box short-circuited before the no-pixel-centre fallback
-    — and `_filter_zero_score_detections` then dropped it before matching, so
-    with an empty ground truth these images reported no false positive at all.
-    With extraction's area filter off, every region must come back as one false
-    positive carrying the region's own value.
+    Contours used to be traced through pixel centres, so a one-pixel-thick
+    region traced to a point or a line with no area: `label_reduce` scored it
+    0.0 and `_filter_zero_score_detections` dropped it before matching, so with
+    an empty ground truth these images reported no false positive at all.
+    Every region must come back as one false positive carrying its own value.
     """
     frame = pl.DataFrame(
         {
@@ -327,17 +326,59 @@ def test_contour_matcher_keeps_one_pixel_thick_regions() -> None:
 
 
 @plugin_required
-def test_contour_matcher_defaults_keep_thin_predictions_and_drop_thin_gt() -> None:
-    """By default a one-pixel prediction is a detection; one-pixel GT is not.
+def test_contour_matcher_matches_one_pixel_thick_regions() -> None:
+    """A thin prediction over the same thin lesion is a true positive.
 
-    A thin prediction is evidence the model marked something, so it counts as
-    a false positive. A thin ground-truth region has no area, so no
-    prediction could ever match it; keeping it would count a guaranteed miss.
+    Contours are traced along pixel edges, so a one-pixel-thick region has the
+    area of its pixels and overlaps a ground-truth region exactly as its pixels
+    do. Traced through pixel centres, both sides had no area, IoU was 0, and
+    such a lesion could never be found.
     """
-    thin = _heatmap_with([(5, 5)]).tolist()
+    frame = pl.DataFrame(
+        {
+            "image": list(_THIN_REGIONS),
+            "pred": [
+                _heatmap_with(pixels).tolist() for pixels in _THIN_REGIONS.values()
+            ],
+            "gt": [
+                _heatmap_with(pixels, value=1.0).tolist()
+                for pixels in _THIN_REGIONS.values()
+            ],
+        },
+        schema={
+            "image": pl.String,
+            "pred": pl.List(pl.List(pl.Float32)),
+            "gt": pl.List(pl.List(pl.Float32)),
+        },
+    )
+    table = ContourMatcher().match(
+        frame, pred_col="pred", gt_col="gt", image_id_col="image"
+    )
+    detections = table.detections.collect().sort(COL_IMAGE_ID)
+
+    assert detections[COL_IMAGE_ID].to_list() == sorted(_THIN_REGIONS)
+    assert detections[COL_IS_TP].all()
+    assert detections[COL_IOU].to_list() == [1.0] * len(_THIN_REGIONS)
+    n_gts = table.image_metadata.select(COL_N_GTS).collect()[COL_N_GTS]
+    assert n_gts.to_list() == [1] * len(_THIN_REGIONS)
+
+
+@plugin_required
+def test_contour_matcher_defaults_keep_thin_predictions_and_thin_gt() -> None:
+    """By default neither side drops a one-pixel region.
+
+    The smallest extracted region, one pixel, has area 1, so the defaults
+    (``min_contour_area=0.0``, ``gt_min_contour_area=1.0``) keep every region:
+    an unmatched thin prediction is a false positive, and an undetected thin
+    lesion is a miss.
+    """
     empty = np.zeros((16, 16), np.float32).tolist()
     frame = pl.DataFrame(
-        {"image": ["thin pred", "thin gt"], "pred": [thin, empty], "gt": [empty, thin]},
+        {
+            "image": ["thin pred", "thin gt"],
+            "pred": [_heatmap_with([(5, 5)]).tolist(), empty],
+            "gt": [empty, _heatmap_with([(5, 5)], value=1.0).tolist()],
+        },
         schema={
             "image": pl.String,
             "pred": pl.List(pl.List(pl.Float32)),
@@ -352,12 +393,12 @@ def test_contour_matcher_defaults_keep_thin_predictions_and_drop_thin_gt() -> No
     assert detections[COL_IMAGE_ID].to_list() == ["thin pred"]
     assert detections[COL_SCORE].to_list() == [0.5]
     n_gts = dict(table.image_metadata.select(COL_IMAGE_ID, COL_N_GTS).collect().rows())
-    assert n_gts == {"thin pred": 0, "thin gt": 0}
+    assert n_gts == {"thin pred": 0, "thin gt": 1}
 
 
-def _heatmap_with(pixels: list[tuple[int, int]]) -> np.ndarray:
-    """A 16x16 zero heatmap with 0.5 at each ``(row, col)`` in *pixels*."""
+def _heatmap_with(pixels: list[tuple[int, int]], value: float = 0.5) -> np.ndarray:
+    """A 16x16 zero heatmap with *value* at each ``(row, col)`` in *pixels*."""
     heatmap = np.zeros((16, 16), dtype=np.float32)
     for r, c in pixels:
-        heatmap[r, c] = 0.5
+        heatmap[r, c] = value
     return heatmap

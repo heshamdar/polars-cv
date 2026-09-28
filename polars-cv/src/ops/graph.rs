@@ -222,10 +222,10 @@ pub enum GraphOp<M: Mode = Exec> {
     /// This is the buffer-space variant of label reduction. It accepts contours
     /// via a Polars expression and returns one score per contour.
     ///
-    /// Pixels are sampled at their centres. A contour with no area (the point
-    /// or line a one-pixel-thick region traces to) or whose region catches no
-    /// pixel centre (a sub-pixel contour) is scored on the pixels its outline
-    /// passes through, in every region mode, rather than as 0.0.
+    /// Pixels are sampled at their centres. A contour with no area (a point or
+    /// a line) or whose region catches no pixel centre (a sub-pixel contour) is
+    /// scored on the pixels its outline passes through, in every region mode,
+    /// rather than as 0.0.
     #[op(name = "label_reduce",
          sample = {"contours": {"$slot": 1}, "reduction": "mean", "region_mode": "bbox"})]
     LabelReduce {

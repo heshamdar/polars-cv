@@ -490,11 +490,10 @@ class TestMaskContourRoundTrip:
     """mask -> `extract_contours()` -> `List[Contour]` column -> mask.
 
     The leg that closes the loop is the sink's output being re-readable by the
-    source. It is lossy in one known direction — the tracer walks the *centres*
-    of the boundary pixels, so each region comes back inset by half a pixel all
-    round (see `test_contour_raster_crosscheck.TestRoundTripThroughExtraction`) —
-    and the assertions below are written around that inset rather than a
-    tolerance wide enough to hide a real shift.
+    source. It is lossless: the tracer walks the *edges* of the boundary
+    pixels, so each region comes back bounding exactly its pixels (see
+    `test_contour_raster_crosscheck.TestRoundTripThroughExtraction`), and the
+    mask read back equals the original.
     """
 
     CANVAS = 128
@@ -527,14 +526,12 @@ class TestMaskContourRoundTrip:
 
         arr = _rasterize(sets, width=self.CANVAS, height=self.CANVAS, fill_value=1)
 
-        # Each region returns as its own (w-1) x (h-1) inset box.
-        expected = sum((y1 - y0 - 1) * (x1 - x0 - 1) for y0, y1, x0, x1 in self.BOXES)
+        # Each region returns as its own full w x h box.
+        expected = sum((y1 - y0) * (x1 - x0) for y0, y1, x0, x1 in self.BOXES)
         assert int(arr.sum()) == expected
 
-    def test_the_returned_mask_sits_inside_the_original(
-        self, encode_png: "Callable"
-    ) -> None:
-        """Inset, never outset — every returned pixel was set in the original."""
+    def test_the_returned_mask_is_the_original(self, encode_png: "Callable") -> None:
+        """Pixel for pixel: nothing inset, nothing outset."""
         sets = self._contour_sets(encode_png)
         returned = (
             _rasterize(sets, width=self.CANVAS, height=self.CANVAS, fill_value=1)[
@@ -547,9 +544,7 @@ class TestMaskContourRoundTrip:
         for y0, y1, x0, x1 in self.BOXES:
             original[y0:y1, x0:x1] = True
 
-        assert not (returned & ~original).any()
-        iou = (returned & original).sum() / (returned | original).sum()
-        assert iou > 0.9
+        np.testing.assert_array_equal(returned, original)
 
     def test_the_two_routes_to_a_mask_agree(self, encode_png: "Callable") -> None:
         """Rasterizing in the graph and rasterizing from a column give one mask.
