@@ -121,10 +121,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   for u16. One traversal now runs all of them, reading a view in the runs its
   layout has and writing into place when nothing else holds the buffer. The
   output is the only image-sized allocation, and results are unchanged. On
-  the wheels: per-value ops on a flipped or transposed view 1.1–1.3x, non-u8
-  grayscale 1.6–2.2x, u8 preset `normalize` 1.6–1.7x, u8 `adjust_contrast`
-  1.1–1.3x, an f32 scalar chain written in place 1.2–1.75x (CR-64).
-- **The half-precision tensor sink is 3–7x faster and runs in parallel.**
+  the wheels: per-value ops on a flipped or transposed view 1.0–1.2x, non-u8
+  grayscale 1.5–2.1x, u8 preset `normalize` 1.5–1.9x, u8 `adjust_contrast`
+  1.1–1.5x, an f32 scalar chain written in place 1.1–2x (CR-64).
+- **The half-precision tensor sink is 3–6x faster and runs in parallel.**
   `sink("numpy"|"torch", dtype="f16")` converted every row one element at a
   time after all rows were computed, on one thread. Each row is now
   converted on its own thread, in one pass with the CPU's F16C instructions

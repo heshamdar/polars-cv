@@ -5,10 +5,62 @@ State of the kernel-performance effort planned in
 Read this, then the plan's Phase 9, then `CLAUDE.md`'s Working Agreements
 (they bind every change here).
 
-Branch: `claude/performance-optimization-handover-97vxoc` (Phases 1–5 were on
-`claude/codebase-performance-assessment-36x2p3`, which it continues). Last code
-commit: `4cfd1cd` (Phase 8). Everything is committed and pushed; there is no
-work in progress. **What is left: Phase 9 (below) and the open items after it.**
+Branch: `claude/performance-improvements-review-syhp8e`, which continues
+`claude/performance-optimization-handover-97vxoc` (PR 105; Phases 1–5 were on
+`claude/codebase-performance-assessment-36x2p3` before that) and has `main`
+merged in. Everything is committed and pushed; there is no work in progress.
+
+**Read "Review (2026-09-28)" below first.** A review of Phases 1–8 as a whole
+found that each phase had re-solved how a kernel reads a view and where it
+writes; that is now one mechanism (`core::map`, CR-64) that later work must
+use. Phase 9 is done (f16 sink; JPEG eval recorded). **What is left: the
+open items at the end, three of which need the owner's decision.**
+
+## Review (2026-09-28)
+
+A review of Phases 1–8 as a whole, asked for because many steps were failed
+attempts and the end state might be less clean than claimed.
+
+**Verdict.** The individual mechanisms are sound and well guarded: CPU
+dispatch with a debug parity check, one conversion rule, the strided walk,
+inline layouts, verbatim-kernel oracles for the warp and blur. The measured
+wins are real. The weakness was structural: every phase re-solved *how a
+kernel reads a view and where it writes* locally, for the op it was about,
+so the mechanisms did not compose. Several of the history's failed attempts
+are this showing through: CR-57 was a Phase 1 claim the planner silently
+undid, and the walk broke the dispatch module's inlining rule from the day
+it shipped.
+
+**Findings, and what was done:**
+
+1. *Traversal was solved five ways* (`Walk`; `dense_rows`; an in-place
+   check plus a hand loop; `to_contiguous()` then a slice loop; the
+   planner's `RequiresContiguous`). Whether a view was copied depended on op
+   × dtype × strategy. **Done:** `core::map`, the one traversal (CR-64);
+   ~12 hand-written in-place/into/pack paths deleted.
+2. *The walk broke the dispatch rule*: runs went to a closure and the
+   scratch flushed through `&mut dyn FnMut`, both outside the AVX2 build
+   unless LLVM inlines them. Invisible with its one consumer; the first
+   version of the fix reproduced it at scale (cast 4.5× slower). **Done:**
+   rows are an iterator, runs go to an `#[inline(always)]` `RunSink`.
+3. *A run could split a pixel*, which is why pixel kernels invented
+   `dense_rows`. **Done:** runs are whole grains; grayscale reads any view.
+4. *An optimiser trap for flipped views* (hoisted overlap check, see the
+   code-generation traps below). **Done:** per-unit opaque address.
+5. *The f16 sink converted in the serial column build*, three passes, a
+   runtime F16C check per element (CR-65) — the handover's open item 1 in
+   miniature. **Done:** one pass, bulk F16C, on the row pool, 3–6× faster.
+6. *Smaller:* typed grayscale's store bypassed M5 (now M5); the engine had
+   both a "pass" and a "blocked" streaming strategy (merged); the walk
+   allocated its geometry (now inline); `adjust_contrast` gathered an f32
+   copy to sum it (now reads runs); view-buffer did not build without
+   `image_interop` (fixed, and now checked).
+7. *Test gaps:* no parity test had a per-channel kernel cross a block or run
+   boundary, and typed threshold had no Rust test. Both added and watched
+   failing.
+8. *Still open, owner's decision:* resize of > 4 channels panics (open item
+   4); the warp's border fill truncates (open item 7); whether to adopt
+   jpeg-encoder, whose eval gate passes but whose files are larger (item 11).
 
 ## Where it stands
 
@@ -26,79 +78,41 @@ work in progress. **What is left: Phase 9 (below) and the open items after it.**
 | 6: `List` source zero-copy, raw/blob alignment | done | `f944fc9` | `2026-09-28-phase6-ingestion/` | CR-61 (silent 0 on cast, fixed) |
 | 7: rotation / affine | done | `060df58` | `2026-09-28-phase7-warp/` | CR-62 (u64 max stored as 0), CR-63 (0° smeared NaN) |
 | 8: morphology iterations, blur input conversion | done | `4cfd1cd` | `2026-09-28-phase8-morph-blur/` | — |
-| 9: JPEG encoder (eval-gated), f16 sink | **next** | | | |
+| review: one traversal (`core::map`) | done | `0614576` | `2026-09-28-review-traversal/` | CR-64 |
+| 9a: f16 sink | done | `0614576` | `2026-09-28-review-traversal/` | CR-65 |
+| open item 5: view-buffer without `image_interop` | done | `6229fbe` | — | — |
+| 9b: JPEG encoder eval | done (see below) | this commit | `2026-09-28-phase9-jpeg-eval/` | — |
 
 Reports live under `polars-cv/benchmarks/reports/`; findings are in
 `CODE_REVIEW_FINDINGS.md` under "Performance review (2026-09-27)". The next free
-finding id is **CR-64**; check with `grep -o '^### CR-[0-9]*' CODE_REVIEW_FINDINGS.md | sort -t- -k2 -n | tail -1`
+finding id is **CR-66**; check with `grep -o '^### CR-[0-9]*' CODE_REVIEW_FINDINGS.md | sort -t- -k2 -n | tail -1`
 before filing one. CR-50 was duplicated once.
 
-## Phase 9: sinks (JPEG encoder, f16)
+## Phase 9: sinks (done)
 
-Plan: `PERFORMANCE_PLAN.md`, "Phase 9 — Sinks". It has two independent halves;
-do the f16 sink first (small, certain) and the JPEG eval second (it may end in
-"not adopted", which is a valid outcome to record).
-
-### f16 sink
-
-- **Where:** `NumpyRowOutput::from_buffer_f16` (`polars-cv/src/output.rs`),
-  behind `.sink("numpy"|"torch", dtype="f16")`. Today it is
-  `buffer.cast(F32)` → `to_contiguous()` → one `half::f16::from_f32(v)` and
-  `extend_from_slice` per element. `half = "2"` is already a polars-cv
-  dependency.
-- **Plan:** walk the source once (M3, `core::strided::Walk` — or, simpler,
-  `convert_view`/`convert_slice` into an f32 row scratch) and convert each row
-  with `half::slice::HalfFloatSliceExt::convert_from_f32_slice` straight into
-  the output bytes.
-- **Test first:** bit-identical to the per-element `f16::from_f32` over every
-  special value (NaN payloads, ±0, ±inf, subnormals, values that round to
-  f16's max and overflow to inf, halfway cases) and over strided inputs
-  (transposed, flipped, cropped). Check that `half`'s bulk conversion uses the
-  same rounding (round-to-nearest-even) as `from_f32` on this target — it may
-  use F16C instructions when available; that is why the test must cover
-  halfway and NaN cases. Watch it fail against a deliberately wrong
-  conversion (e.g. truncating).
-- **Measure first:** there is no f16 case in any benchmark. Add one (the
-  plugin micro-benchmarks, `benchmarks/plugin_overhead.py`, run through
-  `sink("numpy", dtype="f16")` on 64×64 and 512×512) and time it before
-  changing anything; a per-element loop over 2-byte outputs may or may not
-  matter next to the rest of the sink.
-
-### JPEG encoder (eval-gated)
-
-- **Gate first:** `view-buffer/tests/jpeg_encode_eval.rs`, mirroring
-  `view-buffer/tests/png_decode_eval.rs` (read it: a synthesized corpus, a
-  parity test that always runs, and an `#[ignore]`d timing test run with
-  `--ignored --nocapture` in release).
-  - Compare `image::codecs::jpeg::JpegEncoder` (production) with
-    `jpeg-encoder` (`features = ["simd"]`; the crates.io index was reachable
-    from this container) on gradient/noise × 256²/512²/1024² × L8/Rgb8, at
-    quality 75 and 90.
-  - Parity: decode both outputs back and require PSNR against the source
-    within 0.5 dB of each other. This always runs.
-  - **Adopt only if the geomean speedup is ≥ 1.5×.** Otherwise stop, record
-    the table in a report and in the plan, and leave the encoder alone.
-- **If adopted:**
-  - The dependency goes in `view-buffer/Cargo.toml` under `image_interop`.
-  - `jpeg-encoder` is IJG-licensed: add `IJG` to `deny.toml`'s `allow` list
-    with a comment, and only then (the user's decision, below). Run
-    `cargo deny check` (part of `verify.sh`).
-  - **The plan's description of `encode_jpeg` is out of date.**
-    `ImageAdapter::encode_jpeg` (`view-buffer/src/interop/image.rs`) goes
-    through `encode_in_place`, which **packs the buffer** (`to_contiguous()`)
-    and hands `native` a contiguous byte slice and colour type; if the encoder
-    refuses the colour type (`UnsupportedErrorKind::Color`, e.g. alpha), the
-    `converted` closure runs on a `DynamicImage` instead. There is no
-    `JpegViewAdapter`. Keep that structure: the new encoder plugs in as the
-    `native` closure for `L8`/`Rgb8`, and anything it cannot take falls to the
-    existing conversion path. Reading strided views without packing would be
-    a separate change (see `ViewBuffer::dense_rows`), not part of the swap.
-  - `ImageCodec::check_support` stays the one authority on what is encodable
-    (JPEG's 65,535 limit already holds there).
-  - Output bytes change: that is a user-visible, CHANGELOG'd change. A grep
-    of the tests found **no test pinning exact JPEG bytes** (no hash, golden
-    or equality check on encoder output); search again before switching, and
-    any pixel-tolerance JPEG test must pass unchanged.
+- **f16 sink** (CR-65, `0614576`): `ViewBuffer::to_f16_bits`, an element map
+  over the one traversal (any view read once, each 2,048-element block read
+  as f32 by M5, then `half`'s bulk conversion, F16C detected once per block),
+  called by the encode half on the row's thread; the column build only
+  labels rows `float16` (`NumpyRowOutput::from_f16_bits`). Bit-identical to
+  `f16::from_f32` per value (same instruction or same fallback), pinned over
+  binary16's edge values in Rust and against NumPy through the plugin.
+  3–6× faster conversion, and off the serial tail.
+- **JPEG encoder eval** (`polars-cv/benchmarks/reports/2026-09-28-phase9-jpeg-eval/`):
+  run as a standalone crate, because `cargo deny` checks dev-dependencies
+  and a view-buffer test would have needed IJG allowed. **The gate passes**
+  (geomean 1.62–1.65× over three runs, worst ΔPSNR 0.04 dB), but the files
+  are 5–13% larger on smooth content at the same quality. That was not part
+  of the gate, so the swap was **not made; it is the owner's decision**. If
+  adopted:
+  - the dependency goes in `view-buffer/Cargo.toml` under `image_interop`,
+    and `IJG` in `deny.toml`'s `allow` with a comment;
+  - it plugs in as the `native` closure of `ImageAdapter::encode_in_place`
+    for `L8`/`Rgb8` at `SamplingFactor::F_1_1` (the production encoder's
+    4:4:4); anything it refuses falls to the existing `converted` path;
+    `ImageCodec::check_support` stays the authority on what is encodable;
+  - no test pins exact JPEG bytes (search again first); pixel-tolerance
+    tests must pass unchanged; CHANGELOG the byte change.
 
 ## Remaining open items (outside the plan)
 
@@ -108,46 +122,51 @@ ones marked **ask** change behaviour or scope and need the user's go-ahead.
 1. **Eager calls scale poorly across threads.** An 8×8 `invert` over 200k rows
    in one chunk is only 1.7× faster on 4 threads than on 1, and the same rows
    split into 100 chunks run ~2× faster than one chunk. Some per-call work is
-   serial. First suspect: the column build after the rows are computed
-   (`build_series_from_spec`, `graph/decode.rs`; `fill_rows` already runs on
-   the pool, but the rest does not). Profile with callgrind
-   (`--toggle-collect='*execute_rows*'` excludes it; collect on
-   `*vb_graph*` instead) and time 1 vs 4 threads. Likely the biggest
-   remaining win for small-image workloads.
+   serial. The review found one instance (CR-65: the f16 sink converted in the
+   serial column build) and moved it onto the row pool; look for others the
+   same way: anything in `build_series_from_spec` (`graph/decode.rs`) or
+   `output.rs` that is O(pixels) per row and not under `fill_rows`/`split`.
+   Profile with callgrind (`--toggle-collect='*execute_rows*'` excludes it;
+   collect on `*vb_graph*` instead) and time 1 vs 4 threads. Likely the
+   biggest remaining win for small-image workloads.
 2. **Transpose is ~8× a vertical flip** (2.5 vs 0.3 ms at 1024² u8; CR-55
    follow-up). Tiling was tried in Phase 3 and made it 1.7× *slower*
    (reverted). A small-unit transpose kernel (e.g. 8×8 byte blocks with SIMD
    shuffles) is the untried idea. Needs an interleaved A/B against `bf64725`.
-3. **u8 preset normalize is slower in the v3 build than on the wheel target**
-   (4.0 vs 2.2 ms at 1024², Phase 2 report). Not investigated; start by
-   comparing the generated code of the two builds (`objdump`, count `ymm`), as
-   Phase 7 did for the warp.
+3. ~~u8 preset normalize slower in the v3 build~~: the table map's inner loop
+   over a run-time channel count compiled badly in the AVX2 build; it is now
+   specialised for 3 and 4 channels (1.5–1.9× on the wheels, CR-64). Recheck
+   on v3 before closing.
 4. **Resize of more than 4 channels panics at run time.** fast_image_resize
-   has no such pixel type, and resize's `check()` accepts any channel count
-   (as it did before Phase 4). A bug, not filed. The fix belongs in the op's
-   contract (`check()` refuses it at plan time, per "a bypass must fail"), or
-   in a per-channel-group resize. **Ask** which.
-5. **view-buffer does not build without the `image_interop` feature**
-   (`separable_gaussian_blur_body` and friends are used ungated). CI and
-   `verify.sh` build only `--all-features`, so nothing notices. Not filed.
-   Either gate the users or make the feature mandatory; add a
-   `cargo check -p view-buffer --no-default-features` to `verify.sh` so it
-   stays fixed.
-6. **Typed grayscale still stores with `clamp_for_dtype` + `NumCast`**
-   (`luma_typed`, `runner.rs`). For u64/i64 that pattern clamps one past the
-   range and stores 0 (CR-62), but grayscale's weights sum below 1, so no
-   input reaches it (a white u64 image stays white). The blur's store moved
-   to M5 in Phase 8. Moving grayscale too would leave `clamp_for_dtype` only
-   in the warp's test oracle; do it only with a benchmark, since the M5 form
-   can vectorise differently (Phase 7's RGBA lesson below).
+   has no such pixel type, and resize's `check()` accepts any channel count.
+   The fix belongs in the op's contract (`check()` refuses it at plan time,
+   per "a bypass must fail"), or in a per-channel-group resize. **Ask** which.
+5. ~~view-buffer does not build without `image_interop`~~: fixed (`6229fbe`);
+   CI and `verify.sh` check `--no-default-features` and the defaults.
+6. ~~Typed grayscale stores with `clamp_for_dtype` + `NumCast`~~: grayscale
+   is a pixel map storing by `CastFrom` (CR-64), 1.5–2.1× faster;
+   `clamp_for_dtype` is test-only (the warp and blur oracles).
 7. **The warp's border fill converts with `NumCast`**, truncating: a u8
    `border_value=7.5` fills 7 but blends toward 7.5 at the edge, and an
-   out-of-range value fills 0. Inconsistent with M5, left as it was, not
-   filed. Changing it changes output: **ask**.
+   out-of-range value fills 0 (the CR-62 pattern). M5 would round and
+   saturate. Changing it changes output: **ask**.
 8. **A converting `list` row goes through polars' `strict_cast`** (Phase 6):
    15.8 µs per 64×64 `i64 → u8` row against 2.2 for an in-place one. It is a
    convenience path, and a typed pass would need a second copy of polars'
    cast rules. Not worth doing without a user asking.
+9. **The debug parity check spawns a thread per dispatched call** (so its
+   allocations stay out of the copy-count guards' per-thread accounting).
+   Every debug-build kernel call, the whole Python suite included, pays a
+   thread spawn and a second run. A per-thread "diagnostic" flag the counting
+   allocators skip would do the same without the spawn. Low priority; measure
+   the suite's time first.
+10. **Code size**: every map is instantiated per (source, destination) dtype
+    pair, twice (portable and AVX2); the table strategy alone is 80 copies of
+    ~2,600 instructions. Nothing measured slower for it, but the binary grew.
+    A table lookup gains nothing from AVX2 (it is scalar loads), so it could
+    skip dispatch if size ever matters.
+11. **Adopt jpeg-encoder?** The eval gate passes but files grow 5–13% on
+    smooth content (Phase 9 above). **Ask.**
 
 ## What exists now (the mechanisms later work must use)
 
@@ -163,7 +182,9 @@ not write a second one beside it; extend it.
   - A kernel must not hand its loop to a non-inlined callee, such as a closure
     that stays out of line or a `thread_local!` `with`.
 - **`view-buffer/src/core/convert.rs`** (`CastFrom`, `convert_slice`,
-  `convert_view`): the one element-conversion rule (M5).
+  `convert_view`, `to_f16_bits`): the one element-conversion rule (M5), as a
+  map; `ViewBuffer::to_f16_bits` is the half-precision sink's conversion
+  (bulk F16C via `half`, on the row's thread).
   - Integer sources use `as`.
   - Float → integer rounds half away from zero, then saturates.
   - f32 → 8/16-bit uses `round_narrow!` (vectorises in bulk casts); f64 →
@@ -171,19 +192,32 @@ not write a second one beside it; extend it.
     channels; `round_narrow` did not, RGBA warp 1.8× slower). Same values,
     pinned by `narrow_conversion_equals_round_then_saturate`.
 - **`with_dtype!`** (`core/dtype.rs`): the one runtime `DType` → type match.
+- **`view-buffer/src/core/map.rs`** (`ElementMap`, `PixelMap`, `map_owned`,
+  `map_new`, `map_pixels`): **the one traversal of a per-value or per-pixel
+  kernel** (CR-64). A kernel states only what it computes over a run; the
+  traversal decides in place (sole owner, same dtype) vs into spare capacity,
+  reads any view in `Walk` runs (whole pixels for a pixel map), and dispatches.
+  Do not write a kernel's own in-place / into / `to_contiguous()` paths
+  again: make it a map.
+  - An `ElementMap` is told where its run starts (`at`): a per-channel map
+    reads its channel as `(at + i) % C`. Runs and blocks start mid-pixel.
+  - `map::for_each_run` is the reduction form (statistics), not dispatched.
 - **`view-buffer/src/ops/elementwise/`**: every per-value compute op.
   - `lower_to_scalars` is shared with fusion.
-  - `strategy` picks, in order: integer affine, lookup table (only for `powf` or
-    per-channel work), blocked, or f32 pass.
-  - `unique_contiguous_mut` decides whether a buffer is written in place.
-  - `legacy.rs` is the verbatim pre-engine test oracle. Leave it unchanged.
+  - `strategy` picks, in order: integer affine, lookup table (only for `powf`
+    or per-channel work), or blocked f32 passes. Each is an element map.
+  - `legacy.rs` is the verbatim pre-engine test oracle. Leave it unchanged
+    (it now carries its own copy of the removed `finish_fused_output`).
 - **`view-buffer/src/core/strided.rs`** (`Walk`): the one walk over a view's
   memory.
   - `copy_to` sits behind `to_contiguous`/`append_to`/`write_to`.
-  - `for_each_run` sits behind `convert_view`.
+  - `for_each_run(grain, sink)` sits behind every map over a view. Runs are
+    whole grains; the consumer is a `RunSink` with an `#[inline(always)]`
+    method, never a closure, inside a dispatched body.
   - A debug-build bound check guards every walk.
-- **`ViewBuffer::dense_rows`**: row-wise kernels read crops and vertical flips
-  where they lie.
+- **`ViewBuffer::dense_rows`**: rows of a crop or vertical flip as slices,
+  for fast_image_resize's row interface only (`interop/fir.rs`). Everything
+  else reads views through `Walk`.
 - **`view-buffer/src/interop/fir.rs`** (`FirViewAdapter<P>`): the one way a
   buffer reaches fast_image_resize. `resize_pixels::<P>` (`runner.rs`) is the
   one resize kernel; it packs only a layout the adapter refuses.
@@ -343,6 +377,31 @@ a loop vectorised (count `ymm`).
 - **How a store is written decides whether a pixel's channels vectorise**
   (Phase 7): the same values, written two ways, measured 1.8× apart for RGBA.
   Check `ymm` counts when a store changes.
+- **No closure inside a dispatched body** (review, CR-64). A closure is its
+  own function, compiled without the AVX2 build unless LLVM inlines it, and
+  it declines for a large body: a traversal wrapped in one ran a cast 4.5×
+  slower on the wheels. Loops go in the body, over iterators, or in
+  `#[inline(always)]` trait methods (`RunSink`, the maps). A nested `fn`
+  needs `#[inline(always)]` for the same reason. Small closures in iterator
+  adapters (`.map(|x| …)`) inline fine.
+- **A panic message that borrows a field keeps the struct in memory**, and a
+  pointer in it then may alias the loop's stores. Move the field out before
+  asserting on it.
+- **LLVM hoists a vector loop's overlap check out of an enclosing loop**, and
+  a negative step (a vertical flip's rows) fails the hoisted check for every
+  iteration: the whole image ran the scalar remainder loop (5×). The walk
+  makes each unit's address opaque (`black_box`) so the check is per unit.
+  Look for it when a view is much slower than the same data packed:
+  callgrind with `--dump-instr=yes --compress-pos=no` shows which loop runs.
+- **Bind a slice, not `&Vec`, before a hot loop** (`let t: &[D] = &self.v`):
+  through `&Vec` the data pointer is reloaded after every store.
+- **A loop over a run-time channel count** compiled 20% slower in the AVX2
+  build than the baseline did; specialise 3 and 4 channels with const
+  generics (`as_chunks::<C>`).
+- **Test the per-channel position**: blocks (2,048) and walk runs (8 KiB)
+  start mid-pixel. Parity tests need images of several blocks and a
+  channel-first view (channels `h·w` apart) to reach it; before the review
+  none did.
 
 **Disk:** the session allowance is ~38 GB. `target/debug` grew to 20 GB with
 stale flag variants and filled it twice. `rm -rf target/debug/incremental`
