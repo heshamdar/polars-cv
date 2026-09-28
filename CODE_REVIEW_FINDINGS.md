@@ -1316,6 +1316,22 @@ phase of that plan, closed as each lands.
   length and pixels through `crop` → `sink("blob")`, and failed against the
   unfixed extension (292 bytes for a 172-byte blob).
 
+### CR-61 — A `list` value the declared dtype cannot hold became 0 · `Resolved` · Medium
+
+- **Location:** `graph/decode.rs`, the `list`/`array` source's converting
+  path (`series_to_bytes`, now `convert_row_values`).
+- **What was wrong:** a row whose values were not the declared dtype was
+  converted by polars' non-strict cast, which nulls a value the target cannot
+  hold, and the nulls were then read as the values under them: `300`, `-1`,
+  `NaN` and `1e10` declared `u8` all became `0`, silently. Found while
+  replacing the path in Phase 6.
+- **Resolution:** the conversion is polars' strict cast of the row's values:
+  such a value is an error naming it (and the row is null under
+  `on_error="null"`). Float → integer still truncates, as polars' cast does.
+- **Guards:** `a_value_the_declared_dtype_cannot_hold_is_refused` (Rust) and
+  `test_a_value_the_declared_dtype_cannot_hold_is_refused` (Python), both
+  watched failing on the old path.
+
 ### CR-60 — The plugin allocated with the system `malloc`, not polars' allocator · `Resolved` · Low (perf)
 
 - **Location:** `polars-cv/src/lib.rs` declared no `#[global_allocator]`.

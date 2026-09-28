@@ -235,6 +235,13 @@ Each phase is one or more commits on `claude/codebase-performance-assessment-36x
 
 ### Phase 6 — Ingestion: `List` source zero-copy, raw/blob alignment
 
+> **Done** (report `polars-cv/benchmarks/reports/2026-09-28-phase6-ingestion/`).
+> Measured first (new `benchmarks/ingestion_overhead.py`): `List` rows cost 3–10x an
+> `Array` row, alignment copies ~0.3 µs/row. Done as planned, except that the
+> converting case is polars' *strict* cast rather than a hand-written pass: the
+> non-strict one stored 0 for unrepresentable values (CR-61), and one cast authority
+> beats a second. Walker: `list_row_grid`; binary rows: `decode_binary_row`.
+
 - **Tests first** (`decode.rs` test module, in the style of `array_source_view_tests`):
   - Rectangular `List[List[u8]]` / `List[f32]` rows → the data pointer lies inside the
     column's leaf values buffer.
