@@ -7,7 +7,7 @@ Working Agreements (they bind every change here).
 
 Branch: `claude/performance-optimization-handover-97vxoc` (Phases 1–5 were on
 `claude/codebase-performance-assessment-36x2p3`, which it continues). Last code
-commit: `f0428bb` (Phase 6). Everything is committed and pushed; there is no
+commit: `060df58` (Phase 7). Everything is committed and pushed; there is no
 work in progress.
 
 ## Where it stands
@@ -24,13 +24,13 @@ work in progress.
 | 5: per-row executor overhead | done | `dbe23ee` | `2026-09-28-phase5-per-row/` | CR-58; CR-59 (blob bug, fixed) |
 | CR-60: the plugin allocates through polars' allocator | done | `1e7ad74`, `f0428bb` | `2026-09-28-cr60-allocator/` | CR-60 |
 | 6: `List` source zero-copy, raw/blob alignment | done | `f944fc9` | `2026-09-28-phase6-ingestion/` | CR-61 (silent 0 on cast, fixed) |
-| 7: rotation / affine | **next** | | | |
-| 8: morphology iterations, blur input conversion | not started | | | |
+| 7: rotation / affine | done | `060df58` | `2026-09-28-phase7-warp/` | CR-62 (u64 max stored as 0), CR-63 (0° smeared NaN) |
+| 8: morphology iterations, blur input conversion | **next** | | | |
 | 9: JPEG encoder (eval-gated), f16 sink | not started | | | |
 
 Reports live under `polars-cv/benchmarks/reports/`; findings are in
 `CODE_REVIEW_FINDINGS.md` under "Performance review (2026-09-27)". The next free
-finding id is **CR-62**; check with `grep -o '^### CR-[0-9]*' CODE_REVIEW_FINDINGS.md | sort -t- -k2 -n | tail -1`
+finding id is **CR-64**; check with `grep -o '^### CR-[0-9]*' CODE_REVIEW_FINDINGS.md | sort -t- -k2 -n | tail -1`
 before filing one. CR-50 was duplicated once.
 
 ## What exists now (the mechanisms later phases must use)
@@ -81,6 +81,13 @@ not write a second one beside it; extend it.
 - **`list_row_grid`** (`graph/decode.rs`) is the one way a `List`/`Array` row
   becomes a grid; **`decode_binary_row`** the one binary-row decode, with
   `get_binary_row_buffer`'s `in_place` predicate deciding copy vs view.
+- **`execution/warp.rs`** is the affine warp. Its tests keep the pre-Phase-7
+  kernel verbatim as a byte-parity oracle over every dtype, channel count,
+  angle, matrix and non-finite input: any change to the warp must keep them
+  byte-identical, or change the oracle deliberately and say why.
+- **M5 has an f64 → 8/16-bit form** (`round().clamp() as T`) alongside
+  `round_narrow` (f32): same values, but it vectorises across a pixel's
+  channels, which `round_narrow` did not (RGBA warp 1.8x slower).
 - **`benchmarks/ingestion_overhead.py`**: per-row source cost, `array` as the
   in-place reference.
 - **`MemoryEffect` is what makes a planned pipeline pack.** A kernel that reads
@@ -187,6 +194,14 @@ before building either side):
   in one chunk is 1.7x faster on 4 threads than on 1, and the same rows split
   into 100 chunks run ~2x faster than one chunk. Some per-call work is serial
   (the column build is the first suspect). Not investigated.
+- **`clamp_for_dtype` + `NumCast` is still the store in typed grayscale and
+  the Gaussian blur** (`runner.rs`). For u64/i64 it clamps one past the range
+  and would store 0 (CR-62), but no input reaches it there (weights sum below
+  1; 1,200 blur cases tried). Phase 8's blur item moves the blur store to M5,
+  which removes it there; watch the RGBA lesson above when it does.
+- **The warp's border fill converts with `NumCast`** (truncating: a u8
+  `border_value=7.5` fills 7, but blends toward 7.5 at the edge; out of range
+  fills 0). Inconsistent with M5, left as it was. Not filed.
 - **Resize of more than 4 channels panics at run time** (as it did before
   Phase 4): fast_image_resize has no such pixel type and resize's `check()`
   accepts any channel count. Not filed.
@@ -197,14 +212,25 @@ before building either side):
   convenience; a typed pass would need its own range checks, a second copy of
   polars' cast rules. Not worth it without a user asking.
 
-## Starting Phase 7
+## Starting Phase 8
 
-Plan: `PERFORMANCE_PLAN.md`, "Phase 7 — Rotation / affine". Its line numbers
-are stale; grep for `affine_warp_typed` and `Rotation::Identity`. It is a
-kernel phase, so the kernel benchmarks (`benchmarks/regression`, the
-`rotate`/`affine` cases) are the A/B, not the plugin micro-benchmarks. Measure
-first, as Phases 4–6 did: each found its real cost somewhere other than the
-plan's first guess.
+Plan: `PERFORMANCE_PLAN.md`, "Phase 8 — Morphology iterations, blur input
+conversion". Its line numbers are stale; grep for `apply_erode`,
+`apply_dilate` and `separable_gaussian_blur_body`. A kernel phase: the A/B is
+`view-buffer/benches/kernels.rs` (`erode_k3_x3_u8`, `blur_sigma2_u8_rgb`;
+add cases for what you change, as Phase 7 added the rotate matrix). Measure
+first, as Phases 4–7 did.
+
+**Kernel profiling** (what worked in Phase 7): build the bench unstripped in
+its own target dir, `CARGO_TARGET_DIR=$SCRATCH/tprof
+CARGO_PROFILE_BENCHMARK_STRIP=false CARGO_PROFILE_BENCHMARK_DEBUG=line-tables-only
+scripts/with-pyo3-env.sh cargo bench -p view-buffer --all-features --profile
+benchmark --bench kernels --no-run`, then `valgrind --tool=callgrind <bench
+binary> --bench <case> --profile-time 3` from `view-buffer/`, and
+`callgrind_annotate --auto=yes` for per-line counts. `objdump -d` of the
+`run_avx2::<…>` function shows whether a loop vectorised (count `ymm`).
+Never benchmark while anything else builds: a concurrent test build cost
+Phase 7's head run ~10%.
 
 **Profiling the plugin** (what worked in Phase 5):
 - There is no `perf`, and `py-spy` sees only threads with Python state (the
@@ -234,7 +260,10 @@ is always safe; a whole `target/debug` is only build cache. Never build
 `-p polars-cv --all-features`: it is a different feature set and rebuilds the
 whole polars stack in debug.
 
-Lessons from Phases 4–6 that still apply:
+Lessons from Phases 4–7 that still apply:
+- **Unsigned 64-bit ↔ f64 conversions are multi-instruction on x86** (no
+  AVX-512): `usize as f64` and `f64 as usize` in a per-pixel loop cost more
+  than the arithmetic around them. Count in `f64`, convert through `i64`.
 - **Verify with nothing unstaged or untracked.** `verify.sh` passed for the
   CR-60 commit while its new `allocator.rs` was untracked, so the relevance
   guard (which reads tracked files) never saw it; the next run failed. And
