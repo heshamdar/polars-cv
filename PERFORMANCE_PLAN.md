@@ -155,6 +155,10 @@ Each phase is one or more commits on `claude/codebase-performance-assessment-36x
 
 ### Phase 3 — M3 strided traversal (flips, crop, transpose, rotate-90)
 
+> **Done** (`bf64725`, CR-55; report `polars-cv/benchmarks/reports/2026-09-28-phase3-strided/`).
+> A gated tiled transpose was tried (`80d3b52`) and reverted (`c4475b6`): it made
+> u8 transpose 1.7x slower at 1024². Transpose remains ~8x a vertical flip.
+
 - **Tests first** (extend `view-buffer/tests/strided_ops.rs`):
   - A property test over random shapes (rank 1–4), slices, negative strides and
     transposes: `RowWalk` copy == the element-by-element reference.
