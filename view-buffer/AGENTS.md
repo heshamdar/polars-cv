@@ -155,6 +155,12 @@ blocked streaming for an integer result, or one f32 pass, and writes in place wh
 vectorised `255 - x`, so a cheap kernel never takes one. Do not add a per-op
 kernel beside it; extend the lowering.
 
+A layout's shape and strides are `core::layout::{Dims, Strides}`, inline up
+to rank 4, so cloning a `ViewBuffer` or asking its layout a question never
+allocates; contiguity has one allocation-free rule (`is_c_contiguous`). Keep
+it that way: the executor does both several times per row, and on small rows
+a heap copy per call was most of the row (`layout_bookkeeping_allocates_nothing`).
+
 Row-wise kernels read a view where it lies through `ViewBuffer::dense_rows`
 (contiguous, crops, vertical flips) instead of calling `to_contiguous()` first.
 Resize hands such a view to fast_image_resize through

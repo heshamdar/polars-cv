@@ -1,6 +1,15 @@
 //! Memory layout types for view-buffer.
 
 use crate::core::dtype::DType;
+use smallvec::SmallVec;
+
+/// A layout's sizes, one per axis. Inline up to rank 4 (an image, or a batch
+/// of them), so copying a layout or asking it a question allocates nothing:
+/// the executor does both several times per row.
+pub type Dims = SmallVec<[usize; 4]>;
+
+/// A layout's strides in bytes, one per axis; inline like [`Dims`].
+pub type Strides = SmallVec<[isize; 4]>;
 
 /// External layout requirements for different libraries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,8 +24,8 @@ pub enum ExternalLayout {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LayoutFacts {
     pub rank: usize,
-    pub shape: Vec<usize>,
-    pub strides: Vec<isize>, // Strides in BYTES
+    pub shape: Dims,
+    pub strides: Strides, // Strides in BYTES
     pub dtype: DType,
     pub offset: usize, // Offset in BYTES
 }
@@ -26,8 +35,8 @@ impl LayoutFacts {
     pub fn new(shape: &[usize], strides: &[isize], dtype: DType, offset: usize) -> Self {
         Self {
             rank: shape.len(),
-            shape: shape.to_vec(),
-            strides: strides.to_vec(),
+            shape: Dims::from_slice(shape),
+            strides: Strides::from_slice(strides),
             dtype,
             offset,
         }
@@ -35,16 +44,7 @@ impl LayoutFacts {
 
     /// Returns true if the layout is contiguous (C-order/row-major).
     pub fn is_contiguous(&self) -> bool {
-        let mut expected_strides = vec![0; self.rank];
-        let mut current = self.dtype.size_of() as isize;
-
-        // Compute standard C-order (row-major) strides
-        for i in (0..self.rank).rev() {
-            expected_strides[i] = current;
-            current *= self.shape[i] as isize;
-        }
-
-        self.strides == expected_strides
+        is_c_contiguous(&self.shape, &self.strides, self.dtype)
     }
 
     /// Returns true if the layout is channels-last (HWC format).
@@ -108,19 +108,34 @@ impl LayoutFacts {
     }
 }
 
+/// Whether `strides` are the C-order (row-major) strides of `shape` for
+/// `dtype`: the one contiguity rule, read by [`LayoutFacts`] and [`Layout`]
+/// alike, compared innermost first and without allocating.
+fn is_c_contiguous(shape: &[usize], strides: &[isize], dtype: DType) -> bool {
+    let mut expected = dtype.size_of() as isize;
+    for (&size, &stride) in shape.iter().zip(strides).rev() {
+        if stride != expected {
+            return false;
+        }
+        expected *= size as isize;
+    }
+    true
+}
+
 /// Persistent storage for layout information.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layout {
-    pub shape: Vec<usize>,
-    pub strides: Vec<isize>,
+    pub shape: Dims,
+    pub strides: Strides,
     pub offset: usize,
     pub dtype: DType,
 }
 
 impl Layout {
     /// Creates a new contiguous layout with the given shape and dtype.
-    pub fn new_contiguous(shape: Vec<usize>, dtype: DType) -> Self {
-        let mut strides = vec![0; shape.len()];
+    pub fn new_contiguous(shape: impl Into<Dims>, dtype: DType) -> Self {
+        let shape = shape.into();
+        let mut strides = Strides::from_elem(0, shape.len());
         let mut current_stride = dtype.size_of() as isize;
 
         for i in (0..shape.len()).rev() {
@@ -143,7 +158,7 @@ impl Layout {
 
     /// Returns true if the layout is contiguous.
     pub fn is_contiguous(&self) -> bool {
-        LayoutFacts::from(self).is_contiguous()
+        is_c_contiguous(&self.shape, &self.strides, self.dtype)
     }
 
     /// Returns true if the layout is compatible with the target external layout.

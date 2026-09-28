@@ -62,6 +62,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   u8 grayscale entry above already said so, but the planner packed such a
   view before the kernel could read it. u8 grayscale after a vertical flip is
   1.65x faster at 1024² on the wheels (CR-57).
+- **Cheap rows cost about half as much.** A buffer's shape and strides used
+  to live on the heap, so copying a buffer or asking whether it was
+  contiguous allocated, several times per row: `invert` on an 8×8 image made
+  27 allocations per row and spent more than half its time in the
+  allocator. Layouts of up to four dimensions are now stored inline, a
+  cached plan is replayed without copying it, and row results are no longer
+  gathered into one call-sized vector before the column is built. `invert`
+  on 8×8 rows is 1.3x faster eager and 1.4x streaming (CR-58).
 
 ### Changed
 
@@ -80,6 +88,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   the packing loop in `copy_elements_into`, the element-wise engine's strided
   f32 read and grayscale's per-pixel strided fallback (a non-dense layout is
   now packed, then takes the dense kernel).
+- view-buffer: `Layout` and `LayoutFacts` store shape and strides as
+  `core::layout::{Dims, Strides}` (inline up to rank 4), and the constructors
+  (`from_vec_with_shape`, `reshape`, `from_polars_buffer*`, `new_contiguous`)
+  take `impl Into<Dims>`, so existing `Vec` arguments still work.
+  `ExecutionPlan::execute_steps` replays borrowed steps.
 - view-buffer: the resizes (`resize`, `resize_scale`, `resize_to_*`,
   `resize_max`/`min`, `letterbox`) and `grayscale` declare
   `MemoryEffect::StridePreserving`,
@@ -90,6 +103,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `resize_pixels::<P>` replaces the u8/u16/f32 copies of the resize kernel.
 
 ### Fixed
+
+- **`sink("blob")` of a whole-row crop wrote the rest of the image after
+  it.** A crop that keeps every column is a contiguous view of part of the
+  image, and its blob's payload was the whole image's length from the crop's
+  first byte on: too long, and for a crop below the top row a read past the
+  end of the image's memory. The blob now holds exactly the crop (CR-59).
 
 - **`grayscale` of a non-u8 gray + alpha image mixed the alpha into the
   intensity.** A `[H, W, 2]` u16/f32 pixel came out as

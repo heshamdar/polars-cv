@@ -64,6 +64,28 @@ class TestBlobBufferRegistration:
             assert decoded is not None
             np.testing.assert_array_equal(decoded, expected)
 
+    @pytest.mark.parametrize("top", [0, 2])
+    def test_blob_of_a_full_width_crop_holds_only_the_crop(self, top: int) -> None:
+        """A crop of whole rows is a contiguous view of part of the image.
+
+        Its blob carries the crop's bytes: it used to carry the whole
+        image's storage length, reading past the end for a crop below row 0.
+        """
+        img = _png(3, h=6, w=10)
+        df = pl.DataFrame({"img": [img]})
+        crop = Pipeline().source("image_bytes").crop(top=top, height=2)
+        out = df.with_columns(
+            blob=pl.col("img").cv.pipe(crop).sink("blob")
+        ).with_columns(
+            arr=pl.col("blob")
+            .cv.pipe(Pipeline().source("blob", dtype="u8"))
+            .sink("numpy")
+        )
+        expected = np.array(Image.open(io.BytesIO(img)))[top : top + 2]
+        header = 64 + 2 * 3 * 8  # fixed header, then u64 shape and i64 strides
+        assert len(out["blob"][0]) == header + expected.nbytes
+        np.testing.assert_array_equal(numpy_from_struct(out["arr"][0]), expected)
+
     def test_blob_streaming_matches_in_memory(self) -> None:
         """Per-morsel streaming output equals the whole-column eager output."""
         n = 500  # spans many streaming morsels

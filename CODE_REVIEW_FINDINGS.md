@@ -1277,6 +1277,58 @@ phase of that plan, closed as each lands.
   wheel target): grayscale of a vertically flipped RGB u8 image 1.65x at
   1024², 1.5x at 512².
 
+### CR-58 — A cheap row spent most of its time allocating layout copies · `Resolved` · Medium (perf)
+
+- **What was wrong:** `Layout` kept its shape and strides in two heap `Vec`s.
+  Every `ViewBuffer::clone`, every `to_contiguous()` of a contiguous buffer
+  (a clone) and every `is_contiguous()` (which rebuilt a `LayoutFacts` from
+  copies, plus a scratch vector) allocated, several times per row. `invert`
+  on an 8×8 u8 row made 27 allocations and spent 58% of its instructions in
+  the allocator; the kernel was ~2%. The plan-cache hit added three more (a
+  key and a step-list copy), and the executor copied every row result into
+  one call-sized vector before building the column.
+- **Resolution:**
+  - `core::layout::{Dims, Strides}` (`SmallVec<[_; 4]>`): layouts of rank ≤ 4
+    are inline; `is_c_contiguous` is the one contiguity rule, allocation-free.
+  - A plan-cache hit compares slices and shares an `Arc<[PlanStep]>`
+    (`ExecutionPlan::execute_steps`).
+  - `PendingSegment::ops` is inline; row results reach the column builder
+    as per-range parts (`RowParts`), not concatenated.
+- **Guards:** `copy_counts.rs` (`layout_bookkeeping_allocates_nothing`,
+  watched failing at 20 allocations) and `compiled.rs`
+  (`a_cache_hit_allocates_nothing`, watched failing at 1, the step-list copy).
+- **Measured** (`polars-cv/benchmarks/reports/2026-09-28-phase5-per-row/`):
+  instructions per 8×8 `invert` row 10,400 → 5,750; `invert` 1.29x eager and
+  1.38x streaming at 8×8, 4 threads.
+
+### CR-59 — The blob of a contiguous part of a buffer carried the whole buffer · `Resolved` · High
+
+- **Location:** `ViewBuffer::write_blob_into` (`to_blob`, the `blob` sink).
+- **What was wrong:** the payload length was the storage's length
+  (`data.len()`), not the view's. A contiguous view of part of a buffer — a
+  `crop` of whole rows — wrote every byte of the storage after its offset:
+  too long for leading rows, and **a read past the end of the allocation**
+  for rows further down. Found while profiling Phase 5.
+- **Resolution:** the payload is `logical_len_bytes()`, the view's elements.
+- **Guards:** `tests/blob_write.rs` gains leading- and middle-row slices (the
+  length check failed on them); `test_zero_copy_encode.py`
+  (`test_blob_of_a_full_width_crop_holds_only_the_crop`) checks the blob
+  length and pixels through `crop` → `sink("blob")`, and failed against the
+  unfixed extension (292 bytes for a 172-byte blob).
+
+### CR-60 — The plugin allocates with the system `malloc`, not polars' allocator · `Open` · Low (perf)
+
+- **Location:** `polars-cv/src/lib.rs` declares no `#[global_allocator]`.
+- **What is wrong:** pyo3-polars (0.27) provides `PolarsAllocator` so that a
+  plugin shares polars' allocator. Without it, glibc decides when row buffers
+  go back to the OS. Since CR-58 removed the small allocations that happened
+  to pin glibc's heap, a call that holds many large rows until the column is
+  built (a 64×64 f32 `array` sink over 50k rows, one thread) has its freed
+  memory trimmed and re-faulted by the next call: ~40% slower from the second
+  call on, and faster than before with `MALLOC_TRIM_THRESHOLD_=-1`.
+- **Fix:** adopt `PolarsAllocator` (check `test_alloc.rs`, which installs its
+  own counting allocator for tests), then re-run the Phase 5 benchmarks.
+
 ### CR-53 — `invert` on other integer dtypes returns f32 against a `PreserveInput` contract · `Resolved` · Low
 
 - **Location:** `ComputeOp::Invert` (`output_dtype_rule` = `PreserveInput`).

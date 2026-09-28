@@ -339,3 +339,40 @@ fn grayscale_of_a_view_with_packed_rows_allocates_only_its_output() {
         );
     }
 }
+
+// --- Layout bookkeeping: what a row pays before any pixel moves ---
+
+/// Cloning a buffer and asking its layout questions allocates nothing, at
+/// any rank an image or a batch of images has. They run several times per
+/// row, so on small rows a heap copy of the shape and strides per call was
+/// most of the executor's per-row cost (performance plan, phase 5).
+#[test]
+fn layout_bookkeeping_allocates_nothing() {
+    let buffers = [
+        ("rank 1", ViewBuffer::from_vec(vec![1u8; 64])),
+        (
+            "rank 2",
+            ViewBuffer::from_vec(vec![1u8; 64]).reshape(vec![8, 8]),
+        ),
+        (
+            "rank 3",
+            ViewBuffer::from_vec(vec![1u8; 192]).reshape(vec![8, 8, 3]),
+        ),
+        (
+            "rank 4",
+            ViewBuffer::from_vec(vec![1u8; 384]).reshape(vec![2, 8, 8, 3]),
+        ),
+    ];
+    for (label, buf) in buffers {
+        let ((), count) = large_allocations(1, || {
+            let copy = buf.clone();
+            assert!(copy.layout_facts().is_contiguous());
+            let _ = copy.layout_facts().is_dense_rows();
+            let packed = copy.to_contiguous();
+            assert_eq!(packed.as_slice::<u8>().len(), buf.as_slice::<u8>().len());
+            let _ = copy.flip(&[0]);
+            let _ = copy.strides_bytes();
+        });
+        assert_eq!(count, 0, "{label}: {count} allocations");
+    }
+}

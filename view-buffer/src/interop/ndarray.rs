@@ -37,7 +37,7 @@ impl<'a, T: ViewType> ExternalView<'a> for NdArrayViewAdapter<T> {
 
         // 3. Logic: Construct strides and shape for ndarray
         // Handle negative strides by tracking flipped axes
-        let shape = buf.layout.shape.clone();
+        let shape = buf.layout.shape.to_vec();
         let elem_size = std::mem::size_of::<T>() as isize;
 
         // Track which axes have negative strides (need to be inverted later)

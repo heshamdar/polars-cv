@@ -896,25 +896,32 @@ pub(crate) fn null_row_result_for_spec(spec: &OutputSpec) -> PolarsResult<RowRes
 /// `encode_node_output` and [`SinkKind`] are two halves of one contract, so
 /// reaching this means they disagree. Publishing the row as null (the former
 /// `_ => None` arms) would pass the bug off as data (CR-38).
-fn foreign_row(kind: SinkKind, row: &RowResult) -> PolarsError {
+fn foreign_row(kind: SinkKind, variant: &str) -> PolarsError {
     polars_err!(ComputeError:
         "internal: a {:?} sink received a {} row. The encode half and the sink \
          kind disagree about this output.",
-        kind, row.variant_name()
+        kind, variant
     )
 }
 
-/// Convert every row with `accept`, which returns `None` for a variant the
-/// kind does not accept; that becomes an error rather than a null.
+/// Convert every row with `accept`, which returns the variant's name for a
+/// variant the kind does not accept; that becomes an error rather than a null.
 fn convert_rows<T>(
     kind: SinkKind,
-    data: Vec<RowResult>,
-    accept: impl Fn(RowResult) -> Result<Option<T>, RowResult>,
+    data: RowParts,
+    accept: impl Fn(RowResult) -> Result<Option<T>, &'static str>,
 ) -> PolarsResult<Vec<Option<T>>> {
-    data.into_iter()
-        .map(|row| accept(row).map_err(|row| foreign_row(kind, &row)))
-        .collect()
+    let mut rows = Vec::with_capacity(data.iter().map(Vec::len).sum());
+    for row in data.into_iter().flatten() {
+        rows.push(accept(row).map_err(|variant| foreign_row(kind, variant))?);
+    }
+    Ok(rows)
 }
+
+/// A column's row results in row order, as the row ranges that computed
+/// them left them: converted straight from the parts, never concatenated
+/// into one call-sized vector of (large) `RowResult`s first.
+pub(crate) type RowParts = Vec<Vec<RowResult>>;
 
 /// A vector row as typed list data.
 fn vector_row(vals: Vec<f64>) -> ViewBuffer {
@@ -931,7 +938,7 @@ fn vector_row(vals: Vec<f64>) -> ViewBuffer {
 pub(crate) fn build_series_from_spec(
     name: PlSmallStr,
     spec: &OutputSpec,
-    data: Vec<RowResult>,
+    data: RowParts,
     split: Option<&crate::row_split::Split<'_>>,
 ) -> PolarsResult<Series> {
     let dtype = spec.expected_dtype;
@@ -942,7 +949,7 @@ pub(crate) fn build_series_from_spec(
         SinkKind::HistogramBuckets => {
             let rows = convert_rows(kind, data, |r| match r {
                 RowResult::HistogramBuckets(b) => Ok(b),
-                other => Err(other),
+                other => Err(other.variant_name()),
             })?;
             let values = rows
                 .iter()
@@ -964,7 +971,7 @@ pub(crate) fn build_series_from_spec(
             // correctly without materialising to contiguous here.
             let buffers = convert_rows(kind, data, |r| match r {
                 RowResult::NumpyStruct(b) => Ok(b),
-                other => Err(other),
+                other => Err(other.variant_name()),
             })?;
             let series = crate::output::build_numpy_series(name, buffers, spec.sink.as_f16())?;
             match kind {
@@ -978,7 +985,7 @@ pub(crate) fn build_series_from_spec(
             // `crate::output::binary_view_series_from_rows`.
             let rows = convert_rows(kind, data, |r| match r {
                 RowResult::Binary(b) => Ok(b),
-                other => Err(other),
+                other => Err(other.variant_name()),
             })?;
             Ok(crate::output::binary_view_series_from_rows(
                 name,
@@ -988,7 +995,7 @@ pub(crate) fn build_series_from_spec(
         SinkKind::BufferList => {
             let rows = convert_rows(kind, data, |r| match r {
                 RowResult::TypedList(t) => Ok(t),
-                other => Err(other),
+                other => Err(other.variant_name()),
             })?;
             build_typed_list_series_from_rows_with_dtype(
                 name,
@@ -1002,7 +1009,7 @@ pub(crate) fn build_series_from_spec(
         SinkKind::BufferArray => {
             let rows = convert_rows(kind, data, |r| match r {
                 RowResult::TypedArray(t) => Ok(t),
-                other => Err(other),
+                other => Err(other.variant_name()),
             })?;
             build_typed_array_series_from_rows_with_dtype(
                 name,
@@ -1016,7 +1023,7 @@ pub(crate) fn build_series_from_spec(
         SinkKind::Scalar => {
             let rows = convert_rows(kind, data, |r| match r {
                 RowResult::Scalar(s) => Ok(s),
-                other => Err(other),
+                other => Err(other.variant_name()),
             })?;
             Ok(Float64Chunked::from_iter_options(name, rows.into_iter()).into_series())
         }
@@ -1024,7 +1031,7 @@ pub(crate) fn build_series_from_spec(
             let rows: Vec<TypedListRow> = convert_rows(kind, data, |r| match r {
                 RowResult::TypedList(t) => Ok(t),
                 RowResult::Vector(v) => Ok(v.map(vector_row)),
-                other => Err(other),
+                other => Err(other.variant_name()),
             })?;
             build_typed_list_series_from_rows_with_dtype(
                 name,
@@ -1039,7 +1046,7 @@ pub(crate) fn build_series_from_spec(
             let rows: Vec<TypedListRow> = convert_rows(kind, data, |r| match r {
                 RowResult::TypedList(t) | RowResult::TypedArray(t) => Ok(t),
                 RowResult::Vector(v) => Ok(v.map(vector_row)),
-                other => Err(other),
+                other => Err(other.variant_name()),
             })?;
             build_typed_array_series_from_rows_with_dtype(
                 name,
@@ -1053,7 +1060,7 @@ pub(crate) fn build_series_from_spec(
         SinkKind::Contours => {
             let rows = convert_rows(kind, data, |r| match r {
                 RowResult::Contours(c) => Ok(c),
-                other => Err(other),
+                other => Err(other.variant_name()),
             })?;
             contour_set_series(name, &rows)
         }
