@@ -75,8 +75,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   call to fault in again. It now shares polars' allocator (jemalloc on
   Linux), as pyo3-polars intends: 64×64 pipelines are 1.15–1.66x faster, a
   repeated large `blob` sink 2x faster, and peak memory ~10% higher (CR-60).
+- **`List` columns are read in place.** A `list` source row whose values
+  are already the declared dtype is now a view of the column, as an `Array`
+  row already was, instead of a per-row copy through several intermediate
+  Series: 3.6x faster for 64×64 u8 rows, 2x for flat f32 rows, and a row of
+  another dtype is converted in one pass (1.5x). Raw and blob rows are read
+  in place whenever they are aligned for their own dtype, rather than only
+  at 8-byte boundaries.
 
 ### Changed
+
+- **`source("list", require_contiguous=True)` accepts rectangular `List`
+  rows.** It refused every `List` row, although it documents refusing only
+  jagged ones; rectangular rows are now read in place. A row that would need
+  converting to the declared dtype is still refused, as for `array`.
 
 - **`normalize(method="zscore")` computes its mean and standard deviation
   exactly.** They used to be running f32 sums, which drift at image sizes;
@@ -108,6 +120,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `resize_pixels::<P>` replaces the u8/u16/f32 copies of the resize kernel.
 
 ### Fixed
+
+- **A `list`/`array` value the declared dtype cannot hold is an error, not
+  0.** Converting a row to its declared dtype stored 0 for any value out of
+  range (`300` or `-1` as `u8`) or undefined (`NaN`). It now fails naming the
+  value, or nulls the row under `on_error="null"`. Float values declared as
+  an integer dtype are still truncated (CR-61).
 
 - **`sink("blob")` of a whole-row crop wrote the rest of the image after
   it.** A crop that keeps every column is a contiguous view of part of the

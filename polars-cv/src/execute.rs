@@ -51,7 +51,7 @@ fn decode_jpeg_scaled(bytes: &[u8], max_size: u32) -> Option<ViewBuffer> {
 /// the (routed) `Source` before calling and passes it for its `dtype` and
 /// `decode_max_size`. `blob`/`raw`
 /// sources never reach it: they decode zero-copy via
-/// `graph::decode::decode_binary_zero_copy`.
+/// `graph::decode::decode_binary_row`.
 pub fn decode_image_bytes(bytes: &[u8], source: &Source) -> PolarsResult<ViewBuffer> {
     // An explicit decode-scale assertion lets JPEG decode skip work via IDCT
     // scaling; other formats fall through to a full decode.

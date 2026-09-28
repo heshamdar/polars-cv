@@ -40,6 +40,7 @@ benchmarks/
 ├── inference_pipeline_comparison.py # Inference-focused comparisons
 ├── batch_throughput.py             # Batch decode/preprocess throughput benchmarks
 ├── plugin_overhead.py              # Per-call plugin/dispatch overhead measurement
+├── ingestion_overhead.py           # Per-row source decode cost (list/array/raw/blob)
 ├── frameworks/                     # Framework adapters
 │   ├── base.py                     # AbstractFrameworkAdapter
 │   ├── polars_cv_adapter.py        # polars-cv (eager + streaming)

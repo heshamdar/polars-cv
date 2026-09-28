@@ -107,7 +107,7 @@ BoolOrExpr: TypeAlias = Union[bool, pl.Expr]
 #: A boolean mask is the documented shape for a ground-truth mask column and
 #: the natural output of ``np_mask.astype(bool).tolist()``. It is not a buffer
 #: element type, but the source decoder casts rather than reinterprets
-#: (``series_to_bytes`` in ``graph/decode.rs``), so ``u8`` gives the 0/1 a mask
+#: (``convert_row_values`` in ``graph/decode.rs``), so ``u8`` gives the 0/1 a mask
 #: means. This is the one correspondence not derivable from ``dtype_table!``,
 #: so it is written out here and nowhere else.
 _CAST_ONLY_NAMES: dict[str, str] = {"boolean": "u8"}
