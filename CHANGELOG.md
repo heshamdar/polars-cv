@@ -22,8 +22,23 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   through, in every region mode. That rule replaces the centroid fallback
   sub-pixel contours had. With `min_contour_area=0` each such region is now
   a detection that carries its own value. It still has no area, so it can
-  only be a false positive. The default `min_contour_area=1.0` still drops
-  these regions, and its docstring now says so.
+  only be a false positive.
+
+### Changed
+
+- **`ContourMatcher(min_contour_area=)` defaults to `0.0`**, up from `1.0`, so
+  the one-pixel-thick predictions above count as false positives by default.
+  The `1.0` default dates from the boundary tracer that collapsed regions
+  into degenerate walks. With that fixed, it only discarded real
+  detections: a five-pixel line was dropped while a four-pixel 2×2 block was
+  kept. FROC/LROC false-positive counts rise wherever a heatmap has such
+  regions. Pass `min_contour_area=1.0` for the old behaviour.
+- **`ContourMatcher(gt_min_contour_area=)` defaults to `1.0`** and no longer
+  follows `min_contour_area` (`None` is no longer accepted). One-pixel-thick
+  ground-truth regions are still dropped by default, as before: with no area,
+  no prediction could match one, so keeping it would count a guaranteed
+  miss. A caller who set only `min_contour_area` now gets `1.0` for ground
+  truth; pass `gt_min_contour_area` explicitly to change it.
 
 ## [0.29.0] — 2026-09-27
 

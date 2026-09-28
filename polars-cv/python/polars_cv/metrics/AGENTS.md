@@ -201,7 +201,7 @@ metrics/
 - `label_reduce` scores a zero-area contour (a one-pixel-thick region, traced through pixel centres) or one with no interior pixel centre on the pixels its outline passes through, so such detections keep their own value and survive `_filter_zero_score_detections`.
 
 ### ContourMatcher behavior
-- `min_contour_area` defaults to 1.0, which excludes one-pixel-thick regions (polygon area 0). With `0.0` they are kept, but with no area they can only be false positives.
+- `min_contour_area` defaults to 0.0: one-pixel-thick predictions (polygon area 0) are kept, scored on their own pixels, and can only be false positives. `gt_min_contour_area` defaults to 1.0 independently, dropping one-pixel-thick GT regions that no prediction could ever match.
 - Auto-detects source format (`Binary`/`List`/`Array`) from column dtypes via `_detect_source_info`.
 - `auto_resize=True` (default) resizes predictions to GT dimensions via fused pipeline. `auto_resize=False` assumes shapes match.
 - Three `label_reduce` region modes: `"interior"` (default), `"boundary"` (interior + boundary pixels), `"bbox"`.
