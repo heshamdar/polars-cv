@@ -1316,18 +1316,29 @@ phase of that plan, closed as each lands.
   length and pixels through `crop` → `sink("blob")`, and failed against the
   unfixed extension (292 bytes for a 172-byte blob).
 
-### CR-60 — The plugin allocates with the system `malloc`, not polars' allocator · `Open` · Low (perf)
+### CR-60 — The plugin allocated with the system `malloc`, not polars' allocator · `Resolved` · Low (perf)
 
-- **Location:** `polars-cv/src/lib.rs` declares no `#[global_allocator]`.
-- **What is wrong:** pyo3-polars (0.27) provides `PolarsAllocator` so that a
-  plugin shares polars' allocator. Without it, glibc decides when row buffers
-  go back to the OS. Since CR-58 removed the small allocations that happened
-  to pin glibc's heap, a call that holds many large rows until the column is
-  built (a 64×64 f32 `array` sink over 50k rows, one thread) has its freed
+- **Location:** `polars-cv/src/lib.rs` declared no `#[global_allocator]`.
+- **What was wrong:** pyo3-polars (0.27) provides `PolarsAllocator` so that a
+  plugin shares polars' allocator. Without it, glibc decided when row buffers
+  went back to the OS. Once CR-58 removed the small allocations that happened
+  to pin glibc's heap, a call holding many large rows until the column was
+  built (a 64×64 f32 `array` sink over 50k rows, one thread) had its freed
   memory trimmed and re-faulted by the next call: ~40% slower from the second
-  call on, and faster than before with `MALLOC_TRIM_THRESHOLD_=-1`.
-- **Fix:** adopt `PolarsAllocator` (check `test_alloc.rs`, which installs its
-  own counting allocator for tests), then re-run the Phase 5 benchmarks.
+  call on.
+- **Resolution:** `polars-cv/src/allocator.rs`: `PolarsAllocator`, wrapped to
+  record that it is in use, is the global allocator outside the lib's unit
+  tests (which keep `test_alloc`'s counting allocator). The installed polars
+  ships its binary as `_polars_runtime_32`, but the capsule still resolves
+  under its old name `polars.polars._allocator`: checked, not assumed.
+- **Guard:** `_lib.__allocator__` and `tests/test_allocator.py`, watched
+  failing both ways `PolarsAllocator` could quietly not apply: the
+  `#[global_allocator]` line removed, and the capsule name changed.
+- **Measured** (`polars-cv/benchmarks/reports/2026-09-28-cr60-allocator/`):
+  the `array` case is back to 0.68–0.89 s from call 2 on (0.76–1.19 s on
+  glibc); a `blob` sink of the same rows is 2x faster from call 2 on; the
+  64×64 plugin cases are 1.15–1.66x faster at 4 threads, and nothing is
+  slower. Peak RSS is ~10% higher.
 
 ### CR-53 — `invert` on other integer dtypes returns f32 against a `PreserveInput` contract · `Resolved` · Low
 

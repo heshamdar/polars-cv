@@ -91,6 +91,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   cached plan is replayed without copying it, and row results are no longer
   gathered into one call-sized vector before the column is built. `invert`
   on 8×8 rows is 1.3x faster eager and 1.4x streaming (CR-58).
+- **The plugin allocates through polars' allocator.** It used the system
+  `malloc`, which gave a call's freed row buffers back to the OS for the next
+  call to fault in again. It now shares polars' allocator (jemalloc on
+  Linux), as pyo3-polars intends: 64×64 pipelines are 1.15–1.66x faster, a
+  repeated large `blob` sink 2x faster, and peak memory ~10% higher (CR-60).
 
 ### Changed
 
