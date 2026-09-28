@@ -186,13 +186,15 @@ macro_rules! check_case {
 
 #[test]
 fn morph_matches_naive_reference_all_dtypes() {
-    let sizes: &[(usize, usize)] = &[(1, 1), (2, 3), (5, 5), (64, 64)];
-    let ksizes: &[u32] = &[1, 2, 3, 5, 9];
+    // Down to images narrower than the collapsed window (radius 4 x 4
+    // iterations = 16 > 64/4), and even sizes (whose radius is `k / 2`).
+    let sizes: &[(usize, usize)] = &[(1, 1), (2, 3), (5, 5), (7, 19), (64, 64)];
+    let ksizes: &[u32] = &[1, 2, 3, 4, 5, 9];
 
     for &(h, w) in sizes {
         let vals = seeded_values(h * w, (h * 100 + w) as u64);
         for &ksize in ksizes {
-            for iters in [1u32, 2] {
+            for iters in [0u32, 1, 2, 3, 4] {
                 for kind in [Kind::Min, Kind::Max] {
                     check_case!(u8, DType::U8, vals, h, w, ksize, iters, kind);
                     check_case!(u16, DType::U16, vals, h, w, ksize, iters, kind);
@@ -210,7 +212,7 @@ fn morph_matches_naive_reference_binary_mask() {
     let (h, w) = (100, 100);
     let vals = binary_mask(h, w);
     for &ksize in &[3u32, 5] {
-        for iters in [1u32, 2] {
+        for iters in [1u32, 2, 4] {
             for kind in [Kind::Min, Kind::Max] {
                 check_case!(u8, DType::U8, vals, h, w, ksize, iters, kind);
             }
@@ -229,20 +231,49 @@ fn morph_matches_naive_reference_with_nans() {
         data[i] = f32::NAN;
     }
 
-    for &ksize in &[3u32, 5] {
+    for (ksize, iters) in [(3u32, 1u32), (5, 1), (3, 2), (3, 4), (5, 3)] {
         for kind in [Kind::Min, Kind::Max] {
             let buf = ViewBuffer::from_vec_with_shape(data.clone(), vec![h, w]);
-            let got = run_morph(buf, ksize, 1, kind);
-            let want = naive_morph_reference(&data, h, w, ksize, 1, kind);
+            let got = run_morph(buf, ksize, iters, kind);
+            let want = naive_morph_reference(&data, h, w, ksize, iters, kind);
             let got_slice = got.as_slice::<f32>();
             for (i, (g, e)) in got_slice.iter().zip(&want).enumerate() {
                 assert!(
                     g.to_bits() == e.to_bits(),
                     "NaN-case bit mismatch at {i}: {g:?} vs {e:?} \
-                     (ksize={ksize}, kind={})",
+                     (ksize={ksize}, iters={iters}, kind={})",
                     if kind == Kind::Min { "erode" } else { "dilate" },
                 );
             }
+        }
+    }
+}
+
+/// Signed zeros compare equal, so which one a min/max keeps depends on the
+/// order it meets them in. Iterated passes must keep the same ones.
+#[test]
+fn morph_matches_naive_reference_with_signed_zeros() {
+    let (h, w) = (12, 17);
+    let data: Vec<f64> = seeded_values(h * w, 11)
+        .iter()
+        .map(|&v| match v % 4 {
+            0 => 0.0,
+            1 => -0.0,
+            2 => v as f64,
+            _ => -(v as f64),
+        })
+        .collect();
+    for (ksize, iters) in [(3u32, 2u32), (3, 4), (5, 2), (5, 3)] {
+        for kind in [Kind::Min, Kind::Max] {
+            let buf = ViewBuffer::from_vec_with_shape(data.clone(), vec![h, w]);
+            let got = run_morph(buf, ksize, iters, kind);
+            let want = naive_morph_reference(&data, h, w, ksize, iters, kind);
+            let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(
+                bits(got.as_slice::<f64>()),
+                bits(&want),
+                "signed zeros: ksize={ksize} iters={iters}"
+            );
         }
     }
 }

@@ -258,8 +258,19 @@ fn spatial_kernels(c: &mut Criterion) {
     let rgb = |s| owned_u8(&image_u8(s, 3), s, 3);
     let gray = |s| owned_u8(&image_u8(s, 1), s, 1);
 
+    let gray_f32 = |s| owned_f32(&image_u8(s, 1), s, 1);
+    let rgb_f32 = |s| owned_f32(&image_u8(s, 3), s, 3);
     bench_sizes(c, "blur_sigma2_u8_rgb", rgb, |b| exec(b, |e| e.blur(2.0)));
+    bench_sizes(c, "blur_sigma2_u8_gray", gray, |b| exec(b, |e| e.blur(2.0)));
+    bench_sizes(c, "blur_sigma2_f32_rgb", rgb_f32, |b| {
+        exec(b, |e| e.blur(2.0))
+    });
+    bench_sizes(c, "erode_k3_x1_u8", gray, |b| exec(b, |e| e.erode(3, 1)));
     bench_sizes(c, "erode_k3_x3_u8", gray, |b| exec(b, |e| e.erode(3, 3)));
+    bench_sizes(c, "dilate_k5_x4_u8", gray, |b| exec(b, |e| e.dilate(5, 4)));
+    bench_sizes(c, "erode_k3_x3_f32", gray_f32, |b| {
+        exec(b, |e| e.erode(3, 3))
+    });
     let rotate = |angle: f32, interpolation| {
         move |b| {
             exec(b, |e| {
@@ -273,7 +284,6 @@ fn spatial_kernels(c: &mut Criterion) {
         }
     };
     let rgba = |s| owned_u8(&image_u8(s, 4), s, 4);
-    let rgb_f32 = |s| owned_f32(&image_u8(s, 3), s, 3);
     let bilinear = InterpolationType::Bilinear;
     bench_sizes(c, "rotate_30_bilinear_u8_rgb", rgb, rotate(30.0, bilinear));
     bench_sizes(

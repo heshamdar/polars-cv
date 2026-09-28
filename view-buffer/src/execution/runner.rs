@@ -7,6 +7,8 @@
 
 use crate::core::buffer::ViewBuffer;
 #[cfg(feature = "image_interop")]
+use crate::core::convert::CastFrom;
+#[cfg(feature = "image_interop")]
 use crate::core::dispatch::{dispatch, dispatch_mut, SimdKernel, SimdKernelMut};
 use crate::core::dtype::DType;
 use crate::expr::ViewExpr;
@@ -1261,7 +1263,8 @@ fn gaussian_kernel_1d(sigma: f32) -> Vec<f32> {
 /// measured slower).
 fn separable_gaussian_blur_typed<T>(contig_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
 where
-    T: crate::core::dtype::ViewType + Default + Copy + num_traits::NumCast,
+    T: crate::core::dtype::ViewType + Default + Copy + CastFrom<f32>,
+    f32: CastFrom<T>,
 {
     dispatch(SeparableBlur::<T> {
         buf: contig_buf,
@@ -1292,7 +1295,8 @@ impl<T> Clone for SeparableBlur<'_, T> {
 #[cfg(feature = "image_interop")]
 impl<T> SimdKernel for SeparableBlur<'_, T>
 where
-    T: crate::core::dtype::ViewType + Default + Copy + num_traits::NumCast,
+    T: crate::core::dtype::ViewType + Default + Copy + CastFrom<f32>,
+    f32: CastFrom<T>,
 {
     type Output = ViewBuffer;
 
@@ -1307,6 +1311,196 @@ where
 mod blur_dispatch_tests {
     use super::{separable_gaussian_blur_body, separable_gaussian_blur_typed};
     use crate::core::buffer::ViewBuffer;
+
+    use super::{clamp_for_dtype, gaussian_kernel_1d, DType, ImageOp, ImageOpKind, BLUR_HORIZ_BUF};
+
+    /// The blur as it was before Phase 8, kept verbatim as the parity oracle.
+    pub(super) fn reference_blur_body<T>(contig_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
+    where
+        T: crate::core::dtype::ViewType + Default + Copy + num_traits::NumCast,
+    {
+        use num_traits::NumCast;
+
+        let shape = contig_buf.shape();
+        let h = shape[0];
+        let w = shape[1];
+        let c = shape.get(2).copied().unwrap_or(1);
+        let n = h * w * c;
+        let wc = w * c;
+
+        let kernel = gaussian_kernel_1d(sigma);
+        let radius = kernel.len() / 2;
+        let src: &[T] = contig_buf.as_slice::<T>();
+
+        // ── Convert input to f32 once ────────────────────────────────────────
+        let mut input_f32: Vec<f32> = Vec::with_capacity(n);
+        input_f32.extend(src.iter().map(|&v| {
+            let v: f32 = NumCast::from(v).unwrap_or(0.0);
+            v
+        }));
+
+        // The scratch slab is taken out of the thread-local for the duration of
+        // the call rather than used inside a `with` closure: the passes must be in
+        // this function's own body to be compiled with its target features (a
+        // closure is a separate function and does not inherit them).
+        let mut slab = BLUR_HORIZ_BUF.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+        if slab.len() < n {
+            slab.resize(n, 0.0f32);
+        }
+        let result = {
+            let horiz = &mut slab[..n];
+
+            // ── Horizontal pass (f32 → f32) ──────────────────────────────────
+            for y in 0..h {
+                let row_in = &input_f32[y * wc..(y + 1) * wc];
+                let row_out = &mut horiz[y * wc..(y + 1) * wc];
+
+                if w <= 2 * radius {
+                    // Image narrower than the kernel: clamped gather everywhere.
+                    for x in 0..w {
+                        for ch in 0..c {
+                            let mut sum = 0.0f32;
+                            for (ki, &kw) in kernel.iter().enumerate() {
+                                let sx = (x as i64 + ki as i64 - radius as i64)
+                                    .clamp(0, w as i64 - 1)
+                                    as usize;
+                                sum += kw * row_in[sx * c + ch];
+                            }
+                            row_out[x * c + ch] = sum;
+                        }
+                    }
+                    continue;
+                }
+
+                // Interior: per-tap shifted-slice multiply-add over contiguous
+                // memory — the inner zip vectorizes.
+                let lo = radius * c;
+                let hi = (w - radius) * c;
+                row_out[lo..hi].fill(0.0);
+                for (ki, &kw) in kernel.iter().enumerate() {
+                    let shift = (ki as i64 - radius as i64) * c as i64;
+                    let src_start = (lo as i64 + shift) as usize;
+                    let src_slice = &row_in[src_start..src_start + (hi - lo)];
+                    for (o, &v) in row_out[lo..hi].iter_mut().zip(src_slice) {
+                        *o += kw * v;
+                    }
+                }
+                // Borders: clamped gather for `radius` columns on each side.
+                for x in (0..radius).chain(w - radius..w) {
+                    for ch in 0..c {
+                        let mut sum = 0.0f32;
+                        for (ki, &kw) in kernel.iter().enumerate() {
+                            let sx = (x as i64 + ki as i64 - radius as i64).clamp(0, w as i64 - 1)
+                                as usize;
+                            sum += kw * row_in[sx * c + ch];
+                        }
+                        row_out[x * c + ch] = sum;
+                    }
+                }
+            }
+
+            // ── Vertical pass (f32 → f32 row accumulation) → T ───────────────
+            let is_float = matches!(T::DTYPE, DType::F32 | DType::F64);
+            let mut acc_row = vec![0.0f32; wc];
+            let mut out: Vec<T> = Vec::with_capacity(n);
+            for y in 0..h {
+                acc_row.fill(0.0);
+                for (ki, &kw) in kernel.iter().enumerate() {
+                    let sy = (y as i64 + ki as i64 - radius as i64).clamp(0, h as i64 - 1) as usize;
+                    let src_row = &horiz[sy * wc..(sy + 1) * wc];
+                    for (o, &v) in acc_row.iter_mut().zip(src_row) {
+                        *o += kw * v;
+                    }
+                }
+                if is_float {
+                    out.extend(
+                        acc_row
+                            .iter()
+                            .map(|&v| NumCast::from(v).unwrap_or(T::default())),
+                    );
+                } else {
+                    out.extend(acc_row.iter().map(|&v| {
+                        NumCast::from(clamp_for_dtype(v as f64, T::DTYPE)).unwrap_or(T::default())
+                    }));
+                }
+            }
+
+            ViewBuffer::from_vec_with_shape(out, shape.to_vec())
+        };
+        BLUR_HORIZ_BUF.with(|cell| *cell.borrow_mut() = slab);
+        result
+    }
+
+    /// Every dtype the typed blur runs (others cast to f32 around it), with
+    /// NaN, infinities and the integer extremes, over 1-5 channels, sizes
+    /// down to narrower than the kernel, and several sigmas: the blur equals
+    /// the pre-Phase-8 kernel byte for byte.
+    #[test]
+    fn blur_matches_the_reference_kernel_bit_for_bit() {
+        let shapes: [&[usize]; 7] = [
+            &[1, 1],
+            &[3, 2, 3],
+            &[9, 5, 1],
+            &[16, 23],
+            &[20, 17, 2],
+            &[11, 30, 4],
+            &[7, 13, 5],
+        ];
+        let wave = |i: usize| ((i * 7919 + 13) % 256) as f32;
+        for shape in shapes {
+            let n: usize = shape.iter().product();
+            let u8s: Vec<u8> = (0..n)
+                .map(|i| if i % 11 == 0 { 255 } else { wave(i) as u8 })
+                .collect();
+            let u16s: Vec<u16> = (0..n)
+                .map(|i| {
+                    if i % 7 == 0 {
+                        u16::MAX
+                    } else {
+                        (wave(i) * 251.0) as u16
+                    }
+                })
+                .collect();
+            let f32s: Vec<f32> = (0..n)
+                .map(|i| match i % 17 {
+                    3 => f32::NAN,
+                    8 => f32::INFINITY,
+                    12 => -0.0,
+                    _ => wave(i) / 7.0 - 11.0,
+                })
+                .collect();
+            let bufs = [
+                ViewBuffer::from_vec_with_shape(u8s, shape.to_vec()),
+                ViewBuffer::from_vec_with_shape(u16s, shape.to_vec()),
+                ViewBuffer::from_vec_with_shape(f32s, shape.to_vec()),
+            ];
+            for buf in &bufs {
+                for sigma in [0.3f32, 0.8, 2.0, 5.5] {
+                    let got = super::apply_image_inner(
+                        buf.clone(),
+                        ImageOp {
+                            kind: ImageOpKind::Blur { sigma },
+                        },
+                    );
+                    let want = match buf.dtype() {
+                        DType::U8 => reference_blur_body::<u8>(buf, sigma),
+                        DType::U16 => reference_blur_body::<u16>(buf, sigma),
+                        _ => reference_blur_body::<f32>(buf, sigma),
+                    };
+                    let bytes = |b: &ViewBuffer| {
+                        use crate::core::dispatch::KernelOutput;
+                        b.output_bytes().to_vec()
+                    };
+                    assert_eq!(got.shape(), want.shape());
+                    assert!(
+                        bytes(&got) == bytes(&want),
+                        "{:?} {shape:?} sigma {sigma}: the blur differs from the reference",
+                        buf.dtype()
+                    );
+                }
+            }
+        }
+    }
 
     /// The dispatched blur (AVX2 build when the CPU has it) and the portable
     /// build agree bit for bit. `dispatch` asserts the same in every debug
@@ -1341,10 +1535,9 @@ mod blur_dispatch_tests {
 #[inline(always)]
 fn separable_gaussian_blur_body<T>(contig_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
 where
-    T: crate::core::dtype::ViewType + Default + Copy + num_traits::NumCast,
+    T: crate::core::dtype::ViewType + Default + Copy + CastFrom<f32>,
+    f32: CastFrom<T>,
 {
-    use num_traits::NumCast;
-
     let shape = contig_buf.shape();
     let h = shape[0];
     let w = shape[1];
@@ -1356,13 +1549,6 @@ where
     let radius = kernel.len() / 2;
     let src: &[T] = contig_buf.as_slice::<T>();
 
-    // ── Convert input to f32 once ────────────────────────────────────────
-    let mut input_f32: Vec<f32> = Vec::with_capacity(n);
-    input_f32.extend(src.iter().map(|&v| {
-        let v: f32 = NumCast::from(v).unwrap_or(0.0);
-        v
-    }));
-
     // The scratch slab is taken out of the thread-local for the duration of
     // the call rather than used inside a `with` closure: the passes must be in
     // this function's own body to be compiled with its target features (a
@@ -1373,10 +1559,16 @@ where
     }
     let result = {
         let horiz = &mut slab[..n];
+        // One input row in f32, converted as the horizontal pass reaches it:
+        // converting the whole image first allocated and wrote 4 bytes per
+        // element that were read once.
+        let mut row_in = vec![0.0f32; wc];
 
-        // ── Horizontal pass (f32 → f32) ──────────────────────────────────
+        // ── Horizontal pass (T → f32 row → f32) ─────────────────────────
         for y in 0..h {
-            let row_in = &input_f32[y * wc..(y + 1) * wc];
+            for (dst, &v) in row_in.iter_mut().zip(&src[y * wc..(y + 1) * wc]) {
+                *dst = f32::cast_from(v);
+            }
             let row_out = &mut horiz[y * wc..(y + 1) * wc];
 
             if w <= 2 * radius {
@@ -1423,7 +1615,7 @@ where
         }
 
         // ── Vertical pass (f32 → f32 row accumulation) → T ───────────────
-        let is_float = matches!(T::DTYPE, DType::F32 | DType::F64);
+        // Stored through M5: round-then-saturate to an integer, as is to f32.
         let mut acc_row = vec![0.0f32; wc];
         let mut out: Vec<T> = Vec::with_capacity(n);
         for y in 0..h {
@@ -1435,17 +1627,7 @@ where
                     *o += kw * v;
                 }
             }
-            if is_float {
-                out.extend(
-                    acc_row
-                        .iter()
-                        .map(|&v| NumCast::from(v).unwrap_or(T::default())),
-                );
-            } else {
-                out.extend(acc_row.iter().map(|&v| {
-                    NumCast::from(clamp_for_dtype(v as f64, T::DTYPE)).unwrap_or(T::default())
-                }));
-            }
+            out.extend(acc_row.iter().map(|&v| T::cast_from(v)));
         }
 
         ViewBuffer::from_vec_with_shape(out, shape.to_vec())
@@ -1478,11 +1660,7 @@ fn apply_erode(buf: ViewBuffer, ksize: u32, iterations: u32) -> ViewBuffer {
              Consider using .grayscale() or .threshold() first."
         );
     }
-    let mut result = buf;
-    for _ in 0..iterations {
-        result = morph_minmax_pass(&result, ksize, MorphKind::Min);
-    }
-    result
+    morph_iterated(buf, ksize, iterations, MorphKind::Min)
 }
 
 /// Morphological dilation: output = local maximum over ksize×ksize neighborhood.
@@ -1500,11 +1678,35 @@ fn apply_dilate(buf: ViewBuffer, ksize: u32, iterations: u32) -> ViewBuffer {
              Consider using .grayscale() or .threshold() first."
         );
     }
-    let mut result = buf;
-    for _ in 0..iterations {
-        result = morph_minmax_pass(&result, ksize, MorphKind::Max);
+    morph_iterated(buf, ksize, iterations, MorphKind::Max)
+}
+
+/// `iterations` min (or max) passes of a `ksize` window.
+///
+/// For an integer dtype, **one** pass of radius `iterations * (ksize / 2)`.
+/// Growing a window by radius `r` and then by `r` again reaches every pixel
+/// within `2r` and nothing further, and the min of mins is the min over the
+/// union. That holds at the border too — replicating the edge clamps each
+/// step's index, and a clamp of a clamped interval is the clamp of the wider
+/// interval — and for the separable passes, since row and column minima
+/// commute. The taps are about the same in number; the passes over the whole
+/// image are what it saves.
+///
+/// A float dtype keeps the passes: its fold keeps a NaN incumbent, ignores a
+/// NaN candidate and keeps the incumbent of two equal signed zeros, so its
+/// result depends on the passes' structure, and one wide pass differs
+/// (`tests/morph_ref.rs`, NaN and signed-zero cases).
+#[cfg(feature = "image_interop")]
+fn morph_iterated(buf: ViewBuffer, ksize: u32, iterations: u32, kind: MorphKind) -> ViewBuffer {
+    let radius = (ksize / 2) as usize;
+    if matches!(buf.dtype(), DType::F32 | DType::F64) {
+        let mut result = buf;
+        for _ in 0..iterations {
+            result = morph_minmax_pass(&result, radius, kind);
+        }
+        return result;
     }
-    result
+    morph_minmax_pass(&buf, radius * iterations as usize, kind)
 }
 
 /// Morphological gradient: dilate(input) − erode(input), clamped to valid range.
@@ -1521,8 +1723,9 @@ fn apply_morph_gradient(buf: ViewBuffer, ksize: u32) -> ViewBuffer {
              Consider using .grayscale() or .threshold() first."
         );
     }
-    let dilated = morph_minmax_pass(&buf, ksize, MorphKind::Max);
-    let eroded = morph_minmax_pass(&buf, ksize, MorphKind::Min);
+    let radius = (ksize / 2) as usize;
+    let dilated = morph_minmax_pass(&buf, radius, MorphKind::Max);
+    let eroded = morph_minmax_pass(&buf, radius, MorphKind::Min);
 
     morph_subtract(&dilated, &eroded)
 }
@@ -1534,39 +1737,40 @@ enum MorphKind {
     Max,
 }
 
-/// Single-pass min or max filter over a ksize×ksize rectangular structuring element.
+/// Single-pass min or max filter over a `(2 * radius + 1)`-square
+/// rectangular structuring element.
 ///
 /// Uses a separable approach (row pass then column pass) for efficiency.
 /// Border handling: replicate edge pixels.
 #[cfg(feature = "image_interop")]
-fn morph_minmax_pass(buf: &ViewBuffer, ksize: u32, kind: MorphKind) -> ViewBuffer {
-    if ksize <= 1 {
+fn morph_minmax_pass(buf: &ViewBuffer, radius: usize, kind: MorphKind) -> ViewBuffer {
+    if radius == 0 {
         return buf.clone();
     }
     let dtype = buf.dtype();
     match dtype {
-        DType::U8 => morph_dispatch::<u8>(buf, ksize, kind),
-        DType::I8 => morph_dispatch::<i8>(buf, ksize, kind),
-        DType::U16 => morph_dispatch::<u16>(buf, ksize, kind),
-        DType::I16 => morph_dispatch::<i16>(buf, ksize, kind),
-        DType::U32 => morph_dispatch::<u32>(buf, ksize, kind),
-        DType::I32 => morph_dispatch::<i32>(buf, ksize, kind),
-        DType::F32 => morph_dispatch::<f32>(buf, ksize, kind),
-        DType::F64 => morph_dispatch::<f64>(buf, ksize, kind),
-        DType::U64 => morph_dispatch::<u64>(buf, ksize, kind),
-        DType::I64 => morph_dispatch::<i64>(buf, ksize, kind),
+        DType::U8 => morph_dispatch::<u8>(buf, radius, kind),
+        DType::I8 => morph_dispatch::<i8>(buf, radius, kind),
+        DType::U16 => morph_dispatch::<u16>(buf, radius, kind),
+        DType::I16 => morph_dispatch::<i16>(buf, radius, kind),
+        DType::U32 => morph_dispatch::<u32>(buf, radius, kind),
+        DType::I32 => morph_dispatch::<i32>(buf, radius, kind),
+        DType::F32 => morph_dispatch::<f32>(buf, radius, kind),
+        DType::F64 => morph_dispatch::<f64>(buf, radius, kind),
+        DType::U64 => morph_dispatch::<u64>(buf, radius, kind),
+        DType::I64 => morph_dispatch::<i64>(buf, radius, kind),
     }
 }
 
 /// Select the const-generic Min/Max instantiation for one element type.
 #[cfg(feature = "image_interop")]
-fn morph_dispatch<T>(buf: &ViewBuffer, ksize: u32, kind: MorphKind) -> ViewBuffer
+fn morph_dispatch<T>(buf: &ViewBuffer, radius: usize, kind: MorphKind) -> ViewBuffer
 where
     T: crate::core::dtype::ViewType + Default + Copy + PartialOrd,
 {
     match kind {
-        MorphKind::Min => morph_minmax_typed::<T, true>(buf, ksize),
-        MorphKind::Max => morph_minmax_typed::<T, false>(buf, ksize),
+        MorphKind::Min => morph_minmax_typed::<T, true>(buf, radius),
+        MorphKind::Max => morph_minmax_typed::<T, false>(buf, radius),
     }
 }
 
@@ -1608,7 +1812,7 @@ fn morph_select<T: PartialOrd + Copy, const IS_MIN: bool>(val: T, candidate: T) 
 ///
 /// Bit-exact vs the pre-split implementation (see tests/morph_ref.rs).
 #[cfg(feature = "image_interop")]
-fn morph_minmax_typed<T, const IS_MIN: bool>(buf: &ViewBuffer, ksize: u32) -> ViewBuffer
+fn morph_minmax_typed<T, const IS_MIN: bool>(buf: &ViewBuffer, radius: usize) -> ViewBuffer
 where
     T: crate::core::dtype::ViewType + Default + Copy + PartialOrd,
 {
@@ -1616,7 +1820,6 @@ where
     let shape = contig.shape();
     let h = shape[0];
     let w = shape[1];
-    let radius = (ksize / 2) as usize;
     let src: &[T] = contig.as_slice::<T>();
 
     // ── Row pass ─────────────────────────────────────────────────────────
