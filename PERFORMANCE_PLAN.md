@@ -264,6 +264,13 @@ Each phase is one or more commits on `claude/codebase-performance-assessment-36x
 
 ### Phase 7 — Rotation / affine (augmentation path), bit-identical
 
+> **Done** (report `polars-cv/benchmarks/reports/2026-09-28-phase7-warp/`; CR-62, CR-63).
+> 1.4–2.2x, 0° free. Done as planned except: coordinates are still `a*x + b*y + t` per
+> pixel (the additive step was never tried; `b*y` is hoisted per row, which is exact),
+> the [border | interior | border] split is a per-pixel `f64` interior test instead,
+> and the identity is handled where `RotateAffine` runs (`warp::rotate`), since there
+> is no no-op `ViewDto` to lower to. Tiling measured as noise.
+
 - **Tests first:**
   - `tests/affine_ref.rs` and `rotation.rs` gain a byte-parity test comparing the new
     kernel against the current one, kept as `#[cfg(test)]` reference, over angles

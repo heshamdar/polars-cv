@@ -1,0 +1,392 @@
+   Compiling proc-macro2 v1.0.103
+   Compiling quote v1.0.42
+   Compiling unicode-ident v1.0.22
+   Compiling libm v0.2.15
+   Compiling autocfg v1.5.0
+   Compiling cfg-if v1.0.4
+   Compiling libc v0.2.178
+   Compiling num-traits v0.2.19
+   Compiling syn v2.0.111
+   Compiling zerocopy v0.8.31
+   Compiling version_check v0.9.5
+   Compiling memchr v2.7.6
+   Compiling crossbeam-utils v0.8.21
+   Compiling bitflags v2.10.0
+   Compiling num-integer v0.1.46
+   Compiling getrandom v0.3.4
+   Compiling crossbeam-epoch v0.9.21
+   Compiling num-bigint v0.4.6
+   Compiling serde_core v1.0.228
+   Compiling rayon-core v1.13.0
+   Compiling either v1.15.0
+   Compiling crossbeam-deque v0.8.6
+   Compiling bytes v1.12.1
+   Compiling rayon v1.11.0
+   Compiling num-complex v0.4.6
+   Compiling smallvec v1.15.1
+   Compiling ahash v0.8.12
+   Compiling iana-time-zone v0.1.64
+   Compiling zerocopy-derive v0.8.31
+   Compiling bytemuck_derive v1.10.2
+   Compiling once_cell v1.21.3
+   Compiling itoa v1.0.17
+   Compiling chrono v0.4.45
+   Compiling bytemuck v1.24.0
+   Compiling arrow-schema v59.0.0
+   Compiling find-msvc-tools v0.1.6
+   Compiling shlex v1.3.0
+   Compiling stable_deref_trait v1.2.1
+   Compiling serde v1.0.228
+   Compiling hashbrown v0.17.1
+   Compiling cc v1.2.51
+   Compiling serde_derive v1.0.228
+   Compiling half v2.7.1
+   Compiling arrow-buffer v59.0.0
+   Compiling aho-corasick v1.1.4
+   Compiling ryu v1.0.22
+   Compiling arrow-data v59.0.0
+   Compiling regex-syntax v0.8.8
+   Compiling arrow-array v59.0.0
+   Compiling simd-adler32 v0.3.8
+   Compiling regex-automata v0.4.13
+   Compiling object v0.32.2
+   Compiling equator-macro v0.4.2
+   Compiling parking_lot_core v0.9.12
+   Compiling lexical-util v1.0.7
+   Compiling regex v1.12.2
+   Compiling equator v0.4.2
+   Compiling num-derive v0.4.2
+   Compiling ar_archive_writer v0.2.0
+   Compiling errno v0.3.14
+   Compiling rustversion v1.0.22
+   Compiling thiserror v2.0.17
+   Compiling equivalent v1.0.2
+   Compiling simdutf8 v0.1.5
+   Compiling signal-hook v0.4.4
+   Compiling foldhash v0.2.0
+   Compiling anyhow v1.0.104
+   Compiling scopeguard v1.2.0
+   Compiling allocator-api2 v0.2.21
+   Compiling lock_api v0.4.14
+   Compiling hashbrown v0.16.1
+   Compiling signal-hook-registry v1.4.8
+   Compiling psm v0.1.28
+   Compiling aligned-vec v0.6.4
+   Compiling arrow-select v59.0.0
+   Compiling thiserror-impl v2.0.17
+   Compiling log v0.4.29
+   Compiling arrayvec v0.7.6
+   Compiling crc32fast v1.5.0
+   Compiling adler2 v2.0.1
+   Compiling miniz_oxide v0.8.9
+   Compiling indexmap v2.12.1
+   Compiling parking_lot v0.12.5
+   Compiling v_frame v0.3.9
+   Compiling lexical-write-integer v1.0.6
+   Compiling lexical-parse-integer v1.0.6
+   Compiling stacker v0.1.22
+   Compiling ppv-lite86 v0.2.21
+   Compiling as-slice v0.2.1
+   Compiling num-rational v0.4.2
+   Compiling rand_core v0.9.3
+   Compiling slotmap v1.1.1
+   Compiling semver v1.0.27
+   Compiling built v0.8.0
+   Compiling paste v1.0.15
+   Compiling serde_json v1.0.148
+   Compiling av-scenechange v0.14.1
+   Compiling rav1e v0.8.1
+   Compiling rustc_version v0.4.1
+   Compiling rand_chacha v0.9.0
+   Compiling aligned v0.4.3
+   Compiling lexical-write-float v1.0.6
+   Compiling lexical-parse-float v1.0.6
+   Compiling castaway v0.2.4
+   Compiling polars-error v0.54.4
+   Compiling arg_enum_proc_macro v0.3.4
+   Compiling profiling-procmacros v1.0.17
+   Compiling nom v8.0.0
+   Compiling core2 v0.4.0
+   Compiling polars-utils v0.54.4
+   Compiling byteorder v1.5.0
+   Compiling heapless v0.8.0
+   Compiling zmij v1.0.0
+   Compiling static_assertions v1.1.0
+   Compiling y4m v0.8.0
+   Compiling base64 v0.22.1
+   Compiling pastey v0.1.1
+   Compiling quick-error v2.0.1
+   Compiling zune-core v0.4.12
+   Compiling compact_str v0.9.1
+   Compiling hash32 v0.3.1
+   Compiling bitstream-io v4.9.0
+   Compiling profiling v1.0.17
+   Compiling lexical-core v1.0.6
+   Compiling polars-config v0.54.4
+   Compiling flate2 v1.1.5
+   Compiling av1-grain v0.2.5
+   Compiling flatbuffers v25.12.19
+   Compiling rand v0.9.2
+   Compiling arrow-ord v59.0.0
+   Compiling zune-inflate v0.2.54
+   Compiling argminmax v0.6.3
+   Compiling maybe-rayon v0.1.1
+   Compiling itertools v0.14.0
+   Compiling uuid v1.19.0
+   Compiling raw-cpuid v11.6.0
+   Compiling atoi v2.0.0
+   Compiling simd_helpers v0.1.0
+   Compiling new_debug_unreachable v1.0.6
+   Compiling weezl v0.1.12
+   Compiling noop_proc_macro v0.3.0
+   Compiling strength_reduce v0.2.4
+   Compiling imgref v1.12.0
+   Compiling loop9 v0.1.5
+   Compiling transpose v0.2.3
+   Compiling arrow-cast v59.0.0
+   Compiling zune-jpeg v0.4.21
+   Compiling avif-serialize v0.8.6
+   Compiling fdeflate v0.3.7
+   Compiling primal-check v0.3.4
+   Compiling csv-core v0.1.13
+   Compiling pxfm v0.1.27
+   Compiling polars-schema v0.54.4
+   Compiling polars-buffer v0.54.4
+   Compiling i_float v1.16.0
+   Compiling matrixmultiply v0.3.10
+   Compiling color_quant v1.1.0
+   Compiling byteorder-lite v0.1.0
+   Compiling fax v0.2.7
+   Compiling rand_core v0.10.1
+   Compiling rgb v0.8.52
+   Compiling lebe v0.5.3
+   Compiling zune-core v0.5.0
+   Compiling bit_field v0.10.3
+   Compiling exr v1.74.0
+   Compiling moxcms v0.7.11
+   Compiling zune-jpeg v0.5.8
+   Compiling ravif v0.12.0
+   Compiling tiff v0.10.3
+   Compiling image-webp v0.2.4
+   Compiling gif v0.14.1
+   Compiling i_shape v1.18.0
+   Compiling csv v1.4.0
+   Compiling rustfft v6.4.1
+   Compiling png v0.18.0
+   Compiling rstar v0.12.2
+   Compiling qoi v0.4.1
+   Compiling approx v0.5.1
+   Compiling polars-arrow v0.54.4
+   Compiling anstyle v1.0.14
+   Compiling i_tree v0.18.0
+   Compiling plotters-backend v0.3.7
+   Compiling thiserror v1.0.69
+   Compiling ciborium-io v0.2.2
+   Compiling rawpointer v0.2.1
+   Compiling i_key_sort v0.10.3
+   Compiling clap_lex v1.1.0
+   Compiling litrs v1.0.0
+   Compiling heck v0.5.0
+   Compiling strum_macros v0.27.2
+   Compiling document-features v0.2.12
+   Compiling i_overlay v4.5.2
+   Compiling rustdct v0.7.1
+   Compiling clap_builder v4.6.0
+   Compiling ciborium-ll v0.2.2
+   Compiling plotters-svg v0.3.7
+   Compiling geo-types v0.7.19
+   Compiling image v0.25.9
+   Compiling arrow-ipc v59.0.0
+   Compiling arrow-csv v59.0.0
+   Compiling rand v0.10.1
+   Compiling rand_pcg v0.10.2
+   Compiling arrow-json v59.0.0
+   Compiling arrow-string v59.0.0
+   Compiling arrow-arith v59.0.0
+   Compiling arrow-row v59.0.0
+   Compiling thiserror-impl v1.0.69
+   Compiling itertools v0.10.5
+   Compiling geographiclib-rs v0.2.7
+   Compiling same-file v1.0.6
+   Compiling ethnum v1.5.3
+   Compiling dyn-clone v1.0.20
+   Compiling streaming-iterator v0.1.9
+   Compiling sif-itree v0.4.1
+   Compiling cast v0.3.0
+   Compiling robust v1.2.0
+   Compiling float_next_after v2.0.0
+   Compiling geo v0.33.1
+   Compiling criterion-plot v0.5.0
+   Compiling walkdir v2.5.0
+   Compiling arrow v59.0.0
+   Compiling image_hasher v3.0.0
+   Compiling clap v4.6.1
+   Compiling ndarray v0.17.1
+   Compiling plotters v0.3.7
+   Compiling ciborium v0.2.2
+   Compiling fast_image_resize v5.6.0
+   Compiling tinytemplate v1.2.1
+   Compiling serde_path_to_error v0.1.20
+   Compiling polars-cv-macros v0.29.0 (/home/user/polars-cv/polars-cv-macros)
+   Compiling is-terminal v0.4.17
+   Compiling anes v0.1.6
+   Compiling oorandom v11.1.5
+   Compiling criterion v0.5.1
+   Compiling view-buffer v0.29.0 (/home/user/polars-cv/view-buffer)
+   Compiling zune-png v0.4.10
+    Finished `benchmark` profile [optimized] target(s) in 3m 12s
+     Running benches/kernels.rs (target/benchmark/deps/kernels-0983c602711e5a40)
+Gnuplot not found, using plotters backend
+Benchmarking rotate_30_bilinear_u8_rgb/256
+Benchmarking rotate_30_bilinear_u8_rgb/256: Warming up for 500.00 ms
+Benchmarking rotate_30_bilinear_u8_rgb/256: Collecting 20 samples in estimated 2.1863 s (1050 iterations)
+Benchmarking rotate_30_bilinear_u8_rgb/256: Analyzing
+rotate_30_bilinear_u8_rgb/256
+                        time:   [1.9748 ms 2.0550 ms 2.1291 ms]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking rotate_30_bilinear_u8_rgb/512
+Benchmarking rotate_30_bilinear_u8_rgb/512: Warming up for 500.00 ms
+Benchmarking rotate_30_bilinear_u8_rgb/512: Collecting 20 samples in estimated 3.3173 s (420 iterations)
+Benchmarking rotate_30_bilinear_u8_rgb/512: Analyzing
+rotate_30_bilinear_u8_rgb/512
+                        time:   [7.7526 ms 8.0566 ms 8.3702 ms]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking rotate_30_bilinear_u8_rgb/1024
+Benchmarking rotate_30_bilinear_u8_rgb/1024: Warming up for 500.00 ms
+Benchmarking rotate_30_bilinear_u8_rgb/1024: Collecting 20 samples in estimated 2.0848 s (60 iterations)
+Benchmarking rotate_30_bilinear_u8_rgb/1024: Analyzing
+rotate_30_bilinear_u8_rgb/1024
+                        time:   [32.357 ms 33.273 ms 34.462 ms]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+
+Benchmarking rotate_30_bilinear_u8_gray/256
+Benchmarking rotate_30_bilinear_u8_gray/256: Warming up for 500.00 ms
+Benchmarking rotate_30_bilinear_u8_gray/256: Collecting 20 samples in estimated 2.0656 s (1680 iterations)
+Benchmarking rotate_30_bilinear_u8_gray/256: Analyzing
+rotate_30_bilinear_u8_gray/256
+                        time:   [1.2094 ms 1.2672 ms 1.3446 ms]
+Found 4 outliers among 20 measurements (20.00%)
+  2 (10.00%) high mild
+  2 (10.00%) high severe
+Benchmarking rotate_30_bilinear_u8_gray/512
+Benchmarking rotate_30_bilinear_u8_gray/512: Warming up for 500.00 ms
+Benchmarking rotate_30_bilinear_u8_gray/512: Collecting 20 samples in estimated 2.2441 s (420 iterations)
+Benchmarking rotate_30_bilinear_u8_gray/512: Analyzing
+rotate_30_bilinear_u8_gray/512
+                        time:   [5.2105 ms 5.4298 ms 5.6179 ms]
+Benchmarking rotate_30_bilinear_u8_gray/1024
+Benchmarking rotate_30_bilinear_u8_gray/1024: Warming up for 500.00 ms
+Benchmarking rotate_30_bilinear_u8_gray/1024: Collecting 20 samples in estimated 2.0142 s (100 iterations)
+Benchmarking rotate_30_bilinear_u8_gray/1024: Analyzing
+rotate_30_bilinear_u8_gray/1024
+                        time:   [19.842 ms 20.437 ms 21.168 ms]
+Found 4 outliers among 20 measurements (20.00%)
+  3 (15.00%) high mild
+  1 (5.00%) high severe
+
+Benchmarking rotate_30_bilinear_u8_rgba/256
+Benchmarking rotate_30_bilinear_u8_rgba/256: Warming up for 500.00 ms
+Benchmarking rotate_30_bilinear_u8_rgba/256: Collecting 20 samples in estimated 2.0098 s (840 iterations)
+Benchmarking rotate_30_bilinear_u8_rgba/256: Analyzing
+rotate_30_bilinear_u8_rgba/256
+                        time:   [2.1684 ms 2.2208 ms 2.2994 ms]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+Benchmarking rotate_30_bilinear_u8_rgba/512
+Benchmarking rotate_30_bilinear_u8_rgba/512: Warming up for 500.00 ms
+Benchmarking rotate_30_bilinear_u8_rgba/512: Collecting 20 samples in estimated 3.8016 s (420 iterations)
+Benchmarking rotate_30_bilinear_u8_rgba/512: Analyzing
+rotate_30_bilinear_u8_rgba/512
+                        time:   [9.4534 ms 9.8752 ms 10.635 ms]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+Benchmarking rotate_30_bilinear_u8_rgba/1024
+Benchmarking rotate_30_bilinear_u8_rgba/1024: Warming up for 500.00 ms
+Benchmarking rotate_30_bilinear_u8_rgba/1024: Collecting 20 samples in estimated 2.2659 s (60 iterations)
+Benchmarking rotate_30_bilinear_u8_rgba/1024: Analyzing
+rotate_30_bilinear_u8_rgba/1024
+                        time:   [37.398 ms 38.405 ms 39.918 ms]
+Found 3 outliers among 20 measurements (15.00%)
+  1 (5.00%) high mild
+  2 (10.00%) high severe
+
+Benchmarking rotate_30_bilinear_f32_rgb/256
+Benchmarking rotate_30_bilinear_f32_rgb/256: Warming up for 500.00 ms
+Benchmarking rotate_30_bilinear_f32_rgb/256: Collecting 20 samples in estimated 2.1694 s (1260 iterations)
+Benchmarking rotate_30_bilinear_f32_rgb/256: Analyzing
+rotate_30_bilinear_f32_rgb/256
+                        time:   [1.5671 ms 1.6008 ms 1.6519 ms]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high severe
+Benchmarking rotate_30_bilinear_f32_rgb/512
+Benchmarking rotate_30_bilinear_f32_rgb/512: Warming up for 500.00 ms
+Benchmarking rotate_30_bilinear_f32_rgb/512: Collecting 20 samples in estimated 3.1669 s (420 iterations)
+Benchmarking rotate_30_bilinear_f32_rgb/512: Analyzing
+rotate_30_bilinear_f32_rgb/512
+                        time:   [6.6629 ms 6.7598 ms 6.9069 ms]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+Benchmarking rotate_30_bilinear_f32_rgb/1024
+Benchmarking rotate_30_bilinear_f32_rgb/1024: Warming up for 500.00 ms
+Benchmarking rotate_30_bilinear_f32_rgb/1024: Collecting 20 samples in estimated 2.3781 s (60 iterations)
+Benchmarking rotate_30_bilinear_f32_rgb/1024: Analyzing
+rotate_30_bilinear_f32_rgb/1024
+                        time:   [31.429 ms 32.165 ms 33.008 ms]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+
+Benchmarking rotate_30_nearest_u8_rgb/256
+Benchmarking rotate_30_nearest_u8_rgb/256: Warming up for 500.00 ms
+Benchmarking rotate_30_nearest_u8_rgb/256: Collecting 20 samples in estimated 2.0618 s (3990 iterations)
+Benchmarking rotate_30_nearest_u8_rgb/256: Analyzing
+rotate_30_nearest_u8_rgb/256
+                        time:   [522.60 µs 557.89 µs 599.21 µs]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking rotate_30_nearest_u8_rgb/512
+Benchmarking rotate_30_nearest_u8_rgb/512: Warming up for 500.00 ms
+Benchmarking rotate_30_nearest_u8_rgb/512: Collecting 20 samples in estimated 2.4082 s (1050 iterations)
+Benchmarking rotate_30_nearest_u8_rgb/512: Analyzing
+rotate_30_nearest_u8_rgb/512
+                        time:   [2.1558 ms 2.2950 ms 2.4468 ms]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+Benchmarking rotate_30_nearest_u8_rgb/1024
+Benchmarking rotate_30_nearest_u8_rgb/1024: Warming up for 500.00 ms
+
+Warning: Unable to complete 20 samples in 2.0s. You may wish to increase target time to 2.4s, enable flat sampling, or reduce sample count to 10.
+Benchmarking rotate_30_nearest_u8_rgb/1024: Collecting 20 samples in estimated 2.3637 s (210 iterations)
+Benchmarking rotate_30_nearest_u8_rgb/1024: Analyzing
+rotate_30_nearest_u8_rgb/1024
+                        time:   [10.788 ms 11.230 ms 11.673 ms]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+
+Benchmarking rotate_0_u8_rgb/256
+Benchmarking rotate_0_u8_rgb/256: Warming up for 500.00 ms
+Benchmarking rotate_0_u8_rgb/256: Collecting 20 samples in estimated 2.1812 s (840 iterations)
+Benchmarking rotate_0_u8_rgb/256: Analyzing
+rotate_0_u8_rgb/256     time:   [2.1593 ms 2.1885 ms 2.2286 ms]
+Found 3 outliers among 20 measurements (15.00%)
+  2 (10.00%) high mild
+  1 (5.00%) high severe
+Benchmarking rotate_0_u8_rgb/512
+Benchmarking rotate_0_u8_rgb/512: Warming up for 500.00 ms
+Benchmarking rotate_0_u8_rgb/512: Collecting 20 samples in estimated 3.6941 s (420 iterations)
+Benchmarking rotate_0_u8_rgb/512: Analyzing
+rotate_0_u8_rgb/512     time:   [8.7610 ms 9.0194 ms 9.3542 ms]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking rotate_0_u8_rgb/1024
+Benchmarking rotate_0_u8_rgb/1024: Warming up for 500.00 ms
+Benchmarking rotate_0_u8_rgb/1024: Collecting 20 samples in estimated 2.4827 s (60 iterations)
+Benchmarking rotate_0_u8_rgb/1024: Analyzing
+rotate_0_u8_rgb/1024    time:   [34.746 ms 35.911 ms 37.337 ms]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) high mild
+  1 (5.00%) high severe

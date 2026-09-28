@@ -75,6 +75,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   call to fault in again. It now shares polars' allocator (jemalloc on
   Linux), as pyo3-polars intends: 64×64 pipelines are 1.15–1.66x faster, a
   repeated large `blob` sink 2x faster, and peak memory ~10% higher (CR-60).
+- **Rotation and `warp_affine` are 1.4–2.2x faster**, with bit-identical
+  output: the warp takes a bounds-check-free path for pixels whose
+  neighbours are all inside the image and is compiled per channel count and
+  for AVX2. A rotation by 0° (or 360°) now returns its input instead of
+  warping it.
 - **`List` columns are read in place.** A `list` source row whose values
   are already the declared dtype is now a view of the column, as an `Array`
   row already was, instead of a per-row copy through several intermediate
@@ -105,6 +110,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   the packing loop in `copy_elements_into`, the element-wise engine's strided
   f32 read and grayscale's per-pixel strided fallback (a non-dense layout is
   now packed, then takes the dense kernel).
+- view-buffer: the affine warp lives in `execution/warp.rs`, and M5's
+  `CastFrom<f64>` for 8/16-bit targets is `round().clamp() as T` (the same
+  values as before, in a form the compiler vectorises across a pixel's
+  channels).
 - view-buffer: `Layout` and `LayoutFacts` store shape and strides as
   `core::layout::{Dims, Strides}` (inline up to rank 4), and the constructors
   (`from_vec_with_shape`, `reshape`, `from_polars_buffer*`, `new_contiguous`)
@@ -120,6 +129,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `resize_pixels::<P>` replaces the u8/u16/f32 copies of the resize kernel.
 
 ### Fixed
+
+- **`rotate(0)` no longer spreads NaN or infinity.** It ran a full bilinear
+  warp, which turned a NaN or infinite pixel's left and upper neighbours into
+  NaN. It now returns the image unchanged (CR-63).
+- **A warped u64/i64 image keeps its maximum values.** `rotate` and
+  `warp_affine` stored a value at the top of the 64-bit range as 0; it now
+  saturates, as every other conversion does (CR-62).
 
 - **A `list`/`array` value the declared dtype cannot hold is an error, not
   0.** Converting a row to its declared dtype stored 0 for any value out of
