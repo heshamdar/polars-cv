@@ -1,0 +1,50 @@
+== base
+Benchmarking resize_224_u8/1024: Analyzing
+resize_224_u8/1024      time:   [597.54 µs 619.85 µs 646.91 µs]
+packed_crop_resize_224_u8/1024
+                        time:   [425.92 µs 434.99 µs 450.94 µs]
+== head
+Benchmarking resize_224_u8/1024: Analyzing
+resize_224_u8/1024      time:   [603.92 µs 617.53 µs 644.42 µs]
+packed_crop_resize_224_u8/1024
+                        time:   [492.79 µs 516.45 µs 537.24 µs]
+== base
+Benchmarking resize_224_u8/1024: Analyzing
+resize_224_u8/1024      time:   [601.13 µs 665.12 µs 760.29 µs]
+packed_crop_resize_224_u8/1024
+                        time:   [451.40 µs 478.32 µs 514.73 µs]
+== head
+Benchmarking resize_224_u8/1024: Analyzing
+resize_224_u8/1024      time:   [618.79 µs 639.05 µs 675.49 µs]
+packed_crop_resize_224_u8/1024
+                        time:   [482.87 µs 515.59 µs 557.65 µs]
+== base
+Benchmarking resize_224_u8/1024: Analyzing
+resize_224_u8/1024      time:   [592.36 µs 602.46 µs 616.35 µs]
+packed_crop_resize_224_u8/1024
+                        time:   [454.07 µs 463.19 µs 477.62 µs]
+== head
+Benchmarking resize_224_u8/1024: Analyzing
+resize_224_u8/1024      time:   [615.55 µs 629.23 µs 647.28 µs]
+packed_crop_resize_224_u8/1024
+                        time:   [487.39 µs 500.30 µs 520.71 µs]
+== base
+Benchmarking resize_224_u8/1024: Analyzing
+resize_224_u8/1024      time:   [590.26 µs 612.17 µs 642.15 µs]
+packed_crop_resize_224_u8/1024
+                        time:   [460.96 µs 477.47 µs 497.45 µs]
+== head
+Benchmarking resize_224_u8/1024: Analyzing
+resize_224_u8/1024      time:   [601.36 µs 609.32 µs 619.32 µs]
+packed_crop_resize_224_u8/1024
+                        time:   [502.43 µs 535.50 µs 579.46 µs]
+== base
+Benchmarking resize_224_u8/1024: Analyzing
+resize_224_u8/1024      time:   [567.06 µs 570.87 µs 578.27 µs]
+packed_crop_resize_224_u8/1024
+                        time:   [448.46 µs 473.65 µs 511.06 µs]
+== head
+Benchmarking resize_224_u8/1024: Analyzing
+resize_224_u8/1024      time:   [603.26 µs 623.84 µs 662.16 µs]
+packed_crop_resize_224_u8/1024
+                        time:   [479.27 µs 511.60 µs 554.20 µs]

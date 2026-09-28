@@ -1,0 +1,93 @@
+== round 1
+materialize_flip_v_u8/256
+                        time:   [23.287 µs 25.025 µs 27.311 µs]
+materialize_flip_v_u8/512
+                        time:   [43.468 µs 43.631 µs 43.822 µs]
+materialize_flip_v_u8/1024
+                        time:   [211.62 µs 219.35 µs 228.51 µs]
+Benchmarking resize_224_u8/256: Analyzing
+resize_224_u8/256       time:   [193.26 µs 194.99 µs 197.06 µs]
+Benchmarking resize_224_u8/512: Analyzing
+resize_224_u8/512       time:   [301.53 µs 323.51 µs 350.61 µs]
+Benchmarking resize_224_u8/1024: Analyzing
+resize_224_u8/1024      time:   [642.88 µs 678.05 µs 704.14 µs]
+crop_then_resize_224_u8/256
+                        time:   [171.53 µs 175.49 µs 179.98 µs]
+crop_then_resize_224_u8/512
+                        time:   [302.79 µs 314.08 µs 328.25 µs]
+crop_then_resize_224_u8/1024
+                        time:   [590.31 µs 613.06 µs 645.15 µs]
+packed_crop_resize_224_u8/256
+                        time:   [163.95 µs 168.64 µs 177.96 µs]
+packed_crop_resize_224_u8/512
+                        time:   [258.87 µs 268.98 µs 282.37 µs]
+packed_crop_resize_224_u8/1024
+                        time:   [450.14 µs 463.70 µs 487.02 µs]
+flip_v_then_resize_224_u8/256
+                        time:   [214.12 µs 227.58 µs 244.78 µs]
+flip_v_then_resize_224_u8/512
+                        time:   [350.76 µs 365.84 µs 384.50 µs]
+flip_v_then_resize_224_u8/1024
+                        time:   [820.60 µs 835.73 µs 858.65 µs]
+== round 2
+materialize_flip_v_u8/256
+                        time:   [21.252 µs 22.528 µs 24.171 µs]
+materialize_flip_v_u8/512
+                        time:   [45.802 µs 46.914 µs 48.085 µs]
+materialize_flip_v_u8/1024
+                        time:   [208.84 µs 211.30 µs 215.64 µs]
+Benchmarking resize_224_u8/256: Analyzing
+resize_224_u8/256       time:   [197.07 µs 205.76 µs 214.91 µs]
+Benchmarking resize_224_u8/512: Analyzing
+resize_224_u8/512       time:   [296.16 µs 303.29 µs 312.03 µs]
+Benchmarking resize_224_u8/1024: Analyzing
+resize_224_u8/1024      time:   [608.21 µs 625.49 µs 647.13 µs]
+crop_then_resize_224_u8/256
+                        time:   [169.55 µs 179.24 µs 192.46 µs]
+crop_then_resize_224_u8/512
+                        time:   [289.00 µs 295.08 µs 300.04 µs]
+crop_then_resize_224_u8/1024
+                        time:   [587.84 µs 608.52 µs 631.64 µs]
+packed_crop_resize_224_u8/256
+                        time:   [166.27 µs 177.44 µs 191.85 µs]
+packed_crop_resize_224_u8/512
+                        time:   [256.06 µs 265.55 µs 279.43 µs]
+packed_crop_resize_224_u8/1024
+                        time:   [463.38 µs 471.07 µs 480.21 µs]
+flip_v_then_resize_224_u8/256
+                        time:   [205.40 µs 212.14 µs 219.04 µs]
+flip_v_then_resize_224_u8/512
+                        time:   [363.70 µs 391.35 µs 420.68 µs]
+flip_v_then_resize_224_u8/1024
+                        time:   [819.16 µs 843.20 µs 879.29 µs]
+== round 3
+materialize_flip_v_u8/256
+                        time:   [22.131 µs 24.143 µs 26.564 µs]
+materialize_flip_v_u8/512
+                        time:   [45.422 µs 46.487 µs 47.912 µs]
+materialize_flip_v_u8/1024
+                        time:   [217.45 µs 225.87 µs 232.81 µs]
+Benchmarking resize_224_u8/256: Analyzing
+resize_224_u8/256       time:   [194.88 µs 197.93 µs 202.60 µs]
+Benchmarking resize_224_u8/512: Analyzing
+resize_224_u8/512       time:   [300.40 µs 303.84 µs 307.37 µs]
+Benchmarking resize_224_u8/1024: Analyzing
+resize_224_u8/1024      time:   [628.61 µs 648.28 µs 684.06 µs]
+crop_then_resize_224_u8/256
+                        time:   [174.37 µs 182.29 µs 190.96 µs]
+crop_then_resize_224_u8/512
+                        time:   [291.84 µs 302.57 µs 318.09 µs]
+crop_then_resize_224_u8/1024
+                        time:   [604.70 µs 623.16 µs 645.91 µs]
+packed_crop_resize_224_u8/256
+                        time:   [163.56 µs 167.17 µs 172.04 µs]
+packed_crop_resize_224_u8/512
+                        time:   [265.54 µs 272.34 µs 281.40 µs]
+packed_crop_resize_224_u8/1024
+                        time:   [442.00 µs 446.64 µs 452.51 µs]
+flip_v_then_resize_224_u8/256
+                        time:   [201.74 µs 212.38 µs 225.36 µs]
+flip_v_then_resize_224_u8/512
+                        time:   [351.81 µs 357.82 µs 363.87 µs]
+flip_v_then_resize_224_u8/1024
+                        time:   [863.80 µs 901.74 µs 941.81 µs]

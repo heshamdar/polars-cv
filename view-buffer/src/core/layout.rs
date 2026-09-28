@@ -99,8 +99,10 @@ impl LayoutFacts {
                     && self.has_positive_strides()
             }
             ExternalLayout::FastImageResize => {
-                // fast_image_resize usually requires strictly contiguous buffers
-                self.is_contiguous()
+                // fast_image_resize reads one row at a time, so only the
+                // pixels within a row must be packed: the row stride may be
+                // anything (a crop's gap, a vertical flip's negative stride).
+                self.is_dense_rows()
             }
         }
     }
@@ -154,5 +156,56 @@ impl Layout {
 impl From<&Layout> for LayoutFacts {
     fn from(l: &Layout) -> Self {
         Self::new(&l.shape, &l.strides, l.dtype, l.offset)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `[8, 6, 3]` f32 facts with the given byte strides and offset.
+    fn f32_hwc(shape: &[usize], strides: &[isize], offset: usize) -> LayoutFacts {
+        LayoutFacts::new(shape, strides, DType::F32, offset)
+    }
+
+    /// fast_image_resize reads a view row by row, so any layout whose pixels
+    /// are packed within each row is resized where it lies: a crop (padded
+    /// rows) and a vertical flip (negative row stride) included. Anything
+    /// that is not packed within a row — a horizontal flip, a transpose, a
+    /// channel subset — has to be packed first.
+    #[test]
+    fn fast_image_resize_takes_any_view_with_packed_rows() {
+        let accepted = [
+            ("contiguous", f32_hwc(&[8, 6, 3], &[72, 12, 4], 0)),
+            ("crop", f32_hwc(&[4, 3, 3], &[72, 12, 4], 84)),
+            ("flip_v", f32_hwc(&[8, 6, 3], &[-72, 12, 4], 504)),
+            (
+                "rank 2 crop",
+                LayoutFacts::new(&[4, 3], &[24, 4], DType::F32, 28),
+            ),
+        ];
+        for (label, facts) in accepted {
+            assert!(
+                facts.compatible_with(ExternalLayout::FastImageResize),
+                "{label} was refused"
+            );
+        }
+        let refused = [
+            ("flip_h", f32_hwc(&[8, 6, 3], &[72, -12, 4], 60)),
+            ("transpose", f32_hwc(&[6, 8, 3], &[12, 72, 4], 0)),
+            ("channel subset", f32_hwc(&[8, 6, 2], &[72, 12, 4], 0)),
+            ("reversed channels", f32_hwc(&[8, 6, 3], &[72, 12, -4], 8)),
+            ("rank 1", LayoutFacts::new(&[8], &[4], DType::F32, 0)),
+            (
+                "rank 4",
+                LayoutFacts::new(&[1, 8, 6, 3], &[576, 72, 12, 4], DType::F32, 0),
+            ),
+        ];
+        for (label, facts) in refused {
+            assert!(
+                !facts.compatible_with(ExternalLayout::FastImageResize),
+                "{label} was accepted"
+            );
+        }
     }
 }
