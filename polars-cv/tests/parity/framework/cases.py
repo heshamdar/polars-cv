@@ -286,6 +286,10 @@ def draw_batch_chain(
     length = data.draw(st.integers(1, max_steps), label="length")
     for index in range(length):
         outputs = [r for r in result.rows if r is not None]
+        if domain == "buffer" and len({(o.ndim, o.shape[2:]) for o in outputs}) > 1:
+            # Rows now differ beyond height and width (a transpose moved a
+            # spatial axis into the channels): no one argument set fits them.
+            break
         if domain == "buffer":
             uniform = len({o.shape for o in outputs}) == 1
             proxy = _smallest(outputs)

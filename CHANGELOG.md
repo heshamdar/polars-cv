@@ -177,8 +177,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `channel-swap-panic`, `channel-merge-dtype`, `convolve2d-f64`,
   `through-f32`, `derived-extent-zero`, `view-offset-lost`,
   `reshape-after-view`, `tiff-gray-alpha`, `divide-ratio-contract`,
-  `warp-per-row-matrix`, `threshold-wide-literal`, `nan-one-sided-clamp`,
-  `hsv-hue-180`. Each
+  `warp-per-row-matrix`, `threshold-wide-int`, `nan-one-sided-clamp`,
+  `hsv-hue-180`, `scalar-fusion-int-cast`, `derived-size-tie`. Each
   entry's summary describes the defect and the fix.
 - tests: `tests/property/` is folded into `tests/parity/laws/`. The
   `TestResizeScaleReference`/`TestAspectRatioResizeReference` classes in

@@ -429,7 +429,10 @@ def _stat_tol(x: np.ndarray, p: Params) -> Tol:
     """
     eps = float(np.finfo(float_out(x)).eps)
     scale = magnitude(x) * max(1.0, abs(float(p.get("factor", 1.0))))
-    return Tol(atol=64 * eps * scale, rtol=8 * eps)
+    # The statistic itself carries summation-order error growing with n.
+    return Tol(
+        atol=64 * eps * scale * max(1.0, math.log2(max(2, x.size))), rtol=8 * eps
+    )
 
 
 def _gamma_params(draw: st.DrawFn, x: np.ndarray) -> Params:
@@ -832,6 +835,10 @@ def _warp_tol(x: np.ndarray, p: Params) -> Tol:
         steep = max(steep, float(np.abs(np.diff(xf, axis=0)).max()))
     if x.shape[1] > 1:
         steep = max(steep, float(np.abs(np.diff(xf, axis=1)).max()))
+    # The image's edge is a step to the border value too.
+    fill = float(p.get("border_value", 0.0))
+    if x.size:
+        steep = max(steep, float(np.abs(xf - fill).max()))
     rounding = 1.0 if is_int(x) else 1e-6 * magnitude(x)
     return sparse(atol=rounding + steep / 32, frac=border, frac_atol=math.inf)
 
@@ -1122,8 +1129,11 @@ def _std_tol(x: np.ndarray, p: Params) -> Tol:
 
 
 def _sum_tol(x: np.ndarray, p: Params) -> Tol:
+    """Summation order: a sum of ``n`` terms may lose up to ``n * eps * sum|x|``
+    (the classical bound), which for 64-bit integers near 2**52 is hundreds."""
     eps = float(np.finfo(float_out(x)).eps) if x.dtype.kind == "f" else 2.0**-52
-    return close(atol=eps * x.size * magnitude(x), rtol=1e-12)
+    total = float(np.abs(x.astype(np.float64)).sum()) if x.size else 0.0
+    return close(atol=eps * max(1, x.size) * max(total, 1.0), rtol=1e-12)
 
 
 def _popcount_ref(x: np.ndarray, p: Params) -> np.float64:
