@@ -158,19 +158,28 @@ class SourceSpec:
     heterogeneous: bool = True
     declares_dtype: bool = True
     admits: Callable[[np.ndarray], bool] = lambda a: True
+    #: Whether rows travel as an encoded image file, which is ``[H, W, C]``
+    #: by construction (the array formats carry any rank).
+    encodes_image: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
 
     def can_carry(self, arrays: Sequence[np.ndarray]) -> bool:
         """Whether every array in *arrays* fits this source."""
         if not arrays:
             return True
-        if not all(self.carries(dtype_name(a.dtype), a.shape[2]) for a in arrays):
+        if not all(self.admits_rank(a.ndim) for a in arrays):
+            return False
+        if not all(self.carries(dtype_name(a.dtype), _channels(a)) for a in arrays):
             return False
         if not all(self.admits(a) for a in arrays):
             return False
         if not self.heterogeneous and len({a.shape for a in arrays}) > 1:
             return False
         return len({a.dtype for a in arrays}) == 1
+
+    def admits_rank(self, ndim: int) -> bool:
+        """Image codecs carry ``[H, W, C]``; the array formats any rank."""
+        return ndim == 3 if self.encodes_image else ndim >= 1
 
     def pipeline(self, dtype: str) -> Pipeline:
         """The ``Pipeline`` that reads this source, with a known *dtype*."""
@@ -188,6 +197,11 @@ class SourceSpec:
         return values, self.column_type(present)
 
 
+def _channels(a: np.ndarray) -> int:
+    """The channel count of an image-shaped array (1 for anything else)."""
+    return a.shape[2] if a.ndim == 3 else 1
+
+
 def _codec_source(
     name: str, fmt: str, carries: Callable[[str, int], bool], **kw: Any
 ) -> SourceSpec:
@@ -197,13 +211,17 @@ def _codec_source(
         carries=carries,
         encode_row=lambda a: encode_codec(a, fmt),
         column_type=lambda _: pl.Binary,
+        encodes_image=True,
         **kw,
     )
 
 
 def _nested_list_type(arrays: Sequence[np.ndarray]) -> pl.DataType:
     leaf = POLARS_DTYPES[dtype_name(arrays[0].dtype)] if arrays else pl.UInt8
-    return pl.List(pl.List(pl.List(leaf)))
+    nested: pl.DataType = leaf
+    for _ in range(arrays[0].ndim if arrays else 3):
+        nested = pl.List(nested)
+    return nested
 
 
 def _array_type(arrays: Sequence[np.ndarray]) -> pl.DataType:
@@ -277,6 +295,7 @@ SOURCES: dict[str, SourceSpec] = {
         ),
         SourceSpec(
             name="file_path",
+            encodes_image=True,
             format="file_path",
             carries=_png_carries,
             encode_row=lambda a: _FILES.path_for(encode_codec(a, "png")),
@@ -284,6 +303,7 @@ SOURCES: dict[str, SourceSpec] = {
         ),
         SourceSpec(
             name="auto_bytes",
+            encodes_image=True,
             format="auto",
             carries=_png_carries,
             encode_row=lambda a: encode_codec(a, "png"),

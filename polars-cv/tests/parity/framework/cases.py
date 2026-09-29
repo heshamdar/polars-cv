@@ -28,6 +28,7 @@ from tests.parity.framework.oracle import OPS, OpSpec
 from tests.parity.framework.run import (
     COMPOSITIONS,
     ENGINES,
+    OPTIMIZATION,
     PARAM_STYLES,
     Axes,
     PerRow,
@@ -409,7 +410,16 @@ def axes_variants(
         variants += [
             base.but(composition=c) for c in compositions if c != base.composition
         ]
+        # Every pass off, then a few single-pass settings per example (each
+        # pass alone, each pass removed): across a lane's examples every pass
+        # is reached both ways without paying for all of them every time.
         variants.append(base.but(optimize="none"))
+        per_pass = [v for v in OPTIMIZATION if ":" in v]
+        chosen = draw(
+            st.lists(st.sampled_from(per_pass), min_size=1, max_size=4, unique=True),
+            label="optimizer settings",
+        )
+        variants += [base.but(optimize=v) for v in chosen]
         if len(images) > 1:
             variants.append(base.but(chunked=True))
         combo = Axes(
@@ -420,7 +430,7 @@ def axes_variants(
             if has_expr
             else base.params,
             composition=draw(st.sampled_from(compositions), label="composition"),
-            optimize=draw(st.sampled_from(["all", "none"]), label="optimize"),
+            optimize=draw(st.sampled_from(OPTIMIZATION), label="optimize"),
             chunked=len(images) > 1 and draw(st.booleans(), label="chunked"),
         )
         if combo.composition == "aliased" and SINKS[combo.sink].kwargs(info):

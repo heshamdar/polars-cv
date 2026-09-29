@@ -166,7 +166,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   agree byte for byte across every source, sink, engine, parameter style
   (literal, `pl.col`, `pl.lit`, computed), composition (one pipeline,
   `.pipe()`, aliased prefixes, blob-materialized steps), optimizer setting
-  and chunking. Algebraic laws cover inverses, commutation, resampling
+  (all, none, and each registered pass alone and removed) and chunking. Algebraic laws cover inverses, commutation, resampling
   identities, morphology ordering and the lossless contour round trip.
   Ratchets hold its tables to the op, I/O and dtype catalogues. Each property
   runs a small derandomized budget per push and a 25x randomized one in the
@@ -177,7 +177,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `channel-swap-panic`, `channel-merge-dtype`, `convolve2d-f64`,
   `through-f32`, `derived-extent-zero`, `view-offset-lost`,
   `reshape-after-view`, `tiff-gray-alpha`, `divide-ratio-contract`,
-  `warp-per-row-matrix`, `threshold-wide-literal`. Each
+  `warp-per-row-matrix`, `threshold-wide-literal`, `nan-one-sided-clamp`,
+  `hsv-hue-180`. Each
   entry's summary describes the defect and the fix.
 - tests: `tests/property/` is folded into `tests/parity/laws/`. The
   `TestResizeScaleReference`/`TestAspectRatioResizeReference` classes in

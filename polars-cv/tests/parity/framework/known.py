@@ -179,6 +179,43 @@ def _wide_int_threshold(step: Step, images: Sequence[Any]) -> bool:
     )
 
 
+def _repro_nan_one_sided_clamp() -> None:
+    from tests.parity.framework.run import Axes, Step, execute
+
+    image = np.array([[[np.nan]]], dtype=np.float32)
+    for step in (
+        Step("relu"),
+        Step("clamp_min", {"value": 0.5}),
+        Step("clamp_max", {"value": 0.5}),
+    ):
+        out = execute([image], [step], Axes()).rows[0]
+        assert np.isnan(out.ravel()[0]), f"{step!r} turned NaN into a number"
+
+
+def _repro_hsv_hue_180() -> None:
+    from tests.parity.framework.run import Axes, Step, execute
+
+    image = np.array([[[255, 0, 1]]], dtype=np.uint8)  # hue 359.8 degrees
+    out = execute([image], [Step("to_hsv")], Axes()).rows[0]
+    assert out.ravel()[0] < 180, "8-bit hue is [0, 180): 359.8 degrees wraps to 0"
+
+
+def _has_nan(x: np.ndarray) -> bool:
+    return x.dtype.kind == "f" and bool(np.isnan(x).any())
+
+
+def _hue_rounds_to_180(x: np.ndarray) -> bool:
+    """Whether some RGB pixel's hue lies in [359, 360) degrees, where half of
+    it rounds to 180."""
+    import cv2
+
+    if x.dtype != np.uint8 or x.ndim != 3 or x.shape[2] not in (3, 4):
+        return False
+    rgb = np.ascontiguousarray(x[:, :, :3]).astype(np.float32) / 255.0
+    hue = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)[:, :, 0]
+    return bool((hue >= 359.0).any())
+
+
 def _repro_convolve_f64() -> None:
     from tests.parity.framework.run import Axes, Step, execute
 
@@ -464,6 +501,31 @@ DIVERGENCES: tuple[Divergence, ...] = (
         affects_axes=lambda axes, images, shapes, steps: any(
             _wide_int_threshold(s, images) for s in steps
         ),
+    ),
+    Divergence(
+        key="nan-one-sided-clamp",
+        summary=(
+            "relu, clamp_min and clamp_max turn NaN into their bound (relu(NaN) "
+            "-> 0, clamp_min(0.5) of NaN -> 0.5), while clamp, abs, sign, "
+            "round and scale propagate it — and NumPy and PyTorch propagate it "
+            "through all of these. Fixed: NaN in, NaN out (or the rule is "
+            "chosen and documented)."
+        ),
+        repro=_repro_nan_one_sided_clamp,
+        affects_step=lambda step, x: (
+            step.method in ("relu", "clamp_min", "clamp_max") and _has_nan(x)
+        ),
+    ),
+    Divergence(
+        key="hsv-hue-180",
+        summary=(
+            "to_hsv on u8 emits H = 180 for hues in [359, 360) degrees "
+            "(RGB(255, 0, 1) -> H 180), outside 8-bit HSV's [0, 180); OpenCV "
+            "wraps them to 0. A 180-entry hue table indexed with it reads out "
+            "of bounds. Fixed: H is taken modulo 180."
+        ),
+        repro=_repro_hsv_hue_180,
+        affects_step=lambda step, x: step.method == "to_hsv" and _hue_rounds_to_180(x),
     ),
     Divergence(
         key="convolve2d-f64",

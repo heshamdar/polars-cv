@@ -630,6 +630,12 @@ def _resize_to(x: np.ndarray, height: int, width: int, flt: str) -> np.ndarray:
     return out.astype(x.dtype)
 
 
+def _resamplable(x: np.ndarray) -> bool:
+    """The resampler's contract: ``[H, W, C]`` with at most four channels
+    (view-buffer/src/ops/image.rs, "at most 4 channels for resampling")."""
+    return is_rank3(x) and x.shape[2] <= 4
+
+
 def _resize_ref_accepts(x: np.ndarray, p: Params) -> bool:
     if p.get("filter") not in _PIL_FILTERS:
         return False
@@ -1098,6 +1104,23 @@ def _scalar_result(fn: Callable[[np.ndarray, Params], float]) -> Reference:
     return ref
 
 
+def _mean_tol(x: np.ndarray, p: Params) -> Tol:
+    """A mean inherits its sum's summation-order error (up to ``n * eps *
+    max|x|`` for a naive sum); dividing by ``n`` does not shrink that bound
+    relative to the result, so it is taken as is."""
+    eps = float(np.finfo(float_out(x)).eps) if x.dtype.kind == "f" else 2.0**-52
+    return close(atol=eps * max(1, x.size) * magnitude(x), rtol=1e-12)
+
+
+def _std_tol(x: np.ndarray, p: Params) -> Tol:
+    """A standard deviation is the square root of a variance whose rounding
+    error scales with ``eps * max|x|**2``; near zero spread the root turns
+    that into ``sqrt(eps * n) * max|x|`` (a constant image of 2700s comes
+    back with std 4e-11, not 0)."""
+    eps = float(np.finfo(float_out(x)).eps) if x.dtype.kind == "f" else 2.0**-52
+    return close(atol=math.sqrt(eps * max(1, x.size) * 16) * magnitude(x), rtol=1e-9)
+
+
 def _sum_tol(x: np.ndarray, p: Params) -> Tol:
     eps = float(np.finfo(float_out(x)).eps) if x.dtype.kind == "f" else 2.0**-52
     return close(atol=eps * x.size * magnitude(x), rtol=1e-12)
@@ -1492,7 +1515,7 @@ OPS: dict[str, OpSpec] = {
         _spec(
             "resize",
             _size_params,
-            accepts=is_rank3,
+            accepts=_resamplable,
             ref=_resize_ref,
             ref_accepts=_resize_ref_accepts,
             ref_dtypes=("u8", "f32"),
@@ -1504,7 +1527,7 @@ OPS: dict[str, OpSpec] = {
         _spec(
             "resize_to_height",
             _one_size_params("height"),
-            accepts=is_rank3,
+            accepts=_resamplable,
             ref=_resize_to_height_ref,
             ref_accepts=_resize_ref_accepts,
             ref_dtypes=("u8", "f32"),
@@ -1515,7 +1538,7 @@ OPS: dict[str, OpSpec] = {
         _spec(
             "resize_to_width",
             _one_size_params("width"),
-            accepts=is_rank3,
+            accepts=_resamplable,
             ref=_resize_to_width_ref,
             ref_accepts=_resize_ref_accepts,
             ref_dtypes=("u8", "f32"),
@@ -1525,7 +1548,7 @@ OPS: dict[str, OpSpec] = {
         _spec(
             "resize_max",
             _one_size_params("max_size"),
-            accepts=is_rank3,
+            accepts=_resamplable,
             ref=_resize_max_ref,
             ref_accepts=_resize_ref_accepts,
             ref_dtypes=("u8", "f32"),
@@ -1535,7 +1558,7 @@ OPS: dict[str, OpSpec] = {
         _spec(
             "resize_min",
             _one_size_params("min_size"),
-            accepts=is_rank3,
+            accepts=_resamplable,
             ref=_resize_min_ref,
             ref_accepts=_resize_ref_accepts,
             ref_dtypes=("u8", "f32"),
@@ -1545,7 +1568,7 @@ OPS: dict[str, OpSpec] = {
         _spec(
             "resize_scale",
             _resize_scale_params,
-            accepts=is_rank3,
+            accepts=_resamplable,
             ref=_resize_scale_ref,
             ref_accepts=_resize_ref_accepts,
             ref_dtypes=("u8", "f32"),
@@ -1555,7 +1578,7 @@ OPS: dict[str, OpSpec] = {
         _spec(
             "letterbox",
             _letterbox_params,
-            accepts=is_rank3,
+            accepts=_resamplable,
             ref=_letterbox_ref,
             ref_accepts=_resize_ref_accepts,
             ref_dtypes=("u8", "f32"),
@@ -1744,7 +1767,7 @@ OPS: dict[str, OpSpec] = {
         _spec(
             "reduce_mean",
             ref=_scalar_result(lambda x, p: x.astype(np.float64).mean()),
-            tol=_stat_tol,
+            tol=_mean_tol,
             kind="global",
             domain_out="scalar",
             terminal=True,
@@ -1768,7 +1791,7 @@ OPS: dict[str, OpSpec] = {
             _std_params,
             ref=_scalar_result(lambda x, p: x.astype(np.float64).std(ddof=p["ddof"])),
             ref_accepts=_std_ref_accepts,
-            tol=_stat_tol,
+            tol=_std_tol,
             kind="global",
             domain_out="scalar",
             terminal=True,
