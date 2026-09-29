@@ -2087,6 +2087,12 @@ _CORE_STRUCTURAL_MODULES = frozenset(
         # module scanning files via `_discovery` and these two scan fixtures.
         "test_dtype_ratchet_fixtures.py",
         "test_doc_table_fixtures.py",
+        # The parity framework's coverage ratchets (every op, source, sink and
+        # dtype has a parity entry or a reason) and the fixtures that prove its
+        # comparators, tolerance propagation and divergence predicates still
+        # reject what they claim to. Neither scans files.
+        "test_parity_ratchets.py",
+        "test_parity_framework_fixtures.py",
     }
 )
 

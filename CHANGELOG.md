@@ -156,6 +156,34 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Internal
 
+- tests: a generative parity suite, `tests/parity/` (Hypothesis). Every
+  chainable op runs against an independent reference (NumPy, OpenCV, Pillow,
+  SciPy) over drawn dtypes, sizes, channel counts, pixel content, null rows,
+  mixed-size rows, sources and engines, with per-row expression arguments.
+  Random chains and two-branch graphs are checked step by step, each step
+  against its reference on the engine's own previous output, and end to end
+  with the error bound carried through each op's gain. The same case must
+  agree byte for byte across every source, sink, engine, parameter style
+  (literal, `pl.col`, `pl.lit`, computed), composition (one pipeline,
+  `.pipe()`, aliased prefixes, blob-materialized steps), optimizer setting
+  and chunking. Algebraic laws cover inverses, commutation, resampling
+  identities, morphology ordering and the lossless contour round trip.
+  Ratchets hold its tables to the op, I/O and dtype catalogues. Each property
+  runs a small derandomized budget per push and a 25x randomized one in the
+  weekly slow lane.
+- tests: divergences the suite found are registered, not fixed, in
+  `tests/parity/framework/known.py` and pinned as strict xfails:
+  `binary-source-numpy-rows`, `array-null-slice-panic`,
+  `channel-swap-panic`, `channel-merge-dtype`, `convolve2d-f64`,
+  `through-f32`, `derived-extent-zero`, `view-offset-lost`,
+  `reshape-after-view`, `tiff-gray-alpha`, `divide-ratio-contract`,
+  `warp-per-row-matrix`, `threshold-wide-literal`. Each
+  entry's summary describes the defect and the fix.
+- tests: `tests/property/` is folded into `tests/parity/laws/`. The
+  `TestResizeScaleReference`/`TestAspectRatioResizeReference` classes in
+  `test_resize_enhancements.py` are removed: they resized with Pillow and
+  asserted Pillow's output size without running polars-cv. The parity suite's
+  resize entries compare polars-cv's pixels with Pillow's.
 - view-buffer: `ViewBuffer::try_apply_fused_kernel_inplace` is removed. Whether
   a kernel may write its input is decided in one place,
   `ViewBuffer::unique_contiguous_mut`, which the element-wise engine and the
