@@ -31,6 +31,7 @@ from tests.parity.framework.images import DTYPES, ImageSpec, render
 from tests.parity.framework.oracle import BINARY, OPS
 from tests.parity.framework.run import (
     ENGINES,
+    OPTIMIZATION,
     Axes,
     BinaryCase,
     PlanRefused,
@@ -124,7 +125,16 @@ def test_binary_graph_matches_references(data: st.DataObject) -> None:
         ) from exc
     left_out = _branch_output(case.left, list(case.left_steps))
     right_out = _branch_output(case.right, list(case.right_steps))
-    divergence = known.step_divergence(Step(method), left_out[0])
+    # Either operand can carry the defect (a small left and a wide right).
+    divergence = next(
+        (
+            d
+            for operand in (*left_out, *right_out)
+            if operand is not None
+            and (d := known.step_divergence(Step(method), operand)) is not None
+        ),
+        None,
+    )
     if divergence is not None:
         event(f"known divergence: {divergence.key}")
         return
@@ -191,7 +201,11 @@ def test_binary_graph_is_execution_invariant(data: st.DataObject) -> None:
     variants = [
         (f"engine={e}", lambda e=e: execute_binary(case, engine=e)) for e in ENGINES
     ]
-    variants.append(("optimize=none", lambda: execute_binary(case, optimize="none")))
+    variants += [
+        (f"optimize={v}", lambda v=v: execute_binary(case, optimize=v))
+        for v in OPTIMIZATION
+        if v != "all"
+    ]
     duplicated = BinaryCase(**{**case.__dict__, "shared": False})
     variants.append(("two identical columns", lambda: execute_binary(duplicated)))
     for label, run in variants:

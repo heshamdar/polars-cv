@@ -28,7 +28,7 @@ from tests.parity.framework.budget import property_lanes
 from tests.parity.framework.cases import draw_step, lossless_sources
 from tests.parity.framework.checks import ChainChecker
 from tests.parity.framework.images import image_specs
-from tests.parity.framework.run import ENGINES, Axes
+from tests.parity.framework.run import ENGINES, OPTIMIZATION, Axes
 
 pytestmark = plugin_required
 
@@ -48,6 +48,7 @@ def test_chain_matches_composed_references(data: st.DataObject) -> None:
     axes = Axes(
         source=data.draw(st.sampled_from(lossless_sources([image])), label="source"),
         engine=data.draw(st.sampled_from(ENGINES), label="engine"),
+        optimize=data.draw(st.sampled_from(OPTIMIZATION), label="optimize"),
     )
     checker = ChainChecker(image, axes)
     length = data.draw(st.integers(1, MAX_STEPS), label="length")

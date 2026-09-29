@@ -22,6 +22,7 @@ import numpy as np
 import polars as pl
 
 from polars_cv import OptFlags, Pipeline
+from polars_cv._optimize import PASS_NAMES
 from tests._expr_param_cases import expression_eligible_parameters
 from tests._plan_view import planned
 from tests.parity.framework.io import (
@@ -128,7 +129,42 @@ PARAM_STYLES = ("literal", "column", "lit", "derived")
 #:   between them through a ``blob`` round trip (nothing can fuse).
 COMPOSITIONS = ("chain", "continuation", "aliased", "materialized")
 
-OPTIMIZATION = ("all", "none")
+
+def _optimization_values() -> tuple[str, ...]:
+    """Every optimizer setting the axis sweeps, from the pass registry.
+
+    ``all`` and ``none``, then each pass alone (``only:<pass>``) and each pass
+    removed from the full set (``without:<pass>``) — the same shape as
+    ``test_optimize_equivalence``'s flag subsets. Read from
+    ``polars_cv._optimize.PASS_NAMES`` (generated from the Rust pass
+    catalogue), so a new pass joins the sweep without an edit here.
+    """
+    names = tuple(PASS_NAMES)
+    return (
+        "all",
+        "none",
+        *(f"only:{n}" for n in names),
+        *(f"without:{n}" for n in names),
+    )
+
+
+OPTIMIZATION = _optimization_values()
+
+
+def opt_flags_for(value: str) -> OptFlags:
+    """The :class:`OptFlags` an optimize-axis value names."""
+    if value == "all":
+        return OptFlags.all()
+    if value == "none":
+        return OptFlags.none()
+    kind, _, name = value.partition(":")
+    if name not in PASS_NAMES or kind not in ("only", "without"):
+        msg = f"unknown optimize setting {value!r}; expected one of {OPTIMIZATION}"
+        raise ValueError(msg)
+    on = kind == "without"
+    flags = {n: on for n in PASS_NAMES}
+    flags[name] = not on
+    return OptFlags(**flags)
 
 
 @dataclass(frozen=True)
@@ -364,7 +400,7 @@ def execute(
         msg = f"sink {axes.sink!r} does not apply to {info}"
         raise NotApplicable(msg)
     sink_kwargs = sink.kwargs(info)
-    opt_flags = OptFlags.all() if axes.optimize == "all" else OptFlags.none()
+    opt_flags = opt_flags_for(axes.optimize)
 
     try:
         expr = _compose(
@@ -541,7 +577,7 @@ def execute_binary(
     node = getattr(left, case.method)(right)
     if case.tail:
         node = node.pipe(apply_steps(Pipeline(), case.tail, params))
-    opt_flags = OptFlags.all() if optimize == "all" else OptFlags.none()
+    opt_flags = opt_flags_for(optimize)
     try:
         expr = node.sink("numpy", opt_flags=opt_flags)
     except ValueError as exc:

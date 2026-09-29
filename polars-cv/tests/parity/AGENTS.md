@@ -32,7 +32,7 @@ guarantees. This suite searches around them.
 | engine | `run.ENGINES` | eager (`DataFrame.select`, pinned to in-memory), lazy in-memory, lazy streaming |
 | parameters | `run.PARAM_STYLES` | literal, `pl.col`, `pl.lit`, a computed expression; per-row values (`PerRow`) |
 | composition | `run.COMPOSITIONS` | one pipeline, `.pipe()` continuation, every prefix aliased, every step materialized through `blob` |
-| optimizer | `run.Axes.optimize` | every pass on / off |
+| optimizer | `run.OPTIMIZATION` | all, none, and each pass in `PASS_NAMES` alone (`only:`) and removed (`without:`) |
 | frame layout | `run.Axes.chunked` | one chunk / a morsel boundary mid-column |
 
 Codec sinks decode through OpenCV, not polars-cv (Pillow cannot hold 16-bit

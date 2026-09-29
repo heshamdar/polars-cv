@@ -374,3 +374,35 @@ class TestChecksCatchDefects:
             check_invariant(
                 [self._IMAGE], [Step("flip_h")], Axes(), [Axes(sink="list")]
             )
+
+
+class TestOptimizationAxis:
+    """The optimize axis is the pass registry, both ways round."""
+
+    def test_every_pass_is_swept_alone_and_removed(self) -> None:
+        from polars_cv._optimize import PASS_NAMES
+        from tests.parity.framework.run import OPTIMIZATION
+
+        for name in PASS_NAMES:
+            assert f"only:{name}" in OPTIMIZATION
+            assert f"without:{name}" in OPTIMIZATION
+
+    def test_settings_map_to_the_flags_they_name(self) -> None:
+        from polars_cv._optimize import PASS_NAMES
+        from tests.parity.framework.run import opt_flags_for
+
+        name = PASS_NAMES[0]
+        only = opt_flags_for(f"only:{name}")
+        without = opt_flags_for(f"without:{name}")
+        assert getattr(only, name) and not any(getattr(only, n) for n in PASS_NAMES[1:])
+        assert not getattr(without, name) and all(
+            getattr(without, n) for n in PASS_NAMES[1:]
+        )
+
+    def test_an_unknown_setting_is_refused(self) -> None:
+        from tests.parity.framework.run import Axes, opt_flags_for
+
+        with pytest.raises(ValueError, match="unknown"):
+            opt_flags_for("only:no_such_pass")
+        with pytest.raises(ValueError, match="unknown axis value"):
+            Axes(optimize="some")
