@@ -156,6 +156,57 @@ _FLIP = Step("flip", {"axes": [0]})
 _BLUR = Step("blur", {"sigma": 1.0})
 
 
+def _divergence(repro, *, raises=AssertionError, match="the defect"):
+    return known.Divergence(
+        key="fixture",
+        summary="Fixed: never.",
+        repro=repro,
+        affects_step=lambda step, x: False,
+        raises=raises,
+        match=match,
+    )
+
+
+def _fails_with(exc: BaseException):
+    def repro() -> None:
+        raise exc
+
+    return repro
+
+
+class TestStillReproduces:
+    """A registered repro counts only when it fails with its own defect."""
+
+    @pytest.mark.parametrize(
+        ("divergence", "reason"),
+        [
+            (_divergence(lambda: None), "the repro passes"),
+            (
+                _divergence(_fails_with(TypeError("renamed helper"))),
+                "failed with TypeError",
+            ),
+            (
+                _divergence(_fails_with(AssertionError("another assertion"))),
+                "not with 'the defect'",
+            ),
+            (
+                _divergence(
+                    _fails_with(AssertionError("the defect")), raises=ValueError
+                ),
+                "failed with AssertionError, not ValueError",
+            ),
+        ],
+    )
+    def test_rejects(self, divergence: known.Divergence, reason: str) -> None:
+        with pytest.raises(AssertionError, match=reason):
+            known.still_reproduces(divergence)
+
+    def test_accepts_its_own_failure(self) -> None:
+        known.still_reproduces(
+            _divergence(_fails_with(AssertionError("row 1: the defect, again")))
+        )
+
+
 class TestDivergencePredicates:
     """Each predicate flags its defect's cases and nothing else."""
 

@@ -178,8 +178,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `through-f32`, `derived-extent-zero`, `view-offset-lost`,
   `reshape-after-view`, `tiff-gray-alpha`, `divide-ratio-contract`,
   `warp-per-row-matrix`, `threshold-wide-int`, `nan-one-sided-clamp`,
-  `hsv-hue-180`, `scalar-fusion-int-cast`, `derived-size-tie`. Each
-  entry's summary describes the defect and the fix.
+  `hsv-hue-180`, `scalar-fusion-int-cast`, `derived-size-tie`,
+  `blend-int`, `color-int-range`. Each entry's summary describes the defect
+  and the fix, and each pins the exception and message its repro fails with
+  (`known.still_reproduces`), so a repro broken for another reason no longer
+  reads as the defect.
+- tests: the parity suite's binary ops are drawn on every dtype their
+  contract admits (`BinarySpec` splits `accepts` from `ref_accepts`, as
+  `OpSpec` does); add/subtract/multiply/blend were drawn on u8, u16 and floats
+  only, which is how the claim that they were exact on wide integers went
+  unchecked.
 - tests: `tests/property/` is folded into `tests/parity/laws/`. The
   `TestResizeScaleReference`/`TestAspectRatioResizeReference` classes in
   `test_resize_enhancements.py` are removed: they resized with Pillow and

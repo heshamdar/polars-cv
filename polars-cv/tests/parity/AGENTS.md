@@ -105,10 +105,13 @@ again. So each confirmed divergence is one `Divergence` entry, with:
   `hypothesis.event`.
 - `avoid=True` when the case cannot be carried forward: it raises, or it
   leaves a state such as a 0×0 image. Generators never produce such a case.
-- a **repro** that asserts the *correct* behaviour.
-  `oracle/test_parity_known_divergences.py` runs it as a strict `xfail`, so a
-  fix XPASSes, the suite goes red, and the entry (predicate included) must be
-  deleted. That deletion puts the fixed path back under the sweeps.
+- a **repro** that asserts the *correct* behaviour, and the `raises` and
+  `match` it fails with today. `oracle/test_parity_known_divergences.py` runs
+  it through `known.still_reproduces`, which requires that exact failure: a
+  fix makes the repro pass, the suite goes red, and the entry (predicate
+  included) must be deleted. That deletion puts the fixed path back under the
+  sweeps. A repro that breaks for another reason fails too, rather than
+  reading as the defect.
 
 Confirm a divergence against the running engine with an independent decoder
 or reference before adding it, as for `tests/test_known_gaps.py`.
