@@ -139,6 +139,9 @@ def test_binary_graph_matches_references(data: st.DataObject) -> None:
         event(f"known divergence: {divergence.key}")
         return
     for row, (a, b, out) in enumerate(zip(left_out, right_out, joined.rows)):
+        if not spec.ref_accepts(a):
+            event(f"{method}: no reference for this input")
+            continue
         expected = spec.ref(a, b)
         mismatch = compare(out, expected, spec.tol(a))
         if mismatch is not None:

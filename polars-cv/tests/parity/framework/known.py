@@ -53,6 +53,12 @@ class Divergence:
             it leaves a state no later step is meant to handle (a zero-sized
             image). Such a case is never executed or appended to a chain; the
             checks skip it and count it with ``event``.
+        raises: The exception the repro fails with today: ``AssertionError``
+            for a wrong answer, the engine's error type for one it refuses.
+        match: A fragment of that exception's message. Together with
+            *raises* it pins the failure to the defect, so a repro broken for
+            another reason (a renamed helper, a changed fixture) is reported
+            rather than read as "still reproduces" (:func:`still_reproduces`).
     """
 
     key: str
@@ -65,6 +71,38 @@ class Divergence:
     affects_step: Callable[[Step, np.ndarray], bool] | None = None
     affects_chain: Callable[[Sequence[Step]], bool] | None = None
     avoid: bool = False
+    raises: type[BaseException] = AssertionError
+    match: str = ""
+
+
+def still_reproduces(divergence: Divergence) -> None:
+    """Run *divergence*'s repro and require it to fail *for its defect*.
+
+    Raises ``AssertionError`` when the repro passes (the defect is fixed:
+    delete the entry, which puts the path back under the sweeps) or fails
+    some other way (the repro is broken, not the engine).
+    """
+    try:
+        divergence.repro()
+    except divergence.raises as exc:
+        if divergence.match not in str(exc):
+            msg = (
+                f"{divergence.key}: the repro raised {type(exc).__name__} but "
+                f"not with {divergence.match!r}: {str(exc)[:300]}"
+            )
+            raise AssertionError(msg) from exc
+        return
+    except Exception as exc:
+        msg = (
+            f"{divergence.key}: the repro failed with {type(exc).__name__}, not "
+            f"{divergence.raises.__name__}: {str(exc)[:300]}"
+        )
+        raise AssertionError(msg) from exc
+    msg = (
+        f"{divergence.key}: the repro passes. The defect is fixed: delete its "
+        "entry (predicate included) so the sweeps cover the path again."
+    )
+    raise AssertionError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +317,35 @@ def _derived_size_is_tie(step: Step, x: np.ndarray) -> bool:
     return any((size * f) % 1 == Fraction(1, 2) for size, f in ((h, fy), (w, fx)))
 
 
+def _repro_blend_int() -> None:
+    from tests.parity.framework.run import BinaryCase, execute_binary
+
+    a = np.array([[[81]]], dtype=np.int8)
+    out = execute_binary(BinaryCase((a,), (a,), (), (), "blend")).rows[0]
+    # (81 / 127) * (81 / 127) * 127 = 51.66
+    assert out.ravel()[0] == 52, f"blend of i8 81 with itself is {out.ravel()[0]}"
+
+
+def _repro_color_int_range() -> None:
+    from tests.parity.framework.run import Axes, Step, execute
+
+    gray = np.full((1, 1, 3), 32768, dtype=np.uint16)
+    out = execute([gray], [Step("to_ycbcr")], Axes()).rows[0].ravel()
+    # A gray pixel has no chroma: Cb = Cr = the middle of the range.
+    assert out.tolist() == [32768] * 3, f"u16 gray to YCbCr is {out.tolist()}"
+
+
+_COLOR_SPACES = frozenset({"to_hsv", "to_ycbcr", "to_lab"})
+
+
+def _color_int_range(step: Step, x: np.ndarray) -> bool:
+    space = step.method in _COLOR_SPACES or (
+        step.method == "convert_color"
+        and step.params.get("to_space") not in (None, "rgb", "bgr", "gray")
+    )
+    return space and x.dtype.kind in "iu" and x.dtype != np.uint8
+
+
 def _repro_convolve_f64() -> None:
     from tests.parity.framework.run import Axes, Step, execute
 
@@ -385,7 +452,11 @@ _THROUGH_F32 = frozenset(
         "resize_scale",
         "letterbox",
         "morphology_gradient",
-        # binary ops (the DAG suite asks with Step(method) and the left operand)
+        # binary ops (the DAG suite asks with Step(method) and each operand)
+        "add",
+        "subtract",
+        "multiply",
+        "blend",
         "bitwise_and",
         "bitwise_or",
         "bitwise_xor",
@@ -431,6 +502,8 @@ def _derived_extent_is_zero(step: Step, x: np.ndarray) -> bool:
 DIVERGENCES: tuple[Divergence, ...] = (
     Divergence(
         key="tiff-gray-alpha",
+        raises=pl.exceptions.ComputeError,
+        match="Unsupported TIFF color type",
         summary=(
             "The image decoder cannot read a gray+alpha (2-sample) TIFF: one "
             "written by Pillow is refused ('Unsupported TIFF color type: "
@@ -449,6 +522,8 @@ DIVERGENCES: tuple[Divergence, ...] = (
     ),
     Divergence(
         key="array-null-slice-panic",
+        raises=pl.exceptions.ComputeError,
+        match="panicked",
         summary=(
             "An Array column with null rows panics in polars-arrow ('the "
             "offset of the new Buffer cannot exceed the existing length') "
@@ -468,6 +543,7 @@ DIVERGENCES: tuple[Divergence, ...] = (
     ),
     Divergence(
         key="binary-source-numpy-rows",
+        match="row 1 came back as row 0's pixels",
         summary=(
             "A multi-row blob or raw column read by the eager or in-memory "
             "engine into a zero-copy tensor sink (numpy/ndarray/torch) returns "
@@ -487,6 +563,8 @@ DIVERGENCES: tuple[Divergence, ...] = (
     ),
     Divergence(
         key="channel-swap-panic",
+        raises=pl.exceptions.ComputeError,
+        match="ImageOp contract violation: ChannelSwap",
         summary=(
             "channel_swap panics on every dtype but u8 and f32 ('ImageOp "
             "contract violation: ChannelSwap: expected output dtype U16 (rule "
@@ -502,6 +580,8 @@ DIVERGENCES: tuple[Divergence, ...] = (
     ),
     Divergence(
         key="channel-merge-dtype",
+        raises=pl.exceptions.ComputeError,
+        match="planned dtype u16 but execution produced F32",
         summary=(
             "channel_merge of any dtype but u8 and f32 plans the operands' "
             "dtype and executes f32, which the plugin's output guard rejects "
@@ -517,6 +597,7 @@ DIVERGENCES: tuple[Divergence, ...] = (
     ),
     Divergence(
         key="divide-ratio-contract",
+        match="documented: integer division",
         summary=(
             "divide and ratio do not do what their docs say. Documented: "
             "divide is integer division for u8/u16 (x / 0 -> 0) and IEEE "
@@ -530,16 +611,17 @@ DIVERGENCES: tuple[Divergence, ...] = (
     ),
     Divergence(
         key="warp-per-row-matrix",
+        match="a per-row matrix changed the f64 result",
         summary=(
             "warp_affine (and shear/rotate_and_scale, which lower to it) "
             "gives a different result when the matrix arrives as per-row "
-            "expressions rather than literals, although the matrices are "
-            "bit-identical (checked against rotation_matrix_2d): the two "
-            "parameter paths evaluate the warp in different arithmetic. It "
-            "shows in the last bits of f64 (up to 8e-16) and of wide integers "
-            "(u64 110184465182317 vs ...318), and can flip a rounding on any "
-            "integer dtype. Fixed: literal and per-row matrices give "
-            "identical output."
+            "expressions rather than literals. Both run the same f64 kernel; "
+            "the literal matrix is parsed from the graph JSON inexactly "
+            "(serde_json without float_roundtrip can land an ulp away), so "
+            "the kernel gets a different matrix. It shows in the last bits of "
+            "f64 (up to 8e-16) and of wide integers (u64 110184465182317 vs "
+            "...318), and can flip a rounding on any integer dtype. Fixed: "
+            "literal and per-row matrices give identical output."
         ),
         repro=_repro_warp_per_row_matrix,
         affects_axes=lambda axes, images, shapes, steps: (
@@ -551,15 +633,17 @@ DIVERGENCES: tuple[Divergence, ...] = (
     ),
     Divergence(
         key="threshold-wide-int",
+        match="the pixel does not exceed the threshold",
         summary=(
             "threshold on a u64/i64 image near the edge of f64 precision "
-            "(|value| >= 2**50) depends on how the value and the image arrive. "
-            "u64 pixel 18442240474082181119 against the literal "
-            "1.8442240474082181e19 gives 255 where the same value as an "
-            "expression gives 0; i64 pixel 3797082577976981 against "
-            "3797082577976980.5 gives 255 from the list source and 0 from the "
-            "array, raw, blob and auto sources. f64 and exact comparison agree "
-            "on each. Fixed: one answer on every path."
+            "(|value| >= 2**50) depends on whether the value arrives as a "
+            "literal or an expression, on every source: u64 pixel "
+            "18442240474082181119 against the literal 1.8442240474082181e19 "
+            "gives 255 where the same value as an expression gives 0; i64 "
+            "pixel 3797082577976981 against 3797082577976980.5 gives 0 as a "
+            "literal and 255 as an expression. The literal is parsed from the "
+            "graph JSON inexactly, and the kernel compares the pixel rounded "
+            "to f64. Fixed: one exact answer on every path."
         ),
         repro=_repro_threshold_wide_literal,
         affects_step=lambda step, x: _wide_int_threshold(step, [x]),
@@ -569,6 +653,7 @@ DIVERGENCES: tuple[Divergence, ...] = (
     ),
     Divergence(
         key="nan-one-sided-clamp",
+        match="turned NaN into a number",
         summary=(
             "relu, clamp_min and clamp_max turn NaN into their bound (relu(NaN) "
             "-> 0, clamp_min(0.5) of NaN -> 0.5), while clamp, abs, sign, "
@@ -583,6 +668,7 @@ DIVERGENCES: tuple[Divergence, ...] = (
     ),
     Divergence(
         key="hsv-hue-180",
+        match="8-bit hue is [0, 180)",
         summary=(
             "to_hsv on u8 emits H = 180 for hues in [359, 360) degrees "
             "(RGB(255, 0, 1) -> H 180), outside 8-bit HSV's [0, 180); OpenCV "
@@ -594,6 +680,7 @@ DIVERGENCES: tuple[Divergence, ...] = (
     ),
     Divergence(
         key="scalar-fusion-int-cast",
+        match="fused [255 255 255]",
         summary=(
             "The scalar_fusion pass changes results: it fuses an integer "
             "invert with a following int -> int cast into one kernel that "
@@ -610,6 +697,7 @@ DIVERGENCES: tuple[Divergence, ...] = (
     ),
     Divergence(
         key="derived-size-tie",
+        match="width 46",
         summary=(
             "An aspect-preserving resize whose derived size is exactly k + 1/2 "
             "rounds it inconsistently: resize_to_height(21) of a 14x31 image "
@@ -621,7 +709,43 @@ DIVERGENCES: tuple[Divergence, ...] = (
         affects_step=_derived_size_is_tie,
     ),
     Divergence(
+        key="blend-int",
+        match="blend of i8 81 with itself is 127",
+        summary=(
+            "blend is normalized ((a/MAX)(b/MAX)MAX) only for u8 and u16; "
+            "every other integer dtype takes the float path, where blend is "
+            "a plain multiply saturated to the dtype (i8 81 blend 81 -> 127, "
+            "not 52). The per-dtype semantics of the binary ops are written "
+            "for u8/u16 and floats only. Fixed: blend normalizes by the "
+            "dtype's maximum on every integer dtype."
+        ),
+        repro=_repro_blend_int,
+        affects_step=lambda step, x: (
+            step.method == "blend"
+            and x.dtype.kind in "iu"
+            and x.dtype not in (np.uint8, np.uint16)
+        ),
+    ),
+    Divergence(
+        key="color-int-range",
+        match="u16 gray to YCbCr is [32768, 128, 128]",
+        summary=(
+            "The colour-space conversions (to_hsv, to_ycbcr, to_lab) use "
+            "8-bit constants on every integer dtype: a u16 gray pixel 32768 "
+            "converts to YCbCr (32768, 128, 128) (the chroma offset is 128, "
+            "not half the range), HSV saturation is scaled to 255 while V "
+            "keeps the input's range, and Lab reads the input as 0-255 (u16 "
+            "mid-gray has L = 5393). The oracle models u8 only; widen its "
+            "ref_accepts with the fix. Fixed: each integer dtype converts "
+            "over its own range."
+        ),
+        repro=_repro_color_int_range,
+        affects_step=_color_int_range,
+    ),
+    Divergence(
         key="convolve2d-f64",
+        raises=pl.exceptions.ComputeError,
+        match="planned dtype f64 but execution produced F32",
         summary=(
             "convolve2d (and sobel/laplacian/sharpen, which lower to it) on an "
             "f64 image plans f64 but executes f32, which the plugin's own "
@@ -637,14 +761,15 @@ DIVERGENCES: tuple[Divergence, ...] = (
     ),
     Divergence(
         key="through-f32",
+        match="must not round 16777217",
         summary=(
             "32/64-bit integer and f64 images are converted or resampled "
             "through f32, so a value f32 cannot hold changes (u32 16777217 -> "
             "16777216; f64 0.63696169 -> 0.63696170) even where the op only "
             "moves data (to_bgr, convert_color rgb->bgr, a nearest resize), "
-            "and in the binary maximum/minimum/bitwise_and/or/xor (u32 "
-            "16777219 ^ 16777221 -> 0, not 6); add/subtract/multiply are "
-            "exact. Fixed: those ops are exact on every dtype."
+            "and in the binary ops: every operand pair but u8, u16, f32 and "
+            "f64 is computed in f32 (u32 16777219 ^ 16777221 -> 0, not 6). "
+            "Fixed: those ops are exact on every dtype."
         ),
         repro=_repro_wide_int_through_f32,
         affects_step=lambda step, x: (
@@ -653,6 +778,7 @@ DIVERGENCES: tuple[Divergence, ...] = (
     ),
     Divergence(
         key="derived-extent-zero",
+        match="collapsed to zero rows",
         summary=(
             "The aspect-preserving resizes (resize_max/min/to_height/to_width/"
             "scale, letterbox) round a derived size without a floor of one "
@@ -667,6 +793,7 @@ DIVERGENCES: tuple[Divergence, ...] = (
     ),
     Divergence(
         key="view-offset-lost",
+        match="read from the uncropped start",
         summary=(
             "A crop that starts below the first row (or right of the first "
             "column) leaves a view with an offset; a zero-copy rank change "
@@ -683,6 +810,8 @@ DIVERGENCES: tuple[Divergence, ...] = (
     ),
     Divergence(
         key="reshape-after-view",
+        raises=pl.exceptions.ComputeError,
+        match="cannot reshape a non-contiguous view",
         summary=(
             "reshape after a flip, transpose, quarter rotation or crop fails at "
             "execution ('cannot reshape a non-contiguous view ... the elements "

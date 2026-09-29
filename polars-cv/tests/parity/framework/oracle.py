@@ -1947,13 +1947,16 @@ EXEMPT: dict[str, str] = {
 class BinarySpec:
     """A two-operand op on ``LazyPipelineExpr``.
 
-    Both operands share a dtype and shape; the result's dtype is the
-    operands'. ``ref(a, b)`` is the reference.
+    Both operands share a dtype and shape. ``ref(a, b)`` is the reference.
+    As for :class:`OpSpec`, ``accepts`` is what the op's contract admits (the
+    cases drawn, so the invariance suite covers all of it) and
+    ``ref_accepts`` what the reference models (the cases compared).
     """
 
     method: str
     ref: Callable[[np.ndarray, np.ndarray], np.ndarray]
     accepts: Callable[[np.ndarray], bool] = _always
+    ref_accepts: Callable[[np.ndarray], bool] = _always
     tol: Callable[[np.ndarray], Tol] = lambda x: EXACT
     note: str = ""
 
@@ -1999,34 +2002,22 @@ def _float_or_lsb(x: np.ndarray) -> Tol:
     return lsb(1) if is_int(x) else close(atol=0, rtol=4 * float(np.finfo(x.dtype).eps))
 
 
-_U = lambda x: x.dtype in (np.uint8, np.uint16) or x.dtype.kind == "f"  # noqa: E731
-
 BINARY: dict[str, BinarySpec] = {
     spec.method: spec
     for spec in (
-        BinarySpec(
-            "add", _saturating(lambda a, b: a + b), accepts=_U, note="saturating"
-        ),
-        BinarySpec(
-            "subtract", _saturating(lambda a, b: a - b), accepts=_U, note="saturating"
-        ),
-        BinarySpec(
-            "multiply", _saturating(lambda a, b: a * b), accepts=_U, note="saturating"
-        ),
-        BinarySpec(
-            "divide", _divide_ref, accepts=_U, note="integer division; x / 0 -> 0"
-        ),
+        BinarySpec("add", _saturating(lambda a, b: a + b), note="saturating"),
+        BinarySpec("subtract", _saturating(lambda a, b: a - b), note="saturating"),
+        BinarySpec("multiply", _saturating(lambda a, b: a * b), note="saturating"),
+        BinarySpec("divide", _divide_ref, note="integer division; x / 0 -> 0"),
         BinarySpec(
             "blend",
             _unit_scaled(lambda a, b, m: (a / m) * (b / m) * m),
-            accepts=_U,
             tol=_float_or_lsb,
             note="normalized product: (a/MAX)(b/MAX)MAX",
         ),
         BinarySpec(
             "ratio",
             _unit_scaled(lambda a, b, m: (a / b) * m if m != 1.0 else a / b),
-            accepts=_U,
             tol=_float_or_lsb,
             note="(a/b)*MAX clamped for integers; plain division for floats",
         ),
