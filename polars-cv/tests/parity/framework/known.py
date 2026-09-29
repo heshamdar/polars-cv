@@ -169,12 +169,12 @@ def _repro_threshold_wide_literal() -> None:
 
 
 def _wide_int_threshold(step: Step, images: Sequence[Any]) -> bool:
-    """A threshold beyond 2**53 over a 64-bit integer image."""
+    """A threshold beyond 2**50 over a 64-bit integer image."""
     if step.method != "threshold":
         return False
     value = step.params.get("value", 0.0)
     values = getattr(value, "values", (value,))  # a PerRow carries several
-    return any(abs(float(v)) >= 2**53 for v in values) and any(
+    return any(abs(float(v)) >= 2**50 for v in values) and any(
         im is not None and im.dtype in (np.uint64, np.int64) for im in images
     )
 
@@ -214,6 +214,69 @@ def _hue_rounds_to_180(x: np.ndarray) -> bool:
     rgb = np.ascontiguousarray(x[:, :, :3]).astype(np.float32) / 255.0
     hue = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)[:, :, 0]
     return bool((hue >= 359.0).any())
+
+
+def _repro_fused_int_cast() -> None:
+    from tests.parity.framework.run import Axes, Step, execute
+
+    image = np.array([[[1000], [60000], [300]]], dtype=np.uint16)
+    steps = [Step("invert"), Step("cast", {"dtype": "u8"})]
+    fused = execute([image], steps, Axes(optimize="all")).rows[0]
+    unfused = execute([image], steps, Axes(optimize="none")).rows[0]
+    # int -> int casts wrap (view-buffer/src/core/convert.rs): 64535 -> 23.
+    assert np.array_equal(fused, unfused), f"fused {fused.ravel()} vs {unfused.ravel()}"
+
+
+def _fused_int_cast(axes: Axes, images: Sequence[Any], steps: Sequence[Step]) -> bool:
+    """scalar_fusion on, an integer image, and an integer cast after invert."""
+    from tests.parity.framework.images import DTYPES
+    from tests.parity.framework.run import opt_flags_for
+
+    if not opt_flags_for(axes.optimize).scalar_fusion:
+        return False
+    if not any(im is not None and im.dtype.kind in "iu" for im in images):
+        return False
+    for i, step in enumerate(steps):
+        target = step.params.get("dtype") if step.method == "cast" else None
+        if target in DTYPES and DTYPES[target].kind in "iu":
+            if any(prev.method == "invert" for prev in steps[:i]):
+                return True
+    return False
+
+
+def _repro_derived_size_tie() -> None:
+    from tests.parity.framework.run import Axes, Step, execute
+
+    image = np.zeros((14, 31, 1), dtype=np.uint8)  # 31 * 21 / 14 = 46.5
+    out = execute(
+        [image], [Step("resize_to_height", {"height": 21, "filter": "nearest"})], Axes()
+    )
+    # 7.5 -> 8, 10.5 -> 11, 1.5 -> 2 elsewhere: a tie rounds up.
+    assert out.rows[0].shape[1] == 47, f"width {out.rows[0].shape[1]}"
+
+
+def _derived_size_is_tie(step: Step, x: np.ndarray) -> bool:
+    """Whether an aspect-preserving resize derives a size of exactly k + 1/2."""
+    from fractions import Fraction
+
+    if x.ndim < 2:
+        return False
+    h, w = x.shape[:2]
+    p = step.params
+    ratio = {
+        "resize_to_height": lambda: (Fraction(p["height"], h),) * 2,
+        "resize_to_width": lambda: (Fraction(p["width"], w),) * 2,
+        "resize_max": lambda: (Fraction(p["max_size"], max(h, w)),) * 2,
+        "resize_min": lambda: (Fraction(p["min_size"], min(h, w)),) * 2,
+        "letterbox": lambda: (
+            (min(Fraction(p["height"], h), Fraction(p["width"], w)),) * 2
+        ),
+        "resize_scale": lambda: (Fraction(p["scale_y"]), Fraction(p["scale_x"])),
+    }.get(step.method)
+    if ratio is None:
+        return False
+    fy, fx = ratio()
+    return any((size * f) % 1 == Fraction(1, 2) for size, f in ((h, fy), (w, fx)))
 
 
 def _repro_convolve_f64() -> None:
@@ -487,14 +550,16 @@ DIVERGENCES: tuple[Divergence, ...] = (
         ),
     ),
     Divergence(
-        key="threshold-wide-literal",
+        key="threshold-wide-int",
         summary=(
-            "threshold on a u64/i64 image with a literal whole-number value "
-            "beyond 2**53 can misfire: pixel 18442240474082181119 against "
-            "value 1.8442240474082181e19 (the pixel's own f64 rounding) gives "
-            "255, where the same value as an expression gives 0, as do f64 "
-            "and exact comparison. Both paths otherwise compare in f64. "
-            "Fixed: the literal and expression paths agree."
+            "threshold on a u64/i64 image near the edge of f64 precision "
+            "(|value| >= 2**50) depends on how the value and the image arrive. "
+            "u64 pixel 18442240474082181119 against the literal "
+            "1.8442240474082181e19 gives 255 where the same value as an "
+            "expression gives 0; i64 pixel 3797082577976981 against "
+            "3797082577976980.5 gives 255 from the list source and 0 from the "
+            "array, raw, blob and auto sources. f64 and exact comparison agree "
+            "on each. Fixed: one answer on every path."
         ),
         repro=_repro_threshold_wide_literal,
         affects_step=lambda step, x: _wide_int_threshold(step, [x]),
@@ -526,6 +591,34 @@ DIVERGENCES: tuple[Divergence, ...] = (
         ),
         repro=_repro_hsv_hue_180,
         affects_step=lambda step, x: step.method == "to_hsv" and _hue_rounds_to_180(x),
+    ),
+    Divergence(
+        key="scalar-fusion-int-cast",
+        summary=(
+            "The scalar_fusion pass changes results: it fuses an integer "
+            "invert with a following int -> int cast into one kernel that "
+            "converts by the float -> int rule (round, saturate) instead of "
+            "the int -> int rule (wrap). u16 invert().cast('u8') of 1000 is 23 "
+            "unfused (64535 wraps) and 255 fused; i16 targets likewise. Every "
+            "pass is documented as byte-identical. Fixed: fused and unfused "
+            "agree."
+        ),
+        repro=_repro_fused_int_cast,
+        affects_axes=lambda axes, images, shapes, steps: _fused_int_cast(
+            axes, images, steps
+        ),
+    ),
+    Divergence(
+        key="derived-size-tie",
+        summary=(
+            "An aspect-preserving resize whose derived size is exactly k + 1/2 "
+            "rounds it inconsistently: resize_to_height(21) of a 14x31 image "
+            "derives width 46 (46.5 down) while 7.5, 10.5 and 1.5 round up — "
+            "the size is computed in floating point in an order that lands "
+            "some ties just below .5. Fixed: ties round one way."
+        ),
+        repro=_repro_derived_size_tie,
+        affects_step=_derived_size_is_tie,
     ),
     Divergence(
         key="convolve2d-f64",

@@ -260,6 +260,10 @@ class ChainChecker:
         params = dict(step.params)
         modelled = spec.has_reference(previous, params)
         divergence = known.step_divergence(step, previous) if modelled else None
+        if divergence is None and modelled:
+            # An axis-level defect (the optimizer setting, say) that this
+            # prefix triggers; the same entry withholds the end-to-end check.
+            divergence = known.axes_divergence(self.axes, [self.image], [], self.steps)
         if divergence is not None:
             event(f"known divergence: {divergence.key}")
         elif modelled:
