@@ -1202,6 +1202,29 @@ class TestHistogramCorrectness:
         assert hist[255] == 1
         assert sum(hist) == 4
 
+    def _gradient_hist(self, encode_png: Callable, **kwargs: object) -> list:
+        """Grayscale pixels 0, 64, 128, 255 through ``histogram(**kwargs)``."""
+        arr = np.array([[0, 64, 128, 255]], dtype=np.uint8)
+        df = pl.DataFrame({"img": [encode_png(arr)]})
+        pipe = Pipeline().source("image_bytes").histogram(output="counts", **kwargs)
+        return df.select(out=pl.col("img").cv.pipe(pipe).sink("list"))["out"][
+            0
+        ].to_list()
+
+    def test_values_outside_the_range_are_dropped(self, encode_png: Callable) -> None:
+        """numpy's rule: 0 and 255 lie outside ``range=(50, 200)`` and are not
+        counted (they used to be clamped into the end bins)."""
+        counts = self._gradient_hist(encode_png, bins=3, range=(50, 200))
+        ref, _ = np.histogram([0, 64, 128, 255], bins=3, range=(50, 200))
+        assert counts == ref.tolist() == [1, 1, 0]
+        edged = self._gradient_hist(encode_png, bins=[50, 100, 150, 200])
+        assert edged == [1, 1, 0]
+
+    def test_infinite_outer_edges_keep_every_value(self, encode_png: Callable) -> None:
+        """Open bounds, as polars' ``hist`` breaks: nothing falls outside."""
+        counts = self._gradient_hist(encode_png, bins=[-math.inf, 100, math.inf])
+        assert counts == [2, 2]
+
     @staticmethod
     def _nan_pipe() -> Pipeline:
         """Grayscale pixels 0 and 4 → f32 sqrt(-x): 0.0, and NaN for the 4s."""

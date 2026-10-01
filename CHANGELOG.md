@@ -82,6 +82,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   before, auto range silently skipped NaN. Explicit edges must increase
   monotonically, checked at plan time.
 
+- **`histogram` drops values outside its bins, as NumPy does.** A value
+  below the first edge or above the last — of an explicit `range` or of
+  explicit edges — was clamped into the end bin, so `range=(50, 200)` counted
+  every pixel. It is now in no bin, like NaN: not counted, and its
+  `quantized` index is one past the last bin. Pass infinite outer edges to
+  keep everything (`bins=[-inf, 50, 200, inf]`, see *Added*). Tied edges
+  follow `np.histogram` (`[0, 1, 1, 2]` puts 1 in the last bin left-closed,
+  the first right-closed); a binary search over the tie used to pick either.
+  A `range` whose min exceeds its max is an error. An auto-detected range
+  still holds every pixel: its ends widen outward where a 64-bit integer
+  rounds inward to f64.
+
 - **polars-cv requires `polars>=1.43.2`** (was `>=1.41.1`). Older polars
   exports a sliced `Array` column that has nulls across the plugin FFI with
   its offset applied twice (the `FixedSizeListArray` export reported the
@@ -120,6 +132,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   8-connected, so pixels touching only at a corner are one region, whose
   outline passes through that corner twice. `mode="external"` is now decided
   from the region labelling rather than a quadratic point-in-polygon scan.
+
+### Added
+
+- **Open-ended histogram bins.** Explicit edges may start at `-inf` and end
+  at `inf`, as polars' `hist` breaks do: `histogram(bins=[-math.inf, 0,
+  math.inf])` splits every value at 0. The wire carries an infinite edge as
+  `"inf"`/`"-inf"` (JSON has no infinity), through a `bound` catalogue type
+  (`naming::Bound`) that only histogram edges have, so no other float
+  parameter can receive an infinity it does not define.
 
 ### Performance
 
@@ -249,6 +270,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Internal
 
+- tests (review follow-ups): the dtype sweep fails an op its contract admits
+  on no swept layout (it had never swept `reshape`, whose sample fitted no
+  layout); `rotate_and_scale`'s lowering and the binary float ops are
+  checked against independent references (geometry; f64 rounded once and
+  exact integers), not restatements of the kernel; the parity harness keys
+  the quarter-turn rule on `rotate` itself and keeps literal-only list forms
+  (`histogram` edges) literal on every parameter axis; the u8 resample bound
+  against Pillow is 2 for every filter, as two correct fixed-point
+  resamplers round to opposite sides of the exact value.
 - tests: a generative parity suite, `tests/parity/` (Hypothesis). Every
   chainable op runs against an independent reference (NumPy, OpenCV, Pillow,
   SciPy) over drawn dtypes, sizes, channel counts, pixel content, null rows,
@@ -321,6 +351,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **`convert_color(rgb -> gray)` is `grayscale()`.** BT.601 was written out
+  in five places, and `convert_color` computed it in f32 for i8, u16, i16 and
+  f32 where `grayscale` computes in f64 and rounds once, so the two
+  disagreed (f32 in the last bit). Both now run one luma
+  (`ops::color::Luma`), as does the YCbCr encoder.
+- **Histogram edges meet integer pixels exactly.** A u64/i64 pixel was
+  compared with an edge through f64, so `2**53 + 3` landed in the bin above
+  the edge `2**53 + 4`. Histogram binning now reads the threshold's exact
+  integer cut (`core::cut`, the one pixel-against-boundary comparison).
 - **Resizing an empty image is refused, not a panic.** An aspect-preserving
   resize (`resize(height=…)`, `resize_max`, `resize_min`, `letterbox`) of an
   image with a zero height or width divided by it while deriving the other

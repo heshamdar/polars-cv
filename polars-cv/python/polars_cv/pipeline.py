@@ -8,6 +8,7 @@ processing pipelines that can be applied to Polars DataFrame columns.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable
 from types import FunctionType
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -96,12 +97,23 @@ def _encode_field(p: "Pipeline", value: Any, ty: "dict[str, Any]", where: str) -
             _encode_field(p, v, ty["inner"], f"{where}[{i}]")
             for i, v in enumerate(value)
         ]
+    if kind == "scalar" and ty["py"] == "bound" and not isinstance(value, pl.Expr):
+        return _bound_wire(_to_python(value))
     if kind == "scalar" and ty["per_row"]:
         return p._wire(value)
     if isinstance(value, pl.Expr):
         msg = f"{where}: {_STRUCTURAL}"
         raise TypeError(msg)
     return _to_python(value)
+
+
+def _bound_wire(value: Any) -> Any:
+    """A ``bound`` (``naming::Bound``: a float that may be infinite) on the
+    wire. JSON has no infinity, so an infinite bound is ``"inf"``/``"-inf"``;
+    anything else goes as given, for Rust to accept or refuse."""
+    if isinstance(value, (int, float)) and math.isinf(value):
+        return "inf" if value > 0 else "-inf"
+    return value
 
 
 def _is_sequence(value: Any) -> bool:

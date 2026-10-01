@@ -641,7 +641,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
                 {"kind": "scalar", "per_row": True, "py": "int"},
                 {
                     "kind": "list",
-                    "inner": {"kind": "scalar", "per_row": False, "py": "float"},
+                    "inner": {"kind": "scalar", "per_row": False, "py": "bound"},
                 },
             ],
         },
@@ -1719,12 +1719,19 @@ class _OpsMixin:
     ) -> Pipeline:
         """Compute pixel value histogram.
 
+        Bins follow ``numpy.histogram``: a value outside the range or the edges
+        is in no bin (not counted; ``"quantized"`` gives it the index one past the
+        last bin), as is NaN. Infinite outer edges are open bounds, e.g.
+        ``bins=[-inf, 0, 10, inf]`` keeps every value.
+
         Domain: buffer → vector; with ``output="quantized"``: buffer → buffer
 
         Args:
             bins: Number of bins (default 256), a Polars expression for per-row dynamic
-                bin count, or an explicit list of bin edges.
-            range: (min, max) tuple. Auto-detected if None.
+                bin count, or an explicit list of non-decreasing bin edges (the outer
+                ones may be infinite).
+            range: (min, max) tuple, finite. Auto-detected if None, widened to hold
+                every value.
             closed: "left" or "right" interval inclusiveness (default "left").
             output: "buckets" (list of structs), "counts" (bin counts), "normalized"
                 (sum to 1.0), "quantized" (pixel indices), "edges" (bin edges).

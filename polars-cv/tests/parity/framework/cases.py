@@ -33,6 +33,7 @@ from tests.parity.framework.run import (
     Axes,
     PerRow,
     Step,
+    admits_expression,
     expression_eligible,
 )
 
@@ -165,7 +166,7 @@ def _merge_per_row(method: str, rows: list[dict[str, Any]]) -> dict[str, Any] | 
             return None  # a list's length is structural: it cannot vary
         if all(v == values[0] for v in values):
             merged[key] = values[0]
-        elif expression_eligible(method, key) is not None:
+        elif admits_expression(expression_eligible(method, key), PerRow(tuple(values))):
             merged[key] = PerRow(tuple(values))
         else:
             return None

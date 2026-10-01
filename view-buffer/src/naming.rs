@@ -267,6 +267,43 @@ impl WireScalar for core::num::NonZeroU32 {
     }
 }
 
+/// A boundary on the number line: any `f64` but NaN, so `±infinity` too.
+///
+/// JSON has no infinity, so on the wire an infinite bound is the string
+/// `"inf"` or `"-inf"` (Python's encoder writes it from the catalogue's
+/// `bound` type), a finite one a number. Only a field whose infinity means
+/// something has this type (a histogram's open outer edges); every other
+/// float stays `f64`, where the wire cannot carry one.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct Bound(pub f64);
+
+impl WireScalar for Bound {
+    const KIND: WireKind = WireKind::Float;
+    const PY_TYPE: &'static str = "bound";
+    fn from_wire(value: WireValue<'_>) -> Result<Self, String> {
+        match value {
+            WireValue::Str("inf") => Ok(Bound(f64::INFINITY)),
+            WireValue::Str("-inf") => Ok(Bound(f64::NEG_INFINITY)),
+            WireValue::Float(f) if f.is_nan() => Err("a bound cannot be NaN".to_string()),
+            WireValue::Int(_) | WireValue::Float(_) => f64::from_wire(value).map(Bound),
+            other => Err(format!(
+                "expected a number, \"inf\" or \"-inf\", got {}",
+                describe_wire(other)
+            )),
+        }
+    }
+    fn to_wire(self) -> WireValue<'static> {
+        match self.0 {
+            f64::INFINITY => WireValue::Str("inf"),
+            f64::NEG_INFINITY => WireValue::Str("-inf"),
+            f => WireValue::Float(f),
+        }
+    }
+    fn spellings() -> Vec<&'static str> {
+        Vec::new()
+    }
+}
+
 macro_rules! wire_float {
     ($($t:ty),+) => {$(
         impl WireScalar for $t {

@@ -9,6 +9,7 @@
 pub mod buffer;
 pub mod bytes;
 pub mod convert;
+pub(crate) mod cut;
 pub(crate) mod dispatch;
 pub mod dtype;
 pub mod layout;

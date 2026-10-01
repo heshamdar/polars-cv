@@ -126,6 +126,8 @@ from __future__ import annotations
 _SCALAR = {
     "int": ("IntOrExpr", "int"),
     "float": ("FloatOrExpr", "float"),
+    # A float that may be infinite (``naming::Bound``): a histogram edge.
+    "bound": ("FloatOrExpr", "float"),
     "bool": ("BoolOrExpr", "bool"),
     "str": ("str", "str"),
 }

@@ -99,6 +99,23 @@ def expression_eligible(method: str, name: str) -> str | None:
     return _ELIGIBLE.get(f"{method}.{name}")
 
 
+def admits_expression(annotation: str | None, value: Any) -> bool:
+    """Whether *value* (a :class:`PerRow`'s values alike) can be an expression
+    of a parameter annotated *annotation*: a scalar where the annotation
+    admits an expression, a sequence where its elements do
+    (``Sequence[FloatOrExpr]``). A parameter that is a scalar or a list
+    (``histogram(bins=)``: a per-row count, or literal edges) admits one only
+    in its scalar form."""
+    if annotation is None:
+        return False
+    values = value.values if isinstance(value, PerRow) else (value,)
+    if all(isinstance(v, (list, tuple)) for v in values):
+        return "OrExpr]" in annotation
+    if any(isinstance(v, (list, tuple)) for v in values):
+        return False
+    return any(part.strip().endswith("OrExpr") for part in annotation.split("|"))
+
+
 def _is_sequence_param(annotation: str) -> bool:
     return any(t in annotation for t in ("Sequence[", "tuple[", "list["))
 
@@ -213,7 +230,7 @@ class _Params:
     def value(self, step_index: int, step: Step, name: str) -> Any:
         value = step.params[name]
         annotation = expression_eligible(step.method, name)
-        as_expr = self.style != "literal" and annotation is not None
+        as_expr = self.style != "literal" and admits_expression(annotation, value)
         if isinstance(value, PerRow) and not as_expr:
             msg = (
                 f"{step!r}: {name} varies per row, which the {self.style!r} "
