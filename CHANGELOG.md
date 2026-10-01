@@ -174,7 +174,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - tests: divergences the suite found are registered, not fixed, in
   `tests/parity/framework/known.py` and pinned as strict xfails:
   `binary-source-numpy-rows`, `array-null-slice-panic`,
-  `through-f32`, `derived-extent-zero`, `view-offset-lost`,
+  `derived-extent-zero`, `view-offset-lost`,
   `reshape-after-view`, `tiff-gray-alpha`, `divide-ratio-contract`,
   `nan-one-sided-clamp`,
   `hsv-hue-180`, `scalar-fusion-int-cast`, `derived-size-tie`,
@@ -198,6 +198,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   interpolating kernel computes in. `BinaryOp::output_dtype` derives from
   `output_dtype_rule` (which said `PreserveInput` for divide while planning
   and execution promoted to float).
+- tests: parity references for ops that compute in f64 allow a few f64
+  ulps of the magnitude on 64-bit integer images (`_accumulated`): f64
+  holds 53 bits, and the float64 references round the same way. The blur
+  reference takes `sigma` as the f32 the op receives.
 - tests: the parity resize reference gives a pixel whose resampled alpha is
   0 colour 0, the engine's un-premultiply convention, where Pillow leaves
   ringing residue.
@@ -261,6 +265,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   16777216). Each is now one kernel generic over the element type
   (`with_dtype!`); `channel_swap` and the colour conversions' reorder are the
   same kernel, where they were two.
+- **Resizing, blurring and `rgb->gray` keep 32/64-bit integer and f64 images
+  at full precision.** These dtypes were cast to f32, resampled and cast
+  back, so any value f32 cannot hold changed, even through a nearest resize
+  that only moves data (u32 16777217 -> 16777216). Nearest resampling is now
+  an exact gather on every dtype, and the convolution resamplers, blur and
+  the luma compute in `DType::accumulator` (f64 for these dtypes). fast_image_resize has
+  no 64-bit pixel types, so those dtypes are resampled by
+  `execution::resample`, which uses fast_image_resize's own filters and
+  coefficient rule in f64 (tested against it: byte-identical for nearest,
+  within 1e-4 for the convolution filters). u8, u16, f32, i8 and i16 are
+  unchanged.
 - **The two-buffer ops are exact on every dtype, and `blend` is normalized on
   every integer dtype.** `add`, `subtract`, `multiply`, `blend`, `maximum`,
   `minimum` and the bitwise ops ran natively only for u8 and u16 (and same-

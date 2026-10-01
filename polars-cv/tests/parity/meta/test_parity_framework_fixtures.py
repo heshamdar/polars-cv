@@ -236,26 +236,15 @@ class TestDivergencePredicates:
     def test_chain_predicates_pass(self, chain: list[Step]) -> None:
         assert known.chain_divergence(chain) is None
 
-    def test_through_f32_flags_only_unrepresentable_values(self) -> None:
-        flagged = np.full((1, 1, 3), 2**24 + 1, np.uint32)
-        fine = np.full((1, 1, 3), 2**24, np.uint32)
-        f64_exact = np.full((1, 1, 3), 0.5)
-        f64_inexact = np.full((1, 1, 3), 0.1)
-        step = Step("blur", {"sigma": 1.0})
-        assert known.step_divergence(step, flagged).key == "through-f32"
-        assert known.step_divergence(step, f64_inexact).key == "through-f32"
-        assert known.step_divergence(step, fine) is None
-        assert known.step_divergence(step, f64_exact) is None
-        assert known.step_divergence(Step("flip", {"axes": [0]}), flagged) is None
-
     def test_an_avoid_entry_wins_over_a_value_only_one(self) -> None:
-        """A large i32 image resized to zero width is both ``through-f32``
-        (value-only) and ``derived-extent-zero`` (avoid); the lookup must
-        report the one that stops the case being built."""
-        image = np.full((14, 1, 4), 2**30, np.int32)
-        step = Step("resize_to_height", {"height": 1, "filter": "nearest"})
-        assert known.step_divergence(step, image).key == "derived-extent-zero"
-        assert known.append_divergence([], step, [image]).key == "derived-extent-zero"
+        """When several entries cover one case, the lookup reports the one
+        that stops the case being built, wherever it sits in the registry."""
+        value_only = _divergence(lambda: None)
+        avoid = known.Divergence(**{**value_only.__dict__, "key": "a", "avoid": True})
+        assert known._first([value_only, avoid]) is avoid
+        assert known._first([avoid, value_only]) is avoid
+        assert known._first([value_only]) is value_only
+        assert known._first([]) is None
 
     @pytest.mark.parametrize(
         ("step", "shape", "flagged"),

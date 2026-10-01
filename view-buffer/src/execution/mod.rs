@@ -6,6 +6,8 @@
 //!   [`ViewExpr::plan`](crate::expr::ViewExpr::plan).
 
 pub mod plan;
+#[cfg(feature = "image_interop")]
+mod resample;
 pub mod runner;
 mod warp;
 

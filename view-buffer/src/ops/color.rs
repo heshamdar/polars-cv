@@ -382,6 +382,17 @@ fn rgb_to_gray(buf: &ViewBuffer) -> ViewBuffer {
             }
             ViewBuffer::from_vec_with_shape(out, vec![h, w, 1])
         }
+        // The luma in the input's `DType::accumulator` (f64 for f64 and the
+        // 32/64-bit integers, which f32 cannot hold), stored back in its dtype.
+        dtype if dtype.accumulator() == DType::F64 => {
+            let f64_buf = contig.cast(DType::F64);
+            let src = f64_buf.as_slice::<f64>();
+            let mut out = Vec::with_capacity(h * w);
+            for pix in src.as_chunks::<3>().0 {
+                out.push(0.299 * pix[0] + 0.587 * pix[1] + 0.114 * pix[2]);
+            }
+            ViewBuffer::from_vec_with_shape(out, vec![h, w, 1]).cast(dtype)
+        }
         _ => {
             let f32_buf = contig.cast(DType::F32);
             let src = f32_buf.as_slice::<f32>();

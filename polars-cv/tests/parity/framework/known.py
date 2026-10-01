@@ -272,15 +272,6 @@ def _color_int_range(step: Step, x: np.ndarray) -> bool:
     return space and x.dtype.kind in "iu" and x.dtype != np.uint8
 
 
-def _repro_wide_int_through_f32() -> None:
-    from tests.parity.framework.run import Axes, Step, execute
-
-    image = np.full((1, 1, 1), 16_777_217, dtype=np.uint32)
-    step = Step("resize", {"height": 2, "width": 2, "filter": "nearest"})
-    out = execute([image], [step], Axes()).rows[0]
-    assert (out == 16_777_217).all(), f"a nearest resize gave {out.ravel()}"
-
-
 def _repro_letterbox_zero_extent() -> None:
     from tests.parity.framework.run import Axes, Step, execute
 
@@ -353,36 +344,6 @@ def _reshape_of_a_view(steps: Sequence[Step]) -> bool:
     if not steps or steps[-1].method != "reshape":
         return False
     return any(s.method not in ("assert_shape",) for s in _view_run(steps))
-
-
-#: Ops that convert or resample a 32/64-bit integer image through f32.
-_THROUGH_F32 = frozenset(
-    {
-        "blur",
-        "resize",
-        "resize_to_height",
-        "resize_to_width",
-        "resize_max",
-        "resize_min",
-        "resize_scale",
-        "letterbox",
-    }
-)
-
-
-def _through_f32(step: Step) -> bool:
-    if step.method == "convert_color":
-        return step.params.get("to_space") == "gray"
-    return step.method in _THROUGH_F32
-
-
-def _not_representable_in_f32(x: np.ndarray) -> bool:
-    """Whether some value of *x* changes on a round trip through f32."""
-    if x.size == 0 or x.dtype.itemsize < 4 or x.dtype == np.float32:
-        return False
-    if x.dtype.kind in "iu":
-        return float(np.max(np.abs(x.astype(np.float64)))) > 2**24
-    return bool(np.any(x.astype(np.float32).astype(x.dtype) != x))
 
 
 def _derived_extent_is_zero(step: Step, x: np.ndarray) -> bool:
@@ -559,22 +520,6 @@ DIVERGENCES: tuple[Divergence, ...] = (
         affects_step=_color_int_range,
     ),
     Divergence(
-        key="through-f32",
-        match="a nearest resize gave [16777216",
-        summary=(
-            "32/64-bit integer and f64 images are resampled through f32, so a "
-            "value f32 cannot hold changes (u32 16777217 -> 16777216; f64 "
-            "0.63696169 -> 0.63696170): the resizes (a nearest one, which "
-            "only moves data, included), blur, letterbox and convert_color "
-            "rgb->gray. Fixed: data movement is exact on every dtype, and "
-            "interpolation accumulates in DType::accumulator (f64 for these)."
-        ),
-        repro=_repro_wide_int_through_f32,
-        affects_step=lambda step, x: (
-            _through_f32(step) and _not_representable_in_f32(x)
-        ),
-    ),
-    Divergence(
         key="derived-extent-zero",
         match="collapsed to zero rows",
         summary=(
@@ -629,9 +574,9 @@ def _first(matches: Sequence[Divergence]) -> Divergence | None:
     """The match a caller must act on: an ``avoid`` entry if any matches.
 
     Several entries can cover one case (a large i32 image resized to zero
-    width is both ``through-f32`` and ``derived-extent-zero``). Returning the
-    first in registry order would let a value-only entry mask one whose case
-    must not be executed at all.
+    width was both a value-only precision entry and ``derived-extent-zero``).
+    Returning the first in registry order would let a value-only entry mask
+    one whose case must not be executed at all.
     """
     for divergence in matches:
         if divergence.avoid:

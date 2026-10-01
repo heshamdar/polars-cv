@@ -331,8 +331,9 @@ fn to_fir_algorithm(filter: &FilterType) -> fir::ResizeAlg {
 /// Resize using fast_image_resize with SIMD optimization.
 ///
 /// U8, U16 and F32 with 1–4 channels are fast_image_resize's own pixel types
-/// ([`resize_pixels`]). Any other dtype is cast to F32, resized, then cast
-/// back, so the output always keeps the input's dtype and rank.
+/// ([`resize_pixels`]). i8 and i16 are resized as F32 (which holds them
+/// exactly) and cast back; the 32/64-bit integers and f64 are resampled in
+/// f64 by `execution::resample`. The output keeps the input's dtype and rank.
 #[cfg(feature = "image_interop")]
 fn resize_strided(
     buf: ViewBuffer,
@@ -360,7 +361,13 @@ fn resize_strided(
             "resize's contract (`ImageOp::validate`) refuses more than 4 channels, \
              so {dtype:?} with {channels} cannot reach the resampler"
         ),
-        (other, _) => resize_strided(buf.cast(DType::F32), w, h, filter).cast(other),
+        // i8/i16 resample exactly as f32 (`DType::accumulator`); the
+        // 32/64-bit integers and f64 have no fir pixel type and resample in
+        // f64 (`execution::resample`).
+        (other, _) if other.accumulator() == DType::F32 => {
+            resize_strided(buf.cast(DType::F32), w, h, filter).cast(other)
+        }
+        _ => super::resample::resample(&buf, w as usize, h as usize, filter),
     }
 }
 
@@ -428,6 +435,10 @@ thread_local! {
     /// fit the largest image seen per thread and is never shrunk — amortised
     /// O(1) allocation like TILE_EXTRACT_BUF in tiling.rs.
     static BLUR_HORIZ_BUF: std::cell::RefCell<Vec<f32>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+
+    /// The same slab for an f64-accumulating blur (`BlurAcc for f64`).
+    static BLUR_HORIZ_BUF_F64: std::cell::RefCell<Vec<f64>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
@@ -1112,15 +1123,13 @@ fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
             } else {
                 work_buf.to_contiguous()
             };
-            match contig_buf.dtype() {
-                DType::U8 => separable_gaussian_blur_typed::<u8>(&contig_buf, sigma),
-                DType::U16 => separable_gaussian_blur_typed::<u16>(&contig_buf, sigma),
-                DType::F32 => separable_gaussian_blur_typed::<f32>(&contig_buf, sigma),
-                other => {
-                    let f32_buf = contig_buf.cast(DType::F32);
-                    separable_gaussian_blur_typed::<f32>(&f32_buf, sigma).cast(other)
-                }
-            }
+            // Every dtype in its own element type, accumulating in its
+            // `DType::accumulator`.
+            let dtype = contig_buf.dtype();
+            with_dtype!(dtype, T => match dtype.accumulator() {
+                DType::F64 => separable_gaussian_blur_typed::<T, f64>(&contig_buf, sigma),
+                _ => separable_gaussian_blur_typed::<T, f32>(&contig_buf, sigma),
+            })
         }
         // Deferred resizes: dimensions come from the kind's shape — the same
         // authority the planner reads — then the shared resize kernel runs.
@@ -1185,18 +1194,89 @@ fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
 /// Builds a normalised 1-D Gaussian kernel of radius `ceil(3σ)`.
 /// The radius formula matches the halo declaration in `ops/image.rs`.
 #[cfg(feature = "image_interop")]
-fn gaussian_kernel_1d(sigma: f32) -> Vec<f32> {
+fn gaussian_kernel_1d<F: BlurAcc>(sigma: f32) -> Vec<F> {
     let radius = (sigma * 3.0).ceil() as usize;
     let size = 2 * radius + 1;
-    let mut k: Vec<f32> = (0..size)
+    let sigma = F::from_f32(sigma);
+    let two = F::from_f32(2.0);
+    let mut k: Vec<F> = (0..size)
         .map(|i| {
-            let x = i as f32 - radius as f32;
-            (-x * x / (2.0 * sigma * sigma)).exp()
+            let x = F::from_usize(i) - F::from_usize(radius);
+            (-x * x / (two * sigma * sigma)).exp()
         })
         .collect();
-    let s: f32 = k.iter().sum();
-    k.iter_mut().for_each(|v| *v /= s);
+    let s: F = k.iter().fold(F::zero(), |acc, &v| acc + v);
+    k.iter_mut().for_each(|v| *v = *v / s);
     k
+}
+
+/// The float a blur accumulates in ([`DType::accumulator`]): f32, or f64 for
+/// f64 and the 32/64-bit integers. Each has its own per-thread scratch slab
+/// for the horizontal pass.
+#[cfg(feature = "image_interop")]
+trait BlurAcc:
+    Copy
+    + Default
+    + std::ops::AddAssign
+    + std::ops::Neg<Output = Self>
+    + std::ops::Mul<Output = Self>
+    + std::ops::Div<Output = Self>
+    + std::ops::Sub<Output = Self>
+    + std::ops::Add<Output = Self>
+    + 'static
+{
+    fn zero() -> Self;
+    fn exp(self) -> Self;
+    fn from_f32(v: f32) -> Self;
+    fn from_usize(v: usize) -> Self;
+    /// The thread's scratch slab, taken (and given back by [`Self::give_slab`])
+    /// so the passes stay in the dispatched function's own body.
+    fn take_slab() -> Vec<Self>;
+    fn give_slab(slab: Vec<Self>);
+}
+
+#[cfg(feature = "image_interop")]
+impl BlurAcc for f32 {
+    fn zero() -> Self {
+        0.0
+    }
+    fn exp(self) -> Self {
+        f32::exp(self)
+    }
+    fn from_f32(v: f32) -> Self {
+        v
+    }
+    fn from_usize(v: usize) -> Self {
+        v as f32
+    }
+    fn take_slab() -> Vec<Self> {
+        BLUR_HORIZ_BUF.with(|cell| std::mem::take(&mut *cell.borrow_mut()))
+    }
+    fn give_slab(slab: Vec<Self>) {
+        BLUR_HORIZ_BUF.with(|cell| *cell.borrow_mut() = slab);
+    }
+}
+
+#[cfg(feature = "image_interop")]
+impl BlurAcc for f64 {
+    fn zero() -> Self {
+        0.0
+    }
+    fn exp(self) -> Self {
+        f64::exp(self)
+    }
+    fn from_f32(v: f32) -> Self {
+        f64::from(v)
+    }
+    fn from_usize(v: usize) -> Self {
+        v as f64
+    }
+    fn take_slab() -> Vec<Self> {
+        BLUR_HORIZ_BUF_F64.with(|cell| std::mem::take(&mut *cell.borrow_mut()))
+    }
+    fn give_slab(slab: Vec<Self>) {
+        BLUR_HORIZ_BUF_F64.with(|cell| *cell.borrow_mut() = slab);
+    }
 }
 
 /// Separable Gaussian blur: one 1-D horizontal pass followed by one 1-D
@@ -1224,12 +1304,12 @@ fn gaussian_kernel_1d(sigma: f32) -> Vec<f32> {
 /// (conversion, both passes, the output clamp) has an AVX2 build (CR-35:
 /// ~1.4x over the wheels' SSE2 baseline; dispatching only the row axpy
 /// measured slower).
-fn separable_gaussian_blur_typed<T>(contig_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
+fn separable_gaussian_blur_typed<T, F>(contig_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
 where
-    T: crate::core::dtype::ViewType + Default + Copy + CastFrom<f32>,
-    f32: CastFrom<T>,
+    T: crate::core::dtype::ViewType + Default + Copy + CastFrom<F>,
+    F: BlurAcc + CastFrom<T>,
 {
-    dispatch(SeparableBlur::<T> {
+    dispatch(SeparableBlur::<T, F> {
         buf: contig_buf,
         sigma,
         _elem: std::marker::PhantomData,
@@ -1237,15 +1317,15 @@ where
 }
 
 #[cfg(feature = "image_interop")]
-struct SeparableBlur<'a, T> {
+struct SeparableBlur<'a, T, F> {
     buf: &'a ViewBuffer,
     sigma: f32,
-    _elem: std::marker::PhantomData<T>,
+    _elem: std::marker::PhantomData<fn() -> (T, F)>,
 }
 
 #[cfg(feature = "image_interop")]
 // Derived `Clone` would demand `T: Clone` of the marker's parameter.
-impl<T> Clone for SeparableBlur<'_, T> {
+impl<T, F> Clone for SeparableBlur<'_, T, F> {
     fn clone(&self) -> Self {
         SeparableBlur {
             buf: self.buf,
@@ -1256,16 +1336,16 @@ impl<T> Clone for SeparableBlur<'_, T> {
 }
 
 #[cfg(feature = "image_interop")]
-impl<T> SimdKernel for SeparableBlur<'_, T>
+impl<T, F> SimdKernel for SeparableBlur<'_, T, F>
 where
-    T: crate::core::dtype::ViewType + Default + Copy + CastFrom<f32>,
-    f32: CastFrom<T>,
+    T: crate::core::dtype::ViewType + Default + Copy + CastFrom<F>,
+    F: BlurAcc + CastFrom<T>,
 {
     type Output = ViewBuffer;
 
     #[inline(always)]
     fn run(self) -> ViewBuffer {
-        separable_gaussian_blur_body::<T>(self.buf, self.sigma)
+        separable_gaussian_blur_body::<T, F>(self.buf, self.sigma)
     }
 }
 
@@ -1291,7 +1371,7 @@ mod blur_dispatch_tests {
         let n = h * w * c;
         let wc = w * c;
 
-        let kernel = gaussian_kernel_1d(sigma);
+        let kernel = gaussian_kernel_1d::<f32>(sigma);
         let radius = kernel.len() / 2;
         let src: &[T] = contig_buf.as_slice::<T>();
 
@@ -1477,13 +1557,13 @@ mod blur_dispatch_tests {
         let f32_buf = ViewBuffer::from_vec_with_shape(f32s, vec![h, w, c]);
         for sigma in [0.8f32, 2.0, 5.5] {
             let (a, b) = (
-                separable_gaussian_blur_typed::<u8>(&u8_buf, sigma),
-                separable_gaussian_blur_body::<u8>(&u8_buf, sigma),
+                separable_gaussian_blur_typed::<u8, f32>(&u8_buf, sigma),
+                separable_gaussian_blur_body::<u8, f32>(&u8_buf, sigma),
             );
             assert_eq!(a.as_slice::<u8>(), b.as_slice::<u8>(), "u8 sigma {sigma}");
             let (a, b) = (
-                separable_gaussian_blur_typed::<f32>(&f32_buf, sigma),
-                separable_gaussian_blur_body::<f32>(&f32_buf, sigma),
+                separable_gaussian_blur_typed::<f32, f32>(&f32_buf, sigma),
+                separable_gaussian_blur_body::<f32, f32>(&f32_buf, sigma),
             );
             let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
             assert_eq!(
@@ -1497,10 +1577,10 @@ mod blur_dispatch_tests {
 
 #[cfg(feature = "image_interop")]
 #[inline(always)]
-fn separable_gaussian_blur_body<T>(contig_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
+fn separable_gaussian_blur_body<T, F>(contig_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
 where
-    T: crate::core::dtype::ViewType + Default + Copy + CastFrom<f32>,
-    f32: CastFrom<T>,
+    T: crate::core::dtype::ViewType + Default + Copy + CastFrom<F>,
+    F: BlurAcc + CastFrom<T>,
 {
     let shape = contig_buf.shape();
     let h = shape[0];
@@ -1509,7 +1589,7 @@ where
     let n = h * w * c;
     let wc = w * c;
 
-    let kernel = gaussian_kernel_1d(sigma);
+    let kernel: Vec<F> = gaussian_kernel_1d(sigma);
     let radius = kernel.len() / 2;
     let src: &[T] = contig_buf.as_slice::<T>();
 
@@ -1517,21 +1597,21 @@ where
     // the call rather than used inside a `with` closure: the passes must be in
     // this function's own body to be compiled with its target features (a
     // closure is a separate function and does not inherit them).
-    let mut slab = BLUR_HORIZ_BUF.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    let mut slab = F::take_slab();
     if slab.len() < n {
-        slab.resize(n, 0.0f32);
+        slab.resize(n, F::zero());
     }
     let result = {
         let horiz = &mut slab[..n];
-        // One input row in f32, converted as the horizontal pass reaches it:
+        // One input row in F, converted as the horizontal pass reaches it:
         // converting the whole image first allocated and wrote 4 bytes per
         // element that were read once.
-        let mut row_in = vec![0.0f32; wc];
+        let mut row_in = vec![F::zero(); wc];
 
-        // ── Horizontal pass (T → f32 row → f32) ─────────────────────────
+        // ── Horizontal pass (T → F row → F) ─────────────────────────────
         for y in 0..h {
             for (dst, &v) in row_in.iter_mut().zip(&src[y * wc..(y + 1) * wc]) {
-                *dst = f32::cast_from(v);
+                *dst = F::cast_from(v);
             }
             let row_out = &mut horiz[y * wc..(y + 1) * wc];
 
@@ -1539,7 +1619,7 @@ where
                 // Image narrower than the kernel: clamped gather everywhere.
                 for x in 0..w {
                     for ch in 0..c {
-                        let mut sum = 0.0f32;
+                        let mut sum = F::zero();
                         for (ki, &kw) in kernel.iter().enumerate() {
                             let sx = (x as i64 + ki as i64 - radius as i64).clamp(0, w as i64 - 1)
                                 as usize;
@@ -1555,7 +1635,7 @@ where
             // memory — the inner zip vectorizes.
             let lo = radius * c;
             let hi = (w - radius) * c;
-            row_out[lo..hi].fill(0.0);
+            row_out[lo..hi].fill(F::zero());
             for (ki, &kw) in kernel.iter().enumerate() {
                 let shift = (ki as i64 - radius as i64) * c as i64;
                 let src_start = (lo as i64 + shift) as usize;
@@ -1567,7 +1647,7 @@ where
             // Borders: clamped gather for `radius` columns on each side.
             for x in (0..radius).chain(w - radius..w) {
                 for ch in 0..c {
-                    let mut sum = 0.0f32;
+                    let mut sum = F::zero();
                     for (ki, &kw) in kernel.iter().enumerate() {
                         let sx =
                             (x as i64 + ki as i64 - radius as i64).clamp(0, w as i64 - 1) as usize;
@@ -1578,12 +1658,12 @@ where
             }
         }
 
-        // ── Vertical pass (f32 → f32 row accumulation) → T ───────────────
+        // ── Vertical pass (F → F row accumulation) → T ───────────────────
         // Stored through M5: round-then-saturate to an integer, as is to f32.
-        let mut acc_row = vec![0.0f32; wc];
+        let mut acc_row = vec![F::zero(); wc];
         let mut out: Vec<T> = Vec::with_capacity(n);
         for y in 0..h {
-            acc_row.fill(0.0);
+            acc_row.fill(F::zero());
             for (ki, &kw) in kernel.iter().enumerate() {
                 let sy = (y as i64 + ki as i64 - radius as i64).clamp(0, h as i64 - 1) as usize;
                 let src_row = &horiz[sy * wc..(sy + 1) * wc];
@@ -1596,7 +1676,7 @@ where
 
         ViewBuffer::from_vec_with_shape(out, shape.to_vec())
     };
-    BLUR_HORIZ_BUF.with(|cell| *cell.borrow_mut() = slab);
+    F::give_slab(slab);
     result
 }
 
@@ -2229,7 +2309,7 @@ mod blur_radius_tests {
     #[test]
     fn declared_radius_matches_the_executed_kernel() {
         for sigma in [0.5f32, 1.0, 1.5, 2.0, 3.3, 5.0] {
-            let kernel_radius = gaussian_kernel_1d(sigma).len() / 2;
+            let kernel_radius = gaussian_kernel_1d::<f32>(sigma).len() / 2;
             assert_eq!(
                 declared_radius(sigma),
                 kernel_radius,
