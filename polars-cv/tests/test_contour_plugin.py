@@ -723,8 +723,13 @@ class TestNonFiniteCoordinates:
             schema={"c": CONTOUR_SCHEMA, "o": CONTOUR_SCHEMA},
         ).with_columns(p=pl.struct(x=pl.lit(1.0), y=pl.lit(1.0)))
         expr = make(pl.col("c").contour, pl.col("o"), pl.col("p"))
-        with pytest.raises(pl.exceptions.ComputeError, match=r"non-finite x.*row 1"):
+        # Refused on every engine. The row is named relative to the slice
+        # polars hands the plugin: the frame's row in memory, while streaming
+        # may pass a morsel per row (polars 1.43 does), so it is checked there.
+        with pytest.raises(pl.exceptions.ComputeError, match=r"non-finite x"):
             df.select(expr)
+        with pytest.raises(pl.exceptions.ComputeError, match=r"non-finite x.*row 1"):
+            df.lazy().select(expr).collect(engine="in-memory")
 
     def test_a_point_with_a_nan_coordinate_is_refused(
         self, square_contour: dict
