@@ -18,8 +18,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     Scale 0–255 float images by 1/255 first;
   - **u16, u32 and u64 span 0..MAX**: YCbCr chroma is centred at
     (MAX + 1) / 2 (a u16 gray pixel had Cb = Cr = 128), HSV's S and V span
-    0..MAX with the hue over the whole range for one turn (OpenCV's
-    `HSV_FULL` scheme; S was scaled to 255), and Lab reads RGB / MAX (u16
+    0..MAX with the hue over the whole range for one turn (S was scaled to
+    255; OpenCV has no HSV above 8 bits, so this extends its 8-bit
+    `HSV_FULL` scheme and is polars-cv's own), and Lab reads RGB / MAX (u16
     mid-gray had L = 5393);
   - **signed integers are refused** by `to_hsv`, `to_lab`, `to_ycbcr` and
     `convert_color` to or from those spaces, which have no signed range
@@ -53,8 +54,24 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   its position. `reduce_percentile` of input that contains a NaN is NaN.
   Before, it sorted with a comparator that is not a total order, so the
   engine panicked ("comparison function does not correctly implement a
-  total order"), which the deep parity chain hunt hit through `sqrt`. All of
-  these now share one ordering rule, `reduction::displaces`.
+  total order"), which the deep parity chain hunt hit through `sqrt`.
+
+- **Every op that orders values propagates NaN, from either side.** Binary
+  `maximum`/`minimum` gave `maximum(NaN, 1) = 1` but `maximum(1, NaN) = NaN`;
+  `dilate`/`erode` kept a NaN centre but skipped a NaN neighbour;
+  `morphology_gradient` turned NaN into 0; MinMax `normalize` skipped NaN
+  (ZScore propagated it); HSV's `max(r, g, b)` skipped a NaN channel. They,
+  the scalar clamps and the reductions above now read one rule,
+  `ops::util::displaces` (`maximum`/`minimum`): a NaN anywhere is the result.
+
+- **Non-finite geometry is refused, not warped.** A NaN or infinite
+  `rotate_and_scale` angle, centre or scale, `rotate` angle or `warp_affine`
+  coefficient passed the singularity check (`NaN < eps` is false) and warped
+  every pixel to the border; a NaN, infinite, zero or negative
+  `resize_scale` factor became a 1-pixel or `usize::MAX` axis. Each is now
+  refused — at plan time for a literal, per row for a column — by one matrix
+  rule, `AffineParams::matrix_is_invertible` (finite and non-singular), and
+  a finite-positive factor rule.
 
 - **`histogram` follows NumPy for NaN.** A NaN pixel is in no bin. It is not
   counted, `normalized`/`buckets` shares sum to 1 over what was counted, and
@@ -303,6 +320,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   replaced by `from_f16_bits`.
 
 ### Fixed
+
+- **Resizing an empty image is refused, not a panic.** An aspect-preserving
+  resize (`resize(height=…)`, `resize_max`, `resize_min`, `letterbox`) of an
+  image with a zero height or width divided by it while deriving the other
+  side and panicked the engine. Every resampling op now refuses an empty
+  image in its contract (at plan time when the size is known, per row
+  otherwise), and the shape rule has no output for one.
+- **`ViewBuffer::reshape` refuses a strided view in every build.** The check
+  was a `debug_assert!` in the runner, so a direct caller in a release build
+  got elements in memory order rather than view order.
 
 - **8-bit HSV hue stays in [0, 180).** A hue in [359°, 360°) rounded to
   180 (`RGB(255, 0, 1)` -> H = 180), outside the range; it wraps to 0, as

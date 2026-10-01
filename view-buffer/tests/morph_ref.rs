@@ -5,9 +5,10 @@
 //! shifted-slice elementwise min/max. These tests preserve the original
 //! per-element clamped-gather implementation verbatim as
 //! `naive_morph_reference` and assert **exact equality** — including float
-//! inputs laced with NaN, where the original's strict-comparison semantics
-//! (a NaN incumbent is kept, a NaN candidate is ignored) must be preserved
-//! bit for bit.
+//! inputs laced with NaN, bit for bit. One rule changed on purpose since the
+//! original: a NaN anywhere in the window is the result (the original kept a
+//! NaN incumbent but ignored a NaN candidate), numpy's rule, shared with
+//! every op that orders values.
 
 #![cfg(feature = "image_interop")]
 
@@ -20,8 +21,30 @@ enum Kind {
 }
 
 // ---------------------------------------------------------------------------
-// Reference implementation (the pre-optimization code, verbatim semantics)
+// Reference implementation (the pre-optimization code, NaN rule aside)
 // ---------------------------------------------------------------------------
+
+/// The window's running extreme. A NaN (`x != x`) is the result wherever it
+/// sits, the first met kept; otherwise a strict comparison, a tie keeping the
+/// incumbent.
+#[allow(clippy::eq_op)]
+fn pick<T: PartialOrd + Copy>(val: T, candidate: T, kind: Kind) -> T {
+    if val != val {
+        return val;
+    }
+    if candidate != candidate {
+        return candidate;
+    }
+    let take = match kind {
+        Kind::Min => candidate < val,
+        Kind::Max => candidate > val,
+    };
+    if take {
+        candidate
+    } else {
+        val
+    }
+}
 
 fn naive_pass<T>(src: &[T], h: usize, w: usize, ksize: u32, kind: Kind) -> Vec<T>
 where
@@ -37,22 +60,7 @@ where
             for kx in -radius..=radius {
                 let sx = (x as i64 + kx).clamp(0, w as i64 - 1) as usize;
                 let candidate = src[y * w + sx];
-                val = match kind {
-                    Kind::Min => {
-                        if candidate < val {
-                            candidate
-                        } else {
-                            val
-                        }
-                    }
-                    Kind::Max => {
-                        if candidate > val {
-                            candidate
-                        } else {
-                            val
-                        }
-                    }
-                };
+                val = pick(val, candidate, kind);
             }
             row_out[y * w + x] = val;
         }
@@ -66,22 +74,7 @@ where
             for ky in -radius..=radius {
                 let sy = (y as i64 + ky).clamp(0, h as i64 - 1) as usize;
                 let candidate = row_out[sy * w + x];
-                val = match kind {
-                    Kind::Min => {
-                        if candidate < val {
-                            candidate
-                        } else {
-                            val
-                        }
-                    }
-                    Kind::Max => {
-                        if candidate > val {
-                            candidate
-                        } else {
-                            val
-                        }
-                    }
-                };
+                val = pick(val, candidate, kind);
             }
             col_out[y * w + x] = val;
         }
@@ -222,9 +215,8 @@ fn morph_matches_naive_reference_binary_mask() {
 
 #[test]
 fn morph_matches_naive_reference_with_nans() {
-    // NaN incumbents must be kept and NaN candidates ignored, exactly like
-    // the original strict-comparison fold. Compare bit patterns so NaN slots
-    // are checked too.
+    // A NaN anywhere in a window is the result. Compare bit patterns so NaN
+    // slots are checked too.
     let (h, w) = (16, 16);
     let mut data: Vec<f32> = seeded_values(h * w, 3).iter().map(|&v| v as f32).collect();
     for i in (0..h * w).step_by(13) {

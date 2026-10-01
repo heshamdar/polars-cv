@@ -352,8 +352,9 @@ enum HueScale {
     HalfDegrees,
     /// Floats: degrees, `[0, 360)`.
     Degrees,
-    /// The wider unsigned integers: the whole range is one turn, `[0, MAX]`
-    /// (OpenCV's `HSV_FULL` scheme); the period is `MAX + 1`.
+    /// The wider unsigned integers: the whole range is one turn, `[0, MAX]`,
+    /// the period `MAX + 1`. OpenCV has no HSV above 8 bits; this extends its
+    /// 8-bit `HSV_FULL` scheme and is polars-cv's own convention.
     Full(f64),
 }
 
@@ -487,8 +488,9 @@ fn encode(to: ColorSpace, [r, g, b]: [f64; 3], scale: f64, range: &ColorRange) -
             [y, y, y]
         }
         ColorSpace::Hsv => {
-            let max = r.max(g).max(b);
-            let min = r.min(g).min(b);
+            use crate::ops::util::{maximum, minimum};
+            let max = maximum(maximum(r, g), b);
+            let min = minimum(minimum(r, g), b);
             let diff = max - min;
             let s = if max == 0.0 { 0.0 } else { diff / max };
             let hue = if diff == 0.0 {

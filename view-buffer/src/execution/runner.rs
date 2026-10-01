@@ -50,18 +50,14 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
     }
     match op {
         ViewOp::Transpose { .. } => buf.permute(&op.axes()),
-        ViewOp::Reshape { shape } => {
-            debug_assert!(
-                buf.layout.is_contiguous(),
-                "the planner packs a reshape's input (MemoryEffect::ViewOfContiguous)"
-            );
-            buf.reshape(
-                shape
-                    .iter()
-                    .map(|&d| d as usize)
-                    .collect::<crate::core::layout::Dims>(),
-            )
-        }
+        // The planner packs a reshape's input (`MemoryEffect::ViewOfContiguous`);
+        // `ViewBuffer::reshape` refuses a strided one in every build.
+        ViewOp::Reshape { shape } => buf.reshape(
+            shape
+                .iter()
+                .map(|&d| d as usize)
+                .collect::<crate::core::layout::Dims>(),
+        ),
         ViewOp::Flip { .. } => buf.flip(&op.axes()),
         ViewOp::Crop { .. } | ViewOp::Slice { .. } => unreachable!("windows are sliced above"),
         ViewOp::Rotate90 => {
@@ -1822,24 +1818,16 @@ where
 /// One Min/Max fold step with the comparison kind monomorphized out of the
 /// loop.
 ///
-/// The comparison expression is kept literally as `candidate < val` /
-/// `candidate > val` (NOT `f32::min`/`max`): when `val` is NaN every
-/// comparison is false so NaN is kept, and when `candidate` is NaN it is
-/// ignored — the exact semantics of the original per-element implementation,
-/// preserved for float dtypes (including signed-zero tie behavior, where the
-/// incumbent `val` wins).
+/// The window's running extreme: [`crate::ops::util`]'s NaN rule, so a NaN
+/// anywhere in the window is the result (it used to be kept as the centre
+/// but skipped as a neighbour). A tie keeps the incumbent `val`.
 #[cfg(feature = "image_interop")]
 #[inline(always)]
 fn morph_select<T: PartialOrd + Copy, const IS_MIN: bool>(val: T, candidate: T) -> T {
-    let take = if IS_MIN {
-        candidate < val
+    if IS_MIN {
+        crate::ops::util::minimum(val, candidate)
     } else {
-        candidate > val
-    };
-    if take {
-        candidate
-    } else {
-        val
+        crate::ops::util::maximum(val, candidate)
     }
 }
 
@@ -1972,7 +1960,8 @@ macro_rules! sub_floor_zero_float {
         impl SubFloorZero for $t {
             #[inline(always)]
             fn sub_floor_zero(self, other: Self) -> Self {
-                (self - other).max(0.0)
+                // NaN stays NaN (`f32::max` would make it 0).
+                crate::ops::util::maximum(self - other, 0.0)
             }
         }
     )+};

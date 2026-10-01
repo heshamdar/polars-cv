@@ -1492,6 +1492,16 @@ impl ViewBuffer {
             self.layout.shape,
             shape
         );
+        // A strided view has no single reshape: a contiguous layout over its
+        // storage would read memory order, not view order. The planner packs
+        // a reshape's input first (`MemoryEffect::ViewOfContiguous`); this is
+        // the backstop, in every build, for a caller that skips it.
+        assert!(
+            self.layout.is_contiguous(),
+            "reshape of a strided view {:?} (strides {:?}): pack it first",
+            self.layout.shape,
+            self.layout.strides
+        );
         // A contiguous view may start past its buffer's first element (a crop
         // below the first row): the new layout keeps where it starts.
         let offset = self.layout.offset;
@@ -1509,6 +1519,20 @@ mod reshape_offset_tests {
     /// first row) and is still contiguous reshapes to *its* elements. The
     /// reshape rebuilt the layout at offset 0 and read from the uncropped
     /// start.
+    /// A strided view has no single reshape: rebuilding its layout as
+    /// contiguous would read elements in memory order, not view order. The
+    /// planner packs a reshape's input first (`MemoryEffect::ViewOfContiguous`);
+    /// a direct caller that skips that is refused in every build, not just
+    /// debug ones.
+    #[test]
+    #[should_panic(expected = "reshape of a strided view")]
+    fn reshape_refuses_a_strided_view() {
+        let buf = ViewBuffer::from_vec_with_shape((0u8..6).collect::<Vec<u8>>(), vec![3, 2]);
+        let transposed = buf.permute(&[1, 0]);
+        assert!(!transposed.layout.is_contiguous());
+        let _ = transposed.reshape(vec![6]);
+    }
+
     #[test]
     fn reshape_keeps_a_views_offset() {
         let buf = ViewBuffer::from_vec_with_shape((0u8..6).collect::<Vec<u8>>(), vec![3, 2, 1]);

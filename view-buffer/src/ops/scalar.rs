@@ -29,9 +29,9 @@ pub enum ScalarOp {
     Square,
     /// Reciprocal: `1.0 / x`.
     Recip,
-    /// Minimum with a constant ceiling, NaN-propagating ([`min_numpy`]).
+    /// Minimum with a constant ceiling, NaN-propagating ([`crate::ops::util::minimum`]).
     Min(f32),
-    /// Maximum with a constant floor, NaN-propagating ([`max_numpy`];
+    /// Maximum with a constant floor, NaN-propagating ([`crate::ops::util::maximum`];
     /// `Relu == Max(0.0)`).
     Max(f32),
     /// Sign: `-1`, `0`, `+1`; `0` for `±0`, `NaN` for `NaN` (matches numpy.sign).
@@ -46,31 +46,6 @@ pub enum ScalarOp {
     Trunc,
     Relu,
     Clamp(f32, f32),
-}
-
-/// `max(x, c)` as `numpy.maximum`: a NaN on either side is the result.
-///
-/// `f32::max`/`f64::max` return the *other* operand for a NaN, so `relu(NaN)`
-/// came out 0 and `clamp_min(NaN)` the bound, while `clamp` (`f32::clamp`)
-/// propagated it. Written once here, like [`signum_numpy`], so the f32
-/// kernel arm and the f64 cold path share one rule.
-#[inline(always)]
-pub(crate) fn max_numpy<F: num_traits::Float>(x: F, c: F) -> F {
-    if x.is_nan() || c.is_nan() {
-        x + c
-    } else {
-        x.max(c)
-    }
-}
-
-/// `min(x, c)` as `numpy.minimum`: a NaN on either side is the result.
-#[inline(always)]
-pub(crate) fn min_numpy<F: num_traits::Float>(x: F, c: F) -> F {
-    if x.is_nan() || c.is_nan() {
-        x + c
-    } else {
-        x.min(c)
-    }
 }
 
 /// numpy-compatible sign: `0` for `±0`, `NaN` for `NaN`, else `±1`.
@@ -139,14 +114,14 @@ impl ScalarOp {
             ScalarOp::Sqrt => x.sqrt(),
             ScalarOp::Square => x * x,
             ScalarOp::Recip => 1.0 / x,
-            ScalarOp::Min(c) => min_numpy(x, *c as f64),
-            ScalarOp::Max(c) => max_numpy(x, *c as f64),
+            ScalarOp::Min(c) => crate::ops::util::minimum(x, *c as f64),
+            ScalarOp::Max(c) => crate::ops::util::maximum(x, *c as f64),
             ScalarOp::Sign => signum_numpy(x),
             ScalarOp::Floor => x.floor(),
             ScalarOp::Ceil => x.ceil(),
             ScalarOp::Round => x.round_ties_even(),
             ScalarOp::Trunc => x.trunc(),
-            ScalarOp::Relu => max_numpy(x, 0.0),
+            ScalarOp::Relu => crate::ops::util::maximum(x, 0.0),
             ScalarOp::Clamp(lo, hi) => x.clamp(*lo as f64, *hi as f64),
         }
     }

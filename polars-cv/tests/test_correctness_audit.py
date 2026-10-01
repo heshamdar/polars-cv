@@ -1245,6 +1245,63 @@ class TestHistogramCorrectness:
             df.select(out=pl.col("img").cv.pipe(pipe).sink("list"))
 
 
+@plugin_required
+class TestNonFiniteAndEmptyInputs:
+    """NaN, non-finite parameters and empty images, at the entry point."""
+
+    def test_minmax_normalize_of_an_image_with_nan_is_nan(
+        self, encode_png: Callable
+    ) -> None:
+        """One NaN makes the extremes NaN, as ZScore's mean already did."""
+        arr = np.zeros((2, 2), dtype=np.uint8)
+        arr[0, 0] = 4  # sqrt(-4) is NaN
+        arr[1, 1] = 9
+        df = pl.DataFrame({"img": [encode_png(arr)]})
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .cast("f32")
+            .scale(-1.0)
+            .sqrt()
+            .normalize(method="minmax")
+        )
+        out = numpy_from_struct(
+            df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy")).row(0)[0]
+        )
+        assert np.isnan(out).all(), out
+
+    def test_a_per_row_non_finite_angle_is_refused(self, encode_png: Callable) -> None:
+        """No warp has a NaN angle; the row fails rather than going blank."""
+        df = pl.DataFrame(
+            {
+                "img": [encode_png(_make_solid(4, 4, (9, 9, 9)))],
+                "theta": [float("nan")],
+            }
+        )
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .rotate_and_scale(
+                angle=pl.col("theta"), center=(2.0, 2.0), output_size=(4, 4)
+            )
+        )
+        with pytest.raises(pl.exceptions.ComputeError, match="not finite"):
+            df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+
+    @pytest.mark.parametrize("factor", [0.0, -0.5])
+    def test_a_resize_factor_must_be_finite_and_positive(self, factor: float) -> None:
+        with pytest.raises(ValueError, match="finite positive factor"):
+            Pipeline().source("image_bytes").resize_scale(scale_x=factor, scale_y=1.0)
+
+    def test_resizing_an_empty_image_is_refused(self) -> None:
+        """An empty image has no aspect ratio: refused when planned, not a
+        divide-by-zero panic deriving the other side."""
+        empty = Pipeline().source("raw", dtype="u8").reshape([0, 4, 1])
+        with pytest.raises(ValueError, match="non-empty image to resample"):
+            empty.resize_to_height(4)
+
+
 # ===================================================================
 # 10. Reduce percentile correctness
 # ===================================================================

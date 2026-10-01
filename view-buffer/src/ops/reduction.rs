@@ -267,21 +267,12 @@ impl ReductionOp {
         match self {
             ReductionOp::Max { axis: None } => {
                 assert!(!data.is_empty(), "Cannot reduce Max on empty buffer");
-                let max_val = data.iter().copied().fold(data[0], |a, b| {
-                    if displaces(&a, &b, Greater) {
-                        b
-                    } else {
-                        a
-                    }
-                });
+                let max_val = data.iter().copied().fold(data[0], maximum);
                 ViewBuffer::from_scalar(max_val)
             }
             ReductionOp::Min { axis: None } => {
                 assert!(!data.is_empty(), "Cannot reduce Min on empty buffer");
-                let min_val =
-                    data.iter()
-                        .copied()
-                        .fold(data[0], |a, b| if displaces(&a, &b, Less) { b } else { a });
+                let min_val = data.iter().copied().fold(data[0], minimum);
                 ViewBuffer::from_scalar(min_val)
             }
             ReductionOp::Mean { axis: None } => {
@@ -328,24 +319,12 @@ impl ReductionOp {
             // Axis-based reductions
             ReductionOp::Max { axis: Some(ax) } => {
                 self.reduce_axis::<T, _>(buffer, *ax as usize, |slice: &[T]| {
-                    slice.iter().copied().fold(slice[0], |a, b| {
-                        if displaces(&a, &b, Greater) {
-                            b
-                        } else {
-                            a
-                        }
-                    })
+                    slice.iter().copied().fold(slice[0], maximum)
                 })
             }
             ReductionOp::Min { axis: Some(ax) } => {
                 self.reduce_axis::<T, _>(buffer, *ax as usize, |slice: &[T]| {
-                    slice.iter().copied().fold(slice[0], |a, b| {
-                        if displaces(&a, &b, Less) {
-                            b
-                        } else {
-                            a
-                        }
-                    })
+                    slice.iter().copied().fold(slice[0], minimum)
                 })
             }
             ReductionOp::Mean { axis: Some(ax) } => {
@@ -667,18 +646,8 @@ fn compute_strides(shape: &[usize]) -> Vec<usize> {
 }
 
 use super::util::{coords_to_linear, linear_to_coords};
-use std::cmp::Ordering::{self, Greater, Less};
-
-/// Whether `b` displaces `a` as the running extreme in direction `want`
-/// (`Greater` for max, `Less` for min) — numpy's rule for every ordering
-/// reduction: a NaN, the one value unordered against itself, is absorbing
-/// (the first one met is kept, so `argmax` reports its index); otherwise
-/// only a strictly better value displaces.
-#[inline]
-fn displaces<T: PartialOrd>(a: &T, b: &T, want: Ordering) -> bool {
-    let is_nan = |x: &T| x.partial_cmp(x).is_none();
-    !is_nan(a) && (is_nan(b) || b.partial_cmp(a) == Some(want))
-}
+use super::util::{displaces, maximum, minimum};
+use std::cmp::Ordering::{Greater, Less};
 
 #[cfg(test)]
 mod tests {

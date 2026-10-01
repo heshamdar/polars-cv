@@ -805,8 +805,10 @@ pub(crate) mod stats {
 
     /// Minimum and maximum of the elements as f32 read them. Integers take
     /// their integer extremes (`as f32` is monotone, so this equals a fold
-    /// over the converted values); floats fold in element order with
-    /// `f32::min`/`max`, which skip NaN. `(inf, -inf)` for no elements.
+    /// over the converted values); floats fold with the NaN rule
+    /// ([`crate::ops::util::minimum`]/`maximum`), so a NaN makes both NaN —
+    /// and MinMax normalize NaN throughout, as ZScore's mean already was.
+    /// `(inf, -inf)` for no elements.
     pub(crate) fn min_max_f32(buf: &ViewBuffer) -> (f32, f32) {
         fn int_extremes<T: ViewType + Ord>(buf: &ViewBuffer) -> Option<(T, T)> {
             let mut extremes: Option<(T, T)> = None;
@@ -828,8 +830,8 @@ pub(crate) mod stats {
             for_each_run::<T>(buf, |run| {
                 for &x in run {
                     let v = f32::cast_from(x);
-                    min = min.min(v);
-                    max = max.max(v);
+                    min = crate::ops::util::minimum(min, v);
+                    max = crate::ops::util::maximum(max, v);
                 }
             });
             (min, max)
@@ -1128,12 +1130,12 @@ pub(crate) fn apply_fused_op_passes(data: &mut [f32], ops: &[ScalarOp]) {
             }
             ScalarOp::Min(c) => {
                 for x in data.iter_mut() {
-                    *x = crate::ops::scalar::min_numpy(*x, *c);
+                    *x = crate::ops::util::minimum(*x, *c);
                 }
             }
             ScalarOp::Max(c) => {
                 for x in data.iter_mut() {
-                    *x = crate::ops::scalar::max_numpy(*x, *c);
+                    *x = crate::ops::util::maximum(*x, *c);
                 }
             }
             ScalarOp::Sign => {
@@ -1163,7 +1165,7 @@ pub(crate) fn apply_fused_op_passes(data: &mut [f32], ops: &[ScalarOp]) {
             }
             ScalarOp::Relu => {
                 for x in data.iter_mut() {
-                    *x = crate::ops::scalar::max_numpy(*x, 0.0);
+                    *x = crate::ops::util::maximum(*x, 0.0);
                 }
             }
             ScalarOp::Clamp(lo, hi) => {
