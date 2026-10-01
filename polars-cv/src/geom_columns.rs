@@ -7,8 +7,9 @@
 //! forms, null handling and error text cannot diverge between them.
 //!
 //! A value's numeric fields are found by name (a struct's field order means
-//! nothing) and must be `Float64`; a null field in a non-null value is an
-//! error naming the row, never a stand-in `0.0`.
+//! nothing) and must be `Float64`; a null, NaN or infinite field in a
+//! non-null value is an error naming the row, never a stand-in `0.0` or a
+//! position nothing has.
 //!
 //! It replaced a parser over `AnyValue`s, which built a `Series` per ring and
 //! per point list: 98 allocations for a two-contour row that reading the
@@ -293,7 +294,8 @@ fn named_f64<'a, const N: usize>(
     Ok((st, found))
 }
 
-/// The fields of struct `k`: a null field is an error, not a stand-in 0.0.
+/// The fields of struct `k`: a null field is an error, not a stand-in 0.0,
+/// and so is a NaN or infinite one, which has no position either.
 fn values<const N: usize>(
     fields: &Fields<'_, N>,
     k: usize,
@@ -301,9 +303,13 @@ fn values<const N: usize>(
 ) -> Result<[f64; N], String> {
     let mut out = [0.0; N];
     for (slot, (name, array)) in out.iter_mut().zip(&fields.1) {
-        *slot = array
+        let v = array
             .get(k)
             .ok_or_else(|| format!("a {what} has a null {name}"))?;
+        if !v.is_finite() {
+            return Err(format!("a {what} has a non-finite {name} ({v})"));
+        }
+        *slot = v;
     }
     Ok(out)
 }
@@ -633,6 +639,32 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("null"), "{err}");
+    }
+
+    /// A coordinate that is NaN or infinite has no position, so it is
+    /// refused like a null one, by every consumer: a NaN vertex panicked
+    /// `convex_hull`, `iou`, `dice` and `simplify` in the geometry library,
+    /// made `hausdorff_distance` `f64::MAX`, and left the bbox, winding and
+    /// convexity finite but wrong.
+    #[test]
+    fn a_non_finite_coordinate_is_refused() {
+        let ok = points(["x", "y"], &[Some(1.0), Some(2.0)], &[Some(3.0), Some(4.0)]);
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            // The bad coordinate is in the second point (row 1 as points).
+            for (xs, ys) in [
+                ([Some(1.0), Some(bad)], [Some(3.0), Some(4.0)]),
+                ([Some(1.0), Some(2.0)], [Some(3.0), Some(bad)]),
+            ] {
+                let col = rings(vec![Some(ok.clone()), Some(points(["x", "y"], &xs, &ys))]);
+                let column = ContourColumn::new(&col);
+                assert!(column.row(0).is_ok());
+                let err = column.row(1).unwrap_err().to_string();
+                assert!(err.contains("non-finite") && err.contains("row 1"), "{err}");
+                let pts = points(["x", "y"], &xs, &ys);
+                let err = PointColumn::new(&pts).get(1).unwrap_err().to_string();
+                assert!(err.contains("non-finite"), "{bad}: {err}");
+            }
+        }
     }
 
     #[test]

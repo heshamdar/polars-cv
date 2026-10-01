@@ -9,6 +9,7 @@ use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::DType;
 use crate::geometry::contour::{Contour, Point};
 use crate::geometry::{measures, pairwise, predicates};
+use crate::ops::util::maximum;
 
 /// Reduction applied over the pixel values of a contour's region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,7 +150,7 @@ fn score_one(
             if include {
                 let val = at(y, x);
                 acc += val;
-                max_val = max_val.max(val);
+                max_val = maximum(max_val, val);
                 count += 1;
             }
         }
@@ -160,7 +161,7 @@ fn score_one(
         for (x, y) in path_pixels(&contour.exterior, width, height) {
             let val = at(y, x);
             acc += val;
-            max_val = max_val.max(val);
+            max_val = maximum(max_val, val);
             count += 1;
         }
         if count == 0 {
@@ -313,6 +314,37 @@ mod tests {
                     LabelReduction::Sum => acc,
                 };
                 assert_eq!(scores[0], expected, "{reduction:?}/{mode:?}");
+            }
+        }
+    }
+
+    /// A NaN pixel in a region makes its score NaN, for every reduction and
+    /// wherever it lies (numpy's `max`/`mean`/`sum`, the one ordering rule):
+    /// `Max` folded with `f64::max`, which drops a NaN, so the score was
+    /// the region's largest number.
+    #[test]
+    fn a_nan_pixel_makes_the_score_nan() {
+        for at in [0usize, 5, 15] {
+            let mut data: Vec<f32> = (0..16).map(|i| i as f32).collect();
+            data[at] = f32::NAN;
+            let buffer = ViewBuffer::from_vec_with_shape(data, vec![4, 4, 1]);
+            for reduction in [
+                LabelReduction::Max,
+                LabelReduction::Mean,
+                LabelReduction::Sum,
+            ] {
+                let scores = score_contours_on_buffer(
+                    &buffer,
+                    &[square(0.0, 0.0, 4.0)],
+                    reduction,
+                    LabelRegionMode::Bbox,
+                )
+                .unwrap();
+                assert!(
+                    scores[0].is_nan(),
+                    "NaN at {at}, {reduction:?}: {}",
+                    scores[0]
+                );
             }
         }
     }
