@@ -27,9 +27,32 @@ loosened by whoever hits it. Its arithmetic is pinned by committed fixtures in
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 import numpy as np
+
+
+def _premultiplied(x: np.ndarray) -> np.ndarray:
+    """Colour times alpha over the dtype's maximum; alpha as it is.
+
+    For ``[H, W, 2|4]`` (gray+alpha, RGBA). The representation a resampler
+    with alpha works in, and the only one where a bound on it is dense: back
+    in straight colour each side's rounding is multiplied by ``MAX / alpha``.
+    """
+    if x.ndim != 3 or x.shape[2] not in (2, 4):
+        msg = f"premultiplied space needs [H, W, 2|4] with alpha last, got {x.shape}"
+        raise ValueError(msg)
+    top = float(np.iinfo(x.dtype).max) if x.dtype.kind in "iu" else 1.0
+    out = x.astype(np.float64)
+    out[..., :-1] *= out[..., -1:] / top
+    return out
+
+
+#: The representations a bound may be stated in, by name (see ``Tol.space``).
+SPACES: dict[str, Callable[[np.ndarray], np.ndarray]] = {
+    "premultiplied": _premultiplied,
+}
 
 
 @dataclass(frozen=True)
@@ -42,14 +65,24 @@ class Tol:
     pixels (an interpolation boundary, a rotation's anti-aliased edge): a
     dense ``atol`` large enough to cover those would hide a kernel that is
     wrong everywhere by that much.
+
+    ``space`` names the representation the bound holds in (one of
+    :data:`SPACES`; ``None``: the output as it is). :func:`compare` maps both
+    sides into it first. A translucent resample is compared premultiplied,
+    where it is well-conditioned, rather than given a straight-colour
+    allowance loose enough to hide a wrong kernel.
     """
 
     atol: float = 0.0
     rtol: float = 0.0
     frac: float = 0.0
     frac_atol: float = 0.0
+    space: str | None = None
 
     def __post_init__(self) -> None:
+        if self.space is not None and self.space not in SPACES:
+            msg = f"unknown comparison space {self.space!r}; known: {sorted(SPACES)}"
+            raise ValueError(msg)
         if min(self.atol, self.rtol, self.frac, self.frac_atol) < 0:
             msg = f"tolerances are non-negative: {self}"
             raise ValueError(msg)
@@ -73,6 +106,8 @@ class Tol:
             parts.append(f"rtol={self.rtol:g}")
         if self.frac:
             parts.append(f"frac={self.frac:g}@{self.frac_atol:g}")
+        if self.space:
+            parts.append(f"in {self.space} space")
         return f"Tol({', '.join(parts)})"
 
 
@@ -134,7 +169,10 @@ def propagate(
     3. A discontinuous step (infinite gain), or a ``global`` one, turns any
        inexact input unbounded.
     4. A sparse input survives only ``movement``/``pointwise`` steps.
-    5. Otherwise errors add: ``gain * incoming + own``, plus one level of
+    5. A bound stated in another space (``Tol.space``) does not compose
+       with errors in the output's own: over an exact input it stands as
+       the step's own, otherwise no bound holds.
+    6. Otherwise errors add: ``gain * incoming + own``, plus one level of
        re-rounding for an integer output that is not pure data movement.
     """
     if kind not in KINDS:
@@ -147,6 +185,8 @@ def propagate(
     if math.isinf(gain) or kind == "global":
         return None
     if incoming.frac and kind not in ("movement", "pointwise"):
+        return None
+    if incoming.space or own.space:
         return None
 
     requant = 1.0 if integer_out and kind != "movement" else 0.0
@@ -190,6 +230,9 @@ def compare(actual: np.ndarray, expected: np.ndarray, tol: Tol) -> Mismatch | No
         return Mismatch(f"dtype {actual.dtype} != reference {expected.dtype}")
     if actual.size == 0:
         return None
+    if tol.space is not None:
+        to_space = SPACES[tol.space]
+        actual, expected = to_space(actual), to_space(expected)
 
     a = actual.astype(np.float64) if actual.dtype.kind != "O" else actual
     e = expected.astype(np.float64)
