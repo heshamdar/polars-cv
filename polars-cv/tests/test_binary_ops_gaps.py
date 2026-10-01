@@ -209,3 +209,58 @@ class TestApplyMaskInvert:
         arr_invert = numpy_from_struct(r_invert.row(0)[0])
 
         assert not np.array_equal(arr_normal, arr_invert)
+
+
+@plugin_required
+class TestMixedDtypePromotion:
+    """Operands of different dtypes combine in NumPy's promoted dtype, at plan
+    time and at execution alike: u8 with i8 is i16, so 200 + (-100) is 100.
+    The larger-integer rule promoted to i8 and lost the 200."""
+
+    @staticmethod
+    def _frame() -> pl.DataFrame:
+        a = np.array([[[200], [0]]], dtype=np.uint8)
+        b = np.array([[[-100], [-128]]], dtype=np.int8)
+        return pl.DataFrame(
+            {
+                "a": pl.Series([a], dtype=pl.Array(pl.UInt8, (1, 2, 1))),
+                "b": pl.Series([b], dtype=pl.Array(pl.Int8, (1, 2, 1))),
+            }
+        )
+
+    def test_u8_with_i8_is_i16(self) -> None:
+        expr = (
+            pl.col("a")
+            .cv.pipe(Pipeline().source("array"))
+            .add(pl.col("b").cv.pipe(Pipeline().source("array")))
+            .sink("array")
+        )
+        lf = self._frame().lazy().select(out=expr)
+        assert lf.collect_schema()["out"] == pl.Array(pl.Int16, (1, 2, 1))
+        out = np.asarray(lf.collect()["out"][0].to_list())
+        np.testing.assert_array_equal(out.ravel(), [100, -128])
+        ref = np.array([200, 0], np.uint8) + np.array([-100, -128], np.int8)
+        assert ref.dtype == np.int16
+
+    def test_bitwise_without_a_common_integer_is_refused(self) -> None:
+        df = pl.DataFrame(
+            {
+                "a": pl.Series(
+                    [np.ones((1, 1, 1), np.uint64)],
+                    dtype=pl.Array(pl.UInt64, (1, 1, 1)),
+                ),
+                "b": pl.Series(
+                    [np.ones((1, 1, 1), np.int64)], dtype=pl.Array(pl.Int64, (1, 1, 1))
+                ),
+            }
+        )
+        expr = (
+            pl.col("a")
+            .cv.pipe(Pipeline().source("array"))
+            .bitwise_and(pl.col("b").cv.pipe(Pipeline().source("array")))
+            .sink("numpy")
+        )
+        with pytest.raises(
+            (ValueError, pl.exceptions.ComputeError), match="no common integer"
+        ):
+            df.select(expr)

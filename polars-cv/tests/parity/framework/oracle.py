@@ -128,9 +128,17 @@ class OpSpec:
 # ---------------------------------------------------------------------------
 
 
+#: The dtypes whose float is f64 (``DType::accumulator``): f32 cannot hold
+#: the 32/64-bit integers, which NumPy promotes to f64.
+_F64_ACCUMULATED = {
+    np.dtype(t) for t in (np.float64, np.uint32, np.int32, np.uint64, np.int64)
+}
+
+
 def float_out(x: np.ndarray) -> np.dtype:
-    """The dtype a float-promoting op produces: f64 stays f64, else f32."""
-    return np.dtype(np.float64) if x.dtype == np.float64 else np.dtype(np.float32)
+    """The dtype a float-promoting op produces (``PromoteToFloat``): f64 for
+    f64 and the 32/64-bit integers, f32 otherwise."""
+    return np.dtype(np.float64 if x.dtype in _F64_ACCUMULATED else np.float32)
 
 
 def round_half_away(v: np.ndarray) -> np.ndarray:
@@ -423,7 +431,12 @@ def _threshold_params(draw: st.DrawFn, x: np.ndarray) -> Params:
 
 
 def _threshold_ref(x: np.ndarray, p: Params) -> np.ndarray:
-    return np.where(x.astype(np.float64) > p["value"], 255, 0).astype(np.uint8)
+    """``255`` where a pixel exceeds the value, compared exactly: Python
+    compares an int with a float exactly, where a 64-bit pixel rounded to
+    f64 can land on the value."""
+    t = p["value"]
+    above = np.array([v > t for v in x.ravel().tolist()], dtype=bool)
+    return np.where(above.reshape(x.shape), 255, 0).astype(np.uint8)
 
 
 def _clamp_params(draw: st.DrawFn, x: np.ndarray) -> Params:
@@ -533,7 +546,11 @@ def _grayscale_ref(x: np.ndarray, p: Params) -> np.ndarray:
 def _grayscale_tol(x: np.ndarray, p: Params) -> Tol:
     if x.shape[2] in (1, 2):
         return EXACT
-    return lsb(1) if is_int(x) else close(atol=1e-6 * magnitude(x), rtol=1e-6)
+    if not is_int(x):
+        return close(atol=1e-6 * magnitude(x), rtol=1e-6)
+    # The luma is computed in f64 (an integer's accumulator) on both sides,
+    # in different orders: beyond 2**53 that is a few f64 spacings apart.
+    return lsb(max(1.0, 4 * float(np.spacing(float(magnitude(x))))))
 
 
 def _to_bgr_ref(x: np.ndarray, p: Params) -> np.ndarray:
@@ -595,7 +612,11 @@ def _ycbcr_ref(x: np.ndarray, p: Params) -> np.ndarray:
     def ycbcr(rgb: np.ndarray) -> np.ndarray:
         r, g, b = (rgb[:, :, i].astype(np.float64) for i in range(3))
         y = 0.299 * r + 0.587 * g + 0.114 * b
-        planes = np.stack([y, off + (b - y) / 1.772, off + (r - y) / 1.402], axis=2)
+        # (B - Y) / 1.772 and (R - Y) / 1.402 expanded, so an infinite
+        # channel gives the infinite limit, not inf - inf.
+        cb = -0.168736 * r - 0.331264 * g + 0.5 * b
+        cr = 0.5 * r - 0.418688 * g - 0.081312 * b
+        planes = np.stack([y, off + cb, off + cr], axis=2)
         return to_dtype(planes, rgb.dtype)
 
     return color_channels(ycbcr, x)
@@ -2162,29 +2183,36 @@ def _saturating(
 
 @quiet
 def _divide_ref(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """NumPy's true division into f32 (f64 for f64): IEEE at zero."""
-    out = np.float64 if a.dtype == np.float64 else np.float32
+    """NumPy's true division into the operands' float: f64 for f64 and the
+    32/64-bit integers, f32 otherwise. IEEE at zero."""
+    out = float_out(a)
     return (a.astype(np.float64) / b.astype(np.float64)).astype(out)
 
 
 def _divide_tol(x: np.ndarray) -> Tol:
     """The engine divides in ``DType::accumulator``; the reference rounds an
     f64 quotient to the output, so the two may differ by an ulp of it."""
-    eps = np.finfo(np.float64 if x.dtype == np.float64 else np.float32).eps
+    eps = np.finfo(float_out(x)).eps
     return close(atol=0, rtol=2 * float(eps))
 
 
-def _unit_scaled(
-    fn: Callable[[np.ndarray, np.ndarray, float], np.ndarray],
-) -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
-    @quiet
-    def ref(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        if a.dtype.kind == "f":
-            return fn(a.astype(np.float64), b.astype(np.float64), 1.0).astype(a.dtype)
-        peak = float(np.iinfo(a.dtype).max)
-        return to_dtype(fn(a.astype(np.float64), b.astype(np.float64), peak), a.dtype)
+@quiet
+def _blend_ref(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """``(a/MAX)(b/MAX)MAX``: a plain product for floats; for integers
+    ``round(a*b / MAX)`` in exact integers (MAX is odd, so no ties),
+    saturated -- f64 cannot hold a 64-bit product."""
+    if a.dtype.kind == "f":
+        return (a.astype(np.float64) * b.astype(np.float64)).astype(a.dtype)
+    info = np.iinfo(a.dtype)
+    peak = int(info.max)
 
-    return ref
+    def one(x: int, y: int) -> int:
+        q, r = divmod(abs(x * y), peak)
+        q += 2 * r > peak
+        return min(max(q if x * y >= 0 else -q, int(info.min)), peak)
+
+    flat = [one(x, y) for x, y in zip(a.ravel().tolist(), b.ravel().tolist())]
+    return np.array(flat, dtype=a.dtype).reshape(np.broadcast_shapes(a.shape, b.shape))
 
 
 def _float_or_lsb(x: np.ndarray) -> Tol:
@@ -2205,9 +2233,9 @@ BINARY: dict[str, BinarySpec] = {
         ),
         BinarySpec(
             "blend",
-            _unit_scaled(lambda a, b, m: (a / m) * (b / m) * m),
+            _blend_ref,
             tol=_float_or_lsb,
-            note="normalized product: (a/MAX)(b/MAX)MAX",
+            note="normalized product: (a/MAX)(b/MAX)MAX, exact for integers",
         ),
         BinarySpec("maximum", lambda a, b: np.maximum(a, b)),
         BinarySpec("minimum", lambda a, b: np.minimum(a, b)),

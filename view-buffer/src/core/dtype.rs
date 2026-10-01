@@ -211,7 +211,10 @@ pub enum OutputDTypeRule {
     PreserveInput,
     /// Output is always a fixed dtype (e.g., always F32).
     Fixed(DType),
-    /// Promote integers to float32, preserve float types.
+    /// A float: the input's [`DType::accumulator`] — f32 for the 8/16-bit
+    /// integers, f64 for the 32/64-bit ones (which f32 cannot hold, as NumPy
+    /// promotes them), the float dtypes preserved. The op computes in that
+    /// same float, so what it computes in and what it stores agree.
     PromoteToFloat,
     /// Force output to F64 (for reductions that need precision).
     ForceF64,
@@ -234,7 +237,7 @@ pub enum OutputDTypeRule {
 /// then failed in the encoder.
 ///
 /// Three states, ordered by how much is known. `SomeFloat` is deliberately not
-/// a dtype: there is no single answer (f32 for integers, f64 preserved), and
+/// a dtype: there is no single answer (f32 or f64 by the input's width), and
 /// inventing one would be a lie the runtime guard would catch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlannedDType {
@@ -316,8 +319,8 @@ impl OutputDTypeRule {
             (_, PlannedDType::Known(dt)) => PlannedDType::Known(self.resolve(dt)),
             // Output follows an input we do not know.
             (OutputDTypeRule::PreserveInput, other) => other,
-            // A float in, a float out; anything else in, f32 out. Either way a
-            // float — which is the whole point of this state existing.
+            // A float in, a float out; an integer in, f32 or f64 out. Either
+            // way a float — which is the whole point of this state existing.
             (OutputDTypeRule::PromoteToFloat, _) => PlannedDType::SomeFloat,
             // The remaining rules ignore the input entirely, so an unknown
             // input is no obstacle. U8 is an arbitrary stand-in that `resolve`
@@ -331,13 +334,7 @@ impl OutputDTypeRule {
         match self {
             OutputDTypeRule::PreserveInput => input_dtype,
             OutputDTypeRule::Fixed(dtype) => *dtype,
-            OutputDTypeRule::PromoteToFloat => {
-                if matches!(input_dtype, DType::F32 | DType::F64) {
-                    input_dtype
-                } else {
-                    DType::F32
-                }
-            }
+            OutputDTypeRule::PromoteToFloat => input_dtype.accumulator(),
             OutputDTypeRule::ForceF64 => DType::F64,
             OutputDTypeRule::ForceI64 => DType::I64,
             OutputDTypeRule::ForceU64 => DType::U64,
@@ -436,6 +433,21 @@ impl DType {
             // integer destination, float source: never (fractionals / NaN / inf).
             (Some(_), None) => false,
         }
+    }
+
+    /// The dtype two operands of these dtypes combine in: **NumPy's
+    /// promotion** (`np.result_type`). The first dtype, smallest first and
+    /// unsigned before signed before float, that holds every value of both
+    /// exactly ([`losslessly_contains`](Self::losslessly_contains)), else
+    /// `F64` when none does (u64 with a signed integer, a 64-bit integer with
+    /// a float). So u8 with i8 is i16 and u32 with f32 is f64, where the
+    /// larger-integer rule this replaced lost values (u8 200 + i8 gave i8).
+    pub fn promote(self, other: DType) -> DType {
+        use DType::*;
+        [U8, I8, U16, I16, U32, I32, U64, I64, F32, F64]
+            .into_iter()
+            .find(|d| d.losslessly_contains(self) && d.losslessly_contains(other))
+            .unwrap_or(F64)
     }
 
     /// The value range's maximum: an integer dtype's largest value, 1.0 for
@@ -555,6 +567,75 @@ mod planned_dtype_tests {
         OutputDTypeRule::ForceU64,
         OutputDTypeRule::ForceU32,
     ];
+
+    /// `promote` is NumPy's table: every pair, as `np.result_type` gives it
+    /// (numpy 2.x, recorded rather than derived).
+    #[test]
+    fn promote_is_numpys_result_type() {
+        use DType::*;
+        let numpy: &[(DType, DType, DType)] = &[
+            (U8, U8, U8),
+            (U8, I8, I16),
+            (U8, U16, U16),
+            (U8, I16, I16),
+            (U8, U32, U32),
+            (U8, I32, I32),
+            (U8, U64, U64),
+            (U8, I64, I64),
+            (U8, F32, F32),
+            (U8, F64, F64),
+            (I8, I8, I8),
+            (I8, U16, I32),
+            (I8, I16, I16),
+            (I8, U32, I64),
+            (I8, I32, I32),
+            (I8, U64, F64),
+            (I8, I64, I64),
+            (I8, F32, F32),
+            (I8, F64, F64),
+            (U16, U16, U16),
+            (U16, I16, I32),
+            (U16, U32, U32),
+            (U16, I32, I32),
+            (U16, U64, U64),
+            (U16, I64, I64),
+            (U16, F32, F32),
+            (U16, F64, F64),
+            (I16, I16, I16),
+            (I16, U32, I64),
+            (I16, I32, I32),
+            (I16, U64, F64),
+            (I16, I64, I64),
+            (I16, F32, F32),
+            (I16, F64, F64),
+            (U32, U32, U32),
+            (U32, I32, I64),
+            (U32, U64, U64),
+            (U32, I64, I64),
+            (U32, F32, F64),
+            (U32, F64, F64),
+            (I32, I32, I32),
+            (I32, U64, F64),
+            (I32, I64, I64),
+            (I32, F32, F64),
+            (I32, F64, F64),
+            (U64, U64, U64),
+            (U64, I64, F64),
+            (U64, F32, F64),
+            (U64, F64, F64),
+            (I64, I64, I64),
+            (I64, F32, F64),
+            (I64, F64, F64),
+            (F32, F32, F32),
+            (F32, F64, F64),
+            (F64, F64, F64),
+        ];
+        assert_eq!(numpy.len(), 55, "every unordered pair");
+        for &(a, b, want) in numpy {
+            assert_eq!(a.promote(b), want, "{a:?} with {b:?}");
+            assert_eq!(b.promote(a), want, "{b:?} with {a:?}");
+        }
+    }
 
     #[test]
     fn resolve_planned_agrees_with_resolve_on_a_known_input() {

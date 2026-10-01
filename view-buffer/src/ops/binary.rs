@@ -19,6 +19,7 @@
 //! - All operations use standard IEEE 754 arithmetic
 
 use crate::core::buffer::ViewBuffer;
+use crate::core::convert::CastFrom;
 use crate::core::dtype::{
     with_dtype, DType, DTypeCategory, OutputDTypeRule, PlannedDType, ViewType,
 };
@@ -106,48 +107,31 @@ crate::naming::named_variants!(BinaryOp {
 impl BinaryOp {
     /// Execute the binary operation on two buffers.
     ///
-    /// Both buffers must have broadcastable shapes. The operands are brought
-    /// to their common dtype ([`promote_dtypes`]) and combined natively in
-    /// it, with the per-dtype semantics of [`BinaryElem`]; true division
-    /// computes in that dtype's [`DType::accumulator`]. The result is stored
-    /// in [`output_dtype`](Self::output_dtype), the dtype planning reads.
+    /// Both buffers must have broadcastable shapes. The operands combine in
+    /// their common dtype ([`DType::promote`], NumPy's promotion), with the
+    /// per-dtype semantics of [`BinaryElem`]; true division computes in that
+    /// dtype's [`DType::accumulator`]. Either way the result is
+    /// [`output_dtype`](Self::output_dtype), the dtype planning reads.
     pub fn execute(&self, a: &ViewBuffer, b: &ViewBuffer) -> ViewBuffer {
         let output_shape =
             broadcast_shapes(a.shape(), b.shape()).expect("Shapes must be broadcastable");
         let out_dtype = self.output_dtype(a.dtype(), b.dtype());
-        let common = promote_dtypes(a.dtype(), b.dtype());
-
-        let result = match self {
-            // True division: a float result, computed in the accumulator (f64
-            // for f64 and the 32/64-bit integers, f32 otherwise).
-            BinaryOp::Divide => {
-                let compute = if out_dtype == DType::F64 {
-                    DType::F64
-                } else {
-                    common.accumulator()
-                };
-                let (a, b) = (a.cast_to(compute), b.cast_to(compute));
-                match compute {
-                    DType::F64 => divide::<f64>(&a, &b, &output_shape),
-                    _ => divide::<f32>(&a, &b, &output_shape),
-                }
-            }
-            _ => {
-                let (a, b) = (a.cast_to(common), b.cast_to(common));
-                with_dtype!(common, T => self.execute_typed::<T>(&a, &b, &output_shape))
-            }
-        };
-
-        if result.dtype() == out_dtype {
-            result
-        } else {
-            result.cast_to(out_dtype)
+        let common = a.dtype().promote(b.dtype());
+        // Each operand is read in its own dtype and converted exactly to the
+        // dtype the op computes in (`zip_with`): the promotion, or for true
+        // division its float (`out_dtype`, the promotion's accumulator).
+        match self {
+            BinaryOp::Divide => match out_dtype {
+                DType::F64 => divide::<f64>(a, b, &output_shape),
+                _ => divide::<f32>(a, b, &output_shape),
+            },
+            _ => with_dtype!(common, T => self.execute_typed::<T>(a, b, &output_shape)),
         }
     }
 
     /// The output dtype of this binary op for the given operand dtypes: its
     /// [`output_dtype_rule`](Op::output_dtype_rule) applied to the two
-    /// operands' common dtype ([`promote_dtypes`]).
+    /// operands' common dtype ([`DType::promote`], NumPy's promotion).
     ///
     /// This is what planning (the plugin's `plan::step`, given both operand
     /// dtypes) and execution ([`execute`](BinaryOp::execute)) both read, and
@@ -155,14 +139,13 @@ impl BinaryOp {
     /// disagree. Divide uses *true division*: integer operands
     /// promote to float (`F32`, or `F64` when an operand is already `F64`).
     pub fn output_dtype(&self, left: DType, right: DType) -> DType {
-        self.output_dtype_rule()
-            .resolve(promote_dtypes(left, right))
+        self.output_dtype_rule().resolve(left.promote(right))
     }
 
     /// Every op but division, in the operands' own dtype `T`. The op is
     /// matched once, outside the loop, so each arm is its own monomorphic
     /// loop.
-    fn execute_typed<T: BinaryElem>(
+    fn execute_typed<T: BinaryElem + FromAny>(
         &self,
         a: &ViewBuffer,
         b: &ViewBuffer,
@@ -187,7 +170,7 @@ impl BinaryOp {
 
 /// `a / b` element-wise in the float `F`, IEEE: `x / 0` is ±inf, `0 / 0`
 /// NaN.
-fn divide<F: ViewType + num_traits::Float>(
+fn divide<F: ViewType + num_traits::Float + FromAny>(
     a: &ViewBuffer,
     b: &ViewBuffer,
     output_shape: &[usize],
@@ -195,28 +178,91 @@ fn divide<F: ViewType + num_traits::Float>(
     zip_with(a, b, output_shape, |x: F, y: F| x / y)
 }
 
-/// `f(a, b)` element-wise over two buffers of one dtype `T`, broadcast to
-/// `output_shape`.
-fn zip_with<T: ViewType, Fun: Fn(T, T) -> T>(
+/// A dtype every element dtype converts to ([`CastFrom`]): the dtype a
+/// binary op computes in reads either operand, whatever its own dtype.
+pub(crate) trait FromAny:
+    ViewType
+    + Default
+    + CastFrom<u8>
+    + CastFrom<i8>
+    + CastFrom<u16>
+    + CastFrom<i16>
+    + CastFrom<u32>
+    + CastFrom<i32>
+    + CastFrom<u64>
+    + CastFrom<i64>
+    + CastFrom<f32>
+    + CastFrom<f64>
+{
+}
+
+impl<T> FromAny for T where
+    T: ViewType
+        + Default
+        + CastFrom<u8>
+        + CastFrom<i8>
+        + CastFrom<u16>
+        + CastFrom<i16>
+        + CastFrom<u32>
+        + CastFrom<i32>
+        + CastFrom<u64>
+        + CastFrom<i64>
+        + CastFrom<f32>
+        + CastFrom<f64>
+{
+}
+
+/// Elements `start..start + dst.len()` of `buf` broadcast to `shape`, in
+/// logical order, each converted to `T`.
+fn read_as<T: FromAny>(buf: &ViewBuffer, shape: &[usize], start: usize, dst: &mut [T]) {
+    with_dtype!(buf.dtype(), S => {
+        let src = buf.as_slice::<S>();
+        if buf.shape() == shape {
+            let end = start + dst.len();
+            for (d, &x) in dst.iter_mut().zip(&src[start..end]) {
+                *d = T::cast_from(x);
+            }
+        } else {
+            for (k, d) in dst.iter_mut().enumerate() {
+                let coords = linear_to_coords(start + k, shape);
+                *d = T::cast_from(src[broadcast_index(&coords, buf.shape())]);
+            }
+        }
+    })
+}
+
+/// `f(a, b)` element-wise in the dtype `T`, broadcast to `output_shape`.
+///
+/// Operands already of dtype `T` and of the output's shape are read where
+/// they lie. Otherwise each is read in its own dtype and converted to `T`
+/// (which holds every value of both: [`DType::promote`]) a block at a time,
+/// so mixed operands cost two blocks of scratch rather than a converted copy
+/// of each.
+fn zip_with<T: FromAny, Fun: Fn(T, T) -> T>(
     a: &ViewBuffer,
     b: &ViewBuffer,
     output_shape: &[usize],
     f: Fun,
 ) -> ViewBuffer {
     let (ca, cb) = (a.to_contiguous(), b.to_contiguous());
-    let (sa, sb) = (ca.as_slice::<T>(), cb.as_slice::<T>());
-    let out: Vec<T> = if a.shape() == b.shape() && a.shape() == output_shape {
+    let direct = |x: &ViewBuffer| x.dtype() == T::DTYPE && x.shape() == output_shape;
+    let out: Vec<T> = if direct(&ca) && direct(&cb) {
+        let (sa, sb) = (ca.as_slice::<T>(), cb.as_slice::<T>());
         sa.iter().zip(sb).map(|(&x, &y)| f(x, y)).collect()
     } else {
+        const BLOCK: usize = 1024;
         let total: usize = output_shape.iter().product();
-        (0..total)
-            .map(|i| {
-                let coords = linear_to_coords(i, output_shape);
-                let x = sa[broadcast_index(&coords, a.shape())];
-                let y = sb[broadcast_index(&coords, b.shape())];
-                f(x, y)
-            })
-            .collect()
+        let mut out = Vec::with_capacity(total);
+        let (mut xa, mut xb) = ([T::default(); BLOCK], [T::default(); BLOCK]);
+        let mut start = 0;
+        while start < total {
+            let n = BLOCK.min(total - start);
+            read_as(&ca, output_shape, start, &mut xa[..n]);
+            read_as(&cb, output_shape, start, &mut xb[..n]);
+            out.extend(xa[..n].iter().zip(&xb[..n]).map(|(&x, &y)| f(x, y)));
+            start += n;
+        }
+        out
     };
     ViewBuffer::from_vec_with_shape(out, output_shape.to_vec())
 }
@@ -385,7 +431,7 @@ impl Op for BinaryOp {
     fn validate(
         &self,
         input_shapes: &[&[Dim]],
-        _input_dtypes: &[PlannedDType],
+        input_dtypes: &[PlannedDType],
     ) -> Result<(), ValidationError> {
         let [a, b, ..] = input_shapes else {
             return Err(ValidationError::InsufficientInputs {
@@ -393,6 +439,24 @@ impl Op for BinaryOp {
                 got: input_shapes.len(),
             });
         };
+        // The bitwise ops need a common integer dtype: u64 with a signed
+        // integer promotes to f64, which has no bits to combine (NumPy
+        // refuses it too).
+        if let (
+            BinaryOp::BitwiseAnd | BinaryOp::BitwiseOr | BinaryOp::BitwiseXor,
+            [PlannedDType::Known(l), PlannedDType::Known(r), ..],
+        ) = (self, input_dtypes)
+        {
+            if !DTypeCategory::Integer.accepts(l.promote(*r)) {
+                return Err(ValidationError::Generic {
+                    message: format!(
+                        "{l:?} and {r:?} have no common integer dtype (they promote to {:?}), \
+                         so they have no bits to combine; cast one first",
+                        l.promote(*r)
+                    ),
+                });
+            }
+        }
         // Refused only where two known sizes cannot broadcast.
         if broadcast_dims(a, b).is_none() {
             return Err(ValidationError::Generic {
@@ -419,7 +483,7 @@ impl Op for BinaryOp {
         None // Work with promoted input dtype
     }
 
-    /// Over the operands' common dtype ([`promote_dtypes`]).
+    /// Over the operands' common dtype ([`DType::promote`]).
     fn output_dtype_rule(&self) -> OutputDTypeRule {
         match self {
             BinaryOp::Divide => OutputDTypeRule::PromoteToFloat,
@@ -478,31 +542,6 @@ pub fn broadcast_shapes(a: &[usize], b: &[usize]) -> Option<Vec<usize>> {
 
     result.reverse();
     Some(result)
-}
-
-/// Promote two dtypes to a common type.
-pub fn promote_dtypes(a: DType, b: DType) -> DType {
-    use DType::*;
-
-    // If same, return as-is
-    if a == b {
-        return a;
-    }
-
-    // Float types take precedence
-    match (a, b) {
-        (F64, _) | (_, F64) => F64,
-        (F32, _) | (_, F32) => F32,
-        // Among integers, use the larger
-        (I64, _) | (_, I64) => I64,
-        (U64, _) | (_, U64) => U64,
-        (I32, _) | (_, I32) => I32,
-        (U32, _) | (_, U32) => U32,
-        (I16, _) | (_, I16) => I16,
-        (U16, _) | (_, U16) => U16,
-        (I8, _) | (_, I8) => I8,
-        _ => U8,
-    }
 }
 
 use super::util::linear_to_coords;
@@ -581,13 +620,6 @@ mod tests {
             broadcast_dims(&[Known(4), Input(1)], &[Known(2), Input(1)]),
             None
         );
-    }
-
-    #[test]
-    fn test_promote_dtypes() {
-        assert_eq!(promote_dtypes(DType::U8, DType::U8), DType::U8);
-        assert_eq!(promote_dtypes(DType::U8, DType::F32), DType::F32);
-        assert_eq!(promote_dtypes(DType::F32, DType::F64), DType::F64);
     }
 
     #[test]

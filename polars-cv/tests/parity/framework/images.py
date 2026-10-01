@@ -18,6 +18,13 @@ The content kinds are the inputs that break image kernels in practice:
 * ``edges`` — two-valued blocks; step edges for gradients, morphology, canny.
 * ``gradient`` — a ramp; monotone content for histogram and resampling.
 * ``halves`` (floats) — values on ``k/2``; ties for every rounding rule.
+* ``nonfinite`` (floats) — smooth content with NaN, ``inf`` and ``-inf``
+  sprinkled in; every op's NaN and infinity rule, and its panics.
+
+Integer value ranges: ``byte`` (0..255, what most image data occupies),
+``full`` (the dtype's range, within ±2**52 so a value survives f64) and, for
+the 64-bit dtypes, ``wide``: the whole range with odd low bits, values f64
+cannot hold (a kernel that computes through f64 rounds them).
 """
 
 from __future__ import annotations
@@ -46,7 +53,10 @@ DTYPES: dict[str, np.dtype] = {
 NAME_OF: dict[np.dtype, str] = {v: k for k, v in DTYPES.items()}
 
 INT_CONTENT = ("noise", "smooth", "constant", "extremes", "edges", "gradient")
-FLOAT_CONTENT = (*INT_CONTENT, "halves")
+FLOAT_CONTENT = (*INT_CONTENT, "halves", "nonfinite")
+
+#: The dtypes whose integers reach beyond f64's 53-bit mantissa.
+WIDE_DTYPES = ("u64", "i64")
 
 #: Float value ranges. ``unit`` is what normalized images hold; ``signed``
 #: exercises negative paths (abs, relu, sign); ``wide`` exercises magnitude.
@@ -92,6 +102,10 @@ def _bounds(dtype: np.dtype, value_range: str) -> tuple[float, float]:
     if value_range == "byte":
         # The range most image data actually occupies, whatever its container.
         return (max(info.min, 0), min(info.max, 255))
+    if value_range == "wide":
+        # The largest floats inside the range: rendered through f64, then
+        # given odd low bits (``_widen``).
+        return (float(info.min), float(np.nextafter(float(info.max), 0.0)))
     # 64-bit extremes do not survive a trip through float64; stay in range.
     return (float(max(info.min, -(2**52))), float(min(info.max, 2**52)))
 
@@ -134,6 +148,13 @@ def render(spec: ImageSpec) -> np.ndarray:
     elif spec.content == "halves":
         values = rng.integers(-16, 17, size=shape) / 2.0
         return values.astype(dtype)
+    elif spec.content == "nonfinite":
+        values = (lo + rng.random(shape) * (hi - lo)).astype(dtype)
+        special = rng.random(shape)
+        values[special < 0.15] = np.nan
+        values[(special >= 0.15) & (special < 0.2)] = np.inf
+        values[(special >= 0.2) & (special < 0.25)] = -np.inf
+        return values
     else:  # pragma: no cover - the strategy only draws known kinds
         msg = f"unknown content kind {spec.content!r}"
         raise ValueError(msg)
@@ -141,7 +162,17 @@ def render(spec: ImageSpec) -> np.ndarray:
     values = lo + unit * (hi - lo)
     if dtype.kind == "f":
         return values.astype(dtype)
-    return np.clip(np.rint(values), lo, hi).astype(dtype)
+    ints = np.clip(np.rint(values), lo, hi).astype(dtype)
+    return _widen(ints, rng) if spec.value_range == "wide" else ints
+
+
+def _widen(ints: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Give the 64-bit values low bits f64 cannot hold, staying in range: a
+    positive value steps down by 1-7, any other up (the values sit at least
+    1024 inside the range, ``_bounds``). One step per image, so ``constant``
+    stays constant."""
+    step = ints.dtype.type(rng.integers(1, 8))
+    return np.where(ints > 0, ints - step, ints + step)
 
 
 def _bilinear(coarse: np.ndarray, rows: np.ndarray, cols: np.ndarray) -> np.ndarray:
@@ -187,7 +218,10 @@ def image_specs(
         if is_float:
             value_range = draw(st.sampled_from(tuple(FLOAT_RANGES)), label="range")
         else:
-            value_range = draw(st.sampled_from(("byte", "full")), label="range")
+            ranges = (
+                ("byte", "full", "wide") if dtype in WIDE_DTYPES else ("byte", "full")
+            )
+            value_range = draw(st.sampled_from(ranges), label="range")
         side = sides(min_side, max_side)
         return ImageSpec(
             height=draw(side, label="height"),

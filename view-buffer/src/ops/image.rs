@@ -382,9 +382,35 @@ impl<M: Mode> Op for ImageOp<M> {
             // Image kernels read axes 0/1 as height/width and axis 2 as channels;
             // anything else would be passed through unchanged or read with an
             // axis silently dropped, so it is refused rather than degraded.
+            // Extending an axis by its own pixels needs one to read (numpy
+            // refuses an empty axis for every mode but "constant"). A
+            // per-row size or mode is checked when its row runs.
+            ImageOpKind::Pad {
+                top,
+                bottom,
+                left,
+                right,
+                mode,
+                ..
+            } => {
+                require_hw_or_hwc(shape)?;
+                let reads_pixels = M::sym(mode).known().is_some_and(|m| m != PadMode::Constant);
+                let padded = |a: &M::V<u32>, b: &M::V<u32>| {
+                    known::<M, u32>(a).is_some_and(|v| v > 0)
+                        || known::<M, u32>(b).is_some_and(|v| v > 0)
+                };
+                let empty_and_extended = (shape[0].known() == Some(0) && padded(top, bottom))
+                    || (shape[1].known() == Some(0) && padded(left, right));
+                if reads_pixels && empty_and_extended {
+                    return Err(ValidationError::ShapeRequirement {
+                        requirement: "a non-empty axis to extend by its pixels (an empty one pads only with mode=\"constant\")",
+                        got: shape.to_vec(),
+                    });
+                }
+                Ok(())
+            }
             ImageOpKind::Blur { .. }
             | ImageOpKind::HistogramEqualize
-            | ImageOpKind::Pad { .. }
             | ImageOpKind::PadToSize { .. }
             | ImageOpKind::Canny { .. }
             | ImageOpKind::Grayscale => require_hw_or_hwc(shape),
@@ -662,6 +688,39 @@ mod rule_tests {
     use super::*;
     use crate::mode::{Param, Wire};
     use crate::ops::spatial_rule::NeighborhoodSupport;
+
+    /// Extending an empty axis by its own pixels has nothing to read: numpy
+    /// refuses it ("can't extend empty axis 0 using modes other than
+    /// 'constant'"), and `edge`/`reflect`/`symmetric` panicked the engine. A
+    /// constant pad, or no padding on the empty axis, is fine.
+    #[test]
+    fn pad_refuses_to_extend_an_empty_axis_by_its_pixels() {
+        use crate::ops::{Dim, Op};
+        let pad = |top: u32, left: u32, mode: PadMode| ImageOp {
+            kind: ImageOpKind::<crate::mode::Exec>::Pad {
+                top,
+                bottom: 0,
+                left,
+                right: 0,
+                value: 0.0,
+                mode,
+            },
+        };
+        let check = |op: &ImageOp, shape: [usize; 3]| {
+            let dims: Vec<Dim> = shape.iter().map(|&n| Dim::Known(n)).collect();
+            op.validate(&[&dims], &[crate::PlannedDType::Known(crate::DType::U8)])
+        };
+        for mode in [PadMode::Edge, PadMode::Reflect, PadMode::Symmetric] {
+            let err = check(&pad(1, 0, mode), [0, 3, 1]).expect_err("rows");
+            assert!(err.to_string().contains("empty"), "{err}");
+            assert!(check(&pad(0, 1, mode), [3, 0, 1]).is_err(), "{mode:?} cols");
+            assert!(
+                check(&pad(0, 1, mode), [0, 3, 1]).is_ok(),
+                "{mode:?}: rows unpadded"
+            );
+        }
+        assert!(check(&pad(1, 1, PadMode::Constant), [0, 0, 1]).is_ok());
+    }
 
     /// A scale factor must be finite and positive: NaN saturated to a
     /// 1-pixel axis, infinity to `usize::MAX` (an allocation failure), and a

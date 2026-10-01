@@ -55,7 +55,10 @@ mod tests;
 pub(crate) fn apply(buf: ViewBuffer, op: &ComputeOp) -> ViewBuffer {
     match lower(op, &buf) {
         Lowered::Kernels(kernels) => run_kernels(buf, &kernels),
-        Lowered::F64(steps) => map_owned::<f64, _>(buf, &F64Map(&steps)),
+        Lowered::F64(steps) => match buf.dtype() {
+            DType::F64 => map_owned::<f64, _>(buf, &F64Map(&steps)),
+            dtype => with_dtype!(dtype, T => map_new::<T, f64, _>(&buf, &F64Map(&steps))),
+        },
         Lowered::Zeros(out) => zeros(out, buf.shape()),
         Lowered::IntNot => match buf.dtype() {
             DType::U32 => map_owned::<u32, _>(buf, &Not),
@@ -81,7 +84,8 @@ enum Lowered {
     /// One kernel applies to every element; `C` kernels apply per channel of
     /// a channels-last buffer.
     Kernels(Vec<FusedKernel>),
-    /// f64 input to a float-preserving op: compute and write f64.
+    /// Input whose accumulator is f64 (f64 and the 32/64-bit integers):
+    /// read each element exactly as f64, compute and write f64.
     F64(Vec<F64Step>),
     /// Every element is zero of this dtype (a normalize with no spread).
     Zeros(DType),
@@ -99,6 +103,7 @@ pub(crate) enum F64Step {
     Sub(f64),
     Mul(f64),
     Add(f64),
+    Div(f64),
 }
 
 impl F64Step {
@@ -109,6 +114,7 @@ impl F64Step {
             F64Step::Sub(c) => x - c,
             F64Step::Mul(c) => x * c,
             F64Step::Add(c) => x + c,
+            F64Step::Div(c) => x / c,
         }
     }
 }
@@ -131,7 +137,7 @@ fn lower(op: &ComputeOp, buf: &ViewBuffer) -> Lowered {
             buf,
         ),
         ComputeOp::AdjustContrast { factor } => {
-            if dtype == DType::F64 {
+            if dtype.accumulator() == DType::F64 {
                 let mean = stats::mean_f64(buf);
                 Lowered::F64(vec![
                     F64Step::Sub(mean),
@@ -163,28 +169,42 @@ fn lower(op: &ComputeOp, buf: &ViewBuffer) -> Lowered {
         _ => {
             let out_dtype = op.output_dtype_rule().resolve(dtype);
             let mut ops = Vec::new();
-            if dtype == DType::F64 {
-                // Every one of these preserves f64 and lowers for f64 as for
-                // any float (gamma's range and invert's maximum are 1).
-                assert!(
-                    lower_to_scalars(op, DType::F32, true, &mut ops),
-                    "internal: `{}` has no scalar lowering",
-                    op.name()
-                );
-                return Lowered::F64(ops.into_iter().map(F64Step::Scalar).collect());
+            match (op, dtype) {
+                (ComputeOp::Invert, DType::U32 | DType::I32 | DType::U64 | DType::I64) => {
+                    return Lowered::IntNot;
+                }
+                // f64 and the 32/64-bit integers compute in f64
+                // (`DType::accumulator`) and store f64 (`PromoteToFloat`).
+                // Gamma maps the input's own range, its maximum exact here.
+                (ComputeOp::AdjustGamma { gamma }, _) if dtype.accumulator() == DType::F64 => {
+                    let max = dtype.value_range_max();
+                    return Lowered::F64(vec![
+                        F64Step::Div(max),
+                        F64Step::Scalar(ScalarOp::Clamp(0.0, 1.0)),
+                        F64Step::Scalar(ScalarOp::Pow(*gamma)),
+                        F64Step::Mul(max),
+                    ]);
+                }
+                _ if dtype.accumulator() == DType::F64 => {
+                    debug_assert_eq!(out_dtype, DType::F64, "`{}` stores f64", op.name());
+                    // Lowered as for any float: invert's maximum is 1 and
+                    // gamma is handled above.
+                    assert!(
+                        lower_to_scalars(op, DType::F32, true, &mut ops),
+                        "internal: `{}` has no scalar lowering",
+                        op.name()
+                    );
+                    return Lowered::F64(ops.into_iter().map(F64Step::Scalar).collect());
+                }
+                _ => {}
             }
             if lower_to_scalars(op, dtype, true, &mut ops) {
                 return one(ops, out_dtype);
             }
-            match (op, dtype) {
-                (ComputeOp::Invert, DType::U32 | DType::I32 | DType::U64 | DType::I64) => {
-                    Lowered::IntNot
-                }
-                _ => panic!(
-                    "internal: `{}` has no scalar lowering for {dtype:?}",
-                    op.name()
-                ),
-            }
+            panic!(
+                "internal: `{}` has no scalar lowering for {dtype:?}",
+                op.name()
+            )
         }
     }
 }
@@ -771,11 +791,14 @@ impl F64Map<'_> {
 }
 
 // SAFETY: `map_into` writes every element of `dst`.
-unsafe impl ElementMap<f64, f64> for F64Map<'_> {
+unsafe impl<S: ViewType> ElementMap<S, f64> for F64Map<'_>
+where
+    f64: CastFrom<S>,
+{
     #[inline(always)]
-    fn map_into(&self, src: &[f64], dst: &mut [MaybeUninit<f64>], _at: usize) {
+    fn map_into(&self, src: &[S], dst: &mut [MaybeUninit<f64>], _at: usize) {
         for (d, &x) in dst.iter_mut().zip(src) {
-            d.write(self.apply(x));
+            d.write(self.apply(f64::cast_from(x)));
         }
     }
 }
@@ -928,18 +951,19 @@ pub(crate) mod stats {
         sum as f32 / n as f32
     }
 
-    /// The f64 mean of an f64 buffer, summed in element order.
+    /// The f64 mean of a buffer whose accumulator is f64 (f64, and the
+    /// 32/64-bit integers read exactly as f64), summed in element order.
     pub(crate) fn mean_f64(buf: &ViewBuffer) -> f64 {
         let n = buf.shape().iter().product::<usize>();
         if n == 0 {
             return 0.0;
         }
         let mut sum = sum_start();
-        for_each_run::<f64>(buf, |run| {
+        with_dtype!(buf.dtype(), T => for_each_run::<T>(buf, |run| {
             for &x in run {
-                sum += x;
+                sum += f64::cast_from(x);
             }
-        });
+        }));
         sum / n as f64
     }
 
@@ -989,11 +1013,11 @@ pub(crate) fn lower_to_scalars(
     is_outer: bool,
     list: &mut Vec<ScalarOp>,
 ) -> bool {
-    // The float-promoting scalar family is excluded for f64 inputs: the
-    // dtype contract preserves f64 (and the unfused runtime now computes in
-    // f64), but the fused kernel computes in f32 — fusing would silently
-    // drop precision. f64 chains simply stay unfused.
-    let promote_family_fusable = input_dtype != DType::F64;
+    // The fused kernel computes in f32, so it takes only an input whose
+    // accumulator is f32 (`DType::accumulator`): f64 and the 32/64-bit
+    // integers compute and store in f64 unfused, and fusing them would round
+    // every element to f32 first.
+    let promote_family_fusable = input_dtype.accumulator() == DType::F32;
     match op {
         ComputeOp::Scale { factor } if promote_family_fusable => {
             list.push(ScalarOp::Mul(*factor));

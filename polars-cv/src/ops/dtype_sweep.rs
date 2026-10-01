@@ -129,20 +129,32 @@ fn expect_dtype(
 /// The graph-level kernels the registry sweep cannot reach through
 /// `ViewExpr` (they read two or more buffers): every binary op executes in the
 /// dtype `plan::step` plans for it (`BinaryOp::output_dtype`), and
-/// `channel_merge` in its operands' (`PreserveInput`), on every dtype.
+/// `channel_merge` in its operands' (`PreserveInput`), on every dtype and,
+/// for the binary ops, every pair of dtypes.
 #[test]
 fn every_multi_operand_kernel_executes_in_its_planned_dtype() {
     let mut failures: Vec<String> = Vec::new();
     for &dtype in DType::ALL {
-        for &(name, op) in view_buffer::BinaryOp::NAMED {
-            for shape in shapes() {
-                let (a, b) = (image(&shape, dtype), image(&shape, dtype));
-                expect_dtype(
-                    &mut failures,
-                    format!("{name} on {dtype:?}{shape:?}"),
-                    op.output_dtype(dtype, dtype),
-                    || op.execute(&a, &b),
-                );
+        // Every operand pair, mixed dtypes promoting as NumPy's do; a pair the
+        // contract refuses (bitwise without a common integer) is skipped.
+        for &other in DType::ALL {
+            for &(name, op) in view_buffer::BinaryOp::NAMED {
+                let dims = |d| vec![view_buffer::ops::Dim::Known(d)];
+                let planned = [dtype, other].map(view_buffer::PlannedDType::Known);
+                if view_buffer::ops::traits::Op::validate(&op, &[&dims(6), &dims(6)], &planned)
+                    .is_err()
+                {
+                    continue;
+                }
+                for shape in shapes() {
+                    let (a, b) = (image(&shape, dtype), image(&shape, other));
+                    expect_dtype(
+                        &mut failures,
+                        format!("{name} on {dtype:?}/{other:?}{shape:?}"),
+                        op.output_dtype(dtype, other),
+                        || op.execute(&a, &b),
+                    );
+                }
             }
         }
         for planes in 1..=4 {

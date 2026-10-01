@@ -410,7 +410,13 @@ where
         as_pixels_mut::<P>(&mut out),
     )
     .expect("the output holds target_width * target_height pixels");
-    let options = fir::ResizeOptions::new().resize_alg(to_fir_algorithm(&filter));
+    // Premultiplied exactly when the declaration says the last channel is
+    // alpha (`ops::color::has_alpha`), not by fir's default for its 2/4
+    // channel pixel types.
+    let channels = buf.shape().get(2).copied().unwrap_or(1);
+    let options = fir::ResizeOptions::new()
+        .resize_alg(to_fir_algorithm(&filter))
+        .use_alpha(crate::ops::color::has_alpha(channels));
     FIR_RESIZER.with(|cell| {
         cell.borrow_mut()
             .resize_typed(&src, &mut dst, &options)
@@ -472,7 +478,7 @@ fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
 }
 
 /// Grayscale as a pixel map: the luma of a colour pixel (its first three
-/// channels), the gray channel of a gray + alpha one (`C == 2`).
+/// channels), the gray channel of a gray + alpha one (`color_channels(C) == 1`).
 #[cfg(feature = "image_interop")]
 struct Grayscale;
 
@@ -485,8 +491,8 @@ unsafe impl<T: crate::ops::color::Luma, const C: usize> PixelMap<T, T, C> for Gr
         for (d, p) in dst.iter_mut().zip(src) {
             // `C` is a constant, so each instance keeps one arm. The blue
             // index is written `C.min(3) - 1` (2 for every `C >= 3`) only so
-            // the discarded arm of `C == 2` stays in bounds.
-            d.write(if C == 2 {
+            // the discarded arm of gray + alpha stays in bounds.
+            d.write(if crate::ops::color::color_channels(C) == 1 {
                 p[0]
             } else {
                 T::luma(p[0], p[1], p[C.min(3) - 1])
