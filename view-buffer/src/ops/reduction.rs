@@ -231,7 +231,10 @@ impl ReductionOp {
             return ViewBuffer::from_scalar(f64::NAN);
         }
 
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        if values.iter().any(|v| v.is_nan()) {
+            return ViewBuffer::from_scalar(f64::NAN);
+        }
+        values.sort_by(f64::total_cmp);
 
         let n = values.len();
         if n == 1 {
@@ -264,18 +267,21 @@ impl ReductionOp {
         match self {
             ReductionOp::Max { axis: None } => {
                 assert!(!data.is_empty(), "Cannot reduce Max on empty buffer");
-                let max_val = data
-                    .iter()
-                    .copied()
-                    .fold(data[0], |a, b| if a > b { a } else { b });
+                let max_val = data.iter().copied().fold(data[0], |a, b| {
+                    if displaces(&a, &b, Greater) {
+                        b
+                    } else {
+                        a
+                    }
+                });
                 ViewBuffer::from_scalar(max_val)
             }
             ReductionOp::Min { axis: None } => {
                 assert!(!data.is_empty(), "Cannot reduce Min on empty buffer");
-                let min_val = data
-                    .iter()
-                    .copied()
-                    .fold(data[0], |a, b| if a < b { a } else { b });
+                let min_val =
+                    data.iter()
+                        .copied()
+                        .fold(data[0], |a, b| if displaces(&a, &b, Less) { b } else { a });
                 ViewBuffer::from_scalar(min_val)
             }
             ReductionOp::Mean { axis: None } => {
@@ -322,18 +328,24 @@ impl ReductionOp {
             // Axis-based reductions
             ReductionOp::Max { axis: Some(ax) } => {
                 self.reduce_axis::<T, _>(buffer, *ax as usize, |slice: &[T]| {
-                    slice
-                        .iter()
-                        .copied()
-                        .fold(slice[0], |a, b| if a > b { a } else { b })
+                    slice.iter().copied().fold(slice[0], |a, b| {
+                        if displaces(&a, &b, Greater) {
+                            b
+                        } else {
+                            a
+                        }
+                    })
                 })
             }
             ReductionOp::Min { axis: Some(ax) } => {
                 self.reduce_axis::<T, _>(buffer, *ax as usize, |slice: &[T]| {
-                    slice
-                        .iter()
-                        .copied()
-                        .fold(slice[0], |a, b| if a < b { a } else { b })
+                    slice.iter().copied().fold(slice[0], |a, b| {
+                        if displaces(&a, &b, Less) {
+                            b
+                        } else {
+                            a
+                        }
+                    })
                 })
             }
             ReductionOp::Mean { axis: Some(ax) } => {
@@ -536,12 +548,8 @@ impl ReductionOp {
                 let in_idx = coords_to_linear(&in_coords, &strides);
                 let val = data[in_idx];
 
-                let is_better = if is_max {
-                    val > best_val
-                } else {
-                    val < best_val
-                };
-                if is_better {
+                let want = if is_max { Greater } else { Less };
+                if displaces(&best_val, &val, want) {
                     best_val = val;
                     best_idx = a;
                 }
@@ -659,6 +667,18 @@ fn compute_strides(shape: &[usize]) -> Vec<usize> {
 }
 
 use super::util::{coords_to_linear, linear_to_coords};
+use std::cmp::Ordering::{self, Greater, Less};
+
+/// Whether `b` displaces `a` as the running extreme in direction `want`
+/// (`Greater` for max, `Less` for min) — numpy's rule for every ordering
+/// reduction: a NaN, the one value unordered against itself, is absorbing
+/// (the first one met is kept, so `argmax` reports its index); otherwise
+/// only a strictly better value displaces.
+#[inline]
+fn displaces<T: PartialOrd>(a: &T, b: &T, want: Ordering) -> bool {
+    let is_nan = |x: &T| x.partial_cmp(x).is_none();
+    !is_nan(a) && (is_nan(b) || b.partial_cmp(a) == Some(want))
+}
 
 #[cfg(test)]
 mod tests {
@@ -696,6 +716,54 @@ mod tests {
         let argmax = ReductionOp::ArgMax { axis: 0 }.execute(&buffer);
         assert_eq!(argmax.shape(), &[1]);
         assert_eq!(argmax.as_slice::<i64>(), &[1]);
+    }
+
+    /// A NaN is the result of every ordering reduction, as in numpy: `max`
+    /// and `min` propagate it, `argmax`/`argmin` give its first index, and
+    /// `percentile` is NaN. Percentile used to sort with a comparator that is
+    /// not a total order under NaN, which panics; max/min/arg* compared with
+    /// `>`/`<`, so whether a NaN survived depended on where it sat.
+    #[test]
+    fn a_nan_is_the_result_of_every_ordering_reduction() {
+        for data in [
+            vec![f32::NAN, 1.0, 5.0, 3.0],
+            vec![1.0, f32::NAN, 5.0, 3.0],
+            vec![1.0, 5.0, 3.0, f32::NAN],
+        ] {
+            let nan_at = data.iter().position(|x| x.is_nan()).unwrap();
+            let buffer = ViewBuffer::from_vec_with_shape(data.clone(), vec![4]);
+            for op in [
+                ReductionOp::Max { axis: None },
+                ReductionOp::Min { axis: None },
+                ReductionOp::Max { axis: Some(0) },
+                ReductionOp::Min { axis: Some(0) },
+            ] {
+                let out = op.execute(&buffer);
+                assert!(out.as_slice::<f32>()[0].is_nan(), "{op:?} of {data:?}");
+            }
+            for q in [0.0, 50.0, 100.0] {
+                let out = ReductionOp::Percentile { q }.execute(&buffer);
+                assert!(out.as_slice::<f64>()[0].is_nan(), "p{q} of {data:?}");
+            }
+            for op in [
+                ReductionOp::ArgMax { axis: 0 },
+                ReductionOp::ArgMin { axis: 0 },
+            ] {
+                let out = op.execute(&buffer);
+                assert_eq!(
+                    out.as_slice::<i64>(),
+                    &[nan_at as i64],
+                    "{op:?} of {data:?}"
+                );
+            }
+        }
+        // Many NaNs, enough for the sort to notice an inconsistent order.
+        let data: Vec<f64> = (0..64)
+            .map(|i| if i % 3 == 0 { f64::NAN } else { i as f64 })
+            .collect();
+        let buffer = ViewBuffer::from_vec_with_shape(data, vec![64]);
+        let out = ReductionOp::Percentile { q: 25.0 }.execute(&buffer);
+        assert!(out.as_slice::<f64>()[0].is_nan());
     }
 
     #[test]
