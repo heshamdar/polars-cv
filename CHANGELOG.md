@@ -9,6 +9,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Breaking changes
 
+- **polars-cv requires `polars>=1.43.2`** (was `>=1.41.1`). Older polars
+  exports a sliced `Array` column that has nulls across the plugin FFI with
+  its offset applied twice (the `FixedSizeListArray` export reported the
+  validity's offset while its values were already sliced), so the plugin's
+  import panicked: an `array` source over two chunks, or one chunk split
+  into streaming morsels, failed with "the offset of the new Buffer cannot
+  exceed the existing length". Fixed in polars itself; 1.43.0 and 1.43.1 are
+  yanked. The floor's fast suite was run at polars 1.43.2 / numpy 2.0.2.
+
 - **`divide` is IEEE true division; `ratio` is removed.** `divide` already
   promoted integer operands to float (`f32`, or `f64` with an `f64` operand)
   and divided, but a zero divisor gave `0`, even for floats, and its
@@ -184,7 +193,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   weekly slow lane.
 - tests: divergences the suite found are registered, not fixed, in
   `tests/parity/framework/known.py` and pinned as strict xfails:
-  `array-null-slice-panic`,
+
   `derived-extent-zero`, `tiff-gray-alpha`,
   `nan-one-sided-clamp`,
   `hsv-hue-180`, `scalar-fusion-int-cast`, `derived-size-tie`,
