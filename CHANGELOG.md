@@ -178,10 +178,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `reshape-after-view`, `tiff-gray-alpha`, `divide-ratio-contract`,
   `nan-one-sided-clamp`,
   `hsv-hue-180`, `scalar-fusion-int-cast`, `derived-size-tie`,
-  `blend-int`, `color-int-range`. Each entry's summary describes the defect
+  `color-int-range`. Each entry's summary describes the defect
   and the fix, and each pins the exception and message its repro fails with
   (`known.still_reproduces`), so a repro broken for another reason no longer
   reads as the defect.
+- view-buffer: `BinaryOp::execute` is one kernel generic over a `BinaryElem`
+  trait (the per-dtype semantics, defined once); the u8, u16 and float copies
+  of every op, including dead integer-division arms, are deleted.
+  `binary_exact.rs` checks every integer op against an exact i128/u128
+  reference at each dtype's edges.
 - tests: `ops::dtype_sweep` executes every registered buffer op on every
   dtype and every layout its contract admits (rank 2, and 1-4 channels) and
   requires the executed dtype to be the declared one; every binary op and
@@ -256,6 +261,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   16777216). Each is now one kernel generic over the element type
   (`with_dtype!`); `channel_swap` and the colour conversions' reorder are the
   same kernel, where they were two.
+- **The two-buffer ops are exact on every dtype, and `blend` is normalized on
+  every integer dtype.** `add`, `subtract`, `multiply`, `blend`, `maximum`,
+  `minimum` and the bitwise ops ran natively only for u8 and u16 (and same-
+  dtype floats); every other operand pair was computed in f32, so a value f32
+  cannot hold changed (u32 `16777219 ^ 16777221` gave 0, not 6), and `blend`
+  was a plain saturating multiply (i8 `81 blend 81` gave 127). One kernel
+  generic over the element type now serves every dtype: integer arithmetic
+  saturates to the dtype's range, `blend` is `round(a*b / MAX)` (the
+  normalized product u8/u16 already used), and floats use IEEE arithmetic.
+  True division computes in `DType::accumulator`.
 - **Colour conversions refuse a channel count they cannot read.** They
   admitted any `C` at least the source space's channel count, but every
   kernel reads a pixel as that many values: `to_bgr` of a 5-channel image
