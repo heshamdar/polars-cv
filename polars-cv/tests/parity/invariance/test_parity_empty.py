@@ -42,7 +42,7 @@ def test_an_empty_image_is_refused_or_processed(
     method: str, data: st.DataObject
 ) -> None:
     spec = OPS[method]
-    dtype = data.draw(st.sampled_from(list(spec.ref_dtypes or DTYPES)), label="dtype")
+    dtype = data.draw(st.sampled_from(list(DTYPES)), label="dtype")
     channels = data.draw(st.sampled_from([1, 2, 3, 4]), label="channels")
     proxy = np.zeros((5, 6, channels), DTYPES[dtype])
     if not spec.accepts(proxy):

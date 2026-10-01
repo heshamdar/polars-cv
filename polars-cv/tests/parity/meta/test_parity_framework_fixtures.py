@@ -312,6 +312,12 @@ class TestMergePerRow:
         assert _merge_per_row("histogram", edges) is None
         assert _merge_per_row("histogram", [{"bins": 2}, {"bins": [0.0, 1.0]}]) is None
 
+    def test_a_per_row_enum_varies_per_row(self) -> None:
+        """``str | pl.Expr`` (a per-row enum) admits an expression too."""
+        rows = [{"mode": "edge"}, {"mode": "reflect"}]
+        merged = _merge_per_row("pad", rows)
+        assert merged == {"mode": PerRow(("edge", "reflect"))}
+
     def test_a_list_of_expressions_varies_per_row(self) -> None:
         rows = [{"kernel": [1.0, 2.0]}, {"kernel": [1.0, 3.0]}]
         merged = _merge_per_row("convolve2d", rows)
