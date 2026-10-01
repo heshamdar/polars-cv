@@ -616,8 +616,8 @@ pub(crate) fn apply_image_inner(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
 /// place, and any view is read where it lies.
 ///
 /// A u8 input with the threshold inside the u8 range compares in u8 (`p > t`
-/// for an integer `p` is `p > floor(t)`); any other compares the element
-/// read as `f64`.
+/// for an integer `p` is `p > floor(t)`); any other integer compares exactly
+/// the same way ([`IntCut`]), and a float in `f64`.
 #[cfg(feature = "image_interop")]
 fn threshold_generic(buf: ViewBuffer, thresh: f64) -> ViewBuffer {
     let shape = buf.shape();
@@ -664,28 +664,96 @@ impl ElementMapInPlace<u8> for ThresholdU8 {
     }
 }
 
-/// Threshold of any dtype, compared in `f64`.
+/// Threshold of any dtype: an integer element is compared exactly, a float
+/// one in `f64` (exact for both float dtypes).
 #[cfg(feature = "image_interop")]
-struct Threshold<T>(f64, PhantomData<fn(T)>);
+struct Threshold<T>(f64, IntCut, PhantomData<fn(T)>);
 
 #[cfg(feature = "image_interop")]
 impl<T> Threshold<T> {
     fn new(thresh: f64) -> Self {
-        Threshold(thresh, PhantomData)
+        Threshold(thresh, IntCut::of(thresh), PhantomData)
+    }
+}
+
+/// `p > t` for every integer `p`, decided once per threshold: `p > t` iff
+/// `p > floor(t)`, and every integer dtype fits `i128`. Rounding the pixel to
+/// f64 instead answers for a neighbour above 2**53.
+#[cfg(feature = "image_interop")]
+#[derive(Clone, Copy)]
+enum IntCut {
+    /// Every integer exceeds `t` (`t` below every integer dtype).
+    Always,
+    /// No integer exceeds `t` (`t` above every integer dtype, or NaN).
+    Never,
+    /// `p` exceeds `t` iff `p > floor(t)`.
+    Above(i128),
+}
+
+#[cfg(feature = "image_interop")]
+impl IntCut {
+    fn of(t: f64) -> Self {
+        // Beyond +-2**100 no integer dtype reaches, and `floor` fits i128.
+        const BOUND: f64 = 1.2676506002282294e30; // 2**100
+        if t.is_nan() || t >= BOUND {
+            IntCut::Never
+        } else if t <= -BOUND {
+            IntCut::Always
+        } else {
+            IntCut::Above(t.floor() as i128)
+        }
+    }
+}
+
+/// Whether an element exceeds the threshold (`t` as written, or its
+/// [`IntCut`] for an integer dtype).
+#[cfg(feature = "image_interop")]
+trait Exceeds: Copy {
+    fn exceeds(self, t: f64, cut: IntCut) -> bool;
+}
+
+#[cfg(feature = "image_interop")]
+macro_rules! exceeds_int {
+    ($($t:ty),+) => {$(
+        impl Exceeds for $t {
+            #[inline(always)]
+            fn exceeds(self, _t: f64, cut: IntCut) -> bool {
+                match cut {
+                    IntCut::Always => true,
+                    IntCut::Never => false,
+                    IntCut::Above(c) => i128::from(self) > c,
+                }
+            }
+        }
+    )+};
+}
+#[cfg(feature = "image_interop")]
+exceeds_int!(u8, i8, u16, i16, u32, i32, u64, i64);
+
+#[cfg(feature = "image_interop")]
+impl Exceeds for f32 {
+    #[inline(always)]
+    fn exceeds(self, t: f64, _cut: IntCut) -> bool {
+        f64::from(self) > t
+    }
+}
+
+#[cfg(feature = "image_interop")]
+impl Exceeds for f64 {
+    #[inline(always)]
+    fn exceeds(self, t: f64, _cut: IntCut) -> bool {
+        self > t
     }
 }
 
 // SAFETY: `map_into` writes every element of `dst`.
 #[cfg(feature = "image_interop")]
-unsafe impl<T: ViewType> ElementMap<T, u8> for Threshold<T>
-where
-    f64: CastFrom<T>,
-{
+unsafe impl<T: ViewType + Exceeds> ElementMap<T, u8> for Threshold<T> {
     #[inline(always)]
     fn map_into(&self, src: &[T], dst: &mut [MaybeUninit<u8>], _at: usize) {
-        let t = self.0;
+        let (t, cut) = (self.0, self.1);
         for (d, &x) in dst.iter_mut().zip(src) {
-            d.write(if f64::cast_from(x) > t { 255 } else { 0 });
+            d.write(if x.exceeds(t, cut) { 255 } else { 0 });
         }
     }
 }
@@ -941,8 +1009,65 @@ mod grayscale_threshold_parity_tests {
         }
     }
 
-    /// Any other dtype compares the element read as `f64`, and still writes
-    /// u8, for every layout.
+    /// An integer pixel is compared with the threshold exactly (`p > t` iff
+    /// `p > floor(t)`), not rounded to f64 first: above 2**53 neighbouring
+    /// pixels share an f64, so the rounded comparison answered for the
+    /// neighbour.
+    #[test]
+    fn integer_threshold_is_exact_beyond_f64_precision() {
+        // 18442240474082181119 as f64 is ...120: the rounded comparison put
+        // ...119 above it.
+        let u = ViewBuffer::from_vec_with_shape(
+            vec![
+                18442240474082181119u64,
+                18442240474082181120,
+                18442240474082183169,
+                u64::MAX,
+            ],
+            vec![1, 4],
+        );
+        let i = ViewBuffer::from_vec_with_shape(
+            vec![3797082577976980i64, 3797082577976981, i64::MAX, i64::MIN],
+            vec![1, 4],
+        );
+        // 2**53 + 1 rounds to 2**53 as f64, so the rounded comparison said it
+        // does not exceed 2**53.
+        let w = ViewBuffer::from_vec_with_shape(
+            vec![
+                9007199254740991i64,
+                9007199254740992,
+                9007199254740993,
+                9007199254740995,
+            ],
+            vec![1, 4],
+        );
+        let cases: [(&ViewBuffer, f64, [u8; 4]); 12] = [
+            (&w, 9007199254740992.0, [0, 0, 255, 255]),
+            (&w, 9007199254740994.0, [0, 0, 0, 255]),
+            (&u, 18442240474082181119u64 as f64, [0, 0, 255, 255]),
+            (&u, 0.0, [255; 4]),
+            (&u, -1e300, [255; 4]),
+            (&u, 1e300, [0; 4]),
+            (&u, f64::NAN, [0; 4]),
+            (&i, 3797082577976980.5, [0, 255, 255, 0]),
+            (&i, -0.5, [255, 255, 255, 0]),
+            (&i, 9.3e18, [0; 4]),
+            (&i, -9.3e18, [255; 4]),
+            (&i, f64::NAN, [0; 4]),
+        ];
+        for (buf, t, expected) in cases {
+            let got = run(buf.clone(), ImageOpKind::Threshold { value: t });
+            assert_eq!(
+                got.as_slice::<u8>(),
+                &expected[..],
+                "{:?} t={t}",
+                buf.dtype()
+            );
+        }
+    }
+
+    /// Any other dtype compares the element's value, and still writes u8, for
+    /// every layout.
     #[test]
     fn typed_threshold_matches_the_comparison_reference() {
         for (h, w) in SIZES {

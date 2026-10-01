@@ -177,7 +177,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `channel-swap-panic`, `channel-merge-dtype`, `convolve2d-f64`,
   `through-f32`, `derived-extent-zero`, `view-offset-lost`,
   `reshape-after-view`, `tiff-gray-alpha`, `divide-ratio-contract`,
-  `warp-per-row-matrix`, `threshold-wide-int`, `nan-one-sided-clamp`,
+  `nan-one-sided-clamp`,
   `hsv-hue-180`, `scalar-fusion-int-cast`, `derived-size-tie`,
   `blend-int`, `color-int-range`. Each entry's summary describes the defect
   and the fix, and each pins the exception and message its repro fails with
@@ -234,6 +234,27 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **A literal float parameter equals the same value given as an expression.**
+  The graph JSON was parsed without `serde_json`'s `float_roundtrip`, so a
+  literal could land an ulp away from what the caller wrote, while the same
+  value from a column was read exactly. Any f64 parameter could differ; the
+  parity suite caught `warp_affine`'s matrix (the last bits of an f64 or wide
+  integer image differed between `matrix=[...]` and per-row expressions) and
+  `threshold` near a u64 pixel. Literals now parse to the nearest f64.
+- **`rotate_and_scale` with a per-row angle, centre or scale matches the same
+  values given as literals.** Its matrix was computed in Python: through the
+  `rotation_matrix_2d` FFI for literals, but as polars expression arithmetic
+  for any expression argument, and polars' `radians()` (`x * (pi/180)`)
+  rounds differently from the engine's `x * pi / 180`, so the two disagreed
+  in the last bits of an f64 image. `rotate_and_scale` is now a typed op the
+  engine lowers per row through `AffineParams::rotation_matrix_2d`, so there
+  is no second copy of the trig; its signature and outputs are unchanged.
+  The `polars_cv._lib.rotation_matrix_2d` FFI, which existed only to feed the
+  Python copy, is removed.
+- **`threshold` compares integer pixels exactly.** A non-u8 integer pixel was
+  rounded to f64 before the comparison, so above 2**53 it answered for a
+  neighbour (`2**53 + 1 > 2**53` came out false). Every integer dtype now
+  compares `p > floor(t)`, as u8 already did.
 - **`rotate`/`warp_affine` fill pixels off the image with the border value
   rounded and saturated, like every other pixel.** The fill truncated it: a
   u8 `border_value=7.5` filled 7 while pixels at the edge blended toward 7.5,

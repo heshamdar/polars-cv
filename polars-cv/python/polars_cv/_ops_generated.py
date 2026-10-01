@@ -399,6 +399,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "resize_to_height",
         "resize_to_width",
         "rotate",
+        "rotate_and_scale",
         "round",
         "scale",
         "sign",
@@ -894,6 +895,20 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         },
         "border_value": {"kind": "scalar", "per_row": True, "py": "float"},
     },
+    "rotate_and_scale": {
+        "angle": {"kind": "scalar", "per_row": True, "py": "float"},
+        "center": {
+            "kind": "array",
+            "len": 2,
+            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+        },
+        "output_size": {
+            "kind": "array",
+            "len": 2,
+            "inner": {"kind": "scalar", "per_row": True, "py": "int"},
+        },
+        "scale": {"kind": "scalar", "per_row": True, "py": "float"},
+    },
     "round": {},
     "scale": {"factor": {"kind": "scalar", "per_row": True, "py": "float"}},
     "sign": {},
@@ -1078,6 +1093,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "resize_to_height": [{"input": "buffer", "output": "buffer"}],
     "resize_to_width": [{"input": "buffer", "output": "buffer"}],
     "rotate": [{"input": "buffer", "output": "buffer"}],
+    "rotate_and_scale": [{"input": "buffer", "output": "buffer"}],
     "round": [{"input": "buffer", "output": "buffer"}],
     "scale": [{"input": "buffer", "output": "buffer"}],
     "sign": [{"input": "buffer", "output": "buffer"}],
@@ -2264,6 +2280,55 @@ class _OpsMixin:
                 "expand": expand,
                 "interpolation": interpolation,
                 "border_value": border_value,
+            },
+        )
+
+    def rotate_and_scale(
+        self,
+        *,
+        angle: FloatOrExpr,
+        center: Sequence[FloatOrExpr],
+        output_size: Sequence[IntOrExpr],
+        scale: FloatOrExpr = 1.0,
+    ) -> Pipeline:
+        """Combined rotation and scaling around a center point.
+
+        Warps with OpenCV's ``getRotationMatrix2D(center, -angle, scale)``
+        matrix, built per row from the values the row resolves: the matrix
+        is computed in one place (the engine), so a literal and the same
+        value as an expression give identical output.
+
+        Domain: buffer → buffer
+
+        Args:
+            angle: Rotation angle in degrees (positive = clockwise). Accepts a Polars
+                expression for a per-row angle.
+            center: ``(cx, cy)`` center of rotation. Required: an image source's
+                height/width are not known until execution, so there is no plan-time
+                centre to default to. Each element accepts an expression.
+            output_size: ``(height, width)`` of the output. Required, because the output
+                shape is part of the plan-time schema. Each element accepts an
+                expression.
+            scale: Scale factor (default 1.0). Accepts an expression.
+
+        Example:
+            ```python
+            >>> pipe = Pipeline().source("image_bytes").rotate_and_scale(
+            ...     angle=45.0, scale=1.2, center=(112, 112), output_size=(224, 224)
+            ... )
+            >>> # Per-row angle from a column
+            >>> pipe = Pipeline().source("image_bytes").rotate_and_scale(
+            ...     angle=pl.col("theta"), center=(112, 112), output_size=(224, 224)
+            ... )
+            ```
+        """
+        return self._append_typed(
+            "rotate_and_scale",
+            {
+                "angle": angle,
+                "center": center,
+                "output_size": output_size,
+                "scale": scale,
             },
         )
 

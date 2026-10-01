@@ -86,9 +86,11 @@ pyo3-polars = { version = "0.27", features = ["derive", "lazy"] }
 # Image encoding support
 image = "0.25"
 
-# Serialization
+# Serialization. `float_roundtrip`: a literal f64 in the graph JSON parses to
+# the nearest f64, so it equals the same value read from a column
+# (`ops::tests::a_literal_float_parses_to_the_nearest_f64`).
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
 
 # Half-precision (f16) output downcast for the numpy/torch sink. The engine has
 # no native f16 dtype, so f16 is produced only at the encode boundary.

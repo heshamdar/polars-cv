@@ -76,7 +76,6 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(contour_schema, m)?)?;
     m.add_function(wrap_pyfunction!(bbox_schema, m)?)?;
     m.add_function(wrap_pyfunction!(extension_types, m)?)?;
-    m.add_function(wrap_pyfunction!(rotation_matrix_2d, m)?)?;
     m.add_class::<output::ArrowBytes>()?;
     m.add_function(wrap_pyfunction!(output::binary_rows, m)?)?;
     Ok(())
@@ -156,22 +155,6 @@ fn extension_types() -> Vec<(&'static str, pyo3_polars::PySeries)> {
             (t.name(), pyo3_polars::PySeries(empty))
         })
         .collect()
-}
-
-/// The 2x3 rotation+scale matrix about `(cx, cy)` — the same authority
-/// (`AffineParams::rotation_matrix_2d`) that `from_rotation` builds on.
-///
-/// It exists so the Python planner's literal `rotate_and_scale` reads this
-/// matrix instead of transliterating the trig: `_rotation_matrix`'s all-literal
-/// path calls it, keeping the rotation formula in one place. The per-row
-/// `pl.Expr` path stays in Python — the engine cannot evaluate an expression at
-/// plan time — which is the one remaining, guard-sanctioned copy.
-///
-/// `angle_deg` is `f64` so the returned matrix matches Python's f64 arithmetic
-/// exactly (the planner feeds these straight into a literal `warp_affine`).
-#[pyfunction]
-fn rotation_matrix_2d(angle_deg: f64, cx: f64, cy: f64, scale: f64) -> Vec<f64> {
-    view_buffer::ops::affine::AffineParams::rotation_matrix_2d(angle_deg, cx, cy, scale).to_vec()
 }
 
 /// The typed op catalogue as JSON: every typed op's name, Python method name,

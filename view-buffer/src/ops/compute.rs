@@ -257,6 +257,41 @@ pub enum ComputeOp<M: Mode = Exec> {
         #[param(default = 0.0)]
         border_value: M::V<f64>,
     },
+    /// Combined rotation and scaling around a center point.
+    ///
+    /// Warps with OpenCV's ``getRotationMatrix2D(center, -angle, scale)``
+    /// matrix, built per row from the values the row resolves: the matrix
+    /// is computed in one place (the engine), so a literal and the same
+    /// value as an expression give identical output.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> pipe = Pipeline().source("image_bytes").rotate_and_scale(
+    ///     ...     angle=45.0, scale=1.2, center=(112, 112), output_size=(224, 224)
+    ///     ... )
+    ///     >>> # Per-row angle from a column
+    ///     >>> pipe = Pipeline().source("image_bytes").rotate_and_scale(
+    ///     ...     angle=pl.col("theta"), center=(112, 112), output_size=(224, 224)
+    ///     ... )
+    ///     ```
+    #[op(name = "rotate_and_scale", sample = {"angle": 30.0, "center": [2.0, 2.0],
+                                              "output_size": [4, 4], "scale": 1.0})]
+    RotateAndScale {
+        /// Rotation angle in degrees (positive = clockwise). Accepts a Polars
+        /// expression for a per-row angle.
+        angle: M::V<f64>,
+        /// ``(cx, cy)`` center of rotation. Required: an image source's
+        /// height/width are not known until execution, so there is no
+        /// plan-time centre to default to. Each element accepts an expression.
+        center: [M::V<f64>; 2],
+        /// ``(height, width)`` of the output. Required, because the output
+        /// shape is part of the plan-time schema. Each element accepts an
+        /// expression.
+        output_size: [M::V<u32>; 2],
+        /// Scale factor (default 1.0). Accepts an expression.
+        #[param(default = 1.0)]
+        scale: M::V<f64>,
+    },
     /// Rotate image by specified angle.
     ///
     /// For angles of 90, 180, or 270 degrees, this uses zero-copy view operations
@@ -323,6 +358,10 @@ impl<M: Mode> ComputeOp<M> {
             ComputeOp::WarpAffine {
                 output_size: [h, w],
                 ..
+            }
+            | ComputeOp::RotateAndScale {
+                output_size: [h, w],
+                ..
             } => OpShape::SetHw {
                 h: size::<M>(h),
                 w: size::<M>(w),
@@ -372,6 +411,19 @@ impl<M: Mode> ComputeOp<M> {
                          {determinant}), so it has no inverse and the warp is undefined. \
                          A row of zeros, a zero scale factor on an axis, or two \
                          proportional rows will do this."
+                    ));
+                }
+            }
+            return Ok(());
+        }
+        // The rotation matrix's determinant is scale**2: only a zero scale is
+        // singular.
+        if let ComputeOp::RotateAndScale { scale, .. } = self {
+            if let Some(scale) = M::sym(scale).known() {
+                if (scale * scale).abs() < AffineParams::SINGULAR_EPSILON {
+                    return Err(format!(
+                        "rotate_and_scale: scale {scale} collapses the image to a \
+                         point, so the warp has no inverse and is undefined."
                     ));
                 }
             }
@@ -483,6 +535,20 @@ impl ComputeOp {
                 interpolation,
                 border_value,
             })),
+            // The matrix comes from the one rotation authority, on the row's
+            // own values.
+            ComputeOp::RotateAndScale {
+                angle,
+                center: [cx, cy],
+                output_size: [output_height, output_width],
+                scale,
+            } => ViewDto::Compute(ComputeOp::Affine(AffineParams {
+                matrix: AffineParams::rotation_matrix_2d(angle, cx, cy, scale),
+                output_height,
+                output_width,
+                interpolation: InterpolationType::Bilinear,
+                border_value: 0.0,
+            })),
             other => ViewDto::Compute(other),
         }
     }
@@ -573,6 +639,7 @@ impl<M: Mode> Op for ComputeOp<M> {
             ComputeOp::Invert => "Invert",
             ComputeOp::RotateAffine { .. } => "RotateAffine",
             ComputeOp::WarpAffine { .. } => "WarpAffine",
+            ComputeOp::RotateAndScale { .. } => "RotateAndScale",
             ComputeOp::Rotate { .. } => "Rotate",
             ComputeOp::AddConstant { .. } => "Add",
             ComputeOp::SubtractConstant { .. } => "Sub",
@@ -588,6 +655,7 @@ impl<M: Mode> Op for ComputeOp<M> {
             ComputeOp::Affine(_)
             | ComputeOp::RotateAffine { .. }
             | ComputeOp::WarpAffine { .. }
+            | ComputeOp::RotateAndScale { .. }
             | ComputeOp::Rotate { .. } => MemoryEffect::RequiresContiguous,
             // Every per-value op, `normalize` and `adjust_contrast` included
             // (their statistics too), reads a view where it lies
@@ -620,6 +688,7 @@ impl<M: Mode> Op for ComputeOp<M> {
             ComputeOp::Affine(_)
             | ComputeOp::RotateAffine { .. }
             | ComputeOp::WarpAffine { .. }
+            | ComputeOp::RotateAndScale { .. }
             | ComputeOp::Rotate { .. } => SpatialDependency::geometric(),
             // Per-element: output at (y, x) depends only on input at (y, x).
             _ => SpatialDependency::Pointwise,
@@ -696,7 +765,7 @@ impl<M: Mode> Op for ComputeOp<M> {
                 }
                 Ok(())
             }
-            ComputeOp::WarpAffine { .. } => {
+            ComputeOp::WarpAffine { .. } | ComputeOp::RotateAndScale { .. } => {
                 self.check()
                     .map_err(|message| ValidationError::Generic { message })?;
                 crate::ops::validation::require_hw_or_hwc(input_shapes[0])
@@ -714,6 +783,7 @@ impl<M: Mode> Op for ComputeOp<M> {
             | ComputeOp::Affine(_)
             | ComputeOp::RotateAffine { .. }
             | ComputeOp::WarpAffine { .. }
+            | ComputeOp::RotateAndScale { .. }
             | ComputeOp::Rotate { .. }
             | ComputeOp::Fused(_) => DTypeCategory::Any,
             _ => DTypeCategory::Numeric,
@@ -747,6 +817,7 @@ impl<M: Mode> Op for ComputeOp<M> {
             | ComputeOp::Affine(_)
             | ComputeOp::RotateAffine { .. }
             | ComputeOp::WarpAffine { .. }
+            | ComputeOp::RotateAndScale { .. }
             | ComputeOp::Rotate { .. } => OutputDTypeRule::PreserveInput,
             _ => OutputDTypeRule::PromoteToFloat,
         }
@@ -757,6 +828,36 @@ impl<M: Mode> Op for ComputeOp<M> {
 mod tests {
     use super::*;
     use crate::mode::{Literals, Resolve, Wire};
+
+    /// `rotate_and_scale` executes as a warp by the one rotation matrix,
+    /// built from the values the row resolves (a literal and a per-row angle
+    /// therefore get the same matrix).
+    #[test]
+    fn rotate_and_scale_lowers_to_the_rotation_matrix() {
+        let op: ComputeOp<Exec> = ComputeOp::RotateAndScale {
+            angle: 26.875,
+            center: [0.0137, 0.0137],
+            output_size: [5, 6],
+            scale: 0.5,
+        };
+        let crate::ops::dto::ViewDto::Compute(ComputeOp::Affine(params)) = op.lowered() else {
+            panic!("rotate_and_scale must lower to an affine warp");
+        };
+        let expected = AffineParams::rotation_matrix_2d(26.875, 0.0137, 0.0137, 0.5);
+        assert_eq!(params.matrix.map(f64::to_bits), expected.map(f64::to_bits));
+        assert_eq!((params.output_height, params.output_width), (5, 6));
+    }
+
+    #[test]
+    fn a_zero_scale_is_refused() {
+        let op: ComputeOp<Exec> = ComputeOp::RotateAndScale {
+            angle: 10.0,
+            center: [1.0, 1.0],
+            output_size: [4, 4],
+            scale: 0.0,
+        };
+        assert!(op.check().unwrap_err().contains("scale 0"));
+    }
 
     /// The generic `name()` spells each wire scalar op's `ScalarOp` name
     /// (a per-row value cannot build the `ScalarOp`); the executed op's

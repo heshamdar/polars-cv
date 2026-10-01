@@ -589,7 +589,7 @@ class TestLetterboxFilterExposed:
 
 @plugin_required
 class TestRotateAndScaleAcceptsExpressions:
-    """``rotate_and_scale`` builds its matrix from expression arithmetic."""
+    """``rotate_and_scale`` takes expressions; the engine builds each row's matrix."""
 
     @pytest.fixture()
     def image_bytes(self) -> bytes:

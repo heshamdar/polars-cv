@@ -171,52 +171,6 @@ def _repro_divide_contract() -> None:
     assert out.dtype == np.uint8 and out.ravel()[0] == 3, "documented: integer division"
 
 
-def _repro_warp_per_row_matrix() -> None:
-    from tests.parity.framework.run import Axes, Step, execute
-
-    image = np.random.default_rng(1).random((6, 7, 2))
-    step = Step(
-        "warp_affine",
-        {
-            # rotate_and_scale(angle=0.25, center=(0.0137, 0.0137), scale=0.5)
-            "matrix": [
-                0.49999524036036724,
-                -0.0021816546423732855,
-                0.006879953875663483,
-                0.0021816546423732855,
-                0.49999524036036724,
-                0.006820176538462455,
-            ],
-            "output_size": (5, 6),
-            "interpolation": "bilinear",
-            "border_value": 0.0,
-        },
-    )
-    literal = execute([image], [step], Axes(params="literal")).rows[0]
-    per_row = execute([image], [step], Axes(params="column")).rows[0]
-    assert np.array_equal(literal, per_row), "a per-row matrix changed the f64 result"
-
-
-def _repro_threshold_wide_literal() -> None:
-    from tests.parity.framework.run import Axes, Step, execute
-
-    image = np.array([[[18442240474082181119]]], dtype=np.uint64)
-    step = Step("threshold", {"value": 1.8442240474082181e19})  # float(pixel)
-    out = execute([image], [step], Axes(params="literal")).rows[0]
-    assert out.ravel()[0] == 0, "the pixel does not exceed the threshold"
-
-
-def _wide_int_threshold(step: Step, images: Sequence[Any]) -> bool:
-    """A threshold beyond 2**50 over a 64-bit integer image."""
-    if step.method != "threshold":
-        return False
-    value = step.params.get("value", 0.0)
-    values = getattr(value, "values", (value,))  # a PerRow carries several
-    return any(abs(float(v)) >= 2**50 for v in values) and any(
-        im is not None and im.dtype in (np.uint64, np.int64) for im in images
-    )
-
-
 def _repro_nan_one_sided_clamp() -> None:
     from tests.parity.framework.run import Axes, Step, execute
 
@@ -608,48 +562,6 @@ DIVERGENCES: tuple[Divergence, ...] = (
         ),
         repro=_repro_divide_contract,
         affects_step=lambda step, x: step.method in ("divide", "ratio"),
-    ),
-    Divergence(
-        key="warp-per-row-matrix",
-        match="a per-row matrix changed the f64 result",
-        summary=(
-            "warp_affine (and shear/rotate_and_scale, which lower to it) "
-            "gives a different result when the matrix arrives as per-row "
-            "expressions rather than literals. Both run the same f64 kernel; "
-            "the literal matrix is parsed from the graph JSON inexactly "
-            "(serde_json without float_roundtrip can land an ulp away), so "
-            "the kernel gets a different matrix. It shows in the last bits of "
-            "f64 (up to 8e-16) and of wide integers (u64 110184465182317 vs "
-            "...318), and can flip a rounding on any integer dtype. Fixed: "
-            "literal and per-row matrices give identical output."
-        ),
-        repro=_repro_warp_per_row_matrix,
-        affects_axes=lambda axes, images, shapes, steps: (
-            axes.params != "literal"
-            and any(
-                s.method in ("warp_affine", "shear", "rotate_and_scale") for s in steps
-            )
-        ),
-    ),
-    Divergence(
-        key="threshold-wide-int",
-        match="the pixel does not exceed the threshold",
-        summary=(
-            "threshold on a u64/i64 image near the edge of f64 precision "
-            "(|value| >= 2**50) depends on whether the value arrives as a "
-            "literal or an expression, on every source: u64 pixel "
-            "18442240474082181119 against the literal 1.8442240474082181e19 "
-            "gives 255 where the same value as an expression gives 0; i64 "
-            "pixel 3797082577976981 against 3797082577976980.5 gives 0 as a "
-            "literal and 255 as an expression. The literal is parsed from the "
-            "graph JSON inexactly, and the kernel compares the pixel rounded "
-            "to f64. Fixed: one exact answer on every path."
-        ),
-        repro=_repro_threshold_wide_literal,
-        affects_step=lambda step, x: _wide_int_threshold(step, [x]),
-        affects_axes=lambda axes, images, shapes, steps: any(
-            _wide_int_threshold(s, images) for s in steps
-        ),
     ),
     Divergence(
         key="nan-one-sided-clamp",
