@@ -234,3 +234,60 @@ fn fusing_invert_then_cast_keeps_the_int_conversion() {
         }
     }
 }
+
+/// `scalar_fusion` never changes a wide-integer chain's result. The fused
+/// kernel computes in f32, so it may only take an input whose accumulator is
+/// f32 (`DType::accumulator`). A u32/i32/u64/i64 pixel above 2^24 is not an
+/// f32, and the unfused float-promoting ops compute it in f64: fusing rounded
+/// it to f32 first.
+#[test]
+fn scalar_fusion_never_fuses_a_wide_integer_through_f32() {
+    let fused = OptConfig::default();
+    let unfused = OptConfig {
+        scalar_fusion: false,
+        ..OptConfig::default()
+    };
+    // Integers f32 cannot hold: 2^24 + 1 and up, odd, across the u32 range.
+    let wide: Vec<u64> = (0..4096u64)
+        .map(|i| 16_777_217 + i * 1_048_573 * 2)
+        .collect();
+    let sources: Vec<(DType, ViewBuffer)> = vec![
+        (
+            DType::U32,
+            ViewBuffer::from_vec(wide.iter().map(|&v| v as u32).collect()),
+        ),
+        (
+            DType::I32,
+            ViewBuffer::from_vec(wide.iter().map(|&v| (v as u32 >> 1) as i32).collect()),
+        ),
+        (DType::U64, ViewBuffer::from_vec(wide.clone())),
+        (
+            DType::I64,
+            ViewBuffer::from_vec(wide.iter().map(|&v| v as i64).collect()),
+        ),
+    ];
+    let inner = [
+        ComputeOp::Scale { factor: 3.0 },
+        ComputeOp::AdjustGamma { gamma: 0.5 },
+        ComputeOp::Sqrt,
+        ComputeOp::Reciprocal,
+        ComputeOp::AddConstant { value: 0.5 },
+        ComputeOp::Square,
+    ];
+    let mut differ = Vec::new();
+    for (dtype, buf) in &sources {
+        for op in &inner {
+            let expr = ViewExpr::new_source(buf.clone())
+                .apply_op(ViewDto::Compute(op.clone()))
+                .apply_op(ViewDto::Compute(ComputeOp::Relu));
+            let a = expr.plan_with(&fused).execute().cast(DType::F64);
+            let b = expr.plan_with(&unfused).execute().cast(DType::F64);
+            let (a, b) = (a.to_contiguous(), b.to_contiguous());
+            let bits = |x: &[f64]| x.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+            if bits(a.as_slice::<f64>()) != bits(b.as_slice::<f64>()) {
+                differ.push(format!("{dtype:?} {op:?} -> relu"));
+            }
+        }
+    }
+    assert!(differ.is_empty(), "fused differs from unfused: {differ:#?}");
+}
