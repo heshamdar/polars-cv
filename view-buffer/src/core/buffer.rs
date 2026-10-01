@@ -1646,7 +1646,20 @@ mod scalar_dual_path_tests {
             ScalarOp::Relu,
             ScalarOp::Clamp(0.0, 1.0),
         ];
-        let xs: [f32; 8] = [-2.5, -1.0, -0.4, 0.0, 0.4, 1.0, 2.5, 4.0];
+        let xs: [f32; 12] = [
+            -2.5,
+            -1.0,
+            -0.4,
+            0.0,
+            0.4,
+            1.0,
+            2.5,
+            4.0,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            -0.0,
+        ];
         for op in ops {
             let buf = ViewBuffer::from_vec_with_shape(xs.to_vec(), vec![xs.len()]);
             let kernel = FusedKernel {
@@ -1670,6 +1683,36 @@ mod scalar_dual_path_tests {
                     "{op:?} on {x}: f32 kernel gave {via_f32}, apply_f64 gave {via_f64}"
                 );
             }
+        }
+    }
+
+    /// NaN in, NaN out, for every scalar op — the one-sided bounds included,
+    /// as NumPy and PyTorch propagate it (`relu(NaN)` is NaN, not 0) and as
+    /// `clamp` already did. Fused (f32 kernel) and unfused (`apply_f64`).
+    #[test]
+    fn every_scalar_op_propagates_nan() {
+        let ops = [
+            ScalarOp::Min(0.5),
+            ScalarOp::Max(0.5),
+            ScalarOp::Relu,
+            ScalarOp::Clamp(0.0, 1.0),
+            ScalarOp::Abs,
+            ScalarOp::Sign,
+            ScalarOp::Round,
+        ];
+        for op in ops {
+            assert!(op.apply_f64(f64::NAN).is_nan(), "{op:?}: apply_f64(NaN)");
+            let buf = ViewBuffer::from_vec_with_shape(vec![f32::NAN; 3], vec![3]);
+            let kernel = FusedKernel {
+                ops: vec![op.clone()],
+                out_dtype: DType::F32,
+            };
+            let out = buf.apply_fused_kernel(&kernel);
+            assert!(
+                out.as_slice::<f32>().iter().all(|v| v.is_nan()),
+                "{op:?}: f32 kernel turned NaN into {:?}",
+                out.as_slice::<f32>()
+            );
         }
     }
 

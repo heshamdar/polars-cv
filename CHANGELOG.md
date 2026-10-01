@@ -9,6 +9,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Breaking changes
 
+- **`relu`, `clamp_min` and `clamp_max` propagate NaN.** They used
+  `f32::max`/`min`, which return the other operand for a NaN, so `relu(NaN)`
+  was 0 and `clamp_min(NaN, 0.5)` was 0.5, while `clamp`, `abs`, `sign` and
+  `round` propagated it. NaN in now gives NaN out from every scalar op, as in
+  NumPy (`np.maximum`) and PyTorch. Replace NaN first (`fill_nan`) where a
+  bound was wanted.
+
 - **polars-cv requires `polars>=1.43.2`** (was `>=1.41.1`). Older polars
   exports a sliced `Array` column that has nulls across the plugin FFI with
   its offset applied twice (the `FixedSizeListArray` export reported the
@@ -195,8 +202,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `tests/parity/framework/known.py` and pinned as strict xfails:
 
   `derived-extent-zero`, `tiff-gray-alpha`,
-  `nan-one-sided-clamp`,
-  `hsv-hue-180`, `scalar-fusion-int-cast`, `derived-size-tie`,
+  `hsv-hue-180`, `derived-size-tie`,
   `color-int-range`. Each entry's summary describes the defect
   and the fix, and each pins the exception and message its repro fails with
   (`known.still_reproduces`), so a repro broken for another reason no longer
@@ -280,6 +286,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **The `scalar_fusion` pass no longer changes an integer chain's result.**
+  It fused an integer `invert` with a following narrowing integer `cast`
+  into one kernel that stores by the float -> int rule (round, saturate)
+  instead of the int -> int rule the unfused cast applies (wrap): u16
+  `invert().cast("u8")` of 1000 was 255 fused and 23 unfused. Every pass is
+  byte-identical on and off again. `DType::converts_like_float` is now the
+  one rule both `scalar_fusion` and `cast_chain_collapse` read before
+  replacing a conversion with a float one (and it lets `cast_chain_collapse`
+  drop an f32 intermediate between integers where that is exact, such as
+  u8 -> f32 -> u16).
 - **A blob or raw column sunk to `numpy`/`ndarray`/`torch` returns every row,
   not row 0's pixels for each.** Rows read in place are slices of the
   column's shared buffer, and the numpy `data` column registered those

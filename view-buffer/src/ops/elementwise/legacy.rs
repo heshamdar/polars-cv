@@ -4,7 +4,9 @@
 //! `self` became `this` where a method became a free function, and the
 //! kernel's in-place/allocating pair calls the fused arithmetic by path). The
 //! engine is checked against it bit for bit, so "bit-identical" is measured
-//! against the code that shipped rather than restated from memory.
+//! against the code that shipped rather than restated from memory. One rule
+//! has changed since, on purpose: `relu`, `clamp_min` and `clamp_max`
+//! propagate NaN (`scalar::max_numpy`/`min_numpy`), as `clamp` always did.
 #![allow(dead_code, clippy::all)]
 
 use crate::core::buffer::{BufferStorage, ViewBuffer};
@@ -27,10 +29,12 @@ pub(super) fn apply(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
             move |x: f32| x * factor,
             move |x: f64| x * factor as f64,
         ),
+        // The one deliberate change since the move: NaN propagates
+        // (`max_numpy`), as it does through every scalar op.
         ComputeOp::Relu => apply_scalar_owned_with(
             buf,
-            |x: f32| if x > 0.0 { x } else { 0.0 },
-            |x: f64| if x > 0.0 { x } else { 0.0 },
+            |x: f32| crate::ops::scalar::max_numpy(x, 0.0),
+            |x: f64| crate::ops::scalar::max_numpy(x, 0.0),
         ),
         ComputeOp::Fused(ref kernel) => {
             let mut buf = buf;

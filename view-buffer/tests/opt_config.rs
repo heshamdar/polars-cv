@@ -192,3 +192,45 @@ fn scalar_fusion_toggle_is_output_preserving() {
         vec![2.0, 0.0, 6.0, 8.0]
     );
 }
+
+/// `scalar_fusion` never changes an integer chain's result: an `invert`
+/// (which keeps its integer dtype) followed by a cast to every dtype gives
+/// the same bytes fused and unfused, for every integer dtype `invert` fuses
+/// on. The fused kernel stores its f32 result by the float -> int rule
+/// (round, saturate), but the unfused cast from the integer intermediate
+/// wraps (`u16` 64535 -> `u8` 23): fusing a cast whose rule differs changed
+/// 23 to 255.
+#[test]
+fn fusing_invert_then_cast_keeps_the_int_conversion() {
+    let fused = OptConfig::default();
+    let unfused = OptConfig {
+        scalar_fusion: false,
+        ..OptConfig::default()
+    };
+    let sources: Vec<(DType, ViewBuffer)> = vec![
+        (DType::U8, ViewBuffer::from_vec(vec![0u8, 1, 100, 200, 255])),
+        (
+            DType::U16,
+            ViewBuffer::from_vec(vec![0u16, 1, 1000, 60000, 65535]),
+        ),
+        (DType::I8, ViewBuffer::from_vec(vec![-128i8, -1, 0, 5, 127])),
+        (
+            DType::I16,
+            ViewBuffer::from_vec(vec![-32768i16, -300, 0, 300, 32767]),
+        ),
+    ];
+    for (dtype, buf) in sources {
+        for &target in DType::ALL {
+            let expr = ViewExpr::new_source(buf.clone())
+                .apply_op(ViewDto::Compute(ComputeOp::Invert))
+                .apply_op(ViewDto::Compute(ComputeOp::Cast { dtype: target }));
+            let a = expr.plan_with(&fused).execute().cast(DType::F64);
+            let b = expr.plan_with(&unfused).execute().cast(DType::F64);
+            assert_eq!(
+                a.to_contiguous().as_slice::<f64>(),
+                b.to_contiguous().as_slice::<f64>(),
+                "{dtype:?} invert -> cast {target:?}: fused vs unfused"
+            );
+        }
+    }
+}

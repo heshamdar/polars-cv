@@ -120,29 +120,12 @@ def _repro_tiff_gray_alpha() -> None:
     )
 
 
-def _repro_nan_one_sided_clamp() -> None:
-    from tests.parity.framework.run import Axes, Step, execute
-
-    image = np.array([[[np.nan]]], dtype=np.float32)
-    for step in (
-        Step("relu"),
-        Step("clamp_min", {"value": 0.5}),
-        Step("clamp_max", {"value": 0.5}),
-    ):
-        out = execute([image], [step], Axes()).rows[0]
-        assert np.isnan(out.ravel()[0]), f"{step!r} turned NaN into a number"
-
-
 def _repro_hsv_hue_180() -> None:
     from tests.parity.framework.run import Axes, Step, execute
 
     image = np.array([[[255, 0, 1]]], dtype=np.uint8)  # hue 359.8 degrees
     out = execute([image], [Step("to_hsv")], Axes()).rows[0]
     assert out.ravel()[0] < 180, "8-bit hue is [0, 180): 359.8 degrees wraps to 0"
-
-
-def _has_nan(x: np.ndarray) -> bool:
-    return x.dtype.kind == "f" and bool(np.isnan(x).any())
 
 
 def _hue_rounds_to_180(x: np.ndarray) -> bool:
@@ -155,34 +138,6 @@ def _hue_rounds_to_180(x: np.ndarray) -> bool:
     rgb = np.ascontiguousarray(x[:, :, :3]).astype(np.float32) / 255.0
     hue = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)[:, :, 0]
     return bool((hue >= 359.0).any())
-
-
-def _repro_fused_int_cast() -> None:
-    from tests.parity.framework.run import Axes, Step, execute
-
-    image = np.array([[[1000], [60000], [300]]], dtype=np.uint16)
-    steps = [Step("invert"), Step("cast", {"dtype": "u8"})]
-    fused = execute([image], steps, Axes(optimize="all")).rows[0]
-    unfused = execute([image], steps, Axes(optimize="none")).rows[0]
-    # int -> int casts wrap (view-buffer/src/core/convert.rs): 64535 -> 23.
-    assert np.array_equal(fused, unfused), f"fused {fused.ravel()} vs {unfused.ravel()}"
-
-
-def _fused_int_cast(axes: Axes, images: Sequence[Any], steps: Sequence[Step]) -> bool:
-    """scalar_fusion on, an integer image, and an integer cast after invert."""
-    from tests.parity.framework.images import DTYPES
-    from tests.parity.framework.run import opt_flags_for
-
-    if not opt_flags_for(axes.optimize).scalar_fusion:
-        return False
-    if not any(im is not None and im.dtype.kind in "iu" for im in images):
-        return False
-    for i, step in enumerate(steps):
-        target = step.params.get("dtype") if step.method == "cast" else None
-        if target in DTYPES and DTYPES[target].kind in "iu":
-            if any(prev.method == "invert" for prev in steps[:i]):
-                return True
-    return False
 
 
 def _repro_derived_size_tie() -> None:
@@ -297,21 +252,6 @@ DIVERGENCES: tuple[Divergence, ...] = (
         avoid=True,
     ),
     Divergence(
-        key="nan-one-sided-clamp",
-        match="turned NaN into a number",
-        summary=(
-            "relu, clamp_min and clamp_max turn NaN into their bound (relu(NaN) "
-            "-> 0, clamp_min(0.5) of NaN -> 0.5), while clamp, abs, sign, "
-            "round and scale propagate it — and NumPy and PyTorch propagate it "
-            "through all of these. Fixed: NaN in, NaN out (or the rule is "
-            "chosen and documented)."
-        ),
-        repro=_repro_nan_one_sided_clamp,
-        affects_step=lambda step, x: (
-            step.method in ("relu", "clamp_min", "clamp_max") and _has_nan(x)
-        ),
-    ),
-    Divergence(
         key="hsv-hue-180",
         match="8-bit hue is [0, 180)",
         summary=(
@@ -322,23 +262,6 @@ DIVERGENCES: tuple[Divergence, ...] = (
         ),
         repro=_repro_hsv_hue_180,
         affects_step=lambda step, x: step.method == "to_hsv" and _hue_rounds_to_180(x),
-    ),
-    Divergence(
-        key="scalar-fusion-int-cast",
-        match="fused [255 255 255]",
-        summary=(
-            "The scalar_fusion pass changes results: it fuses an integer "
-            "invert with a following int -> int cast into one kernel that "
-            "converts by the float -> int rule (round, saturate) instead of "
-            "the int -> int rule (wrap). u16 invert().cast('u8') of 1000 is 23 "
-            "unfused (64535 wraps) and 255 fused; i16 targets likewise. Every "
-            "pass is documented as byte-identical. Fixed: fused and unfused "
-            "agree."
-        ),
-        repro=_repro_fused_int_cast,
-        affects_axes=lambda axes, images, shapes, steps: _fused_int_cast(
-            axes, images, steps
-        ),
     ),
     Divergence(
         key="derived-size-tie",
