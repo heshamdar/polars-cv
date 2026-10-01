@@ -1999,12 +1999,16 @@ def _saturating(
 
 @quiet
 def _divide_ref(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    if a.dtype.kind == "f":
-        return (a / b).astype(a.dtype)
-    out = np.zeros_like(a)
-    nz = b != 0
-    out[nz] = (a[nz].astype(object) // b[nz].astype(object)).astype(a.dtype)
-    return out
+    """NumPy's true division into f32 (f64 for f64): IEEE at zero."""
+    out = np.float64 if a.dtype == np.float64 else np.float32
+    return (a.astype(np.float64) / b.astype(np.float64)).astype(out)
+
+
+def _divide_tol(x: np.ndarray) -> Tol:
+    """The engine divides in ``DType::accumulator``; the reference rounds an
+    f64 quotient to the output, so the two may differ by an ulp of it."""
+    eps = np.finfo(np.float64 if x.dtype == np.float64 else np.float32).eps
+    return close(atol=0, rtol=2 * float(eps))
 
 
 def _unit_scaled(
@@ -2030,18 +2034,17 @@ BINARY: dict[str, BinarySpec] = {
         BinarySpec("add", _saturating(lambda a, b: a + b), note="saturating"),
         BinarySpec("subtract", _saturating(lambda a, b: a - b), note="saturating"),
         BinarySpec("multiply", _saturating(lambda a, b: a * b), note="saturating"),
-        BinarySpec("divide", _divide_ref, note="integer division; x / 0 -> 0"),
+        BinarySpec(
+            "divide",
+            _divide_ref,
+            tol=_divide_tol,
+            note="true division into a float; IEEE at zero (x / 0 -> inf)",
+        ),
         BinarySpec(
             "blend",
             _unit_scaled(lambda a, b, m: (a / m) * (b / m) * m),
             tol=_float_or_lsb,
             note="normalized product: (a/MAX)(b/MAX)MAX",
-        ),
-        BinarySpec(
-            "ratio",
-            _unit_scaled(lambda a, b, m: (a / b) * m if m != 1.0 else a / b),
-            tol=_float_or_lsb,
-            note="(a/b)*MAX clamped for integers; plain division for floats",
         ),
         BinarySpec("maximum", lambda a, b: np.maximum(a, b)),
         BinarySpec("minimum", lambda a, b: np.minimum(a, b)),

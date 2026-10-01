@@ -1,7 +1,7 @@
 """
 Tests filling gaps in binary operation coverage.
 
-Covers: blend/ratio via LazyPipelineExpr execution, bitwise_xor execution,
+Covers: blend via LazyPipelineExpr execution, bitwise_xor execution,
 maximum/minimum with NumPy reference comparison, and apply_mask with
 invert=True.
 """
@@ -55,41 +55,6 @@ class TestBlendExecution:
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
         result = df.select(out=expr1.blend(expr2).sink("numpy"))
-        actual = numpy_from_struct(result.row(0)[0])
-
-        np.testing.assert_allclose(actual, expected, atol=1)
-
-
-# ---------------------------------------------------------------------------
-# ratio execution + reference
-# ---------------------------------------------------------------------------
-
-
-@plugin_required
-class TestRatioExecution:
-    """Test ratio operation end-to-end against NumPy reference."""
-
-    def test_ratio_matches_reference(
-        self,
-        sample_pair: tuple[np.ndarray, np.ndarray, bytes, bytes],
-    ) -> None:
-        """Ratio should match true division (a / b) semantics."""
-        img1, img2, png1, png2 = sample_pair
-
-        # NumPy reference: true division a / b (float), with zero protection.
-        a = img1.astype(np.float32)
-        b = img2.astype(np.float32)
-        expected = np.where(img2 == 0, 0.0, a / np.where(img2 == 0, 1.0, b)).astype(
-            np.float32
-        )
-
-        df = pl.DataFrame({"img1": [png1], "img2": [png2]})
-        pipe1 = Pipeline().source("image_bytes")
-        pipe2 = Pipeline().source("image_bytes")
-        expr1 = pl.col("img1").cv.pipe(pipe1)
-        expr2 = pl.col("img2").cv.pipe(pipe2)
-
-        result = df.select(out=expr1.ratio(expr2).sink("numpy"))
         actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_allclose(actual, expected, atol=1)

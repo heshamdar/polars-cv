@@ -11,9 +11,9 @@
 //! - `Add`/`Subtract`: Saturating arithmetic (clamps to valid range)
 //! - `Multiply`: Saturating multiplication (clamps to max value)
 //! - `Blend`: Normalized multiplication ((a/max) * (b/max) * max)
-//! - `Divide`/`Ratio`: True division — integer operands promote to float and
-//!   `a / b` is computed in float (zero divisor yields 0), so the result dtype
-//!   is `f32` (or `f64` when an operand is already `f64`).
+//! - `Divide`: True division — integer operands promote to float and `a / b`
+//!   is computed in float with IEEE semantics (`x / 0` is ±inf, `0 / 0` NaN),
+//!   so the result dtype is `f32` (or `f64` when an operand is already `f64`).
 //!
 //! ## For float types (f32, f64):
 //! - All operations use standard IEEE 754 arithmetic
@@ -64,15 +64,10 @@ pub enum BinaryOp {
     Blend,
     /// Element-wise division (true division).
     ///
-    /// Integer operands promote to float; `a / b` is computed in float with zero
-    /// protection (returns 0 when the divisor is 0). Output dtype is `f32` (or
-    /// `f64` when an operand is already `f64`).
+    /// Integer operands promote to float; `a / b` is computed in float with
+    /// IEEE semantics (`x / 0` is ±inf, `0 / 0` NaN), as NumPy's `true_divide`.
+    /// Output dtype is `f32` (or `f64` when an operand is already `f64`).
     Divide,
-    /// Element-wise ratio (true division).
-    ///
-    /// Currently identical to [`Divide`](BinaryOp::Divide): integer operands
-    /// promote to float and `a / b` is computed in float with zero protection.
-    Ratio,
     /// Element-wise maximum.
     Maximum,
     /// Element-wise minimum.
@@ -101,7 +96,6 @@ crate::naming::named_variants!(BinaryOp {
     "multiply" => Multiply,
     "divide" => Divide,
     "blend" => Blend,
-    "ratio" => Ratio,
     "maximum" => Maximum,
     "minimum" => Minimum,
     "bitwise_and" => BitwiseAnd,
@@ -126,7 +120,7 @@ impl BinaryOp {
         let result = match self {
             // True division: a float result, computed in the accumulator (f64
             // for f64 and the 32/64-bit integers, f32 otherwise).
-            BinaryOp::Divide | BinaryOp::Ratio => {
+            BinaryOp::Divide => {
                 let compute = if out_dtype == DType::F64 {
                     DType::F64
                 } else {
@@ -158,7 +152,7 @@ impl BinaryOp {
     /// This is what planning (the plugin's `plan::step`, given both operand
     /// dtypes) and execution ([`execute`](BinaryOp::execute)) both read, and
     /// it derives from the rule rather than restating it, so the two cannot
-    /// disagree. Divide and Ratio use *true division*: integer operands
+    /// disagree. Divide uses *true division*: integer operands
     /// promote to float (`F32`, or `F64` when an operand is already `F64`).
     pub fn output_dtype(&self, left: DType, right: DType) -> DType {
         self.output_dtype_rule()
@@ -188,26 +182,21 @@ impl BinaryOp {
             BinaryOp::BitwiseAnd => zip_with(a, b, output_shape, T::bit_and),
             BinaryOp::BitwiseOr => zip_with(a, b, output_shape, T::bit_or),
             BinaryOp::BitwiseXor => zip_with(a, b, output_shape, T::bit_xor),
-            BinaryOp::Divide | BinaryOp::Ratio => {
+            BinaryOp::Divide => {
                 unreachable!("division is computed in float by `execute`")
             }
         }
     }
 }
 
-/// `a / b` element-wise in the float `F`, with a zero divisor giving 0.
+/// `a / b` element-wise in the float `F`, IEEE: `x / 0` is ±inf, `0 / 0`
+/// NaN.
 fn divide<F: ViewType + num_traits::Float>(
     a: &ViewBuffer,
     b: &ViewBuffer,
     output_shape: &[usize],
 ) -> ViewBuffer {
-    zip_with(a, b, output_shape, |x: F, y: F| {
-        if y == F::zero() {
-            F::zero()
-        } else {
-            x / y
-        }
-    })
+    zip_with(a, b, output_shape, |x: F, y: F| x / y)
 }
 
 /// `f(a, b)` element-wise over two buffers of one dtype `T`, broadcast to
@@ -343,7 +332,6 @@ impl Op for BinaryOp {
             BinaryOp::Multiply => "Multiply",
             BinaryOp::Blend => "Blend",
             BinaryOp::Divide => "Divide",
-            BinaryOp::Ratio => "Ratio",
             BinaryOp::Maximum => "Maximum",
             BinaryOp::Minimum => "Minimum",
             BinaryOp::BitwiseAnd => "BitwiseAnd",
@@ -381,7 +369,6 @@ impl Op for BinaryOp {
             | BinaryOp::Multiply
             | BinaryOp::Blend
             | BinaryOp::Divide
-            | BinaryOp::Ratio
             | BinaryOp::Maximum
             | BinaryOp::Minimum
             | BinaryOp::BitwiseAnd
@@ -439,7 +426,7 @@ impl Op for BinaryOp {
     /// Over the operands' common dtype ([`promote_dtypes`]).
     fn output_dtype_rule(&self) -> OutputDTypeRule {
         match self {
-            BinaryOp::Divide | BinaryOp::Ratio => OutputDTypeRule::PromoteToFloat,
+            BinaryOp::Divide => OutputDTypeRule::PromoteToFloat,
             _ => OutputDTypeRule::PreserveInput,
         }
     }
@@ -652,20 +639,6 @@ mod tests {
     }
 
     #[test]
-    fn test_u8_ratio_is_true_division() {
-        // Ratio now uses true division: integer operands promote to f32 and the
-        // result is `a / b` (not the old scaled `(a/b) * 255`).
-        let a = ViewBuffer::from_vec_with_shape(vec![128u8, 64, 255], vec![3]);
-        let b = ViewBuffer::from_vec_with_shape(vec![64u8, 128, 255], vec![3]);
-        let result = BinaryOp::Ratio.execute(&a, &b);
-        assert_eq!(result.dtype(), DType::F32);
-        let data = result.as_slice::<f32>();
-        assert!((data[0] - 2.0).abs() < 1e-6); // 128 / 64
-        assert!((data[1] - 0.5).abs() < 1e-6); // 64 / 128
-        assert!((data[2] - 1.0).abs() < 1e-6); // 255 / 255
-    }
-
-    #[test]
     fn test_u8_divide_is_true_division() {
         // divide(u8, u8) promotes to f32 and computes true division, not the
         // truncating integer division it used to.
@@ -676,7 +649,7 @@ mod tests {
         let data = result.as_slice::<f32>();
         assert!((data[0] - (130.0 / 64.0)).abs() < 1e-6); // ~2.031, not 2
         assert!((data[1] - 2.0).abs() < 1e-6);
-        assert_eq!(data[2], 0.0); // zero divisor protected
+        assert_eq!(data[2], f32::INFINITY); // IEEE: 1 / 0
     }
 
     #[test]
@@ -694,10 +667,6 @@ mod tests {
         // True division always lands on a float.
         assert_eq!(
             BinaryOp::Divide.output_dtype(DType::U8, DType::U8),
-            DType::F32
-        );
-        assert_eq!(
-            BinaryOp::Ratio.output_dtype(DType::U16, DType::U16),
             DType::F32
         );
         assert_eq!(

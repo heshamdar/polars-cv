@@ -17,7 +17,6 @@
       "multiply",
       "divide",
       "blend",
-      "ratio",
       "maximum",
       "minimum",
       "bitwise_and",

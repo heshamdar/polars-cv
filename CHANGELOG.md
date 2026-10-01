@@ -9,6 +9,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Breaking changes
 
+- **`divide` is IEEE true division; `ratio` is removed.** `divide` already
+  promoted integer operands to float (`f32`, or `f64` with an `f64` operand)
+  and divided, but a zero divisor gave `0`, even for floats, and its
+  docstring promised integer division for u8/u16. A zero divisor now follows
+  IEEE 754, as NumPy's `true_divide`: `x / 0` is `inf` (`-inf` for negative
+  `x`) and `0 / 0` is `nan`. Write `a.divide(b)` and replace non-finite
+  values afterwards if `0` was wanted. `ratio` was documented as `(a/b)`
+  scaled to the dtype's range but executed exactly as `divide`; it is
+  deleted rather than kept as a second name. Use `divide` (and `.scale(255)`
+  for the documented scaling).
+
 - **`extract_contours` traces along pixel edges, not pixel centres.** Pixel
   `(x, y)` is the unit square `[x, x+1] x [y, y+1]`, and every extracted
   outline runs along those squares' edges, so it bounds exactly its region's
@@ -175,7 +186,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `tests/parity/framework/known.py` and pinned as strict xfails:
   `binary-source-numpy-rows`, `array-null-slice-panic`,
   `derived-extent-zero`, `view-offset-lost`,
-  `reshape-after-view`, `tiff-gray-alpha`, `divide-ratio-contract`,
+  `reshape-after-view`, `tiff-gray-alpha`,
   `nan-one-sided-clamp`,
   `hsv-hue-180`, `scalar-fusion-int-cast`, `derived-size-tie`,
   `color-int-range`. Each entry's summary describes the defect
