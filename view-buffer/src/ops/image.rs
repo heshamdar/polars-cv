@@ -261,6 +261,20 @@ impl<M: Mode> ImageOpKind<M> {
     /// Refuse a parameter combination no row can execute. Every image op's
     /// parameters are independent, so there is none.
     pub fn check(&self) -> Result<(), String> {
+        // A scale factor is finite and positive: NaN, infinity and a negative
+        // factor have no output size (`shape_rule::scaled_by`).
+        if let ImageOpKind::ResizeScale {
+            scale_x, scale_y, ..
+        } = self
+        {
+            for (name, s) in [("scale_x", scale_x), ("scale_y", scale_y)] {
+                if let Some(s) = M::sym(s).known().filter(|s| !(s.is_finite() && *s > 0.0)) {
+                    return Err(format!(
+                        "resize_scale: {name} {s} is not a finite positive factor"
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -374,7 +388,9 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::PadToSize { .. }
             | ImageOpKind::Canny { .. }
             | ImageOpKind::Grayscale => require_hw_or_hwc(shape),
-            // The resampler handles one to four interleaved channels.
+            // The resampler handles one to four interleaved channels, and
+            // needs a source pixel on each axis: an empty image has nothing
+            // to interpolate and no aspect ratio to keep.
             ImageOpKind::Resize { .. }
             | ImageOpKind::ResizeScale { .. }
             | ImageOpKind::ResizeToHeight { .. }
@@ -383,6 +399,12 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::ResizeMin { .. }
             | ImageOpKind::Letterbox { .. } => {
                 require_hw_or_hwc(shape)?;
+                if shape[..2].iter().any(|d| d.known() == Some(0)) {
+                    return Err(ValidationError::ShapeRequirement {
+                        requirement: "a non-empty image to resample",
+                        got: shape.to_vec(),
+                    });
+                }
                 match shape.get(2).and_then(|c| c.known()) {
                     Some(c) if c > 4 => Err(ValidationError::ShapeRequirement {
                         requirement: "at most 4 channels for resampling",
@@ -640,6 +662,74 @@ mod rule_tests {
     use super::*;
     use crate::mode::{Param, Wire};
     use crate::ops::spatial_rule::NeighborhoodSupport;
+
+    /// A scale factor must be finite and positive: NaN saturated to a
+    /// 1-pixel axis, infinity to `usize::MAX` (an allocation failure), and a
+    /// negative factor to the 1-pixel floor.
+    #[test]
+    fn resize_scale_refuses_a_factor_that_is_not_finite_and_positive() {
+        let op = |sx: f32, sy: f32| ImageOpKind::<crate::mode::Exec>::ResizeScale {
+            scale_x: sx,
+            scale_y: sy,
+            filter: FilterType::Triangle,
+        };
+        for bad in [f32::NAN, f32::INFINITY, 0.0, -0.5] {
+            assert!(op(bad, 1.0).check().is_err(), "scale_x {bad}");
+            assert!(op(1.0, bad).check().is_err(), "scale_y {bad}");
+        }
+        assert!(op(0.5, 2.0).check().is_ok());
+    }
+
+    /// A resampler needs at least one source pixel on each axis: an empty
+    /// image is refused by the contract (at plan time when its size is
+    /// known, per row otherwise), not resampled from nothing.
+    #[test]
+    fn resampling_refuses_an_empty_image() {
+        use crate::ops::validation::ValidationError;
+        use crate::ops::Dim::Known;
+        let filter = FilterType::Triangle;
+        for kind in [
+            ImageOpKind::Resize {
+                width: 4,
+                height: 4,
+                filter,
+            },
+            ImageOpKind::ResizeScale {
+                scale_x: 2.0,
+                scale_y: 2.0,
+                filter,
+            },
+            ImageOpKind::ResizeToHeight { height: 4, filter },
+            ImageOpKind::ResizeToWidth { width: 4, filter },
+            ImageOpKind::ResizeMax {
+                max_size: 4,
+                filter,
+            },
+            ImageOpKind::ResizeMin {
+                min_size: 4,
+                filter,
+            },
+            ImageOpKind::Letterbox {
+                height: 4,
+                width: 4,
+                value: 0.0,
+                filter,
+            },
+        ] {
+            let op = ImageOp::<crate::mode::Exec> { kind };
+            for shape in [
+                [Known(0), Known(3), Known(1)],
+                [Known(3), Known(0), Known(1)],
+            ] {
+                let err = op.validate(&[&shape], &[]);
+                assert!(
+                    matches!(err, Err(ValidationError::ShapeRequirement { .. })),
+                    "{op:?} over {shape:?}: {err:?}"
+                );
+            }
+            assert!(op.validate(&[&[Known(3), Known(3), Known(1)]], &[]).is_ok());
+        }
+    }
 
     /// A rule that reads a per-row value says so rather than reading a
     /// stand-in: a blur whose sigma is per-row has a per-row radius.

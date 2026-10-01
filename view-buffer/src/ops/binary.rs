@@ -173,12 +173,8 @@ impl BinaryOp {
             BinaryOp::Subtract => zip_with(a, b, output_shape, T::sat_sub),
             BinaryOp::Multiply => zip_with(a, b, output_shape, T::sat_mul),
             BinaryOp::Blend => zip_with(a, b, output_shape, T::blend),
-            BinaryOp::Maximum => {
-                zip_with(a, b, output_shape, |x: T, y: T| if x > y { x } else { y })
-            }
-            BinaryOp::Minimum => {
-                zip_with(a, b, output_shape, |x: T, y: T| if x < y { x } else { y })
-            }
+            BinaryOp::Maximum => zip_with(a, b, output_shape, crate::ops::util::maximum::<T>),
+            BinaryOp::Minimum => zip_with(a, b, output_shape, crate::ops::util::minimum::<T>),
             BinaryOp::BitwiseAnd => zip_with(a, b, output_shape, T::bit_and),
             BinaryOp::BitwiseOr => zip_with(a, b, output_shape, T::bit_or),
             BinaryOp::BitwiseXor => zip_with(a, b, output_shape, T::bit_xor),

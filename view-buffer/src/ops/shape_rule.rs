@@ -194,7 +194,12 @@ pub enum OpShape {
 /// resizes here, and letterbox's fit, `ops::image::letterbox_fit`). Computed
 /// exactly in integers: an f32 ratio rounded `21 * 31 / 14 = 46.5` to
 /// 46.499996 and so down, and nothing kept a size from rounding to 0.
+///
+/// `d` is an input side and must not be 0: an empty image has no aspect
+/// ratio, and its resampling is refused by the contract
+/// (`ImageOp::validate`) before any size is derived from it.
 pub fn scaled_size(n: usize, t: usize, d: usize) -> usize {
+    assert!(d > 0, "scaled_size: no aspect ratio from an empty side");
     let (n, t, d) = (n as u128, t as u128, d as u128);
     (((2 * n * t + d) / (2 * d)) as usize).max(1)
 }
@@ -226,14 +231,17 @@ impl OpShape {
             [h, w, ..] => (*h, *w),
             _ => (Dim::Unknown, Dim::Unknown),
         };
-        // Both sizes of an aspect-ratio computation, when known.
+        // Both sizes of an aspect-ratio computation, when known. An empty
+        // side has no aspect ratio to keep: resampling it has no output (the
+        // resize contracts refuse it), and `scaled_size` would divide by it.
         let known_hw = in_h.known().zip(in_w.known());
         let aspect = |f: &dyn Fn(usize, usize) -> (usize, usize)| match known_hw {
+            Some((0, _) | (_, 0)) => None,
             Some((h, w)) => {
                 let (oh, ow) = f(h, w);
-                hw(Dim::Known(oh), Dim::Known(ow))
+                Some(hw(Dim::Known(oh), Dim::Known(ow)))
             }
-            None => hw(Dim::Unknown, Dim::Unknown),
+            None => Some(hw(Dim::Unknown, Dim::Unknown)),
         };
         Some(match self {
             OpShape::Preserve => input.to_vec(),
@@ -280,7 +288,7 @@ impl OpShape {
                 hw(by(in_h, *sy), by(in_w, *sx))
             }
             OpShape::HeightTo(h) => match h.known() {
-                Some(t) => aspect(&|ih, iw| (t, scaled_size(iw, t, ih))),
+                Some(t) => aspect(&|ih, iw| (t, scaled_size(iw, t, ih)))?,
                 None => hw(Dim::Unknown, Dim::Unknown),
             }
             .into_iter()
@@ -288,7 +296,7 @@ impl OpShape {
             .map(|(i, d)| if i == 0 { h.dim() } else { d })
             .collect(),
             OpShape::WidthTo(w) => match w.known() {
-                Some(t) => aspect(&|ih, iw| (scaled_size(ih, t, iw), t)),
+                Some(t) => aspect(&|ih, iw| (scaled_size(ih, t, iw), t))?,
                 None => hw(Dim::Unknown, Dim::Unknown),
             }
             .into_iter()
@@ -301,7 +309,7 @@ impl OpShape {
                     aspect(&|ih, iw| {
                         let side = if long { ih.max(iw) } else { ih.min(iw) };
                         (scaled_size(ih, n, side), scaled_size(iw, n, side))
-                    })
+                    })?
                 }
                 None => hw(Dim::Unknown, Dim::Unknown),
             },
@@ -812,6 +820,44 @@ mod symbolic_tests {
     /// `DISTINGUISHED_RANK` (or the leading sizes' length); that is sound only
     /// if no variant tells a higher rank apart. Every size it claims must hold
     /// at every higher rank too, or the axis be absent there.
+    /// `dims` is total over empty axes too: every variant, over inputs with a
+    /// zero height and/or width. A size derived by keeping the aspect ratio
+    /// divides by an input side, which panicked on a zero one; resampling an
+    /// empty image has no output (the resize contracts refuse it).
+    #[test]
+    fn dims_is_total_over_empty_axes() {
+        let inputs: [&[Dim]; 5] = [
+            &[Known(0), Known(4), Known(1)],
+            &[Known(4), Known(0), Known(1)],
+            &[Known(0), Known(0)],
+            &[Known(0), Input(1), Known(3)],
+            &[Known(0)],
+        ];
+        for shape in every_variant() {
+            for input in inputs {
+                let out = std::panic::catch_unwind(|| shape.dims(&[input]));
+                assert!(out.is_ok(), "{shape:?} over {input:?} panicked");
+            }
+        }
+        for shape in [
+            OpShape::HeightTo(Sym::Known(10)),
+            OpShape::WidthTo(Sym::Known(10)),
+            OpShape::LongSideTo(Sym::Known(10)),
+            OpShape::ShortSideTo(Sym::Known(10)),
+        ] {
+            assert_eq!(
+                shape.dims(&[&[Known(0), Known(4), Known(1)]]),
+                None,
+                "{shape:?}"
+            );
+            assert_eq!(
+                shape.dims(&[&[Known(4), Known(0), Known(1)]]),
+                None,
+                "{shape:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_shape_is_rank_stable_past_its_patterns() {
         for leading in [vec![], vec![Some(7)], vec![Some(7), Some(9), Some(3)]] {

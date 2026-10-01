@@ -402,30 +402,67 @@ impl<M: Mode> ComputeOp<M> {
         if let ComputeOp::WarpAffine { matrix, .. } = self {
             let known: Option<Vec<f64>> = matrix.iter().map(|c| M::sym(c).known()).collect();
             if let Some(known) = known {
-                let [a, b, _, c, d, _] =
-                    [known[0], known[1], known[2], known[3], known[4], known[5]];
-                let determinant = a * d - b * c;
-                if determinant.abs() < AffineParams::SINGULAR_EPSILON {
+                let m: [f64; 6] = [known[0], known[1], known[2], known[3], known[4], known[5]];
+                if !AffineParams::matrix_is_invertible(&m) {
+                    let [a, b, _, c, d, _] = m;
                     return Err(format!(
-                        "warp_affine: matrix {known:?} is singular (determinant \
-                         {determinant}), so it has no inverse and the warp is undefined. \
-                         A row of zeros, a zero scale factor on an axis, or two \
-                         proportional rows will do this."
+                        "warp_affine: matrix {m:?} is singular or not finite \
+                         (determinant {}), so it has no inverse and the warp is undefined. A non-finite coefficient, a row of \
+                         zeros, a zero scale factor on an axis, or two proportional \
+                         rows will do this.",
+                        a * d - b * c
                     ));
                 }
             }
             return Ok(());
         }
-        // The rotation matrix's determinant is scale**2: only a zero scale is
-        // singular.
-        if let ComputeOp::RotateAndScale { scale, .. } = self {
-            if let Some(scale) = M::sym(scale).known() {
+        // The rotation matrix's determinant is scale**2: a zero scale is
+        // singular, and a non-finite angle, centre or scale makes it NaN. Each
+        // known value is checked as soon as it is known (a literal at plan
+        // time), and the whole matrix — the same rule `warp_affine` reads —
+        // once every value is.
+        if let ComputeOp::RotateAndScale {
+            angle,
+            center: [cx, cy],
+            scale,
+            ..
+        } = self
+        {
+            let named = [
+                ("angle", M::sym(angle).known()),
+                ("center x", M::sym(cx).known()),
+                ("center y", M::sym(cy).known()),
+                ("scale", M::sym(scale).known()),
+            ];
+            for (name, value) in named {
+                if let Some(v) = value.filter(|v| !v.is_finite()) {
+                    return Err(format!("rotate_and_scale: {name} {v} is not finite"));
+                }
+            }
+            if let Some(scale) = named[3].1 {
                 if (scale * scale).abs() < AffineParams::SINGULAR_EPSILON {
                     return Err(format!(
                         "rotate_and_scale: scale {scale} collapses the image to a \
                          point, so the warp has no inverse and is undefined."
                     ));
                 }
+            }
+            if let [Some(angle), Some(cx), Some(cy), Some(scale)] = named.map(|(_, v)| v) {
+                let m = AffineParams::rotation_matrix_2d(angle, cx, cy, scale);
+                if !AffineParams::matrix_is_invertible(&m) {
+                    return Err(format!(
+                        "rotate_and_scale: angle {angle}, centre ({cx}, {cy}) and scale \
+                         {scale} give the matrix {m:?}, which has no inverse."
+                    ));
+                }
+            }
+            return Ok(());
+        }
+        // A rotation by a non-finite angle has no matrix (and no expanded
+        // canvas: `AffineParams::expanded_size` of NaN is 0).
+        if let ComputeOp::Rotate { angle, .. } = self {
+            if let Some(angle) = M::sym(angle).known().filter(|a| !a.is_finite()) {
+                return Err(format!("rotate: angle {angle} is not finite"));
             }
             return Ok(());
         }
@@ -828,6 +865,43 @@ impl<M: Mode> Op for ComputeOp<M> {
 mod tests {
     use super::*;
     use crate::mode::{Literals, Resolve, Wire};
+
+    /// A geometric parameter that is not finite has no warp: a NaN or
+    /// infinite angle, centre or scale makes the matrix NaN, and it used to
+    /// pass (`NaN < eps` is false) and warp every pixel to the border. Each
+    /// warp's matrix is checked by the one rule, `AffineParams::is_invertible`
+    /// (finite and non-singular), per row when a value is per-row.
+    #[test]
+    fn a_warp_with_a_non_finite_parameter_is_refused() {
+        let rs = |angle: f64, cx: f64, scale: f64| ComputeOp::<Exec>::RotateAndScale {
+            angle,
+            center: [cx, 2.0],
+            output_size: [4, 4],
+            scale,
+        };
+        let warp = |m0: f64| ComputeOp::<Exec>::WarpAffine {
+            matrix: [m0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            output_size: [4, 4],
+            interpolation: InterpolationType::Bilinear,
+            border_value: 0.0,
+        };
+        let rotate = |angle: f32| ComputeOp::<Exec>::Rotate {
+            angle,
+            expand: true,
+            interpolation: InterpolationType::Bilinear,
+            border_value: 0.0,
+        };
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(rs(bad, 2.0, 1.0).check().is_err(), "angle {bad}");
+            assert!(rs(30.0, bad, 1.0).check().is_err(), "centre {bad}");
+            assert!(rs(30.0, 2.0, bad).check().is_err(), "scale {bad}");
+            assert!(warp(bad).check().is_err(), "matrix {bad}");
+            assert!(rotate(bad as f32).check().is_err(), "rotate {bad}");
+        }
+        assert!(rs(30.0, 2.0, 1.0).check().is_ok());
+        assert!(warp(1.0).check().is_ok());
+        assert!(rotate(30.0).check().is_ok());
+    }
 
     /// `rotate_and_scale` executes as a warp by the one rotation matrix,
     /// built from the values the row resolves (a literal and a per-row angle

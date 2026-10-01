@@ -926,18 +926,14 @@ mod scalar_op_tests {
             (ScalarOp::Sqrt, |x| x.sqrt()),
             (ScalarOp::Square, |x| x * x),
             (ScalarOp::Recip, |x| 1.0 / x),
-            (ScalarOp::Min(0.5), |x| {
-                crate::ops::scalar::min_numpy(x, 0.5)
-            }),
-            (ScalarOp::Max(0.5), |x| {
-                crate::ops::scalar::max_numpy(x, 0.5)
-            }),
+            (ScalarOp::Min(0.5), |x| crate::ops::util::minimum(x, 0.5)),
+            (ScalarOp::Max(0.5), |x| crate::ops::util::maximum(x, 0.5)),
             (ScalarOp::Sign, signum_numpy::<f32>),
             (ScalarOp::Floor, |x| x.floor()),
             (ScalarOp::Ceil, |x| x.ceil()),
             (ScalarOp::Round, |x| x.round_ties_even()),
             (ScalarOp::Trunc, |x| x.trunc()),
-            (ScalarOp::Relu, |x| crate::ops::scalar::max_numpy(x, 0.0)),
+            (ScalarOp::Relu, |x| crate::ops::util::maximum(x, 0.0)),
             (ScalarOp::Clamp(0.0, 1.0), |x| x.clamp(0.0, 1.0)),
         ]
     }

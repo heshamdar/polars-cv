@@ -113,7 +113,17 @@ impl AffineParams {
     /// conditioning test: a nearly-singular matrix is a legitimate (if extreme)
     /// transform and produces a real, if heavily stretched, image.
     pub fn is_invertible(&self) -> bool {
-        self.determinant().abs() >= Self::SINGULAR_EPSILON
+        Self::matrix_is_invertible(&self.matrix)
+    }
+
+    /// [`is_invertible`](Self::is_invertible) for a bare `[a, b, tx, c, d, ty]`
+    /// matrix, as the warps' `check()` holds one before any `AffineParams`
+    /// exists: every coefficient finite (a NaN or infinite one — from a
+    /// non-finite angle, centre, scale or coefficient — maps every pixel
+    /// nowhere) and the linear part non-singular.
+    pub fn matrix_is_invertible(matrix: &[f64; 6]) -> bool {
+        let [a, b, _, c, d, _] = *matrix;
+        matrix.iter().all(|v| v.is_finite()) && (a * d - b * c).abs() >= Self::SINGULAR_EPSILON
     }
 
     /// Below this, [`determinant`](Self::determinant) counts as zero.
