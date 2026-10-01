@@ -62,7 +62,8 @@ reference sets `ref=None` and says why in `no_ref`. It is still exercised by
 currently modelled:
 
 - Resize resamples height before width, where Pillow goes width first.
-- 2- and 4-channel resizes are alpha-premultiplied.
+- 2- and 4-channel resizes are alpha-premultiplied, and a pixel whose
+  resampled alpha is 0 has colour 0.
 - Nearest-neighbour ties may go either way. Only the tie pixels are excused,
   computed exactly.
 - Rotation is clockwise about `(w/2, h/2)`.

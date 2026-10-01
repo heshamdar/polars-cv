@@ -174,7 +174,6 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - tests: divergences the suite found are registered, not fixed, in
   `tests/parity/framework/known.py` and pinned as strict xfails:
   `binary-source-numpy-rows`, `array-null-slice-panic`,
-  `channel-swap-panic`, `channel-merge-dtype`, `convolve2d-f64`,
   `through-f32`, `derived-extent-zero`, `view-offset-lost`,
   `reshape-after-view`, `tiff-gray-alpha`, `divide-ratio-contract`,
   `nan-one-sided-clamp`,
@@ -183,6 +182,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   and the fix, and each pins the exception and message its repro fails with
   (`known.still_reproduces`), so a repro broken for another reason no longer
   reads as the defect.
+- tests: `ops::dtype_sweep` executes every registered buffer op on every
+  dtype and every layout its contract admits (rank 2, and 1-4 channels) and
+  requires the executed dtype to be the declared one; every binary op and
+  `channel_merge` likewise against what `plan::step` plans. Driven by
+  `TypedOp::samples()`, so a new op is swept when it is registered.
+  `exact_data_movement.rs` holds the data-movement ops to exact output on
+  values f32 cannot hold.
+- view-buffer: `DType::accumulator` is the one rule for the float an
+  interpolating kernel computes in. `BinaryOp::output_dtype` derives from
+  `output_dtype_rule` (which said `PreserveInput` for divide while planning
+  and execution promoted to float).
+- tests: the parity resize reference gives a pixel whose resampled alpha is
+  0 colour 0, the engine's un-premultiply convention, where Pillow leaves
+  ringing residue.
 - tests: the parity suite's binary ops are drawn on every dtype their
   contract admits (`BinarySpec` splits `accepts` from `ref_accepts`, as
   `OpSpec` does); add/subtract/multiply/blend were drawn on u8, u16 and floats
@@ -234,6 +247,27 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **`channel_swap`, `channel_merge`, RGB <-> BGR, gray -> RGB and the
+  morphological gradient are exact on every dtype.** They had native paths
+  for u8 (and some u16/f32) only and converted every other dtype through f32:
+  `channel_swap` and `channel_merge` then panicked against their contract
+  ("expected output dtype U16 ... but got F32"), and the colour moves and the
+  gradient silently rounded values f32 cannot hold (u32 16777217 ->
+  16777216). Each is now one kernel generic over the element type
+  (`with_dtype!`); `channel_swap` and the colour conversions' reorder are the
+  same kernel, where they were two.
+- **Colour conversions refuse a channel count they cannot read.** They
+  admitted any `C` at least the source space's channel count, but every
+  kernel reads a pixel as that many values: `to_bgr` of a 5-channel image
+  reordered the first three channels and returned the other two as zeros,
+  and the other spaces read across pixel boundaries. A conversion now
+  admits exactly the space's channels or those plus alpha (3 or 4 for RGB,
+  BGR, HSV, Lab and YCbCr; 1 or 2 for gray), at plan time when the count is
+  known and per row otherwise.
+- **`convolve2d` (and `sobel`, `laplacian`, `sharpen`) on f64 returns f64.**
+  It planned f64 and executed f32, which the output guard refused. A
+  convolution now accumulates in `DType::accumulator` — f64 for f64 and the
+  32/64-bit integers, f32 otherwise — and stores its declared dtype.
 - **A literal float parameter equals the same value given as an expression.**
   The graph JSON was parsed without `serde_json`'s `float_roundtrip`, so a
   literal could land an ulp away from what the caller wrote, while the same

@@ -130,55 +130,29 @@ pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer 
     }
 }
 
-/// Execute a channel swap operation: reorder channels in a [H, W, C] buffer.
+/// Reorder the channels of an `[H, W, C]` buffer: output channel `i` is
+/// input channel `order[i]`. Pure data movement, in the input's own dtype —
+/// the one channel reorder (`channel_swap`, and the colour conversions'
+/// RGB <-> BGR).
 pub fn apply_channel_swap(buf: &ViewBuffer, order: &[usize]) -> ViewBuffer {
     let shape = buf.shape();
     assert!(shape.len() == 3, "ChannelSwap requires 3D [H, W, C] input");
-    let h = shape[0];
-    let w = shape[1];
-    let c = shape[2];
+    let (h, w, c) = (shape[0], shape[1], shape[2]);
     assert!(
         order.len() == c,
         "ChannelSwap order length {} must match channel count {}",
         order.len(),
         c
     );
-
     let contig = buf.to_contiguous();
-    match buf.dtype() {
-        DType::U8 => {
-            let src = contig.as_slice::<u8>();
-            let mut output = vec![0u8; h * w * c];
-            for y in 0..h {
-                for x in 0..w {
-                    let base_src = (y * w + x) * c;
-                    let base_dst = (y * w + x) * c;
-                    for (dst_c, &src_c) in order.iter().enumerate() {
-                        output[base_dst + dst_c] = src[base_src + src_c];
-                    }
-                }
-            }
-            ViewBuffer::from_vec_with_shape(output, vec![h, w, c])
+    crate::core::dtype::with_dtype!(buf.dtype(), T => {
+        let src = contig.as_slice::<T>();
+        let mut out: Vec<T> = Vec::with_capacity(src.len());
+        for pixel in src.chunks_exact(c) {
+            out.extend(order.iter().map(|&i| pixel[i]));
         }
-        DType::F32 => {
-            let src = contig.as_slice::<f32>();
-            let mut output = vec![0.0f32; h * w * c];
-            for y in 0..h {
-                for x in 0..w {
-                    let base_src = (y * w + x) * c;
-                    let base_dst = (y * w + x) * c;
-                    for (dst_c, &src_c) in order.iter().enumerate() {
-                        output[base_dst + dst_c] = src[base_src + src_c];
-                    }
-                }
-            }
-            ViewBuffer::from_vec_with_shape(output, vec![h, w, c])
-        }
-        _ => {
-            let f32_buf = buf.cast(DType::F32);
-            apply_channel_swap(&f32_buf, order)
-        }
-    }
+        ViewBuffer::from_vec_with_shape(out, vec![h, w, c])
+    })
 }
 
 /// Whether [`apply_channel_merge`] can merge buffers of these shapes and dtypes
@@ -261,43 +235,17 @@ pub fn apply_channel_merge(buffers: &[&ViewBuffer]) -> ViewBuffer {
         );
     }
 
-    match buffers[0].dtype() {
-        DType::U8 => {
-            let mut output = vec![0u8; h * w * c];
-            let contigs: Vec<_> = buffers.iter().map(|b| b.to_contiguous()).collect();
-            let slices: Vec<&[u8]> = contigs.iter().map(|b| b.as_slice::<u8>()).collect();
-            for y in 0..h {
-                for x in 0..w {
-                    let pixel_idx = y * w + x;
-                    let base_dst = pixel_idx * c;
-                    for (ch, slice) in slices.iter().enumerate() {
-                        output[base_dst + ch] = slice[pixel_idx];
-                    }
-                }
-            }
-            ViewBuffer::from_vec_with_shape(output, vec![h, w, c])
+    let contigs: Vec<ViewBuffer> = buffers.iter().map(|b| b.to_contiguous()).collect();
+    // Pure data movement, in the inputs' own dtype (they share one:
+    // `validate_channel_merge`).
+    crate::core::dtype::with_dtype!(buffers[0].dtype(), T => {
+        let planes: Vec<&[T]> = contigs.iter().map(|b| b.as_slice::<T>()).collect();
+        let mut out: Vec<T> = Vec::with_capacity(h * w * c);
+        for pixel in 0..h * w {
+            out.extend(planes.iter().map(|plane| plane[pixel]));
         }
-        DType::F32 => {
-            let mut output = vec![0.0f32; h * w * c];
-            let contigs: Vec<_> = buffers.iter().map(|b| b.to_contiguous()).collect();
-            let slices: Vec<&[f32]> = contigs.iter().map(|b| b.as_slice::<f32>()).collect();
-            for y in 0..h {
-                for x in 0..w {
-                    let pixel_idx = y * w + x;
-                    let base_dst = pixel_idx * c;
-                    for (ch, slice) in slices.iter().enumerate() {
-                        output[base_dst + ch] = slice[pixel_idx];
-                    }
-                }
-            }
-            ViewBuffer::from_vec_with_shape(output, vec![h, w, c])
-        }
-        _ => {
-            let f32_bufs: Vec<_> = buffers.iter().map(|b| b.cast(DType::F32)).collect();
-            let refs: Vec<&ViewBuffer> = f32_bufs.iter().collect();
-            apply_channel_merge(&refs)
-        }
-    }
+        ViewBuffer::from_vec_with_shape(out, vec![h, w, c])
+    })
 }
 
 /// Convert a buffer to U8 for image operations.
@@ -1901,54 +1849,55 @@ where
 /// Element-wise saturating subtraction: result = a − b, clamped to valid range.
 #[cfg(feature = "image_interop")]
 fn morph_subtract(a: &ViewBuffer, b: &ViewBuffer) -> ViewBuffer {
-    let dtype = a.dtype();
     let ca = a.to_contiguous();
     let cb = b.to_contiguous();
     let shape = crate::core::layout::Dims::from_slice(ca.shape());
-    let count = ca.layout.num_elements();
-
-    match dtype {
-        DType::U8 => {
-            let sa = unsafe { std::slice::from_raw_parts(ca.as_ptr::<u8>(), count) };
-            let sb = unsafe { std::slice::from_raw_parts(cb.as_ptr::<u8>(), count) };
-            let out: Vec<u8> = sa
-                .iter()
-                .zip(sb)
-                .map(|(&a, &b)| a.saturating_sub(b))
-                .collect();
-            ViewBuffer::from_vec_with_shape(out, shape)
-        }
-        DType::U16 => {
-            let sa = unsafe { std::slice::from_raw_parts(ca.as_ptr::<u16>(), count) };
-            let sb = unsafe { std::slice::from_raw_parts(cb.as_ptr::<u16>(), count) };
-            let out: Vec<u16> = sa
-                .iter()
-                .zip(sb)
-                .map(|(&a, &b)| a.saturating_sub(b))
-                .collect();
-            ViewBuffer::from_vec_with_shape(out, shape)
-        }
-        DType::F32 => {
-            let sa = unsafe { std::slice::from_raw_parts(ca.as_ptr::<f32>(), count) };
-            let sb = unsafe { std::slice::from_raw_parts(cb.as_ptr::<f32>(), count) };
-            let out: Vec<f32> = sa.iter().zip(sb).map(|(&a, &b)| (a - b).max(0.0)).collect();
-            ViewBuffer::from_vec_with_shape(out, shape)
-        }
-        DType::F64 => {
-            let sa = unsafe { std::slice::from_raw_parts(ca.as_ptr::<f64>(), count) };
-            let sb = unsafe { std::slice::from_raw_parts(cb.as_ptr::<f64>(), count) };
-            let out: Vec<f64> = sa.iter().zip(sb).map(|(&a, &b)| (a - b).max(0.0)).collect();
-            ViewBuffer::from_vec_with_shape(out, shape)
-        }
-        _ => {
-            // For other integer types, cast to f32, subtract, cast back
-            let fa = a.cast(DType::F32);
-            let fb = b.cast(DType::F32);
-            let result = morph_subtract(&fa, &fb);
-            result.cast(dtype)
-        }
-    }
+    with_dtype!(a.dtype(), T => {
+        let out: Vec<T> = ca
+            .as_slice::<T>()
+            .iter()
+            .zip(cb.as_slice::<T>())
+            .map(|(&a, &b)| a.sub_floor_zero(b))
+            .collect();
+        ViewBuffer::from_vec_with_shape(out, shape)
+    })
 }
+
+/// `max(a - b, 0)`, saturating at the dtype's maximum, in the dtype itself:
+/// the morphological gradient's dilate − erode (never negative, but an i8
+/// 127 − (−128) exceeds i8).
+#[cfg(feature = "image_interop")]
+trait SubFloorZero: Copy {
+    fn sub_floor_zero(self, other: Self) -> Self;
+}
+
+#[cfg(feature = "image_interop")]
+macro_rules! sub_floor_zero_int {
+    ($($t:ty),+) => {$(
+        impl SubFloorZero for $t {
+            #[inline(always)]
+            fn sub_floor_zero(self, other: Self) -> Self {
+                self.saturating_sub(other).max(0)
+            }
+        }
+    )+};
+}
+#[cfg(feature = "image_interop")]
+sub_floor_zero_int!(u8, i8, u16, i16, u32, i32, u64, i64);
+
+#[cfg(feature = "image_interop")]
+macro_rules! sub_floor_zero_float {
+    ($($t:ty),+) => {$(
+        impl SubFloorZero for $t {
+            #[inline(always)]
+            fn sub_floor_zero(self, other: Self) -> Self {
+                (self - other).max(0.0)
+            }
+        }
+    )+};
+}
+#[cfg(feature = "image_interop")]
+sub_floor_zero_float!(f32, f64);
 
 // ============================================================
 // Canny Edge Detection

@@ -18,6 +18,8 @@
 //! [`TypedOp`] *is* the wire op: `{"op": <name>, <field>: <value>, ...}`,
 //! deserialized strictly by name. A name no op registers is an error.
 
+#[cfg(test)]
+mod dtype_sweep;
 pub mod graph;
 pub mod param;
 

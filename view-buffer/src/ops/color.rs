@@ -93,8 +93,22 @@ impl<M: Mode> Op for ColorConvertOp<M> {
         crate::ops::validation::require_channels_at_least(
             shape,
             M::lit(&self.from_space).channels(),
-            "[H, W, C] with at least the source color space's channels",
-        )
+            "[H, W, C] with the source color space's channels (and optionally alpha)",
+        )?;
+        // Exactly the space's channels, or those plus alpha (`color_channels`
+        // is the one alpha rule): every kernel reads a pixel as that many
+        // values, so a fifth channel would be read as the next pixel's.
+        let space = M::lit(&self.from_space).channels();
+        match shape.get(2).and_then(|c| c.known()) {
+            Some(c) if color_channels(c) != space => {
+                Err(crate::ops::validation::ValidationError::ShapeRequirement {
+                    requirement: "[H, W, C] with the source color space's channels \
+                                  (and optionally alpha)",
+                    got: shape.to_vec(),
+                })
+            }
+            _ => Ok(()),
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -172,18 +186,12 @@ pub fn split_alpha(buf: &ViewBuffer) -> (ViewBuffer, ViewBuffer) {
     let (h, w, c) = (shape[0], shape[1], shape[2]);
     let color_c = color_channels(c);
 
-    match buf.dtype() {
-        DType::U8 => split_alpha_typed::<u8>(&contig, h, w, c, color_c),
-        DType::U16 => split_alpha_typed::<u16>(&contig, h, w, c, color_c),
-        DType::F32 => split_alpha_typed::<f32>(&contig, h, w, c, color_c),
-        _ => {
-            let f32_buf = contig.cast(DType::F32);
-            split_alpha_typed::<f32>(&f32_buf, h, w, c, color_c)
-        }
-    }
+    crate::core::dtype::with_dtype!(buf.dtype(), T => {
+        split_alpha_typed::<T>(&contig, h, w, c, color_c)
+    })
 }
 
-fn split_alpha_typed<T: crate::core::dtype::ViewType + Default + Copy>(
+fn split_alpha_typed<T: crate::core::dtype::ViewType>(
     buf: &ViewBuffer,
     h: usize,
     w: usize,
@@ -220,19 +228,12 @@ pub fn merge_alpha(color: &ViewBuffer, alpha: &ViewBuffer) -> ViewBuffer {
     let (h, w) = (shape[0], shape[1]);
     let color_c = if shape.len() == 3 { shape[2] } else { 1 };
 
-    match color.dtype() {
-        DType::U8 => merge_alpha_typed::<u8>(&contig_color, &contig_alpha, h, w, color_c),
-        DType::U16 => merge_alpha_typed::<u16>(&contig_color, &contig_alpha, h, w, color_c),
-        DType::F32 => merge_alpha_typed::<f32>(&contig_color, &contig_alpha, h, w, color_c),
-        _ => {
-            let f32_color = contig_color.cast(DType::F32);
-            let f32_alpha = contig_alpha.cast(DType::F32);
-            merge_alpha_typed::<f32>(&f32_color, &f32_alpha, h, w, color_c)
-        }
-    }
+    crate::core::dtype::with_dtype!(color.dtype(), T => {
+        merge_alpha_typed::<T>(&contig_color, &contig_alpha, h, w, color_c)
+    })
 }
 
-fn merge_alpha_typed<T: crate::core::dtype::ViewType + Default + Copy>(
+fn merge_alpha_typed<T: crate::core::dtype::ViewType>(
     color: &ViewBuffer,
     alpha: &ViewBuffer,
     h: usize,
@@ -267,22 +268,12 @@ pub fn apply_color_convert(buf: &ViewBuffer, op: &ColorConvertOp) -> ViewBuffer 
     let channels = if shape.len() == 3 { shape[2] } else { 1 };
     let has_alpha = color_channels(channels) < channels;
 
-    let result = if has_alpha {
+    if has_alpha {
         let (color_buf, alpha_buf) = split_alpha(buf);
         let converted = apply_color_convert_core(&color_buf, op);
         merge_alpha(&converted, &alpha_buf)
     } else {
         apply_color_convert_core(buf, op)
-    };
-
-    // Enforce the declared dtype contract at the single exit point: non-Lab
-    // conversions preserve the input element dtype. The core paths already
-    // cast back, but the alpha split/merge helpers work in u8/u16/f32 and
-    // would otherwise leak f32 for e.g. an RGBA f64 input.
-    if !op.promotes_to_float() && result.dtype() != buf.dtype() {
-        result.cast(buf.dtype())
-    } else {
-        result
     }
 }
 
@@ -340,7 +331,7 @@ fn to_rgb_f32(buf: &ViewBuffer, from: ColorSpace) -> ViewBuffer {
 
     match from {
         ColorSpace::Rgb => contig,
-        ColorSpace::Bgr => channel_reorder_f32(&contig, &[2, 1, 0]),
+        ColorSpace::Bgr => channel_reorder(&contig, &[2, 1, 0]),
         ColorSpace::Hsv => hsv_to_rgb_f32(&contig),
         ColorSpace::Lab => lab_to_rgb_f32(&contig),
         ColorSpace::YCbCr => ycbcr_to_rgb_f32(&contig),
@@ -352,7 +343,7 @@ fn to_rgb_f32(buf: &ViewBuffer, from: ColorSpace) -> ViewBuffer {
 fn from_rgb_f32(rgb: &ViewBuffer, to: ColorSpace) -> ViewBuffer {
     match to {
         ColorSpace::Rgb => rgb.clone(),
-        ColorSpace::Bgr => channel_reorder_f32(rgb, &[2, 1, 0]),
+        ColorSpace::Bgr => channel_reorder(rgb, &[2, 1, 0]),
         ColorSpace::Hsv => rgb_to_hsv_f32(rgb),
         ColorSpace::Lab => rgb_to_lab_f32(rgb),
         ColorSpace::YCbCr => rgb_to_ycbcr_f32(rgb),
@@ -409,40 +400,20 @@ fn rgb_to_gray(buf: &ViewBuffer) -> ViewBuffer {
     }
 }
 
+/// Replicate a gray plane into three channels: data movement, in the
+/// input's own dtype.
 fn gray_to_rgb(buf: &ViewBuffer) -> ViewBuffer {
     let contig = buf.to_contiguous();
     let shape = contig.shape();
     let (h, w) = (shape[0], shape[1]);
-
-    match buf.dtype() {
-        DType::U8 => {
-            let src = contig.as_slice::<u8>();
-            let mut out = Vec::with_capacity(h * w * 3);
-            for &val in src {
-                out.push(val);
-                out.push(val);
-                out.push(val);
-            }
-            ViewBuffer::from_vec_with_shape(out, vec![h, w, 3])
+    crate::core::dtype::with_dtype!(buf.dtype(), T => {
+        let src = contig.as_slice::<T>();
+        let mut out: Vec<T> = Vec::with_capacity(h * w * 3);
+        for &val in src {
+            out.extend([val, val, val]);
         }
-        _ => {
-            let f32_buf = contig.cast(DType::F32);
-            let src = f32_buf.as_slice::<f32>();
-            let mut out = Vec::with_capacity(h * w * 3);
-            for &val in src {
-                out.push(val);
-                out.push(val);
-                out.push(val);
-            }
-            let rgb = ViewBuffer::from_vec_with_shape(out, vec![h, w, 3]);
-            // Preserve the element dtype (replication itself is lossless).
-            if buf.dtype() != DType::F32 {
-                rgb.cast(buf.dtype())
-            } else {
-                rgb
-            }
-        }
-    }
+        ViewBuffer::from_vec_with_shape(out, vec![h, w, 3])
+    })
 }
 
 fn gray_to_rgb_f32(buf: &ViewBuffer) -> ViewBuffer {
@@ -463,44 +434,7 @@ fn gray_to_rgb_f32(buf: &ViewBuffer) -> ViewBuffer {
 // =============================================================================
 
 fn channel_reorder(buf: &ViewBuffer, order: &[usize]) -> ViewBuffer {
-    let contig = buf.to_contiguous();
-    let shape = contig.shape();
-    let (h, w, c) = (shape[0], shape[1], shape[2]);
-
-    match buf.dtype() {
-        DType::U8 => {
-            let src = contig.as_slice::<u8>();
-            let mut out = vec![0u8; h * w * c];
-            for i in 0..(h * w) {
-                for (dst_c, &src_c) in order.iter().enumerate() {
-                    out[i * c + dst_c] = src[i * c + src_c];
-                }
-            }
-            ViewBuffer::from_vec_with_shape(out, vec![h, w, c])
-        }
-        _ => {
-            let f32_buf = contig.cast(DType::F32);
-            let reordered = channel_reorder_f32(&f32_buf, order);
-            if buf.dtype() != DType::F32 {
-                reordered.cast(buf.dtype())
-            } else {
-                reordered
-            }
-        }
-    }
-}
-
-fn channel_reorder_f32(buf: &ViewBuffer, order: &[usize]) -> ViewBuffer {
-    let shape = buf.shape();
-    let (h, w, c) = (shape[0], shape[1], shape[2]);
-    let src = buf.as_slice::<f32>();
-    let mut out = vec![0.0f32; h * w * c];
-    for i in 0..(h * w) {
-        for (dst_c, &src_c) in order.iter().enumerate() {
-            out[i * c + dst_c] = src[i * c + src_c];
-        }
-    }
-    ViewBuffer::from_vec_with_shape(out, vec![h, w, c])
+    crate::execution::runner::apply_channel_swap(buf, order)
 }
 
 // =============================================================================

@@ -143,25 +143,6 @@ def _repro_blob_numpy_rows() -> None:
     assert np.array_equal(out.rows[1], b), "row 1 came back as row 0's pixels"
 
 
-def _repro_channel_swap_panic() -> None:
-    from tests.parity.framework.run import Axes, Step, execute
-
-    image = np.arange(12, dtype=np.uint16).reshape(2, 2, 3)
-    out = execute([image], [Step("channel_swap", {"order": [2, 1, 0]})], Axes())
-    assert np.array_equal(out.rows[0], image[:, :, ::-1])
-
-
-def _repro_channel_merge_dtype() -> None:
-    from polars_cv import Pipeline, numpy_from_struct
-
-    image = np.arange(12, dtype=np.uint16).reshape(2, 2, 3)
-    frame = pl.DataFrame({"x": [image]}, schema={"x": pl.Array(pl.UInt16, image.shape)})
-    source = Pipeline().source("array", dtype="u16")
-    planes = [pl.col("x").cv.pipe(source.channel_select(c)) for c in range(3)]
-    out = frame.select(o=planes[0].channel_merge(*planes[1:]).sink("numpy"))
-    assert np.array_equal(numpy_from_struct(out["o"][0]), image)
-
-
 def _repro_divide_contract() -> None:
     from tests.parity.framework.run import BinaryCase, execute_binary
 
@@ -300,22 +281,13 @@ def _color_int_range(step: Step, x: np.ndarray) -> bool:
     return space and x.dtype.kind in "iu" and x.dtype != np.uint8
 
 
-def _repro_convolve_f64() -> None:
-    from tests.parity.framework.run import Axes, Step, execute
-
-    image = np.linspace(0, 1, 12).reshape(2, 2, 3)
-    out = execute([image], [Step("sobel", {"axis": "x"})], Axes())
-    assert out.rows[0].dtype == np.float64
-
-
 def _repro_wide_int_through_f32() -> None:
-    from tests.parity.framework.run import Axes, Step, execute
+    from tests.parity.framework.run import BinaryCase, execute_binary
 
-    image = np.full((2, 2, 3), 16_777_217, dtype=np.uint32)
-    out = execute([image], [Step("to_bgr")], Axes())
-    assert np.array_equal(out.rows[0], image), (
-        "a channel reorder must not round 16777217 to 16777216"
-    )
+    a = np.full((1, 1, 1), 16_777_219, dtype=np.uint32)
+    b = np.full((1, 1, 1), 16_777_221, dtype=np.uint32)
+    out = execute_binary(BinaryCase((a,), (b,), (), (), "bitwise_xor")).rows[0]
+    assert out.ravel()[0] == 6, f"16777219 ^ 16777221 is {out.ravel()[0]}, not 6"
 
 
 def _repro_letterbox_zero_extent() -> None:
@@ -395,8 +367,6 @@ def _reshape_of_a_view(steps: Sequence[Step]) -> bool:
 #: Ops that convert or resample a 32/64-bit integer image through f32.
 _THROUGH_F32 = frozenset(
     {
-        "to_bgr",
-        "convert_color",
         "blur",
         "resize",
         "resize_to_height",
@@ -405,7 +375,6 @@ _THROUGH_F32 = frozenset(
         "resize_min",
         "resize_scale",
         "letterbox",
-        "morphology_gradient",
         # binary ops (the DAG suite asks with Step(method) and each operand)
         "add",
         "subtract",
@@ -418,6 +387,12 @@ _THROUGH_F32 = frozenset(
         "minimum",
     }
 )
+
+
+def _through_f32(step: Step) -> bool:
+    if step.method == "convert_color":
+        return step.params.get("to_space") == "gray"
+    return step.method in _THROUGH_F32
 
 
 def _not_representable_in_f32(x: np.ndarray) -> bool:
@@ -514,40 +489,6 @@ DIVERGENCES: tuple[Divergence, ...] = (
             and axes.engine != "streaming"
             and sum(im is not None for im in images) > 1
         ),
-    ),
-    Divergence(
-        key="channel-swap-panic",
-        raises=pl.exceptions.ComputeError,
-        match="ImageOp contract violation: ChannelSwap",
-        summary=(
-            "channel_swap panics on every dtype but u8 and f32 ('ImageOp "
-            "contract violation: ChannelSwap: expected output dtype U16 (rule "
-            "PreserveInput ...), but got F32'): the kernel converts through "
-            "f32 while its contract preserves the dtype. Fixed: the channels "
-            "are reordered in the input dtype."
-        ),
-        repro=_repro_channel_swap_panic,
-        affects_step=lambda step, x: (
-            step.method == "channel_swap" and x.dtype not in (np.uint8, np.float32)
-        ),
-        avoid=True,
-    ),
-    Divergence(
-        key="channel-merge-dtype",
-        raises=pl.exceptions.ComputeError,
-        match="planned dtype u16 but execution produced F32",
-        summary=(
-            "channel_merge of any dtype but u8 and f32 plans the operands' "
-            "dtype and executes f32, which the plugin's output guard rejects "
-            "('planned dtype u16 but execution produced F32'); the same "
-            "through-f32 kernel as channel-swap-panic. Fixed: the planes are "
-            "stacked in their own dtype."
-        ),
-        repro=_repro_channel_merge_dtype,
-        affects_step=lambda step, x: (
-            step.method == "channel_merge" and x.dtype not in (np.uint8, np.float32)
-        ),
-        avoid=True,
     ),
     Divergence(
         key="divide-ratio-contract",
@@ -655,37 +596,21 @@ DIVERGENCES: tuple[Divergence, ...] = (
         affects_step=_color_int_range,
     ),
     Divergence(
-        key="convolve2d-f64",
-        raises=pl.exceptions.ComputeError,
-        match="planned dtype f64 but execution produced F32",
-        summary=(
-            "convolve2d (and sobel/laplacian/sharpen, which lower to it) on an "
-            "f64 image plans f64 but executes f32, which the plugin's own "
-            "output guard rejects ('planned dtype f64 but execution produced "
-            "F32'). Fixed: f64 in, f64 out."
-        ),
-        repro=_repro_convolve_f64,
-        affects_step=lambda step, x: (
-            step.method in ("convolve2d", "sobel", "laplacian", "sharpen")
-            and x.dtype == np.float64
-        ),
-        avoid=True,
-    ),
-    Divergence(
         key="through-f32",
-        match="must not round 16777217",
+        match="16777219 ^ 16777221 is 0, not 6",
         summary=(
-            "32/64-bit integer and f64 images are converted or resampled "
+            "32/64-bit integer and f64 images are resampled or combined "
             "through f32, so a value f32 cannot hold changes (u32 16777217 -> "
-            "16777216; f64 0.63696169 -> 0.63696170) even where the op only "
-            "moves data (to_bgr, convert_color rgb->bgr, a nearest resize), "
-            "and in the binary ops: every operand pair but u8, u16, f32 and "
-            "f64 is computed in f32 (u32 16777219 ^ 16777221 -> 0, not 6). "
-            "Fixed: those ops are exact on every dtype."
+            "16777216; f64 0.63696169 -> 0.63696170): the resizes (a nearest "
+            "one included), blur, letterbox, convert_color rgb->gray, and the "
+            "binary ops, where every operand pair but u8, u16, f32 and f64 is "
+            "computed in f32 (u32 16777219 ^ 16777221 -> 0, not 6). Fixed: "
+            "data movement is exact on every dtype, and interpolation "
+            "accumulates in DType::accumulator (f64 for these)."
         ),
         repro=_repro_wide_int_through_f32,
         affects_step=lambda step, x: (
-            step.method in _THROUGH_F32 and _not_representable_in_f32(x)
+            _through_f32(step) and _not_representable_in_f32(x)
         ),
     ),
     Divergence(

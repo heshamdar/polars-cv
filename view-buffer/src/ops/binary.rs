@@ -160,19 +160,18 @@ impl BinaryOp {
         }
     }
 
-    /// The output dtype of this binary op for the given operand dtypes.
+    /// The output dtype of this binary op for the given operand dtypes: its
+    /// [`output_dtype_rule`](Op::output_dtype_rule) applied to the two
+    /// operands' common dtype ([`promote_dtypes`]).
     ///
-    /// This is the single authority shared by planning (the plugin's
-    /// `plan::step`, given both operand dtypes) and execution ([`execute`](BinaryOp::execute)). Divide and Ratio use
-    /// *true division*: integer operands promote to float (`F32`, or `F64` when an
-    /// operand is already `F64`), matching numpy-style semantics. All other ops
-    /// use standard numeric promotion of the two operands.
+    /// This is what planning (the plugin's `plan::step`, given both operand
+    /// dtypes) and execution ([`execute`](BinaryOp::execute)) both read, and
+    /// it derives from the rule rather than restating it, so the two cannot
+    /// disagree. Divide and Ratio use *true division*: integer operands
+    /// promote to float (`F32`, or `F64` when an operand is already `F64`).
     pub fn output_dtype(&self, left: DType, right: DType) -> DType {
-        let promoted = promote_dtypes(left, right);
-        match self {
-            BinaryOp::Divide | BinaryOp::Ratio => to_float(promoted),
-            _ => promoted,
-        }
+        self.output_dtype_rule()
+            .resolve(promote_dtypes(left, right))
     }
 
     /// Execute operation on u8 buffers with image-processing semantics.
@@ -585,8 +584,12 @@ impl Op for BinaryOp {
         None // Work with promoted input dtype
     }
 
+    /// Over the operands' common dtype ([`promote_dtypes`]).
     fn output_dtype_rule(&self) -> OutputDTypeRule {
-        OutputDTypeRule::PreserveInput
+        match self {
+            BinaryOp::Divide | BinaryOp::Ratio => OutputDTypeRule::PromoteToFloat,
+            _ => OutputDTypeRule::PreserveInput,
+        }
     }
 }
 
@@ -640,17 +643,6 @@ pub fn broadcast_shapes(a: &[usize], b: &[usize]) -> Option<Vec<usize>> {
 
     result.reverse();
     Some(result)
-}
-
-/// Promote an integer dtype to `F32` for true division; floats keep their width.
-///
-/// Used by [`BinaryOp::output_dtype`] for Divide/Ratio so the result of `a / b`
-/// is a float regardless of the (integer) input types.
-fn to_float(d: DType) -> DType {
-    match d {
-        DType::F64 => DType::F64,
-        _ => DType::F32,
-    }
 }
 
 /// Promote two dtypes to a common type.

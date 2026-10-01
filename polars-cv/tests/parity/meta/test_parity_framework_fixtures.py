@@ -241,7 +241,7 @@ class TestDivergencePredicates:
         fine = np.full((1, 1, 3), 2**24, np.uint32)
         f64_exact = np.full((1, 1, 3), 0.5)
         f64_inexact = np.full((1, 1, 3), 0.1)
-        step = Step("to_bgr")
+        step = Step("blur", {"sigma": 1.0})
         assert known.step_divergence(step, flagged).key == "through-f32"
         assert known.step_divergence(step, f64_inexact).key == "through-f32"
         assert known.step_divergence(step, fine) is None
