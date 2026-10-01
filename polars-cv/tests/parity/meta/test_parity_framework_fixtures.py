@@ -359,3 +359,47 @@ class TestOptimizationAxis:
             opt_flags_for("only:no_such_pass")
         with pytest.raises(ValueError, match="unknown axis value"):
             Axes(optimize="some")
+
+
+class TestReferenceClaims:
+    """A step that claims a reference must be able to compute it.
+
+    ``has_reference`` gates which rows are compared; a claim the reference
+    cannot honour turns a skip into a harness error deep in a chain hunt
+    (``rotate_and_scale`` at a quarter turn on i8 was claimed as data
+    movement, then sent to ``cv2.warpAffine``, which has no i8).
+    """
+
+    @pytest.mark.parametrize(
+        ("method", "params", "claimed"),
+        [
+            # A bare quarter turn is data movement: every dtype.
+            (
+                "rotate",
+                {"angle": 90.0, "interpolation": "bilinear", "border_value": 0.0},
+                True,
+            ),
+            # About a centre, scaled, it is a warp: OpenCV's dtypes only.
+            (
+                "rotate_and_scale",
+                {
+                    "angle": 0.0,
+                    "center": (0.0137, 0.0137),
+                    "output_size": (1, 1),
+                    "scale": 0.5,
+                },
+                False,
+            ),
+        ],
+    )
+    def test_a_claimed_reference_runs(
+        self, method: str, params: dict, claimed: bool
+    ) -> None:
+        from tests.parity.framework.oracle import spec_for
+
+        spec = spec_for(method)
+        x = np.arange(8, dtype=np.int8).reshape(2, 2, 2)
+        assert spec.has_reference(x, params) is claimed
+        if claimed:
+            assert spec.ref is not None
+            spec.ref(x, params)
