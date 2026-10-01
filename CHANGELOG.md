@@ -94,6 +94,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   still holds every pixel: its ends widen outward where a 64-bit integer
   rounds inward to f64.
 
+- **NaN propagates through `label_reduce`, and geometry refuses non-finite
+  coordinates.** `label_reduce(reduction="max")` folded with `f64::max`,
+  which drops a NaN, so a region holding a NaN pixel scored its largest
+  number; it now scores NaN, as `mean` and `sum` already did (the
+  whole-image statistics `reduce_sum`/`mean`/`std`, `normalize` and
+  `adjust_contrast` already propagated). A contour, point or bbox with a NaN
+  or infinite coordinate is now an error naming the row, as a null
+  coordinate already was, in every geometry function, the `contour` source
+  and `label_reduce`: a NaN vertex panicked the plugin in `convex_hull`,
+  `iou`, `dice` and `simplify`, made `hausdorff_distance` `1.8e308`, and
+  left the bbox, winding and convexity finite but wrong.
+
 - **polars-cv requires `polars>=1.43.2`** (was `>=1.41.1`). Older polars
   exports a sliced `Array` column that has nulls across the plugin FFI with
   its offset applied twice (the `FixedSizeListArray` export reported the

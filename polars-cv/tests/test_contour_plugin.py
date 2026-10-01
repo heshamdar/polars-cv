@@ -16,7 +16,7 @@ from polars_cv.geometry import CONTOUR_SCHEMA, POINT_SCHEMA
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
-    pass
+    from collections.abc import Callable
 
 
 # Mark all tests in this module as requiring the plugin
@@ -676,3 +676,62 @@ def test_graph_and_namespace_scale_agree_for_an_explicit_origin(origin: str) -> 
     ) == pytest.approx(
         (min(p[0] for p in namespace_pts), min(p[1] for p in namespace_pts)), abs=1.5
     ), f"origin={origin!r}: graph {graph_pts} vs namespace {namespace_pts}"
+
+
+@plugin_required
+class TestNonFiniteCoordinates:
+    """A NaN or infinite coordinate has no position: every geometry function
+    refuses it, naming the row, as it does a null one. A NaN vertex panicked
+    ``convex_hull``/``iou``/``dice``/``simplify``, gave ``hausdorff_distance``
+    ``f64::MAX`` and finite but wrong bboxes, windings and convexity."""
+
+    BAD = {
+        "exterior": [
+            {"x": 0.0, "y": 0.0},
+            {"x": float("nan"), "y": 0.0},
+            {"x": 4.0, "y": 4.0},
+        ],
+        "holes": [],
+        "is_closed": True,
+    }
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda c, o, p: c.area(),
+            lambda c, o, p: c.perimeter(),
+            lambda c, o, p: c.centroid(),
+            lambda c, o, p: c.bounding_box(),
+            lambda c, o, p: c.winding(),
+            lambda c, o, p: c.is_convex(),
+            lambda c, o, p: c.convex_hull(),
+            lambda c, o, p: c.simplify(0.5),
+            lambda c, o, p: c.iou(o),
+            lambda c, o, p: c.dice(o),
+            lambda c, o, p: c.hausdorff_distance(o),
+            lambda c, o, p: c.contains_point(p),
+        ],
+    )
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+    def test_every_contour_function_refuses_it(
+        self, make: Callable, bad: float, square_contour: dict
+    ) -> None:
+        contour = {**self.BAD, "exterior": [dict(v) for v in self.BAD["exterior"]]}
+        contour["exterior"][1]["x"] = bad
+        df = pl.DataFrame(
+            {"c": [square_contour, contour], "o": [square_contour] * 2},
+            schema={"c": CONTOUR_SCHEMA, "o": CONTOUR_SCHEMA},
+        ).with_columns(p=pl.struct(x=pl.lit(1.0), y=pl.lit(1.0)))
+        expr = make(pl.col("c").contour, pl.col("o"), pl.col("p"))
+        with pytest.raises(pl.exceptions.ComputeError, match=r"non-finite x.*row 1"):
+            df.select(expr)
+
+    def test_a_point_with_a_nan_coordinate_is_refused(
+        self, square_contour: dict
+    ) -> None:
+        df = pl.DataFrame(
+            {"c": [square_contour], "p": [{"x": float("nan"), "y": 1.0}]},
+            schema={"c": CONTOUR_SCHEMA, "p": POINT_SCHEMA},
+        )
+        with pytest.raises(pl.exceptions.ComputeError, match="non-finite x"):
+            df.select(pl.col("c").contour.contains_point(pl.col("p")))
