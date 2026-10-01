@@ -46,6 +46,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   NumPy (`np.maximum`) and PyTorch. Replace NaN first (`fill_nan`) where a
   bound was wanted.
 
+- **The ordering reductions propagate NaN too.** `reduce_max`/`reduce_min`
+  (whole-buffer and per-axis) return NaN when any input is NaN, and
+  `reduce_argmax`/`reduce_argmin` return the first NaN's index, as in NumPy.
+  They used to compare with `>`/`<`, so whether a NaN survived depended on
+  its position. `reduce_percentile` of input that contains a NaN is NaN.
+  Before, it sorted with a comparator that is not a total order, so the
+  engine panicked ("comparison function does not correctly implement a
+  total order"), which the deep parity chain hunt hit through `sqrt`. All of
+  these now share one ordering rule, `reduction::displaces`.
+
 - **polars-cv requires `polars>=1.43.2`** (was `>=1.41.1`). Older polars
   exports a sliced `Array` column that has nulls across the plugin FFI with
   its offset applied twice (the `FixedSizeListArray` export reported the
