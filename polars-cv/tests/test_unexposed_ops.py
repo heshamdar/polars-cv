@@ -434,11 +434,8 @@ class TestHistogramPolarsCV:
         encode_png: Callable[[np.ndarray], bytes],
     ) -> None:
         """
-        Histogram with custom range.
-
-        Note: polars-cv clips values outside the range to the first/last bins,
-        while NumPy excludes them. This test verifies the polars-cv behavior
-        is internally consistent.
+        Histogram with custom range: values outside it are in no bin, as in
+        NumPy (they used to be clipped into the first/last bins).
         """
         from polars_cv import Pipeline
 
@@ -459,9 +456,9 @@ class TestHistogramPolarsCV:
         result = df.select(output=pl.col("img").cv.pipe(pipe).sink("list"))
         actual_counts = np.array(result.row(0)[0])
 
-        assert len(actual_counts) == bins
-        # Total counts should equal total pixels (polars-cv clips, doesn't exclude)
-        assert actual_counts.sum() == grayscale_image.size
+        expected, _ = np.histogram(grayscale_image, bins=bins, range=value_range)
+        np.testing.assert_array_equal(actual_counts, expected)
+        assert actual_counts.sum() < grayscale_image.size
 
     def test_histogram_edges_output(
         self,

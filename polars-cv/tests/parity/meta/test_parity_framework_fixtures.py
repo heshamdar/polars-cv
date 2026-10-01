@@ -304,6 +304,19 @@ class TestMergePerRow:
         rows = [{"shape": [1, 1]}, {"shape": [1, 1, 1]}]
         assert _merge_per_row("reshape", rows) is None
 
+    def test_a_scalar_or_list_parameter_varies_only_as_a_scalar(self) -> None:
+        """``histogram(bins=)`` is a per-row count or literal edges."""
+        counts = [{"bins": 4}, {"bins": 8}]
+        assert _merge_per_row("histogram", counts) == {"bins": PerRow((4, 8))}
+        edges = [{"bins": [0.0, 1.0]}, {"bins": [0.0, 2.0]}]
+        assert _merge_per_row("histogram", edges) is None
+        assert _merge_per_row("histogram", [{"bins": 2}, {"bins": [0.0, 1.0]}]) is None
+
+    def test_a_list_of_expressions_varies_per_row(self) -> None:
+        rows = [{"kernel": [1.0, 2.0]}, {"kernel": [1.0, 3.0]}]
+        merged = _merge_per_row("convolve2d", rows)
+        assert merged == {"kernel": PerRow(([1.0, 2.0], [1.0, 3.0]))}
+
 
 # ---------------------------------------------------------------------------
 # Lanes

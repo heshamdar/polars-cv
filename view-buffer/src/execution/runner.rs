@@ -9,6 +9,8 @@ use crate::core::buffer::ViewBuffer;
 #[cfg(feature = "image_interop")]
 use crate::core::convert::CastFrom;
 #[cfg(feature = "image_interop")]
+use crate::core::cut::{AgainstCut, Cut};
+#[cfg(feature = "image_interop")]
 use crate::core::dispatch::{dispatch, SimdKernel};
 use crate::core::dtype::DType;
 #[cfg(feature = "image_interop")]
@@ -446,6 +448,7 @@ thread_local! {
 /// reads no others), through a view of them.
 #[cfg(feature = "image_interop")]
 fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
+    use crate::ops::color::Luma;
     let shape = buf.shape();
     let channels = shape.get(2).copied().unwrap_or(1);
     if channels == 1 {
@@ -468,42 +471,6 @@ fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
     with_dtype!(buf.dtype(), T => gray::<T>(&buf, channels))
 }
 
-/// An element type's BT.601 luma.
-#[cfg(feature = "image_interop")]
-trait Luma: ViewType {
-    fn luma(r: Self, g: Self, b: Self) -> Self;
-}
-
-/// Fixed-point BT.601 luma of one u8 pixel. The sum peaks at
-/// `256 * 255 + 128 = 65408`, so it fits in `u16`, which gives the vector
-/// loop twice the lanes of `u32`.
-#[cfg(feature = "image_interop")]
-impl Luma for u8 {
-    #[inline(always)]
-    fn luma(r: u8, g: u8, b: u8) -> u8 {
-        ((77 * u16::from(r) + 150 * u16::from(g) + 29 * u16::from(b) + 128) >> 8) as u8
-    }
-}
-
-/// BT.601 luma in `f64`, stored by the conversion rule (M5): rounded and
-/// saturated for an integer dtype, as is for a float one.
-macro_rules! luma_f64 {
-    ($($t:ty),+) => {$(
-        #[cfg(feature = "image_interop")]
-        impl Luma for $t {
-            #[inline(always)]
-            fn luma(r: $t, g: $t, b: $t) -> $t {
-                const R_COEFF: f64 = 0.299;
-                const G_COEFF: f64 = 0.587;
-                const B_COEFF: f64 = 0.114;
-                let f = f64::cast_from;
-                <$t>::cast_from(R_COEFF * f(r) + G_COEFF * f(g) + B_COEFF * f(b))
-            }
-        }
-    )+};
-}
-luma_f64!(i8, u16, i16, u32, i32, u64, i64, f32, f64);
-
 /// Grayscale as a pixel map: the luma of a colour pixel (its first three
 /// channels), the gray channel of a gray + alpha one (`C == 2`).
 #[cfg(feature = "image_interop")]
@@ -512,7 +479,7 @@ struct Grayscale;
 // SAFETY: `map_into` writes one value per pixel of `src`, into `dst`'s
 // matching slot.
 #[cfg(feature = "image_interop")]
-unsafe impl<T: Luma, const C: usize> PixelMap<T, T, C> for Grayscale {
+unsafe impl<T: crate::ops::color::Luma, const C: usize> PixelMap<T, T, C> for Grayscale {
     #[inline(always)]
     fn map_into(&self, src: &[[T; C]], dst: &mut [MaybeUninit<T>]) {
         for (d, p) in dst.iter_mut().zip(src) {
@@ -573,7 +540,7 @@ pub(crate) fn apply_image_inner(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
 ///
 /// A u8 input with the threshold inside the u8 range compares in u8 (`p > t`
 /// for an integer `p` is `p > floor(t)`); any other integer compares exactly
-/// the same way ([`IntCut`]), and a float in `f64`.
+/// exactly ([`Cut`]), and a float in `f64`.
 #[cfg(feature = "image_interop")]
 fn threshold_generic(buf: ViewBuffer, thresh: f64) -> ViewBuffer {
     let shape = buf.shape();
@@ -620,96 +587,26 @@ impl ElementMapInPlace<u8> for ThresholdU8 {
     }
 }
 
-/// Threshold of any dtype: an integer element is compared exactly, a float
-/// one in `f64` (exact for both float dtypes).
+/// Threshold of any dtype, compared exactly against the threshold
+/// (`core::cut`, the one pixel-against-boundary comparison).
 #[cfg(feature = "image_interop")]
-struct Threshold<T>(f64, IntCut, PhantomData<fn(T)>);
+struct Threshold<T>(Cut, PhantomData<fn(T)>);
 
 #[cfg(feature = "image_interop")]
 impl<T> Threshold<T> {
     fn new(thresh: f64) -> Self {
-        Threshold(thresh, IntCut::of(thresh), PhantomData)
-    }
-}
-
-/// `p > t` for every integer `p`, decided once per threshold: `p > t` iff
-/// `p > floor(t)`, and every integer dtype fits `i128`. Rounding the pixel to
-/// f64 instead answers for a neighbour above 2**53.
-#[cfg(feature = "image_interop")]
-#[derive(Clone, Copy)]
-enum IntCut {
-    /// Every integer exceeds `t` (`t` below every integer dtype).
-    Always,
-    /// No integer exceeds `t` (`t` above every integer dtype, or NaN).
-    Never,
-    /// `p` exceeds `t` iff `p > floor(t)`.
-    Above(i128),
-}
-
-#[cfg(feature = "image_interop")]
-impl IntCut {
-    fn of(t: f64) -> Self {
-        // Beyond +-2**100 no integer dtype reaches, and `floor` fits i128.
-        const BOUND: f64 = 1.2676506002282294e30; // 2**100
-        if t.is_nan() || t >= BOUND {
-            IntCut::Never
-        } else if t <= -BOUND {
-            IntCut::Always
-        } else {
-            IntCut::Above(t.floor() as i128)
-        }
-    }
-}
-
-/// Whether an element exceeds the threshold (`t` as written, or its
-/// [`IntCut`] for an integer dtype).
-#[cfg(feature = "image_interop")]
-trait Exceeds: Copy {
-    fn exceeds(self, t: f64, cut: IntCut) -> bool;
-}
-
-#[cfg(feature = "image_interop")]
-macro_rules! exceeds_int {
-    ($($t:ty),+) => {$(
-        impl Exceeds for $t {
-            #[inline(always)]
-            fn exceeds(self, _t: f64, cut: IntCut) -> bool {
-                match cut {
-                    IntCut::Always => true,
-                    IntCut::Never => false,
-                    IntCut::Above(c) => i128::from(self) > c,
-                }
-            }
-        }
-    )+};
-}
-#[cfg(feature = "image_interop")]
-exceeds_int!(u8, i8, u16, i16, u32, i32, u64, i64);
-
-#[cfg(feature = "image_interop")]
-impl Exceeds for f32 {
-    #[inline(always)]
-    fn exceeds(self, t: f64, _cut: IntCut) -> bool {
-        f64::from(self) > t
-    }
-}
-
-#[cfg(feature = "image_interop")]
-impl Exceeds for f64 {
-    #[inline(always)]
-    fn exceeds(self, t: f64, _cut: IntCut) -> bool {
-        self > t
+        Threshold(Cut::of(thresh), PhantomData)
     }
 }
 
 // SAFETY: `map_into` writes every element of `dst`.
 #[cfg(feature = "image_interop")]
-unsafe impl<T: ViewType + Exceeds> ElementMap<T, u8> for Threshold<T> {
+unsafe impl<T: ViewType + AgainstCut> ElementMap<T, u8> for Threshold<T> {
     #[inline(always)]
     fn map_into(&self, src: &[T], dst: &mut [MaybeUninit<u8>], _at: usize) {
-        let (t, cut) = (self.0, self.1);
+        let cut = &self.0;
         for (d, &x) in dst.iter_mut().zip(src) {
-            d.write(if x.exceeds(t, cut) { 255 } else { 0 });
+            d.write(if x.above(cut) { 255 } else { 0 });
         }
     }
 }
@@ -783,7 +680,7 @@ mod grayscale_threshold_parity_tests {
                     let (r32, g32, b32) = (u32::from(r), u32::from(g), u32::from(b));
                     let expected = ((77 * r32 + 150 * g32 + 29 * b32 + 128) >> 8) as u8;
                     assert_eq!(
-                        <u8 as super::Luma>::luma(r, g, b),
+                        <u8 as crate::ops::color::Luma>::luma(r, g, b),
                         expected,
                         "({r}, {g}, {b})"
                     );

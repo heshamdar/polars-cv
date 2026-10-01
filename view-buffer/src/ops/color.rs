@@ -6,6 +6,7 @@
 //! with H in degrees. Signed integers have no colour range.
 
 use crate::core::buffer::ViewBuffer;
+use crate::core::convert::CastFrom;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::shape_rule::OpShape;
 use crate::ops::spatial_rule::SpatialDependency;
@@ -484,7 +485,7 @@ fn encode(to: ColorSpace, [r, g, b]: [f64; 3], scale: f64, range: &ColorRange) -
         ColorSpace::Rgb => [r * k, g * k, b * k],
         ColorSpace::Bgr => [b * k, g * k, r * k],
         ColorSpace::Gray => {
-            let y = (0.299 * r + 0.587 * g + 0.114 * b) * k;
+            let y = luma_f64(r, g, b) * k;
             [y, y, y]
         }
         ColorSpace::Hsv => {
@@ -510,7 +511,7 @@ fn encode(to: ColorSpace, [r, g, b]: [f64; 3], scale: f64, range: &ColorRange) -
             [range.encode_hue(hue), s * range.full, max * k]
         }
         ColorSpace::YCbCr => [
-            (0.299 * r + 0.587 * g + 0.114 * b) * k,
+            luma_f64(r, g, b) * k,
             range.chroma_offset + (-0.168736 * r - 0.331264 * g + 0.5 * b) * k,
             range.chroma_offset + (0.5 * r - 0.418688 * g - 0.081312 * b) * k,
         ],
@@ -581,53 +582,69 @@ fn convert_ranged(buf: &ViewBuffer, op: &ColorConvertOp, out_dtype: DType) -> Vi
 }
 
 // =============================================================================
+// Luma: the one BT.601 authority
+// =============================================================================
+
+/// BT.601 luma, `Y = 0.299R + 0.587G + 0.114B`, of values in any units.
+///
+/// **The one luma formula**: `grayscale()` (through [`Luma`]),
+/// `convert_color` to gray and the YCbCr encoder all read it, so no two can
+/// weigh the channels differently.
+#[inline(always)]
+pub(crate) fn luma_f64(r: f64, g: f64, b: f64) -> f64 {
+    0.299 * r + 0.587 * g + 0.114 * b
+}
+
+/// An element type's luma, stored in its own dtype: u8 in fixed point
+/// (`(77R + 150G + 29B + 128) >> 8`), every other dtype as [`luma_f64`]
+/// stored by the conversion rule (rounded and saturated for an integer).
+/// `grayscale()` and `convert_color(rgb -> gray)` both run it.
+pub(crate) trait Luma: crate::core::dtype::ViewType {
+    fn luma(r: Self, g: Self, b: Self) -> Self;
+}
+
+/// Fixed-point BT.601 luma of one u8 pixel. The sum peaks at
+/// `256 * 255 + 128 = 65408`, so it fits in `u16`, which gives the vector
+/// loop twice the lanes of `u32`.
+impl Luma for u8 {
+    #[inline(always)]
+    fn luma(r: u8, g: u8, b: u8) -> u8 {
+        ((77 * u16::from(r) + 150 * u16::from(g) + 29 * u16::from(b) + 128) >> 8) as u8
+    }
+}
+
+macro_rules! luma_by_f64 {
+    ($($t:ty),+) => {$(
+        impl Luma for $t {
+            #[inline(always)]
+            fn luma(r: $t, g: $t, b: $t) -> $t {
+                let f = f64::cast_from;
+                <$t>::cast_from(luma_f64(f(r), f(g), f(b)))
+            }
+        }
+    )+};
+}
+luma_by_f64!(i8, u16, i16, u32, i32, u64, i64, f32, f64);
+
+// =============================================================================
 // RGB ↔ Grayscale
 // =============================================================================
 
+/// The luma of each pixel of a packed `[H, W, 3]` buffer, in its dtype.
 fn rgb_to_gray(buf: &ViewBuffer) -> ViewBuffer {
     let contig = buf.to_contiguous();
     let shape = contig.shape();
     let (h, w) = (shape[0], shape[1]);
-
-    match buf.dtype() {
-        DType::U8 => {
-            let src = contig.as_slice::<u8>();
-            let mut out = Vec::with_capacity(h * w);
-            for pix in src.as_chunks::<3>().0 {
-                let r = pix[0] as u32;
-                let g = pix[1] as u32;
-                let b = pix[2] as u32;
-                out.push(((77 * r + 150 * g + 29 * b + 128) >> 8).min(255) as u8);
-            }
-            ViewBuffer::from_vec_with_shape(out, vec![h, w, 1])
-        }
-        // The luma in the input's `DType::accumulator` (f64 for f64 and the
-        // 32/64-bit integers, which f32 cannot hold), stored back in its dtype.
-        dtype if dtype.accumulator() == DType::F64 => {
-            let f64_buf = contig.cast(DType::F64);
-            let src = f64_buf.as_slice::<f64>();
-            let mut out = Vec::with_capacity(h * w);
-            for pix in src.as_chunks::<3>().0 {
-                out.push(0.299 * pix[0] + 0.587 * pix[1] + 0.114 * pix[2]);
-            }
-            ViewBuffer::from_vec_with_shape(out, vec![h, w, 1]).cast(dtype)
-        }
-        _ => {
-            let f32_buf = contig.cast(DType::F32);
-            let src = f32_buf.as_slice::<f32>();
-            let mut out = Vec::with_capacity(h * w);
-            for pix in src.as_chunks::<3>().0 {
-                out.push(0.299 * pix[0] + 0.587 * pix[1] + 0.114 * pix[2]);
-            }
-            let gray = ViewBuffer::from_vec_with_shape(out, vec![h, w, 1]);
-            // Preserve the element dtype (math runs in f32, then casts back).
-            if buf.dtype() != DType::F32 {
-                gray.cast(buf.dtype())
-            } else {
-                gray
-            }
-        }
-    }
+    crate::core::dtype::with_dtype!(buf.dtype(), T => {
+        let out: Vec<T> = contig
+            .as_slice::<T>()
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|p| T::luma(p[0], p[1], p[2]))
+            .collect();
+        ViewBuffer::from_vec_with_shape(out, vec![h, w, 1])
+    })
 }
 
 /// Replicate a gray plane into three channels: data movement, in the

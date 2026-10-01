@@ -28,6 +28,7 @@ an exemption in :data:`EXEMPT` / :data:`BINARY_EXEMPT` naming its reason.
 
 from __future__ import annotations
 
+import bisect
 import math
 import warnings
 from dataclasses import dataclass, field
@@ -1295,11 +1296,26 @@ def _axis_reduce(
 
 def _histogram_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     params: Params = {
-        "bins": draw(st.integers(1, 16), label="bins"),
         "output": draw(
             st.sampled_from(["counts", "normalized", "edges"]), label="output"
         ),
+        "closed": draw(st.sampled_from(["left", "right"]), label="closed"),
     }
+    if draw(st.booleans(), label="explicit_edges"):
+        # Non-decreasing, ties allowed, the outer edges possibly open.
+        inner = sorted(
+            draw(st.lists(_nice(-8, 160), min_size=1, max_size=8), label="edges")
+        )
+        if draw(st.booleans(), label="tie") and inner:
+            inner.insert(0, inner[0])
+        lo = [-math.inf] if draw(st.booleans(), label="open_below") else []
+        hi = [math.inf] if draw(st.booleans(), label="open_above") else []
+        edges = lo + inner + hi
+        if len(edges) < 2:
+            edges.append(edges[-1] + 1.0)
+        params["bins"] = edges
+        return params
+    params["bins"] = draw(st.integers(1, 16), label="bins")
     # Auto range over NaN or infinity is an error (numpy's rule, and the
     # engine's): there are no equal-width bins to make.
     if _non_finite(x) or draw(st.booleans(), label="explicit_range"):
@@ -1308,27 +1324,51 @@ def _histogram_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     return params
 
 
+def _auto_range(values: list) -> tuple[float, float]:
+    """The detected range, widened outward to hold every value: an integer
+    beyond 2**53 can round inward to f64."""
+    vmin, vmax = min(values), max(values)
+    lo, hi = float(vmin), float(vmax)
+    while lo > vmin:  # Python compares an int with a float exactly
+        lo = math.nextafter(lo, -math.inf)
+    while hi < vmax:
+        hi = math.nextafter(hi, math.inf)
+    if lo == hi:  # numpy widens a zero-width range by 0.5 each way
+        lo, hi = lo - 0.5, hi + 0.5
+    return lo, hi
+
+
 def _histogram_ref(x: np.ndarray, p: Params) -> np.ndarray:
-    values = x.astype(np.float64).ravel()
-    rng = p.get("range") or (float(values.min()), float(values.max()))
-    # The engine clamps a value outside an explicit range into the edge bin
-    # (view-buffer/src/ops/histogram.rs); numpy drops it.
-    values = np.clip(values, rng[0], rng[1])  # NaN stays NaN: in no bin
-    counts, edges = np.histogram(values, bins=p["bins"], range=rng)
+    """``numpy.histogram``'s rule, compared exactly: Python ints for integer
+    pixels (numpy rounds a pixel beyond 2**53 to f64 first). A value outside
+    the edges, or NaN, is in no bin."""
+    values = x.ravel().tolist()  # Python ints / floats, exact
+    if isinstance(p["bins"], list):
+        edges = [float(e) for e in p["bins"]]
+    else:
+        lo, hi = p.get("range") or _auto_range(values)
+        edges = np.linspace(lo, hi, p["bins"] + 1).tolist()
+        edges[-1] = hi
     if p["output"] == "edges":
-        return edges.astype(np.float64)
+        return np.asarray(edges, np.float64)
+    n = len(edges) - 1
+    counts = np.zeros(n, np.uint64)
+    for v in values:
+        if v != v or not edges[0] <= v <= edges[-1]:
+            continue  # NaN, or outside: in no bin
+        if p.get("closed", "left") == "left":  # [e_i, e_i+1), the last closed
+            b = min(bisect.bisect_right(edges, v) - 1, n - 1)
+        else:  # (e_i, e_i+1], the first closed
+            b = max(bisect.bisect_left(edges, v) - 1, 0)
+        counts[b] += 1
     if p["output"] == "normalized":
-        total = counts.sum()
-        return (counts / total if total else counts.astype(np.float64)).astype(
-            np.float64
-        )
-    return counts.astype(np.uint64)
+        total = int(counts.sum())
+        return counts / total if total else counts.astype(np.float64)
+    return counts
 
 
 def _histogram_ref_accepts(x: np.ndarray, p: Params) -> bool:
-    # Auto range over a constant image is a zero-width range; numpy widens it
-    # by ±0.5 and the engine documents no rule.
-    return p.get("range") is not None or bool(x.size and x.max() != x.min())
+    return True
 
 
 def _extract_shape_ref(x: np.ndarray, p: Params) -> np.ndarray:
@@ -1999,9 +2039,9 @@ OPS: dict[str, OpSpec] = {
             defines_non_finite=True,
             domain_out="vector",
             terminal=True,
-            note="numpy.histogram (bins half-open [a, b), the last closed), "
-            "except that a value outside an explicit range is clamped into the "
-            "edge bin rather than dropped — the engine's rule, not numpy's",
+            note="numpy.histogram (bins half-open [a, b), the last closed; "
+            "closed='right' mirrors it), a value outside the edges in no bin, "
+            "integers compared exactly",
         ),
         _spec(
             "extract_shape",

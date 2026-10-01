@@ -1102,11 +1102,11 @@
     "name": "histogram",
     "python": "histogram",
     "visibility": "public",
-    "doc": "Compute pixel value histogram.\n\nExample:\n    >>> Pipeline().source(\"image_bytes\").grayscale().histogram(bins=8)",
+    "doc": "Compute pixel value histogram.\n\nBins follow ``numpy.histogram``: a value outside the range or the edges\nis in no bin (not counted; ``\"quantized\"`` gives it the index one past the\nlast bin), as is NaN. Infinite outer edges are open bounds, e.g.\n``bins=[-inf, 0, 10, inf]`` keeps every value.\n\nExample:\n    >>> Pipeline().source(\"image_bytes\").grayscale().histogram(bins=8)",
     "fields": [
       {
         "name": "bins",
-        "doc": "Number of bins (default 256), a Polars expression for per-row dynamic\nbin count, or an explicit list of bin edges.",
+        "doc": "Number of bins (default 256), a Polars expression for per-row dynamic\nbin count, or an explicit list of non-decreasing bin edges (the outer\nones may be infinite).",
         "default": 256,
         "type": {
           "kind": "one_of",
@@ -1121,7 +1121,7 @@
               "inner": {
                 "kind": "scalar",
                 "per_row": false,
-                "py": "float"
+                "py": "bound"
               }
             }
           ]
@@ -1129,7 +1129,7 @@
       },
       {
         "name": "range",
-        "doc": "(min, max) tuple. Auto-detected if None.",
+        "doc": "(min, max) tuple, finite. Auto-detected if None, widened to hold every\nvalue.",
         "type": {
           "kind": "optional",
           "inner": {

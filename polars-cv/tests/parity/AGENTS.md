@@ -69,7 +69,6 @@ currently modelled:
 - Rotation is clockwise about `(w/2, h/2)`.
 - `convolve2d`'s `"reflect"` repeats the edge pixel, which `pad` calls
   `"symmetric"`.
-- `histogram` clamps out-of-range values into the edge bins.
 - int→int `cast` wraps.
 - `rgb→gray` via `convert_color` keeps alpha, while `grayscale()` drops it.
 
