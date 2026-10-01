@@ -40,7 +40,7 @@ from PIL import Image
 from scipy import ndimage
 
 from tests.parity.framework.images import DTYPES, dtype_name
-from tests.parity.framework.tolerance import EXACT, Tol, close, lsb, sparse
+from tests.parity.framework.tolerance import EXACT, Tol, close, lsb, sparse, widen
 
 Params = dict[str, Any]
 ParamStrategy = Callable[[st.DrawFn, np.ndarray], Params]
@@ -169,6 +169,19 @@ def magnitude(x: np.ndarray) -> float:
     if x.size == 0:
         return 1.0
     return max(1.0, float(np.max(np.abs(x.astype(np.float64)))))
+
+
+def _accumulated(x: np.ndarray, own: Tol) -> Tol:
+    """*own*, plus the accumulator's rounding on a 64-bit integer image.
+
+    An interpolating op computes in ``DType::accumulator``: f64 for the
+    64-bit integers, which holds 53 bits. Above 2**53 a computed value is good
+    to a few f64 ulps of the magnitude, not to one unit, and the float64
+    reference rounds the same way, so the two can differ by that much.
+    """
+    if x.dtype.kind in "iu" and x.dtype.itemsize == 8:
+        return widen(own, atol=own.atol + 8 * 2.0**-52 * magnitude(x))
+    return own
 
 
 def per_channel(fn: Callable[[np.ndarray], np.ndarray], x: np.ndarray) -> np.ndarray:
@@ -953,7 +966,7 @@ def _blur_params(draw: st.DrawFn, x: np.ndarray) -> Params:
 
 
 def _blur_ref(x: np.ndarray, p: Params) -> np.ndarray:
-    sigma = p["sigma"]
+    sigma = float(np.float32(p["sigma"]))  # the op's sigma is an f32
     k = 2 * math.ceil(3 * sigma) + 1
     planes = per_channel(
         lambda plane: cv2.GaussianBlur(
@@ -965,7 +978,8 @@ def _blur_ref(x: np.ndarray, p: Params) -> np.ndarray:
 
 
 def _blur_tol(x: np.ndarray, p: Params) -> Tol:
-    return lsb(1) if is_int(x) else close(atol=1e-5 * magnitude(x), rtol=1e-5)
+    own = lsb(1) if is_int(x) else close(atol=1e-5 * magnitude(x), rtol=1e-5)
+    return _accumulated(x, own)
 
 
 def _single_channel(x: np.ndarray) -> bool:
@@ -1656,7 +1670,8 @@ OPS: dict[str, OpSpec] = {
             ref=_blur_ref,
             tol=_blur_tol,
             kind="spatial",
-            note="OpenCV GaussianBlur, ksize 2*ceil(3*sigma)+1, replicate border",
+            note="OpenCV GaussianBlur, ksize 2*ceil(3*sigma)+1, replicate border; "
+            "sigma is an f32 on the wire",
         ),
         _spec(
             "erode",
