@@ -64,8 +64,9 @@ pub enum GraphOp<M: Mode = Exec> {
     },
     /// Element-wise true division, into a float.
     ///
-    /// Integer operands promote to float (``f32``, or ``f64`` when an operand
-    /// is ``f64``) and ``a / b`` follows IEEE 754, as NumPy's ``true_divide``:
+    /// The operands promote as NumPy's do and divide in float: ``f64`` when
+    /// that promotion is ``f64`` or a 32/64-bit integer, else ``f32``. ``a / b``
+    /// follows IEEE 754, as NumPy's ``true_divide``:
     /// ``x / 0`` is ``inf`` (``-inf`` for negative ``x``) and ``0 / 0`` is
     /// ``nan``.
     ///

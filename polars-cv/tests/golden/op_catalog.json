@@ -909,7 +909,7 @@
     "name": "divide",
     "python": "divide",
     "visibility": "lazy_only",
-    "doc": "Element-wise true division, into a float.\n\nInteger operands promote to float (``f32``, or ``f64`` when an operand\nis ``f64``) and ``a / b`` follows IEEE 754, as NumPy's ``true_divide``:\n``x / 0`` is ``inf`` (``-inf`` for negative ``x``) and ``0 / 0`` is\n``nan``.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.divide(b).sink(\"numpy\")\n    ```",
+    "doc": "Element-wise true division, into a float.\n\nThe operands promote as NumPy's do and divide in float: ``f64`` when\nthat promotion is ``f64`` or a 32/64-bit integer, else ``f32``. ``a / b``\nfollows IEEE 754, as NumPy's ``true_divide``:\n``x / 0`` is ``inf`` (``-inf`` for negative ``x``) and ``0 / 0`` is\n``nan``.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.divide(b).sink(\"numpy\")\n    ```",
     "fields": [
       {
         "name": "other",

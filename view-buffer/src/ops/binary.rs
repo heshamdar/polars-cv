@@ -65,9 +65,9 @@ pub enum BinaryOp {
     Blend,
     /// Element-wise division (true division).
     ///
-    /// Integer operands promote to float; `a / b` is computed in float with
-    /// IEEE semantics (`x / 0` is ±inf, `0 / 0` NaN), as NumPy's `true_divide`.
-    /// Output dtype is `f32` (or `f64` when an operand is already `f64`).
+    /// The operands' promotion ([`DType::promote`]) divides in its
+    /// [`DType::accumulator`] with IEEE semantics (`x / 0` is ±inf, `0 / 0`
+    /// NaN), as NumPy's `true_divide`.
     Divide,
     /// Element-wise maximum.
     Maximum,
@@ -136,8 +136,8 @@ impl BinaryOp {
     /// This is what planning (the plugin's `plan::step`, given both operand
     /// dtypes) and execution ([`execute`](BinaryOp::execute)) both read, and
     /// it derives from the rule rather than restating it, so the two cannot
-    /// disagree. Divide uses *true division*: integer operands
-    /// promote to float (`F32`, or `F64` when an operand is already `F64`).
+    /// disagree. Divide uses *true division*, into the promotion's
+    /// [`DType::accumulator`].
     pub fn output_dtype(&self, left: DType, right: DType) -> DType {
         self.output_dtype_rule().resolve(left.promote(right))
     }
@@ -275,8 +275,8 @@ fn zip_with<T: FromAny, Fun: Fn(T, T) -> T>(
 ///   (MAX is odd for every integer dtype, so there are no ties), saturated;
 ///   the bitwise ops are exact;
 /// - floats: IEEE arithmetic, and `blend` is a plain product (MAX is 1). The
-///   bitwise ops are integer-only by contract (`accepted_input_dtypes`); on a
-///   float they combine the values truncated to i64.
+///   bitwise ops are integer-only by contract (`accepted_input_dtypes`,
+///   `validate`), so a float reaching one is a caller that skipped it.
 pub(crate) trait BinaryElem: ViewType + PartialOrd {
     fn sat_add(self, other: Self) -> Self;
     fn sat_sub(self, other: Self) -> Self;
@@ -350,16 +350,16 @@ macro_rules! binary_float {
                 self * other
             }
             #[inline(always)]
-            fn bit_and(self, other: Self) -> Self {
-                ((self as i64) & (other as i64)) as $t
+            fn bit_and(self, _: Self) -> Self {
+                unreachable!("bitwise ops are integer-only")
             }
             #[inline(always)]
-            fn bit_or(self, other: Self) -> Self {
-                ((self as i64) | (other as i64)) as $t
+            fn bit_or(self, _: Self) -> Self {
+                unreachable!("bitwise ops are integer-only")
             }
             #[inline(always)]
-            fn bit_xor(self, other: Self) -> Self {
-                ((self as i64) ^ (other as i64)) as $t
+            fn bit_xor(self, _: Self) -> Self {
+                unreachable!("bitwise ops are integer-only")
             }
         }
     )+};
@@ -709,8 +709,8 @@ mod tests {
 
     #[test]
     fn test_mixed_dtype_add_matches_authority() {
-        // A promoting integer add computes in float internally but the produced
-        // buffer must carry the authority dtype (u16), matching planning.
+        // A mixed add computes in, and produces, the promoted dtype (u16),
+        // matching planning.
         let a = ViewBuffer::from_vec_with_shape(vec![200u8, 100], vec![2]);
         let b = ViewBuffer::from_vec_with_shape(vec![400u16, 50], vec![2]);
         let result = BinaryOp::Add.execute(&a, &b);
@@ -718,6 +718,16 @@ mod tests {
         let data = result.as_slice::<u16>();
         assert_eq!(data[0], 600);
         assert_eq!(data[1], 150);
+    }
+
+    /// The bitwise ops have no float semantics: a float operand is refused by
+    /// the contract, and the engine fails rather than inventing bits for one
+    /// that reaches it.
+    #[test]
+    #[should_panic(expected = "integer-only")]
+    fn bitwise_on_a_float_fails() {
+        let a = ViewBuffer::from_vec_with_shape(vec![3.0f64], vec![1]);
+        BinaryOp::BitwiseAnd.execute(&a, &a);
     }
 
     #[test]
