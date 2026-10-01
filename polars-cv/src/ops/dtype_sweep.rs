@@ -23,9 +23,11 @@ use crate::graph::step::GraphStep;
 use crate::ops::TypedOp;
 use crate::params::ParamCtx;
 
-/// The input layouts swept: rank 2, then rank 3 with 1-4 channels.
+/// The input layouts swept: rank 2, then rank 3 with 1-4 channels, and a
+/// 2x2 image -- the only one `reshape`'s sample (`[2, 2, 1]`, four elements)
+/// admits, and a small-extent case for every other op.
 fn shapes() -> Vec<Vec<usize>> {
-    let mut shapes = vec![vec![6, 7]];
+    let mut shapes = vec![vec![2, 2], vec![6, 7]];
     shapes.extend((1..=4).map(|c| vec![6, 7, c]));
     shapes
 }
@@ -49,6 +51,9 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 fn every_sample_op_executes_in_its_declared_dtype() {
     let mut failures: Vec<String> = Vec::new();
     let mut executed = 0usize;
+    // Ops the contract admitted on no dtype and no layout at all: a refusal is
+    // a skip, so an op that wrongly refuses everything would check nothing.
+    let mut never_admitted: Vec<&str> = Vec::new();
     for sample in TypedOp::samples() {
         let name = sample.name();
         let step = sample
@@ -57,12 +62,14 @@ fn every_sample_op_executes_in_its_declared_dtype() {
         let GraphStep::Buffer(dto) = step else {
             continue;
         };
+        let mut admitted = false;
         for &dtype in DType::ALL {
             for shape in shapes() {
                 let source = ViewExpr::new_source(image(&shape, dtype));
                 let Ok(expr) = source.try_apply_op(dto.clone()) else {
                     continue; // the contract does not admit this input
                 };
+                admitted = true;
                 let declared = expr.dtype;
                 let what = format!("{name} on {dtype:?}{shape:?}");
                 match catch_unwind(AssertUnwindSafe(|| expr.plan().execute())) {
@@ -79,8 +86,16 @@ fn every_sample_op_executes_in_its_declared_dtype() {
                 }
             }
         }
+        if !admitted {
+            never_admitted.push(name);
+        }
     }
-    // A sweep that admits nothing checks nothing.
+    // A sweep that admits nothing checks nothing -- per op, not just overall.
+    assert!(
+        never_admitted.is_empty(),
+        "these ops admit no swept dtype or layout, so the sweep checks nothing \
+         for them: {never_admitted:?}"
+    );
     assert!(executed > 500, "only {executed} cases executed");
     assert!(
         failures.is_empty(),

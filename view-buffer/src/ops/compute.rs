@@ -903,23 +903,41 @@ mod tests {
         assert!(rotate(30.0).check().is_ok());
     }
 
-    /// `rotate_and_scale` executes as a warp by the one rotation matrix,
-    /// built from the values the row resolves (a literal and a per-row angle
-    /// therefore get the same matrix).
+    /// `rotate_and_scale` executes as a warp that turns the image clockwise
+    /// (y down) about its centre and scales it. Checked against the geometry
+    /// rather than the function that builds the matrix: the centre stays put,
+    /// and a point one unit right of it lands `scale` along the turned axis.
     #[test]
     fn rotate_and_scale_lowers_to_the_rotation_matrix() {
-        let op: ComputeOp<Exec> = ComputeOp::RotateAndScale {
-            angle: 26.875,
-            center: [0.0137, 0.0137],
-            output_size: [5, 6],
-            scale: 0.5,
-        };
-        let crate::ops::dto::ViewDto::Compute(ComputeOp::Affine(params)) = op.lowered() else {
-            panic!("rotate_and_scale must lower to an affine warp");
-        };
-        let expected = AffineParams::rotation_matrix_2d(26.875, 0.0137, 0.0137, 0.5);
-        assert_eq!(params.matrix.map(f64::to_bits), expected.map(f64::to_bits));
-        assert_eq!((params.output_height, params.output_width), (5, 6));
+        let cases = [
+            // (angle, centre, scale, where (cx + 1, cy) must land)
+            (90.0, [1.0, 3.0], 2.0, [1.0, 5.0]),
+            (180.0, [0.0137, 0.0137], 0.5, [0.0137 - 0.5, 0.0137]),
+            (30.0, [4.0, -2.0], 1.0, [4.0 + 0.75f64.sqrt(), -2.0 + 0.5]),
+        ];
+        for (angle, [cx, cy], scale, [ex, ey]) in cases {
+            let op: ComputeOp<Exec> = ComputeOp::RotateAndScale {
+                angle,
+                center: [cx, cy],
+                output_size: [5, 6],
+                scale,
+            };
+            let crate::ops::dto::ViewDto::Compute(ComputeOp::Affine(params)) = op.lowered() else {
+                panic!("rotate_and_scale must lower to an affine warp");
+            };
+            let m = params.matrix;
+            let at = |x: f64, y: f64| (m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5]);
+            let close = |(x, y): (f64, f64), (u, v): (f64, f64)| {
+                (x - u).abs() < 1e-12 && (y - v).abs() < 1e-12
+            };
+            assert!(close(at(cx, cy), (cx, cy)), "{angle}: the centre moved");
+            assert!(
+                close(at(cx + 1.0, cy), (ex, ey)),
+                "{angle}: (cx + 1, cy) -> {:?}, want ({ex}, {ey})",
+                at(cx + 1.0, cy)
+            );
+            assert_eq!((params.output_height, params.output_width), (5, 6));
+        }
     }
 
     #[test]

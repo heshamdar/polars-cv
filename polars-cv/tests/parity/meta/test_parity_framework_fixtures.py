@@ -155,6 +155,30 @@ class TestComparisonSpace:
 # ---------------------------------------------------------------------------
 
 
+class TestOpaqueResampleBound:
+    """Two correct u8 fixed-point resamplers can differ by 2.
+
+    Each rounds within 1 of the exact resample, on opposite sides of it, so
+    the bound between them is 2 for every filter. F11, a bilinear
+    ``resize_min(14)`` of a 16x16 RGB image: engine 34, Pillow 36, exact 35.0.
+    """
+
+    RGB = np.zeros((16, 16, 3), u8)
+    PARAMS: ClassVar[dict] = {"min_size": 14, "filter": "bilinear"}
+
+    def test_opposite_roundings_of_one_resample_agree(self) -> None:
+        from tests.parity.framework.oracle import _resize_tol
+
+        tol = _resize_tol(self.RGB, self.PARAMS)
+        assert compare(np.array([34], u8), np.array([36], u8), tol) is None
+
+    def test_a_wrong_kernel_is_still_caught(self) -> None:
+        from tests.parity.framework.oracle import _resize_tol
+
+        tol = _resize_tol(self.RGB, self.PARAMS)
+        assert compare(np.array([33], u8), np.array([36], u8), tol) is not None
+
+
 class TestPropagate:
     """The end-to-end bound's rules, each pinned."""
 
@@ -435,6 +459,13 @@ class TestReferenceClaims:
                     "output_size": (1, 1),
                     "scale": 0.5,
                 },
+                False,
+            ),
+            # Which op it is decides, not which arguments are present: a
+            # quarter turn about the default centre is still a warp.
+            (
+                "rotate_and_scale",
+                {"angle": 90.0, "output_size": (2, 2), "scale": 1.0},
                 False,
             ),
         ],

@@ -119,47 +119,134 @@ fn integer_ops_are_exact_on_every_integer_dtype() {
     check_int!(i64);
 }
 
-macro_rules! check_float {
-    ($t:ty) => {{
-        let values: Vec<$t> = vec![-2.5, -0.1, 0.0, 0.1, 1.0 / 3.0, 7.0, 1e30, 16_777_217.0];
-        let n = values.len();
-        let a: Vec<$t> = values
-            .iter()
-            .flat_map(|&x| std::iter::repeat_n(x, n))
-            .collect();
-        let b: Vec<$t> = (0..n).flat_map(|_| values.iter().copied()).collect();
-        let (ba, bb) = (
-            ViewBuffer::from_vec_with_shape(a.clone(), vec![n, n]),
-            ViewBuffer::from_vec_with_shape(b.clone(), vec![n, n]),
-        );
-        let cases: [(BinaryOp, fn($t, $t) -> $t); 6] = [
-            (BinaryOp::Add, |x, y| x + y),
-            (BinaryOp::Subtract, |x, y| x - y),
-            (BinaryOp::Multiply, |x, y| x * y),
-            (BinaryOp::Blend, |x, y| x * y),
-            (BinaryOp::Maximum, |x, y| if x > y { x } else { y }),
-            (BinaryOp::Minimum, |x, y| if x < y { x } else { y }),
-        ];
-        for (op, f) in cases {
-            let out = op.execute(&ba, &bb);
-            let got = out.to_contiguous();
-            let got = got.as_slice::<$t>();
-            for i in 0..n * n {
-                assert_eq!(
-                    got[i].to_bits(),
-                    f(a[i], b[i]).to_bits(),
-                    "{} {op:?}({}, {})",
-                    stringify!($t),
-                    a[i],
-                    b[i]
-                );
-            }
-        }
-    }};
+/// `maximum`/`minimum` by NumPy's rule: NaN if either side is NaN.
+fn ordered(x: f64, y: f64, larger: bool) -> f64 {
+    if x.is_nan() || y.is_nan() {
+        f64::NAN
+    } else if (x > y) == larger {
+        x
+    } else {
+        y
+    }
 }
 
+/// Bit-identical, any NaN matching any NaN.
+fn same(got: f64, want: f64) -> bool {
+    (got.is_nan() && want.is_nan()) || got.to_bits() == want.to_bits()
+}
+
+const FLOAT_OPS: [BinaryOp; 6] = [
+    BinaryOp::Add,
+    BinaryOp::Subtract,
+    BinaryOp::Multiply,
+    BinaryOp::Blend,
+    BinaryOp::Maximum,
+    BinaryOp::Minimum,
+];
+
+/// Every pair of `values`: a row of `a`s against a row of `b`s.
+fn pairs<T: view_buffer::core::dtype::ViewType>(
+    values: &[T],
+) -> (Vec<T>, Vec<T>, ViewBuffer, ViewBuffer) {
+    let n = values.len();
+    let a: Vec<T> = values
+        .iter()
+        .flat_map(|&x| std::iter::repeat_n(x, n))
+        .collect();
+    let b: Vec<T> = (0..n).flat_map(|_| values.iter().copied()).collect();
+    let (ba, bb) = (
+        ViewBuffer::from_vec_with_shape(a.clone(), vec![n, n]),
+        ViewBuffer::from_vec_with_shape(b.clone(), vec![n, n]),
+    );
+    (a, b, ba, bb)
+}
+
+/// f32 against f64 arithmetic rounded once to f32: f64 carries more than
+/// twice f32's precision, so that is the correctly rounded f32 result of
+/// `+`, `-` and `*` -- a reference that does not share the kernel's f32 path.
 #[test]
-fn float_ops_are_native_float_arithmetic() {
-    check_float!(f32);
-    check_float!(f64);
+fn f32_ops_are_correctly_rounded() {
+    let values: Vec<f32> = vec![
+        -2.5,
+        -0.1,
+        0.0,
+        0.1,
+        1.0 / 3.0,
+        7.0,
+        1e30,
+        16_777_217.0,
+        f32::INFINITY,
+        f32::NAN,
+    ];
+    let (a, b, ba, bb) = pairs(&values);
+    for op in FLOAT_OPS {
+        let out = op.execute(&ba, &bb);
+        let got = out.to_contiguous();
+        let got = got.as_slice::<f32>();
+        for i in 0..a.len() {
+            let (x, y) = (a[i] as f64, b[i] as f64);
+            let want = match op {
+                BinaryOp::Add => x + y,
+                BinaryOp::Subtract => x - y,
+                BinaryOp::Multiply | BinaryOp::Blend => x * y,
+                BinaryOp::Maximum => ordered(x, y, true),
+                BinaryOp::Minimum => ordered(x, y, false),
+                _ => unreachable!(),
+            } as f32;
+            assert!(
+                same(got[i] as f64, want as f64),
+                "f32 {op:?}({}, {}): got {}, want {want}",
+                a[i],
+                b[i],
+                got[i]
+            );
+        }
+    }
+}
+
+/// f64 on quarter-integers below 2^24, where every sum, difference and
+/// product is exactly an f64: the reference is exact integer arithmetic on
+/// the values times four.
+#[test]
+fn f64_ops_are_exact_where_the_result_is_representable() {
+    let quarters: Vec<i128> = vec![-10_000_001, -10, -1, 0, 1, 3, 4, 13, 9_999_999, 33_554_431];
+    let values: Vec<f64> = quarters.iter().map(|&q| q as f64 / 4.0).collect();
+    let (a, b, ba, bb) = pairs(&values);
+    for op in FLOAT_OPS {
+        let out = op.execute(&ba, &bb);
+        let got = out.to_contiguous();
+        let got = got.as_slice::<f64>();
+        for i in 0..a.len() {
+            let (x, y) = ((a[i] * 4.0) as i128, (b[i] * 4.0) as i128);
+            // (value, its denominator): x/4 + y/4 = (x + y)/4, x/4 * y/4 = xy/16.
+            let (num, den) = match op {
+                BinaryOp::Add => (x + y, 4),
+                BinaryOp::Subtract => (x - y, 4),
+                BinaryOp::Multiply | BinaryOp::Blend => (x * y, 16),
+                BinaryOp::Maximum => (x.max(y), 4),
+                BinaryOp::Minimum => (x.min(y), 4),
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                got[i] * den as f64,
+                num as f64,
+                "f64 {op:?}({}, {})",
+                a[i],
+                b[i]
+            );
+        }
+    }
+    // NaN by NumPy's rule, on the dtype the exact check cannot reach.
+    let (a, b, ba, bb) = pairs(&[f64::NAN, 1.0, f64::NEG_INFINITY]);
+    for (op, larger) in [(BinaryOp::Maximum, true), (BinaryOp::Minimum, false)] {
+        let got = op.execute(&ba, &bb).to_contiguous();
+        for (i, &g) in got.as_slice::<f64>().iter().enumerate() {
+            assert!(
+                same(g, ordered(a[i], b[i], larger)),
+                "f64 {op:?}({}, {})",
+                a[i],
+                b[i]
+            );
+        }
+    }
 }

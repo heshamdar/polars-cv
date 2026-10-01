@@ -796,7 +796,10 @@ def _resize_tol(x: np.ndarray, p: Params) -> Tol:
         return Tol(atol=2 * (_FILTER_L1[flt] / 2 + 1), space="premultiplied")
     if x.dtype == np.float32:
         return close(atol=1e-4 * magnitude(x), rtol=1e-4)
-    return lsb(1) if flt == "bilinear" else lsb(2)
+    # Each fixed-point resampler rounds within 1 of the exact resample, and two
+    # correct ones can round to opposite sides of it (F11: bilinear, engine 34,
+    # Pillow 36, exact 35.0) -- 2 apart for every filter.
+    return lsb(2)
 
 
 def _size_params(draw: st.DrawFn, x: np.ndarray) -> Params:
@@ -925,26 +928,21 @@ def _warp(
     return np.stack(planes, axis=2).astype(x.dtype)
 
 
-def _is_rot90(p: Params) -> bool:
-    """A bare quarter turn: data movement, not a warp.
-
-    Only ``rotate``'s own arguments qualify; an angle with a centre or
-    scale (``rotate_and_scale``) is a warp at any angle.
-    """
-    return (
-        "angle" in p and "matrix" not in p and "center" not in p and _is_quarter_turn(p)
-    )
-
-
 def _warp_ref_accepts(x: np.ndarray, p: Params) -> bool:
-    if _is_rot90(p):
-        return True  # data movement: every dtype
     return x.dtype.type in _CV_DTYPES
 
 
+def _rotate_ref_accepts(x: np.ndarray, p: Params) -> bool:
+    """``rotate`` alone turns a quarter turn into data movement (every dtype);
+    the other warps are warps at any angle, whatever their arguments."""
+    return _is_quarter_turn(p) or _warp_ref_accepts(x, p)
+
+
+def _rotate_tol(x: np.ndarray, p: Params) -> Tol:
+    return EXACT if _is_quarter_turn(p) else _warp_tol(x, p)
+
+
 def _warp_tol(x: np.ndarray, p: Params) -> Tol:
-    if _is_rot90(p):
-        return EXACT
     # OpenCV computes interpolation weights in fixed point (5 bits); the
     # engine in float. A pixel whose source footprint straddles the image
     # edge blends with the border value, where those differences are
@@ -1739,9 +1737,9 @@ OPS: dict[str, OpSpec] = {
             _rotate_params,
             accepts=is_rank3,
             ref=_rotate_ref,
-            ref_accepts=_warp_ref_accepts,
+            ref_accepts=_rotate_ref_accepts,
             ref_dtypes=("u8", "u16", "i16", "f32", "f64"),
-            tol=_warp_tol,
+            tol=_rotate_tol,
             kind="spatial",
             note="quarter turns are exact data movement (np.rot90, clockwise); "
             "other angles rotate clockwise about (w/2, h/2), OpenCV's matrix "
