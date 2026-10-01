@@ -230,7 +230,12 @@ impl HistogramOp {
     }
 
     /// Execute the histogram operation.
-    pub fn execute(&self, buffer: &ViewBuffer) -> ViewBuffer {
+    ///
+    /// NaN follows numpy: it is in no bin (not counted; its quantized index
+    /// is one past the last bin), and a range that is not finite — supplied,
+    /// or auto-detected over NaN or infinity — is an error, there being no
+    /// equal-width bins to make.
+    pub fn execute(&self, buffer: &ViewBuffer) -> Result<ViewBuffer, String> {
         let contig = buffer.to_contiguous();
 
         match buffer.dtype() {
@@ -247,7 +252,7 @@ impl HistogramOp {
         }
     }
 
-    fn execute_typed<T>(&self, buffer: &ViewBuffer) -> ViewBuffer
+    fn execute_typed<T>(&self, buffer: &ViewBuffer) -> Result<ViewBuffer, String>
     where
         T: Copy + num_traits::NumCast + PartialOrd + ViewType + 'static,
     {
@@ -259,13 +264,26 @@ impl HistogramOp {
             e.clone()
         } else {
             let (mut min_val, mut max_val) = match self.value_range() {
-                Some((min, max)) => (min, max),
+                Some((min, max)) if min.is_finite() && max.is_finite() => (min, max),
+                Some((min, max)) => {
+                    return Err(format!("supplied range of [{min}, {max}] is not finite"));
+                }
                 None => {
-                    // Auto-detect from data
+                    // Auto-detect from data; a NaN anywhere makes it NaN.
                     let (dmin, dmax) = data.iter().fold((f64::MAX, f64::MIN), |(min, max), &x| {
                         let xf: f64 = num_traits::NumCast::from(x).unwrap_or(0.0);
-                        (min.min(xf), max.max(xf))
+                        if xf.is_nan() || min.is_nan() {
+                            (f64::NAN, f64::NAN)
+                        } else {
+                            (min.min(xf), max.max(xf))
+                        }
                     });
+                    if !(dmin.is_finite() && dmax.is_finite()) {
+                        return Err(format!(
+                            "autodetected range of [{dmin}, {dmax}] is not finite; \
+                             pass `range=` or explicit bin edges"
+                        ));
+                    }
                     (dmin, dmax)
                 }
             };
@@ -288,7 +306,7 @@ impl HistogramOp {
         let num_bins = edges.len().saturating_sub(1);
         if num_bins == 0 {
             // Edge case: no bins
-            return match self.output {
+            return Ok(match self.output {
                 HistogramOutput::Counts => {
                     ViewBuffer::from_vec_with_shape(Vec::<u64>::new(), vec![0])
                 }
@@ -305,7 +323,7 @@ impl HistogramOp {
                 HistogramOutput::Buckets => {
                     ViewBuffer::from_vec_with_shape(Vec::<f64>::new(), vec![0, 4])
                 }
-            };
+            });
         }
 
         let mut counts = vec![0u64; num_bins];
@@ -319,6 +337,13 @@ impl HistogramOp {
 
         for &x in data {
             let xf: f64 = num_traits::NumCast::from(x).unwrap_or(0.0);
+            if xf.is_nan() {
+                // In no bin: one past the last, as `np.digitize` puts it.
+                if let Some(ref mut q) = quantized {
+                    q.push(num_bins as u32);
+                }
+                continue;
+            }
 
             // Find bin
             let bin_idx = if is_uniform {
@@ -400,10 +425,11 @@ impl HistogramOp {
             }
         }
 
-        match self.output {
+        // What was counted: NaN is in no bin, so the shares sum to 1 over the rest.
+        let total = counts.iter().sum::<u64>() as f64;
+        Ok(match self.output {
             HistogramOutput::Counts => ViewBuffer::from_vec_with_shape(counts, vec![num_bins]),
             HistogramOutput::Normalized => {
-                let total = data.len() as f64;
                 let normalized: Vec<f64> = counts
                     .iter()
                     .map(|&c| if total > 0.0 { c as f64 / total } else { 0.0 })
@@ -419,7 +445,6 @@ impl HistogramOp {
             }
             HistogramOutput::Buckets => {
                 let mut buckets = Vec::with_capacity(num_bins * 4);
-                let total = data.len() as f64;
                 for i in 0..num_bins {
                     buckets.push(edges[i]);
                     buckets.push(edges[i + 1]);
@@ -432,7 +457,7 @@ impl HistogramOp {
                 }
                 ViewBuffer::from_vec_with_shape(buckets, vec![num_bins, 4])
             }
-        }
+        })
     }
 }
 
@@ -482,6 +507,17 @@ impl<M: Mode> Op for HistogramOp<M> {
                 return Err(ValidationError::InvalidParameter {
                     param: "edges".to_string(),
                     reason: "edges must contain at least 2 values".to_string(),
+                });
+            }
+            // numpy's rule; a NaN edge orders against nothing, so it fails too.
+            let edges: Vec<f64> = edges.iter().map(M::lit).collect();
+            if edges
+                .windows(2)
+                .any(|w| w[0].partial_cmp(&w[1]).is_none_or(|o| o.is_gt()))
+            {
+                return Err(ValidationError::InvalidParameter {
+                    param: "bins".to_string(),
+                    reason: format!("bin edges must increase monotonically, got {edges:?}"),
                 });
             }
         } else if self.num_bins() == Sym::Known(0) {
@@ -534,9 +570,16 @@ mod tests {
                 for data in [&gradient, &values] {
                     let buf = ViewBuffer::from_vec_with_shape(data.clone(), vec![data.len()]);
                     let op = HistogramOp::new(bins).with_closed(closed);
-                    let edges = op.clone().with_output(HistogramOutput::Edges).execute(&buf);
+                    let edges = op
+                        .clone()
+                        .with_output(HistogramOutput::Edges)
+                        .execute(&buf)
+                        .unwrap();
                     let edges = edges.as_slice::<f64>().to_vec();
-                    let q = op.with_output(HistogramOutput::Quantized).execute(&buf);
+                    let q = op
+                        .with_output(HistogramOutput::Quantized)
+                        .execute(&buf)
+                        .unwrap();
                     for (&x, &b) in data.iter().zip(q.as_slice::<u32>()) {
                         let (b, last) = (b as usize, bins - 1);
                         let (lo, hi) = (edges[b], edges[b + 1]);
@@ -554,13 +597,76 @@ mod tests {
         }
     }
 
+    /// NaN follows numpy (`np.histogram`, `np.digitize`): it is in no bin, so
+    /// it is not counted (and `normalized` sums to 1 over what was), and its
+    /// quantized index is one past the last bin. It used to land in bin 0
+    /// with equal-width bins and panic the engine with explicit edges.
+    #[test]
+    fn nan_is_in_no_bin() {
+        let data = vec![f64::NAN, 0.5, 1.5, f64::NAN, 3.5];
+        let buf = ViewBuffer::from_vec_with_shape(data, vec![5]);
+        let ranged = HistogramOp::new(4).with_range(0.0, 4.0);
+        let edged = HistogramOp::new(4).with_edges(vec![0.0, 1.0, 2.0, 3.0, 4.0]);
+        for op in [ranged, edged] {
+            let counts = op.execute(&buf).unwrap();
+            assert_eq!(counts.as_slice::<u64>(), &[1, 1, 0, 1], "{op:?}");
+            let norm = op
+                .clone()
+                .with_output(HistogramOutput::Normalized)
+                .execute(&buf)
+                .unwrap();
+            assert!((norm.as_slice::<f64>().iter().sum::<f64>() - 1.0).abs() < 1e-12);
+            let q = op
+                .clone()
+                .with_output(HistogramOutput::Quantized)
+                .execute(&buf)
+                .unwrap();
+            assert_eq!(q.as_slice::<u32>(), &[4, 0, 1, 4, 3], "{op:?}");
+        }
+    }
+
+    /// An auto-detected range over NaN or infinity, or a supplied range that
+    /// is not finite, is an error, as in numpy ("autodetected range of
+    /// [nan, nan] is not finite"): there are no equal-width bins to make.
+    #[test]
+    fn a_range_that_is_not_finite_is_an_error() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let buf = ViewBuffer::from_vec_with_shape(vec![1.0, bad, 2.0], vec![3]);
+            for output in [HistogramOutput::Counts, HistogramOutput::Edges] {
+                let err = HistogramOp::new(4).with_output(output).execute(&buf);
+                assert!(
+                    err.as_ref().is_err_and(|e| e.contains("not finite")),
+                    "{bad} {output:?}: {err:?}"
+                );
+            }
+            let finite = ViewBuffer::from_vec_with_shape(vec![1.0f64, 2.0], vec![2]);
+            let err = HistogramOp::new(4).with_range(0.0, bad).execute(&finite);
+            assert!(
+                err.is_err_and(|e| e.contains("not finite")),
+                "range [0, {bad}]"
+            );
+        }
+    }
+
+    /// Explicit edges must increase monotonically (numpy's rule); a NaN
+    /// edge orders against nothing and is refused with them.
+    #[test]
+    fn edges_must_increase_monotonically() {
+        for edges in [vec![0.0, 2.0, 1.0], vec![0.0, f64::NAN, 1.0]] {
+            let op = HistogramOp::new(1).with_edges(edges.clone());
+            assert!(op.validate(&[], &[]).is_err(), "{edges:?}");
+        }
+        let op = HistogramOp::new(1).with_edges(vec![0.0, 1.0, 1.0, 2.0]);
+        assert!(op.validate(&[], &[]).is_ok());
+    }
+
     #[test]
     fn test_histogram_counts() {
         let data = vec![0u8, 1, 2, 3, 4, 5, 6, 7];
         let buffer = ViewBuffer::from_vec_with_shape(data, vec![8]);
 
         let op = HistogramOp::new(4).with_range(0.0, 8.0);
-        let result = op.execute(&buffer);
+        let result = op.execute(&buffer).unwrap();
 
         let counts = result.as_slice::<u64>();
         assert_eq!(counts.len(), 4);
@@ -576,7 +682,7 @@ mod tests {
         let op = HistogramOp::new(4)
             .with_range(0.0, 8.0)
             .with_output(HistogramOutput::Normalized);
-        let result = op.execute(&buffer);
+        let result = op.execute(&buffer).unwrap();
 
         let normalized = result.as_slice::<f64>();
         let sum: f64 = normalized.iter().sum();
@@ -591,7 +697,7 @@ mod tests {
         let op = HistogramOp::new(4)
             .with_range(0.0, 256.0)
             .with_output(HistogramOutput::Quantized);
-        let result = op.execute(&buffer);
+        let result = op.execute(&buffer).unwrap();
 
         let quantized = result.as_slice::<u32>();
         assert_eq!(quantized.len(), 3);

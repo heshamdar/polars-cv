@@ -82,6 +82,10 @@ class OpSpec:
     #: Whether the arguments restate a row's whole shape (``assert_shape``,
     #: ``reshape``), so one literal set cannot serve rows of different sizes.
     uniform_rows: bool = False
+    #: Whether the op defines a NaN/infinity rule the reference shares (numpy's
+    #: for the ordering reductions and ``histogram``), so non-finite input is
+    #: compared rather than withheld (see :meth:`has_reference`).
+    defines_non_finite: bool = False
     tags: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
@@ -109,7 +113,11 @@ class OpSpec:
         """
         if self.ref is None or not self.ref_accepts(x, p):
             return False
-        if self.kind in ("spatial", "global") and _non_finite(x):
+        if (
+            self.kind in ("spatial", "global")
+            and not self.defines_non_finite
+            and _non_finite(x)
+        ):
             return False
         return True
 
@@ -1284,7 +1292,9 @@ def _histogram_params(draw: st.DrawFn, x: np.ndarray) -> Params:
             st.sampled_from(["counts", "normalized", "edges"]), label="output"
         ),
     }
-    if draw(st.booleans(), label="explicit_range"):
+    # Auto range over NaN or infinity is an error (numpy's rule, and the
+    # engine's): there are no equal-width bins to make.
+    if _non_finite(x) or draw(st.booleans(), label="explicit_range"):
         lo = draw(_nice(-4, 128), label="lo")
         params["range"] = (lo, lo + draw(_nice(1, 256), label="span"))
     return params
@@ -1295,7 +1305,7 @@ def _histogram_ref(x: np.ndarray, p: Params) -> np.ndarray:
     rng = p.get("range") or (float(values.min()), float(values.max()))
     # The engine clamps a value outside an explicit range into the edge bin
     # (view-buffer/src/ops/histogram.rs); numpy drops it.
-    values = np.clip(values, rng[0], rng[1])
+    values = np.clip(values, rng[0], rng[1])  # NaN stays NaN: in no bin
     counts, edges = np.histogram(values, bins=p["bins"], range=rng)
     if p["output"] == "edges":
         return edges.astype(np.float64)
@@ -1904,6 +1914,7 @@ OPS: dict[str, OpSpec] = {
             "reduce_min",
             ref=_scalar_result(lambda x, p: x.min()),
             kind="global",
+            defines_non_finite=True,
             domain_out="scalar",
             terminal=True,
         ),
@@ -1911,6 +1922,7 @@ OPS: dict[str, OpSpec] = {
             "reduce_max",
             ref=_scalar_result(lambda x, p: x.max()),
             kind="global",
+            defines_non_finite=True,
             domain_out="scalar",
             terminal=True,
         ),
@@ -1930,8 +1942,12 @@ OPS: dict[str, OpSpec] = {
             ref=_scalar_result(
                 lambda x, p: np.percentile(x.astype(np.float64), p["q"])
             ),
+            # numpy interpolates an infinity into NaN (its p0 of [1, inf] is
+            # NaN), no rule worth matching; NaN alone is defined (NaN out).
+            ref_accepts=lambda x, p: not np.isinf(x).any(),
             tol=_stat_tol,
             kind="global",
+            defines_non_finite=True,
             domain_out="scalar",
             terminal=True,
             note="linear interpolation, as numpy's default",
@@ -1952,6 +1968,7 @@ OPS: dict[str, OpSpec] = {
             _axis_params,
             ref=_axis_reduce(np.argmax, lambda x: np.dtype(np.int64)),
             kind="global",
+            defines_non_finite=True,
             terminal=True,
             note="first occurrence wins a tie, as numpy",
         ),
@@ -1960,6 +1977,7 @@ OPS: dict[str, OpSpec] = {
             _axis_params,
             ref=_axis_reduce(np.argmin, lambda x: np.dtype(np.int64)),
             kind="global",
+            defines_non_finite=True,
             terminal=True,
         ),
         # --- terminal: vector ----------------------------------------------------------
@@ -1970,6 +1988,7 @@ OPS: dict[str, OpSpec] = {
             ref_accepts=_histogram_ref_accepts,
             tol=close(atol=1e-12, rtol=1e-9),
             kind="global",
+            defines_non_finite=True,
             domain_out="vector",
             terminal=True,
             note="numpy.histogram (bins half-open [a, b), the last closed), "
