@@ -243,8 +243,11 @@ class TestRgbLab:
             .convert_color(from_space="lab", to_space="rgb")
         )
         actual = _run_pipe(pipe, png_bytes=rgb_png)
-        # LAB round-trip stays in f32, compare in float space
-        np.testing.assert_allclose(actual, rgb_image.astype(np.float32), atol=2.0)
+        # LAB round-trip stays in f32, whose colour values are in [0, 1] (as
+        # in OpenCV): the u8 image comes back divided by 255.
+        np.testing.assert_allclose(
+            actual, rgb_image.astype(np.float32) / 255.0, atol=2.0 / 255.0
+        )
 
     def test_lab_output_is_float(self, rgb_png: bytes) -> None:
         """Verify LAB conversion produces f32 output."""

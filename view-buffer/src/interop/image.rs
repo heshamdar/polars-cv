@@ -560,14 +560,7 @@ impl ImageAdapter {
                     .map_err(tiff_err)?;
             }
             (crate::core::dtype::DType::U8, 2) => {
-                // tiff crate has no GrayA encoder; expand to RGBA for encoding
-                let src = contiguous.as_slice::<u8>();
-                let mut rgba = Vec::with_capacity(src.len() * 2);
-                for pixel in src.as_chunks::<2>().0 {
-                    rgba.extend_from_slice(&[pixel[0], pixel[0], pixel[0], pixel[1]]);
-                }
-                encoder
-                    .write_image::<colortype::RGBA8>(w, h, &rgba)
+                write_gray_alpha::<GrayAlpha8, _>(&mut encoder, w, h, contiguous.as_slice::<u8>())
                     .map_err(tiff_err)?;
             }
             (crate::core::dtype::DType::U8, 3) => {
@@ -586,15 +579,13 @@ impl ImageAdapter {
                     .map_err(tiff_err)?;
             }
             (crate::core::dtype::DType::U16, 2) => {
-                // tiff crate has no GrayA encoder; expand to RGBA for encoding
-                let src = contiguous.as_slice::<u16>();
-                let mut rgba = Vec::with_capacity(src.len() * 2);
-                for pixel in src.as_chunks::<2>().0 {
-                    rgba.extend_from_slice(&[pixel[0], pixel[0], pixel[0], pixel[1]]);
-                }
-                encoder
-                    .write_image::<colortype::RGBA16>(w, h, &rgba)
-                    .map_err(tiff_err)?;
+                write_gray_alpha::<GrayAlpha16, _>(
+                    &mut encoder,
+                    w,
+                    h,
+                    contiguous.as_slice::<u16>(),
+                )
+                .map_err(tiff_err)?;
             }
             (crate::core::dtype::DType::U16, 3) => {
                 encoder
@@ -689,6 +680,10 @@ impl ImageAdapter {
                     tiff::ColorType::RGB(_) => Ok(3),
                     tiff::ColorType::Palette(_) if allow_alpha => Ok(3),
                     tiff::ColorType::GrayA(_) if allow_alpha => Ok(2),
+                    // A gray image with one extra sample is gray + alpha:
+                    // the tiff crate reports a BlackIsZero image of two
+                    // samples as `Multiband` (it never reports `GrayA`).
+                    tiff::ColorType::Multiband { num_samples: 2, .. } if allow_alpha => Ok(2),
                     tiff::ColorType::RGBA(_) if allow_alpha => Ok(4),
                     _ => Err(image::ImageError::IoError(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -850,9 +845,98 @@ impl ImageAdapter {
     }
 }
 
+/// A gray + alpha TIFF colour type: BlackIsZero with two samples per pixel,
+/// the second declared alpha by [`write_gray_alpha`]'s ExtraSamples tag (the
+/// tiff crate's encoder has gray and RGBA types but no gray + alpha one).
+struct GrayAlpha<T>(std::marker::PhantomData<T>);
+type GrayAlpha8 = GrayAlpha<u8>;
+type GrayAlpha16 = GrayAlpha<u16>;
+
+macro_rules! gray_alpha_colortype {
+    ($t:ty, $bits:expr) => {
+        impl tiff::encoder::colortype::ColorType for GrayAlpha<$t> {
+            type Inner = $t;
+            const TIFF_VALUE: tiff::tags::PhotometricInterpretation =
+                tiff::tags::PhotometricInterpretation::BlackIsZero;
+            const BITS_PER_SAMPLE: &'static [u16] = &[$bits, $bits];
+            const SAMPLE_FORMAT: &'static [tiff::tags::SampleFormat] = &[
+                tiff::tags::SampleFormat::Uint,
+                tiff::tags::SampleFormat::Uint,
+            ];
+
+            /// Horizontal differencing, sample by sample (the predictor the
+            /// crate's own integer types use).
+            fn horizontal_predict(row: &[$t], result: &mut Vec<$t>) {
+                let n = Self::SAMPLE_FORMAT.len();
+                result.extend_from_slice(&row[..n.min(row.len())]);
+                result.extend(
+                    row.iter()
+                        .zip(row.iter().skip(n))
+                        .map(|(p, c)| c.wrapping_sub(*p)),
+                );
+            }
+        }
+    };
+}
+gray_alpha_colortype!(u8, 8);
+gray_alpha_colortype!(u16, 16);
+
+/// Write a gray + alpha image, declaring its second sample unassociated
+/// alpha (ExtraSamples = 2), so readers (OpenCV, Pillow) see `LA`.
+fn write_gray_alpha<C, W>(
+    encoder: &mut tiff::encoder::TiffEncoder<W>,
+    w: u32,
+    h: u32,
+    data: &[C::Inner],
+) -> tiff::TiffResult<()>
+where
+    C: tiff::encoder::colortype::ColorType,
+    W: std::io::Write + std::io::Seek,
+    [C::Inner]: tiff::encoder::TiffValue,
+{
+    let mut image = encoder.new_image::<C>(w, h)?;
+    image
+        .encoder()
+        .write_tag(tiff::tags::Tag::ExtraSamples, &[2u16][..])?;
+    image.write_data(data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A gray + alpha image round-trips through TIFF as its two channels,
+    /// stored as two samples per pixel (a BlackIsZero image with one extra,
+    /// alpha, sample). The encoder expanded it to RGBA, which decoded as four
+    /// channels; and a two-sample TIFF from another writer was refused.
+    #[test]
+    fn gray_alpha_tiff_round_trips_as_two_channels() {
+        let u8_image: Vec<u8> = (0..24).map(|i| (i * 11 % 256) as u8).collect();
+        let u16_image: Vec<u16> = (0..24).map(|i| (i * 2711 % 65536) as u16).collect();
+        let cases = [
+            ViewBuffer::from_vec_with_shape(u8_image, vec![3, 4, 2]),
+            ViewBuffer::from_vec_with_shape(u16_image, vec![3, 4, 2]),
+        ];
+        for image in cases {
+            let bytes = ImageAdapter::encode_tiff(&image).unwrap();
+            let mut decoder = tiff::decoder::Decoder::new(std::io::Cursor::new(&bytes)).unwrap();
+            let samples = match decoder.colortype().unwrap() {
+                tiff::ColorType::GrayA(_) => 2,
+                tiff::ColorType::Multiband { num_samples, .. } => num_samples,
+                other => panic!("{:?} stored as {other:?}", image.dtype()),
+            };
+            assert_eq!(samples, 2, "{:?}", image.dtype());
+            let back = ImageAdapter::decode_tiff(&bytes).unwrap();
+            assert_eq!(back.shape(), &[3, 4, 2]);
+            assert_eq!(back.dtype(), image.dtype());
+            let (a, b) = (back.to_contiguous(), image.to_contiguous());
+            let same = match image.dtype() {
+                DType::U8 => a.as_slice::<u8>() == b.as_slice::<u8>(),
+                _ => a.as_slice::<u16>() == b.as_slice::<u16>(),
+            };
+            assert!(same, "{:?} values changed", image.dtype());
+        }
+    }
 
     /// Every codec, every dtype, at the channel counts an image can have.
     const ALL_DTYPES: &[DType] = &[

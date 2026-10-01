@@ -122,6 +122,18 @@ Pipeline().source("image_bytes").to_ycbcr()
 
 **Supported spaces:** `rgb`, `bgr`, `hsv`, `lab`, `ycbcr`, `gray`.
 
+**Value ranges** follow OpenCV per dtype:
+
+| Dtype | Channel range | HSV hue | YCbCr chroma centre |
+|-------|---------------|---------|---------------------|
+| `u8` | 0–255 | half-degrees, [0, 180) | 128 |
+| `u16`, `u32`, `u64` | 0–MAX | the whole range is one turn, [0, MAX] | (MAX + 1) / 2 |
+| `f32`, `f64` | [0, 1] | degrees, [0, 360) | 0.5 |
+
+Lab is always `f32` (L in [0, 100]), and converting from Lab gives `f32` RGB
+in [0, 1]. Signed integer images have no colour range: `hsv`, `lab` and
+`ycbcr` refuse them (cast first); `rgb`, `bgr` and `gray` accept every dtype.
+
 ## Channel Operations
 
 ### Channel Select

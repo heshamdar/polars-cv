@@ -110,12 +110,21 @@ def decode_codec(data: bytes, channels: int) -> np.ndarray:
     Pillow cannot hold 16-bit colour (it silently reduces it to 8 bits), so
     OpenCV is the decoder. OpenCV has no gray+alpha mode: it expands one to
     BGRA, which is folded back to two channels after checking the colour
-    planes really are equal.
+    planes really are equal; or, for a gray+alpha TIFF, it drops the alpha,
+    and Pillow (whose ``LA`` mode holds 8-bit gray+alpha) decodes it instead.
     """
     decoded = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED)
     if decoded is None:
         msg = "OpenCV could not decode the sink's bytes"
         raise AssertionError(msg)
+    if channels == 2 and decoded.ndim == 2:
+        import io
+
+        image = Image.open(io.BytesIO(data))
+        if image.mode != "LA":
+            msg = f"a gray+alpha output decoded as {image.mode}"
+            raise AssertionError(msg)
+        return np.asarray(image)
     decoded = _to_bgr(decoded)  # BGR<->RGB is its own inverse
     if channels == 2 and decoded.ndim == 3 and decoded.shape[2] == 4:
         gray = decoded[..., 0]
@@ -527,8 +536,13 @@ SINKS: dict[str, SinkSpec] = {
             "tiff",
             BUFFER,
             _decode_codec,
+            # A 16-bit gray+alpha TIFF has no independent decoder here (OpenCV
+            # drops its alpha, Pillow cannot read it); the engine's round trip
+            # is held by `gray_alpha_tiff_round_trips_as_two_channels`.
             codec=lambda d, c: (
-                (d in ("u8", "u16") and c <= 4) or (d == "f32" and c == 1)
+                (d == "u8" and c <= 4)
+                or (d == "u16" and c in (1, 3, 4))
+                or (d == "f32" and c == 1)
             ),
         ),
         # WebP has no gray mode: a 1/2-channel image comes back as 3/4 channels.

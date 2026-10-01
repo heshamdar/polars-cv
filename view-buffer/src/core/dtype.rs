@@ -438,21 +438,28 @@ impl DType {
         }
     }
 
-    /// The normalization ceiling range-mapping ops (gamma) use for this
-    /// dtype: the maximum representable value for integers (as f32,
-    /// approximate for the 64-bit types), 1.0 for floats.
-    pub fn norm_range_max_f32(&self) -> f32 {
+    /// The value range's maximum: an integer dtype's largest value, 1.0 for
+    /// the floats (whose image values are in [0, 1], as in OpenCV). The one
+    /// rule for "what full scale means" that range-mapping ops read: gamma
+    /// (`norm_range_max_f32`) and the colour conversions.
+    pub fn value_range_max(&self) -> f64 {
         match self {
-            DType::U8 => u8::MAX as f32,
-            DType::I8 => i8::MAX as f32,
-            DType::U16 => u16::MAX as f32,
-            DType::I16 => i16::MAX as f32,
-            DType::U32 => u32::MAX as f32,
-            DType::I32 => i32::MAX as f32,
-            DType::U64 => u64::MAX as f32,
-            DType::I64 => i64::MAX as f32,
+            DType::U8 => u8::MAX as f64,
+            DType::I8 => i8::MAX as f64,
+            DType::U16 => u16::MAX as f64,
+            DType::I16 => i16::MAX as f64,
+            DType::U32 => u32::MAX as f64,
+            DType::I32 => i32::MAX as f64,
+            DType::U64 => u64::MAX as f64,
+            DType::I64 => i64::MAX as f64,
             DType::F32 | DType::F64 => 1.0,
         }
+    }
+
+    /// [`value_range_max`](Self::value_range_max) as f32 (approximate for the
+    /// 32/64-bit integers), the normalization ceiling gamma uses.
+    pub fn norm_range_max_f32(&self) -> f32 {
+        self.value_range_max() as f32
     }
 }
 

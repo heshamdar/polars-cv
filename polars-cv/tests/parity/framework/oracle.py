@@ -531,24 +531,97 @@ def _to_bgr_ref(x: np.ndarray, p: Params) -> np.ndarray:
     return color_channels(lambda rgb: rgb[:, :, ::-1].copy(), x)
 
 
-def _hsv_ref(x: np.ndarray, p: Params) -> np.ndarray:
-    return color_channels(lambda rgb: cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV), x)
+def _ranged(x: np.ndarray) -> bool:
+    """The dtypes with a colour range: unsigned integers (0..MAX) and floats
+    ([0, 1]); the ranged conversions refuse signed integers."""
+    return x.dtype.kind in "uf"
 
 
-def _ycbcr_ref(x: np.ndarray, p: Params) -> np.ndarray:
-    # OpenCV orders the planes Y, Cr, Cb; the engine's space is Y, Cb, Cr.
-    return color_channels(
-        lambda rgb: cv2.cvtColor(rgb, cv2.COLOR_RGB2YCrCb)[:, :, [0, 2, 1]], x
+@quiet
+def _hsv_definition(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """HSV by its definition, in float64: hue in degrees [0, 360), S in
+    [0, 1], V in the input's units."""
+    r, g, b = (rgb[:, :, i].astype(np.float64) for i in range(3))
+    v = np.maximum(np.maximum(r, g), b)
+    diff = v - np.minimum(np.minimum(r, g), b)
+    s = np.where(v == 0, 0.0, diff / np.where(v == 0, 1.0, v))
+    d = np.where(diff == 0, 1.0, diff)
+    hue = np.select(
+        [diff == 0, v == r, v == g],
+        [0.0, 60.0 * (g - b) / d, 60.0 * (b - r) / d + 120.0],
+        60.0 * (r - g) / d + 240.0,
     )
+    return np.where(hue < 0, hue + 360.0, hue), s, v
+
+
+def _hsv_ref(x: np.ndarray, p: Params) -> np.ndarray:
+    """OpenCV's 8-bit HSV (H in half-degrees); for u16 and floats HSV by its
+    definition (OpenCV's float HSV divides by ``v + FLT_EPSILON``, which is
+    visible on dark u16 pixels): float H in degrees with S, V in [0, 1], u16
+    over 0..65535 with the hue covering one turn (``HSV_FULL``'s scheme),
+    wrapped at 65536."""
+
+    def hsv(rgb: np.ndarray) -> np.ndarray:
+        if rgb.dtype == np.uint8:
+            return cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+        hue, sat, val = _hsv_definition(rgb)
+        if rgb.dtype.kind == "f":
+            return np.stack([hue, sat, val], axis=2).astype(rgb.dtype)
+        full = float(np.iinfo(rgb.dtype).max)
+        hue = round_half_away(hue * (full + 1) / 360.0)
+        hue = np.where(hue >= full + 1, hue - (full + 1), hue)
+        return to_dtype(np.stack([hue, sat * full, val], axis=2), rgb.dtype)
+
+    return color_channels(hsv, x)
+
+
+@quiet
+def _ycbcr_ref(x: np.ndarray, p: Params) -> np.ndarray:
+    """Full-range BT.601 (JFIF) by its definition: ``Cb = (B - Y) / 1.772``
+    and ``Cr = (R - Y) / 1.402`` about the dtype's chroma centre (128 for
+    u8, 32768 for u16, 0.5 for floats). OpenCV rounds those factors to
+    0.564 and 0.713, a 1e-4 difference of full scale."""
+    off = 0.5 if x.dtype.kind == "f" else (float(np.iinfo(x.dtype).max) + 1) / 2
+
+    def ycbcr(rgb: np.ndarray) -> np.ndarray:
+        r, g, b = (rgb[:, :, i].astype(np.float64) for i in range(3))
+        y = 0.299 * r + 0.587 * g + 0.114 * b
+        planes = np.stack([y, off + (b - y) / 1.772, off + (r - y) / 1.402], axis=2)
+        return to_dtype(planes, rgb.dtype)
+
+    return color_channels(ycbcr, x)
 
 
 def _lab_ref(x: np.ndarray, p: Params) -> np.ndarray:
-    rgb = x[:, :, :3].astype(np.float32) / 255.0
+    """OpenCV's float Lab of the image scaled to [0, 1] (OpenCV has no
+    16-bit Lab)."""
+    scale = 1.0 if x.dtype.kind == "f" else float(np.iinfo(x.dtype).max)
+    rgb = (x[:, :, :3].astype(np.float64) / scale).astype(np.float32)
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2Lab).astype(np.float32)
 
 
-def _u8_color(x: np.ndarray) -> bool:
-    return is_u8(x) and x.ndim == 3 and x.shape[2] in (3, 4)
+def _color_ref_dtype(x: np.ndarray) -> bool:
+    """What OpenCV's colour conversions take (8/16-bit and f32)."""
+    return (
+        x.ndim == 3
+        and x.shape[2] in (3, 4)
+        and x.dtype in (np.uint8, np.uint16, np.float32)
+    )
+
+
+def _unit(x: np.ndarray) -> bool:
+    """A float image within [0, 1], a float colour's range (outside it,
+    OpenCV's float HSV and Lab extrapolate differently from the engine)."""
+    return x.dtype.kind != "f" or bool(np.all((x[:, :, :3] >= 0) & (x[:, :, :3] <= 1)))
+
+
+def _hsv_tol(x: np.ndarray, p: Params) -> Tol:
+    # Hue is undefined on gray pixels and wraps, hence the sparse allowance.
+    if x.dtype == np.uint8:
+        return sparse(atol=2, frac=0.005, frac_atol=180)
+    if x.dtype == np.uint16:
+        return sparse(atol=2, frac=0.005, frac_atol=65536)
+    return sparse(atol=1e-3 * magnitude(x), frac=0.005, frac_atol=360)
 
 
 # ---------------------------------------------------------------------------
@@ -1498,34 +1571,40 @@ OPS: dict[str, OpSpec] = {
         ),
         _spec(
             "to_hsv",
-            accepts=lambda x: is_rank3(x) and x.shape[2] in (3, 4),
+            accepts=lambda x: is_rank3(x) and x.shape[2] in (3, 4) and _ranged(x),
             ref=_hsv_ref,
-            ref_accepts=lambda x, p: _u8_color(x),
-            ref_dtypes=("u8",),
-            tol=sparse(atol=2, frac=0.005, frac_atol=180),
+            ref_accepts=lambda x, p: _color_ref_dtype(x) and _unit(x),
+            ref_dtypes=("u8", "u16", "f32"),
+            tol=_hsv_tol,
             gain=_INF,
-            note="OpenCV's 8-bit HSV (H in [0, 180)); hue is undefined on gray "
-            "pixels and wraps at 180, hence the sparse allowance",
+            note="OpenCV's HSV: u8 H in [0, 180), u16 H over 0..65535 for one "
+            "turn, float H in degrees with S, V in [0, 1]; hue is undefined on "
+            "gray pixels and wraps, hence the sparse allowance",
         ),
         _spec(
             "to_ycbcr",
-            accepts=lambda x: is_rank3(x) and x.shape[2] in (3, 4),
+            accepts=lambda x: is_rank3(x) and x.shape[2] in (3, 4) and _ranged(x),
             ref=_ycbcr_ref,
-            ref_accepts=lambda x, p: _u8_color(x),
-            ref_dtypes=("u8",),
-            tol=lsb(1),
+            ref_accepts=lambda x, p: _color_ref_dtype(x),
+            ref_dtypes=("u8", "u16", "f32"),
+            tol=lambda x, p: (
+                lsb(1) if is_int(x) else close(atol=1e-5 * magnitude(x), rtol=1e-5)
+            ),
             gain=1.0,
-            note="OpenCV's YCrCb reordered to Y, Cb, Cr",
+            note="full-range BT.601 (JFIF) by its definition; chroma centred "
+            "at 128 (u8), 32768 (u16) and 0.5 (float)",
         ),
         _spec(
             "to_lab",
-            accepts=lambda x: is_rank3(x) and x.shape[2] in (3, 4),
+            accepts=lambda x: is_rank3(x) and x.shape[2] in (3, 4) and _ranged(x),
             ref=_lab_ref,
-            ref_accepts=lambda x, p: is_u8(x) and x.shape[2] == 3,
-            ref_dtypes=("u8",),
+            ref_accepts=lambda x, p: (
+                _color_ref_dtype(x) and x.shape[2] == 3 and _unit(x)
+            ),
+            ref_dtypes=("u8", "u16", "f32"),
             tol=close(atol=0.5, rtol=1e-3),
             gain=_INF,
-            note="OpenCV's float Lab of RGB / 255 (L in [0, 100]); a* and b* "
+            note="OpenCV's float Lab of RGB scaled to [0, 1] (L in [0, 100]); a* and b* "
             "agree to ~0.2 (OpenCV's float path approximates the sRGB "
             "curve), well under one just-noticeable difference",
         ),
