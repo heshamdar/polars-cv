@@ -51,9 +51,10 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
     match op {
         ViewOp::Transpose { .. } => buf.permute(&op.axes()),
         ViewOp::Reshape { shape } => {
-            if !buf.layout.is_contiguous() {
-                panic!("Reshape on non-contiguous view not supported without copy");
-            }
+            debug_assert!(
+                buf.layout.is_contiguous(),
+                "the planner packs a reshape's input (MemoryEffect::ViewOfContiguous)"
+            );
             buf.reshape(
                 shape
                     .iter()

@@ -184,9 +184,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   weekly slow lane.
 - tests: divergences the suite found are registered, not fixed, in
   `tests/parity/framework/known.py` and pinned as strict xfails:
-  `binary-source-numpy-rows`, `array-null-slice-panic`,
-  `derived-extent-zero`, `view-offset-lost`,
-  `reshape-after-view`, `tiff-gray-alpha`,
+  `array-null-slice-panic`,
+  `derived-extent-zero`, `tiff-gray-alpha`,
   `nan-one-sided-clamp`,
   `hsv-hue-180`, `scalar-fusion-int-cast`, `derived-size-tie`,
   `color-int-range`. Each entry's summary describes the defect
@@ -198,6 +197,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   of every op, including dead integer-division arms, are deleted.
   `binary_exact.rs` checks every integer op against an exact i128/u128
   reference at each dtype's edges.
+- view-buffer: `MemoryEffect::ViewOfContiguous` (metadata-only over a
+  contiguous input) and `MemoryEffect::needs_contiguous_input`, read by one
+  `materialize_if_needed` for every kind of plan step; the three ad-hoc
+  reshape refusals (in `try_apply_op`, the `reshape` builder and the runner)
+  are gone.
 - tests: `ops::dtype_sweep` executes every registered buffer op on every
   dtype and every layout its contract admits (rank 2, and 1-4 channels) and
   requires the executed dtype to be the declared one; every binary op and
@@ -267,6 +271,24 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **A blob or raw column sunk to `numpy`/`ndarray`/`torch` returns every row,
+  not row 0's pixels for each.** Rows read in place are slices of the
+  column's shared buffer, and the numpy `data` column registered those
+  slices; Arrow's FFI export hands over a buffer's *storage* pointer, so
+  every row was read from the start of the shared storage (raw rows: from
+  the wrong place). The column now registers each storage once, unsliced,
+  and addresses each row by its offset in it.
+- **`reshape` and `channel_select` after a crop read the crop.** A crop that
+  starts below the first row (or right of the first column) leaves a view
+  with an offset; a reshape rebuilt its layout at offset 0, so
+  `crop(top=1).channel_select(0)` of a single-channel image returned the
+  uncropped rows. Reshape keeps the view's offset.
+- **`reshape` after a `flip`, `transpose`, quarter `rotate` or `crop` copies
+  first, as NumPy's does.** It was refused at execution ("cannot reshape a
+  non-contiguous view"), not by the planner, with no way to ask for the
+  copy. Reshape now declares `MemoryEffect::ViewOfContiguous` and the planner
+  packs a strided input before it: a no-op when the input already is
+  contiguous.
 - **`channel_swap`, `channel_merge`, RGB <-> BGR, gray -> RGB and the
   morphological gradient are exact on every dtype.** They had native paths
   for u8 (and some u16/f32) only and converted every other dtype through f32:

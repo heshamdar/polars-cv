@@ -23,6 +23,20 @@ pub enum MemoryEffect {
     StridePreserving,
     /// Allocates, and needs its input contiguous first.
     RequiresContiguous,
+    /// Metadata-only over a contiguous input (`reshape`: row-major order is
+    /// what it reinterprets); a strided input is packed first.
+    ViewOfContiguous,
+}
+
+impl MemoryEffect {
+    /// Whether the planner must hand this op a contiguous input — the one
+    /// rule `ViewExpr::build_plan` reads for every kind of step.
+    pub fn needs_contiguous_input(self) -> bool {
+        matches!(
+            self,
+            MemoryEffect::RequiresContiguous | MemoryEffect::ViewOfContiguous
+        )
+    }
 }
 
 /// Under what condition an operation is a no-op — value-, dtype-, shape- and
