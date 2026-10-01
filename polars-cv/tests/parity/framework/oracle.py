@@ -907,14 +907,25 @@ def _warp(
     return np.stack(planes, axis=2).astype(x.dtype)
 
 
+def _is_rot90(p: Params) -> bool:
+    """A bare quarter turn: data movement, not a warp.
+
+    Only ``rotate``'s own arguments qualify; an angle with a centre or
+    scale (``rotate_and_scale``) is a warp at any angle.
+    """
+    return (
+        "angle" in p and "matrix" not in p and "center" not in p and _is_quarter_turn(p)
+    )
+
+
 def _warp_ref_accepts(x: np.ndarray, p: Params) -> bool:
-    if "angle" in p and "matrix" not in p and _is_quarter_turn(p):
-        return True  # a quarter turn is data movement: every dtype
+    if _is_rot90(p):
+        return True  # data movement: every dtype
     return x.dtype.type in _CV_DTYPES
 
 
 def _warp_tol(x: np.ndarray, p: Params) -> Tol:
-    if "angle" in p and "matrix" not in p and "center" not in p and _is_quarter_turn(p):
+    if _is_rot90(p):
         return EXACT
     # OpenCV computes interpolation weights in fixed point (5 bits); the
     # engine in float. A pixel whose source footprint straddles the image
