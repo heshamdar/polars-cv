@@ -138,6 +138,21 @@ impl AffineParams {
         [cos_a, -sin_a, tx, sin_a, cos_a, ty]
     }
 
+    /// The canvas an `h × w` image needs to hold its rotation by `angle_deg`
+    /// whole (`rotate(expand=True)`): the one formula, read by the shape rule
+    /// at plan time (`OpShape::RotateExpand`) and by
+    /// [`from_rotation`](Self::from_rotation) at execution, so the planned
+    /// and executed sizes cannot drift.
+    pub fn expanded_size(h: usize, w: usize, angle_deg: f64) -> (usize, usize) {
+        let rad = angle_deg * std::f64::consts::PI / 180.0;
+        let (cos, sin) = (rad.cos().abs(), rad.sin().abs());
+        let (h, w) = (h as f64, w as f64);
+        (
+            (h * cos + w * sin).round() as usize,
+            (w * cos + h * sin).round() as usize,
+        )
+    }
+
     /// Build an `AffineParams` that performs a rotation around the image
     /// center, optionally expanding the canvas to fit the full rotated image.
     ///
@@ -162,11 +177,12 @@ impl AffineParams {
         let sin_a = base[3];
 
         let (oh, ow) = if expand {
-            let abs_cos = cos_a.abs();
-            let abs_sin = sin_a.abs();
-            let new_w = (iw * abs_cos + ih * abs_sin).round() as u32;
-            let new_h = (ih * abs_cos + iw * abs_sin).round() as u32;
-            (new_h, new_w)
+            let (h, w) = Self::expanded_size(
+                input_height as usize,
+                input_width as usize,
+                angle_deg as f64,
+            );
+            (h as u32, w as u32)
         } else {
             (input_height, input_width)
         };

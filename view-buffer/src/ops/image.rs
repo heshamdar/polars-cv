@@ -313,15 +313,18 @@ impl<M: Mode> ImageOpKind<M> {
 }
 
 /// Aspect-preserving fit of an `in_h × in_w` image inside `height × width`
-/// (the intermediate resize dimensions of [`ImageOpKind::Letterbox`]).
+/// (the intermediate resize dimensions of [`ImageOpKind::Letterbox`]): the
+/// tighter side meets its target and the other is derived by the shape
+/// rule's [`scaled_size`](crate::ops::shape_rule::scaled_size), the two
+/// scales compared exactly (`height / in_h` vs `width / in_w`).
 pub fn letterbox_fit(in_h: usize, in_w: usize, height: u32, width: u32) -> (usize, usize) {
-    let scale_h = height as f32 / in_h as f32;
-    let scale_w = width as f32 / in_w as f32;
-    let scale = scale_h.min(scale_w);
-    (
-        (in_h as f32 * scale).round() as usize,
-        (in_w as f32 * scale).round() as usize,
-    )
+    use crate::ops::shape_rule::scaled_size;
+    let (height, width) = (height as usize, width as usize);
+    if height as u128 * in_w as u128 <= width as u128 * in_h as u128 {
+        (height, scaled_size(in_w, height, in_h).min(width))
+    } else {
+        (scaled_size(in_h, width, in_w).min(height), width)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

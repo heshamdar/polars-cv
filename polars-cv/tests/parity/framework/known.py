@@ -140,41 +140,6 @@ def _hue_rounds_to_180(x: np.ndarray) -> bool:
     return bool((hue >= 359.0).any())
 
 
-def _repro_derived_size_tie() -> None:
-    from tests.parity.framework.run import Axes, Step, execute
-
-    image = np.zeros((14, 31, 1), dtype=np.uint8)  # 31 * 21 / 14 = 46.5
-    out = execute(
-        [image], [Step("resize_to_height", {"height": 21, "filter": "nearest"})], Axes()
-    )
-    # 7.5 -> 8, 10.5 -> 11, 1.5 -> 2 elsewhere: a tie rounds up.
-    assert out.rows[0].shape[1] == 47, f"width {out.rows[0].shape[1]}"
-
-
-def _derived_size_is_tie(step: Step, x: np.ndarray) -> bool:
-    """Whether an aspect-preserving resize derives a size of exactly k + 1/2."""
-    from fractions import Fraction
-
-    if x.ndim < 2:
-        return False
-    h, w = x.shape[:2]
-    p = step.params
-    ratio = {
-        "resize_to_height": lambda: (Fraction(p["height"], h),) * 2,
-        "resize_to_width": lambda: (Fraction(p["width"], w),) * 2,
-        "resize_max": lambda: (Fraction(p["max_size"], max(h, w)),) * 2,
-        "resize_min": lambda: (Fraction(p["min_size"], min(h, w)),) * 2,
-        "letterbox": lambda: (
-            (min(Fraction(p["height"], h), Fraction(p["width"], w)),) * 2
-        ),
-        "resize_scale": lambda: (Fraction(p["scale_y"]), Fraction(p["scale_x"])),
-    }.get(step.method)
-    if ratio is None:
-        return False
-    fy, fx = ratio()
-    return any((size * f) % 1 == Fraction(1, 2) for size, f in ((h, fy), (w, fx)))
-
-
 def _repro_color_int_range() -> None:
     from tests.parity.framework.run import Axes, Step, execute
 
@@ -193,37 +158,6 @@ def _color_int_range(step: Step, x: np.ndarray) -> bool:
         and step.params.get("to_space") not in (None, "rgb", "bgr", "gray")
     )
     return space and x.dtype.kind in "iu" and x.dtype != np.uint8
-
-
-def _repro_letterbox_zero_extent() -> None:
-    from tests.parity.framework.run import Axes, Step, execute
-
-    image = np.array([[[10], [20], [30]]], dtype=np.uint8)  # 1 x 3
-    step = Step(
-        "letterbox", {"height": 1, "width": 1, "value": 0.0, "filter": "nearest"}
-    )
-    out = execute([image], [step], Axes())
-    assert out.rows[0].ravel()[0] != 0, "the fitted content collapsed to zero rows"
-
-
-def _derived_extent_is_zero(step: Step, x: np.ndarray) -> bool:
-    """Whether an aspect-preserving resize derives a size that rounds to 0."""
-    if x.ndim < 2:
-        return False
-    h, w = x.shape[:2]
-    p = step.params
-    factors = {
-        "letterbox": lambda: (min(p["height"] / h, p["width"] / w),) * 2,
-        "resize_max": lambda: (p["max_size"] / max(h, w),) * 2,
-        "resize_min": lambda: (p["min_size"] / min(h, w),) * 2,
-        "resize_to_height": lambda: (p["height"] / h,) * 2,
-        "resize_to_width": lambda: (p["width"] / w,) * 2,
-        "resize_scale": lambda: (p["scale_y"], p["scale_x"]),
-    }.get(step.method)
-    if factors is None:
-        return False
-    fy, fx = factors()
-    return min(h * fy, w * fx) < 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -264,19 +198,6 @@ DIVERGENCES: tuple[Divergence, ...] = (
         affects_step=lambda step, x: step.method == "to_hsv" and _hue_rounds_to_180(x),
     ),
     Divergence(
-        key="derived-size-tie",
-        match="width 46",
-        summary=(
-            "An aspect-preserving resize whose derived size is exactly k + 1/2 "
-            "rounds it inconsistently: resize_to_height(21) of a 14x31 image "
-            "derives width 46 (46.5 down) while 7.5, 10.5 and 1.5 round up — "
-            "the size is computed in floating point in an order that lands "
-            "some ties just below .5. Fixed: ties round one way."
-        ),
-        repro=_repro_derived_size_tie,
-        affects_step=_derived_size_is_tie,
-    ),
-    Divergence(
         key="color-int-range",
         match="u16 gray to YCbCr is [32768, 128, 128]",
         summary=(
@@ -291,21 +212,6 @@ DIVERGENCES: tuple[Divergence, ...] = (
         ),
         repro=_repro_color_int_range,
         affects_step=_color_int_range,
-    ),
-    Divergence(
-        key="derived-extent-zero",
-        match="collapsed to zero rows",
-        summary=(
-            "The aspect-preserving resizes (resize_max/min/to_height/to_width/"
-            "scale, letterbox) round a derived size without a floor of one "
-            "pixel: resize_max(1) of a 3x1 image is 1x0, resize_scale(0.25) "
-            "of a 1x1 image is 0x0, and letterbox of a 1x3 image into 1x1 "
-            "fits the content to zero rows and returns pure padding. Fixed: "
-            "every derived size is at least 1."
-        ),
-        repro=_repro_letterbox_zero_extent,
-        affects_step=_derived_extent_is_zero,
-        avoid=True,
     ),
 )
 
