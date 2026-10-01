@@ -213,60 +213,6 @@ class TestDivergencePredicates:
         assert known._first([value_only]) is value_only
         assert known._first([]) is None
 
-    @pytest.mark.parametrize(
-        ("step", "shape", "flagged"),
-        [
-            (Step("resize_max", {"max_size": 1, "filter": "nearest"}), (3, 1, 1), True),
-            (
-                Step("resize_max", {"max_size": 2, "filter": "nearest"}),
-                (3, 1, 1),
-                False,
-            ),
-            (
-                Step(
-                    "resize_scale",
-                    {"scale_x": 0.25, "scale_y": 0.25, "filter": "nearest"},
-                ),
-                (1, 1, 1),
-                True,
-            ),
-            (
-                Step(
-                    "resize_scale",
-                    {"scale_x": 0.5, "scale_y": 0.5, "filter": "nearest"},
-                ),
-                (1, 1, 1),
-                False,
-            ),
-            (
-                Step(
-                    "letterbox",
-                    {"height": 1, "width": 1, "value": 0.0, "filter": "nearest"},
-                ),
-                (1, 3, 1),
-                True,
-            ),
-            (
-                Step(
-                    "letterbox",
-                    {"height": 1, "width": 1, "value": 0.0, "filter": "nearest"},
-                ),
-                (1, 2, 1),
-                False,
-            ),
-        ],
-    )
-    def test_derived_extent_zero(self, step: Step, shape: tuple, flagged: bool) -> None:
-        divergence = known.step_divergence(step, np.zeros(shape, u8))
-        assert (
-            divergence is not None and divergence.key == "derived-extent-zero"
-        ) is flagged
-
-
-# ---------------------------------------------------------------------------
-# Per-row merging
-# ---------------------------------------------------------------------------
-
 
 class TestMergePerRow:
     """What may vary per row is exactly what the signature lets be an expression."""

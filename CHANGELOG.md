@@ -9,6 +9,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Breaking changes
 
+- **Aspect-preserving resizes derive sizes exactly, and never as 0.**
+  `resize_to_height`, `resize_to_width`, `resize_max`, `resize_min`,
+  `resize_scale` and `letterbox` computed the derived size in f32, which
+  landed some exact halves just below .5: `resize_to_height(21)` of a 14x31
+  image gave width 46 where 7.5 and 1.5 round up. They also had no floor, so
+  `resize_max(1)` of a 3x1 image was 1x0, `resize_scale(0.25)` of a 1x1
+  image 0x0, and `letterbox` of a 1x3 image into 1x1 fitted the content to
+  zero rows and returned only padding. A derived size is now `n * t / d`
+  rounded half up in exact integer arithmetic, and at least 1, at plan time
+  and at execution (one rule, `shape_rule::scaled_size`, which letterbox's
+  fit also reads). Sizes change only for those inputs.
+
 - **`relu`, `clamp_min` and `clamp_max` propagate NaN.** They used
   `f32::max`/`min`, which return the other operand for a NaN, so `relu(NaN)`
   was 0 and `clamp_min(NaN, 0.5)` was 0.5, while `clamp`, `abs`, `sign` and
@@ -201,8 +213,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - tests: divergences the suite found are registered, not fixed, in
   `tests/parity/framework/known.py` and pinned as strict xfails:
 
-  `derived-extent-zero`, `tiff-gray-alpha`,
-  `hsv-hue-180`, `derived-size-tie`,
+  `tiff-gray-alpha`,
+  `hsv-hue-180`,
   `color-int-range`. Each entry's summary describes the defect
   and the fix, and each pins the exception and message its repro fails with
   (`known.still_reproduces`), so a repro broken for another reason no longer
@@ -217,6 +229,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `materialize_if_needed` for every kind of plan step; the three ad-hoc
   reshape refusals (in `try_apply_op`, the `reshape` builder and the runner)
   are gone.
+- view-buffer: `AffineParams::expanded_size` is the one formula for an
+  `expand=True` rotation's canvas, read by the shape rule and by
+  `from_rotation` (they were two copies).
 - tests: `ops::dtype_sweep` executes every registered buffer op on every
   dtype and every layout its contract admits (rank 2, and 1-4 channels) and
   requires the executed dtype to be the declared one; every binary op and

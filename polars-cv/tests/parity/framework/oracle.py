@@ -31,6 +31,7 @@ from __future__ import annotations
 import math
 import warnings
 from dataclasses import dataclass, field
+from fractions import Fraction
 from typing import Any, Callable
 
 import cv2
@@ -672,21 +673,21 @@ def _resize_target(x: np.ndarray, p: Params) -> tuple[int, int]:
     """The (height, width) a resize-family call resamples *x* to."""
     h, w = x.shape[:2]
     if "max_size" in p:
-        s = p["max_size"] / max(h, w)
+        s = Fraction(p["max_size"], max(h, w))
         return _scaled(h, s), _scaled(w, s)
     if "min_size" in p:
-        s = p["min_size"] / min(h, w)
+        s = Fraction(p["min_size"], min(h, w))
         return _scaled(h, s), _scaled(w, s)
     if "scale_x" in p:
         return _scaled(h, p["scale_y"]), _scaled(w, p["scale_x"])
     if "value" in p:  # letterbox: the fitted content, before padding
-        s = min(p["height"] / h, p["width"] / w)
+        s = min(Fraction(p["height"], h), Fraction(p["width"], w))
         return min(p["height"], _scaled(h, s)), min(p["width"], _scaled(w, s))
     if "height" in p and "width" in p:
         return p["height"], p["width"]
     if "height" in p:
-        return p["height"], _scaled(w, p["height"] / h)
-    return _scaled(h, p["width"] / w), p["width"]
+        return p["height"], _scaled(w, Fraction(p["height"], h))
+    return _scaled(h, Fraction(p["width"], w)), p["width"]
 
 
 def _resize_tol(x: np.ndarray, p: Params) -> Tol:
@@ -719,30 +720,35 @@ def _resize_ref(x: np.ndarray, p: Params) -> np.ndarray:
     return _resize_to(x, p["height"], p["width"], p["filter"])
 
 
-def _scaled(size: int, factor: float) -> int:
-    """The engine's derived-size rule: round half up, at least one pixel."""
-    return max(1, math.floor(size * factor + 0.5))
+def _scaled(size: int, factor: Fraction | float) -> int:
+    """The engine's derived-size rule, exactly: round half up, at least one
+    pixel. A ratio comes as a ``Fraction``; a scale factor as the f32 the op
+    receives."""
+    exact = (
+        factor if isinstance(factor, Fraction) else Fraction(float(np.float32(factor)))
+    )
+    return max(1, math.floor(size * exact + Fraction(1, 2)))
 
 
 def _resize_to_height_ref(x: np.ndarray, p: Params) -> np.ndarray:
     h, w = x.shape[:2]
-    return _resize_to(x, p["height"], _scaled(w, p["height"] / h), p["filter"])
+    return _resize_to(x, p["height"], _scaled(w, Fraction(p["height"], h)), p["filter"])
 
 
 def _resize_to_width_ref(x: np.ndarray, p: Params) -> np.ndarray:
     h, w = x.shape[:2]
-    return _resize_to(x, _scaled(h, p["width"] / w), p["width"], p["filter"])
+    return _resize_to(x, _scaled(h, Fraction(p["width"], w)), p["width"], p["filter"])
 
 
 def _resize_max_ref(x: np.ndarray, p: Params) -> np.ndarray:
     h, w = x.shape[:2]
-    s = p["max_size"] / max(h, w)
+    s = Fraction(p["max_size"], max(h, w))
     return _resize_to(x, _scaled(h, s), _scaled(w, s), p["filter"])
 
 
 def _resize_min_ref(x: np.ndarray, p: Params) -> np.ndarray:
     h, w = x.shape[:2]
-    s = p["min_size"] / min(h, w)
+    s = Fraction(p["min_size"], min(h, w))
     return _resize_to(x, _scaled(h, s), _scaled(w, s), p["filter"])
 
 
@@ -783,7 +789,7 @@ def _letterbox_params(draw: st.DrawFn, x: np.ndarray) -> Params:
 
 def _letterbox_ref(x: np.ndarray, p: Params) -> np.ndarray:
     h, w = x.shape[:2]
-    s = min(p["height"] / h, p["width"] / w)
+    s = min(Fraction(p["height"], h), Fraction(p["width"], w))
     nh, nw = min(p["height"], _scaled(h, s)), min(p["width"], _scaled(w, s))
     inner = _resize_to(x, nh, nw, p["filter"])
     return _pad_to_size_ref(
