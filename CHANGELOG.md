@@ -396,7 +396,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **An empty image is refused cleanly, not a panic.** `reduce_argmax`/
   `reduce_argmin` over an empty axis panicked the engine, and `pad` with
   `mode="edge"`, `"reflect"` or `"symmetric"` panicked extending an empty
-  axis; both are now refused by their contracts, as NumPy refuses them, as
+  axis; both are now refused by their contracts, as NumPy refuses them (padding
+  only the *other* axis of an empty image gives an empty image, as NumPy's), as
   are `reduce_max`/`min`/`percentile` over nothing (`sum`, `mean` and `std`
   stay defined). An `Array` column with a zero-size dimension is refused at
   planning, naming the column: polars' FFI import of one sets its length to 0
