@@ -126,12 +126,9 @@ impl AffineParams {
     /// size as the input.
     ///
     /// [`from_rotation`](Self::from_rotation) builds on this for the
-    /// image-center + optional-expand case, and the plugin's `rotation_matrix_2d`
-    /// FFI exposes it so the Python planner reads this matrix instead of
-    /// recomputing the trig for a literal `rotate_and_scale`.
-    ///
-    /// `angle_deg` is `f64` (not the `f32` `from_rotation` takes) so the FFI
-    /// reproduces the planner's f64 arithmetic bit-for-bit.
+    /// image-center + optional-expand case, and `rotate_and_scale` lowers to
+    /// it per row (`ComputeOp::lowered`), so a literal and a per-row angle
+    /// get the same matrix.
     pub fn rotation_matrix_2d(angle_deg: f64, cx: f64, cy: f64, scale: f64) -> [f64; 6] {
         let rad = angle_deg * std::f64::consts::PI / 180.0;
         let cos_a = rad.cos() * scale;

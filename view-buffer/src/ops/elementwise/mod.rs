@@ -154,6 +154,7 @@ fn lower(op: &ComputeOp, buf: &ViewBuffer) -> Lowered {
         | ComputeOp::Affine(_)
         | ComputeOp::RotateAffine { .. }
         | ComputeOp::WarpAffine { .. }
+        | ComputeOp::RotateAndScale { .. }
         | ComputeOp::Rotate { .. } => {
             panic!("internal: `{}` is not a per-value op", op.name())
         }

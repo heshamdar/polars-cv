@@ -2433,6 +2433,65 @@
     ]
   },
   {
+    "name": "rotate_and_scale",
+    "python": "rotate_and_scale",
+    "visibility": "public",
+    "doc": "Combined rotation and scaling around a center point.\n\nWarps with OpenCV's ``getRotationMatrix2D(center, -angle, scale)``\nmatrix, built per row from the values the row resolves: the matrix\nis computed in one place (the engine), so a literal and the same\nvalue as an expression give identical output.\n\nExample:\n    ```python\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate_and_scale(\n    ...     angle=45.0, scale=1.2, center=(112, 112), output_size=(224, 224)\n    ... )\n    >>> # Per-row angle from a column\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate_and_scale(\n    ...     angle=pl.col(\"theta\"), center=(112, 112), output_size=(224, 224)\n    ... )\n    ```",
+    "fields": [
+      {
+        "name": "angle",
+        "doc": "Rotation angle in degrees (positive = clockwise). Accepts a Polars\nexpression for a per-row angle.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "center",
+        "doc": "``(cx, cy)`` center of rotation. Required: an image source's\nheight/width are not known until execution, so there is no\nplan-time centre to default to. Each element accepts an expression.",
+        "type": {
+          "kind": "array",
+          "len": 2,
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
+          }
+        }
+      },
+      {
+        "name": "output_size",
+        "doc": "``(height, width)`` of the output. Required, because the output\nshape is part of the plan-time schema. Each element accepts an\nexpression.",
+        "type": {
+          "kind": "array",
+          "len": 2,
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "int"
+          }
+        }
+      },
+      {
+        "name": "scale",
+        "doc": "Scale factor (default 1.0). Accepts an expression.",
+        "default": 1.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
+  },
+  {
     "name": "round",
     "python": "round",
     "visibility": "public",

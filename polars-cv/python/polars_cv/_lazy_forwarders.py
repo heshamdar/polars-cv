@@ -714,8 +714,8 @@ class _LazyForwardersMixin:
         self,
         *,
         angle: FloatOrExpr,
-        center: tuple[FloatOrExpr, FloatOrExpr],
-        output_size: tuple[IntOrExpr, IntOrExpr],
+        center: Sequence[FloatOrExpr],
+        output_size: Sequence[IntOrExpr],
         scale: FloatOrExpr = 1.0,
     ) -> LazyPipelineExpr:
         """Combined rotation and scaling around a center point.

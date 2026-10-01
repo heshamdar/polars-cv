@@ -8,7 +8,6 @@ processing pipelines that can be applied to Polars DataFrame columns.
 from __future__ import annotations
 
 import json
-import math
 from collections.abc import Callable
 from types import FunctionType
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -42,53 +41,6 @@ if TYPE_CHECKING:
     from polars_cv._optimize import OptFlags
     from polars_cv._types import SlotOf
     from polars_cv.lazy import LazyPipelineExpr
-
-
-def _rotation_matrix(
-    angle_deg: FloatOrExpr,
-    center: tuple[FloatOrExpr, FloatOrExpr],
-    scale: FloatOrExpr,
-) -> list[FloatOrExpr]:
-    """Build a 2x3 forward-mapping rotation+scale matrix around *center*.
-
-    Matches OpenCV's ``getRotationMatrix2D(center, -angle_deg, scale)``
-    convention where positive *angle_deg* = clockwise in image coordinates.
-
-    Any argument may be a Polars expression. Only the trigonometry needs to
-    know the difference — the remaining arithmetic is written with plain
-    operators, which compose identically for floats and for ``pl.Expr``.
-
-    Args:
-        angle_deg: Rotation angle in degrees (positive = clockwise).
-        center: ``(cx, cy)`` center of rotation.
-        scale: Scale factor.
-
-    Returns:
-        Six-element list ``[a, b, tx, c, d, ty]`` (forward mapping).
-    """
-    cx, cy = center
-    if not any(isinstance(v, pl.Expr) for v in (angle_deg, cx, cy, scale)):
-        # All-literal: read the matrix from the Rust authority
-        # (`AffineParams::rotation_matrix_2d`) rather than transliterating the
-        # trig, so the formula lives in exactly one place. The `pl.Expr` path
-        # below cannot -- the engine evaluates those operands per row at
-        # execution, not at plan time -- and is the one guard-sanctioned copy.
-        from polars_cv._lib import rotation_matrix_2d
-
-        return list(
-            rotation_matrix_2d(float(angle_deg), float(cx), float(cy), float(scale))  # ty: ignore[invalid-argument-type]
-        )
-    if isinstance(angle_deg, pl.Expr):
-        rad = angle_deg.radians()
-        cos_a = rad.cos() * scale
-        sin_a = rad.sin() * scale
-    else:
-        rad = math.radians(angle_deg)
-        cos_a = math.cos(rad) * scale
-        sin_a = math.sin(rad) * scale
-    tx = (1 - cos_a) * cx + sin_a * cy
-    ty = -sin_a * cx + (1 - cos_a) * cy
-    return [cos_a, -sin_a, tx, sin_a, cos_a, ty]
 
 
 #: Refusal for an expression given where the catalogue types a field literal.
@@ -1085,50 +1037,6 @@ class Pipeline(_OpsMixin):
         # sx/sy may be per-row expressions; warp_affine tracks each matrix
         # element independently, so the shear matrix passes them through.
         matrix: list[FloatOrExpr] = [1.0, sx, 0.0, sy, 1.0, 0.0]
-        return self.warp_affine(matrix=matrix, output_size=output_size)
-
-    @_sugar("warp_affine")
-    def rotate_and_scale(
-        self,
-        *,
-        angle: FloatOrExpr,
-        center: tuple[FloatOrExpr, FloatOrExpr],
-        output_size: tuple[IntOrExpr, IntOrExpr],
-        scale: FloatOrExpr = 1.0,
-    ) -> "Pipeline":
-        """
-        Combined rotation and scaling around a center point.
-
-        Convenience wrapper that builds a rotation+scale matrix and delegates
-        to :meth:`warp_affine`.
-
-        Args:
-            angle: Rotation angle in degrees (positive = clockwise). Accepts a
-                Polars expression for a per-row angle.
-            center: ``(cx, cy)`` center of rotation. Required — an image source's
-                height/width are not known until execution, so there is no
-                plan-time centre to default to. Each element accepts an
-                expression.
-            output_size: ``(height, width)`` of the output. Required, because the
-                output shape is part of the plan-time schema (same reason as
-                *center*). Each element accepts an expression.
-            scale: Scale factor (default 1.0). Accepts an expression.
-
-        Returns:
-            Self for chaining.
-
-        Example:
-            ```python
-            >>> pipe = Pipeline().source("image_bytes").rotate_and_scale(
-            ...     angle=45.0, scale=1.2, center=(112, 112), output_size=(224, 224)
-            ... )
-            >>> # Per-row angle from a column
-            >>> pipe = Pipeline().source("image_bytes").rotate_and_scale(
-            ...     angle=pl.col("theta"), center=(112, 112), output_size=(224, 224)
-            ... )
-            ```
-        """
-        matrix = _rotation_matrix(angle, center, scale)
         return self.warp_affine(matrix=matrix, output_size=output_size)
 
     # --- Contour/Geometry Operations ---
