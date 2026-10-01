@@ -231,7 +231,10 @@ impl ReductionOp {
             return ViewBuffer::from_scalar(f64::NAN);
         }
 
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        if values.iter().any(|v| v.is_nan()) {
+            return ViewBuffer::from_scalar(f64::NAN);
+        }
+        values.sort_by(f64::total_cmp);
 
         let n = values.len();
         if n == 1 {
@@ -264,18 +267,12 @@ impl ReductionOp {
         match self {
             ReductionOp::Max { axis: None } => {
                 assert!(!data.is_empty(), "Cannot reduce Max on empty buffer");
-                let max_val = data
-                    .iter()
-                    .copied()
-                    .fold(data[0], |a, b| if a > b { a } else { b });
+                let max_val = data.iter().copied().fold(data[0], maximum);
                 ViewBuffer::from_scalar(max_val)
             }
             ReductionOp::Min { axis: None } => {
                 assert!(!data.is_empty(), "Cannot reduce Min on empty buffer");
-                let min_val = data
-                    .iter()
-                    .copied()
-                    .fold(data[0], |a, b| if a < b { a } else { b });
+                let min_val = data.iter().copied().fold(data[0], minimum);
                 ViewBuffer::from_scalar(min_val)
             }
             ReductionOp::Mean { axis: None } => {
@@ -322,18 +319,12 @@ impl ReductionOp {
             // Axis-based reductions
             ReductionOp::Max { axis: Some(ax) } => {
                 self.reduce_axis::<T, _>(buffer, *ax as usize, |slice: &[T]| {
-                    slice
-                        .iter()
-                        .copied()
-                        .fold(slice[0], |a, b| if a > b { a } else { b })
+                    slice.iter().copied().fold(slice[0], maximum)
                 })
             }
             ReductionOp::Min { axis: Some(ax) } => {
                 self.reduce_axis::<T, _>(buffer, *ax as usize, |slice: &[T]| {
-                    slice
-                        .iter()
-                        .copied()
-                        .fold(slice[0], |a, b| if a < b { a } else { b })
+                    slice.iter().copied().fold(slice[0], minimum)
                 })
             }
             ReductionOp::Mean { axis: Some(ax) } => {
@@ -536,12 +527,8 @@ impl ReductionOp {
                 let in_idx = coords_to_linear(&in_coords, &strides);
                 let val = data[in_idx];
 
-                let is_better = if is_max {
-                    val > best_val
-                } else {
-                    val < best_val
-                };
-                if is_better {
+                let want = if is_max { Greater } else { Less };
+                if displaces(&best_val, &val, want) {
                     best_val = val;
                     best_idx = a;
                 }
@@ -617,15 +604,35 @@ impl<M: Mode> Op for ReductionOp<M> {
         input_shapes: &[&[crate::ops::Dim]],
         _input_dtypes: &[crate::PlannedDType],
     ) -> Result<(), ValidationError> {
+        let shape = input_shapes[0];
         if let Some(ax) = self.axis() {
-            if ax >= input_shapes[0].len() {
+            if ax >= shape.len() {
                 return Err(ValidationError::InvalidAxis {
                     axis: ax,
-                    ndim: input_shapes[0].len(),
+                    ndim: shape.len(),
                 });
             }
         }
-
+        // An ordering reduction over nothing has no answer (numpy raises);
+        // sum, mean and std are defined over nothing (0, NaN, NaN).
+        let orders = matches!(
+            self,
+            ReductionOp::Max { .. }
+                | ReductionOp::Min { .. }
+                | ReductionOp::ArgMax { .. }
+                | ReductionOp::ArgMin { .. }
+                | ReductionOp::Percentile { .. }
+        );
+        let reduced: &[crate::ops::Dim] = match self.axis() {
+            Some(ax) => &shape[ax..=ax],
+            None => shape,
+        };
+        if orders && reduced.iter().any(|d| d.known() == Some(0)) {
+            return Err(ValidationError::ShapeRequirement {
+                requirement: "a non-empty extent to order (an empty one has no extreme)",
+                got: shape.to_vec(),
+            });
+        }
         Ok(())
     }
 
@@ -659,6 +666,8 @@ fn compute_strides(shape: &[usize]) -> Vec<usize> {
 }
 
 use super::util::{coords_to_linear, linear_to_coords};
+use super::util::{displaces, maximum, minimum};
+use std::cmp::Ordering::{Greater, Less};
 
 #[cfg(test)]
 mod tests {
@@ -696,6 +705,102 @@ mod tests {
         let argmax = ReductionOp::ArgMax { axis: 0 }.execute(&buffer);
         assert_eq!(argmax.shape(), &[1]);
         assert_eq!(argmax.as_slice::<i64>(), &[1]);
+    }
+
+    /// An ordering reduction over nothing has no answer: numpy raises
+    /// ("zero-size array to reduction operation maximum which has no
+    /// identity", "attempt to get argmax of an empty sequence"). The
+    /// contract refuses it; `argmax` over an empty axis panicked the engine.
+    /// `sum` (0), `mean` and `std` (NaN) are defined over nothing.
+    #[test]
+    fn an_ordering_reduction_over_nothing_is_refused() {
+        use crate::ops::{Dim, Op};
+        use crate::PlannedDType;
+        let f32_ = [PlannedDType::Known(DType::F32)];
+        let check = |op: &ReductionOp, shape: &[usize]| {
+            let dims: Vec<Dim> = shape.iter().map(|&n| Dim::Known(n)).collect();
+            op.validate(&[&dims], &f32_)
+        };
+        for shape in [[0usize, 3, 1], [3, 0, 1]] {
+            let empty_axis = if shape[0] == 0 { 0 } else { 1 };
+            for op in [
+                ReductionOp::ArgMax { axis: empty_axis },
+                ReductionOp::ArgMin { axis: empty_axis },
+                ReductionOp::Max {
+                    axis: Some(empty_axis),
+                },
+                ReductionOp::Min {
+                    axis: Some(empty_axis),
+                },
+                ReductionOp::Max { axis: None },
+                ReductionOp::Min { axis: None },
+                ReductionOp::Percentile { q: 50.0 },
+            ] {
+                let err = check(&op, &shape).expect_err(&format!("{op:?} on {shape:?}"));
+                assert!(err.to_string().contains("empty"), "{op:?}: {err}");
+            }
+            // Reducing a non-empty axis of an empty image is fine (empty out).
+            let other = 2;
+            assert!(check(&ReductionOp::ArgMax { axis: other }, &shape).is_ok());
+            for op in [
+                ReductionOp::Sum,
+                ReductionOp::Mean { axis: None },
+                ReductionOp::Std {
+                    axis: None,
+                    ddof: 0,
+                },
+            ] {
+                assert!(check(&op, &shape).is_ok(), "{op:?}");
+            }
+        }
+    }
+
+    /// A NaN is the result of every ordering reduction, as in numpy: `max`
+    /// and `min` propagate it, `argmax`/`argmin` give its first index, and
+    /// `percentile` is NaN. Percentile used to sort with a comparator that is
+    /// not a total order under NaN, which panics; max/min/arg* compared with
+    /// `>`/`<`, so whether a NaN survived depended on where it sat.
+    #[test]
+    fn a_nan_is_the_result_of_every_ordering_reduction() {
+        for data in [
+            vec![f32::NAN, 1.0, 5.0, 3.0],
+            vec![1.0, f32::NAN, 5.0, 3.0],
+            vec![1.0, 5.0, 3.0, f32::NAN],
+        ] {
+            let nan_at = data.iter().position(|x| x.is_nan()).unwrap();
+            let buffer = ViewBuffer::from_vec_with_shape(data.clone(), vec![4]);
+            for op in [
+                ReductionOp::Max { axis: None },
+                ReductionOp::Min { axis: None },
+                ReductionOp::Max { axis: Some(0) },
+                ReductionOp::Min { axis: Some(0) },
+            ] {
+                let out = op.execute(&buffer);
+                assert!(out.as_slice::<f32>()[0].is_nan(), "{op:?} of {data:?}");
+            }
+            for q in [0.0, 50.0, 100.0] {
+                let out = ReductionOp::Percentile { q }.execute(&buffer);
+                assert!(out.as_slice::<f64>()[0].is_nan(), "p{q} of {data:?}");
+            }
+            for op in [
+                ReductionOp::ArgMax { axis: 0 },
+                ReductionOp::ArgMin { axis: 0 },
+            ] {
+                let out = op.execute(&buffer);
+                assert_eq!(
+                    out.as_slice::<i64>(),
+                    &[nan_at as i64],
+                    "{op:?} of {data:?}"
+                );
+            }
+        }
+        // Many NaNs, enough for the sort to notice an inconsistent order.
+        let data: Vec<f64> = (0..64)
+            .map(|i| if i % 3 == 0 { f64::NAN } else { i as f64 })
+            .collect();
+        let buffer = ViewBuffer::from_vec_with_shape(data, vec![64]);
+        let out = ReductionOp::Percentile { q: 25.0 }.execute(&buffer);
+        assert!(out.as_slice::<f64>()[0].is_nan());
     }
 
     #[test]

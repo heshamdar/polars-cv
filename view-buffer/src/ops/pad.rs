@@ -159,6 +159,20 @@ fn pad_generic<T: FillValue>(
     let input = contig.as_slice::<T>();
     let fill = T::from_f32(value);
     let mut output = vec![fill; output_h * output_w * channels];
+    let out_shape = if shape.len() == 2 {
+        vec![output_h, output_w]
+    } else {
+        vec![output_h, output_w, channels]
+    };
+    // An empty input is extended only by "constant" (the op's contract), so
+    // under any other mode its output is empty too: nothing to read or write.
+    if input.is_empty() && mode != PadMode::Constant {
+        debug_assert!(
+            output.is_empty(),
+            "the contract refuses extending an empty axis"
+        );
+        return ViewBuffer::from_vec_with_shape(output, out_shape);
+    }
 
     match mode {
         PadMode::Constant => {
@@ -207,11 +221,6 @@ fn pad_generic<T: FillValue>(
         }
     }
 
-    let out_shape = if shape.len() == 2 {
-        vec![output_h, output_w]
-    } else {
-        vec![output_h, output_w, channels]
-    };
     ViewBuffer::from_vec_with_shape(output, out_shape)
 }
 
@@ -238,6 +247,33 @@ fn reflect_index(idx: isize, len: usize, symmetric: bool) -> usize {
 
 #[cfg(test)]
 mod tests {
+    /// Padding the non-empty axis of an empty image gives an empty image, as
+    /// numpy's does (`np.pad(np.zeros((5, 0)), ((0, 1), (0, 0)), "edge")` is
+    /// 6x0): edge mode read a zero-width row's first pixel and panicked. (An
+    /// empty axis itself is extended only by "constant": the op's contract.)
+    #[test]
+    fn padding_the_other_axis_of_an_empty_image_is_empty() {
+        for mode in [
+            PadMode::Edge,
+            PadMode::Reflect,
+            PadMode::Symmetric,
+            PadMode::Constant,
+        ] {
+            let cols = ViewBuffer::from_vec_with_shape(Vec::<u8>::new(), vec![5, 0, 1]);
+            assert_eq!(
+                pad(&cols, 0, 1, 0, 0, 0.0, mode).shape(),
+                &[6, 0, 1],
+                "{mode:?}"
+            );
+            let rows = ViewBuffer::from_vec_with_shape(Vec::<f32>::new(), vec![0, 4]);
+            assert_eq!(
+                pad(&rows, 0, 0, 2, 1, 0.0, mode).shape(),
+                &[0, 7],
+                "{mode:?}"
+            );
+        }
+    }
+
     use super::*;
     use crate::core::dtype::DType;
 

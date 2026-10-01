@@ -62,10 +62,12 @@ pub enum GraphOp<M: Mode = Exec> {
         /// The expression to combine with, element-wise.
         other: NodeRef,
     },
-    /// Element-wise division.
+    /// Element-wise true division, into a float.
     ///
-    /// For u8/u16: integer division, with division by zero yielding 0. For
-    /// f32/f64: standard division.
+    /// Integer operands promote to float (``f32``, or ``f64`` when an operand
+    /// is ``f64``) and ``a / b`` follows IEEE 754, as NumPy's ``true_divide``:
+    /// ``x / 0`` is ``inf`` (``-inf`` for negative ``x``) and ``0 / 0`` is
+    /// ``nan``.
     ///
     /// Example:
     ///     ```python
@@ -91,22 +93,6 @@ pub enum GraphOp<M: Mode = Exec> {
     ///     ```
     #[op(name = "blend", visibility = LazyOnly, sample = {"other": "n0"})]
     Blend {
-        /// The expression to combine with, element-wise.
-        other: NodeRef,
-    },
-    /// Scaled ratio: a/b scaled to the full range of the dtype.
-    ///
-    /// For u8: (a/b) * 255, clamped to [0, 255]. For u16: (a/b) * 65535,
-    /// clamped to [0, 65535]. For f32/f64: standard division.
-    ///
-    /// Example:
-    ///     ```python
-    ///     >>> a = pl.col("image1").cv.pipe(pipe1)
-    ///     >>> b = pl.col("image2").cv.pipe(pipe2)
-    ///     >>> result = a.ratio(b).sink("numpy")
-    ///     ```
-    #[op(name = "ratio", visibility = LazyOnly, sample = {"other": "n0"})]
-    Ratio {
         /// The expression to combine with, element-wise.
         other: NodeRef,
     },
@@ -263,7 +249,6 @@ impl<M: Mode> GraphOp<M> {
             GraphOp::Multiply { other } => Role::Binary(BinaryOp::Multiply, other),
             GraphOp::Divide { other } => Role::Binary(BinaryOp::Divide, other),
             GraphOp::Blend { other } => Role::Binary(BinaryOp::Blend, other),
-            GraphOp::Ratio { other } => Role::Binary(BinaryOp::Ratio, other),
             GraphOp::Maximum { other } => Role::Binary(BinaryOp::Maximum, other),
             GraphOp::Minimum { other } => Role::Binary(BinaryOp::Minimum, other),
             GraphOp::BitwiseAnd { other } => Role::Binary(BinaryOp::BitwiseAnd, other),

@@ -257,6 +257,41 @@ pub enum ComputeOp<M: Mode = Exec> {
         #[param(default = 0.0)]
         border_value: M::V<f64>,
     },
+    /// Combined rotation and scaling around a center point.
+    ///
+    /// Warps with OpenCV's ``getRotationMatrix2D(center, -angle, scale)``
+    /// matrix, built per row from the values the row resolves: the matrix
+    /// is computed in one place (the engine), so a literal and the same
+    /// value as an expression give identical output.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> pipe = Pipeline().source("image_bytes").rotate_and_scale(
+    ///     ...     angle=45.0, scale=1.2, center=(112, 112), output_size=(224, 224)
+    ///     ... )
+    ///     >>> # Per-row angle from a column
+    ///     >>> pipe = Pipeline().source("image_bytes").rotate_and_scale(
+    ///     ...     angle=pl.col("theta"), center=(112, 112), output_size=(224, 224)
+    ///     ... )
+    ///     ```
+    #[op(name = "rotate_and_scale", sample = {"angle": 30.0, "center": [2.0, 2.0],
+                                              "output_size": [4, 4], "scale": 1.0})]
+    RotateAndScale {
+        /// Rotation angle in degrees (positive = clockwise). Accepts a Polars
+        /// expression for a per-row angle.
+        angle: M::V<f64>,
+        /// ``(cx, cy)`` center of rotation. Required: an image source's
+        /// height/width are not known until execution, so there is no
+        /// plan-time centre to default to. Each element accepts an expression.
+        center: [M::V<f64>; 2],
+        /// ``(height, width)`` of the output. Required, because the output
+        /// shape is part of the plan-time schema. Each element accepts an
+        /// expression.
+        output_size: [M::V<u32>; 2],
+        /// Scale factor (default 1.0). Accepts an expression.
+        #[param(default = 1.0)]
+        scale: M::V<f64>,
+    },
     /// Rotate image by specified angle.
     ///
     /// For angles of 90, 180, or 270 degrees, this uses zero-copy view operations
@@ -323,6 +358,10 @@ impl<M: Mode> ComputeOp<M> {
             ComputeOp::WarpAffine {
                 output_size: [h, w],
                 ..
+            }
+            | ComputeOp::RotateAndScale {
+                output_size: [h, w],
+                ..
             } => OpShape::SetHw {
                 h: size::<M>(h),
                 w: size::<M>(w),
@@ -363,17 +402,67 @@ impl<M: Mode> ComputeOp<M> {
         if let ComputeOp::WarpAffine { matrix, .. } = self {
             let known: Option<Vec<f64>> = matrix.iter().map(|c| M::sym(c).known()).collect();
             if let Some(known) = known {
-                let [a, b, _, c, d, _] =
-                    [known[0], known[1], known[2], known[3], known[4], known[5]];
-                let determinant = a * d - b * c;
-                if determinant.abs() < AffineParams::SINGULAR_EPSILON {
+                let m: [f64; 6] = [known[0], known[1], known[2], known[3], known[4], known[5]];
+                if !AffineParams::matrix_is_invertible(&m) {
+                    let [a, b, _, c, d, _] = m;
                     return Err(format!(
-                        "warp_affine: matrix {known:?} is singular (determinant \
-                         {determinant}), so it has no inverse and the warp is undefined. \
-                         A row of zeros, a zero scale factor on an axis, or two \
-                         proportional rows will do this."
+                        "warp_affine: matrix {m:?} is singular or not finite \
+                         (determinant {}), so it has no inverse and the warp is undefined. A non-finite coefficient, a row of \
+                         zeros, a zero scale factor on an axis, or two proportional \
+                         rows will do this.",
+                        a * d - b * c
                     ));
                 }
+            }
+            return Ok(());
+        }
+        // The rotation matrix's determinant is scale**2: a zero scale is
+        // singular, and a non-finite angle, centre or scale makes it NaN. Each
+        // known value is checked as soon as it is known (a literal at plan
+        // time), and the whole matrix — the same rule `warp_affine` reads —
+        // once every value is.
+        if let ComputeOp::RotateAndScale {
+            angle,
+            center: [cx, cy],
+            scale,
+            ..
+        } = self
+        {
+            let named = [
+                ("angle", M::sym(angle).known()),
+                ("center x", M::sym(cx).known()),
+                ("center y", M::sym(cy).known()),
+                ("scale", M::sym(scale).known()),
+            ];
+            for (name, value) in named {
+                if let Some(v) = value.filter(|v| !v.is_finite()) {
+                    return Err(format!("rotate_and_scale: {name} {v} is not finite"));
+                }
+            }
+            if let Some(scale) = named[3].1 {
+                if (scale * scale).abs() < AffineParams::SINGULAR_EPSILON {
+                    return Err(format!(
+                        "rotate_and_scale: scale {scale} collapses the image to a \
+                         point, so the warp has no inverse and is undefined."
+                    ));
+                }
+            }
+            if let [Some(angle), Some(cx), Some(cy), Some(scale)] = named.map(|(_, v)| v) {
+                let m = AffineParams::rotation_matrix_2d(angle, cx, cy, scale);
+                if !AffineParams::matrix_is_invertible(&m) {
+                    return Err(format!(
+                        "rotate_and_scale: angle {angle}, centre ({cx}, {cy}) and scale \
+                         {scale} give the matrix {m:?}, which has no inverse."
+                    ));
+                }
+            }
+            return Ok(());
+        }
+        // A rotation by a non-finite angle has no matrix (and no expanded
+        // canvas: `AffineParams::expanded_size` of NaN is 0).
+        if let ComputeOp::Rotate { angle, .. } = self {
+            if let Some(angle) = M::sym(angle).known().filter(|a| !a.is_finite()) {
+                return Err(format!("rotate: angle {angle} is not finite"));
             }
             return Ok(());
         }
@@ -483,6 +572,20 @@ impl ComputeOp {
                 interpolation,
                 border_value,
             })),
+            // The matrix comes from the one rotation authority, on the row's
+            // own values.
+            ComputeOp::RotateAndScale {
+                angle,
+                center: [cx, cy],
+                output_size: [output_height, output_width],
+                scale,
+            } => ViewDto::Compute(ComputeOp::Affine(AffineParams {
+                matrix: AffineParams::rotation_matrix_2d(angle, cx, cy, scale),
+                output_height,
+                output_width,
+                interpolation: InterpolationType::Bilinear,
+                border_value: 0.0,
+            })),
             other => ViewDto::Compute(other),
         }
     }
@@ -573,6 +676,7 @@ impl<M: Mode> Op for ComputeOp<M> {
             ComputeOp::Invert => "Invert",
             ComputeOp::RotateAffine { .. } => "RotateAffine",
             ComputeOp::WarpAffine { .. } => "WarpAffine",
+            ComputeOp::RotateAndScale { .. } => "RotateAndScale",
             ComputeOp::Rotate { .. } => "Rotate",
             ComputeOp::AddConstant { .. } => "Add",
             ComputeOp::SubtractConstant { .. } => "Sub",
@@ -588,6 +692,7 @@ impl<M: Mode> Op for ComputeOp<M> {
             ComputeOp::Affine(_)
             | ComputeOp::RotateAffine { .. }
             | ComputeOp::WarpAffine { .. }
+            | ComputeOp::RotateAndScale { .. }
             | ComputeOp::Rotate { .. } => MemoryEffect::RequiresContiguous,
             // Every per-value op, `normalize` and `adjust_contrast` included
             // (their statistics too), reads a view where it lies
@@ -620,6 +725,7 @@ impl<M: Mode> Op for ComputeOp<M> {
             ComputeOp::Affine(_)
             | ComputeOp::RotateAffine { .. }
             | ComputeOp::WarpAffine { .. }
+            | ComputeOp::RotateAndScale { .. }
             | ComputeOp::Rotate { .. } => SpatialDependency::geometric(),
             // Per-element: output at (y, x) depends only on input at (y, x).
             _ => SpatialDependency::Pointwise,
@@ -696,7 +802,7 @@ impl<M: Mode> Op for ComputeOp<M> {
                 }
                 Ok(())
             }
-            ComputeOp::WarpAffine { .. } => {
+            ComputeOp::WarpAffine { .. } | ComputeOp::RotateAndScale { .. } => {
                 self.check()
                     .map_err(|message| ValidationError::Generic { message })?;
                 crate::ops::validation::require_hw_or_hwc(input_shapes[0])
@@ -714,6 +820,7 @@ impl<M: Mode> Op for ComputeOp<M> {
             | ComputeOp::Affine(_)
             | ComputeOp::RotateAffine { .. }
             | ComputeOp::WarpAffine { .. }
+            | ComputeOp::RotateAndScale { .. }
             | ComputeOp::Rotate { .. }
             | ComputeOp::Fused(_) => DTypeCategory::Any,
             _ => DTypeCategory::Numeric,
@@ -747,6 +854,7 @@ impl<M: Mode> Op for ComputeOp<M> {
             | ComputeOp::Affine(_)
             | ComputeOp::RotateAffine { .. }
             | ComputeOp::WarpAffine { .. }
+            | ComputeOp::RotateAndScale { .. }
             | ComputeOp::Rotate { .. } => OutputDTypeRule::PreserveInput,
             _ => OutputDTypeRule::PromoteToFloat,
         }
@@ -757,6 +865,91 @@ impl<M: Mode> Op for ComputeOp<M> {
 mod tests {
     use super::*;
     use crate::mode::{Literals, Resolve, Wire};
+
+    /// A geometric parameter that is not finite has no warp: a NaN or
+    /// infinite angle, centre or scale makes the matrix NaN, and it used to
+    /// pass (`NaN < eps` is false) and warp every pixel to the border. Each
+    /// warp's matrix is checked by the one rule, `AffineParams::is_invertible`
+    /// (finite and non-singular), per row when a value is per-row.
+    #[test]
+    fn a_warp_with_a_non_finite_parameter_is_refused() {
+        let rs = |angle: f64, cx: f64, scale: f64| ComputeOp::<Exec>::RotateAndScale {
+            angle,
+            center: [cx, 2.0],
+            output_size: [4, 4],
+            scale,
+        };
+        let warp = |m0: f64| ComputeOp::<Exec>::WarpAffine {
+            matrix: [m0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            output_size: [4, 4],
+            interpolation: InterpolationType::Bilinear,
+            border_value: 0.0,
+        };
+        let rotate = |angle: f32| ComputeOp::<Exec>::Rotate {
+            angle,
+            expand: true,
+            interpolation: InterpolationType::Bilinear,
+            border_value: 0.0,
+        };
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(rs(bad, 2.0, 1.0).check().is_err(), "angle {bad}");
+            assert!(rs(30.0, bad, 1.0).check().is_err(), "centre {bad}");
+            assert!(rs(30.0, 2.0, bad).check().is_err(), "scale {bad}");
+            assert!(warp(bad).check().is_err(), "matrix {bad}");
+            assert!(rotate(bad as f32).check().is_err(), "rotate {bad}");
+        }
+        assert!(rs(30.0, 2.0, 1.0).check().is_ok());
+        assert!(warp(1.0).check().is_ok());
+        assert!(rotate(30.0).check().is_ok());
+    }
+
+    /// `rotate_and_scale` executes as a warp that turns the image clockwise
+    /// (y down) about its centre and scales it. Checked against the geometry
+    /// rather than the function that builds the matrix: the centre stays put,
+    /// and a point one unit right of it lands `scale` along the turned axis.
+    #[test]
+    fn rotate_and_scale_lowers_to_the_rotation_matrix() {
+        let cases = [
+            // (angle, centre, scale, where (cx + 1, cy) must land)
+            (90.0, [1.0, 3.0], 2.0, [1.0, 5.0]),
+            (180.0, [0.0137, 0.0137], 0.5, [0.0137 - 0.5, 0.0137]),
+            (30.0, [4.0, -2.0], 1.0, [4.0 + 0.75f64.sqrt(), -2.0 + 0.5]),
+        ];
+        for (angle, [cx, cy], scale, [ex, ey]) in cases {
+            let op: ComputeOp<Exec> = ComputeOp::RotateAndScale {
+                angle,
+                center: [cx, cy],
+                output_size: [5, 6],
+                scale,
+            };
+            let crate::ops::dto::ViewDto::Compute(ComputeOp::Affine(params)) = op.lowered() else {
+                panic!("rotate_and_scale must lower to an affine warp");
+            };
+            let m = params.matrix;
+            let at = |x: f64, y: f64| (m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5]);
+            let close = |(x, y): (f64, f64), (u, v): (f64, f64)| {
+                (x - u).abs() < 1e-12 && (y - v).abs() < 1e-12
+            };
+            assert!(close(at(cx, cy), (cx, cy)), "{angle}: the centre moved");
+            assert!(
+                close(at(cx + 1.0, cy), (ex, ey)),
+                "{angle}: (cx + 1, cy) -> {:?}, want ({ex}, {ey})",
+                at(cx + 1.0, cy)
+            );
+            assert_eq!((params.output_height, params.output_width), (5, 6));
+        }
+    }
+
+    #[test]
+    fn a_zero_scale_is_refused() {
+        let op: ComputeOp<Exec> = ComputeOp::RotateAndScale {
+            angle: 10.0,
+            center: [1.0, 1.0],
+            output_size: [4, 4],
+            scale: 0.0,
+        };
+        assert!(op.check().unwrap_err().contains("scale 0"));
+    }
 
     /// The generic `name()` spells each wire scalar op's `ScalarOp` name
     /// (a per-row value cannot build the `ScalarOp`); the executed op's

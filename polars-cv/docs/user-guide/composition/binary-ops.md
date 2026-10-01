@@ -14,14 +14,21 @@ result = expr_a.apply_mask(expr_b)
 
 ## Available Operations
 
-| Operation | Description | U8 Behavior | Float Behavior |
-|-----------|-------------|-------------|----------------|
-| `add` | Element-wise addition | Saturating (max 255) | Standard |
-| `subtract` | Element-wise subtraction | Saturating (min 0) | Standard |
-| `multiply` | Element-wise multiplication | Saturating | Standard |
-| `divide` | Element-wise division | Integer division | Standard |
-| `blend` | Normalized blend | `(a/255)*(b/255)*255` | Standard |
-| `ratio` | Scaled ratio | `(a/b)*255` | Standard |
+| Operation | Description | Integer behaviour | Float behaviour |
+|-----------|-------------|-------------------|-----------------|
+| `add` | Element-wise addition | Saturating to the dtype's range | IEEE |
+| `subtract` | Element-wise subtraction | Saturating to the dtype's range | IEEE |
+| `multiply` | Element-wise multiplication | Saturating to the dtype's range | IEEE |
+| `divide` | True division | Promotes to a float: `f32` for 8/16-bit integers, `f64` for 32/64-bit ones (and with an `f64` operand); `x / 0` is `inf`, `0 / 0` is `nan` | IEEE |
+| `blend` | Normalized product | `round(a*b / MAX)`, i.e. `(a/MAX)*(b/MAX)*MAX` | `a * b` |
+| `maximum` / `minimum` | Element-wise extremes | Exact | IEEE comparison |
+| `bitwise_and` / `or` / `xor` | Bitwise | Exact | Integer-only |
+
+Operands of different dtypes meet in **NumPy's promoted dtype**
+(`np.result_type`): the smallest dtype that holds every value of both, so
+`u8` with `i8` is `i16` and `u32` with `f32` is `f64`; `u64` with a signed
+integer has none and is `f64` (a bitwise op on that pair is refused). Every
+dtype is computed natively, so no value is rounded through `f32`.
 
 ## Basic Usage
 

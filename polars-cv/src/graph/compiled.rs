@@ -872,7 +872,9 @@ impl CompiledGraph {
                                         &[current_buf.dtype()],
                                     )
                                     .map_err(|e| format!("{}: {e}", histogram_op.name()))?;
-                                let result = histogram_op.execute(&current_buf);
+                                let result = histogram_op
+                                    .execute(&current_buf)
+                                    .map_err(|e| format!("{}: {e}", histogram_op.name()))?;
                                 current_output = NodeOutput::from_buffer(result);
                             }
                             GraphStep::PerceptualHash(phash_op) => {

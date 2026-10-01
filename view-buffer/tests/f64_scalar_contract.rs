@@ -86,3 +86,57 @@ fn f64_chain_stays_unfused_but_correct() {
     assert_eq!(vals[1], 0.0);
     assert_eq!(vals[2], 1.0);
 }
+
+/// The 32/64-bit integers promote to f64, as NumPy's float ops do (decision
+/// D3): f32 cannot hold them (2^24 + 1 is not an f32), so `scale`, `sqrt`,
+/// gamma and the rest of the family compute in f64 from the exact value and
+/// return f64, where they used to read each pixel as f32 and return f32.
+#[test]
+fn wide_integers_promote_to_f64_and_compute_from_the_exact_value() {
+    let big = 16_777_217u64; // 2^24 + 1
+    let max32 = u32::MAX as f64;
+    let sources: Vec<ViewBuffer> = vec![
+        ViewBuffer::from_vec(vec![big as u32, 3]),
+        ViewBuffer::from_vec(vec![big as i32, 3]),
+        ViewBuffer::from_vec(vec![big, 3]),
+        ViewBuffer::from_vec(vec![big as i64, 3]),
+    ];
+    for buf in &sources {
+        let dtype = buf.dtype();
+        let x = big as f64;
+        let scaled = run(buf, |e| e.scale(3.0));
+        assert_eq!(f64_vals(&scaled)[0], x * 3.0, "{dtype:?} scale");
+        let rooted = run(buf, |e| {
+            e.apply_op(view_buffer::ViewDto::Compute(view_buffer::ComputeOp::Sqrt))
+        });
+        assert_eq!(f64_vals(&rooted)[0], x.sqrt(), "{dtype:?} sqrt");
+        let shifted = run(buf, |e| {
+            e.apply_op(view_buffer::ViewDto::Compute(
+                view_buffer::ComputeOp::AddConstant { value: 0.5 },
+            ))
+        });
+        assert_eq!(f64_vals(&shifted)[0], x + 0.5, "{dtype:?} add_constant");
+        let contrast = run(buf, |e| e.adjust_contrast(2.0));
+        let mean = (x + 3.0) / 2.0;
+        assert_eq!(
+            f64_vals(&contrast)[0],
+            (x - mean) * 2.0 + mean,
+            "{dtype:?} contrast"
+        );
+    }
+    // Gamma maps the dtype's own range, its maximum exact in f64.
+    let top = ViewBuffer::from_vec(vec![u32::MAX, 0]);
+    let gamma = run(&top, |e| e.adjust_gamma(2.0));
+    assert_eq!(f64_vals(&gamma), vec![max32, 0.0]);
+}
+
+/// The 8/16-bit integers keep f32, which holds every value they have.
+#[test]
+fn narrow_integers_still_promote_to_f32() {
+    for buf in [
+        ViewBuffer::from_vec(vec![200u8]),
+        ViewBuffer::from_vec(vec![-7i16]),
+    ] {
+        assert_eq!(run(&buf, |e| e.scale(2.0)).dtype(), DType::F32);
+    }
+}

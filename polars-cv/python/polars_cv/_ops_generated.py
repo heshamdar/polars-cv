@@ -379,7 +379,6 @@ TYPED_OPS: frozenset[str] = frozenset(
         "pad_to_size",
         "perceptual_hash",
         "rasterize",
-        "ratio",
         "reciprocal",
         "reduce_argmax",
         "reduce_argmin",
@@ -399,6 +398,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "resize_to_height",
         "resize_to_width",
         "rotate",
+        "rotate_and_scale",
         "round",
         "scale",
         "sign",
@@ -641,7 +641,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
                 {"kind": "scalar", "per_row": True, "py": "int"},
                 {
                     "kind": "list",
-                    "inner": {"kind": "scalar", "per_row": False, "py": "float"},
+                    "inner": {"kind": "scalar", "per_row": False, "py": "bound"},
                 },
             ],
         },
@@ -788,7 +788,6 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         "fill_value": {"kind": "scalar", "per_row": True, "py": "int"},
         "background": {"kind": "scalar", "per_row": True, "py": "int"},
     },
-    "ratio": {"other": {"kind": "node"}},
     "reciprocal": {},
     "reduce_argmax": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
     "reduce_argmin": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
@@ -893,6 +892,20 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "variants": ["nearest", "bilinear"],
         },
         "border_value": {"kind": "scalar", "per_row": True, "py": "float"},
+    },
+    "rotate_and_scale": {
+        "angle": {"kind": "scalar", "per_row": True, "py": "float"},
+        "center": {
+            "kind": "array",
+            "len": 2,
+            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+        },
+        "output_size": {
+            "kind": "array",
+            "len": 2,
+            "inner": {"kind": "scalar", "per_row": True, "py": "int"},
+        },
+        "scale": {"kind": "scalar", "per_row": True, "py": "float"},
     },
     "round": {},
     "scale": {"factor": {"kind": "scalar", "per_row": True, "py": "float"}},
@@ -1020,10 +1033,6 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "pad_to_size": [{"input": "buffer", "output": "buffer"}],
     "perceptual_hash": [{"input": "buffer", "output": "vector"}],
     "rasterize": [{"input": "contour", "output": "buffer"}],
-    "ratio": [
-        {"input": "buffer", "output": "buffer"},
-        {"input": "vector", "output": "vector"},
-    ],
     "reciprocal": [{"input": "buffer", "output": "buffer"}],
     "reduce_argmax": [
         {"input": "buffer", "output": "buffer"},
@@ -1078,6 +1087,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "resize_to_height": [{"input": "buffer", "output": "buffer"}],
     "resize_to_width": [{"input": "buffer", "output": "buffer"}],
     "rotate": [{"input": "buffer", "output": "buffer"}],
+    "rotate_and_scale": [{"input": "buffer", "output": "buffer"}],
     "round": [{"input": "buffer", "output": "buffer"}],
     "scale": [{"input": "buffer", "output": "buffer"}],
     "sign": [{"input": "buffer", "output": "buffer"}],
@@ -1709,12 +1719,19 @@ class _OpsMixin:
     ) -> Pipeline:
         """Compute pixel value histogram.
 
+        Bins follow ``numpy.histogram``: a value outside the range or the edges
+        is in no bin (not counted; ``"quantized"`` gives it the index one past the
+        last bin), as is NaN. Infinite outer edges are open bounds, e.g.
+        ``bins=[-inf, 0, 10, inf]`` keeps every value.
+
         Domain: buffer → vector; with ``output="quantized"``: buffer → buffer
 
         Args:
             bins: Number of bins (default 256), a Polars expression for per-row dynamic
-                bin count, or an explicit list of bin edges.
-            range: (min, max) tuple. Auto-detected if None.
+                bin count, or an explicit list of non-decreasing bin edges (the outer
+                ones may be infinite).
+            range: (min, max) tuple, finite. Auto-detected if None, widened to hold
+                every value.
             closed: "left" or "right" interval inclusiveness (default "left").
             output: "buckets" (list of structs), "counts" (bin counts), "normalized"
                 (sum to 1.0), "quantized" (pixel indices), "edges" (bin edges).
@@ -2267,6 +2284,55 @@ class _OpsMixin:
             },
         )
 
+    def rotate_and_scale(
+        self,
+        *,
+        angle: FloatOrExpr,
+        center: Sequence[FloatOrExpr],
+        output_size: Sequence[IntOrExpr],
+        scale: FloatOrExpr = 1.0,
+    ) -> Pipeline:
+        """Combined rotation and scaling around a center point.
+
+        Warps with OpenCV's ``getRotationMatrix2D(center, -angle, scale)``
+        matrix, built per row from the values the row resolves: the matrix
+        is computed in one place (the engine), so a literal and the same
+        value as an expression give identical output.
+
+        Domain: buffer → buffer
+
+        Args:
+            angle: Rotation angle in degrees (positive = clockwise). Accepts a Polars
+                expression for a per-row angle.
+            center: ``(cx, cy)`` center of rotation. Required: an image source's
+                height/width are not known until execution, so there is no plan-time
+                centre to default to. Each element accepts an expression.
+            output_size: ``(height, width)`` of the output. Required, because the output
+                shape is part of the plan-time schema. Each element accepts an
+                expression.
+            scale: Scale factor (default 1.0). Accepts an expression.
+
+        Example:
+            ```python
+            >>> pipe = Pipeline().source("image_bytes").rotate_and_scale(
+            ...     angle=45.0, scale=1.2, center=(112, 112), output_size=(224, 224)
+            ... )
+            >>> # Per-row angle from a column
+            >>> pipe = Pipeline().source("image_bytes").rotate_and_scale(
+            ...     angle=pl.col("theta"), center=(112, 112), output_size=(224, 224)
+            ... )
+            ```
+        """
+        return self._append_typed(
+            "rotate_and_scale",
+            {
+                "angle": angle,
+                "center": center,
+                "output_size": output_size,
+                "scale": scale,
+            },
+        )
+
     def round(self) -> Pipeline:
         """Round to nearest, ties to even (matches Polars/numpy).
 
@@ -2507,10 +2573,12 @@ class _LazyOpsMixin:
         return self._binary_op("blend", other)
 
     def divide(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
-        """Element-wise division.
+        """Element-wise true division, into a float.
 
-        For u8/u16: integer division, with division by zero yielding 0. For
-        f32/f64: standard division.
+        Integer operands promote to float (``f32``, or ``f64`` when an operand
+        is ``f64``) and ``a / b`` follows IEEE 754, as NumPy's ``true_divide``:
+        ``x / 0`` is ``inf`` (``-inf`` for negative ``x``) and ``0 / 0`` is
+        ``nan``.
 
         Domain: buffer → buffer, vector → vector
 
@@ -2582,26 +2650,6 @@ class _LazyOpsMixin:
             ```
         """
         return self._binary_op("multiply", other)
-
-    def ratio(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
-        """Scaled ratio: a/b scaled to the full range of the dtype.
-
-        For u8: (a/b) * 255, clamped to [0, 255]. For u16: (a/b) * 65535,
-        clamped to [0, 65535]. For f32/f64: standard division.
-
-        Domain: buffer → buffer, vector → vector
-
-        Args:
-            other: The expression to combine with, element-wise.
-
-        Example:
-            ```python
-            >>> a = pl.col("image1").cv.pipe(pipe1)
-            >>> b = pl.col("image2").cv.pipe(pipe2)
-            >>> result = a.ratio(b).sink("numpy")
-            ```
-        """
-        return self._binary_op("ratio", other)
 
     def subtract(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise subtraction.

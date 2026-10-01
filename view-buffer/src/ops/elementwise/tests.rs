@@ -292,13 +292,36 @@ fn complement(buf: &ViewBuffer) -> Option<ViewBuffer> {
 }
 
 /// The expected result where the engine deliberately departs from the legacy
-/// code (CR-53): `invert` on an integer dtype other than u8/u16 used to
-/// return f32 `1 - x`; it now keeps the dtype as `MAX + MIN - x`, which is
-/// `!x`.
+/// code:
+/// - CR-53: `invert` on an integer dtype other than u8/u16 used to return
+///   f32 `1 - x`; it now keeps the dtype as `MAX + MIN - x`, which is `!x`.
+/// - D3: the float-promoting ops on the 32/64-bit integers used to read each
+///   pixel as f32 and return f32; they now promote to f64, as NumPy does —
+///   the legacy f64 path on the input converted exactly to f64, with gamma
+///   mapping the integer's own range.
 fn changed_from_legacy(op: &ComputeOp, buf: &ViewBuffer) -> Option<ViewBuffer> {
+    use crate::core::dtype::OutputDTypeRule;
+    use crate::ops::traits::Op;
+    let wide = matches!(
+        buf.dtype(),
+        DType::U32 | DType::I32 | DType::U64 | DType::I64
+    );
     match (op, buf.dtype()) {
         (ComputeOp::Invert, DType::U8 | DType::U16) => None,
         (ComputeOp::Invert, _) => complement(buf),
+        (ComputeOp::AdjustGamma { gamma }, _) if wide => {
+            let max = buf.dtype().value_range_max();
+            let x = buf.cast(DType::F64).to_contiguous();
+            let out: Vec<f64> = x
+                .as_slice::<f64>()
+                .iter()
+                .map(|&v| (v / max).clamp(0.0, 1.0).powf(*gamma as f64) * max)
+                .collect();
+            Some(ViewBuffer::from_vec_with_shape(out, buf.shape().to_vec()))
+        }
+        _ if wide && op.output_dtype_rule() == OutputDTypeRule::PromoteToFloat => {
+            Some(legacy::apply(buf.cast(DType::F64), op.clone()))
+        }
         _ => None,
     }
 }

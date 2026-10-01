@@ -179,7 +179,7 @@ CI and wheel jobs clear it with `RUSTFLAGS=""`.
 
 ## Known Issues
 
-- **f64 chains stay unfused:** the FusedKernel computes in f32, so the float-promoting scalar family is correct-but-unfused for f64 inputs (`view-buffer/src/expr.rs::extract_ops`).
+- **f64-accumulated chains stay unfused:** the FusedKernel computes in f32, so the float-promoting scalar family is correct-but-unfused for inputs whose `DType::accumulator` is f64 — f64 and the 32/64-bit integers (`view-buffer/src/ops/elementwise/mod.rs::lower_to_scalars`).
 
 ## Release History
 
@@ -214,8 +214,8 @@ changes; they explain *why* the code is shaped the way it is.
 - **Kernel fusion.** Consecutive scalar compute ops (scale/relu/clamp/gamma/invert)
   plus casts fold into one `FusedKernel` pass (any-numeric read → f32 ops →
   out-dtype write). `out_dtype` is pinned to what the unfused chain would produce,
-  so fusion never changes the planned schema. f64 promote-family inputs stay
-  unfused (see Known Issues).
+  so fusion never changes the planned schema. Promote-family inputs whose
+  accumulator is f64 stay unfused (see Known Issues).
 - **Rotation/affine unification.** `rotate()` with arbitrary angles routes through
   `ComputeOp::RotateAffine` → `AffineParams::from_rotation()` → `apply_affine_warp()`,
   sharing the affine code path; 90/180/270 stay zero-copy via `ViewOp`. Consecutive
@@ -286,7 +286,7 @@ side channel.
 | Null parameter handling | `NullParamPolicy` on `ParamCtx`, via `ParamCol::on_null` | Reviewed by hand: never add per-op or per-parameter null keywords |
 | What a `(domain, sink format)` pair produces | `SinkKind::resolve` in `src/graph/sink_kind.rs` | Compile error: the four halves of the sink contract (`dtype_for_output`, `encode_node_output`, `null_row_result_for_spec`, `build_series_from_spec`) match on the enum, so a new kind is non-exhaustive in all four at once; `every_kind_is_produced_by_some_pair` rejects a kind no pair names |
 | Which files a source-scanning guard reads | `tests/_discovery.py` — every accessor raises rather than returning empty | `test_scans_go_through_discovery` (AST walk: a direct `glob`/`rglob` in `tests/` fails unless the file is in `_DISCOVERY_EXEMPT` with a reason), `test_discovery_fixtures.py` |
-| The `rotate_and_scale` matrix | `AffineParams::rotation_matrix_2d` (view-buffer), read via the `rotation_matrix_2d` FFI | Reviewed by hand: `_rotation_matrix`'s literal path calls the FFI rather than recomputing the trig (its `pl.Expr` branch is the one sanctioned copy); `_REQUIRED_LIB_HOOKS` in `test_sanitation.py` keeps the FFI registered |
+| The `rotate_and_scale` matrix | `AffineParams::rotation_matrix_2d` (view-buffer), evaluated per row when `ComputeOp::RotateAndScale` lowers | Structural: `rotate_and_scale` is a typed op, so its angle, centre and scale reach the engine as parameters and Python holds no trig to drift (a polars `.radians()` copy rounded differently: `test_per_row_arguments_match_literals`) |
 | A `Pipeline`'s state, when copied | `Pipeline._clone` — copies every field (lists copied, the immutable plan shared); `to_graph` and CSE derive through it, then replace the plan | `test_a_derived_pipeline_keeps_every_setting_and_shares_no_list` |
 | Whether the compiled extension matches the sources | `POLARS_CV_SOURCE_HASH` from `build.rs`, recomputed by `build_info()` | `test_compiled_plugin_matches_the_rust_sources` — the version comparison cannot fire within a release cycle |
 | Dtype spellings on the Python side | `python/polars_cv/_dtype_names.py`, generated from `dtype_table!` by `scripts/gen_dtype_names.py` | `test_dtype_names_module_is_current` (regenerate-and-diff), `test_engine_dtype_names_match_the_generated_table` pins `_types.DType` to it without the plugin |
@@ -377,6 +377,6 @@ rather than back-filled with pins that would misuse the file.)
   known at plan time (e.g. a `list` source with explicit dims, or post-`resize`);
   making it a silent conditional default would violate "explicit over implicit",
   so it is intentionally not done.
-- **f64 through the float-promoting scalar ops is excluded from kernel fusion**,
+- **f64 and the 32/64-bit integers through the float-promoting scalar ops are excluded from kernel fusion**,
   which computes in f32. Correct, but slower than it needs to be. This is a perf
   limitation, tracked in the root **Known Issues** section, not a defect.

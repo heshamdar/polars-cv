@@ -109,6 +109,16 @@ answers `slow` to the lane-declaration guard for exactly that reason.
   imagehash ground truth. These are the **correctness guarantees**: if a change
   moves one of these expectations, say why in the commit rather than retuning
   the tolerance.
+- `tests/parity/` — the generative parity framework (Hypothesis). Every op
+  against an independent reference over drawn dtypes, sizes, channels, rows,
+  sources and engines; random *chains* and two-branch graphs checked step by
+  step and end to end; the same case executed along every axis (source, sink,
+  engine, expression vs literal, composition, optimizer, chunking) and
+  required to agree byte for byte; and algebraic laws. Confirmed divergences
+  it found and nobody has fixed yet are registered in
+  `parity/framework/known.py` and pinned as strict xfails. Read
+  [`parity/AGENTS.md`](parity/AGENTS.md) before adding an op, source, sink or
+  divergence.
 - `_gaps` in a name (e.g. `test_binary_ops_gaps.py`) is historical — they are
   ordinary tests whose gaps have since been filled.
 

@@ -1492,8 +1492,108 @@ impl ViewBuffer {
             self.layout.shape,
             shape
         );
+        // A strided view has no single reshape: a contiguous layout over its
+        // storage would read memory order, not view order. The planner packs
+        // a reshape's input first (`MemoryEffect::ViewOfContiguous`); this is
+        // the backstop, in every build, for a caller that skips it.
+        assert!(
+            self.layout.is_contiguous(),
+            "reshape of a strided view {:?} (strides {:?}): pack it first",
+            self.layout.shape,
+            self.layout.strides
+        );
+        // A contiguous view may start past its buffer's first element (a crop
+        // below the first row): the new layout keeps where it starts.
+        let offset = self.layout.offset;
         self.layout = Layout::new_contiguous(shape, self.layout.dtype);
+        self.layout.offset = offset;
         self
+    }
+}
+
+#[cfg(test)]
+mod reshape_offset_tests {
+    use crate::{ViewBuffer, ViewDto, ViewExpr, ViewOp};
+
+    /// A view that starts past its buffer's first element (a crop below the
+    /// first row) and is still contiguous reshapes to *its* elements. The
+    /// reshape rebuilt the layout at offset 0 and read from the uncropped
+    /// start.
+    /// A strided view has no single reshape: rebuilding its layout as
+    /// contiguous would read elements in memory order, not view order. The
+    /// planner packs a reshape's input first (`MemoryEffect::ViewOfContiguous`);
+    /// a direct caller that skips that is refused in every build, not just
+    /// debug ones.
+    #[test]
+    #[should_panic(expected = "reshape of a strided view")]
+    fn reshape_refuses_a_strided_view() {
+        let buf = ViewBuffer::from_vec_with_shape((0u8..6).collect::<Vec<u8>>(), vec![3, 2]);
+        let transposed = buf.permute(&[1, 0]);
+        assert!(!transposed.layout.is_contiguous());
+        let _ = transposed.reshape(vec![6]);
+    }
+
+    #[test]
+    fn reshape_keeps_a_views_offset() {
+        let buf = ViewBuffer::from_vec_with_shape((0u8..6).collect::<Vec<u8>>(), vec![3, 2, 1]);
+        let cropped = buf.slice(&[1, 0, 0], &[3, 2, 1]);
+        assert!(cropped.layout.is_contiguous());
+        let flat = cropped.reshape(vec![4]);
+        assert_eq!(flat.to_contiguous().as_slice::<u8>(), &[2, 3, 4, 5]);
+    }
+
+    /// A reshape of a view whose elements are not in row-major order (after a
+    /// flip or a transpose) is planned with a copy first, as NumPy's reshape
+    /// copies: it used to be refused at execution.
+    #[test]
+    fn reshape_of_a_strided_view_copies_first() {
+        let image: Vec<u8> = (0..12).collect();
+        let source = || ViewBuffer::from_vec_with_shape(image.clone(), vec![4, 3, 1]);
+        let reshape = ViewDto::View(ViewOp::Reshape { shape: vec![12, 1] });
+        let flip = ViewDto::View(ViewOp::Flip { axes: vec![0] });
+        let out = ViewExpr::new_source(source())
+            .try_apply_op(flip)
+            .unwrap()
+            .try_apply_op(reshape.clone())
+            .unwrap()
+            .plan()
+            .execute();
+        let flipped: Vec<u8> = image.chunks(3).rev().flatten().copied().collect();
+        assert_eq!(out.to_contiguous().as_slice::<u8>(), &flipped[..]);
+        let transpose = ViewDto::View(ViewOp::Transpose {
+            axes: vec![1, 0, 2],
+        });
+        let out = ViewExpr::new_source(source())
+            .try_apply_op(transpose)
+            .unwrap()
+            .try_apply_op(reshape)
+            .unwrap()
+            .plan()
+            .execute();
+        let transposed: Vec<u8> = (0..3)
+            .flat_map(|c| (0..4).map(move |r| (r * 3 + c) as u8))
+            .collect();
+        assert_eq!(out.to_contiguous().as_slice::<u8>(), &transposed[..]);
+    }
+
+    /// `channel_select` on a single-channel image drops the channel axis
+    /// through the same reshape.
+    #[test]
+    fn channel_select_after_a_crop_reads_the_crop() {
+        let buf = ViewBuffer::from_vec_with_shape((0u8..6).collect::<Vec<u8>>(), vec![3, 2, 1]);
+        let crop = ViewDto::View(ViewOp::Crop {
+            top: 1,
+            left: 0,
+            height: Some(2),
+            width: Some(2),
+        });
+        let select = ViewDto::View(ViewOp::ChannelSelect { index: 0 });
+        let out = ViewExpr::new_source(buf)
+            .apply_op(crop)
+            .apply_op(select)
+            .plan()
+            .execute();
+        assert_eq!(out.to_contiguous().as_slice::<u8>(), &[2, 3, 4, 5]);
     }
 }
 
@@ -1570,7 +1670,20 @@ mod scalar_dual_path_tests {
             ScalarOp::Relu,
             ScalarOp::Clamp(0.0, 1.0),
         ];
-        let xs: [f32; 8] = [-2.5, -1.0, -0.4, 0.0, 0.4, 1.0, 2.5, 4.0];
+        let xs: [f32; 12] = [
+            -2.5,
+            -1.0,
+            -0.4,
+            0.0,
+            0.4,
+            1.0,
+            2.5,
+            4.0,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            -0.0,
+        ];
         for op in ops {
             let buf = ViewBuffer::from_vec_with_shape(xs.to_vec(), vec![xs.len()]);
             let kernel = FusedKernel {
@@ -1594,6 +1707,36 @@ mod scalar_dual_path_tests {
                     "{op:?} on {x}: f32 kernel gave {via_f32}, apply_f64 gave {via_f64}"
                 );
             }
+        }
+    }
+
+    /// NaN in, NaN out, for every scalar op — the one-sided bounds included,
+    /// as NumPy and PyTorch propagate it (`relu(NaN)` is NaN, not 0) and as
+    /// `clamp` already did. Fused (f32 kernel) and unfused (`apply_f64`).
+    #[test]
+    fn every_scalar_op_propagates_nan() {
+        let ops = [
+            ScalarOp::Min(0.5),
+            ScalarOp::Max(0.5),
+            ScalarOp::Relu,
+            ScalarOp::Clamp(0.0, 1.0),
+            ScalarOp::Abs,
+            ScalarOp::Sign,
+            ScalarOp::Round,
+        ];
+        for op in ops {
+            assert!(op.apply_f64(f64::NAN).is_nan(), "{op:?}: apply_f64(NaN)");
+            let buf = ViewBuffer::from_vec_with_shape(vec![f32::NAN; 3], vec![3]);
+            let kernel = FusedKernel {
+                ops: vec![op.clone()],
+                out_dtype: DType::F32,
+            };
+            let out = buf.apply_fused_kernel(&kernel);
+            assert!(
+                out.as_slice::<f32>().iter().all(|v| v.is_nan()),
+                "{op:?}: f32 kernel turned NaN into {:?}",
+                out.as_slice::<f32>()
+            );
         }
     }
 

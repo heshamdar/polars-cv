@@ -57,7 +57,6 @@ fn make_3d_buffer() -> ViewBuffer {
 fn test_view_ops_declare_zero_copy() {
     let ops = [
         ViewOp::transpose(&[1, 0]),
-        ViewOp::Reshape { shape: vec![100] },
         ViewOp::flip(&[0]),
         ViewOp::Slice {
             start: vec![0, 0],
@@ -72,6 +71,16 @@ fn test_view_ops_declare_zero_copy() {
             "ViewOp {op:?} must declare View (metadata-only)"
         );
     }
+}
+
+/// A reshape is metadata-only too, but it reinterprets row-major order, so a
+/// strided input (a flip, a transpose) is packed first: it declares
+/// `ViewOfContiguous`, which the planner reads to insert that copy.
+#[test]
+fn test_reshape_declares_a_view_of_contiguous_input() {
+    let op: ViewOp = ViewOp::Reshape { shape: vec![100] };
+    assert_eq!(op.memory_effect(), MemoryEffect::ViewOfContiguous);
+    assert!(op.memory_effect().needs_contiguous_input());
 }
 
 #[test]

@@ -102,6 +102,13 @@ Pipeline().source("image_bytes").grayscale().histogram(bins=[0, 50, 100, 200, 25
 Pipeline().source("image_bytes").grayscale().histogram(bins=10, closed="right")
 ```
 
+A value outside an explicit `range` is clamped into the edge bin. NaN follows
+NumPy: it is in no bin, so it is not counted (`normalized` shares sum to 1 over
+the counted values), and its `quantized` index is one past the last bin. An
+auto-detected range over NaN or infinity, or a supplied `range` that is not
+finite, raises: there are no equal-width bins to make, so pass `range=` or
+explicit edges. Explicit edges must increase monotonically.
+
 **Outputs:** `"buckets"` (default), `"counts"`, `"normalized"`, `"quantized"`, `"edges"`.
 **Closed Intervals:** `"left"` (default), `"right"`.
 
@@ -121,6 +128,18 @@ Pipeline().source("image_bytes").to_ycbcr()
 ```
 
 **Supported spaces:** `rgb`, `bgr`, `hsv`, `lab`, `ycbcr`, `gray`.
+
+**Value ranges** follow OpenCV per dtype:
+
+| Dtype | Channel range | HSV hue | YCbCr chroma centre |
+|-------|---------------|---------|---------------------|
+| `u8` | 0–255 | half-degrees, [0, 180) | 128 |
+| `u16`, `u32`, `u64` | 0–MAX | the whole range is one turn, [0, MAX] | (MAX + 1) / 2 |
+| `f32`, `f64` | [0, 1] | degrees, [0, 360) | 0.5 |
+
+Lab is always `f32` (L in [0, 100]), and converting from Lab gives `f32` RGB
+in [0, 1]. Signed integer images have no colour range: `hsv`, `lab` and
+`ycbcr` refuse them (cast first); `rgb`, `bgr` and `gray` accept every dtype.
 
 ## Channel Operations
 
@@ -181,10 +200,12 @@ All intensity parameters accept Polars expressions for per-row dynamic values.
 
 ### Elementwise Math
 
-Pure per-pixel math primitives. Each promotes to float (integers → `f32`, `f64`
-preserved) like `scale`/`relu`, and **fuses automatically** with adjacent scalar
-ops — a chain of them runs as a single kernel pass rather than one pass per op,
-with no fusion for you to manage.
+Pure per-pixel math primitives. Each promotes to float like `scale`/`relu`:
+8/16-bit integers → `f32`, 32/64-bit integers → `f64` (which holds their
+values, as NumPy promotes them), floats preserved. On an `f32`-computing input
+they **fuse automatically** with adjacent scalar ops — a chain of them runs as a
+single kernel pass rather than one pass per op, with no fusion for you to
+manage.
 
 ```python
 p = Pipeline().source("image_bytes", dtype="u8")
@@ -212,9 +233,10 @@ p.subtract_constant(pl.col("bias"))  # per-row subtrahend
 
 ### Preserving the input dtype
 
-Intensity operations compute in `f32`, so by default an integer image is
-**promoted to `f32`** on output. Pass `preserve_dtype=True` to cast the result
-back to the input dtype instead — the math still runs in `f32`, but the result is
+Intensity operations compute in a float — `f32` for 8/16-bit integers, `f64`
+for 32/64-bit ones — so by default an integer image is **promoted to that
+float** on output. Pass `preserve_dtype=True` to cast the result back to the
+input dtype instead — the math still runs in the float, but the result is
 rounded and saturated back into the original storage type. This is available on
 `scale`, `clamp`, and `adjust_brightness`.
 

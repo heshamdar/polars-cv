@@ -120,19 +120,6 @@ impl ViewExpr {
         op: ViewDto,
     ) -> Result<Arc<Self>, crate::ops::validation::ValidationError> {
         crate::ops::validation::validate_concrete(op.as_op(), &[&self.shape], &[self.dtype])?;
-        if let ViewDto::View(ViewOp::Reshape { .. }) = &op {
-            if let Some(strides) = &self.strides {
-                let facts =
-                    crate::core::layout::LayoutFacts::new(&self.shape, strides, self.dtype, 0);
-                if !facts.is_contiguous() {
-                    return Err(crate::ops::validation::ValidationError::Generic {
-                        message: "cannot reshape a non-contiguous view (after a transpose, \
-                                  flip or crop); the elements are not in reshape order"
-                            .to_string(),
-                    });
-                }
-            }
-        }
         Ok(self.apply_op(op))
     }
 
@@ -294,8 +281,8 @@ impl ViewExpr {
     /// strides via `calc_strides`); a view never changes dtype, so it is
     /// preserved. The view analogue of [`compute_node`](Self::compute_node).
     ///
-    /// `reshape` keeps its own builder because it must reject a non-contiguous
-    /// input (its bespoke panic) rather than route through here.
+    /// `reshape` keeps its own builder: its output strides are contiguous
+    /// whatever its input's (the planner packs a strided input first).
     fn view_node(self: &Arc<Self>, op: ViewOp) -> Arc<Self> {
         let new_shape = op.shape().concrete(&[&self.shape]);
         let new_strides = self.calc_strides(&op, &new_shape);
@@ -318,19 +305,8 @@ impl ViewExpr {
             shape: new_shape.iter().map(|&d| d as u32).collect(),
         };
 
-        // Validation: Reshape on non-contiguous strided buffer is invalid as a View.
-        if let Some(strides) = &self.strides {
-            let facts = crate::core::layout::LayoutFacts::new(&self.shape, strides, self.dtype, 0);
-            if !facts.is_contiguous() {
-                // In a full implementation, we might auto-insert a Materialize op here.
-                // For now, we allow the Planner to catch it (or panic) but we warn/mark strides None.
-                // But since we want to "detect invalid views during definition":
-                panic!("Invalid View: Cannot reshape non-contiguous view without copying. Input strides: {strides:?}");
-            }
-        }
-
-        // If valid (or unknown), calculate new strides
-        // Since Reshape implies contiguous -> contiguous, we generate new contiguous strides.
+        // The planner packs a strided input first (`ViewOfContiguous`), so
+        // the output is always contiguous.
         let new_strides = if self.strides.is_some() {
             let l = Layout::new_contiguous(new_shape.clone(), self.dtype);
             Some(l.strides.into_vec())
@@ -584,10 +560,11 @@ impl ViewExpr {
                         if let ExprNode::Compute(ComputeOp::Cast { dtype: inner }, ref grandchild) =
                             &child.node
                         {
-                            let switches_int_conversion = DTypeCategory::Integer
-                                .accepts(grandchild.dtype)
-                                && DTypeCategory::Float.accepts(*inner)
-                                && DTypeCategory::Integer.accepts(*target_dtype);
+                            // Dropping a float intermediate replaces its
+                            // float -> target conversion with the
+                            // grandchild's own (`converts_like_float`).
+                            let switches_int_conversion = DTypeCategory::Float.accepts(*inner)
+                                && !grandchild.dtype.converts_like_float(*target_dtype);
                             if inner.losslessly_contains(grandchild.dtype)
                                 && !switches_int_conversion
                             {
@@ -669,50 +646,48 @@ impl ViewExpr {
             },
             ExprNode::View(op, child) => {
                 let mut plan = child.build_plan();
+                materialize_if_needed(&mut plan, op.memory_effect());
                 plan.steps.push(PlanStep::View(op.clone()));
                 plan
             }
             ExprNode::Compute(op, child) => {
                 let mut plan = child.build_plan();
-
-                if op.memory_effect() == MemoryEffect::RequiresContiguous
-                    && (plan_ends_in_view(&plan) || !plan.source.layout.is_contiguous())
-                {
-                    plan.steps.push(PlanStep::MaterializeContiguous);
-                }
-
+                materialize_if_needed(&mut plan, op.memory_effect());
                 plan.steps.push(PlanStep::Compute(op.clone()));
                 plan
             }
             ExprNode::Image(op, child) => {
                 let mut plan = child.build_plan();
-
-                if op.memory_effect() == MemoryEffect::RequiresContiguous
-                    && (plan_ends_in_view(&plan) || !plan.source.layout.is_contiguous())
-                {
-                    plan.steps.push(PlanStep::MaterializeContiguous);
-                }
-
+                materialize_if_needed(&mut plan, op.memory_effect());
                 plan.steps.push(PlanStep::Image(op.clone()));
                 plan
             }
             ExprNode::Color(op, child) => {
                 let mut plan = child.build_plan();
-                if plan_ends_in_view(&plan) || !plan.source.layout.is_contiguous() {
-                    plan.steps.push(PlanStep::MaterializeContiguous);
-                }
+                materialize_if_needed(&mut plan, op.memory_effect());
                 plan.steps.push(PlanStep::Color(op.clone()));
                 plan
             }
             ExprNode::Filter(op, child) => {
                 let mut plan = child.build_plan();
-                if plan_ends_in_view(&plan) || !plan.source.layout.is_contiguous() {
-                    plan.steps.push(PlanStep::MaterializeContiguous);
-                }
+                materialize_if_needed(&mut plan, op.memory_effect());
                 plan.steps.push(PlanStep::Filter(op.clone()));
                 plan
             }
         }
+    }
+}
+
+/// Pack the plan's current buffer before an op that needs a contiguous input
+/// ([`MemoryEffect::needs_contiguous_input`]) when it may not be one: after a
+/// view step, or from a strided source. The one place the planner decides
+/// it, for every kind of step. Packing a buffer that turns out contiguous
+/// returns it as it is.
+fn materialize_if_needed(plan: &mut ExecutionPlan, effect: MemoryEffect) {
+    if effect.needs_contiguous_input()
+        && (plan_ends_in_view(plan) || !plan.source.layout.is_contiguous())
+    {
+        plan.steps.push(PlanStep::MaterializeContiguous);
     }
 }
 
@@ -736,6 +711,15 @@ fn try_fuse(
     outer_input_dtype: DType,
     planned_out_dtype: DType,
 ) -> Option<ComputeOp> {
+    // The kernel stores its f32 result by the float -> target rule; a cast
+    // the unfused chain would make from an integer intermediate may convert
+    // differently (int -> int wraps), and then it must stay unfused.
+    if let ComputeOp::Cast { dtype: target } = outer {
+        if !outer_input_dtype.converts_like_float(*target) {
+            return None;
+        }
+    }
+
     let mut ops = Vec::new();
 
     if !crate::ops::elementwise::lower_to_scalars(inner, inner_input_dtype, false, &mut ops) {
@@ -942,14 +926,14 @@ mod scalar_op_tests {
             (ScalarOp::Sqrt, |x| x.sqrt()),
             (ScalarOp::Square, |x| x * x),
             (ScalarOp::Recip, |x| 1.0 / x),
-            (ScalarOp::Min(0.5), |x| x.min(0.5)),
-            (ScalarOp::Max(0.5), |x| x.max(0.5)),
+            (ScalarOp::Min(0.5), |x| crate::ops::util::minimum(x, 0.5)),
+            (ScalarOp::Max(0.5), |x| crate::ops::util::maximum(x, 0.5)),
             (ScalarOp::Sign, signum_numpy::<f32>),
             (ScalarOp::Floor, |x| x.floor()),
             (ScalarOp::Ceil, |x| x.ceil()),
             (ScalarOp::Round, |x| x.round_ties_even()),
             (ScalarOp::Trunc, |x| x.trunc()),
-            (ScalarOp::Relu, |x| x.max(0.0)),
+            (ScalarOp::Relu, |x| crate::ops::util::maximum(x, 0.0)),
             (ScalarOp::Clamp(0.0, 1.0), |x| x.clamp(0.0, 1.0)),
         ]
     }

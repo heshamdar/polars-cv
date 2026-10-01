@@ -1202,6 +1202,128 @@ class TestHistogramCorrectness:
         assert hist[255] == 1
         assert sum(hist) == 4
 
+    def _gradient_hist(self, encode_png: Callable, **kwargs: object) -> list:
+        """Grayscale pixels 0, 64, 128, 255 through ``histogram(**kwargs)``."""
+        arr = np.array([[0, 64, 128, 255]], dtype=np.uint8)
+        df = pl.DataFrame({"img": [encode_png(arr)]})
+        pipe = Pipeline().source("image_bytes").histogram(output="counts", **kwargs)
+        return df.select(out=pl.col("img").cv.pipe(pipe).sink("list"))["out"][
+            0
+        ].to_list()
+
+    def test_values_outside_the_range_are_dropped(self, encode_png: Callable) -> None:
+        """numpy's rule: 0 and 255 lie outside ``range=(50, 200)`` and are not
+        counted (they used to be clamped into the end bins)."""
+        counts = self._gradient_hist(encode_png, bins=3, range=(50, 200))
+        ref, _ = np.histogram([0, 64, 128, 255], bins=3, range=(50, 200))
+        assert counts == ref.tolist() == [1, 1, 0]
+        edged = self._gradient_hist(encode_png, bins=[50, 100, 150, 200])
+        assert edged == [1, 1, 0]
+
+    def test_infinite_outer_edges_keep_every_value(self, encode_png: Callable) -> None:
+        """Open bounds, as polars' ``hist`` breaks: nothing falls outside."""
+        counts = self._gradient_hist(encode_png, bins=[-math.inf, 100, math.inf])
+        assert counts == [2, 2]
+
+    @staticmethod
+    def _nan_pipe() -> Pipeline:
+        """Grayscale pixels 0 and 4 → f32 sqrt(-x): 0.0, and NaN for the 4s."""
+        return (
+            Pipeline().source("image_bytes").grayscale().cast("f32").scale(-1.0).sqrt()
+        )
+
+    def _nan_frame(self, encode_png: Callable) -> pl.DataFrame:
+        arr = np.zeros((2, 2), dtype=np.uint8)
+        arr[0, 0] = 4  # one NaN after sqrt(-x); three zeros
+        return pl.DataFrame({"img": [encode_png(arr)]})
+
+    def test_nan_is_in_no_bin(self, encode_png: Callable) -> None:
+        """NaN is not counted, as numpy: the shares sum to 1 over the rest."""
+        df = self._nan_frame(encode_png)
+        counts = df.select(
+            out=pl.col("img")
+            .cv.pipe(self._nan_pipe().histogram(bins=2, range=(0, 1), output="counts"))
+            .sink("list")
+        )["out"][0].to_list()
+        assert counts == [3, 0]
+        shares = df.select(
+            out=pl.col("img")
+            .cv.pipe(
+                self._nan_pipe().histogram(bins=2, range=(0, 1), output="normalized")
+            )
+            .sink("list")
+        )["out"][0].to_list()
+        assert shares == [1.0, 0.0]
+
+    def test_edges_must_increase_monotonically(self) -> None:
+        """numpy's rule, refused when the pipeline is built."""
+        with pytest.raises(ValueError, match="increase monotonically"):
+            Pipeline().source("image_bytes").grayscale().histogram(bins=[0, 2, 1])
+
+    def test_auto_range_over_nan_raises(self, encode_png: Callable) -> None:
+        """No equal-width bins span NaN: numpy's error, not a guessed range."""
+        df = self._nan_frame(encode_png)
+        pipe = self._nan_pipe().histogram(bins=2, output="counts")
+        with pytest.raises(pl.exceptions.ComputeError, match="not finite"):
+            df.select(out=pl.col("img").cv.pipe(pipe).sink("list"))
+
+
+@plugin_required
+class TestNonFiniteAndEmptyInputs:
+    """NaN, non-finite parameters and empty images, at the entry point."""
+
+    def test_minmax_normalize_of_an_image_with_nan_is_nan(
+        self, encode_png: Callable
+    ) -> None:
+        """One NaN makes the extremes NaN, as ZScore's mean already did."""
+        arr = np.zeros((2, 2), dtype=np.uint8)
+        arr[0, 0] = 4  # sqrt(-4) is NaN
+        arr[1, 1] = 9
+        df = pl.DataFrame({"img": [encode_png(arr)]})
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .cast("f32")
+            .scale(-1.0)
+            .sqrt()
+            .normalize(method="minmax")
+        )
+        out = numpy_from_struct(
+            df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy")).row(0)[0]
+        )
+        assert np.isnan(out).all(), out
+
+    def test_a_per_row_non_finite_angle_is_refused(self, encode_png: Callable) -> None:
+        """No warp has a NaN angle; the row fails rather than going blank."""
+        df = pl.DataFrame(
+            {
+                "img": [encode_png(_make_solid(4, 4, (9, 9, 9)))],
+                "theta": [float("nan")],
+            }
+        )
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .rotate_and_scale(
+                angle=pl.col("theta"), center=(2.0, 2.0), output_size=(4, 4)
+            )
+        )
+        with pytest.raises(pl.exceptions.ComputeError, match="not finite"):
+            df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+
+    @pytest.mark.parametrize("factor", [0.0, -0.5])
+    def test_a_resize_factor_must_be_finite_and_positive(self, factor: float) -> None:
+        with pytest.raises(ValueError, match="finite positive factor"):
+            Pipeline().source("image_bytes").resize_scale(scale_x=factor, scale_y=1.0)
+
+    def test_resizing_an_empty_image_is_refused(self) -> None:
+        """An empty image has no aspect ratio: refused when planned, not a
+        divide-by-zero panic deriving the other side."""
+        empty = Pipeline().source("raw", dtype="u8").reshape([0, 4, 1])
+        with pytest.raises(ValueError, match="non-empty image to resample"):
+            empty.resize_to_height(4)
+
 
 # ===================================================================
 # 10. Reduce percentile correctness

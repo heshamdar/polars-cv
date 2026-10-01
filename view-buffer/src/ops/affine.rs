@@ -113,7 +113,17 @@ impl AffineParams {
     /// conditioning test: a nearly-singular matrix is a legitimate (if extreme)
     /// transform and produces a real, if heavily stretched, image.
     pub fn is_invertible(&self) -> bool {
-        self.determinant().abs() >= Self::SINGULAR_EPSILON
+        Self::matrix_is_invertible(&self.matrix)
+    }
+
+    /// [`is_invertible`](Self::is_invertible) for a bare `[a, b, tx, c, d, ty]`
+    /// matrix, as the warps' `check()` holds one before any `AffineParams`
+    /// exists: every coefficient finite (a NaN or infinite one — from a
+    /// non-finite angle, centre, scale or coefficient — maps every pixel
+    /// nowhere) and the linear part non-singular.
+    pub fn matrix_is_invertible(matrix: &[f64; 6]) -> bool {
+        let [a, b, _, c, d, _] = *matrix;
+        matrix.iter().all(|v| v.is_finite()) && (a * d - b * c).abs() >= Self::SINGULAR_EPSILON
     }
 
     /// Below this, [`determinant`](Self::determinant) counts as zero.
@@ -126,12 +136,9 @@ impl AffineParams {
     /// size as the input.
     ///
     /// [`from_rotation`](Self::from_rotation) builds on this for the
-    /// image-center + optional-expand case, and the plugin's `rotation_matrix_2d`
-    /// FFI exposes it so the Python planner reads this matrix instead of
-    /// recomputing the trig for a literal `rotate_and_scale`.
-    ///
-    /// `angle_deg` is `f64` (not the `f32` `from_rotation` takes) so the FFI
-    /// reproduces the planner's f64 arithmetic bit-for-bit.
+    /// image-center + optional-expand case, and `rotate_and_scale` lowers to
+    /// it per row (`ComputeOp::lowered`), so a literal and a per-row angle
+    /// get the same matrix.
     pub fn rotation_matrix_2d(angle_deg: f64, cx: f64, cy: f64, scale: f64) -> [f64; 6] {
         let rad = angle_deg * std::f64::consts::PI / 180.0;
         let cos_a = rad.cos() * scale;
@@ -139,6 +146,21 @@ impl AffineParams {
         let tx = (1.0 - cos_a) * cx + sin_a * cy;
         let ty = -sin_a * cx + (1.0 - cos_a) * cy;
         [cos_a, -sin_a, tx, sin_a, cos_a, ty]
+    }
+
+    /// The canvas an `h × w` image needs to hold its rotation by `angle_deg`
+    /// whole (`rotate(expand=True)`): the one formula, read by the shape rule
+    /// at plan time (`OpShape::RotateExpand`) and by
+    /// [`from_rotation`](Self::from_rotation) at execution, so the planned
+    /// and executed sizes cannot drift.
+    pub fn expanded_size(h: usize, w: usize, angle_deg: f64) -> (usize, usize) {
+        let rad = angle_deg * std::f64::consts::PI / 180.0;
+        let (cos, sin) = (rad.cos().abs(), rad.sin().abs());
+        let (h, w) = (h as f64, w as f64);
+        (
+            (h * cos + w * sin).round() as usize,
+            (w * cos + h * sin).round() as usize,
+        )
     }
 
     /// Build an `AffineParams` that performs a rotation around the image
@@ -165,11 +187,12 @@ impl AffineParams {
         let sin_a = base[3];
 
         let (oh, ow) = if expand {
-            let abs_cos = cos_a.abs();
-            let abs_sin = sin_a.abs();
-            let new_w = (iw * abs_cos + ih * abs_sin).round() as u32;
-            let new_h = (ih * abs_cos + iw * abs_sin).round() as u32;
-            (new_h, new_w)
+            let (h, w) = Self::expanded_size(
+                input_height as usize,
+                input_width as usize,
+                angle_deg as f64,
+            );
+            (h as u32, w as u32)
         } else {
             (input_height, input_width)
         };

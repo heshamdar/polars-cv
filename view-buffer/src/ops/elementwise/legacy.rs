@@ -4,7 +4,10 @@
 //! `self` became `this` where a method became a free function, and the
 //! kernel's in-place/allocating pair calls the fused arithmetic by path). The
 //! engine is checked against it bit for bit, so "bit-identical" is measured
-//! against the code that shipped rather than restated from memory.
+//! against the code that shipped rather than restated from memory. One rule
+//! has changed since, on purpose: `relu`, `clamp_min`, `clamp_max` and the
+//! MinMax normalize extremes propagate NaN (`ops::util::maximum`/`minimum`),
+//! as `clamp` and ZScore always did.
 #![allow(dead_code, clippy::all)]
 
 use crate::core::buffer::{BufferStorage, ViewBuffer};
@@ -27,10 +30,12 @@ pub(super) fn apply(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
             move |x: f32| x * factor,
             move |x: f64| x * factor as f64,
         ),
+        // The one deliberate change since the move: NaN propagates
+        // (`ops::util::maximum`), as it does through every scalar op.
         ComputeOp::Relu => apply_scalar_owned_with(
             buf,
-            |x: f32| if x > 0.0 { x } else { 0.0 },
-            |x: f64| if x > 0.0 { x } else { 0.0 },
+            |x: f32| crate::ops::util::maximum(x, 0.0),
+            |x: f64| crate::ops::util::maximum(x, 0.0),
         ),
         ComputeOp::Fused(ref kernel) => {
             let mut buf = buf;
@@ -143,8 +148,14 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::Normalization) -> 
         if let Ok(view) = work_buf.as_array_view::<f32>() {
             match method {
                 Normalization::MinMax => {
-                    let min = view.iter().cloned().fold(f32::INFINITY, f32::min);
-                    let max = view.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                    let min = view
+                        .iter()
+                        .cloned()
+                        .fold(f32::INFINITY, crate::ops::util::minimum);
+                    let max = view
+                        .iter()
+                        .cloned()
+                        .fold(f32::NEG_INFINITY, crate::ops::util::maximum);
                     let range = max - min;
                     if range == 0.0 {
                         let result: ndarray::ArrayD<f32> = ndarray::Array::zeros(view.raw_dim());
@@ -205,8 +216,14 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::Normalization) -> 
 
     let new_data: Vec<f32> = match method {
         Normalization::MinMax => {
-            let min = src.iter().cloned().fold(f32::INFINITY, f32::min);
-            let max = src.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let min = src
+                .iter()
+                .cloned()
+                .fold(f32::INFINITY, crate::ops::util::minimum);
+            let max = src
+                .iter()
+                .cloned()
+                .fold(f32::NEG_INFINITY, crate::ops::util::maximum);
             let range = max - min;
             if range == 0.0 {
                 vec![0.0; count]

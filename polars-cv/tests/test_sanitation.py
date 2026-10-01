@@ -527,10 +527,6 @@ _REQUIRED_LIB_HOOKS = (
     # Every optimisation pass (logical and engine), which OptFlags and
     # OPTIMIZATION_PASSES are generated from.
     "pass_catalog",
-    # The 2x3 rotation+scale matrix about an arbitrary centre, read by the
-    # planner's literal `rotate_and_scale` so `_rotation_matrix` does not
-    # recompute the trig.
-    "rotation_matrix_2d",
     # The `{x, y}` point struct authority, read by the geometry parity test so
     # Python's POINT_SCHEMA cannot drift from `geom_schema::point_fields`.
     "point_schema",
@@ -655,7 +651,6 @@ def test_binary_dtype_authority():
 
     # True division promotes integers to float; other ops use plain promotion.
     assert _binary_dtype("divide", "u8", "u8") == "f32"
-    assert _binary_dtype("ratio", "u16", "u16") == "f32"
     assert _binary_dtype("divide", "f64", "f64") == "f64"
     assert _binary_dtype("add", "u8", "u8") == "u8"
     assert _binary_dtype("add", "u8", "u16") == "u16"
@@ -2087,6 +2082,12 @@ _CORE_STRUCTURAL_MODULES = frozenset(
         # module scanning files via `_discovery` and these two scan fixtures.
         "test_dtype_ratchet_fixtures.py",
         "test_doc_table_fixtures.py",
+        # The parity framework's coverage ratchets (every op, source, sink and
+        # dtype has a parity entry or a reason) and the fixtures that prove its
+        # comparators, tolerance propagation and divergence predicates still
+        # reject what they claim to. Neither scans files.
+        "test_parity_ratchets.py",
+        "test_parity_framework_fixtures.py",
     }
 )
 
@@ -2623,13 +2624,6 @@ _SUGAR_PROBES: list[tuple[str, Callable[[], Pipeline], Callable[[], Pipeline]]] 
         lambda: Pipeline().source("contour").rasterize(width=4, height=4),
     ),
     ("resize_scale", _image, lambda: _image().resize_scale(scale=0.5)),
-    (
-        "rotate_and_scale",
-        _image,
-        lambda: _image().rotate_and_scale(
-            angle=10.0, scale=1.0, center=(4.0, 4.0), output_size=(8, 8)
-        ),
-    ),
     ("shear", _image, lambda: _image().shear(sx=0.1, output_size=(8, 8))),
     ("scale", _image, lambda: _image().scale(2.0)),
     ("scale", _image, lambda: _image().scale(2.0, out_dtype="u8")),

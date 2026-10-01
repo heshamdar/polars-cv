@@ -76,7 +76,6 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(contour_schema, m)?)?;
     m.add_function(wrap_pyfunction!(bbox_schema, m)?)?;
     m.add_function(wrap_pyfunction!(extension_types, m)?)?;
-    m.add_function(wrap_pyfunction!(rotation_matrix_2d, m)?)?;
     m.add_class::<output::ArrowBytes>()?;
     m.add_function(wrap_pyfunction!(output::binary_rows, m)?)?;
     Ok(())
@@ -156,22 +155,6 @@ fn extension_types() -> Vec<(&'static str, pyo3_polars::PySeries)> {
             (t.name(), pyo3_polars::PySeries(empty))
         })
         .collect()
-}
-
-/// The 2x3 rotation+scale matrix about `(cx, cy)` — the same authority
-/// (`AffineParams::rotation_matrix_2d`) that `from_rotation` builds on.
-///
-/// It exists so the Python planner's literal `rotate_and_scale` reads this
-/// matrix instead of transliterating the trig: `_rotation_matrix`'s all-literal
-/// path calls it, keeping the rotation formula in one place. The per-row
-/// `pl.Expr` path stays in Python — the engine cannot evaluate an expression at
-/// plan time — which is the one remaining, guard-sanctioned copy.
-///
-/// `angle_deg` is `f64` so the returned matrix matches Python's f64 arithmetic
-/// exactly (the planner feeds these straight into a literal `warp_affine`).
-#[pyfunction]
-fn rotation_matrix_2d(angle_deg: f64, cx: f64, cy: f64, scale: f64) -> Vec<f64> {
-    view_buffer::ops::affine::AffineParams::rotation_matrix_2d(angle_deg, cx, cy, scale).to_vec()
 }
 
 /// The typed op catalogue as JSON: every typed op's name, Python method name,
@@ -279,6 +262,16 @@ fn check_graph(graph_json: &str) -> PyResult<()> {
     Ok(())
 }
 
+/// Whether `dtype` holds an `Array` with a zero-size dimension at any level.
+fn has_zero_width_array(dtype: &DataType) -> bool {
+    match dtype {
+        DataType::Array(_, 0) => true,
+        DataType::Array(inner, _) | DataType::List(inner) => has_zero_width_array(inner),
+        DataType::Struct(fields) => fields.iter().any(|f| has_zero_width_array(f.dtype())),
+        _ => false,
+    }
+}
+
 /// Compute the output dtype for unified graph (single or multi-output).
 ///
 /// This function receives kwargs and parses the graph JSON to determine
@@ -286,6 +279,21 @@ fn check_graph(graph_json: &str) -> PyResult<()> {
 /// - Single output: Returns appropriate typed column (Binary, Float64, List, etc.)
 /// - Multi-output: Returns Struct with appropriately typed fields
 fn unified_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsResult<Field> {
+    // A zero-width `Array` loses its rows crossing into the plugin: polars'
+    // FFI import (`FixedSizeListArray::try_from_ffi`) sets the length of an
+    // array whose values are empty to 0 and then slices it to the real row
+    // count, which panics. Refuse it at planning, before any data crosses.
+    if let Some(f) = input_fields
+        .iter()
+        .find(|f| has_zero_width_array(f.dtype()))
+    {
+        polars_bail!(
+            ComputeError: "column {:?} is {}, an Array with a zero-size dimension, which \
+            cannot cross the plugin boundary (polars' FFI import drops its rows); filter \
+            out the empty images first",
+            f.name(), f.dtype()
+        );
+    }
     let name = if !input_fields.is_empty() {
         input_fields[0].name().clone()
     } else {

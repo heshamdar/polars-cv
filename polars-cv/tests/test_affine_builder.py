@@ -2,10 +2,10 @@
 Tests for affine transform pipeline builder operations.
 
 Tests the Python-side pipeline construction for warp_affine, shear,
-and rotate_and_scale. Most need no compiled plugin; the exceptions are the
-``rotate_and_scale`` cases that actually build a matrix, which now read it from
-the ``rotation_matrix_2d`` FFI (the single rotation-matrix authority) and so
-carry ``@plugin_required``.
+and rotate_and_scale. ``rotate_and_scale`` is a typed op: its matrix is built
+by the engine per row (``AffineParams::rotation_matrix_2d``, pinned by the
+Rust test ``rotate_and_scale_lowers_to_the_rotation_matrix``), so these tests
+check only what Python holds -- the op and its arguments.
 """
 
 from __future__ import annotations
@@ -212,7 +212,7 @@ class TestShearPipelineBuilder:
 
 
 class TestRotateAndScalePipelineBuilder:
-    """Tests for the rotate_and_scale convenience method."""
+    """Tests for the rotate_and_scale op."""
 
     @plugin_required
     def test_rotate_and_scale_basic(self) -> None:
@@ -228,7 +228,7 @@ class TestRotateAndScalePipelineBuilder:
             )
         )
         assert len(ops_of(pipe)) == 1
-        assert ops_of(pipe)[0].op == "warp_affine"
+        assert ops_of(pipe)[0].op == "rotate_and_scale"
 
     def test_rotate_and_scale_requires_center(self) -> None:
         """rotate_and_scale requires center (a required keyword-only argument)."""
@@ -243,53 +243,23 @@ class TestRotateAndScalePipelineBuilder:
             pipe.rotate_and_scale(angle=45.0, center=(50.0, 50.0))
 
     @plugin_required
-    def test_rotate_and_scale_matrix_correctness(self) -> None:
-        """Verify the rotation matrix is correct for 90 degrees.
-
-        Independent cross-check: the pipeline's matrix comes from the
-        ``rotation_matrix_2d`` FFI, and this recomputes it from the reference
-        formula in Python, so the two must agree.
-        """
-        import math
-
+    def test_rotate_and_scale_carries_its_arguments(self) -> None:
+        """The op holds the angle, centre and scale, not a matrix."""
         pipe = (
             Pipeline()
             .source("image_bytes")
             .rotate_and_scale(
                 angle=90.0,
-                scale=1.0,
-                center=(50.0, 50.0),
-                output_size=(100, 100),
-            )
-        )
-        matrix = ops_of(pipe)[0].params["matrix"]
-        rad = math.radians(90.0)
-        cos_a = math.cos(rad) * 1.0
-        sin_a = math.sin(rad) * 1.0
-        cx, cy = 50.0, 50.0
-        tx = (1 - cos_a) * cx + sin_a * cy
-        ty = -sin_a * cx + (1 - cos_a) * cy
-        expected = [cos_a, -sin_a, tx, sin_a, cos_a, ty]
-        for actual, exp in zip(matrix, expected):
-            assert abs(actual - exp) < 1e-10
-
-    @plugin_required
-    def test_rotate_and_scale_with_scale(self) -> None:
-        """rotate_and_scale with scale factor."""
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .rotate_and_scale(
-                angle=0.0,
                 scale=2.0,
                 center=(50.0, 50.0),
                 output_size=(200, 200),
             )
         )
-        matrix = ops_of(pipe)[0].params["matrix"]
-        # At angle=0 and scale=2: matrix should be [2, 0, -50, 0, 2, -50]
-        assert abs(matrix[0] - 2.0) < 1e-10
-        assert abs(matrix[4] - 2.0) < 1e-10
+        params = ops_of(pipe)[0].params
+        assert params["angle"] == 90.0
+        assert params["scale"] == 2.0
+        assert list(params["center"]) == [50.0, 50.0]
+        assert "matrix" not in params
 
 
 class TestRotateShapeHintTracking:

@@ -315,9 +315,10 @@ removed because folding several interpolation passes into one (and dropping the
 intermediate clip of an `expand=False` rotate) changed pixels by up to ~185/255,
 breaking the byte-for-byte on/off guarantee every optimization carries (see
 [`_optimize.py`](_optimize.py) and the CHANGELOG), so do not restore
-it. `shear()` and `rotate_and_scale()` build their matrix (the literal
-rotation matrix via the `rotation_matrix_2d` FFI) and delegate to
-`warp_affine()`; `_to_spec_dict()` emits ops verbatim.
+it. `shear()` is sugar that passes its coefficients to `warp_affine()`;
+`rotate_and_scale()` is a typed op whose matrix the engine builds per row
+(`AffineParams::rotation_matrix_2d`), so no rotation trig is written in Python.
+`_to_spec_dict()` emits ops verbatim.
 
 ### Shape Hints (single authority: view-buffer `OpShape`)
 

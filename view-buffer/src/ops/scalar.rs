@@ -29,9 +29,10 @@ pub enum ScalarOp {
     Square,
     /// Reciprocal: `1.0 / x`.
     Recip,
-    /// Minimum with a constant ceiling: `x.min(c)`.
+    /// Minimum with a constant ceiling, NaN-propagating ([`crate::ops::util::minimum`]).
     Min(f32),
-    /// Maximum with a constant floor: `x.max(c)` (`Relu == Max(0.0)`).
+    /// Maximum with a constant floor, NaN-propagating ([`crate::ops::util::maximum`];
+    /// `Relu == Max(0.0)`).
     Max(f32),
     /// Sign: `-1`, `0`, `+1`; `0` for `±0`, `NaN` for `NaN` (matches numpy.sign).
     Sign,
@@ -113,14 +114,14 @@ impl ScalarOp {
             ScalarOp::Sqrt => x.sqrt(),
             ScalarOp::Square => x * x,
             ScalarOp::Recip => 1.0 / x,
-            ScalarOp::Min(c) => x.min(*c as f64),
-            ScalarOp::Max(c) => x.max(*c as f64),
+            ScalarOp::Min(c) => crate::ops::util::minimum(x, *c as f64),
+            ScalarOp::Max(c) => crate::ops::util::maximum(x, *c as f64),
             ScalarOp::Sign => signum_numpy(x),
             ScalarOp::Floor => x.floor(),
             ScalarOp::Ceil => x.ceil(),
             ScalarOp::Round => x.round_ties_even(),
             ScalarOp::Trunc => x.trunc(),
-            ScalarOp::Relu => x.max(0.0),
+            ScalarOp::Relu => crate::ops::util::maximum(x, 0.0),
             ScalarOp::Clamp(lo, hi) => x.clamp(*lo as f64, *hi as f64),
         }
     }

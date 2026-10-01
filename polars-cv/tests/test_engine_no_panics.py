@@ -118,7 +118,6 @@ def test_no_op_panics_on_any_input_shape(
         "maximum",
         "minimum",
         "blend",
-        "ratio",
         "bitwise_and",
         "apply_mask",
         "channel_merge",

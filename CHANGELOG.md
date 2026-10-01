@@ -9,6 +9,140 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Breaking changes
 
+- **Colour conversions use each dtype's value range, as OpenCV does.** They
+  assumed 0–255 for every dtype. Now:
+  - **floats are in [0, 1]**: HSV gives H in degrees and S, V in [0, 1];
+    YCbCr centres chroma at 0.5; Lab reads RGB in [0, 1], and converting
+    from Lab gives `f32` RGB in [0, 1] (it was 0–255). A carried alpha is
+    rescaled with the image (u8 RGBA -> Lab gives alpha 1.0, not 255.0).
+    Scale 0–255 float images by 1/255 first;
+  - **u16, u32 and u64 span 0..MAX**: YCbCr chroma is centred at
+    (MAX + 1) / 2 (a u16 gray pixel had Cb = Cr = 128), HSV's S and V span
+    0..MAX with the hue over the whole range for one turn (S was scaled to
+    255; OpenCV has no HSV above 8 bits, so this extends its 8-bit
+    `HSV_FULL` scheme and is polars-cv's own), and Lab reads RGB / MAX (u16
+    mid-gray had L = 5393);
+  - **signed integers are refused** by `to_hsv`, `to_lab`, `to_ycbcr` and
+    `convert_color` to or from those spaces, which have no signed range
+    (RGB, BGR and gray conversions accept every dtype).
+  u8 keeps OpenCV's 8-bit conventions; its values move by at most one unit
+  where the math, now f64 throughout, rounds a tie differently.
+
+- **Aspect-preserving resizes derive sizes exactly, and never as 0.**
+  `resize_to_height`, `resize_to_width`, `resize_max`, `resize_min`,
+  `resize_scale` and `letterbox` computed the derived size in f32, which
+  landed some exact halves just below .5: `resize_to_height(21)` of a 14x31
+  image gave width 46 where 7.5 and 1.5 round up. They also had no floor, so
+  `resize_max(1)` of a 3x1 image was 1x0, `resize_scale(0.25)` of a 1x1
+  image 0x0, and `letterbox` of a 1x3 image into 1x1 fitted the content to
+  zero rows and returned only padding. A derived size is now `n * t / d`
+  rounded half up in exact integer arithmetic, and at least 1, at plan time
+  and at execution (one rule, `shape_rule::scaled_size`, which letterbox's
+  fit also reads). Sizes change only for those inputs.
+
+- **`relu`, `clamp_min` and `clamp_max` propagate NaN.** They used
+  `f32::max`/`min`, which return the other operand for a NaN, so `relu(NaN)`
+  was 0 and `clamp_min(NaN, 0.5)` was 0.5, while `clamp`, `abs`, `sign` and
+  `round` propagated it. NaN in now gives NaN out from every scalar op, as in
+  NumPy (`np.maximum`) and PyTorch. Replace NaN first (`fill_nan`) where a
+  bound was wanted.
+
+- **The ordering reductions propagate NaN too.** `reduce_max`/`reduce_min`
+  (whole-buffer and per-axis) return NaN when any input is NaN, and
+  `reduce_argmax`/`reduce_argmin` return the first NaN's index, as in NumPy.
+  They used to compare with `>`/`<`, so whether a NaN survived depended on
+  its position. `reduce_percentile` of input that contains a NaN is NaN.
+  Before, it sorted with a comparator that is not a total order, so the
+  engine panicked ("comparison function does not correctly implement a
+  total order"), which the deep parity chain hunt hit through `sqrt`.
+
+- **Every op that orders values propagates NaN, from either side.** Binary
+  `maximum`/`minimum` gave `maximum(NaN, 1) = 1` but `maximum(1, NaN) = NaN`;
+  `dilate`/`erode` kept a NaN centre but skipped a NaN neighbour;
+  `morphology_gradient` turned NaN into 0; MinMax `normalize` skipped NaN
+  (ZScore propagated it); HSV's `max(r, g, b)` skipped a NaN channel. They,
+  the scalar clamps and the reductions above now read one rule,
+  `ops::util::displaces` (`maximum`/`minimum`): a NaN anywhere is the result.
+
+- **Non-finite geometry is refused, not warped.** A NaN or infinite
+  `rotate_and_scale` angle, centre or scale, `rotate` angle or `warp_affine`
+  coefficient passed the singularity check (`NaN < eps` is false) and warped
+  every pixel to the border; a NaN, infinite, zero or negative
+  `resize_scale` factor became a 1-pixel or `usize::MAX` axis. Each is now
+  refused — at plan time for a literal, per row for a column — by one matrix
+  rule, `AffineParams::matrix_is_invertible` (finite and non-singular), and
+  a finite-positive factor rule.
+
+- **`histogram` follows NumPy for NaN.** A NaN pixel is in no bin. It is not
+  counted, `normalized`/`buckets` shares sum to 1 over what was counted, and
+  its `quantized` index is one past the last bin (`np.digitize`). Before, it
+  was counted in bin 0 with equal-width bins and panicked the engine with
+  explicit edges. An auto-detected range over NaN or infinity, or a supplied
+  `range` that is not finite, now raises "... is not finite" as NumPy does;
+  before, auto range silently skipped NaN. Explicit edges must increase
+  monotonically, checked at plan time.
+
+- **`histogram` drops values outside its bins, as NumPy does.** A value
+  below the first edge or above the last — of an explicit `range` or of
+  explicit edges — was clamped into the end bin, so `range=(50, 200)` counted
+  every pixel. It is now in no bin, like NaN: not counted, and its
+  `quantized` index is one past the last bin. Pass infinite outer edges to
+  keep everything (`bins=[-inf, 50, 200, inf]`, see *Added*). Tied edges
+  follow `np.histogram` (`[0, 1, 1, 2]` puts 1 in the last bin left-closed,
+  the first right-closed); a binary search over the tie used to pick either.
+  A `range` whose min exceeds its max is an error. An auto-detected range
+  still holds every pixel: its ends widen outward where a 64-bit integer
+  rounds inward to f64.
+
+- **NaN propagates through `label_reduce`, and geometry refuses non-finite
+  coordinates.** `label_reduce(reduction="max")` folded with `f64::max`,
+  which drops a NaN, so a region holding a NaN pixel scored its largest
+  number; it now scores NaN, as `mean` and `sum` already did (the
+  whole-image statistics `reduce_sum`/`mean`/`std`, `normalize` and
+  `adjust_contrast` already propagated). A contour, point or bbox with a NaN
+  or infinite coordinate is now an error naming the row, as a null
+  coordinate already was, in every geometry function, the `contour` source
+  and `label_reduce`: a NaN vertex panicked the plugin in `convex_hull`,
+  `iou`, `dice` and `simplify`, made `hausdorff_distance` `1.8e308`, and
+  left the bbox, winding and convexity finite but wrong.
+
+- **Mixed dtypes promote as NumPy's do, and 32/64-bit integers promote to
+  f64.** Two operands of different dtypes met in "the larger integer", which
+  lost values: `u8` 200 plus an `i8` came back `i8`, `u64` with `i64` was
+  `i64`, `u32` with `i16` was `u32`, and an `i64` with an `f32` was computed
+  in `f32`. They now meet in NumPy's `result_type` (`DType::promote`, derived
+  from the lossless-containment rule): `u8`+`i8` is `i16`, `u32`+`f32` is
+  `f64`, and `u64` with a signed integer is `f64` — where a bitwise op is
+  refused, there being no common integer. The float-promoting ops (`scale`,
+  `sqrt`, `divide`, `convolve2d`, gamma, the scalar math family, ...) give
+  `f64` for `u32`/`i32`/`u64`/`i64` input, computed from the exact value; they
+  gave `f32`, reading each pixel as f32 (`2**24 + 1` became `2**24`), and
+  convolve and divide computed in f64 only to store f32. 8/16-bit integers
+  still give `f32`. One rule decides both what an op computes in and what it
+  stores (`OutputDTypeRule::PromoteToFloat` resolves to
+  `DType::accumulator`). Mixed operands are converted a block at a time
+  rather than each copied whole.
+
+- **polars-cv requires `polars>=1.43.2`** (was `>=1.41.1`). Older polars
+  exports a sliced `Array` column that has nulls across the plugin FFI with
+  its offset applied twice (the `FixedSizeListArray` export reported the
+  validity's offset while its values were already sliced), so the plugin's
+  import panicked: an `array` source over two chunks, or one chunk split
+  into streaming morsels, failed with "the offset of the new Buffer cannot
+  exceed the existing length". Fixed in polars itself; 1.43.0 and 1.43.1 are
+  yanked. The floor's fast suite was run at polars 1.43.2 / numpy 2.0.2.
+
+- **`divide` is IEEE true division; `ratio` is removed.** `divide` already
+  promoted integer operands to float (`f32`, or `f64` with an `f64` operand)
+  and divided, but a zero divisor gave `0`, even for floats, and its
+  docstring promised integer division for u8/u16. A zero divisor now follows
+  IEEE 754, as NumPy's `true_divide`: `x / 0` is `inf` (`-inf` for negative
+  `x`) and `0 / 0` is `nan`. Write `a.divide(b)` and replace non-finite
+  values afterwards if `0` was wanted. `ratio` was documented as `(a/b)`
+  scaled to the dtype's range but executed exactly as `divide`; it is
+  deleted rather than kept as a second name. Use `divide` (and `.scale(255)`
+  for the documented scaling).
+
 - **`extract_contours` traces along pixel edges, not pixel centres.** Pixel
   `(x, y)` is the unit square `[x, x+1] x [y, y+1]`, and every extracted
   outline runs along those squares' edges, so it bounds exactly its region's
@@ -27,6 +161,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   8-connected, so pixels touching only at a corner are one region, whose
   outline passes through that corner twice. `mode="external"` is now decided
   from the region labelling rather than a quadratic point-in-polygon scan.
+
+### Added
+
+- **Open-ended histogram bins.** Explicit edges may start at `-inf` and end
+  at `inf`, as polars' `hist` breaks do: `histogram(bins=[-math.inf, 0,
+  math.inf])` splits every value at 0. The wire carries an infinite edge as
+  `"inf"`/`"-inf"` (JSON has no infinity), through a `bound` catalogue type
+  (`naming::Bound`) that only histogram edges have, so no other float
+  parameter can receive an infinity it does not define.
 
 ### Performance
 
@@ -156,6 +299,59 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Internal
 
+- One declaration that 2- and 4-channel images are gray + alpha and RGBA
+  (`ops::color::has_alpha`), read by the resamplers' premultiply (fir's is
+  now set from it explicitly rather than by its pixel-type default), the
+  shape rule's carried alpha, grayscale and the colour conversions; a
+  structural guard (`test_alpha_authority.py`) refuses a restated channel
+  test.
+- tests: the parity generator draws NaN/infinity content for float images,
+  64-bit integers beyond 2**53, and sweeps every op on empty images
+  (`invariance/test_parity_empty.py`: refused or processed, never a panic).
+  What it found is fixed above; the references it showed to be inexact for
+  64-bit integers (threshold, blend, grayscale's bound) now compare exactly,
+  the YCbCr reference expands its chroma so an infinite channel gives its
+  limit, and the morphology ordering law skips NaN positions.
+- tests (review follow-ups): the dtype sweep fails an op its contract admits
+  on no swept layout (it had never swept `reshape`, whose sample fitted no
+  layout); `rotate_and_scale`'s lowering and the binary float ops are
+  checked against independent references (geometry; f64 rounded once and
+  exact integers), not restatements of the kernel; the parity harness keys
+  the quarter-turn rule on `rotate` itself and keeps literal-only list forms
+  (`histogram` edges) literal on every parameter axis; the u8 resample bound
+  against Pillow is 2 for every filter, as two correct fixed-point
+  resamplers round to opposite sides of the exact value.
+- tests: a generative parity suite, `tests/parity/` (Hypothesis). Every
+  chainable op runs against an independent reference (NumPy, OpenCV, Pillow,
+  SciPy) over drawn dtypes, sizes, channel counts, pixel content, null rows,
+  mixed-size rows, sources and engines, with per-row expression arguments.
+  Random chains and two-branch graphs are checked step by step, each step
+  against its reference on the engine's own previous output, and end to end
+  with the error bound carried through each op's gain. The same case must
+  agree byte for byte across every source, sink, engine, parameter style
+  (literal, `pl.col`, `pl.lit`, computed), composition (one pipeline,
+  `.pipe()`, aliased prefixes, blob-materialized steps), optimizer setting
+  (all, none, and each registered pass alone and removed) and chunking. Algebraic laws cover inverses, commutation, resampling
+  identities, morphology ordering and the lossless contour round trip.
+  Ratchets hold its tables to the op, I/O and dtype catalogues. Each property
+  runs a small derandomized budget per push and a 25x randomized one in the
+  weekly slow lane.
+- tests: divergences the suite found are registered in
+  `tests/parity/framework/known.py`, each pinning the exception and message
+  its repro fails with (`known.still_reproduces`), so a repro broken for
+  another reason no longer reads as the defect. Every divergence the suite
+  found has since been fixed (see *Fixed* and *Breaking changes*) and its
+  entry deleted; the registry is empty.
+- tests: the parity suite's binary ops are drawn on every dtype their
+  contract admits (`BinarySpec` splits `accepts` from `ref_accepts`, as
+  `OpSpec` does); add/subtract/multiply/blend were drawn on u8, u16 and floats
+  only, which is how the claim that they were exact on wide integers went
+  unchecked.
+- tests: `tests/property/` is folded into `tests/parity/laws/`. The
+  `TestResizeScaleReference`/`TestAspectRatioResizeReference` classes in
+  `test_resize_enhancements.py` are removed: they resized with Pillow and
+  asserted Pillow's output size without running polars-cv. The parity suite's
+  resize entries compare polars-cv's pixels with Pillow's.
 - view-buffer: `ViewBuffer::try_apply_fused_kernel_inplace` is removed. Whether
   a kernel may write its input is decided in one place,
   `ViewBuffer::unique_contiguous_mut`, which the element-wise engine and the
@@ -197,6 +393,139 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **An empty image is refused cleanly, not a panic.** `reduce_argmax`/
+  `reduce_argmin` over an empty axis panicked the engine, and `pad` with
+  `mode="edge"`, `"reflect"` or `"symmetric"` panicked extending an empty
+  axis; both are now refused by their contracts, as NumPy refuses them (padding
+  only the *other* axis of an empty image gives an empty image, as NumPy's), as
+  are `reduce_max`/`min`/`percentile` over nothing (`sum`, `mean` and `std`
+  stay defined). An `Array` column with a zero-size dimension is refused at
+  planning, naming the column: polars' FFI import of one sets its length to 0
+  and then slices it to the real row count, which panicked the plugin.
+- **`convert_color(rgb -> gray)` is `grayscale()`.** BT.601 was written out
+  in five places, and `convert_color` computed it in f32 for i8, u16, i16 and
+  f32 where `grayscale` computes in f64 and rounds once, so the two
+  disagreed (f32 in the last bit). Both now run one luma
+  (`ops::color::Luma`), as does the YCbCr encoder.
+- **Histogram edges meet integer pixels exactly.** A u64/i64 pixel was
+  compared with an edge through f64, so `2**53 + 3` landed in the bin above
+  the edge `2**53 + 4`. Histogram binning now reads the threshold's exact
+  integer cut (`core::cut`, the one pixel-against-boundary comparison).
+- **Resizing an empty image is refused, not a panic.** An aspect-preserving
+  resize (`resize(height=…)`, `resize_max`, `resize_min`, `letterbox`) of an
+  image with a zero height or width divided by it while deriving the other
+  side and panicked the engine. Every resampling op now refuses an empty
+  image in its contract (at plan time when the size is known, per row
+  otherwise), and the shape rule has no output for one.
+- **`ViewBuffer::reshape` refuses a strided view in every build.** The check
+  was a `debug_assert!` in the runner, so a direct caller in a release build
+  got elements in memory order rather than view order.
+
+- **8-bit HSV hue stays in [0, 180).** A hue in [359°, 360°) rounded to
+  180 (`RGB(255, 0, 1)` -> H = 180), outside the range; it wraps to 0, as
+  OpenCV's does. Integer hues wrap at their period on every dtype.
+- **A gray + alpha image round-trips through TIFF.** The `tiff` sink
+  expanded it to RGBA, so it came back as four channels, and a two-sample
+  TIFF from another writer (Pillow's `LA`) was refused as "Unsupported TIFF
+  color type". It is now written as two samples with the second declared
+  alpha (ExtraSamples), and decoded as two channels.
+- **A histogram counts a value on a bin edge in the bin its edges give.**
+  The uniform-bin index was `floor((x - lo) / width)`, which for a value
+  exactly on an edge can land a bin low: -7142.857142857143, edge 1 of
+  [-10000, 10000] in 7 bins (and so what `output="edges"` reports), was
+  counted in bin 0. The edges now decide membership for both
+  `closed="left"` and `"right"` (whose former epsilon test is gone).
+- **The `scalar_fusion` pass no longer changes an integer chain's result.**
+  It fused an integer `invert` with a following narrowing integer `cast`
+  into one kernel that stores by the float -> int rule (round, saturate)
+  instead of the int -> int rule the unfused cast applies (wrap): u16
+  `invert().cast("u8")` of 1000 was 255 fused and 23 unfused. Every pass is
+  byte-identical on and off again. `DType::converts_like_float` is now the
+  one rule both `scalar_fusion` and `cast_chain_collapse` read before
+  replacing a conversion with a float one (and it lets `cast_chain_collapse`
+  drop an f32 intermediate between integers where that is exact, such as
+  u8 -> f32 -> u16).
+- **A blob or raw column sunk to `numpy`/`ndarray`/`torch` returns every row,
+  not row 0's pixels for each.** Rows read in place are slices of the
+  column's shared buffer, and the numpy `data` column registered those
+  slices; Arrow's FFI export hands over a buffer's *storage* pointer, so
+  every row was read from the start of the shared storage (raw rows: from
+  the wrong place). The column now registers each storage once, unsliced,
+  and addresses each row by its offset in it.
+- **`reshape` and `channel_select` after a crop read the crop.** A crop that
+  starts below the first row (or right of the first column) leaves a view
+  with an offset; a reshape rebuilt its layout at offset 0, so
+  `crop(top=1).channel_select(0)` of a single-channel image returned the
+  uncropped rows. Reshape keeps the view's offset.
+- **`reshape` after a `flip`, `transpose`, quarter `rotate` or `crop` copies
+  first, as NumPy's does.** It was refused at execution ("cannot reshape a
+  non-contiguous view"), not by the planner, with no way to ask for the
+  copy. Reshape now declares `MemoryEffect::ViewOfContiguous` and the planner
+  packs a strided input before it: a no-op when the input already is
+  contiguous.
+- **`channel_swap`, `channel_merge`, RGB <-> BGR, gray -> RGB and the
+  morphological gradient are exact on every dtype.** They had native paths
+  for u8 (and some u16/f32) only and converted every other dtype through f32:
+  `channel_swap` and `channel_merge` then panicked against their contract
+  ("expected output dtype U16 ... but got F32"), and the colour moves and the
+  gradient silently rounded values f32 cannot hold (u32 16777217 ->
+  16777216). Each is now one kernel generic over the element type
+  (`with_dtype!`); `channel_swap` and the colour conversions' reorder are the
+  same kernel, where they were two.
+- **Resizing, blurring and `rgb->gray` keep 32/64-bit integer and f64 images
+  at full precision.** These dtypes were cast to f32, resampled and cast
+  back, so any value f32 cannot hold changed, even through a nearest resize
+  that only moves data (u32 16777217 -> 16777216). Nearest resampling is now
+  an exact gather on every dtype, and the convolution resamplers, blur and
+  the luma compute in `DType::accumulator` (f64 for these dtypes). fast_image_resize has
+  no 64-bit pixel types, so those dtypes are resampled by
+  `execution::resample`, which uses fast_image_resize's own filters and
+  coefficient rule in f64 (tested against it: byte-identical for nearest,
+  within 1e-4 for the convolution filters). u8, u16, f32, i8 and i16 are
+  unchanged.
+- **The two-buffer ops are exact on every dtype, and `blend` is normalized on
+  every integer dtype.** `add`, `subtract`, `multiply`, `blend`, `maximum`,
+  `minimum` and the bitwise ops ran natively only for u8 and u16 (and same-
+  dtype floats); every other operand pair was computed in f32, so a value f32
+  cannot hold changed (u32 `16777219 ^ 16777221` gave 0, not 6), and `blend`
+  was a plain saturating multiply (i8 `81 blend 81` gave 127). One kernel
+  generic over the element type now serves every dtype: integer arithmetic
+  saturates to the dtype's range, `blend` is `round(a*b / MAX)` (the
+  normalized product u8/u16 already used), and floats use IEEE arithmetic.
+  True division computes in `DType::accumulator`.
+- **Colour conversions refuse a channel count they cannot read.** They
+  admitted any `C` at least the source space's channel count, but every
+  kernel reads a pixel as that many values: `to_bgr` of a 5-channel image
+  reordered the first three channels and returned the other two as zeros,
+  and the other spaces read across pixel boundaries. A conversion now
+  admits exactly the space's channels or those plus alpha (3 or 4 for RGB,
+  BGR, HSV, Lab and YCbCr; 1 or 2 for gray), at plan time when the count is
+  known and per row otherwise.
+- **`convolve2d` (and `sobel`, `laplacian`, `sharpen`) on f64 returns f64.**
+  It planned f64 and executed f32, which the output guard refused. A
+  convolution now accumulates in `DType::accumulator` — f64 for f64 and the
+  32/64-bit integers, f32 otherwise — and stores its declared dtype.
+- **A literal float parameter equals the same value given as an expression.**
+  The graph JSON was parsed without `serde_json`'s `float_roundtrip`, so a
+  literal could land an ulp away from what the caller wrote, while the same
+  value from a column was read exactly. Any f64 parameter could differ; the
+  parity suite caught `warp_affine`'s matrix (the last bits of an f64 or wide
+  integer image differed between `matrix=[...]` and per-row expressions) and
+  `threshold` near a u64 pixel. Literals now parse to the nearest f64.
+- **`rotate_and_scale` with a per-row angle, centre or scale matches the same
+  values given as literals.** Its matrix was computed in Python: through the
+  `rotation_matrix_2d` FFI for literals, but as polars expression arithmetic
+  for any expression argument, and polars' `radians()` (`x * (pi/180)`)
+  rounds differently from the engine's `x * pi / 180`, so the two disagreed
+  in the last bits of an f64 image. `rotate_and_scale` is now a typed op the
+  engine lowers per row through `AffineParams::rotation_matrix_2d`, so there
+  is no second copy of the trig; its signature and outputs are unchanged.
+  The `polars_cv._lib.rotation_matrix_2d` FFI, which existed only to feed the
+  Python copy, is removed.
+- **`threshold` compares integer pixels exactly.** A non-u8 integer pixel was
+  rounded to f64 before the comparison, so above 2**53 it answered for a
+  neighbour (`2**53 + 1 > 2**53` came out false). Every integer dtype now
+  compares `p > floor(t)`, as u8 already did.
 - **`rotate`/`warp_affine` fill pixels off the image with the border value
   rounded and saturated, like every other pixel.** The fill truncated it: a
   u8 `border_value=7.5` filled 7 while pixels at the edge blended toward 7.5,

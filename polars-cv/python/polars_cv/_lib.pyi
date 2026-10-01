@@ -13,8 +13,6 @@ the pipeline's own expression table.
 
 from __future__ import annotations
 
-from typing import Any
-
 import polars as pl
 
 __version__: str
@@ -74,14 +72,6 @@ class Plan:
 
 def pass_catalog() -> str:
     """Return the optimisation-pass catalogue as JSON (see ``tests/golden/pass_catalog.json``)."""
-
-def rotation_matrix_2d(
-    angle_deg: float,
-    cx: float,
-    cy: float,
-    scale: float,
-) -> Any:
-    """The affine parameters a ``rotate`` executes as, for a known input shape."""
 
 def op_catalog() -> str:
     """Return the typed op catalogue as JSON (see ``tests/golden/op_catalog.json``)."""

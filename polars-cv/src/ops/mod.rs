@@ -18,6 +18,8 @@
 //! [`TypedOp`] *is* the wire op: `{"op": <name>, <field>: <value>, ...}`,
 //! deserialized strictly by name. A name no op registers is an error.
 
+#[cfg(test)]
+mod dtype_sweep;
 pub mod graph;
 pub mod param;
 
@@ -324,6 +326,37 @@ mod tests {
 
     fn parse_err(v: serde_json::Value) -> String {
         parse(v).expect_err("expected the spec to be rejected")
+    }
+
+    /// A literal f64 reaches the op exactly as the caller wrote it. The wire
+    /// is JSON *text* (Python's shortest round-trip `repr`), and a parser
+    /// that is not correctly rounded lands some values an ulp away, so a
+    /// literal and the same value as a per-row column (read exactly from
+    /// Arrow) gave different results: a threshold at the edge of a u64 pixel,
+    /// the last bits of a warp. `str::parse::<f64>` is correctly rounded.
+    #[test]
+    fn a_literal_float_parses_to_the_nearest_f64() {
+        let spellings = [
+            "1.8442240474082181e+19",
+            "3797082577976980.5",
+            "0.49999524036036724",
+            "-0.0021816546423732855",
+            "0.006879953875663483",
+            "0.006820176538462455",
+            "2.2250738585072014e-308",
+            "5e-324",
+            "9007199254740993",
+            "0.1",
+            "1.7976931348623157e+308",
+        ];
+        for text in spellings {
+            let op: TypedOp =
+                serde_json::from_str(&format!(r#"{{"op": "threshold", "value": {text}}}"#))
+                    .unwrap();
+            let got = op.fields_json()["value"].as_f64().unwrap();
+            let want: f64 = text.parse().unwrap();
+            assert_eq!(got.to_bits(), want.to_bits(), "{text}: {got:e} vs {want:e}");
+        }
     }
 
     #[test]

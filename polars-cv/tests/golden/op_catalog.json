@@ -909,7 +909,7 @@
     "name": "divide",
     "python": "divide",
     "visibility": "lazy_only",
-    "doc": "Element-wise division.\n\nFor u8/u16: integer division, with division by zero yielding 0. For\nf32/f64: standard division.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.divide(b).sink(\"numpy\")\n    ```",
+    "doc": "Element-wise true division, into a float.\n\nInteger operands promote to float (``f32``, or ``f64`` when an operand\nis ``f64``) and ``a / b`` follows IEEE 754, as NumPy's ``true_divide``:\n``x / 0`` is ``inf`` (``-inf`` for negative ``x``) and ``0 / 0`` is\n``nan``.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.divide(b).sink(\"numpy\")\n    ```",
     "fields": [
       {
         "name": "other",
@@ -1102,11 +1102,11 @@
     "name": "histogram",
     "python": "histogram",
     "visibility": "public",
-    "doc": "Compute pixel value histogram.\n\nExample:\n    >>> Pipeline().source(\"image_bytes\").grayscale().histogram(bins=8)",
+    "doc": "Compute pixel value histogram.\n\nBins follow ``numpy.histogram``: a value outside the range or the edges\nis in no bin (not counted; ``\"quantized\"`` gives it the index one past the\nlast bin), as is NaN. Infinite outer edges are open bounds, e.g.\n``bins=[-inf, 0, 10, inf]`` keeps every value.\n\nExample:\n    >>> Pipeline().source(\"image_bytes\").grayscale().histogram(bins=8)",
     "fields": [
       {
         "name": "bins",
-        "doc": "Number of bins (default 256), a Polars expression for per-row dynamic\nbin count, or an explicit list of bin edges.",
+        "doc": "Number of bins (default 256), a Polars expression for per-row dynamic\nbin count, or an explicit list of non-decreasing bin edges (the outer\nones may be infinite).",
         "default": 256,
         "type": {
           "kind": "one_of",
@@ -1121,7 +1121,7 @@
               "inner": {
                 "kind": "scalar",
                 "per_row": false,
-                "py": "float"
+                "py": "bound"
               }
             }
           ]
@@ -1129,7 +1129,7 @@
       },
       {
         "name": "range",
-        "doc": "(min, max) tuple. Auto-detected if None.",
+        "doc": "(min, max) tuple, finite. Auto-detected if None, widened to hold every\nvalue.",
         "type": {
           "kind": "optional",
           "inner": {
@@ -1736,31 +1736,6 @@
       {
         "input": "contour",
         "output": "buffer"
-      }
-    ]
-  },
-  {
-    "name": "ratio",
-    "python": "ratio",
-    "visibility": "lazy_only",
-    "doc": "Scaled ratio: a/b scaled to the full range of the dtype.\n\nFor u8: (a/b) * 255, clamped to [0, 255]. For u16: (a/b) * 65535,\nclamped to [0, 65535]. For f32/f64: standard division.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.ratio(b).sink(\"numpy\")\n    ```",
-    "fields": [
-      {
-        "name": "other",
-        "doc": "The expression to combine with, element-wise.",
-        "type": {
-          "kind": "node"
-        }
-      }
-    ],
-    "domains": [
-      {
-        "input": "buffer",
-        "output": "buffer"
-      },
-      {
-        "input": "vector",
-        "output": "vector"
       }
     ]
   },
@@ -2418,6 +2393,65 @@
         "name": "border_value",
         "doc": "Fill value for out-of-bounds pixels (default 0). Not applicable to\n90/180/270 degree rotations.",
         "default": 0.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
+  },
+  {
+    "name": "rotate_and_scale",
+    "python": "rotate_and_scale",
+    "visibility": "public",
+    "doc": "Combined rotation and scaling around a center point.\n\nWarps with OpenCV's ``getRotationMatrix2D(center, -angle, scale)``\nmatrix, built per row from the values the row resolves: the matrix\nis computed in one place (the engine), so a literal and the same\nvalue as an expression give identical output.\n\nExample:\n    ```python\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate_and_scale(\n    ...     angle=45.0, scale=1.2, center=(112, 112), output_size=(224, 224)\n    ... )\n    >>> # Per-row angle from a column\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate_and_scale(\n    ...     angle=pl.col(\"theta\"), center=(112, 112), output_size=(224, 224)\n    ... )\n    ```",
+    "fields": [
+      {
+        "name": "angle",
+        "doc": "Rotation angle in degrees (positive = clockwise). Accepts a Polars\nexpression for a per-row angle.",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "center",
+        "doc": "``(cx, cy)`` center of rotation. Required: an image source's\nheight/width are not known until execution, so there is no\nplan-time centre to default to. Each element accepts an expression.",
+        "type": {
+          "kind": "array",
+          "len": 2,
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
+          }
+        }
+      },
+      {
+        "name": "output_size",
+        "doc": "``(height, width)`` of the output. Required, because the output\nshape is part of the plan-time schema. Each element accepts an\nexpression.",
+        "type": {
+          "kind": "array",
+          "len": 2,
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "int"
+          }
+        }
+      },
+      {
+        "name": "scale",
+        "doc": "Scale factor (default 1.0). Accepts an expression.",
+        "default": 1.0,
         "type": {
           "kind": "scalar",
           "per_row": true,

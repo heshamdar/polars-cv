@@ -189,6 +189,28 @@ pub enum OpShape {
     Canvas { of: usize },
 }
 
+/// `n * t / d` rounded to the nearest integer, a tie up, and at least 1: the
+/// one rule for a size derived by keeping an aspect ratio (the `*To`/`*SideTo`
+/// resizes here, and letterbox's fit, `ops::image::letterbox_fit`). Computed
+/// exactly in integers: an f32 ratio rounded `21 * 31 / 14 = 46.5` to
+/// 46.499996 and so down, and nothing kept a size from rounding to 0.
+///
+/// `d` is an input side and must not be 0: an empty image has no aspect
+/// ratio, and its resampling is refused by the contract
+/// (`ImageOp::validate`) before any size is derived from it.
+pub fn scaled_size(n: usize, t: usize, d: usize) -> usize {
+    assert!(d > 0, "scaled_size: no aspect ratio from an empty side");
+    let (n, t, d) = (n as u128, t as u128, d as u128);
+    (((2 * n * t + d) / (2 * d)) as usize).max(1)
+}
+
+/// `n * s` rounded to the nearest integer, a tie up, and at least 1, for a
+/// scale factor `s` (`resize_scale`). `n * s` is exact in f64 (an f32 factor
+/// has 24 significant bits).
+pub fn scaled_by(n: usize, s: f32) -> usize {
+    ((n as f64 * f64::from(s) + 0.5).floor() as usize).max(1)
+}
+
 impl OpShape {
     /// The output shape for `inputs`; `None` when it is not knowable before
     /// execution, or when there is no output — an input of a rank the shape
@@ -209,17 +231,17 @@ impl OpShape {
             [h, w, ..] => (*h, *w),
             _ => (Dim::Unknown, Dim::Unknown),
         };
-        // Both sizes of an aspect-ratio computation, when known.
+        // Both sizes of an aspect-ratio computation, when known. An empty
+        // side has no aspect ratio to keep: resampling it has no output (the
+        // resize contracts refuse it), and `scaled_size` would divide by it.
         let known_hw = in_h.known().zip(in_w.known());
-        let aspect = |f: &dyn Fn(f32, f32) -> (f32, f32)| match known_hw {
+        let aspect = |f: &dyn Fn(usize, usize) -> (usize, usize)| match known_hw {
+            Some((0, _) | (_, 0)) => None,
             Some((h, w)) => {
-                let (oh, ow) = f(h as f32, w as f32);
-                hw(
-                    Dim::Known(oh.round() as usize),
-                    Dim::Known(ow.round() as usize),
-                )
+                let (oh, ow) = f(h, w);
+                Some(hw(Dim::Known(oh), Dim::Known(ow)))
             }
-            None => hw(Dim::Unknown, Dim::Unknown),
+            None => Some(hw(Dim::Unknown, Dim::Unknown)),
         };
         Some(match self {
             OpShape::Preserve => input.to_vec(),
@@ -234,7 +256,7 @@ impl OpShape {
                 [_, _] if *to_gray => input.to_vec(),
                 [h, w] => vec![*h, *w, Dim::Known(*channels)],
                 [h, w, c] => {
-                    let alpha = |c: usize| usize::from(matches!(c, 2 | 4));
+                    let alpha = |c: usize| usize::from(crate::ops::color::has_alpha(c));
                     vec![*h, *w, c.map(|c| channels + alpha(c))]
                 }
                 _ => return None,
@@ -251,26 +273,22 @@ impl OpShape {
             },
             OpShape::RotateExpand(angle) => match (known_hw, angle.known()) {
                 (Some((h, w)), Some(angle)) => {
-                    let rad = (angle as f64) * std::f64::consts::PI / 180.0;
-                    let (cos, sin) = (rad.cos().abs(), rad.sin().abs());
-                    let (h, w) = (h as f64, w as f64);
-                    hw(
-                        Dim::Known((h * cos + w * sin).round() as usize),
-                        Dim::Known((w * cos + h * sin).round() as usize),
-                    )
+                    let (oh, ow) =
+                        crate::ops::affine::AffineParams::expanded_size(h, w, angle as f64);
+                    hw(Dim::Known(oh), Dim::Known(ow))
                 }
                 _ => hw(Dim::Unknown, Dim::Unknown),
             },
             OpShape::SetHw { h, w } => hw(h.dim(), w.dim()),
             OpShape::ScaleHw { sy, sx } => {
                 let by = |d: Dim, s: Sym<f32>| match s {
-                    Sym::Known(s) => d.map(|n| (n as f32 * s).round() as usize),
+                    Sym::Known(s) => d.map(|n| scaled_by(n, s)),
                     Sym::PerRow => Dim::Unknown,
                 };
                 hw(by(in_h, *sy), by(in_w, *sx))
             }
             OpShape::HeightTo(h) => match h.known() {
-                Some(t) => aspect(&|ih, iw| (t as f32, t as f32 * (iw / ih))),
+                Some(t) => aspect(&|ih, iw| (t, scaled_size(iw, t, ih)))?,
                 None => hw(Dim::Unknown, Dim::Unknown),
             }
             .into_iter()
@@ -278,7 +296,7 @@ impl OpShape {
             .map(|(i, d)| if i == 0 { h.dim() } else { d })
             .collect(),
             OpShape::WidthTo(w) => match w.known() {
-                Some(t) => aspect(&|ih, iw| (t as f32 * (ih / iw), t as f32)),
+                Some(t) => aspect(&|ih, iw| (scaled_size(ih, t, iw), t))?,
                 None => hw(Dim::Unknown, Dim::Unknown),
             }
             .into_iter()
@@ -290,9 +308,8 @@ impl OpShape {
                     let long = matches!(self, OpShape::LongSideTo(_));
                     aspect(&|ih, iw| {
                         let side = if long { ih.max(iw) } else { ih.min(iw) };
-                        let scale = n as f32 / side;
-                        (ih * scale, iw * scale)
-                    })
+                        (scaled_size(ih, n, side), scaled_size(iw, n, side))
+                    })?
                 }
                 None => hw(Dim::Unknown, Dim::Unknown),
             },
@@ -521,6 +538,50 @@ impl OpShape {
             _ => false,
         };
         for_any_input || input.is_some_and(|input| self.dims(&[input]).as_deref() == Some(input))
+    }
+}
+
+#[cfg(test)]
+mod derived_size_tests {
+    //! A size derived by keeping an aspect ratio is `round(n * t / d)`
+    //! computed exactly, a tie rounding up, and never below one pixel.
+
+    use super::{OpShape, Sym};
+
+    fn hw(shape: OpShape, h: usize, w: usize) -> (usize, usize) {
+        let out = shape.concrete(&[&[h, w, 1]]);
+        (out[0], out[1])
+    }
+
+    /// 21 * 31 / 14 = 46.5 exactly: it rounds up, like 7.5 and 1.5 do. The
+    /// f32 ratio made it 46.499996 and rounded it down.
+    #[test]
+    fn an_exact_tie_rounds_up() {
+        assert_eq!(hw(OpShape::HeightTo(Sym::Known(21)), 14, 31), (21, 47));
+        assert_eq!(hw(OpShape::WidthTo(Sym::Known(21)), 31, 14), (47, 21));
+        assert_eq!(hw(OpShape::HeightTo(Sym::Known(3)), 2, 5), (3, 8)); // 7.5
+        assert_eq!(hw(OpShape::LongSideTo(Sym::Known(21)), 14, 31), (9, 21)); // 9.48
+        assert_eq!(hw(OpShape::ShortSideTo(Sym::Known(21)), 14, 31), (21, 47));
+        let scale = OpShape::ScaleHw {
+            sy: Sym::Known(0.5),
+            sx: Sym::Known(0.5),
+        };
+        assert_eq!(hw(scale, 3, 5), (2, 3)); // 1.5, 2.5
+    }
+
+    /// No derived size is zero: resize_max(1) of 3x1, resize_scale(0.25) of
+    /// 1x1 and letterbox's fit of 1x3 into 1x1 used to give an empty axis.
+    #[test]
+    fn a_derived_size_is_at_least_one_pixel() {
+        assert_eq!(hw(OpShape::LongSideTo(Sym::Known(1)), 3, 1), (1, 1));
+        let scale = OpShape::ScaleHw {
+            sy: Sym::Known(0.25),
+            sx: Sym::Known(0.25),
+        };
+        assert_eq!(hw(scale, 1, 1), (1, 1));
+        assert_eq!(hw(OpShape::HeightTo(Sym::Known(1)), 100, 2), (1, 1));
+        assert_eq!(crate::ops::image::letterbox_fit(1, 3, 1, 1), (1, 1));
+        assert_eq!(crate::ops::image::letterbox_fit(14, 31, 21, 100), (21, 47));
     }
 }
 
@@ -759,6 +820,44 @@ mod symbolic_tests {
     /// `DISTINGUISHED_RANK` (or the leading sizes' length); that is sound only
     /// if no variant tells a higher rank apart. Every size it claims must hold
     /// at every higher rank too, or the axis be absent there.
+    /// `dims` is total over empty axes too: every variant, over inputs with a
+    /// zero height and/or width. A size derived by keeping the aspect ratio
+    /// divides by an input side, which panicked on a zero one; resampling an
+    /// empty image has no output (the resize contracts refuse it).
+    #[test]
+    fn dims_is_total_over_empty_axes() {
+        let inputs: [&[Dim]; 5] = [
+            &[Known(0), Known(4), Known(1)],
+            &[Known(4), Known(0), Known(1)],
+            &[Known(0), Known(0)],
+            &[Known(0), Input(1), Known(3)],
+            &[Known(0)],
+        ];
+        for shape in every_variant() {
+            for input in inputs {
+                let out = std::panic::catch_unwind(|| shape.dims(&[input]));
+                assert!(out.is_ok(), "{shape:?} over {input:?} panicked");
+            }
+        }
+        for shape in [
+            OpShape::HeightTo(Sym::Known(10)),
+            OpShape::WidthTo(Sym::Known(10)),
+            OpShape::LongSideTo(Sym::Known(10)),
+            OpShape::ShortSideTo(Sym::Known(10)),
+        ] {
+            assert_eq!(
+                shape.dims(&[&[Known(0), Known(4), Known(1)]]),
+                None,
+                "{shape:?}"
+            );
+            assert_eq!(
+                shape.dims(&[&[Known(4), Known(0), Known(1)]]),
+                None,
+                "{shape:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_shape_is_rank_stable_past_its_patterns() {
         for leading in [vec![], vec![Some(7)], vec![Some(7), Some(9), Some(3)]] {
