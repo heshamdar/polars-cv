@@ -608,6 +608,11 @@ def _pil_resize_premultiplied(
     pixel contributes no colour — as Pillow does for ``LA``/``RGBA``. Pillow's
     ``La``/``RGBa`` modes are the premultiplied forms; converting once and
     resizing in them keeps the two passes premultiplied throughout.
+
+    A pixel whose resampled alpha is 0 has no colour: the engine
+    un-premultiplies it to 0, where Pillow leaves the residue of its
+    neighbours' ringing. The reference takes the engine's convention for
+    exactly those pixels.
     """
     h0, w0 = x.shape[:2]
     if (height, width) == (h0, w0):
@@ -619,7 +624,9 @@ def _pil_resize_premultiplied(
         image = image.resize((w0, height), resample)
     if width != w0:
         image = image.resize((width, height), resample)
-    return np.asarray(image.convert(mode))
+    out = np.asarray(image.convert(mode)).copy()
+    out[out[:, :, -1] == 0, :-1] = 0
+    return out
 
 
 def _resize_to(x: np.ndarray, height: int, width: int, flt: str) -> np.ndarray:

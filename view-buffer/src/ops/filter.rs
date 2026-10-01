@@ -132,7 +132,7 @@ impl<M: Mode> Op for ConvolveOp<M> {
     }
 
     fn working_dtype(&self) -> Option<DType> {
-        None // Works in f32 internally regardless of input
+        None // Accumulates in the input's `DType::accumulator`
     }
 
     fn output_dtype_rule(&self) -> OutputDTypeRule {
@@ -140,10 +140,25 @@ impl<M: Mode> Op for ConvolveOp<M> {
     }
 }
 
+/// The float a convolution accumulates in: f32 or f64
+/// ([`DType::accumulator`]).
+trait Acc:
+    crate::core::dtype::ViewType
+    + num_traits::Float
+    + std::ops::AddAssign
+    + std::ops::MulAssign
+    + num_traits::FromPrimitive
+{
+}
+impl Acc for f32 {}
+impl Acc for f64 {}
+
 /// Apply 2D convolution to a buffer.
 ///
-/// Works in f32 internally. For multi-channel images, each channel is
-/// convolved independently. Output dtype is f32.
+/// Accumulates in the input's [`DType::accumulator`] (f32, or f64 for f64 and
+/// 32/64-bit integer input) and stores the declared output dtype
+/// (`PromoteToFloat`: f64 for f64, f32 otherwise). For multi-channel images,
+/// each channel is convolved independently.
 ///
 /// Structured for auto-vectorization (interior/border split, same pattern as
 /// the separable Gaussian blur in `execution/runner.rs`):
@@ -154,52 +169,79 @@ impl<M: Mode> Op for ConvolveOp<M> {
 ///
 /// Taps are visited in the same `ky`-outer/`kx`-inner order as the original
 /// per-pixel loop and `norm_factor` is applied as a final multiply, so every
-/// element accumulates in the identical floating-point order: the result is
-/// bit-exact with the pre-split implementation (see tests/convolve_ref.rs).
+/// element accumulates in the identical floating-point order: the f32 result
+/// is bit-exact with the pre-split implementation (see tests/convolve_ref.rs).
 pub fn apply_convolve2d(buf: &ViewBuffer, op: &ConvolveOp) -> ViewBuffer {
-    let work_buf = if buf.dtype() != DType::F32 {
-        buf.cast(DType::F32)
-    } else {
-        buf.clone()
+    let out_dtype = op.output_dtype_rule().resolve(buf.dtype());
+    let out = match buf.dtype().accumulator() {
+        DType::F64 => convolve_in::<f64>(buf, op),
+        _ => convolve_in::<f32>(buf, op),
     };
-    let contig = work_buf.to_contiguous();
+    if out.dtype() == out_dtype {
+        out
+    } else {
+        out.cast(out_dtype)
+    }
+}
+
+fn convolve_in<F: Acc>(buf: &ViewBuffer, op: &ConvolveOp) -> ViewBuffer {
+    let contig = buf.cast(F::DTYPE).to_contiguous();
     let shape = contig.shape();
 
     let h = shape[0];
     let w = shape[1];
     let c = shape.get(2).copied().unwrap_or(1);
 
-    let count = contig.layout.num_elements();
-    let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
+    let src: &[F] = contig.as_slice::<F>();
 
-    let kernel = &op.kernel;
+    // The coefficients in the accumulator's precision (an f32 kernel widens
+    // exactly).
+    let kernel: Vec<F> = op
+        .kernel
+        .iter()
+        .map(|&k| F::from_f32(k).expect("an f32 coefficient converts"))
+        .collect();
+    let kernel = &kernel[..];
     let ksize = op.side();
     let half = ksize / 2;
 
     let norm_factor = if op.normalize {
-        let abs_sum: f32 = kernel.iter().map(|k| k.abs()).sum();
-        if abs_sum > 0.0 {
-            1.0 / abs_sum
+        let abs_sum: F = kernel.iter().fold(F::zero(), |acc, k| acc + k.abs());
+        if abs_sum > F::zero() {
+            F::one() / abs_sum
         } else {
-            1.0
+            F::one()
         }
     } else {
-        1.0
+        F::one()
     };
 
-    let mut output = vec![0.0f32; h * w * c];
+    let mut output = vec![F::zero(); h * w * c];
 
     if h > 2 * half && w > 2 * half {
         match ksize {
-            3 => convolve_interior::<3>(src, &mut output, h, w, c, kernel, norm_factor),
-            5 => convolve_interior::<5>(src, &mut output, h, w, c, kernel, norm_factor),
-            7 => convolve_interior::<7>(src, &mut output, h, w, c, kernel, norm_factor),
+            3 => convolve_interior::<F, 3>(src, &mut output, h, w, c, kernel, norm_factor),
+            5 => convolve_interior::<F, 5>(src, &mut output, h, w, c, kernel, norm_factor),
+            7 => convolve_interior::<F, 7>(src, &mut output, h, w, c, kernel, norm_factor),
             _ => convolve_interior_dyn(src, &mut output, h, w, c, kernel, ksize, norm_factor),
         }
-        convolve_border_ring(src, &mut output, h, w, c, op, norm_factor);
+        convolve_border_ring(src, &mut output, h, w, c, op, kernel, norm_factor);
     } else {
         // Image no larger than the kernel: clamped/reflected gather everywhere.
-        convolve_gather_rect(src, &mut output, h, w, c, op, norm_factor, 0, h, 0, w);
+        convolve_gather_rect(
+            src,
+            &mut output,
+            h,
+            w,
+            c,
+            op,
+            kernel,
+            norm_factor,
+            0,
+            h,
+            0,
+            w,
+        );
     }
 
     if c == 1 && shape.len() == 2 {
@@ -213,14 +255,15 @@ pub fn apply_convolve2d(buf: &ViewBuffer, op: &ConvolveOp) -> ViewBuffer {
 ///
 /// Requires `h > 2*(K/2)` and `w > 2*(K/2)`. Writes only the interior
 /// rows/columns of `out`; the border ring is left untouched (zero).
-fn convolve_interior<const K: usize>(
-    src: &[f32],
-    out: &mut [f32],
+#[allow(clippy::too_many_arguments)]
+fn convolve_interior<F: Acc, const K: usize>(
+    src: &[F],
+    out: &mut [F],
     h: usize,
     w: usize,
     c: usize,
-    kernel: &[f32],
-    norm_factor: f32,
+    kernel: &[F],
+    norm_factor: F,
 ) {
     convolve_interior_dyn(src, out, h, w, c, kernel, K, norm_factor);
 }
@@ -229,15 +272,15 @@ fn convolve_interior<const K: usize>(
 /// row segments, then a final `norm_factor` multiply.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
-fn convolve_interior_dyn(
-    src: &[f32],
-    out: &mut [f32],
+fn convolve_interior_dyn<F: Acc>(
+    src: &[F],
+    out: &mut [F],
     h: usize,
     w: usize,
     c: usize,
-    kernel: &[f32],
+    kernel: &[F],
     ksize: usize,
-    norm_factor: f32,
+    norm_factor: F,
 ) {
     let half = ksize / 2;
     let wc = w * c;
@@ -267,47 +310,41 @@ fn convolve_interior_dyn(
 
 /// Convolve the border ring (top/bottom rows plus left/right columns of the
 /// remaining rows) with the original per-pixel gather.
-fn convolve_border_ring(
-    src: &[f32],
-    out: &mut [f32],
+#[allow(clippy::too_many_arguments)]
+fn convolve_border_ring<F: Acc>(
+    src: &[F],
+    out: &mut [F],
     h: usize,
     w: usize,
     c: usize,
     op: &ConvolveOp,
-    norm_factor: f32,
+    kernel: &[F],
+    norm_factor: F,
 ) {
     let half = op.side() / 2;
+    let rect = |out: &mut [F], y0, y1, x0, x1| {
+        convolve_gather_rect(src, out, h, w, c, op, kernel, norm_factor, y0, y1, x0, x1)
+    };
     // Top and bottom rows.
-    convolve_gather_rect(src, out, h, w, c, op, norm_factor, 0, half, 0, w);
-    convolve_gather_rect(src, out, h, w, c, op, norm_factor, h - half, h, 0, w);
+    rect(out, 0, half, 0, w);
+    rect(out, h - half, h, 0, w);
     // Left and right columns of the interior rows.
-    convolve_gather_rect(src, out, h, w, c, op, norm_factor, half, h - half, 0, half);
-    convolve_gather_rect(
-        src,
-        out,
-        h,
-        w,
-        c,
-        op,
-        norm_factor,
-        half,
-        h - half,
-        w - half,
-        w,
-    );
+    rect(out, half, h - half, 0, half);
+    rect(out, half, h - half, w - half, w);
 }
 
 /// Per-pixel gather convolution over the rectangle `[y0,y1) × [x0,x1)`,
 /// preserving the original tap order and border handling.
 #[allow(clippy::too_many_arguments)]
-fn convolve_gather_rect(
-    src: &[f32],
-    out: &mut [f32],
+fn convolve_gather_rect<F: Acc>(
+    src: &[F],
+    out: &mut [F],
     h: usize,
     w: usize,
     c: usize,
     op: &ConvolveOp,
-    norm_factor: f32,
+    kernel: &[F],
+    norm_factor: F,
     y0: usize,
     y1: usize,
     x0: usize,
@@ -315,12 +352,11 @@ fn convolve_gather_rect(
 ) {
     let ksize = op.side();
     let half = (ksize / 2) as i64;
-    let kernel = &op.kernel;
 
     for ch in 0..c {
         for y in y0..y1 {
             for x in x0..x1 {
-                let mut sum = 0.0f32;
+                let mut sum = F::zero();
                 for ky in 0..ksize {
                     for kx in 0..ksize {
                         let sy = y as i64 + ky as i64 - half;
@@ -339,8 +375,8 @@ fn convolve_gather_rect(
 /// Sample a pixel with border handling.
 #[inline]
 #[allow(clippy::too_many_arguments)]
-fn sample_pixel(
-    data: &[f32],
+fn sample_pixel<F: Acc>(
+    data: &[F],
     h: usize,
     w: usize,
     c: usize,
@@ -348,11 +384,11 @@ fn sample_pixel(
     y: i64,
     x: i64,
     border: BorderMode,
-) -> f32 {
+) -> F {
     let (sy, sx) = match border {
         BorderMode::Zero => {
             if y < 0 || y >= h as i64 || x < 0 || x >= w as i64 {
-                return 0.0;
+                return F::zero();
             }
             (y as usize, x as usize)
         }

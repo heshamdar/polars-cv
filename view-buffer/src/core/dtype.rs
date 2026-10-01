@@ -357,6 +357,18 @@ impl DType {
         }
     }
 
+    /// The float an interpolating kernel (convolve, blur, resample, colour
+    /// math) computes in for an input of this dtype: `F64` for `f64` and the
+    /// 32/64-bit integers, whose values f32 cannot hold, else `F32`. The one
+    /// rule, so no kernel decides it alone; the result is then stored in the
+    /// op's declared output dtype.
+    pub fn accumulator(&self) -> DType {
+        match self {
+            DType::F64 | DType::U32 | DType::I32 | DType::U64 | DType::I64 => DType::F64,
+            DType::U8 | DType::I8 | DType::U16 | DType::I16 | DType::F32 => DType::F32,
+        }
+    }
+
     /// Whether every value representable in `other` is exactly representable in
     /// `self` — i.e. casting `other` → `self` loses no information.
     ///
