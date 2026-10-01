@@ -1128,12 +1128,12 @@ pub(crate) fn apply_fused_op_passes(data: &mut [f32], ops: &[ScalarOp]) {
             }
             ScalarOp::Min(c) => {
                 for x in data.iter_mut() {
-                    *x = x.min(*c);
+                    *x = crate::ops::scalar::min_numpy(*x, *c);
                 }
             }
             ScalarOp::Max(c) => {
                 for x in data.iter_mut() {
-                    *x = x.max(*c);
+                    *x = crate::ops::scalar::max_numpy(*x, *c);
                 }
             }
             ScalarOp::Sign => {
@@ -1163,7 +1163,7 @@ pub(crate) fn apply_fused_op_passes(data: &mut [f32], ops: &[ScalarOp]) {
             }
             ScalarOp::Relu => {
                 for x in data.iter_mut() {
-                    *x = x.max(0.0);
+                    *x = crate::ops::scalar::max_numpy(*x, 0.0);
                 }
             }
             ScalarOp::Clamp(lo, hi) => {

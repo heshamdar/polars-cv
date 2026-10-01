@@ -560,10 +560,11 @@ impl ViewExpr {
                         if let ExprNode::Compute(ComputeOp::Cast { dtype: inner }, ref grandchild) =
                             &child.node
                         {
-                            let switches_int_conversion = DTypeCategory::Integer
-                                .accepts(grandchild.dtype)
-                                && DTypeCategory::Float.accepts(*inner)
-                                && DTypeCategory::Integer.accepts(*target_dtype);
+                            // Dropping a float intermediate replaces its
+                            // float -> target conversion with the
+                            // grandchild's own (`converts_like_float`).
+                            let switches_int_conversion = DTypeCategory::Float.accepts(*inner)
+                                && !grandchild.dtype.converts_like_float(*target_dtype);
                             if inner.losslessly_contains(grandchild.dtype)
                                 && !switches_int_conversion
                             {
@@ -710,6 +711,15 @@ fn try_fuse(
     outer_input_dtype: DType,
     planned_out_dtype: DType,
 ) -> Option<ComputeOp> {
+    // The kernel stores its f32 result by the float -> target rule; a cast
+    // the unfused chain would make from an integer intermediate may convert
+    // differently (int -> int wraps), and then it must stay unfused.
+    if let ComputeOp::Cast { dtype: target } = outer {
+        if !outer_input_dtype.converts_like_float(*target) {
+            return None;
+        }
+    }
+
     let mut ops = Vec::new();
 
     if !crate::ops::elementwise::lower_to_scalars(inner, inner_input_dtype, false, &mut ops) {
@@ -916,14 +926,18 @@ mod scalar_op_tests {
             (ScalarOp::Sqrt, |x| x.sqrt()),
             (ScalarOp::Square, |x| x * x),
             (ScalarOp::Recip, |x| 1.0 / x),
-            (ScalarOp::Min(0.5), |x| x.min(0.5)),
-            (ScalarOp::Max(0.5), |x| x.max(0.5)),
+            (ScalarOp::Min(0.5), |x| {
+                crate::ops::scalar::min_numpy(x, 0.5)
+            }),
+            (ScalarOp::Max(0.5), |x| {
+                crate::ops::scalar::max_numpy(x, 0.5)
+            }),
             (ScalarOp::Sign, signum_numpy::<f32>),
             (ScalarOp::Floor, |x| x.floor()),
             (ScalarOp::Ceil, |x| x.ceil()),
             (ScalarOp::Round, |x| x.round_ties_even()),
             (ScalarOp::Trunc, |x| x.trunc()),
-            (ScalarOp::Relu, |x| x.max(0.0)),
+            (ScalarOp::Relu, |x| crate::ops::scalar::max_numpy(x, 0.0)),
             (ScalarOp::Clamp(0.0, 1.0), |x| x.clamp(0.0, 1.0)),
         ]
     }

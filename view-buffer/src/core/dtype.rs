@@ -357,6 +357,20 @@ impl DType {
         }
     }
 
+    /// Whether converting a value held in `self` to `target` (the crate's
+    /// rule, `core::convert`) gives what converting that same value from a
+    /// float gives. Only an integer-to-integer conversion that narrows
+    /// differs: int -> int wraps (`as`), float -> int rounds and saturates.
+    ///
+    /// The one rule an optimizer pass reads before replacing a conversion
+    /// from `self` with a float one: `cast_chain_collapse` dropping a float
+    /// intermediate between integers, and `scalar_fusion` storing an integer
+    /// chain's result through its f32 kernel.
+    pub fn converts_like_float(&self, target: DType) -> bool {
+        let int = |d: DType| DTypeCategory::Integer.accepts(d);
+        !(int(*self) && int(target)) || target.losslessly_contains(*self)
+    }
+
     /// The float an interpolating kernel (convolve, blur, resample, colour
     /// math) computes in for an input of this dtype: `F64` for `f64` and the
     /// 32/64-bit integers, whose values f32 cannot hold, else `F32`. The one
