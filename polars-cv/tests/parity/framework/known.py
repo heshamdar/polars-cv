@@ -120,20 +120,6 @@ def _repro_tiff_gray_alpha() -> None:
     )
 
 
-def _repro_array_null_slice() -> None:
-    from polars_cv import Pipeline
-
-    image = np.zeros((1, 1, 1), dtype=np.uint8)
-    rows = [None, None, None, image, image]
-    frame = pl.DataFrame(
-        {"x": pl.Series("x", rows, dtype=pl.Array(pl.UInt8, (1, 1, 1)))}
-    )
-    expr = pl.col("x").cv.pipe(Pipeline().source("array", dtype="u8")).sink("numpy")
-    # One chunk; the streaming engine's morsels slice it.
-    out = frame.lazy().select(expr).collect(engine="streaming")
-    assert out["x"].null_count() == 3
-
-
 def _repro_nan_one_sided_clamp() -> None:
     from tests.parity.framework.run import Axes, Step, execute
 
@@ -307,27 +293,6 @@ DIVERGENCES: tuple[Divergence, ...] = (
         affects_axes=lambda axes, images, shapes, steps: (
             axes.source == "tiff"
             and any(im is not None and im.shape[2] == 2 for im in images)
-        ),
-        avoid=True,
-    ),
-    Divergence(
-        key="array-null-slice-panic",
-        raises=pl.exceptions.ComputeError,
-        match="panicked",
-        summary=(
-            "An Array column with null rows panics in polars-arrow ('the "
-            "offset of the new Buffer cannot exceed the existing length') "
-            "once it is sliced: across two chunks under any engine, or in one "
-            "chunk under the streaming engine once its morsels split it (three "
-            "leading nulls in five rows is enough). The plugin slices the "
-            "FixedSizeList with an offset it has already applied. Fixed: the "
-            "null rows come back null."
-        ),
-        repro=_repro_array_null_slice,
-        affects_axes=lambda axes, images, shapes, steps: (
-            axes.source == "array"
-            and (axes.chunked or axes.engine == "streaming")
-            and any(im is None for im in images)
         ),
         avoid=True,
     ),
