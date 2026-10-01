@@ -252,15 +252,6 @@ def _derived_size_is_tie(step: Step, x: np.ndarray) -> bool:
     return any((size * f) % 1 == Fraction(1, 2) for size, f in ((h, fy), (w, fx)))
 
 
-def _repro_blend_int() -> None:
-    from tests.parity.framework.run import BinaryCase, execute_binary
-
-    a = np.array([[[81]]], dtype=np.int8)
-    out = execute_binary(BinaryCase((a,), (a,), (), (), "blend")).rows[0]
-    # (81 / 127) * (81 / 127) * 127 = 51.66
-    assert out.ravel()[0] == 52, f"blend of i8 81 with itself is {out.ravel()[0]}"
-
-
 def _repro_color_int_range() -> None:
     from tests.parity.framework.run import Axes, Step, execute
 
@@ -282,12 +273,12 @@ def _color_int_range(step: Step, x: np.ndarray) -> bool:
 
 
 def _repro_wide_int_through_f32() -> None:
-    from tests.parity.framework.run import BinaryCase, execute_binary
+    from tests.parity.framework.run import Axes, Step, execute
 
-    a = np.full((1, 1, 1), 16_777_219, dtype=np.uint32)
-    b = np.full((1, 1, 1), 16_777_221, dtype=np.uint32)
-    out = execute_binary(BinaryCase((a,), (b,), (), (), "bitwise_xor")).rows[0]
-    assert out.ravel()[0] == 6, f"16777219 ^ 16777221 is {out.ravel()[0]}, not 6"
+    image = np.full((1, 1, 1), 16_777_217, dtype=np.uint32)
+    step = Step("resize", {"height": 2, "width": 2, "filter": "nearest"})
+    out = execute([image], [step], Axes()).rows[0]
+    assert (out == 16_777_217).all(), f"a nearest resize gave {out.ravel()}"
 
 
 def _repro_letterbox_zero_extent() -> None:
@@ -375,16 +366,6 @@ _THROUGH_F32 = frozenset(
         "resize_min",
         "resize_scale",
         "letterbox",
-        # binary ops (the DAG suite asks with Step(method) and each operand)
-        "add",
-        "subtract",
-        "multiply",
-        "blend",
-        "bitwise_and",
-        "bitwise_or",
-        "bitwise_xor",
-        "maximum",
-        "minimum",
     }
 )
 
@@ -562,24 +543,6 @@ DIVERGENCES: tuple[Divergence, ...] = (
         affects_step=_derived_size_is_tie,
     ),
     Divergence(
-        key="blend-int",
-        match="blend of i8 81 with itself is 127",
-        summary=(
-            "blend is normalized ((a/MAX)(b/MAX)MAX) only for u8 and u16; "
-            "every other integer dtype takes the float path, where blend is "
-            "a plain multiply saturated to the dtype (i8 81 blend 81 -> 127, "
-            "not 52). The per-dtype semantics of the binary ops are written "
-            "for u8/u16 and floats only. Fixed: blend normalizes by the "
-            "dtype's maximum on every integer dtype."
-        ),
-        repro=_repro_blend_int,
-        affects_step=lambda step, x: (
-            step.method == "blend"
-            and x.dtype.kind in "iu"
-            and x.dtype not in (np.uint8, np.uint16)
-        ),
-    ),
-    Divergence(
         key="color-int-range",
         match="u16 gray to YCbCr is [32768, 128, 128]",
         summary=(
@@ -597,16 +560,14 @@ DIVERGENCES: tuple[Divergence, ...] = (
     ),
     Divergence(
         key="through-f32",
-        match="16777219 ^ 16777221 is 0, not 6",
+        match="a nearest resize gave [16777216",
         summary=(
-            "32/64-bit integer and f64 images are resampled or combined "
-            "through f32, so a value f32 cannot hold changes (u32 16777217 -> "
-            "16777216; f64 0.63696169 -> 0.63696170): the resizes (a nearest "
-            "one included), blur, letterbox, convert_color rgb->gray, and the "
-            "binary ops, where every operand pair but u8, u16, f32 and f64 is "
-            "computed in f32 (u32 16777219 ^ 16777221 -> 0, not 6). Fixed: "
-            "data movement is exact on every dtype, and interpolation "
-            "accumulates in DType::accumulator (f64 for these)."
+            "32/64-bit integer and f64 images are resampled through f32, so a "
+            "value f32 cannot hold changes (u32 16777217 -> 16777216; f64 "
+            "0.63696169 -> 0.63696170): the resizes (a nearest one, which "
+            "only moves data, included), blur, letterbox and convert_color "
+            "rgb->gray. Fixed: data movement is exact on every dtype, and "
+            "interpolation accumulates in DType::accumulator (f64 for these)."
         ),
         repro=_repro_wide_int_through_f32,
         affects_step=lambda step, x: (
