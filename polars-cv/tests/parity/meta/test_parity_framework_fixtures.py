@@ -17,6 +17,7 @@ must accept, calling the *same* helper the sweeps call:
 from __future__ import annotations
 
 import math
+from typing import ClassVar
 
 import numpy as np
 import pytest
@@ -101,6 +102,52 @@ class TestCompare:
         """float64 cannot tell 2**63-1 from 2**63-2; the exact path must."""
         big = np.array([2**63 - 1], np.int64)
         assert compare(big, big - 1, EXACT) is not None
+
+
+class TestComparisonSpace:
+    """A bound can hold in another representation than the output's.
+
+    u8 colour with alpha is resampled premultiplied, in 8 bits, by the engine
+    and by Pillow alike. Un-premultiplying multiplies each side's rounding by
+    ``MAX / alpha``, so in straight colour no dense bound holds where the
+    output is translucent. In premultiplied space both sides agree within a
+    few units: that is where the bound is stated.
+    """
+
+    #: The F10 case: alpha alternating 46/102 down a 10x1 RGBA column,
+    #: bilinear to 1x1. Exact colour 84.6; the engine gave 86, Pillow 82.
+    COLUMN = np.repeat(np.array([46, 102] * 5, u8)[:, None, None], 4, axis=2)
+    PARAMS: ClassVar[dict] = {"height": 1, "width": 1, "filter": "bilinear"}
+
+    def test_a_translucent_resample_holds_in_premultiplied_space(self) -> None:
+        from tests.parity.framework.oracle import _resize_tol
+
+        tol = _resize_tol(self.COLUMN, self.PARAMS)
+        engine = np.array([[[86, 86, 86, 74]]], u8)
+        pillow = np.array([[[82, 82, 82, 74]]], u8)
+        assert compare(engine, pillow, tol) is None
+
+    def test_a_wrong_kernel_is_still_caught(self) -> None:
+        from tests.parity.framework.oracle import _resize_tol
+
+        tol = _resize_tol(self.COLUMN, self.PARAMS)
+        opaque = np.full((1, 1, 4), 255, u8)
+        off = opaque.copy()
+        off[..., :3] -= 6
+        mismatch = compare(off, opaque, tol)
+        assert mismatch is not None and "exceed" in str(mismatch)
+
+    def test_a_bound_in_another_space_does_not_propagate(self) -> None:
+        spaced = Tol(atol=2, space="premultiplied")
+        # Over an exact input the step's own bound stands, space and all...
+        assert propagate(EXACT, spaced, 1.0, kind="spatial", integer_out=True) == spaced
+        # ...but it does not compose with straight-space errors either way.
+        assert propagate(spaced, lsb(1), 1.0, kind="spatial", integer_out=True) is None
+        assert propagate(lsb(1), spaced, 1.0, kind="spatial", integer_out=True) is None
+
+    def test_an_unknown_space_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="unknown comparison space"):
+            Tol(atol=1, space="linear-light")
 
 
 # ---------------------------------------------------------------------------

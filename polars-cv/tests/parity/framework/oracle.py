@@ -645,6 +645,12 @@ _PIL_FILTERS = {
 _FILTERS = (*_PIL_FILTERS, "gaussian")
 
 
+#: Each resampling kernel's L1 norm, ``integral |k(x)| dx``: how much a
+#: per-tap rounding error can add up to through the filter (the negative
+#: lobes count). Computed numerically from the kernels' definitions.
+_FILTER_L1 = {"bilinear": 1.0, "catmullrom": 1.1667, "lanczos3": 1.3544}
+
+
 def _pil_resize_plane(
     plane: np.ndarray, height: int, width: int, flt: str
 ) -> np.ndarray:
@@ -780,10 +786,14 @@ def _resize_tol(x: np.ndarray, p: Params) -> Tol:
             share = min(1.0, share * h * w / (p["height"] * p["width"]))
         return EXACT if share == 0 else sparse(atol=0, frac=share, frac_atol=math.inf)
     if x.dtype == np.uint8 and x.shape[2] in (2, 4):
-        # Pillow premultiplies in 8 bits, so a nearly transparent pixel's
-        # colour is ill-conditioned once un-premultiplied (alpha 4 carries two
-        # bits of colour); the engine keeps more. Alpha itself stays dense.
-        return sparse(atol=2, frac=0.1, frac_atol=math.inf)
+        # Both sides resample premultiplied, in 8 bits. Un-premultiplied, each
+        # side's rounding is scaled by 255 / alpha (3.4x at alpha 74), so no
+        # dense straight-colour bound holds on a translucent output. Compared
+        # premultiplied, each side is off by at most: its premultiply's
+        # rounding through the filter (1/2 * the kernel's L1 norm), the
+        # resample's own rounding (1/2) and the straight output's (1/2, no
+        # more once re-premultiplied): 2 * (L1 / 2 + 1) between them.
+        return Tol(atol=2 * (_FILTER_L1[flt] / 2 + 1), space="premultiplied")
     if x.dtype == np.float32:
         return close(atol=1e-4 * magnitude(x), rtol=1e-4)
     return lsb(1) if flt == "bilinear" else lsb(2)
