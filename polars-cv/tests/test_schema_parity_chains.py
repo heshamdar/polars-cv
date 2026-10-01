@@ -216,7 +216,8 @@ def test_hint_invalidating_steps_still_plan_their_dtype(name: str) -> None:
 def test_binary_op_axis_is_the_rust_registry() -> None:
     """The sweep below must cover the real vocabulary, not a stale copy."""
     names = _binary_op_names()
-    assert len(names) >= 11, f"BinaryOp vocabulary shrank to {names}"
+    # 10 since `ratio` (a second name for divide) was deleted.
+    assert len(names) >= 10, f"BinaryOp vocabulary shrank to {names}"
     assert "divide" in names and "blend" in names
 
 
@@ -227,7 +228,7 @@ def test_binary_ops_plan_what_they_execute(op: str) -> None:
 
     Binary ops are the one two-input dtype rule: ``Plan.push`` reads the other
     operand's state for them (``other=``), so their promotion — u8 x u8 ->
-    f32 for ``divide``/``ratio`` — is a separate branch of the fold.
+    f32 for ``divide`` — is a separate branch of the fold.
     """
     df = _df("null_first")
     left = pl.col("img").cv.pipe(_base())

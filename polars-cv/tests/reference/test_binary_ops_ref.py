@@ -398,13 +398,14 @@ class TestBinaryOpsPolarsCV:
         sample_images: tuple[np.ndarray, np.ndarray],
         encode_png: Callable[[np.ndarray], bytes],
     ) -> None:
-        """polars-cv divide should match integer division semantics."""
+        """polars-cv divide is NumPy's true division into f32, IEEE at zero."""
         img1, img2 = sample_images
 
-        # NumPy reference: integer division with zero protection (returns 0)
-        expected = np.zeros_like(img1)
-        nonzero_mask = img2 != 0
-        expected[nonzero_mask] = img1[nonzero_mask] // img2[nonzero_mask]
+        # NumPy reference: true division (x / 0 -> inf, 0 / 0 -> nan).
+        with np.errstate(divide="ignore", invalid="ignore"):
+            expected = (img1.astype(np.float64) / img2.astype(np.float64)).astype(
+                np.float32
+            )
 
         # polars-cv implementation
         df = pl.DataFrame(
@@ -423,42 +424,8 @@ class TestBinaryOpsPolarsCV:
         result = df.select(output=expr1.divide(expr2).sink("numpy"))
         actual = numpy_from_struct(result.row(0)[0])
 
-        np.testing.assert_allclose(actual, expected, atol=1)
-
-    def test_ratio_matches_reference(
-        self,
-        sample_images: tuple[np.ndarray, np.ndarray],
-        encode_png: Callable[[np.ndarray], bytes],
-    ) -> None:
-        """polars-cv ratio should match true division (a / b) semantics."""
-        img1, img2 = sample_images
-
-        # NumPy reference: true division a / b, promoting to float, with zero
-        # protection (a divisor of 0 yields 0).
-        a = img1.astype(np.float32)
-        b = img2.astype(np.float32)
-        expected = np.where(img2 == 0, 0.0, a / np.where(img2 == 0, 1.0, b)).astype(
-            np.float32
-        )
-
-        # polars-cv implementation
-        df = pl.DataFrame(
-            {
-                "img1": [encode_png(img1)],
-                "img2": [encode_png(img2)],
-            }
-        )
-
-        pipe1 = Pipeline().source("image_bytes")
-        pipe2 = Pipeline().source("image_bytes")
-
-        expr1 = pl.col("img1").cv.pipe(pipe1)
-        expr2 = pl.col("img2").cv.pipe(pipe2)
-
-        result = df.select(output=expr1.ratio(expr2).sink("numpy"))
-        actual = numpy_from_struct(result.row(0)[0])
-
-        np.testing.assert_allclose(actual, expected, atol=1)
+        assert actual.dtype == np.float32
+        np.testing.assert_allclose(actual, expected, rtol=1e-6, equal_nan=True)
 
     def test_apply_mask_matches_reference(
         self,

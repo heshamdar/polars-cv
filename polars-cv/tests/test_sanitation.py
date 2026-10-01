@@ -651,7 +651,6 @@ def test_binary_dtype_authority():
 
     # True division promotes integers to float; other ops use plain promotion.
     assert _binary_dtype("divide", "u8", "u8") == "f32"
-    assert _binary_dtype("ratio", "u16", "u16") == "f32"
     assert _binary_dtype("divide", "f64", "f64") == "f64"
     assert _binary_dtype("add", "u8", "u8") == "u8"
     assert _binary_dtype("add", "u8", "u16") == "u16"

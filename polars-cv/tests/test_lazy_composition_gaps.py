@@ -1,7 +1,7 @@
 """
 Tests filling gaps in lazy composition coverage.
 
-Covers: blend/ratio composition structure, merge_pipe with 3+ branches,
+Covers: blend composition structure, merge_pipe with 3+ branches,
 statistics with custom include lists, sink(return_expr=False), and
 bitwise operation composition.
 """
@@ -23,7 +23,7 @@ from tests.conftest import plugin_required
 
 
 class TestBlendRatioComposition:
-    """Verify blend() and ratio() create proper LazyPipelineExpr."""
+    """Verify blend() creates a proper LazyPipelineExpr."""
 
     def test_blend_returns_lazy_expr(self) -> None:
         """blend() should return a LazyPipelineExpr."""
@@ -31,14 +31,6 @@ class TestBlendRatioComposition:
         expr1 = pl.col("a").cv.pipe(pipe)
         expr2 = pl.col("b").cv.pipe(pipe)
         result = expr1.blend(expr2)
-        assert isinstance(result, LazyPipelineExpr)
-
-    def test_ratio_returns_lazy_expr(self) -> None:
-        """ratio() should return a LazyPipelineExpr."""
-        pipe = Pipeline().source("image_bytes")
-        expr1 = pl.col("a").cv.pipe(pipe)
-        expr2 = pl.col("b").cv.pipe(pipe)
-        result = expr1.ratio(expr2)
         assert isinstance(result, LazyPipelineExpr)
 
 
@@ -187,13 +179,13 @@ class TestSinkReturnExpr:
 
 
 # ---------------------------------------------------------------------------
-# Execution tests for blend, ratio, bitwise
+# Execution tests for blend, bitwise
 # ---------------------------------------------------------------------------
 
 
 @plugin_required
 class TestBlendRatioExecution:
-    """Execute blend/ratio and verify output is valid."""
+    """Execute blend and verify output is valid."""
 
     def test_blend_execution_produces_valid_output(self, encode_png: Callable) -> None:
         """blend should execute without error and produce correct shape."""
@@ -215,28 +207,6 @@ class TestBlendRatioExecution:
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.shape == (30, 30, 3)
         assert arr.dtype == np.uint8
-
-    def test_ratio_execution_produces_valid_output(self, encode_png: Callable) -> None:
-        """ratio should execute without error and produce correct shape."""
-        rng = np.random.default_rng(42)
-        img1 = rng.integers(0, 256, (30, 30, 3), dtype=np.uint8)
-        img2 = rng.integers(0, 256, (30, 30, 3), dtype=np.uint8)
-        df = pl.DataFrame(
-            {
-                "a": [encode_png(img1)],
-                "b": [encode_png(img2)],
-            }
-        )
-
-        pipe = Pipeline().source("image_bytes")
-        expr1 = pl.col("a").cv.pipe(pipe)
-        expr2 = pl.col("b").cv.pipe(pipe)
-
-        result = df.select(out=expr1.ratio(expr2).sink("numpy"))
-        arr = numpy_from_struct(result.row(0)[0])
-        # ratio is true division: u8 operands promote to f32.
-        assert arr.shape == (30, 30, 3)
-        assert arr.dtype == np.float32
 
 
 @plugin_required

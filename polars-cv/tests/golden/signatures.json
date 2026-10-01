@@ -1237,18 +1237,6 @@
     "0"
    ]
   ],
-  "ratio": [
-   [
-    "self",
-    "POSITIONAL_OR_KEYWORD",
-    ""
-   ],
-   [
-    "other",
-    "POSITIONAL_OR_KEYWORD",
-    ""
-   ]
-  ],
   "reciprocal": [
    [
     "self",

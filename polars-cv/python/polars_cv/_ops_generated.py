@@ -379,7 +379,6 @@ TYPED_OPS: frozenset[str] = frozenset(
         "pad_to_size",
         "perceptual_hash",
         "rasterize",
-        "ratio",
         "reciprocal",
         "reduce_argmax",
         "reduce_argmin",
@@ -789,7 +788,6 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         "fill_value": {"kind": "scalar", "per_row": True, "py": "int"},
         "background": {"kind": "scalar", "per_row": True, "py": "int"},
     },
-    "ratio": {"other": {"kind": "node"}},
     "reciprocal": {},
     "reduce_argmax": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
     "reduce_argmin": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
@@ -1035,10 +1033,6 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "pad_to_size": [{"input": "buffer", "output": "buffer"}],
     "perceptual_hash": [{"input": "buffer", "output": "vector"}],
     "rasterize": [{"input": "contour", "output": "buffer"}],
-    "ratio": [
-        {"input": "buffer", "output": "buffer"},
-        {"input": "vector", "output": "vector"},
-    ],
     "reciprocal": [{"input": "buffer", "output": "buffer"}],
     "reduce_argmax": [
         {"input": "buffer", "output": "buffer"},
@@ -2572,10 +2566,12 @@ class _LazyOpsMixin:
         return self._binary_op("blend", other)
 
     def divide(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
-        """Element-wise division.
+        """Element-wise true division, into a float.
 
-        For u8/u16: integer division, with division by zero yielding 0. For
-        f32/f64: standard division.
+        Integer operands promote to float (``f32``, or ``f64`` when an operand
+        is ``f64``) and ``a / b`` follows IEEE 754, as NumPy's ``true_divide``:
+        ``x / 0`` is ``inf`` (``-inf`` for negative ``x``) and ``0 / 0`` is
+        ``nan``.
 
         Domain: buffer → buffer, vector → vector
 
@@ -2647,26 +2643,6 @@ class _LazyOpsMixin:
             ```
         """
         return self._binary_op("multiply", other)
-
-    def ratio(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
-        """Scaled ratio: a/b scaled to the full range of the dtype.
-
-        For u8: (a/b) * 255, clamped to [0, 255]. For u16: (a/b) * 65535,
-        clamped to [0, 65535]. For f32/f64: standard division.
-
-        Domain: buffer → buffer, vector → vector
-
-        Args:
-            other: The expression to combine with, element-wise.
-
-        Example:
-            ```python
-            >>> a = pl.col("image1").cv.pipe(pipe1)
-            >>> b = pl.col("image2").cv.pipe(pipe2)
-            >>> result = a.ratio(b).sink("numpy")
-            ```
-        """
-        return self._binary_op("ratio", other)
 
     def subtract(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise subtraction.

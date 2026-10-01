@@ -143,15 +143,6 @@ def _repro_blob_numpy_rows() -> None:
     assert np.array_equal(out.rows[1], b), "row 1 came back as row 0's pixels"
 
 
-def _repro_divide_contract() -> None:
-    from tests.parity.framework.run import BinaryCase, execute_binary
-
-    a = np.array([[[7]]], dtype=np.uint8)
-    b = np.array([[[2]]], dtype=np.uint8)
-    out = execute_binary(BinaryCase((a,), (b,), (), (), "divide")).rows[0]
-    assert out.dtype == np.uint8 and out.ravel()[0] == 3, "documented: integer division"
-
-
 def _repro_nan_one_sided_clamp() -> None:
     from tests.parity.framework.run import Axes, Step, execute
 
@@ -431,20 +422,6 @@ DIVERGENCES: tuple[Divergence, ...] = (
             and axes.engine != "streaming"
             and sum(im is not None for im in images) > 1
         ),
-    ),
-    Divergence(
-        key="divide-ratio-contract",
-        match="documented: integer division",
-        summary=(
-            "divide and ratio do not do what their docs say. Documented: "
-            "divide is integer division for u8/u16 (x / 0 -> 0) and IEEE "
-            "division for floats (x / 0 -> inf); ratio scales a / b by the "
-            "dtype's maximum and clamps. Observed: both return f32 a / b on "
-            "every dtype, with x / 0 -> 0.0 even for floats, so ratio is "
-            "divide. Fixed: code or docs change, and the reference follows."
-        ),
-        repro=_repro_divide_contract,
-        affects_step=lambda step, x: step.method in ("divide", "ratio"),
     ),
     Divergence(
         key="nan-one-sided-clamp",

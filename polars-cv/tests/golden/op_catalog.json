@@ -909,7 +909,7 @@
     "name": "divide",
     "python": "divide",
     "visibility": "lazy_only",
-    "doc": "Element-wise division.\n\nFor u8/u16: integer division, with division by zero yielding 0. For\nf32/f64: standard division.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.divide(b).sink(\"numpy\")\n    ```",
+    "doc": "Element-wise true division, into a float.\n\nInteger operands promote to float (``f32``, or ``f64`` when an operand\nis ``f64``) and ``a / b`` follows IEEE 754, as NumPy's ``true_divide``:\n``x / 0`` is ``inf`` (``-inf`` for negative ``x``) and ``0 / 0`` is\n``nan``.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.divide(b).sink(\"numpy\")\n    ```",
     "fields": [
       {
         "name": "other",
@@ -1736,31 +1736,6 @@
       {
         "input": "contour",
         "output": "buffer"
-      }
-    ]
-  },
-  {
-    "name": "ratio",
-    "python": "ratio",
-    "visibility": "lazy_only",
-    "doc": "Scaled ratio: a/b scaled to the full range of the dtype.\n\nFor u8: (a/b) * 255, clamped to [0, 255]. For u16: (a/b) * 65535,\nclamped to [0, 65535]. For f32/f64: standard division.\n\nExample:\n    ```python\n    >>> a = pl.col(\"image1\").cv.pipe(pipe1)\n    >>> b = pl.col(\"image2\").cv.pipe(pipe2)\n    >>> result = a.ratio(b).sink(\"numpy\")\n    ```",
-    "fields": [
-      {
-        "name": "other",
-        "doc": "The expression to combine with, element-wise.",
-        "type": {
-          "kind": "node"
-        }
-      }
-    ],
-    "domains": [
-      {
-        "input": "buffer",
-        "output": "buffer"
-      },
-      {
-        "input": "vector",
-        "output": "vector"
       }
     ]
   },

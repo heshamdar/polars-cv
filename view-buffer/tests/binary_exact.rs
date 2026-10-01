@@ -50,7 +50,7 @@ fn reference(op: BinaryOp, a: i128, b: i128, min: i128, max: i128) -> i128 {
         BinaryOp::BitwiseAnd => a & b,
         BinaryOp::BitwiseOr => a | b,
         BinaryOp::BitwiseXor => a ^ b,
-        BinaryOp::Divide | BinaryOp::Ratio => unreachable!("true division is float"),
+        BinaryOp::Divide => unreachable!("true division is float"),
     }
 }
 
