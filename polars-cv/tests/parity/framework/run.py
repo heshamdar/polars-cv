@@ -113,7 +113,8 @@ def admits_expression(annotation: str | None, value: Any) -> bool:
         return "OrExpr]" in annotation
     if any(isinstance(v, (list, tuple)) for v in values):
         return False
-    return any(part.strip().endswith("OrExpr") for part in annotation.split("|"))
+    scalars = [p.strip() for p in annotation.split("|") if "[" not in p]
+    return any(p.endswith("OrExpr") or p == "pl.Expr" for p in scalars)
 
 
 def _is_sequence_param(annotation: str) -> bool:
