@@ -56,6 +56,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   total order"), which the deep parity chain hunt hit through `sqrt`. All of
   these now share one ordering rule, `reduction::displaces`.
 
+- **`histogram` follows NumPy for NaN.** A NaN pixel is in no bin. It is not
+  counted, `normalized`/`buckets` shares sum to 1 over what was counted, and
+  its `quantized` index is one past the last bin (`np.digitize`). Before, it
+  was counted in bin 0 with equal-width bins and panicked the engine with
+  explicit edges. An auto-detected range over NaN or infinity, or a supplied
+  `range` that is not finite, now raises "... is not finite" as NumPy does;
+  before, auto range silently skipped NaN. Explicit edges must increase
+  monotonically, checked at plan time.
+
 - **polars-cv requires `polars>=1.43.2`** (was `>=1.41.1`). Older polars
   exports a sliced `Array` column that has nulls across the plugin FFI with
   its offset applied twice (the `FixedSizeListArray` export reported the

@@ -102,6 +102,13 @@ Pipeline().source("image_bytes").grayscale().histogram(bins=[0, 50, 100, 200, 25
 Pipeline().source("image_bytes").grayscale().histogram(bins=10, closed="right")
 ```
 
+A value outside an explicit `range` is clamped into the edge bin. NaN follows
+NumPy: it is in no bin, so it is not counted (`normalized` shares sum to 1 over
+the counted values), and its `quantized` index is one past the last bin. An
+auto-detected range over NaN or infinity, or a supplied `range` that is not
+finite, raises: there are no equal-width bins to make, so pass `range=` or
+explicit edges. Explicit edges must increase monotonically.
+
 **Outputs:** `"buckets"` (default), `"counts"`, `"normalized"`, `"quantized"`, `"edges"`.
 **Closed Intervals:** `"left"` (default), `"right"`.
 
