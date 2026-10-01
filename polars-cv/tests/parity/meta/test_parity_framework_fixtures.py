@@ -148,13 +148,6 @@ class TestPropagate:
 # Known-divergence predicates
 # ---------------------------------------------------------------------------
 
-_CROP_BAND = Step("crop", {"top": 1, "left": 0, "height": 2, "width": 3})
-_CROP_ORIGIN = Step("crop", {"top": 0, "left": 0, "height": 2, "width": 3})
-_SELECT = Step("channel_select", {"index": 0})
-_RESHAPE = Step("reshape", {"shape": [6, 1]})
-_FLIP = Step("flip", {"axes": [0]})
-_BLUR = Step("blur", {"sigma": 1.0})
-
 
 def _divergence(repro, *, raises=AssertionError, match="the defect"):
     return known.Divergence(
@@ -209,32 +202,6 @@ class TestStillReproduces:
 
 class TestDivergencePredicates:
     """Each predicate flags its defect's cases and nothing else."""
-
-    @pytest.mark.parametrize(
-        ("chain", "key"),
-        [
-            ([_CROP_BAND, _SELECT], "view-offset-lost"),
-            ([_CROP_BAND, _FLIP, _SELECT], "view-offset-lost"),
-            ([_FLIP, _RESHAPE], "reshape-after-view"),
-            ([_CROP_ORIGIN, _RESHAPE], "reshape-after-view"),
-        ],
-    )
-    def test_chain_predicates_flag(self, chain: list[Step], key: str) -> None:
-        divergence = known.chain_divergence(chain)
-        assert divergence is not None and divergence.key == key
-
-    @pytest.mark.parametrize(
-        "chain",
-        [
-            [_CROP_ORIGIN, _SELECT],  # no offset
-            [_CROP_BAND, _BLUR, _SELECT],  # blur materializes the crop
-            [_BLUR, _RESHAPE],  # reshape of a fresh buffer
-            [_RESHAPE],
-            [_SELECT],
-        ],
-    )
-    def test_chain_predicates_pass(self, chain: list[Step]) -> None:
-        assert known.chain_divergence(chain) is None
 
     def test_an_avoid_entry_wins_over_a_value_only_one(self) -> None:
         """When several entries cover one case, the lookup reports the one

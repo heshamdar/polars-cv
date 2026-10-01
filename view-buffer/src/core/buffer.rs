@@ -1492,8 +1492,84 @@ impl ViewBuffer {
             self.layout.shape,
             shape
         );
+        // A contiguous view may start past its buffer's first element (a crop
+        // below the first row): the new layout keeps where it starts.
+        let offset = self.layout.offset;
         self.layout = Layout::new_contiguous(shape, self.layout.dtype);
+        self.layout.offset = offset;
         self
+    }
+}
+
+#[cfg(test)]
+mod reshape_offset_tests {
+    use crate::{ViewBuffer, ViewDto, ViewExpr, ViewOp};
+
+    /// A view that starts past its buffer's first element (a crop below the
+    /// first row) and is still contiguous reshapes to *its* elements. The
+    /// reshape rebuilt the layout at offset 0 and read from the uncropped
+    /// start.
+    #[test]
+    fn reshape_keeps_a_views_offset() {
+        let buf = ViewBuffer::from_vec_with_shape((0u8..6).collect::<Vec<u8>>(), vec![3, 2, 1]);
+        let cropped = buf.slice(&[1, 0, 0], &[3, 2, 1]);
+        assert!(cropped.layout.is_contiguous());
+        let flat = cropped.reshape(vec![4]);
+        assert_eq!(flat.to_contiguous().as_slice::<u8>(), &[2, 3, 4, 5]);
+    }
+
+    /// A reshape of a view whose elements are not in row-major order (after a
+    /// flip or a transpose) is planned with a copy first, as NumPy's reshape
+    /// copies: it used to be refused at execution.
+    #[test]
+    fn reshape_of_a_strided_view_copies_first() {
+        let image: Vec<u8> = (0..12).collect();
+        let source = || ViewBuffer::from_vec_with_shape(image.clone(), vec![4, 3, 1]);
+        let reshape = ViewDto::View(ViewOp::Reshape { shape: vec![12, 1] });
+        let flip = ViewDto::View(ViewOp::Flip { axes: vec![0] });
+        let out = ViewExpr::new_source(source())
+            .try_apply_op(flip)
+            .unwrap()
+            .try_apply_op(reshape.clone())
+            .unwrap()
+            .plan()
+            .execute();
+        let flipped: Vec<u8> = image.chunks(3).rev().flatten().copied().collect();
+        assert_eq!(out.to_contiguous().as_slice::<u8>(), &flipped[..]);
+        let transpose = ViewDto::View(ViewOp::Transpose {
+            axes: vec![1, 0, 2],
+        });
+        let out = ViewExpr::new_source(source())
+            .try_apply_op(transpose)
+            .unwrap()
+            .try_apply_op(reshape)
+            .unwrap()
+            .plan()
+            .execute();
+        let transposed: Vec<u8> = (0..3)
+            .flat_map(|c| (0..4).map(move |r| (r * 3 + c) as u8))
+            .collect();
+        assert_eq!(out.to_contiguous().as_slice::<u8>(), &transposed[..]);
+    }
+
+    /// `channel_select` on a single-channel image drops the channel axis
+    /// through the same reshape.
+    #[test]
+    fn channel_select_after_a_crop_reads_the_crop() {
+        let buf = ViewBuffer::from_vec_with_shape((0u8..6).collect::<Vec<u8>>(), vec![3, 2, 1]);
+        let crop = ViewDto::View(ViewOp::Crop {
+            top: 1,
+            left: 0,
+            height: Some(2),
+            width: Some(2),
+        });
+        let select = ViewDto::View(ViewOp::ChannelSelect { index: 0 });
+        let out = ViewExpr::new_source(buf)
+            .apply_op(crop)
+            .apply_op(select)
+            .plan()
+            .execute();
+        assert_eq!(out.to_contiguous().as_slice::<u8>(), &[2, 3, 4, 5]);
     }
 }
 

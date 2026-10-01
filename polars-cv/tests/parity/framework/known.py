@@ -134,15 +134,6 @@ def _repro_array_null_slice() -> None:
     assert out["x"].null_count() == 3
 
 
-def _repro_blob_numpy_rows() -> None:
-    from tests.parity.framework.run import Axes, execute
-
-    a = np.arange(12, dtype=np.uint8).reshape(2, 2, 3)
-    b = a + 100
-    out = execute([a, b], [], Axes(source="blob", sink="numpy", engine="eager"))
-    assert np.array_equal(out.rows[1], b), "row 1 came back as row 0's pixels"
-
-
 def _repro_nan_one_sided_clamp() -> None:
     from tests.parity.framework.run import Axes, Step, execute
 
@@ -274,69 +265,6 @@ def _repro_letterbox_zero_extent() -> None:
     assert out.rows[0].ravel()[0] != 0, "the fitted content collapsed to zero rows"
 
 
-def _repro_view_offset_lost() -> None:
-    from tests.parity.framework.run import Axes, Step, execute
-
-    image = np.arange(6, dtype=np.uint8).reshape(3, 2, 1)
-    crop = Step("crop", {"top": 1, "left": 0, "height": 2, "width": 2})
-    out = execute([image], [crop, Step("channel_select", {"index": 0})], Axes())
-    assert np.array_equal(out.rows[0], image[1:, :, 0]), "read from the uncropped start"
-
-
-def _repro_reshape_after_view() -> None:
-    from tests.parity.framework.run import Axes, Step, execute
-
-    image = np.arange(12, dtype=np.uint8).reshape(4, 3, 1)
-    steps = [Step("flip", {"axes": [0]}), Step("reshape", {"shape": [12, 1]})]
-    out = execute([image], steps, Axes())
-    assert np.array_equal(out.rows[0], image[::-1].reshape(12, 1))
-
-
-#: Ops that leave their output as a view of their input (no copy). A run of
-#: them ending in a rank change is where the two view defects below live.
-_VIEW_OPS = frozenset(
-    {
-        "crop",
-        "flip",
-        "flip_h",
-        "flip_v",
-        "transpose",
-        "channel_select",
-        "channel_swap",
-        "reshape",
-        "assert_shape",
-    }
-)
-
-
-def _view_run(steps: Sequence[Step]) -> list[Step]:
-    """The trailing run of view-producing steps before the last step."""
-    run: list[Step] = []
-    for step in reversed(steps[:-1]):
-        quarter = (
-            step.method == "rotate" and float(step.params.get("angle", 1)) % 90 == 0
-        )
-        if step.method not in _VIEW_OPS and not quarter:
-            break
-        run.append(step)
-    return run
-
-
-def _offset_view_then_rank_change(steps: Sequence[Step]) -> bool:
-    if not steps or steps[-1].method not in ("channel_select", "reshape"):
-        return False
-    return any(
-        s.method == "crop" and (s.params.get("top", 0) or s.params.get("left", 0))
-        for s in _view_run(steps)
-    )
-
-
-def _reshape_of_a_view(steps: Sequence[Step]) -> bool:
-    if not steps or steps[-1].method != "reshape":
-        return False
-    return any(s.method not in ("assert_shape",) for s in _view_run(steps))
-
-
 def _derived_extent_is_zero(step: Step, x: np.ndarray) -> bool:
     """Whether an aspect-preserving resize derives a size that rounds to 0."""
     if x.ndim < 2:
@@ -402,26 +330,6 @@ DIVERGENCES: tuple[Divergence, ...] = (
             and any(im is None for im in images)
         ),
         avoid=True,
-    ),
-    Divergence(
-        key="binary-source-numpy-rows",
-        match="row 1 came back as row 0's pixels",
-        summary=(
-            "A multi-row blob or raw column read by the eager or in-memory "
-            "engine into a zero-copy tensor sink (numpy/ndarray/torch) returns "
-            "the wrong pixels for every row but the first (blob: row 0's; "
-            "raw: garbage). The blob, png and list sinks, a materializing op "
-            "(cast) and the streaming engine are all correct, so the "
-            "zero-copy output of a view over a Binary column mis-addresses "
-            "rows. Fixed: every row comes back as itself."
-        ),
-        repro=_repro_blob_numpy_rows,
-        affects_axes=lambda axes, images, shapes, steps: (
-            (axes.source in ("blob", "raw") or axes.composition == "materialized")
-            and axes.sink in ("numpy", "ndarray", "torch")
-            and axes.engine != "streaming"
-            and sum(im is not None for im in images) > 1
-        ),
     ),
     Divergence(
         key="nan-one-sided-clamp",
@@ -509,39 +417,6 @@ DIVERGENCES: tuple[Divergence, ...] = (
         ),
         repro=_repro_letterbox_zero_extent,
         affects_step=_derived_extent_is_zero,
-        avoid=True,
-    ),
-    Divergence(
-        key="view-offset-lost",
-        match="read from the uncropped start",
-        summary=(
-            "A crop that starts below the first row (or right of the first "
-            "column) leaves a view with an offset; a zero-copy rank change "
-            "applied to it in the same pipeline — channel_select on a "
-            "single-channel image, or reshape — reads from the *uncropped* "
-            "start. crop(top=1).channel_select(0) of a 3x2x1 image returns "
-            "rows 0-1, not 1-2. Materializing the crop first (a blob round "
-            "trip) gives the right answer. Fixed: the rank change honours the "
-            "view's offset."
-        ),
-        repro=_repro_view_offset_lost,
-        affects_chain=_offset_view_then_rank_change,
-        avoid=True,
-    ),
-    Divergence(
-        key="reshape-after-view",
-        raises=pl.exceptions.ComputeError,
-        match="cannot reshape a non-contiguous view",
-        summary=(
-            "reshape after a flip, transpose, quarter rotation or crop fails at "
-            "execution ('cannot reshape a non-contiguous view ... the elements "
-            "are not in reshape order') where NumPy would copy. It is refused "
-            "on purpose, but at run time rather than by the planner, and with "
-            "no way to ask for the copy. Fixed (or decided): the view is "
-            "materialized, or the planner refuses the chain."
-        ),
-        repro=_repro_reshape_after_view,
-        affects_chain=_reshape_of_a_view,
         avoid=True,
     ),
 )

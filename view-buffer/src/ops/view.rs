@@ -336,7 +336,12 @@ impl<M: Mode> Op for ViewOp<M> {
     }
 
     fn memory_effect(&self) -> MemoryEffect {
-        MemoryEffect::View
+        match self {
+            // A reshape reinterprets row-major order, so a flipped, transposed
+            // or narrowed view is packed first (as NumPy's reshape copies).
+            ViewOp::Reshape { .. } => MemoryEffect::ViewOfContiguous,
+            _ => MemoryEffect::View,
+        }
     }
 
     fn identity_rule(&self) -> IdentityRule {

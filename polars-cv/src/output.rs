@@ -193,6 +193,8 @@ fn build_data_column(rows: &[Option<NumpyRowOutput>]) -> PolarsResult<Series> {
     let n_rows = rows.len();
     let mut views: Vec<View> = Vec::with_capacity(n_rows);
     let mut buffers: Vec<polars_buffer::Buffer<u8>> = Vec::new();
+    // Storage address -> its index in `buffers`.
+    let mut registered: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
     let mut validity_builder: Option<MutableBitmap> = None;
     let mut total_bytes_len: usize = 0;
     let mut total_buffer_len: usize = 0;
@@ -207,13 +209,30 @@ fn build_data_column(rows: &[Option<NumpyRowOutput>]) -> PolarsResult<Series> {
                     // Inline small values directly in the view
                     views.push(View::new_inline(row.data.as_slice()));
                 } else {
-                    // Register buffer and create view pointing to it
-                    let buffer_idx = buffers.len() as u32;
-                    total_buffer_len += row.data.len();
-                    buffers.push(row.data.clone()); // Arc clone, very cheap
-
-                    // Create view with buffer reference
-                    views.push(View::new_from_bytes(row.data.as_slice(), buffer_idx, 0));
+                    // Register the row's whole storage, once per storage, and
+                    // point the view at the row's offset within it. A row is
+                    // often a slice of a shared buffer (a blob or raw column
+                    // read in place), and Arrow's FFI export hands over a
+                    // buffer's storage pointer, so a registered slice would
+                    // be read from its storage's start.
+                    let offset = u32::try_from(row.data.offset()).map_err(|_| {
+                        polars_err!(ComputeError: "a numpy row lies beyond 4 GiB into its buffer")
+                    })?;
+                    let buffer_idx = *registered
+                        .entry(row.data.storage_ptr() as usize)
+                        .or_insert_with(|| {
+                            let storage = polars_buffer::Buffer::from_storage(
+                                row.data.clone().into_storage(),
+                            );
+                            total_buffer_len += storage.len();
+                            buffers.push(storage); // Arc clone, very cheap
+                            (buffers.len() - 1) as u32
+                        });
+                    views.push(View::new_from_bytes(
+                        row.data.as_slice(),
+                        buffer_idx,
+                        offset,
+                    ));
                 }
 
                 // Update validity if we had nulls before
@@ -517,6 +536,50 @@ fn build_offset_column(rows: &[Option<NumpyRowOutput>]) -> Series {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Rows that are slices of one shared buffer (a blob or raw column's rows
+    /// read where they lie) each read back as themselves, and every data
+    /// buffer the column registers is unsliced. Arrow's FFI export hands
+    /// over a buffer's *storage* pointer, so a registered slice was read from
+    /// its storage's start: every row of a blob column came back as row 0.
+    #[test]
+    fn rows_sliced_from_one_buffer_register_its_storage() {
+        let shared = polars_buffer::Buffer::from_vec((0..64u8).collect::<Vec<u8>>());
+        let rows: Vec<Option<NumpyRowOutput>> = (0..3)
+            .map(|k| {
+                Some(NumpyRowOutput {
+                    data: shared.clone().sliced(8 + k * 16..8 + (k + 1) * 16),
+                    dtype: "uint8",
+                    shape: vec![16],
+                    strides: vec![1],
+                    offset: 0,
+                })
+            })
+            .collect();
+        let column = build_data_column(&rows).unwrap();
+        let array = column
+            .binary()
+            .unwrap()
+            .downcast_iter()
+            .next()
+            .unwrap()
+            .clone();
+        for (k, row) in rows.iter().enumerate() {
+            let want = row.as_ref().unwrap().data.as_slice();
+            assert_eq!(array.value(k), want, "row {k}");
+        }
+        for (i, buffer) in array.data_buffers().iter().enumerate() {
+            assert!(
+                buffer.offset() == 0 && !buffer.is_sliced(),
+                "data buffer {i} is a slice (offset {}, len {}); the FFI export \
+                 would read it from its storage's start",
+                buffer.offset(),
+                buffer.len()
+            );
+        }
+        // One storage, registered once.
+        assert_eq!(array.data_buffers().len(), 1);
+    }
 
     #[test]
     fn numpy_row_output_names_its_dtype_from_the_dtype_table() {
