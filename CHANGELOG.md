@@ -9,6 +9,24 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Breaking changes
 
+- **Colour conversions use each dtype's value range, as OpenCV does.** They
+  assumed 0–255 for every dtype. Now:
+  - **floats are in [0, 1]**: HSV gives H in degrees and S, V in [0, 1];
+    YCbCr centres chroma at 0.5; Lab reads RGB in [0, 1], and converting
+    from Lab gives `f32` RGB in [0, 1] (it was 0–255). A carried alpha is
+    rescaled with the image (u8 RGBA -> Lab gives alpha 1.0, not 255.0).
+    Scale 0–255 float images by 1/255 first;
+  - **u16, u32 and u64 span 0..MAX**: YCbCr chroma is centred at
+    (MAX + 1) / 2 (a u16 gray pixel had Cb = Cr = 128), HSV's S and V span
+    0..MAX with the hue over the whole range for one turn (OpenCV's
+    `HSV_FULL` scheme; S was scaled to 255), and Lab reads RGB / MAX (u16
+    mid-gray had L = 5393);
+  - **signed integers are refused** by `to_hsv`, `to_lab`, `to_ycbcr` and
+    `convert_color` to or from those spaces, which have no signed range
+    (RGB, BGR and gray conversions accept every dtype).
+  u8 keeps OpenCV's 8-bit conventions; its values move by at most one unit
+  where the math, now f64 throughout, rounds a tie differently.
+
 - **Aspect-preserving resizes derive sizes exactly, and never as 0.**
   `resize_to_height`, `resize_to_width`, `resize_max`, `resize_min`,
   `resize_scale` and `letterbox` computed the derived size in f32, which
@@ -210,46 +228,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   Ratchets hold its tables to the op, I/O and dtype catalogues. Each property
   runs a small derandomized budget per push and a 25x randomized one in the
   weekly slow lane.
-- tests: divergences the suite found are registered, not fixed, in
-  `tests/parity/framework/known.py` and pinned as strict xfails:
-
-  `tiff-gray-alpha`,
-  `hsv-hue-180`,
-  `color-int-range`. Each entry's summary describes the defect
-  and the fix, and each pins the exception and message its repro fails with
-  (`known.still_reproduces`), so a repro broken for another reason no longer
-  reads as the defect.
-- view-buffer: `BinaryOp::execute` is one kernel generic over a `BinaryElem`
-  trait (the per-dtype semantics, defined once); the u8, u16 and float copies
-  of every op, including dead integer-division arms, are deleted.
-  `binary_exact.rs` checks every integer op against an exact i128/u128
-  reference at each dtype's edges.
-- view-buffer: `MemoryEffect::ViewOfContiguous` (metadata-only over a
-  contiguous input) and `MemoryEffect::needs_contiguous_input`, read by one
-  `materialize_if_needed` for every kind of plan step; the three ad-hoc
-  reshape refusals (in `try_apply_op`, the `reshape` builder and the runner)
-  are gone.
-- view-buffer: `AffineParams::expanded_size` is the one formula for an
-  `expand=True` rotation's canvas, read by the shape rule and by
-  `from_rotation` (they were two copies).
-- tests: `ops::dtype_sweep` executes every registered buffer op on every
-  dtype and every layout its contract admits (rank 2, and 1-4 channels) and
-  requires the executed dtype to be the declared one; every binary op and
-  `channel_merge` likewise against what `plan::step` plans. Driven by
-  `TypedOp::samples()`, so a new op is swept when it is registered.
-  `exact_data_movement.rs` holds the data-movement ops to exact output on
-  values f32 cannot hold.
-- view-buffer: `DType::accumulator` is the one rule for the float an
-  interpolating kernel computes in. `BinaryOp::output_dtype` derives from
-  `output_dtype_rule` (which said `PreserveInput` for divide while planning
-  and execution promoted to float).
-- tests: parity references for ops that compute in f64 allow a few f64
-  ulps of the magnitude on 64-bit integer images (`_accumulated`): f64
-  holds 53 bits, and the float64 references round the same way. The blur
-  reference takes `sigma` as the f32 the op receives.
-- tests: the parity resize reference gives a pixel whose resampled alpha is
-  0 colour 0, the engine's un-premultiply convention, where Pillow leaves
-  ringing residue.
+- tests: divergences the suite found are registered in
+  `tests/parity/framework/known.py`, each pinning the exception and message
+  its repro fails with (`known.still_reproduces`), so a repro broken for
+  another reason no longer reads as the defect. Every divergence the suite
+  found has since been fixed (see *Fixed* and *Breaking changes*) and its
+  entry deleted; the registry is empty.
 - tests: the parity suite's binary ops are drawn on every dtype their
   contract admits (`BinarySpec` splits `accepts` from `ref_accepts`, as
   `OpSpec` does); add/subtract/multiply/blend were drawn on u8, u16 and floats
@@ -301,6 +285,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **8-bit HSV hue stays in [0, 180).** A hue in [359°, 360°) rounded to
+  180 (`RGB(255, 0, 1)` -> H = 180), outside the range; it wraps to 0, as
+  OpenCV's does. Integer hues wrap at their period on every dtype.
+- **A gray + alpha image round-trips through TIFF.** The `tiff` sink
+  expanded it to RGBA, so it came back as four channels, and a two-sample
+  TIFF from another writer (Pillow's `LA`) was refused as "Unsupported TIFF
+  color type". It is now written as two samples with the second declared
+  alpha (ExtraSamples), and decoded as two channels.
+- **A histogram counts a value on a bin edge in the bin its edges give.**
+  The uniform-bin index was `floor((x - lo) / width)`, which for a value
+  exactly on an edge can land a bin low: -7142.857142857143, edge 1 of
+  [-10000, 10000] in 7 bins (and so what `output="edges"` reports), was
+  counted in bin 0. The edges now decide membership for both
+  `closed="left"` and `"right"` (whose former epsilon test is gone).
 - **The `scalar_fusion` pass no longer changes an integer chain's result.**
   It fused an integer `invert` with a following narrowing integer `cast`
   into one kernel that stores by the float -> int rule (round, saturate)

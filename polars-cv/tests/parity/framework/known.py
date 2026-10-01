@@ -27,7 +27,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 import numpy as np
-import polars as pl
 
 if TYPE_CHECKING:
     from tests.parity.framework.run import Axes, Step
@@ -110,110 +109,11 @@ def still_reproduces(divergence: Divergence) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _repro_tiff_gray_alpha() -> None:
-    from tests.parity.framework.run import Axes, execute
-
-    image = (np.arange(4 * 5 * 2).reshape(4, 5, 2) * 7 % 250).astype(np.uint8)
-    out = execute([image], [], Axes(source="tiff"))
-    assert np.array_equal(out.rows[0], image), (
-        "a gray+alpha TIFF should decode as itself"
-    )
-
-
-def _repro_hsv_hue_180() -> None:
-    from tests.parity.framework.run import Axes, Step, execute
-
-    image = np.array([[[255, 0, 1]]], dtype=np.uint8)  # hue 359.8 degrees
-    out = execute([image], [Step("to_hsv")], Axes()).rows[0]
-    assert out.ravel()[0] < 180, "8-bit hue is [0, 180): 359.8 degrees wraps to 0"
-
-
-def _hue_rounds_to_180(x: np.ndarray) -> bool:
-    """Whether some RGB pixel's hue lies in [359, 360) degrees, where half of
-    it rounds to 180."""
-    import cv2
-
-    if x.dtype != np.uint8 or x.ndim != 3 or x.shape[2] not in (3, 4):
-        return False
-    rgb = np.ascontiguousarray(x[:, :, :3]).astype(np.float32) / 255.0
-    hue = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)[:, :, 0]
-    return bool((hue >= 359.0).any())
-
-
-def _repro_color_int_range() -> None:
-    from tests.parity.framework.run import Axes, Step, execute
-
-    gray = np.full((1, 1, 3), 32768, dtype=np.uint16)
-    out = execute([gray], [Step("to_ycbcr")], Axes()).rows[0].ravel()
-    # A gray pixel has no chroma: Cb = Cr = the middle of the range.
-    assert out.tolist() == [32768] * 3, f"u16 gray to YCbCr is {out.tolist()}"
-
-
-_COLOR_SPACES = frozenset({"to_hsv", "to_ycbcr", "to_lab"})
-
-
-def _color_int_range(step: Step, x: np.ndarray) -> bool:
-    space = step.method in _COLOR_SPACES or (
-        step.method == "convert_color"
-        and step.params.get("to_space") not in (None, "rgb", "bgr", "gray")
-    )
-    return space and x.dtype.kind in "iu" and x.dtype != np.uint8
-
-
 # ---------------------------------------------------------------------------
 # The registry
 # ---------------------------------------------------------------------------
 
-DIVERGENCES: tuple[Divergence, ...] = (
-    Divergence(
-        key="tiff-gray-alpha",
-        raises=pl.exceptions.ComputeError,
-        match="Unsupported TIFF color type",
-        summary=(
-            "The image decoder cannot read a gray+alpha (2-sample) TIFF: one "
-            "written by Pillow is refused ('Unsupported TIFF color type: "
-            "Multiband { bit_depth: 8, num_samples: 2 }'), and one written by "
-            "the engine's own tiff sink — which OpenCV decodes correctly — "
-            "comes back as 4 channels of the wrong values. PNG round-trips "
-            "the same image exactly. Fixed: a gray+alpha TIFF decodes as its "
-            "two channels."
-        ),
-        repro=_repro_tiff_gray_alpha,
-        affects_axes=lambda axes, images, shapes, steps: (
-            axes.source == "tiff"
-            and any(im is not None and im.shape[2] == 2 for im in images)
-        ),
-        avoid=True,
-    ),
-    Divergence(
-        key="hsv-hue-180",
-        match="8-bit hue is [0, 180)",
-        summary=(
-            "to_hsv on u8 emits H = 180 for hues in [359, 360) degrees "
-            "(RGB(255, 0, 1) -> H 180), outside 8-bit HSV's [0, 180); OpenCV "
-            "wraps them to 0. A 180-entry hue table indexed with it reads out "
-            "of bounds. Fixed: H is taken modulo 180."
-        ),
-        repro=_repro_hsv_hue_180,
-        affects_step=lambda step, x: step.method == "to_hsv" and _hue_rounds_to_180(x),
-    ),
-    Divergence(
-        key="color-int-range",
-        match="u16 gray to YCbCr is [32768, 128, 128]",
-        summary=(
-            "The colour-space conversions (to_hsv, to_ycbcr, to_lab) use "
-            "8-bit constants on every integer dtype: a u16 gray pixel 32768 "
-            "converts to YCbCr (32768, 128, 128) (the chroma offset is 128, "
-            "not half the range), HSV saturation is scaled to 255 while V "
-            "keeps the input's range, and Lab reads the input as 0-255 (u16 "
-            "mid-gray has L = 5393). The oracle models u8 only; widen its "
-            "ref_accepts with the fix. Fixed: each integer dtype converts "
-            "over its own range."
-        ),
-        repro=_repro_color_int_range,
-        affects_step=_color_int_range,
-    ),
-)
+DIVERGENCES: tuple[Divergence, ...] = ()
 
 
 def _first(matches: Sequence[Divergence]) -> Divergence | None:

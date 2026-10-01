@@ -326,28 +326,39 @@ impl HistogramOp {
                 if bin_width == 0.0 {
                     0
                 } else {
-                    let mut b = ((xf - edges[0]) / bin_width).floor() as isize;
-
-                    // Handle bounds based on closed strategy
+                    // `floor((x - lo) / width)` is only a guess: the edges
+                    // are the authority for membership (and what
+                    // `output="edges"` reports), and a value exactly on one
+                    // can compute a bin low. Step the guess to the bin the
+                    // edges give.
+                    let last = num_bins - 1;
+                    let guess = ((xf - edges[0]) / bin_width).floor();
+                    let mut b = if guess.is_nan() || guess < 0.0 {
+                        0
+                    } else {
+                        (guess as usize).min(last)
+                    };
                     match self.closed {
+                        // [e_b, e_b+1), the last bin closed.
                         HistogramClosed::Left => {
-                            // [a, b) except last bin is [a, b]
-                            if xf == *edges.last().unwrap() {
-                                b = (num_bins - 1) as isize;
+                            while b < last && xf >= edges[b + 1] {
+                                b += 1;
+                            }
+                            while b > 0 && xf < edges[b] {
+                                b -= 1;
                             }
                         }
+                        // (e_b, e_b+1], the first bin closed.
                         HistogramClosed::Right => {
-                            // (a, b] except first bin is [a, b]
-                            if xf == edges[0] {
-                                b = 0;
-                            } else if ((xf - edges[0]) % bin_width).abs() < f64::EPSILON
-                                && xf != edges[0]
-                            {
+                            while b < last && xf > edges[b + 1] {
+                                b += 1;
+                            }
+                            while b > 0 && xf <= edges[b] {
                                 b -= 1;
                             }
                         }
                     }
-                    b.clamp(0, (num_bins - 1) as isize) as usize
+                    b
                 }
             } else {
                 match edges.binary_search_by(|e| e.partial_cmp(&xf).unwrap()) {
@@ -504,6 +515,44 @@ impl<M: Mode> Op for HistogramOp<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every value lands in the bin its own `edges` output says it belongs
+    /// to: `[e_i, e_i+1)` (left-closed, the last bin closed) or
+    /// `(e_i, e_i+1]` (right-closed, the first bin closed). The bin was
+    /// computed as `floor((x - lo) / width)`, which for a value exactly on an
+    /// edge can land one bin low: -7142.857142857143 equals edge 1 of
+    /// [-10000, 10000] in 7 bins but was counted in bin 0.
+    #[test]
+    fn a_value_on_an_edge_is_in_the_bin_the_edges_give() {
+        let gradient: Vec<f64> = (0..8)
+            .map(|i| -10000.0 + i as f64 * 20000.0 / 7.0)
+            .collect();
+        let mut values = gradient.clone();
+        values.extend((0..200).map(|i| ((i * 7919) % 1000) as f64 * 0.37 - 150.0));
+        for closed in [HistogramClosed::Left, HistogramClosed::Right] {
+            for bins in [3usize, 7, 10] {
+                for data in [&gradient, &values] {
+                    let buf = ViewBuffer::from_vec_with_shape(data.clone(), vec![data.len()]);
+                    let op = HistogramOp::new(bins).with_closed(closed);
+                    let edges = op.clone().with_output(HistogramOutput::Edges).execute(&buf);
+                    let edges = edges.as_slice::<f64>().to_vec();
+                    let q = op.with_output(HistogramOutput::Quantized).execute(&buf);
+                    for (&x, &b) in data.iter().zip(q.as_slice::<u32>()) {
+                        let (b, last) = (b as usize, bins - 1);
+                        let (lo, hi) = (edges[b], edges[b + 1]);
+                        let inside = match closed {
+                            HistogramClosed::Left => lo <= x && (x < hi || (b == last && x <= hi)),
+                            HistogramClosed::Right => (lo < x || (b == 0 && x >= lo)) && x <= hi,
+                        };
+                        assert!(
+                            inside,
+                            "{closed:?} {bins} bins: {x} in bin {b} [{lo}, {hi}]"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_histogram_counts() {
