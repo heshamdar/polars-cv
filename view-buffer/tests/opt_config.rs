@@ -274,18 +274,25 @@ fn scalar_fusion_never_fuses_a_wide_integer_through_f32() {
         ComputeOp::AddConstant { value: 0.5 },
         ComputeOp::Square,
     ];
+    // An outer cast lowers to the kernel's own store, so it fuses onto any
+    // inner op whose lowering the gate admits.
+    let outer = [
+        ComputeOp::Relu,
+        ComputeOp::Cast { dtype: DType::F32 },
+        ComputeOp::Cast { dtype: DType::I64 },
+    ];
     let mut differ = Vec::new();
     for (dtype, buf) in &sources {
-        for op in &inner {
+        for (op, last) in inner.iter().flat_map(|i| outer.iter().map(move |o| (i, o))) {
             let expr = ViewExpr::new_source(buf.clone())
                 .apply_op(ViewDto::Compute(op.clone()))
-                .apply_op(ViewDto::Compute(ComputeOp::Relu));
+                .apply_op(ViewDto::Compute(last.clone()));
             let a = expr.plan_with(&fused).execute().cast(DType::F64);
             let b = expr.plan_with(&unfused).execute().cast(DType::F64);
             let (a, b) = (a.to_contiguous(), b.to_contiguous());
             let bits = |x: &[f64]| x.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
             if bits(a.as_slice::<f64>()) != bits(b.as_slice::<f64>()) {
-                differ.push(format!("{dtype:?} {op:?} -> relu"));
+                differ.push(format!("{dtype:?} {op:?} -> {last:?}"));
             }
         }
     }

@@ -262,6 +262,16 @@ fn check_graph(graph_json: &str) -> PyResult<()> {
     Ok(())
 }
 
+/// Whether `dtype` holds an `Array` with a zero-size dimension at any level.
+fn has_zero_width_array(dtype: &DataType) -> bool {
+    match dtype {
+        DataType::Array(_, 0) => true,
+        DataType::Array(inner, _) | DataType::List(inner) => has_zero_width_array(inner),
+        DataType::Struct(fields) => fields.iter().any(|f| has_zero_width_array(f.dtype())),
+        _ => false,
+    }
+}
+
 /// Compute the output dtype for unified graph (single or multi-output).
 ///
 /// This function receives kwargs and parses the graph JSON to determine
@@ -269,6 +279,21 @@ fn check_graph(graph_json: &str) -> PyResult<()> {
 /// - Single output: Returns appropriate typed column (Binary, Float64, List, etc.)
 /// - Multi-output: Returns Struct with appropriately typed fields
 fn unified_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsResult<Field> {
+    // A zero-width `Array` loses its rows crossing into the plugin: polars'
+    // FFI import (`FixedSizeListArray::try_from_ffi`) sets the length of an
+    // array whose values are empty to 0 and then slices it to the real row
+    // count, which panics. Refuse it at planning, before any data crosses.
+    if let Some(f) = input_fields
+        .iter()
+        .find(|f| has_zero_width_array(f.dtype()))
+    {
+        polars_bail!(
+            ComputeError: "column {:?} is {}, an Array with a zero-size dimension, which \
+            cannot cross the plugin boundary (polars' FFI import drops its rows); filter \
+            out the empty images first",
+            f.name(), f.dtype()
+        );
+    }
     let name = if !input_fields.is_empty() {
         input_fields[0].name().clone()
     } else {

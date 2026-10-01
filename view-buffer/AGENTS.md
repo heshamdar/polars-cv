@@ -178,7 +178,7 @@ Resize hands such a view to fast_image_resize through
 | **View** | Yes | Transpose, reshape, flip, crop, channel_select — metadata only |
 | **Compute** | No | Element-wise ops (cast, scale, normalize, clamp, contrast, gamma, invert) — can be fused. Includes `ComputeOp::Affine` and `ComputeOp::RotateAffine` (not fused with scalar ops). |
 | **Image** | No | Resize, blur, grayscale, threshold, canny, histogram equalize, erode, dilate, morph gradient — allocate their output; resize, grayscale and threshold read strided input, the rest require materialization |
-| **Filter** | No | 2D convolution with `Replicate`/`Zero`/`Reflect` border modes — contiguous output, promotes to f32 |
+| **Filter** | No | 2D convolution with `Replicate`/`Zero`/`Reflect` border modes — contiguous output, promotes to the input's float (`DType::accumulator`) |
 | **Color** | No | Color space conversions — route through f32 RGB internally. LAB uses D65/sRGB. HSV follows OpenCV (H=[0,180] for U8) |
 | **Binary** | No | Pixel-wise operations between two buffers |
 | **Geometry** | N/A | Contour extraction, rasterization, measures, pairwise matching |
@@ -340,10 +340,10 @@ A tiled execution strategy was implemented, benchmarked, and removed — it did 
   writing, so `u8 -> cast(f32) -> scale -> clamp -> relu` is a single pass
   with no cast materializations. `out_dtype` is pinned at fusion time to the
   dtype the *unfused* chain would produce (`expr.rs::try_fuse`), so fusion
-  can never change the planned schema. f64 inputs are excluded from the
-  promote-family lowering (the dtype contract preserves f64 there while the
-  unfused runtime computes f32 — a pre-existing divergence fusion must not
-  take a side on). Equivalence is guarded by `tests/fused_ops.rs`, which
+  can never change the planned schema. Inputs whose `DType::accumulator` is
+  f64 (f64 and the 32/64-bit integers) are excluded from the promote-family
+  lowering: they compute and store in f64 unfused, and the f32 kernel would
+  round them. Equivalence is guarded by `tests/fused_ops.rs`, which
   compares every fused chain bit-for-bit against per-op execution.
 - Zero-copy interop avoids unnecessary allocations between Arrow, ndarray, and image
 - Contiguous buffers enable SIMD-friendly iteration patterns

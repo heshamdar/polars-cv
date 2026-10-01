@@ -305,7 +305,10 @@ def test_smoothing_a_constant_image_leaves_it_constant(
 
 @property_lanes(spec=image_specs(channels=(1,), max_side=24), data=st.data())
 def test_morphology_orders_pointwise(spec, data: st.DataObject) -> None:
-    """erode <= x <= dilate and open <= x <= close, at every pixel."""
+    """erode <= x <= dilate and open <= x <= close, at every pixel.
+
+    A NaN in a window makes the extreme NaN (the one ordering rule), so a
+    position where either side is NaN orders nothing and is skipped."""
     image = spec.render()
     k = data.draw(st.sampled_from([1, 3, 5]), label="ksize")
     eroded = _run(image, [Step("erode", {"ksize": k, "iterations": 1})])
@@ -318,8 +321,13 @@ def test_morphology_orders_pointwise(spec, data: st.DataObject) -> None:
         ("open <= x", opened, image),
         ("x <= close", image, closed),
     ):
-        if not np.all(low <= high):
-            where = tuple(np.argwhere(~(low <= high))[0])
+        bad = (
+            ~(low <= high)
+            & ~np.isnan(low.astype(np.float64))
+            & ~np.isnan(high.astype(np.float64))
+        )
+        if bad.any():
+            where = tuple(np.argwhere(bad)[0])
             raise ParityFailure(
                 f"{label} fails at {where}: {low[where]} > {high[where]}"
             )

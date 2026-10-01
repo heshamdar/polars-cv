@@ -256,7 +256,7 @@ impl OpShape {
                 [_, _] if *to_gray => input.to_vec(),
                 [h, w] => vec![*h, *w, Dim::Known(*channels)],
                 [h, w, c] => {
-                    let alpha = |c: usize| usize::from(matches!(c, 2 | 4));
+                    let alpha = |c: usize| usize::from(crate::ops::color::has_alpha(c));
                     vec![*h, *w, c.map(|c| channels + alpha(c))]
                 }
                 _ => return None,

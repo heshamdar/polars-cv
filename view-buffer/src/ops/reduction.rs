@@ -604,15 +604,35 @@ impl<M: Mode> Op for ReductionOp<M> {
         input_shapes: &[&[crate::ops::Dim]],
         _input_dtypes: &[crate::PlannedDType],
     ) -> Result<(), ValidationError> {
+        let shape = input_shapes[0];
         if let Some(ax) = self.axis() {
-            if ax >= input_shapes[0].len() {
+            if ax >= shape.len() {
                 return Err(ValidationError::InvalidAxis {
                     axis: ax,
-                    ndim: input_shapes[0].len(),
+                    ndim: shape.len(),
                 });
             }
         }
-
+        // An ordering reduction over nothing has no answer (numpy raises);
+        // sum, mean and std are defined over nothing (0, NaN, NaN).
+        let orders = matches!(
+            self,
+            ReductionOp::Max { .. }
+                | ReductionOp::Min { .. }
+                | ReductionOp::ArgMax { .. }
+                | ReductionOp::ArgMin { .. }
+                | ReductionOp::Percentile { .. }
+        );
+        let reduced: &[crate::ops::Dim] = match self.axis() {
+            Some(ax) => &shape[ax..=ax],
+            None => shape,
+        };
+        if orders && reduced.iter().any(|d| d.known() == Some(0)) {
+            return Err(ValidationError::ShapeRequirement {
+                requirement: "a non-empty extent to order (an empty one has no extreme)",
+                got: shape.to_vec(),
+            });
+        }
         Ok(())
     }
 
@@ -685,6 +705,54 @@ mod tests {
         let argmax = ReductionOp::ArgMax { axis: 0 }.execute(&buffer);
         assert_eq!(argmax.shape(), &[1]);
         assert_eq!(argmax.as_slice::<i64>(), &[1]);
+    }
+
+    /// An ordering reduction over nothing has no answer: numpy raises
+    /// ("zero-size array to reduction operation maximum which has no
+    /// identity", "attempt to get argmax of an empty sequence"). The
+    /// contract refuses it; `argmax` over an empty axis panicked the engine.
+    /// `sum` (0), `mean` and `std` (NaN) are defined over nothing.
+    #[test]
+    fn an_ordering_reduction_over_nothing_is_refused() {
+        use crate::ops::{Dim, Op};
+        use crate::PlannedDType;
+        let f32_ = [PlannedDType::Known(DType::F32)];
+        let check = |op: &ReductionOp, shape: &[usize]| {
+            let dims: Vec<Dim> = shape.iter().map(|&n| Dim::Known(n)).collect();
+            op.validate(&[&dims], &f32_)
+        };
+        for shape in [[0usize, 3, 1], [3, 0, 1]] {
+            let empty_axis = if shape[0] == 0 { 0 } else { 1 };
+            for op in [
+                ReductionOp::ArgMax { axis: empty_axis },
+                ReductionOp::ArgMin { axis: empty_axis },
+                ReductionOp::Max {
+                    axis: Some(empty_axis),
+                },
+                ReductionOp::Min {
+                    axis: Some(empty_axis),
+                },
+                ReductionOp::Max { axis: None },
+                ReductionOp::Min { axis: None },
+                ReductionOp::Percentile { q: 50.0 },
+            ] {
+                let err = check(&op, &shape).expect_err(&format!("{op:?} on {shape:?}"));
+                assert!(err.to_string().contains("empty"), "{op:?}: {err}");
+            }
+            // Reducing a non-empty axis of an empty image is fine (empty out).
+            let other = 2;
+            assert!(check(&ReductionOp::ArgMax { axis: other }, &shape).is_ok());
+            for op in [
+                ReductionOp::Sum,
+                ReductionOp::Mean { axis: None },
+                ReductionOp::Std {
+                    axis: None,
+                    ddof: 0,
+                },
+            ] {
+                assert!(check(&op, &shape).is_ok(), "{op:?}");
+            }
+        }
     }
 
     /// A NaN is the result of every ordering reduction, as in numpy: `max`

@@ -106,6 +106,23 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `iou`, `dice` and `simplify`, made `hausdorff_distance` `1.8e308`, and
   left the bbox, winding and convexity finite but wrong.
 
+- **Mixed dtypes promote as NumPy's do, and 32/64-bit integers promote to
+  f64.** Two operands of different dtypes met in "the larger integer", which
+  lost values: `u8` 200 plus an `i8` came back `i8`, `u64` with `i64` was
+  `i64`, `u32` with `i16` was `u32`, and an `i64` with an `f32` was computed
+  in `f32`. They now meet in NumPy's `result_type` (`DType::promote`, derived
+  from the lossless-containment rule): `u8`+`i8` is `i16`, `u32`+`f32` is
+  `f64`, and `u64` with a signed integer is `f64` — where a bitwise op is
+  refused, there being no common integer. The float-promoting ops (`scale`,
+  `sqrt`, `divide`, `convolve2d`, gamma, the scalar math family, ...) give
+  `f64` for `u32`/`i32`/`u64`/`i64` input, computed from the exact value; they
+  gave `f32`, reading each pixel as f32 (`2**24 + 1` became `2**24`), and
+  convolve and divide computed in f64 only to store f32. 8/16-bit integers
+  still give `f32`. One rule decides both what an op computes in and what it
+  stores (`OutputDTypeRule::PromoteToFloat` resolves to
+  `DType::accumulator`). Mixed operands are converted a block at a time
+  rather than each copied whole.
+
 - **polars-cv requires `polars>=1.43.2`** (was `>=1.41.1`). Older polars
   exports a sliced `Array` column that has nulls across the plugin FFI with
   its offset applied twice (the `FixedSizeListArray` export reported the
@@ -282,6 +299,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Internal
 
+- One declaration that 2- and 4-channel images are gray + alpha and RGBA
+  (`ops::color::has_alpha`), read by the resamplers' premultiply (fir's is
+  now set from it explicitly rather than by its pixel-type default), the
+  shape rule's carried alpha, grayscale and the colour conversions; a
+  structural guard (`test_alpha_authority.py`) refuses a restated channel
+  test.
+- tests: the parity generator draws NaN/infinity content for float images,
+  64-bit integers beyond 2**53, and sweeps every op on empty images
+  (`invariance/test_parity_empty.py`: refused or processed, never a panic).
+  What it found is fixed above; the references it showed to be inexact for
+  64-bit integers (threshold, blend, grayscale's bound) now compare exactly,
+  the YCbCr reference expands its chroma so an infinite channel gives its
+  limit, and the morphology ordering law skips NaN positions.
 - tests (review follow-ups): the dtype sweep fails an op its contract admits
   on no swept layout (it had never swept `reshape`, whose sample fitted no
   layout); `rotate_and_scale`'s lowering and the binary float ops are
@@ -363,6 +393,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **An empty image is refused cleanly, not a panic.** `reduce_argmax`/
+  `reduce_argmin` over an empty axis panicked the engine, and `pad` with
+  `mode="edge"`, `"reflect"` or `"symmetric"` panicked extending an empty
+  axis; both are now refused by their contracts, as NumPy refuses them, as
+  are `reduce_max`/`min`/`percentile` over nothing (`sum`, `mean` and `std`
+  stay defined). An `Array` column with a zero-size dimension is refused at
+  planning, naming the column: polars' FFI import of one sets its length to 0
+  and then slices it to the real row count, which panicked the plugin.
 - **`convert_color(rgb -> gray)` is `grayscale()`.** BT.601 was written out
   in five places, and `convert_color` computed it in f32 for i8, u16, i16 and
   f32 where `grayscale` computes in f64 and rounds once, so the two

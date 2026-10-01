@@ -19,13 +19,16 @@ result = expr_a.apply_mask(expr_b)
 | `add` | Element-wise addition | Saturating to the dtype's range | IEEE |
 | `subtract` | Element-wise subtraction | Saturating to the dtype's range | IEEE |
 | `multiply` | Element-wise multiplication | Saturating to the dtype's range | IEEE |
-| `divide` | True division | Promotes to `f32` (`f64` with an `f64` operand); `x / 0` is `inf`, `0 / 0` is `nan` | IEEE |
+| `divide` | True division | Promotes to a float: `f32` for 8/16-bit integers, `f64` for 32/64-bit ones (and with an `f64` operand); `x / 0` is `inf`, `0 / 0` is `nan` | IEEE |
 | `blend` | Normalized product | `round(a*b / MAX)`, i.e. `(a/MAX)*(b/MAX)*MAX` | `a * b` |
 | `maximum` / `minimum` | Element-wise extremes | Exact | IEEE comparison |
 | `bitwise_and` / `or` / `xor` | Bitwise | Exact | Integer-only |
 
-Operands of different dtypes meet in their common dtype first. Every dtype is
-computed natively, so no value is rounded through `f32`.
+Operands of different dtypes meet in **NumPy's promoted dtype**
+(`np.result_type`): the smallest dtype that holds every value of both, so
+`u8` with `i8` is `i16` and `u32` with `f32` is `f64`; `u64` with a signed
+integer has none and is `f64` (a bitwise op on that pair is refused). Every
+dtype is computed natively, so no value is rounded through `f32`.
 
 ## Basic Usage
 

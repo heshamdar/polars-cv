@@ -179,7 +179,7 @@ CI and wheel jobs clear it with `RUSTFLAGS=""`.
 
 ## Known Issues
 
-- **f64 chains stay unfused:** the FusedKernel computes in f32, so the float-promoting scalar family is correct-but-unfused for f64 inputs (`view-buffer/src/expr.rs::extract_ops`).
+- **f64-accumulated chains stay unfused:** the FusedKernel computes in f32, so the float-promoting scalar family is correct-but-unfused for inputs whose `DType::accumulator` is f64 — f64 and the 32/64-bit integers (`view-buffer/src/ops/elementwise/mod.rs::lower_to_scalars`).
 
 ## Release History
 
@@ -214,8 +214,8 @@ changes; they explain *why* the code is shaped the way it is.
 - **Kernel fusion.** Consecutive scalar compute ops (scale/relu/clamp/gamma/invert)
   plus casts fold into one `FusedKernel` pass (any-numeric read → f32 ops →
   out-dtype write). `out_dtype` is pinned to what the unfused chain would produce,
-  so fusion never changes the planned schema. f64 promote-family inputs stay
-  unfused (see Known Issues).
+  so fusion never changes the planned schema. Promote-family inputs whose
+  accumulator is f64 stay unfused (see Known Issues).
 - **Rotation/affine unification.** `rotate()` with arbitrary angles routes through
   `ComputeOp::RotateAffine` → `AffineParams::from_rotation()` → `apply_affine_warp()`,
   sharing the affine code path; 90/180/270 stay zero-copy via `ViewOp`. Consecutive
@@ -377,6 +377,6 @@ rather than back-filled with pins that would misuse the file.)
   known at plan time (e.g. a `list` source with explicit dims, or post-`resize`);
   making it a silent conditional default would violate "explicit over implicit",
   so it is intentionally not done.
-- **f64 through the float-promoting scalar ops is excluded from kernel fusion**,
+- **f64 and the 32/64-bit integers through the float-promoting scalar ops are excluded from kernel fusion**,
   which computes in f32. Correct, but slower than it needs to be. This is a perf
   limitation, tracked in the root **Known Issues** section, not a defect.

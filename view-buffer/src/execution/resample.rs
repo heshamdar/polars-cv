@@ -179,7 +179,7 @@ fn convolve(
     }
     let packed = buf.cast(DType::F64).to_contiguous();
     let mut data: Vec<f64> = packed.as_slice::<f64>().to_vec();
-    let alpha = matches!(c, 2 | 4);
+    let alpha = crate::ops::color::has_alpha(c);
     if alpha {
         for px in data.chunks_exact_mut(c) {
             let a = px[c - 1];

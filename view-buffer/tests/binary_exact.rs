@@ -14,7 +14,7 @@
 //! other pair was computed in f32 (u32 `16777219 ^ 16777221` came back 0),
 //! and `blend` was a plain multiply.
 
-use view_buffer::{BinaryOp, ViewBuffer};
+use view_buffer::{BinaryOp, DType, ViewBuffer};
 
 /// `round(num / max)` for an odd `max`, rounding half away from zero.
 fn div_round(num: i128, max: i128) -> i128 {
@@ -249,4 +249,246 @@ fn f64_ops_are_exact_where_the_result_is_representable() {
             );
         }
     }
+}
+
+/// A value of any dtype, exactly: integers in `i128`, floats in `f64`.
+#[derive(Clone, Copy, Debug)]
+enum Val {
+    Int(i128),
+    Float(f64),
+}
+
+impl Val {
+    fn as_f64(self) -> f64 {
+        match self {
+            Val::Int(i) => i as f64,
+            Val::Float(f) => f,
+        }
+    }
+}
+
+/// Edge values of `dtype`, and values f32 cannot hold where it reaches them.
+fn edge_values(dtype: DType) -> Vec<Val> {
+    let int = |min: i128, max: i128| {
+        let mut v: Vec<i128> = vec![min, min + 1, -1, 0, 1, 3, 200, max - 1, max];
+        v.extend([16_777_217, -16_777_217, 9_007_199_254_740_993]);
+        v.retain(|x| (min..=max).contains(x));
+        v.sort();
+        v.dedup();
+        v.into_iter().map(Val::Int).collect::<Vec<_>>()
+    };
+    match dtype {
+        DType::U8 => int(0, u8::MAX as i128),
+        DType::I8 => int(i8::MIN as i128, i8::MAX as i128),
+        DType::U16 => int(0, u16::MAX as i128),
+        DType::I16 => int(i16::MIN as i128, i16::MAX as i128),
+        DType::U32 => int(0, u32::MAX as i128),
+        DType::I32 => int(i32::MIN as i128, i32::MAX as i128),
+        DType::U64 => int(0, u64::MAX as i128),
+        DType::I64 => int(i64::MIN as i128, i64::MAX as i128),
+        DType::F32 | DType::F64 => [-2.5, 0.0, 0.1, 7.0, 16_777_217.0, -3.0e9]
+            .into_iter()
+            .map(|f| {
+                Val::Float(if dtype == DType::F32 {
+                    f as f32 as f64
+                } else {
+                    f
+                })
+            })
+            .collect(),
+    }
+}
+
+fn buffer(dtype: DType, values: &[Val]) -> ViewBuffer {
+    let n = values.len();
+    macro_rules! ints {
+        ($t:ty) => {
+            ViewBuffer::from_vec_with_shape(
+                values
+                    .iter()
+                    .map(|v| match v {
+                        Val::Int(i) => *i as $t,
+                        Val::Float(_) => unreachable!(),
+                    })
+                    .collect::<Vec<$t>>(),
+                vec![n],
+            )
+        };
+    }
+    match dtype {
+        DType::U8 => ints!(u8),
+        DType::I8 => ints!(i8),
+        DType::U16 => ints!(u16),
+        DType::I16 => ints!(i16),
+        DType::U32 => ints!(u32),
+        DType::I32 => ints!(i32),
+        DType::U64 => ints!(u64),
+        DType::I64 => ints!(i64),
+        DType::F32 => ViewBuffer::from_vec_with_shape(
+            values
+                .iter()
+                .map(|v| v.as_f64() as f32)
+                .collect::<Vec<f32>>(),
+            vec![n],
+        ),
+        DType::F64 => ViewBuffer::from_vec_with_shape(
+            values.iter().map(|v| v.as_f64()).collect::<Vec<f64>>(),
+            vec![n],
+        ),
+    }
+}
+
+/// Every element of a buffer, exactly.
+fn values_of(buf: &ViewBuffer) -> Vec<Val> {
+    let b = buf.to_contiguous();
+    macro_rules! ints {
+        ($t:ty) => {
+            b.as_slice::<$t>()
+                .iter()
+                .map(|&x| Val::Int(x as i128))
+                .collect()
+        };
+    }
+    match b.dtype() {
+        DType::U8 => ints!(u8),
+        DType::I8 => ints!(i8),
+        DType::U16 => ints!(u16),
+        DType::I16 => ints!(i16),
+        DType::U32 => ints!(u32),
+        DType::I32 => ints!(i32),
+        DType::U64 => ints!(u64),
+        DType::I64 => ints!(i64),
+        DType::F32 => b
+            .as_slice::<f32>()
+            .iter()
+            .map(|&x| Val::Float(x as f64))
+            .collect(),
+        DType::F64 => b.as_slice::<f64>().iter().map(|&x| Val::Float(x)).collect(),
+    }
+}
+
+fn int_range(dtype: DType) -> Option<(i128, i128)> {
+    Some(match dtype {
+        DType::U8 => (0, u8::MAX as i128),
+        DType::I8 => (i8::MIN as i128, i8::MAX as i128),
+        DType::U16 => (0, u16::MAX as i128),
+        DType::I16 => (i16::MIN as i128, i16::MAX as i128),
+        DType::U32 => (0, u32::MAX as i128),
+        DType::I32 => (i32::MIN as i128, i32::MAX as i128),
+        DType::U64 => (0, u64::MAX as i128),
+        DType::I64 => (i64::MIN as i128, i64::MAX as i128),
+        DType::F32 | DType::F64 => return None,
+    })
+}
+
+/// Two operands of different dtypes combine in NumPy's promoted dtype
+/// (`DType::promote`), each value converted exactly, then the op's
+/// semantics in that dtype (decision D3, finding F1). The larger-integer
+/// rule lost values: u8 200 with i8 gave i8, u64 with i64 gave i64, and an
+/// i64 with an f32 was computed in f32.
+#[test]
+fn mixed_dtype_operands_combine_in_numpys_promoted_dtype() {
+    let ops = [
+        BinaryOp::Add,
+        BinaryOp::Subtract,
+        BinaryOp::Multiply,
+        BinaryOp::Blend,
+        BinaryOp::Maximum,
+        BinaryOp::Minimum,
+        BinaryOp::BitwiseAnd,
+        BinaryOp::BitwiseOr,
+        BinaryOp::BitwiseXor,
+        BinaryOp::Divide,
+    ];
+    let mut failures = Vec::new();
+    for &da in DType::ALL {
+        for &db in DType::ALL {
+            if da == db {
+                continue;
+            }
+            let common = da.promote(db);
+            let (va, vb) = (edge_values(da), edge_values(db));
+            let n = va.len() * vb.len();
+            let a: Vec<Val> = va
+                .iter()
+                .flat_map(|&x| std::iter::repeat_n(x, vb.len()))
+                .collect();
+            let b: Vec<Val> = (0..va.len()).flat_map(|_| vb.iter().copied()).collect();
+            let (ba, bb) = (buffer(da, &a), buffer(db, &b));
+            for op in ops {
+                let bitwise = matches!(
+                    op,
+                    BinaryOp::BitwiseAnd | BinaryOp::BitwiseOr | BinaryOp::BitwiseXor
+                );
+                if bitwise && int_range(common).is_none() {
+                    continue; // refused by the contract (no common integer)
+                }
+                let out_dtype = op.output_dtype(da, db);
+                let want_dtype = if op == BinaryOp::Divide {
+                    common.accumulator()
+                } else {
+                    common
+                };
+                if out_dtype != want_dtype {
+                    failures.push(format!(
+                        "{da:?} {op:?} {db:?}: dtype {out_dtype:?}, want {want_dtype:?}"
+                    ));
+                    continue;
+                }
+                let got = values_of(&op.execute(&ba, &bb));
+                for i in 0..n {
+                    let want = match (op, int_range(common)) {
+                        (BinaryOp::Divide, _) => {
+                            let q = a[i].as_f64() / b[i].as_f64();
+                            Val::Float(if want_dtype == DType::F32 {
+                                q as f32 as f64
+                            } else {
+                                q
+                            })
+                        }
+                        (_, Some((min, max))) => {
+                            let (Val::Int(x), Val::Int(y)) = (a[i], b[i]) else {
+                                unreachable!()
+                            };
+                            Val::Int(reference(op, x, y, min, max))
+                        }
+                        (_, None) => {
+                            let (x, y) = (a[i].as_f64(), b[i].as_f64());
+                            let r = match op {
+                                BinaryOp::Add => x + y,
+                                BinaryOp::Subtract => x - y,
+                                BinaryOp::Multiply | BinaryOp::Blend => x * y,
+                                BinaryOp::Maximum => ordered(x, y, true),
+                                BinaryOp::Minimum => ordered(x, y, false),
+                                _ => unreachable!(),
+                            };
+                            Val::Float(if common == DType::F32 {
+                                r as f32 as f64
+                            } else {
+                                r
+                            })
+                        }
+                    };
+                    let same = match (got[i], want) {
+                        (Val::Int(g), Val::Int(w)) => g == w,
+                        (Val::Float(g), Val::Float(w)) => self::same(g, w),
+                        _ => false,
+                    };
+                    if !same {
+                        failures.push(format!(
+                            "{da:?} {op:?} {db:?}: ({:?}, {:?}) -> {:?}, want {want:?}",
+                            a[i], b[i], got[i]
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} mixed cases wrong:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }

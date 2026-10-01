@@ -186,12 +186,19 @@ impl<M: Mode> Op for ColorConvertOp<M> {
 /// last when `C` is 2 (GrayA) or 4 (RGBA), where the last is alpha; else all.
 /// The one rule for "which channels are alpha", read by every op that sets
 /// alpha aside.
-pub fn color_channels(channels: usize) -> usize {
-    if matches!(channels, 2 | 4) {
-        channels - 1
-    } else {
-        channels
-    }
+///
+/// **The declaration** that a 2-channel image is gray + alpha and a 4-channel
+/// one RGBA: the resamplers' premultiply, the shape rule's carried alpha,
+/// grayscale's gray channel and the colour conversions all read it (through
+/// this or [`has_alpha`]) rather than testing the channel count themselves.
+pub const fn color_channels(channels: usize) -> usize {
+    channels - has_alpha(channels) as usize
+}
+
+/// Whether a `C`-channel image's last channel is alpha: 2 (gray + alpha) and
+/// 4 (RGBA). The rule itself; see [`color_channels`].
+pub const fn has_alpha(channels: usize) -> bool {
+    matches!(channels, 2 | 4)
 }
 
 /// Split alpha channel from a buffer.
@@ -284,9 +291,7 @@ pub fn apply_color_convert(buf: &ViewBuffer, op: &ColorConvertOp) -> ViewBuffer 
 
     let shape = buf.shape();
     let channels = if shape.len() == 3 { shape[2] } else { 1 };
-    let has_alpha = color_channels(channels) < channels;
-
-    if has_alpha {
+    if has_alpha(channels) {
         let (color_buf, alpha_buf) = split_alpha(buf);
         let converted = apply_color_convert_core(&color_buf, op);
         // Alpha is a value in the image's range too: a conversion that

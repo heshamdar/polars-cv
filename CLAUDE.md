@@ -522,4 +522,4 @@ Subsystem-specific AGENTS.md files provide deeper guidance:
 
 ## Known Limitations
 
-- f64 inputs through the float-promoting scalar ops execute correctly (in f64) but are excluded from kernel fusion, which computes in f32.
+- f64 and 32/64-bit integer inputs through the float-promoting scalar ops execute correctly (in f64) but are excluded from kernel fusion, which computes in f32.
