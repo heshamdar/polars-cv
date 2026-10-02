@@ -233,6 +233,16 @@ metrics/
   `n_gts_col` / `weight_col` / `gt_label_col` / `group_col` raises — those
   arguments only ever described how to derive metadata from the detection
   frame, and accepting them alongside `image_meta` would silently discard them.
+- Class keys must agree: a `class_id` column on the detections or on
+  `image_meta` requires `class_col`, and `class_col` requires `class_id` on
+  `image_meta` (`_check_class_keys`, schema-only so nothing collects). The
+  metrics join on `(image_id, class_id)`; a key matching no metadata row counts
+  for nothing, which is how `lroc_auc` scored a perfect detector 0.0.
+- Every named column must exist — none falls back to its default.
+- Without `iou_col` the table's `iou` is null and `has_iou=False`, so
+  `at_iou_threshold` (and IoU-swept mAP) raises instead of comparing a
+  placeholder 0.0. `DetectionTable` copies go through `dataclasses.replace`, so
+  a new field cannot be dropped by one of them.
 
 ### The FROC evaluation unit
 - An `image_metadata` row is one (image, class). The **image count** — the
