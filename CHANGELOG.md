@@ -36,6 +36,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **Header-only metadata from path columns, and `.cv.image_info()`.**
+  `.cv.width()`, `.height()`, `.channels()` and `.image_dtype()` take a
+  `String` column of paths as well as image bytes, with the same
+  `cloud_options`, `on_error` and `allowed_roots` as `.cv.read_bytes()`: a
+  local file is read only as far as its header needs (a growing prefix, since
+  a JPEG's frame header can sit behind large EXIF/comment segments), instead
+  of `read_bytes()` reading every file whole first. Remote objects are still
+  fetched whole (a ranged read would nest the object store's concurrency
+  permits). `.cv.image_info()` returns `Struct{width, height, channels,
+  dtype}` from one header read per row. Path options on a bytes column are
+  refused.
+
 - **`.contour.close_along_border(width, height, arc="shortest", max_snap=2.0)`**
   closes an open line whose ends lie on the image frame into the region it
   bounds — a pectoral muscle edge, a skin line — by snapping each end onto its
