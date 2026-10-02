@@ -289,6 +289,62 @@ pub fn hausdorff_distance_outlines(a: &Outline, b: &Outline) -> f64 {
     vertex_hausdorff(rings(a), rings(b))
 }
 
+/// Point-to-edge boundary distances between two outlines, both directions.
+///
+/// Each outline's boundary is sampled ([`measures::sample_outline`]: its
+/// vertices, and with `sample_step` points along every edge) and every sample
+/// is measured to the *edges* of the other outline — not its vertices, which
+/// is what makes two tracings of one outline at different vertex densities
+/// distance zero apart (the discrete [`hausdorff_distance`] does not).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoundaryDistances {
+    /// Mean distance from `a`'s samples to `b`'s boundary.
+    pub mean_a_to_b: f64,
+    /// Mean distance from `b`'s samples to `a`'s boundary.
+    pub mean_b_to_a: f64,
+    /// Average symmetric surface distance: the mean over both sample sets.
+    pub assd: f64,
+    /// Hausdorff distance: the largest sample distance either way.
+    pub hd: f64,
+    /// The larger of the two directed 95th percentiles (linear
+    /// interpolation, NumPy's default) — MONAI's `percentile=95` convention.
+    pub hd95: f64,
+}
+
+/// [`BoundaryDistances`] between `a` and `b`, or `None` when either has no
+/// vertices (no boundary to measure to).
+pub fn boundary_distances(
+    a: &Outline,
+    b: &Outline,
+    sample_step: Option<f64>,
+) -> Option<BoundaryDistances> {
+    let directed = |from: &Outline, to: &Outline| -> Option<Vec<f64>> {
+        let target = super::measures::PreparedOutline::new(to);
+        let samples = super::measures::sample_outline(from, sample_step);
+        let d: Vec<f64> = samples.iter().map(|p| target.distance(p)).collect();
+        (!d.is_empty() && d.iter().all(|v| v.is_finite())).then_some(d)
+    };
+    let (ab, ba) = (directed(a, b)?, directed(b, a)?);
+    let mean = |d: &[f64]| d.iter().sum::<f64>() / d.len() as f64;
+    let max = |d: &[f64]| d.iter().copied().fold(0.0, f64::max);
+    Some(BoundaryDistances {
+        mean_a_to_b: mean(&ab),
+        mean_b_to_a: mean(&ba),
+        assd: (ab.iter().sum::<f64>() + ba.iter().sum::<f64>()) / (ab.len() + ba.len()) as f64,
+        hd: max(&ab).max(max(&ba)),
+        hd95: percentile(ab, 0.95).max(percentile(ba, 0.95)),
+    })
+}
+
+/// The `q` quantile of `values` by linear interpolation between order
+/// statistics (NumPy's default `percentile` method). `values` is non-empty.
+fn percentile(mut values: Vec<f64>, q: f64) -> f64 {
+    values.sort_by(f64::total_cmp);
+    let pos = q * (values.len() - 1) as f64;
+    let (lo, hi) = (pos.floor() as usize, pos.ceil() as usize);
+    values[lo] + (pos - lo as f64) * (values[hi] - values[lo])
+}
+
 /// The discrete Hausdorff distance between two vertex sets, each given as
 /// open line strings (a repeated closing vertex would only be walked twice).
 fn vertex_hausdorff(a: geo::MultiLineString<f64>, b: geo::MultiLineString<f64>) -> f64 {
@@ -791,5 +847,88 @@ mod tests {
         let b = square_contour(5.0, 0.0, 10.0);
         let h = hausdorff_distance(&a, &b);
         assert!((h - 5.0).abs() < 0.01);
+    }
+}
+
+#[cfg(test)]
+mod boundary_distance_tests {
+    use super::*;
+    use crate::geometry::contour::{Outline, Point};
+
+    fn ring(points: &[(f64, f64)]) -> Outline {
+        Outline::Closed(Contour::from_tuples(points))
+    }
+
+    fn square_with(per_side: usize) -> Outline {
+        let step = 100.0 / per_side as f64;
+        let side: Vec<f64> = (0..per_side).map(|i| i as f64 * step).collect();
+        let mut pts = Vec::new();
+        pts.extend(side.iter().map(|&s| (s, 0.0)));
+        pts.extend(side.iter().map(|&s| (100.0, s)));
+        pts.extend(side.iter().map(|&s| (100.0 - s, 100.0)));
+        pts.extend(side.iter().map(|&s| (0.0, 100.0 - s)));
+        ring(&pts)
+    }
+
+    #[test]
+    fn one_outline_at_two_vertex_densities_is_at_distance_zero() {
+        // Vertex-to-vertex Hausdorff calls these 50 apart; their boundaries
+        // coincide, which is what a point-to-edge measure must report.
+        let d = boundary_distances(&square_with(1), &square_with(100), None).unwrap();
+        assert!(d.hd < 1e-9 && d.hd95 < 1e-9 && d.assd < 1e-9, "{d:?}");
+    }
+
+    #[test]
+    fn a_uniform_offset_is_measured_exactly() {
+        let inner = ring(&[(1.0, 1.0), (9.0, 1.0), (9.0, 9.0), (1.0, 9.0)]);
+        let outer = ring(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
+        let d = boundary_distances(&inner, &outer, Some(0.5)).unwrap();
+        assert!((d.mean_a_to_b - 1.0).abs() < 1e-12, "{d:?}");
+        assert!((d.hd - 2f64.sqrt()).abs() < 1e-12, "{d:?}"); // outer corners
+        assert!(d.mean_b_to_a > 1.0 && d.assd > 1.0);
+    }
+
+    #[test]
+    fn densifying_finds_an_edge_its_vertices_miss() {
+        // Every corner of the square lies on the notched outline, but the
+        // middle of its bottom edge is away from the notch's flanks.
+        let square = ring(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
+        let notched = ring(&[
+            (0.0, 0.0),
+            (4.0, 0.0),
+            (5.0, 3.0),
+            (6.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+        ]);
+        let sparse = boundary_distances(&square, &notched, None).unwrap();
+        assert_eq!(sparse.mean_a_to_b, 0.0);
+        let dense = boundary_distances(&square, &notched, Some(0.5)).unwrap();
+        assert!(dense.mean_a_to_b > 0.0, "{dense:?}");
+    }
+
+    #[test]
+    fn an_open_polyline_is_sampled_without_a_closing_edge() {
+        let line = Outline::Open(vec![Point::new(0.0, 0.0), Point::new(10.0, 0.0)]);
+        let square = ring(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
+        let d = boundary_distances(&line, &square, Some(1.0)).unwrap();
+        assert_eq!(d.mean_a_to_b, 0.0);
+        assert!((d.hd - 10.0).abs() < 1e-12, "{d:?}"); // the far side of the square
+    }
+
+    #[test]
+    fn hd95_is_the_larger_directed_95th_percentile() {
+        let a = Outline::Open((0..=100).map(|i| Point::new(i as f64, 0.0)).collect());
+        let b = Outline::Open(vec![Point::new(0.0, 0.0), Point::new(0.0, 1.0)]);
+        let d = boundary_distances(&a, &b, None).unwrap();
+        // a -> b distances are 0..=100 (minus 0's point): 95th percentile is 95.
+        assert!((d.hd95 - 95.0).abs() < 1e-9, "{d:?}");
+        assert!((d.hd - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn an_empty_side_has_no_distances() {
+        assert!(boundary_distances(&ring(&[]), &square_with(1), None).is_none());
     }
 }

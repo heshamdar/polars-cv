@@ -72,6 +72,34 @@
   },
   {
     "namespace": "contour",
+    "name": "contour_boundary_distances",
+    "python": "boundary_distances",
+    "visibility": "public",
+    "doc": "Point-to-edge boundary distances to another contour, both directions.\n\nEach boundary is sampled — its vertices, plus a point every\n``sample_step`` along each edge when given — and every sample is\nmeasured to the *edges* of the other contour, so two tracings of one\noutline at different vertex densities are distance zero apart. Open\ncontours (``is_closed=False``) are measured as polylines, without a\nclosing edge. For a physical unit, ``.contour.scale(sx, sy, origin=\"origin\")``\nboth sides by the pixel spacing first (anisotropic spacing included).\nA contour with no vertices gives null.\n\nReturns:\n    ``Struct{mean_a_to_b, mean_b_to_a, assd, hd, hd95}`` (Float64):\n    the directed means, the average symmetric surface distance (mean\n    over both sample sets), the Hausdorff distance (largest sample\n    distance) and the larger directed 95th percentile (linear\n    interpolation; MONAI's ``percentile=95``) — a ``List`` of them when\n    either side is a contour set.",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "Another contour column to compare with.",
+        "type": {
+          "kind": "column"
+        }
+      },
+      {
+        "name": "sample_step",
+        "doc": "Spacing of the points sampled along every edge, > 0; ``None``\nsamples the vertices only (literal or expression).",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
     "name": "contour_bounding_box",
     "python": "bounding_box",
     "visibility": "public",
@@ -199,7 +227,7 @@
     "name": "contour_hausdorff",
     "python": "hausdorff_distance",
     "visibility": "public",
-    "doc": "Compute Hausdorff distance to another contour.\n\nThe maximum, over every *vertex* of either contour, of the distance to the\nnearest vertex of the other. This is a vertex-to-vertex measure, not\npoint-to-edge: two contours tracing the same outline with different vertex\nspacing have a non-zero distance. Hole vertices are included. An empty\ncontour gives `inf`.\n\nReturns:\n    Float64 Hausdorff distance — `List(Float64)` when either side is a\n    contour set.",
+    "doc": "Compute Hausdorff distance to another contour.\n\nThe maximum, over every *vertex* of either contour, of the distance to the\nnearest vertex of the other. This is a vertex-to-vertex measure, not\npoint-to-edge: two contours tracing the same outline with different vertex\nspacing have a non-zero distance. Hole vertices are included. An empty\ncontour gives `inf`. For point-to-edge distances, see\n`boundary_distances`.\n\nReturns:\n    Float64 Hausdorff distance — `List(Float64)` when either side is a\n    contour set.",
     "fields": [
       {
         "name": "other",
