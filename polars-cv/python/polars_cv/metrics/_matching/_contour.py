@@ -740,8 +740,8 @@ class ContourMatcher:
         # Predictions given as contours are the detections themselves, scored
         # by the caller; anything else is a heatmap to extract and score them
         # from, whose scores are the heatmap's.
-        pred_contours = not pred_is_expr and _is_contour_dtype(schema_dict[pred_col])
-        if pred_contours:
+        contour_preds: tuple[str, str] | None = None
+        if isinstance(pred_col, str) and _is_contour_dtype(schema_dict[pred_col]):
             if score_col is None:
                 msg = (
                     f"pred_col {pred_col!r} holds contours, which carry no "
@@ -756,6 +756,7 @@ class ContourMatcher:
                     "in the ground truth's coordinates"
                 )
                 raise ValueError(msg)
+            contour_preds = (pred_col, score_col)
         elif score_col is not None:
             msg = (
                 f"score_col {score_col!r} is for contour predictions; a "
@@ -767,15 +768,16 @@ class ContourMatcher:
         # A column is decoded via source("auto") (its leaf dtype read at plan
         # time); a pre-decoded expr is reused as-is. Either way the same ops are
         # appended through the handle.
-        pred_handle = (
-            _SourceHandle.from_expr(pred_col)
-            if pred_is_expr
-            else _SourceHandle.from_column(
+        # The predictions: the caller's contours and scores, or a heatmap.
+        pred_source: tuple[str, str] | _SourceHandle
+        if contour_preds is not None:
+            pred_source = contour_preds
+        elif isinstance(pred_col, LazyPipelineExpr):
+            pred_source = _SourceHandle.from_expr(pred_col)
+        else:
+            pred_source = _SourceHandle.from_column(
                 pred_col, _detect_source_info(schema_dict, pred_col)
             )
-            if not pred_contours
-            else None
-        )
         # Ground truth given as contours (a contour or contour-set column) is
         # used as it is, by name; anything else is a mask to extract them from.
         gt_source: _SourceHandle | str
@@ -810,12 +812,10 @@ class ContourMatcher:
 
         # Contour extraction (or the caller's contours)
         aligned_handle: _SourceHandle | None = None
-        if pred_handle is None:
+        if isinstance(pred_source, tuple):
+            contours_col, scores_col = pred_source
             prepared = _contour_predictions(
-                prepared,
-                pred_col,  # ty: ignore[invalid-argument-type]
-                score_col,  # ty: ignore[invalid-argument-type]
-                schema_dict,
+                prepared, contours_col, scores_col, schema_dict
             )
         elif self._auto_resize:
             # Resize prediction heatmaps to GT mask dimensions via a fused
@@ -831,7 +831,7 @@ class ContourMatcher:
             prepared = _add_gt_shape_columns(prepared, gt_source, gt_dtype)
             prepared = _extract_with_fused_resize(
                 prepared,
-                pred_handle=pred_handle,
+                pred_handle=pred_source,
                 threshold=self._extraction_threshold,
                 min_area=self._min_contour_area,
                 min_area_fraction=self._min_contour_area_fraction,
@@ -846,13 +846,13 @@ class ContourMatcher:
             # Trust the user: shapes are assumed to match.
             prepared = _extract_contours_via(
                 prepared,
-                pred_handle,
+                pred_source,
                 threshold=self._extraction_threshold,
                 min_area=self._min_contour_area,
                 min_area_fraction=self._min_contour_area_fraction,
                 output_col="_pred_contours",
             )
-            aligned_handle = pred_handle
+            aligned_handle = pred_source
 
         if isinstance(gt_source, str):
             prepared = prepared.with_columns(_gt_contours=pl.col(gt_source))
