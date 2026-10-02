@@ -159,6 +159,38 @@
     "None"
    ]
   ],
+  "correspond_by_coverage": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "tolerance",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "threshold",
+    "KEYWORD_ONLY",
+    "0.5"
+   ],
+   [
+    "order",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "sample_step",
+    "KEYWORD_ONLY",
+    "None"
+   ]
+  ],
   "dice": [
    [
     "self",

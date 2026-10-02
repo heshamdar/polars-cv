@@ -167,6 +167,10 @@ fn correspondence_fields() -> Vec<Field> {
             PlSmallStr::from_static("overlap"),
             DataType::List(Box::new(DataType::Float64)),
         ),
+        Field::new(
+            PlSmallStr::from_static("duplicate"),
+            DataType::List(Box::new(DataType::Boolean)),
+        ),
     ]
 }
 
@@ -188,6 +192,10 @@ fn correspondence_anyvalue(result: &pairwise::Correspondence) -> AnyValue<'stati
         vec![
             optional_u32_list_anyvalue(&right, PlSmallStr::from_static("right_idx")),
             float_list_anyvalue(&result.overlap, PlSmallStr::from_static("overlap")),
+            AnyValue::List(Series::new(
+                PlSmallStr::from_static("duplicate"),
+                result.duplicate.as_slice(),
+            )),
         ],
         correspondence_fields(),
     )))
@@ -247,7 +255,7 @@ fn correspond_rows<T>(
     params: &GeomParams,
     (threshold, order): (&Param<f64>, &Option<ColumnRef>),
     sides: impl Fn(usize) -> PolarsResult<Sides<T>> + Sync,
-    build_matrix: impl Fn(&[T], &[T]) -> Vec<Vec<f64>> + Sync,
+    build_matrix: impl Fn(&GeomParams, usize, &[T], &[T]) -> PolarsResult<Vec<Vec<f64>>> + Sync,
 ) -> PolarsResult<Series> {
     // `order` is read through its reference: it is optional, so nothing here
     // may read a fixed position.
@@ -272,8 +280,8 @@ fn correspond_rows<T>(
             }
             None => None,
         };
-        let result =
-            pairwise::greedy_assign(&build_matrix(&left, &right), threshold, order.as_deref());
+        let matrix = build_matrix(params, i, &left, &right)?;
+        let result = pairwise::greedy_assign(&matrix, threshold, order.as_deref());
         Ok(Some(correspondence_anyvalue(&result)))
     })?;
     let rows: Vec<AnyValue> = rows
@@ -523,7 +531,56 @@ fn contour_correspond(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Ser
         &params,
         (threshold, order),
         |i| Ok((left.row(i)?, right.row(i)?)),
-        pairwise::iou_matrix,
+        |_, _, l, r| Ok(pairwise::iou_matrix(l, r)),
+    )
+}
+
+/// One-to-one correspondence by coverage: line-shaped targets included.
+#[polars_expr(output_type_func=correspondence_output_type)]
+fn contour_correspond_by_coverage(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "contour_correspond_by_coverage";
+    let (op, params) = GeomParams::parse::<ContourFn<Wire>>(inputs, kwargs, NAME)?;
+    let ContourFn::CorrespondByCoverage {
+        other,
+        tolerance,
+        threshold,
+        order,
+        sample_step,
+    } = &op
+    else {
+        return Err(parsed_as_another(NAME));
+    };
+    // Outlines on both sides: a polyline target is the point of this rule.
+    let (left, right) = (
+        ContourColumn::new(&inputs[0]),
+        ContourColumn::new(params.column(other)),
+    );
+    correspond_rows(
+        inputs,
+        &params,
+        (threshold, order),
+        |i| Ok((left.outlines(i)?, right.outlines(i)?)),
+        |params, i, l, r| {
+            let tolerance = params.value(tolerance, i)?;
+            if !(tolerance.is_finite() && tolerance >= 0.0) {
+                polars_bail!(ComputeError:
+                    "{}: tolerance must be a non-negative number, got {} (row {})",
+                    NAME, tolerance, i);
+            }
+            let step = match sample_step {
+                Some(step) => {
+                    let step = params.value(step, i)?;
+                    if !(step.is_finite() && step > 0.0) {
+                        polars_bail!(ComputeError:
+                            "{}: sample_step must be a positive number, got {} (row {})",
+                            NAME, step, i);
+                    }
+                    Some(step)
+                }
+                None => None,
+            };
+            Ok(pairwise::coverage_matrix(l, r, tolerance, step))
+        },
     )
 }
 
@@ -873,7 +930,7 @@ fn bbox_correspond(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series
         &params,
         (threshold, order),
         |i| Ok((left.row(i)?, right.row(i)?)),
-        pairwise::bbox_iou_matrix,
+        |_, _, l, r| Ok(pairwise::bbox_iou_matrix(l, r)),
     )
 }
 

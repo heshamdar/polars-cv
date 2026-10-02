@@ -36,6 +36,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`.contour.correspond_by_coverage(other, tolerance, threshold=0.5, order=None,
+  sample_step=None)`** pairs contours by *coverage* rather than IoU: the
+  fraction of each target's boundary samples inside the candidate (when it is
+  closed) or within `tolerance` of its edges. It scores line-shaped targets —
+  polyline annotations, which IoU cannot (a polyline has no area) — through
+  the same greedy, exclusive rule as `correspond`.
+- **Correspondences report duplicates.** `CORRESPONDENCE_SCHEMA` (from
+  `.contour.correspond`, `.correspond_by_coverage` and `.bbox.correspond`)
+  gains `duplicate: List(Boolean)`: an unpaired element that cleared the
+  threshold against a target another element had already claimed — a
+  repeated hit, which LUNA16/CAMELYON-style evaluation ignores rather than
+  counting as a false positive.
+
 - **Header-only metadata from path columns, and `.cv.image_info()`.**
   `.cv.width()`, `.height()`, `.channels()` and `.image_dtype()` take a
   `String` column of paths as well as image bytes, with the same

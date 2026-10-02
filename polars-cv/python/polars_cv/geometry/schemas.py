@@ -146,12 +146,13 @@ CORRESPONDENCE_SCHEMA = pl.Struct(
     [
         pl.Field("right_idx", pl.List(pl.UInt32)),
         pl.Field("overlap", pl.List(pl.Float64)),
+        pl.Field("duplicate", pl.List(pl.Boolean)),
     ]
 )
 """
 What ``.contour.correspond()`` / ``.bbox.correspond()`` return.
 
-Both fields are positionally aligned with the *left* expression: entry ``i``
+Every field is positionally aligned with the *left* expression: entry ``i``
 describes its element ``i``. There is deliberately no ``left_idx`` -- the one
 this replaced published ``pred_idx`` as ``0..n``, a second copy of the position
 -- and deliberately no pair counts, because how many pairings a population
@@ -160,7 +161,12 @@ contains is a question about the population, not about one row.
 Fields:
     right_idx: Index of the paired element in the right set, null when the
         left element was left unpaired.
-    overlap: IoU of the chosen pair, ``0.0`` where nothing was chosen.
+    overlap: IoU (or, for ``correspond_by_coverage``, coverage) of the chosen
+        pair, ``0.0`` where nothing was chosen.
+    duplicate: The left element was left unpaired although it cleared the
+        threshold against a right element another one had already claimed —
+        a repeated hit on one target, which some detection conventions
+        ignore rather than count as a false positive.
 """
 
 # --- Bounding Box Schema ---

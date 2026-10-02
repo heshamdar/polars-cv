@@ -137,6 +137,12 @@ pub struct Correspondence {
     pub right_idx: Vec<Option<usize>>,
     /// Overlap of the chosen pair, `0.0` where nothing was chosen.
     pub overlap: Vec<f64>,
+    /// Whether an unpaired left element cleared the threshold against some
+    /// right element that another left element had already claimed: a
+    /// repeated hit on one target, which detection conventions (LUNA16,
+    /// CAMELYON) ignore rather than count as a false positive. `false` for a
+    /// paired element and for a plain miss.
+    pub duplicate: Vec<bool>,
 }
 
 /// Greedy one-to-one assignment over an overlap matrix.
@@ -217,7 +223,17 @@ pub fn greedy_assign(
         }
     }
 
-    Correspondence { right_idx, overlap }
+    // A duplicate cleared the threshold against something, but everything it
+    // cleared it against was taken by the time it was visited.
+    let duplicate = (0..n_left)
+        .map(|left| right_idx[left].is_none() && matrix[left].iter().any(|&o| o >= threshold))
+        .collect();
+
+    Correspondence {
+        right_idx,
+        overlap,
+        duplicate,
+    }
 }
 
 /// Computes the Dice coefficient between two contours.
@@ -343,6 +359,66 @@ fn percentile(mut values: Vec<f64>, q: f64) -> f64 {
     let pos = q * (values.len() - 1) as f64;
     let (lo, hi) = (pos.floor() as usize, pos.ceil() as usize);
     values[lo] + (pos - lo as f64) * (values[hi] - values[lo])
+}
+
+/// How much of `target` lies within `tolerance` of `by`: the fraction of
+/// `target`'s boundary samples ([`super::measures::sample_outline`]) inside
+/// `by` (a closed one; an open polyline bounds no region) or within
+/// `tolerance` of its edges, the bound included. An empty target is 0.
+///
+/// The hit rule for line-shaped ground truth, which overlap cannot score: a
+/// polyline has no area, so its IoU with any region is 0.
+pub fn coverage(target: &Outline, by: &Outline, tolerance: f64, sample_step: Option<f64>) -> f64 {
+    let samples = super::measures::sample_outline(target, sample_step);
+    covered_fraction(
+        &samples,
+        by,
+        &super::measures::PreparedOutline::new(by),
+        tolerance,
+    )
+}
+
+/// The fraction of `samples` inside `by` or within `tolerance` of its
+/// prepared `edges` — [`coverage`]'s rule, over samples and edges built once.
+fn covered_fraction(
+    samples: &[super::contour::Point],
+    by: &Outline,
+    edges: &super::measures::PreparedOutline,
+    tolerance: f64,
+) -> f64 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let hit = |p: &super::contour::Point| match by {
+        Outline::Closed(region) if super::predicates::contains_point(region, p.x, p.y) => true,
+        _ => edges.distance(p) <= tolerance,
+    };
+    samples.iter().filter(|p| hit(p)).count() as f64 / samples.len() as f64
+}
+
+/// [`coverage`] of every target by every candidate, indexed
+/// `[candidate][target]` — the matrix [`greedy_assign`] reads. Each target is
+/// sampled, and each candidate's edges prepared, once.
+pub fn coverage_matrix(
+    candidates: &[Outline],
+    targets: &[Outline],
+    tolerance: f64,
+    sample_step: Option<f64>,
+) -> Vec<Vec<f64>> {
+    let samples: Vec<_> = targets
+        .iter()
+        .map(|t| super::measures::sample_outline(t, sample_step))
+        .collect();
+    candidates
+        .iter()
+        .map(|c| {
+            let edges = super::measures::PreparedOutline::new(c);
+            samples
+                .iter()
+                .map(|s| covered_fraction(s, c, &edges, tolerance))
+                .collect()
+        })
+        .collect()
 }
 
 /// The discrete Hausdorff distance between two vertex sets, each given as
@@ -930,5 +1006,103 @@ mod boundary_distance_tests {
     #[test]
     fn an_empty_side_has_no_distances() {
         assert!(boundary_distances(&ring(&[]), &square_with(1), None).is_none());
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::geometry::contour::{Outline, Point};
+
+    fn region(points: &[(f64, f64)]) -> Outline {
+        Outline::Closed(Contour::from_tuples(points))
+    }
+
+    fn line(points: &[(f64, f64)]) -> Outline {
+        Outline::Open(points.iter().map(|&(x, y)| Point::new(x, y)).collect())
+    }
+
+    fn square() -> Outline {
+        region(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)])
+    }
+
+    #[test]
+    fn a_line_inside_a_region_is_fully_covered() {
+        let gt = line(&[(2.0, 5.0), (8.0, 5.0)]);
+        assert_eq!(coverage(&gt, &square(), 0.0, Some(1.0)), 1.0);
+    }
+
+    #[test]
+    fn a_line_half_outside_is_half_covered() {
+        // Samples at x = 5, 6, ..., 15 (11 points): 5..=10 lie in or on the
+        // square, 11..=15 do not.
+        let gt = line(&[(5.0, 5.0), (15.0, 5.0)]);
+        let c = coverage(&gt, &square(), 0.0, Some(1.0));
+        assert!((c - 6.0 / 11.0).abs() < 1e-12, "{c}");
+    }
+
+    #[test]
+    fn the_tolerance_is_inclusive() {
+        // Every sample of the line sits exactly 2 outside the square's right edge.
+        let gt = line(&[(12.0, 2.0), (12.0, 8.0)]);
+        assert_eq!(coverage(&gt, &square(), 2.0, Some(1.0)), 1.0);
+        assert_eq!(coverage(&gt, &square(), 1.999, Some(1.0)), 0.0);
+    }
+
+    #[test]
+    fn an_open_candidate_covers_by_distance_only() {
+        // A polyline candidate bounds no region: only its tolerance band counts.
+        let gt = line(&[(0.0, 0.0), (10.0, 0.0)]);
+        let cand = line(&[(0.0, 1.0), (5.0, 1.0)]);
+        let c = coverage(&gt, &cand, 1.0, Some(1.0));
+        assert!((c - 6.0 / 11.0).abs() < 1e-12, "{c}");
+    }
+
+    #[test]
+    fn the_matrix_is_candidates_by_targets() {
+        let gts = [
+            line(&[(2.0, 5.0), (8.0, 5.0)]),
+            line(&[(50.0, 50.0), (60.0, 50.0)]),
+        ];
+        let cands = [square()];
+        let m = coverage_matrix(&cands, &gts, 0.0, Some(1.0));
+        assert_eq!(m, vec![vec![1.0, 0.0]]);
+    }
+
+    #[test]
+    fn an_empty_target_is_not_covered() {
+        assert_eq!(coverage(&line(&[]), &square(), 1.0, None), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod duplicate_tests {
+    use super::*;
+
+    #[test]
+    fn a_second_hit_on_a_claimed_target_is_a_duplicate() {
+        // Both candidates clear the threshold against target 0; the first
+        // claims it, the second is left unmatched as a duplicate. The third
+        // misses everything and is a plain miss.
+        let m = vec![vec![0.9, 0.0], vec![0.8, 0.1], vec![0.2, 0.3]];
+        let c = greedy_assign(&m, 0.5, None);
+        assert_eq!(c.right_idx, vec![Some(0), None, None]);
+        assert_eq!(c.duplicate, vec![false, true, false]);
+    }
+
+    #[test]
+    fn a_candidate_that_takes_another_target_is_not_a_duplicate() {
+        let m = vec![vec![0.9, 0.0], vec![0.8, 0.6]];
+        let c = greedy_assign(&m, 0.5, None);
+        assert_eq!(c.right_idx, vec![Some(0), Some(1)]);
+        assert_eq!(c.duplicate, vec![false, false]);
+    }
+
+    #[test]
+    fn duplicates_follow_the_visit_order() {
+        let m = vec![vec![0.9], vec![0.8]];
+        let c = greedy_assign(&m, 0.5, Some(&[1, 0]));
+        assert_eq!(c.right_idx, vec![None, Some(0)]);
+        assert_eq!(c.duplicate, vec![true, false]);
     }
 }

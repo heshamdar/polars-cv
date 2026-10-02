@@ -41,6 +41,7 @@ READS: dict[str, str] = {
     "pairwise_iou": "region",
     "largest": "region",
     "correspond": "region",
+    "correspond_by_coverage": "outline",
     "perimeter": "outline",
     "bounding_box": "outline",
     "hausdorff_distance": "outline",

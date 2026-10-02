@@ -2884,12 +2884,57 @@ class _ContourOpsMixin:
         Returns:
             A struct matching :data:`polars_cv.CORRESPONDENCE_SCHEMA`:
             ``right_idx`` (index into *other*, null where unpaired) and
-            ``overlap`` (the IoU of the chosen pair, 0.0 where unpaired), both
-            positionally aligned with this expression's contours.
+            ``overlap`` (the IoU of the chosen pair, 0.0 where unpaired) and
+            ``duplicate`` (unpaired, but cleared the threshold against a
+            contour another one had already claimed), all positionally aligned
+            with this expression's contours.
         """
         return self._call(
             "contour_correspond",
             {"other": other, "threshold": threshold, "order": order},
+        )
+
+    def correspond_by_coverage(
+        self,
+        other: pl.Expr,
+        tolerance: FloatOrExpr,
+        *,
+        threshold: FloatOrExpr = 0.5,
+        order: pl.Expr | None = None,
+        sample_step: FloatOrExpr | None = None,
+    ) -> pl.Expr:
+        """Pair each contour with at most one contour in *other*, by coverage.
+
+        The rule of :meth:`correspond` — greedy, exclusive, visited in *order*,
+        the threshold inclusive — over a different score: the fraction of each
+        *other* contour's boundary samples that lie inside this contour (when
+        closed) or within *tolerance* of its edges. That scores line-shaped
+        targets, such as a polyline annotation, which IoU cannot: a polyline
+        has no area. Open contours are read as polylines on both sides.
+
+        Args:
+            other: Contour-set expression to pair against (`List[Contour]`).
+            tolerance: How far from this contour a target sample still counts as
+                covered, in pixels, >= 0 (literal or expression).
+            threshold: Minimum coverage for a pairing, in [0, 1] (literal or
+                expression).
+            order: Optional per-row visit order, a permutation of ``0..n``.
+            sample_step: Spacing of the samples taken along each target edge, > 0;
+                ``None`` samples its vertices only (literal or expression).
+
+        Returns:
+            A struct matching :data:`polars_cv.CORRESPONDENCE_SCHEMA`, with
+            ``overlap`` the coverage of the chosen pair.
+        """
+        return self._call(
+            "contour_correspond_by_coverage",
+            {
+                "other": other,
+                "tolerance": tolerance,
+                "threshold": threshold,
+                "order": order,
+                "sample_step": sample_step,
+            },
         )
 
     def dice(self, other: pl.Expr) -> pl.Expr:

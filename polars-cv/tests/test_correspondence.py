@@ -162,7 +162,7 @@ def _extract(out: pl.DataFrame) -> tuple[list[int | None], list[float]]:
     """Read ``(right_idx, overlap)`` out of the accessor's struct."""
     cell = out["_c"][0]
     names = [f.name for f in CORRESPONDENCE_SCHEMA.fields]
-    assert names == ["right_idx", "overlap"], (
+    assert names == ["right_idx", "overlap", "duplicate"], (
         f"CORRESPONDENCE_SCHEMA changed shape: {names}"
     )
     return list(cell["right_idx"]), list(cell["overlap"])
@@ -485,3 +485,106 @@ class TestOrderIsValidated:
     def test_a_repeated_entry_is_refused(self, kind: str) -> None:
         with pytest.raises(Exception, match=r"repeats entry .* permutation"):
             self._run_with(kind, [1, 1])
+
+
+# ---------------------------------------------------------------------------
+# Duplicates and coverage
+# ---------------------------------------------------------------------------
+
+
+def _polyline(*points: tuple[float, float]) -> dict[str, object]:
+    return {
+        "exterior": [{"x": float(x), "y": float(y)} for x, y in points],
+        "holes": [],
+        "is_closed": False,
+    }
+
+
+@plugin_required
+class TestDuplicates:
+    """`duplicate` flags an unpaired candidate whose only hits were claimed."""
+
+    def test_a_second_hit_on_a_claimed_target_is_a_duplicate(self) -> None:
+        df = pl.DataFrame(
+            {
+                "a": [[_rect(0, 0, 10, 10), _rect(1, 0, 10, 10), _rect(50, 50, 5, 5)]],
+                "b": [[_rect(0, 0, 10, 10)]],
+            },
+            schema={"a": CONTOUR_SET_SCHEMA, "b": CONTOUR_SET_SCHEMA},
+        )
+        out = df.select(pl.col("a").contour.correspond(pl.col("b"), threshold=0.5))
+        assert out.schema["a"] == CORRESPONDENCE_SCHEMA
+        row = out.item()
+        assert row["right_idx"] == [0, None, None]
+        assert row["duplicate"] == [False, True, False]
+
+    def test_bbox_correspondence_carries_it_too(self) -> None:
+        df = pl.DataFrame(
+            {
+                "a": [[_bbox(0, 0, 10, 10), _bbox(1, 0, 10, 10)]],
+                "b": [[_bbox(0, 0, 10, 10)]],
+            },
+            schema={"a": pl.List(BBOX_SCHEMA), "b": pl.List(BBOX_SCHEMA)},
+        )
+        row = df.select(pl.col("a").bbox.correspond(pl.col("b"), threshold=0.5)).item()
+        assert row["duplicate"] == [False, True]
+
+
+@plugin_required
+class TestCorrespondByCoverage:
+    """Pairing by how much of each target lies within a tolerance of a
+    candidate: the hit rule for line-shaped ground truth, which IoU cannot
+    score (a polyline has no area)."""
+
+    def _df(self) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                # A thin predicted region along y = 5, and one far away.
+                "pred": [[_rect(0, 4, 20, 2), _rect(60, 60, 5, 5)]],
+                # A ground-truth line along y = 5, and one along y = 30.
+                "gt": [[_polyline((2, 5), (18, 5)), _polyline((0, 30), (20, 30))]],
+            },
+            schema={"pred": CONTOUR_SET_SCHEMA, "gt": CONTOUR_SET_SCHEMA},
+        )
+
+    def test_a_line_inside_a_prediction_is_matched(self) -> None:
+        row = (
+            self._df()
+            .select(
+                pl.col("pred").contour.correspond_by_coverage(
+                    pl.col("gt"), tolerance=1.0, threshold=0.5, sample_step=1.0
+                )
+            )
+            .item()
+        )
+        assert row["right_idx"] == [0, None]
+        assert row["overlap"] == [1.0, 0.0]
+
+    def test_the_tolerance_widens_the_hit(self) -> None:
+        def match(tol: float) -> list[int | None]:
+            df = pl.DataFrame(
+                {"pred": [[_rect(0, 0, 20, 2)]], "gt": [[_polyline((0, 5), (20, 5))]]},
+                schema={"pred": CONTOUR_SET_SCHEMA, "gt": CONTOUR_SET_SCHEMA},
+            )
+            out = df.select(
+                pl.col("pred").contour.correspond_by_coverage(
+                    pl.col("gt"), tolerance=tol, threshold=0.5
+                )
+            )
+            return out.item()["right_idx"]
+
+        assert match(2.0) == [None]
+        assert match(3.0) == [0]
+
+    def test_iou_cannot_score_a_line(self) -> None:
+        with pytest.raises(pl.exceptions.ComputeError, match="open contour"):
+            self._df().select(pl.col("pred").contour.correspond(pl.col("gt")))
+
+    @pytest.mark.parametrize("tol", [-1.0])
+    def test_a_negative_tolerance_is_refused(self, tol: float) -> None:
+        with pytest.raises(Exception, match="tolerance"):
+            self._df().select(
+                pl.col("pred").contour.correspond_by_coverage(
+                    pl.col("gt"), tolerance=tol
+                )
+            )
