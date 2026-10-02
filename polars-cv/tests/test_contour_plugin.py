@@ -815,3 +815,87 @@ class TestBoundaryDistances:
             self._df().select(
                 pl.col("a").contour.boundary_distances(pl.col("b"), sample_step=step)
             )
+
+    @staticmethod
+    def _truncated() -> pl.DataFrame:
+        """A region cut off by the left image edge, and its annotation.
+
+        The object fills x 0..50, y 20..80 of a 100 x 100 image, so its
+        outline runs up the frame; the annotation traces only the real
+        boundary, as an open line. Per-row image sizes, as real data has.
+        """
+        from polars_cv.geometry import contour_from_coords
+
+        outline = [[20.0, 0.0], [20.0, 50.0], [80.0, 50.0], [80.0, 0.0]]  # [y, x]
+        return pl.DataFrame(
+            {"pred": [outline], "gt": [outline], "w": [100.0], "h": [100.0]}
+        ).with_columns(
+            pred=contour_from_coords(pl.col("pred"), order="yx"),
+            gt=contour_from_coords(pl.col("gt"), order="yx", closed=False),
+        )
+
+    @staticmethod
+    def _frame(inset: float = 0.0) -> pl.Expr:
+        return pl.struct(
+            (pl.col("w") * 0 + inset).alias("x"),
+            (pl.col("h") * 0 + inset).alias("y"),
+            (pl.col("w") - 2 * inset).alias("width"),
+            (pl.col("h") - 2 * inset).alias("height"),
+        )
+
+    def test_frame_boundary_is_not_measured(self) -> None:
+        df = self._truncated()
+        without = df.select(
+            pl.col("pred").contour.boundary_distances(pl.col("gt"), sample_step=1.0)
+        ).item()
+        assert without["hd"] == pytest.approx(30.0)  # the frame side, as error
+        got = df.select(
+            pl.col("pred").contour.boundary_distances(
+                pl.col("gt"), sample_step=1.0, frame=self._frame()
+            )
+        ).item()
+        assert got == {
+            "mean_a_to_b": 0.0,
+            "mean_b_to_a": 0.0,
+            "assd": 0.0,
+            "hd": 0.0,
+            "hd95": 0.0,
+        }
+
+    def test_a_literal_frame_broadcasts(self) -> None:
+        frame = pl.struct(
+            pl.lit(0.0).alias("x"),
+            pl.lit(0.0).alias("y"),
+            pl.lit(100.0).alias("width"),
+            pl.lit(100.0).alias("height"),
+        )
+        got = (
+            self._truncated()
+            .select(
+                pl.col("pred").contour.boundary_distances(
+                    pl.col("gt"), sample_step=1.0, frame=frame
+                )
+            )
+            .item()
+        )
+        assert got["hd"] == 0.0
+
+    def test_a_null_frame_is_a_null_result(self) -> None:
+        got = (
+            self._truncated()
+            .select(
+                pl.col("pred").contour.boundary_distances(
+                    pl.col("gt"), frame=pl.when(False).then(self._frame())
+                )
+            )
+            .item()
+        )
+        assert got is None
+
+    def test_an_empty_frame_is_refused(self) -> None:
+        with pytest.raises(pl.exceptions.ComputeError, match="positive width"):
+            self._truncated().select(
+                pl.col("pred").contour.boundary_distances(
+                    pl.col("gt"), frame=self._frame(inset=50.0)
+                )
+            )

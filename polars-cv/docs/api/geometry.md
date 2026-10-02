@@ -79,6 +79,12 @@ control there is [`Pipeline.on_null_param()`](pipeline.md). See
 [Geometry Operations](../user-guide/operations/geometry.md#expression-parameters)
 for which parameters are per-row.
 
+`on_error("null")`, chained the same way, nulls a row whose **data** the
+function refuses (e.g. `close_along_border` on a line that does not reach the
+frame) instead of failing the query; an error about the column itself (its
+arity or dtype) still raises. See
+[Invalid rows](../user-guide/operations/geometry.md#invalid-rows).
+
 ## ContourNamespace
 
 ::: polars_cv.geometry.contours.ContourNamespace

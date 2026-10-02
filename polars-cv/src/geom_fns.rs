@@ -200,6 +200,15 @@ pub enum ContourFn<M: Mode = Exec> {
     /// both sides by the pixel spacing first (anisotropic spacing included).
     /// A contour with no vertices gives null.
     ///
+    /// An object cut off by the image edge has a frame segment in its outline
+    /// that an annotation of it does not trace. With ``frame`` (a bbox per
+    /// row, e.g. ``{x: 0, y: 0, width: w, height: h}``), boundary on the
+    /// frame's edges or outside it is not boundary: those samples are dropped
+    /// from both directions, and each side is measured to the other's
+    /// boundary inside the frame. To also drop boundary *near* the edge,
+    /// inset the frame (``x: 1, width: w - 2`` drops the outermost pixel).
+    /// Nothing left inside the frame gives null.
+    ///
     /// Returns:
     ///     ``Struct{mean_a_to_b, mean_b_to_a, assd, hd, hd95}`` (Float64):
     ///     the directed means, the average symmetric surface distance (mean
@@ -215,6 +224,9 @@ pub enum ContourFn<M: Mode = Exec> {
         /// Spacing of the points sampled along every edge, > 0; ``None``
         /// samples the vertices only (literal or expression).
         sample_step: Option<M::V<f64>>,
+        /// A bbox column, the image frame: boundary not strictly inside it is
+        /// excluded. A null frame row gives null.
+        frame: Option<ColumnRef>,
     },
     /// Test if contour contains a point.
     ///

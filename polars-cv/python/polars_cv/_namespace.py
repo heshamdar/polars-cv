@@ -18,12 +18,18 @@ from typing import Any, TypeVar
 import polars as pl
 
 from polars_cv import _plugin
-from polars_cv._types import NullParamPolicy, _to_python
+from polars_cv._types import NullParamPolicy, RowErrorPolicy, _to_python
 
 #: Accepted ``on_null(...)`` values, read from ``NullParamPolicy`` — a class
 #: generated from the Rust enum (``PLUGIN_REGISTRY`` → ``enum_catalog.json``)
 #: rather than spelled here.
 _NULL_PARAM_POLICIES = tuple(p.value for p in NullParamPolicy)
+
+#: Accepted ``on_error(...)`` values: ``RowErrorPolicy``'s, less the one that
+#: needs a struct output to carry its message, which an accessor does not have.
+_ROW_ERROR_POLICIES = tuple(
+    p.value for p in RowErrorPolicy if p is not RowErrorPolicy.NULL_WITH_MESSAGE
+)
 
 
 class _PluginNamespace:
@@ -66,7 +72,8 @@ _Policy = TypeVar("_Policy", bound="_GeomNamespace")
 
 
 class _GeomNamespace(_PluginNamespace):
-    """The geometry accessors' base: their one plugin call, and ``on_null``.
+    """The geometry accessors' base: their one plugin call, ``on_null`` and
+    ``on_error``.
 
     Every ``.contour``/``.point``/``.bbox`` method is generated
     (``_ops_generated``) as one :meth:`_call` of its Rust definition
@@ -85,6 +92,7 @@ class _GeomNamespace(_PluginNamespace):
     """
 
     _on_null: str = "raise"
+    _on_error: str = "raise"
 
     def on_null(self: _Policy, policy: str) -> _Policy:
         """Set what a null in a per-row expression parameter means.
@@ -117,6 +125,41 @@ class _GeomNamespace(_PluginNamespace):
             raise ValueError(msg)
         new = copy.copy(self)
         new._on_null = policy
+        return new
+
+    def on_error(self: _Policy, policy: str) -> _Policy:
+        """Set what a row whose data the function refuses means.
+
+        The accessors' counterpart of ``source(on_error=...)``: a row error —
+        an open line too far from the frame to close, an open contour given
+        to an area, a zero ``normalize`` size — fails the expression by
+        default. Under ``"null"`` that row is null and the others proceed, so
+        the invalid rows can be counted and inspected::
+
+            pl.col("line").contour.on_error("null").close_along_border(w, h)
+
+        An error about the **column** rather than a row — a contour set where
+        one contour per row is expected, a dtype no reader understands — still
+        raises: no row could succeed, and nulling it would null them all.
+
+        Args:
+            policy: One of ``"raise"``, ``"null"``.
+
+        Returns:
+            A copy of this namespace with the policy applied.
+        """
+        if policy == RowErrorPolicy.NULL_WITH_MESSAGE.value:
+            msg = (
+                "on_error='null_with_message' needs a struct output to carry "
+                "the message, which a geometry accessor does not have; use "
+                "'null'"
+            )
+            raise ValueError(msg)
+        if policy not in _ROW_ERROR_POLICIES:
+            msg = f"on_error must be one of {_ROW_ERROR_POLICIES}, got '{policy}'"
+            raise ValueError(msg)
+        new = copy.copy(self)
+        new._on_error = policy
         return new
 
     def _call(self, function: str, values: dict[str, Any]) -> pl.Expr:
@@ -152,5 +195,9 @@ class _GeomNamespace(_PluginNamespace):
         return self._plugin(
             function,
             args=args,
-            kwargs={"args": fields, "on_null": self._on_null},
+            kwargs={
+                "args": fields,
+                "on_null": self._on_null,
+                "on_error": self._on_error,
+            },
         )

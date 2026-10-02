@@ -2752,7 +2752,11 @@ class _ContourOpsMixin:
         return self._call("contour_area", {"signed": signed})
 
     def boundary_distances(
-        self, other: pl.Expr, *, sample_step: FloatOrExpr | None = None
+        self,
+        other: pl.Expr,
+        *,
+        sample_step: FloatOrExpr | None = None,
+        frame: pl.Expr | None = None,
     ) -> pl.Expr:
         """Point-to-edge boundary distances to another contour, both directions.
 
@@ -2765,10 +2769,21 @@ class _ContourOpsMixin:
         both sides by the pixel spacing first (anisotropic spacing included).
         A contour with no vertices gives null.
 
+        An object cut off by the image edge has a frame segment in its outline
+        that an annotation of it does not trace. With ``frame`` (a bbox per
+        row, e.g. ``{x: 0, y: 0, width: w, height: h}``), boundary on the
+        frame's edges or outside it is not boundary: those samples are dropped
+        from both directions, and each side is measured to the other's
+        boundary inside the frame. To also drop boundary *near* the edge,
+        inset the frame (``x: 1, width: w - 2`` drops the outermost pixel).
+        Nothing left inside the frame gives null.
+
         Args:
             other: Another contour column to compare with.
             sample_step: Spacing of the points sampled along every edge, > 0; ``None``
                 samples the vertices only (literal or expression).
+            frame: A bbox column, the image frame: boundary not strictly inside it is
+                excluded. A null frame row gives null.
 
         Returns:
             ``Struct{mean_a_to_b, mean_b_to_a, assd, hd, hd95}`` (Float64):
@@ -2779,7 +2794,8 @@ class _ContourOpsMixin:
             either side is a contour set.
         """
         return self._call(
-            "contour_boundary_distances", {"other": other, "sample_step": sample_step}
+            "contour_boundary_distances",
+            {"other": other, "sample_step": sample_step, "frame": frame},
         )
 
     def bounding_box(self) -> pl.Expr:

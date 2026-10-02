@@ -24,22 +24,26 @@ use serde::Deserialize;
 use view_buffer::mode::WireOps;
 use view_buffer::naming::WireScalar;
 
+use crate::graph::RowErrorPolicy;
 use crate::ops::{ColumnRef, Literal, Param};
 use crate::params::{NullParamPolicy, ParamCtx};
 
 /// A geometry plugin call's kwargs: the function's own wire fields, and the
-/// null policy (`_GeomNamespace.on_null`) every call carries.
+/// null and error policies (`_GeomNamespace.on_null` / `.on_error`) every
+/// call carries.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GeomKwargs {
     args: serde_json::Map<String, serde_json::Value>,
     on_null: Literal<NullParamPolicy>,
+    on_error: Literal<RowErrorPolicy>,
 }
 
 /// Per-row resolver over one plugin call's inputs.
 pub struct GeomParams<'a> {
     inputs: &'a [Series],
     policy: NullParamPolicy,
+    on_error: RowErrorPolicy,
     ctx: ParamCtx<'a>,
 }
 
@@ -53,6 +57,7 @@ pub struct GeomParams<'a> {
 pub struct SharedParams<'a> {
     inputs: &'a [Series],
     policy: NullParamPolicy,
+    on_error: RowErrorPolicy,
 }
 
 impl<'a> SharedParams<'a> {
@@ -61,6 +66,7 @@ impl<'a> SharedParams<'a> {
         GeomParams {
             inputs: self.inputs,
             policy: self.policy,
+            on_error: self.on_error,
             ctx: ParamCtx::with_null_policy(self.inputs, self.policy),
         }
     }
@@ -111,9 +117,18 @@ impl<'a> GeomParams<'a> {
                 inputs.len(), claimed
             );
         }
+        let on_error = kwargs.on_error.get();
+        if on_error == RowErrorPolicy::NullWithMessage {
+            polars_bail!(ComputeError:
+                "{}: on_error='null_with_message' needs a struct output to carry \
+                 the message, which a geometry function does not have; use 'null'",
+                name
+            );
+        }
         let shared = SharedParams {
             inputs,
             policy: kwargs.on_null.get(),
+            on_error,
         };
         Ok((op, shared.params()))
     }
@@ -162,6 +177,7 @@ impl<'a> GeomParams<'a> {
         SharedParams {
             inputs: self.inputs,
             policy: self.policy,
+            on_error: self.on_error,
         }
     }
 
@@ -170,6 +186,16 @@ impl<'a> GeomParams<'a> {
         match f() {
             Ok(value) => Ok(Some(value)),
             Err(_) if self.ctx.took_null() => Ok(None),
+            // A row's data refused under `on_error="null"`: that row is null.
+            // A `SchemaMismatch` is about the column — its arity or layout —
+            // which no row could get past, so it raises under every policy
+            // rather than nulling the whole column ([`column_error`]).
+            Err(e)
+                if self.on_error == RowErrorPolicy::Null
+                    && !matches!(e, PolarsError::SchemaMismatch(_)) =>
+            {
+                Ok(None)
+            }
             Err(e) => Err(e),
         }
     }
@@ -198,6 +224,14 @@ impl<'a> GeomParams<'a> {
     pub fn optional_column(&self, column: &Option<ColumnRef>) -> Option<&'a Series> {
         column.as_ref().map(|c| self.column(c))
     }
+}
+
+/// An error about an operand **column** — an arity a function cannot take, a
+/// layout no reader understands — rather than one row's data. It raises under
+/// every `on_error` policy ([`GeomParams::row`]): no row of such a column could
+/// succeed, so nulling it would turn a broken query into an all-null result.
+pub fn column_error(msg: impl std::fmt::Display) -> PolarsError {
+    PolarsError::SchemaMismatch(msg.to_string().into())
 }
 
 /// The error for a function whose arguments parsed as another function of

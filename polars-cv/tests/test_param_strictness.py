@@ -858,6 +858,7 @@ class TestInputSlotsAreValidated:
             kwargs={
                 "args": {"width": 10.0, "height": 10.0, **kwargs},
                 "on_null": "raise",
+                "on_error": "raise",
             },
             is_elementwise=True,
         )

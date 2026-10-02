@@ -75,7 +75,7 @@
     "name": "contour_boundary_distances",
     "python": "boundary_distances",
     "visibility": "public",
-    "doc": "Point-to-edge boundary distances to another contour, both directions.\n\nEach boundary is sampled — its vertices, plus a point every\n``sample_step`` along each edge when given — and every sample is\nmeasured to the *edges* of the other contour, so two tracings of one\noutline at different vertex densities are distance zero apart. Open\ncontours (``is_closed=False``) are measured as polylines, without a\nclosing edge. For a physical unit, ``.contour.scale(sx, sy, origin=\"origin\")``\nboth sides by the pixel spacing first (anisotropic spacing included).\nA contour with no vertices gives null.\n\nReturns:\n    ``Struct{mean_a_to_b, mean_b_to_a, assd, hd, hd95}`` (Float64):\n    the directed means, the average symmetric surface distance (mean\n    over both sample sets), the Hausdorff distance (largest sample\n    distance) and the larger directed 95th percentile (linear\n    interpolation; MONAI's ``percentile=95``) — a ``List`` of them when\n    either side is a contour set.",
+    "doc": "Point-to-edge boundary distances to another contour, both directions.\n\nEach boundary is sampled — its vertices, plus a point every\n``sample_step`` along each edge when given — and every sample is\nmeasured to the *edges* of the other contour, so two tracings of one\noutline at different vertex densities are distance zero apart. Open\ncontours (``is_closed=False``) are measured as polylines, without a\nclosing edge. For a physical unit, ``.contour.scale(sx, sy, origin=\"origin\")``\nboth sides by the pixel spacing first (anisotropic spacing included).\nA contour with no vertices gives null.\n\nAn object cut off by the image edge has a frame segment in its outline\nthat an annotation of it does not trace. With ``frame`` (a bbox per\nrow, e.g. ``{x: 0, y: 0, width: w, height: h}``), boundary on the\nframe's edges or outside it is not boundary: those samples are dropped\nfrom both directions, and each side is measured to the other's\nboundary inside the frame. To also drop boundary *near* the edge,\ninset the frame (``x: 1, width: w - 2`` drops the outermost pixel).\nNothing left inside the frame gives null.\n\nReturns:\n    ``Struct{mean_a_to_b, mean_b_to_a, assd, hd, hd95}`` (Float64):\n    the directed means, the average symmetric surface distance (mean\n    over both sample sets), the Hausdorff distance (largest sample\n    distance) and the larger directed 95th percentile (linear\n    interpolation; MONAI's ``percentile=95``) — a ``List`` of them when\n    either side is a contour set.",
     "fields": [
       {
         "name": "other",
@@ -93,6 +93,16 @@
             "kind": "scalar",
             "per_row": true,
             "py": "float"
+          }
+        }
+      },
+      {
+        "name": "frame",
+        "doc": "A bbox column, the image frame: boundary not strictly inside it is\nexcluded. A null frame row gives null.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "column"
           }
         }
       }
