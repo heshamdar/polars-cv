@@ -131,28 +131,23 @@ fn score_one(
     let mut acc = 0.0;
     let mut max_val = f64::NEG_INFINITY;
     let mut count = 0usize;
-    // Converted once for the whole scan: `to_geo` allocates, and the two
-    // point-in-contour modes below test every pixel in the bounding box.
-    let polygon = (region_mode != LabelRegionMode::Bbox).then(|| contour.to_geo());
-    for y in y0..y1 {
-        for x in x0..x1 {
-            let point = Point::new(x as f64 + 0.5, y as f64 + 0.5);
-            let include = match (region_mode, &polygon) {
-                (LabelRegionMode::Bbox, _) => true,
-                (LabelRegionMode::Interior, Some(polygon)) => {
-                    predicates::position_in_polygon(polygon, &point) > 0
+    let mut take = |x: usize, y: usize| {
+        let val = at(y, x);
+        acc += val;
+        max_val = maximum(max_val, val);
+        count += 1;
+    };
+    match region_mode {
+        LabelRegionMode::Bbox => {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    take(x, y);
                 }
-                (LabelRegionMode::Boundary, Some(polygon)) => {
-                    predicates::position_in_polygon(polygon, &point) >= 0
-                }
-                _ => unreachable!("polygon is built for every non-Bbox mode"),
-            };
-            if include {
-                let val = at(y, x);
-                acc += val;
-                max_val = maximum(max_val, val);
-                count += 1;
             }
+        }
+        LabelRegionMode::Interior | LabelRegionMode::Boundary => {
+            let include_boundary = region_mode == LabelRegionMode::Boundary;
+            for_each_region_pixel(contour, include_boundary, (x0, x1), (y0, y1), take);
         }
     }
     if count == 0 {
@@ -172,6 +167,124 @@ fn score_one(
         LabelReduction::Max => max_val,
         LabelReduction::Mean => acc / count as f64,
         LabelReduction::Sum => acc,
+    }
+}
+
+/// Visit, in raster order, every pixel `(x, y)` of `xs` x `ys` whose centre
+/// `(x + 0.5, y + 0.5)` lies inside `contour` — or on its boundary too, with
+/// `include_boundary` — exactly as [`predicates::position_in_polygon`] decides
+/// it (non-zero winding over the exterior, holes outside, the boundary exact).
+///
+/// A scanline scan: per row, each ring's edge crossings with the line through
+/// the pixel centres, swept left to right, settle every pixel at once — work
+/// proportional to the edges and the pixels, where testing each pixel against
+/// every edge cost their product (seconds per image for the thousands of
+/// vertices a traced contour has). A pixel whose centre lies within a
+/// rounding margin of a crossing, and every pixel of a row that passes
+/// through a vertex, is decided by the exact predicate instead, so the
+/// result is the predicate's to the pixel: the scan only decides what the
+/// arithmetic cannot get wrong. Raster order keeps a sum over the pixels the
+/// same floating-point sum.
+fn for_each_region_pixel(
+    contour: &Contour,
+    include_boundary: bool,
+    (x0, x1): (usize, usize),
+    (y0, y1): (usize, usize),
+    mut visit: impl FnMut(usize, usize),
+) {
+    if x0 >= x1 {
+        return;
+    }
+    let polygon = contour.to_geo();
+    let exact = |x: usize, y: usize| {
+        let p = Point::new(x as f64 + 0.5, y as f64 + 0.5);
+        let position = predicates::position_in_polygon(&polygon, &p);
+        position > 0 || (include_boundary && position == 0)
+    };
+    let rings: Vec<&[Point]> = std::iter::once(contour.exterior.as_slice())
+        .chain(contour.holes.iter().map(Vec::as_slice))
+        .collect();
+    let width = x1 - x0;
+    // Per pixel of the row: winding-covered by the exterior, by a hole (as
+    // difference arrays), and whether the exact predicate must decide it.
+    let mut exterior = vec![0i32; width + 1];
+    let mut holes = vec![0i32; width + 1];
+    let mut uncertain = vec![false; width];
+    let mut crossings: Vec<(f64, i32)> = Vec::new();
+
+    'rows: for y in y0..y1 {
+        let scan_y = y as f64 + 0.5;
+        // A vertex on the line is where the half-open crossing rule and an
+        // on-boundary centre meet: leave the whole row to the predicate.
+        if rings.iter().any(|ring| ring.iter().any(|v| v.y == scan_y)) {
+            for x in x0..x1 {
+                if exact(x, y) {
+                    visit(x, y);
+                }
+            }
+            continue 'rows;
+        }
+        exterior.fill(0);
+        holes.fill(0);
+        uncertain.fill(false);
+        for (r, ring) in rings.iter().enumerate() {
+            crossings.clear();
+            let n = ring.len();
+            for i in 0..n {
+                let (a, b) = (&ring[i], &ring[(i + 1) % n]);
+                // The predicate's half-open rule: an upward edge counts from
+                // its start, a downward one from its end, a level one never.
+                let dir = if a.y <= scan_y && scan_y < b.y {
+                    1
+                } else if b.y <= scan_y && scan_y < a.y {
+                    -1
+                } else {
+                    continue;
+                };
+                let t = (scan_y - a.y) / (b.y - a.y);
+                let cx = a.x + t * (b.x - a.x);
+                crossings.push((cx, dir));
+                // Centres this close to the crossing are the predicate's.
+                let margin = 1e-9 * (1.0 + a.x.abs().max(b.x.abs()));
+                let lo = (cx - margin - 0.5).ceil().max(x0 as f64);
+                let hi = (cx + margin - 0.5).floor().min((x1 - 1) as f64);
+                if lo <= hi {
+                    for x in lo as usize..=hi as usize {
+                        uncertain[x - x0] = true;
+                    }
+                }
+            }
+            crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let cover = if r == 0 { &mut exterior } else { &mut holes };
+            let mut winding = 0;
+            for pair in crossings.windows(2) {
+                winding += pair[0].1;
+                if winding == 0 {
+                    continue;
+                }
+                // Centres strictly between the two crossings.
+                let first = ((pair[0].0 - 0.5).floor() + 1.0).max(x0 as f64);
+                let last = ((pair[1].0 - 0.5).ceil() - 1.0).min((x1 - 1) as f64);
+                if first <= last {
+                    cover[first as usize - x0] += 1;
+                    cover[last as usize - x0 + 1] -= 1;
+                }
+            }
+        }
+        let (mut in_exterior, mut in_hole) = (0, 0);
+        for i in 0..width {
+            in_exterior += exterior[i];
+            in_hole += holes[i];
+            let x = x0 + i;
+            let inside = if uncertain[i] {
+                exact(x, y)
+            } else {
+                in_exterior > 0 && in_hole == 0
+            };
+            if inside {
+                visit(x, y);
+            }
+        }
     }
 }
 
@@ -404,6 +517,114 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// The per-pixel predicate over the scan window: the oracle the scanline
+    /// region scan is held to, one exact test per pixel, sharing none of its
+    /// crossing arithmetic.
+    fn region_pixels_brute(
+        contour: &Contour,
+        include_boundary: bool,
+        (x0, x1): (usize, usize),
+        (y0, y1): (usize, usize),
+    ) -> Vec<(usize, usize)> {
+        let polygon = contour.to_geo();
+        let mut out = Vec::new();
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let p = Point::new(x as f64 + 0.5, y as f64 + 0.5);
+                let position = predicates::position_in_polygon(&polygon, &p);
+                if position > 0 || (include_boundary && position == 0) {
+                    out.push((x, y));
+                }
+            }
+        }
+        out
+    }
+
+    /// xorshift64*, so the cases are the same on every run.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> f64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            (self.0.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64
+        }
+        fn ring(&mut self, n: usize, snap: f64) -> Vec<Point> {
+            // `snap` 0 keeps raw floats; 1 puts vertices on the lattice (a
+            // traced contour); 0.5 on half-integers, so pixel centres land on
+            // vertices and edges and scan lines pass through vertices.
+            let (cx, cy) = (2.0 + 16.0 * self.next(), 2.0 + 16.0 * self.next());
+            (0..n)
+                .map(|_| {
+                    let (x, y) = (
+                        cx + 14.0 * (self.next() - 0.5) * 2.0,
+                        cy + 14.0 * (self.next() - 0.5) * 2.0,
+                    );
+                    if snap > 0.0 {
+                        Point::new((x / snap).round() * snap, (y / snap).round() * snap)
+                    } else {
+                        Point::new(x, y)
+                    }
+                })
+                .collect()
+        }
+    }
+
+    /// The scanline scan selects exactly the pixels the exact predicate does,
+    /// in raster order, on contours built to stress it: random (often
+    /// self-intersecting) rings, lattice and half-integer vertices, holes
+    /// that overlap each other or leave the exterior, and contours reaching
+    /// past the window.
+    #[test]
+    fn the_region_scan_matches_the_exact_predicate() {
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        let window = ((0usize, 20usize), (0usize, 20usize));
+        for case in 0..600 {
+            let snap = [0.0, 1.0, 0.5][case % 3];
+            let n = 3 + (rng.next() * 12.0) as usize;
+            let mut holes = Vec::new();
+            for _ in 0..(case / 3) % 3 {
+                let k = 3 + (rng.next() * 5.0) as usize;
+                holes.push(rng.ring(k, snap));
+            }
+            let contour = Contour::with_holes(rng.ring(n, snap), holes);
+            for include_boundary in [false, true] {
+                let mut scanned = Vec::new();
+                for_each_region_pixel(&contour, include_boundary, window.0, window.1, |x, y| {
+                    scanned.push((x, y))
+                });
+                let brute = region_pixels_brute(&contour, include_boundary, window.0, window.1);
+                assert_eq!(
+                    scanned, brute,
+                    "case {case}, boundary {include_boundary}: {:?} holes {:?}",
+                    contour.exterior, contour.holes
+                );
+            }
+        }
+    }
+
+    /// A many-vertex disc: the case the scan exists for, against the oracle.
+    #[test]
+    fn a_dense_disc_matches_the_exact_predicate() {
+        let ring: Vec<Point> = (0..2048)
+            .map(|i| {
+                let a = std::f64::consts::TAU * i as f64 / 2048.0;
+                Point::new(30.0 + 25.0 * a.cos(), 30.0 + 25.0 * a.sin())
+            })
+            .collect();
+        let contour = Contour::new(ring);
+        for include_boundary in [false, true] {
+            let mut scanned = Vec::new();
+            for_each_region_pixel(&contour, include_boundary, (5, 56), (5, 56), |x, y| {
+                scanned.push((x, y))
+            });
+            assert_eq!(
+                scanned,
+                region_pixels_brute(&contour, include_boundary, (5, 56), (5, 56))
+            );
         }
     }
 

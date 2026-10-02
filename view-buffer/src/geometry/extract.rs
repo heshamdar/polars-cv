@@ -55,50 +55,11 @@ pub fn extract_contours(
     let contiguous = buffer.to_contiguous();
     let data = unsafe { std::slice::from_raw_parts(contiguous.as_ptr::<u8>(), height * width) };
 
-    let background = label_background(data, width, height);
     let keep_holes = !matches!(mode, ExtractMode::External);
-    let mut in_region = vec![false; width * height];
-    let mut hole_traced = vec![false; background.regions];
-    let mut contours = Vec::new();
-
-    // The raster scan meets each region, and each hole, first at its top-left
-    // pixel, whose top edge is on the region's own border — the pixel above it
-    // cannot belong to the region, or the scan would have met that one first.
-    for y in 0..height {
-        for x in 0..width {
-            let idx = y * width + x;
-            let (xi, yi) = (x as isize, y as isize);
-
-            if data[idx] > 0 {
-                if in_region[idx] {
-                    continue;
-                }
-                flood(idx, width, height, &NEIGHBOURS_8, |j| {
-                    let joins = data[j] > 0 && !in_region[j];
-                    in_region[j] |= joins;
-                    joins
-                });
-                // The background above the first pixel is the one surrounding
-                // the region: either the outside, or a hole of another region.
-                let surrounded_by = if y == 0 {
-                    OUTSIDE
-                } else {
-                    background.label[idx - width]
-                };
-                if keep_holes || surrounded_by == OUTSIDE {
-                    contours.push(trace_border(data, width, height, (xi, yi), EAST));
-                }
-            } else {
-                let hole = background.label[idx];
-                if keep_holes && hole != OUTSIDE && !hole_traced[hole as usize] {
-                    hole_traced[hole as usize] = true;
-                    // Along the top edge, westward: the region above is then
-                    // on the right, as the walk requires.
-                    contours.push(trace_border(data, width, height, (xi + 1, yi), WEST));
-                }
-            }
-        }
-    }
+    let contours: Vec<Contour> = border_starts(data, width, height, keep_holes)
+        .into_iter()
+        .map(|(start, heading)| trace_border(data, width, height, start, heading))
+        .collect();
 
     // Apply approximation
     let contours: Vec<Contour> = contours
@@ -116,7 +77,250 @@ pub fn extract_contours(
     }
 }
 
+/// Where each border's walk starts, and its first heading, in raster order
+/// of each border's first pixel: a region's top-left pixel's top edge,
+/// eastward; with `keep_holes`, a hole's top-left pixel's top edge, westward
+/// (the region above is then on the walk's right, as it requires).
+/// Without `keep_holes`, only the regions not inside a hole.
+///
+/// The image is read as **runs** — maximal stretches of one row with one
+/// colour — joined into connected components by union-find: foreground runs
+/// 8-connected (sharing a column, or a corner), background runs 4-connected
+/// (sharing a column), the pairing under which every border is one closed
+/// curve. That is work proportional to the runs, where flood-filling every
+/// pixel of the background (as [`border_starts_flood`], the oracle this is
+/// tested against, does) cost a pass over a 34 MB label array even for an
+/// empty mask. A run's first pixel in raster order is its component's when
+/// no earlier run belongs to it, so components come in raster order of their
+/// first pixel by visiting runs in order.
+fn border_starts(
+    data: &[u8],
+    width: usize,
+    height: usize,
+    keep_holes: bool,
+) -> Vec<((isize, isize), Heading)> {
+    if width == 0 || height == 0 || !data.iter().any(|&v| v > 0) {
+        return Vec::new();
+    }
+    let runs = Runs::new(data, width, height);
+    let mut sets = DisjointSets::new(runs.len());
+    for y in 1..height {
+        let above = runs.row(y - 1);
+        let mut k = above.start;
+        for b in runs.row(y) {
+            let (bx0, bx1, fg) = runs.get(b);
+            // Every run above that can touch this one, 8-connected: its
+            // columns reach `bx0 - 1` and it starts no later than `bx1`.
+            while runs.get(k).1 < bx0 {
+                k += 1;
+            }
+            let mut a = k;
+            while a < above.end && runs.get(a).0 <= bx1 {
+                let (ax0, ax1, afg) = runs.get(a);
+                let touches = if fg {
+                    ax0 <= bx1 && bx0 <= ax1
+                } else {
+                    ax0 < bx1 && bx0 < ax1
+                };
+                if afg == fg && touches {
+                    sets.union(a, b);
+                }
+                a += 1;
+            }
+        }
+    }
+    // The background reaching the image edge is the outside.
+    let mut outside = vec![false; runs.len()];
+    for y in 0..height {
+        for r in runs.row(y) {
+            let (x0, x1, fg) = runs.get(r);
+            if !fg && (y == 0 || y + 1 == height || x0 == 0 || x1 == width) {
+                let root = sets.find(r);
+                outside[root] = true;
+            }
+        }
+    }
+    let mut seen = vec![false; runs.len()];
+    let mut starts = Vec::new();
+    for y in 0..height {
+        for r in runs.row(y) {
+            let root = sets.find(r);
+            if std::mem::replace(&mut seen[root], true) {
+                continue;
+            }
+            let (x0, _, fg) = runs.get(r);
+            let (xi, yi) = (x0 as isize, y as isize);
+            if fg {
+                // The background above the first pixel surrounds the region:
+                // the outside, or a hole of another region.
+                let surrounded_by_outside =
+                    y == 0 || outside[sets.find(runs.containing(y - 1, x0))];
+                if keep_holes || surrounded_by_outside {
+                    starts.push(((xi, yi), EAST));
+                }
+            } else if keep_holes && !outside[root] {
+                starts.push(((xi + 1, yi), WEST));
+            }
+        }
+    }
+    starts
+}
+
+/// A mask's runs: per row, the maximal stretches of one colour, in order.
+struct Runs {
+    /// `(x0, x1, foreground)`, `x1` exclusive, row after row.
+    runs: Vec<(usize, usize, bool)>,
+    /// Row `y`'s runs are `row_start[y]..row_start[y + 1]`.
+    row_start: Vec<usize>,
+}
+
+impl Runs {
+    fn new(data: &[u8], width: usize, height: usize) -> Self {
+        let mut runs = Vec::new();
+        let mut row_start = Vec::with_capacity(height + 1);
+        for row in data.chunks_exact(width).take(height) {
+            row_start.push(runs.len());
+            let mut x = 0;
+            while x < width {
+                let fg = row[x] > 0;
+                let end = next_change(row, x + 1, fg);
+                runs.push((x, end, fg));
+                x = end;
+            }
+        }
+        row_start.push(runs.len());
+        Runs { runs, row_start }
+    }
+
+    fn len(&self) -> usize {
+        self.runs.len()
+    }
+
+    fn get(&self, r: usize) -> (usize, usize, bool) {
+        self.runs[r]
+    }
+
+    fn row(&self, y: usize) -> std::ops::Range<usize> {
+        self.row_start[y]..self.row_start[y + 1]
+    }
+
+    /// The run of row `y` holding column `x`.
+    fn containing(&self, y: usize, x: usize) -> usize {
+        let row = self.row(y);
+        row.start + self.runs[row].partition_point(|&(_, x1, _)| x1 <= x)
+    }
+}
+
+/// The first column from `x` on whose pixel is not `fg`, or the row's end.
+///
+/// Skips eight pixels at a time while a word is all background (zero) or,
+/// for a foreground run, holds no zero byte.
+fn next_change(row: &[u8], mut x: usize, fg: bool) -> usize {
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    const HIGHS: u64 = 0x8080_8080_8080_8080;
+    while x + 8 <= row.len() {
+        let word = u64::from_ne_bytes(row[x..x + 8].try_into().expect("eight bytes"));
+        let uniform = if fg {
+            word.wrapping_sub(ONES) & !word & HIGHS == 0
+        } else {
+            word == 0
+        };
+        if !uniform {
+            break;
+        }
+        x += 8;
+    }
+    while x < row.len() && (row[x] > 0) == fg {
+        x += 1;
+    }
+    x
+}
+
+/// Union-find over run indices, with path halving and union by size.
+struct DisjointSets {
+    parent: Vec<usize>,
+    size: Vec<u32>,
+}
+
+impl DisjointSets {
+    fn new(n: usize) -> Self {
+        DisjointSets {
+            parent: (0..n).collect(),
+            size: vec![1; n],
+        }
+    }
+
+    fn find(&mut self, mut i: usize) -> usize {
+        while self.parent[i] != i {
+            self.parent[i] = self.parent[self.parent[i]];
+            i = self.parent[i];
+        }
+        i
+    }
+
+    fn union(&mut self, a: usize, b: usize) {
+        let (mut a, mut b) = (self.find(a), self.find(b));
+        if a == b {
+            return;
+        }
+        if self.size[a] < self.size[b] {
+            std::mem::swap(&mut a, &mut b);
+        }
+        self.parent[b] = a;
+        self.size[a] += self.size[b];
+    }
+}
+
+/// [`border_starts`] by flood-filling every pixel: the labelling this crate
+/// used before runs, kept as the independent oracle the run-based one is
+/// tested against (it shares no labelling code with it).
+#[cfg(test)]
+fn border_starts_flood(
+    data: &[u8],
+    width: usize,
+    height: usize,
+    keep_holes: bool,
+) -> Vec<((isize, isize), Heading)> {
+    let background = label_background(data, width, height);
+    let mut in_region = vec![false; width * height];
+    let mut hole_traced = vec![false; background.regions];
+    let mut starts = Vec::new();
+    for y in 0..height {
+        for x in 0..width {
+            let idx = y * width + x;
+            let (xi, yi) = (x as isize, y as isize);
+            if data[idx] > 0 {
+                if in_region[idx] {
+                    continue;
+                }
+                flood(idx, width, height, &NEIGHBOURS_8, |j| {
+                    let joins = data[j] > 0 && !in_region[j];
+                    in_region[j] |= joins;
+                    joins
+                });
+                let surrounded_by = if y == 0 {
+                    OUTSIDE
+                } else {
+                    background.label[idx - width]
+                };
+                if keep_holes || surrounded_by == OUTSIDE {
+                    starts.push(((xi, yi), EAST));
+                }
+            } else {
+                let hole = background.label[idx];
+                if keep_holes && hole != OUTSIDE && !hole_traced[hole as usize] {
+                    hole_traced[hole as usize] = true;
+                    starts.push(((xi + 1, yi), WEST));
+                }
+            }
+        }
+    }
+    starts
+}
+
+#[cfg(test)]
 const NEIGHBOURS_4: [(isize, isize); 4] = [(1, 0), (0, 1), (-1, 0), (0, -1)];
+#[cfg(test)]
 const NEIGHBOURS_8: [(isize, isize); 8] = [
     (1, 0),
     (1, 1),
@@ -130,6 +334,7 @@ const NEIGHBOURS_8: [(isize, isize); 8] = [
 
 /// Flood-fills from `start` over `steps`, visiting each pixel `claim` accepts
 /// (it records the membership itself) and spreading only from those.
+#[cfg(test)]
 fn flood(
     start: usize,
     width: usize,
@@ -158,11 +363,14 @@ fn flood(
 
 /// The label of the background region every background pixel on the image
 /// edge belongs to — the region surrounding the image's outermost regions.
+#[cfg(test)]
 const OUTSIDE: u32 = 0;
 /// The label a foreground pixel carries.
+#[cfg(test)]
 const FOREGROUND: u32 = u32::MAX;
 
 /// The 4-connected background regions of a mask.
+#[cfg(test)]
 struct Background {
     /// Each pixel's region: [`OUTSIDE`], an enclosed region (a hole) numbered
     /// from 1, or [`FOREGROUND`].
@@ -171,6 +379,7 @@ struct Background {
     regions: usize,
 }
 
+#[cfg(test)]
 fn label_background(data: &[u8], width: usize, height: usize) -> Background {
     const UNLABELLED: u32 = u32::MAX - 1;
     let mut label: Vec<u32> = data
@@ -333,6 +542,66 @@ mod tests {
             }
         }
         ViewBuffer::from_vec_with_shape(data, vec![height, width, 1])
+    }
+
+    /// Run-based labelling finds exactly the borders, in exactly the order,
+    /// the per-pixel flood fill does: random masks from sparse specks to
+    /// near-solid (so holes, islands in holes, diagonal pinches and regions
+    /// on the image edge all occur), at widths below, at and off a multiple
+    /// of the eight-pixel skip, with foreground values other than 255.
+    #[test]
+    fn run_labelling_matches_the_flood_fill() {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let sizes = [
+            (1, 1),
+            (1, 9),
+            (9, 1),
+            (3, 5),
+            (8, 8),
+            (13, 7),
+            (17, 16),
+            (33, 21),
+            (64, 40),
+        ];
+        for (case, &(width, height)) in sizes.iter().cycle().take(900).enumerate() {
+            let density = [5, 30, 50, 70, 95][case % 5];
+            // Blobs, not salt: a coarse grid of cells upsampled 2x, so
+            // regions span runs and rows and enclose holes.
+            let data: Vec<u8> = (0..width * height)
+                .map(|i| {
+                    let (x, y) = (i % width, i / width);
+                    let cell = (x / 2 + 31 * (y / 2)) as u64;
+                    let v = next() ^ cell;
+                    if (v % 100) < density as u64 {
+                        [255, 1, 128][(v % 3) as usize]
+                    } else {
+                        0
+                    }
+                })
+                .collect();
+            for keep_holes in [false, true] {
+                assert_eq!(
+                    border_starts(&data, width, height, keep_holes),
+                    border_starts_flood(&data, width, height, keep_holes),
+                    "case {case}: {width}x{height}, density {density}, holes {keep_holes}"
+                );
+            }
+        }
+    }
+
+    /// An empty mask has no borders, and reads no further than its pixels.
+    #[test]
+    fn an_empty_mask_has_no_borders() {
+        let data = vec![0u8; 64 * 48];
+        for keep_holes in [false, true] {
+            assert!(border_starts(&data, 64, 48, keep_holes).is_empty());
+        }
     }
 
     /// A white square filling pixels `[20, 80)^2` of a 100x100 canvas.
