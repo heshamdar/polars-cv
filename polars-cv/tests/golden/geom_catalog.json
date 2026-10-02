@@ -195,7 +195,7 @@
     "name": "contour_correspond",
     "python": "correspond",
     "visibility": "public",
-    "doc": "Pair each contour with at most one contour in *other*, by overlap.\n\nGreedy and exclusive: contours are visited in *order* and each takes the\nhighest-IoU partner not already taken, keeping it only if that IoU is at\nleast *threshold*. A partner claimed earlier is unavailable later, so the\norder is what resolves contention. Exact ties go to the lowest index in\n*other*; the threshold bound is inclusive.\n\nThe relation carries no interpretation. Contours can represent anything,\nand whether a pairing means a \"detection\" is the caller's business --\nas is deriving *order* from confidence, and counting pairings across a\npopulation.\n\nReturns:\n    A struct matching :data:`polars_cv.CORRESPONDENCE_SCHEMA`:\n    ``right_idx`` (index into *other*, null where unpaired) and\n    ``overlap`` (the IoU of the chosen pair, 0.0 where unpaired), both\n    positionally aligned with this expression's contours.",
+    "doc": "Pair each contour with at most one contour in *other*, by overlap.\n\nGreedy and exclusive: contours are visited in *order* and each takes the\nhighest-IoU partner not already taken, keeping it only if that IoU is at\nleast *threshold*. A partner claimed earlier is unavailable later, so the\norder is what resolves contention. Exact ties go to the lowest index in\n*other*; the threshold bound is inclusive.\n\nThe relation carries no interpretation. Contours can represent anything,\nand whether a pairing means a \"detection\" is the caller's business --\nas is deriving *order* from confidence, and counting pairings across a\npopulation.\n\nReturns:\n    A struct matching :data:`polars_cv.CORRESPONDENCE_SCHEMA`:\n    ``right_idx`` (index into *other*, null where unpaired) and\n    ``overlap`` (the IoU of the chosen pair, 0.0 where unpaired) and\n    ``duplicate`` (unpaired, but cleared the threshold against a\n    contour another one had already claimed), all positionally aligned\n    with this expression's contours.",
     "fields": [
       {
         "name": "other",
@@ -221,6 +221,63 @@
           "kind": "optional",
           "inner": {
             "kind": "column"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_correspond_by_coverage",
+    "python": "correspond_by_coverage",
+    "visibility": "public",
+    "doc": "Pair each contour with at most one contour in *other*, by coverage.\n\nThe rule of :meth:`correspond` — greedy, exclusive, visited in *order*,\nthe threshold inclusive — over a different score: the fraction of each\n*other* contour's boundary samples that lie inside this contour (when\nclosed) or within *tolerance* of its edges. That scores line-shaped\ntargets, such as a polyline annotation, which IoU cannot: a polyline\nhas no area. Open contours are read as polylines on both sides.\n\nReturns:\n    A struct matching :data:`polars_cv.CORRESPONDENCE_SCHEMA`, with\n    ``overlap`` the coverage of the chosen pair.",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "Contour-set expression to pair against (`List[Contour]`).",
+        "type": {
+          "kind": "column"
+        }
+      },
+      {
+        "name": "tolerance",
+        "doc": "How far from this contour a target sample still counts as\ncovered, in pixels, >= 0 (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "threshold",
+        "doc": "Minimum coverage for a pairing, in [0, 1] (literal or expression).",
+        "default": 0.5,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "order",
+        "doc": "Optional per-row visit order, a permutation of ``0..n``.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "column"
+          }
+        }
+      },
+      {
+        "name": "sample_step",
+        "doc": "Spacing of the samples taken along each target edge, > 0; ``None``\nsamples its vertices only (literal or expression).",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
           }
         }
       }

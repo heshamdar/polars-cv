@@ -253,8 +253,10 @@ pub enum ContourFn<M: Mode = Exec> {
     /// Returns:
     ///     A struct matching :data:`polars_cv.CORRESPONDENCE_SCHEMA`:
     ///     ``right_idx`` (index into *other*, null where unpaired) and
-    ///     ``overlap`` (the IoU of the chosen pair, 0.0 where unpaired), both
-    ///     positionally aligned with this expression's contours.
+    ///     ``overlap`` (the IoU of the chosen pair, 0.0 where unpaired) and
+    ///     ``duplicate`` (unpaired, but cleared the threshold against a
+    ///     contour another one had already claimed), all positionally aligned
+    ///     with this expression's contours.
     #[op(name = "contour_correspond", python = "correspond",
          sample = {"other": {"$slot": 1}, "threshold": 0.5, "order": {"$slot": 2}})]
     Correspond {
@@ -267,6 +269,36 @@ pub enum ContourFn<M: Mode = Exec> {
         /// Optional per-row list of indices giving the visit sequence, a
         /// permutation of ``0..n``. Defaults to natural order.
         order: Option<ColumnRef>,
+    },
+    /// Pair each contour with at most one contour in *other*, by coverage.
+    ///
+    /// The rule of :meth:`correspond` — greedy, exclusive, visited in *order*,
+    /// the threshold inclusive — over a different score: the fraction of each
+    /// *other* contour's boundary samples that lie inside this contour (when
+    /// closed) or within *tolerance* of its edges. That scores line-shaped
+    /// targets, such as a polyline annotation, which IoU cannot: a polyline
+    /// has no area. Open contours are read as polylines on both sides.
+    ///
+    /// Returns:
+    ///     A struct matching :data:`polars_cv.CORRESPONDENCE_SCHEMA`, with
+    ///     ``overlap`` the coverage of the chosen pair.
+    #[op(name = "contour_correspond_by_coverage", python = "correspond_by_coverage",
+         sample = {"other": {"$slot": 1}, "tolerance": 2.0, "threshold": 0.5,
+                   "order": {"$slot": 2}, "sample_step": 1.0})]
+    CorrespondByCoverage {
+        /// Contour-set expression to pair against (`List[Contour]`).
+        other: ColumnRef,
+        /// How far from this contour a target sample still counts as
+        /// covered, in pixels, >= 0 (literal or expression).
+        tolerance: M::V<f64>,
+        /// Minimum coverage for a pairing, in [0, 1] (literal or expression).
+        #[param(default = 0.5)]
+        threshold: M::V<f64>,
+        /// Optional per-row visit order, a permutation of ``0..n``.
+        order: Option<ColumnRef>,
+        /// Spacing of the samples taken along each target edge, > 0; ``None``
+        /// samples its vertices only (literal or expression).
+        sample_step: Option<M::V<f64>>,
     },
     /// Score each contour from an image/array expression with configurable reduction.
     ///

@@ -32,7 +32,7 @@ from .._types import (
 #: Field names read off the published schema rather than spelled again here.
 #: A private copy of this struct's layout is exactly what the correspondence
 #: refactor removed; re-typing the names would restore it in miniature.
-_RIGHT_IDX, _OVERLAP = (f.name for f in CORRESPONDENCE_SCHEMA.fields)
+_RIGHT_IDX, _OVERLAP, _DUPLICATE = (f.name for f in CORRESPONDENCE_SCHEMA.fields)
 
 # ---------------------------------------------------------------------------
 # Source format detection

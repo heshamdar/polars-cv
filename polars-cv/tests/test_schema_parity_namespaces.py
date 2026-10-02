@@ -174,6 +174,9 @@ CONTOUR_CASES: dict[str, object] = {
     "correspond": lambda: pl.col("aset").contour.correspond(
         pl.col("bset"), threshold=0.5
     ),
+    "correspond_by_coverage": lambda: pl.col("aset").contour.correspond_by_coverage(
+        pl.col("bset"), tolerance=1.0
+    ),
 }
 CONTOUR_EXEMPT = {
     "on_null": "a policy setter, not an expression",
@@ -271,6 +274,7 @@ SET_ARITY_EXEMPT = {
     "pairwise_iou": "already takes sets on both sides",
     "largest": "set-level: `aset` is its case, and a lone contour is a set of one",
     "correspond": "already takes sets on both sides",
+    "correspond_by_coverage": "already takes sets on both sides",
     # Two contour operands, so the shared frame would make *both* sides sets,
     # which is refused by construction. Swept as set x single below instead.
     "iou": "two contour operands; swept as set x single below",
