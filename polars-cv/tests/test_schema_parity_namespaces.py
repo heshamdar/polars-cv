@@ -159,6 +159,7 @@ CONTOUR_CASES: dict[str, object] = {
     "flip": lambda: pl.col("a").contour.flip(),
     "ensure_winding": lambda: pl.col("a").contour.ensure_winding("ccw"),
     "pairwise_iou": lambda: pl.col("aset").contour.pairwise_iou(pl.col("bset")),
+    "largest": lambda: pl.col("aset").contour.largest(k=1),
     "correspond": lambda: pl.col("aset").contour.correspond(
         pl.col("bset"), threshold=0.5
     ),
@@ -256,6 +257,7 @@ SET_ARITY_EXEMPT = {
     # repack — a lone contour read as a set of one — is covered by
     # `test_set_level_accessors_take_a_lone_contour`.
     "pairwise_iou": "already takes sets on both sides",
+    "largest": "set-level: `aset` is its case, and a lone contour is a set of one",
     "correspond": "already takes sets on both sides",
     # Two contour operands, so the shared frame would make *both* sides sets,
     # which is refused by construction. Swept as set x single below instead.

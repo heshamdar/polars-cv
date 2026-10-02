@@ -69,3 +69,57 @@ class TestMinAreaFraction:
         pipe = _BASE.extract_contours(min_area_fraction=pl.col("f"))
         with pytest.raises(pl.exceptions.ComputeError, match="min_area_fraction"):
             df.select(pl.col("img").cv.pipe(pipe).sink("native"))
+
+
+def _square(x0: float, size: float) -> dict:
+    x0, size = float(x0), float(size)
+    ring = [
+        {"x": x0, "y": 0.0},
+        {"x": x0 + size, "y": 0.0},
+        {"x": x0 + size, "y": size},
+        {"x": x0, "y": size},
+    ]
+    return {"exterior": ring, "holes": [], "is_closed": True}
+
+
+@plugin_required
+class TestLargest:
+    """Keep the k largest contours of a set, by area, as a set."""
+
+    def test_in_the_pipeline(self) -> None:
+        df = pl.DataFrame({"img": [_blobs(40)]})
+        assert _areas(df, _BASE.extract_contours().largest()) == [[100.0]]
+        assert _areas(df, _BASE.extract_contours().largest(k=2)) == [[16.0, 100.0]]
+
+    def test_largest_first_and_ties_in_input_order(self) -> None:
+        from polars_cv import CONTOUR_SET_SCHEMA
+
+        df = pl.DataFrame(
+            {"c": [[_square(0, 1), _square(10, 3), _square(20, 2), _square(30, 3)]]},
+            schema={"c": CONTOUR_SET_SCHEMA},
+        )
+        out = df.select(pl.col("c").contour.largest(k=3)).item()
+        assert [c["exterior"][0]["x"] for c in out] == [10.0, 30.0, 20.0]
+
+    def test_on_a_column_of_sets_and_of_single_contours(self) -> None:
+        from polars_cv import CONTOUR_SCHEMA, CONTOUR_SET_SCHEMA
+
+        sets = pl.DataFrame(
+            {"c": [[_square(0, 1), _square(10, 3)], [], None]},
+            schema={"c": CONTOUR_SET_SCHEMA},
+        )
+        got = sets.select(pl.col("c").contour.largest().contour.area()).to_series()
+        assert got.to_list() == [[9.0], [], None]
+        # A lone contour is a set of one, so the result is always a set.
+        single = pl.DataFrame({"c": [_square(0, 2)]}, schema={"c": CONTOUR_SCHEMA})
+        out = single.select(pl.col("c").contour.largest())
+        assert out.schema["c"] == pl.List(CONTOUR_SCHEMA)
+
+    def test_a_per_row_k(self) -> None:
+        df = pl.DataFrame({"img": [_blobs(40), _blobs(40)], "k": [1, 3]})
+        pipe = _BASE.extract_contours().largest(k=pl.col("k"))
+        assert _areas(df, pipe) == [[100.0], [4.0, 16.0, 100.0]]
+
+    def test_k_zero_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="k"):
+            _BASE.extract_contours().largest(k=0)

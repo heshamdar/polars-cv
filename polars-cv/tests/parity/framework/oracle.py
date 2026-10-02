@@ -2119,6 +2119,11 @@ OPS: dict[str, OpSpec] = {
                 ("centroid", _no_params, "vector"),
                 ("bounding_box", _no_params, "vector"),
                 ("convex_hull", _no_params, "contour"),
+                (
+                    "largest",
+                    lambda draw, x: {"k": draw(st.integers(1, 3))},
+                    "contour",
+                ),
                 ("translate", _translate_params, "contour"),
                 ("scale_contour", _scale_contour_params, "contour"),
                 (

@@ -600,6 +600,30 @@
     ]
   },
   {
+    "name": "contour_largest",
+    "python": "largest",
+    "visibility": "public",
+    "doc": "Keep the ``k`` largest contours of the set, by area: largest first,\nequal areas in their input order. A set of fewer keeps them all.",
+    "fields": [
+      {
+        "name": "k",
+        "doc": "How many contours to keep, >= 1 (literal or expression).",
+        "default": 1,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "contour"
+      }
+    ]
+  },
+  {
     "name": "contour_perimeter",
     "python": "perimeter",
     "visibility": "public",

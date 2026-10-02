@@ -474,6 +474,7 @@ pub const OP_ACCESSORS: &[(&str, &str)] = &[
     ("contour_translate", "translate"),
     ("contour_scale", "scale"),
     ("contour_simplify", "simplify"),
+    ("contour_largest", "largest"),
 ];
 
 /// One accessor method: its namespace and its function's description.
