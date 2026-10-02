@@ -42,7 +42,10 @@ def test_on_error_refuses_null_with_message() -> None:
 @plugin_required
 class TestGeometryOnError:
     def test_default_raises_naming_the_row(self) -> None:
-        with pytest.raises(pl.exceptions.ComputeError, match=r"max_snap.*row 1"):
+        # The row the plugin names is its index within the batch polars hands
+        # it, which the engine may split differently by version: pin the
+        # message, not a row number.
+        with pytest.raises(pl.exceptions.ComputeError, match=r"max_snap.*\(row \d+\)"):
             _lines().select(pl.col("c").contour.close_along_border(40, 40))
 
     def test_null_nulls_only_the_invalid_row(self) -> None:
