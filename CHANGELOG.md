@@ -169,6 +169,26 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `max_fp_per_image` and `max_sensitivity`, so a truncated curve is visible
   next to the AUC.
 
+### Performance
+
+- **`extract_contours` labels runs, not pixels.** Every call flood-filled the
+  whole background through a per-pixel `u32` label array (34 MB for a
+  3328 x 2560 mask) before tracing anything — even for an empty mask, and in
+  `mode="external"`. Components are now found by union-find over each row's
+  runs (word-at-a-time run detection, an all-zero mask returns at once), work
+  proportional to the runs. Finding the borders of a 3328 x 2560 blob went
+  from ~140 ms to under 1 ms in a release build; output is unchanged, held to
+  the old flood fill (kept as a test oracle) on randomized masks.
+- **`label_reduce` scans regions by scanline.** `region_mode="interior"` /
+  `"boundary"` tested every pixel in a contour's bounding box against every
+  edge, so cost grew with vertices x pixels: a 4,096-vertex disc of radius
+  1000 took ~11 s per image. A scanline winding scan now settles each row
+  from its edge crossings, leaving to the exact predicate only the pixels
+  whose centre lies within rounding distance of an edge and the rows through
+  a vertex — so the selected pixels, their order, and every score are
+  unchanged (held to the per-pixel predicate on randomized, self-intersecting
+  and half-pixel contours). The same disc now takes ~23 ms.
+
 ### Fixed
 
 - **A length-1 geometry operand broadcasts.** Every `.point`/`.contour`/`.bbox`
