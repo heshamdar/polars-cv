@@ -293,6 +293,83 @@ impl Contour {
     }
 }
 
+/// A contour as its boundary: a closed region's rings, or an open polyline.
+///
+/// [`Contour`] is always a closed region — every area, overlap and
+/// containment measure takes one. An open polyline (a contour column row with
+/// `is_closed = false`: an annotated skin line, a muscle edge) has no region,
+/// so it is a different type, and only the measures that read a *boundary* —
+/// length, distance, nearest point, vertices, point-wise transforms — accept
+/// it. A region measure cannot be handed an open line by mistake: there is no
+/// `Contour` to hand it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Outline {
+    /// A closed region; its rings close back on their first vertex.
+    Closed(Contour),
+    /// An open polyline: its edges join consecutive vertices only. It has no
+    /// holes and no region.
+    Open(Vec<Point>),
+}
+
+impl Outline {
+    /// Whether the outline closes back on its first vertex.
+    pub fn is_closed(&self) -> bool {
+        matches!(self, Outline::Closed(_))
+    }
+
+    /// The vertices of the first path (the exterior, or the polyline).
+    pub fn exterior(&self) -> &[Point] {
+        match self {
+            Outline::Closed(c) => &c.exterior,
+            Outline::Open(points) => points,
+        }
+    }
+
+    /// The hole rings; an open polyline has none.
+    pub fn holes(&self) -> &[Vec<Point>] {
+        match self {
+            Outline::Closed(c) => &c.holes,
+            Outline::Open(_) => &[],
+        }
+    }
+
+    /// Each path of the boundary with whether it closes: the exterior and
+    /// every hole of a region, or the one polyline.
+    pub fn paths(&self) -> impl Iterator<Item = (&[Point], bool)> {
+        let closed = self.is_closed();
+        std::iter::once(self.exterior())
+            .chain(self.holes().iter().map(Vec::as_slice))
+            .map(move |points| (points, closed))
+    }
+
+    /// Every vertex, exterior then holes.
+    pub fn vertices(&self) -> impl Iterator<Item = &Point> {
+        self.paths().flat_map(|(points, _)| points.iter())
+    }
+
+    /// The axis-aligned bounding box of the exterior (or the polyline).
+    pub fn bounding_box(&self) -> Option<BoundingBox> {
+        BoundingBox::from_points(self.exterior())
+    }
+
+    /// `f` applied to the outline's points: a region's contour as it is, an
+    /// open polyline as a hole-less ring of its points (which `f` must map
+    /// point by point, keeping their order or reversing it). The result keeps
+    /// the outline's closedness.
+    pub fn map_points(&self, f: impl FnOnce(&Contour) -> Contour) -> Outline {
+        match self {
+            Outline::Closed(c) => Outline::Closed(f(c)),
+            Outline::Open(points) => Outline::Open(f(&Contour::new(points.clone())).exterior),
+        }
+    }
+}
+
+impl From<Contour> for Outline {
+    fn from(contour: Contour) -> Self {
+        Outline::Closed(contour)
+    }
+}
+
 fn ring_to_geo(points: &[Point]) -> geo::LineString<f64> {
     geo::LineString::from(
         points

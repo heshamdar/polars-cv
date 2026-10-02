@@ -16,12 +16,20 @@
 //! arrays does in 6 (`reading_a_row_allocates_only_its_contours`).
 //!
 //! Accepted forms, per row:
-//! - a contour struct: an `exterior: List[{x, y}]` field and an optional
-//!   `holes: List[List[{x, y}]]` (other fields, such as `is_closed`, are not
-//!   read). A struct without `exterior` is refused, not guessed at;
+//! - a contour struct: an `exterior: List[{x, y}]` field, an optional
+//!   `holes: List[List[{x, y}]]` and an optional `is_closed: Boolean` (absent
+//!   or null reads as closed, as absent or null `holes` reads as none; only an
+//!   explicit `false` opens it). A struct without `exterior` is refused, not
+//!   guessed at;
 //! - a bare `List[{x, y}]`, one contour without holes;
 //! - a `List` of either, a contour set ([`Arity::Set`]), whose null elements
 //!   are skipped.
+//!
+//! An open contour (`is_closed = false`) is a polyline: it is read as an
+//! [`Outline::Open`] by [`ContourColumn::outlines`], for the functions that
+//! measure a boundary, and refused by [`ContourColumn::row`], which hands the
+//! region functions (area, overlap, containment, rasterizing) a [`Contour`] —
+//! a closed region — or nothing. An open contour with holes is refused by both.
 //!
 //! A point's coordinates are its `x`/`X` and `y`/`Y` fields
 //! ([`POINT_FIELD_SPELLINGS`]). A bbox's are [`BBOX_FIELD_NAMES`]. The
@@ -30,12 +38,12 @@
 //! non-null row, so an all-null column of any dtype reads as nulls.
 
 use polars::prelude::*;
-use polars_arrow::array::{Array, ListArray, PrimitiveArray, StructArray};
-use view_buffer::geometry::contour::{Contour, Point};
+use polars_arrow::array::{Array, BooleanArray, ListArray, PrimitiveArray, StructArray};
+use view_buffer::geometry::contour::{Contour, Outline, Point};
 
 use view_buffer::geometry::contour::BoundingBox;
 
-use crate::geom_arity::{is_point_dtype, Arity};
+use crate::geom_arity::{is_point_dtype, Arity, ReadContour};
 use crate::geom_schema::{BBOX_FIELD_NAMES, POINT_FIELD_SPELLINGS};
 
 /// A contour column's rows, each as the contours it holds.
@@ -60,6 +68,8 @@ enum Contours<'a> {
         /// Per contour, a list of hole rings (or why those rings cannot be
         /// read, which matters only to a contour that has one).
         holes: Option<(&'a ListArray<i64>, Result<Rings<'a>, String>)>,
+        /// The `is_closed` flags, when the struct has the field.
+        is_closed: Option<&'a BooleanArray>,
     },
     Ring(Rings<'a>),
 }
@@ -114,8 +124,33 @@ impl<'a> ContourColumn<'a> {
     }
 
     /// Row `i`'s contours — exactly one for a single-contour column — or
-    /// `None` for a null row.
+    /// `None` for a null row. Every one is a closed region: an open contour is
+    /// refused, since the region functions that read rows this way have
+    /// nothing to measure on a polyline. Boundary functions read
+    /// [`Self::outlines`] instead.
     pub(crate) fn row(&self, row: usize) -> PolarsResult<Option<Vec<Contour>>> {
+        let Some(outlines) = self.outlines(row)? else {
+            return Ok(None);
+        };
+        outlines
+            .into_iter()
+            .map(|outline| match outline {
+                Outline::Closed(contour) => Ok(contour),
+                Outline::Open(_) => Err(polars_err!(ComputeError:
+                    "an open contour (is_closed = false) has no region, so this \
+                     function — an area, overlap, containment or rasterizing one — \
+                     cannot measure it (row {}). Close it first, or use a boundary \
+                     measure (perimeter, distance, nearest point, hausdorff)",
+                    row
+                )),
+            })
+            .collect::<PolarsResult<_>>()
+            .map(Some)
+    }
+
+    /// Row `i`'s contours as outlines — closed regions and open polylines
+    /// alike — or `None` for a null row.
+    pub(crate) fn outlines(&self, row: usize) -> PolarsResult<Option<Vec<Outline>>> {
         let ((array, rows), i) = locate(&self.chunks, row)?;
         let rows = match rows {
             Ok(rows) => rows,
@@ -142,22 +177,28 @@ impl<'a> ContourColumn<'a> {
     /// Row `i`'s one contour, for a function of a single contour, or `None`
     /// for a null row. A contour set is refused: which of its contours is
     /// meant has no default.
-    pub(crate) fn single(&self, i: usize) -> PolarsResult<Option<Contour>> {
+    ///
+    /// Read as `T`: a region ([`Contour`]) or a boundary ([`Outline`]).
+    pub(crate) fn single_as<T: ReadContour>(&self, i: usize) -> PolarsResult<Option<T>> {
         if self.arity == Arity::Set {
             polars_bail!(ComputeError:
                 "expected one contour per row, got a contour set: .explode() it first"
             );
         }
-        Ok(self.row(i)?.and_then(|mut v| v.pop()))
+        Ok(T::read(self, i)?.and_then(|mut v| v.pop()))
     }
 }
 
 impl Contours<'_> {
     /// The `j`th contour.
-    fn get(&self, j: usize) -> Result<Contour, String> {
+    fn get(&self, j: usize) -> Result<Outline, String> {
         match self {
-            Contours::Ring(rings) => rings.get(j).map(Contour::new),
-            Contours::Struct { exterior, holes } => {
+            Contours::Ring(rings) => rings.get(j).map(|ring| Outline::Closed(Contour::new(ring))),
+            Contours::Struct {
+                exterior,
+                holes,
+                is_closed,
+            } => {
                 let holes = match holes {
                     None => Vec::new(),
                     Some((per_contour, rings)) => {
@@ -174,7 +215,25 @@ impl Contours<'_> {
                         }
                     }
                 };
-                Ok(Contour::with_holes(exterior.get(j)?, holes))
+                // Unspecified — no field, or a null one, which is what a dict
+                // without the key becomes under CONTOUR_SCHEMA — is closed, as
+                // unspecified `holes` is none: only an explicit `false` opens.
+                let closed = match is_closed {
+                    Some(flags) if flags.is_valid(j) => flags.value(j),
+                    _ => true,
+                };
+                match (closed, holes.is_empty()) {
+                    (true, _) => Ok(Outline::Closed(Contour::with_holes(
+                        exterior.get(j)?,
+                        holes,
+                    ))),
+                    (false, true) => Ok(Outline::Open(exterior.get(j)?)),
+                    (false, false) => Err(
+                        "an open contour (is_closed = false) has holes, but a polyline \
+                         bounds no region for a hole to be cut from"
+                            .to_string(),
+                    ),
+                }
             }
         }
     }
@@ -238,7 +297,21 @@ fn contours<'a>(array: &'a dyn Array, dtype: &DataType) -> Result<Contours<'a>, 
                     Some((per_contour, rings))
                 }
             };
-            Ok(Contours::Struct { exterior, holes })
+            let is_closed = match field("is_closed") {
+                None => None,
+                Some(idx) => match fields[idx].dtype() {
+                    DataType::Boolean => Some(downcast::<BooleanArray>(
+                        st.values()[idx].as_ref(),
+                        "is_closed",
+                    )?),
+                    other => return Err(format!("is_closed field must be Boolean, got {other}")),
+                },
+            };
+            Ok(Contours::Struct {
+                exterior,
+                holes,
+                is_closed,
+            })
         }
         DataType::List(point) if is_point_dtype(point) => Ok(Contours::Ring(rings(array, point)?)),
         other => Err(format!("Expected Struct or List for contour, got {other}")),

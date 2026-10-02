@@ -5,7 +5,7 @@
 //! [`Contour`] and [`geo::Polygon`] and keeps the crate's degenerate-input
 //! conventions.
 
-use super::contour::{BoundingBox, Contour, Point, Winding};
+use super::contour::{BoundingBox, Contour, Outline, Point, Winding};
 use geo::{Area, Centroid, Closest, ClosestPoint, Distance, Euclidean, Length, LineString};
 
 fn ring_polygon(points: &[Point]) -> geo::Polygon<f64> {
@@ -14,6 +14,19 @@ fn ring_polygon(points: &[Point]) -> geo::Polygon<f64> {
 
 fn ring_line_string(points: &[Point]) -> LineString<f64> {
     ring_polygon(points).into_inner().0
+}
+
+/// A path's edges as a line string: a closed ring returns to its first vertex,
+/// an open polyline does not.
+fn path_line_string(points: &[Point], closed: bool) -> LineString<f64> {
+    if closed {
+        ring_line_string(points)
+    } else {
+        points
+            .iter()
+            .map(|p| geo::coord! { x: p.x, y: p.y })
+            .collect()
+    }
 }
 
 /// Computes the signed area of a single closed ring.
@@ -75,11 +88,25 @@ pub fn area(contour: &Contour, signed: bool) -> f64 {
 /// # Returns
 /// Total perimeter length
 pub fn perimeter_of_ring(points: &[Point]) -> f64 {
+    path_length(points, true)
+}
+
+/// The length of one path, closing it back to its first vertex if `closed`.
+fn path_length(points: &[Point], closed: bool) -> f64 {
     if points.len() < 2 {
         return 0.0;
     }
 
-    Euclidean.length(&ring_line_string(points))
+    Euclidean.length(&path_line_string(points, closed))
+}
+
+/// The length of an outline: a region's perimeter (holes included), or an
+/// open polyline's arc length — without the closing edge it does not have.
+pub fn outline_length(outline: &Outline) -> f64 {
+    outline
+        .paths()
+        .map(|(points, closed)| path_length(points, closed))
+        .sum()
 }
 
 /// Computes the perimeter of a contour including holes.
@@ -206,11 +233,25 @@ fn geo_point(point: &Point) -> geo::Point<f64> {
 /// # Returns
 /// Minimum distance to any edge of the polygon
 pub fn distance_to_polygon(point: &Point, polygon: &[Point]) -> f64 {
-    match polygon {
+    distance_to_path(point, polygon, true)
+}
+
+/// The distance from `point` to one path's edges.
+fn distance_to_path(point: &Point, path: &[Point], closed: bool) -> f64 {
+    match path {
         [] => f64::INFINITY,
         [only] => point.distance_to(only),
-        _ => Euclidean.distance(&geo_point(point), &ring_line_string(polygon)),
+        _ => Euclidean.distance(&geo_point(point), &path_line_string(path, closed)),
     }
+}
+
+/// The minimum distance from a point to an outline's edges: every ring of a
+/// region, or an open polyline's segments only.
+pub fn distance_to_outline(point: &Point, outline: &Outline) -> f64 {
+    outline
+        .paths()
+        .map(|(path, closed)| distance_to_path(point, path, closed))
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// Computes the minimum distance from a point to a contour boundary.
@@ -239,14 +280,28 @@ pub fn distance_to_contour(point: &Point, contour: &Contour) -> f64 {
 /// # Returns
 /// The nearest point on the polygon boundary, or None if polygon is empty
 pub fn nearest_point_on_polygon(point: &Point, polygon: &[Point]) -> Option<Point> {
-    match polygon {
+    nearest_point_on_path(point, polygon, true)
+}
+
+/// The nearest point on one path's edges.
+fn nearest_point_on_path(point: &Point, path: &[Point], closed: bool) -> Option<Point> {
+    match path {
         [] => None,
         [only] => Some(*only),
-        _ => match ring_line_string(polygon).closest_point(&geo_point(point)) {
+        _ => match path_line_string(path, closed).closest_point(&geo_point(point)) {
             Closest::Intersection(p) | Closest::SinglePoint(p) => Some(Point::new(p.x(), p.y())),
             Closest::Indeterminate => None,
         },
     }
+}
+
+/// The nearest point on an outline's edges: every ring of a region, or an
+/// open polyline's segments only.
+pub fn nearest_point_on_outline(point: &Point, outline: &Outline) -> Option<Point> {
+    outline
+        .paths()
+        .filter_map(|(path, closed)| nearest_point_on_path(point, path, closed))
+        .min_by(|a, b| point.distance_to(a).total_cmp(&point.distance_to(b)))
 }
 
 /// Finds the nearest point on a contour boundary.
@@ -432,5 +487,62 @@ mod tests {
         let nearest = nearest_point_on_polygon(&point, &polygon).unwrap();
         assert!((nearest.x - 10.0).abs() < 1e-10);
         assert!((nearest.y - 5.0).abs() < 1e-10);
+    }
+}
+
+#[cfg(test)]
+mod outline_tests {
+    use super::*;
+    use crate::geometry::contour::Outline;
+
+    /// The open L (0,0) -> (10,0) -> (10,10): its closing edge would be the
+    /// diagonal back to the origin, which an open polyline does not have.
+    fn open_l() -> Outline {
+        Outline::Open(vec![
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(10.0, 10.0),
+        ])
+    }
+
+    fn closed_l() -> Outline {
+        match open_l() {
+            Outline::Open(points) => Outline::Closed(Contour::new(points)),
+            closed => closed,
+        }
+    }
+
+    #[test]
+    fn an_open_outline_has_no_closing_edge() {
+        let p = Point::new(0.0, 10.0);
+        assert!((distance_to_outline(&p, &open_l()) - 10.0).abs() < 1e-12);
+        assert!((distance_to_outline(&p, &closed_l()) - 50f64.sqrt()).abs() < 1e-12);
+        let near = nearest_point_on_outline(&p, &open_l()).unwrap();
+        assert!((near.x - 10.0).abs() < 1e-12 && (near.y - 10.0).abs() < 1e-12);
+        let near = nearest_point_on_outline(&p, &closed_l()).unwrap();
+        assert!((near.x - 5.0).abs() < 1e-12 && (near.y - 5.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn an_open_outline_is_as_long_as_its_segments() {
+        assert!((outline_length(&open_l()) - 20.0).abs() < 1e-12);
+        assert!((outline_length(&closed_l()) - (20.0 + 200f64.sqrt())).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_closed_outline_measures_as_its_contour() {
+        let square = Contour::new(vec![
+            Point::new(0.0, 0.0),
+            Point::new(4.0, 0.0),
+            Point::new(4.0, 4.0),
+            Point::new(0.0, 4.0),
+        ]);
+        let p = Point::new(1.0, 7.0);
+        let outline = Outline::Closed(square.clone());
+        assert_eq!(
+            distance_to_outline(&p, &outline),
+            distance_to_contour(&p, &square)
+        );
+        assert_eq!(outline_length(&outline), perimeter(&square));
     }
 }

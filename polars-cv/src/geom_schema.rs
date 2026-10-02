@@ -102,8 +102,8 @@ pub(crate) fn contour_fields() -> Vec<Field> {
 /// cost ~30 ms per ~90k points in the contour sink (CR-36). Each declared
 /// field is matched by name to the array that fills it; a field this does not
 /// know is an error, so a schema change cannot be half-applied here.
-pub(crate) fn contour_array<'a>(
-    contours: impl ExactSizeIterator<Item = &'a view_buffer::geometry::Contour> + Clone,
+pub(crate) fn contour_array<'a, C: ContourParts + 'a>(
+    contours: impl ExactSizeIterator<Item = &'a C> + Clone,
 ) -> PolarsResult<Box<dyn polars_arrow::array::Array>> {
     use polars_arrow::array::{Array, BooleanArray, ListArray, PrimitiveArray, StructArray};
     use polars_arrow::datatypes::ArrowDataType;
@@ -134,13 +134,13 @@ pub(crate) fn contour_array<'a>(
     for field in &fields {
         let array = match field.name().as_str() {
             "exterior" => {
-                let exterior = points(&mut contours.clone().flat_map(|c| c.exterior.iter()))?;
-                let lengths = contours.clone().map(|c| c.exterior.len()).collect();
+                let exterior = points(&mut contours.clone().flat_map(|c| c.exterior().iter()))?;
+                let lengths = contours.clone().map(|c| c.exterior().len()).collect();
                 list(field.dtype(), lengths, exterior.boxed())?
             }
             "holes" => {
                 let ring_points =
-                    points(&mut contours.clone().flat_map(|c| c.holes.iter().flatten()))?;
+                    points(&mut contours.clone().flat_map(|c| c.holes().iter().flatten()))?;
                 let ring_dtype = match field.dtype() {
                     DataType::List(inner) => inner.as_ref().clone(),
                     other => polars_bail!(ComputeError:
@@ -148,14 +148,16 @@ pub(crate) fn contour_array<'a>(
                 };
                 let ring_lengths = contours
                     .clone()
-                    .flat_map(|c| c.holes.iter().map(Vec::len))
+                    .flat_map(|c| c.holes().iter().map(Vec::len))
                     .collect();
                 let rings = list(&ring_dtype, ring_lengths, ring_points.boxed())?;
-                let hole_counts = contours.clone().map(|c| c.holes.len()).collect();
+                let hole_counts = contours.clone().map(|c| c.holes().len()).collect();
                 list(field.dtype(), hole_counts, rings)?
             }
-            // Reserved and never read back; every contour is published closed.
-            "is_closed" => BooleanArray::from_slice(vec![true; n]).boxed(),
+            "is_closed" => BooleanArray::from_slice(
+                contours.clone().map(|c| c.is_closed()).collect::<Vec<_>>(),
+            )
+            .boxed(),
             other => polars_bail!(ComputeError:
                 "contour field '{other}' is declared in contour_fields but \
                  contour_array does not build it"),
@@ -164,6 +166,41 @@ pub(crate) fn contour_array<'a>(
     }
     let dtype: ArrowDataType = arrow(&DataType::Struct(fields));
     Ok(StructArray::try_new(dtype, n, values, None)?.boxed())
+}
+
+/// What [`contour_array`] writes of a contour: its rings and whether it closes.
+///
+/// A [`Contour`](view_buffer::geometry::Contour) is a closed region; an
+/// [`Outline`](view_buffer::geometry::contour::Outline) may be an open
+/// polyline, which is published with `is_closed = false`.
+pub(crate) trait ContourParts {
+    fn exterior(&self) -> &[view_buffer::geometry::Point];
+    fn holes(&self) -> &[Vec<view_buffer::geometry::Point>];
+    fn is_closed(&self) -> bool;
+}
+
+impl ContourParts for view_buffer::geometry::Contour {
+    fn exterior(&self) -> &[view_buffer::geometry::Point] {
+        &self.exterior
+    }
+    fn holes(&self) -> &[Vec<view_buffer::geometry::Point>] {
+        &self.holes
+    }
+    fn is_closed(&self) -> bool {
+        true
+    }
+}
+
+impl ContourParts for view_buffer::geometry::contour::Outline {
+    fn exterior(&self) -> &[view_buffer::geometry::Point] {
+        self.exterior()
+    }
+    fn holes(&self) -> &[Vec<view_buffer::geometry::Point>] {
+        self.holes()
+    }
+    fn is_closed(&self) -> bool {
+        self.is_closed()
+    }
 }
 
 /// The field names of a bbox `{x, y, width, height}`, in wire order.
