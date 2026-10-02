@@ -184,6 +184,16 @@ impl<'a> GeomParams<'a> {
         &self.inputs[column.0]
     }
 
+    /// A data operand's row `row` as a value, after scalar broadcasting (a
+    /// one-row operand is every row's), through [`ParamCol::at`] — for an
+    /// operand no geometry reader reads (`correspond`'s `order`).
+    ///
+    /// [`ParamCol::at`]: crate::params::ParamCol::at
+    pub fn operand_value(&self, column: &ColumnRef, row: usize) -> PolarsResult<AnyValue<'a>> {
+        let (series, idx) = self.ctx.col(column.0)?.at(row);
+        series.get(idx)
+    }
+
     /// An optional data operand's input series, when the caller gave one.
     pub fn optional_column(&self, column: &Option<ColumnRef>) -> Option<&'a Series> {
         column.as_ref().map(|c| self.column(c))

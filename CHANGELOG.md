@@ -129,6 +129,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **A length-1 geometry operand broadcasts.** Every `.point`/`.contour`/`.bbox`
+  accessor failed with "geometry row 1 out of bounds" when an operand was one
+  row — a bbox, point or contour built from literals, or a column the
+  optimiser folded back into a literal — whatever the arity of the other side
+  (single points and contour sets included, not only the new point sets). The
+  three geometry readers now locate rows through one shared locator that
+  broadcasts a one-row column, as a per-row parameter already did, and
+  `correspond`'s `order` reads through the same broadcast-aware accessor.
+
 - **Open contours are measured as polylines; `is_closed` is read.** The field
   was written `True` and never read, so an open polyline was measured as the
   ring its closing edge would make: the point (0, 10) was 7.07 from the L
