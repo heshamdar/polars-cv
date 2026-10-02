@@ -73,10 +73,9 @@
   },
   {
     "name": "ExtractMode",
-    "doc": "Contour retrieval mode for ``extract_contours``.\n\n- EXTERNAL: Outermost contours only (default).\n- TREE: Full nesting hierarchy.\n- ALL: Every contour, without hierarchy.",
+    "doc": "Contour retrieval mode for ``extract_contours``.\n\n- EXTERNAL: Outermost contours only (default).\n- ALL: Every border, hole borders included, without hierarchy.",
     "variants": [
       "external",
-      "tree",
       "all"
     ]
   },

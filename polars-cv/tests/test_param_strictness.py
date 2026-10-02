@@ -236,7 +236,7 @@ class TestEnumValuesExecutable:
         )
         _run(pipe, "numpy", image_bytes)
 
-    @pytest.mark.parametrize("mode", ["external", "tree", "all"])
+    @pytest.mark.parametrize("mode", ["external", "all"])
     def test_extract_contour_modes(self, image_bytes: bytes, mode: str) -> None:
         pipe = (
             Pipeline()

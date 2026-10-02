@@ -23,8 +23,8 @@ use super::ops::{ApproxMethod, ExtractMode};
 /// only at a corner are one region, whose outline passes through that corner
 /// twice.
 ///
-/// Every foreground region yields its exterior. [`ExtractMode::All`] and
-/// [`ExtractMode::Tree`] also yield one border per enclosed background region
+/// Every foreground region yields its exterior. [`ExtractMode::All`] also
+/// yields one border per enclosed background region
 /// (a hole), and include the regions inside holes; [`ExtractMode::External`]
 /// keeps only the exteriors of regions that are not inside a hole. Contours
 /// come in raster order of their first pixel.

@@ -1009,7 +1009,7 @@
     "fields": [
       {
         "name": "mode",
-        "doc": "\"external\" (outer only), \"tree\" (full hierarchy), \"all\".",
+        "doc": "\"external\" (outer borders only) or \"all\" (hole borders too, as\na flat list).",
         "default": "external",
         "type": {
           "kind": "scalar",
@@ -1017,7 +1017,6 @@
           "py": "ExtractMode",
           "variants": [
             "external",
-            "tree",
             "all"
           ]
         }
@@ -1073,7 +1072,7 @@
     "name": "extract_shape",
     "python": "extract_shape",
     "visibility": "public",
-    "doc": "Extract buffer shape as a struct {height, width, channels}.",
+    "doc": "Extract the buffer's shape: one Float64 per dimension, in order\n(``[height, width, channels]`` for an image), as a vector.\n\nReturns:\n    ``List(Float64)`` of the dimension sizes.",
     "fields": [],
     "domains": [
       {

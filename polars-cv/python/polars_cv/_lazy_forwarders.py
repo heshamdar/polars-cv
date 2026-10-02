@@ -285,7 +285,7 @@ class _LazyForwardersMixin:
         )
 
     def extract_shape(self) -> LazyPipelineExpr:
-        """Extract buffer shape as a struct {height, width, channels}.
+        """Extract the buffer's shape: one Float64 per dimension, in order
 
         Lazy form of :meth:`Pipeline.extract_shape` on this expression's output.
         """

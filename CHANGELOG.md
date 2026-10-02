@@ -7,6 +7,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Removed
+
+- **`extract_contours(mode="tree")`.** It ran exactly as `mode="all"` — the
+  kernel told only `external` from the rest — while documented as "full
+  hierarchy", which nothing builds (borders come back as a flat list). Use
+  `mode="all"`; `"tree"` is now refused by the wire like any unknown value.
+
 ### Changed
 
 - **FROC/LROC read a curve past its end by one policy, null by default
