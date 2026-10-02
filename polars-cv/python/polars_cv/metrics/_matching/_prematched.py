@@ -74,13 +74,19 @@ class PreMatchedAdapter:
             pred_col: Column with confidence scores (aliased to ``score``).
             gt_col: Column with TP flag (aliased to ``is_tp``).
             score_col: Alias for ``pred_col`` (takes precedence if both set).
-            class_col: Optional class label column.
+            class_col: Class label column. Required when the data carries a
+                ``class_id`` column or ``image_meta`` does: omitting it keys
+                every detection by the default class, which matches no
+                classed metadata row.
             image_id_col: Image identifier column (required, or row index used).
             weight_col: Optional sample weight column.
             group_col: Optional grouping column.
             n_gts_col: Column with per-image GT count.
             gt_label_col: Column with per-image positive/negative label.
-            iou_col: Optional column with per-detection IoU values.
+            iou_col: Optional column with per-detection IoU values. Without
+                it the table's ``iou`` is null and
+                :meth:`DetectionTable.at_iou_threshold` (so IoU-swept mAP)
+                is refused rather than compared against a placeholder.
             det_idx_col: Optional column with detection index within image.
             image_meta: Optional per-image (or per-image-class) frame that
                 defines the evaluation population. Must use the canonical
@@ -97,8 +103,10 @@ class PreMatchedAdapter:
 
         Raises:
             ValueError: If ``image_meta`` is combined with ``n_gts_col``,
-                ``weight_col``, ``gt_label_col`` or ``group_col``, or if a
-                named column is missing from ``data``.
+                ``weight_col``, ``gt_label_col`` or ``group_col``; if a
+                named column is missing from ``data``; or if the detections'
+                and the population's ``class_id`` keys cannot agree (see
+                ``class_col``).
         """
         if image_meta is not None:
             # image_meta is the whole population, so the per-image column
@@ -128,11 +136,33 @@ class PreMatchedAdapter:
 
         resolved_score = score_col or pred_col
         resolved_tp = gt_col
-        ensure_columns_exist(schema_names, [resolved_score, resolved_tp])
+        named = [
+            resolved_score,
+            resolved_tp,
+            *(
+                c
+                for c in (
+                    class_col,
+                    image_id_col,
+                    iou_col,
+                    det_idx_col,
+                    n_gts_col,
+                    weight_col,
+                    gt_label_col,
+                    group_col,
+                )
+                if c is not None
+            ),
+        ]
+        # A named column that is missing is an error, never its default: a
+        # misspelled weight_col used to leave every weight at 1.0.
+        ensure_columns_exist(schema_names, named)
+
+        meta_lf = None if image_meta is None else _canonicalize_image_meta(image_meta)
+        _check_class_keys(schema_names, class_col, image_meta)
 
         # Image ID
         if image_id_col is not None:
-            ensure_columns_exist(schema_names, [image_id_col])
             lf = lf.with_columns(
                 pl.col(image_id_col).cast(pl.String).alias(COL_IMAGE_ID)
             )
@@ -153,12 +183,12 @@ class PreMatchedAdapter:
             pl.col(resolved_tp).cast(pl.Boolean).alias(COL_IS_TP),
             (
                 pl.col(iou_col).cast(pl.Float64).alias(COL_IOU)
-                if iou_col is not None and iou_col in schema_names
-                else pl.lit(0.0, dtype=pl.Float64).alias(COL_IOU)
+                if iou_col is not None
+                else pl.lit(None, dtype=pl.Float64).alias(COL_IOU)
             ),
         ]
 
-        if det_idx_col is not None and det_idx_col in schema_names:
+        if det_idx_col is not None:
             det_exprs.append(pl.col(det_idx_col).cast(pl.UInt32).alias(COL_DET_IDX))
         else:
             # Auto-assign det_idx as row ordinal within each image
@@ -175,16 +205,14 @@ class PreMatchedAdapter:
         detections_lf = lf.select(det_exprs)
 
         # If we used a placeholder det_idx, assign proper ordinals
-        if det_idx_col is None or det_idx_col not in schema_names:
+        if det_idx_col is None:
             detections_lf = detections_lf.with_columns(
                 pl.int_range(0, pl.len(), dtype=pl.UInt32)
                 .over(COL_IMAGE_ID, COL_CLASS_ID)
                 .alias(COL_DET_IDX)
             )
 
-        if image_meta is not None:
-            meta_lf = _canonicalize_image_meta(image_meta)
-        else:
+        if meta_lf is None:
             warnings.warn(
                 "PreMatchedAdapter.match() was called without image_meta. "
                 "Image metadata is derived from the detection frame, so any "
@@ -208,21 +236,21 @@ class PreMatchedAdapter:
 
             meta_agg: list[pl.Expr] = []
 
-            if n_gts_col is not None and n_gts_col in schema_names:
+            if n_gts_col is not None:
                 meta_agg.append(
                     pl.col(n_gts_col).first().cast(pl.Int64).alias(COL_N_GTS)
                 )
             else:
                 meta_agg.append(pl.col(COL_IS_TP).sum().cast(pl.Int64).alias(COL_N_GTS))
 
-            if weight_col is not None and weight_col in schema_names:
+            if weight_col is not None:
                 meta_agg.append(
                     pl.col(weight_col).first().cast(pl.Float64).alias(COL_WEIGHT)
                 )
             else:
                 meta_agg.append(pl.lit(1.0, dtype=pl.Float64).alias(COL_WEIGHT))
 
-            if gt_label_col is not None and gt_label_col in schema_names:
+            if gt_label_col is not None:
                 meta_agg.append(
                     pl.col(gt_label_col).first().cast(pl.Boolean).alias(COL_GT_LABEL)
                 )
@@ -231,7 +259,7 @@ class PreMatchedAdapter:
 
             meta_lf = enriched_lf.group_by(COL_IMAGE_ID, COL_CLASS_ID).agg(meta_agg)
 
-            if group_col is not None and group_col in list(lf.collect_schema().names()):
+            if group_col is not None:
                 group_map = lf.select(
                     pl.col(image_id_col or COL_IMAGE_ID)
                     .cast(pl.String)
@@ -240,7 +268,50 @@ class PreMatchedAdapter:
                 ).unique()
                 meta_lf = meta_lf.join(group_map, on=COL_IMAGE_ID, how="left")
 
-        return DetectionTable.from_matched(detections_lf, meta_lf)
+        return DetectionTable.from_matched(
+            detections_lf, meta_lf, has_iou=iou_col is not None
+        )
+
+
+def _check_class_keys(
+    schema_names: list[str],
+    class_col: str | None,
+    image_meta: pl.LazyFrame | pl.DataFrame | None,
+) -> None:
+    """Refuse a class keying under which detections and population disagree.
+
+    Metrics join detections to ``image_metadata`` on ``(image_id, class_id)``;
+    a detection whose key matches no metadata row counts for nothing. Without
+    ``class_col`` every detection is keyed by the default class, so a
+    ``class_id`` the caller supplied (on the detections or on ``image_meta``)
+    would be silently out-keyed — ``lroc_auc`` scored a perfect detector 0.0.
+    Checked on schemas only, so the adapter stays lazy.
+    """
+    if class_col is None and COL_CLASS_ID in schema_names:
+        raise ValueError(
+            "the detection frame has a class_id column but class_col was not "
+            "passed, so every detection would be keyed by the default class "
+            f"{DEFAULT_CLASS!r} instead. Pass class_col='class_id' to use it, "
+            "or drop the column for a single-class evaluation."
+        )
+    if image_meta is None:
+        return
+    meta_has_class = COL_CLASS_ID in to_lazy(image_meta).collect_schema().names()
+    if class_col is None and meta_has_class:
+        raise ValueError(
+            "image_meta has a class_id column but class_col was not passed, so "
+            f"every detection would be keyed by the default class "
+            f"{DEFAULT_CLASS!r} and match no metadata row. Pass class_col "
+            "naming the detections' class column, or drop class_id from "
+            "image_meta for a single-class evaluation."
+        )
+    if class_col is not None and not meta_has_class:
+        raise ValueError(
+            f"class_col={class_col!r} keys the detections by class, but "
+            "image_meta has no class_id column, so every metadata row has the "
+            f"default class {DEFAULT_CLASS!r} and no detection would match it. "
+            "Add class_id to image_meta."
+        )
 
 
 def _canonicalize_image_meta(

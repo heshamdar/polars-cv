@@ -9,6 +9,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **`PreMatchedAdapter` refuses keys and columns it used to drop silently.**
+  With `class_col` omitted, every detection was re-keyed to the default class
+  while `image_meta` kept its own `class_id`, so the `(image_id, class_id)`
+  joins matched nothing and `lroc_auc` returned 0.0 for a perfect detector. A
+  `class_id` column on the detections or on `image_meta` now requires
+  `class_col`, and `class_col` requires `class_id` on `image_meta`. A named
+  `iou_col`, `det_idx_col`, `n_gts_col`, `weight_col`, `gt_label_col` or
+  `group_col` that is missing now raises, as the docstring said, instead of
+  falling back to its default (a misspelled `weight_col` left every weight at
+  1.0). Without `iou_col` the `iou` column is null rather than 0.0, and
+  `DetectionTable.at_iou_threshold` — so `mean_average_precision` — raises on
+  such a table: it compared the placeholder and turned every TP into an FP.
+
 - **A sourceless `Pipeline()` no longer assumes it continues a buffer.**
   `contours.pipe(Pipeline().simplify(2.0))` raised "expects contour input but
   pipeline is currently in buffer domain" while `contours.simplify(2.0)`

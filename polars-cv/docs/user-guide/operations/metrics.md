@@ -54,6 +54,14 @@ detector found nothing in has no metadata row at all — which deletes the
 negative population and inflates recall and FP-per-image. Omitting it emits a
 `UserWarning`.
 
+Classes are keyed only when you say so: if the detections or `image_meta`
+carry a `class_id` column, pass `class_col` (e.g. `class_col="class_id"`) —
+the adapter raises otherwise, since the metrics join detections to the
+population on `(image_id, class_id)` and a mismatched key silently counts for
+nothing. Pass `iou_col` if you want to re-threshold by IoU
+(`table.at_iou_threshold`, `mean_average_precision(iou_thresholds=...)`);
+without one the table has no IoU and those raise.
+
 `image_meta` is the sole source of image metadata, so it cannot be combined
 with `n_gts_col`, `weight_col`, `gt_label_col` or `group_col` — those describe
 how to derive metadata from the *detection* frame, and passing both raises

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -115,6 +115,9 @@ class DetectionTable:
     _detections: pl.LazyFrame
     _image_meta: pl.LazyFrame
     _matching_iou_threshold: float | None = None
+    #: Whether ``iou`` holds real overlaps. A pre-matched table built without
+    #: an IoU column has none, and :meth:`at_iou_threshold` refuses it.
+    _has_iou: bool = True
 
     # ------------------------------------------------------------------
     # Construction
@@ -127,6 +130,7 @@ class DetectionTable:
         image_meta: pl.LazyFrame | pl.DataFrame,
         *,
         matching_iou_threshold: float | None = None,
+        has_iou: bool = True,
     ) -> DetectionTable:
         """Construct a ``DetectionTable`` with planning-time schema validation.
 
@@ -140,6 +144,9 @@ class DetectionTable:
                 Stored so that :meth:`at_iou_threshold` can warn when the
                 caller tries to *lower* the threshold below the matching
                 level (which has no effect).
+            has_iou: Whether the ``iou`` column holds real overlaps; ``False``
+                when the source had none (``iou`` is then null), so
+                :meth:`at_iou_threshold` refuses the table.
 
         Returns:
             Validated ``DetectionTable`` instance.
@@ -157,6 +164,7 @@ class DetectionTable:
             _detections=det_lf,
             _image_meta=meta_lf,
             _matching_iou_threshold=matching_iou_threshold,
+            _has_iou=has_iou,
         )
 
     # ------------------------------------------------------------------
@@ -189,11 +197,7 @@ class DetectionTable:
         new_meta = self._image_meta.with_columns(
             pl.col(group_col).cast(pl.String).alias(COL_GROUP_ID)
         )
-        return DetectionTable(
-            _detections=self._detections,
-            _image_meta=new_meta,
-            _matching_iou_threshold=self._matching_iou_threshold,
-        )
+        return replace(self, _image_meta=new_meta)
 
     def filter_class(self, class_id: str) -> DetectionTable:
         """Return a copy filtered to a single class.
@@ -204,10 +208,10 @@ class DetectionTable:
         Returns:
             Filtered ``DetectionTable``.
         """
-        return DetectionTable(
+        return replace(
+            self,
             _detections=self._detections.filter(pl.col(COL_CLASS_ID) == class_id),
             _image_meta=self._image_meta.filter(pl.col(COL_CLASS_ID) == class_id),
-            _matching_iou_threshold=self._matching_iou_threshold,
         )
 
     def class_ids(self) -> list[str]:
@@ -272,7 +276,18 @@ class DetectionTable:
 
         Returns:
             ``DetectionTable`` with updated ``is_tp``.
+
+        Raises:
+            ValueError: If the table has no IoU values (a pre-matched table
+                built without ``iou_col``).
         """
+        if not self._has_iou:
+            raise ValueError(
+                "this DetectionTable has no IoU values (it was pre-matched "
+                "without iou_col), so it cannot be re-thresholded by IoU. Pass "
+                "iou_col to PreMatchedAdapter.match, or evaluate at the "
+                "matching the TP flags already encode."
+            )
         if (
             self._matching_iou_threshold is not None
             and iou_threshold < self._matching_iou_threshold
@@ -295,11 +310,7 @@ class DetectionTable:
             .otherwise(pl.lit(False))
             .alias(COL_IS_TP)
         )
-        return DetectionTable(
-            _detections=new_det,
-            _image_meta=self._image_meta,
-            _matching_iou_threshold=self._matching_iou_threshold,
-        )
+        return replace(self, _detections=new_det)
 
     # ------------------------------------------------------------------
     # Collect helper

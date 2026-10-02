@@ -138,6 +138,138 @@ class TestPreMatchedAdapter:
         assert det_df.height == 2
 
 
+def _classed_frames() -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Detections and a population that both carry ``class_id``: two positive
+    images found at high scores, two negatives at low ones (a perfect LROC)."""
+    detections = pl.DataFrame(
+        {
+            "image_id": ["a", "b", "c", "d"],
+            "class_id": ["fold"] * 4,
+            "score": [0.9, 0.8, 0.2, 0.1],
+            "is_tp": [True, True, False, False],
+        }
+    )
+    image_meta = pl.DataFrame(
+        {
+            "image_id": ["a", "b", "c", "d"],
+            "class_id": ["fold"] * 4,
+            "n_gts": [1, 1, 0, 0],
+            "gt_label": [True, True, False, False],
+        }
+    )
+    return detections, image_meta
+
+
+class TestPreMatchedAdapterKeys:
+    """The adapter refuses inputs whose keys it would otherwise silently drop.
+
+    A detection whose ``(image_id, class_id)`` matches no metadata row counts
+    for nothing: with ``class_col`` omitted the detections were re-keyed to the
+    default class while ``image_meta`` kept its own, and ``lroc_auc`` returned
+    0.0 for a perfect detector.
+    """
+
+    def test_an_input_class_id_needs_class_col(self) -> None:
+        detections, image_meta = _classed_frames()
+        with pytest.raises(ValueError, match="class_col='class_id'"):
+            PreMatchedAdapter().match(
+                detections, image_id_col="image_id", image_meta=image_meta
+            )
+
+    def test_an_input_class_id_needs_class_col_without_image_meta(self) -> None:
+        detections, _ = _classed_frames()
+        with pytest.raises(ValueError, match="class_col='class_id'"):
+            PreMatchedAdapter().match(detections, image_id_col="image_id")
+
+    def test_image_meta_classes_need_detection_classes(self) -> None:
+        detections, image_meta = _classed_frames()
+        with pytest.raises(ValueError, match="image_meta has a class_id column"):
+            PreMatchedAdapter().match(
+                detections.drop("class_id"),
+                image_id_col="image_id",
+                image_meta=image_meta,
+            )
+
+    def test_detection_classes_need_image_meta_classes(self) -> None:
+        detections, image_meta = _classed_frames()
+        with pytest.raises(ValueError, match="image_meta has no class_id column"):
+            PreMatchedAdapter().match(
+                detections,
+                image_id_col="image_id",
+                class_col="class_id",
+                image_meta=image_meta.drop("class_id"),
+            )
+
+    def test_matching_classes_score_the_perfect_detector(self) -> None:
+        from polars_cv.metrics import lroc_auc
+
+        detections, image_meta = _classed_frames()
+        table = PreMatchedAdapter().match(
+            detections,
+            image_id_col="image_id",
+            class_col="class_id",
+            image_meta=image_meta,
+        )
+        assert lroc_auc(table).collect().item() == pytest.approx(1.0)
+
+    @pytest.mark.parametrize(
+        "kwarg",
+        [
+            "iou_col",
+            "det_idx_col",
+            "n_gts_col",
+            "weight_col",
+            "gt_label_col",
+            "group_col",
+        ],
+    )
+    def test_a_named_column_that_is_missing_is_refused(self, kwarg: str) -> None:
+        """A misspelled optional column used to fall back to its default."""
+        detections, _ = _classed_frames()
+        with pytest.raises(ValueError, match="not_a_column"):
+            PreMatchedAdapter().match(
+                detections.drop("class_id"),
+                image_id_col="image_id",
+                **{kwarg: "not_a_column"},
+            )
+
+
+class TestPreMatchedAdapterIoU:
+    """Without ``iou_col`` the table has no IoU, and says so."""
+
+    def _table(self, **kwargs: str) -> DetectionTable:
+        detections, image_meta = _classed_frames()
+        return PreMatchedAdapter().match(
+            detections.with_columns(overlap=pl.lit(0.7)),
+            image_id_col="image_id",
+            class_col="class_id",
+            image_meta=image_meta,
+            **kwargs,
+        )
+
+    def test_rethresholding_a_table_without_iou_is_refused(self) -> None:
+        """It used to compare a placeholder 0.0 and turn every TP into an FP."""
+        with pytest.raises(ValueError, match="iou_col"):
+            self._table().at_iou_threshold(0.5)
+
+    def test_map_of_a_table_without_iou_is_refused(self) -> None:
+        from polars_cv.metrics import mean_average_precision
+
+        with pytest.raises(ValueError, match="iou_col"):
+            mean_average_precision(self._table(), iou_thresholds=[0.5])
+
+    def test_a_table_without_iou_stores_none(self) -> None:
+        det_df, _ = self._table().collect()
+        assert det_df[COL_IOU].null_count() == det_df.height
+
+    def test_a_given_iou_rethresholds(self) -> None:
+        table = self._table(iou_col="overlap")
+        det_df, _ = table.at_iou_threshold(0.5).collect()
+        assert det_df[COL_IS_TP].to_list() == [True, True, False, False]
+        det_df, _ = table.at_iou_threshold(0.8).collect()
+        assert not det_df[COL_IS_TP].any()
+
+
 # ---------------------------------------------------------------------------
 # The Matcher protocol must actually constrain its implementations
 # ---------------------------------------------------------------------------
