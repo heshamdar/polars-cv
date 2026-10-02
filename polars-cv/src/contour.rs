@@ -966,9 +966,10 @@ mod named_param_tests {
         name: &str,
         args: serde_json::Value,
     ) -> PolarsResult<(F, GeomParams<'a>)> {
-        let kwargs: GeomKwargs =
-            serde_json::from_value(serde_json::json!({"args": args, "on_null": "raise"}))
-                .expect("the kwargs envelope parses");
+        let kwargs: GeomKwargs = serde_json::from_value(
+            serde_json::json!({"args": args, "on_null": "raise", "on_error": "raise"}),
+        )
+        .expect("the kwargs envelope parses");
         GeomParams::parse::<F>(inputs, kwargs, name)
     }
 

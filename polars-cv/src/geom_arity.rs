@@ -641,7 +641,8 @@ mod split_tests {
     fn params(inputs: &[Series]) -> GeomParams<'_> {
         let kwargs = serde_json::from_value(serde_json::json!({
             "args": {"signed": false},
-            "on_null": "raise"
+            "on_null": "raise",
+            "on_error": "raise"
         }))
         .unwrap();
         GeomParams::parse::<GeometryOp<Wire>>(inputs, kwargs, "contour_area")
@@ -743,7 +744,8 @@ mod split_tests {
     ) -> (PointFn<Wire>, GeomParams<'a>) {
         let kwargs = serde_json::from_value(serde_json::json!({
             "args": {"dx": {"$slot": 1}, "dy": 0.0},
-            "on_null": on_null
+            "on_null": on_null,
+            "on_error": "raise"
         }))
         .unwrap();
         GeomParams::parse::<PointFn<Wire>>(inputs, kwargs, "point_translate").unwrap()
