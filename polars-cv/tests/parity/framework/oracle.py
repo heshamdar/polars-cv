@@ -1409,7 +1409,7 @@ _CONTOUR_NO_REF = (
 
 def _extract_contours_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     return {
-        "mode": draw(st.sampled_from(["external", "tree", "all"]), label="mode"),
+        "mode": draw(st.sampled_from(["external", "all"]), label="mode"),
         "method": draw(st.sampled_from(["none", "simple", "approx"]), label="method"),
     }
 

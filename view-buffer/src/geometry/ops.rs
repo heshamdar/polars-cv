@@ -138,9 +138,10 @@ pub enum GeometryOp<M: Mode = Exec> {
     /// that touch or nest enclose one region between them — and reassembling a
     /// holed contour from those is the caller's job. ``mode="external"`` keeps
     /// only the outermost, discarding hole borders.
-    #[op(name = "extract_contours", sample = {"mode": "tree", "method": "none", "min_area": 2.0})]
+    #[op(name = "extract_contours", sample = {"mode": "all", "method": "none", "min_area": 2.0})]
     ExtractContours {
-        /// "external" (outer only), "tree" (full hierarchy), "all".
+        /// "external" (outer borders only) or "all" (hole borders too, as
+        /// a flat list).
         #[param(default = "external")]
         mode: M::V<ExtractMode>,
         /// "simple" (remove redundant), "none" (all points), "approx".
@@ -307,9 +308,7 @@ impl GeometryOp {
 pub enum ExtractMode {
     /// Only outermost contours (no nesting).
     External,
-    /// Full hierarchy with parent-child relationships.
-    Tree,
-    /// All contours flattened (no hierarchy).
+    /// Every border, hole borders included, as a flat list (no hierarchy).
     All,
 }
 
@@ -330,9 +329,8 @@ crate::naming::named_variants!(ScaleOrigin: "Point a contour scale operation is 
     "origin" => Origin,
 });
 
-crate::naming::named_variants!(ExtractMode: "Contour retrieval mode for ``extract_contours``.\n\n- EXTERNAL: Outermost contours only (default).\n- TREE: Full nesting hierarchy.\n- ALL: Every contour, without hierarchy." {
+crate::naming::named_variants!(ExtractMode: "Contour retrieval mode for ``extract_contours``.\n\n- EXTERNAL: Outermost contours only (default).\n- ALL: Every border, hole borders included, without hierarchy." {
     "external" => External,
-    "tree" => Tree,
     "all" => All,
 });
 

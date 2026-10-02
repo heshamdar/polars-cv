@@ -85,12 +85,10 @@ class ExtractMode(str, Enum):
     """Contour retrieval mode for ``extract_contours``.
 
     - EXTERNAL: Outermost contours only (default).
-    - TREE: Full nesting hierarchy.
-    - ALL: Every contour, without hierarchy.
+    - ALL: Every border, hole borders included, without hierarchy.
     """
 
     EXTERNAL = "external"
-    TREE = "tree"
     ALL = "all"
 
 
@@ -614,7 +612,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "scalar",
             "per_row": True,
             "py": "ExtractMode",
-            "variants": ["external", "tree", "all"],
+            "variants": ["external", "all"],
         },
         "method": {
             "kind": "scalar",
@@ -1688,7 +1686,8 @@ class _OpsMixin:
         Domain: buffer → contour
 
         Args:
-            mode: "external" (outer only), "tree" (full hierarchy), "all".
+            mode: "external" (outer borders only) or "all" (hole borders too, as a flat
+                list).
             method: "simple" (remove redundant), "none" (all points), "approx".
             min_area: Filter small contours: the minimum area in pixels. Accepts a
                 Polars expression for per-row dynamic thresholds.
@@ -1709,9 +1708,14 @@ class _OpsMixin:
         )
 
     def extract_shape(self) -> Pipeline:
-        """Extract buffer shape as a struct {height, width, channels}.
+        """Extract the buffer's shape: one Float64 per dimension, in order
+        (``[height, width, channels]`` for an image), as a vector.
 
         Domain: buffer → vector
+
+
+        Returns:
+            ``List(Float64)`` of the dimension sizes.
         """
         return self._append_typed("extract_shape", {})
 

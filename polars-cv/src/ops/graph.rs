@@ -201,7 +201,11 @@ pub enum GraphOp<M: Mode = Exec> {
         #[param(default = true)]
         exact: M::L<bool>,
     },
-    /// Extract buffer shape as a struct {height, width, channels}.
+    /// Extract the buffer's shape: one Float64 per dimension, in order
+    /// (``[height, width, channels]`` for an image), as a vector.
+    ///
+    /// Returns:
+    ///     ``List(Float64)`` of the dimension sizes.
     #[op(name = "extract_shape", sample = {})]
     ExtractShape,
     /// Score contour regions against the current buffer values.
