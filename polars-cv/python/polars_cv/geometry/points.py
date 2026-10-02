@@ -20,8 +20,12 @@ class PointNamespace(_PointOpsMixin, _GeomNamespace):
     This namespace provides geometric operations for point data,
     including coordinate transformations and distance calculations.
 
-    The point column must match POINT_SCHEMA or POINT_SET_SCHEMA.
-    Operations automatically handle both single points and sets of points.
+    The point column holds one point per row (``POINT_SCHEMA``) or a point set
+    (``POINT_SET_SCHEMA``, ``List(point)``) per row. Over a set every method
+    gives one value per point, in input order (a null point gives a null in
+    its place), as a ``List``. A contour or bbox operand is one per row and
+    broadcasts against the set; two point columns broadcast either way (a set
+    against a single point), and a set on both sides is refused.
 
     Numeric parameters accept either a literal or a Polars expression; an
     expression is resolved per row at execution time.
@@ -35,23 +39,3 @@ class PointNamespace(_PointOpsMixin, _GeomNamespace):
         ...     ),
         ... )
     """
-
-    # --- Extraction ---
-
-    def x(self) -> pl.Expr:
-        """
-        Extract X coordinate.
-
-        Returns:
-            Float64 X coordinate.
-        """
-        return self._expr.ext.storage().struct.field("x")
-
-    def y(self) -> pl.Expr:
-        """
-        Extract Y coordinate.
-
-        Returns:
-            Float64 Y coordinate.
-        """
-        return self._expr.ext.storage().struct.field("y")

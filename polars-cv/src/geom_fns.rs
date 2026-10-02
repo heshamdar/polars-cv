@@ -229,6 +229,18 @@ pub enum ContourFn<M: Mode = Exec> {
 /// The `.point` accessor's functions.
 #[derive(Debug, Clone, PartialEq, Ops)]
 pub enum PointFn<M: Mode = Exec> {
+    /// Extract the X coordinate.
+    ///
+    /// Returns:
+    ///     Float64 X coordinate.
+    #[op(name = "point_x", python = "x", sample = {})]
+    X,
+    /// Extract the Y coordinate.
+    ///
+    /// Returns:
+    ///     Float64 Y coordinate.
+    #[op(name = "point_y", python = "y", sample = {})]
+    Y,
     /// Convert pixel coordinates to normalized [0,1] range.
     ///
     /// Returns:

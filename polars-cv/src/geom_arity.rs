@@ -74,6 +74,17 @@ impl Arity {
         }
     }
 
+    /// Read the arity of a *point* column: a `List` of point structs is a
+    /// point set (`POINT_SET_SCHEMA`), one value per point. The same dtype in
+    /// a contour column is one ring ([`Arity::of`]); which it is depends on
+    /// the namespace that reads it, never on the value.
+    pub(crate) fn of_points(dtype: &DataType) -> Self {
+        match dtype {
+            DataType::List(inner) if is_point_dtype(inner) => Arity::Set,
+            _ => Arity::Single,
+        }
+    }
+
     /// The dtype of a single contour within a column of this arity.
     ///
     /// What a transform has to build its elements as: for a set that is the
@@ -105,7 +116,7 @@ impl Arity {
     /// Broadcasting: a set on either side makes the result a set, so
     /// `dets.iou(gt)` and `gt.iou(dets)` agree. Set × set is refused by
     /// [`zip_contours`] before this is reached.
-    fn combine(self, other: Arity) -> Arity {
+    pub(crate) fn combine(self, other: Arity) -> Arity {
         match (self, other) {
             (Arity::Single, Arity::Single) => Arity::Single,
             _ => Arity::Set,

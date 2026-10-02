@@ -742,5 +742,21 @@
         }
       }
     ]
+  },
+  {
+    "namespace": "point",
+    "name": "point_x",
+    "python": "x",
+    "visibility": "public",
+    "doc": "Extract the X coordinate.\n\nReturns:\n    Float64 X coordinate.",
+    "fields": []
+  },
+  {
+    "namespace": "point",
+    "name": "point_y",
+    "python": "y",
+    "visibility": "public",
+    "doc": "Extract the Y coordinate.\n\nReturns:\n    Float64 Y coordinate.",
+    "fields": []
   }
 ]
