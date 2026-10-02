@@ -65,12 +65,11 @@ for the memory and streaming behaviour, and for the path-sandboxing caveat.
 ## Metadata
 
 The metadata readers parse only the image header, so they do not decode pixels.
-They take a `Binary` column of encoded images — pair them with `read_bytes()` to
-query files named by a path column:
+They take a `Binary` column of encoded images or a `String` column of paths (a
+local file is read only as far as its header needs):
 
 ```python
-raw = pl.col("path").cv.read_bytes()
-df.with_columns(w=raw.cv.width(), h=raw.cv.height())
+df.with_columns(w=pl.col("path").cv.width(), info=pl.col("path").cv.image_info())
 ```
 
 See [Metadata & Display](../user-guide/operations/metadata.md) for details.

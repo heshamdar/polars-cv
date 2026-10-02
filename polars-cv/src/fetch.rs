@@ -308,6 +308,41 @@ pub fn row_bytes<'a>(
         .map_err(|e| format!("Failed to read local file '{path}': {e}"))
 }
 
+/// Read one row's path only as far as `parse` needs: `parse` over the
+/// file's leading bytes, `None` when it cannot tell from them.
+///
+/// A local file is read in a growing prefix (64 KiB, then four times as much
+/// each time `parse` cannot tell yet) until `parse` answers or the file ends —
+/// an image header is usually in the first few KiB, but a JPEG's frame header
+/// may sit behind large EXIF/comment segments. A remote file is the whole
+/// object from `batch` ([`row_bytes`]): ranged reads would nest the store's
+/// concurrency permits (`cloud::read_object`). The [`PathPolicy`] check is
+/// [`row_bytes`]'s, applied to both.
+pub fn row_header<T>(
+    batch: &FetchedBatch,
+    path: &str,
+    options: Option<&CloudOptions>,
+    policy: &PathPolicy,
+    parse: impl Fn(&[u8]) -> Option<T>,
+) -> Result<Option<T>, String> {
+    if cloud::is_remote_path(path) {
+        return row_bytes(batch, path, options, policy).map(|bytes| parse(&bytes));
+    }
+    policy.check(path)?;
+    let mut limit = 64 * 1024;
+    loop {
+        let (bytes, eof) = cloud::read_local_prefix(path, limit)
+            .map_err(|e| format!("Failed to read local file '{path}': {e}"))?;
+        if let Some(found) = parse(&bytes) {
+            return Ok(Some(found));
+        }
+        if eof {
+            return Ok(None);
+        }
+        limit = limit.saturating_mul(4);
+    }
+}
+
 /// What an unreadable path does to the query.
 ///
 /// Distinct from the graph's [`RowErrorPolicy`](crate::graph::RowErrorPolicy):

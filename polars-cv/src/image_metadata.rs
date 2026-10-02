@@ -126,46 +126,173 @@ fn extract_metadata(bytes: &[u8]) -> Option<ImageMeta> {
     try_view_header(bytes).or_else(|| try_image_header(bytes))
 }
 
-/// Get image width from binary column (header-only, no full decode).
-#[polars_expr(output_type=UInt32)]
-fn image_width(inputs: &[Series]) -> PolarsResult<Series> {
-    let ca = inputs[0].binary()?;
-    let out: UInt32Chunked = ca
-        .iter()
-        .map(|opt_bytes| opt_bytes.and_then(|b| extract_metadata(b).map(|m| m.width)))
-        .collect();
-    Ok(out.with_name(ca.name().clone()).into_series())
+/// Static kwargs of the metadata functions: how to reach a *path* column's
+/// files, exactly as `.cv.read_bytes()` takes them. Closed, and refused on a
+/// binary column, where there is no path for them to apply to.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetaKwargs {
+    #[serde(default)]
+    cloud_options: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    on_error: Option<String>,
+    #[serde(default)]
+    allowed_roots: Option<Vec<String>>,
 }
 
-/// Get image height from binary column (header-only, no full decode).
-#[polars_expr(output_type=UInt32)]
-fn image_height(inputs: &[Series]) -> PolarsResult<Series> {
-    let ca = inputs[0].binary()?;
-    let out: UInt32Chunked = ca
-        .iter()
-        .map(|opt_bytes| opt_bytes.and_then(|b| extract_metadata(b).map(|m| m.height)))
-        .collect();
-    Ok(out.with_name(ca.name().clone()).into_series())
+/// Each row's header metadata: from the bytes of a `Binary` column, or from
+/// the files a `String` column of paths names — read only as far as the
+/// header needs ([`crate::fetch::row_header`]). `None` for a null row, an
+/// unrecognised format, or (with `on_error="null"`) an unreadable path.
+fn metas(
+    inputs: &[Series],
+    kwargs: &MetaKwargs,
+    name: &str,
+) -> PolarsResult<Vec<Option<ImageMeta>>> {
+    let input = &inputs[0];
+    match input.dtype() {
+        DataType::Binary => {
+            if kwargs.cloud_options.is_some()
+                || kwargs.on_error.is_some()
+                || kwargs.allowed_roots.is_some()
+            {
+                polars_bail!(ComputeError:
+                    "{}: cloud_options, on_error and allowed_roots apply to a path \
+                     column; this column holds bytes",
+                    name
+                );
+            }
+            Ok(input
+                .binary()?
+                .iter()
+                .map(|b| b.and_then(extract_metadata))
+                .collect())
+        }
+        DataType::String | DataType::Null => {
+            if input.dtype() == &DataType::Null {
+                return Ok((0..input.len()).map(|_| None).collect());
+            }
+            let ca = input.str()?;
+            let null_on_error =
+                crate::fetch::parse_on_error(kwargs.on_error.as_deref().unwrap_or("raise"), name)?;
+            let options = kwargs
+                .cloud_options
+                .as_ref()
+                .map(crate::cloud::CloudOptions::from_map);
+            let policy = kwargs
+                .allowed_roots
+                .as_deref()
+                .map(crate::fetch::PathPolicy::new)
+                .unwrap_or_default();
+            let batch = crate::fetch::prefetch(ca, options.as_ref(), &policy);
+            ca.iter()
+                .map(|path| {
+                    let Some(path) = path else { return Ok(None) };
+                    match crate::fetch::row_header(
+                        &batch,
+                        path,
+                        options.as_ref(),
+                        &policy,
+                        extract_metadata,
+                    ) {
+                        Ok(meta) => Ok(meta),
+                        Err(_) if null_on_error => Ok(None),
+                        Err(e) => Err(polars_err!(ComputeError: "{}: {}", name, e)),
+                    }
+                })
+                .collect()
+        }
+        other => polars_bail!(ComputeError:
+            "{} takes a Binary column of image bytes or a String column of paths, got {}",
+            name, other
+        ),
+    }
 }
 
-/// Get image channel count from binary column (header-only, no full decode).
-#[polars_expr(output_type=UInt32)]
-fn image_channels(inputs: &[Series]) -> PolarsResult<Series> {
-    let ca = inputs[0].binary()?;
-    let out: UInt32Chunked = ca
+fn u32_column(
+    inputs: &[Series],
+    kwargs: MetaKwargs,
+    name: &'static str,
+    field: impl Fn(&ImageMeta) -> Option<u32>,
+) -> PolarsResult<Series> {
+    let out: UInt32Chunked = metas(inputs, &kwargs, name)?
         .iter()
-        .map(|opt_bytes| opt_bytes.and_then(|b| extract_metadata(b).and_then(|m| m.channels)))
+        .map(|m| m.as_ref().and_then(&field))
         .collect();
-    Ok(out.with_name(ca.name().clone()).into_series())
+    Ok(out.with_name(inputs[0].name().clone()).into_series())
 }
 
-/// Get image element dtype from binary column (header-only, no full decode).
+/// Image width (header-only, no full decode).
+#[polars_expr(output_type=UInt32)]
+fn image_width(inputs: &[Series], kwargs: MetaKwargs) -> PolarsResult<Series> {
+    u32_column(inputs, kwargs, "width()", |m| Some(m.width))
+}
+
+/// Image height (header-only, no full decode).
+#[polars_expr(output_type=UInt32)]
+fn image_height(inputs: &[Series], kwargs: MetaKwargs) -> PolarsResult<Series> {
+    u32_column(inputs, kwargs, "height()", |m| Some(m.height))
+}
+
+/// Image channel count (header-only, no full decode).
+#[polars_expr(output_type=UInt32)]
+fn image_channels(inputs: &[Series], kwargs: MetaKwargs) -> PolarsResult<Series> {
+    u32_column(inputs, kwargs, "channels()", |m| m.channels)
+}
+
+/// Image element dtype (header-only, no full decode).
 #[polars_expr(output_type=String)]
-fn image_dtype(inputs: &[Series]) -> PolarsResult<Series> {
-    let ca = inputs[0].binary()?;
-    let out: StringChunked = ca
+fn image_dtype(inputs: &[Series], kwargs: MetaKwargs) -> PolarsResult<Series> {
+    let out: StringChunked = metas(inputs, &kwargs, "image_dtype()")?
         .iter()
-        .map(|opt_bytes| opt_bytes.and_then(|b| extract_metadata(b).and_then(|m| m.dtype)))
+        .map(|m| m.as_ref().and_then(|m| m.dtype))
         .collect();
-    Ok(out.with_name(ca.name().clone()).into_series())
+    Ok(out.with_name(inputs[0].name().clone()).into_series())
+}
+
+/// The fields of `image_info`, in order: the four metadata functions' values.
+fn image_info_fields() -> Vec<Field> {
+    vec![
+        Field::new(PlSmallStr::from_static("width"), DataType::UInt32),
+        Field::new(PlSmallStr::from_static("height"), DataType::UInt32),
+        Field::new(PlSmallStr::from_static("channels"), DataType::UInt32),
+        Field::new(PlSmallStr::from_static("dtype"), DataType::String),
+    ]
+}
+
+fn image_info_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
+    let name = input_fields.first().map_or_else(
+        || PlSmallStr::from_static("image_info"),
+        |f| f.name().clone(),
+    );
+    Ok(Field::new(name, DataType::Struct(image_info_fields())))
+}
+
+/// Width, height, channels and dtype from one header read per row.
+#[polars_expr(output_type_func=image_info_output_type)]
+fn image_info(inputs: &[Series], kwargs: MetaKwargs) -> PolarsResult<Series> {
+    let metas = metas(inputs, &kwargs, "image_info()")?;
+    let [w, h, c, d] = ["width", "height", "channels", "dtype"].map(PlSmallStr::from_static);
+    let width: UInt32Chunked = metas.iter().map(|m| m.as_ref().map(|m| m.width)).collect();
+    let height: UInt32Chunked = metas.iter().map(|m| m.as_ref().map(|m| m.height)).collect();
+    let channels: UInt32Chunked = metas
+        .iter()
+        .map(|m| m.as_ref().and_then(|m| m.channels))
+        .collect();
+    let dtype: StringChunked = metas
+        .iter()
+        .map(|m| m.as_ref().and_then(|m| m.dtype))
+        .collect();
+    let fields = [
+        width.with_name(w).into_series(),
+        height.with_name(h).into_series(),
+        channels.with_name(c).into_series(),
+        dtype.with_name(d).into_series(),
+    ];
+    let mut out = StructChunked::from_series(inputs[0].name().clone(), metas.len(), fields.iter())?;
+    if metas.iter().any(Option::is_none) {
+        let validity: polars_arrow::bitmap::Bitmap = metas.iter().map(Option::is_some).collect();
+        out = out.with_outer_validity(Some(validity));
+    }
+    Ok(out.into_series())
 }

@@ -24,15 +24,19 @@ result = df.with_columns(
 | `.cv.channels()` | `UInt32` | Number of channels (1, 3, 4, etc.) |
 | `.cv.image_dtype()` | `String` | Element dtype name (e.g., `"uint8"`, `"float32"`) |
 
-These methods work on binary columns containing encoded images (PNG, JPEG, TIFF, etc.).
+| `.cv.image_info()` | `Struct` | All four from one header read: `{width, height, channels, dtype}` |
 
-To query files named by a **path** column — local or remote — fetch the bytes
-first with [`read_bytes()`](../concepts/sources.md#reading-bytes-without-decoding),
-which does not decode:
+These methods work on binary columns containing encoded images (PNG, JPEG, TIFF,
+etc.) and on **path** columns. A local file is read only as far as its header
+needs (a JPEG's frame header may sit behind large EXIF or comment segments, so
+the read grows until it is found); a remote object is fetched whole, as
+[`read_bytes()`](../concepts/sources.md#reading-bytes-without-decoding) does.
+Path columns take the same `cloud_options`, `on_error` and `allowed_roots` as
+`read_bytes()`. Asking for more than one field? `image_info()` reads each
+header once:
 
 ```python
-raw = pl.col("path").cv.read_bytes()
-df.with_columns(w=raw.cv.width(), h=raw.cv.height())
+df.with_columns(info=pl.col("path").cv.image_info()).unnest("info")
 ```
 
 ### Use Case: Filtering by Size

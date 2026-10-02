@@ -392,6 +392,24 @@ pub fn read_local_path(path: &str) -> Result<Vec<u8>, CloudError> {
     }
 }
 
+/// The first `limit` bytes of a local file (all of it if shorter), and whether
+/// that reached its end. Accepts what [`read_local_path`] does.
+pub fn read_local_prefix(path: &str, limit: usize) -> Result<(Vec<u8>, bool), CloudError> {
+    use std::io::Read;
+    let local = match path.strip_prefix("file://") {
+        Some(rest) => Url::parse(path).map_or_else(|_| rest.to_string(), |u| u.path().to_string()),
+        None => path.to_string(),
+    };
+    let file =
+        std::fs::File::open(Path::new(&local)).map_err(|e| CloudError::ReadError(e.to_string()))?;
+    let mut bytes = Vec::with_capacity(limit.min(1 << 20));
+    file.take(limit as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| CloudError::ReadError(e.to_string()))?;
+    let eof = bytes.len() < limit;
+    Ok((bytes, eof))
+}
+
 /// Get or create a tokio runtime for async operations.
 ///
 /// Reuses a thread-local runtime to avoid the overhead of creating a new
