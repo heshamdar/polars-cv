@@ -3155,6 +3155,24 @@ class _PointOpsMixin:
         """
         return self._call("point_within_bbox", {"bbox": bbox})
 
+    def x(self) -> pl.Expr:
+        """Extract the X coordinate.
+
+
+        Returns:
+            Float64 X coordinate.
+        """
+        return self._call("point_x", {})
+
+    def y(self) -> pl.Expr:
+        """Extract the Y coordinate.
+
+
+        Returns:
+            Float64 Y coordinate.
+        """
+        return self._call("point_y", {})
+
 
 class _BBoxOpsMixin:
     """The generated ``.bbox`` accessor methods."""

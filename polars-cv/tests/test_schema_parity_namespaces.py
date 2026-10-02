@@ -32,6 +32,7 @@ from polars_cv.geometry.schemas import (
     CONTOUR_SCHEMA,
     CONTOUR_SET_SCHEMA,
     POINT_SCHEMA,
+    POINT_SET_SCHEMA,
 )
 from tests._schema_parity import assert_plan_equals_exec
 from tests.conftest import make_image_png, make_rect_png, plugin_required
@@ -369,6 +370,120 @@ def test_set_level_accessors_take_a_lone_contour() -> None:
 @pytest.mark.parametrize("name", sorted(POINT_CASES))
 def test_point_accessors(name: str) -> None:
     assert_plan_equals_exec(_contour_df(), POINT_CASES[name]())
+
+
+def _point_set_df() -> pl.DataFrame:
+    """`_contour_df`'s point columns as point *sets* (``POINT_SET_SCHEMA``),
+    same names, so the single-arity ``POINT_CASES`` sweep unchanged; their
+    contour and bbox operands stay single, which a set broadcasts against."""
+    pts = [{"x": 1.0, "y": 2.0}, {"x": 3.0, "y": 4.0}]
+    return pl.DataFrame(
+        {
+            "pa": [None, pts, [], [{"x": 5.0, "y": 6.0}]],
+            "pb": [
+                {"x": 5.0, "y": 6.0},
+                None,
+                {"x": 1.0, "y": 1.0},
+                {"x": 7.0, "y": 8.0},
+            ],
+            "a": [_square(0, 0, 10), _square(0, 0, 10), None, _square(2, 2, 6)],
+            "ba": [{"x": 0.0, "y": 0.0, "width": 4.0, "height": 4.0}] * 4,
+        },
+        schema={
+            "pa": POINT_SET_SCHEMA,
+            "pb": POINT_SCHEMA,
+            "a": CONTOUR_SCHEMA,
+            "ba": BBOX_SCHEMA,
+        },
+    )
+
+
+@plugin_required
+@pytest.mark.parametrize("name", sorted(POINT_CASES))
+def test_point_accessors_over_a_point_set(name: str) -> None:
+    """Every `.point` accessor declares, and produces, `List(elem)` for a set,
+    one value per point in input order — the contour arity rule."""
+    series = assert_plan_equals_exec(_point_set_df(), POINT_CASES[name]())
+    assert isinstance(series.dtype, pl.List), (
+        f"{name} over a point-set column planned {series.dtype}, not a list"
+    )
+
+
+#: The `.point` accessors with a second point operand, which broadcast either way.
+POINT_BROADCAST_CASES: dict[str, object] = {
+    name: case
+    for name, case in {
+        "distance": lambda a, b: a.point.distance(b),
+        "manhattan_distance": lambda a, b: a.point.manhattan_distance(b),
+        "angle_to": lambda a, b: a.point.angle_to(b),
+        "midpoint": lambda a, b: a.point.midpoint(b),
+        "interpolate": lambda a, b: a.point.interpolate(b, t=0.25),
+    }.items()
+}
+
+
+@plugin_required
+@pytest.mark.parametrize("name", sorted(POINT_BROADCAST_CASES))
+def test_point_broadcast_either_way(name: str) -> None:
+    """A set on either side broadcasts against the other side's single point,
+    each result keeping its operands' order (``angle_to``/``interpolate`` are
+    not symmetric)."""
+    build = POINT_BROADCAST_CASES[name]
+    df = pl.DataFrame(
+        {
+            "s": [[{"x": 1.0, "y": 2.0}, {"x": 3.0, "y": 5.0}]],
+            "p": [{"x": 4.0, "y": 6.0}],
+        },
+        schema={"s": POINT_SET_SCHEMA, "p": POINT_SCHEMA},
+    )
+    exploded = df.explode("s", empty_as_null=False)
+    for left, right, by_row in (
+        ("s", "p", build(pl.col("s"), pl.col("p"))),
+        ("p", "s", build(pl.col("p"), pl.col("s"))),
+    ):
+        got = assert_plan_equals_exec(df, by_row).to_list()[0]
+        want = exploded.select(build(pl.col(left), pl.col(right))).to_series().to_list()
+        assert got == want, f"{name}({left}, {right})"
+
+
+@plugin_required
+@pytest.mark.parametrize("name", sorted(POINT_BROADCAST_CASES))
+def test_point_broadcast_refuses_a_set_on_both_sides(name: str) -> None:
+    df = pl.DataFrame(
+        {"s": [[{"x": 1.0, "y": 2.0}]], "t": [[{"x": 0.0, "y": 0.0}]]},
+        schema={"s": POINT_SET_SCHEMA, "t": POINT_SET_SCHEMA},
+    )
+    with pytest.raises(Exception, match="both"):
+        df.select(POINT_BROADCAST_CASES[name](pl.col("s"), pl.col("t")))
+
+
+@plugin_required
+def test_a_point_set_measured_against_a_contour() -> None:
+    """The reporter's case: several points per row against one contour."""
+    square = [
+        {"x": 0.0, "y": 0.0},
+        {"x": 10.0, "y": 0.0},
+        {"x": 10.0, "y": 10.0},
+        {"x": 0.0, "y": 10.0},
+    ]
+    df = pl.DataFrame(
+        {
+            "c": [{"exterior": square, "holes": [], "is_closed": True}],
+            "pts": [[{"x": 5.0, "y": 20.0}, {"x": 5.0, "y": 30.0}]],
+        },
+        schema={"c": CONTOUR_SCHEMA, "pts": POINT_SET_SCHEMA},
+    )
+    got = df.select(pl.col("pts").point.distance_to_contour(pl.col("c"))).item()
+    assert got.to_list() == [10.0, 20.0]
+
+
+@plugin_required
+def test_point_coordinates_read_any_spelling() -> None:
+    """`x()`/`y()` read the coordinate fields the plugin's point reader does,
+    ``X``/``Y`` included."""
+    df = pl.DataFrame({"p": [{"X": 1.0, "Y": 2.0}]})
+    assert df.select(pl.col("p").point.x()).item() == 1.0
+    assert df.select(pl.col("p").point.y()).item() == 2.0
 
 
 @plugin_required

@@ -216,5 +216,12 @@ namespace's real methods *and* swept in both arities, so an accessor that skips
 the macro fails `test_contour_accessors_over_a_contour_set` rather than shipping
 a schema its data contradicts.
 
-`.point` has the identical single-only limitation over `POINT_SET_SCHEMA`;
-`geom_arity.rs` is written to fit it, but wiring it up is not done.
+`.point` follows the same rule over `POINT_SET_SCHEMA` (`Arity::of_points`:
+a `List` of point structs is a set in a point column, one ring in a contour
+column). Every point function runs through `point.rs`'s `map_points` (one
+point column; a contour/bbox operand broadcasts) or `zip_points` (two point
+columns, broadcast either way, set x set refused), and declares its type with
+`unary_field`/`binary_field` over the same arities. A null point inside a set
+gives a null in its place, so results stay aligned with their input. `x()`/`y()`
+are `PointFn` variants like the rest (they read `X`/`Y` spellings too).
+`test_point_accessors_over_a_point_set` sweeps `POINT_CASES` over sets.

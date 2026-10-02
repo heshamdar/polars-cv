@@ -402,34 +402,80 @@ fn locate<'c, 'a, T>(
     polars_bail!(OutOfBounds: "geometry row {} out of bounds", row)
 }
 
-/// A point column's rows, each as a [`Point`].
+/// A point column's rows: one `{x, y}` struct per row, or a point set
+/// (`List({x, y})`, [`Arity::Set`]) per row.
 pub(crate) struct PointColumn<'a> {
-    chunks: Vec<(&'a dyn Array, Result<Points<'a>, String>)>,
+    arity: Arity,
+    chunks: Vec<(&'a dyn Array, Result<PointRows<'a>, String>)>,
+}
+
+enum PointRows<'a> {
+    Single(Points<'a>),
+    Set(&'a ListArray<i64>, Points<'a>),
 }
 
 impl<'a> PointColumn<'a> {
     /// Resolve `series`'s layout, chunk by chunk. Reads no rows.
     pub(crate) fn new(series: &'a Series) -> Self {
+        let dtype = series.dtype();
+        let arity = Arity::of_points(dtype);
         let chunks = series
             .chunks()
             .iter()
-            .map(|chunk| (chunk.as_ref(), coordinates(chunk.as_ref(), series.dtype())))
+            .map(|chunk| {
+                let chunk = chunk.as_ref();
+                let rows = match (arity, dtype) {
+                    (Arity::Set, DataType::List(elem)) => {
+                        downcast::<ListArray<i64>>(chunk, "a point set").and_then(|list| {
+                            coordinates(list.values().as_ref(), elem)
+                                .map(|p| PointRows::Set(list, p))
+                        })
+                    }
+                    _ => coordinates(chunk, dtype).map(PointRows::Single),
+                };
+                (chunk, rows)
+            })
             .collect();
-        PointColumn { chunks }
+        PointColumn { arity, chunks }
     }
 
-    /// Row `row`'s point, or `None` for a null row.
-    pub(crate) fn get(&self, row: usize) -> PolarsResult<Option<Point>> {
-        let ((array, points), i) = locate(&self.chunks, row)?;
+    /// Whether the column holds a point set per row.
+    pub(crate) fn arity(&self) -> Arity {
+        self.arity
+    }
+
+    /// Row `row`'s points — exactly one for a single-point column — or `None`
+    /// for a null row. A null point inside a set is `None` in its place, so a
+    /// result lines up with the set it was computed from.
+    pub(crate) fn row(&self, row: usize) -> PolarsResult<Option<Vec<Option<Point>>>> {
+        let ((array, rows), i) = locate(&self.chunks, row)?;
         if !array.is_valid(i) {
             return Ok(None);
         }
-        points
-            .as_ref()
-            .map_err(Clone::clone)
-            .and_then(|points| values(points, i, "point"))
-            .map(|[x, y]| Some(Point::new(x, y)))
+        let at = |points: &Points<'_>, k: usize| {
+            values(points, k, "point").map(|[x, y]| Point::new(x, y))
+        };
+        let read = match rows.as_ref().map_err(Clone::clone) {
+            Err(msg) => Err(msg),
+            Ok(PointRows::Single(points)) => at(points, i).map(|p| vec![Some(p)]),
+            Ok(PointRows::Set(list, points)) => {
+                let (start, end) = list.offsets().start_end(i);
+                (start..end)
+                    .map(|k| points.0.is_valid(k).then(|| at(points, k)).transpose())
+                    .collect()
+            }
+        };
+        read.map(Some)
             .map_err(|msg| polars_err!(ComputeError: "{} (row {})", msg, row))
+    }
+
+    /// Row `row`'s one point, or `None` for a null row, for an operand that
+    /// is a single point (a rotation's origin). A point set is refused.
+    pub(crate) fn get(&self, row: usize) -> PolarsResult<Option<Point>> {
+        if self.arity == Arity::Set {
+            polars_bail!(ComputeError: "expected one point per row, got a point set");
+        }
+        Ok(self.row(row)?.and_then(|mut v| v.pop().flatten()))
     }
 }
 

@@ -29,6 +29,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`.point` accessors take point sets.** A `POINT_SET_SCHEMA` column
+  (`List(point)`) gives one value per point, in input order, as a `List` — the
+  `.contour` arity rule: `pl.col("pts").point.distance_to_contour(pl.col("c"))`
+  measures every point against the row's contour without an explode/group-by.
+  A contour or bbox operand broadcasts against the set; two point columns
+  broadcast either way, and a set on both sides is refused. A null point in a
+  set gives a null in its place. `x()`/`y()` are typed functions now, so they
+  take sets too and read the `X`/`Y` spellings the other accessors accept.
+
 - **`froc_operating_range(table, group_by=...)`** reports each curve's
   `max_fp_per_image` and `max_sensitivity`, so a truncated curve is visible
   next to the AUC.
