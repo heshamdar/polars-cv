@@ -13,12 +13,29 @@ result = df.with_columns(
 )
 ```
 
-The pool is sized by `POLARS_MAX_THREADS`, like Polars' own. Under the
-streaming engine several calls run at once; they share that one pool (a caller
-waits while its rows run), so the plugin never uses more threads than the
-setting allows. Results, error reporting and `on_error` behave exactly as a
-row-by-row run would: rows come back in order, and under `on_error="raise"` the
-error reported is the earliest failing row's.
+The pool is sized by `POLARS_MAX_THREADS`, like Polars' own. Results, error
+reporting and `on_error` behave exactly as a row-by-row run would: rows come
+back in order, and under `on_error="raise"` the error reported is the earliest
+failing row's.
+
+### Two pools, one setting
+
+The plugin's pool is its **own** — a plugin links its own copy of Polars, so it
+cannot join the host's — and both are sized by `POLARS_MAX_THREADS`. A call
+spreads its rows over the plugin's pool only when it runs alone; when calls
+overlap — the streaming engine running morsels concurrently, or the in-memory
+engine evaluating several `.cv`/geometry expressions of one `select` at once —
+the overlapping calls run on the Polars thread that made them. So while one
+call is spread and others run inline, up to about twice `POLARS_MAX_THREADS`
+threads can be runnable at once.
+
+That is usually the fastest arrangement. If a query with many plugin
+expressions shows a load average well above the core count and erratic run
+times — most likely on machines with mixed performance/efficiency cores, or
+when every row holds large buffers and memory is tight — lower
+`POLARS_MAX_THREADS` (set it before importing Polars). Measure: on a 4-core
+machine, nine large-image pipelines in one streaming query ran fastest at the
+default.
 
 ## Use the streaming engine for larger-than-memory data
 

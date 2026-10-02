@@ -52,6 +52,12 @@ The compiled graph is cached process-wide, so per-morsel overhead is just a
 hash lookup. (The detection-metrics APIs already collect with
 `engine="streaming"` internally.)
 
+The plugin's pool and Polars' own are separate and both sized by
+`POLARS_MAX_THREADS`, so a query with many plugin expressions can briefly run up
+to about twice that many threads. If such a query shows a load average far
+above the core count and erratic timings, lower `POLARS_MAX_THREADS` — see
+[Streaming & Scaling](https://heshamdar.github.io/polars-cv/user-guide/concepts/streaming/#two-pools-one-setting).
+
 ## Source Behavior (Auto DType)
 
 `source()` defaults to `"auto"`, which infers the decode path from the input

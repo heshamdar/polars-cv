@@ -191,6 +191,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **The streaming guide no longer claims the plugin stays within
+  `POLARS_MAX_THREADS`.** The plugin's pool is its own (sized by the same
+  setting), and overlapping calls run inline on Polars' threads while a lone
+  call spreads over that pool, so up to about twice the setting can be
+  runnable. The guide and README now say so, and when to lower the setting.
 - **A length-1 geometry operand broadcasts.** Every `.point`/`.contour`/`.bbox`
   accessor failed with "geometry row 1 out of bounds" when an operand was one
   row — a bbox, point or contour built from literals, or a column the
