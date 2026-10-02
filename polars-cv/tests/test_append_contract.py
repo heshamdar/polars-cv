@@ -201,6 +201,38 @@ def test_eager_and_lazy_agree_on_shape_state(op) -> None:
 
 
 @plugin_required
+@pytest.mark.parametrize(
+    "op", sorted(name for name, case in _OP_CASES.items() if case is not None)
+)
+def test_a_sourceless_continuation_plans_like_the_lazy_method(op) -> None:
+    """``.pipe(Pipeline().op())`` must plan as ``.op()`` on the lazy node.
+
+    A sourceless ``Pipeline()`` knows nothing of what it will follow, so its
+    first op anchors it in the domain that op reads, and ``.pipe()`` plans it
+    again from the upstream node. It used to start as a buffer, so every
+    contour op was refused before ``.pipe()`` ever saw it.
+    """
+    domain, kwargs = _OP_CASES[op]
+    upstream = pl.col("img").cv.pipe(case_base(op, domain))
+
+    via_method = getattr(upstream, op)(**kwargs)._pipeline
+    via_pipe = upstream.pipe(getattr(Pipeline(), op)(**kwargs))._pipeline
+
+    assert _state(via_pipe) == _state(via_method), (
+        f"{op}: .pipe(Pipeline().{op}()) {_state(via_pipe)} != "
+        f".{op}() {_state(via_method)}"
+    )
+
+
+@plugin_required
+def test_a_sourceless_continuation_onto_the_wrong_domain_is_refused() -> None:
+    """The anchor is provisional: ``.pipe()`` checks it against the real node."""
+    buffer_node = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
+    with pytest.raises(ValueError, match="expects contour input"):
+        buffer_node.pipe(Pipeline().simplify(2.0))
+
+
+@plugin_required
 def test_assert_shape_survives_a_continuation() -> None:
     """A user assertion outranks inference, and only from where it was written.
 

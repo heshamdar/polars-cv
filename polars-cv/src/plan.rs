@@ -175,7 +175,9 @@ fn wire_dtype<'de, D: serde::Deserializer<'de>>(d: D) -> Result<PlannedDType, D:
 
 #[pymethods]
 impl State {
-    /// The state of a pipeline with no source yet: a buffer, nothing known.
+    /// The placeholder state of a pipeline with no source and no op yet: a
+    /// buffer, nothing known. Its first op replaces it with the domain that op
+    /// reads (`Plan::pushed`), so it never refuses a continuation's first op.
     #[new]
     fn unsourced() -> Self {
         State::new(
@@ -551,6 +553,26 @@ impl State {
             shape,
         }
     }
+
+    /// What an unsourced pipeline's first op tells of the state before it:
+    /// only its domain, read off the op's own contract (a buffer when it
+    /// reads one, else the domain it reads), and nothing about dtype or shape.
+    /// The node it is finally attached to plans it again from the real state.
+    fn entering(op: &crate::ops::TypedOp) -> State {
+        let accepted = op.input_domains();
+        let domain = if accepted.contains(&Domain::Buffer) {
+            Domain::Buffer
+        } else {
+            match accepted.as_slice() {
+                [only] => *only,
+                // No op reads several domains without buffer among them; if
+                // one ever does, its first op cannot say which it follows,
+                // and the buffer placeholder is refused as before.
+                _ => Domain::Buffer,
+            }
+        };
+        State::new(domain, PlannedDType::Unknown, PlannedShape::unknown())
+    }
 }
 
 /// The state a source hands the first op.
@@ -644,6 +666,13 @@ pub(crate) struct Plan {
     start: State,
     ops: Vec<Planned>,
     state: State,
+    /// No source and no op yet, so nothing says what this pipeline follows:
+    /// `start` is a placeholder until the first op, whose own input domain
+    /// anchors it ([`Plan::pushed`]). A continuation (`Plan::continuing`)
+    /// starts from a real upstream state and is never open; the source or
+    /// upstream it is finally attached to plans every op again
+    /// (`with_source`, `rebased`), so nothing goes unchecked.
+    open: bool,
 }
 
 impl Plan {
@@ -658,6 +687,7 @@ impl Plan {
             start: start.clone(),
             ops: Vec::new(),
             state: start,
+            open: false,
         };
         for (op, refs) in ops {
             plan = plan.pushed(op, refs)?;
@@ -666,6 +696,11 @@ impl Plan {
     }
 
     fn pushed(mut self, op: crate::ops::TypedOp, refs: Refs) -> Result<Plan, String> {
+        if self.open {
+            self.start = State::entering(&op);
+            self.state = self.start.clone();
+            self.open = false;
+        }
         let next = step(&op, &self.state, &refs)?;
         let entering = std::mem::replace(&mut self.state, next);
         self.ops.push(Planned { op, entering, refs });
@@ -711,7 +746,10 @@ impl Plan {
                     .ok_or_else(|| format!("no op at position {i}"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Plan::replanned(self.source.clone(), start, ops)
+        let mut plan = Plan::replanned(self.source.clone(), start, ops)?;
+        // An open plan has no ops, so selecting from it selects nothing.
+        plan.open = self.open;
+        Ok(plan)
     }
 
     /// A plan from its pickle wire (see `Plan::__reduce__`).
@@ -727,14 +765,21 @@ impl Plan {
         struct WirePlan {
             source: Option<crate::formats::source::Source>,
             start: State,
+            #[serde(default)]
+            open: bool,
             ops: Vec<WireOp>,
         }
         let plan: WirePlan = serde_json::from_str(wire).map_err(|e| e.to_string())?;
-        Plan::replanned(
+        if plan.open && (plan.source.is_some() || !plan.ops.is_empty()) {
+            return Err("only an empty, sourceless plan is open".into());
+        }
+        let mut back = Plan::replanned(
             plan.source,
             plan.start,
             plan.ops.into_iter().map(|o| (o.op, o.refs)),
-        )
+        )?;
+        back.open = plan.open;
+        Ok(back)
     }
 }
 
@@ -795,6 +840,7 @@ impl Plan {
             start: start.clone(),
             ops: Vec::new(),
             state: start,
+            open: true,
         }
     }
 
@@ -808,6 +854,7 @@ impl Plan {
             start: start.clone(),
             ops: Vec::new(),
             state: start,
+            open: false,
         }
     }
 
@@ -950,6 +997,7 @@ impl Plan {
         let wire = serde_json::json!({
             "source": plan.source,
             "start": serde_json::from_str::<serde_json::Value>(&plan.start._wire()).expect("wire state"),
+            "open": plan.open,
             "ops": plan.ops.iter().map(|p| serde_json::json!({"op": p.op, "refs": refs(&p.refs)})).collect::<Vec<_>>(),
         });
         let restore = slf
@@ -1032,6 +1080,58 @@ mod tests {
         let back = Plan::from_wire(&wire.to_string()).unwrap();
         assert_eq!(back.states(), plan.states());
         assert_eq!(back.ops_json(), plan.ops_json());
+    }
+
+    #[test]
+    fn an_unsourced_plan_enters_in_the_domain_its_first_op_reads() {
+        // Nothing precedes a sourceless pipeline yet, so its first op says
+        // what it must follow: a contour op starts it in the contour domain.
+        let plan = pushed(
+            Plan::empty(),
+            json!({"op": "contour_simplify", "tolerance": 2.0}),
+        );
+        assert_eq!(plan.start.domain, Domain::Contour);
+        assert_eq!(plan.start.dtype, PlannedDType::Unknown);
+        assert_eq!(plan.state.domain, Domain::Contour);
+        // A buffer op keeps the buffer entry it always had.
+        let plan = pushed(Plan::empty(), json!({"op": "grayscale"}));
+        assert_eq!(plan.start.domain, Domain::Buffer);
+        // Only the first op anchors it: the second is checked against it.
+        let err = plan
+            .pushed(
+                serde_json::from_value(json!({"op": "contour_simplify", "tolerance": 2.0}))
+                    .unwrap(),
+                Refs::new(),
+            )
+            .unwrap_err();
+        assert!(err.contains("buffer domain"), "{err}");
+    }
+
+    #[test]
+    fn a_continuing_plan_keeps_the_state_it_continues() {
+        // A real upstream state is a fact, not an opening: it is never re-seeded.
+        let plan = Plan::continuing(state("buffer", "auto", None, [None; 3]));
+        let err = plan
+            .pushed(
+                serde_json::from_value(json!({"op": "contour_simplify", "tolerance": 2.0}))
+                    .unwrap(),
+                Refs::new(),
+            )
+            .unwrap_err();
+        assert!(err.contains("buffer domain"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_unsourced_plan_survives_its_pickle_wire_still_open() {
+        let wire = json!({
+            "source": null,
+            "start": serde_json::from_str::<serde_json::Value>(&State::unsourced()._wire()).unwrap(),
+            "open": true,
+            "ops": [],
+        });
+        let back = Plan::from_wire(&wire.to_string()).unwrap();
+        let plan = pushed(back, json!({"op": "contour_simplify", "tolerance": 2.0}));
+        assert_eq!(plan.start.domain, Domain::Contour);
     }
 
     /// A state of rank `ndim` (or unknown) whose first sizes are `dims`.
