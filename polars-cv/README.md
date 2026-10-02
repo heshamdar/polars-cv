@@ -121,7 +121,7 @@ fill it in the expression: `pl.col("target_h").fill_null(224)`.
 ## Operations
 
 - **Image**: `resize`, `resize_scale`, `resize_to_height`, `resize_to_width`, `resize_max`, `resize_min`, `thumbnail`, `grayscale`, `blur`, `threshold`, `crop`, `rotate`, `pad`, `letterbox`, `flip_h`, `flip_v`.
-- **Color**: `cvt_color`, `to_hsv`, `to_lab`, `to_bgr`, `to_ycbcr`.
+- **Color**: `convert_color`, `to_hsv`, `to_lab`, `to_bgr`, `to_ycbcr`.
 - **Channels**: `channel_select`, `channel_swap`.
 - **Intensity**: `adjust_contrast`, `adjust_gamma`, `adjust_brightness`, `invert`.
 - **Convolution & Edge Detection**: `convolve2d`, `sobel`, `laplacian`, `sharpen`, `canny`.
