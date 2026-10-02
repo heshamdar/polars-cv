@@ -173,6 +173,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Performance
 
+- **Broadcasting two-buffer ops are ~29x faster.** An operand broadcast to
+  the other's shape (the `[H, W, 1]` mask `apply_mask` blends into an
+  `[H, W, 3]` image, or any binary op over differently shaped inputs) was
+  read by decoding every output element's coordinates afresh, allocating a
+  `Vec` and dividing once per axis per element. It is now read by stepping
+  through the output and carrying the source index along: 1024x1024 RGB
+  under a mask drops from ~104 ms to ~3.6 ms. Results are unchanged.
+
 - **Kernels use AVX2 on CPUs that have it, whatever the wheel was built for.**
   The published wheels target the x86-64 baseline (SSE2), where much of the
   engine's arithmetic could not vectorise. One runtime dispatch mechanism now

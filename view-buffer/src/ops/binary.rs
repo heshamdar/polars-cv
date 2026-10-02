@@ -223,9 +223,23 @@ fn read_as<T: FromAny>(buf: &ViewBuffer, shape: &[usize], start: usize, dst: &mu
                 *d = T::cast_from(x);
             }
         } else {
-            for (k, d) in dst.iter_mut().enumerate() {
-                let coords = linear_to_coords(start + k, shape);
-                *d = T::cast_from(src[broadcast_index(&coords, buf.shape())]);
+            // Walk the output positions with an odometer, carrying the source
+            // index along: each step adds the axis's broadcast step (0 where
+            // the source axis is 1), with no division or allocation per element.
+            let steps = broadcast_steps(buf.shape(), shape);
+            let mut coords = linear_to_coords(start, shape);
+            let mut at: usize = coords.iter().zip(&steps).map(|(c, s)| c * s).sum();
+            for d in dst.iter_mut() {
+                *d = T::cast_from(src[at]);
+                for ax in (0..shape.len()).rev() {
+                    coords[ax] += 1;
+                    at += steps[ax];
+                    if coords[ax] < shape[ax] {
+                        break;
+                    }
+                    at -= steps[ax] * shape[ax];
+                    coords[ax] = 0;
+                }
             }
         }
     })
@@ -546,21 +560,20 @@ pub fn broadcast_shapes(a: &[usize], b: &[usize]) -> Option<Vec<usize>> {
 
 use super::util::linear_to_coords;
 
-/// Get the linear index for broadcast access.
-fn broadcast_index(coords: &[usize], shape: &[usize]) -> usize {
-    let offset = coords.len().saturating_sub(shape.len());
-    let mut index = 0;
+/// Each axis of `out`'s step through a packed `src` broadcast to it: the
+/// source's stride, or 0 where the source axis is 1 or absent (axes align from
+/// the last).
+fn broadcast_steps(src: &[usize], out: &[usize]) -> Vec<usize> {
+    let offset = out.len() - src.len();
+    let mut steps = vec![0; out.len()];
     let mut stride = 1;
-
-    for i in (0..shape.len()).rev() {
-        let coord = coords[offset + i];
-        // Broadcast: if dimension is 1, use 0
-        let actual_coord = if shape[i] == 1 { 0 } else { coord };
-        index += actual_coord * stride;
-        stride *= shape[i];
+    for i in (0..src.len()).rev() {
+        if src[i] != 1 {
+            steps[offset + i] = stride;
+        }
+        stride *= src[i];
     }
-
-    index
+    steps
 }
 
 #[cfg(test)]
@@ -589,6 +602,53 @@ mod tests {
     fn test_broadcast_shapes_incompatible() {
         let result = broadcast_shapes(&[3, 4], &[3, 5]);
         assert_eq!(result, None);
+    }
+
+    /// A broadcast operand is read at the position NumPy's broadcasting
+    /// gives every output element, checked against a reference that decodes
+    /// each position independently: across `zip_with`'s blocks (every case
+    /// spans several), a carry over more than one axis, size-1 axes on both
+    /// sides and an operand of lower rank.
+    #[test]
+    fn broadcast_reads_every_position_numpy_gives() {
+        let cases: &[(&[usize], &[usize])] = &[
+            (&[37, 53, 3], &[37, 53, 1]),
+            (&[37, 53, 3], &[1, 53, 3]),
+            (&[37, 53, 3], &[37, 1, 3]),
+            (&[37, 53, 3], &[3]),
+            (&[37, 53, 3], &[53, 1]),
+            (&[37, 1, 3], &[1, 53, 1]),
+            (&[1], &[45, 29, 4]),
+            (&[45, 29, 4], &[1, 1, 1]),
+            (&[2, 3, 5, 7, 11], &[3, 1, 7, 1]),
+        ];
+        // The packed index of output position `pos` in an operand of `shape`.
+        let index = |pos: &[usize], shape: &[usize]| {
+            let offset = pos.len() - shape.len();
+            shape.iter().enumerate().fold(0, |acc, (i, &d)| {
+                acc * d + if d == 1 { 0 } else { pos[offset + i] }
+            })
+        };
+        for &(sa, sb) in cases {
+            let (na, nb): (usize, usize) = (sa.iter().product(), sb.iter().product());
+            let a = ViewBuffer::from_vec_with_shape((0..na as u64).collect(), sa.to_vec());
+            let b = ViewBuffer::from_vec_with_shape(
+                (0..nb as u64).map(|i| i * 1_000_000).collect(),
+                sb.to_vec(),
+            );
+            let out = BinaryOp::Add.execute(&a, &b);
+            let shape = out.shape().to_vec();
+            for (k, &got) in out.as_slice::<u64>().iter().enumerate() {
+                let mut pos = vec![0; shape.len()];
+                let mut rest = k;
+                for ax in (0..shape.len()).rev() {
+                    pos[ax] = rest % shape[ax];
+                    rest /= shape[ax];
+                }
+                let want = index(&pos, sa) as u64 + index(&pos, sb) as u64 * 1_000_000;
+                assert_eq!(got, want, "{sa:?} + {sb:?} at {pos:?}");
+            }
+        }
     }
 
     #[test]
