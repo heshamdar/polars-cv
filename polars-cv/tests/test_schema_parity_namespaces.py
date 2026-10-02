@@ -147,6 +147,9 @@ CONTOUR_CASES: dict[str, object] = {
     "iou": lambda: pl.col("a").contour.iou(pl.col("b")),
     "dice": lambda: pl.col("a").contour.dice(pl.col("b")),
     "hausdorff_distance": lambda: pl.col("a").contour.hausdorff_distance(pl.col("b")),
+    "boundary_distances": lambda: pl.col("a").contour.boundary_distances(
+        pl.col("b"), sample_step=0.5
+    ),
     "translate": lambda: pl.col("a").contour.translate(1.0, 2.0),
     "scale": lambda: pl.col("a").contour.scale(2.0, 2.0),
     "simplify": lambda: pl.col("a").contour.simplify(0.5),
@@ -259,6 +262,7 @@ SET_ARITY_EXEMPT = {
     "iou": "two contour operands; swept as set x single below",
     "dice": "two contour operands; swept as set x single below",
     "hausdorff_distance": "two contour operands; swept as set x single below",
+    "boundary_distances": "two contour operands; swept as set x single below",
 }
 
 #: The broadcast accessors, and the operand order each is swept in.
@@ -266,6 +270,7 @@ BROADCAST_CASES: dict[str, object] = {
     "iou": lambda left, right: left.contour.iou(right),
     "dice": lambda left, right: left.contour.dice(right),
     "hausdorff_distance": lambda left, right: left.contour.hausdorff_distance(right),
+    "boundary_distances": lambda left, right: left.contour.boundary_distances(right),
 }
 
 

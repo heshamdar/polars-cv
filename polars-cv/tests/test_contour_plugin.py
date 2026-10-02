@@ -740,3 +740,78 @@ class TestNonFiniteCoordinates:
         )
         with pytest.raises(pl.exceptions.ComputeError, match="non-finite x"):
             df.select(pl.col("c").contour.contains_point(pl.col("p")))
+
+
+@plugin_required
+class TestBoundaryDistances:
+    """Point-to-edge boundary distances: the reporter's two tracings of one
+    100 x 100 square, at 4 and 400 vertices, are one outline."""
+
+    @staticmethod
+    def _square(points_per_side: int) -> dict:
+        side = [i * 100 / points_per_side for i in range(points_per_side)]
+        ring = (
+            [{"x": s, "y": 0.0} for s in side]
+            + [{"x": 100.0, "y": s} for s in side]
+            + [{"x": 100 - s, "y": 100.0} for s in side]
+            + [{"x": 0.0, "y": 100 - s} for s in side]
+        )
+        return {"exterior": ring, "holes": [], "is_closed": True}
+
+    def _df(self) -> pl.DataFrame:
+        return pl.DataFrame(
+            {"a": [self._square(1)], "b": [self._square(100)]},
+            schema={"a": CONTOUR_SCHEMA, "b": CONTOUR_SCHEMA},
+        )
+
+    def test_one_outline_at_two_densities_is_at_distance_zero(self) -> None:
+        df = self._df()
+        assert (
+            df.select(pl.col("a").contour.hausdorff_distance(pl.col("b"))).item()
+            == 50.0
+        )
+        got = df.select(pl.col("a").contour.boundary_distances(pl.col("b"))).item()
+        assert got == {
+            "mean_a_to_b": 0.0,
+            "mean_b_to_a": 0.0,
+            "assd": 0.0,
+            "hd": 0.0,
+            "hd95": 0.0,
+        }
+
+    def test_a_uniform_offset(self) -> None:
+        inner = [
+            {"x": 1.0, "y": 1.0},
+            {"x": 9.0, "y": 1.0},
+            {"x": 9.0, "y": 9.0},
+            {"x": 1.0, "y": 9.0},
+        ]
+        df = pl.DataFrame(
+            {
+                "a": [{"exterior": inner, "holes": [], "is_closed": True}],
+                "b": [self._square(1)],
+            },
+            schema={"a": CONTOUR_SCHEMA, "b": CONTOUR_SCHEMA},
+        )
+        got = df.select(
+            pl.col("a")
+            .contour.scale(10.0, 10.0, origin="origin")
+            .contour.boundary_distances(pl.col("b"), sample_step=1.0)
+        ).item()
+        assert got["mean_a_to_b"] == pytest.approx(10.0)
+
+    def test_a_per_row_step(self) -> None:
+        df = self._df().with_columns(step=pl.Series([2.0]))
+        got = df.select(
+            pl.col("a").contour.boundary_distances(
+                pl.col("b"), sample_step=pl.col("step")
+            )
+        ).item()
+        assert got["hd"] == pytest.approx(0.0)
+
+    @pytest.mark.parametrize("step", [0.0, -1.0])
+    def test_a_non_positive_step_is_refused(self, step: float) -> None:
+        with pytest.raises(Exception, match="sample_step"):
+            self._df().select(
+                pl.col("a").contour.boundary_distances(pl.col("b"), sample_step=step)
+            )

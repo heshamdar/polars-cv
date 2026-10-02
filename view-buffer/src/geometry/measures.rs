@@ -248,10 +248,65 @@ fn distance_to_path(point: &Point, path: &[Point], closed: bool) -> f64 {
 /// The minimum distance from a point to an outline's edges: every ring of a
 /// region, or an open polyline's segments only.
 pub fn distance_to_outline(point: &Point, outline: &Outline) -> f64 {
-    outline
-        .paths()
-        .map(|(path, closed)| distance_to_path(point, path, closed))
-        .fold(f64::INFINITY, f64::min)
+    PreparedOutline::new(outline).distance(point)
+}
+
+/// An outline's edges built once, for measuring many points against it.
+pub struct PreparedOutline {
+    /// Paths of two or more vertices, as line strings.
+    lines: Vec<LineString<f64>>,
+    /// One-vertex paths, which are points.
+    points: Vec<Point>,
+}
+
+impl PreparedOutline {
+    pub fn new(outline: &Outline) -> Self {
+        let mut prepared = PreparedOutline {
+            lines: Vec::new(),
+            points: Vec::new(),
+        };
+        for (path, closed) in outline.paths() {
+            match path {
+                [] => {}
+                [only] => prepared.points.push(*only),
+                _ => prepared.lines.push(path_line_string(path, closed)),
+            }
+        }
+        prepared
+    }
+
+    /// The distance from `point` to the nearest edge (`INFINITY` if none).
+    pub fn distance(&self, point: &Point) -> f64 {
+        let p = geo_point(point);
+        self.lines
+            .iter()
+            .map(|line| Euclidean.distance(&p, line))
+            .chain(self.points.iter().map(|q| point.distance_to(q)))
+            .fold(f64::INFINITY, f64::min)
+    }
+}
+
+/// Points along an outline's boundary: its vertices, and with `step` also
+/// points every `step` along each edge (a closed ring's closing edge too, an
+/// open polyline's not), so a sparse outline does not under-sample its edges.
+pub fn sample_outline(outline: &Outline, step: Option<f64>) -> Vec<Point> {
+    let mut out = Vec::new();
+    for (path, closed) in outline.paths() {
+        out.extend_from_slice(path);
+        let Some(step) = step else { continue };
+        let closing = (closed && path.len() > 2).then(|| (path[path.len() - 1], path[0]));
+        let edges = path.windows(2).map(|w| (w[0], w[1])).chain(closing);
+        for (p, q) in edges {
+            let length = p.distance_to(&q);
+            let mut k = 1.0;
+            while k * step < length {
+                let t = k * step / length;
+                out.push(Point::new(p.x + t * (q.x - p.x), p.y + t * (q.y - p.y)));
+                k += 1.0;
+            }
+        }
+    }
+    out
 }
 
 /// Computes the minimum distance from a point to a contour boundary.

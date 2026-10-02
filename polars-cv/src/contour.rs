@@ -542,7 +542,7 @@ contour_accessor! {
     zip fn contour_iou / contour_iou_output_type -> DataType::Float64;
     reads Contour;
     parse ContourFn::Iou { other };
-    |a, b| Ok(AnyValue::Float64(pairwise::iou(a, b)))
+    |a, b, _params, _row| Ok(AnyValue::Float64(pairwise::iou(a, b)))
 }
 
 contour_accessor! {
@@ -550,7 +550,7 @@ contour_accessor! {
     zip fn contour_dice / contour_dice_output_type -> DataType::Float64;
     reads Contour;
     parse ContourFn::Dice { other };
-    |a, b| Ok(AnyValue::Float64(pairwise::dice(a, b)))
+    |a, b, _params, _row| Ok(AnyValue::Float64(pairwise::dice(a, b)))
 }
 
 contour_accessor! {
@@ -558,7 +558,54 @@ contour_accessor! {
     zip fn contour_hausdorff / contour_hausdorff_output_type -> DataType::Float64;
     reads Outline;
     parse ContourFn::Hausdorff { other };
-    |a, b| Ok(AnyValue::Float64(pairwise::hausdorff_distance_outlines(a, b)))
+    |a, b, _params, _row| Ok(AnyValue::Float64(pairwise::hausdorff_distance_outlines(a, b)))
+}
+
+/// The fields of `contour_boundary_distances`'s struct, in order.
+const BOUNDARY_DISTANCE_FIELDS: [&str; 5] = ["mean_a_to_b", "mean_b_to_a", "assd", "hd", "hd95"];
+
+fn boundary_distance_fields() -> Vec<Field> {
+    BOUNDARY_DISTANCE_FIELDS
+        .iter()
+        .map(|name| Field::new(PlSmallStr::from_static(name), DataType::Float64))
+        .collect()
+}
+
+fn boundary_distances_dtype() -> DataType {
+    DataType::Struct(boundary_distance_fields())
+}
+
+contour_accessor! {
+    /// Point-to-edge boundary distances between two contours, broadcasting a
+    /// set against a single.
+    zip fn contour_boundary_distances / contour_boundary_distances_output_type
+        -> boundary_distances_dtype();
+    reads Outline;
+    parse ContourFn::BoundaryDistances { other, sample_step };
+    |a, b, params, row| {
+        let step = match sample_step {
+            Some(step) => {
+                let step = params.value(step, row)?;
+                if !(step.is_finite() && step > 0.0) {
+                    polars_bail!(ComputeError:
+                        "boundary_distances: sample_step must be a positive number, \
+                         got {} (row {})", step, row);
+                }
+                Some(step)
+            }
+            None => None,
+        };
+        Ok(match pairwise::boundary_distances(a, b, step) {
+            None => AnyValue::Null,
+            Some(d) => AnyValue::StructOwned(Box::new((
+                [d.mean_a_to_b, d.mean_b_to_a, d.assd, d.hd, d.hd95]
+                    .into_iter()
+                    .map(AnyValue::Float64)
+                    .collect(),
+                boundary_distance_fields(),
+            ))),
+        })
+    }
 }
 
 // ============================================================================

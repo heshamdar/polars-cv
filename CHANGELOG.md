@@ -29,6 +29,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`.contour.boundary_distances(other, sample_step=None)`** — point-to-edge
+  boundary distances, both directions, as
+  `Struct{mean_a_to_b, mean_b_to_a, assd, hd, hd95}`: the directed means, the
+  average symmetric surface distance, the Hausdorff distance and the larger
+  directed 95th percentile (MONAI's convention). Each boundary is sampled at
+  its vertices, plus every `sample_step` along each edge when given, and
+  measured to the other's *edges*, so two tracings of one outline at
+  different vertex densities are 0 apart (`hausdorff_distance`, which stays
+  vertex-to-vertex, called the reporter's pair 50 apart). Open contours are
+  measured as polylines; for physical units `.contour.scale()` both sides by
+  the pixel spacing first. Broadcasts a set against a single like `iou`.
+
 - **`.point` accessors take point sets.** A `POINT_SET_SCHEMA` column
   (`List(point)`) gives one value per point, in input order, as a `List` — the
   `.contour` arity rule: `pl.col("pts").point.distance_to_contour(pl.col("c"))`

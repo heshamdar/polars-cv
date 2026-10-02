@@ -132,7 +132,8 @@ pub enum ContourFn<M: Mode = Exec> {
     /// nearest vertex of the other. This is a vertex-to-vertex measure, not
     /// point-to-edge: two contours tracing the same outline with different vertex
     /// spacing have a non-zero distance. Hole vertices are included. An empty
-    /// contour gives `inf`.
+    /// contour gives `inf`. For point-to-edge distances, see
+    /// `boundary_distances`.
     ///
     /// Returns:
     ///     Float64 Hausdorff distance — `List(Float64)` when either side is a
@@ -142,6 +143,33 @@ pub enum ContourFn<M: Mode = Exec> {
     Hausdorff {
         /// Another contour column to compare with.
         other: ColumnRef,
+    },
+    /// Point-to-edge boundary distances to another contour, both directions.
+    ///
+    /// Each boundary is sampled — its vertices, plus a point every
+    /// ``sample_step`` along each edge when given — and every sample is
+    /// measured to the *edges* of the other contour, so two tracings of one
+    /// outline at different vertex densities are distance zero apart. Open
+    /// contours (``is_closed=False``) are measured as polylines, without a
+    /// closing edge. For a physical unit, ``.contour.scale(sx, sy, origin="origin")``
+    /// both sides by the pixel spacing first (anisotropic spacing included).
+    /// A contour with no vertices gives null.
+    ///
+    /// Returns:
+    ///     ``Struct{mean_a_to_b, mean_b_to_a, assd, hd, hd95}`` (Float64):
+    ///     the directed means, the average symmetric surface distance (mean
+    ///     over both sample sets), the Hausdorff distance (largest sample
+    ///     distance) and the larger directed 95th percentile (linear
+    ///     interpolation; MONAI's ``percentile=95``) — a ``List`` of them when
+    ///     either side is a contour set.
+    #[op(name = "contour_boundary_distances", python = "boundary_distances",
+         sample = {"other": {"$slot": 1}, "sample_step": 0.5})]
+    BoundaryDistances {
+        /// Another contour column to compare with.
+        other: ColumnRef,
+        /// Spacing of the points sampled along every edge, > 0; ``None``
+        /// samples the vertices only (literal or expression).
+        sample_step: Option<M::V<f64>>,
     },
     /// Test if contour contains a point.
     ///

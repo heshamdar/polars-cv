@@ -365,7 +365,7 @@ pub(crate) fn zip_contours<T: ReadContour, R: ContourOutput + Send>(
     calls: &CallTracker,
     name: &'static str,
     elem: DataType,
-    compute: impl Fn(&T, &T, usize) -> PolarsResult<R> + Sync,
+    compute: impl Fn(&T, &T, &GeomParams, usize) -> PolarsResult<R> + Sync,
 ) -> PolarsResult<Series> {
     let (a_arity, b_arity) = (Arity::of(a.dtype()), Arity::of(b.dtype()));
     if a_arity == Arity::Set && b_arity == Arity::Set {
@@ -379,7 +379,7 @@ pub(crate) fn zip_contours<T: ReadContour, R: ContourOutput + Send>(
     }
     let arity = a_arity.combine(b_arity);
     let (a_column, b_column) = (ContourColumn::new(a), ContourColumn::new(b));
-    let row = |i: usize| -> PolarsResult<Option<Vec<R>>> {
+    let row = |params: &GeomParams, i: usize| -> PolarsResult<Option<Vec<R>>> {
         let (Some(left), Some(right)) = (T::read(&a_column, i)?, T::read(&b_column, i)?) else {
             return Ok(None);
         };
@@ -388,18 +388,23 @@ pub(crate) fn zip_contours<T: ReadContour, R: ContourOutput + Send>(
         // against an empty single side yields an empty set.
         let results = match (a_arity, b_arity) {
             (Arity::Set, _) => match right.first() {
-                Some(single) => left.iter().map(|c| compute(c, single, i)).collect(),
+                Some(single) => left.iter().map(|c| compute(c, single, params, i)).collect(),
                 None => Ok(Vec::new()),
             },
             (_, Arity::Set) => match left.first() {
-                Some(single) => right.iter().map(|c| compute(single, c, i)).collect(),
+                Some(single) => right
+                    .iter()
+                    .map(|c| compute(single, c, params, i))
+                    .collect(),
                 None => Ok(Vec::new()),
             },
-            (Arity::Single, Arity::Single) => compute(&left[0], &right[0], i).map(|r| vec![r]),
+            (Arity::Single, Arity::Single) => {
+                compute(&left[0], &right[0], params, i).map(|r| vec![r])
+            }
         }?;
         Ok(Some(results))
     };
-    let rows = params.map_rows(calls, a.len(), |_, i| row(i))?;
+    let rows = params.map_rows(calls, a.len(), row)?;
     R::column(a.name().clone(), rows, arity, &elem)
 }
 
@@ -471,8 +476,8 @@ macro_rules! contour_accessor {
         $(#[$meta:meta])*
         zip fn $name:ident / $out_ty:ident -> $elem:expr;
         reads $read:ty;
-        parse $fam:ident :: $var:ident { $other:ident };
-        |$a:ident, $b:ident| $body:expr
+        parse $fam:ident :: $var:ident { $other:ident $(, $field:ident)* };
+        |$a:ident, $b:ident, $params:ident, $row:ident| $body:expr
     ) => {
         fn $out_ty(input_fields: &[Field]) -> PolarsResult<Field> {
             $crate::geom_arity::binary_field(input_fields, stringify!($name), $elem)
@@ -483,7 +488,7 @@ macro_rules! contour_accessor {
             let (op, params) = $crate::geom_params::GeomParams::parse::<
                 $fam<::view_buffer::mode::Wire>,
             >(inputs, kwargs, stringify!($name))?;
-            let $fam::$var { $other } = &op else {
+            let $fam::$var { $other $(, $field)* } = &op else {
                 return Err($crate::geom_params::parsed_as_another(stringify!($name)));
             };
             $crate::geom_arity::zip_contours::<$read, _>(
@@ -493,7 +498,7 @@ macro_rules! contour_accessor {
                 $crate::geom_calls!(),
                 stringify!($name),
                 $elem,
-                |$a, $b, _row| $body,
+                |$a, $b, $params, $row| $body,
             )
         }
     };
@@ -691,7 +696,7 @@ mod split_tests {
             &CallTracker::new(),
             "test",
             DataType::Float64,
-            |l, r, row| {
+            |l, r, _params, row| {
                 rendezvous.visit(row);
                 Ok(AnyValue::Float64(l.exterior[0].x + r.exterior[0].x))
             },
