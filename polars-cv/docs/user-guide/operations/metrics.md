@@ -83,6 +83,32 @@ auc = froc_auc(table, fp_range=(0.0, 8.0)).collect().item()
 `pred_col`/`gt_col`, so a segmentation graph and the contour extraction can
 share one decode and stream from a single collect.
 
+#### Line-shaped ground truth
+
+Landmarks annotated as lines (a skinfold, a muscle edge) but predicted as thin
+regions cannot be paired by IoU: a line has no area. Match them by
+**coverage** instead — the fraction of each GT line's samples inside a
+prediction or within `coverage_tolerance` pixels of it — and give the GT as a
+contour column (open polylines, e.g. from `contour_set_from_coords(...,
+closed=False)`) rather than a mask:
+
+```python
+matcher = ContourMatcher(
+    iou_threshold=0.5,          # here: the minimum coverage
+    match_by="coverage",
+    coverage_tolerance=5.0,     # pixels; divide a physical tolerance by the spacing
+    duplicates="ignore",        # a repeated hit on one GT is dropped, not an FP
+    auto_resize=False,          # contour GT has no mask size to resize to
+)
+table = matcher.match(data, pred_col="heatmap", gt_col="gt_lines")
+```
+
+`duplicates="ignore"` follows the LUNA16/CAMELYON convention; the default,
+`"false_positive"`, counts a second prediction on an already-matched GT as a
+false positive. At the expression level the same pieces are
+`.contour.correspond_by_coverage(...)` and the `duplicate` field of every
+correspondence result.
+
 Both columns go through `source("auto")`, so a mask may be a nested
 `List`/`Array` of numbers or booleans, encoded image bytes (PNG/JPEG or a VIEW
 blob), or a `String` column of paths to read.
