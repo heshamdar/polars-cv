@@ -253,3 +253,57 @@ pub fn check_range(name: &str, value: f64, lo: f64, hi: f64, row: usize) -> Pola
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geom_fns::PointFn;
+    use view_buffer::mode::Wire;
+
+    fn params<'a>(inputs: &'a [Series], on_error: &str) -> PolarsResult<GeomParams<'a>> {
+        let kwargs: GeomKwargs = serde_json::from_value(serde_json::json!({
+            "args": {},
+            "on_null": "raise",
+            "on_error": on_error,
+        }))
+        .expect("the kwargs envelope parses");
+        GeomParams::parse::<PointFn<Wire>>(inputs, kwargs, "point_x").map(|(_, p)| p)
+    }
+
+    fn column() -> [Series; 1] {
+        [Series::new("p".into(), [1.0f64])]
+    }
+
+    /// Under `"null"` a row's own error is that row's null; under `"raise"`
+    /// it fails the call.
+    #[test]
+    fn a_row_error_is_null_only_under_null() {
+        let inputs = column();
+        let failing = || -> PolarsResult<()> { polars_bail!(ComputeError: "bad row") };
+        assert!(params(&inputs, "raise").unwrap().row(failing).is_err());
+        assert_eq!(params(&inputs, "null").unwrap().row(failing).unwrap(), None);
+    }
+
+    /// An error about the column is no row's to null: it raises under both.
+    #[test]
+    fn a_column_error_raises_under_every_policy() {
+        let inputs = column();
+        for policy in ["raise", "null"] {
+            let result = params(&inputs, policy)
+                .unwrap()
+                .row(|| -> PolarsResult<()> { Err(column_error("a contour set")) });
+            assert!(
+                matches!(result, Err(PolarsError::SchemaMismatch(_))),
+                "{policy}"
+            );
+        }
+    }
+
+    /// An accessor's output has no struct to carry `_error` in.
+    #[test]
+    fn null_with_message_is_refused() {
+        let inputs = column();
+        let err = params(&inputs, "null_with_message").err().expect("refused");
+        assert!(err.to_string().contains("null_with_message"), "{err}");
+    }
+}
