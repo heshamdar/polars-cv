@@ -209,7 +209,9 @@ fn correspondence_anyvalue(result: &pairwise::Correspondence) -> AnyValue<'stati
 /// fails here, naming the row.
 fn parse_order_list(value: &AnyValue, n_left: usize, row: usize) -> PolarsResult<Vec<usize>> {
     let AnyValue::List(series) = value else {
-        polars_bail!(ComputeError: "Expected List[UInt32] for order, got {:?}", value);
+        return Err(crate::geom_params::column_error(format!(
+            "Expected List[UInt32] for order, got {value:?}"
+        )));
     };
     if series.len() != n_left {
         polars_bail!(ComputeError:
@@ -706,7 +708,7 @@ contour_accessor! {
     zip fn contour_boundary_distances / contour_boundary_distances_output_type
         -> boundary_distances_dtype();
     reads Outline;
-    parse ContourFn::BoundaryDistances { other, sample_step };
+    parse ContourFn::BoundaryDistances { other, sample_step, frame };
     |a, b, params, row| {
         let step = match sample_step {
             Some(step) => {
@@ -720,7 +722,18 @@ contour_accessor! {
             }
             None => None,
         };
-        Ok(match pairwise::boundary_distances(a, b, step) {
+        let frame = match params.optional_column(frame) {
+            None => None,
+            Some(column) => match BBoxColumn::new(column).single(row)? {
+                // A null frame is a null operand: a null result.
+                None => return Ok(AnyValue::Null),
+                Some(f) if f.width > 0.0 && f.height > 0.0 => Some(f),
+                Some(f) => polars_bail!(ComputeError:
+                    "boundary_distances: the frame must have a positive width and \
+                     height, got {} x {} (row {})", f.width, f.height, row),
+            },
+        };
+        Ok(match pairwise::boundary_distances(a, b, step, frame.as_ref()) {
             None => AnyValue::Null,
             Some(d) => AnyValue::StructOwned(Box::new((
                 [d.mean_a_to_b, d.mean_b_to_a, d.assd, d.hd, d.hd95]

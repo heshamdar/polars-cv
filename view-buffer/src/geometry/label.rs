@@ -7,7 +7,7 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::DType;
-use crate::geometry::contour::{Contour, Point};
+use crate::geometry::contour::{BoundingBox, Contour, Point};
 use crate::geometry::{measures, pairwise, predicates};
 use crate::ops::util::maximum;
 
@@ -185,10 +185,11 @@ fn score_one(
 /// produces.
 fn path_pixels(ring: &[Point], width: usize, height: usize) -> Vec<(usize, usize)> {
     let (w, h) = (width as f64, height as f64);
+    let buffer = BoundingBox::new(0.0, 0.0, w, h);
     let mut pixels = Vec::new();
     for (i, a) in ring.iter().enumerate() {
         let b = &ring[(i + 1) % ring.len()];
-        let Some((a, b)) = clip_segment(a, b, w, h) else {
+        let Some((a, b)) = buffer.clip_segment(a, b) else {
             continue;
         };
         let steps = (b.x - a.x).abs().max((b.y - a.y).abs()).ceil() as usize;
@@ -210,35 +211,6 @@ fn path_pixels(ring: &[Point], width: usize, height: usize) -> Vec<(usize, usize
     pixels.sort_unstable();
     pixels.dedup();
     pixels
-}
-
-/// The part of segment `a`-`b` inside `[0, w] x [0, h]` (Liang–Barsky), or
-/// `None` when no part of it is.
-fn clip_segment(a: &Point, b: &Point, w: f64, h: f64) -> Option<(Point, Point)> {
-    let (dx, dy) = (b.x - a.x, b.y - a.y);
-    let (mut t0, mut t1) = (0.0f64, 1.0f64);
-    for (p, q) in [(-dx, a.x), (dx, w - a.x), (-dy, a.y), (dy, h - a.y)] {
-        if p == 0.0 {
-            // Parallel to this edge: inside or out for the whole segment.
-            if q < 0.0 {
-                return None;
-            }
-        } else {
-            let r = q / p;
-            if p < 0.0 {
-                t0 = t0.max(r);
-            } else {
-                t1 = t1.min(r);
-            }
-        }
-    }
-    // `max`/`min` discard NaN, so `t0`/`t1` stay finite; a NaN endpoint then
-    // yields NaN pixels, which `path_pixels`' bounds check drops.
-    if t0 > t1 {
-        return None;
-    }
-    let at = |t: f64| Point::new(a.x + t * dx, a.y + t * dy);
-    Some((at(t0), at(t1)))
 }
 
 #[cfg(test)]

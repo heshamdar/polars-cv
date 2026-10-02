@@ -45,6 +45,22 @@ df.with_columns(
 For a fallback value instead, fill the null in the expression:
 `pl.col("w").fill_null(1.0)`.
 
+### Invalid rows
+
+A row whose data a function refuses — a line too far from the frame for
+`close_along_border`, an open contour given to `area`, a zero `normalize`
+size — fails the query by default, naming the row. `on_error("null")` nulls
+just those rows, so they can be counted and inspected, mirroring
+`source(on_error="null")`:
+
+```python
+closed = pl.col("line").contour.on_error("null").close_along_border(pl.col("w"), pl.col("h"))
+```
+
+An error about the **column** rather than a row — a contour set where one
+contour per row is expected, a dtype no reader understands — still raises
+under `"null"`: no row could succeed. `on_error` and `on_null` compose.
+
 ## Schemas
 
 Geometry data uses Polars Struct columns:

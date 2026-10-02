@@ -36,6 +36,25 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`on_error("raise" | "null")` on the geometry accessors.** One invalid row
+  — e.g. a `close_along_border` line ending beyond `max_snap` from the frame —
+  failed the whole query, and the only remedy was re-implementing the check
+  in Polars expressions. `pl.col(...).contour.on_error("null")` (and on
+  `.point`/`.bbox`) nulls just the rows whose data a function refuses,
+  mirroring `source(on_error="null")`; it composes with `on_null`. An error
+  about the operand **column** (a contour set where one contour is expected,
+  an unreadable dtype) still raises: those are now `SchemaMismatch` errors
+  internally, which the policy never nulls. `"null_with_message"` is refused
+  (an accessor has no struct output to carry the message).
+- **`.contour.boundary_distances(frame=...)`.** A region cut off by the image
+  edge has a frame segment in its outline that no annotation traces, so every
+  frame sample was measured as error (ASSD/HD/HD95 inflated even for a perfect
+  prediction). `frame` takes a bbox per row (literal or column): boundary not
+  strictly inside it is dropped from both directions, and each side is
+  measured to the other's boundary clipped to the frame. Insetting the bbox
+  drops boundary near the edge too.
+
+
 - **Line-shaped ground truth in `ContourMatcher`.** `match_by="coverage"`
   (with `coverage_tolerance`) pairs predictions with GT by coverage, so GT
   annotated as polylines — skinfolds, muscle edges — can be scored, which IoU

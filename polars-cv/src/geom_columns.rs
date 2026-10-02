@@ -44,6 +44,7 @@ use view_buffer::geometry::contour::{Contour, Outline, Point};
 use view_buffer::geometry::contour::BoundingBox;
 
 use crate::geom_arity::{is_point_dtype, Arity, ReadContour};
+use crate::geom_params::column_error;
 use crate::geom_schema::{BBOX_FIELD_NAMES, POINT_FIELD_SPELLINGS};
 
 /// A contour column's rows, each as the contours it holds.
@@ -150,7 +151,7 @@ impl<'a> ContourColumn<'a> {
         let rows = match rows {
             Ok(rows) => rows,
             Err(_) if !array.is_valid(i) => return Ok(None),
-            Err(msg) => polars_bail!(ComputeError: "{}", msg),
+            Err(msg) => return Err(column_error(msg)),
         };
         let contours = match rows {
             Rows::Single(array, contours) if array.is_valid(i) => {
@@ -166,7 +167,7 @@ impl<'a> ContourColumn<'a> {
             }
             _ => Ok(None),
         };
-        contours.map_err(|msg| polars_err!(ComputeError: "{} (row {})", msg, row))
+        contours.map_err(|e| e.at_row(row))
     }
 
     /// Row `i`'s one contour, for a function of a single contour, or `None`
@@ -176,9 +177,9 @@ impl<'a> ContourColumn<'a> {
     /// Read as `T`: a region ([`Contour`]) or a boundary ([`Outline`]).
     pub(crate) fn single_as<T: ReadContour>(&self, i: usize) -> PolarsResult<Option<T>> {
         if self.arity == Arity::Set {
-            polars_bail!(ComputeError:
-                "expected one contour per row, got a contour set: .explode() it first"
-            );
+            return Err(column_error(
+                "expected one contour per row, got a contour set: .explode() it first",
+            ));
         }
         Ok(T::read(self, i)?.and_then(|mut v| v.pop()))
     }
@@ -186,7 +187,7 @@ impl<'a> ContourColumn<'a> {
 
 impl Contours<'_> {
     /// The `j`th contour.
-    fn get(&self, j: usize) -> Result<Outline, String> {
+    fn get(&self, j: usize) -> Result<Outline, ReadError> {
         match self {
             Contours::Ring(rings) => rings.get(j).map(|ring| Outline::Closed(Contour::new(ring))),
             Contours::Struct {
@@ -203,7 +204,7 @@ impl Contours<'_> {
                             .peekable();
                         match (present.peek(), rings) {
                             (None, _) => Vec::new(),
-                            (Some(_), Err(msg)) => return Err(msg.clone()),
+                            (Some(_), Err(msg)) => return Err(ReadError::Layout(msg.clone())),
                             (Some(_), Ok(rings)) => {
                                 present.map(|r| rings.get(r)).collect::<Result<_, _>>()?
                             }
@@ -223,11 +224,11 @@ impl Contours<'_> {
                         holes,
                     ))),
                     (false, true) => Ok(Outline::Open(exterior.get(j)?)),
-                    (false, false) => Err(
+                    (false, false) => Err(ReadError::Value(
                         "an open contour (is_closed = false) has holes, but a polyline \
                          bounds no region for a hole to be cut from"
                             .to_string(),
-                    ),
+                    )),
                 }
             }
         }
@@ -238,23 +239,53 @@ impl Rings<'_> {
     /// The `j`th ring's points. A null point, or a point with a null
     /// coordinate, is refused: it has no position, and reading one as the
     /// origin (as this once did) moves the ring silently.
-    fn get(&self, j: usize) -> Result<Vec<Point>, String> {
+    fn get(&self, j: usize) -> Result<Vec<Point>, ReadError> {
         let (start, end) = self.list.offsets().start_end(j);
         if start == end {
             return Ok(Vec::new());
         }
-        let points = self.points.as_ref().map_err(Clone::clone)?;
+        let points = self
+            .points
+            .as_ref()
+            .map_err(|msg| ReadError::Layout(msg.clone()))?;
         // Sized up front: collecting `Result`s loses the length hint, and a
         // growing vector reallocates as it goes.
         let mut ring = Vec::with_capacity(end - start);
         for k in start..end {
             if !points.0.is_valid(k) {
-                return Err("a contour point is null".to_string());
+                return Err(ReadError::Value("a contour point is null".to_string()));
             }
             let [x, y] = values(points, k, "contour point")?;
             ring.push(Point::new(x, y));
         }
         Ok(ring)
+    }
+}
+
+/// Why a contour could not be read: its column's layout — known before any
+/// row, but reported only for a row that has a value to read (so an all-null
+/// column of any dtype reads as nulls) — or the value itself.
+enum ReadError {
+    Layout(String),
+    Value(String),
+}
+
+impl From<String> for ReadError {
+    /// A value's own fields (`values`) are the value's fault.
+    fn from(msg: String) -> Self {
+        ReadError::Value(msg)
+    }
+}
+
+impl ReadError {
+    /// The error for row `row`: a layout is the column's
+    /// ([`column_error`]), raised under every `on_error` policy; a value is
+    /// the row's, naming it.
+    fn at_row(self, row: usize) -> PolarsError {
+        match self {
+            ReadError::Layout(msg) => column_error(msg),
+            ReadError::Value(msg) => polars_err!(ComputeError: "{} (row {})", msg, row),
+        }
     }
 }
 
@@ -470,8 +501,8 @@ impl<'a> PointColumn<'a> {
         let at = |points: &Points<'_>, k: usize| {
             values(points, k, "point").map(|[x, y]| Point::new(x, y))
         };
-        let read = match rows.as_ref().map_err(Clone::clone) {
-            Err(msg) => Err(msg),
+        let read = match rows {
+            Err(msg) => return Err(column_error(msg)),
             Ok(PointRows::Single(points)) => at(points, i).map(|p| vec![Some(p)]),
             Ok(PointRows::Set(list, points)) => {
                 let (start, end) = list.offsets().start_end(i);
@@ -488,7 +519,7 @@ impl<'a> PointColumn<'a> {
     /// is a single point (a rotation's origin). A point set is refused.
     pub(crate) fn get(&self, row: usize) -> PolarsResult<Option<Point>> {
         if self.arity == Arity::Set {
-            polars_bail!(ComputeError: "expected one point per row, got a point set");
+            return Err(column_error("expected one point per row, got a point set"));
         }
         Ok(self.row(row)?.and_then(|mut v| v.pop().flatten()))
     }
@@ -545,8 +576,8 @@ impl<'a> BBoxColumn<'a> {
         if !array.is_valid(i) {
             return Ok(None);
         }
-        let read = match rows.as_ref().map_err(Clone::clone) {
-            Err(msg) => Err(msg),
+        let read = match rows {
+            Err(msg) => return Err(column_error(msg)),
             Ok(BBoxRows::Single(fields)) => bbox_at(fields, i).map(|b| vec![b]),
             Ok(BBoxRows::Set(list, fields)) => {
                 let (start, end) = list.offsets().start_end(i);
@@ -563,7 +594,9 @@ impl<'a> BBoxColumn<'a> {
     /// Row `row`'s one bbox, or `None` for a null row. A set is refused.
     pub(crate) fn single(&self, row: usize) -> PolarsResult<Option<BoundingBox>> {
         if self.arity == Arity::Set {
-            polars_bail!(ComputeError: "expected one bbox per row, got a list of them");
+            return Err(column_error(
+                "expected one bbox per row, got a list of them",
+            ));
         }
         Ok(self.row(row)?.and_then(|mut v| v.pop()))
     }

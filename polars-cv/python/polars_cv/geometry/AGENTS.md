@@ -202,6 +202,18 @@ pool), so `on_null("null")` nulls the row rather than each
 contour. That is the job `contour_row` used to do, moved so it cannot be
 forgotten.
 
+`GeomParams::row` applies `on_error` the same way: under `"null"` any row
+error nulls the row **except** a `SchemaMismatch`, which marks an error about
+the operand column (an arity a function cannot take, a layout no reader
+understands — `geom_params::column_error`). Such an error must be raised with
+`column_error`, never `ComputeError`, or `on_error("null")` would turn a query
+that cannot work into an all-null column. The readers carry the distinction
+internally (`geom_columns::ReadError`), since a layout error is deferred to
+the first non-null row.
+
+Every reader locates rows through `geom_columns::Chunks`, which broadcasts a
+one-row operand to every row, as `ParamCol` does for a parameter.
+
 `contour_contains_point` is the one accessor with its own loop: its second
 operand is a point, so neither the `map` arm (one operand) nor the `zip` arm
 (two contour operands) describes it. It still reads `Arity::of` and wraps

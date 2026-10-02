@@ -190,6 +190,46 @@ impl BoundingBox {
         self.width * self.height
     }
 
+    /// Whether `p` lies strictly inside the box: not on its edges.
+    pub fn contains_strictly(&self, p: &Point) -> bool {
+        p.x > self.x && p.x < self.x + self.width && p.y > self.y && p.y < self.y + self.height
+    }
+
+    /// The part of segment `a`-`b` inside the closed box (Liang–Barsky), or
+    /// `None` when no part of it is.
+    ///
+    /// `max`/`min` discard NaN, so the clip parameters stay finite; a NaN
+    /// endpoint yields NaN points, which callers' bounds checks drop.
+    pub fn clip_segment(&self, a: &Point, b: &Point) -> Option<(Point, Point)> {
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        let (mut t0, mut t1) = (0.0f64, 1.0f64);
+        for (p, q) in [
+            (-dx, a.x - self.x),
+            (dx, self.x + self.width - a.x),
+            (-dy, a.y - self.y),
+            (dy, self.y + self.height - a.y),
+        ] {
+            if p == 0.0 {
+                // Parallel to this edge: inside or out for the whole segment.
+                if q < 0.0 {
+                    return None;
+                }
+            } else {
+                let r = q / p;
+                if p < 0.0 {
+                    t0 = t0.max(r);
+                } else {
+                    t1 = t1.min(r);
+                }
+            }
+        }
+        if t0 > t1 {
+            return None;
+        }
+        let at = |t: f64| Point::new(a.x + t * dx, a.y + t * dy);
+        Some((at(t0), at(t1)))
+    }
+
     /// Checks if this bounding box intersects with another.
     pub fn intersects(&self, other: &BoundingBox) -> bool {
         self.x < other.x + other.width

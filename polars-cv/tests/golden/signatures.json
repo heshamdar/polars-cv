@@ -22,6 +22,18 @@
     "None"
    ]
   ],
+  "on_error": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "policy",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "on_null": [
    [
     "self",
@@ -73,6 +85,11 @@
    ],
    [
     "sample_step",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "frame",
     "KEYWORD_ONLY",
     "None"
    ]
@@ -300,6 +317,18 @@
    ],
    [
     "height",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "on_error": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "policy",
     "POSITIONAL_OR_KEYWORD",
     ""
    ]
@@ -3464,6 +3493,18 @@
    ],
    [
     "height",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "on_error": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "policy",
     "POSITIONAL_OR_KEYWORD",
     ""
    ]

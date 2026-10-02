@@ -329,15 +329,32 @@ pub struct BoundaryDistances {
 
 /// [`BoundaryDistances`] between `a` and `b`, or `None` when either has no
 /// vertices (no boundary to measure to).
+///
+/// With a `frame` (the image, or an inset of it), boundary on the frame or
+/// outside it is not boundary: samples not strictly inside the frame are
+/// dropped from both directions, and each target is clipped to the frame's
+/// interior ([`PreparedOutline::within`]). A region cut off by the image edge
+/// then agrees with an annotation that traces only its real boundary. `None`
+/// too when either side has no boundary left inside the frame.
+///
+/// [`PreparedOutline::within`]: super::measures::PreparedOutline::within
 pub fn boundary_distances(
     a: &Outline,
     b: &Outline,
     sample_step: Option<f64>,
+    frame: Option<&super::contour::BoundingBox>,
 ) -> Option<BoundaryDistances> {
     let directed = |from: &Outline, to: &Outline| -> Option<Vec<f64>> {
-        let target = super::measures::PreparedOutline::new(to);
+        let target = match frame {
+            Some(frame) => super::measures::PreparedOutline::within(to, frame),
+            None => super::measures::PreparedOutline::new(to),
+        };
         let samples = super::measures::sample_outline(from, sample_step);
-        let d: Vec<f64> = samples.iter().map(|p| target.distance(p)).collect();
+        let d: Vec<f64> = samples
+            .iter()
+            .filter(|p| frame.is_none_or(|frame| frame.contains_strictly(p)))
+            .map(|p| target.distance(p))
+            .collect();
         (!d.is_empty() && d.iter().all(|v| v.is_finite())).then_some(d)
     };
     let (ab, ba) = (directed(a, b)?, directed(b, a)?);
@@ -929,7 +946,7 @@ mod tests {
 #[cfg(test)]
 mod boundary_distance_tests {
     use super::*;
-    use crate::geometry::contour::{Outline, Point};
+    use crate::geometry::contour::{BoundingBox, Outline, Point};
 
     fn ring(points: &[(f64, f64)]) -> Outline {
         Outline::Closed(Contour::from_tuples(points))
@@ -950,7 +967,7 @@ mod boundary_distance_tests {
     fn one_outline_at_two_vertex_densities_is_at_distance_zero() {
         // Vertex-to-vertex Hausdorff calls these 50 apart; their boundaries
         // coincide, which is what a point-to-edge measure must report.
-        let d = boundary_distances(&square_with(1), &square_with(100), None).unwrap();
+        let d = boundary_distances(&square_with(1), &square_with(100), None, None).unwrap();
         assert!(d.hd < 1e-9 && d.hd95 < 1e-9 && d.assd < 1e-9, "{d:?}");
     }
 
@@ -958,7 +975,7 @@ mod boundary_distance_tests {
     fn a_uniform_offset_is_measured_exactly() {
         let inner = ring(&[(1.0, 1.0), (9.0, 1.0), (9.0, 9.0), (1.0, 9.0)]);
         let outer = ring(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
-        let d = boundary_distances(&inner, &outer, Some(0.5)).unwrap();
+        let d = boundary_distances(&inner, &outer, Some(0.5), None).unwrap();
         assert!((d.mean_a_to_b - 1.0).abs() < 1e-12, "{d:?}");
         assert!((d.hd - 2f64.sqrt()).abs() < 1e-12, "{d:?}"); // outer corners
         assert!(d.mean_b_to_a > 1.0 && d.assd > 1.0);
@@ -978,9 +995,9 @@ mod boundary_distance_tests {
             (10.0, 10.0),
             (0.0, 10.0),
         ]);
-        let sparse = boundary_distances(&square, &notched, None).unwrap();
+        let sparse = boundary_distances(&square, &notched, None, None).unwrap();
         assert_eq!(sparse.mean_a_to_b, 0.0);
-        let dense = boundary_distances(&square, &notched, Some(0.5)).unwrap();
+        let dense = boundary_distances(&square, &notched, Some(0.5), None).unwrap();
         assert!(dense.mean_a_to_b > 0.0, "{dense:?}");
     }
 
@@ -988,7 +1005,7 @@ mod boundary_distance_tests {
     fn an_open_polyline_is_sampled_without_a_closing_edge() {
         let line = Outline::Open(vec![Point::new(0.0, 0.0), Point::new(10.0, 0.0)]);
         let square = ring(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
-        let d = boundary_distances(&line, &square, Some(1.0)).unwrap();
+        let d = boundary_distances(&line, &square, Some(1.0), None).unwrap();
         assert_eq!(d.mean_a_to_b, 0.0);
         assert!((d.hd - 10.0).abs() < 1e-12, "{d:?}"); // the far side of the square
     }
@@ -997,7 +1014,7 @@ mod boundary_distance_tests {
     fn hd95_is_the_larger_directed_95th_percentile() {
         let a = Outline::Open((0..=100).map(|i| Point::new(i as f64, 0.0)).collect());
         let b = Outline::Open(vec![Point::new(0.0, 0.0), Point::new(0.0, 1.0)]);
-        let d = boundary_distances(&a, &b, None).unwrap();
+        let d = boundary_distances(&a, &b, None, None).unwrap();
         // a -> b distances are 0..=100 (minus 0's point): 95th percentile is 95.
         assert!((d.hd95 - 95.0).abs() < 1e-9, "{d:?}");
         assert!((d.hd - 100.0).abs() < 1e-9);
@@ -1005,7 +1022,72 @@ mod boundary_distance_tests {
 
     #[test]
     fn an_empty_side_has_no_distances() {
-        assert!(boundary_distances(&ring(&[]), &square_with(1), None).is_none());
+        assert!(boundary_distances(&ring(&[]), &square_with(1), None, None).is_none());
+    }
+
+    /// The issue's case: a region filling x 0..50, y 20..80 of a 100 x 100
+    /// image runs up the left image edge; its annotation is the same outline
+    /// without that side. Only the frame disagrees, so with the frame every
+    /// distance is 0 — and without it the frame side is measured as error.
+    #[test]
+    fn boundary_on_the_frame_is_not_boundary() {
+        let region = ring(&[(0.0, 20.0), (50.0, 20.0), (50.0, 80.0), (0.0, 80.0)]);
+        let annotation = Outline::Open(vec![
+            Point::new(0.0, 20.0),
+            Point::new(50.0, 20.0),
+            Point::new(50.0, 80.0),
+            Point::new(0.0, 80.0),
+        ]);
+        let frame = BoundingBox::new(0.0, 0.0, 100.0, 100.0);
+        let without = boundary_distances(&region, &annotation, Some(1.0), None).unwrap();
+        assert!(without.hd > 29.0, "{without:?}");
+        let with = boundary_distances(&region, &annotation, Some(1.0), Some(&frame)).unwrap();
+        for v in [
+            with.mean_a_to_b,
+            with.mean_b_to_a,
+            with.assd,
+            with.hd,
+            with.hd95,
+        ] {
+            assert!(v < 1e-12, "{with:?}");
+        }
+    }
+
+    /// The target is clipped too: a sample just inside the frame is measured
+    /// to the target's real boundary, not to its frame side.
+    #[test]
+    fn the_target_is_clipped_to_the_frame() {
+        let region = ring(&[(0.0, 20.0), (50.0, 20.0), (50.0, 80.0), (0.0, 80.0)]);
+        // One point 1 px inside the left edge, halfway down the frame side.
+        let probe = Outline::Open(vec![Point::new(1.0, 50.0)]);
+        let frame = BoundingBox::new(0.0, 0.0, 100.0, 100.0);
+        let d = boundary_distances(&probe, &region, None, Some(&frame)).unwrap();
+        // 30 to the top and bottom edges, not 1 to the frame side.
+        assert!((d.mean_a_to_b - 30.0).abs() < 1e-12, "{d:?}");
+    }
+
+    /// An inset frame is the tolerance: boundary within 1 px of the image
+    /// edge is dropped by insetting the frame 1 px.
+    #[test]
+    fn an_inset_frame_drops_boundary_near_the_edge() {
+        let near = ring(&[(0.5, 20.0), (50.0, 20.0), (50.0, 80.0), (0.5, 80.0)]);
+        let annotation = Outline::Open(vec![
+            Point::new(0.5, 20.0),
+            Point::new(50.0, 20.0),
+            Point::new(50.0, 80.0),
+            Point::new(0.5, 80.0),
+        ]);
+        let inset = BoundingBox::new(1.0, 1.0, 98.0, 98.0);
+        let d = boundary_distances(&near, &annotation, Some(1.0), Some(&inset)).unwrap();
+        assert!(d.hd < 1e-12, "{d:?}");
+    }
+
+    /// Nothing left inside the frame is nothing to measure.
+    #[test]
+    fn an_outline_wholly_on_the_frame_has_no_distances() {
+        let edge = Outline::Open(vec![Point::new(0.0, 0.0), Point::new(0.0, 100.0)]);
+        let frame = BoundingBox::new(0.0, 0.0, 100.0, 100.0);
+        assert!(boundary_distances(&edge, &square_with(1), Some(1.0), Some(&frame)).is_none());
     }
 }
 

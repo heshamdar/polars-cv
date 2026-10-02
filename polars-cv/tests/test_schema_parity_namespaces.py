@@ -180,6 +180,7 @@ CONTOUR_CASES: dict[str, object] = {
 }
 CONTOUR_EXEMPT = {
     "on_null": "a policy setter, not an expression",
+    "on_error": "a policy setter, not an expression",
     "label_reduce": "needs a paired image column; covered in test_schema_parity_ops",
 }
 
@@ -206,7 +207,10 @@ POINT_CASES: dict[str, object] = {
         pl.col("a")
     ),
 }
-POINT_EXEMPT = {"on_null": "a policy setter, not an expression"}
+POINT_EXEMPT = {
+    "on_null": "a policy setter, not an expression",
+    "on_error": "a policy setter, not an expression",
+}
 
 BBOX_CASES: dict[str, object] = {
     "pairwise_iou": lambda: pl.col("baset").bbox.pairwise_iou(pl.col("bbset")),
@@ -214,7 +218,10 @@ BBOX_CASES: dict[str, object] = {
         pl.col("bbset"), threshold=0.5
     ),
 }
-BBOX_EXEMPT = {"on_null": "a policy setter, not an expression"}
+BBOX_EXEMPT = {
+    "on_null": "a policy setter, not an expression",
+    "on_error": "a policy setter, not an expression",
+}
 
 
 def _public_methods(cls: type) -> set[str]:
