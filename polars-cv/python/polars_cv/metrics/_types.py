@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
 # ---------------------------------------------------------------------------
 # Canonical column names
@@ -212,6 +212,50 @@ class DetectionTable:
             self,
             _detections=self._detections.filter(pl.col(COL_CLASS_ID) == class_id),
             _image_meta=self._image_meta.filter(pl.col(COL_CLASS_ID) == class_id),
+        )
+
+    def filter_images(
+        self, images: pl.Expr | Iterable[str] | pl.Series
+    ) -> DetectionTable:
+        """Return a copy restricted to a subset of images.
+
+        For stratified evaluation: the same metrics over the images of one
+        device, scan type or size bucket. The stored matcher settings (the
+        matching IoU threshold, whether ``iou`` holds overlaps) are kept, so
+        the subset is evaluated exactly as the whole table would be.
+
+        Args:
+            images: Either the ids of the images to keep (an iterable of
+                ``image_id`` values), or a predicate over ``image_metadata``
+                (e.g. ``pl.col("group_id") == "device_a"``). Detections follow
+                the ``(image_id, class_id)`` metadata rows that are kept.
+
+        Returns:
+            Filtered ``DetectionTable``.
+
+        Raises:
+            TypeError: For a bare string, which would otherwise be read as
+                a sequence of one-character ids.
+        """
+        if isinstance(images, str):
+            msg = (
+                f"filter_images takes a list of image ids or a predicate, got "
+                f"the string {images!r}: pass [{images!r}] for one image"
+            )
+            raise TypeError(msg)
+        if isinstance(images, pl.Expr):
+            predicate = images
+        else:
+            ids = pl.Series(list(images), dtype=pl.String)
+            predicate = pl.col(COL_IMAGE_ID).is_in(ids.implode())
+        meta = self._image_meta.filter(predicate)
+        keys = meta.select(COL_IMAGE_ID, COL_CLASS_ID).unique()
+        return replace(
+            self,
+            _detections=self._detections.join(
+                keys, on=[COL_IMAGE_ID, COL_CLASS_ID], how="semi"
+            ),
+            _image_meta=meta,
         )
 
     def class_ids(self) -> list[str]:
