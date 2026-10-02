@@ -7,6 +7,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+
+- **A sourceless `Pipeline()` no longer assumes it continues a buffer.**
+  `contours.pipe(Pipeline().simplify(2.0))` raised "expects contour input but
+  pipeline is currently in buffer domain" while `contours.simplify(2.0)`
+  worked: an unsourced plan started from a placeholder *buffer* state and
+  checked its first op against it, although nothing yet said what it follows.
+  Its first op now anchors it in the domain that op reads (a buffer whenever
+  the op reads one, so every buffer pipeline plans as before), and `.pipe()`
+  plans every op again from the real upstream node, so a continuation onto
+  the wrong domain is still refused there. `.pipe(Pipeline().op())` now plans
+  like `.op()` on the lazy node for every chainable op
+  (`test_a_sourceless_continuation_plans_like_the_lazy_method`).
+
 ## [0.30.0] — 2026-10-02
 
 Every op now computes and stores in the dtype it declares, following NumPy and
