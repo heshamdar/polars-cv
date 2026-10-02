@@ -7,6 +7,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.30.0] — 2026-10-02
+
+Every op now computes and stores in the dtype it declares, following NumPy and
+OpenCV where they define an answer: colour ranges per dtype, NumPy promotion,
+IEEE division, NaN propagation, NumPy histogram binning and pixel-edge
+contours. Kernels are substantially faster across the board. Upgrading from
+0.29: see the [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.30/).
+
 ### Breaking changes
 
 - **Colour conversions use each dtype's value range, as OpenCV does.** They
@@ -3779,7 +3787,8 @@ Each item is described in full under its section below.
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
-[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.30.0
 [0.29.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.29.0
 [0.28.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.28.0
 [0.27.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.27.0

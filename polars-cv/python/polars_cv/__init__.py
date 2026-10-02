@@ -90,7 +90,7 @@ from .pipeline import Pipeline
 # storage. Pure Python, so importing polars-cv still loads no compiled code.
 register_extension_types()
 
-__version__ = "0.29.0"
+__version__ = "0.30.0"
 
 
 def _source_hash_from_tree() -> str | None:
