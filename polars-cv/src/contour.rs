@@ -755,6 +755,31 @@ contour_accessor! {
 }
 
 contour_accessor! {
+    /// Close an open line along the image frame into a region.
+    map fn contour_close_along_border / contour_close_along_border_output_type
+        -> |input| Arity::elem_dtype(input);
+    reads Outline;
+    parse ContourFn::CloseAlongBorder { width, height, arc, max_snap };
+    |outline, params, row| {
+        let Outline::Open(line) = outline else {
+            polars_bail!(ComputeError:
+                "close_along_border: the contour is already closed (row {}); it \
+                 takes an open line (is_closed = false)",
+                row
+            );
+        };
+        transforms::close_along_border(
+            line,
+            params.value(width, row)?,
+            params.value(height, row)?,
+            params.value(arc, row)?,
+            params.value(max_snap, row)?,
+        )
+        .map_err(|e| polars_err!(ComputeError: "close_along_border: {} (row {})", e, row))
+    }
+}
+
+contour_accessor! {
     /// Normalize contour coordinates to [0, 1] range.
     map fn contour_normalize / contour_normalize_output_type
         -> |input| Arity::elem_dtype(input);

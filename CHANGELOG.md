@@ -36,6 +36,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`.contour.close_along_border(width, height, arc="shortest", max_snap=2.0)`**
+  closes an open line whose ends lie on the image frame into the region it
+  bounds — a pectoral muscle edge, a skin line — by snapping each end onto its
+  nearest frame edge and walking the frame back from the line's end to its
+  start through the corners it passes (`arc`: the shorter way, or
+  `"clockwise"`/`"counterclockwise"` as displayed). A straight chord would
+  drop a corner region entirely. An end farther than `max_snap` from the frame
+  is refused rather than joined; a closed contour is refused.
+
 - **Geometry from coordinate lists, and back.**
   `polars_cv.geometry.point_from_coords(expr, order="xy"|"yx")`,
   `contour_from_coords(expr, order, closed=True)` and

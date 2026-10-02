@@ -2800,6 +2800,44 @@ class _ContourOpsMixin:
         """
         return self._call("contour_centroid", {})
 
+    def close_along_border(
+        self,
+        width: FloatOrExpr,
+        height: FloatOrExpr,
+        *,
+        arc: str | pl.Expr = "shortest",
+        max_snap: FloatOrExpr = 2.0,
+    ) -> pl.Expr:
+        """Close an open line whose ends lie on the image frame into a region,
+        along the frame.
+
+        A region annotated only by its boundary — a pectoral muscle edge from
+        the top edge to the chest-wall edge, a skin line — becomes the region
+        it bounds: each end is snapped onto its nearest frame edge, then the
+        frame is walked from the line's last point back to its first, ``arc``
+        deciding which way round, through every corner it passes. A straight
+        chord would drop a corner region entirely. The input must be open
+        (``is_closed=False``); an end farther than ``max_snap`` from the frame
+        is refused rather than joined.
+
+        Args:
+            width: Image width: the frame is ``[0, width] x [0, height]`` (literal or
+                expression).
+            height: Image height (literal or expression).
+            arc: ``"shortest"``, ``"clockwise"`` or ``"counterclockwise"`` (as
+                displayed, y down), from the line's end back to its start (literal or
+                expression).
+            max_snap: The farthest an end may lie from the frame to be snapped onto it,
+                in pixels (literal or expression).
+
+        Returns:
+            A closed contour — a ``List`` of them for a contour set.
+        """
+        return self._call(
+            "contour_close_along_border",
+            {"width": width, "height": height, "arc": arc, "max_snap": max_snap},
+        )
+
     def contains_point(self, point: pl.Expr) -> pl.Expr:
         """Test if contour contains a point.
 

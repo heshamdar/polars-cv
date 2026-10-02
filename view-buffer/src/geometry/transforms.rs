@@ -2,7 +2,7 @@
 //!
 //! Implements translate, scale, flip, simplify, and convex hull.
 
-use super::contour::{Contour, Outline, Point, Winding};
+use super::contour::{BorderArc, Contour, Outline, Point, Winding};
 use super::measures::{centroid, contour_winding};
 use super::ops::ScaleOrigin;
 use geo::{ConvexHull, Simplify};
@@ -216,6 +216,105 @@ pub fn largest(contours: &[Contour], k: usize) -> Vec<Contour> {
     ranked.into_iter().take(k).map(|(_, c)| c.clone()).collect()
 }
 
+/// Close an open line whose ends lie on the image frame `[0, width] x
+/// [0, height]` into a region, along the frame.
+///
+/// Each endpoint is snapped onto its nearest frame edge (refused when farther
+/// than `max_snap`: it does not lie on the frame, and joining it there would
+/// invent geometry). The frame is then walked from the line's end back to its
+/// start — `arc` says which way round — collecting the corners it passes, so
+/// the ring is the line, the snapped end, those corners and the snapped start.
+/// A chord between the endpoints is not enough: for a corner region the
+/// endpoints sit on two edges and the region is the corner the chord cuts off.
+pub fn close_along_border(
+    line: &[Point],
+    width: f64,
+    height: f64,
+    arc: BorderArc,
+    max_snap: f64,
+) -> Result<Contour, String> {
+    if !(width > 0.0 && height > 0.0) {
+        return Err(format!(
+            "the frame must have a positive size, got {width} x {height}"
+        ));
+    }
+    let (Some(&first), Some(&last)) = (line.first(), line.last()) else {
+        return Err("an empty line has no ends to close".to_string());
+    };
+    if line.len() < 2 {
+        return Err("a one-point line has no ends to close".to_string());
+    }
+    let (w, h) = (width, height);
+    let perimeter = 2.0 * (w + h);
+    // A point on the frame and its clockwise perimeter coordinate from (0, 0)
+    // (y down: along the top rightward, down the right, ...).
+    let snap = |p: Point, which: &str| -> Result<(Point, f64), String> {
+        let (x, y) = (p.x.clamp(0.0, w), p.y.clamp(0.0, h));
+        let candidates = [
+            (Point::new(x, 0.0), x),                     // top
+            (Point::new(w, y), w + y),                   // right
+            (Point::new(x, h), w + h + (w - x)),         // bottom
+            (Point::new(0.0, y), 2.0 * w + h + (h - y)), // left
+        ];
+        let (q, t) = candidates
+            .into_iter()
+            .min_by(|a, b| p.distance_to(&a.0).total_cmp(&p.distance_to(&b.0)))
+            .expect("four candidates");
+        let d = p.distance_to(&q);
+        if d > max_snap {
+            return Err(format!(
+                "the line's {which} point ({}, {}) is {d} from the image frame, \
+                 beyond max_snap = {max_snap}: it does not lie on the frame",
+                p.x, p.y
+            ));
+        }
+        Ok((q, t.rem_euclid(perimeter)))
+    };
+    let (start, t_start) = snap(first, "first")?;
+    let (end, t_end) = snap(last, "last")?;
+    let clockwise_span = (t_start - t_end).rem_euclid(perimeter);
+    let clockwise = match arc {
+        BorderArc::Clockwise => true,
+        BorderArc::Counterclockwise => false,
+        BorderArc::Shortest => clockwise_span <= perimeter - clockwise_span,
+    };
+    let span = if clockwise {
+        clockwise_span
+    } else {
+        perimeter - clockwise_span
+    };
+    let corners = [
+        (Point::new(0.0, 0.0), 0.0),
+        (Point::new(w, 0.0), w),
+        (Point::new(w, h), w + h),
+        (Point::new(0.0, h), 2.0 * w + h),
+    ];
+    let mut passed: Vec<(f64, Point)> = corners
+        .into_iter()
+        .map(|(c, t)| {
+            let along = if clockwise { t - t_end } else { t_end - t };
+            (along.rem_euclid(perimeter), c)
+        })
+        .filter(|&(along, _)| along > 0.0 && along < span)
+        .collect();
+    passed.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    let mut ring: Vec<Point> = line.to_vec();
+    let mut push = |p: Point| {
+        if ring.last() != Some(&p) {
+            ring.push(p);
+        }
+    };
+    push(end);
+    passed.into_iter().for_each(|(_, c)| push(c));
+    push(start);
+    // The ring closes back on its first point implicitly; drop a repeat.
+    if ring.len() > 1 && ring.last() == ring.first() {
+        ring.pop();
+    }
+    Ok(Contour::new(ring))
+}
+
 /// Computes the convex hull of a contour's exterior ring.
 ///
 /// # Arguments
@@ -355,5 +454,72 @@ mod tests {
 
         // Convex hull of L-shape should have fewer or equal points
         assert!(hull.len() <= 5); // Depends on algorithm details
+    }
+}
+
+#[cfg(test)]
+mod close_along_border_tests {
+    use super::*;
+    use crate::geometry::contour::BorderArc;
+    use crate::geometry::measures::area;
+
+    fn pts(v: &[(f64, f64)]) -> Vec<Point> {
+        v.iter().map(|&(x, y)| Point::new(x, y)).collect()
+    }
+
+    /// A pectoral-like edge from the top edge to the left edge of a 100x100
+    /// image: its region is the corner triangle at (0, 0).
+    fn pectoral() -> Vec<Point> {
+        pts(&[(60.0, 0.0), (30.0, 20.0), (0.0, 40.0)])
+    }
+
+    #[test]
+    fn the_shortest_arc_closes_through_the_corner_it_passes() {
+        let c = close_along_border(&pectoral(), 100.0, 100.0, BorderArc::Shortest, 2.0).unwrap();
+        assert_eq!(c.exterior.last(), Some(&Point::new(0.0, 0.0)));
+        // (60,0) (30,20) (0,40) (0,0): shoelace area 1200.
+        assert!((area(&c, false) - 1200.0).abs() < 1e-9, "{c:?}");
+    }
+
+    #[test]
+    fn the_other_way_round_is_the_complement() {
+        // From the end (left edge) back to the start (top edge) clockwise is
+        // the short way here; counter-clockwise runs down, across the bottom
+        // and up the right edge, through the other three corners.
+        let cw = close_along_border(&pectoral(), 100.0, 100.0, BorderArc::Clockwise, 2.0).unwrap();
+        let ccw = close_along_border(&pectoral(), 100.0, 100.0, BorderArc::Counterclockwise, 2.0)
+            .unwrap();
+        assert!((area(&cw, false) - 1200.0).abs() < 1e-9);
+        assert!(
+            (area(&ccw, false) - (10000.0 - 1200.0)).abs() < 1e-9,
+            "{ccw:?}"
+        );
+        assert_eq!(ccw.exterior.len(), 3 + 3);
+    }
+
+    #[test]
+    fn endpoints_near_the_frame_are_snapped_onto_it() {
+        let line = pts(&[(60.0, 1.5), (30.0, 20.0), (1.0, 40.0)]);
+        let c = close_along_border(&line, 100.0, 100.0, BorderArc::Shortest, 2.0).unwrap();
+        // The snapped end (0, 40), the corner, the snapped start (60, 0).
+        assert_eq!(
+            &c.exterior[3..],
+            &pts(&[(0.0, 40.0), (0.0, 0.0), (60.0, 0.0)])[..]
+        );
+    }
+
+    #[test]
+    fn an_endpoint_away_from_the_frame_is_refused() {
+        let line = pts(&[(60.0, 5.0), (0.0, 40.0)]);
+        let err = close_along_border(&line, 100.0, 100.0, BorderArc::Shortest, 2.0).unwrap_err();
+        assert!(err.contains("5"), "{err}");
+    }
+
+    #[test]
+    fn a_line_across_the_image_takes_the_shorter_side() {
+        // Top edge to bottom edge, left of centre: the left side is shorter.
+        let line = pts(&[(20.0, 0.0), (30.0, 100.0)]);
+        let c = close_along_border(&line, 100.0, 100.0, BorderArc::Shortest, 2.0).unwrap();
+        assert!((area(&c, false) - 2500.0).abs() < 1e-9, "{c:?}");
     }
 }

@@ -52,6 +52,12 @@ def _square(x0: float, y0: float, size: float) -> dict:
     return {"exterior": ring, "holes": [], "is_closed": True}
 
 
+def _open_line(x0: float) -> dict:
+    """An open polyline from the top edge of a 10 x 10 frame to its left edge."""
+    ring = [{"x": x0, "y": 0.0}, {"x": 2.0, "y": 2.0}, {"x": 0.0, "y": x0}]
+    return {"exterior": ring, "holes": [], "is_closed": False}
+
+
 def _contour_df() -> pl.DataFrame:
     """Contours, points and bboxes side by side, with nulls interleaved.
 
@@ -63,6 +69,7 @@ def _contour_df() -> pl.DataFrame:
         {
             "a": [None, _square(0, 0, 10), _square(2, 2, 6)],
             "b": [_square(1, 1, 8), None, _square(0, 0, 10)],
+            "o": [None, _open_line(6.0), _open_line(4.0)],
             "pa": [None, {"x": 1.0, "y": 2.0}, {"x": 3.0, "y": 4.0}],
             "pb": [{"x": 5.0, "y": 6.0}, None, {"x": 7.0, "y": 8.0}],
             "ba": [
@@ -93,6 +100,7 @@ def _contour_df() -> pl.DataFrame:
         schema={
             "a": CONTOUR_SCHEMA,
             "b": CONTOUR_SCHEMA,
+            "o": CONTOUR_SCHEMA,
             "pa": POINT_SCHEMA,
             "pb": POINT_SCHEMA,
             "ba": BBOX_SCHEMA,
@@ -158,6 +166,7 @@ CONTOUR_CASES: dict[str, object] = {
     "to_absolute": lambda: pl.col("a").contour.to_absolute(100, 100),
     "flip": lambda: pl.col("a").contour.flip(),
     "to_coords": lambda: pl.col("a").contour.to_coords(order="yx"),
+    "close_along_border": lambda: pl.col("o").contour.close_along_border(10, 10),
     "ensure_winding": lambda: pl.col("a").contour.ensure_winding("ccw"),
     "pairwise_iou": lambda: pl.col("aset").contour.pairwise_iou(pl.col("bset")),
     "largest": lambda: pl.col("aset").contour.largest(k=1),
@@ -290,6 +299,7 @@ def _contour_set_df() -> pl.DataFrame:
         {
             "a": [None, [_square(0, 0, 10), _square(4, 4, 4)], [_square(2, 2, 6)]],
             "b": [[_square(1, 1, 8)], None, [_square(0, 0, 10)]],
+            "o": [None, [_open_line(6.0), _open_line(3.0)], []],
             "pb": [{"x": 5.0, "y": 6.0}, None, {"x": 7.0, "y": 8.0}],
             "aset": [None, [_square(0, 0, 10), _square(4, 4, 4)], [_square(1, 1, 3)]],
             "bset": [[_square(0, 0, 8)], None, [_square(1, 1, 3), _square(5, 5, 2)]],
@@ -297,6 +307,7 @@ def _contour_set_df() -> pl.DataFrame:
         schema={
             "a": CONTOUR_SET_SCHEMA,
             "b": CONTOUR_SET_SCHEMA,
+            "o": CONTOUR_SET_SCHEMA,
             "pb": POINT_SCHEMA,
             "aset": CONTOUR_SET_SCHEMA,
             "bset": CONTOUR_SET_SCHEMA,

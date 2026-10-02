@@ -116,6 +116,58 @@
   },
   {
     "namespace": "contour",
+    "name": "contour_close_along_border",
+    "python": "close_along_border",
+    "visibility": "public",
+    "doc": "Close an open line whose ends lie on the image frame into a region,\nalong the frame.\n\nA region annotated only by its boundary — a pectoral muscle edge from\nthe top edge to the chest-wall edge, a skin line — becomes the region\nit bounds: each end is snapped onto its nearest frame edge, then the\nframe is walked from the line's last point back to its first, ``arc``\ndeciding which way round, through every corner it passes. A straight\nchord would drop a corner region entirely. The input must be open\n(``is_closed=False``); an end farther than ``max_snap`` from the frame\nis refused rather than joined.\n\nReturns:\n    A closed contour — a ``List`` of them for a contour set.",
+    "fields": [
+      {
+        "name": "width",
+        "doc": "Image width: the frame is ``[0, width] x [0, height]`` (literal or\nexpression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "height",
+        "doc": "Image height (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "arc",
+        "doc": "``\"shortest\"``, ``\"clockwise\"`` or ``\"counterclockwise\"`` (as\ndisplayed, y down), from the line's end back to its start (literal\nor expression).",
+        "default": "shortest",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "BorderArc",
+          "variants": [
+            "shortest",
+            "clockwise",
+            "counterclockwise"
+          ]
+        }
+      },
+      {
+        "name": "max_snap",
+        "doc": "The farthest an end may lie from the frame to be snapped onto it,\nin pixels (literal or expression).",
+        "default": 2.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
     "name": "contour_contains_point",
     "python": "contains_point",
     "visibility": "public",

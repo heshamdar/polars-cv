@@ -53,6 +53,7 @@ READS: dict[str, str] = {
     "to_absolute": "outline",
     "flip": "outline",
     "to_coords": "outline",
+    "close_along_border": "outline",
     "point.distance_to_contour": "outline",
     "point.nearest_point_on_contour": "outline",
     "point.signed_distance_to_contour": "region",
@@ -73,6 +74,8 @@ _CASES = {
 #: ``test_scaling_a_polyline_about_its_centroid_is_refused``).
 _OPEN_SPELLING = {
     "scale": lambda: pl.col("a").contour.scale(2.0, 2.0, origin="bbox_center"),
+    # The case table reads its open-line column; here every column is open.
+    "close_along_border": lambda: pl.col("a").contour.close_along_border(10, 10),
 }
 
 
@@ -213,3 +216,48 @@ class TestOpenContourReading:
         pipe = Pipeline().source("contour").area()
         with pytest.raises(pl.exceptions.ComputeError, match="open contour"):
             df.select(pl.col("c").cv.pipe(pipe).sink("native"))
+
+
+@plugin_required
+class TestCloseAlongBorder:
+    """An open line ending on the image frame, closed along it into a region."""
+
+    @staticmethod
+    def _line(points: list[tuple[float, float]]) -> pl.DataFrame:
+        ring = [{"x": x, "y": y} for x, y in points]
+        return pl.DataFrame(
+            {"c": [{"exterior": ring, "holes": [], "is_closed": False}]},
+            schema={"c": CONTOUR_SCHEMA},
+        )
+
+    def test_a_pectoral_edge_closes_into_its_corner(self) -> None:
+        df = self._line([(60.0, 0.0), (30.0, 20.0), (0.0, 40.0)])
+        region = pl.col("c").contour.close_along_border(100, 100)
+        out = df.select(region.contour.area()).item()
+        assert out == pytest.approx(1200.0)
+        other = pl.col("c").contour.close_along_border(100, 100, arc="counterclockwise")
+        assert df.select(other.contour.area()).item() == pytest.approx(8800.0)
+        assert df.select(region).item()["is_closed"] is True
+
+    def test_the_frame_may_be_per_row(self) -> None:
+        df = self._line([(60.0, 0.0), (0.0, 40.0)]).with_columns(
+            w=pl.lit(100.0), h=pl.lit(100.0)
+        )
+        out = df.select(
+            pl.col("c")
+            .contour.close_along_border(pl.col("w"), pl.col("h"))
+            .contour.area()
+        )
+        assert out.item() == pytest.approx(1200.0)
+
+    def test_an_end_off_the_frame_is_refused(self) -> None:
+        df = self._line([(60.0, 5.0), (0.0, 40.0)])
+        with pytest.raises(pl.exceptions.ComputeError, match="max_snap"):
+            df.select(pl.col("c").contour.close_along_border(100, 100))
+        ok = df.select(pl.col("c").contour.close_along_border(100, 100, max_snap=6.0))
+        assert ok.item()["exterior"][-1] == {"x": 60.0, "y": 0.0}
+
+    def test_a_closed_contour_is_refused(self) -> None:
+        df = pl.DataFrame({"c": [_l_shape(closed=True)]}, schema={"c": CONTOUR_SCHEMA})
+        with pytest.raises(pl.exceptions.ComputeError, match="already closed"):
+            df.select(pl.col("c").contour.close_along_border(10, 10))
