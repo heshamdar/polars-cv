@@ -35,6 +35,24 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **Open contours are measured as polylines; `is_closed` is read.** The field
+  was written `True` and never read, so an open polyline was measured as the
+  ring its closing edge would make: the point (0, 10) was 7.07 from the L
+  (0,0)->(10,0)->(10,10) instead of 10. `is_closed = False` now makes a contour
+  an open polyline: perimeter, `point.distance_to_contour`,
+  `point.nearest_point_on_contour`, `hausdorff_distance`, `bounding_box`,
+  `simplify`, `convex_hull` and the point-wise transforms (`translate`,
+  `scale`, `flip`, `normalize`, `to_absolute`) measure or keep it as a line;
+  region functions — `area`, `centroid`, `is_convex`, `winding`,
+  `ensure_winding`, `contains_point`, `iou`, `dice`, `pairwise_iou`,
+  `correspond`, `label_reduce`, `point.signed_distance_to_contour`, and the
+  pipeline's `contour` source — refuse it, naming the row, instead of
+  silently closing it. `scale(origin="centroid")` refuses one (a polyline has
+  no centroid). An open contour with holes is an error; an unspecified
+  `is_closed` (absent, or null) reads as closed, as before. view-buffer models the
+  polyline as its own type (`Outline::Open`), so a region measure cannot be
+  handed one: every `.contour` accessor declares which it reads.
+
 - **`PreMatchedAdapter` refuses keys and columns it used to drop silently.**
   With `class_col` omitted, every detection was re-keyed to the default class
   while `image_meta` kept its own `class_id`, so the `(image_id, class_id)`

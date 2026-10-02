@@ -13,7 +13,7 @@
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 
-use view_buffer::geometry::contour::Point;
+use view_buffer::geometry::contour::{Contour, Outline, Point};
 use view_buffer::geometry::{measures, predicates};
 
 use crate::geom_calls;
@@ -307,12 +307,12 @@ fn point_interpolate(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Seri
 
 /// Run `f` over the rows where both the point and the (single) contour are
 /// present.
-fn with_contour<T: PointOutput>(
+fn with_contour<C: crate::geom_arity::ReadContour, T: PointOutput>(
     inputs: &[Series],
     params: &GeomParams,
     contour: &crate::ops::ColumnRef,
     calls: &crate::row_split::CallTracker,
-    f: impl Fn(Point, &view_buffer::geometry::contour::Contour) -> Option<T> + Sync,
+    f: impl Fn(Point, &C) -> Option<T> + Sync,
 ) -> PolarsResult<Series> {
     let (points, contours) = (
         PointColumn::new(&inputs[0]),
@@ -322,7 +322,7 @@ fn with_contour<T: PointOutput>(
         let Some(p) = points.get(i)? else {
             return Ok(None);
         };
-        let Some(c) = contours.single(i)? else {
+        let Some(c) = contours.single_as::<C>(i)? else {
             return Ok(None);
         };
         Ok(f(p, &c))
@@ -338,8 +338,9 @@ fn point_distance_to_contour(inputs: &[Series], kwargs: GeomKwargs) -> PolarsRes
         "point_distance_to_contour",
         DistanceToContour { contour }
     );
-    with_contour(inputs, &params, contour, geom_calls!(), |p, c| {
-        Some(measures::distance_to_contour(&p, c))
+    // A boundary measure: an open polyline is measured to its segments only.
+    with_contour(inputs, &params, contour, geom_calls!(), |p, c: &Outline| {
+        Some(measures::distance_to_outline(&p, c))
     })
 }
 
@@ -353,7 +354,8 @@ fn point_signed_distance_to_contour(inputs: &[Series], kwargs: GeomKwargs) -> Po
         "point_signed_distance_to_contour",
         SignedDistanceToContour { contour }
     );
-    with_contour(inputs, &params, contour, geom_calls!(), |p, c| {
+    // Inside/outside needs a region, so an open polyline is refused.
+    with_contour(inputs, &params, contour, geom_calls!(), |p, c: &Contour| {
         let dist = measures::distance_to_contour(&p, c);
         Some(if predicates::contains_point(c, p.x, p.y) {
             -dist
@@ -372,8 +374,8 @@ fn point_nearest_on_contour(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResu
         "point_nearest_on_contour",
         NearestOnContour { contour }
     );
-    with_contour(inputs, &params, contour, geom_calls!(), |p, c| {
-        measures::nearest_point_on_contour(&p, c)
+    with_contour(inputs, &params, contour, geom_calls!(), |p, c: &Outline| {
+        measures::nearest_point_on_outline(&p, c)
     })
 }
 

@@ -2,7 +2,7 @@
 //!
 //! Implements translate, scale, flip, simplify, and convex hull.
 
-use super::contour::{Contour, Point, Winding};
+use super::contour::{Contour, Outline, Point, Winding};
 use super::measures::{centroid, contour_winding};
 use super::ops::ScaleOrigin;
 use geo::{ConvexHull, Simplify};
@@ -174,6 +174,36 @@ pub fn simplify(contour: &Contour, tolerance: f64) -> Contour {
     Contour::from_geo(&contour.to_geo().simplify(tolerance))
 }
 
+/// Simplifies an outline: a region as [`simplify`] does, an open polyline as
+/// a line (Douglas-Peucker keeps its two endpoints; no closing edge is added).
+pub fn simplify_outline(outline: &Outline, tolerance: f64) -> Outline {
+    match outline {
+        Outline::Closed(c) => Outline::Closed(simplify(c, tolerance)),
+        Outline::Open(points) => {
+            let line: geo::LineString<f64> = points
+                .iter()
+                .map(|p| geo::coord! { x: p.x, y: p.y })
+                .collect();
+            Outline::Open(
+                line.simplify(tolerance)
+                    .0
+                    .iter()
+                    .map(|c| Point::new(c.x, c.y))
+                    .collect(),
+            )
+        }
+    }
+}
+
+/// The convex hull of an outline's exterior vertices — the same region
+/// whether the outline closes or not, since a hull reads only the points.
+pub fn convex_hull_outline(outline: &Outline) -> Contour {
+    match outline {
+        Outline::Closed(c) => convex_hull(c),
+        Outline::Open(points) => convex_hull(&Contour::new(points.clone())),
+    }
+}
+
 /// Computes the convex hull of a contour's exterior ring.
 ///
 /// # Arguments
@@ -188,6 +218,34 @@ pub fn convex_hull(contour: &Contour) -> Contour {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_open_outline_simplifies_as_a_line() {
+        // A zig-zag whose middle vertices sit within the tolerance of the
+        // chord: a line keeps its endpoints and no closing edge appears.
+        let line = Outline::Open(vec![
+            Point::new(0.0, 0.0),
+            Point::new(5.0, 0.1),
+            Point::new(10.0, 0.0),
+        ]);
+        assert_eq!(
+            simplify_outline(&line, 1.0),
+            Outline::Open(vec![Point::new(0.0, 0.0), Point::new(10.0, 0.0)])
+        );
+    }
+
+    #[test]
+    fn a_point_wise_transform_keeps_an_outline_open() {
+        let line = Outline::Open(vec![Point::new(0.0, 0.0), Point::new(1.0, 2.0)]);
+        assert_eq!(
+            line.map_points(|c| translate(c, 1.0, 1.0)),
+            Outline::Open(vec![Point::new(1.0, 1.0), Point::new(2.0, 3.0)])
+        );
+        assert_eq!(
+            line.map_points(flip),
+            Outline::Open(vec![Point::new(1.0, 2.0), Point::new(0.0, 0.0)])
+        );
+    }
 
     fn square_contour() -> Contour {
         Contour::from_tuples(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)])

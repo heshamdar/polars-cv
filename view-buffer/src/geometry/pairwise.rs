@@ -9,7 +9,7 @@
 //! and hole-aware, and a contour always scores 1.0 against itself regardless of
 //! point order, concavity, or holes.
 
-use super::contour::{BoundingBox, Contour};
+use super::contour::{BoundingBox, Contour, Outline};
 use geo::{Area, BooleanOps, BoundingRect, HausdorffDistance, Intersects, MultiPolygon};
 
 /// Areas below this are treated as degenerate — here and by
@@ -268,16 +268,37 @@ pub fn dice(a: &Contour, b: &Contour) -> f64 {
 /// # Returns
 /// Hausdorff distance, or `INFINITY` if either contour is empty
 pub fn hausdorff_distance(a: &Contour, b: &Contour) -> f64 {
+    vertex_hausdorff(a.to_geo_rings(), b.to_geo_rings())
+}
+
+/// [`hausdorff_distance`] between two outlines, open or closed: a vertex
+/// measure, so whether a path closes changes nothing but which vertices exist.
+pub fn hausdorff_distance_outlines(a: &Outline, b: &Outline) -> f64 {
+    let rings = |o: &Outline| {
+        geo::MultiLineString::new(
+            o.paths()
+                .map(|(points, _)| {
+                    points
+                        .iter()
+                        .map(|p| geo::coord! { x: p.x, y: p.y })
+                        .collect()
+                })
+                .collect(),
+        )
+    };
+    vertex_hausdorff(rings(a), rings(b))
+}
+
+/// The discrete Hausdorff distance between two vertex sets, each given as
+/// open line strings (a repeated closing vertex would only be walked twice).
+fn vertex_hausdorff(a: geo::MultiLineString<f64>, b: geo::MultiLineString<f64>) -> f64 {
     // `geo` folds with `Bounded::min_value()`, so an empty coordinate set yields
     // -f64::MAX rather than propagating emptiness. A distance is never negative.
-    if a.exterior.is_empty() || b.exterior.is_empty() {
+    let empty = |m: &geo::MultiLineString<f64>| m.0.first().is_none_or(|l| l.0.is_empty());
+    if empty(&a) || empty(&b) {
         return f64::INFINITY;
     }
-
-    // `to_geo_rings` carries the holes and leaves the rings open; going through
-    // `to_geo` would instead drop the holes on `.exterior()` and close the ring,
-    // making the O(n*m) scan walk the first vertex twice.
-    a.to_geo_rings().hausdorff_distance(&b.to_geo_rings())
+    a.hausdorff_distance(&b)
 }
 
 #[cfg(test)]

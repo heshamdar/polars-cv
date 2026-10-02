@@ -57,8 +57,17 @@ Winding is **computed from point order** (the sign of `geo`'s signed area), not 
 - Counter-clockwise (CCW) = positive signed area
 - Clockwise (CW) = negative signed area
 
-`is_closed` is reserved — written unconditionally as `true`, never read back. Rings
-are implicitly closed; the first point is not repeated.
+`is_closed = false` makes the contour an open polyline. view-buffer models it
+as a different type: `Contour` is always a closed region, and an
+`Outline::Open(points)` is a polyline. `ContourColumn::row` hands region
+functions `Contour`s and refuses an open row; `ContourColumn::outlines` hands
+boundary functions either. Each `contour_accessor!` declares `reads Contour`
+or `reads Outline` (a required clause), and `tests/test_open_contours.py`
+classifies every accessor and sweeps both kinds. Open contours with holes are
+refused; an absent or null flag reads as closed (as absent `holes` reads as
+none). The pipeline's
+`contour` source is a region reader. Closed rings are implicitly closed: the
+first point is not repeated.
 
 ## Expression Namespaces
 

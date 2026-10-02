@@ -101,8 +101,14 @@ Fields:
     exterior: Outer boundary as a ring of points, in either winding direction.
     holes: List of interior holes, each in either winding direction. This field
            is the sole carrier of hole-ness — see below.
-    is_closed: Reserved. Always written as True and never read back; rings are
-               implicitly closed. Kept for wire compatibility.
+    is_closed: True for a closed region (the ring returns to its first point,
+               which is not repeated); False for an open polyline, whose edges
+               join consecutive points only. An open contour has no region:
+               boundary functions (perimeter, distance, nearest point,
+               hausdorff, the point-wise transforms) measure it as a line, and
+               region functions (area, centroid, contains_point, IoU, Dice,
+               rasterize, ...) refuse it. It may not have holes. Unspecified
+               (a null, or no field) reads as closed.
 
 Hole-ness is structural, not directional. A ring is a hole because it appears in
 `holes`, not because of how it is wound, and every operation (area, centroid,
@@ -256,7 +262,8 @@ def contour_from_points(
     Args:
         points: List of (x, y) tuples for the exterior ring.
         holes: Optional list of holes, each as a list of (x, y) tuples.
-        is_closed: Whether the contour is closed.
+        is_closed: ``False`` for an open polyline (no holes allowed): see
+            ``CONTOUR_SCHEMA``.
 
     Returns:
         Dictionary matching CONTOUR_SCHEMA.

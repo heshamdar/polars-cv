@@ -32,13 +32,18 @@
 //! halves from a single `-> <elem>` declaration, so an accessor cannot state one
 //! and mean the other.
 //!
+//! Each accessor also says what it reads, `reads Contour` (a closed region:
+//! an open polyline row is refused) or `reads Outline` (a boundary, open or
+//! closed) — a required clause of the macro, so a new accessor cannot measure
+//! an area on a polyline by not having decided ([`ReadContour`]).
+//!
 //! Reading the arity from the dtype rather than the value is what keeps plan ==
 //! exec: the `output_type_func` is only handed [`Field`]s, so a row-level
 //! decision would be one the declaration could not have made.
 
 use polars::prelude::*;
 
-use view_buffer::geometry::contour::Contour;
+use view_buffer::geometry::contour::{Contour, Outline};
 
 use crate::geom_columns::ContourColumn;
 use crate::geom_params::GeomParams;
@@ -197,10 +202,25 @@ impl ContourOutput for AnyValue<'static> {
     }
 }
 
-/// Transforms: a contour per contour, built straight into Arrow through
-/// [`crate::geom_schema::contour_array`] rather than as an `AnyValue` with a
-/// sub-`Series` per ring, which made `.contour.translate()` cost as much as
-/// extracting the contours in the first place (CR-36).
+/// How an accessor reads a contour column's rows: as closed regions
+/// ([`Contour`], refusing an open polyline) or as boundaries ([`Outline`],
+/// either). The one choice every `.contour` accessor makes.
+pub(crate) trait ReadContour: Sized {
+    fn read(column: &ContourColumn<'_>, row: usize) -> PolarsResult<Option<Vec<Self>>>;
+}
+
+impl ReadContour for Contour {
+    fn read(column: &ContourColumn<'_>, row: usize) -> PolarsResult<Option<Vec<Self>>> {
+        column.row(row)
+    }
+}
+
+impl ReadContour for Outline {
+    fn read(column: &ContourColumn<'_>, row: usize) -> PolarsResult<Option<Vec<Self>>> {
+        column.outlines(row)
+    }
+}
+
 impl ContourOutput for Contour {
     fn column(
         name: PlSmallStr,
@@ -208,51 +228,76 @@ impl ContourOutput for Contour {
         arity: Arity,
         elem: &DataType,
     ) -> PolarsResult<Series> {
-        use polars_arrow::array::{Array, ListArray};
-        use polars_arrow::bitmap::Bitmap;
-        use polars_arrow::offset::Offsets;
+        contour_column(name, rows, arity, elem, Contour::new(Vec::new()))
+    }
+}
 
-        let validity: Option<Bitmap> = rows
-            .iter()
-            .any(Option::is_none)
-            .then(|| rows.iter().map(Option::is_some).collect());
-        let array: Box<dyn Array> = match arity {
-            Arity::Single => {
-                // One slot per row; a null row's slot holds an empty contour
-                // under a cleared validity bit.
-                let empty = Contour::new(Vec::new());
-                let slots: Vec<&Contour> = rows
-                    .iter()
-                    .map(|row| match row {
-                        Some(results) if results.len() == 1 => Ok(&results[0]),
-                        Some(results) => Err(polars_err!(ComputeError:
-                            "internal: a single-contour row produced {} results",
-                            results.len()
-                        )),
-                        None => Ok(&empty),
-                    })
-                    .collect::<PolarsResult<_>>()?;
-                crate::geom_schema::contour_array(slots.iter().copied())?.with_validity(validity)
-            }
-            Arity::Set => {
-                let all: Vec<&Contour> = rows.iter().flatten().flatten().collect();
-                let values = crate::geom_schema::contour_array(all.iter().copied())?;
-                let lengths = rows.iter().map(|r| r.as_ref().map_or(0, Vec::len));
-                let offsets = Offsets::<i64>::try_from_lengths(lengths)?;
-                let dtype = ListArray::<i64>::default_datatype(values.dtype().clone());
-                ListArray::<i64>::try_new(dtype, offsets.into(), values, validity)?.boxed()
-            }
-        };
-        // The declared type governs; a column whose element layout differs
-        // from the canonical contour (e.g. one without holes) is cast exactly as
-        // the `AnyValue` path's strict construction would have been.
-        let declared = arity.wrap(elem.clone());
-        let series = Series::from_arrow(name, array)?;
-        if series.dtype() == &declared {
-            Ok(series)
-        } else {
-            series.strict_cast(&declared)
+impl ContourOutput for Outline {
+    fn column(
+        name: PlSmallStr,
+        rows: Vec<Option<Vec<Self>>>,
+        arity: Arity,
+        elem: &DataType,
+    ) -> PolarsResult<Series> {
+        contour_column(name, rows, arity, elem, Outline::Open(Vec::new()))
+    }
+}
+
+/// Transforms: a contour per contour, built straight into Arrow through
+/// [`crate::geom_schema::contour_array`] rather than as an `AnyValue` with a
+/// sub-`Series` per ring, which made `.contour.translate()` cost as much as
+/// extracting the contours in the first place (CR-36). `empty` fills a null
+/// row's slot.
+fn contour_column<C: crate::geom_schema::ContourParts>(
+    name: PlSmallStr,
+    rows: Vec<Option<Vec<C>>>,
+    arity: Arity,
+    elem: &DataType,
+    empty: C,
+) -> PolarsResult<Series> {
+    use polars_arrow::array::{Array, ListArray};
+    use polars_arrow::bitmap::Bitmap;
+    use polars_arrow::offset::Offsets;
+
+    let validity: Option<Bitmap> = rows
+        .iter()
+        .any(Option::is_none)
+        .then(|| rows.iter().map(Option::is_some).collect());
+    let array: Box<dyn Array> = match arity {
+        Arity::Single => {
+            // One slot per row; a null row's slot holds an empty contour
+            // under a cleared validity bit.
+            let slots: Vec<&C> = rows
+                .iter()
+                .map(|row| match row {
+                    Some(results) if results.len() == 1 => Ok(&results[0]),
+                    Some(results) => Err(polars_err!(ComputeError:
+                        "internal: a single-contour row produced {} results",
+                        results.len()
+                    )),
+                    None => Ok(&empty),
+                })
+                .collect::<PolarsResult<_>>()?;
+            crate::geom_schema::contour_array(slots.iter().copied())?.with_validity(validity)
         }
+        Arity::Set => {
+            let all: Vec<&C> = rows.iter().flatten().flatten().collect();
+            let values = crate::geom_schema::contour_array(all.iter().copied())?;
+            let lengths = rows.iter().map(|r| r.as_ref().map_or(0, Vec::len));
+            let offsets = Offsets::<i64>::try_from_lengths(lengths)?;
+            let dtype = ListArray::<i64>::default_datatype(values.dtype().clone());
+            ListArray::<i64>::try_new(dtype, offsets.into(), values, validity)?.boxed()
+        }
+    };
+    // The declared type governs; a column whose element layout differs
+    // from the canonical contour (e.g. one without holes) is cast exactly as
+    // the `AnyValue` path's strict construction would have been.
+    let declared = arity.wrap(elem.clone());
+    let series = Series::from_arrow(name, array)?;
+    if series.dtype() == &declared {
+        Ok(series)
+    } else {
+        series.strict_cast(&declared)
     }
 }
 
@@ -270,16 +315,16 @@ impl ContourOutput for Contour {
 /// row, exactly as a null input contour already does. Routing it through here
 /// keeps it from being re-implemented per accessor — the job `contour_row` did
 /// for the single-contour accessors, which this replaces.
-pub(crate) fn map_contours<R: ContourOutput + Send>(
+pub(crate) fn map_contours<T: ReadContour, R: ContourOutput + Send>(
     series: &Series,
     params: &GeomParams,
     calls: &CallTracker,
     elem: DataType,
-    compute: impl Fn(&Contour, &GeomParams, usize) -> PolarsResult<R> + Sync,
+    compute: impl Fn(&T, &GeomParams, usize) -> PolarsResult<R> + Sync,
 ) -> PolarsResult<Series> {
     let column = ContourColumn::new(series);
     let rows = params.map_rows(calls, series.len(), |params, i| {
-        let Some(contours) = column.row(i)? else {
+        let Some(contours) = T::read(&column, i)? else {
             return Ok(None);
         };
         contours
@@ -302,14 +347,14 @@ pub(crate) fn map_contours<R: ContourOutput + Send>(
 ///
 /// The refusal reads dtypes, so it fires before any row is parsed rather than
 /// part-way through a batch.
-pub(crate) fn zip_contours<R: ContourOutput + Send>(
+pub(crate) fn zip_contours<T: ReadContour, R: ContourOutput + Send>(
     a: &Series,
     b: &Series,
     params: &GeomParams,
     calls: &CallTracker,
     name: &'static str,
     elem: DataType,
-    compute: impl Fn(&Contour, &Contour, usize) -> PolarsResult<R> + Sync,
+    compute: impl Fn(&T, &T, usize) -> PolarsResult<R> + Sync,
 ) -> PolarsResult<Series> {
     let (a_arity, b_arity) = (Arity::of(a.dtype()), Arity::of(b.dtype()));
     if a_arity == Arity::Set && b_arity == Arity::Set {
@@ -324,7 +369,7 @@ pub(crate) fn zip_contours<R: ContourOutput + Send>(
     let arity = a_arity.combine(b_arity);
     let (a_column, b_column) = (ContourColumn::new(a), ContourColumn::new(b));
     let row = |i: usize| -> PolarsResult<Option<Vec<R>>> {
-        let (Some(left), Some(right)) = (a_column.row(i)?, b_column.row(i)?) else {
+        let (Some(left), Some(right)) = (T::read(&a_column, i)?, T::read(&b_column, i)?) else {
             return Ok(None);
         };
         // Exactly one side is a set, so the other side's single contour is
@@ -379,6 +424,7 @@ macro_rules! contour_accessor {
     (
         $(#[$meta:meta])*
         map fn $name:ident / $out_ty:ident -> |$ity:ident| $elem:expr;
+        reads $read:ty;
         parse $fam:ident :: $var:ident $({ $($field:ident),* })?;
         |$c:ident, $params:ident, $row:ident| $body:expr
     ) => {
@@ -400,7 +446,7 @@ macro_rules! contour_accessor {
                 return Err($crate::geom_params::parsed_as_another(stringify!($name)));
             };
             let $ity = inputs[0].dtype();
-            $crate::geom_arity::map_contours(
+            $crate::geom_arity::map_contours::<$read, _>(
                 &inputs[0],
                 &geom_params,
                 $crate::geom_calls!(),
@@ -413,6 +459,7 @@ macro_rules! contour_accessor {
     (
         $(#[$meta:meta])*
         zip fn $name:ident / $out_ty:ident -> $elem:expr;
+        reads $read:ty;
         parse $fam:ident :: $var:ident { $other:ident };
         |$a:ident, $b:ident| $body:expr
     ) => {
@@ -428,7 +475,7 @@ macro_rules! contour_accessor {
             let $fam::$var { $other } = &op else {
                 return Err($crate::geom_params::parsed_as_another(stringify!($name)));
             };
-            $crate::geom_arity::zip_contours(
+            $crate::geom_arity::zip_contours::<$read, _>(
                 &inputs[0],
                 params.column($other),
                 &params,
@@ -597,7 +644,7 @@ mod split_tests {
         let params = params(&inputs);
         let rendezvous = Rendezvous::new(true);
         let calls = CallTracker::new();
-        let out = map_contours(
+        let out = map_contours::<Contour, _>(
             &inputs[0],
             &params,
             &calls,
@@ -626,7 +673,7 @@ mod split_tests {
         let (a, b) = (&inputs[0], &inputs[1]);
         let params = params(&inputs[..1]);
         let rendezvous = Rendezvous::new(true);
-        let out = zip_contours(
+        let out = zip_contours::<Contour, _>(
             a,
             b,
             &params,
@@ -659,7 +706,7 @@ mod split_tests {
             .running
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst); // another call
         let rendezvous = Rendezvous::new(false);
-        let out = map_contours(
+        let out = map_contours::<Contour, _>(
             &inputs[0],
             &params,
             &calls,

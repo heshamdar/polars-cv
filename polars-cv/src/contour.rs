@@ -11,7 +11,11 @@ use pyo3_polars::derive::polars_expr;
 
 // Import geometry operations from view-buffer
 use view_buffer::geometry::{
-    contour::Winding, label::score_contours_on_buffer, measures, pairwise, predicates, transforms,
+    contour::{Contour, Outline, Winding},
+    label::score_contours_on_buffer,
+    measures,
+    ops::ScaleOrigin,
+    pairwise, predicates, transforms,
 };
 
 // `contour_accessor!` is `#[macro_export]`ed, so it lives at the crate root
@@ -36,8 +40,8 @@ use view_buffer::GeometryOp;
 /// - exterior: List[{x: Float64, y: Float64}]
 /// - holes: List[List[{x: Float64, y: Float64}]] — the sole carrier of hole-ness;
 ///   ring winding is never interpreted as a hole signal
-/// - is_closed: Boolean — reserved. Always written `true` here and ignored by
-///   `parse_contour`; rings are implicitly closed.
+/// - is_closed: Boolean — `true`: a [`Contour`] is always a closed region (an
+///   open polyline is an `Outline::Open`, written by `contour_array`).
 ///
 /// Test-only: production contour columns are built straight into Arrow by
 /// `geom_schema::contour_array` (CR-36). This per-value construction stays as
@@ -97,7 +101,7 @@ pub fn contour_to_anyvalue(contour: &view_buffer::geometry::contour::Contour) ->
         vec![
             AnyValue::List(exterior_series),
             AnyValue::List(holes_series),
-            AnyValue::Boolean(true), // is_closed: reserved, never read back
+            AnyValue::Boolean(true), // a `Contour` is a closed region
         ],
         crate::geom_schema::contour_fields(),
     )))
@@ -320,6 +324,7 @@ fn label_reduce_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
 contour_accessor! {
     /// Compute contour area.
     map fn contour_area / contour_area_output_type -> |_input| DataType::Float64;
+    reads Contour;
     parse GeometryOp::Area { signed };
     |contour, params, row| {
         let signed = params.value(signed, row)?;
@@ -330,13 +335,15 @@ contour_accessor! {
 contour_accessor! {
     /// Compute contour perimeter.
     map fn contour_perimeter / contour_perimeter_output_type -> |_input| DataType::Float64;
+    reads Outline;
     parse GeometryOp::Perimeter;
-    |contour, _params, _row| Ok(AnyValue::Float64(measures::perimeter(contour)))
+    |outline, _params, _row| Ok(AnyValue::Float64(measures::outline_length(outline)))
 }
 
 contour_accessor! {
     /// Compute winding direction.
     map fn contour_winding / contour_winding_output_type -> |_input| DataType::String;
+    reads Contour;
     parse ContourFn::Winding;
     |contour, _params, _row| Ok(AnyValue::StringOwned(
         match measures::contour_winding(contour) {
@@ -350,6 +357,7 @@ contour_accessor! {
 contour_accessor! {
     /// Compute contour centroid — a `{x, y}` struct per contour.
     map fn contour_centroid / contour_centroid_output_type -> |_input| point_struct_dtype();
+    reads Contour;
     parse GeometryOp::Centroid;
     |contour, _params, _row| {
         let center = measures::centroid(contour);
@@ -360,8 +368,9 @@ contour_accessor! {
 contour_accessor! {
     /// Compute contour bounding box — an `{x, y, width, height}` struct per contour.
     map fn contour_bounding_box / contour_bounding_box_output_type -> |_input| bbox_struct_dtype();
+    reads Outline;
     parse GeometryOp::BoundingBox;
-    |contour, _params, _row| Ok(bbox_anyvalue(measures::bounding_box(contour)))
+    |outline, _params, _row| Ok(bbox_anyvalue(outline.bounding_box()))
 }
 
 // ============================================================================
@@ -371,6 +380,7 @@ contour_accessor! {
 contour_accessor! {
     /// Check if contour is convex.
     map fn contour_is_convex / contour_is_convex_output_type -> |_input| DataType::Boolean;
+    reads Contour;
     parse ContourFn::IsConvex;
     |contour, _params, _row| Ok(AnyValue::Boolean(predicates::contour_is_convex(contour)))
 }
@@ -530,6 +540,7 @@ fn contour_label_reduce(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<S
 contour_accessor! {
     /// Compute IoU between two contours, broadcasting a set against a single.
     zip fn contour_iou / contour_iou_output_type -> DataType::Float64;
+    reads Contour;
     parse ContourFn::Iou { other };
     |a, b| Ok(AnyValue::Float64(pairwise::iou(a, b)))
 }
@@ -537,6 +548,7 @@ contour_accessor! {
 contour_accessor! {
     /// Compute Dice coefficient between two contours.
     zip fn contour_dice / contour_dice_output_type -> DataType::Float64;
+    reads Contour;
     parse ContourFn::Dice { other };
     |a, b| Ok(AnyValue::Float64(pairwise::dice(a, b)))
 }
@@ -544,8 +556,9 @@ contour_accessor! {
 contour_accessor! {
     /// Compute Hausdorff distance between two contours.
     zip fn contour_hausdorff / contour_hausdorff_output_type -> DataType::Float64;
+    reads Outline;
     parse ContourFn::Hausdorff { other };
-    |a, b| Ok(AnyValue::Float64(pairwise::hausdorff_distance(a, b)))
+    |a, b| Ok(AnyValue::Float64(pairwise::hausdorff_distance_outlines(a, b)))
 }
 
 // ============================================================================
@@ -562,11 +575,12 @@ contour_accessor! {
     /// Translate contour by offset.
     map fn contour_translate / contour_translate_output_type
         -> |input| Arity::elem_dtype(input);
+    reads Outline;
     parse GeometryOp::Translate { dx, dy };
-    |contour, params, row| {
+    |outline, params, row| {
         let dx = params.value(dx, row)?;
         let dy = params.value(dy, row)?;
-        Ok(transforms::translate(contour, dx, dy))
+        Ok(outline.map_points(|c| transforms::translate(c, dx, dy)))
     }
 }
 
@@ -574,15 +588,24 @@ contour_accessor! {
     /// Scale contour.
     map fn contour_scale / contour_scale_output_type
         -> |input| Arity::elem_dtype(input);
+    reads Outline;
     parse GeometryOp::Scale { sx, sy, origin };
-    |contour, params, row| {
+    |outline, params, row| {
         let sx = params.value(sx, row)?;
         let sy = params.value(sy, row)?;
         // Per-row capable, like `sx`/`sy` beside it: which point the scale
         // is measured from does not change the output's shape, rank or
         // dtype. This is the pipeline op's own definition, default and all.
         let scale_origin = params.value(origin, row)?;
-        Ok(transforms::scale(contour, sx, sy, scale_origin))
+        if !outline.is_closed() && scale_origin == ScaleOrigin::Centroid {
+            polars_bail!(ComputeError:
+                "scale(origin=\"centroid\") needs a closed contour: an open polyline \
+                 (is_closed = false) bounds no region to take a centroid of (row {}). \
+                 Scale about \"bbox_center\" or \"origin\" instead",
+                row
+            );
+        }
+        Ok(outline.map_points(|c| transforms::scale(c, sx, sy, scale_origin)))
     }
 }
 
@@ -590,37 +613,41 @@ contour_accessor! {
     /// Simplify contour.
     map fn contour_simplify / contour_simplify_output_type
         -> |input| Arity::elem_dtype(input);
+    reads Outline;
     parse GeometryOp::Simplify { tolerance };
-    |contour, params, row| {
+    |outline, params, row| {
         let tolerance = params.value(tolerance, row)?;
-        Ok(transforms::simplify(contour, tolerance))
+        Ok(transforms::simplify_outline(outline, tolerance))
     }
 }
 
 contour_accessor! {
     /// Flip contour (reverse winding).
     map fn contour_flip / contour_flip_output_type -> |input| Arity::elem_dtype(input);
+    reads Outline;
     parse ContourFn::Flip;
-    |contour, _params, _row| Ok(transforms::flip(contour))
+    |outline, _params, _row| Ok(outline.map_points(transforms::flip))
 }
 
 contour_accessor! {
     /// Compute convex hull.
     map fn contour_convex_hull / contour_convex_hull_output_type
         -> |input| Arity::elem_dtype(input);
+    reads Outline;
     parse GeometryOp::ConvexHull;
-    |contour, _params, _row| Ok(transforms::convex_hull(contour))
+    |outline, _params, _row| Ok(transforms::convex_hull_outline(outline))
 }
 
 contour_accessor! {
     /// Normalize contour coordinates to [0, 1] range.
     map fn contour_normalize / contour_normalize_output_type
         -> |input| Arity::elem_dtype(input);
+    reads Outline;
     parse ContourFn::Normalize { width, height };
-    |contour, params, row| {
+    |outline, params, row| {
         let ref_width = params.value(width, row)?;
         let ref_height = params.value(height, row)?;
-        Ok(transforms::normalize(contour, ref_width, ref_height))
+        Ok(outline.map_points(|c| transforms::normalize(c, ref_width, ref_height)))
     }
 }
 
@@ -628,11 +655,12 @@ contour_accessor! {
     /// Convert normalized coordinates to absolute pixel coordinates.
     map fn contour_to_absolute / contour_to_absolute_output_type
         -> |input| Arity::elem_dtype(input);
+    reads Outline;
     parse ContourFn::ToAbsolute { width, height };
-    |contour, params, row| {
+    |outline, params, row| {
         let ref_width = params.value(width, row)?;
         let ref_height = params.value(height, row)?;
-        Ok(transforms::to_absolute(contour, ref_width, ref_height))
+        Ok(outline.map_points(|c| transforms::to_absolute(c, ref_width, ref_height)))
     }
 }
 
@@ -640,6 +668,7 @@ contour_accessor! {
     /// Ensure contour has specified winding direction.
     map fn contour_ensure_winding / contour_ensure_winding_output_type
         -> |input| Arity::elem_dtype(input);
+    reads Contour;
     parse ContourFn::EnsureWinding { direction };
     |contour, params, row| {
         // Per-row capable: the winding a ring is rewound to changes the
