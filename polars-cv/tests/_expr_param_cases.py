@@ -684,6 +684,21 @@ CASES: list[ExprCase] = [
         column=RECT,
     ),
     ExprCase(
+        "extract_contours",
+        "min_area_fraction",
+        lambda v: mask().extract_contours(min_area_fraction=v),
+        (1e-6, 0.9),
+        column=RECT,
+    ),
+    ExprCase(
+        "largest",
+        "k",
+        # The ring's exterior and its hole border: two contours to keep or drop.
+        lambda v: mask().extract_contours(mode="all").largest(k=v),
+        (1, 2),
+        column=RING,
+    ),
+    ExprCase(
         "area",
         "signed",
         lambda v: contour().scale_contour(sx=1.0, sy=-1.0).area(signed=v),
