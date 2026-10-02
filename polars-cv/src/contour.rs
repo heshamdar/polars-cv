@@ -259,7 +259,6 @@ fn correspond_rows<T>(
 ) -> PolarsResult<Series> {
     // `order` is read through its reference: it is optional, so nothing here
     // may read a fixed position.
-    let order_series = params.optional_column(order);
     let rows = params.map_rows(crate::geom_calls!(), inputs[0].len(), |params, i| {
         let (Some(left), Some(right)) = sides(i)? else {
             return Ok(None);
@@ -269,9 +268,9 @@ fn correspond_rows<T>(
         // `on_null="null"` nulls this row instead (`map_rows`).
         let threshold = params.value(threshold, i)?;
         check_range("threshold", threshold, 0.0, 1.0, i)?;
-        let order = match order_series {
+        let order = match order {
             Some(column) => {
-                let value = column.get(i)?;
+                let value = params.operand_value(column, i)?;
                 if value.is_null() {
                     None
                 } else {

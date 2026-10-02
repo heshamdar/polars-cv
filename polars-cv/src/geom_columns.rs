@@ -50,7 +50,7 @@ use crate::geom_schema::{BBOX_FIELD_NAMES, POINT_FIELD_SPELLINGS};
 pub(crate) struct ContourColumn<'a> {
     arity: Arity,
     /// Per chunk: the array and its reader (or why it cannot be read).
-    chunks: Vec<(&'a dyn Array, Result<Rows<'a>, String>)>,
+    chunks: Chunks<'a, Result<Rows<'a>, String>>,
 }
 
 /// How one chunk's rows hold their contours.
@@ -98,23 +98,18 @@ impl<'a> ContourColumn<'a> {
     pub(crate) fn new(series: &'a Series) -> Self {
         let dtype = series.dtype();
         let arity = Arity::of(dtype);
-        let chunks = series
-            .chunks()
-            .iter()
-            .map(|chunk| {
-                let chunk = chunk.as_ref();
-                let rows = match (arity, dtype) {
-                    (Arity::Set, DataType::List(elem)) => {
-                        downcast::<ListArray<i64>>(chunk, "a contour set").and_then(|list| {
-                            let values = list.values().as_ref();
-                            Ok(Rows::Set(list, values, contours(values, elem)?))
-                        })
-                    }
-                    _ => contours(chunk, dtype).map(|c| Rows::Single(chunk, c)),
-                };
-                (chunk, rows)
-            })
-            .collect();
+        let chunks = Chunks::new(series, |chunk| {
+            let rows = match (arity, dtype) {
+                (Arity::Set, DataType::List(elem)) => {
+                    downcast::<ListArray<i64>>(chunk, "a contour set").and_then(|list| {
+                        let values = list.values().as_ref();
+                        Ok(Rows::Set(list, values, contours(values, elem)?))
+                    })
+                }
+                _ => contours(chunk, dtype).map(|c| Rows::Single(chunk, c)),
+            };
+            rows
+        });
         ContourColumn { arity, chunks }
     }
 
@@ -151,7 +146,7 @@ impl<'a> ContourColumn<'a> {
     /// Row `i`'s contours as outlines — closed regions and open polylines
     /// alike — or `None` for a null row.
     pub(crate) fn outlines(&self, row: usize) -> PolarsResult<Option<Vec<Outline>>> {
-        let ((array, rows), i) = locate(&self.chunks, row)?;
+        let ((array, rows), i) = self.chunks.locate(row)?;
         let rows = match rows {
             Ok(rows) => rows,
             Err(_) if !array.is_valid(i) => return Ok(None),
@@ -387,26 +382,52 @@ fn values<const N: usize>(
     Ok(out)
 }
 
-/// The chunk holding column row `row`, and the row's index within it.
-fn locate<'c, 'a, T>(
-    chunks: &'c [(&'a dyn Array, T)],
-    row: usize,
-) -> PolarsResult<(&'c (&'a dyn Array, T), usize)> {
-    let mut i = row;
-    for chunk in chunks {
-        if i < chunk.0.len() {
-            return Ok((chunk, i));
+/// A column's chunks, each with what its reader resolved from it, and the
+/// one way a row is located in them.
+///
+/// **Scalar broadcasting**: a one-row column — a literal operand, or one the
+/// optimiser folded back into a literal — is that row for every row, as
+/// [`ParamCol`](crate::params::ParamCol) reads a one-row parameter. Without it
+/// every operand built from literals failed with "row 1 out of bounds".
+struct Chunks<'a, T> {
+    chunks: Vec<(&'a dyn Array, T)>,
+    broadcast: bool,
+}
+
+impl<'a, T> Chunks<'a, T> {
+    /// Resolve each of `series`'s chunks with `resolve`.
+    fn new(series: &'a Series, resolve: impl Fn(&'a dyn Array) -> T) -> Self {
+        Chunks {
+            chunks: series
+                .chunks()
+                .iter()
+                .map(|chunk| {
+                    let chunk = chunk.as_ref();
+                    (chunk, resolve(chunk))
+                })
+                .collect(),
+            broadcast: series.len() == 1,
         }
-        i -= chunk.0.len();
     }
-    polars_bail!(OutOfBounds: "geometry row {} out of bounds", row)
+
+    /// The chunk holding column row `row`, and the row's index within it.
+    fn locate(&self, row: usize) -> PolarsResult<(&(&'a dyn Array, T), usize)> {
+        let mut i = if self.broadcast { 0 } else { row };
+        for chunk in &self.chunks {
+            if i < chunk.0.len() {
+                return Ok((chunk, i));
+            }
+            i -= chunk.0.len();
+        }
+        polars_bail!(OutOfBounds: "geometry row {} out of bounds", row)
+    }
 }
 
 /// A point column's rows: one `{x, y}` struct per row, or a point set
 /// (`List({x, y})`, [`Arity::Set`]) per row.
 pub(crate) struct PointColumn<'a> {
     arity: Arity,
-    chunks: Vec<(&'a dyn Array, Result<PointRows<'a>, String>)>,
+    chunks: Chunks<'a, Result<PointRows<'a>, String>>,
 }
 
 enum PointRows<'a> {
@@ -419,23 +440,17 @@ impl<'a> PointColumn<'a> {
     pub(crate) fn new(series: &'a Series) -> Self {
         let dtype = series.dtype();
         let arity = Arity::of_points(dtype);
-        let chunks = series
-            .chunks()
-            .iter()
-            .map(|chunk| {
-                let chunk = chunk.as_ref();
-                let rows = match (arity, dtype) {
-                    (Arity::Set, DataType::List(elem)) => {
-                        downcast::<ListArray<i64>>(chunk, "a point set").and_then(|list| {
-                            coordinates(list.values().as_ref(), elem)
-                                .map(|p| PointRows::Set(list, p))
-                        })
-                    }
-                    _ => coordinates(chunk, dtype).map(PointRows::Single),
-                };
-                (chunk, rows)
-            })
-            .collect();
+        let chunks = Chunks::new(series, |chunk| {
+            let rows = match (arity, dtype) {
+                (Arity::Set, DataType::List(elem)) => {
+                    downcast::<ListArray<i64>>(chunk, "a point set").and_then(|list| {
+                        coordinates(list.values().as_ref(), elem).map(|p| PointRows::Set(list, p))
+                    })
+                }
+                _ => coordinates(chunk, dtype).map(PointRows::Single),
+            };
+            rows
+        });
         PointColumn { arity, chunks }
     }
 
@@ -448,7 +463,7 @@ impl<'a> PointColumn<'a> {
     /// for a null row. A null point inside a set is `None` in its place, so a
     /// result lines up with the set it was computed from.
     pub(crate) fn row(&self, row: usize) -> PolarsResult<Option<Vec<Option<Point>>>> {
-        let ((array, rows), i) = locate(&self.chunks, row)?;
+        let ((array, rows), i) = self.chunks.locate(row)?;
         if !array.is_valid(i) {
             return Ok(None);
         }
@@ -488,7 +503,7 @@ fn bbox_at(fields: &Fields<'_, 4>, k: usize) -> Result<BoundingBox, String> {
 /// list of them ([`Arity::Set`]), whose null elements are skipped.
 pub(crate) struct BBoxColumn<'a> {
     arity: Arity,
-    chunks: Vec<(&'a dyn Array, Result<BBoxRows<'a>, String>)>,
+    chunks: Chunks<'a, Result<BBoxRows<'a>, String>>,
 }
 
 enum BBoxRows<'a> {
@@ -508,30 +523,25 @@ impl<'a> BBoxColumn<'a> {
             DataType::List(_) => Arity::Set,
             _ => Arity::Single,
         };
-        let chunks = series
-            .chunks()
-            .iter()
-            .map(|chunk| {
-                let chunk = chunk.as_ref();
-                let rows = match (arity, dtype) {
-                    (Arity::Set, DataType::List(elem)) => {
-                        downcast::<ListArray<i64>>(chunk, "a bbox list").and_then(|list| {
-                            named_f64(list.values().as_ref(), elem, spellings, "BBox")
-                                .map(|f| BBoxRows::Set(list, f))
-                        })
-                    }
-                    _ => named_f64(chunk, dtype, spellings, "BBox").map(BBoxRows::Single),
-                };
-                (chunk, rows)
-            })
-            .collect();
+        let chunks = Chunks::new(series, |chunk| {
+            let rows = match (arity, dtype) {
+                (Arity::Set, DataType::List(elem)) => {
+                    downcast::<ListArray<i64>>(chunk, "a bbox list").and_then(|list| {
+                        named_f64(list.values().as_ref(), elem, spellings, "BBox")
+                            .map(|f| BBoxRows::Set(list, f))
+                    })
+                }
+                _ => named_f64(chunk, dtype, spellings, "BBox").map(BBoxRows::Single),
+            };
+            rows
+        });
         BBoxColumn { arity, chunks }
     }
 
     /// Row `row`'s bboxes — exactly one for a single-bbox column — or `None`
     /// for a null row.
     pub(crate) fn row(&self, row: usize) -> PolarsResult<Option<Vec<BoundingBox>>> {
-        let ((array, rows), i) = locate(&self.chunks, row)?;
+        let ((array, rows), i) = self.chunks.locate(row)?;
         if !array.is_valid(i) {
             return Ok(None);
         }
