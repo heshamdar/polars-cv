@@ -6,6 +6,7 @@ from ._confusion import ConfusionResult, confusion_at_threshold
 from ._froc import (
     froc_auc,
     froc_curve_lazy,
+    froc_operating_range,
     froc_sensitivity_at_fp,
     froc_summary_table,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "froc_auc",
     "froc_curve_lazy",
     "froc_sensitivity_at_fp",
+    "froc_operating_range",
     "froc_summary_table",
     "lroc_auc",
     "lroc_curve_lazy",

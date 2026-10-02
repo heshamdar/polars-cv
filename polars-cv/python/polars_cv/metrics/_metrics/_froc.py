@@ -3,7 +3,9 @@
 The eager ``froc_curve``/``FROCResult`` API was removed in favour of the
 expression-valued functions here: :func:`froc_curve_lazy` (group-aware curve),
 :func:`froc_auc` (one row per group), :func:`froc_sensitivity_at_fp` and
-:func:`froc_summary_table`. Confidence intervals come from
+:func:`froc_summary_table`, all reading the curve past its last operating
+point by one ``extrapolate`` policy, and :func:`froc_operating_range` (how far
+the curve reaches). Confidence intervals come from
 ``froc_auc_ci_lazy`` in :mod:`polars_cv.metrics._bootstrap`.
 """
 
@@ -13,7 +15,7 @@ from typing import Literal
 
 import polars as pl
 
-from .._auc import CorrectionMethod
+from .._auc import CorrectionMethod, Extrapolate
 from .._auc_expr import (
     collapse_curve,
     collapse_scores,
@@ -236,6 +238,7 @@ def froc_auc(
     level: Literal["detection", "image"] = "detection",
     group_by: str | list[str] | None = None,
     weight_agg: WeightAgg = "first",
+    extrapolate: Extrapolate = "none",
 ) -> pl.LazyFrame:
     """Compute FROC AUC as a lazy, group-aware frame — one row per group.
 
@@ -249,6 +252,12 @@ def froc_auc(
     no reasonable default window. With the default ``correction="normalize"`` the
     result is the mean sensitivity over ``fp_range`` (bounded to ``[0, 1]`` when
     the curve is); pass ``correction=None`` for the raw partial area.
+
+    A curve stops at the highest FP/image any threshold reaches (detections
+    from a thresholded mask exist at one operating point). Past that point the
+    sensitivity was not observed, so by default an ``fp_range`` reaching beyond
+    it gives a null AUC — as :func:`froc_summary_table` gives a null
+    sensitivity there; ``extrapolate="flat"`` extends the last sensitivity.
 
     Both families are weighted by ``image_metadata.weight``: the trapezoidal path
     through the weighted curve, and Mann-Whitney through a weighted rank-sum
@@ -269,9 +278,13 @@ def froc_auc(
         group_by: Optional grouping column(s). ``None`` yields a single row.
         weight_agg: Duplicate-weight resolution policy (see
             :func:`resolve_key_weights`).
+        extrapolate: How the curve is read past its observed FP/image range:
+            ``"none"`` (default) gives null, ``"flat"`` extends its endpoints
+            (the LUNA16 convention). See :func:`froc_operating_range`.
 
     Returns:
-        A ``LazyFrame`` with ``[*group_by, auc]``.
+        A ``LazyFrame`` with ``[*group_by, auc]``; ``auc`` is null where
+        ``fp_range`` leaves the group's curve and ``extrapolate="none"``.
 
     Raises:
         ValueError: If ``method="trapezoidal"`` and ``fp_range`` is ``None``, or
@@ -388,6 +401,7 @@ def froc_auc(
         lo=fp_range[0],
         hi=fp_range[1],
         correction=correction,
+        extrapolate=extrapolate,
     )
 
     if group_keys:
@@ -401,27 +415,36 @@ def froc_sensitivity_at_fp(
     *,
     thresholds: list[float] | None = None,
     weight_agg: WeightAgg = "first",
+    extrapolate: Extrapolate = "none",
 ) -> pl.LazyFrame:
     """Interpolate FROC sensitivity at a requested FP/image rate, lazily.
 
     Builds the curve via :func:`froc_curve_lazy` and interpolates it with the
-    shared lazy geometry (upper-envelope, no extrapolation) — nothing is
-    collected here; the caller owns the collect.
+    shared lazy geometry (upper-envelope) — nothing is collected here; the
+    caller owns the collect.
 
     Args:
         table: Canonical detection table.
         fp_per_image: Target false-positive-per-image rate.
         thresholds: Optional explicit score thresholds to keep.
         weight_agg: Duplicate-weight resolution policy.
+        extrapolate: How the curve is read past its observed FP/image range:
+            ``"none"`` (default) gives null, ``"flat"`` extends its endpoints
+            (the LUNA16 convention). See :func:`froc_operating_range`.
 
     Returns:
         A one-row ``LazyFrame`` ``[fp_per_image, sensitivity]``; ``sensitivity``
-        is null when ``fp_per_image`` is outside the observed range of the curve.
+        is null when ``fp_per_image`` is outside the observed range of the curve
+        and ``extrapolate="none"``.
         A scalar is ``froc_sensitivity_at_fp(t, fp).collect().item()``.
     """
     curve = froc_curve_lazy(table, thresholds=thresholds, weight_agg=weight_agg)
     return interpolate_curve_lazy(
-        curve, x_col="fp_per_image", y_col="sensitivity", at=[fp_per_image]
+        curve,
+        x_col="fp_per_image",
+        y_col="sensitivity",
+        at=[fp_per_image],
+        extrapolate=extrapolate,
     )
 
 
@@ -430,6 +453,7 @@ def froc_summary_table(
     fp_rates: list[float] | None = None,
     *,
     weight_agg: WeightAgg = "first",
+    extrapolate: Extrapolate = "none",
 ) -> pl.LazyFrame:
     """Sensitivity at standard FP/image operating points, lazily.
 
@@ -437,14 +461,53 @@ def froc_summary_table(
         table: Canonical detection table.
         fp_rates: Operating points. Defaults to the standard radiology set.
         weight_agg: Duplicate-weight resolution policy.
+        extrapolate: How the curve is read past its observed FP/image range:
+            ``"none"`` (default) gives null, ``"flat"`` extends its endpoints
+            (the LUNA16 convention). See :func:`froc_operating_range`.
 
     Returns:
         A ``LazyFrame`` with ``fp_per_image`` and ``sensitivity`` columns, one row
-        per operating point (``sensitivity`` null off the curve). The caller
-        collects.
+        per operating point (``sensitivity`` null off the curve unless
+        ``extrapolate="flat"``). The caller collects.
     """
     rates = fp_rates or [0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
     curve = froc_curve_lazy(table, weight_agg=weight_agg)
     return interpolate_curve_lazy(
-        curve, x_col="fp_per_image", y_col="sensitivity", at=rates
+        curve,
+        x_col="fp_per_image",
+        y_col="sensitivity",
+        at=rates,
+        extrapolate=extrapolate,
     )
+
+
+def froc_operating_range(
+    table: DetectionTable,
+    *,
+    group_by: str | list[str] | None = None,
+    weight_agg: WeightAgg = "first",
+) -> pl.LazyFrame:
+    """How far each FROC curve reaches, lazily — one row per group.
+
+    A curve's last operating point is the highest FP/image any threshold
+    reaches; beyond it :func:`froc_auc` and :func:`froc_summary_table` report
+    null unless asked to extrapolate. Report this alongside them so a
+    truncated curve is visible.
+
+    Args:
+        table: Canonical detection table.
+        group_by: Optional grouping column(s). ``None`` yields a single row.
+        weight_agg: Duplicate-weight resolution policy.
+
+    Returns:
+        A ``LazyFrame`` with ``[*group_by, max_fp_per_image, max_sensitivity]``.
+    """
+    group_keys = _normalize_group_by(group_by)
+    curve = froc_curve_lazy(table, group_by=group_by, weight_agg=weight_agg)
+    reach = (
+        pl.col("fp_per_image").max().alias("max_fp_per_image"),
+        pl.col("sensitivity").max().alias("max_sensitivity"),
+    )
+    if group_keys:
+        return curve.group_by(group_keys).agg(*reach)
+    return curve.select(*reach)

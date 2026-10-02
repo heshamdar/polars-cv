@@ -80,11 +80,17 @@ def ref_froc_auc(
     *,
     fp_range: tuple[float, float] | None = None,
     correction: str | None = None,
-) -> float:
-    """Reference trapezoidal FROC AUC (raw or partial) for a single-class table."""
+    extrapolate: str = "flat",
+) -> float | None:
+    """Reference trapezoidal FROC AUC (raw or partial) for a single-class table.
+
+    ``extrapolate="none"``: ``None`` when ``fp_range`` leaves the observed curve.
+    """
     fps, sens = _froc_points(table)
     if fp_range is None:
         return _collapse_and_trapz(fps, sens)
+    if extrapolate == "none" and (fp_range[0] < fps.min() or fp_range[1] > fps.max()):
+        return None
     raw = _collapse_and_trapz(fps, sens, fp_range[0], fp_range[1])
     if correction == "normalize":
         span = fp_range[1] - fp_range[0]
@@ -106,11 +112,14 @@ def _collapsed_xy(xs: np.ndarray, ys: np.ndarray) -> tuple[np.ndarray, np.ndarra
     return np.array(ux), np.array(uy)
 
 
-def ref_froc_sensitivity_at_fp(table: DetectionTable, fp: float) -> float | None:
-    """Reference interpolated sensitivity at ``fp`` (None outside the range)."""
+def ref_froc_sensitivity_at_fp(
+    table: DetectionTable, fp: float, extrapolate: str = "none"
+) -> float | None:
+    """Reference interpolated sensitivity at ``fp``: ``None`` outside the range,
+    or ``np.interp``'s endpoint clamp with ``extrapolate="flat"``."""
     fps, sens = _froc_points(table)
     ax, ay = _collapsed_xy(fps, sens)
-    if fp < ax[0] or fp > ax[-1]:
+    if extrapolate == "none" and (fp < ax[0] or fp > ax[-1]):
         return None
     return float(np.interp(fp, ax, ay))
 

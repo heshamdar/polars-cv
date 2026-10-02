@@ -263,7 +263,11 @@ class TestFrocBootstrapRecomputesTotalTargets:
     ) -> None:
         """Bootstrap produces a valid CI over resampled replicates."""
         ci = froc_auc_ci_lazy(
-            simple_detection_table, n_bootstrap=10, seed=42, fp_range=(0.0, 1.0)
+            simple_detection_table,
+            n_bootstrap=10,
+            seed=42,
+            fp_range=(0.0, 1.0),
+            extrapolate="flat",
         ).collect()
         assert ci.height == 1
         assert ci["ci_lower"].item() <= ci["auc"].item() <= ci["ci_upper"].item()
@@ -549,7 +553,11 @@ class TestMannWhitneyBootstrap:
     ) -> None:
         """The public CI seam is lazy — it returns a LazyFrame, never a scalar."""
         out = froc_auc_ci_lazy(
-            simple_detection_table, n_bootstrap=5, seed=42, fp_range=(0.0, 1.0)
+            simple_detection_table,
+            n_bootstrap=5,
+            seed=42,
+            fp_range=(0.0, 1.0),
+            extrapolate="flat",
         )
         assert isinstance(out, pl.LazyFrame)
         assert out.collect().columns == ["auc", "ci_lower", "ci_upper"]
@@ -603,6 +611,7 @@ class TestEntityLevelBootstrap:
             seed=42,
             sample_col="case_id",
             fp_range=(0.0, 1.0),
+            extrapolate="flat",
         ).collect()
         assert ci.height == 1
         assert ci["ci_lower"].item() <= ci["ci_upper"].item()
@@ -674,6 +683,7 @@ class TestPartialAUCCorrection:
             froc_auc(
                 simple_detection_table,
                 fp_range=(0.0, 1.0),
+                extrapolate="flat",
                 correction="mcclish",  # type: ignore[arg-type]
             ).collect()
 
@@ -683,7 +693,10 @@ class TestPartialAUCCorrection:
         """FROC auc with correction='normalize' returns average sensitivity."""
         normalized = (
             froc_auc(
-                simple_detection_table, fp_range=(0.0, 1.0), correction="normalize"
+                simple_detection_table,
+                fp_range=(0.0, 1.0),
+                extrapolate="flat",
+                correction="normalize",
             )
             .collect()
             .item()
@@ -1327,9 +1340,11 @@ class TestFrocBootstrapCiContainsPoint:
             }
         )
         table = DetectionTable.from_matched(det_df, meta_df)
-        point = froc_auc(table, fp_range=(0.0, 1.0)).collect().item()
+        point = (
+            froc_auc(table, fp_range=(0.0, 1.0), extrapolate="flat").collect().item()
+        )
         ci = froc_auc_ci_lazy(
-            table, fp_range=(0.0, 1.0), n_bootstrap=200, seed=0
+            table, fp_range=(0.0, 1.0), extrapolate="flat", n_bootstrap=200, seed=0
         ).collect()
         assert ci["ci_lower"].item() <= point <= ci["ci_upper"].item()
         assert ci["ci_upper"].item() <= 1.0 + 1e-9
@@ -1789,14 +1804,20 @@ class TestFrocWeightScaleInvariance:
     ) -> None:
         small = (
             froc_auc(
-                _subunit_weight_table(1.0), fp_range=fp_range, correction="normalize"
+                _subunit_weight_table(1.0),
+                fp_range=fp_range,
+                extrapolate="flat",
+                correction="normalize",
             )
             .collect()
             .item()
         )
         large = (
             froc_auc(
-                _subunit_weight_table(1e6), fp_range=fp_range, correction="normalize"
+                _subunit_weight_table(1e6),
+                fp_range=fp_range,
+                extrapolate="flat",
+                correction="normalize",
             )
             .collect()
             .item()
@@ -1810,9 +1831,15 @@ class TestFrocWeightScaleInvariance:
         """Both the source and the independent oracle must be clamp-free."""
         table = _subunit_weight_table(1.0)
         got = (
-            froc_auc(table, fp_range=fp_range, correction="normalize").collect().item()
+            froc_auc(
+                table, fp_range=fp_range, extrapolate="flat", correction="normalize"
+            )
+            .collect()
+            .item()
         )
-        want = ref_froc_auc(table, fp_range=fp_range, correction="normalize")
+        want = ref_froc_auc(
+            table, fp_range=fp_range, extrapolate="flat", correction="normalize"
+        )
         assert got == pytest.approx(want, abs=1e-7)
 
 

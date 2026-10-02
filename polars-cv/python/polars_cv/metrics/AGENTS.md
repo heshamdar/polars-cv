@@ -149,7 +149,7 @@ metrics/
 ├── __init__.py           # Public re-exports
 ├── _types.py             # DetectionTable, column constants, schema validation
 ├── _result.py            # MetricResult base (auc only) — PR/Confusion
-├── _auc.py               # eager AUC utilities kept for PR: trapz, partial, validate_correction, _interp
+├── _auc.py               # the correction and extrapolate vocabularies (validate_*)
 ├── _auc_expr.py          # the FROC/LROC integral authority: *_expr + collapse_curve
 ├── _bootstrap.py         # {froc_auc,lroc_auc,average_precision}_ci_lazy + lazy resampler
 ├── _matching/
@@ -274,13 +274,25 @@ metrics/
   return a **`LazyFrame`** (the caller collects — no method collects internally),
   built on the single lazy authority `_auc_expr.interpolate_curve_lazy`
   (`collapse_curve` + backward/forward `join_asof`). `sensitivity` is `null` for
-  x-values outside the observed range — no endpoint clamping — and the summary's
-  y column stays Float64 even when every point is null.
+  x-values outside the observed range by default, and the summary's y column
+  stays Float64 even when every point is null.
+- **One off-curve policy.** `partial_auc_expr` and `interpolate_curve_lazy` are
+  the only two curve readers and both take `extrapolate` (`"none"` default,
+  `"flat"`; vocabulary in `_auc.py`). They used to disagree — the integral
+  filled flat past the curve's end while the interpolation returned null — so
+  one table had an unknown sensitivity at 2 FP/image and a defined AUC over
+  0–2. Every FROC/LROC entry point and the `*_ci_lazy` functions pass the
+  argument through; `froc_operating_range` reports how far a curve reaches.
+  LROC appends its `(1, max sensitivity)` endpoint, so its default `[0, 1]`
+  window never needs extrapolation.
+- **Undefined is not empty in the bootstrap.** `_bootstrap_ci_from_replicates`
+  fills an *absent* replicate (an empty draw) with `empty_value`, but a
+  replicate *present with a null value* is undefined and nulls its group's
+  bounds.
 - At an x the curve visits more than once, the *highest* y there is returned:
   `froc_sensitivity_at_fp(table, 0.0).collect().item()` is the sensitivity
   reachable with no false positives, not the origin's zero.
 
 ## Known Issues
 
-- Bbox matching converts to contours internally. Correct but suboptimal for axis-aligned boxes.
 - Score + extract cannot be merged into one graph: `label_reduce` requires contours as an expression parameter, so they must exist as a column before the scoring pipeline runs.

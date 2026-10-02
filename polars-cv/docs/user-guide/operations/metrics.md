@@ -9,12 +9,12 @@ computations use native Polars operations.
 The metrics system follows a three-layer architecture:
 
 ```
-Input Data → Matcher → DetectionTable → Metric Function → MetricResult
+Input Data → Matcher → DetectionTable → Metric Function → LazyFrame
 ```
 
 1. **Matchers** convert raw data into a canonical `DetectionTable`.
-2. **Metric functions** compute curves and scalar metrics from the table.
-3. **Result objects** carry computed curves with convenience methods.
+2. **Metric functions** compute curves and scalar metrics from the table,
+   lazily: the caller collects.
 
 ## DetectionTable
 
@@ -133,6 +133,7 @@ is a normal `group_by` rather than a Python loop.
 from polars_cv.metrics import (
     froc_auc,
     froc_curve_lazy,
+    froc_operating_range,
     froc_sensitivity_at_fp,
     froc_summary_table,
 )
@@ -141,8 +142,11 @@ from polars_cv.metrics import (
 # unbounded); the default correction="normalize" returns mean sensitivity over
 # it. Pass correction=None for the raw partial area.
 print(froc_auc(table, fp_range=(0, 8)).collect().item())
-print(froc_sensitivity_at_fp(table, 1.0))
-print(froc_summary_table(table))
+print(froc_sensitivity_at_fp(table, 1.0).collect()["sensitivity"].item())
+print(froc_summary_table(table).collect())
+
+# How far the curve reaches (max FP/image and the sensitivity there):
+print(froc_operating_range(table).collect())
 
 # One AUC per class, in a single lazy plan:
 per_class = froc_auc(table, group_by="class_id", fp_range=(0, 8)).collect()
@@ -154,11 +158,18 @@ mw = froc_auc(table, method="mann_whitney", level="detection").collect().item()
 curve = froc_curve_lazy(table).collect()
 ```
 
-`froc_sensitivity_at_fp` returns `None` — and `froc_summary_table` a null —
-when the requested FP/image rate lies beyond the curve's observed range. An
-operating point the detector never reaches is reported as unreachable rather
-than clamped to the last value on the curve. Where an x is visited more than
-once, the highest sensitivity there is returned.
+A FROC curve stops at the highest FP/image any threshold reaches — detections
+from a thresholded mask exist at a single operating point. Past it the
+sensitivity was never observed, and every FROC reader says so the same way:
+`froc_sensitivity_at_fp` and `froc_summary_table` give a null sensitivity
+there, and `froc_auc` gives a null AUC for an `fp_range` that reaches beyond
+it. Report `froc_operating_range` alongside them so a truncated curve is
+visible. If you want the common convention of extending the last sensitivity
+flat (LUNA16's `np.interp`), ask for it: every one of these functions — and
+`froc_auc_ci_lazy` — takes `extrapolate="flat"` (default `"none"`). A
+bootstrap interval is null when any replicate's curve stops short of the
+window, rather than scoring it 0. Where an x is visited more than once, the
+highest sensitivity there is returned.
 
 ### LROC
 
@@ -168,7 +179,7 @@ from polars_cv.metrics import lroc_auc, lroc_curve_lazy, lroc_sensitivity_at_fpf
 # LROC's FPF axis is bounded to [0, 1], so no range is needed — the default
 # integrates the full [0, 1] domain (normalized, i.e. the standard LROC AUC).
 print(lroc_auc(table).collect().item())
-print(lroc_sensitivity_at_fpf(table, 0.5))  # None if 0.5 FPF is off the curve
+print(lroc_sensitivity_at_fpf(table, 0.5).collect())
 curve = lroc_curve_lazy(table).collect()
 ```
 

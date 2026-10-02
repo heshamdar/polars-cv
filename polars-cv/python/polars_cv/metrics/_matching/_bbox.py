@@ -31,9 +31,9 @@ class BBoxMatcher:
     height}]`` (i.e. ``List[BBOX_SCHEMA]``).  Scores should be provided as a
     separate ``List[Float64]`` column aligned with the prediction bboxes.
 
-    Matching calls ``.bbox.correspond()``, supplying a confidence order, which
-    internally converts each bbox to a 4-point rectangular contour and
-    delegates to the existing contour matching infrastructure.
+    Matching calls ``.bbox.correspond()``, supplying a confidence order: the
+    IoU of two boxes is computed analytically and the greedy assignment is the
+    one ``.contour.correspond()`` uses.
 
     Args:
         iou_threshold: IoU threshold for TP matching.

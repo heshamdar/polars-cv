@@ -82,6 +82,10 @@
     options:
       show_root_heading: true
 
+::: polars_cv.metrics.froc_operating_range
+    options:
+      show_root_heading: true
+
 ::: polars_cv.metrics.lroc_auc
     options:
       show_root_heading: true

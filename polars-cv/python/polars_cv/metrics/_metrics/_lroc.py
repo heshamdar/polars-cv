@@ -12,7 +12,7 @@ from typing import Literal
 
 import polars as pl
 
-from .._auc import CorrectionMethod
+from .._auc import CorrectionMethod, Extrapolate
 from .._auc_expr import (
     collapse_curve,
     collapse_scores,
@@ -227,6 +227,7 @@ def lroc_auc(
     level: Literal["detection", "image"] = "image",
     group_by: str | list[str] | None = None,
     weight_agg: WeightAgg = "first",
+    extrapolate: Extrapolate = "none",
 ) -> pl.LazyFrame:
     """Compute LROC AUC as a lazy, group-aware frame — one row per group.
 
@@ -262,6 +263,10 @@ def lroc_auc(
         group_by: Optional grouping column(s). ``None`` yields a single row.
         weight_agg: Duplicate-weight resolution policy (see
             :func:`resolve_key_weights`).
+        extrapolate: How the curve is read outside its observed FPF range:
+            ``"none"`` (default, null) or ``"flat"``. The LROC curve always
+            spans ``[0, 1]`` (it carries the ``(1, max sensitivity)`` endpoint),
+            so this only matters for a window reaching outside it.
 
     Returns:
         A ``LazyFrame`` with ``[*group_by, auc]``.
@@ -372,6 +377,7 @@ def lroc_auc(
         lo=lo,
         hi=hi,
         correction=correction,
+        extrapolate=extrapolate,
     )
     if group_keys:
         return collapsed.group_by(group_keys).agg(auc=auc_expr)
@@ -384,6 +390,7 @@ def lroc_sensitivity_at_fpf(
     *,
     variant: Literal["best_tp", "top_scoring"] = "best_tp",
     weight_agg: WeightAgg = "first",
+    extrapolate: Extrapolate = "none",
 ) -> pl.LazyFrame:
     """Interpolate LROC sensitivity at a requested false-positive fraction, lazily.
 
@@ -392,6 +399,10 @@ def lroc_sensitivity_at_fpf(
         fpf: Target false-positive fraction.
         variant: ``"best_tp"`` or ``"top_scoring"``.
         weight_agg: Duplicate-weight resolution policy.
+        extrapolate: How the curve is read outside its observed FPF range:
+            ``"none"`` (default, null) or ``"flat"``. The LROC curve always
+            spans ``[0, 1]`` (it carries the ``(1, max sensitivity)`` endpoint),
+            so this only matters for a window reaching outside it.
 
     Returns:
         A one-row ``LazyFrame`` ``[fpf, sensitivity]``; ``sensitivity`` is null
@@ -399,4 +410,6 @@ def lroc_sensitivity_at_fpf(
         collects.
     """
     curve = lroc_curve_lazy(table, variant=variant, weight_agg=weight_agg)
-    return interpolate_curve_lazy(curve, x_col="fpf", y_col="sensitivity", at=[fpf])
+    return interpolate_curve_lazy(
+        curve, x_col="fpf", y_col="sensitivity", at=[fpf], extrapolate=extrapolate
+    )

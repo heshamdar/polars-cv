@@ -5,7 +5,8 @@ The AUC integrals themselves are lazy Polars expressions in
 the single authority every caller reduces through. The eager, Series-based
 ``trapz_auc`` / ``partial_auc`` that once lived here were removed once every
 consumer routed through the lazy path; only the shared ``correction`` vocabulary
-remains, so a value nothing recognises still fails loudly in one place.
+remains (with the ``extrapolate`` off-curve vocabulary), so a value nothing
+recognises still fails loudly in one place.
 """
 
 from __future__ import annotations
@@ -13,6 +14,25 @@ from __future__ import annotations
 from typing import Literal
 
 CorrectionMethod = Literal["normalize"] | None
+
+#: How a curve is read where it was not observed: ``"none"`` (null) or
+#: ``"flat"`` (the nearest endpoint's value, NumPy ``interp``'s clamp — the
+#: LUNA16 FROC convention). One vocabulary for both readers, the integral and
+#: the interpolation, so they cannot disagree about the same table.
+Extrapolate = Literal["none", "flat"]
+
+
+def validate_extrapolate(extrapolate: Extrapolate) -> None:
+    """Reject any off-curve policy outside :data:`Extrapolate`.
+
+    Raises:
+        ValueError: If ``extrapolate`` is neither ``"none"`` nor ``"flat"``.
+    """
+    if extrapolate not in ("none", "flat"):
+        raise ValueError(
+            f"Unknown extrapolate {extrapolate!r}. Expected 'none' (null where "
+            "the curve was not observed) or 'flat' (extend its endpoints)."
+        )
 
 
 def validate_correction(correction: CorrectionMethod) -> None:

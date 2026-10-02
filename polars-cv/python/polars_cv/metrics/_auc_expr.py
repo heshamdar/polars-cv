@@ -31,7 +31,12 @@ from __future__ import annotations
 
 import polars as pl
 
-from ._auc import CorrectionMethod, validate_correction
+from ._auc import (
+    CorrectionMethod,
+    Extrapolate,
+    validate_correction,
+    validate_extrapolate,
+)
 
 
 def _as_expr(value: str | pl.Expr) -> pl.Expr:
@@ -148,14 +153,17 @@ def partial_auc_expr(
     lo: float,
     hi: float,
     correction: CorrectionMethod = None,
+    extrapolate: Extrapolate = "none",
 ) -> pl.Expr:
     """Partial trapezoidal AUC over ``[lo, hi]`` as a reduction expression.
 
-    Reproduces ``_auc.partial_auc`` without ``search_sorted`` or Python control
-    flow: each consecutive segment contributes the trapezoid over its overlap
-    with ``[lo, hi]`` (``y`` linearly interpolated at the clamped ends), and the
-    region outside the observed x-range is filled flat at the nearest endpoint's
-    ``y`` (``partial_auc``'s clamp behaviour). Assumes unique, collapsed ``x``.
+    Each consecutive segment contributes the trapezoid over its overlap with
+    ``[lo, hi]`` (``y`` linearly interpolated at the clamped ends), without
+    ``search_sorted`` or Python control flow. Where the window leaves the
+    observed x-range the area is not known: ``extrapolate="none"`` (default)
+    makes the result null, ``"flat"`` fills it at the nearest endpoint's ``y``.
+    :func:`interpolate_curve_lazy` reads off-curve points by the same policy.
+    Assumes unique, collapsed ``x``.
 
     Args:
         x: Monotonic x-axis column name or expression.
@@ -164,12 +172,16 @@ def partial_auc_expr(
         hi: Upper x bound.
         correction: ``None`` raw; ``"normalize"`` divides by ``(hi - lo)``,
             giving the mean y-value over the window.
+        extrapolate: ``"none"`` (null when ``[lo, hi]`` leaves the curve) or
+            ``"flat"`` (extend the endpoints).
 
     Returns:
         A ``pl.Expr`` reducing to the (corrected) partial area; ``0.0`` when
-        ``hi <= lo`` or the curve is empty.
+        ``hi <= lo`` or the curve is empty; null when the window leaves the
+        curve and ``extrapolate="none"``.
     """
     validate_correction(correction)
+    validate_extrapolate(extrapolate)
     lo_f = float(lo)
     hi_f = float(hi)
     span = hi_f - lo_f
@@ -203,8 +215,8 @@ def partial_auc_expr(
     )
     interior = seg_area.sum()
 
-    # Flat fill outside the observed range, clamped to [lo, hi] (partial_auc
-    # extends the curve at its endpoint y rather than extrapolating).
+    # Flat fill outside the observed range, clamped to [lo, hi]; with
+    # extrapolate="none" a window that needs it is null instead (below).
     x_min = x_sorted.min()
     x_max = x_sorted.max()
     y_first = y_sorted.first()
@@ -217,6 +229,10 @@ def partial_auc_expr(
         lower_bound=0.0
     )
     raw = interior + left_width * y_first + right_width * y_last
+
+    if extrapolate == "none":
+        off_curve = (left_width > 0.0) | (right_width > 0.0)
+        raw = pl.when(off_curve).then(None).otherwise(raw)
 
     # Empty curve → 0.0 (degenerate range already returned above).
     raw = pl.when(xc.count() == 0).then(0.0).otherwise(raw)
@@ -335,6 +351,7 @@ def interpolate_curve_lazy(
     x_col: str,
     y_col: str,
     at: list[float],
+    extrapolate: Extrapolate = "none",
 ) -> pl.LazyFrame:
     """Interpolate ``y`` at requested ``x`` operating points, lazily.
 
@@ -343,20 +360,24 @@ def interpolate_curve_lazy(
     collapses the curve to the strictly-increasing upper envelope
     (:func:`collapse_curve`), then brackets each query point with a backward and a
     forward as-of join and linearly interpolates. A point outside the observed
-    ``[min x, max x]`` yields a null ``y`` (no extrapolation); an exact knot (and
-    the endpoints) yields that knot's collapsed ``y``. Nothing is collected — the
-    caller owns the collect.
+    ``[min x, max x]`` yields a null ``y`` with ``extrapolate="none"`` (default)
+    or the nearest endpoint's ``y`` with ``"flat"`` — the policy
+    :func:`partial_auc_expr` integrates by. An exact knot (and the endpoints)
+    yields that knot's collapsed ``y``. Nothing is collected — the caller owns
+    the collect.
 
     Args:
         curve_lf: Curve carrying ``x_col`` and ``y_col``.
         x_col: X-axis column name.
         y_col: Y-axis column name.
         at: X operating points to report ``y`` for.
+        extrapolate: ``"none"`` (null off the curve) or ``"flat"``.
 
     Returns:
         A ``LazyFrame`` with columns ``[x_col, y_col]``, one row per element of
         ``at`` in the given order; ``y_col`` is Float64 and null off the curve.
     """
+    validate_extrapolate(extrapolate)
     collapsed = collapse_curve(curve_lf, x_col=x_col, y_col=y_col)
     # `sort` after `select` keeps the join key flagged sorted for `join_asof`.
     ref = collapsed.select(pl.col(x_col), _xk=pl.col(x_col), _yk=pl.col(y_col)).sort(
@@ -385,10 +406,18 @@ def interpolate_curve_lazy(
         .otherwise(0.0)
     )
     interp = pl.col("_y_lo") + t * (pl.col("_y_hi") - pl.col("_y_lo"))
-    # Off the observed range (no knot on one side) ⇒ null; exact knot ⇒ its y.
+    # Off the observed range (no knot on one side) ⇒ null, or the knot on the
+    # other side under "flat"; exact knot ⇒ its y.
+    below = pl.col("_x_lo").is_null()
+    above = pl.col("_x_hi").is_null()
+    off = (
+        pl.when(below).then(pl.col("_y_hi")).otherwise(pl.col("_y_lo"))
+        if extrapolate == "flat"
+        else pl.lit(None, dtype=pl.Float64)
+    )
     y_out = (
-        pl.when(pl.col("_x_lo").is_null() | pl.col("_x_hi").is_null())
-        .then(None)
+        pl.when(below | above)
+        .then(off)
         .when(pl.col("_x_lo") == pl.col("_x_hi"))
         .then(pl.col("_y_lo"))
         .otherwise(interp)
