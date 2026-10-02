@@ -269,6 +269,7 @@ class _LazyForwardersMixin:
         mode: str | pl.Expr = "external",
         method: str | pl.Expr = "simple",
         min_area: FloatOrExpr | None = None,
+        min_area_fraction: FloatOrExpr | None = None,
     ) -> LazyPipelineExpr:
         """Extract contours from binary mask.
 
@@ -276,7 +277,10 @@ class _LazyForwardersMixin:
         """
         return self.pipe(
             self._continuation().extract_contours(
-                mode=mode, method=method, min_area=min_area
+                mode=mode,
+                method=method,
+                min_area=min_area,
+                min_area_fraction=min_area_fraction,
             )
         )
 

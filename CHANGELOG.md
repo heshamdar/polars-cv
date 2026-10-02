@@ -29,6 +29,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`extract_contours(min_area_fraction=)`** filters contours by area as a
+  fraction of the image's own height x width, resolved per image as it runs,
+  so a speck threshold scales with resolution without reading each image's
+  size first. In (0, 1]; a literal outside it is refused when the pipeline is
+  built, a per-row one when its row runs. With `min_area` too, a contour must
+  pass both.
+
 - **`.contour.boundary_distances(other, sample_step=None)`** — point-to-edge
   boundary distances, both directions, as
   `Struct{mean_a_to_b, mean_b_to_a, assd, hd, hd95}`: the directed means, the

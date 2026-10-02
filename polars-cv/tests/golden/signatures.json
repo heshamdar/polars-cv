@@ -841,6 +841,11 @@
     "min_area",
     "KEYWORD_ONLY",
     "None"
+   ],
+   [
+    "min_area_fraction",
+    "KEYWORD_ONLY",
+    "None"
    ]
   ],
   "extract_shape": [
@@ -2256,6 +2261,11 @@
    ],
    [
     "min_area",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "min_area_fraction",
     "KEYWORD_ONLY",
     "None"
    ]

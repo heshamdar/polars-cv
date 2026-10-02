@@ -1015,7 +1015,19 @@
       },
       {
         "name": "min_area",
-        "doc": "Filter small contours. Accepts a Polars expression for per-row dynamic\nthresholds.",
+        "doc": "Filter small contours: the minimum area in pixels. Accepts a Polars\nexpression for per-row dynamic thresholds.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
+          }
+        }
+      },
+      {
+        "name": "min_area_fraction",
+        "doc": "Filter small contours relative to the image: the minimum area as a\nfraction of its height x width, in (0, 1], resolved per image as it\nruns (a speck threshold that scales with resolution). Applies\ntogether with ``min_area``: a contour must pass both. Accepts a\nPolars expression.",
         "type": {
           "kind": "optional",
           "inner": {
