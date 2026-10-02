@@ -455,6 +455,47 @@ fn contour_pairwise_iou(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<S
     )
 }
 
+/// Declared type of `contour_largest`: always a set of the input's contours.
+fn contour_largest_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
+    let input = input_fields
+        .first()
+        .ok_or_else(|| polars_err!(ComputeError: "contour_largest takes a contour column"))?;
+    Ok(Field::new(
+        input.name().clone(),
+        Arity::Set.wrap(Arity::elem_dtype(input.dtype())),
+    ))
+}
+
+/// The `k` largest contours of each row's set, as a set.
+///
+/// Set-level, like `pairwise_iou`: a single-contour column is read as a set
+/// of one, so the result is a set whichever arity came in.
+#[polars_expr(output_type_func=contour_largest_output_type)]
+fn contour_largest(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "contour_largest";
+    let (op, params) = GeomParams::parse::<GeometryOp<Wire>>(inputs, kwargs, NAME)?;
+    let GeometryOp::Largest { k } = &op else {
+        return Err(parsed_as_another(NAME));
+    };
+    let contours = ContourColumn::new(&inputs[0]);
+    let rows = params.map_rows(crate::geom_calls!(), inputs[0].len(), |params, i| {
+        let Some(row) = contours.row(i)? else {
+            return Ok(None);
+        };
+        let k = params.value(k, i)?;
+        if k == 0 {
+            polars_bail!(ComputeError: "contour_largest: k must be >= 1, got 0 (row {})", i);
+        }
+        Ok(Some(transforms::largest(&row, k as usize)))
+    })?;
+    Contour::column(
+        inputs[0].name().clone(),
+        rows,
+        Arity::Set,
+        &Arity::elem_dtype(inputs[0].dtype()),
+    )
+}
+
 /// One-to-one correspondence between two contour sets by overlap.
 ///
 /// Generic by construction: it knows about contours and overlap, and nothing

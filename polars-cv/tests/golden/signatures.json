@@ -216,6 +216,18 @@
     "'interior'"
    ]
   ],
+  "largest": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "k",
+    "KEYWORD_ONLY",
+    "1"
+   ]
+  ],
   "normalize": [
    [
     "self",
@@ -956,6 +968,18 @@
     "self",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ]
+  ],
+  "largest": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "k",
+    "KEYWORD_ONLY",
+    "1"
    ]
   ],
   "letterbox": [
@@ -2385,6 +2409,18 @@
     "self",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ]
+  ],
+  "largest": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "k",
+    "KEYWORD_ONLY",
+    "1"
    ]
   ],
   "letterbox": [

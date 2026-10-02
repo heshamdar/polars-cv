@@ -375,6 +375,13 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().laplacian())
 
+    def largest(self, *, k: IntOrExpr = 1) -> LazyPipelineExpr:
+        """Keep the ``k`` largest contours of the set, by area: largest first,
+
+        Lazy form of :meth:`Pipeline.largest` on this expression's output.
+        """
+        return self.pipe(self._continuation().largest(k=k))
+
     def letterbox(
         self,
         *,

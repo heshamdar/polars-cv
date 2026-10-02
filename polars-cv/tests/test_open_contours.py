@@ -39,6 +39,7 @@ READS: dict[str, str] = {
     "iou": "region",
     "dice": "region",
     "pairwise_iou": "region",
+    "largest": "region",
     "correspond": "region",
     "perimeter": "outline",
     "bounding_box": "outline",

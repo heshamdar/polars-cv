@@ -173,6 +173,17 @@ pub(crate) fn execute_geometry_op(
                 .collect();
             Ok(NodeOutput::from_contours(simplified))
         }
+        GeometryOp::Largest { k } => {
+            let contours = input
+                .as_contours()
+                .ok_or_else(|| "Largest requires Contour input".to_string())?;
+            if *k == 0 {
+                return Err("contour_largest: k must be >= 1, got 0".to_string());
+            }
+            Ok(NodeOutput::from_contours(
+                view_buffer::geometry::transforms::largest(contours, *k as usize),
+            ))
+        }
         GeometryOp::ConvexHull => {
             let contours = input
                 .as_contours()

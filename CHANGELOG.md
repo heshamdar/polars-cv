@@ -29,6 +29,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`largest(k=1)`** keeps the `k` largest contours of a set by area,
+  largest first, equal areas in input order — as a pipeline op
+  (`.extract_contours().largest()`) and as `.contour.largest(k)` on a contour
+  column, both from one definition. The result is always a set (a lone contour
+  is a set of one), so downstream set-level code is unchanged; `k` may be per
+  row, and `k = 0` is refused.
+
 - **`extract_contours(min_area_fraction=)`** filters contours by area as a
   fraction of the image's own height x width, resolved per image as it runs,
   so a speck threshold scales with resolution without reading each image's

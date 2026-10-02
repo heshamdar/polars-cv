@@ -116,6 +116,7 @@ OP_CASES: dict[str, tuple[str, dict] | None] = {
     "bounding_box": (CONTOUR, {}),
     "centroid": (CONTOUR, {}),
     "convex_hull": (CONTOUR, {}),
+    "largest": (CONTOUR, {"k": 2}),
     "perimeter": (CONTOUR, {}),
     "rasterize": (CONTOUR, {"width": 32, "height": 32}),
     "scale_contour": (CONTOUR, {"sx": 2.0, "sy": 2.0}),

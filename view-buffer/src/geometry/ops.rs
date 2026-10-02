@@ -94,6 +94,14 @@ pub enum GeometryOp<M: Mode = Exec> {
     /// Compute the convex hull of the contour.
     #[op(name = "contour_convex_hull", python = "convex_hull", sample = {})]
     ConvexHull,
+    /// Keep the ``k`` largest contours of the set, by area: largest first,
+    /// equal areas in their input order. A set of fewer keeps them all.
+    #[op(name = "contour_largest", python = "largest", sample = {"k": 2})]
+    Largest {
+        /// How many contours to keep, >= 1 (literal or expression).
+        #[param(default = 1)]
+        k: M::V<u32>,
+    },
     /// Rasterize contours to a mask.
     ///
     /// The builder is ``Pipeline.rasterize``, whose ``width``/``height`` or
@@ -205,11 +213,25 @@ impl FieldType for RasterSize<Wire> {
 }
 
 impl<M: Mode> GeometryOp<M> {
-    /// Refuse a parameter combination no row can execute: none (the
-    /// per-value checks — a positive canvas, a non-negative tolerance — are
-    /// `validate`'s, on the values).
+    /// Refuse a literal no row can execute — checked whatever the plan
+    /// knows of the input (`validate` runs only over a known rank, which a
+    /// contour set never has). The checks on per-row values run with the row.
     pub fn check(&self) -> Result<(), String> {
-        Ok(())
+        match self {
+            GeometryOp::Largest { k } if known::<M, u32>(k) == Some(0) => {
+                Err("k must be >= 1".to_string())
+            }
+            GeometryOp::ExtractContours {
+                min_area_fraction: Some(fraction),
+                ..
+            } => match known::<M, f64>(fraction) {
+                Some(f) if !(f > 0.0 && f <= 1.0) => {
+                    Err(format!("min_area_fraction must be in (0, 1], got {f}"))
+                }
+                _ => Ok(()),
+            },
+            _ => Ok(()),
+        }
     }
 
     /// How this op's output shape follows from its input — the one
@@ -223,6 +245,9 @@ impl<M: Mode> GeometryOp<M> {
             | GeometryOp::Perimeter
             | GeometryOp::Centroid
             | GeometryOp::BoundingBox => OpShape::Dynamic,
+            // How many contours are kept is `min(k, set size)`: the set's
+            // size is known only with the data.
+            GeometryOp::Largest { .. } => OpShape::Dynamic,
             // Contour transforms preserve the point list; `Simplify` and
             // `ConvexHull` may shorten it, which is not knowable statically, so
             // the input shape stands in for both.
@@ -328,6 +353,7 @@ impl<M: Mode> Op for GeometryOp<M> {
             GeometryOp::Scale { .. } => "Scale",
             GeometryOp::Simplify { .. } => "Simplify",
             GeometryOp::ConvexHull => "ConvexHull",
+            GeometryOp::Largest { .. } => "Largest",
             GeometryOp::Rasterize { .. } => "Rasterize",
             GeometryOp::ExtractContours { .. } => "ExtractContours",
         }
@@ -370,6 +396,7 @@ impl<M: Mode> Op for GeometryOp<M> {
             | GeometryOp::Scale { .. }
             | GeometryOp::Simplify { .. }
             | GeometryOp::ConvexHull
+            | GeometryOp::Largest { .. }
             | GeometryOp::Rasterize { .. }
             | GeometryOp::ExtractContours { .. } => SpatialDependency::Global,
         }
@@ -406,17 +433,6 @@ impl<M: Mode> Op for GeometryOp<M> {
                 }
                 Ok(())
             }
-
-            GeometryOp::ExtractContours {
-                min_area_fraction: Some(fraction),
-                ..
-            } => match known::<M, f64>(fraction) {
-                Some(f) if !(f > 0.0 && f <= 1.0) => Err(ValidationError::InvalidParameter {
-                    param: "min_area_fraction".to_string(),
-                    reason: format!("must be in (0, 1], got {f}"),
-                }),
-                _ => Ok(()),
-            },
 
             GeometryOp::Simplify { tolerance } => {
                 if known::<M, f64>(tolerance).is_some_and(|t| t < 0.0) {
@@ -466,7 +482,8 @@ impl<M: Mode> GeometryOp<M> {
             | GeometryOp::Translate { .. }
             | GeometryOp::Scale { .. }
             | GeometryOp::Simplify { .. }
-            | GeometryOp::ConvexHull => Domain::Contour,
+            | GeometryOp::ConvexHull
+            | GeometryOp::Largest { .. } => Domain::Contour,
         }
     }
 
@@ -489,11 +506,12 @@ impl<M: Mode> GeometryOp<M> {
             | GeometryOp::Centroid
             | GeometryOp::BoundingBox => Domain::Vector,
 
-            // Contour transforms preserve contour domain
+            // Contour transforms (and a selection of the set) stay contours
             GeometryOp::Translate { .. }
             | GeometryOp::Scale { .. }
             | GeometryOp::Simplify { .. }
-            | GeometryOp::ConvexHull => Domain::Contour,
+            | GeometryOp::ConvexHull
+            | GeometryOp::Largest { .. } => Domain::Contour,
         }
     }
 }

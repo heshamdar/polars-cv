@@ -349,6 +349,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "contour_bounding_box",
         "contour_centroid",
         "contour_convex_hull",
+        "contour_largest",
         "contour_perimeter",
         "contour_scale",
         "contour_simplify",
@@ -540,6 +541,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "contour_bounding_box": {},
     "contour_centroid": {},
     "contour_convex_hull": {},
+    "contour_largest": {"k": {"kind": "scalar", "per_row": True, "py": "int"}},
     "contour_perimeter": {},
     "contour_scale": {
         "sx": {"kind": "scalar", "per_row": True, "py": "float"},
@@ -992,6 +994,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "contour_bounding_box": [{"input": "contour", "output": "vector"}],
     "contour_centroid": [{"input": "contour", "output": "vector"}],
     "contour_convex_hull": [{"input": "contour", "output": "contour"}],
+    "contour_largest": [{"input": "contour", "output": "contour"}],
     "contour_perimeter": [{"input": "contour", "output": "vector"}],
     "contour_scale": [{"input": "contour", "output": "contour"}],
     "contour_simplify": [{"input": "contour", "output": "contour"}],
@@ -1485,6 +1488,17 @@ class _OpsMixin:
         Domain: contour → contour
         """
         return self._append_typed("contour_convex_hull", {})
+
+    def largest(self, *, k: IntOrExpr = 1) -> Pipeline:
+        """Keep the ``k`` largest contours of the set, by area: largest first,
+        equal areas in their input order. A set of fewer keeps them all.
+
+        Domain: contour → contour
+
+        Args:
+            k: How many contours to keep, >= 1 (literal or expression).
+        """
+        return self._append_typed("contour_largest", {"k": k})
 
     def perimeter(self) -> Pipeline:
         """Compute the perimeter (arc length) of the contour.
@@ -2938,6 +2952,15 @@ class _ContourOpsMixin:
             "contour_label_reduce",
             {"image": image, "reduction": reduction, "region_mode": region_mode},
         )
+
+    def largest(self, *, k: IntOrExpr = 1) -> pl.Expr:
+        """Keep the ``k`` largest contours of the set, by area: largest first,
+        equal areas in their input order. A set of fewer keeps them all.
+
+        Args:
+            k: How many contours to keep, >= 1 (literal or expression).
+        """
+        return self._call("contour_largest", {"k": k})
 
     def normalize(self, width: FloatOrExpr, height: FloatOrExpr) -> pl.Expr:
         """Convert pixel coordinates to normalized [0,1] range.

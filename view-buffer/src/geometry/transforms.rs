@@ -204,6 +204,18 @@ pub fn convex_hull_outline(outline: &Outline) -> Contour {
     }
 }
 
+/// The `k` largest contours by area ([`super::measures::area`], holes
+/// removed): largest first, equal areas in their input order.
+pub fn largest(contours: &[Contour], k: usize) -> Vec<Contour> {
+    let mut ranked: Vec<(f64, &Contour)> = contours
+        .iter()
+        .map(|c| (super::measures::area(c, false), c))
+        .collect();
+    // Stable, so equal areas keep their input order.
+    ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+    ranked.into_iter().take(k).map(|(_, c)| c.clone()).collect()
+}
+
 /// Computes the convex hull of a contour's exterior ring.
 ///
 /// # Arguments
@@ -218,6 +230,17 @@ pub fn convex_hull(contour: &Contour) -> Contour {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn largest_keeps_the_k_biggest_largest_first_ties_in_order() {
+        let sq =
+            |x: f64, s: f64| Contour::from_tuples(&[(x, 0.0), (x + s, 0.0), (x + s, s), (x, s)]);
+        let set = vec![sq(0.0, 1.0), sq(10.0, 3.0), sq(20.0, 2.0), sq(30.0, 3.0)];
+        let xs = |cs: Vec<Contour>| cs.iter().map(|c| c.exterior[0].x).collect::<Vec<_>>();
+        assert_eq!(xs(largest(&set, 3)), vec![10.0, 30.0, 20.0]);
+        assert_eq!(xs(largest(&set, 10)).len(), 4);
+        assert!(largest(&[], 2).is_empty());
+    }
 
     #[test]
     fn an_open_outline_simplifies_as_a_line() {
