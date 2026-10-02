@@ -13,6 +13,7 @@ mod fetch;
 mod formats;
 mod geom_arity;
 mod geom_columns;
+mod geom_construct;
 mod geom_fns;
 mod geom_params;
 mod geom_schema;

@@ -52,6 +52,7 @@ READS: dict[str, str] = {
     "normalize": "outline",
     "to_absolute": "outline",
     "flip": "outline",
+    "to_coords": "outline",
     "point.distance_to_contour": "outline",
     "point.nearest_point_on_contour": "outline",
     "point.signed_distance_to_contour": "region",

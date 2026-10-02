@@ -33,6 +33,19 @@ class ApproxMethod(str, Enum):
     APPROX = "approx"
 
 
+class BorderArc(str, Enum):
+    """Which way round the image frame ``.contour.close_along_border`` runs, from the line's last point back to its first.
+
+    - SHORTEST: the shorter way round.
+    - CLOCKWISE: clockwise as displayed (y down; along the top edge rightward).
+    - COUNTERCLOCKWISE: the other way.
+    """
+
+    SHORTEST = "shortest"
+    CLOCKWISE = "clockwise"
+    COUNTERCLOCKWISE = "counterclockwise"
+
+
 class BorderMode(str, Enum):
     """Border-handling mode for 2D convolution (``convolve2d``).
 
@@ -55,6 +68,17 @@ class ColorSpace(str, Enum):
     LAB = "lab"
     YCBCR = "ycbcr"
     GRAY = "gray"
+
+
+class CoordOrder(str, Enum):
+    """Order of a point's coordinates in a plain list (``polars_cv.geometry.*_from_coords``, ``.to_coords``).
+
+    - XY: ``[x, y]``.
+    - YX: ``[y, x]`` (row, column).
+    """
+
+    XY = "xy"
+    YX = "yx"
 
 
 class DType(str, Enum):
@@ -3030,6 +3054,20 @@ class _ContourOpsMixin:
         """
         return self._call("contour_to_absolute", {"width": width, "height": height})
 
+    def to_coords(self, *, order: str | pl.Expr = "xy") -> pl.Expr:
+        """The contour's points as plain coordinate pairs, for export — the
+        inverse of ``polars_cv.geometry.contour_from_coords``. A contour with
+        holes is refused: its rings have no single coordinate list.
+
+        Args:
+            order: ``"xy"`` or ``"yx"`` (row, column) (literal or expression).
+
+        Returns:
+            ``List(Array(Float64, 2))`` of the exterior's (or polyline's)
+            points in ``order`` — a ``List`` of them for a contour set.
+        """
+        return self._call("contour_to_coords", {"order": order})
+
     def translate(self, dx: FloatOrExpr, dy: FloatOrExpr) -> pl.Expr:
         """Translate the contour by an offset.
 
@@ -3206,6 +3244,18 @@ class _PointOpsMixin:
             Point with pixel coordinates.
         """
         return self._call("point_to_absolute", {"width": width, "height": height})
+
+    def to_coords(self, *, order: str | pl.Expr = "xy") -> pl.Expr:
+        """The point's coordinates as a plain pair, for export — the inverse of
+        ``polars_cv.geometry.point_from_coords``.
+
+        Args:
+            order: ``"xy"`` or ``"yx"`` (row, column) (literal or expression).
+
+        Returns:
+            ``Array(Float64, 2)`` in ``order``.
+        """
+        return self._call("point_to_coords", {"order": order})
 
     def translate(self, dx: FloatOrExpr, dy: FloatOrExpr) -> pl.Expr:
         """Translate point by offset.

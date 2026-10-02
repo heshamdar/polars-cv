@@ -13,7 +13,7 @@
 //! and the Python accessor methods are generated from [`geom_catalog`].
 
 use serde::Serialize;
-use view_buffer::geometry::contour::Winding;
+use view_buffer::geometry::contour::{CoordOrder, Winding};
 use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
 use view_buffer::mode::{ColumnRef, Exec, Mode, OpDesc, Wire, WireOps};
 use view_buffer::GeometryOp;
@@ -144,6 +144,19 @@ pub enum ContourFn<M: Mode = Exec> {
         /// Another contour column to compare with.
         other: ColumnRef,
     },
+    /// The contour's points as plain coordinate pairs, for export — the
+    /// inverse of ``polars_cv.geometry.contour_from_coords``. A contour with
+    /// holes is refused: its rings have no single coordinate list.
+    ///
+    /// Returns:
+    ///     ``List(Array(Float64, 2))`` of the exterior's (or polyline's)
+    ///     points in ``order`` — a ``List`` of them for a contour set.
+    #[op(name = "contour_to_coords", python = "to_coords", sample = {"order": "yx"})]
+    ToCoords {
+        /// ``"xy"`` or ``"yx"`` (row, column) (literal or expression).
+        #[param(default = "xy")]
+        order: M::V<CoordOrder>,
+    },
     /// Point-to-edge boundary distances to another contour, both directions.
     ///
     /// Each boundary is sampled — its vertices, plus a point every
@@ -269,6 +282,17 @@ pub enum PointFn<M: Mode = Exec> {
     ///     Float64 Y coordinate.
     #[op(name = "point_y", python = "y", sample = {})]
     Y,
+    /// The point's coordinates as a plain pair, for export — the inverse of
+    /// ``polars_cv.geometry.point_from_coords``.
+    ///
+    /// Returns:
+    ///     ``Array(Float64, 2)`` in ``order``.
+    #[op(name = "point_to_coords", python = "to_coords", sample = {"order": "yx"})]
+    ToCoords {
+        /// ``"xy"`` or ``"yx"`` (row, column) (literal or expression).
+        #[param(default = "xy")]
+        order: M::V<CoordOrder>,
+    },
     /// Convert pixel coordinates to normalized [0,1] range.
     ///
     /// Returns:

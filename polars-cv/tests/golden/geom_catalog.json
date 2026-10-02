@@ -467,6 +467,29 @@
   },
   {
     "namespace": "contour",
+    "name": "contour_to_coords",
+    "python": "to_coords",
+    "visibility": "public",
+    "doc": "The contour's points as plain coordinate pairs, for export — the\ninverse of ``polars_cv.geometry.contour_from_coords``. A contour with\nholes is refused: its rings have no single coordinate list.\n\nReturns:\n    ``List(Array(Float64, 2))`` of the exterior's (or polyline's)\n    points in ``order`` — a ``List`` of them for a contour set.",
+    "fields": [
+      {
+        "name": "order",
+        "doc": "``\"xy\"`` or ``\"yx\"`` (row, column) (literal or expression).",
+        "default": "xy",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "CoordOrder",
+          "variants": [
+            "xy",
+            "yx"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
     "name": "contour_translate",
     "python": "translate",
     "visibility": "public",
@@ -743,6 +766,29 @@
           "kind": "scalar",
           "per_row": true,
           "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "point",
+    "name": "point_to_coords",
+    "python": "to_coords",
+    "visibility": "public",
+    "doc": "The point's coordinates as a plain pair, for export — the inverse of\n``polars_cv.geometry.point_from_coords``.\n\nReturns:\n    ``Array(Float64, 2)`` in ``order``.",
+    "fields": [
+      {
+        "name": "order",
+        "doc": "``\"xy\"`` or ``\"yx\"`` (row, column) (literal or expression).",
+        "default": "xy",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "CoordOrder",
+          "variants": [
+            "xy",
+            "yx"
+          ]
         }
       }
     ]

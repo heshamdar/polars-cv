@@ -37,7 +37,7 @@ use crate::row_split::CallTracker;
 use view_buffer::mode::Wire;
 
 /// A per-point result of a point function, and the column of them.
-trait PointOutput: Sized + Send {
+pub(crate) trait PointOutput: Sized + Send {
     /// The element dtype.
     fn dtype() -> DataType;
     fn series(name: PlSmallStr, values: Vec<Option<Self>>) -> PolarsResult<Series>;
@@ -85,10 +85,33 @@ impl PointOutput for Point {
     }
 }
 
+/// A point's coordinates as a pair, `Array(Float64, 2)`.
+impl PointOutput for [f64; 2] {
+    fn dtype() -> DataType {
+        DataType::Array(Box::new(DataType::Float64), 2)
+    }
+    fn series(name: PlSmallStr, values: Vec<Option<Self>>) -> PolarsResult<Series> {
+        use polars_arrow::array::{FixedSizeListArray, PrimitiveArray};
+        let flat: Vec<f64> = values.iter().flat_map(|v| v.unwrap_or([0.0; 2])).collect();
+        let validity: Option<polars_arrow::bitmap::Bitmap> = values
+            .iter()
+            .any(Option::is_none)
+            .then(|| values.iter().map(Option::is_some).collect());
+        let dtype = Self::dtype().to_arrow(CompatLevel::newest());
+        let array = FixedSizeListArray::try_new(
+            dtype,
+            values.len(),
+            PrimitiveArray::from_vec(flat).boxed(),
+            validity,
+        )?;
+        Series::from_arrow(name, array.boxed())
+    }
+}
+
 /// The column of `rows` — per row `None` (a null row) or one result per point
 /// — in `arity`: the results themselves for one point per row, a list of them
 /// for a set.
-fn assemble<T: PointOutput>(
+pub(crate) fn assemble<T: PointOutput>(
     name: PlSmallStr,
     rows: Vec<Option<Vec<Option<T>>>>,
     arity: Arity,
@@ -157,6 +180,9 @@ fn bool_output(f: &[Field]) -> PolarsResult<Field> {
 }
 fn point_output(f: &[Field]) -> PolarsResult<Field> {
     unary_field::<Point>(f)
+}
+fn pair_output(f: &[Field]) -> PolarsResult<Field> {
+    unary_field::<[f64; 2]>(f)
 }
 fn pair_f64_output(f: &[Field]) -> PolarsResult<Field> {
     binary_field::<f64>(f)
@@ -270,6 +296,24 @@ fn point_x(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
 fn point_y(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
     parse_as!(params = inputs, kwargs, "point_y", Y);
     map_points(inputs, &params, geom_calls!(), none, |_, p| Ok(Some(p.y)))
+}
+
+/// The point's coordinates as a pair, in `order`.
+#[polars_expr(output_type_func=pair_output)]
+fn point_to_coords(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    parse_as!(
+        params = inputs,
+        kwargs,
+        "point_to_coords",
+        ToCoords { order }
+    );
+    map_points(
+        inputs,
+        &params,
+        geom_calls!(),
+        |params, i| params.value(order, i).map(Some),
+        |order, p| Ok(Some(order.pair(&p))),
+    )
 }
 
 // ============================================================================
