@@ -7,6 +7,32 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Changed
+
+- **FROC/LROC read a curve past its end by one policy, null by default
+  (breaking for `froc_auc`).** `froc_auc(fp_range=...)` filled the curve flat
+  past its last operating point while `froc_summary_table` and
+  `froc_sensitivity_at_fp` returned null there, so one table reported an
+  unknown sensitivity at 2 FP/image and a defined AUC over 0–2 FP/image — for
+  detections from a thresholded mask, which exist at a single operating point,
+  an AUC that was nearly the curve's maximum sensitivity. The two curve readers
+  (`partial_auc_expr`, `interpolate_curve_lazy`) now share one `extrapolate`
+  argument, `"none"` (default) or `"flat"` (extend the endpoints — the LUNA16
+  `np.interp` convention), threaded through `froc_auc`,
+  `froc_sensitivity_at_fp`, `froc_summary_table`, `lroc_auc`,
+  `lroc_sensitivity_at_fpf`, `froc_auc_ci_lazy` and `lroc_auc_ci_lazy`. An
+  `fp_range` reaching past the curve now gives a null AUC; pass
+  `extrapolate="flat"` for the previous value. LROC values are unchanged (its
+  curve always spans `[0, 1]`). A bootstrap replicate whose curve stops short
+  of the window nulls the bounds instead of being scored as an empty draw's
+  0.0.
+
+### Added
+
+- **`froc_operating_range(table, group_by=...)`** reports each curve's
+  `max_fp_per_image` and `max_sensitivity`, so a truncated curve is visible
+  next to the AUC.
+
 ### Fixed
 
 - **`PreMatchedAdapter` refuses keys and columns it used to drop silently.**

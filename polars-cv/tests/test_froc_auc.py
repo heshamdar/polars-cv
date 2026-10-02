@@ -118,20 +118,25 @@ class TestFrocAucParity:
         with pytest.raises(ValueError, match="requires an explicit fp_range"):
             froc_auc(table)
 
+    @pytest.mark.parametrize("extrapolate", ["none", "flat"])
     @pytest.mark.parametrize("fp_range", [(0.0, 1.0), (0.25, 2.0), (0.0, 8.0)])
-    def test_partial_raw(self, fp_range: tuple[float, float]) -> None:
+    def test_partial_raw(self, fp_range: tuple[float, float], extrapolate: str) -> None:
         table = _table(multiclass=False)
-        got = _auc_value(froc_auc(table, fp_range=fp_range, correction=None))
-        want = ref_froc_auc(table, fp_range=fp_range)
-        assert got == pytest.approx(want, abs=1e-7)
+        got = _auc_value(
+            froc_auc(table, fp_range=fp_range, correction=None, extrapolate=extrapolate)
+        )
+        want = ref_froc_auc(table, fp_range=fp_range, extrapolate=extrapolate)
+        assert got == want or got == pytest.approx(want, abs=1e-7)
 
     @pytest.mark.parametrize("fp_range", [(0.0, 1.0), (0.25, 2.0), (0.0, 8.0)])
     def test_normalize_is_the_default(self, fp_range: tuple[float, float]) -> None:
         """The default correction is 'normalize' (mean sensitivity over fp_range)."""
         table = _table(multiclass=False)
-        default = _auc_value(froc_auc(table, fp_range=fp_range))
+        default = _auc_value(froc_auc(table, fp_range=fp_range, extrapolate="flat"))
         explicit = _auc_value(
-            froc_auc(table, fp_range=fp_range, correction="normalize")
+            froc_auc(
+                table, fp_range=fp_range, correction="normalize", extrapolate="flat"
+            )
         )
         want = ref_froc_auc(table, fp_range=fp_range, correction="normalize")
         assert default == pytest.approx(explicit, abs=_TOL)
@@ -154,7 +159,8 @@ class TestFrocAucParity:
         this was removed — trapezoidal now always integrates a partial window.)
         """
         table = _table(multiclass=False)
-        expr = froc_auc(table, fp_range=(0.0, 8.0))
+        # The curve stops near 1.7 FP/image; "flat" keeps a value to compare.
+        expr = froc_auc(table, fp_range=(0.0, 8.0), extrapolate="flat")
         in_memory = {
             round(expr.collect(engine="in-memory").item(), 12) for _ in range(12)
         }
@@ -168,14 +174,27 @@ class TestFrocAucGroupParity:
 
     def test_trapezoidal_group_by_class(self) -> None:
         table = _table(multiclass=True)
-        grouped = froc_auc(table, group_by="class_id", fp_range=(0.0, 8.0)).collect()
+        grouped = froc_auc(
+            table, group_by="class_id", fp_range=(0.0, 8.0), extrapolate="flat"
+        ).collect()
         got = dict(zip(grouped[COL_CLASS_ID].to_list(), grouped["auc"].to_list()))
 
         for cid in ("x", "y"):
             want = (
-                froc_auc(table.filter_class(cid), fp_range=(0.0, 8.0)).collect().item()
+                froc_auc(
+                    table.filter_class(cid), fp_range=(0.0, 8.0), extrapolate="flat"
+                )
+                .collect()
+                .item()
             )
+            assert got[cid] is not None
             assert got[cid] == pytest.approx(want, abs=_TOL)
+
+    def test_off_curve_groups_are_null_by_group(self) -> None:
+        """Each group's own curve decides whether the window leaves it."""
+        table = _table(multiclass=True)
+        grouped = froc_auc(table, group_by="class_id", fp_range=(0.0, 8.0)).collect()
+        assert grouped["auc"].null_count() == grouped.height
 
     def test_mann_whitney_group_by_class(self) -> None:
         table = _table(multiclass=True)
@@ -200,11 +219,16 @@ class TestFrocAucGroupParity:
 class TestFrocStandaloneHelpers:
     """The lazy standalone helpers match the NumPy reference."""
 
+    @pytest.mark.parametrize("extrapolate", ["none", "flat"])
     @pytest.mark.parametrize("fp", [0.0, 0.25, 0.5, 1.0, 2.0, 100.0])
-    def test_sensitivity_at_fp(self, fp: float) -> None:
+    def test_sensitivity_at_fp(self, fp: float, extrapolate: str) -> None:
         table = _table(multiclass=False)
-        got = froc_sensitivity_at_fp(table, fp).collect()["sensitivity"].item()
-        want = ref_froc_sensitivity_at_fp(table, fp)
+        got = (
+            froc_sensitivity_at_fp(table, fp, extrapolate=extrapolate)
+            .collect()["sensitivity"]
+            .item()
+        )
+        want = ref_froc_sensitivity_at_fp(table, fp, extrapolate=extrapolate)
         assert got == want or got == pytest.approx(want, abs=1e-9)
 
     def test_summary_table_interpolates_the_curve(self) -> None:
@@ -220,6 +244,95 @@ class TestFrocStandaloneHelpers:
                 assert sens is None
             else:
                 assert sens == pytest.approx(want, abs=1e-9)
+
+
+def _one_operating_point() -> DetectionTable:
+    """The reporter's case: 100 images, 50 GTs, detections at one operating
+    point (30 TPs, 5 FPs), so the curve stops at 0.05 FP/image, sensitivity 0.6."""
+    from polars_cv.metrics import PreMatchedAdapter
+
+    detections = pl.DataFrame(
+        {
+            "image_id": [f"img{i}" for i in range(30)]
+            + [f"img{i}" for i in range(60, 65)],
+            "score": [0.9 - i * 0.01 for i in range(30)]
+            + [0.5 - i * 0.01 for i in range(5)],
+            "is_tp": [True] * 30 + [False] * 5,
+        }
+    )
+    image_meta = pl.DataFrame(
+        {"image_id": [f"img{i}" for i in range(100)], "n_gts": [1] * 50 + [0] * 50}
+    )
+    return PreMatchedAdapter().match(
+        detections, image_id_col="image_id", image_meta=image_meta
+    )
+
+
+class TestFrocOffCurve:
+    """One policy past the curve's end, for every FROC reader.
+
+    ``froc_summary_table`` said the sensitivity at 2 FP/image was unknown while
+    ``froc_auc(fp_range=(0, 2))`` reported 0.6 for the same table — a curve
+    observed only up to 0.05 FP/image, silently extended.
+    """
+
+    def test_the_auc_past_the_curve_is_null(self) -> None:
+        table = _one_operating_point()
+        assert froc_auc(table, fp_range=(0.0, 2.0)).collect().item() is None
+
+    def test_the_auc_within_the_curve_is_defined(self) -> None:
+        table = _one_operating_point()
+        # Every TP outranks every FP: the curve is at 0.6 from fp = 0.
+        got = froc_auc(table, fp_range=(0.0, 0.05)).collect().item()
+        assert got == pytest.approx(0.6)
+
+    def test_flat_is_the_explicit_convention(self) -> None:
+        table = _one_operating_point()
+        auc = froc_auc(table, fp_range=(0.0, 2.0), extrapolate="flat")
+        assert auc.collect().item() == pytest.approx(0.6)
+        summary = froc_summary_table(table, [0.05, 1.0, 2.0], extrapolate="flat")
+        assert summary.collect()["sensitivity"].to_list() == pytest.approx(
+            [0.6, 0.6, 0.6]
+        )
+
+    def test_summary_and_auc_agree_by_default(self) -> None:
+        table = _one_operating_point()
+        summary = froc_summary_table(table, [0.05, 1.0, 2.0]).collect()
+        assert summary["sensitivity"].to_list() == [pytest.approx(0.6), None, None]
+
+    def test_the_operating_range_shows_where_the_curve_stops(self) -> None:
+        from polars_cv.metrics import froc_operating_range
+
+        got = froc_operating_range(_one_operating_point()).collect()
+        assert got.columns == ["max_fp_per_image", "max_sensitivity"]
+        assert got.row(0) == pytest.approx((0.05, 0.6))
+
+    def test_the_operating_range_is_per_group(self) -> None:
+        from polars_cv.metrics import froc_operating_range
+
+        table = _table(multiclass=True)
+        got = (
+            froc_operating_range(table, group_by="class_id").collect().sort("class_id")
+        )
+        for cid, row in zip(got["class_id"], got.iter_rows(named=True)):
+            curve = froc_curve_lazy(table.filter_class(cid)).collect()
+            assert row["max_fp_per_image"] == pytest.approx(curve["fp_per_image"].max())
+            assert row["max_sensitivity"] == pytest.approx(curve["sensitivity"].max())
+
+    def test_bootstrap_bounds_are_null_when_a_replicate_is_off_curve(self) -> None:
+        """An undefined replicate is not scored as an empty draw's 0.0."""
+        from polars_cv.metrics import froc_auc_ci_lazy
+
+        table = _one_operating_point()
+        out = froc_auc_ci_lazy(
+            table, fp_range=(0.0, 2.0), n_bootstrap=20, seed=0
+        ).collect()
+        assert out.row(0) == (None, None, None)
+        flat = froc_auc_ci_lazy(
+            table, fp_range=(0.0, 2.0), n_bootstrap=20, seed=0, extrapolate="flat"
+        ).collect()
+        assert flat["ci_lower"].item() is not None
+        assert flat["ci_lower"].item() <= flat["auc"].item() <= flat["ci_upper"].item()
 
 
 class TestFrocIsPureLazy:

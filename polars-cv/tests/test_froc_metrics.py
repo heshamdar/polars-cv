@@ -124,7 +124,11 @@ class TestFrocMetrics:
         }
         assert curve.height >= 1
         # Normalized (default) mean sensitivity over a fixed FP window ∈ [0, 1].
-        assert 0.0 <= froc_auc(table, fp_range=(0.0, 8.0)).collect().item() <= 1.0
+        assert (
+            0.0
+            <= froc_auc(table, fp_range=(0.0, 8.0), extrapolate="flat").collect().item()
+            <= 1.0
+        )
         sens = froc_sensitivity_at_fp(table, 1.0).collect()["sensitivity"].item()
         assert sens is None or 0.0 <= sens <= 1.0
 
@@ -165,7 +169,7 @@ class TestFrocMetrics:
             image_id_col="image_id",
         )
         ci = froc_auc_ci_lazy(
-            table, fp_range=(0.0, 8.0), n_bootstrap=20, seed=42
+            table, fp_range=(0.0, 8.0), extrapolate="flat", n_bootstrap=20, seed=42
         ).collect()
         assert ci.height == 1
         assert ci["ci_lower"].item() <= ci["ci_upper"].item()

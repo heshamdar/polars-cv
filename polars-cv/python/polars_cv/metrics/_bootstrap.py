@@ -36,7 +36,7 @@ from ._types import (
 )
 
 if TYPE_CHECKING:
-    from ._auc import CorrectionMethod
+    from ._auc import CorrectionMethod, Extrapolate
     from ._types import DetectionTable
 
 # Internal slot column carrying a globally-unique, deterministic per-draw id.
@@ -78,6 +78,7 @@ def froc_auc_ci_lazy(
     correction: CorrectionMethod = "normalize",
     level: Literal["detection", "image"] = "detection",
     sample_col: str | None = None,
+    extrapolate: Extrapolate = "none",
 ) -> pl.LazyFrame:
     """Lazy, group-aware bootstrap confidence interval for FROC AUC.
 
@@ -90,6 +91,9 @@ def froc_auc_ci_lazy(
     Each group resamples within itself (its own images, to its own size),
     stratified by ``gt_label``. A **degenerate group** (no positive targets) keeps
     its point estimate but yields null ``ci_lower``/``ci_upper`` instead of raising.
+    So does a group any of whose replicates is **undefined** — a resampled curve
+    that stops short of ``fp_range`` under ``extrapolate="none"``: its AUC was
+    not observed, and is never scored as an empty draw's ``0.0``.
 
     Args:
         table: Canonical detection table.
@@ -106,6 +110,8 @@ def froc_auc_ci_lazy(
         level: Mann-Whitney granularity — ``"detection"`` or ``"image"``.
         sample_col: Optional entity column (e.g. ``"case_id"``) to resample at the
             entity level within each group, expanding to images.
+        extrapolate: Off-curve policy passed to :func:`froc_auc` for the point
+            estimate and every replicate (``"none"`` or ``"flat"``).
 
     Returns:
         ``LazyFrame`` with ``[*group_by, auc, ci_lower, ci_upper]``.
@@ -123,6 +129,7 @@ def froc_auc_ci_lazy(
             correction=correction,
             level=level,
             group_by=keys or None,
+            extrapolate=extrapolate,
         )
 
     empty_value = 0.5 if method == "mann_whitney" else 0.0
@@ -153,6 +160,7 @@ def lroc_auc_ci_lazy(
     correction: CorrectionMethod = "normalize",
     level: Literal["detection", "image"] = "image",
     sample_col: str | None = None,
+    extrapolate: Extrapolate = "none",
 ) -> pl.LazyFrame:
     """Lazy, group-aware bootstrap confidence interval for LROC AUC.
 
@@ -173,6 +181,7 @@ def lroc_auc_ci_lazy(
             (default) gives mean sensitivity over the window.
         level: Mann-Whitney granularity — ``"image"`` or ``"detection"``.
         sample_col: Optional entity column to resample at the entity level.
+        extrapolate: Off-curve policy passed to :func:`lroc_auc`.
 
     Returns:
         ``LazyFrame`` with ``[*group_by, auc, ci_lower, ci_upper]``.
@@ -191,6 +200,7 @@ def lroc_auc_ci_lazy(
             correction=correction,
             level=level,
             group_by=keys or None,
+            extrapolate=extrapolate,
         )
 
     empty_value = 0.5 if method == "mann_whitney" else 0.0
@@ -324,10 +334,12 @@ def _bootstrap_ci_from_replicates(
     """Per-group percentile bounds from a per-replicate grouped-metric frame.
 
     ``replicates`` carries ``[*group_keys, bootstrap_id, value_col]`` (one row per
-    replicate that produced a value). The complete group set and a per-group
+    replicate that produced a row). The complete group set and a per-group
     viability flag come from ``table.image_metadata``. Absent replicates are
     filled with ``empty_value`` (a resample that drew no detections legitimately
-    scores ``0.0`` / ``0.5``). A **non-viable group** nulls its bounds instead of
+    scores ``0.0`` / ``0.5``). A replicate that is *present with a null value*
+    is undefined (its curve does not reach the window), which is different: it
+    nulls its group's bounds rather than being filled. A **non-viable group** nulls its bounds instead of
     reporting a spurious interval: viability needs at least one positive target,
     and — for the two-class rank statistics (``require_both_classes``, i.e.
     Mann-Whitney) — at least one negative as well, since the AUC is undefined
@@ -345,7 +357,10 @@ def _bootstrap_ci_from_replicates(
     reps = pl.LazyFrame(
         {_COL_BOOT: pl.int_range(0, n_bootstrap, dtype=pl.Int32, eager=True)}
     )
-    rep_marked = replicates.with_columns(pl.lit(1, dtype=pl.Int64).alias("_present"))
+    rep_marked = replicates.with_columns(
+        pl.lit(1, dtype=pl.Int64).alias("_present"),
+        pl.col(value_col).is_null().cast(pl.Int64).alias("_undefined"),
+    )
 
     if group_keys:
         groups = meta.group_by(group_keys).agg(viable_expr)
@@ -353,30 +368,42 @@ def _bootstrap_ci_from_replicates(
         joined = grid.join(
             rep_marked, on=[*group_keys, _COL_BOOT], how="left"
         ).with_columns(
-            pl.col(value_col).fill_null(empty_value),
+            pl.when(pl.col("_present").is_null())
+            .then(pl.lit(empty_value))
+            .otherwise(pl.col(value_col))
+            .alias(value_col),
             pl.col("_present").fill_null(0),
+            pl.col("_undefined").fill_null(0),
         )
         agg = joined.group_by(group_keys).agg(
             pl.col(value_col).quantile(alpha, "linear").alias("ci_lower"),
             pl.col(value_col).quantile(1.0 - alpha, "linear").alias("ci_upper"),
             pl.col("_present").sum().alias("_n_present"),
+            pl.col("_undefined").sum().alias("_n_undefined"),
             pl.col("_viable").first().alias("_viable"),
         )
     else:
         groups = meta.select(viable_expr)
         grid = groups.join(reps, how="cross")
         joined = grid.join(rep_marked, on=_COL_BOOT, how="left").with_columns(
-            pl.col(value_col).fill_null(empty_value),
+            pl.when(pl.col("_present").is_null())
+            .then(pl.lit(empty_value))
+            .otherwise(pl.col(value_col))
+            .alias(value_col),
             pl.col("_present").fill_null(0),
+            pl.col("_undefined").fill_null(0),
         )
         agg = joined.select(
             pl.col(value_col).quantile(alpha, "linear").alias("ci_lower"),
             pl.col(value_col).quantile(1.0 - alpha, "linear").alias("ci_upper"),
             pl.col("_present").sum().alias("_n_present"),
+            pl.col("_undefined").sum().alias("_n_undefined"),
             pl.col("_viable").first().alias("_viable"),
         )
 
-    viable = pl.col("_viable") & (pl.col("_n_present") > 0)
+    viable = (
+        pl.col("_viable") & (pl.col("_n_present") > 0) & (pl.col("_n_undefined") == 0)
+    )
     return agg.with_columns(
         pl.when(viable).then(pl.col("ci_lower")).otherwise(None).alias("ci_lower"),
         pl.when(viable).then(pl.col("ci_upper")).otherwise(None).alias("ci_upper"),

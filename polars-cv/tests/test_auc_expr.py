@@ -18,6 +18,7 @@ import pytest
 from polars_cv.metrics._auc_expr import (
     collapse_curve,
     collapse_scores,
+    interpolate_curve_lazy,
     mann_whitney_auc_expr,
     partial_auc_expr,
     trapz_auc_expr,
@@ -48,11 +49,19 @@ def _ref_trapz(xs: list[float], ys: list[float], correction=None) -> float:
 
 
 def _ref_partial(
-    xs: list[float], ys: list[float], lo: float, hi: float, correction=None
-) -> float:
-    """NumPy clipped trapezoid over [lo, hi] with flat endpoint extension."""
+    xs: list[float],
+    ys: list[float],
+    lo: float,
+    hi: float,
+    correction=None,
+    extrapolate: str = "flat",
+) -> float | None:
+    """NumPy clipped trapezoid over [lo, hi]: flat endpoint extension, or
+    ``None`` when ``extrapolate="none"`` and the window leaves the curve."""
     if hi <= lo:
         return 0.0
+    if extrapolate == "none" and (lo < min(xs) or hi > max(xs)):
+        return None
     raw = _collapse_and_trapz(np.asarray(xs, float), np.asarray(ys, float), lo, hi)
     if correction == "normalize":
         return raw / (hi - lo)
@@ -84,20 +93,34 @@ class TestTrapzParity:
 
 
 class TestPartialParity:
-    def test_matches_numpy_partial_over_random_curves_and_ranges(self) -> None:
-        # The lazy ``partial_auc_expr`` flat-extends the curve at both endpoints
-        # (fills [lo, x_min] at y_first and [x_max, hi] at y_last), which is
-        # exactly what the NumPy oracle's clamped interpolation does — so they
-        # agree over every range, including ones entirely off the curve.
+    @pytest.mark.parametrize("extrapolate", ["flat", "none"])
+    def test_matches_numpy_partial_over_random_curves_and_ranges(
+        self, extrapolate: str
+    ) -> None:
+        # ``"flat"`` extends the curve at both endpoints (fills [lo, x_min] at
+        # y_first and [x_max, hi] at y_last), exactly as the NumPy oracle's
+        # clamped interpolation does; ``"none"`` is null wherever the window
+        # leaves the curve and the same area everywhere else.
         rng = random.Random(2)
+        n_off = 0
         for _ in range(300):
             xs, ys = _random_curve(rng, rng.randint(2, 12))
             lo = round(rng.uniform(-1.0, xs[-1]), 3)
             hi = round(max(lo + rng.uniform(0.5, 6.0), xs[0] + 0.1), 3)
             df = pl.DataFrame({"x": xs, "y": ys})
-            got = df.select(auc=partial_auc_expr(x="x", y="y", lo=lo, hi=hi)).item()
-            want = _ref_partial(xs, ys, lo, hi)
-            assert got == pytest.approx(want, abs=1e-7), (xs, ys, lo, hi)
+            got = df.select(
+                auc=partial_auc_expr(
+                    x="x", y="y", lo=lo, hi=hi, extrapolate=extrapolate
+                )
+            ).item()
+            want = _ref_partial(xs, ys, lo, hi, extrapolate=extrapolate)
+            if want is None:
+                n_off += 1
+                assert got is None, (xs, ys, lo, hi)
+            else:
+                assert got == pytest.approx(want, abs=1e-7), (xs, ys, lo, hi)
+        # Both kinds of window are drawn, so both branches are exercised.
+        assert extrapolate == "flat" or 0 < n_off < 300
 
     @pytest.mark.parametrize("correction", ["normalize"])
     def test_corrections(self, correction: str) -> None:
@@ -108,7 +131,14 @@ class TestPartialParity:
             hi = round(max(lo + rng.uniform(0.5, 5.0), xs[0] + 0.1), 3)
             df = pl.DataFrame({"x": xs, "y": ys})
             got = df.select(
-                auc=partial_auc_expr(x="x", y="y", lo=lo, hi=hi, correction=correction)
+                auc=partial_auc_expr(
+                    x="x",
+                    y="y",
+                    lo=lo,
+                    hi=hi,
+                    correction=correction,
+                    extrapolate="flat",
+                )
             ).item()
             want = _ref_partial(xs, ys, lo, hi, correction)
             assert got == pytest.approx(want, abs=1e-7)
@@ -125,7 +155,9 @@ class TestPartialParity:
         # max beyond the observed FP range) — the symmetric counterpart of the
         # left case below.
         df = pl.DataFrame({"x": [0.0, 2.0], "y": [0.3, 0.9]})
-        got = df.select(auc=partial_auc_expr(x="x", y="y", lo=3.0, hi=5.0)).item()
+        got = df.select(
+            auc=partial_auc_expr(x="x", y="y", lo=3.0, hi=5.0, extrapolate="flat")
+        ).item()
         assert got == pytest.approx((5.0 - 3.0) * 0.9, abs=1e-9)
 
     def test_out_of_range_left_extends_first_y(self) -> None:
@@ -133,8 +165,61 @@ class TestPartialParity:
         # extension of the leftmost operating point (the symmetric counterpart
         # of the right case).
         df = pl.DataFrame({"x": [2.0, 4.0], "y": [0.3, 0.9]})
-        got = df.select(auc=partial_auc_expr(x="x", y="y", lo=0.0, hi=1.0)).item()
+        got = df.select(
+            auc=partial_auc_expr(x="x", y="y", lo=0.0, hi=1.0, extrapolate="flat")
+        ).item()
         assert got == pytest.approx((1.0 - 0.0) * 0.3, abs=1e-9)
+
+
+class TestOffCurvePolicy:
+    """One policy for reading a curve where it was not observed.
+
+    ``partial_auc_expr`` and ``interpolate_curve_lazy`` are the only two
+    readers, and they used to disagree: the integral filled flat past the
+    curve's end while the interpolation returned null, so one table reported
+    an unknown sensitivity at 2 FP/image and a defined AUC over 0-2 FP/image.
+    Both now take ``extrapolate``, defaulting to ``"none"``.
+    """
+
+    _CURVE = pl.DataFrame({"x": [0.0, 0.05], "y": [0.0, 0.6]})
+
+    def _auc(self, lo: float, hi: float, **kw: str) -> float | None:
+        return self._CURVE.select(
+            auc=partial_auc_expr(x="x", y="y", lo=lo, hi=hi, **kw)
+        ).item()
+
+    def _at(self, at: list[float], **kw: str) -> list[float | None]:
+        out = interpolate_curve_lazy(
+            self._CURVE.lazy(), x_col="x", y_col="y", at=at, **kw
+        ).collect()
+        return out["y"].to_list()
+
+    def test_the_integral_past_the_curve_is_null_by_default(self) -> None:
+        assert self._auc(0.0, 2.0) is None
+        assert self._auc(-1.0, 0.05) is None
+
+    def test_the_integral_within_the_curve_is_unchanged(self) -> None:
+        assert self._auc(0.0, 0.05) == pytest.approx(0.0 + 0.05 * 0.3)
+        assert self._auc(0.0, 0.05) == self._auc(0.0, 0.05, extrapolate="flat")
+
+    def test_flat_extends_the_integral(self) -> None:
+        got = self._auc(0.0, 2.0, extrapolate="flat", correction="normalize")
+        assert got == pytest.approx((0.05 * 0.3 + 1.95 * 0.6) / 2.0)
+
+    def test_the_interpolation_past_the_curve_is_null_by_default(self) -> None:
+        assert self._at([-1.0, 0.025, 2.0]) == [None, pytest.approx(0.3), None]
+
+    def test_flat_extends_the_interpolation(self) -> None:
+        got = self._at([-1.0, 0.025, 2.0], extrapolate="flat")
+        assert got == [0.0, pytest.approx(0.3), 0.6]
+
+    @pytest.mark.parametrize("reader", ["auc", "at"])
+    def test_an_unknown_policy_is_refused(self, reader: str) -> None:
+        with pytest.raises(ValueError, match="extrapolate"):
+            if reader == "auc":
+                self._auc(0.0, 1.0, extrapolate="clamp")
+            else:
+                self._at([1.0], extrapolate="clamp")
 
 
 def _mw_auc(scores, labels, weights=None) -> float:

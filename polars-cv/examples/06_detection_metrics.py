@@ -22,6 +22,7 @@ from polars_cv import (
     f1_at_threshold,
     froc_auc,
     froc_curve_lazy,
+    froc_operating_range,
     froc_sensitivity_at_fp,
     lroc_auc,
     lroc_curve_lazy,
@@ -113,21 +114,30 @@ def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> objec
     pr = precision_recall_curve(contour_table, class_id="lesion")
     print("\nContourMatcher metrics:")
     print("AP:", round(pr.auc(), 4))
+    # A FROC curve stops at the highest FP/image any threshold reaches; past it
+    # froc_auc is null unless asked to extend the last sensitivity ("flat").
+    reach = froc_operating_range(contour_table).collect()
     print(
-        "FROC AUC (raw partial area over 0–8 FP/image):",
-        round(
-            froc_auc(contour_table, fp_range=(0, 8), correction=None).collect().item(),
-            4,
-        ),
-        "\nFROC AUC normalized (mean sensitivity over 0–8):",
-        round(
-            froc_auc(contour_table, fp_range=(0, 8), correction="normalize")
+        "FROC curve reaches:",
+        fmt(reach["max_fp_per_image"].item()),
+        "FP/image at sensitivity",
+        fmt(reach["max_sensitivity"].item()),
+        "\nFROC AUC (raw partial area over 0–8 FP/image, flat past the curve):",
+        fmt(
+            froc_auc(
+                contour_table, fp_range=(0, 8), correction=None, extrapolate="flat"
+            )
             .collect()
-            .item(),
-            4,
+            .item()
+        ),
+        "\nFROC AUC normalized (mean sensitivity over 0–8, flat past the curve):",
+        fmt(
+            froc_auc(contour_table, fp_range=(0, 8), extrapolate="flat")
+            .collect()
+            .item()
         ),
         "\nFROC AUC (0, 0.5):",
-        round(froc_auc(contour_table, fp_range=(0, 0.5)).collect().item(), 4),
+        fmt(froc_auc(contour_table, fp_range=(0, 0.5)).collect().item()),
         "\nFROC MW-U (detection):",
         round(
             froc_auc(contour_table, method="mann_whitney", level="detection")

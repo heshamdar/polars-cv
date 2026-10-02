@@ -142,7 +142,9 @@ _FROC_FP_RANGE = (0.0, 8.0)
 
 _CI_FUNCS = {
     "froc": (
-        functools.partial(froc_auc_ci_lazy, fp_range=_FROC_FP_RANGE),
+        functools.partial(
+            froc_auc_ci_lazy, fp_range=_FROC_FP_RANGE, extrapolate="flat"
+        ),
         "auc",
     ),
     "lroc": (lroc_auc_ci_lazy, "auc"),
@@ -210,9 +212,16 @@ class TestSchemaAndShape:
     def test_grouped_ci_frame_joins_onto_point_frame(self) -> None:
         # The headline downstream use: join bounds onto the point metric by group.
         table = _two_groups()
-        point = froc_auc(table, group_by="group_id", fp_range=_FROC_FP_RANGE)
+        point = froc_auc(
+            table, group_by="group_id", fp_range=_FROC_FP_RANGE, extrapolate="flat"
+        )
         ci = froc_auc_ci_lazy(
-            table, group_by="group_id", n_bootstrap=50, seed=1, fp_range=_FROC_FP_RANGE
+            table,
+            group_by="group_id",
+            n_bootstrap=50,
+            seed=1,
+            fp_range=_FROC_FP_RANGE,
+            extrapolate="flat",
         ).select("group_id", "ci_lower", "ci_upper")
         joined = point.join(ci, on="group_id", how="left").collect()
         assert joined.height == 2
@@ -243,12 +252,20 @@ class TestPointColumnParity:
     def test_froc_point_matches_froc_auc(self) -> None:
         table = _mixed()
         got = (
-            froc_auc_ci_lazy(table, n_bootstrap=50, seed=1, fp_range=_FROC_FP_RANGE)
+            froc_auc_ci_lazy(
+                table,
+                n_bootstrap=50,
+                seed=1,
+                fp_range=_FROC_FP_RANGE,
+                extrapolate="flat",
+            )
             .collect()["auc"]
             .item()
         )
         assert got == pytest.approx(
-            froc_auc(table, fp_range=_FROC_FP_RANGE).collect().item()
+            froc_auc(table, fp_range=_FROC_FP_RANGE, extrapolate="flat")
+            .collect()
+            .item()
         )
 
     def test_lroc_point_matches_lroc_auc(self) -> None:
@@ -274,12 +291,15 @@ class TestPointColumnParity:
                 n_bootstrap=50,
                 seed=1,
                 fp_range=_FROC_FP_RANGE,
+                extrapolate="flat",
             )
             .collect()
             .sort("group_id")
         )
         ref = (
-            froc_auc(table, group_by="group_id", fp_range=_FROC_FP_RANGE)
+            froc_auc(
+                table, group_by="group_id", fp_range=_FROC_FP_RANGE, extrapolate="flat"
+            )
             .collect()
             .sort("group_id")
         )
@@ -300,8 +320,12 @@ class TestReproducible:
         # seed=None maps to a fixed constant, so even without a seed the bounds
         # are reproducible (a deliberate property of the lazy resampler).
         table = _mixed()
-        a = froc_auc_ci_lazy(table, n_bootstrap=80, fp_range=_FROC_FP_RANGE).collect()
-        b = froc_auc_ci_lazy(table, n_bootstrap=80, fp_range=_FROC_FP_RANGE).collect()
+        a = froc_auc_ci_lazy(
+            table, n_bootstrap=80, fp_range=_FROC_FP_RANGE, extrapolate="flat"
+        ).collect()
+        b = froc_auc_ci_lazy(
+            table, n_bootstrap=80, fp_range=_FROC_FP_RANGE, extrapolate="flat"
+        ).collect()
         assert a.equals(b)
 
 
@@ -329,6 +353,7 @@ class TestDegenerateGroups:
                 n_bootstrap=50,
                 seed=1,
                 fp_range=_FROC_FP_RANGE,
+                extrapolate="flat",
             )
             .collect()
             .sort("group_id")
@@ -346,7 +371,12 @@ class TestDegenerateGroups:
     def test_empty_table_yields_empty_frame(self) -> None:
         empty = _table([])
         out = froc_auc_ci_lazy(
-            empty, group_by="group_id", n_bootstrap=10, seed=1, fp_range=_FROC_FP_RANGE
+            empty,
+            group_by="group_id",
+            n_bootstrap=10,
+            seed=1,
+            fp_range=_FROC_FP_RANGE,
+            extrapolate="flat",
         )
         assert isinstance(out, pl.LazyFrame)
         assert out.collect().height == 0  # no raise
@@ -390,6 +420,7 @@ class TestDegenerateGroups:
                 n_bootstrap=50,
                 seed=1,
                 fp_range=_FROC_FP_RANGE,
+                extrapolate="flat",
             )
             .collect()
             .sort("group_id")
@@ -434,6 +465,7 @@ class TestEntityLevel:
             seed=5,
             sample_col="case_id",
             fp_range=_FROC_FP_RANGE,
+            extrapolate="flat",
         ).collect()
         b = froc_auc_ci_lazy(
             table,
@@ -442,6 +474,7 @@ class TestEntityLevel:
             seed=5,
             sample_col="case_id",
             fp_range=_FROC_FP_RANGE,
+            extrapolate="flat",
         ).collect()
         assert a.sort("group_id").equals(b.sort("group_id"))
         assert sorted(a["group_id"].to_list()) == ["g1", "g2"]
@@ -464,10 +497,10 @@ class TestVariants:
     def test_froc_partial_range(self) -> None:
         table = _mixed()
         out = froc_auc_ci_lazy(
-            table, n_bootstrap=50, seed=2, fp_range=(0.0, 2.0)
+            table, n_bootstrap=50, seed=2, fp_range=(0.0, 2.0), extrapolate="flat"
         ).collect()
         assert out["auc"].item() == pytest.approx(
-            froc_auc(table, fp_range=(0.0, 2.0)).collect().item()
+            froc_auc(table, fp_range=(0.0, 2.0), extrapolate="flat").collect().item()
         )
 
     def test_lroc_mann_whitney(self) -> None:
@@ -516,7 +549,7 @@ class TestThreadCountInvariant:
                     COL_WEIGHT:pl.Float64, COL_GT_LABEL:pl.Boolean, "group_id":pl.String})
         t = DetectionTable.from_matched(det, meta, matching_iou_threshold=0.5)
         out = froc_auc_ci_lazy(
-            t, group_by="group_id", n_bootstrap=200, seed=123, fp_range=(0.0, 8.0)
+            t, group_by="group_id", n_bootstrap=200, seed=123, fp_range=(0.0, 8.0), extrapolate="flat"
         )
         print(out.collect().sort("group_id").write_json())
         """
