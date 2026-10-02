@@ -624,6 +624,10 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "optional",
             "inner": {"kind": "scalar", "per_row": True, "py": "float"},
         },
+        "min_area_fraction": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+        },
     },
     "extract_shape": {},
     "flip": {
@@ -1648,6 +1652,7 @@ class _OpsMixin:
         mode: str | pl.Expr = "external",
         method: str | pl.Expr = "simple",
         min_area: FloatOrExpr | None = None,
+        min_area_fraction: FloatOrExpr | None = None,
     ) -> Pipeline:
         """Extract contours from binary mask.
 
@@ -1671,11 +1676,22 @@ class _OpsMixin:
         Args:
             mode: "external" (outer only), "tree" (full hierarchy), "all".
             method: "simple" (remove redundant), "none" (all points), "approx".
-            min_area: Filter small contours. Accepts a Polars expression for per-row
-                dynamic thresholds.
+            min_area: Filter small contours: the minimum area in pixels. Accepts a
+                Polars expression for per-row dynamic thresholds.
+            min_area_fraction: Filter small contours relative to the image: the minimum
+                area as a fraction of its height x width, in (0, 1], resolved per image
+                as it runs (a speck threshold that scales with resolution). Applies
+                together with ``min_area``: a contour must pass both. Accepts a Polars
+                expression.
         """
         return self._append_typed(
-            "extract_contours", {"mode": mode, "method": method, "min_area": min_area}
+            "extract_contours",
+            {
+                "mode": mode,
+                "method": method,
+                "min_area": min_area,
+                "min_area_fraction": min_area_fraction,
+            },
         )
 
     def extract_shape(self) -> Pipeline:

@@ -46,11 +46,32 @@ pub(crate) fn execute_geometry_op(
             mode,
             method,
             min_area,
+            min_area_fraction,
         } => {
             let buffer = input
                 .as_buffer()
                 .ok_or_else(|| "ExtractContours requires Buffer input".to_string())?;
-            let contours = extract_contours(buffer, *mode, *method, *min_area);
+            // The fraction is of this image's own H x W; a contour must pass
+            // both thresholds, so the larger absolute one is the filter.
+            let relative = match *min_area_fraction {
+                None => None,
+                Some(f) if f > 0.0 && f <= 1.0 => {
+                    let shape = buffer.shape();
+                    let pixels =
+                        shape.first().copied().unwrap_or(0) * shape.get(1).copied().unwrap_or(0);
+                    Some(f * pixels as f64)
+                }
+                Some(f) => {
+                    return Err(format!(
+                        "extract_contours: min_area_fraction must be in (0, 1], got {f}"
+                    ))
+                }
+            };
+            let threshold = match (*min_area, relative) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            };
+            let contours = extract_contours(buffer, *mode, *method, threshold);
             Ok(NodeOutput::from_contours(contours))
         }
         GeometryOp::Rasterize {

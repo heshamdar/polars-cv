@@ -138,9 +138,15 @@ pub enum GeometryOp<M: Mode = Exec> {
         /// "simple" (remove redundant), "none" (all points), "approx".
         #[param(default = "simple")]
         method: M::V<ApproxMethod>,
-        /// Filter small contours. Accepts a Polars expression for per-row dynamic
-        /// thresholds.
+        /// Filter small contours: the minimum area in pixels. Accepts a Polars
+        /// expression for per-row dynamic thresholds.
         min_area: Option<M::V<f64>>,
+        /// Filter small contours relative to the image: the minimum area as a
+        /// fraction of its height x width, in (0, 1], resolved per image as it
+        /// runs (a speck threshold that scales with resolution). Applies
+        /// together with ``min_area``: a contour must pass both. Accepts a
+        /// Polars expression.
+        min_area_fraction: Option<M::V<f64>>,
     },
 }
 
@@ -401,6 +407,17 @@ impl<M: Mode> Op for GeometryOp<M> {
                 Ok(())
             }
 
+            GeometryOp::ExtractContours {
+                min_area_fraction: Some(fraction),
+                ..
+            } => match known::<M, f64>(fraction) {
+                Some(f) if !(f > 0.0 && f <= 1.0) => Err(ValidationError::InvalidParameter {
+                    param: "min_area_fraction".to_string(),
+                    reason: format!("must be in (0, 1], got {f}"),
+                }),
+                _ => Ok(()),
+            },
+
             GeometryOp::Simplify { tolerance } => {
                 if known::<M, f64>(tolerance).is_some_and(|t| t < 0.0) {
                     return Err(ValidationError::InvalidParameter {
@@ -531,6 +548,7 @@ mod tests {
             mode: ExtractMode::External,
             method: ApproxMethod::Simple,
             min_area: None,
+            min_area_fraction: None,
         };
         assert_eq!(extract.input_domain(), Domain::Buffer);
         assert_eq!(extract.output_domain(), Domain::Contour);
