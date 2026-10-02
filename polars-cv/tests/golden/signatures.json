@@ -91,6 +91,33 @@
     ""
    ]
   ],
+  "close_along_border": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "width",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "height",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "arc",
+    "KEYWORD_ONLY",
+    "'shortest'"
+   ],
+   [
+    "max_snap",
+    "KEYWORD_ONLY",
+    "2.0"
+   ]
+  ],
   "contains_point": [
    [
     "self",

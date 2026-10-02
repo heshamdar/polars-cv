@@ -13,7 +13,7 @@
 //! and the Python accessor methods are generated from [`geom_catalog`].
 
 use serde::Serialize;
-use view_buffer::geometry::contour::{CoordOrder, Winding};
+use view_buffer::geometry::contour::{BorderArc, CoordOrder, Winding};
 use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
 use view_buffer::mode::{ColumnRef, Exec, Mode, OpDesc, Wire, WireOps};
 use view_buffer::GeometryOp;
@@ -156,6 +156,38 @@ pub enum ContourFn<M: Mode = Exec> {
         /// ``"xy"`` or ``"yx"`` (row, column) (literal or expression).
         #[param(default = "xy")]
         order: M::V<CoordOrder>,
+    },
+    /// Close an open line whose ends lie on the image frame into a region,
+    /// along the frame.
+    ///
+    /// A region annotated only by its boundary — a pectoral muscle edge from
+    /// the top edge to the chest-wall edge, a skin line — becomes the region
+    /// it bounds: each end is snapped onto its nearest frame edge, then the
+    /// frame is walked from the line's last point back to its first, ``arc``
+    /// deciding which way round, through every corner it passes. A straight
+    /// chord would drop a corner region entirely. The input must be open
+    /// (``is_closed=False``); an end farther than ``max_snap`` from the frame
+    /// is refused rather than joined.
+    ///
+    /// Returns:
+    ///     A closed contour — a ``List`` of them for a contour set.
+    #[op(name = "contour_close_along_border", python = "close_along_border",
+         sample = {"width": 100.0, "height": 80.0, "arc": "clockwise", "max_snap": 1.0})]
+    CloseAlongBorder {
+        /// Image width: the frame is ``[0, width] x [0, height]`` (literal or
+        /// expression).
+        width: M::V<f64>,
+        /// Image height (literal or expression).
+        height: M::V<f64>,
+        /// ``"shortest"``, ``"clockwise"`` or ``"counterclockwise"`` (as
+        /// displayed, y down), from the line's end back to its start (literal
+        /// or expression).
+        #[param(default = "shortest")]
+        arc: M::V<BorderArc>,
+        /// The farthest an end may lie from the frame to be snapped onto it,
+        /// in pixels (literal or expression).
+        #[param(default = 2.0)]
+        max_snap: M::V<f64>,
     },
     /// Point-to-edge boundary distances to another contour, both directions.
     ///
