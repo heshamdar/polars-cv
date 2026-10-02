@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 import polars as pl
 
-from ..._types import dtype_name_for
+from ..._types import FloatOrExpr, LabelReduction, LabelRegionMode, dtype_name_for
 from ...geometry.schemas import CONTOUR_SET_SCHEMA, CORRESPONDENCE_SCHEMA
 from ...lazy import LazyPipelineExpr
 from ...pipeline import Pipeline
@@ -221,12 +221,37 @@ def _add_gt_shape_columns(
 # ---------------------------------------------------------------------------
 
 
+def _extract_ops(
+    p: Pipeline,
+    *,
+    threshold: FloatOrExpr,
+    min_area: FloatOrExpr,
+    min_area_fraction: FloatOrExpr | None = None,
+) -> Pipeline:
+    """Threshold, then extract the external contours.
+
+    A literal ``min_area`` of 0 keeps every region and is left off the op, so
+    the op — and with it CSE and the compiled-graph cache — is the one a
+    caller writing ``extract_contours()`` builds. An expression is passed as
+    it is, read per row.
+    """
+    filters: dict[str, FloatOrExpr] = {}
+    if isinstance(min_area, pl.Expr) or min_area > 0.0:
+        filters["min_area"] = min_area
+    if min_area_fraction is not None:
+        filters["min_area_fraction"] = min_area_fraction
+    return p.threshold(value=threshold).extract_contours(
+        mode="external", method="simple", **filters
+    )
+
+
 def _extract_with_fused_resize(
     lf: pl.LazyFrame,
     *,
     pred_handle: _SourceHandle,
-    threshold: float,
-    min_area: float,
+    threshold: FloatOrExpr,
+    min_area: FloatOrExpr,
+    min_area_fraction: FloatOrExpr | None,
 ) -> pl.LazyFrame:
     """Fuse resize + extract into a single pipeline with multi-output sink.
 
@@ -240,6 +265,7 @@ def _extract_with_fused_resize(
         pred_handle: Source handle for the prediction heatmap.
         threshold: Binary threshold for contour extraction.
         min_area: Minimum contour area filter.
+        min_area_fraction: Minimum contour area as a fraction of the image.
 
     Returns:
         LazyFrame with ``_pred_contours`` and ``_pred_heatmap_aligned``.
@@ -248,15 +274,12 @@ def _extract_with_fused_resize(
         lambda p: p.resize(height=pl.col("_gt_h"), width=pl.col("_gt_w"))
     ).alias("resized_heatmap")
 
-    extract_builder = Pipeline().threshold(value=threshold)
-    if min_area > 0.0:
-        extract_pipe = extract_builder.extract_contours(
-            mode="external", method="simple", min_area=min_area
-        )
-    else:
-        extract_pipe = extract_builder.extract_contours(
-            mode="external", method="simple"
-        )
+    extract_pipe = _extract_ops(
+        Pipeline(),
+        threshold=threshold,
+        min_area=min_area,
+        min_area_fraction=min_area_fraction,
+    )
 
     fused = lazy_resized.pipe(extract_pipe).alias("extracted_contours")
     multi_out = fused.sink({"extracted_contours": "native", "resized_heatmap": "blob"})
@@ -278,9 +301,10 @@ def _extract_contours_via(
     lf: pl.LazyFrame,
     handle: _SourceHandle,
     *,
-    threshold: float,
-    min_area: float,
+    threshold: FloatOrExpr,
+    min_area: FloatOrExpr,
     output_col: str,
+    min_area_fraction: FloatOrExpr | None = None,
 ) -> pl.LazyFrame:
     """Extract contours from a buffer handle (column or pre-decoded expr).
 
@@ -290,21 +314,20 @@ def _extract_contours_via(
         threshold: Binary threshold used prior to extraction.
         min_area: Minimum contour area.
         output_col: Name of output contour-set column.
+        min_area_fraction: Minimum contour area as a fraction of the image.
 
     Returns:
         LazyFrame with ``output_col`` as a list of contours.
     """
-
-    def build_ops(p: Pipeline) -> Pipeline:
-        p = p.threshold(value=threshold)
-        if min_area > 0.0:
-            return p.extract_contours(
-                mode="external", method="simple", min_area=min_area
-            )
-        return p.extract_contours(mode="external", method="simple")
-
     return lf.with_columns(
-        handle.apply(build_ops)
+        handle.apply(
+            lambda p: _extract_ops(
+                p,
+                threshold=threshold,
+                min_area=min_area,
+                min_area_fraction=min_area_fraction,
+            )
+        )
         .sink("native")
         .cast(CONTOUR_SET_SCHEMA)
         .alias(output_col)
@@ -316,14 +339,18 @@ def _score_contours_via(
     handle: _SourceHandle,
     *,
     contour_col: str,
+    reduction: str,
+    region_mode: str,
     output_col: str = "_pred_scores",
 ) -> pl.LazyFrame:
-    """Score contour sets from a heatmap handle using max interior value.
+    """Score contour sets against a heatmap handle with ``label_reduce``.
 
     Args:
         lf: Input lazy frame.
         handle: Source handle for the heatmap to score against.
         contour_col: Contour-set column.
+        reduction: ``label_reduce`` reduction over each contour's pixels.
+        region_mode: ``label_reduce`` region mode.
         output_col: Output score list column.
 
     Returns:
@@ -332,7 +359,9 @@ def _score_contours_via(
     return lf.with_columns(
         handle.apply(
             lambda p: p.label_reduce(
-                contours=pl.col(contour_col), reduction="max", region_mode="interior"
+                contours=pl.col(contour_col),
+                reduction=reduction,
+                region_mode=region_mode,
             )
         )
         .sink("native")
@@ -478,18 +507,71 @@ def _is_contour_dtype(dtype: pl.DataType) -> bool:
     )
 
 
+def _contour_predictions(
+    lf: pl.LazyFrame, pred_col: str, score_col: str, schema: dict[str, pl.DataType]
+) -> pl.LazyFrame:
+    """Use a contour (or contour-set) column as the detections, scored by
+    ``score_col``, as ``_pred_contours`` / ``_pred_scores``.
+
+    A single contour per row becomes a one-element set and its float score a
+    one-element list, so matching sees one shape. The two lists are each read
+    at the other's positions: a count mismatch, either way, is an
+    out-of-bounds gather that fails the query, rather than detections or
+    scores quietly dropped.
+
+    Raises:
+        ValueError: If ``score_col``'s dtype does not fit ``pred_col``'s.
+    """
+    is_set = isinstance(schema[pred_col], pl.List)
+    score_dtype = schema[score_col]
+    fits = (
+        isinstance(score_dtype, pl.List) and score_dtype.inner.is_numeric()
+        if is_set
+        else score_dtype.is_numeric()
+    )
+    if not fits:
+        want = "List[float], one per contour" if is_set else "a float"
+        msg = (
+            f"score_col {score_col!r} must be {want} for the "
+            f"{'contour-set' if is_set else 'contour'} column {pred_col!r}, "
+            f"got {score_dtype}"
+        )
+        raise ValueError(msg)
+    if is_set:
+        contours = pl.col(pred_col)
+        scores = pl.col(score_col).cast(pl.List(pl.Float64))
+    else:
+        present = pl.col(pred_col).is_not_null()
+        contours = pl.when(present).then(pl.concat_list(pl.col(pred_col)))
+        scores = pl.when(present).then(
+            pl.concat_list(pl.col(score_col).cast(pl.Float64))
+        )
+    return lf.with_columns(
+        _pred_contours=contours.list.gather(pl.int_ranges(0, scores.list.len())).cast(
+            CONTOUR_SET_SCHEMA
+        ),
+        _pred_scores=scores.list.gather(pl.int_ranges(0, contours.list.len())),
+    )
+
+
 # ---------------------------------------------------------------------------
 # ContourMatcher
 # ---------------------------------------------------------------------------
 
 
 class ContourMatcher:
-    """Match detections from heatmaps + binary masks via contour extraction.
+    """Match detections from heatmaps (or contours) and GT masks (or contours).
 
-    This is the refactored version of the original ``prepare_detection_table``
-    from ``_prepare.py``.  It extracts contours from both predictions and GT
-    masks, scores predictions against the heatmap, and runs greedy IoU matching
-    via ``.contour.correspond()``.
+    It extracts contours from both predictions and GT masks, scores
+    predictions against the heatmap, and runs greedy IoU matching via
+    ``.contour.correspond()``. Predictions given as contours with their own
+    scores skip the extraction and scoring (see :meth:`match`).
+
+    ``iou_threshold``, ``extraction_threshold``, ``min_contour_area``,
+    ``min_contour_area_fraction`` and ``coverage_tolerance`` may each be a
+    Polars expression, read per row — e.g. a physical tolerance,
+    ``coverage_tolerance=5.0 / pl.col("spacing_mm")``. A literal is checked
+    here; an expression is checked per row when the query runs.
 
     Args:
         iou_threshold: IoU threshold for TP matching.
@@ -519,20 +601,34 @@ class ContourMatcher:
         duplicates: ``"false_positive"`` (default) counts a prediction that
             hits only an already-matched GT as a false positive;
             ``"ignore"`` drops it (the LUNA16/CAMELYON convention).
+        score_reduction: How a detection is scored from the heatmap pixels
+            in its region (``label_reduce``'s ``reduction``): ``"max"``
+            (default), ``"mean"`` or ``"sum"``. A heatmap that saturates
+            scores most detections at its peak, so they tie under ``"max"``.
+        score_region_mode: Which pixels are a detection's region
+            (``label_reduce``'s ``region_mode``): ``"interior"`` (default),
+            ``"boundary"`` or ``"bbox"``.
+        min_contour_area_fraction: Minimum area of an extracted prediction
+            contour as a fraction of the image's pixel count
+            (``extract_contours(min_area_fraction=...)``); ``None`` (default)
+            applies none.
     """
 
     def __init__(
         self,
-        iou_threshold: float = 0.5,
-        extraction_threshold: float = 0.1,
-        min_contour_area: float = 0.0,
+        iou_threshold: FloatOrExpr = 0.5,
+        extraction_threshold: FloatOrExpr = 0.1,
+        min_contour_area: FloatOrExpr = 0.0,
         auto_resize: bool = True,
         gt_min_contour_area: float = 1.0,
         match_by: str = "iou",
-        coverage_tolerance: float | None = None,
+        coverage_tolerance: FloatOrExpr | None = None,
         duplicates: str = "false_positive",
+        score_reduction: str = "max",
+        score_region_mode: str = "interior",
+        min_contour_area_fraction: FloatOrExpr | None = None,
     ) -> None:
-        if not (0.0 < iou_threshold <= 1.0):
+        if not isinstance(iou_threshold, pl.Expr) and not (0.0 < iou_threshold <= 1.0):
             raise ValueError("`iou_threshold` must be in (0, 1].")
         if match_by not in ("iou", "coverage"):
             msg = f"match_by must be 'iou' or 'coverage', got {match_by!r}"
@@ -543,20 +639,36 @@ class ContourMatcher:
                 "means nothing with match_by='iou'"
             )
             raise ValueError(msg)
-        if coverage_tolerance is not None and not coverage_tolerance >= 0.0:
+        if (
+            coverage_tolerance is not None
+            and not isinstance(coverage_tolerance, pl.Expr)
+            and not coverage_tolerance >= 0.0
+        ):
             msg = f"coverage_tolerance must be >= 0, got {coverage_tolerance}"
             raise ValueError(msg)
         if duplicates not in ("false_positive", "ignore"):
             msg = f"duplicates must be 'false_positive' or 'ignore', got {duplicates!r}"
             raise ValueError(msg)
+        # The accepted spellings are the engine's own enums, not a copy here.
+        for name, value, enum in (
+            ("score_reduction", score_reduction, LabelReduction),
+            ("score_region_mode", score_region_mode, LabelRegionMode),
+        ):
+            allowed = tuple(v.value for v in enum)
+            if value not in allowed:
+                msg = f"{name} must be one of {allowed}, got {value!r}"
+                raise ValueError(msg)
         self._match_by = match_by
         self._coverage_tolerance = coverage_tolerance
         self._duplicates = duplicates
         self._iou_threshold = iou_threshold
         self._extraction_threshold = extraction_threshold
         self._min_contour_area = min_contour_area
+        self._min_contour_area_fraction = min_contour_area_fraction
         self._auto_resize = auto_resize
         self._gt_min_contour_area = gt_min_contour_area
+        self._score_reduction = score_reduction
+        self._score_region_mode = score_region_mode
 
     def match(
         self,
@@ -564,17 +676,13 @@ class ContourMatcher:
         *,
         pred_col: str | LazyPipelineExpr,
         gt_col: str | LazyPipelineExpr,
-        # Accepted only for `Matcher`-protocol conformance (see
-        # `_matching/_protocol.py`); ignored by contour matching, whose scores
-        # come from heatmap peaks, not a caller column. `BBoxMatcher` is the
-        # sibling that genuinely reads it.
         score_col: str | None = None,
         class_col: str | None = None,
         image_id_col: str | None = None,
         weight_col: str | None = None,
         group_col: str | None = None,
     ) -> DetectionTable:
-        """Produce a ``DetectionTable`` from heatmap + binary mask data.
+        """Produce a ``DetectionTable`` from heatmap (or contour) + mask data.
 
         ``pred_col`` / ``gt_col`` accept either a **column name** (any format a
         polars-cv source supports: nested ``List[List[...]]``, VIEW ``Binary``
@@ -584,17 +692,24 @@ class ContourMatcher:
         column itself, so a segmentation graph and the contour extraction can
         share one decode (collapsed by CSE) and stream from a single collect.
 
+        ``pred_col`` may instead name a **contour** or **contour-set** column —
+        for a model that emits masks or polygons with its own per-object
+        scores. Those contours are the detections as they are (no extraction,
+        no heatmap scoring), each scored by ``score_col``; ``auto_resize``
+        must then be ``False`` (the contours are in the GT's coordinates).
+
         Args:
             data: Input frame with one image/sample per row.
             pred_col: Prediction heatmap column name, or a pre-decoded
                 ``LazyPipelineExpr`` producing the heatmap buffer.
             gt_col: Ground-truth mask column name, or a pre-decoded
                 ``LazyPipelineExpr`` producing the mask buffer.
-            score_col: Accepted only for ``Matcher`` protocol conformance
-                (``_matching/_protocol.py``); ignored by contour matching, whose
-                scores derive from heatmap peaks rather than a caller column.
-                ``BBoxMatcher`` is the sibling matcher that genuinely requires
-                it.
+            score_col: Each prediction contour's score, for contour
+                predictions: ``List[float]`` aligned with a contour-set
+                ``pred_col`` (a count mismatch fails the query), or a float
+                for a single-contour one. Every contour is kept, a 0.0 score
+                included. Refused for heatmap predictions, whose scores come
+                from the heatmap (``score_reduction``).
             class_col: Optional class label column for multi-class metrics.
             image_id_col: Optional image identifier column (defaults to row index).
             weight_col: Optional sample weight column.
@@ -621,16 +736,45 @@ class ContourMatcher:
         if group_col is not None:
             ensure_columns_exist(schema_names, [group_col])
 
+        schema_dict = dict(schema)
+        # Predictions given as contours are the detections themselves, scored
+        # by the caller; anything else is a heatmap to extract and score them
+        # from, whose scores are the heatmap's.
+        pred_contours = not pred_is_expr and _is_contour_dtype(schema_dict[pred_col])
+        if pred_contours:
+            if score_col is None:
+                msg = (
+                    f"pred_col {pred_col!r} holds contours, which carry no "
+                    "score: pass score_col with each contour's score"
+                )
+                raise ValueError(msg)
+            ensure_columns_exist(schema_names, [score_col])
+            if self._auto_resize:
+                msg = (
+                    f"pred_col {pred_col!r} holds contours, which auto_resize "
+                    "cannot resize: pass auto_resize=False, with the contours "
+                    "in the ground truth's coordinates"
+                )
+                raise ValueError(msg)
+        elif score_col is not None:
+            msg = (
+                f"score_col {score_col!r} is for contour predictions; a "
+                "heatmap's detections are scored from the heatmap (see "
+                "score_reduction)"
+            )
+            raise ValueError(msg)
+
         # A column is decoded via source("auto") (its leaf dtype read at plan
         # time); a pre-decoded expr is reused as-is. Either way the same ops are
         # appended through the handle.
-        schema_dict = dict(schema)
         pred_handle = (
             _SourceHandle.from_expr(pred_col)
             if pred_is_expr
             else _SourceHandle.from_column(
                 pred_col, _detect_source_info(schema_dict, pred_col)
             )
+            if not pred_contours
+            else None
         )
         # Ground truth given as contours (a contour or contour-set column) is
         # used as it is, by name; anything else is a mask to extract them from.
@@ -664,8 +808,16 @@ class ContourMatcher:
             ).alias(COL_WEIGHT)
         )
 
-        # Contour extraction and scoring
-        if self._auto_resize:
+        # Contour extraction (or the caller's contours)
+        aligned_handle: _SourceHandle | None = None
+        if pred_handle is None:
+            prepared = _contour_predictions(
+                prepared,
+                pred_col,  # ty: ignore[invalid-argument-type]
+                score_col,  # ty: ignore[invalid-argument-type]
+                schema_dict,
+            )
+        elif self._auto_resize:
             # Resize prediction heatmaps to GT mask dimensions via a fused
             # pipeline.  If shapes already match the resize is a no-op.
             if isinstance(gt_source, str):
@@ -682,6 +834,7 @@ class ContourMatcher:
                 pred_handle=pred_handle,
                 threshold=self._extraction_threshold,
                 min_area=self._min_contour_area,
+                min_area_fraction=self._min_contour_area_fraction,
             )
             # `_pred_heatmap_aligned` is a VIEW blob this pipeline just emitted,
             # so `auto` recognises it by magic bytes — scoring reads it back as a
@@ -696,6 +849,7 @@ class ContourMatcher:
                 pred_handle,
                 threshold=self._extraction_threshold,
                 min_area=self._min_contour_area,
+                min_area_fraction=self._min_contour_area_fraction,
                 output_col="_pred_contours",
             )
             aligned_handle = pred_handle
@@ -711,17 +865,21 @@ class ContourMatcher:
                 output_col="_gt_contours",
             )
 
-        # Score predictions against the (possibly resized) heatmap
-        prepared = _score_contours_via(
-            prepared,
-            aligned_handle,
-            contour_col="_pred_contours",
-            output_col="_pred_scores_raw",
-        )
+        if aligned_handle is not None:
+            # Score predictions against the (possibly resized) heatmap
+            prepared = _score_contours_via(
+                prepared,
+                aligned_handle,
+                contour_col="_pred_contours",
+                reduction=self._score_reduction,
+                region_mode=self._score_region_mode,
+                output_col="_pred_scores_raw",
+            )
 
-        # Drop detections that score 0.0 against the heatmap, so an unevidenced
-        # contour cannot claim a GT object during greedy assignment.
-        prepared = _filter_zero_score_detections(prepared)
+            # Drop detections that score 0.0 against the heatmap, so an
+            # unevidenced contour cannot claim a GT object during greedy
+            # assignment. A caller's own 0.0 is a confidence, and is kept.
+            prepared = _filter_zero_score_detections(prepared)
 
         # Pair predictions with GT contours. The order is ours to choose;
         # `correspond` only knows about overlap.
@@ -816,5 +974,10 @@ class ContourMatcher:
         return DetectionTable.from_matched(
             detections_lf,
             meta_lf,
-            matching_iou_threshold=self._iou_threshold,
+            # A per-row threshold has no single value to warn against.
+            matching_iou_threshold=(
+                None
+                if isinstance(self._iou_threshold, pl.Expr)
+                else self._iou_threshold
+            ),
         )

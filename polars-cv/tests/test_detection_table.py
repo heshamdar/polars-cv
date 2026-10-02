@@ -179,6 +179,67 @@ class TestDetectionTableViews:
         tp_count = det_df.filter(pl.col(COL_IS_TP)).height
         assert tp_count <= 5
 
+    def test_filter_images_by_ids(self, detection_table: DetectionTable) -> None:
+        """filter_images keeps the named images' metadata and detections."""
+        det_df, meta_df = detection_table.filter_images(["img2"]).collect()
+        assert meta_df[COL_IMAGE_ID].to_list() == ["img2"]
+        assert det_df[COL_IMAGE_ID].to_list() == ["img2", "img2"]
+
+    def test_filter_images_by_metadata_predicate(
+        self, detection_table: DetectionTable
+    ) -> None:
+        """A predicate is evaluated on image_metadata; detections follow it."""
+        det_df, meta_df = detection_table.filter_images(
+            pl.col(COL_N_GTS) >= 2
+        ).collect()
+        assert meta_df[COL_IMAGE_ID].to_list() == ["img1"]
+        assert set(det_df[COL_IMAGE_ID]) == {"img1"}
+        assert det_df.height == 3
+
+    def test_filter_images_keeps_the_matcher_settings(
+        self, sample_detections: pl.DataFrame, sample_metadata: pl.DataFrame
+    ) -> None:
+        """The stored matching threshold survives, so lowering still warns."""
+        table = DetectionTable.from_matched(
+            sample_detections, sample_metadata, matching_iou_threshold=0.5
+        ).filter_images(["img1"])
+        with pytest.warns(UserWarning, match="below the matching"):
+            table.at_iou_threshold(0.3)
+
+    def test_filter_images_is_per_class(self) -> None:
+        """Detections follow their own (image, class) metadata row."""
+        det = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "a"],
+                COL_CLASS_ID: ["x", "y"],
+                COL_SCORE: [0.9, 0.8],
+                COL_IS_TP: [True, True],
+                COL_GT_IDX: [0, 0],
+                COL_IOU: [0.9, 0.9],
+                COL_DET_IDX: [0, 0],
+            },
+            schema={**DETECTION_SCHEMA},
+        )
+        meta = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "a"],
+                COL_CLASS_ID: ["x", "y"],
+                COL_N_GTS: [1, 3],
+                COL_WEIGHT: [1.0, 1.0],
+                COL_GT_LABEL: [True, True],
+            }
+        )
+        table = DetectionTable.from_matched(det, meta)
+        det_df, _ = table.filter_images(pl.col(COL_N_GTS) > 1).collect()
+        assert det_df[COL_CLASS_ID].to_list() == ["y"]
+
+    def test_filter_images_refuses_a_bare_string(
+        self, detection_table: DetectionTable
+    ) -> None:
+        """A bare string would be read as its characters, so it is refused."""
+        with pytest.raises(TypeError, match="list of image ids"):
+            detection_table.filter_images("img1")
+
     def test_collect_returns_dataframes(self, detection_table: DetectionTable) -> None:
         """collect returns eager DataFrames."""
         det_df, meta_df = detection_table.collect(engine="streaming")

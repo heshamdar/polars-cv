@@ -54,6 +54,29 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   measured to the other's boundary clipped to the frame. Insetting the bbox
   drops boundary near the edge too.
 
+- **`ContourMatcher(score_reduction=, score_region_mode=)`.** Detections were
+  always scored by the peak heatmap value inside them (`label_reduce`'s
+  `"max"`/`"interior"`, hard-coded), so on a heatmap that saturates most
+  detections tied at the peak and FROC/LROC collapsed to a few points. Both
+  pass through to `label_reduce`; the defaults are unchanged.
+- **Per-row `ContourMatcher` parameters.** `iou_threshold`,
+  `extraction_threshold`, `min_contour_area`, `coverage_tolerance` and the new
+  `min_contour_area_fraction` each take a Polars expression, read per row by
+  the op they reach (`correspond`/`correspond_by_coverage`, `threshold`,
+  `extract_contours`) — e.g. `coverage_tolerance=5.0 / pl.col("spacing_mm")`
+  for a physical tolerance across devices. A literal is still checked at
+  construction; a per-row `iou_threshold` stores no `matching_iou_threshold`.
+- **Contour predictions in `ContourMatcher`.** `pred_col` may be a contour or
+  contour-set column, scored by `score_col` (`List[float]` aligned with a set,
+  a float for one contour per row; a count mismatch fails the query). The
+  contours are the detections as they are — no extraction, no heatmap
+  scoring, and a caller's 0.0 score is kept — and share the matching,
+  duplicate policy and table build. `score_col` with a heatmap prediction is
+  now refused instead of silently ignored.
+- **`DetectionTable.filter_images(ids | predicate)`.** Keeps the named images
+  (or the `image_metadata` rows a predicate selects) and their detections,
+  with the stored matcher settings, for stratified evaluation without
+  rebuilding the table by hand.
 
 - **Line-shaped ground truth in `ContourMatcher`.** `match_by="coverage"`
   (with `coverage_tolerance`) pairs predictions with GT by coverage, so GT
