@@ -403,6 +403,7 @@ def _explode_match_to_detections(
     gt_idx_col: str,
     iou_col: str,
     class_id: str,
+    ignore_duplicates_col: str | None = None,
 ) -> pl.LazyFrame:
     """Explode per-image match results into per-detection rows.
 
@@ -413,6 +414,9 @@ def _explode_match_to_detections(
         gt_idx_col: Matched-index list column.
         iou_col: IoU list column.
         class_id: Class label to assign.
+        ignore_duplicates_col: The correspondence's ``duplicate`` list column,
+            when duplicate hits are to be dropped rather than kept as false
+            positives; ``None`` keeps every detection.
 
     Returns:
         Per-detection lazy frame with canonical column names.
@@ -434,6 +438,13 @@ def _explode_match_to_detections(
         .then(pl.col(scores_col).list.eval(pl.lit(0.0)))
         .otherwise(pl.col(iou_col)),
         _det_ord=pl.int_ranges(0, pl.col(scores_col).list.len()),
+        _dup=(
+            pl.when(unpaired)
+            .then(pl.col(scores_col).list.eval(pl.lit(False)))
+            .otherwise(pl.col(ignore_duplicates_col))
+            if ignore_duplicates_col is not None
+            else pl.col(scores_col).list.eval(pl.lit(False))
+        ),
     )
 
     # One explode, no join. The payload is positionally aligned with the
@@ -442,8 +453,11 @@ def _explode_match_to_detections(
     # column was `0..n` spelled out.
     return (
         payload.explode(
-            "_scores", "_gt_idx", "_iou", "_det_ord", empty_as_null=True
-        ).with_columns(_det_ord=pl.col("_det_ord").cast(pl.UInt32))
+            "_scores", "_gt_idx", "_iou", "_det_ord", "_dup", empty_as_null=True
+        )
+        .with_columns(_det_ord=pl.col("_det_ord").cast(pl.UInt32))
+        # A repeated hit on a claimed target is dropped, not scored as an FP.
+        .filter(~pl.col("_dup").fill_null(False))
     ).select(
         pl.col(image_id_col).alias(COL_IMAGE_ID),
         pl.lit(class_id).alias(COL_CLASS_ID),
@@ -452,6 +466,15 @@ def _explode_match_to_detections(
         pl.col("_gt_idx").cast(pl.UInt32).alias(COL_GT_IDX),
         pl.col("_iou").fill_null(0.0).alias(COL_IOU),
         pl.col("_det_ord").alias(COL_DET_IDX),
+    )
+
+
+def _is_contour_dtype(dtype: pl.DataType) -> bool:
+    """Whether a column holds contours (a contour struct, or a list of them)
+    rather than a mask: a struct with an ``exterior`` field, at either level."""
+    inner = dtype.inner if isinstance(dtype, pl.List) else dtype
+    return isinstance(inner, pl.Struct) and any(
+        f.name == "exterior" for f in inner.fields
     )
 
 
@@ -476,9 +499,26 @@ class ContourMatcher:
             is its pixel count (for a region with holes, including the hole
             pixels). The default ``0.0`` keeps every region.
         auto_resize: Whether to resize heatmaps to mask shapes automatically.
+            Ground truth given as contours has no mask to take a size from, so
+            it needs ``auto_resize=False`` (the heatmap already in the
+            contours' coordinates).
         gt_min_contour_area: Minimum polygon area of a ground-truth contour,
             independent of ``min_contour_area``. The smallest region, one
             pixel, has area 1, so the default ``1.0`` keeps every region.
+        match_by: ``"iou"`` (default) pairs by overlap
+            (``.contour.correspond``). ``"coverage"`` pairs by the fraction of
+            each GT contour's boundary inside a prediction or within
+            ``coverage_tolerance`` of it (``.contour.correspond_by_coverage``)
+            — the rule for line-shaped GT (polylines), whose IoU with any
+            region is 0. ``iou_threshold`` is then the minimum coverage, and
+            the table's ``iou`` column holds coverage.
+        coverage_tolerance: Pixels a GT sample may lie from a prediction and
+            still count as covered; required with ``match_by="coverage"`` and
+            refused otherwise. For a physical tolerance, divide by the pixel
+            spacing.
+        duplicates: ``"false_positive"`` (default) counts a prediction that
+            hits only an already-matched GT as a false positive;
+            ``"ignore"`` drops it (the LUNA16/CAMELYON convention).
     """
 
     def __init__(
@@ -488,9 +528,30 @@ class ContourMatcher:
         min_contour_area: float = 0.0,
         auto_resize: bool = True,
         gt_min_contour_area: float = 1.0,
+        match_by: str = "iou",
+        coverage_tolerance: float | None = None,
+        duplicates: str = "false_positive",
     ) -> None:
         if not (0.0 < iou_threshold <= 1.0):
             raise ValueError("`iou_threshold` must be in (0, 1].")
+        if match_by not in ("iou", "coverage"):
+            msg = f"match_by must be 'iou' or 'coverage', got {match_by!r}"
+            raise ValueError(msg)
+        if (match_by == "coverage") != (coverage_tolerance is not None):
+            msg = (
+                "coverage_tolerance is required with match_by='coverage' and "
+                "means nothing with match_by='iou'"
+            )
+            raise ValueError(msg)
+        if coverage_tolerance is not None and not coverage_tolerance >= 0.0:
+            msg = f"coverage_tolerance must be >= 0, got {coverage_tolerance}"
+            raise ValueError(msg)
+        if duplicates not in ("false_positive", "ignore"):
+            msg = f"duplicates must be 'false_positive' or 'ignore', got {duplicates!r}"
+            raise ValueError(msg)
+        self._match_by = match_by
+        self._coverage_tolerance = coverage_tolerance
+        self._duplicates = duplicates
         self._iou_threshold = iou_threshold
         self._extraction_threshold = extraction_threshold
         self._min_contour_area = min_contour_area
@@ -571,13 +632,17 @@ class ContourMatcher:
                 pred_col, _detect_source_info(schema_dict, pred_col)
             )
         )
-        gt_handle = (
-            _SourceHandle.from_expr(gt_col)
-            if gt_is_expr
-            else _SourceHandle.from_column(
+        # Ground truth given as contours (a contour or contour-set column) is
+        # used as it is, by name; anything else is a mask to extract them from.
+        gt_source: _SourceHandle | str
+        if isinstance(gt_col, LazyPipelineExpr):
+            gt_source = _SourceHandle.from_expr(gt_col)
+        elif _is_contour_dtype(schema_dict[gt_col]):
+            gt_source = gt_col
+        else:
+            gt_source = _SourceHandle.from_column(
                 gt_col, _detect_source_info(schema_dict, gt_col)
             )
-        )
         gt_dtype = None if gt_is_expr else schema_dict[gt_col]
 
         # Assign image_id
@@ -603,7 +668,15 @@ class ContourMatcher:
         if self._auto_resize:
             # Resize prediction heatmaps to GT mask dimensions via a fused
             # pipeline.  If shapes already match the resize is a no-op.
-            prepared = _add_gt_shape_columns(prepared, gt_handle, gt_dtype)
+            if isinstance(gt_source, str):
+                msg = (
+                    f"gt_col {gt_source!r} holds contours, which have no mask "
+                    "size for auto_resize to resize the heatmap to: pass "
+                    "auto_resize=False, with the heatmap in the contours' "
+                    "coordinates"
+                )
+                raise ValueError(msg)
+            prepared = _add_gt_shape_columns(prepared, gt_source, gt_dtype)
             prepared = _extract_with_fused_resize(
                 prepared,
                 pred_handle=pred_handle,
@@ -627,13 +700,16 @@ class ContourMatcher:
             )
             aligned_handle = pred_handle
 
-        prepared = _extract_contours_via(
-            prepared,
-            gt_handle,
-            threshold=0.5,
-            min_area=self._gt_min_contour_area,
-            output_col="_gt_contours",
-        )
+        if isinstance(gt_source, str):
+            prepared = prepared.with_columns(_gt_contours=pl.col(gt_source))
+        else:
+            prepared = _extract_contours_via(
+                prepared,
+                gt_source,
+                threshold=0.5,
+                min_area=self._gt_min_contour_area,
+                output_col="_gt_contours",
+            )
 
         # Score predictions against the (possibly resized) heatmap
         prepared = _score_contours_via(
@@ -649,12 +725,23 @@ class ContourMatcher:
 
         # Pair predictions with GT contours. The order is ours to choose;
         # `correspond` only knows about overlap.
-        prepared = prepared.with_columns(
-            _match=pl.col("_pred_contours").contour.correspond(  # ty: ignore[unresolved-attribute]
+        preds = pl.col("_pred_contours").contour  # ty: ignore[unresolved-attribute]
+        match = (
+            preds.correspond(
                 pl.col("_gt_contours"),
                 threshold=self._iou_threshold,
                 order=_confidence_order("_pred_scores"),
-            ),
+            )
+            if self._match_by == "iou"
+            else preds.correspond_by_coverage(
+                pl.col("_gt_contours"),
+                tolerance=self._coverage_tolerance,
+                threshold=self._iou_threshold,
+                order=_confidence_order("_pred_scores"),
+            )
+        )
+        prepared = prepared.with_columns(
+            _match=match,
             _n_gts=pl.col("_gt_contours").list.len().fill_null(0).cast(pl.Int64),
         )
 
@@ -666,6 +753,7 @@ class ContourMatcher:
             "_n_gts",
             gt_idx=pl.col("_match").struct.field(_RIGHT_IDX),
             iou=pl.col("_match").struct.field(_OVERLAP),
+            duplicate=pl.col("_match").struct.field(_DUPLICATE),
             _gt_label=(pl.col("_gt_contours").list.len().fill_null(0) > 0),
             **(
                 {COL_CLASS_ID: pl.col(class_col).cast(pl.String)}
@@ -698,6 +786,7 @@ class ContourMatcher:
             gt_idx_col="gt_idx",
             iou_col="iou",
             class_id=DEFAULT_CLASS,
+            ignore_duplicates_col="duplicate" if self._duplicates == "ignore" else None,
         ).filter(pl.col(COL_SCORE).is_not_null())
 
         # When a class column was provided, replace the placeholder class with

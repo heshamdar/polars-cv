@@ -36,6 +36,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **Line-shaped ground truth in `ContourMatcher`.** `match_by="coverage"`
+  (with `coverage_tolerance`) pairs predictions with GT by coverage, so GT
+  annotated as polylines — skinfolds, muscle edges — can be scored, which IoU
+  cannot; `gt_col` may now be a contour or contour-set column (with
+  `auto_resize=False`) instead of a mask. `duplicates="ignore"` drops a
+  prediction whose only hit was an already-matched GT rather than counting it
+  as a false positive (default `"false_positive"`, as before).
+
 - **`.contour.correspond_by_coverage(other, tolerance, threshold=0.5, order=None,
   sample_step=None)`** pairs contours by *coverage* rather than IoU: the
   fraction of each target's boundary samples inside the candidate (when it is

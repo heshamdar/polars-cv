@@ -293,6 +293,17 @@ metrics/
   `froc_sensitivity_at_fp(table, 0.0).collect().item()` is the sensitivity
   reachable with no false positives, not the origin's zero.
 
+### Line-shaped GT and duplicates (ContourMatcher)
+- `match_by="coverage"` pairs through `.contour.correspond_by_coverage` (Rust
+  `pairwise::coverage_matrix` into the same `greedy_assign`); `iou_threshold`
+  is then the minimum coverage and the `iou` column holds coverage. A
+  contour/contour-set `gt_col` (`_is_contour_dtype`) is used as the GT
+  contours directly, and needs `auto_resize=False` — refused otherwise, since
+  there is no mask size to resize to.
+- `duplicates="ignore"` drops detections whose correspondence `duplicate` flag
+  is set (`_explode_match_to_detections(ignore_duplicates_col=...)`), instead
+  of counting them as false positives.
+
 ## Known Issues
 
 - Score + extract cannot be merged into one graph: `label_reduce` requires contours as an expression parameter, so they must exist as a column before the scoring pipeline runs.
