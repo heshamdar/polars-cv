@@ -36,6 +36,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **Geometry from coordinate lists, and back.**
+  `polars_cv.geometry.point_from_coords(expr, order="xy"|"yx")`,
+  `contour_from_coords(expr, order, closed=True)` and
+  `contour_set_from_coords(...)` build points, contours (open polylines with
+  `closed=False`) and contour sets from `[x, y]` or `[y, x]` (row, column)
+  pairs — `List` or `Array(_, 2)`, integers or floats — instead of hand-built
+  structs. `.point.to_coords(order)` and `.contour.to_coords(order)` are the
+  inverse (`Array(Float64, 2)` per point; a contour with holes is refused). A
+  pair that is not two non-null numbers is an error naming its row.
+
 - **`largest(k=1)`** keeps the `k` largest contours of a set by area,
   largest first, equal areas in input order — as a pipeline op
   (`.extract_contours().largest()`) and as `.contour.largest(k)` on a contour

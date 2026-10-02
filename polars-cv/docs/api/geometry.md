@@ -102,3 +102,24 @@ for which parameters are per-row.
       show_root_heading: false
       show_source: false
       heading_level: 3
+
+## Constructors from coordinate lists
+
+Build `POINT_SCHEMA` / `CONTOUR_SCHEMA` / `CONTOUR_SET_SCHEMA` columns from
+plain `[x, y]` or `[y, x]` pairs; `.point.to_coords()` and
+`.contour.to_coords()` are the inverse.
+
+::: polars_cv.geometry.coords.point_from_coords
+    options:
+      show_root_heading: true
+      heading_level: 3
+
+::: polars_cv.geometry.coords.contour_from_coords
+    options:
+      show_root_heading: true
+      heading_level: 3
+
+::: polars_cv.geometry.coords.contour_set_from_coords
+    options:
+      show_root_heading: true
+      heading_level: 3

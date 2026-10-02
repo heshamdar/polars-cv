@@ -65,6 +65,57 @@ crate::naming::named_variants!(Winding: "Winding direction of a contour ring (``
     "cw" | "clockwise" => Clockwise,
 });
 
+/// The order of a point's two coordinates in a plain list: `[x, y]`, or
+/// `[y, x]` (row, column — NumPy's and most mask tools' convention).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoordOrder {
+    /// `[x, y]`.
+    Xy,
+    /// `[y, x]` (row, column).
+    Yx,
+}
+
+crate::naming::named_variants!(CoordOrder: "Order of a point's coordinates in a plain list (``polars_cv.geometry.*_from_coords``, ``.to_coords``).\n\n- XY: ``[x, y]``.\n- YX: ``[y, x]`` (row, column)." {
+    "xy" => Xy,
+    "yx" => Yx,
+});
+
+impl CoordOrder {
+    /// The point of a `[first, second]` pair in this order.
+    pub fn point(self, [first, second]: [f64; 2]) -> Point {
+        match self {
+            CoordOrder::Xy => Point::new(first, second),
+            CoordOrder::Yx => Point::new(second, first),
+        }
+    }
+
+    /// A point's coordinates as a pair in this order.
+    pub fn pair(self, p: &Point) -> [f64; 2] {
+        match self {
+            CoordOrder::Xy => [p.x, p.y],
+            CoordOrder::Yx => [p.y, p.x],
+        }
+    }
+}
+
+/// Which way round the image frame `close_along_border` closes an open line,
+/// travelling from the line's last point back to its first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BorderArc {
+    /// The shorter way round.
+    Shortest,
+    /// Clockwise as the image is displayed (y down): top edge rightward.
+    Clockwise,
+    /// Counter-clockwise as the image is displayed.
+    Counterclockwise,
+}
+
+crate::naming::named_variants!(BorderArc: "Which way round the image frame ``.contour.close_along_border`` runs, from the line's last point back to its first.\n\n- SHORTEST: the shorter way round.\n- CLOCKWISE: clockwise as displayed (y down; along the top edge rightward).\n- COUNTERCLOCKWISE: the other way." {
+    "shortest" => Shortest,
+    "clockwise" => Clockwise,
+    "counterclockwise" => Counterclockwise,
+});
+
 impl Winding {
     /// Returns the opposite winding direction.
     pub fn flip(self) -> Self {

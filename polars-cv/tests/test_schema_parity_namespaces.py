@@ -157,6 +157,7 @@ CONTOUR_CASES: dict[str, object] = {
     "normalize": lambda: pl.col("a").contour.normalize(100, 100),
     "to_absolute": lambda: pl.col("a").contour.to_absolute(100, 100),
     "flip": lambda: pl.col("a").contour.flip(),
+    "to_coords": lambda: pl.col("a").contour.to_coords(order="yx"),
     "ensure_winding": lambda: pl.col("a").contour.ensure_winding("ccw"),
     "pairwise_iou": lambda: pl.col("aset").contour.pairwise_iou(pl.col("bset")),
     "largest": lambda: pl.col("aset").contour.largest(k=1),
@@ -183,6 +184,7 @@ POINT_CASES: dict[str, object] = {
     "normalize": lambda: pl.col("pa").point.normalize(100, 100),
     "to_absolute": lambda: pl.col("pa").point.to_absolute(100, 100),
     "within_bbox": lambda: pl.col("pa").point.within_bbox(pl.col("ba")),
+    "to_coords": lambda: pl.col("pa").point.to_coords(order="yx"),
     "distance_to_contour": lambda: pl.col("pa").point.distance_to_contour(pl.col("a")),
     "signed_distance_to_contour": lambda: pl.col("pa").point.signed_distance_to_contour(
         pl.col("a")

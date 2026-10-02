@@ -327,6 +327,18 @@
     ""
    ]
   ],
+  "to_coords": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "order",
+    "KEYWORD_ONLY",
+    "'xy'"
+   ]
+  ],
   "translate": [
    [
     "self",
@@ -3470,6 +3482,18 @@
     "height",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ]
+  ],
+  "to_coords": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "order",
+    "KEYWORD_ONLY",
+    "'xy'"
    ]
   ],
   "translate": [

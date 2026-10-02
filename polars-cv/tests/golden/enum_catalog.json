@@ -25,6 +25,15 @@
     ]
   },
   {
+    "name": "BorderArc",
+    "doc": "Which way round the image frame ``.contour.close_along_border`` runs, from the line's last point back to its first.\n\n- SHORTEST: the shorter way round.\n- CLOCKWISE: clockwise as displayed (y down; along the top edge rightward).\n- COUNTERCLOCKWISE: the other way.",
+    "variants": [
+      "shortest",
+      "clockwise",
+      "counterclockwise"
+    ]
+  },
+  {
     "name": "BorderMode",
     "doc": "Border-handling mode for 2D convolution (``convolve2d``).\n\n- REPLICATE: Replicate the nearest edge pixel.\n- ZERO: Treat out-of-bounds pixels as zero.\n- REFLECT: Reflect pixels around the edge (dcba|abcd|dcba).",
     "variants": [
@@ -43,6 +52,14 @@
       "lab",
       "ycbcr",
       "gray"
+    ]
+  },
+  {
+    "name": "CoordOrder",
+    "doc": "Order of a point's coordinates in a plain list (``polars_cv.geometry.*_from_coords``, ``.to_coords``).\n\n- XY: ``[x, y]``.\n- YX: ``[y, x]`` (row, column).",
+    "variants": [
+      "xy",
+      "yx"
     ]
   },
   {

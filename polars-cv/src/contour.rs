@@ -602,6 +602,34 @@ contour_accessor! {
     |a, b, _params, _row| Ok(AnyValue::Float64(pairwise::hausdorff_distance_outlines(a, b)))
 }
 
+fn coords_dtype() -> DataType {
+    DataType::List(Box::new(DataType::Array(Box::new(DataType::Float64), 2)))
+}
+
+contour_accessor! {
+    /// The contour's points as coordinate pairs.
+    map fn contour_to_coords / contour_to_coords_output_type -> |_input| coords_dtype();
+    reads Outline;
+    parse ContourFn::ToCoords { order };
+    |outline, params, row| {
+        if !outline.holes().is_empty() {
+            polars_bail!(ComputeError:
+                "to_coords: a contour with holes has no single coordinate list \
+                 (row {}); read its rings from the struct's exterior and holes",
+                row
+            );
+        }
+        let order = params.value(order, row)?;
+        let pairs: Vec<Option<[f64; 2]>> =
+            outline.exterior().iter().map(|p| Some(order.pair(p))).collect();
+        let series = <[f64; 2] as crate::point::PointOutput>::series(
+            PlSmallStr::from_static("coords"),
+            pairs,
+        )?;
+        Ok(AnyValue::List(series))
+    }
+}
+
 /// The fields of `contour_boundary_distances`'s struct, in order.
 const BOUNDARY_DISTANCE_FIELDS: [&str; 5] = ["mean_a_to_b", "mean_b_to_a", "assd", "hd", "hd95"];
 
