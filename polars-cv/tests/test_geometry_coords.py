@@ -48,8 +48,13 @@ class TestPointFromCoords:
 
     @pytest.mark.parametrize("bad", [[1.0], [1.0, 2.0, 3.0]])
     def test_a_pair_of_the_wrong_length_is_refused(self, bad: list[float]) -> None:
+        # The row the plugin names is its index within the batch polars hands
+        # it, which the engine may split differently by version: pin the
+        # message, not a row number.
         df = pl.DataFrame({"p": [[1.0, 2.0], bad]})
-        with pytest.raises(pl.exceptions.ComputeError, match="row 1"):
+        with pytest.raises(
+            pl.exceptions.ComputeError, match=r"exactly 2 numbers.*\(row \d+\)"
+        ):
             df.select(point_from_coords(pl.col("p")))
 
     def test_a_null_coordinate_is_refused(self) -> None:
