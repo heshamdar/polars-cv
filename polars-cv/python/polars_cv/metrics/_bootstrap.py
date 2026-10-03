@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Literal
 
 import polars as pl
 
-from ._grouped_scan import CumSum, Lag, RowIndex, grouped_scan
+from ._grouped_scan import RowIndex, grouped_scan
 from ._types import (
     COL_GT_LABEL,
     COL_IMAGE_ID,
@@ -718,30 +718,41 @@ def _with_weight_clusters(
     weight is neither equal to the one before it nor within ``rtol`` (relative
     to the larger magnitude), so values that differ only by arithmetic noise
     share a cluster without any rounding boundary to straddle. Null weights
-    share one cluster, as do NaN weights. Two grouped scans
-    (:func:`~._grouped_scan.grouped_scan`) and no self-join, so the subplan
-    stays cheap however often the replicate frames re-read it, and stays on the
-    streaming engine.
+    share one cluster, as do NaN weights. A sort and frame-wide scans, every
+    step native to the streaming engine and no self-join, so the subplan stays
+    cheap however often the replicate frames re-read it.
     """
-    w, prev = pl.col(COL_WEIGHT), pl.col("_prev_w")
+    w, prev = pl.col(COL_WEIGHT), pl.col(COL_WEIGHT).shift(1)
     close = w.eq_missing(prev) | (
         (w - prev).abs() <= rtol * pl.max_horizontal(w.abs(), prev.abs())
     )
-    # A group's first row compares against no predecessor (`prev` null), as
-    # `shift().over(part)` did. The second scan numbers the openings.
-    opened = grouped_scan(
-        meta, part, by=[COL_WEIGHT], descending=[False], _prev_w=Lag(COL_WEIGHT)
-    ).with_columns(_opens=(~close).fill_null(True).cast(pl.Int64))
-    return (
-        grouped_scan(
-            opened,
-            part,
-            by=[COL_WEIGHT],
-            descending=[False],
-            _cluster=CumSum("_opens"),
-        )
-        .drop("_prev_w", "_opens")
-        .rename({"_cluster": _COL_WCLUSTER})
+    # A part's first row compares against no predecessor (`prev` null there),
+    # as `shift().over(part)` did; the frame-wide shift reads the previous
+    # part's last row instead, so a part start is forced to `prev` = null.
+    starts = pl.lit(False)
+    for k in part:
+        starts = starts | pl.col(k).ne_missing(pl.col(k).shift(1))
+    close = (
+        pl.when(starts | (pl.int_range(pl.len()) == 0))
+        .then(w.eq_missing(pl.lit(None, dtype=pl.Float64)))
+        .otherwise(close)
+    )
+    opens = (~close).fill_null(True).cast(pl.Int64)
+    # The running count of openings, frame-wide, minus its value before the
+    # part began (the part's minimum of the exclusive count, which never
+    # decreases): the per-part count, in integers, so exactly. Every step is a
+    # native streaming node; `min().over` becomes a group-by and a join.
+    # (`min().over` of a column, not of an expression: only the former is
+    # rewritten natively.)
+    run = pl.col("_opens").cum_sum()
+    counted = (
+        meta.sort(*part, COL_WEIGHT, maintain_order=True)
+        .with_columns(_opens=opens)
+        .with_columns(_run=run, _before=run - pl.col("_opens"))
+    )
+    restart = pl.col("_before").min().over(part) if part else pl.lit(0)
+    return counted.with_columns((pl.col("_run") - restart).alias(_COL_WCLUSTER)).drop(
+        "_opens", "_run", "_before"
     )
 
 

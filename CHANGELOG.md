@@ -111,31 +111,38 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
-- **Metrics stay on the streaming engine.** Polars' streaming engine hands any
-  step it cannot run natively to the in-memory engine, which collects that
-  step's whole input first. In the metrics, these steps were `.over()` running
-  sums, maxima and shifts, and sorts inside `group_by().agg()`. They sat in the
-  PR, FROC and LROC curves, AP, the AUC integrals and the bootstrap. The
-  bootstrap repeats all of these per replicate, so it collected
-  `n_bootstrap × detections` rows; `froc_curve_lazy` alone had 15 such steps.
-  Every public metrics plan now runs natively, except three list aggregations
-  that polars cannot stream. Each runs on a per-object or per-image frame:
-  `group_objects`' per-image object lists, a sampling unit's weight cells, and
-  an entity's images.
-  - `metrics/_grouped_scan.py` is the one way to express a scan per group
-    (`grouped_scan`). It sorts once, runs each scan over the whole frame and
-    restarts it exactly at group starts, and it holds the exact sums.
-  - Unweighted counts are integers and stay bit-identical. Weighted running sums
-    and reductions are computed in Int128 fixed point: exact up to one rounding
-    of each term at 2⁻¹²⁵ of the largest magnitude, and one rounding of the
-    result. They differ from the old float sums in the last bits, and no longer
-    vary between runs or thread counts.
+- **Metrics stay on the streaming engine, except where it cannot help.**
+  Polars' streaming engine hands any step it cannot run natively to the
+  in-memory engine, which collects that step's whole input first. In the
+  metrics, these steps were `.over()` running sums, maxima and shifts, sorts
+  inside `group_by().agg()`, a quantile inside a group-by, and a Python UDF.
+  They sat in the PR, FROC and LROC curves, AP, the AUC integrals and the
+  bootstrap; `froc_curve_lazy` alone had 15 of them. Every one is now native,
+  or is one of the cases that `tests/_streaming_guard.py` lists with its
+  reason:
+  - **A `.over()` scan straight after the sort on its keys.**
+    `metrics/_grouped_scan.py::grouped_scan` is the one way the metrics write
+    a per-group scan: one sort, then windows. Such a window reads the frame the
+    sort has just collected, so it adds no memory of its own. An all-native
+    version was built (frame-wide scans restarted exactly at group starts) and
+    measured. On the bootstrap it held as much memory and ran 2.4x slower, so
+    it was not kept. The guard checks in the physical plan that the window's
+    input is that sort, keyed on the window's keys.
+  - **Three list aggregations**, which polars cannot build in a streaming
+    group-by: `group_objects`' per-image object lists, a sampling unit's weight
+    cells and an entity's images. Each runs on a per-object or per-image
+    frame, never on the bootstrap's replicate frame.
+  - Reductions that must be reproducible are exact (`exact_sums`): Int128 fixed
+    point, exact up to one rounding of each term at 2⁻¹²⁵ of the largest
+    magnitude, and one rounding of the result. They are native, and they no
+    longer vary between runs or thread counts.
   - The bootstrap interval's `quantile` is read off ranks, bit for bit as
     polars' `quantile(q, "linear")` computes it.
   - `group_objects(max_detections=)` caps inside the list aggregation it
     already builds, instead of using a separate window.
-  - `PreMatchedAdapter`'s `det_idx` ordinals, `to_per_image` and the
-    weight-cell clustering use the same scans.
+  - `PreMatchedAdapter`'s `det_idx` ordinals and `to_per_image` go through
+    `grouped_scan`. The weight-cell clustering is native: a frame-wide count
+    minus its value where the part starts.
   - The mask-instance region check (`match_detections(geometry=<masks>)`) is
     no longer a Python UDF that received the whole column of extracted
     outlines at once. It is `.contour.single` in the plugin (see Added), and
@@ -146,6 +153,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   - `tests/test_streaming_plans.py` reads every public plan's physical
     streaming graph and fails on any fallback not listed, with its reason, in
     `tests/_streaming_guard.py`.
+  - Removing these fallbacks does not by itself bound memory. The bootstrap
+    holds its whole replicate frame (`n_bootstrap × detections` rows) in its
+    sorts and group-bys, natively or not; see *bounded bootstrap memory*.
 - **The AUC integrals take a frame, not an aggregation.** `_auc_expr`'s
   `trapz_auc_expr` / `partial_auc_expr` / `mann_whitney_auc_expr` were `pl.Expr`
   reductions for `group_by().agg()`, which sorted inside the aggregation. They

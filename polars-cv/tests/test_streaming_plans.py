@@ -48,19 +48,52 @@ _LF = pl.LazyFrame({"g": [1, 1, 2], "x": [1.0, 2.0, 3.0], "t": [3, 2, 1]})
         pytest.param(
             _LF.with_columns(pl.col("x").map_batches(lambda s: s)), id="column-udf"
         ),
+        pytest.param(
+            _LF.sort("x", "g").with_columns(pl.col("x").cum_sum().over("g")),
+            id="over-after-a-sort-on-other-keys",
+        ),
+        pytest.param(
+            _LF.sort("g", "x").with_columns(pl.col("x").rank().over("g")),
+            id="unlisted-window-after-its-sort",
+        ),
+        pytest.param(
+            # A computed column between the sort and the window: the window's
+            # input is that computation, not the frame the sort holds.
+            _LF.sort("g", "x")
+            .with_columns(y=pl.col("x").cum_sum())
+            .with_columns(pl.col("y").cum_sum().over("g")),
+            id="over-not-straight-after-the-sort",
+        ),
     ],
 )
 def test_guard_rejects_known_fallbacks(plan: pl.LazyFrame) -> None:
-    labels = in_memory_nodes(plan)
-    assert labels, "the scanner no longer sees in-memory fallbacks"
-    assert unexplained(labels) == labels
+    nodes = in_memory_nodes(plan)
+    assert nodes, "the scanner no longer sees in-memory fallbacks"
+    assert unexplained(nodes) == [n.label for n in nodes]
 
 
-def test_guard_accepts_the_object_lists_as_known() -> None:
-    lists = _LF.group_by("g").agg(pl.col("x").alias("pred"), pl.col("t").alias("gt"))
-    labels = in_memory_nodes(lists)
-    assert labels
-    assert unexplained(labels) == []
+@pytest.mark.parametrize(
+    "plan",
+    [
+        pytest.param(
+            _LF.group_by("g").agg(pl.col("x").alias("pred"), pl.col("t").alias("gt")),
+            id="object-lists",
+        ),
+        pytest.param(
+            _LF.sort("g", "x").with_columns(
+                pl.col("x").cum_sum().over("g"),
+                pl.col("x").cum_max(reverse=True).over("g").alias("m"),
+                pl.col("x").shift(1).over("g").alias("p"),
+                pl.int_range(pl.len(), dtype=pl.Int64).over("g").alias("i"),
+            ),
+            id="scans-straight-after-their-sort",
+        ),
+    ],
+)
+def test_guard_accepts_the_known_fallbacks(plan: pl.LazyFrame) -> None:
+    nodes = in_memory_nodes(plan)
+    assert nodes
+    assert unexplained(nodes) == []
 
 
 @pytest.mark.parametrize(
@@ -74,9 +107,9 @@ def test_guard_accepts_the_object_lists_as_known() -> None:
 )
 def test_guard_rejects_other_list_building(plan: pl.LazyFrame) -> None:
     """The allow-list names its sites; any other list aggregation is new."""
-    labels = in_memory_nodes(plan)
-    assert labels
-    assert unexplained(labels) == labels
+    nodes = in_memory_nodes(plan)
+    assert nodes
+    assert unexplained(nodes) == [n.label for n in nodes]
 
 
 @pytest.mark.parametrize(
@@ -215,14 +248,15 @@ def test_plan_stays_streaming(name: str) -> None:
     assert offenders == [], (
         f"{name} falls back to the in-memory engine at:\n  "
         + "\n  ".join(offenders)
-        + "\nRewrite the step natively (see metrics/_grouped_scan.py), or add "
-        "it to KNOWN_FALLBACKS with the reason it cannot be."
+        + "\nWrite the scan through metrics/_grouped_scan.py, or rewrite the "
+        "step natively, or add it to KNOWN_FALLBACKS with the reason it "
+        "cannot be."
     )
 
 
 @plugin_required
 def test_every_known_fallback_is_still_hit() -> None:
     """A fallback that was fixed must leave the allow-list too."""
-    labels = [label for build in PLANS.values() for label in in_memory_nodes(build())]
-    stale = [k.pattern for k in KNOWN_FALLBACKS if not any(map(k.matches, labels))]
+    nodes = [node for build in PLANS.values() for node in in_memory_nodes(build())]
+    stale = [k.pattern for k in KNOWN_FALLBACKS if not any(map(k.matches, nodes))]
     assert stale == []

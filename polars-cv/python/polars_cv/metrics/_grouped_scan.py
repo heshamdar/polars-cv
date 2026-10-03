@@ -1,50 +1,31 @@
-"""Grouped ordered scans and exact sums that stay on the streaming engine.
+"""Grouped ordered scans and exact sums: the metrics' one way to write either.
 
-The metrics need two things polars' streaming engine does not run natively:
+**The grouped scan** (:func:`grouped_scan`) sorts once by ``(*keys, *by)``
+and computes each scan (running sum, running max, lag, row index, first/last
+flag) as a window ``.over(keys)`` on the sorted frame. The streaming engine
+runs such a window in the in-memory engine, which collects its input. That
+input is the frame the sort has just collected, so the window adds no memory
+of its own. An all-native version (restarting frame-wide scans at group starts
+with exact Int128 arithmetic and rank-encoded maxima) was built and measured:
+it held as much memory and ran 2.4x slower on the bootstrap. The guard
+(``tests/test_streaming_plans.py``) accepts this fallback only where the plan
+shows it straight after the sort on its window keys, which is what this
+function produces. Anywhere else, a ``.over()`` scan or a sort inside an
+``agg`` is a regression.
 
-* **a scan restarted per group**: ``cum_sum().over(keys)``,
-  ``cum_max().over(keys)``, ``shift().over(keys)`` and
-  ``int_range(pl.len()).over(keys)``;
-* **a deterministic sum inside a group-by**. The old ``sort().cum_sum()``
-  inside ``agg`` was deterministic but not native.
-
-The streaming engine runs each of these through an ``in-memory-map`` node,
-which collects its whole input first. That defeats streaming for exactly the
-frames that grow largest: bootstrap replicates are ``n_bootstrap ×
-detections`` rows. This module is the one way the metrics express either
-operation; ``tests/test_streaming_plans.py`` rejects a new fallback.
-
-**The grouped scan** sorts once by ``(*keys, *by)``, so every group is a
-contiguous run. Each scan then runs over the *whole* frame and is reset at
-group starts with arithmetic that is exact:
-
-* A cumulative sum subtracts, from the frame-wide running sum, its value just
-  before the group starts. Done in floats, that subtraction cancels
-  catastrophically once earlier groups are large, so floats are summed in
-  Int128 fixed point (:func:`_fixed`). Integers are summed as they are,
-  which is exact.
-* A cumulative max encodes each value's dense rank under its group index, so a
-  later group can never win an earlier group's maximum. The rank is then
-  decoded back to the value. Ranking orders floats exactly, so the selected
-  value is bit-identical to ``.over``'s.
-* A lag nulls the rows whose predecessor belongs to another group.
-
-Every step here is a native streaming node: ``sort``, ``with-row-index``,
-``cum_sum``, ``forward_fill``, ``shift``, ``cum_max``, a ``rank`` and one
-equi-join. ``sort``, ``rank`` and a reverse ``cum_max`` buffer their column;
-none of them hands the plan to the in-memory engine.
-
-**Exact sums** (:func:`exact_sums`) convert each value to Int128 fixed point.
-The scale is a power of two chosen from the frame's largest magnitude and row
-count, and the conversion rounds once. Integer addition is associative, so a
-sum does not depend on how the rows were chunked, ordered or split across
-threads. A float ``sum`` does: its last bits change from run to run, which
-made bootstrap bounds irreproducible.
+**Exact sums** (:func:`exact_sums`) convert each value to Int128 fixed point
+and sum those integers natively in a group-by. The scale is a power of two
+chosen from the frame's largest finite magnitude and its row count, and the
+conversion rounds once. Integer addition is associative, so a sum does not
+depend on how the rows were chunked, ordered or split across threads. A float
+``sum`` does: its last bits change from run to run, which made bootstrap
+bounds irreproducible.
 
 Error: a term keeps at least ``125 − log2(rows)`` bits below the frame's
 largest magnitude (absolute error ≤ ``max·rows·2⁻¹²⁵`` per term), and the sum
 is rounded to Float64 once. Both are below Float64's own resolution for any
-frame polars can hold.
+frame polars can hold. NaN and ±inf are counted apart and combined as float
+addition would combine them.
 """
 
 from __future__ import annotations
@@ -53,10 +34,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 import polars as pl
-
-_I = "_gs_i"
-_GROUP = "_gs_g"
-_NEW = "_gs_new"
 
 #: Bits of Int128 headroom above the largest magnitude (and the row count).
 _FIXED_BITS = 125
@@ -116,10 +93,10 @@ def grouped_scan(
 ) -> pl.LazyFrame:
     """``lf`` sorted by ``(*keys, *by)``, with each ``out`` scan per group.
 
-    Equivalent to sorting the same way and writing ``scan.over(keys)``,
-    including null group keys, which form a group of their own. The order
-    ``by`` gives within a group should be total; ties would make the result
-    depend on which tied row the sort put first, as with ``.over``.
+    Each scan is a window over ``keys`` on the sorted frame, so null group
+    keys form a group of their own, as in ``.over``. The order ``by`` gives
+    within a group should be total; ties would make the result depend on
+    which tied row the sort put first.
 
     Args:
         lf: The frame.
@@ -135,109 +112,36 @@ def grouped_scan(
     keys, by = list(keys), list(by)
     if len(descending) != len(by):
         raise ValueError("`descending` needs one flag per `by` column")
-    schema = lf.collect_schema()
-    names = list(schema.names())
     ordered = lf.sort(
         *keys,
         *by,
         descending=[False] * len(keys) + list(descending),
         nulls_last=nulls_last,
         maintain_order=True,
-    ).with_row_index(_I)
-
-    starts = pl.col(_I) == 0
-    for k in keys:
-        starts = starts | pl.col(k).ne_missing(pl.col(k).shift(1))
-    framed = ordered.with_columns(starts.alias(_NEW)).with_columns(
-        (pl.col(_NEW).cast(pl.Int64).cum_sum() - 1).alias(_GROUP)
     )
 
-    fixed = {
-        scan.col: _fixed(pl.col(scan.col))
-        for scan in out.values()
-        if isinstance(scan, CumSum) and schema[scan.col].is_float()
-    }
-    framed = framed.with_columns(
-        *(v.value.alias(f"_gs_fx_{c}") for c, v in fixed.items()),
-        *(v.scale.alias(f"_gs_sc_{c}") for c, v in fixed.items()),
-        *(
-            e.alias(f"_gs_{k}_{c}")
-            for c, v in fixed.items()
-            for k, e in v.specials.items()
-        ),
-    )
+    def per_group(expr: pl.Expr) -> pl.Expr:
+        return expr.over(keys) if keys else expr
 
+    position = pl.int_range(pl.len(), dtype=pl.Int64)
     exprs: list[pl.Expr] = []
-    lookups: list[tuple[str, str]] = []
     for name, scan in out.items():
         if isinstance(scan, CumSum):
-            exprs.append(_cum_sum(scan.col, scan.col in fixed).alias(name))
+            expr = pl.col(scan.col).cum_sum()
         elif isinstance(scan, CumMax):
-            exprs.append(_cum_max_rank(scan).alias(f"_gs_r_{name}"))
-            lookups.append((name, scan.col))
+            expr = pl.col(scan.col).cum_max(reverse=scan.reverse)
         elif isinstance(scan, Lag):
-            same = pl.col(_GROUP) == pl.col(_GROUP).shift(scan.n)
-            exprs.append(pl.when(same).then(pl.col(scan.col).shift(scan.n)).alias(name))
+            expr = pl.col(scan.col).shift(scan.n)
         elif isinstance(scan, RowIndex):
-            first = pl.when(pl.col(_NEW)).then(pl.col(_I)).forward_fill()
-            exprs.append((pl.col(_I) - first).cast(pl.Int64).alias(name))
+            expr = position
         elif isinstance(scan, IsFirst):
-            exprs.append(pl.col(_NEW).alias(name))
+            expr = position == 0
         elif isinstance(scan, IsLast):
-            last = pl.col(_GROUP).ne_missing(pl.col(_GROUP).shift(-1))
-            exprs.append(last.alias(name))
+            expr = position == pl.len() - 1
         else:  # pragma: no cover - Scan is closed
             raise TypeError(f"not a scan: {scan!r}")
-    framed = framed.with_columns(exprs)
-
-    for name, col in lookups:
-        # Rank → value. One value per rank (dense), so the join neither drops
-        # nor duplicates rows, and `maintain_order` keeps the scan order.
-        values = framed.select(
-            pl.col(col).rank("dense").cast(pl.Int64).alias(f"_gs_r_{name}"),
-            pl.col(col).alias(name),
-        ).unique(subset=f"_gs_r_{name}")
-        framed = framed.join(
-            values, on=f"_gs_r_{name}", how="left", maintain_order="left"
-        )
-    return framed.select(*names, *out)
-
-
-def _restarted(x: pl.Expr) -> pl.Expr:
-    """The running sum of integer ``x`` restarted at each group start.
-
-    The frame-wide running sum minus its value just before the group began:
-    integer arithmetic, so the subtraction is exact.
-    """
-    run = x.cum_sum()
-    return run - pl.when(pl.col(_NEW)).then(run - x).forward_fill()
-
-
-def _cum_sum(col: str, fixed: bool) -> pl.Expr:
-    """``col``'s running sum within its group (null where ``col`` is null)."""
-    if fixed:
-        finite = _restarted(pl.col(f"_gs_fx_{col}").fill_null(0)).cast(
-            pl.Float64
-        ) / pl.col(f"_gs_sc_{col}")
-        nan, pinf, ninf = (_restarted(pl.col(f"_gs_{k}_{col}")) > 0 for k in _SPECIAL)
-        within = _combine(finite, nan, pinf, ninf)
-    else:
-        within = _restarted(pl.col(col).fill_null(0))
-    return pl.when(pl.col(col).is_not_null()).then(within)
-
-
-def _cum_max_rank(scan: CumMax) -> pl.Expr:
-    """The dense rank of the group's running max of ``scan.col``.
-
-    The rank sits in the low 64 bits; the group index above it is subtracted
-    (a reverse scan meets later groups first) or added (a forward scan meets
-    earlier ones first), so the other groups always lose.
-    """
-    rank = pl.col(scan.col).rank("dense").cast(pl.Int128)
-    shift = pl.col(_GROUP).cast(pl.Int128) * (1 << 64)
-    if scan.reverse:
-        return ((rank - shift).cum_max(reverse=True) + shift).cast(pl.Int64)
-    return ((rank + shift).cum_max() - shift).cast(pl.Int64)
+        exprs.append(per_group(expr).alias(name))
+    return ordered.with_columns(exprs)
 
 
 _SPECIAL = ("nan", "pinf", "ninf")
