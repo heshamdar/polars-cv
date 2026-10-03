@@ -124,6 +124,18 @@ size); entity-level (`sample_col`) resamples entities within group, then expands
 to images with a lazy `group_by`/`explode`. An empty base or empty group
 cross-joins to zero rows — it does **not** raise.
 
+**Weighted FROC/LROC CIs stratify on weight cells** (`_sampling_cells`, the
+single authority for a unit's cell). Units with equal weights (the sorted
+distinct weights of an image's rows, or of an entity's images) form one cell.
+Optional `strata=` columns are crossed into the cell. The draw is stratified
+within `(group, gt_label, cell)` (image level) or `(group, cell)` (entity level).
+Every weighted statistic is a weight-scale-invariant ratio, so a weight that
+depends only on its cell's count (`p / q̂` estimated from the sample,
+post-stratification, raking) is then exactly the per-replicate re-estimated
+weight. That is why there is no reweight hook. Unit weights form one cell and
+leave the draw bit-identical to the unweighted resample. AP is unweighted and
+passes `weight_strata=None`, so it is not stratified by weight.
+
 `seed=None` maps to a fixed hash constant, so the CI is **deterministic even
 without an explicit seed**. Each draw gets a distinct synthetic `image_id` from
 its deterministic global slot (`_bootstrap_table_with_draws`) so a redraw counts
@@ -139,8 +151,10 @@ detections legitimately scores that). A **degenerate group** nulls its
 point estimate. Viability needs ≥1 positive target (`sum(gt_label) > 0`); for the
 two-class rank statistics (`method="mann_whitney"`, threaded as
 `require_both_classes`) it additionally needs ≥1 negative, since that AUC is
-undefined without both classes. That viability rule is the one behavioral choice
-worth knowing.
+undefined without both classes. For the weighted families, a group with any
+weight cell of size 1 is also non-viable: that cell has no bootstrap variance,
+and a continuous weight (all singletons) would otherwise report a zero-width
+interval. That viability rule is the one behavioral choice worth knowing.
 
 ## File Layout
 

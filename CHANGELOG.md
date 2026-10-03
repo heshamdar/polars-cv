@@ -7,6 +7,37 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Changed
+
+- **Weighted FROC/LROC bootstrap intervals re-estimate sample-derived weights
+  correctly.** `froc_auc_ci_lazy` and `lroc_auc_ci_lazy` carried each image's
+  `weight` unchanged into every replicate. That is wrong for an importance
+  weight `p / q̂` whose `q̂` comes from the same sample, such as a vendor or
+  prevalence mix reweighted to a target. Each replicate draws a different mix, so
+  the held-fixed weights let the weighted mix drift off target and widened the
+  interval. Both functions now also stratify the resample on **weight cells**:
+  units with equal weights form a cell, and each `(group, cell)` is redrawn to
+  its own size. The weighted statistics are weight-scale-invariant ratios, so a
+  weight that depends only on its cell's count (`p / q̂`, post-stratification,
+  raking) is then exactly the weight re-estimated inside each replicate. The
+  cells come from the weight itself, and the change is fully lazy.
+  - **Point estimates are unchanged.** Unit-weight tables keep bit-identical
+    bounds, apart from single-image groups (see below): one cell per group
+    leaves the draw unchanged.
+  - **New `strata=` columns** are crossed into the cells. They separate cells
+    that share a weight exactly.
+  - **Behaviour change:** a group with a weight cell holding a **single** unit
+    now reports null `ci_lower`/`ci_upper`, keeping its point estimate, as
+    degenerate groups already do. That cell has no bootstrap variance. A
+    continuous weight (every image its own cell), or a group with a single
+    image, would otherwise report a zero-width interval.
+  - A downstream proposal asked for a `reweight` callback hook. It was not
+    adopted: the hook would have re-weighted the replicates but not the point
+    estimate, and it had to handle replicates that draw nothing from a
+    positive-target cell. The cell-stratified draw makes the existing weights
+    correct as they stand.
+  - `average_precision_ci_lazy` is unchanged: AP never reads `weight`.
+
 ## [0.31.0] — 2026-10-03
 
 Open polylines become a first-class contour (`is_closed=False` is read),
