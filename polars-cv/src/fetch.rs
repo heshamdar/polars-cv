@@ -193,9 +193,11 @@ impl PathPolicy {
                 Err(self.denial(path, "it is outside every allowed root"))
             };
         }
-        let stripped = path.strip_prefix("file://").unwrap_or(path);
-        let candidate = Path::new(stripped);
-        let resolved = resolve_best_effort(candidate);
+        // The file the read will open ([`cloud::local_file_path`]), not a
+        // second reading of the string: a URL it refuses is refused here too.
+        let candidate =
+            cloud::local_file_path(path).map_err(|e| self.denial(path, &e.to_string()))?;
+        let resolved = resolve_best_effort(&candidate);
         let allowed = self.roots.iter().any(|root| match root {
             AllowedRoot::Local(dir) => resolved.starts_with(dir),
             AllowedRoot::Remote(_) => false,
@@ -300,9 +302,10 @@ pub fn row_bytes<'a>(
                 .map_err(|e| format!("Failed to read remote file '{path}': {e}")),
         };
     }
-    // Already known non-remote: read the literal path, stripping only a
-    // `file://` prefix. (Routing through the general `read_file` would re-parse
-    // a bare colon-bearing filename as a bogus cloud URL.)
+    // Already known non-remote: read the path `cloud::local_file_path`
+    // resolves, as the policy check above judged it. (Routing through the
+    // general `read_file` would re-parse a bare colon-bearing filename as a
+    // bogus cloud URL.)
     cloud::read_local_path(path)
         .map(Cow::Owned)
         .map_err(|e| format!("Failed to read local file '{path}': {e}"))
@@ -468,6 +471,42 @@ mod tests {
             .is_ok());
         assert!(p.check("/definitely/not/here.bin").is_err());
 
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A `file://` URL is judged as the file it reads, by the one resolver
+    /// both use: a host component (`file://host/etc/passwd`) once passed the
+    /// check as the relative path `host/etc/passwd` — inside a root holding
+    /// the working directory — while the read opened `/etc/passwd`.
+    #[test]
+    fn a_file_url_is_judged_as_the_file_it_reads() {
+        let p = policy(&["."]);
+        let outside = std::env::temp_dir().join("polars_cv_file_url_escape.bin");
+        std::fs::write(&outside, b"secret").unwrap();
+        let escape = format!("file://anyhost{}", outside.display());
+        assert!(p.check(&escape).is_err(), "{escape}");
+        let err = row_bytes(&FetchedBatch::empty(), &escape, None, &p).unwrap_err();
+        assert!(!err.contains("secret"), "{err}");
+        // Unrestricted, a host still names no local file: refused, not guessed.
+        assert!(row_bytes(
+            &FetchedBatch::empty(),
+            &escape,
+            None,
+            &PathPolicy::default()
+        )
+        .is_err());
+        std::fs::remove_file(&outside).ok();
+
+        // A percent-encoded file URL is the decoded file, for both.
+        let root = std::env::temp_dir().join("polars_cv_file_url_root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a b.bin"), b"spaced").unwrap();
+        let p = policy(&[root.to_str().unwrap()]);
+        let url = format!("file://{}/a%20b.bin", root.display());
+        assert!(p.check(&url).is_ok(), "{url}");
+        let batch = FetchedBatch::empty();
+        let bytes = row_bytes(&batch, &url, None, &p).unwrap();
+        assert_eq!(&*bytes, b"spaced");
         std::fs::remove_dir_all(&root).ok();
     }
 

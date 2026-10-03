@@ -332,6 +332,11 @@ pub fn sample_outline(outline: &Outline, step: Option<f64>) -> Vec<Point> {
         let edges = path.windows(2).map(|w| (w[0], w[1])).chain(closing);
         for (p, q) in edges {
             let length = p.distance_to(&q);
+            // An overflowing length (finite vertices ~1e308 apart) has no
+            // step count: `k * step < inf` would never end.
+            if !length.is_finite() {
+                continue;
+            }
             let mut k = 1.0;
             while k * step < length {
                 let t = k * step / length;
@@ -616,6 +621,15 @@ mod outline_tests {
     fn an_open_outline_is_as_long_as_its_segments() {
         assert!((outline_length(&open_l()) - 20.0).abs() < 1e-12);
         assert!((outline_length(&closed_l()) - (20.0 + 200f64.sqrt())).abs() < 1e-12);
+    }
+
+    /// Finite vertices can still be an infinite distance apart: densifying
+    /// such an edge looped forever, appending samples until memory ran out.
+    /// It is sampled at its vertices only.
+    #[test]
+    fn an_edge_of_overflowing_length_is_not_densified() {
+        let line = Outline::Open(vec![Point::new(-1e308, 0.0), Point::new(1e308, 0.0)]);
+        assert_eq!(sample_outline(&line, Some(1.0)).len(), 2);
     }
 
     #[test]

@@ -44,8 +44,11 @@ another hole remains a hole. Winding is reported by
 by [`.contour.ensure_winding()`][polars_cv.geometry.contours.ContourNamespace.ensure_winding],
 and is consulted nowhere else.
 
-`is_closed` is reserved: it is always written as `True` and never read back. Rings
-are implicitly closed, so do not repeat the first point at the end.
+`is_closed=False` makes a contour an open polyline, measured as a line by the
+boundary functions and refused by the region ones (see
+[Open polylines](../user-guide/operations/geometry.md#open-polylines)); an
+unspecified `is_closed` reads as closed. Rings are implicitly closed, so do not
+repeat the first point at the end.
 
 ## Helper Functions
 

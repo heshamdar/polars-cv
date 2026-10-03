@@ -53,7 +53,7 @@ use polars::io::cloud::{build_object_store, CloudOptions as PlCloudOptions, Clou
 use polars::io::pl_async::with_concurrency_budget;
 use polars_utils::pl_path::{CloudScheme, PlRefPath};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::PathBuf;
 use std::str::FromStr;
 use thiserror::Error;
 use tokio::runtime::Runtime;
@@ -285,7 +285,7 @@ pub fn read_file(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u8>, 
     // Try to parse as URL first
     if let Ok(url) = Url::parse(path) {
         match url.scheme() {
-            "file" => read_local_file(url.path()),
+            "file" => read_local_path(path),
             "http" | "https" | "s3" | "s3a" | "gs" | "gcs" | "az" | "azure" | "abfs" | "abfss"
             | "adl" => {
                 let runtime = get_runtime()?;
@@ -297,7 +297,7 @@ pub fn read_file(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u8>, 
         }
     } else {
         // Not a valid URL, treat as local path
-        read_local_file(path)
+        read_local_path(path)
     }
 }
 
@@ -366,42 +366,43 @@ async fn read_object(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u
     }
 }
 
-/// Read a file from the local filesystem.
-fn read_local_file(path: &str) -> Result<Vec<u8>, CloudError> {
-    std::fs::read(Path::new(path)).map_err(|e| CloudError::ReadError(e.to_string()))
+/// The filesystem path a local path names: a bare path as written, or a
+/// `file://` URL's path, percent-decoded.
+///
+/// The one resolver for local paths: every local read and the `allowed_roots`
+/// check ([`crate::fetch::PathPolicy`]) go through it, so the file judged is
+/// the file read. A `file://` URL naming a host other than `localhost` names
+/// no local file and is refused — read as a relative path for the check and
+/// as an absolute one for the read, it once escaped `allowed_roots`. A bare
+/// filename containing a colon (`img:2.png`, legal on Unix) is a path, not a
+/// URL with scheme `img`.
+pub fn local_file_path(path: &str) -> Result<PathBuf, CloudError> {
+    if !path.starts_with("file://") {
+        return Ok(PathBuf::from(path));
+    }
+    Url::parse(path)
+        .ok()
+        .and_then(|url| url.to_file_path().ok())
+        .ok_or_else(|| {
+            CloudError::UrlParse(format!(
+                "'{path}' is not a local file URL: write file:///absolute/path \
+                 (a file:// URL may name no host but localhost)"
+            ))
+        })
 }
 
-/// Read a path already known to be local (not a remote/cloud URL).
-///
-/// Strips a `file://` prefix if present, otherwise reads the literal path.
-/// Unlike [`read_file`], this never treats the path as a cloud URL, so a
-/// bare local filename that happens to contain a colon (e.g. `img:2.png`,
-/// legal on Unix) is read as-is rather than being mis-parsed as a URL with
-/// scheme `img`.
+/// Read a path already known to be local (not a remote/cloud URL), as
+/// [`local_file_path`] resolves it.
 pub fn read_local_path(path: &str) -> Result<Vec<u8>, CloudError> {
-    if let Some(rest) = path.strip_prefix("file://") {
-        // Parse so percent-encoding and the `file://host/path` form resolve
-        // to a real filesystem path, matching read_file's `file` arm.
-        match Url::parse(path) {
-            Ok(url) => read_local_file(url.path()),
-            // Malformed file:// URL — fall back to the literal remainder.
-            Err(_) => read_local_file(rest),
-        }
-    } else {
-        read_local_file(path)
-    }
+    std::fs::read(local_file_path(path)?).map_err(|e| CloudError::ReadError(e.to_string()))
 }
 
 /// The first `limit` bytes of a local file (all of it if shorter), and whether
-/// that reached its end. Accepts what [`read_local_path`] does.
+/// that reached its end. Resolves `path` as [`read_local_path`] does.
 pub fn read_local_prefix(path: &str, limit: usize) -> Result<(Vec<u8>, bool), CloudError> {
     use std::io::Read;
-    let local = match path.strip_prefix("file://") {
-        Some(rest) => Url::parse(path).map_or_else(|_| rest.to_string(), |u| u.path().to_string()),
-        None => path.to_string(),
-    };
-    let file =
-        std::fs::File::open(Path::new(&local)).map_err(|e| CloudError::ReadError(e.to_string()))?;
+    let file = std::fs::File::open(local_file_path(path)?)
+        .map_err(|e| CloudError::ReadError(e.to_string()))?;
     let mut bytes = Vec::with_capacity(limit.min(1 << 20));
     file.take(limit as u64)
         .read_to_end(&mut bytes)

@@ -517,7 +517,11 @@ def _contour_predictions(
     one-element list, so matching sees one shape. The two lists are each read
     at the other's positions: a count mismatch, either way, is an
     out-of-bounds gather that fails the query, rather than detections or
-    scores quietly dropped.
+    scores quietly dropped. A null score list beside present contours is a
+    mismatch (no scores for them), and a null score is read at an
+    out-of-bounds position, so it fails the query too: an unscored contour
+    would take part in matching — and could claim a GT — before the table
+    dropped it. A null contour set is an image without predictions.
 
     Raises:
         ValueError: If ``score_col``'s dtype does not fit ``pred_col``'s.
@@ -546,6 +550,21 @@ def _contour_predictions(
         scores = pl.when(present).then(
             pl.concat_list(pl.col(score_col).cast(pl.Float64))
         )
+    # Absent scores are none: against present contours, a count mismatch.
+    scores = (
+        pl.when(scores.is_null())
+        .then(pl.lit([], pl.List(pl.Float64)))
+        .otherwise(scores)
+    )
+    # Each score's own position, a null's one past the end: gathering there
+    # fails on the null rather than letting it through.
+    own = scores.list.eval(
+        pl.when(pl.element().is_null())
+        .then(pl.len())
+        .otherwise(pl.int_range(pl.len()))
+        .cast(pl.Int64)
+    )
+    scores = scores.list.gather(own)
     return lf.with_columns(
         _pred_contours=contours.list.gather(pl.int_ranges(0, scores.list.len())).cast(
             CONTOUR_SET_SCHEMA
@@ -708,8 +727,9 @@ class ContourMatcher:
                 predictions: ``List[float]`` aligned with a contour-set
                 ``pred_col`` (a count mismatch fails the query), or a float
                 for a single-contour one. Every contour is kept, a 0.0 score
-                included. Refused for heatmap predictions, whose scores come
-                from the heatmap (``score_reduction``).
+                included; a null score fails the query. Refused for
+                heatmap predictions, whose scores come from the heatmap
+                (``score_reduction``).
             class_col: Optional class label column for multi-class metrics.
             image_id_col: Optional image identifier column (defaults to row index).
             weight_col: Optional sample weight column.

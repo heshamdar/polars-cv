@@ -262,3 +262,14 @@ class TestCloseAlongBorder:
         df = pl.DataFrame({"c": [_l_shape(closed=True)]}, schema={"c": CONTOUR_SCHEMA})
         with pytest.raises(pl.exceptions.ComputeError, match="already closed"):
             df.select(pl.col("c").contour.close_along_border(10, 10))
+
+    def test_a_nan_max_snap_is_refused(self) -> None:
+        """A per-row NaN ``max_snap`` passed every distance test, so a line in
+        the middle of the image was "snapped" to the frame and closed."""
+        df = self._line([(50.0, 50.0), (60.0, 60.0)]).with_columns(
+            s=pl.lit(float("nan"))
+        )
+        with pytest.raises(pl.exceptions.ComputeError, match="max_snap must be >= 0"):
+            df.select(
+                pl.col("c").contour.close_along_border(100, 100, max_snap=pl.col("s"))
+            )

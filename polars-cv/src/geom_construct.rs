@@ -4,7 +4,7 @@
 //! `contour_set_from_coords` — the inverse of `.point.to_coords()` /
 //! `.contour.to_coords()`. Python casts the input to `List(Float64)` nesting
 //! (so integers and `Array(_, 2)` pairs arrive alike); every pair must hold
-//! exactly two non-null numbers, or the row is an error naming it. The results
+//! exactly two non-null, finite numbers, or the row is an error naming it. The results
 //! are built by the same assemblers the geometry functions use
 //! ([`crate::point::assemble`], [`ContourOutput`]), so the published schema is
 //! the canonical one.
@@ -56,7 +56,11 @@ fn pair(values: &Series, order: CoordOrder, row: usize) -> PolarsResult<Point> {
             "a coordinate pair must hold exactly 2 numbers, got {} (row {})", ca.len(), row);
     }
     match (ca.get(0), ca.get(1)) {
-        (Some(a), Some(b)) => Ok(order.point([a, b])),
+        // Every geometry reader refuses a non-finite coordinate (it has no
+        // position); building one would only defer that error.
+        (Some(a), Some(b)) if a.is_finite() && b.is_finite() => Ok(order.point([a, b])),
+        (Some(a), Some(b)) => polars_bail!(ComputeError:
+            "a coordinate pair holds a non-finite number, [{}, {}] (row {})", a, b, row),
         _ => polars_bail!(ComputeError: "a coordinate pair holds a null (row {})", row),
     }
 }

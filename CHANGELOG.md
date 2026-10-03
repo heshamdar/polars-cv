@@ -7,6 +7,29 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.31.0] — 2026-10-03
+
+Open polylines become a first-class contour (`is_closed=False` is read),
+with boundary distances, coverage matching for line-shaped ground truth,
+closing a line along the image frame, and coordinate-list constructors.
+FROC/LROC curves are read past their end by one explicit policy, null by
+default. Contour labelling and `label_reduce` region scans are orders of
+magnitude faster. Upgrading from 0.30: see the
+[migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.31/).
+
+### Security
+
+- **`allowed_roots` could be escaped with a `file://` URL naming a host.**
+  The policy check stripped `file://` and judged `host/etc/passwd` as a path
+  relative to the working directory, while the read parsed the URL and opened
+  `/etc/passwd` — so with the working directory inside an allowed root (e.g.
+  `allowed_roots=["."]`) any local file was readable, through
+  `.cv.read_bytes()`, the `file_path` source and the new header-metadata path
+  reads alike. One resolver (`cloud::local_file_path`) now serves the check
+  and every local read, so the file judged is the file read. A `file://` URL
+  naming a host other than `localhost` is refused (it names no local file),
+  and a `file://` URL is percent-decoded, as its comment always claimed.
+
 ### Removed
 
 - **`extract_contours(mode="tree")`.** It ran exactly as `mode="all"` — the
@@ -191,6 +214,23 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **`ContourMatcher` refuses a null score for contour predictions.** A
+  null-scored contour took part in matching — and could claim a GT — and was
+  then dropped from the table, so the GT counted as missed and the detection
+  that should have matched it as a false positive. A null score list beside
+  present contours dropped the row's detections. Both now fail the query, as
+  a score count mismatch does; a null contour set is still an image without
+  predictions.
+- **`close_along_border` refuses a NaN or negative `max_snap`** (a NaN passed
+  every distance test, so a line in the middle of the image was "snapped" to
+  the frame and closed) **and a non-finite frame size.**
+- **Densifying an edge of overflowing length no longer loops forever.**
+  `boundary_distances` / `correspond_by_coverage` with `sample_step` appended
+  samples without end along an edge between finite vertices ~1e308 apart; such
+  an edge is sampled at its vertices.
+- **`point_from_coords` / `contour_from_coords` refuse a non-finite
+  coordinate**, naming the row, rather than building a point every geometry
+  reader then refuses.
 - **The streaming guide no longer claims the plugin stays within
   `POLARS_MAX_THREADS`.** The plugin's pool is its own (sized by the same
   setting), and overlapping calls run inline on Polars' threads while a lone
@@ -4028,7 +4068,8 @@ Each item is described in full under its section below.
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
-[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.31.0
 [0.30.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.30.0
 [0.29.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.29.0
 [0.28.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.28.0

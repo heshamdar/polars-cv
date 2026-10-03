@@ -81,10 +81,20 @@ def _source(paths: list[str], **kwargs) -> pl.Series:
     return df.select(o=pl.col("p").cv.pipe(pipe).sink("png"))["o"]
 
 
-#: Both surfaces that reach `fetch.rs`. Every expectation below is asserted
-#: against both, because the whole design claim is that they share one
-#: mechanism — a test that checked only one would pass while the other leaked.
-_SURFACES = {"read_bytes": _read_bytes, "file_path source": _source}
+def _header(paths: list[str], **kwargs) -> pl.Series:
+    """Read through the header-only metadata surface (`.cv.width()` on paths)."""
+    df = pl.DataFrame({"p": paths})
+    return df.select(w=pl.col("p").cv.width(on_error="null", **kwargs))["w"]
+
+
+#: Every surface that reaches `fetch.rs`. Every expectation below is asserted
+#: against each, because the whole design claim is that they share one
+#: mechanism — a test that checked only one would pass while another leaked.
+_SURFACES = {
+    "read_bytes": _read_bytes,
+    "file_path source": _source,
+    "header metadata": _header,
+}
 
 
 @plugin_required
@@ -164,6 +174,25 @@ def test_remote_paths_are_covered_by_the_same_list(tree, surface) -> None:
     read = _SURFACES[surface]
     out = read(["s3://not-allowed/secret.png"], allowed_roots=[str(tree["allowed"])])
     assert out[0] is None
+
+
+@plugin_required
+@pytest.mark.parametrize("surface", sorted(_SURFACES))
+def test_a_file_url_naming_a_host_is_refused(tree, surface, monkeypatch) -> None:
+    """`file://host/abs/path` is no local file, under a policy or without one.
+
+    The check once read it as the *relative* path `host/abs/path` while the
+    read opened `/abs/path`, so with the working directory inside a root
+    (``allowed_roots=["."]``) any file on the machine was readable.
+    """
+    read = _SURFACES[surface]
+    monkeypatch.chdir(tree["allowed"])
+    escape = f"file://anyhost{tree['secret_image']}"
+    assert read([escape], allowed_roots=["."])[0] is None
+    assert read([escape])[0] is None
+    # The local forms still read, percent-encoding decoded.
+    ok = f"file://{tree['image']}".replace("ok.png", "%6Fk.png")
+    assert read([ok], allowed_roots=["."])[0] is not None
 
 
 @plugin_required
