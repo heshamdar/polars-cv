@@ -1041,3 +1041,46 @@ def test_the_two_contour_scale_surfaces_agree_by_default() -> None:
         f"the namespace default ({namespace_pts}) differs from the graph "
         f"path's default ({centroid_pts}); the same op name means two things"
     )
+
+
+# ---------------------------------------------------------------------------
+# single(label=)
+# ---------------------------------------------------------------------------
+
+
+@plugin_required
+class TestContourSingle:
+    """``single`` unwraps a set of exactly one contour and refuses any other."""
+
+    @staticmethod
+    def _sets(rows: list) -> pl.DataFrame:
+        return pl.DataFrame(
+            {"id": [f"img{i}" for i in range(len(rows))], "c": rows},
+            schema={"id": pl.String, "c": pl.List(CONTOUR_SCHEMA)},
+        )
+
+    def test_a_set_of_one_is_its_contour(self, ccw_square: dict) -> None:
+        df = self._sets([[ccw_square], None])
+        out = df.select(pl.col("c").contour.single(label=pl.col("id")))
+        assert out.schema["c"] == CONTOUR_SCHEMA
+        assert out["c"].to_list() == [ccw_square, None]
+
+    @pytest.mark.parametrize("n", [0, 2])
+    def test_any_other_size_fails_naming_the_row(
+        self, ccw_square: dict, n: int
+    ) -> None:
+        df = self._sets([[ccw_square], [ccw_square] * n])
+        with pytest.raises(
+            pl.exceptions.ComputeError, match=f"'img1' holds {n} contours, not one"
+        ):
+            df.select(pl.col("c").contour.single(label=pl.col("id")))
+
+    def test_a_literal_label_broadcasts(self, ccw_square: dict) -> None:
+        df = self._sets([[ccw_square, ccw_square]])
+        with pytest.raises(pl.exceptions.ComputeError, match="'masks' holds 2"):
+            df.select(pl.col("c").contour.single(label=pl.lit("masks")))
+
+    def test_a_single_contour_column_passes_through(self, ccw_square: dict) -> None:
+        df = pl.DataFrame({"c": [ccw_square]}, schema={"c": CONTOUR_SCHEMA})
+        out = df.select(pl.col("c").contour.single(label=pl.lit("x")))
+        assert out["c"].to_list() == [ccw_square]

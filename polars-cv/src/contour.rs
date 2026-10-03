@@ -505,6 +505,53 @@ fn contour_largest(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series
     )
 }
 
+fn contour_single_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
+    let input = input_fields
+        .first()
+        .ok_or_else(|| polars_err!(ComputeError: "contour_single takes a contour column"))?;
+    Ok(Field::new(
+        input.name().clone(),
+        Arity::elem_dtype(input.dtype()),
+    ))
+}
+
+/// The one contour of each row's set; any other count fails the query.
+///
+/// A single-contour column is a set of one, so it passes through unchanged.
+#[polars_expr(output_type_func=contour_single_output_type)]
+fn contour_single(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "contour_single";
+    let (op, params) = GeomParams::parse::<ContourFn<Wire>>(inputs, kwargs, NAME)?;
+    let ContourFn::Single { label } = &op else {
+        return Err(parsed_as_another(NAME));
+    };
+    let contours = ContourColumn::new(&inputs[0]);
+    let labels = params.column(label).cast(&DataType::String)?;
+    let labels = labels.str()?;
+    let label_of = |i: usize| {
+        let at = if labels.len() == 1 { 0 } else { i };
+        labels
+            .get(at)
+            .map_or_else(|| "a null label".to_string(), |l| format!("'{l}'"))
+    };
+    let rows = params.map_rows(crate::geom_calls!(), inputs[0].len(), |_, i| {
+        let Some(row) = contours.outlines(i)? else {
+            return Ok(None);
+        };
+        if row.len() != 1 {
+            polars_bail!(ComputeError:
+                "{}: {} holds {} contours, not one", NAME, label_of(i), row.len());
+        }
+        Ok(Some(row))
+    })?;
+    Outline::column(
+        inputs[0].name().clone(),
+        rows,
+        Arity::Single,
+        &Arity::elem_dtype(inputs[0].dtype()),
+    )
+}
+
 /// One-to-one correspondence between two contour sets by overlap.
 ///
 /// Generic by construction: it knows about contours and overlap, and nothing

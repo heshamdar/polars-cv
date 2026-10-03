@@ -371,6 +371,23 @@ pub enum ContourFn<M: Mode = Exec> {
         #[param(default = "interior")]
         region_mode: M::V<LabelRegionMode>,
     },
+    /// The one contour of each row's set; a set of any other size fails.
+    ///
+    /// For a column whose every row should hold exactly one contour (the
+    /// outline extracted from an instance mask, say), where taking the first
+    /// or the largest of several would silently measure a different object.
+    /// The error quotes the failing row's ``label``, so it can name the image
+    /// rather than a row number (which, under the streaming engine, is only a
+    /// position within one batch).
+    ///
+    /// Returns:
+    ///     A single-contour column; null where the set is null.
+    #[op(name = "contour_single", python = "single", sample = {"label": {"$slot": 1}})]
+    Single {
+        /// String expression aligned by row, quoted in the error to identify
+        /// the row (an image id, say).
+        label: ColumnRef,
+    },
 }
 
 /// The `.point` accessor's functions.

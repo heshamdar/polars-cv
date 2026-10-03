@@ -420,6 +420,18 @@
     ""
    ]
   ],
+  "single": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "label",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "to_absolute": [
    [
     "self",
