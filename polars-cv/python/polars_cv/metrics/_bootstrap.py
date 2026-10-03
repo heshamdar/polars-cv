@@ -32,14 +32,15 @@ import polars as pl
 from ._types import (
     COL_GT_LABEL,
     COL_IMAGE_ID,
-    COL_IS_TP,
     COL_SCORE,
     COL_WEIGHT,
 )
 
 if TYPE_CHECKING:
     from ._auc import CorrectionMethod, Extrapolate
+    from ._statistics import Statistic
     from ._types import DetectionTable
+    from ._weights import WeightAgg
 
 # Internal slot column carrying a globally-unique, deterministic per-draw id.
 _COL_BOOT = "bootstrap_id"
@@ -150,36 +151,24 @@ def froc_auc_ci_lazy(
     Returns:
         ``LazyFrame`` with ``[*group_by, auc, ci_lower, ci_upper]``.
     """
-    from ._metrics import froc_auc
+    from ._statistics import FROCAUC
 
-    _validate_ci_params(n_bootstrap, confidence)
-    group_keys = _normalize_group_by(group_by)
-
-    def metric(tbl: DetectionTable, keys: list[str]) -> pl.LazyFrame:
-        return froc_auc(
-            tbl,
-            method=method,
+    return bootstrap_ci(
+        table,
+        FROCAUC(
             fp_range=fp_range,
+            method=method,
             correction=correction,
             level=level,
-            group_by=keys or None,
             extrapolate=extrapolate,
-        )
-
-    empty_value = 0.5 if method == "mann_whitney" else 0.0
-    return _auc_ci_lazy(
-        table,
-        metric=metric,
-        group_keys=group_keys,
-        value_col="auc",
+        ),
+        group_by=group_by,
         n_bootstrap=n_bootstrap,
         confidence=confidence,
         seed=seed,
         sample_col=sample_col,
-        strata=_normalize_group_by(strata),
+        strata=strata,
         weight_rtol=weight_rtol,
-        empty_value=empty_value,
-        require_both_classes=method == "mann_whitney",
     )
 
 
@@ -228,37 +217,25 @@ def lroc_auc_ci_lazy(
     Returns:
         ``LazyFrame`` with ``[*group_by, auc, ci_lower, ci_upper]``.
     """
-    from ._metrics import lroc_auc
+    from ._statistics import LROCAUC
 
-    _validate_ci_params(n_bootstrap, confidence)
-    group_keys = _normalize_group_by(group_by)
-
-    def metric(tbl: DetectionTable, keys: list[str]) -> pl.LazyFrame:
-        return lroc_auc(
-            tbl,
+    return bootstrap_ci(
+        table,
+        LROCAUC(
             variant=variant,
             method=method,
             fpf_range=fpf_range,
             correction=correction,
             level=level,
-            group_by=keys or None,
             extrapolate=extrapolate,
-        )
-
-    empty_value = 0.5 if method == "mann_whitney" else 0.0
-    return _auc_ci_lazy(
-        table,
-        metric=metric,
-        group_keys=group_keys,
-        value_col="auc",
+        ),
+        group_by=group_by,
         n_bootstrap=n_bootstrap,
         confidence=confidence,
         seed=seed,
         sample_col=sample_col,
-        strata=_normalize_group_by(strata),
+        strata=strata,
         weight_rtol=weight_rtol,
-        empty_value=empty_value,
-        require_both_classes=method == "mann_whitney",
     )
 
 
@@ -297,27 +274,87 @@ def average_precision_ci_lazy(
     Returns:
         ``LazyFrame`` with ``[*group_by, ap, ci_lower, ci_upper]``.
     """
-    _validate_ci_params(n_bootstrap, confidence)
-    group_keys = _normalize_group_by(group_by)
+    from ._statistics import AP
 
     if class_id is not None:
         table = table.filter_class(class_id)
+    return bootstrap_ci(
+        table,
+        AP(),
+        group_by=group_by,
+        n_bootstrap=n_bootstrap,
+        confidence=confidence,
+        seed=seed,
+        sample_col=sample_col,
+        strata=strata,
+        weight_rtol=weight_rtol,
+    )
+
+
+def bootstrap_ci(
+    table: DetectionTable,
+    statistic: Statistic,
+    *,
+    group_by: str | list[str] | None = None,
+    n_bootstrap: int = 1000,
+    confidence: float = 0.95,
+    seed: int | None = None,
+    sample_col: str | None = None,
+    strata: str | list[str] | None = None,
+    weight_rtol: float = 1e-6,
+    weight_agg: WeightAgg = "first",
+) -> pl.LazyFrame:
+    """Lazy, group-aware percentile bootstrap CI for any :class:`Statistic`.
+
+    The one CI engine: ``froc_auc_ci_lazy``, ``lroc_auc_ci_lazy`` and
+    ``average_precision_ci_lazy`` are this with ``FROCAUC``, ``LROCAUC`` and
+    ``AP``. The point estimate is ``statistic.by_group(table, group_by)``; each
+    replicate is the same statistic on a resample of the table keyed by
+    ``bootstrap_id``. Resampling, stratification (``gt_label`` and weight
+    cells), entity-level draws and the degenerate-group rules are those of
+    :func:`froc_auc_ci_lazy` (see it for the details).
+
+    Images are the resampling unit and ``group_by`` partitions the draw, so
+    keys a statistic averages *over* (a :class:`MeanOver` facet such as
+    ``class_id`` or ``iou_threshold``) stay paired: a drawn image brings its
+    rows for every class and threshold into the same replicate. Pass them as
+    ``group_by`` instead to get one independently-resampled interval per
+    facet.
+
+    Args:
+        table: Canonical detection table.
+        statistic: The statistic to bootstrap, e.g. ``AP("101_point")`` or
+            ``mean_ap()``.
+        group_by: Optional grouping column(s). ``None`` yields one row.
+        n_bootstrap: Number of bootstrap replicates.
+        confidence: Confidence level in ``(0, 1)``.
+        seed: Optional RNG seed (``None`` → deterministic constant).
+        sample_col: Optional entity column to resample at the entity level.
+        strata: Optional metadata column(s) crossed into the weight cells.
+        weight_rtol: Relative tolerance within which weights share a cell.
+        weight_agg: Duplicate-weight resolution policy.
+
+    Returns:
+        ``LazyFrame`` with ``[*group_by, <statistic.name>, ci_lower, ci_upper]``.
+    """
+    _validate_ci_params(n_bootstrap, confidence)
 
     def metric(tbl: DetectionTable, keys: list[str]) -> pl.LazyFrame:
-        return _all_points_ap_grouped(tbl, keys)
+        return statistic.by_group(tbl, keys, weight_agg=weight_agg)
 
     return _auc_ci_lazy(
         table,
         metric=metric,
-        group_keys=group_keys,
-        value_col="ap",
+        group_keys=_normalize_group_by(group_by),
+        value_col=statistic.name,
         n_bootstrap=n_bootstrap,
         confidence=confidence,
         seed=seed,
         sample_col=sample_col,
         strata=_normalize_group_by(strata),
         weight_rtol=weight_rtol,
-        empty_value=0.0,
+        empty_value=statistic.empty_value,
+        require_both_classes=statistic.require_both_classes,
     )
 
 
@@ -565,60 +602,6 @@ def _join_point_and_ci(
         )
     # Both are single-row (or empty) frames; a cross join pairs them.
     return point.join(ci, how="cross").select(value_col, "ci_lower", "ci_upper")
-
-
-# ---------------------------------------------------------------------------
-# Group-aware all-points AP (point + per-replicate), reusing the PR authority
-# ---------------------------------------------------------------------------
-
-
-def _all_points_ap_grouped(
-    table: DetectionTable,
-    group_keys: list[str],
-) -> pl.LazyFrame:
-    """Weighted all-points AP per group as a lazy ``[*group_keys, ap]`` frame.
-
-    Builds the per-detection ``expanded`` frame (``score``/``is_tp``, the
-    detection's resolved ``weight`` and the group's ``gt_mass``) and reduces it
-    with the shared
-    :func:`~polars_cv.metrics._metrics._precision_recall.all_points_ap_by_group`
-    authority — the same estimator the scalar ``average_precision`` uses. An empty
-    ``group_keys`` runs under a single dropped dummy group.
-    """
-    from ._metrics._precision_recall import all_points_ap_by_group
-    from ._weights import attach_resolved_weight, weighted_gt_mass
-
-    meta = table.image_metadata
-    det = attach_resolved_weight(table.detections, meta)
-    det_names = set(det.collect_schema().names())
-    meta_only = [k for k in group_keys if k not in det_names]
-    if meta_only:
-        det = det.join(
-            meta.select(COL_IMAGE_ID, *meta_only).unique(), on=COL_IMAGE_ID, how="left"
-        )
-
-    columns = (COL_SCORE, COL_IS_TP, COL_WEIGHT)
-    if group_keys:
-        expanded = (
-            det.select(*group_keys, *columns)
-            .drop_nulls(COL_SCORE)
-            .join(
-                weighted_gt_mass(meta, group_keys),
-                on=group_keys,
-                how="left",
-                nulls_equal=True,
-            )
-        )
-        return all_points_ap_by_group(expanded, group_col=group_keys)
-
-    _dummy = "_pr_grp"
-    expanded = (
-        det.select(*columns)
-        .drop_nulls(COL_SCORE)
-        .join(weighted_gt_mass(meta, []), how="cross")
-        .with_columns(pl.lit(0, dtype=pl.Int32).alias(_dummy))
-    )
-    return all_points_ap_by_group(expanded, group_col=_dummy).drop(_dummy)
 
 
 # ---------------------------------------------------------------------------

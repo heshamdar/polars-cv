@@ -7,6 +7,33 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+
+- **`Statistic`: every detection metric as one grouped, lazy reduction.**
+  `AP(interpolation)`, `Recall`, `PrecisionAt`/`RecallAt`/`F1At(score)`,
+  `FROCSensitivity(fp)`, `CPM(fp_rates)`, `FROCAUC`, `LROCAUC` and
+  `LROCSensitivity(fpf)` each expose `.by_group(table, keys)` (a lazy
+  `[*keys, value]` frame) and `.value(table)`. They compose the existing
+  authorities and add no second estimator; a test holds every public metric
+  function to agree with its statistic, and fails on a new public metric that
+  has none. `MeanOver(statistic, undefined=...)` averages one over facets
+  (`class_id`, `iou_threshold`). `mean_ap()` is mAP: `undefined="exclude"`
+  leaves classes without ground truth out, as COCO does, while `"zero"`
+  averages them in as 0, which is what `mean_average_precision` does.
+- **`bootstrap_ci(table, statistic, ...)`: one CI engine for any statistic.**
+  `froc_auc_ci_lazy`, `lroc_auc_ci_lazy` and `average_precision_ci_lazy` are now
+  this with `FROCAUC`, `LROCAUC` and `AP`, and their outputs are unchanged.
+  A drawn image brings its rows for every class, so the classes averaged by a
+  `MeanOver` statistic come from one resample. That makes an mAP interval
+  correct, where it would be wrong with one independent resample per class.
+- **COCO 101-point AP.** `interpolation="101_point"` on `average_precision`,
+  `mean_average_precision` and `PrecisionRecallResult.auc`. 11-point and
+  101-point AP now have a grouped lazy form (`ap_by_group`), so they can be
+  bootstrapped, and `mean_average_precision` no longer loops per class for
+  11-point.
+- **`group_by=` on `froc_sensitivity_at_fp`, `froc_summary_table` and
+  `lroc_sensitivity_at_fpf`**, through a grouped `interpolate_curve_lazy`.
+
 ### Changed
 
 - **polars-cv now requires `polars>=1.44.2`** (was `>=1.43.2`). The bootstrap
@@ -70,6 +97,24 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     cell-stratified draw makes the existing weights correct as they stand.
 
 ### Fixed
+
+- **All-points AP over-counted score ties.** The envelope was integrated as a
+  trapezoid, `(Pₖ + Pₖ₋₁)/2`, while the docstring named the step rule
+  `Σ (Rₖ − Rₖ₋₁)·Pₖ` (Pascal VOC 2010+ / COCO / scikit-learn). The two agree
+  whenever scores are distinct. They differ when a tied block mixes TPs and
+  FPs, which lowers precision while raising recall: TP@0.9 then
+  {TP, FP, FP}@0.5 against 2 GTs read **0.875**, and is now **0.75**. Tied
+  scores are common with heatmap-derived scores. This affects
+  `average_precision`, `mean_average_precision`, `PrecisionRecallResult.auc()`,
+  `average_precision_ci_lazy` and the grouped authority. Untied results are
+  unchanged.
+- **The 11-point recall grid is the reference one.** It was `i / 10`; it is
+  now `i · 0.1`, as the VOC devkit (`np.arange(0, 1.1, 0.1)`) and COCO
+  (`np.linspace`) build their grids. A recall landing exactly on 0.3, 0.6 or
+  0.7 now compares the way it does there.
+- **AP and mAP are reproducible bit for bit.** Their sums used Polars'
+  chunked `sum`/`mean`, whose last bits depend on how the values are chunked.
+  They now sum in a fixed order (`ordered_sum`).
 
 - **`.contour.boundary_distances(frame=)` no longer spikes next to the frame.**
   The frame removed the *target's* boundary lying on it, but kept source samples

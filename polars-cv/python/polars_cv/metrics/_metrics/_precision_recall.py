@@ -15,6 +15,7 @@ from typing import Literal
 
 import polars as pl
 
+from .._auc_expr import ordered_mean, ordered_sum
 from .._result import MetricResult
 from .._types import (
     COL_CLASS_ID,
@@ -27,6 +28,15 @@ from .._types import (
 )
 from .._weights import WeightAgg, attach_resolved_weight, weighted_gt_mass
 from ._confusion import confusion_at_threshold
+
+#: The AP estimators. ``"all_points"`` integrates the precision envelope as a
+#: step function over every recall the curve reaches (Pascal VOC 2010+);
+#: ``"11_point"`` / ``"101_point"`` average the envelope on a fixed recall grid
+#: (Pascal VOC 2007 / COCO).
+APInterpolation = Literal["all_points", "11_point", "101_point"]
+
+_N_POINT_METHODS: dict[int, APInterpolation] = {11: "11_point", 101: "101_point"}
+_GRID_SIZES: dict[str, int] = {v: k for k, v in _N_POINT_METHODS.items()}
 
 
 @dataclass(frozen=True)
@@ -50,16 +60,19 @@ class PrecisionRecallResult(MetricResult):
     def auc(  # type: ignore[override]
         self,
         *,
-        method: Literal["all_points", "11_point", "trapezoidal"] = "all_points",
+        method: Literal[
+            "all_points", "11_point", "101_point", "trapezoidal"
+        ] = "all_points",
     ) -> float:  # ty: ignore[invalid-method-override]
         """Compute Average Precision (AUC of the PR curve).
 
         Args:
             method: Computation method.
-                ``"all_points"`` (default) applies the standard monotonically
-                decreasing precision envelope before trapezoidal integration
-                (matches COCO / scikit-learn AP).
-                ``"11_point"`` uses the Pascal VOC 11-point method.
+                ``"all_points"`` (default) integrates the monotonically
+                decreasing precision envelope as a step function over every
+                recall the curve reaches (Pascal VOC 2010+).
+                ``"11_point"`` / ``"101_point"`` average the envelope on a
+                fixed recall grid (Pascal VOC 2007 / COCO).
                 ``"trapezoidal"`` computes raw trapezoidal AUC without the
                 monotone-envelope correction. The global envelope is not
                 applied, but points sharing one recall value (a run of false
@@ -74,13 +87,13 @@ class PrecisionRecallResult(MetricResult):
         """
         if method == "all_points":
             return _all_points_ap(self.curve)
-        if method == "11_point":
-            return _eleven_point_ap(self.curve)
+        if method in _GRID_SIZES:
+            return _n_point_ap(self.curve, _GRID_SIZES[method])
         if method == "trapezoidal":
             return super().auc(x_col="recall", y_col="precision")
         raise ValueError(
             f"Unknown method {method!r}. Expected 'all_points', "
-            f"'11_point', or 'trapezoidal'."
+            f"'11_point', '101_point' or 'trapezoidal'."
         )
 
     def precision_at(self, threshold: float) -> float:
@@ -232,7 +245,7 @@ def average_precision(
     table: DetectionTable,
     *,
     class_id: str | None = None,
-    interpolation: Literal["all_points", "11_point"] = "all_points",
+    interpolation: APInterpolation = "all_points",
     weight_agg: WeightAgg = "first",
 ) -> float:
     """Compute weighted Average Precision for a single class.
@@ -240,12 +253,14 @@ def average_precision(
     Args:
         table: Canonical detection table.
         class_id: Restrict to a specific class.
-        interpolation: ``"all_points"`` (trapezoidal) or ``"11_point"`` (VOC).
+        interpolation: ``"all_points"`` (step-integrated envelope, VOC 2010+),
+            ``"11_point"`` (VOC 2007) or ``"101_point"`` (COCO).
         weight_agg: Duplicate-weight resolution policy.
 
     Returns:
         AP value in [0, 1].
     """
+    validate_interpolation(interpolation)
     pr = precision_recall_curve(table, class_id=class_id, weight_agg=weight_agg)
     return pr.auc(method=interpolation)
 
@@ -254,7 +269,7 @@ def mean_average_precision(
     table: DetectionTable,
     *,
     iou_thresholds: list[float] | None = None,
-    interpolation: Literal["all_points", "11_point"] = "all_points",
+    interpolation: APInterpolation = "all_points",
     weight_agg: WeightAgg = "first",
 ) -> float:
     """Compute weighted Mean Average Precision across classes and IoU thresholds.
@@ -273,42 +288,20 @@ def mean_average_precision(
         mAP value in [0, 1].
     """
     thresholds = iou_thresholds or [0.5]
-
-    if interpolation == "all_points":
-        return _mean_average_precision_all_points(table, thresholds, weight_agg)
-
-    # The grouped authority implements only the all-points estimator; the VOC
-    # 11-point method has no grouped form, so it keeps the per-(threshold, class)
-    # eager path. This branch also validates ``interpolation``: an unknown value
-    # reaches ``PrecisionRecallResult.auc`` and raises there, as before.
-    class_ids = table.class_ids()
-    ap_values: list[float] = []
-    for iou_thresh in thresholds:
-        rethresholded = table.at_iou_threshold(iou_thresh)
-        for cid in class_ids:
-            ap_values.append(
-                average_precision(
-                    rethresholded,
-                    class_id=cid,
-                    interpolation=interpolation,
-                    weight_agg=weight_agg,
-                )
-            )
-
-    if not ap_values:
-        return 0.0
-    return float(pl.Series("ap", ap_values).mean())  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+    validate_interpolation(interpolation)
+    return _mean_average_precision_grouped(table, thresholds, interpolation, weight_agg)
 
 
-def _mean_average_precision_all_points(
+def _mean_average_precision_grouped(
     table: DetectionTable,
     thresholds: list[float],
+    interpolation: APInterpolation,
     weight_agg: WeightAgg = "first",
 ) -> float:
-    """Vectorized all-points mAP over every ``(threshold, class)`` cell.
+    """Vectorized mAP over every ``(threshold, class)`` cell.
 
     One lazy plan, one collect: the per-cell APs come from the shared grouped
-    authority :func:`all_points_ap_by_group` (the same estimator the scalar
+    authority :func:`ap_by_group` (the same estimator the scalar
     ``average_precision`` uses), rather than a Python loop of eager
     ``average_precision`` collects. Re-thresholding goes through the canonical
     :meth:`DetectionTable.at_iou_threshold`, so the ``is_tp`` rule and its
@@ -338,7 +331,9 @@ def _mean_average_precision_all_points(
     expanded = pl.concat(per_threshold, how="vertical").join(
         gts, on=COL_CLASS_ID, how="left"
     )
-    ap = all_points_ap_by_group(expanded, group_col=["_iou_t", COL_CLASS_ID])
+    ap = ap_by_group(
+        expanded, group_col=["_iou_t", COL_CLASS_ID], interpolation=interpolation
+    )
 
     grid = (
         pl.LazyFrame(
@@ -450,95 +445,142 @@ def f1_at_threshold(
 
 
 def _all_points_ap(curve: pl.DataFrame) -> float:
-    """Compute AP using monotone-envelope interpolation — lazily.
+    """All-points AP of a PR curve — the ungrouped view of :func:`ap_from_points`."""
+    return _curve_ap(curve, "all_points")
 
-    Applies the standard monotonically decreasing precision envelope
-    (right-to-left cumulative maximum) before trapezoidal integration, matching
-    the COCO and scikit-learn AP definitions. This is the ungrouped form of the
-    lazy authority :func:`all_points_ap_by_group`: the same envelope and the same
-    shift-based trapezoid anchored at recall = 0 (the first row's ``d_recall``
-    falls back to its own recall, so the leftmost block ``recall₀ · P₀`` is
-    counted, per COCO / scikit-learn ``Σ (Rₙ − Rₙ₋₁) · Pₙ`` with ``R₀ = 0``). No
-    eager Series integral is used.
 
-    Args:
-        curve: PR curve DataFrame with ``recall`` and ``precision``.
+def _n_point_ap(curve: pl.DataFrame, n_points: int) -> float:
+    """N-point interpolated AP of a PR curve (11: Pascal VOC 2007, 101: COCO)."""
+    return _curve_ap(curve, _N_POINT_METHODS[n_points])
 
-    Returns:
-        All-points interpolated AP with monotone envelope.
-    """
+
+def _curve_ap(curve: pl.DataFrame, interpolation: APInterpolation) -> float:
+    """AP of one curve through the grouped authority, under a dropped dummy key."""
     if curve.height == 0:
         return 0.0
-
-    ap = (
-        curve.lazy()
-        .select(
-            pl.col("recall").cast(pl.Float64),
-            pl.col("precision").cast(pl.Float64),
-        )
-        # recall is non-decreasing in the score-descending curve; sort makes the
-        # envelope and the shift-based trapezoid order-stable across thread counts.
-        .sort("recall")
-        .with_columns(precision=pl.col("precision").reverse().cum_max().reverse())
-        .with_columns(
-            d_recall=(pl.col("recall") - pl.col("recall").shift(1)).fill_null(
-                pl.col("recall")
-            ),
-            avg_precision=(
-                (pl.col("precision") + pl.col("precision").shift(1)) / 2.0
-            ).fill_null(pl.col("precision")),
-        )
-        .select(ap=(pl.col("d_recall") * pl.col("avg_precision")).sum())
-        .collect(engine="streaming")
-        .item()
+    points = curve.lazy().select(
+        pl.lit(0, dtype=pl.Int32).alias("_g"),
+        pl.col("score").alias(COL_SCORE),
+        pl.col("recall").cast(pl.Float64),
+        pl.col("precision").cast(pl.Float64),
     )
-    return float(ap)
-
-
-def _eleven_point_ap(curve: pl.DataFrame) -> float:
-    """Compute AP using Pascal VOC 11-point interpolation.
-
-    Cross-joins the 11 recall thresholds with the PR curve, filters to
-    recall >= threshold, and takes max precision per threshold -- all as
-    a single Polars lazy plan. Thresholds beyond the curve's maximum
-    recall have no qualifying point and contribute a precision of 0; the
-    average is always taken over all 11 thresholds.
-
-    Args:
-        curve: PR curve DataFrame with ``recall`` and ``precision``.
-
-    Returns:
-        11-point interpolated AP.
-    """
-    if curve.height == 0:
-        return 0.0
-
-    thresholds = pl.DataFrame({"t": [i / 10.0 for i in range(11)]})
-    per_threshold = (
-        thresholds.lazy()
-        .join(
-            curve.lazy().select(
-                pl.col("recall").cast(pl.Float64),
-                pl.col("precision").cast(pl.Float64),
-            ),
-            how="cross",
-        )
-        .filter(pl.col("recall") >= pl.col("t"))
-        .group_by("t")
-        .agg(max_p=pl.col("precision").max())
-    )
-    result = (
-        thresholds.lazy()
-        .join(per_threshold, on="t", how="left")
-        .select(pl.col("max_p").fill_null(0.0).mean())
-        .collect(engine="streaming")
-    )
-    return float(result.item())
+    out = ap_from_points(points, ["_g"], interpolation).collect(engine="streaming")
+    return float(out["ap"].item()) if out.height else 0.0
 
 
 # ---------------------------------------------------------------------------
 # Grouped (lazy) PR estimators — the single authority for vectorized bootstrap
 # ---------------------------------------------------------------------------
+
+
+def validate_interpolation(interpolation: str) -> None:
+    """Raise ``ValueError`` for an AP interpolation nothing implements."""
+    if interpolation != "all_points" and interpolation not in _GRID_SIZES:
+        raise ValueError(
+            f"Unknown interpolation {interpolation!r}. Expected 'all_points', "
+            f"'11_point' or '101_point'."
+        )
+
+
+def _recall_grid(n_points: int) -> list[float]:
+    """The recall grid ``i · 1/(n−1)``, as ``numpy.linspace`` builds it.
+
+    The reference implementations build their grids this way — COCO's
+    ``np.linspace(0, 1, 101)`` and the VOC 2007 devkit's
+    ``np.arange(0, 1.1, 0.1)`` — so a recall landing exactly on a grid value
+    (``3/10``) compares the way it does there (``3 · 0.1 > 0.3``).
+    """
+    step = 1.0 / (n_points - 1)
+    return [i * step for i in range(n_points - 1)] + [1.0]
+
+
+def pr_points_by_group(expanded: pl.LazyFrame, keys: list[str]) -> pl.LazyFrame:
+    """One weighted PR point per ``(keys, score)`` bucket, lazily.
+
+    ``expanded`` carries ``[*keys, score, is_tp, weight, gt_mass]`` (one row per
+    detection; ``gt_mass`` the group's ``Σ n_gts · w``). Zero-weight detections
+    are dropped. Returns ``[*keys, score, recall, precision]`` with the
+    cumulative counts after each whole tied block (:func:`_score_buckets`).
+    """
+    weighted = expanded.filter(pl.col(COL_WEIGHT) != 0.0)
+    mass = weighted.group_by(keys).agg(pl.col("gt_mass").first())
+    return (
+        _score_buckets(weighted, keys)
+        .join(mass, on=keys, how="left", nulls_equal=True)
+        .sort(*keys, COL_SCORE, descending=[False] * len(keys) + [True])
+        .with_columns(
+            cum_wtp=pl.col("_wtp").cum_sum().over(keys),
+            cum_wfp=pl.col("_wfp").cum_sum().over(keys),
+        )
+        .select(
+            *keys,
+            COL_SCORE,
+            recall=pl.col("cum_wtp") / pl.col("gt_mass"),
+            precision=pl.col("cum_wtp") / (pl.col("cum_wtp") + pl.col("cum_wfp")),
+        )
+    )
+
+
+def ap_from_points(
+    points: pl.LazyFrame,
+    keys: list[str],
+    interpolation: APInterpolation,
+) -> pl.LazyFrame:
+    """AP per group from PR points — the one integration every AP path shares.
+
+    ``points`` carries ``[*keys, score, recall, precision]``. Precision is
+    replaced by its envelope (the highest precision at any equal or higher
+    recall), then:
+
+    * ``"all_points"``: ``Σ (Rₖ − Rₖ₋₁) · P̂ₖ`` with ``R₀ = 0`` — the envelope
+      as a step function. (A trapezoid ``(P̂ₖ + P̂ₖ₋₁)/2`` agrees on untied
+      scores but overstates AP when a tied block mixes TPs and FPs, which
+      lowers precision while raising recall.)
+    * ``"11_point"`` / ``"101_point"``: the mean over the recall grid
+      (:func:`_recall_grid`) of the envelope at the first point reaching each
+      grid recall, ``0`` where none does.
+
+    Rows are sorted by recall (score descending among equal recalls) before
+    any windowed step, so the result is stable across thread counts.
+
+    Returns:
+        ``[*keys, ap]`` — one row per group that has at least one point.
+    """
+    validate_interpolation(interpolation)
+    ordered = points.sort(
+        *keys,
+        "recall",
+        COL_SCORE,
+        descending=[False] * len(keys) + [False, True],
+    ).with_columns(
+        precision=pl.col("precision").reverse().cum_max().reverse().over(keys)
+    )
+    if interpolation == "all_points":
+        d_recall = (pl.col("recall") - pl.col("recall").shift(1).over(keys)).fill_null(
+            pl.col("recall")
+        )
+        return (
+            ordered.with_columns(_area=d_recall * pl.col("precision"))
+            .group_by(keys)
+            .agg(ap=ordered_sum(pl.col("_area")))
+        )
+
+    grid = pl.LazyFrame(
+        {"_t": pl.Series(_recall_grid(_GRID_SIZES[interpolation]), dtype=pl.Float64)}
+    )
+    queries = ordered.select(keys).unique().join(grid, how="cross").sort("_t")
+    # The envelope is non-increasing in recall, so its value at the first
+    # point with recall >= t is the highest precision at any recall >= t.
+    knots = ordered.group_by(*keys, "recall").agg(_p=pl.col("precision").max())
+    reached = queries.join_asof(
+        knots.select(*keys, pl.col("recall").alias("_t"), "_p").sort("_t"),
+        on="_t",
+        by=keys,
+        strategy="forward",
+        # Both sides are sorted on `_t` globally, hence within every group.
+        check_sortedness=False,
+    )
+    return reached.group_by(keys).agg(ap=ordered_mean(pl.col("_p").fill_null(0.0)))
 
 
 def all_points_ap_by_group(
@@ -551,12 +593,9 @@ def all_points_ap_by_group(
     ``expanded`` carries ``[*group_col, score, is_tp, weight, gt_mass]`` (one row
     per detection; ``weight`` its resolved weight, ``gt_mass`` the group's
     ``Σ n_gts · w`` broadcast per row). The estimator is identical to the scalar
-    :func:`precision_recall_curve` + :func:`_all_points_ap`: bucket by score
-    (:func:`_score_buckets`), accumulate in descending score order within group,
-    the monotone decreasing precision envelope, then trapezoidal integration
-    anchored at recall = 0. Zero-weight detections are dropped, as there. Keeping
-    the sort as the last row-reordering step (nothing joins between it and the
-    windowed ops) makes the curve stable across thread counts.
+    :func:`precision_recall_curve` + :func:`_all_points_ap`: one PR point per
+    score bucket (:func:`pr_points_by_group`) integrated by
+    :func:`ap_from_points`.
 
     Args:
         expanded: Per-detection frame with the group key(s), ``score``, ``is_tp``,
@@ -567,35 +606,15 @@ def all_points_ap_by_group(
     Returns:
         ``LazyFrame`` with ``[*group_col, ap]``.
     """
+    return ap_by_group(expanded, group_col=group_col, interpolation="all_points")
+
+
+def ap_by_group(
+    expanded: pl.LazyFrame,
+    *,
+    group_col: str | list[str],
+    interpolation: APInterpolation,
+) -> pl.LazyFrame:
+    """Weighted AP per group under any interpolation (see :func:`ap_from_points`)."""
     keys = [group_col] if isinstance(group_col, str) else list(group_col)
-    weighted = expanded.filter(pl.col(COL_WEIGHT) != 0.0)
-    mass = weighted.group_by(keys).agg(pl.col("gt_mass").first())
-    pr = (
-        _score_buckets(weighted, keys)
-        .join(mass, on=keys, how="left", nulls_equal=True)
-        .sort(*keys, COL_SCORE, descending=[False] * len(keys) + [True])
-        .with_columns(
-            cum_wtp=pl.col("_wtp").cum_sum().over(keys),
-            cum_wfp=pl.col("_wfp").cum_sum().over(keys),
-        )
-        .with_columns(
-            precision=pl.col("cum_wtp") / (pl.col("cum_wtp") + pl.col("cum_wfp")),
-            recall=pl.col("cum_wtp") / pl.col("gt_mass"),
-        )
-        .with_columns(
-            precision=pl.col("precision").reverse().cum_max().reverse().over(keys),
-        )
-    )
-    return (
-        pr.with_columns(
-            d_recall=(
-                pl.col("recall") - pl.col("recall").shift(1).over(keys)
-            ).fill_null(pl.col("recall")),
-            avg_precision=(
-                (pl.col("precision") + pl.col("precision").shift(1).over(keys)) / 2.0
-            ).fill_null(pl.col("precision")),
-        )
-        .with_columns(slice_area=pl.col("d_recall") * pl.col("avg_precision"))
-        .group_by(keys)
-        .agg(ap=pl.col("slice_area").sum())
-    )
+    return ap_from_points(pr_points_by_group(expanded, keys), keys, interpolation)

@@ -921,16 +921,14 @@ class TestWeightCellStratification:
         self,
     ) -> None:
         # AP is weighted too, so it shares the weight-cell draw.
-        from polars_cv.metrics._bootstrap import _all_points_ap_grouped
+        from polars_cv.metrics._statistics import AP
 
         table = _importance_weighted("per_group")
         boot = _replicates(table, group_keys=["group_id"])
         meta = boot.image_metadata.with_columns(_p_over_q(["bootstrap_id", "group_id"]))
         keys = ["group_id", "bootstrap_id"]
-        static = _all_points_ap_grouped(boot, keys).collect().sort(keys)
-        fresh = (
-            _all_points_ap_grouped(_with_meta(boot, meta), keys).collect().sort(keys)
-        )
+        static = AP().by_group(boot, keys).collect().sort(keys)
+        fresh = AP().by_group(_with_meta(boot, meta), keys).collect().sort(keys)
         assert static["ap"].to_list() == pytest.approx(fresh["ap"].to_list(), abs=1e-12)
 
     def test_average_precision_singleton_cells_null_the_bounds(self) -> None:

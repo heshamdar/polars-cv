@@ -389,6 +389,7 @@ def lroc_sensitivity_at_fpf(
     fpf: float,
     *,
     variant: Literal["best_tp", "top_scoring"] = "best_tp",
+    group_by: str | list[str] | None = None,
     weight_agg: WeightAgg = "first",
     extrapolate: Extrapolate = "none",
 ) -> pl.LazyFrame:
@@ -398,6 +399,7 @@ def lroc_sensitivity_at_fpf(
         table: Canonical detection table.
         fpf: Target false-positive fraction.
         variant: ``"best_tp"`` or ``"top_scoring"``.
+        group_by: Optional grouping column(s); ``None`` reads one curve.
         weight_agg: Duplicate-weight resolution policy.
         extrapolate: How the curve is read outside its observed FPF range:
             ``"none"`` (default, null) or ``"flat"``. The LROC curve always
@@ -405,11 +407,19 @@ def lroc_sensitivity_at_fpf(
             so this only matters for a window reaching outside it.
 
     Returns:
-        A one-row ``LazyFrame`` ``[fpf, sensitivity]``; ``sensitivity`` is null
-        when ``fpf`` is outside the observed range of the curve. The caller
-        collects.
+        A ``LazyFrame`` ``[*group_by, fpf, sensitivity]``, one row per group;
+        ``sensitivity`` is null when ``fpf`` is outside the observed range of
+        the curve. The caller collects.
     """
-    curve = lroc_curve_lazy(table, variant=variant, weight_agg=weight_agg)
+    group_keys = _normalize_group_by(group_by)
+    curve = lroc_curve_lazy(
+        table, variant=variant, group_by=group_by, weight_agg=weight_agg
+    )
     return interpolate_curve_lazy(
-        curve, x_col="fpf", y_col="sensitivity", at=[fpf], extrapolate=extrapolate
+        curve,
+        x_col="fpf",
+        y_col="sensitivity",
+        at=[fpf],
+        extrapolate=extrapolate,
+        group_keys=group_keys,
     )
