@@ -398,10 +398,12 @@ def _replicate_table(
     factor would be exactly ``1`` and is not applied. Returns
     ``(replicates, units)``; the units feed the interval's singleton rule.
 
-    Nothing is ``cache()``-d: on the declared polars floor (1.43.2) a cached
-    frame read under different projections returned wrong rows. The units frame
-    is instead one pass over the metadata (sort, window, ``group_by``), so each
-    read of the replicate frames stays cheap to recompute.
+    The units and the draw are ``cache()``-d (still lazy): the replicate metric
+    reads the replicate frames many times, and projection pushdown leaves each
+    read a slightly different subplan the streaming engine cannot merge, so
+    without a cache it re-runs the draw at every read (~4x here). This needs
+    polars >= 1.44.2 (the declared floor): 1.43.2 returned wrong rows from a
+    cached frame read under different projections.
     """
     units = _sampling_units(
         table,
@@ -409,7 +411,7 @@ def _replicate_table(
         group_keys=group_keys,
         strata=strata,
         weight_rtol=weight_rtol,
-    )
+    ).cache()
     samples = _resolve_bootstrap_samples(
         table,
         sample_col=sample_col,
@@ -417,7 +419,7 @@ def _replicate_table(
         seed=seed,
         group_keys=group_keys,
         units=units,
-    )
+    ).cache()
     image_cells = (
         None
         if sample_col is None
@@ -427,7 +429,7 @@ def _replicate_table(
             group_keys=group_keys,
             strata=strata,
             weight_rtol=weight_rtol,
-        )
+        ).cache()
     )
     boot = _bootstrap_table_with_draws(
         table, samples, image_cells=image_cells, group_keys=group_keys

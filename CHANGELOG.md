@@ -9,6 +9,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **polars-cv now requires `polars>=1.44.2`** (was `>=1.43.2`). The bootstrap
+  CIs cache their resample lazily (`LazyFrame.cache()`), because the replicate
+  metric reads it many times and the streaming engine would otherwise re-run
+  the draw at each read (about 4x slower). On polars 1.43.2, a cached frame read
+  under different projections returns wrong rows, which produced AP bounds above
+  1. The `dependency-floors` CI job tests the new floor.
 - **Precision-recall metrics are weighted.** `precision_recall_curve`,
   `average_precision` (all-points and 11-point), `mean_average_precision`,
   `precision_at_threshold`, `recall_at_threshold`, `f1_at_threshold` and

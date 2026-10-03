@@ -3250,7 +3250,7 @@ requires-dist = [
     { name = "graphviz", marker = "extra == 'viz'", specifier = ">=0.21" },
     { name = "networkx", marker = "extra == 'viz'", specifier = ">=3.4.2" },
     { name = "numpy", specifier = ">=2.0.2" },
-    { name = "polars", specifier = ">=1.43.2,<2.0" },
+    { name = "polars", specifier = ">=1.44.2,<2.0" },
     { name = "pydot", marker = "extra == 'viz'", specifier = ">=4.0.1" },
 ]
 provides-extras = ["viz"]
