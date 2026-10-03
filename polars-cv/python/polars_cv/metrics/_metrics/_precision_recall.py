@@ -15,7 +15,7 @@ from typing import Literal
 
 import polars as pl
 
-from .._grouped_scan import exact_mean, exact_sums
+from .._grouped_scan import CumMax, CumSum, Lag, exact_mean, exact_sums, grouped_scan
 from .._result import MetricResult
 from .._types import (
     COL_IS_TP,
@@ -167,11 +167,29 @@ def precision_recall_curve(
         ],
         how="horizontal",
     )
-    det_df, totals = pl.collect_all([det_lf, totals_lf], engine="streaming")
+    # One scan, the grouped authority's, so the scalar curve and every grouped
+    # AP agree bit for bit; only the curve and two totals are collected.
+    curve_lf = grouped_scan(
+        _score_buckets(det_lf, []),
+        [],
+        by=[COL_SCORE],
+        descending=[True],
+        cum_tp=CumSum("_tp"),
+        cum_fp=CumSum("_fp"),
+        cum_weighted_tp=CumSum("_wtp"),
+        cum_weighted_fp=CumSum("_wfp"),
+    ).select(
+        pl.col(COL_SCORE).alias("score"),
+        "cum_tp",
+        "cum_fp",
+        "cum_weighted_tp",
+        "cum_weighted_fp",
+    )
+    scanned, totals = pl.collect_all([curve_lf, totals_lf], engine="streaming")
     total_gts = int(totals["total_gts"].item() or 0)
     gt_mass = float(totals["gt_mass"].item() or 0.0)
 
-    if det_df.height == 0 or total_gts == 0 or not gt_mass > 0.0:
+    if scanned.height == 0 or total_gts == 0 or not gt_mass > 0.0:
         empty_curve = pl.DataFrame(
             schema={
                 "score": pl.Float64,
@@ -190,30 +208,18 @@ def precision_recall_curve(
             class_id=resolved_class,
         )
 
-    curve = (
-        _score_buckets(det_df.lazy(), [])
-        .sort(COL_SCORE, descending=True)
-        .with_columns(
-            cum_tp=pl.col("_tp").cum_sum(),
-            cum_fp=pl.col("_fp").cum_sum(),
-            cum_weighted_tp=pl.col("_wtp").cum_sum(),
-            cum_weighted_fp=pl.col("_wfp").cum_sum(),
-        )
-        .with_columns(
-            precision=pl.col("cum_weighted_tp")
-            / (pl.col("cum_weighted_tp") + pl.col("cum_weighted_fp")),
-            recall=pl.col("cum_weighted_tp") / pl.lit(gt_mass),
-        )
-        .select(
-            pl.col(COL_SCORE).alias("score"),
-            "precision",
-            "recall",
-            "cum_tp",
-            "cum_fp",
-            "cum_weighted_tp",
-            "cum_weighted_fp",
-        )
-        .collect(engine="streaming")
+    curve = scanned.with_columns(
+        precision=pl.col("cum_weighted_tp")
+        / (pl.col("cum_weighted_tp") + pl.col("cum_weighted_fp")),
+        recall=pl.col("cum_weighted_tp") / pl.lit(gt_mass),
+    ).select(
+        "score",
+        "precision",
+        "recall",
+        "cum_tp",
+        "cum_fp",
+        "cum_weighted_tp",
+        "cum_weighted_fp",
     )
 
     return PrecisionRecallResult(
@@ -457,20 +463,20 @@ def pr_points_by_group(expanded: pl.LazyFrame, keys: list[str]) -> pl.LazyFrame:
     """
     weighted = expanded.filter(pl.col(COL_WEIGHT) != 0.0)
     mass = weighted.group_by(keys).agg(pl.col("gt_mass").first())
-    return (
-        _score_buckets(weighted, keys)
-        .join(mass, on=keys, how="left", nulls_equal=True)
-        .sort(*keys, COL_SCORE, descending=[False] * len(keys) + [True])
-        .with_columns(
-            cum_wtp=pl.col("_wtp").cum_sum().over(keys),
-            cum_wfp=pl.col("_wfp").cum_sum().over(keys),
-        )
-        .select(
-            *keys,
-            COL_SCORE,
-            recall=pl.col("cum_wtp") / pl.col("gt_mass"),
-            precision=pl.col("cum_wtp") / (pl.col("cum_wtp") + pl.col("cum_wfp")),
-        )
+    return grouped_scan(
+        _score_buckets(weighted, keys).join(
+            mass, on=keys, how="left", nulls_equal=True
+        ),
+        keys,
+        by=[COL_SCORE],
+        descending=[True],
+        cum_wtp=CumSum("_wtp"),
+        cum_wfp=CumSum("_wfp"),
+    ).select(
+        *keys,
+        COL_SCORE,
+        recall=pl.col("cum_wtp") / pl.col("gt_mass"),
+        precision=pl.col("cum_wtp") / (pl.col("cum_wtp") + pl.col("cum_wfp")),
     )
 
 
@@ -500,16 +506,16 @@ def ap_from_points(
         ``[*keys, ap]`` — one row per group that has at least one point.
     """
     validate_interpolation(interpolation)
-    ordered = points.sort(
-        *keys,
-        "recall",
-        COL_SCORE,
-        descending=[False] * len(keys) + [False, True],
-    ).with_columns(
-        precision=pl.col("precision").reverse().cum_max().reverse().over(keys)
-    )
+    ordered = grouped_scan(
+        points,
+        keys,
+        by=["recall", COL_SCORE],
+        descending=[False, True],
+        _envelope=CumMax("precision", reverse=True),
+        _prev_recall=Lag("recall"),
+    ).with_columns(precision=pl.col("_envelope"))
     if interpolation == "all_points":
-        d_recall = (pl.col("recall") - pl.col("recall").shift(1).over(keys)).fill_null(
+        d_recall = (pl.col("recall") - pl.col("_prev_recall")).fill_null(
             pl.col("recall")
         )
         return exact_sums(

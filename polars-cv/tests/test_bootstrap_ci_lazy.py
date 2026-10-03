@@ -25,6 +25,7 @@ import subprocess
 import sys
 import textwrap
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -1160,3 +1161,48 @@ class TestMultiClassDraw:
         fn, value_col = _CI_FUNCS[family]
         out = fn(self._two_class(), n_bootstrap=100, seed=2).collect()
         assert out["ci_lower"].item() <= out[value_col].item() <= out["ci_upper"].item()
+
+
+@pytest.mark.parametrize("n_bootstrap", [1, 2, 7, 40, 1000])
+def test_percentile_bounds_are_polars_linear_quantiles_bit_for_bit(
+    n_bootstrap: int,
+) -> None:
+    """The rank-read bounds equal ``quantile(q, "linear")`` exactly.
+
+    They replaced that aggregation because it is not native to the streaming
+    engine; bootstrap bounds are compared bit for bit across runs, so the
+    replacement must not move a single bit.
+    """
+    from polars_cv.metrics._bootstrap import _percentile_bounds
+
+    rng = np.random.default_rng(n_bootstrap)
+    groups = ["a", "b", "c"]
+    joined = pl.DataFrame(
+        {
+            "g": np.repeat(groups, n_bootstrap),
+            "v": rng.lognormal(0.0, 3.0, n_bootstrap * len(groups)),
+            "_present": 1,
+            "_undefined": 0,
+            "_viable": True,
+        }
+    ).sample(fraction=1.0, shuffle=True, seed=0)
+    alpha = 0.025
+    got = (
+        _percentile_bounds(joined.lazy(), ["g"], "v", n_bootstrap, alpha)
+        .collect(engine="streaming")
+        .sort("g")
+    )
+    want = (
+        joined.group_by("g")
+        .agg(
+            ci_lower=pl.col("v").quantile(alpha, "linear"),
+            ci_upper=pl.col("v").quantile(1.0 - alpha, "linear"),
+        )
+        .sort("g")
+    )
+    assert got["ci_lower"].to_list() == want["ci_lower"].to_list()
+    assert got["ci_upper"].to_list() == want["ci_upper"].to_list()
+    ungrouped = _percentile_bounds(
+        joined.filter(pl.col("g") == "a").lazy(), [], "v", n_bootstrap, alpha
+    ).collect()
+    assert ungrouped["ci_lower"].to_list() == want["ci_lower"].to_list()[:1]

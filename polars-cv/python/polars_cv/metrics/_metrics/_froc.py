@@ -20,9 +20,10 @@ from .._auc_expr import (
     collapse_curve,
     collapse_scores,
     interpolate_curve_lazy,
-    mann_whitney_auc_expr,
-    partial_auc_expr,
+    mann_whitney_auc,
+    partial_auc,
 )
+from .._grouped_scan import CumSum, grouped_scan
 from .._types import (
     COL_CLASS_ID,
     COL_GT_LABEL,
@@ -63,7 +64,7 @@ def froc_curve_lazy(
 ) -> pl.LazyFrame:
     """Build the FROC curve as a lazy, group-aware frame.
 
-    Every cumulative sum runs ``.over`` the group and the weighted denominators
+    Every cumulative sum restarts per group (:func:`grouped_scan`) and the weighted denominators
     are per-group aggregations rather than eager ``.item()`` Python floats. With
     ``group_by=None`` the whole table is one group; with a grouping column each
     group is computed as if on its filtered sub-table (so
@@ -160,21 +161,24 @@ def _froc_curve_grouped(
     group_stats = gt_stats.join(weight_stats, on=keys, how="left")
 
     bucketed = (
-        det_w.group_by(*keys, COL_SCORE)
-        .agg(
-            tp_count=pl.col(COL_IS_TP).sum().cast(pl.Int64),
-            fp_count=(~pl.col(COL_IS_TP)).sum().cast(pl.Int64),
-            weighted_tp=(pl.col(COL_IS_TP).cast(pl.Float64) * pl.col(COL_WEIGHT)).sum(),
-            weighted_fp=(
-                (~pl.col(COL_IS_TP)).cast(pl.Float64) * pl.col(COL_WEIGHT)
-            ).sum(),
-        )
-        .sort(*keys, COL_SCORE, descending=[False] * len(keys) + [True])
-        .with_columns(
-            tp=pl.col("tp_count").cum_sum().over(keys),
-            fp=pl.col("fp_count").cum_sum().over(keys),
-            cum_weighted_tp=pl.col("weighted_tp").cum_sum().over(keys),
-            cum_weighted_fp=pl.col("weighted_fp").cum_sum().over(keys),
+        grouped_scan(
+            det_w.group_by(*keys, COL_SCORE).agg(
+                tp_count=pl.col(COL_IS_TP).sum().cast(pl.Int64),
+                fp_count=(~pl.col(COL_IS_TP)).sum().cast(pl.Int64),
+                weighted_tp=(
+                    pl.col(COL_IS_TP).cast(pl.Float64) * pl.col(COL_WEIGHT)
+                ).sum(),
+                weighted_fp=(
+                    (~pl.col(COL_IS_TP)).cast(pl.Float64) * pl.col(COL_WEIGHT)
+                ).sum(),
+            ),
+            keys,
+            by=[COL_SCORE],
+            descending=[True],
+            tp=CumSum("tp_count"),
+            fp=CumSum("fp_count"),
+            cum_weighted_tp=CumSum("weighted_tp"),
+            cum_weighted_fp=CumSum("weighted_fp"),
         )
         .rename({COL_SCORE: "threshold"})
         .join(group_stats, on=keys, how="left")
@@ -260,7 +264,7 @@ def froc_auc(
 
     Both families are weighted by ``image_metadata.weight``: the trapezoidal path
     through the weighted curve, and Mann-Whitney through a weighted rank-sum
-    (``collapse_scores`` + ``mann_whitney_auc_expr``). Unit weights recover the
+    (``collapse_scores`` + ``mann_whitney_auc``). Unit weights recover the
     unweighted statistic.
 
     Args:
@@ -320,11 +324,7 @@ def froc_auc(
                 weight=COL_WEIGHT,
                 group_keys=keys,
             )
-            return (
-                bucketed.group_by(keys)
-                .agg(auc=mann_whitney_auc_expr())
-                .drop(_DUMMY_GROUP)
-            )
+            return mann_whitney_auc(bucketed, keys=keys).drop(_DUMMY_GROUP)
         if level == "image":
             # Per-image score: positive images commit their best TP score
             # (0 if none), negative images their max detection score (0 if none);
@@ -362,11 +362,7 @@ def froc_auc(
                 weight=COL_WEIGHT,
                 group_keys=keys,
             )
-            return (
-                bucketed.group_by(keys)
-                .agg(auc=mann_whitney_auc_expr())
-                .drop(_DUMMY_GROUP)
-            )
+            return mann_whitney_auc(bucketed, keys=keys).drop(_DUMMY_GROUP)
         raise ValueError(
             f"Unsupported level {level!r}. Expected 'detection' or 'image'."
         )
@@ -393,18 +389,16 @@ def froc_auc(
     collapsed = collapse_curve(
         curve, x_col="fp_per_image", y_col="sensitivity", group_keys=group_keys
     )
-    auc_expr = partial_auc_expr(
+    return partial_auc(
+        collapsed,
         x="fp_per_image",
         y="sensitivity",
         lo=fp_range[0],
         hi=fp_range[1],
+        keys=group_keys,
         correction=correction,
         extrapolate=extrapolate,
     )
-
-    if group_keys:
-        return collapsed.group_by(group_keys).agg(auc=auc_expr)
-    return collapsed.select(auc=auc_expr)
 
 
 def froc_sensitivities_by_group(

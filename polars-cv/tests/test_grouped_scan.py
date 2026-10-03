@@ -17,6 +17,8 @@ from polars.testing import assert_frame_equal
 from polars_cv.metrics._grouped_scan import (
     CumMax,
     CumSum,
+    IsFirst,
+    IsLast,
     Lag,
     RowIndex,
     exact_sums,
@@ -53,6 +55,8 @@ def _reference(df: pl.DataFrame, keys: list[str]) -> pl.DataFrame:
         fmx=over(pl.col("p").cum_max()),
         lag=over(pl.col("p").shift(1)),
         idx=over(pl.int_range(pl.len(), dtype=pl.Int64)),
+        first=over(pl.int_range(pl.len()) == 0),
+        last=over(pl.int_range(pl.len()) == pl.len() - 1),
     )
 
 
@@ -68,6 +72,8 @@ def _scan(df: pl.DataFrame, keys: list[str]) -> pl.LazyFrame:
         fmx=CumMax("p"),
         lag=Lag("p"),
         idx=RowIndex(),
+        first=IsFirst(),
+        last=IsLast(),
     )
 
 
@@ -77,7 +83,10 @@ def test_grouped_scan_matches_over(keys: list[str], seed: int) -> None:
     df = _frame(seed)
     want = _reference(df, keys)
     got = _scan(df, keys).collect(engine="streaming")
-    exact = ["g", "h", "s", "t", "k", "w", "p", "ck", "mx", "fmx", "lag", "idx"]
+    exact = [
+        *["g", "h", "s", "t", "k", "w", "p"],
+        *["ck", "mx", "fmx", "lag", "idx", "first", "last"],
+    ]
     assert_frame_equal(got.select(exact), want.select(exact), check_dtypes=False)
     np.testing.assert_allclose(got["cw"], want["cw"], rtol=1e-12)
 

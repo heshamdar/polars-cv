@@ -17,12 +17,15 @@ Detection metrics built from polars-cv primitives and Polars lazy expressions:
   `lroc_auc_ci_lazy`, `average_precision_ci_lazy` — each returns a `LazyFrame`
   `[*group_by, <metric>, ci_lower, ci_upper]` and never collects internally
 - **AUC integrals**: the single authority is `_auc_expr.py`
-  (`trapz_auc_expr`, `partial_auc_expr`, `collapse_curve`; the weighted
-  Mann-Whitney two-stage `collapse_scores` + `mann_whitney_auc_expr`; and the
-  lazy `interpolate_curve_lazy`). Every AUC — `froc_auc`/`lroc_auc` and the
-  PR-curve `MetricResult.auc` (the *only* method `MetricResult` exposes) —
-  reduces through these lazy expressions and collects streaming; there is no
-  eager Series integral. `_auc.py` was gutted to just the `correction`
+  (`trapz_auc`, `partial_auc`, `collapse_curve`; the weighted Mann-Whitney
+  two-stage `collapse_scores` + `mann_whitney_auc`; and the lazy
+  `interpolate_curve_lazy`). Each integral takes a lazy curve and `keys` and
+  returns `[*keys, auc]` (one row with no keys). Every AUC — `froc_auc`/`lroc_auc`
+  and the PR-curve `MetricResult.auc` (the *only* method `MetricResult` exposes) —
+  reduces through them and collects streaming; there is no eager Series
+  integral. They were `pl.Expr` reductions for `group_by().agg()`; a sort inside
+  an aggregation is not native to the streaming engine, so they are now grouped
+  scans plus exact sums (see **Streaming** below). `_auc.py` was gutted to just the `correction`
   vocabulary (`CorrectionMethod` + `validate_correction`) once the eager
   `trapz_auc`/`partial_auc` had no consumer left. The `correction` vocabulary is
   `"normalize"` or `None`;
@@ -36,7 +39,7 @@ Detection metrics built from polars-cv primitives and Polars lazy expressions:
 - **Weighted Mann-Whitney**: `froc_auc`/`lroc_auc(method="mann_whitney")` are
   weighted by `image_metadata.weight` (both `level="detection"` and
   `level="image"`), via `collapse_scores` (bucket by distinct score, carrying the
-  positive/negative weight mass) then `mann_whitney_auc_expr` (weighted rank-sum).
+  positive/negative weight mass) then `mann_whitney_auc` (weighted rank-sum).
   A pure `rank("average")` reduction can't weight ties; bucketing removes them.
   Unit weights recover the standard tie-averaged MW — one implementation, not two,
   cross-checked against the pairwise `ref_weighted_mann_whitney` oracle
@@ -122,6 +125,31 @@ keys on `_sweep_key()` as well as `(image_id, class_id)`.
   does not depend on chunking, order or thread count, so bootstrap bounds
   reproduce bit for bit. It also stays on the streaming engine; a sorted
   `cum_sum` inside `agg` does not.
+
+## Streaming
+
+Every metrics plan stays on polars' native streaming engine. A step it cannot
+run natively becomes an `in-memory-map` node that collects its whole input,
+and the bootstrap's input is `n_bootstrap × detections` rows.
+`tests/test_streaming_plans.py` builds every public lazy entry point and fails
+on any such node (or a whole-column Python UDF) that `KNOWN_FALLBACKS` in
+`tests/_streaming_guard.py` does not name, with its reason.
+
+- **No `.over()` scans, and no sort inside `agg`.** A running sum, running max,
+  lag, row index or first/last flag per group goes through
+  `_grouped_scan.grouped_scan`. It sorts once by `(*keys, *by)`, runs each scan
+  over the whole frame, and restarts it at group starts exactly: integer and
+  Int128 fixed-point sums, rank-encoded maxima. Reductions that must be
+  reproducible go through `exact_sums` / `exact_mean` (Int128 fixed point,
+  NaN/±inf combined as float addition would). Aggregations that are already
+  native stay as they are: `sum`, `max`, `len`, `count`, `any`, and
+  `sum().over()` / `len().over()`, which polars rewrites into a group-by plus a
+  join.
+- **What still falls back** (all `KNOWN_FALLBACKS`, each on a per-object or
+  per-image frame, never the replicate frame): `group_objects`' per-(image,
+  class) object lists, which the elementwise matchers need; a sampling unit's
+  set of weight cells (`_cell`); and an entity's image list (`sample_col=`).
+  polars cannot build a list inside a streaming group-by.
 
 ## Bootstrap CIs
 
@@ -301,7 +329,7 @@ metrics/
 - Three `label_reduce` region modes: `"interior"` (default), `"boundary"` (interior + boundary pixels), `"bbox"`.
 
 ### Sorting and aggregation
-- `to_per_image()` uses `sort_by()` within `group_by().agg()` — never rely on `.sort()` before `.group_by()` since Polars does not guarantee order preservation across `group_by`.
+- `to_per_image()` picks the top detection with a `grouped_scan` over `(score desc, det_idx)` (`IsFirst`), not `sort_by()` within `group_by().agg()`: that is not native to the streaming engine, and it was not stable, so a tied top score was read arbitrarily. Never rely on `.sort()` before `.group_by()` either; polars does not keep the order across `group_by`.
 - FROC / LROC curves are returned sorted by **descending `threshold`**, which is
   ascending `fp_per_image` / `fpf` (plotting order). Sort on the threshold, never
   on the x-column: thresholds are unique so the order is total, while `fp_per_image`
@@ -373,7 +401,7 @@ metrics/
   (`collapse_curve` + backward/forward `join_asof`). `sensitivity` is `null` for
   x-values outside the observed range by default, and the summary's y column
   stays Float64 even when every point is null.
-- **One off-curve policy.** `partial_auc_expr` and `interpolate_curve_lazy` are
+- **One off-curve policy.** `partial_auc` and `interpolate_curve_lazy` are
   the only two curve readers and both take `extrapolate` (`"none"` default,
   `"flat"`; vocabulary in `_auc.py`). They used to disagree — the integral
   filled flat past the curve's end while the interpolation returned null — so

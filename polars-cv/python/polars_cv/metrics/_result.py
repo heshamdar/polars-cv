@@ -8,7 +8,7 @@ from typing import Any
 import polars as pl
 
 from ._auc import CorrectionMethod
-from ._auc_expr import collapse_curve, partial_auc_expr, trapz_auc_expr
+from ._auc_expr import collapse_curve, partial_auc, trapz_auc
 
 
 @dataclass(frozen=True)
@@ -49,7 +49,7 @@ class MetricResult:
         reduces the curve to strictly-increasing x with the upper-envelope y (a
         curve carries many rows tied at one x — a run that changes only y leaves
         x fixed — and collapsing each tie to its max y is deterministic and the
-        ROC/FROC convention), then :func:`trapz_auc_expr` / :func:`partial_auc_expr`
+        ROC/FROC convention), then :func:`trapz_auc` / :func:`partial_auc`
         integrates it in one streaming collect.
 
         Args:
@@ -67,13 +67,14 @@ class MetricResult:
             return 0.0
         collapsed = collapse_curve(self.curve.lazy(), x_col=x_col, y_col=y_col)
         if x_range is None:
-            auc_expr = trapz_auc_expr(x=x_col, y=y_col, correction=correction)
+            auc = trapz_auc(collapsed, x=x_col, y=y_col, correction=correction)
         else:
-            auc_expr = partial_auc_expr(
+            auc = partial_auc(
+                collapsed,
                 x=x_col,
                 y=y_col,
                 lo=x_range[0],
                 hi=x_range[1],
                 correction=correction,
             )
-        return collapsed.select(auc=auc_expr).collect(engine="streaming").item()
+        return auc.collect(engine="streaming").item()

@@ -103,6 +103,51 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **Metrics stay on the streaming engine.** Polars' streaming engine hands any
+  step it cannot run natively to the in-memory engine, which collects that
+  step's whole input first. In the metrics, these steps were `.over()` running
+  sums, maxima and shifts, and sorts inside `group_by().agg()`. They sat in the
+  PR, FROC and LROC curves, AP, the AUC integrals and the bootstrap. The
+  bootstrap repeats all of these per replicate, so it collected
+  `n_bootstrap × detections` rows; `froc_curve_lazy` alone had 15 such steps.
+  Every public metrics plan now runs natively, except three list aggregations
+  that polars cannot stream. Each runs on a per-object or per-image frame:
+  `group_objects`' per-image object lists, a sampling unit's weight cells, and
+  an entity's images.
+  - `metrics/_grouped_scan.py` is the one way to express a scan per group
+    (`grouped_scan`). It sorts once, runs each scan over the whole frame and
+    restarts it exactly at group starts, and it holds the exact sums.
+  - Unweighted counts are integers and stay bit-identical. Weighted running sums
+    and reductions are computed in Int128 fixed point: exact up to one rounding
+    of each term at 2⁻¹²⁵ of the largest magnitude, and one rounding of the
+    result. They differ from the old float sums in the last bits, and no longer
+    vary between runs or thread counts.
+  - The bootstrap interval's `quantile` is read off ranks, bit for bit as
+    polars' `quantile(q, "linear")` computes it.
+  - `group_objects(max_detections=)` caps inside the list aggregation it
+    already builds, instead of using a separate window.
+  - `PreMatchedAdapter`'s `det_idx` ordinals, `to_per_image` and the
+    weight-cell clustering use the same scans.
+  - The mask-instance region check (`match_detections(geometry=<masks>)`) is
+    an elementwise UDF. It used to receive the whole column of extracted
+    outlines at once.
+  - `precision_recall_curve` no longer collects the weighted detection table
+    just to test whether it is empty. It collects only the curve and the two
+    totals.
+  - `tests/test_streaming_plans.py` reads every public plan's physical
+    streaming graph and fails on any fallback not listed, with its reason, in
+    `tests/_streaming_guard.py`.
+- **The AUC integrals take a frame, not an aggregation.** `_auc_expr`'s
+  `trapz_auc_expr` / `partial_auc_expr` / `mann_whitney_auc_expr` were `pl.Expr`
+  reductions for `group_by().agg()`, which sorted inside the aggregation. They
+  are replaced by `trapz_auc` / `partial_auc` / `mann_whitney_auc(lf, keys=...)`,
+  which return `[*keys, auc]`. These are internal; the public metric functions
+  are unchanged.
+- **`DetectionTable.to_per_image()` returns `max_score`, `top_is_tp` and
+  `best_tp_score`, and no `detections` list.** The per-image list of detection
+  structs existed only for LROC to read those three values back out of it, and
+  building it is a list aggregation the streaming engine cannot run.
+
 - **polars-cv now requires `polars>=1.44.2`** (was `>=1.43.2`). The bootstrap
   CIs cache their resample lazily (`LazyFrame.cache()`), because the replicate
   metric reads it many times and the streaming engine would otherwise re-run
@@ -190,7 +235,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   0.7 now compares the way it does there.
 - **AP and mAP are reproducible bit for bit.** Their sums used Polars'
   chunked `sum`/`mean`, whose last bits depend on how the values are chunked.
-  They now sum in a fixed order (`ordered_sum`).
+  They now sum exactly in Int128 fixed point (`exact_sums`), which does not
+  depend on chunking, order or thread count, and which streams (see
+  *Metrics stay on the streaming engine* under Changed).
+- **`DetectionTable.to_per_image()`'s `top_is_tp` no longer depends on row
+  order.** It took the first detection of an unstable sort by score, so when two
+  detections tied for the top score, either could be read, and reversing the
+  input flipped the result (and LROC's `top_scoring` variant with it). The tie
+  now goes to the lowest `det_idx`, the order the matcher ranked them in, which
+  is what the LROC reference reads.
 
 - **`.contour.boundary_distances(frame=)` no longer spikes next to the frame.**
   The frame removed the *target's* boundary lying on it, but kept source samples

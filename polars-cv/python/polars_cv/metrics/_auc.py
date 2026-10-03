@@ -1,8 +1,8 @@
 """Correction vocabulary for FROC/LROC/PR AUC.
 
-The AUC integrals themselves are lazy Polars expressions in
-:mod:`polars_cv.metrics._auc_expr` (``trapz_auc_expr`` / ``partial_auc_expr``),
-the single authority every caller reduces through. The eager, Series-based
+The AUC integrals themselves are lazy, per-group functions in
+:mod:`polars_cv.metrics._auc_expr` (``trapz_auc`` / ``partial_auc`` /
+``mann_whitney_auc``), the single authority every caller reduces through. The eager, Series-based
 ``trapz_auc`` / ``partial_auc`` that once lived here were removed once every
 consumer routed through the lazy path; only the shared ``correction`` vocabulary
 remains (with the ``extrapolate`` off-curve vocabulary), so a value nothing

@@ -17,9 +17,10 @@ from .._auc_expr import (
     collapse_curve,
     collapse_scores,
     interpolate_curve_lazy,
-    mann_whitney_auc_expr,
-    partial_auc_expr,
+    mann_whitney_auc,
+    partial_auc,
 )
+from .._grouped_scan import CumSum, grouped_scan
 from .._types import (
     COL_GT_LABEL,
     COL_IMAGE_ID,
@@ -58,42 +59,20 @@ def _scored_per_image_lazy(
     The single authority for LROC's per-image commitment logic.
     """
     per_image_lf = table.to_per_image()
-    if "detections" in per_image_lf.collect_schema().names():
-        per_image_lf = per_image_lf.with_columns(
-            _best_tp_score=pl.col("detections")
-            .list.eval(
-                pl.when(pl.element().struct.field(COL_IS_TP))
-                .then(pl.element().struct.field(COL_SCORE))
-                .otherwise(None)
-            )
-            .list.max(),
-            _max_det_score=pl.col("detections")
-            .list.eval(pl.element().struct.field(COL_SCORE))
-            .list.max(),
-            _top_det_is_tp=pl.col("detections")
-            .list.eval(pl.element().struct.field(COL_IS_TP))
-            .list.first(),
+    positive = pl.col(COL_GT_LABEL)
+    if variant == "best_tp":
+        return per_image_lf.with_columns(
+            max_score=pl.when(positive)
+            .then(pl.col("best_tp_score"))
+            .otherwise(pl.col("max_score")),
+            top_is_tp=pl.when(positive)
+            .then(pl.col("best_tp_score").is_not_null())
+            .otherwise(pl.lit(False)),
         )
-
-        if variant == "best_tp":
-            per_image_lf = per_image_lf.with_columns(
-                max_score=pl.when(pl.col(COL_GT_LABEL))
-                .then(pl.col("_best_tp_score"))
-                .otherwise(pl.col("_max_det_score")),
-                top_is_tp=pl.when(pl.col(COL_GT_LABEL))
-                .then(pl.col("_best_tp_score").is_not_null())
-                .otherwise(pl.lit(False)),
-            )
-        else:
-            # top_scoring: commit to the highest-scoring detection
-            per_image_lf = per_image_lf.with_columns(
-                max_score=pl.col("_max_det_score"),
-                top_is_tp=pl.when(pl.col(COL_GT_LABEL))
-                .then(pl.col("_top_det_is_tp").fill_null(False))
-                .otherwise(pl.lit(False)),
-            )
-
-    return per_image_lf
+    # top_scoring: commit to the highest-scoring detection
+    return per_image_lf.with_columns(
+        top_is_tp=pl.when(positive).then(pl.col("top_is_tp")).otherwise(pl.lit(False)),
+    )
 
 
 def lroc_curve_lazy(
@@ -105,7 +84,7 @@ def lroc_curve_lazy(
 ) -> pl.LazyFrame:
     """Build the LROC curve as a lazy, group-aware frame.
 
-    Cumulative sums run ``.over`` the group and the weighted denominators are
+    Cumulative sums restart per group (:func:`grouped_scan`) and the weighted denominators are
     per-group aggregations.
 
     Args:
@@ -155,25 +134,23 @@ def _build_lroc_curve_grouped(
 
     scored = per_image.filter(pl.col("max_score").is_not_null())
     bucketed = (
-        scored.group_by(*keys, "max_score")
-        .agg(
-            weighted_pos_detected=(
-                (pl.col(COL_GT_LABEL) & pl.col("top_is_tp")).cast(pl.Float64)
-                * pl.col(COL_WEIGHT)
-            ).sum(),
-            weighted_neg_detected=(
-                (~pl.col(COL_GT_LABEL)).cast(pl.Float64) * pl.col(COL_WEIGHT)
-            ).sum(),
-        )
-        .rename({"max_score": "threshold"})
-        .sort(*keys, "threshold", descending=[False] * len(keys) + [True])
-        .with_columns(
-            cum_weighted_pos_detected=pl.col("weighted_pos_detected")
-            .cum_sum()
-            .over(keys),
-            cum_weighted_neg_detected=pl.col("weighted_neg_detected")
-            .cum_sum()
-            .over(keys),
+        grouped_scan(
+            scored.group_by(*keys, "max_score")
+            .agg(
+                weighted_pos_detected=(
+                    (pl.col(COL_GT_LABEL) & pl.col("top_is_tp")).cast(pl.Float64)
+                    * pl.col(COL_WEIGHT)
+                ).sum(),
+                weighted_neg_detected=(
+                    (~pl.col(COL_GT_LABEL)).cast(pl.Float64) * pl.col(COL_WEIGHT)
+                ).sum(),
+            )
+            .rename({"max_score": "threshold"}),
+            keys,
+            by=["threshold"],
+            descending=[True],
+            cum_weighted_pos_detected=CumSum("weighted_pos_detected"),
+            cum_weighted_neg_detected=CumSum("weighted_neg_detected"),
         )
         .join(group_stats, on=keys, how="left")
         .with_columns(
@@ -246,7 +223,7 @@ def lroc_auc(
 
     Both families are weighted by ``image_metadata.weight``: the trapezoidal path
     through the weighted curve, and Mann-Whitney through a weighted rank-sum
-    (``collapse_scores`` + ``mann_whitney_auc_expr``). Unit weights recover the
+    (``collapse_scores`` + ``mann_whitney_auc``). Unit weights recover the
     unweighted statistic.
 
     Args:
@@ -308,11 +285,7 @@ def lroc_auc(
                 weight=COL_WEIGHT,
                 group_keys=keys,
             )
-            return (
-                bucketed.group_by(keys)
-                .agg(auc=mann_whitney_auc_expr())
-                .drop(_DUMMY_GROUP)
-            )
+            return mann_whitney_auc(bucketed, keys=keys).drop(_DUMMY_GROUP)
         if level == "image":
             table.frames(group_keys)  # a sweep must be read per threshold
             per_image = _scored_per_image_lazy(table, variant)
@@ -346,11 +319,7 @@ def lroc_auc(
                 weight=COL_WEIGHT,
                 group_keys=keys,
             )
-            return (
-                bucketed.group_by(keys)
-                .agg(auc=mann_whitney_auc_expr())
-                .drop(_DUMMY_GROUP)
-            )
+            return mann_whitney_auc(bucketed, keys=keys).drop(_DUMMY_GROUP)
         raise ValueError(
             f"Unsupported level {level!r}. Expected 'detection' or 'image'."
         )
@@ -371,17 +340,16 @@ def lroc_auc(
     collapsed = collapse_curve(
         curve, x_col="fpf", y_col="sensitivity", group_keys=group_keys
     )
-    auc_expr = partial_auc_expr(
+    return partial_auc(
+        collapsed,
         x="fpf",
         y="sensitivity",
         lo=lo,
         hi=hi,
+        keys=group_keys,
         correction=correction,
         extrapolate=extrapolate,
     )
-    if group_keys:
-        return collapsed.group_by(group_keys).agg(auc=auc_expr)
-    return collapsed.select(auc=auc_expr)
 
 
 def lroc_sensitivity_at_fpf(

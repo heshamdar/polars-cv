@@ -17,7 +17,7 @@ Everything is one Polars plan:
 * the per-replicate metric reuses the existing lazy group-aware authorities
   (``froc_auc`` / ``lroc_auc`` / ``all_points_ap_by_group`` keyed by
   ``bootstrap_id``);
-* the interval is a lazy per-group ``quantile`` aggregation
+* the interval is a lazy per-group linear ``quantile``, read as ranks
   (:func:`_bootstrap_ci_from_replicates`), with degenerate groups (no positive
   targets) nulling their bounds rather than raising.
 """
@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Literal
 
 import polars as pl
 
+from ._grouped_scan import CumSum, Lag, RowIndex, grouped_scan
 from ._types import (
     COL_GT_LABEL,
     COL_IMAGE_ID,
@@ -546,13 +547,7 @@ def _bootstrap_ci_from_replicates(
             pl.col("_present").fill_null(0),
             pl.col("_undefined").fill_null(0),
         )
-        agg = joined.group_by(group_keys).agg(
-            pl.col(value_col).quantile(alpha, "linear").alias("ci_lower"),
-            pl.col(value_col).quantile(1.0 - alpha, "linear").alias("ci_upper"),
-            pl.col("_present").sum().alias("_n_present"),
-            pl.col("_undefined").sum().alias("_n_undefined"),
-            pl.col("_viable").first().alias("_viable"),
-        )
+        agg = _percentile_bounds(joined, group_keys, value_col, n_bootstrap, alpha)
     else:
         groups = _require_no_singleton_cell(
             meta.select(viable_expr).join(cell_sizes.select(min_cell), how="cross")
@@ -566,13 +561,7 @@ def _bootstrap_ci_from_replicates(
             pl.col("_present").fill_null(0),
             pl.col("_undefined").fill_null(0),
         )
-        agg = joined.select(
-            pl.col(value_col).quantile(alpha, "linear").alias("ci_lower"),
-            pl.col(value_col).quantile(1.0 - alpha, "linear").alias("ci_upper"),
-            pl.col("_present").sum().alias("_n_present"),
-            pl.col("_undefined").sum().alias("_n_undefined"),
-            pl.col("_viable").first().alias("_viable"),
-        )
+        agg = _percentile_bounds(joined, [], value_col, n_bootstrap, alpha)
 
     viable = (
         pl.col("_viable") & (pl.col("_n_present") > 0) & (pl.col("_n_undefined") == 0)
@@ -581,6 +570,57 @@ def _bootstrap_ci_from_replicates(
         pl.when(viable).then(pl.col("ci_lower")).otherwise(None).alias("ci_lower"),
         pl.when(viable).then(pl.col("ci_upper")).otherwise(None).alias("ci_upper"),
     ).select(*group_keys, "ci_lower", "ci_upper")
+
+
+def _percentile_bounds(
+    joined: pl.LazyFrame,
+    group_keys: list[str],
+    value_col: str,
+    n_bootstrap: int,
+    alpha: float,
+) -> pl.LazyFrame:
+    """``ci_lower``/``ci_upper`` and the viability counts per group.
+
+    ``joined`` holds exactly ``n_bootstrap`` rows per group (the replicate grid),
+    so the linear-interpolation positions are known up front. The bounds are
+    ``quantile(q, "linear")`` computed bit for bit as polars does,
+    ``v[⌊h⌋] + (h − ⌊h⌋)·(v[⌊h⌋+1] − v[⌊h⌋])`` with ``h = (n − 1)·q``. Reading
+    them as ranks from one grouped scan keeps the plan on the streaming
+    engine, where ``quantile`` inside a group-by is not native. A null value
+    (an undefined replicate) sorts last; such a group's bounds are nulled by
+    ``_n_undefined`` anyway.
+    """
+    rank, v = pl.col("_rank"), pl.col(value_col)
+    picks: list[pl.Expr] = []
+    bounds: dict[str, pl.Expr] = {}
+    for name, q in (("ci_lower", alpha), ("ci_upper", 1.0 - alpha)):
+        h = float(n_bootstrap - 1) * q
+        lo = math.floor(h)
+        hi = min(lo + 1, n_bootstrap - 1)
+        picks += [
+            pl.when(rank == lo).then(v).max().alias(f"_{name}_lo"),
+            pl.when(rank == hi).then(v).max().alias(f"_{name}_hi"),
+        ]
+        a, b = pl.col(f"_{name}_lo"), pl.col(f"_{name}_hi")
+        bounds[name] = a + (h - lo) * (b - a)
+    aggs = [
+        *picks,
+        pl.col("_present").sum().alias("_n_present"),
+        pl.col("_undefined").sum().alias("_n_undefined"),
+        pl.col("_viable").first().alias("_viable"),
+    ]
+    ranked = grouped_scan(
+        joined,
+        group_keys,
+        by=[value_col],
+        descending=[False],
+        nulls_last=True,
+        _rank=RowIndex(),
+    )
+    agged = ranked.group_by(group_keys).agg(aggs) if group_keys else ranked.select(aggs)
+    return agged.with_columns(**bounds).select(
+        *group_keys, *bounds, "_n_present", "_n_undefined", "_viable"
+    )
 
 
 def _require_no_singleton_cell(groups: pl.LazyFrame) -> pl.LazyFrame:
@@ -678,20 +718,30 @@ def _with_weight_clusters(
     weight is neither equal to the one before it nor within ``rtol`` (relative
     to the larger magnitude), so values that differ only by arithmetic noise
     share a cluster without any rounding boundary to straddle. Null weights
-    share one cluster, as do NaN weights. A sort and a window — no self-join —
-    so the subplan stays cheap however often the replicate frames re-read it.
+    share one cluster, as do NaN weights. Two grouped scans
+    (:func:`~._grouped_scan.grouped_scan`) and no self-join, so the subplan
+    stays cheap however often the replicate frames re-read it, and stays on the
+    streaming engine.
     """
-    w = pl.col(COL_WEIGHT)
-
-    def within(expr: pl.Expr) -> pl.Expr:
-        return expr.over(part) if part else expr
-
-    prev = within(w.shift(1))
+    w, prev = pl.col(COL_WEIGHT), pl.col("_prev_w")
     close = w.eq_missing(prev) | (
         (w - prev).abs() <= rtol * pl.max_horizontal(w.abs(), prev.abs())
     )
-    return meta.sort(*part, COL_WEIGHT).with_columns(
-        within((~close).fill_null(True).cum_sum()).alias(_COL_WCLUSTER)
+    # A group's first row compares against no predecessor (`prev` null), as
+    # `shift().over(part)` did. The second scan numbers the openings.
+    opened = grouped_scan(
+        meta, part, by=[COL_WEIGHT], descending=[False], _prev_w=Lag(COL_WEIGHT)
+    ).with_columns(_opens=(~close).fill_null(True).cast(pl.Int64))
+    return (
+        grouped_scan(
+            opened,
+            part,
+            by=[COL_WEIGHT],
+            descending=[False],
+            _cluster=CumSum("_opens"),
+        )
+        .drop("_prev_w", "_opens")
+        .rename({"_cluster": _COL_WCLUSTER})
     )
 
 
@@ -919,12 +969,9 @@ def _lazy_resample(
     # Deterministic order; within-(partition, stratum) index + size; and a global
     # position that seeds the unique per-draw slot id.
     b = (
-        b.sort([*keys, unit_col])
-        .with_columns(
-            _sidx=pl.int_range(pl.len(), dtype=pl.Int64).over(keys),
-            _s=pl.len().over(keys),
-        )
+        grouped_scan(b, keys, by=[unit_col], descending=[False], _sidx=RowIndex())
         .with_row_index("_pos")
+        .with_columns(_s=pl.len().over(keys))
     )
 
     reps = pl.LazyFrame(

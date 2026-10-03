@@ -29,10 +29,17 @@ import polars as pl
 
 _LABEL = re.compile(r'label="((?:[^"\\]|\\.)*)"')
 _FALLBACK = "in-memory-map"
+#: A Python UDF that is not marked elementwise is handed its whole input
+#: column at once: as costly as a fallback, under another node name.
+_WHOLE_COLUMN_UDF = re.compile(r"^columnar-function .*python_udf")
 
 
 def in_memory_nodes(lf: pl.LazyFrame) -> list[str]:
-    """The labels of ``lf``'s in-memory fallback nodes, one line each."""
+    """The labels of ``lf``'s in-memory fallback nodes, one line each.
+
+    Also a Python UDF that receives its whole input column (``map_batches``
+    without ``is_elementwise=True``), which collects that column just the same.
+    """
     dot = lf.show_graph(
         engine="streaming", plan_stage="physical", raw_output=True, show=False
     )
@@ -40,7 +47,12 @@ def in_memory_nodes(lf: pl.LazyFrame) -> list[str]:
     labels = (
         m.group(1).replace("\\n", " ").replace('\\"', '"') for m in _LABEL.finditer(dot)
     )
-    return [" ".join(label.split()) for label in labels if label.startswith(_FALLBACK)]
+    flat = (" ".join(label.split()) for label in labels)
+    return [
+        label
+        for label in flat
+        if label.startswith(_FALLBACK) or _WHOLE_COLUMN_UDF.match(label)
+    ]
 
 
 @dataclass(frozen=True)
@@ -55,15 +67,36 @@ class KnownFallback:
 
 
 #: The closed list of accepted fallbacks. Anything else is a regression.
+#:
+#: Each builds a list per key with ``group_by().agg(...)``, which polars cannot
+#: do inside a streaming group-by. Each runs on a per-object or per-image frame
+#: (O(objects) or O(images)), never on the bootstrap's replicate frame
+#: (O(n_bootstrap × detections)), and never on pixel data.
 KNOWN_FALLBACKS: tuple[KnownFallback, ...] = (
     KnownFallback(
-        pattern=r"^in-memory-map AGGREGATE.*\.implode\(\)",
+        pattern=(
+            r'^in-memory-map AGGREGATE\[[^]]*\] \[(col\("[^"]+"\)(\.slice\([^)]*\))?'
+            r'\.implode\(\)\.alias\("(pred|pred_score|pred_row|gt|gt_row)"\)'
+            r"(, )?)+\] BY"
+        ),
         reason=(
-            "Building a list per group (`group_by().agg(pl.col(x))`): polars "
-            "cannot implode inside a streaming group-by. The matchers are "
-            "elementwise over one row per (image, class), so the per-image "
-            "object lists have to be built. That costs O(objects) memory, "
-            "not O(pixels)."
+            "group_objects: each (image, class)'s object lists. The matchers "
+            "are elementwise over one row per (image, class), so the lists "
+            "have to exist. Users who already hold per-image lists skip this."
+        ),
+    ),
+    KnownFallback(
+        pattern=r'\.unique\(\)\.sort\(asc\)\.implode\(\)\.alias\("_cell"\)\] BY',
+        reason=(
+            "_sampling_units: the set of weight cells a sampling unit's "
+            "metadata rows fall in (normally one). One row per unit."
+        ),
+    ),
+    KnownFallback(
+        pattern=r'^in-memory-map AGGREGATE\[[^]]*\] \[col\("image_id"\)\.implode\(\)\] BY \[col\("_entity"\)\]$',
+        reason=(
+            "_resolve_bootstrap_samples: the images of each sampling entity "
+            "(sample_col=), exploded per draw. One row per entity."
         ),
     ),
 )
