@@ -63,6 +63,23 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     to handle replicates that draw nothing from a positive-target cell. The
     cell-stratified draw makes the existing weights correct as they stand.
 
+### Fixed
+
+- **Multi-class bootstrap replicates over-drew mixed-label images.** The
+  image-level resample took one base row per distinct `(image_id, gt_label)`.
+  `image_metadata` has a row per `(image, class)`, so an image positive for one
+  class and negative for another sat in both strata: it had two draw chances
+  per replicate, and replicates held more images than the sample. An image now
+  has one draw slot, in the positive stratum if any of its classes is
+  positive. Single-class tables are unchanged.
+- **Grouped bootstrap draws brought other groups' rows.** A draw partitioned by
+  a group key was joined back to the metadata and detections on `image_id`
+  alone. Under `group_by="class_id"`, a draw in one class's partition therefore
+  also brought the image's other classes, and every class's replicate gained
+  the other classes' draws. Draws now carry their partition keys and bring only
+  their own group's rows. Groups that never share an image, such as a
+  per-study `group_id`, are unchanged.
+
 ## [0.31.0] — 2026-10-03
 
 Open polylines become a first-class contour (`is_closed=False` is read),

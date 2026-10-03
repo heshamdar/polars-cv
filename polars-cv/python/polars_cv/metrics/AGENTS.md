@@ -126,26 +126,40 @@ to images with a lazy `group_by`/`explode`. An empty base or empty group
 cross-joins to zero rows — it does **not** raise.
 
 **Every CI is weighted and stratifies on weight cells** (`_replicate_table`,
-the one way replicates are built). `_sampling_cells` is the single authority for
-a unit's cell. Within each `(group, *strata)`, `_weight_clusters` clusters the
-distinct weights by relative gap (`weight_rtol`, default `1e-6`), with no
-rounding boundary. A unit's cell is the sorted distinct clusters (or
-`(*strata, cluster)` structs) of its rows, or of its images for an entity.
+the one way replicates are built). `_sampling_units` is the single authority for
+the resample's base: one row per sampling unit and group.
+
+- At image level, a unit's `gt_label` stratum is positive if **any** of its
+  `(image, class)` rows is. A mixed-label multi-class image used to sit in both
+  strata, so it had two draw slots per replicate.
+- Its `_cell` is the sorted distinct weight clusters (or `(*strata, cluster)`
+  structs) of its rows, or of its images for an entity.
+- `_with_weight_clusters` assigns each metadata row a cluster within
+  `(group, *strata)` by relative gap (`weight_rtol`, default `1e-6`), with no
+  rounding boundary. It is one sort plus a window, with no self-join.
 
 The draw is stratified within `(group, gt_label, cell)` at image level, or
-`(group, cell)` at entity level. `_rescale_to_cell_shares` then multiplies each
-drawn image's weight by `(n_c/N) / (n*_c/N*)`. That factor is exactly 1 for
-image-level draws, and at entity level it restores each cell's share of the
-group's images, which is the `p / q̂` weight re-estimated on the replicate.
+`(group, cell)` at entity level. Each draw carries its partition keys, and
+`_bootstrap_table_with_draws` joins the metadata on `[image_id, *group_keys]`
+and the detections on the group keys they carry. A draw therefore brings only
+its own group's rows: under `group_by="class_id"` a draw used to bring the
+image's other classes too.
+
+At entity level, `_rescale_to_cell_shares` multiplies each drawn image's weight
+by `(n_c/N) / (n*_c/N*)`, which restores each cell's share of the group's
+images. That is the `p / q̂` weight re-estimated on the replicate. At image
+level the factor would be exactly 1, so it is not applied.
 
 Every weighted statistic is a weight-scale-invariant ratio, so the replicate
 weights equal the re-estimated weights. That is why there is no reweight hook.
 Unit weights form one cell and leave the draw and the weights bit-identical to
 the unweighted resample.
 
-The cells and the draw are `.cache()`-d. They stay lazy, but without the cache
-the streaming engine recomputes the resample at every read of the replicate
-frames (~15x): projection pushdown makes each read a distinct subplan.
+**No `.cache()`.** On the declared polars floor (1.43.2), a cached frame read
+under different projections returned wrong rows: AP bounds above 1, caught by
+the floors CI job. Under the streaming engine, every read of the replicate
+frames re-runs the draw, since projection pushdown makes each read a distinct
+subplan. Keep the draw's subplan cheap.
 
 `seed=None` maps to a fixed hash constant, so the CI is **deterministic even
 without an explicit seed**. Each draw gets a distinct synthetic `image_id` from

@@ -677,7 +677,7 @@ def _replicates(
             seed=3,
             group_keys=group_keys,
         )
-        return _bootstrap_table_with_draws(table, samples)
+        return _bootstrap_table_with_draws(table, samples, group_keys=group_keys)
     boot, _ = _replicate_table(
         table,
         group_keys=group_keys,
@@ -1072,3 +1072,93 @@ class TestEntityLevelReweighting:
             .height
             == 0
         )
+
+
+class TestMultiClassDraw:
+    """One draw slot per image, however many class rows it has.
+
+    ``image_metadata`` has a row per ``(image, class)``. An image positive for
+    one class and negative for another used to sit in both ``gt_label`` strata,
+    so it had two draw chances per replicate and replicates held more images
+    than the sample. An image's stratum is now positive if any class is.
+    """
+
+    @staticmethod
+    def _two_class() -> DetectionTable:
+        # Six images; a, c, e positive for "car" and negative for "ped".
+        images = ["a", "b", "c", "d", "e", "f"]
+        car_pos = {"a", "b", "c", "e"}
+        ped_pos = {"b", "d"}
+        det_rows = [
+            (img, cls, 0.9 - 0.1 * k, img in pos)
+            for k, img in enumerate(images)
+            for cls, pos in (("car", car_pos), ("ped", ped_pos))
+        ]
+        det = pl.DataFrame(
+            {
+                COL_IMAGE_ID: [r[0] for r in det_rows],
+                COL_CLASS_ID: [r[1] for r in det_rows],
+                COL_SCORE: [r[2] for r in det_rows],
+                COL_IS_TP: [r[3] for r in det_rows],
+                COL_GT_IDX: [0 if r[3] else None for r in det_rows],
+                COL_IOU: [0.7 if r[3] else 0.0 for r in det_rows],
+                COL_DET_IDX: list(range(len(det_rows))),
+            },
+            schema={
+                COL_IMAGE_ID: pl.String,
+                COL_CLASS_ID: pl.String,
+                COL_SCORE: pl.Float64,
+                COL_IS_TP: pl.Boolean,
+                COL_GT_IDX: pl.UInt32,
+                COL_IOU: pl.Float64,
+                COL_DET_IDX: pl.UInt32,
+            },
+        )
+        meta = pl.DataFrame(
+            {
+                COL_IMAGE_ID: [r[0] for r in det_rows],
+                COL_CLASS_ID: [r[1] for r in det_rows],
+                COL_N_GTS: [int(r[3]) for r in det_rows],
+                COL_WEIGHT: [1.0] * len(det_rows),
+                COL_GT_LABEL: [r[3] for r in det_rows],
+            },
+            schema={
+                COL_IMAGE_ID: pl.String,
+                COL_CLASS_ID: pl.String,
+                COL_N_GTS: pl.Int64,
+                COL_WEIGHT: pl.Float64,
+                COL_GT_LABEL: pl.Boolean,
+            },
+        )
+        return DetectionTable.from_matched(det, meta, matching_iou_threshold=0.5)
+
+    @pytest.mark.parametrize("weighted", [False, True])
+    def test_every_replicate_draws_one_slot_per_image(self, weighted: bool) -> None:
+        table = self._two_class()
+        boot = _replicates(table, group_keys=[], strata=[] if weighted else None)
+        draws = (
+            boot.image_metadata.group_by("bootstrap_id")
+            .agg(pl.col(COL_IMAGE_ID).n_unique().alias("n"))
+            .collect()
+        )
+        assert draws["n"].unique().to_list() == [6]
+        # Each draw carries all of its image's class rows, once.
+        rows = boot.image_metadata.select(pl.len()).collect().item()
+        assert rows == 60 * 12
+
+    def test_class_partitioned_draw_is_unchanged(self) -> None:
+        # Grouped by class, every partition already has one row per image.
+        table = self._two_class()
+        boot = _replicates(table, group_keys=[COL_CLASS_ID])
+        draws = (
+            boot.image_metadata.group_by("bootstrap_id", COL_CLASS_ID)
+            .agg(pl.col(COL_IMAGE_ID).n_unique().alias("n"))
+            .collect()
+        )
+        assert draws["n"].unique().to_list() == [6]
+
+    @pytest.mark.parametrize("family", ["froc", "lroc", "pr"])
+    def test_ci_brackets_point(self, family: str) -> None:
+        fn, value_col = _CI_FUNCS[family]
+        out = fn(self._two_class(), n_bootstrap=100, seed=2).collect()
+        assert out["ci_lower"].item() <= out[value_col].item() <= out["ci_upper"].item()
