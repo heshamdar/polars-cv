@@ -117,8 +117,11 @@ keys on `_sweep_key()` as well as `(image_id, class_id)`.
   `"11_point"` (VOC 2007), `"101_point"` (COCO), `"trapezoidal"` (raw). Every
   AP — scalar, grouped, bootstrap — integrates in `ap_from_points`; the N-point
   grids are `numpy.linspace`'s (`i · 1/(n−1)`), as the reference tools build
-  them. Reductions feeding a reported number sum with `_auc_expr.ordered_sum` /
-  `ordered_mean` (chunk-independent, so bootstrap bounds reproduce bit for bit).
+  them. Reductions feeding a reported number sum with
+  `_grouped_scan.exact_sums` / `exact_mean`: an Int128 fixed-point sum, which
+  does not depend on chunking, order or thread count, so bootstrap bounds
+  reproduce bit for bit. It also stays on the streaming engine; a sorted
+  `cum_sum` inside `agg` does not.
 
 ## Bootstrap CIs
 

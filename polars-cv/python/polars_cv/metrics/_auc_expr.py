@@ -49,25 +49,6 @@ def _as_expr(value: str | pl.Expr) -> pl.Expr:
 # ---------------------------------------------------------------------------
 
 
-def ordered_sum(expr: pl.Expr) -> pl.Expr:
-    """``expr`` summed in a fixed order, reproducible bit for bit.
-
-    ``sum``/``mean`` add per-chunk partial sums, so their last bits depend on
-    how the values happen to be chunked (and a group's rows reach an
-    aggregation in no promised order); float addition is not associative. A
-    sequential prefix sum over the sorted values is independent of both.
-    Bootstrap bounds are compared bit for bit across runs, so every reduction
-    feeding a reported statistic sums this way.
-    """
-    return expr.sort().cum_sum().last().fill_null(0.0)
-
-
-def ordered_mean(expr: pl.Expr) -> pl.Expr:
-    """``expr``'s mean via :func:`ordered_sum`; null for no non-null values."""
-    n = expr.count()
-    return pl.when(n > 0).then(ordered_sum(expr.drop_nulls()) / n).otherwise(None)
-
-
 def collapse_curve(
     lf: pl.LazyFrame,
     *,

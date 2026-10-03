@@ -101,12 +101,16 @@ def group_objects(
     keys = [COL_IMAGE_ID, COL_CLASS_ID]
     p, g = keyed(preds), keyed(gts)
     ranked = p.sort(score, _ROW, descending=[True, False], nulls_last=True)
-    if max_detections is not None:
-        ranked = ranked.filter(pl.int_range(pl.len()).over(keys) < max_detections)
+
+    def capped(expr: pl.Expr) -> pl.Expr:
+        # Each group's rows arrive in `ranked` order, so the cap is the head of
+        # the list the aggregation builds anyway (no separate window).
+        return expr if max_detections is None else expr.head(max_detections)
+
     pred_lists = ranked.group_by(keys, maintain_order=True).agg(
-        pl.col(geometry).alias(PRED),
-        pl.col(score).cast(pl.Float64).alias(PRED_SCORE),
-        pl.col(_ROW).alias(PRED_ROW),
+        capped(pl.col(geometry)).alias(PRED),
+        capped(pl.col(score).cast(pl.Float64)).alias(PRED_SCORE),
+        capped(pl.col(_ROW)).alias(PRED_ROW),
     )
     gt_lists = (
         g.sort(_ROW)
