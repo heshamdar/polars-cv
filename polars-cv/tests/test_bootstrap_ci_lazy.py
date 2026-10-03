@@ -28,9 +28,12 @@ import textwrap
 import numpy as np
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
+import polars_cv.metrics as M
 from polars_cv.metrics import (
     DetectionTable,
+    PreMatchedAdapter,
     average_precision,
     average_precision_ci_lazy,
     froc_auc,
@@ -1206,3 +1209,71 @@ def test_percentile_bounds_are_polars_linear_quantiles_bit_for_bit(
         joined.filter(pl.col("g") == "a").lazy(), [], "v", n_bootstrap, alpha
     ).collect()
     assert ungrouped["ci_lower"].to_list() == want["ci_lower"].to_list()[:1]
+
+
+class TestReplicateBatches:
+    """Batching the replicates bounds memory and changes no bit of any bound.
+
+    Each batch draws its own ``bootstrap_id`` range, and a draw hashes its
+    global slot id, so the batches are slices of the one whole-range draw.
+    """
+
+    @staticmethod
+    def _table() -> DetectionTable:
+        rng = np.random.default_rng(3)
+        n_img, per = 40, 4
+        dets = pl.DataFrame(
+            {
+                "image_id": np.repeat([f"i{i}" for i in range(n_img)], per),
+                "class_id": rng.choice(["a", "b"], n_img * per),
+                "score": rng.random(n_img * per),
+                "is_tp": rng.random(n_img * per) < 0.4,
+            }
+        )
+        images = pl.DataFrame(
+            {
+                "image_id": [f"i{i}" for i in range(n_img)],
+                "weight": rng.choice([0.5, 1.0, 2.0], n_img),
+            }
+        )
+        meta = images.join(pl.DataFrame({"class_id": ["a", "b"]}), how="cross")
+        meta = meta.with_columns(n_gts=pl.Series(rng.integers(0, 3, meta.height)))
+        return PreMatchedAdapter().match(
+            dets,
+            image_id_col="image_id",
+            class_col="class_id",
+            image_meta=meta,
+        )
+
+    @pytest.mark.parametrize(
+        "ci",
+        [
+            pytest.param(
+                lambda t: M.bootstrap_ci(t, M.mean_ap(), n_bootstrap=23, seed=5),
+                id="mean_ap",
+            ),
+            pytest.param(
+                lambda t: M.average_precision_ci_lazy(
+                    t, group_by="class_id", n_bootstrap=23, seed=5, strata="weight"
+                ),
+                id="ap-grouped-stratified",
+            ),
+            pytest.param(
+                lambda t: M.froc_auc_ci_lazy(
+                    t, n_bootstrap=23, seed=5, fp_range=(0.0, 1.0), extrapolate="flat"
+                ),
+                id="froc",
+            ),
+        ],
+    )
+    def test_any_batch_size_gives_the_same_bounds(
+        self, ci, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from polars_cv.metrics import _bootstrap
+
+        results = []
+        for batch in (None, 1, 7, 50):
+            monkeypatch.setattr(_bootstrap, "_REPLICATES_PER_BATCH", batch)
+            results.append(ci(self._table()).collect().sort(pl.all()))
+        for got in results[1:]:
+            assert_frame_equal(got, results[0])
