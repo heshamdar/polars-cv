@@ -44,8 +44,32 @@ Detection metrics built from polars-cv primitives and Polars lazy expressions:
 ## Architecture
 
 ```
-Input Data → Matcher → DetectionTable → Metric function → pl.LazyFrame / pl.Expr
+object tables ─► match_detections ─┐
+heatmaps/masks ─► ContourMatcher ──┼─► DetectionTable ─► Statistic ─► value / by_group / bootstrap_ci
+pre-matched ───► PreMatchedAdapter ┘                        ▲
+                                     DetectionReport ───────┘   (evaluate_detections / _heatmaps)
 ```
+
+Four layers; each upper one only composes the one below, never adds an
+estimator, matcher or resampler of its own:
+
+- **L0 inputs** (`_inputs.py`): `group_objects` (long object rows → one row per
+  (image, class) with lists, population-complete), `bbox_from_coords`
+  (`geometry/coords.py`).
+- **L1 matching**: the matchers, `match_detections` (dispatch on the geometry
+  dtype). Both matchers end in the one shared tail, `_matching/_table.py`
+  (`matched_table` / `explode_matches`): never re-implement the explode or the
+  metadata — the class-join duplication fix lives there.
+- **L2 statistics** (`_statistics.py`): every metric is a `Statistic` with
+  `by_group(table, keys) -> [*keys, name]`; `bootstrap_ci(table, statistic)` is
+  the one CI engine (`*_ci_lazy` are thin delegations). **A new metric is a
+  `Statistic` first**; its function form is its ungrouped reading.
+  `tests/test_statistics.py::test_every_public_metric_is_classified` fails on a
+  public function taking a `DetectionTable` that is neither a `Statistic`'s
+  reading nor declared otherwise.
+- **L3 reports** (`_reports.py`, `_segmentation.py`): pick statistics and show
+  them; `report.metrics` maps each shown number to its statistic, which is what
+  `report.ci` bootstraps.
 
 1. **Matchers** (`_matching/`) convert raw data into a canonical `DetectionTable` (two lazy frames). All implement the `Matcher` protocol. `ContourMatcher.match` also accepts a pre-decoded `LazyPipelineExpr` (via `_SourceHandle`) so a caller's graph can share the decode.
 2. **FROC/LROC metric functions** (`_metrics/`) operate on `DetectionTable` and return a `pl.LazyFrame` (`froc_auc`, `froc_curve_lazy`, …) — no result object, no eager `.item()` until the caller collects. The integral is the reusable expression in `_auc_expr.py`.
@@ -58,6 +82,15 @@ Two aligned lazy frames:
 - **image_metadata** — one row per (image, class): `n_gts`, `weight`, `gt_label`
 
 Supports IoU re-thresholding via `at_iou_threshold()`, class filtering via `filter_class()`, per-image aggregation via `to_per_image()`.
+
+**Sweeps.** A matcher given several IoU thresholds returns one table holding a
+matching per threshold, told apart by an `iou_threshold` column on both frames
+(`_sweep` / `iou_thresholds`). Pooling them counts every GT once per threshold,
+so `DetectionTable.frames(keys)` — the one place every metric reads — refuses a
+sweep unless `iou_threshold` is among the keys; `.detections` /
+`.image_metadata` are `frames()` and refuse it too. Transforms that keep every
+matching apart (filters, the bootstrap draw) read `_all_rows()`. Per-image work
+keys on `_sweep_key()` as well as `(image_id, class_id)`.
 
 ## Matchers
 
@@ -79,10 +112,13 @@ Supports IoU re-thresholding via `at_iou_threshold()`, class filtering via `filt
   global rank statistic that rejects a range (correction is inert for it). A
   scalar is `froc_auc(table, fp_range=(0.0, 8.0)).collect().item()`; grouping is
   `group_by=`.
-- **PR**: `PrecisionRecallResult.auc(method=...)` — `"all_points"` (default, monotone
-  envelope), `"11_point"`, `"trapezoidal"`. All route through the lazy
-  `_auc_expr` integrals (`MetricResult.auc` + `_all_points_ap`), never an eager
-  Series integral.
+- **PR**: `PrecisionRecallResult.auc(method=...)` — `"all_points"` (default:
+  the precision envelope integrated as a **step** function, `Σ ΔR·P̂`),
+  `"11_point"` (VOC 2007), `"101_point"` (COCO), `"trapezoidal"` (raw). Every
+  AP — scalar, grouped, bootstrap — integrates in `ap_from_points`; the N-point
+  grids are `numpy.linspace`'s (`i · 1/(n−1)`), as the reference tools build
+  them. Reductions feeding a reported number sum with `_auc_expr.ordered_sum` /
+  `ordered_mean` (chunk-independent, so bootstrap bounds reproduce bit for bit).
 
 ## Bootstrap CIs
 
@@ -191,9 +227,14 @@ metrics/
 ├── _result.py            # MetricResult base (auc only) — PR/Confusion
 ├── _auc.py               # the correction and extrapolate vocabularies (validate_*)
 ├── _auc_expr.py          # the FROC/LROC integral authority: *_expr + collapse_curve
-├── _bootstrap.py         # {froc_auc,lroc_auc,average_precision}_ci_lazy + lazy resampler
+├── _bootstrap.py         # bootstrap_ci (+ the *_ci_lazy delegations) + lazy resampler
+├── _statistics.py        # Statistic, AP/Recall/…/CPM/FROCAUC/LROCAUC, MeanOver, mean_ap
+├── _inputs.py            # group_objects, match_detections (object tables → DetectionTable)
+├── _reports.py           # evaluate_detections/_heatmaps → DetectionReport
+├── _segmentation.py      # segmentation_measures, evaluate_segmentation → SegmentationReport
 ├── _matching/
 │   ├── _protocol.py      # Matcher protocol
+│   ├── _table.py         # the shared tail: thresholds, explode, metadata, sweeps
 │   ├── _contour.py       # ContourMatcher
 │   ├── _bbox.py          # BBoxMatcher
 │   └── _prematched.py    # PreMatchedAdapter
@@ -217,7 +258,7 @@ metrics/
 
 ### All-points AP: two authorities, one estimator
 - The all-points AP estimator (sort by score desc, cumulative TP/FP, monotone
-  precision envelope, anchored trapezoid) exists as a scalar (`_all_points_ap`,
+  precision envelope, step integral anchored at recall 0) exists as a scalar (`_all_points_ap`,
   behind `PrecisionRecallResult.auc("all_points")`) and a vectorized grouped
   form (`all_points_ap_by_group`). Both `mean_average_precision(...,
   interpolation="all_points")` and every `*_ap` bootstrap go through the grouped
@@ -239,9 +280,11 @@ metrics/
   authority's input carries `weight` and `gt_mass` columns. The integer-weight
   replication oracle (`TestWeightedPrecisionRecall`) checks every PR entry
   point.
-- `mean_average_precision` keeps the eager per-`(threshold, class)` loop for the
-  `"11_point"` (VOC) method only, which has no grouped form; the `"all_points"`
-  method is one lazy plan with a single collect.
+- `mean_average_precision` is `MeanOver(AP(interpolation), undefined="zero")`
+  over a table stacked across its thresholds (a sweep's own matchings, or
+  re-thresholded copies of one matching): one lazy plan, every interpolation.
+  `undefined="zero"` keeps its historical convention (a class without GT
+  averages in as 0); the reports use COCO's `"exclude"`.
 
 ### Null and edge-case handling
 - Contour extraction returns an empty list when an image has no contours, and `null` only for a null input or a failed row. Matchers keep `.fill_null(0)` on `list.len()` for `n_gts`, which now only affects those null rows.
@@ -266,8 +309,11 @@ metrics/
   integrating or interpolating. `MetricResult.auc` and the FROC/LROC paths must
   not sort for themselves; a second sort is a second answer.
 
-### IoU re-thresholding
-- `at_iou_threshold()` only works reliably when *raising* the threshold. Lowering has no effect (unmatched detections lack stored IoU). A `UserWarning` is emitted.
+### IoU re-thresholding vs re-matching
+- On a sweep, `at_iou_threshold(t)` for a matched `t` is an exact slice (that
+  threshold's own matching); any other `t` re-thresholds the matching at the
+  highest matched threshold below it.
+- Re-thresholding only works reliably when *raising* the threshold. Lowering has no effect (unmatched detections lack stored IoU). A `UserWarning` is emitted. It is not re-matching: a detection that lost its GT to a duplicate does not get it back — COCO's mAP needs a sweep.
 
 ### LROC variants
 - `"best_tp"` (default): effective score = highest-scoring TP detection for positive images.

@@ -1,5 +1,12 @@
 """Detection metrics demo on one parameterized synthetic dataset.
 
+The first section is the one-call form most evaluations need:
+``evaluate_detections`` (boxes, COCO-style), ``evaluate_heatmaps`` (FROC) and
+``evaluate_segmentation`` (Dice / Hausdorff), each with bootstrap intervals.
+The sections after it are the building blocks those compose — matchers,
+the ``DetectionTable`` and the individual metric functions — for when you need
+something the reports do not show.
+
 Run:
     uv run python polars-cv/examples/06_detection_metrics.py --help
 """
@@ -32,7 +39,12 @@ from polars_cv import (
     precision_recall_curve,
     recall_at_threshold,
 )
-from polars_cv.metrics import average_precision_ci_lazy
+from polars_cv.metrics import (
+    average_precision_ci_lazy,
+    evaluate_detections,
+    evaluate_heatmaps,
+    evaluate_segmentation,
+)
 from polars_cv.metrics._types import COL_CLASS_ID, COL_IMAGE_ID
 
 OUTPUT_DIR = Path(__file__).parent / "outputs"
@@ -94,6 +106,60 @@ def build_prematched_input_from_table(
         gt_label=pl.col("gt_label"),
     )
     return detections, population
+
+
+def one_call_section(df: pl.DataFrame, args: argparse.Namespace) -> None:
+    """The one-call evaluations: object tables, heatmaps, masks."""
+    # Object tables: one row per box, as detector outputs and annotation files
+    # come. The synthetic data holds per-image lists, so explode them first.
+    preds = (
+        df.select("image_id", "class_id", "pred_bboxes", "pred_scores")
+        .explode("pred_bboxes", "pred_scores", empty_as_null=False)
+        .drop_nulls("pred_bboxes")
+        .rename({"pred_bboxes": "bbox", "pred_scores": "score"})
+    )
+    gts = (
+        df.select("image_id", "class_id", "gt_bboxes")
+        .explode("gt_bboxes", empty_as_null=False)
+        .drop_nulls("gt_bboxes")
+        .rename({"gt_bboxes": "bbox"})
+    )
+    # COCO by default: re-matched at 0.50:0.95, 101-point AP, 100 dets.
+    # `images=` keeps images with neither predictions nor truth in the count.
+    boxes = evaluate_detections(preds, gts, images=df["image_id"])
+    print("\n== evaluate_detections (boxes, COCO-style) ==")
+    print(boxes)
+    print(boxes.per_class)
+    print(boxes.ci("map", n_bootstrap=args.bootstrap_samples, seed=args.seed))
+    errors = boxes.matches(0.5).filter(~pl.col("is_tp"))
+    print(f"{errors.height} false positives at IoU 0.5, e.g.:\n{errors.head(3)}")
+
+    heat = evaluate_heatmaps(
+        df,
+        heatmap="pred_heatmap",
+        gt="gt_mask",
+        image_id="image_id",
+        class_id="class_id",
+        iou_threshold=args.contour_iou_threshold,
+        extraction_threshold=args.extraction_threshold,
+        min_contour_area=args.min_contour_area,
+        gt_min_contour_area=args.gt_min_contour_area,
+        extrapolate="flat",  # LUNA16's reading past the last operating point
+    )
+    print("\n== evaluate_heatmaps (FROC) ==")
+    print(heat)
+    print(heat.ci("cpm", n_bootstrap=args.bootstrap_samples, seed=args.seed))
+
+    seg = evaluate_segmentation(
+        df,
+        pred="pred_heatmap",
+        target="gt_mask",
+        image_id="image_id",
+        threshold=args.extraction_threshold,
+    )
+    print("\n== evaluate_segmentation (heatmap > threshold vs mask) ==")
+    print(seg)
+    print(seg.ci(["dice", "hd95"], n_bootstrap=args.bootstrap_samples, seed=args.seed))
 
 
 def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> object:
@@ -185,8 +251,10 @@ def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> objec
         f"Confusion @{args.score_threshold}:",
         confusion_at_threshold(contour_table, args.score_threshold),
     )
+    # One matching re-thresholded at 0.5; for COCO's re-matched mAP pass the
+    # matcher a sequence of thresholds (or use evaluate_detections).
     print(
-        "mAP (COCO-style thresholds):",
+        "mAP@0.5 (re-thresholded):",
         round(mean_average_precision(contour_table), 4),
     )
 
@@ -352,6 +420,8 @@ def main() -> None:
         },
     )
 
+    one_call_section(df, args)
+    print("\n== Building blocks ==")
     contour_matcher_section(df, args)
     bbox_table = bbox_matcher_section(df, args)
     prematched_section(bbox_table)

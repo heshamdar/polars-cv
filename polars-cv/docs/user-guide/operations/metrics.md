@@ -1,20 +1,148 @@
-# Detection Metrics
+# Evaluation Metrics
 
-polars-cv provides a comprehensive suite of detection metrics built on top of
-Polars lazy expressions and the polars-cv matching primitives. All curve
-computations use native Polars operations.
+polars-cv evaluates detection, instance-segmentation, heatmap (FROC) and
+semantic-segmentation models with Polars lazy expressions. There is a one-call
+entry point for each setup. Every number it reports can be traced to the
+building blocks below it, so you can drop down a layer whenever you need
+something the one-call form does not offer.
 
-## Architecture
+## Evaluating a model
 
-The metrics system follows a three-layer architecture:
+### Object detection (boxes)
+
+Predictions and ground truth as they usually come: one row per object.
+
+```python
+import polars as pl
+from polars_cv.metrics import evaluate_detections
+
+preds = pl.read_csv("predictions.csv")  # image_id, class_id, x1, y1, x2, y2, score
+gts = pl.read_csv("annotations.csv")    # image_id, class_id, x1, y1, x2, y2
+
+report = evaluate_detections(
+    preds, gts, geometry=("x1", "y1", "x2", "y2"), box_format="xyxy"
+)
+report.summary       # map, map_50, map_75, mar
+report.per_class     # ap, ap_50, ap_75, recall, n_gts, n_preds per class
+report.ci("map")     # bootstrap interval, images resampled
+report.matches(0.5)  # every prediction row with is_tp / iou / matched_gt_row
+```
+
+The geometry can also be a single column. `box_format` says what four numbers
+mean (`"xyxy"`, `"xywh"` as in COCO, or `"cxcywh"` as in YOLO); it is required,
+because the data cannot tell them apart. A `BBOX_SCHEMA` struct column needs no
+format.
+
+**The defaults are COCO's.** `iou_thresholds="coco"` means:
+
+- predictions are matched again at each IoU threshold from 0.50 to 0.95 in
+  steps of 0.05, so a detection that loses its box at one threshold can win it
+  at another;
+- AP is 101-point;
+- each image keeps its 100 highest-scoring predictions per class;
+- a class with no ground truth is left out of the means.
+
+On data without crowd regions, the results match pycocotools' `COCOeval` to
+1e-12. Area ranges (small/medium/large) and crowd/ignore regions are not
+modelled. For Pascal VOC, pass `iou_thresholds=0.5`, which gives all-points AP
+at one threshold.
+
+Images that appear in neither table still count, for example empty images whose
+predictions are all false positives. Pass the full image list as `images=`. It
+can be a frame carrying per-image `weight=` and `group=` columns.
+
+### Instance segmentation (polygons or masks)
+
+Use the same call, with a `CONTOUR_SCHEMA` polygon column or one binary mask
+per object instead of boxes. Matching is then by region IoU:
+
+```python
+report = evaluate_detections(preds, gts, geometry="polygon")
+report = evaluate_detections(preds, gts, geometry="mask")  # one region per mask
+```
+
+A mask holding several separate regions fails the query and names its image.
+Silently picking one region would score a different object. Split such masks
+into one row per region, or pass polygons.
+
+### Heatmaps and lesion detection (FROC)
+
+For a model that outputs a probability map, pass one row per image:
+
+```python
+from polars_cv.metrics import evaluate_heatmaps
+
+report = evaluate_heatmaps(df, heatmap="prob_map", gt="lesion_mask")
+report.summary  # map, mar, sensitivity@0.125 ... sensitivity@8, cpm
+report.ci("cpm")
+```
+
+Each heatmap is thresholded into candidate regions, and each region is scored
+from the heatmap and matched to the mask's regions. Any `ContourMatcher` option
+can be passed through, for example `extraction_threshold=0.3`,
+`match_by="coverage"` for line-shaped targets, or `score_reduction="mean"`.
+`extrapolate="flat"` reads the FROC curve the way LUNA16 does.
+
+### Semantic segmentation (Dice, IoU, Hausdorff)
+
+```python
+from polars_cv.metrics import evaluate_segmentation, segmentation_measures
+
+report = evaluate_segmentation(df, pred="pred_mask", target="gt_mask")
+report.summary     # mean dice, iou, assd, hd, hd95 (+ undefined counts)
+report.per_image
+report.ci("hd95")
+
+# Or per row, inside your own query:
+df.with_columns(m=segmentation_measures("pred_mask", "gt_mask", spacing=(0.8, 0.8)))
+```
+
+- **Boundaries.** These are the masks' exact pixel-edge outlines, holes
+  included, measured point-to-edge.
+- **The image edge.** With `frame="image"` (the default), boundary on the
+  image edge is not measured: a structure cut off by the field of view has an
+  edge there that is not anatomy.
+- **Units.** `spacing=(row, col)` gives distances in physical units.
+- **Empty masks.** Two empty masks agree perfectly (Dice 1). If one mask is
+  empty, Dice is 0 and the boundary distances are null; the summary counts
+  those rows as undefined.
+
+## How it fits together
 
 ```
-Input Data → Matcher → DetectionTable → Metric Function → LazyFrame
+object tables ──► match_detections ──┐
+heatmaps/masks ─► ContourMatcher ────┼─► DetectionTable ─► Statistic ─► value / by_group / bootstrap_ci
+pre-matched ────► PreMatchedAdapter ─┘                                    ▲
+                                                     DetectionReport ─────┘
 ```
 
-1. **Matchers** convert raw data into a canonical `DetectionTable`.
-2. **Metric functions** compute curves and scalar metrics from the table,
-   lazily: the caller collects.
+1. **Matching** turns predictions and ground truth into a `DetectionTable`,
+   with one row per detection plus per-(image, class) metadata.
+   `match_detections` is the general entry point for object tables. The
+   matchers below read one row per (image, class) holding lists.
+2. **Statistics.** Every metric is a `Statistic`:
+   - `AP`, `Recall`, `PrecisionAt`, `FROCSensitivity`, `CPM`, `FROCAUC`,
+     `LROCAUC`, …
+   - `MeanOver(statistic)` averages one over classes and IoU thresholds;
+     `mean_ap()` is mAP.
+
+   A statistic reads a table as a whole (`.value`), per group (`.by_group`) or
+   per bootstrap replicate (`bootstrap_ci`). It is the same estimator every
+   time.
+3. **Reports** pick statistics and show them. `report.metrics` lists which
+   statistic each number came from.
+
+So a custom number (say AP@0.6 per scanner, with an interval) is one line on
+the report's table:
+
+```python
+from polars_cv.metrics import AP, bootstrap_ci
+
+bootstrap_ci(report.table.at_iou_threshold(0.6), AP(), group_by="group_id").collect()
+```
+
+The function forms (`average_precision`, `froc_auc`, …) are the ungrouped
+readings of the same statistics.
 
 ## DetectionTable
 
@@ -274,7 +402,21 @@ counts.to_dict()  # {'tp': 10, 'fp': 3, 'fn': 2}
 
 ## Bootstrap Confidence Intervals
 
-The FROC / LROC / PR AUC confidence intervals are **fully lazy and group-aware**.
+`bootstrap_ci(table, statistic, ...)` gives an interval for any `Statistic`.
+`froc_auc_ci_lazy`, `lroc_auc_ci_lazy` and `average_precision_ci_lazy` are
+this function with `FROCAUC`, `LROCAUC` and `AP`. Images are the resampling
+unit. The classes and IoU thresholds that a `MeanOver` statistic averages over
+are drawn together: each drawn image brings all its rows. So an mAP interval
+reflects one resample per replicate, not one per class.
+
+```python
+from polars_cv.metrics import CPM, bootstrap_ci, mean_ap
+
+bootstrap_ci(table, mean_ap("101_point"), n_bootstrap=1000, seed=1).collect()
+bootstrap_ci(table, CPM(extrapolate="flat"), group_by="group_id").collect()
+```
+
+The intervals are **fully lazy and group-aware**.
 Each entry point returns a `pl.LazyFrame` and never collects internally — the
 whole bootstrap (resample, per-replicate metric, and the percentile bounds) is
 one Polars plan the *caller* collects. That means a CI can be built at plan time
@@ -380,18 +522,30 @@ average_precision_ci_lazy(table, group_by="group_id", weight_rtol=1e-3)
   weights (known in advance, not estimated) under entity-level resampling would
   lose the variance that comes from the cell mix drifting.
 
-## IoU Re-thresholding
+## IoU thresholds: re-matching vs re-thresholding
 
-The `DetectionTable` stores raw IoU values from matching, enabling
-re-thresholding without re-running the matching step:
+A matcher given several IoU thresholds matches once per threshold, in one
+plan, and returns one table with an `iou_threshold` column. This is what COCO
+does: at 0.75, a detection that claimed a box at 0.5 with IoU 0.6 no longer
+qualifies, and a lower-scoring detection with IoU 0.8 can take the box.
 
 ```python
-# Compute mAP across COCO IoU thresholds
-map_val = mean_average_precision(
-    table,
-    iou_thresholds=[0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95],
-)
+table = BBoxMatcher(iou_threshold=[0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]).match(...)
+mean_average_precision(table)        # each threshold on its own matching
+table.at_iou_threshold(0.75)         # one matching, exactly
+AP().by_group(table, "iou_threshold")
 ```
+
+Pooling thresholds would count every ground truth once per threshold, so a
+swept table refuses any evaluation that does: `table.detections`,
+`average_precision(table)`, and `froc_auc(table)` without
+`group_by="iou_threshold"` all raise. Group by the threshold, average over it
+(`MeanOver` / `mean_ap()`), or select one with `at_iou_threshold`.
+
+A table matched at one threshold can still be **re-thresholded**.
+`at_iou_threshold(t)` compares the stored IoU with `t`, which does not
+re-match: a detection that lost its box to a higher-scoring duplicate does not
+get it back.
 
 ## Stratified Evaluation
 
@@ -411,10 +565,14 @@ small = table.filter_images(["img_001", "img_007"])
 
 ## Class-Aware Metrics
 
-Pass a `class_col` to the matcher, then compute per-class or averaged metrics:
+Matcher input for several classes is one row per (image, class). Pass the
+class column as `class_col`, and each detection keeps its own row's class.
+`match_detections` builds those rows for you.
 
 ```python
-table = adapter.match(data, ..., class_col="category")
+table = BBoxMatcher().match(data, ..., class_col="category")
 ap_cat = average_precision(table, class_id="cat")
-map_val = mean_average_precision(table)  # averages across all classes
+map_val = mean_average_precision(table)        # classes without truth count as 0
+mean_ap().value(table)                         # COCO: classes without truth left out
+AP().by_group(table, "class_id").collect()     # every class in one plan
 ```
