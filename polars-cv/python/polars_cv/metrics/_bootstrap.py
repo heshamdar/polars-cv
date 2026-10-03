@@ -13,7 +13,7 @@ Everything is one Polars plan:
 * the resample (:func:`_lazy_resample`) is a position-independent hash-expression
   draw over a cross-join skeleton — no materialization, group-partitioned so each
   group resamples within itself and stratified within ``gt_label`` and, for the
-  weighted FROC/LROC families, within each weight cell (:func:`_sampling_cells`);
+  weighted FROC/LROC families, within each weight cell (:func:`_sampling_units`);
 * the per-replicate metric reuses the existing lazy group-aware authorities
   (``froc_auc`` / ``lroc_auc`` / ``all_points_ap_by_group`` keyed by
   ``bootstrap_id``);
@@ -388,36 +388,27 @@ def _replicate_table(
     strata: list[str],
     weight_rtol: float,
 ) -> tuple[DetectionTable, pl.LazyFrame]:
-    """The weighted replicate table and its sampling units' weight cells.
+    """The weighted replicate table and its sampling units.
 
     The one way every CI builds its replicates: the resample is stratified on the
-    sampling units' weight cells (:func:`_sampling_cells`) and each drawn image's
-    weight is rescaled to its cell's full-sample share
-    (:func:`_bootstrap_table_with_draws`). Returns ``(replicates, unit_cells)``;
-    the cells feed the interval's singleton rule.
+    sampling units' weight cells (:func:`_sampling_units`), and under
+    ``sample_col`` each drawn image's weight is rescaled to its cell's
+    full-sample share (:func:`_rescale_to_cell_shares`). An image-level draw
+    redraws every ``(group, gt_label, cell)`` to its own size, so its rescale
+    factor would be exactly ``1`` and is not applied. Returns
+    ``(replicates, units)``; the units feed the interval's singleton rule.
 
-    The cells and the draw are ``cache()``-d (still lazy): the replicate metric
-    reads the replicate frames many times, and projection pushdown leaves each
-    read a slightly different subplan the optimizer cannot merge, so without a
-    cache the streaming engine recomputed the resample at every read (~15x).
+    Nothing is ``cache()``-d: on the declared polars floor (1.43.2) a cached
+    frame read under different projections returned wrong rows. The units frame
+    is instead one pass over the metadata (sort, window, ``group_by``), so each
+    read of the replicate frames stays cheap to recompute.
     """
-    image_cells = _sampling_cells(
+    units = _sampling_units(
         table,
-        sample_col=None,
+        sample_col=sample_col,
         group_keys=group_keys,
         strata=strata,
         weight_rtol=weight_rtol,
-    ).cache()
-    unit_cells = (
-        image_cells
-        if sample_col is None
-        else _sampling_cells(
-            table,
-            sample_col=sample_col,
-            group_keys=group_keys,
-            strata=strata,
-            weight_rtol=weight_rtol,
-        ).cache()
     )
     samples = _resolve_bootstrap_samples(
         table,
@@ -425,12 +416,23 @@ def _replicate_table(
         n_bootstrap=n_bootstrap,
         seed=seed,
         group_keys=group_keys,
-        cells=unit_cells,
-    ).cache()
+        units=units,
+    )
+    image_cells = (
+        None
+        if sample_col is None
+        else _sampling_units(
+            table,
+            sample_col=None,
+            group_keys=group_keys,
+            strata=strata,
+            weight_rtol=weight_rtol,
+        )
+    )
     boot = _bootstrap_table_with_draws(
         table, samples, image_cells=image_cells, group_keys=group_keys
     )
-    return boot, unit_cells
+    return boot, units
 
 
 def _bootstrap_ci_from_replicates(
@@ -458,7 +460,7 @@ def _bootstrap_ci_from_replicates(
     and — for the two-class rank statistics (``require_both_classes``, i.e.
     Mann-Whitney) — at least one negative as well, since the AUC is undefined
     without both classes. Given the sampling units' weight ``cells``
-    (:func:`_sampling_cells`), a group is also non-viable when any of its weight cells holds a single unit:
+    (:func:`_sampling_units`), a group is also non-viable when any of its weight cells holds a single unit:
     every replicate redraws that unit, so its variance is invisible — and a
     continuous weight, all singletons, would report a zero-width interval.
 
@@ -629,64 +631,69 @@ def _unit_expr(sample_col: str | None) -> pl.Expr:
     return pl.col(sample_col).cast(pl.String).alias("_entity")
 
 
-def _sampling_cells(
+def _sampling_units(
     table: DetectionTable,
     *,
     sample_col: str | None,
     group_keys: list[str],
-    strata: list[str],
-    weight_rtol: float,
+    strata: list[str] | None = None,
+    weight_rtol: float = 0.0,
 ) -> pl.LazyFrame:
-    """Each sampling unit's weight cell, lazily: ``[unit, *group_keys, _cell]``.
+    """One row per sampling unit and group: the resample's base, lazily.
 
-    The single authority for which cell a unit belongs to — the resample
-    stratifies on it, the replicate rescale and the interval's singleton rule
-    count it. Within each ``(group, *strata)`` the distinct weights are clustered
-    (:func:`_weight_clusters`), and a unit's cell is the sorted list of the
-    distinct clusters (or ``(*strata, cluster)`` structs) across its metadata
-    rows. A weight is a property of an image, so this is normally one value; when
-    an image's class rows (or an entity's images) disagree, the unit still has
-    one well-defined cell — its combination.
+    The single authority for what a unit is and which stratum it is drawn in —
+    the resample draws from it, the replicate rescale and the interval's
+    singleton rule count it. Columns: ``[unit, *group_keys]``, plus:
+
+    * ``gt_label`` (image-level units): positive if **any** of the image's
+      ``(image, class)`` rows is. One row per image, so an image positive for one
+      class and negative for another has one draw slot, not one per label.
+    * ``_cell`` (when ``strata`` is given): the sorted distinct weight clusters
+      (:func:`_with_weight_clusters`) — or ``(*strata, cluster)`` structs —
+      across the unit's metadata rows. A weight is a property of an image, so
+      this is normally one value; a unit whose rows disagree still has one
+      well-defined cell, its combination.
 
     Raises:
         ValueError: A ``strata`` column is not on ``image_metadata``, or
             ``weight_rtol`` is not a finite number ``>= 0`` (both checked at build
             time; nothing collects).
     """
-    if not (math.isfinite(weight_rtol) and weight_rtol >= 0.0):
-        raise ValueError(
-            f"`weight_rtol` must be a finite number >= 0, got {weight_rtol!r}."
-        )
     meta = table.image_metadata
-    names = set(meta.collect_schema().names())
-    missing = [c for c in strata if c not in names]
-    if missing:
-        raise ValueError(
-            f"`strata` column(s) {missing!r} not found in image_metadata; "
-            f"available: {sorted(names)}."
-        )
-    extra = [c for c in dict.fromkeys(strata) if c != COL_WEIGHT]
-    part = [*group_keys, *(c for c in extra if c not in group_keys)]
-    labelled = meta.join(
-        _weight_clusters(meta, part, weight_rtol),
-        on=[*part, COL_WEIGHT],
-        how="left",
-        nulls_equal=True,
-    )
-    value = pl.struct(*extra, _COL_WCLUSTER) if extra else pl.col(_COL_WCLUSTER)
-    return labelled.group_by(_unit_expr(sample_col), *group_keys).agg(
-        value.unique().sort().alias(_COL_CELL)
-    )
+    aggs: list[pl.Expr] = []
+    if sample_col is None:
+        aggs.append(pl.col(COL_GT_LABEL).any())
+    if strata is not None:
+        if not (math.isfinite(weight_rtol) and weight_rtol >= 0.0):
+            raise ValueError(
+                f"`weight_rtol` must be a finite number >= 0, got {weight_rtol!r}."
+            )
+        names = set(meta.collect_schema().names())
+        missing = [c for c in strata if c not in names]
+        if missing:
+            raise ValueError(
+                f"`strata` column(s) {missing!r} not found in image_metadata; "
+                f"available: {sorted(names)}."
+            )
+        extra = [c for c in dict.fromkeys(strata) if c != COL_WEIGHT]
+        part = [*group_keys, *(c for c in extra if c not in group_keys)]
+        meta = _with_weight_clusters(meta, part, weight_rtol)
+        value = pl.struct(*extra, _COL_WCLUSTER) if extra else pl.col(_COL_WCLUSTER)
+        aggs.append(value.unique().sort().alias(_COL_CELL))
+    return meta.group_by(_unit_expr(sample_col), *group_keys).agg(*aggs)
 
 
-def _weight_clusters(meta: pl.LazyFrame, part: list[str], rtol: float) -> pl.LazyFrame:
-    """Cluster ids for the distinct weights within each ``part``, lazily.
+def _with_weight_clusters(
+    meta: pl.LazyFrame, part: list[str], rtol: float
+) -> pl.LazyFrame:
+    """``meta`` with each row's weight cluster id within ``part``, in one pass.
 
-    Sorted ascending, a new cluster starts wherever a weight is not within
-    ``rtol`` (relative to the larger magnitude) of the one before it, so values
-    that differ only by arithmetic noise share a cluster without any rounding
-    boundary to straddle. A null or NaN weight is a cluster of its own. Returns
-    ``[*part, weight, _wc]``.
+    Sorted by weight within each ``part``, a new cluster starts wherever a
+    weight is neither equal to the one before it nor within ``rtol`` (relative
+    to the larger magnitude), so values that differ only by arithmetic noise
+    share a cluster without any rounding boundary to straddle. Null weights
+    share one cluster, as do NaN weights. A sort and a window — no self-join —
+    so the subplan stays cheap however often the replicate frames re-read it.
     """
     w = pl.col(COL_WEIGHT)
 
@@ -694,12 +701,11 @@ def _weight_clusters(meta: pl.LazyFrame, part: list[str], rtol: float) -> pl.Laz
         return expr.over(part) if part else expr
 
     prev = within(w.shift(1))
-    close = (w - prev).abs() <= rtol * pl.max_horizontal(w.abs(), prev.abs())
-    return (
-        meta.select(*part, COL_WEIGHT)
-        .unique()
-        .sort(*part, COL_WEIGHT)
-        .with_columns(within((~close).fill_null(True).cum_sum()).alias(_COL_WCLUSTER))
+    close = w.eq_missing(prev) | (
+        (w - prev).abs() <= rtol * pl.max_horizontal(w.abs(), prev.abs())
+    )
+    return meta.sort(*part, COL_WEIGHT).with_columns(
+        within((~close).fill_null(True).cum_sum()).alias(_COL_WCLUSTER)
     )
 
 
@@ -710,32 +716,33 @@ def _resolve_bootstrap_samples(
     n_bootstrap: int,
     seed: int | None,
     group_keys: list[str] | None = None,
-    cells: pl.LazyFrame | None = None,
+    units: pl.LazyFrame | None = None,
 ) -> pl.LazyFrame:
-    """Seeded, lazy ``(bootstrap_id, image_id)`` resample frame.
+    """Seeded, lazy ``(bootstrap_id, *group_keys, image_id, _slot)`` resample.
 
     Image-level (``sample_col is None``) resamples images directly, stratified by
     ``gt_label``. Entity-level (``sample_col`` set) resamples entities and expands
     each drawn entity to its images. Both partition draws within ``group_keys`` so
-    an image (or entity) is only ever redrawn to replace one in the same group.
-    ``cells`` (from :func:`_sampling_cells`, built with the same ``sample_col`` and
-    ``group_keys``) further stratifies each partition by weight cell. The whole
-    frame stays lazy — the caller collects once at the streaming boundary.
+    an image (or entity) is only ever redrawn to replace one in the same group,
+    and each draw carries its partition's keys so it brings only that group's
+    rows. ``units`` (from :func:`_sampling_units`, built with the same
+    ``sample_col`` and ``group_keys``) is the base to draw from; a ``_cell``
+    column on it further stratifies the draw. Without it the base is the plain
+    :func:`_sampling_units`. The whole frame stays lazy — the caller collects
+    once at the streaming boundary.
     """
     group_keys = list(group_keys or [])
     meta = table.image_metadata
     unit = _unit_expr(sample_col)
     unit_col = unit.meta.output_name()
 
-    base = meta.select(
-        unit, *([COL_GT_LABEL] if sample_col is None else []), *group_keys
+    base = (
+        _sampling_units(table, sample_col=sample_col, group_keys=group_keys)
+        if units is None
+        else units
     )
-    base = base.unique()
     strata_cols = [COL_GT_LABEL] if sample_col is None else []
-    if cells is not None:
-        base = base.join(
-            cells, on=[unit_col, *group_keys], how="left", nulls_equal=True
-        )
+    if _COL_CELL in base.collect_schema().names():
         strata_cols.append(_COL_CELL)
 
     unit_samples = _lazy_resample(
@@ -749,17 +756,19 @@ def _resolve_bootstrap_samples(
     if sample_col is None:
         return unit_samples
 
-    # Entity-level: expand each drawn entity to its images.
+    # Entity-level: expand each drawn entity to its images within its group.
     ent_map = (
-        meta.select(unit, COL_IMAGE_ID)
+        meta.select(unit, *group_keys, COL_IMAGE_ID)
         .unique()
-        .group_by(unit_col)
+        .group_by(unit_col, *group_keys)
         .agg(pl.col(COL_IMAGE_ID))
     )
     return (
-        unit_samples.join(ent_map, on=unit_col, how="left")
+        unit_samples.join(
+            ent_map, on=[unit_col, *group_keys], how="left", nulls_equal=True
+        )
         .explode(COL_IMAGE_ID, empty_as_null=True)
-        .select(_COL_BOOT, COL_IMAGE_ID, _COL_SLOT)
+        .select(_COL_BOOT, *group_keys, COL_IMAGE_ID, _COL_SLOT)
     )
 
 
@@ -778,29 +787,40 @@ def _bootstrap_table_with_draws(
     is a ``LazyFrame``; the synthetic id uses the deterministic per-draw ``_slot``,
     so the resulting table — and every grouped metric over it — is reproducible.
 
-    With ``image_cells`` (:func:`_sampling_cells` at image level), each drawn
+    A draw brings only its own group's rows: metadata joins on ``image_id`` and
+    every ``group_keys`` column, detections on ``image_id`` and the group keys
+    they carry (a metadata-only key such as ``group_id`` reaches the detections
+    through the draw's metadata). Otherwise, under ``group_by="class_id"`` a
+    draw in one class's partition would bring the image's other classes too.
+
+    With ``image_cells`` (:func:`_sampling_units` at image level), each drawn
     image's weight is rescaled to its cell's full-sample share of the group's
     images (:func:`_rescale_to_cell_shares`).
     """
     from ._types import DetectionTable
 
+    g = list(group_keys or [])
     samples = samples_df.with_columns(
         _draw_uid=pl.col(COL_IMAGE_ID)
         + pl.lit("#d")
         + pl.col(_COL_SLOT).cast(pl.String)
     )
+    det_names = set(table.detections.collect_schema().names())
+    det_keys = [COL_IMAGE_ID, *(k for k in g if k in det_names)]
+    meta_only = [k for k in g if k not in det_names]
 
     det_boot = (
-        samples.join(table.detections, on=COL_IMAGE_ID, how="left")
+        samples.drop(*meta_only)
+        .join(table.detections, on=det_keys, how="left", nulls_equal=True)
         .drop_nulls(COL_SCORE)  # zero-detection draws contribute no rows
         .with_columns(pl.col("_draw_uid").alias(COL_IMAGE_ID))
         .drop("_draw_uid", _COL_SLOT)
     )
-    meta_boot = samples.join(table.image_metadata, on=COL_IMAGE_ID, how="left")
+    meta_boot = samples.join(
+        table.image_metadata, on=[COL_IMAGE_ID, *g], how="left", nulls_equal=True
+    )
     if image_cells is not None:
-        meta_boot = _rescale_to_cell_shares(
-            meta_boot, image_cells, list(group_keys or [])
-        )
+        meta_boot = _rescale_to_cell_shares(meta_boot, image_cells, g)
     meta_boot = meta_boot.with_columns(pl.col("_draw_uid").alias(COL_IMAGE_ID)).drop(
         "_draw_uid", _COL_SLOT
     )
@@ -820,9 +840,8 @@ def _rescale_to_cell_shares(
     full sample, ``n*_c/N*`` its share of the replicate's drawn images. The
     weighted statistics are scale-invariant within a group, so this is a
     ``p / q̂`` weight re-estimated on the replicate — the recomputation a coarser
-    (entity) draw needs, assigned back to its images. An image-level draw redraws
-    every ``(group, cell)`` to its own size, so the factor is exactly ``1``
-    there. A missing weight counts as ``1.0``, as in the metrics.
+    (entity) draw needs, assigned back to its images. A missing weight counts as
+    ``1.0``, as in the metrics.
     """
     g = group_keys
 
@@ -830,8 +849,9 @@ def _rescale_to_cell_shares(
         keys = [*extra, *g]
         return expr.over(keys) if keys else expr
 
+    cells = image_cells.select(COL_IMAGE_ID, *g, _COL_CELL)
     full = (
-        image_cells.group_by(*g, _COL_CELL)
+        cells.group_by(*g, _COL_CELL)
         .agg(_n=pl.len())
         .with_columns(_share=pl.col("_n") / within(pl.col("_n").sum()))
         .select(*g, _COL_CELL, "_share")
@@ -839,7 +859,7 @@ def _rescale_to_cell_shares(
     drawn = pl.col("_draw_uid").n_unique()
     replicate_share = within(drawn, _COL_BOOT, _COL_CELL) / within(drawn, _COL_BOOT)
     return (
-        meta_boot.join(image_cells, on=[COL_IMAGE_ID, *g], how="left", nulls_equal=True)
+        meta_boot.join(cells, on=[COL_IMAGE_ID, *g], how="left", nulls_equal=True)
         .join(full, on=[*g, _COL_CELL], how="left", nulls_equal=True)
         .with_columns(
             (
@@ -859,7 +879,7 @@ def _lazy_resample(
     strata_cols: list[str] | None = None,
     partition_cols: list[str] | None = None,
 ) -> pl.LazyFrame:
-    """Lazy, collect-free ``(bootstrap_id, unit_col, _slot)`` resample frame.
+    """Lazy, collect-free ``(bootstrap_id, *partition, unit_col, _slot)`` resample.
 
     Every draw is a *position-independent* hash of its global slot id, so the
     result is bit-identical across thread counts and streaming morsels and
@@ -885,7 +905,8 @@ def _lazy_resample(
         partition_cols: Optional partition columns on ``base`` (e.g. group keys).
 
     Returns:
-        ``LazyFrame`` with ``bootstrap_id`` (Int32), ``unit_col`` and ``_slot``.
+        ``LazyFrame`` with ``bootstrap_id`` (Int32), the ``partition_cols``,
+        ``unit_col`` and ``_slot``.
 
     Note:
         The draw is ``hash(slot) % stratum_size``; the modulo bias for ``u64 % n``
@@ -941,4 +962,5 @@ def _lazy_resample(
         left_on=[*keys, "_draw"],
         right_on=[*keys, "_sidx"],
         how="left",
-    ).select(_COL_BOOT, unit_col, _COL_SLOT)
+        nulls_equal=True,
+    ).select(_COL_BOOT, *part, unit_col, _COL_SLOT)
