@@ -187,6 +187,13 @@ ap = average_precision(table)
 map_val = mean_average_precision(table, iou_thresholds=[0.5, 0.55, 0.6, ..., 0.95])
 ```
 
+Every precision-recall metric is weighted by `image_metadata.weight`, like
+FROC and LROC. Each detection carries its image's weight, precision is
+`Σw·tp / Σw·(tp + fp)`, and recall is `Σw·tp / Σw·n_gts`. This matches
+scikit-learn's `sample_weight`: a weight of `k` counts the image as if it
+appeared `k` times. Unit weights give the plain counts, a zero weight removes an
+image, and `weight_agg=` resolves duplicate keys as it does for FROC.
+
 ### FROC
 
 The FROC metrics are **expression-valued and lazy**: `froc_auc` returns a
@@ -253,9 +260,9 @@ curve = lroc_curve_lazy(table).collect()
 from polars_cv.metrics import confusion_at_threshold
 
 counts = confusion_at_threshold(table, threshold=0.5)
-# ConfusionResult(tp=10, fp=3, fn=2)
-counts.tp, counts.fp, counts.fn  # attribute access
-counts.precision, counts.recall, counts.f1  # derived metrics
+counts.tp, counts.fp, counts.fn  # raw counts
+counts.weighted_tp, counts.weighted_fp, counts.weighted_fn  # weighted masses
+counts.precision, counts.recall, counts.f1  # derived from the weighted masses
 counts.to_dict()  # {'tp': 10, 'fp': 3, 'fn': 2}
 ```
 
@@ -311,16 +318,17 @@ degenerate groups alike. Viability needs at least one positive target — and, f
 
 When `image_metadata.weight` is an importance weight estimated from the sample
 itself (`w = p / q̂`, reweighting a vendor or prevalence mix to a target), the
-correct weights differ in every replicate: each replicate draws a different
-mix. The FROC and LROC intervals handle this without any reweighting hook. They
-also stratify the resample on **weight cells**: units with the same weight
-form a cell, and each `(group, cell)` is redrawn to its own size.
+correct weights differ in every replicate, because each replicate draws a
+different mix. All three intervals (FROC, LROC and AP) handle this without a
+reweighting hook. They stratify the resample on **weight cells**: units whose
+weights agree within `weight_rtol` form a cell, and each `(group, cell)` is
+redrawn to its own size.
 
-Both weighted statistics are weight-scale-invariant ratios, so a weight that
-depends only on its cell's count (`p / q̂`, post-stratification, raking over
-crossed cells) does not change when the replicates are drawn this way. The
-full-sample weights are then exactly the weights re-estimated in each replicate,
-and the point estimate and the bounds come from the same estimator.
+Every weighted statistic is a ratio that does not change when all weights are
+rescaled. So a weight that depends only on its cell's count (`p / q̂`,
+post-stratification, raking over crossed cells) does not change under this
+draw. The full-sample weights are then exactly the weights re-estimated in each
+replicate, and the point estimate and the bounds come from the same estimator.
 
 ```python
 # Weights computed by the caller, e.g. per (group, vendor) cell:
@@ -330,26 +338,37 @@ meta = meta.with_columns(
 )
 froc_auc_ci_lazy(table, group_by="group_id", method="mann_whitney", seed=42)
 
-# Two cells that happen to share a weight exactly (e.g. several at 1.0)
-# are merged; name the columns the weights were computed over to keep them apart.
+# Two cells that happen to share a weight (e.g. several at 1.0) are merged;
+# name the columns the weights were computed over to keep them apart.
 froc_auc_ci_lazy(table, group_by="group_id", strata="vendor", fp_range=(0, 8))
+
+# Coarser weights (e.g. read back from a 3-significant-figure CSV):
+average_precision_ci_lazy(table, group_by="group_id", weight_rtol=1e-3)
 ```
 
 - **Weights computed per group or globally** are both exact. Draws never cross a
   group, and fixing every `(group, cell)` count also fixes the global count.
 - **Unit weights** form a single cell, so the resample is unchanged.
+- **`weight_rtol`** (default `1e-6`, relative) sets how close two weights must
+  be to share a cell. The sorted distinct weights split wherever consecutive
+  values differ by more than that, so there is no rounding boundary for
+  near-equal values to fall either side of. The default absorbs arithmetic
+  noise; `0.0` compares exactly. A tolerance coarse enough to merge different
+  cells keeps their combined count fixed but not the split between them.
+- **Entity-level resampling (`sample_col`)** redraws whole entities,
+  stratified by the weight cells of their images. Entities differ in size, so
+  a replicate's image mix can still drift. Each drawn image's weight is therefore
+  rescaled by `(n_c/N) / (n*_c/N*)`, its cell's full-sample share of the
+  group's images over its share in the replicate. That is the `p / q̂` weight
+  re-estimated on the replicate, recomputed at the coarser level and assigned
+  back to the images. For image-level draws the factor is exactly 1.
 - **A weight cell holding a single unit nulls its group's bounds.** That cell has
   no bootstrap variance. A continuous weight (for example from a propensity
   model) puts every unit in its own cell and would otherwise report a
   zero-width interval.
-- **Entity-level resampling (`sample_col`)** stratifies entities by the
-  distinct weights of their images. It is exact when the weights count
-  entities, or when the entities within a cell have equal image counts.
-- Weights are compared **exactly**. One expression evaluated per row (as above)
-  gives every member of a cell the same value. Weights that differ only by
-  floating-point noise split a cell, which stays exact but may leave singletons.
-- **Average precision** is unweighted (it never reads `weight`), so its
-  resample is not stratified by weight.
+- The rescale treats weights as **estimated from the sample**. Fixed design
+  weights (known in advance, not estimated) under entity-level resampling would
+  lose the variance that comes from the cell mix drifting.
 
 ## IoU Re-thresholding
 

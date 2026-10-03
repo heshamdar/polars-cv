@@ -865,18 +865,21 @@ class TestBootstrapPrAucEstimatorConsistency:
 
     @staticmethod
     def _dipping_table() -> DetectionTable:
-        # TP(0.9), FP(0.8), TP(0.7) over 2 GTs in ONE image:
-        # raw precision [1.0, 0.5, 0.667] dips; the envelope lifts the
-        # middle point, so raw trapezoid != envelope AP.
+        # TP(0.9), FP(0.8), TP(0.7) over 2 GTs, in each of TWO identical images:
+        # raw precision dips (1.0, then 0.5, 0.667 per image); the envelope
+        # lifts the middle point, so raw trapezoid != envelope AP. Two identical
+        # images rather than one: any redraw has the full sample's content, and
+        # the weight cell holds two units (a one-unit cell nulls the bounds).
+        images = ["img1", "img2"]
         det_df = pl.DataFrame(
             {
-                COL_IMAGE_ID: ["img1", "img1", "img1"],
-                COL_CLASS_ID: [DEFAULT_CLASS] * 3,
-                COL_SCORE: [0.9, 0.8, 0.7],
-                COL_IS_TP: [True, False, True],
-                COL_GT_IDX: [0, None, 1],
-                COL_IOU: [0.9, 0.0, 0.8],
-                COL_DET_IDX: [0, 1, 2],
+                COL_IMAGE_ID: [i for i in images for _ in range(3)],
+                COL_CLASS_ID: [DEFAULT_CLASS] * 6,
+                COL_SCORE: [0.9, 0.8, 0.7] * 2,
+                COL_IS_TP: [True, False, True] * 2,
+                COL_GT_IDX: [0, None, 1] * 2,
+                COL_IOU: [0.9, 0.0, 0.8] * 2,
+                COL_DET_IDX: [0, 1, 2] * 2,
             },
             schema={
                 COL_IMAGE_ID: pl.String,
@@ -890,18 +893,19 @@ class TestBootstrapPrAucEstimatorConsistency:
         )
         meta_df = pl.DataFrame(
             {
-                COL_IMAGE_ID: ["img1"],
-                COL_CLASS_ID: [DEFAULT_CLASS],
-                COL_N_GTS: [2],
-                COL_WEIGHT: [1.0],
-                COL_GT_LABEL: [True],
+                COL_IMAGE_ID: images,
+                COL_CLASS_ID: [DEFAULT_CLASS] * 2,
+                COL_N_GTS: [2, 2],
+                COL_WEIGHT: [1.0, 1.0],
+                COL_GT_LABEL: [True, True],
             }
         )
         return DetectionTable.from_matched(det_df, meta_df)
 
     def test_identity_replicates_equal_point_estimate(self) -> None:
-        """With a single image, every bootstrap sample IS the full sample, so
-        the CI collapses onto the point estimate (bounds equal the point)."""
+        """With two identical images, every bootstrap sample has the full
+        sample's content, so the CI collapses onto the point estimate (bounds
+        equal the point)."""
         table = self._dipping_table()
         result = average_precision_ci_lazy(table, n_bootstrap=8, seed=7).collect()
 

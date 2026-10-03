@@ -24,6 +24,7 @@ Everything is one Polars plan:
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Literal
 
 import polars as pl
@@ -32,7 +33,6 @@ from ._types import (
     COL_GT_LABEL,
     COL_IMAGE_ID,
     COL_IS_TP,
-    COL_N_GTS,
     COL_SCORE,
     COL_WEIGHT,
 )
@@ -44,9 +44,11 @@ if TYPE_CHECKING:
 # Internal slot column carrying a globally-unique, deterministic per-draw id.
 _COL_BOOT = "bootstrap_id"
 _COL_SLOT = "_slot"
-# A sampling unit's weight cell: the sorted distinct weights (crossed with any
-# `strata` columns) of its metadata rows.
+# A sampling unit's weight cell: the sorted distinct weight clusters (crossed
+# with any `strata` columns) of its metadata rows.
 _COL_CELL = "_cell"
+# A metadata row's weight cluster: weights within `weight_rtol` share one.
+_COL_WCLUSTER = "_wc"
 
 
 def _normalize_group_by(group_by: str | list[str] | None) -> list[str]:
@@ -85,6 +87,7 @@ def froc_auc_ci_lazy(
     sample_col: str | None = None,
     extrapolate: Extrapolate = "none",
     strata: str | list[str] | None = None,
+    weight_rtol: float = 1e-6,
 ) -> pl.LazyFrame:
     """Lazy, group-aware bootstrap confidence interval for FROC AUC.
 
@@ -109,10 +112,15 @@ def froc_auc_ci_lazy(
     the sample, post-stratification, raking over crossed cells — is then exactly
     the weight re-estimated inside every replicate. Weights computed per group or
     globally are both exact (draws never cross a group). Unit weights form one
-    cell, which leaves the resample unchanged. A group with a weight cell holding a
-    **single** unit nulls its bounds: that cell has no bootstrap variance, and a
-    continuous weight (every unit its own cell) would otherwise report a
-    zero-width interval. Weights are compared exactly.
+    cell, which leaves the resample unchanged. Weights within ``weight_rtol`` of
+    each other share a cell. Under ``sample_col`` the draw redraws entities, so a
+    replicate's image mix can still wander (entities differ in size): each
+    image's weight is then rescaled by ``(n_c/N) / (n*_c/N*)`` — its cell's
+    full-sample over replicate share of the group's images — which is the
+    ``p / q̂`` weight re-estimated on the replicate (exactly ``1`` for image-level
+    draws). A group with a weight cell holding a **single** unit nulls its
+    bounds: that cell has no bootstrap variance, and a continuous weight (every
+    unit its own cell) would otherwise report a zero-width interval.
 
     Args:
         table: Canonical detection table.
@@ -133,7 +141,11 @@ def froc_auc_ci_lazy(
             estimate and every replicate (``"none"`` or ``"flat"``).
         strata: Optional metadata column(s) crossed into the weight cells — the
             columns the weights were computed over (e.g. ``"vendor"``). Needed
-            only when two cells share a weight exactly (several at ``1.0``).
+            only when two cells share a weight (several at ``1.0``).
+        weight_rtol: Relative tolerance within which two weights share a cell
+            (sorted distinct weights split where consecutive values differ by
+            more than ``weight_rtol`` times the larger). The default ``1e-6``
+            absorbs arithmetic noise; ``0.0`` compares exactly.
 
     Returns:
         ``LazyFrame`` with ``[*group_by, auc, ci_lower, ci_upper]``.
@@ -164,7 +176,8 @@ def froc_auc_ci_lazy(
         confidence=confidence,
         seed=seed,
         sample_col=sample_col,
-        weight_strata=_normalize_group_by(strata),
+        strata=_normalize_group_by(strata),
+        weight_rtol=weight_rtol,
         empty_value=empty_value,
         require_both_classes=method == "mann_whitney",
     )
@@ -185,6 +198,7 @@ def lroc_auc_ci_lazy(
     sample_col: str | None = None,
     extrapolate: Extrapolate = "none",
     strata: str | list[str] | None = None,
+    weight_rtol: float = 1e-6,
 ) -> pl.LazyFrame:
     """Lazy, group-aware bootstrap confidence interval for LROC AUC.
 
@@ -209,6 +223,7 @@ def lroc_auc_ci_lazy(
         extrapolate: Off-curve policy passed to :func:`lroc_auc`.
         strata: Optional metadata column(s) crossed into the weight cells (see
             :func:`froc_auc_ci_lazy`).
+        weight_rtol: Relative tolerance within which weights share a cell.
 
     Returns:
         ``LazyFrame`` with ``[*group_by, auc, ci_lower, ci_upper]``.
@@ -240,7 +255,8 @@ def lroc_auc_ci_lazy(
         confidence=confidence,
         seed=seed,
         sample_col=sample_col,
-        weight_strata=_normalize_group_by(strata),
+        strata=_normalize_group_by(strata),
+        weight_rtol=weight_rtol,
         empty_value=empty_value,
         require_both_classes=method == "mann_whitney",
     )
@@ -255,15 +271,17 @@ def average_precision_ci_lazy(
     seed: int | None = None,
     class_id: str | None = None,
     sample_col: str | None = None,
+    strata: str | list[str] | None = None,
+    weight_rtol: float = 1e-6,
 ) -> pl.LazyFrame:
-    """Lazy, group-aware bootstrap confidence interval for all-points AP.
+    """Lazy, group-aware bootstrap confidence interval for weighted all-points AP.
 
     Returns ``[*group_by, ap, ci_lower, ci_upper]``. The ``ap`` column is the
     deterministic point estimate (the same all-points estimator as
     :func:`~polars_cv.metrics.average_precision`); only the bounds are
-    bootstrapped. Nothing is collected here. AP is unweighted (it never reads
-    ``weight``), so unlike the FROC/LROC intervals its resample is not
-    stratified by weight cell.
+    bootstrapped. Nothing is collected here. The AP is weighted by
+    ``image_metadata.weight`` and its resample is stratified on weight cells, as
+    for :func:`froc_auc_ci_lazy` (see it for the rules).
 
     Args:
         table: Canonical detection table.
@@ -273,6 +291,8 @@ def average_precision_ci_lazy(
         seed: Optional RNG seed (``None`` → deterministic constant).
         class_id: Optional class filter applied before sampling and scoring.
         sample_col: Optional entity column to resample at the entity level.
+        strata: Optional metadata column(s) crossed into the weight cells.
+        weight_rtol: Relative tolerance within which weights share a cell.
 
     Returns:
         ``LazyFrame`` with ``[*group_by, ap, ci_lower, ci_upper]``.
@@ -295,7 +315,8 @@ def average_precision_ci_lazy(
         confidence=confidence,
         seed=seed,
         sample_col=sample_col,
-        weight_strata=None,
+        strata=_normalize_group_by(strata),
+        weight_rtol=weight_rtol,
         empty_value=0.0,
     )
 
@@ -315,7 +336,8 @@ def _auc_ci_lazy(
     confidence: float,
     seed: int | None,
     sample_col: str | None,
-    weight_strata: list[str] | None,
+    strata: list[str],
+    weight_rtol: float,
     empty_value: float,
     require_both_classes: bool = False,
 ) -> pl.LazyFrame:
@@ -325,29 +347,21 @@ def _auc_ci_lazy(
     given grouping (the shared lazy authority for this family). It is called once
     for the point estimate (``keys = group_keys``) and once per replicate
     (``keys = [*group_keys, bootstrap_id]``). ``require_both_classes`` tightens the
-    degeneracy rule for the two-class rank statistics (Mann-Whitney).
-    ``weight_strata`` is ``None`` for an unweighted metric; otherwise the resample
-    is stratified on the weight cells (crossed with those columns), and the same
-    cells feed the singleton rule of the interval.
+    degeneracy rule for the two-class rank statistics (Mann-Whitney). The
+    replicates come from :func:`_replicate_table`, whose sampling-unit weight
+    cells also feed the interval's singleton rule.
     """
     point = metric(table, group_keys)
 
-    cells = (
-        None
-        if weight_strata is None
-        else _sampling_cells(
-            table, sample_col=sample_col, group_keys=group_keys, strata=weight_strata
-        )
-    )
-    samples = _resolve_bootstrap_samples(
+    boot, cells = _replicate_table(
         table,
+        group_keys=group_keys,
         sample_col=sample_col,
         n_bootstrap=n_bootstrap,
         seed=seed,
-        group_keys=group_keys,
-        cells=cells,
+        strata=strata,
+        weight_rtol=weight_rtol,
     )
-    boot = _bootstrap_table_with_draws(table, samples)
     replicates = metric(boot, [*group_keys, _COL_BOOT])
 
     ci = _bootstrap_ci_from_replicates(
@@ -364,6 +378,61 @@ def _auc_ci_lazy(
     return _join_point_and_ci(point, ci, group_keys, value_col)
 
 
+def _replicate_table(
+    table: DetectionTable,
+    *,
+    group_keys: list[str],
+    sample_col: str | None,
+    n_bootstrap: int,
+    seed: int | None,
+    strata: list[str],
+    weight_rtol: float,
+) -> tuple[DetectionTable, pl.LazyFrame]:
+    """The weighted replicate table and its sampling units' weight cells.
+
+    The one way every CI builds its replicates: the resample is stratified on the
+    sampling units' weight cells (:func:`_sampling_cells`) and each drawn image's
+    weight is rescaled to its cell's full-sample share
+    (:func:`_bootstrap_table_with_draws`). Returns ``(replicates, unit_cells)``;
+    the cells feed the interval's singleton rule.
+
+    The cells and the draw are ``cache()``-d (still lazy): the replicate metric
+    reads the replicate frames many times, and projection pushdown leaves each
+    read a slightly different subplan the optimizer cannot merge, so without a
+    cache the streaming engine recomputed the resample at every read (~15x).
+    """
+    image_cells = _sampling_cells(
+        table,
+        sample_col=None,
+        group_keys=group_keys,
+        strata=strata,
+        weight_rtol=weight_rtol,
+    ).cache()
+    unit_cells = (
+        image_cells
+        if sample_col is None
+        else _sampling_cells(
+            table,
+            sample_col=sample_col,
+            group_keys=group_keys,
+            strata=strata,
+            weight_rtol=weight_rtol,
+        ).cache()
+    )
+    samples = _resolve_bootstrap_samples(
+        table,
+        sample_col=sample_col,
+        n_bootstrap=n_bootstrap,
+        seed=seed,
+        group_keys=group_keys,
+        cells=unit_cells,
+    ).cache()
+    boot = _bootstrap_table_with_draws(
+        table, samples, image_cells=image_cells, group_keys=group_keys
+    )
+    return boot, unit_cells
+
+
 def _bootstrap_ci_from_replicates(
     replicates: pl.LazyFrame,
     table: DetectionTable,
@@ -373,8 +442,8 @@ def _bootstrap_ci_from_replicates(
     n_bootstrap: int,
     confidence: float,
     empty_value: float,
+    cells: pl.LazyFrame,
     require_both_classes: bool = False,
-    cells: pl.LazyFrame | None = None,
 ) -> pl.LazyFrame:
     """Per-group percentile bounds from a per-replicate grouped-metric frame.
 
@@ -388,8 +457,8 @@ def _bootstrap_ci_from_replicates(
     reporting a spurious interval: viability needs at least one positive target,
     and — for the two-class rank statistics (``require_both_classes``, i.e.
     Mann-Whitney) — at least one negative as well, since the AUC is undefined
-    without both classes. With weight ``cells`` (:func:`_sampling_cells`), a
-    group is also non-viable when any of its weight cells holds a single unit:
+    without both classes. Given the sampling units' weight ``cells``
+    (:func:`_sampling_cells`), a group is also non-viable when any of its weight cells holds a single unit:
     every replicate redraws that unit, so its variance is invisible — and a
     continuous weight, all singletons, would report a zero-width interval.
 
@@ -410,21 +479,20 @@ def _bootstrap_ci_from_replicates(
         pl.col(value_col).is_null().cast(pl.Int64).alias("_undefined"),
     )
 
-    if cells is not None:
-        cell_sizes = cells.group_by(*group_keys, _COL_CELL).agg(_n=pl.len())
-        min_cell = pl.col("_n").min().alias("_min_cell")
+    cell_sizes = cells.group_by(*group_keys, _COL_CELL).agg(_n=pl.len())
+    min_cell = pl.col("_n").min().alias("_min_cell")
 
     if group_keys:
-        groups = meta.group_by(group_keys).agg(viable_expr)
-        if cells is not None:
-            groups = _require_no_singleton_cell(
-                groups.join(
-                    cell_sizes.group_by(group_keys).agg(min_cell),
-                    on=group_keys,
-                    how="left",
-                    nulls_equal=True,
-                )
+        groups = _require_no_singleton_cell(
+            meta.group_by(group_keys)
+            .agg(viable_expr)
+            .join(
+                cell_sizes.group_by(group_keys).agg(min_cell),
+                on=group_keys,
+                how="left",
+                nulls_equal=True,
             )
+        )
         grid = groups.join(reps, how="cross")
         joined = grid.join(
             rep_marked, on=[*group_keys, _COL_BOOT], how="left"
@@ -444,11 +512,9 @@ def _bootstrap_ci_from_replicates(
             pl.col("_viable").first().alias("_viable"),
         )
     else:
-        groups = meta.select(viable_expr)
-        if cells is not None:
-            groups = _require_no_singleton_cell(
-                groups.join(cell_sizes.select(min_cell), how="cross")
-            )
+        groups = _require_no_singleton_cell(
+            meta.select(viable_expr).join(cell_sizes.select(min_cell), how="cross")
+        )
         grid = groups.join(reps, how="cross")
         joined = grid.join(rep_marked, on=_COL_BOOT, how="left").with_columns(
             pl.when(pl.col("_present").is_null())
@@ -506,18 +572,20 @@ def _all_points_ap_grouped(
     table: DetectionTable,
     group_keys: list[str],
 ) -> pl.LazyFrame:
-    """All-points AP per group as a lazy ``[*group_keys, ap]`` frame.
+    """Weighted all-points AP per group as a lazy ``[*group_keys, ap]`` frame.
 
-    Builds the per-detection ``expanded`` frame (``score``/``is_tp`` plus per-group
-    ``total_gts``) and reduces it with the shared
+    Builds the per-detection ``expanded`` frame (``score``/``is_tp``, the
+    detection's resolved ``weight`` and the group's ``gt_mass``) and reduces it
+    with the shared
     :func:`~polars_cv.metrics._metrics._precision_recall.all_points_ap_by_group`
     authority — the same estimator the scalar ``average_precision`` uses. An empty
     ``group_keys`` runs under a single dropped dummy group.
     """
     from ._metrics._precision_recall import all_points_ap_by_group
+    from ._weights import attach_resolved_weight, weighted_gt_mass
 
-    det = table.detections
     meta = table.image_metadata
+    det = attach_resolved_weight(table.detections, meta)
     det_names = set(det.collect_schema().names())
     meta_only = [k for k in group_keys if k not in det_names]
     if meta_only:
@@ -525,23 +593,25 @@ def _all_points_ap_grouped(
             meta.select(COL_IMAGE_ID, *meta_only).unique(), on=COL_IMAGE_ID, how="left"
         )
 
+    columns = (COL_SCORE, COL_IS_TP, COL_WEIGHT)
     if group_keys:
-        gts = meta.group_by(group_keys).agg(
-            total_gts=pl.col(COL_N_GTS).sum().cast(pl.Float64)
-        )
         expanded = (
-            det.select(*group_keys, COL_SCORE, COL_IS_TP)
+            det.select(*group_keys, *columns)
             .drop_nulls(COL_SCORE)
-            .join(gts, on=group_keys, how="left")
+            .join(
+                weighted_gt_mass(meta, group_keys),
+                on=group_keys,
+                how="left",
+                nulls_equal=True,
+            )
         )
         return all_points_ap_by_group(expanded, group_col=group_keys)
 
     _dummy = "_pr_grp"
-    gts = meta.select(total_gts=pl.col(COL_N_GTS).sum().cast(pl.Float64))
     expanded = (
-        det.select(COL_SCORE, COL_IS_TP)
+        det.select(*columns)
         .drop_nulls(COL_SCORE)
-        .join(gts, how="cross")
+        .join(weighted_gt_mass(meta, []), how="cross")
         .with_columns(pl.lit(0, dtype=pl.Int32).alias(_dummy))
     )
     return all_points_ap_by_group(expanded, group_col=_dummy).drop(_dummy)
@@ -565,20 +635,28 @@ def _sampling_cells(
     sample_col: str | None,
     group_keys: list[str],
     strata: list[str],
+    weight_rtol: float,
 ) -> pl.LazyFrame:
     """Each sampling unit's weight cell, lazily: ``[unit, *group_keys, _cell]``.
 
     The single authority for which cell a unit belongs to — the resample
-    stratifies on it and the interval's singleton rule counts it. A unit's cell is
-    the sorted list of the distinct ``weight`` values (or ``(weight, *strata)``
-    structs) across its metadata rows. A weight is a property of an image, so this
-    is normally one value; when an image's class rows (or an entity's images)
-    disagree, the unit still has one well-defined cell — its combination.
+    stratifies on it, the replicate rescale and the interval's singleton rule
+    count it. Within each ``(group, *strata)`` the distinct weights are clustered
+    (:func:`_weight_clusters`), and a unit's cell is the sorted list of the
+    distinct clusters (or ``(*strata, cluster)`` structs) across its metadata
+    rows. A weight is a property of an image, so this is normally one value; when
+    an image's class rows (or an entity's images) disagree, the unit still has
+    one well-defined cell — its combination.
 
     Raises:
-        ValueError: A ``strata`` column is not on ``image_metadata`` (a schema
-            check; nothing collects).
+        ValueError: A ``strata`` column is not on ``image_metadata``, or
+            ``weight_rtol`` is not a finite number ``>= 0`` (both checked at build
+            time; nothing collects).
     """
+    if not (math.isfinite(weight_rtol) and weight_rtol >= 0.0):
+        raise ValueError(
+            f"`weight_rtol` must be a finite number >= 0, got {weight_rtol!r}."
+        )
     meta = table.image_metadata
     names = set(meta.collect_schema().names())
     missing = [c for c in strata if c not in names]
@@ -588,9 +666,40 @@ def _sampling_cells(
             f"available: {sorted(names)}."
         )
     extra = [c for c in dict.fromkeys(strata) if c != COL_WEIGHT]
-    value = pl.struct(COL_WEIGHT, *extra) if extra else pl.col(COL_WEIGHT)
-    return meta.group_by(_unit_expr(sample_col), *group_keys).agg(
+    part = [*group_keys, *(c for c in extra if c not in group_keys)]
+    labelled = meta.join(
+        _weight_clusters(meta, part, weight_rtol),
+        on=[*part, COL_WEIGHT],
+        how="left",
+        nulls_equal=True,
+    )
+    value = pl.struct(*extra, _COL_WCLUSTER) if extra else pl.col(_COL_WCLUSTER)
+    return labelled.group_by(_unit_expr(sample_col), *group_keys).agg(
         value.unique().sort().alias(_COL_CELL)
+    )
+
+
+def _weight_clusters(meta: pl.LazyFrame, part: list[str], rtol: float) -> pl.LazyFrame:
+    """Cluster ids for the distinct weights within each ``part``, lazily.
+
+    Sorted ascending, a new cluster starts wherever a weight is not within
+    ``rtol`` (relative to the larger magnitude) of the one before it, so values
+    that differ only by arithmetic noise share a cluster without any rounding
+    boundary to straddle. A null or NaN weight is a cluster of its own. Returns
+    ``[*part, weight, _wc]``.
+    """
+    w = pl.col(COL_WEIGHT)
+
+    def within(expr: pl.Expr) -> pl.Expr:
+        return expr.over(part) if part else expr
+
+    prev = within(w.shift(1))
+    close = (w - prev).abs() <= rtol * pl.max_horizontal(w.abs(), prev.abs())
+    return (
+        meta.select(*part, COL_WEIGHT)
+        .unique()
+        .sort(*part, COL_WEIGHT)
+        .with_columns(within((~close).fill_null(True).cum_sum()).alias(_COL_WCLUSTER))
     )
 
 
@@ -657,6 +766,9 @@ def _resolve_bootstrap_samples(
 def _bootstrap_table_with_draws(
     table: DetectionTable,
     samples_df: pl.LazyFrame,
+    *,
+    image_cells: pl.LazyFrame | None = None,
+    group_keys: list[str] | None = None,
 ) -> DetectionTable:
     """Build a per-replicate ``DetectionTable`` keyed by ``bootstrap_id``.
 
@@ -665,6 +777,10 @@ def _bootstrap_table_with_draws(
     rides along on both frames so the grouped metric can key by it. ``samples_df``
     is a ``LazyFrame``; the synthetic id uses the deterministic per-draw ``_slot``,
     so the resulting table — and every grouped metric over it — is reproducible.
+
+    With ``image_cells`` (:func:`_sampling_cells` at image level), each drawn
+    image's weight is rescaled to its cell's full-sample share of the group's
+    images (:func:`_rescale_to_cell_shares`).
     """
     from ._types import DetectionTable
 
@@ -680,13 +796,57 @@ def _bootstrap_table_with_draws(
         .with_columns(pl.col("_draw_uid").alias(COL_IMAGE_ID))
         .drop("_draw_uid", _COL_SLOT)
     )
-    meta_boot = (
-        samples.join(table.image_metadata, on=COL_IMAGE_ID, how="left")
-        .with_columns(pl.col("_draw_uid").alias(COL_IMAGE_ID))
-        .drop("_draw_uid", _COL_SLOT)
+    meta_boot = samples.join(table.image_metadata, on=COL_IMAGE_ID, how="left")
+    if image_cells is not None:
+        meta_boot = _rescale_to_cell_shares(
+            meta_boot, image_cells, list(group_keys or [])
+        )
+    meta_boot = meta_boot.with_columns(pl.col("_draw_uid").alias(COL_IMAGE_ID)).drop(
+        "_draw_uid", _COL_SLOT
     )
     return DetectionTable.from_matched(
         det_boot, meta_boot, matching_iou_threshold=table._matching_iou_threshold
+    )
+
+
+def _rescale_to_cell_shares(
+    meta_boot: pl.LazyFrame,
+    image_cells: pl.LazyFrame,
+    group_keys: list[str],
+) -> pl.LazyFrame:
+    """Rescale each drawn image's weight by ``(n_c/N) / (n*_c/N*)``, lazily.
+
+    ``n_c/N`` is the image's weight cell's share of its group's images in the
+    full sample, ``n*_c/N*`` its share of the replicate's drawn images. The
+    weighted statistics are scale-invariant within a group, so this is a
+    ``p / q̂`` weight re-estimated on the replicate — the recomputation a coarser
+    (entity) draw needs, assigned back to its images. An image-level draw redraws
+    every ``(group, cell)`` to its own size, so the factor is exactly ``1``
+    there. A missing weight counts as ``1.0``, as in the metrics.
+    """
+    g = group_keys
+
+    def within(expr: pl.Expr, *extra: str) -> pl.Expr:
+        keys = [*extra, *g]
+        return expr.over(keys) if keys else expr
+
+    full = (
+        image_cells.group_by(*g, _COL_CELL)
+        .agg(_n=pl.len())
+        .with_columns(_share=pl.col("_n") / within(pl.col("_n").sum()))
+        .select(*g, _COL_CELL, "_share")
+    )
+    drawn = pl.col("_draw_uid").n_unique()
+    replicate_share = within(drawn, _COL_BOOT, _COL_CELL) / within(drawn, _COL_BOOT)
+    return (
+        meta_boot.join(image_cells, on=[COL_IMAGE_ID, *g], how="left", nulls_equal=True)
+        .join(full, on=[*g, _COL_CELL], how="left", nulls_equal=True)
+        .with_columns(
+            (
+                pl.col(COL_WEIGHT).fill_null(1.0) * (pl.col("_share") / replicate_share)
+            ).alias(COL_WEIGHT)
+        )
+        .drop(_COL_CELL, "_share")
     )
 
 
