@@ -19,9 +19,9 @@ from polars_cv.metrics._auc_expr import (
     collapse_curve,
     collapse_scores,
     interpolate_curve_lazy,
-    mann_whitney_auc_expr,
-    partial_auc_expr,
-    trapz_auc_expr,
+    mann_whitney_auc,
+    partial_auc,
+    trapz_auc,
 )
 from tests._metric_refs import (
     _collapse_and_trapz,
@@ -70,7 +70,7 @@ def _ref_partial(
 
 def _expr_trapz(xs: list[float], ys: list[float], correction=None) -> float:
     df = pl.DataFrame({"x": xs, "y": ys})
-    return df.select(auc=trapz_auc_expr(x="x", y="y", correction=correction)).item()
+    return trapz_auc(df.lazy(), x="x", y="y", correction=correction).collect().item()
 
 
 class TestTrapzParity:
@@ -108,11 +108,13 @@ class TestPartialParity:
             lo = round(rng.uniform(-1.0, xs[-1]), 3)
             hi = round(max(lo + rng.uniform(0.5, 6.0), xs[0] + 0.1), 3)
             df = pl.DataFrame({"x": xs, "y": ys})
-            got = df.select(
-                auc=partial_auc_expr(
-                    x="x", y="y", lo=lo, hi=hi, extrapolate=extrapolate
+            got = (
+                partial_auc(
+                    df.lazy(), x="x", y="y", lo=lo, hi=hi, extrapolate=extrapolate
                 )
-            ).item()
+                .collect()
+                .item()
+            )
             want = _ref_partial(xs, ys, lo, hi, extrapolate=extrapolate)
             if want is None:
                 n_off += 1
@@ -130,8 +132,9 @@ class TestPartialParity:
             lo = round(rng.uniform(0.0, xs[-1]), 3)
             hi = round(max(lo + rng.uniform(0.5, 5.0), xs[0] + 0.1), 3)
             df = pl.DataFrame({"x": xs, "y": ys})
-            got = df.select(
-                auc=partial_auc_expr(
+            got = (
+                partial_auc(
+                    df.lazy(),
                     x="x",
                     y="y",
                     lo=lo,
@@ -139,14 +142,16 @@ class TestPartialParity:
                     correction=correction,
                     extrapolate="flat",
                 )
-            ).item()
+                .collect()
+                .item()
+            )
             want = _ref_partial(xs, ys, lo, hi, correction)
             assert got == pytest.approx(want, abs=1e-7)
 
     def test_degenerate_range_is_zero(self) -> None:
         df = pl.DataFrame({"x": [0.0, 1.0, 2.0], "y": [0.0, 0.5, 1.0]})
         assert (
-            df.select(auc=partial_auc_expr(x="x", y="y", lo=2.0, hi=1.0)).item() == 0.0
+            partial_auc(df.lazy(), x="x", y="y", lo=2.0, hi=1.0).collect().item() == 0.0
         )
 
     def test_out_of_range_right_extends_last_y(self) -> None:
@@ -155,9 +160,11 @@ class TestPartialParity:
         # max beyond the observed FP range) — the symmetric counterpart of the
         # left case below.
         df = pl.DataFrame({"x": [0.0, 2.0], "y": [0.3, 0.9]})
-        got = df.select(
-            auc=partial_auc_expr(x="x", y="y", lo=3.0, hi=5.0, extrapolate="flat")
-        ).item()
+        got = (
+            partial_auc(df.lazy(), x="x", y="y", lo=3.0, hi=5.0, extrapolate="flat")
+            .collect()
+            .item()
+        )
         assert got == pytest.approx((5.0 - 3.0) * 0.9, abs=1e-9)
 
     def test_out_of_range_left_extends_first_y(self) -> None:
@@ -165,16 +172,18 @@ class TestPartialParity:
         # extension of the leftmost operating point (the symmetric counterpart
         # of the right case).
         df = pl.DataFrame({"x": [2.0, 4.0], "y": [0.3, 0.9]})
-        got = df.select(
-            auc=partial_auc_expr(x="x", y="y", lo=0.0, hi=1.0, extrapolate="flat")
-        ).item()
+        got = (
+            partial_auc(df.lazy(), x="x", y="y", lo=0.0, hi=1.0, extrapolate="flat")
+            .collect()
+            .item()
+        )
         assert got == pytest.approx((1.0 - 0.0) * 0.3, abs=1e-9)
 
 
 class TestOffCurvePolicy:
     """One policy for reading a curve where it was not observed.
 
-    ``partial_auc_expr`` and ``interpolate_curve_lazy`` are the only two
+    ``partial_auc`` and ``interpolate_curve_lazy`` are the only two
     readers, and they used to disagree: the integral filled flat past the
     curve's end while the interpolation returned null, so one table reported
     an unknown sensitivity at 2 FP/image and a defined AUC over 0-2 FP/image.
@@ -184,9 +193,11 @@ class TestOffCurvePolicy:
     _CURVE = pl.DataFrame({"x": [0.0, 0.05], "y": [0.0, 0.6]})
 
     def _auc(self, lo: float, hi: float, **kw: str) -> float | None:
-        return self._CURVE.select(
-            auc=partial_auc_expr(x="x", y="y", lo=lo, hi=hi, **kw)
-        ).item()
+        return (
+            partial_auc(self._CURVE.lazy(), x="x", y="y", lo=lo, hi=hi, **kw)
+            .collect()
+            .item()
+        )
 
     def _at(self, at: list[float], **kw: str) -> list[float | None]:
         out = interpolate_curve_lazy(
@@ -231,7 +242,7 @@ def _mw_auc(scores, labels, weights=None) -> float:
     bucketed = collapse_scores(
         lf, score="score", label="label", weight="w" if weights is not None else None
     )
-    return bucketed.select(auc=mann_whitney_auc_expr()).collect().item()
+    return mann_whitney_auc(bucketed).collect().item()
 
 
 class TestMannWhitneyParity:
@@ -277,8 +288,7 @@ class TestMannWhitneyParity:
             collapse_scores(
                 df.lazy(), score="score", label="label", weight="w", group_keys=["g"]
             )
-            .group_by("g")
-            .agg(auc=mann_whitney_auc_expr())
+            .pipe(mann_whitney_auc, keys=["g"])
             .collect()
         )
         got_map = dict(zip(got["g"].to_list(), got["auc"].to_list()))
@@ -287,7 +297,7 @@ class TestMannWhitneyParity:
 
 
 class TestNormalizeEngineParity:
-    """`trapz_auc_expr(correction="normalize")` is engine- and run-stable.
+    """`trapz_auc(correction="normalize")` is engine- and run-stable.
 
     The normalize branch guards the zero-span case with
     ``pl.when(span > 0).then(raw / span).otherwise(0.0)``. When ``span`` was read
@@ -325,24 +335,21 @@ class TestNormalizeEngineParity:
         want = self._ref_normalize()
         got = (
             self._curve_frame()
-            .select(auc=trapz_auc_expr(x="x", y="y", correction="normalize"))
+            .pipe(trapz_auc, x="x", y="y", correction="normalize")
             .collect(engine=engine)
             .item()
         )
         assert got == pytest.approx(want, abs=_TOL)
 
     def test_in_memory_is_deterministic_and_matches_streaming(self) -> None:
-        expr = trapz_auc_expr(x="x", y="y", correction="normalize")
+        def auc(lf: pl.LazyFrame) -> pl.LazyFrame:
+            return trapz_auc(lf, x="x", y="y", correction="normalize")
+
         results = {
-            round(
-                self._curve_frame().select(auc=expr).collect(engine="in-memory").item(),
-                12,
-            )
+            round(auc(self._curve_frame()).collect(engine="in-memory").item(), 12)
             for _ in range(16)
         }
-        streaming = (
-            self._curve_frame().select(auc=expr).collect(engine="streaming").item()
-        )
+        streaming = auc(self._curve_frame()).collect(engine="streaming").item()
         assert len(results) == 1, f"non-deterministic in-memory results: {results}"
         assert next(iter(results)) == pytest.approx(streaming, abs=_TOL)
 
@@ -360,8 +367,7 @@ class TestGroupAwareness:
         got = (
             df.lazy()
             .pipe(collapse_curve, x_col="x", y_col="y", group_keys=["g"])
-            .group_by("g")
-            .agg(auc=trapz_auc_expr(x="x", y="y"))
+            .pipe(trapz_auc, x="x", y="y", keys=["g"])
             .collect()
         )
         got_map = dict(zip(got["g"].to_list(), got["auc"].to_list()))

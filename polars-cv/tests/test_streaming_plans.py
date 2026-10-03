@@ -26,7 +26,7 @@ from .conftest import plugin_required
 
 pytestmark = pytest.mark.structural
 
-_LF = pl.LazyFrame({"g": [1, 1, 2], "x": [1.0, 2.0, 3.0]})
+_LF = pl.LazyFrame({"g": [1, 1, 2], "x": [1.0, 2.0, 3.0], "t": [3, 2, 1]})
 
 
 # -- the scanner ------------------------------------------------------------
@@ -45,6 +45,9 @@ _LF = pl.LazyFrame({"g": [1, 1, 2], "x": [1.0, 2.0, 3.0]})
         pytest.param(
             _LF.with_columns(pl.int_range(pl.len()).over("g")), id="int_range-over"
         ),
+        pytest.param(
+            _LF.with_columns(pl.col("x").map_batches(lambda s: s)), id="column-udf"
+        ),
     ],
 )
 def test_guard_rejects_known_fallbacks(plan: pl.LazyFrame) -> None:
@@ -53,10 +56,27 @@ def test_guard_rejects_known_fallbacks(plan: pl.LazyFrame) -> None:
     assert unexplained(labels) == labels
 
 
-def test_guard_accepts_list_building_as_known() -> None:
-    labels = in_memory_nodes(_LF.group_by("g").agg(pl.col("x")))
+def test_guard_accepts_the_object_lists_as_known() -> None:
+    lists = _LF.group_by("g").agg(pl.col("x").alias("pred"), pl.col("t").alias("gt"))
+    labels = in_memory_nodes(lists)
     assert labels
     assert unexplained(labels) == []
+
+
+@pytest.mark.parametrize(
+    "plan",
+    [
+        pytest.param(_LF.group_by("g").agg(pl.col("x")), id="unnamed-list"),
+        pytest.param(
+            _LF.group_by("g").agg(pl.col("x").sort().alias("pred")), id="sorted-list"
+        ),
+    ],
+)
+def test_guard_rejects_other_list_building(plan: pl.LazyFrame) -> None:
+    """The allow-list names its sites; any other list aggregation is new."""
+    labels = in_memory_nodes(plan)
+    assert labels
+    assert unexplained(labels) == labels
 
 
 @pytest.mark.parametrize(
@@ -68,6 +88,11 @@ def test_guard_accepts_list_building_as_known() -> None:
         pytest.param(
             _LF.join(pl.LazyFrame({"t": [0.5]}), how="cross"), id="cross-join"
         ),
+        pytest.param(
+            _LF.with_columns(pl.col("x").map_batches(lambda s: s, is_elementwise=True)),
+            id="elementwise-udf",
+        ),
+        pytest.param(_LF.with_columns(pl.col("x").rank()), id="rank"),
     ],
 )
 def test_guard_accepts_native_nodes(plan: pl.LazyFrame) -> None:
@@ -106,6 +131,9 @@ _IMAGES = pl.DataFrame(
     }
 )
 
+_SQUARE = [[0, 0, 0, 0], [0, 1, 1, 0], [0, 1, 1, 0], [0, 0, 0, 0]]
+_MASKS = pl.DataFrame({"image_id": ["a", "b"], "class_id": "c", "mask": [_SQUARE] * 2})
+
 
 def _table() -> M.DetectionTable:
     return M.match_detections(
@@ -126,6 +154,11 @@ PLANS: dict[str, Callable[[], pl.LazyFrame]] = {
         _PREDS, _GTS, geometry="bbox", max_detections=1
     ),
     "match_detections": lambda: _table().detections,
+    "match_detections(mask)": lambda: (
+        M.match_detections(
+            _MASKS.with_columns(score=pl.lit(0.9)), _MASKS, geometry="mask"
+        ).detections
+    ),
     "PreMatchedAdapter": lambda: (
         M.PreMatchedAdapter()
         .match(
@@ -175,49 +208,8 @@ PLANS: dict[str, Callable[[], pl.LazyFrame]] = {
 }
 
 
-#: Plans that still fall back, each fixed by a later commit of this change.
-#: ``strict``: a plan that starts streaming fails here until it leaves the set.
-STILL_FALLING_BACK: frozenset[str] = frozenset(
-    {
-        "PreMatchedAdapter",
-        "AP(all_points)",
-        "AP(11_point)",
-        "AP(101_point)",
-        "mean_ap",
-        "FROCSensitivity",
-        "CPM",
-        "FROCAUC",
-        "LROCAUC",
-        "LROCSensitivity",
-        "froc_curve_lazy",
-        "froc_sensitivity_at_fp",
-        "froc_summary_table",
-        "froc_operating_range",
-        "lroc_curve_lazy",
-        "lroc_sensitivity_at_fpf",
-        "bootstrap_ci(AP)",
-        "bootstrap_ci(mean_ap, strata)",
-        "bootstrap_ci(Recall, sample_col)",
-        "average_precision_ci_lazy",
-        "froc_auc_ci_lazy",
-        "lroc_auc_ci_lazy",
-    }
-)
-
-
 @plugin_required
-@pytest.mark.parametrize(
-    "name",
-    [
-        pytest.param(
-            name,
-            marks=pytest.mark.xfail(strict=True, reason="still falls back")
-            if name in STILL_FALLING_BACK
-            else (),
-        )
-        for name in PLANS
-    ],
-)
+@pytest.mark.parametrize("name", list(PLANS))
 def test_plan_stays_streaming(name: str) -> None:
     offenders = unexplained(in_memory_nodes(PLANS[name]()))
     assert offenders == [], (

@@ -151,7 +151,7 @@ def ref_weighted_mann_whitney(
     ties), divided by the product of the class weight masses. With unit weights
     this equals :func:`ref_mann_whitney`, and it is a second, pairwise
     implementation of exactly the quantity the vectorized ``collapse_scores`` +
-    ``mann_whitney_auc_expr`` path computes.
+    ``mann_whitney_auc`` path computes.
     """
     pos = [(s, w) for s, lb, w in zip(scores, labels, weights) if lb]
     neg = [(s, w) for s, lb, w in zip(scores, labels, weights) if not lb]

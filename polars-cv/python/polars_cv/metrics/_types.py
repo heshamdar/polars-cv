@@ -356,30 +356,43 @@ class DetectionTable:
         )
 
     def to_per_image(self) -> pl.LazyFrame:
-        """Aggregate detections to one row per image with top-scoring detection.
+        """One row per image (per ``(image_id, class_id)``) with its detections summarised.
 
-        Produces one row per ``(image_id, class_id)`` with:
+        The image metadata (``gt_label``, ``weight``, ``n_gts`` …) plus:
 
-        - ``detections``: list of detection structs sorted by score descending
-        - compatibility columns ``max_score`` and ``top_is_tp`` from the
-          highest-scoring detection
-        - metadata columns ``gt_label``, ``weight``, ``n_gts``
+        - ``max_score``: the highest detection score (null without detections);
+        - ``top_is_tp``: whether the highest-scoring detection is a true
+          positive. Tied top scores go to the earliest detection (lowest
+          ``det_idx``), the order the matcher ranked them in;
+        - ``best_tp_score``: the highest true-positive score (null without one).
 
-        LROC consumes ``detections`` for image-level summarization (best
-        localized detection), rather than relying only on the top-scoring
-        detection.
+        LROC's per-image commitment (``best_tp`` / ``top_scoring``) reads these.
+        Every aggregate is native to the streaming engine; no per-image list is
+        built.
         """
+        from ._grouped_scan import IsFirst, grouped_scan
+
         keys = [COL_IMAGE_ID, COL_CLASS_ID, *self._sweep_key()]
-        top_det = self._detections.group_by(keys).agg(
-            detections=pl.struct(
-                [COL_SCORE, COL_IS_TP, COL_GT_IDX, COL_IOU, COL_DET_IDX]
-            ).sort_by(COL_SCORE, descending=True),
+        det = self._detections.filter(pl.col(COL_SCORE).is_not_null())
+        stats = det.group_by(keys).agg(
             max_score=pl.col(COL_SCORE).max(),
-            top_is_tp=pl.col(COL_IS_TP).sort_by(COL_SCORE, descending=True).first(),
+            best_tp_score=pl.when(pl.col(COL_IS_TP)).then(pl.col(COL_SCORE)).max(),
         )
-        return self._image_meta.join(top_det, on=keys, how="left").with_columns(
-            pl.col("top_is_tp").fill_null(False),
-            pl.col("max_score"),
+        top = (
+            grouped_scan(
+                det.select(*keys, COL_SCORE, COL_DET_IDX, COL_IS_TP),
+                keys,
+                by=[COL_SCORE, COL_DET_IDX],
+                descending=[True, False],
+                _top=IsFirst(),
+            )
+            .filter(pl.col("_top"))
+            .select(*keys, top_is_tp=pl.col(COL_IS_TP))
+        )
+        return (
+            self._image_meta.join(stats, on=keys, how="left")
+            .join(top, on=keys, how="left")
+            .with_columns(pl.col("top_is_tp").fill_null(False))
         )
 
     # ------------------------------------------------------------------

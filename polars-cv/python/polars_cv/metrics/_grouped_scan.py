@@ -92,7 +92,17 @@ class RowIndex:
     """The row's 0-based position within its group (Int64)."""
 
 
-Scan = CumSum | CumMax | Lag | RowIndex
+@dataclass(frozen=True)
+class IsFirst:
+    """Whether the row is its group's first (in the scan order)."""
+
+
+@dataclass(frozen=True)
+class IsLast:
+    """Whether the row is its group's last (in the scan order)."""
+
+
+Scan = CumSum | CumMax | Lag | RowIndex | IsFirst | IsLast
 
 
 def grouped_scan(
@@ -171,6 +181,11 @@ def grouped_scan(
         elif isinstance(scan, RowIndex):
             first = pl.when(pl.col(_NEW)).then(pl.col(_I)).forward_fill()
             exprs.append((pl.col(_I) - first).cast(pl.Int64).alias(name))
+        elif isinstance(scan, IsFirst):
+            exprs.append(pl.col(_NEW).alias(name))
+        elif isinstance(scan, IsLast):
+            last = pl.col(_GROUP).ne_missing(pl.col(_GROUP).shift(-1))
+            exprs.append(last.alias(name))
         else:  # pragma: no cover - Scan is closed
             raise TypeError(f"not a scan: {scan!r}")
     framed = framed.with_columns(exprs)
@@ -366,6 +381,8 @@ def exact_mean(
 __all__ = [
     "CumMax",
     "CumSum",
+    "IsFirst",
+    "IsLast",
     "Lag",
     "RowIndex",
     "exact_mean",

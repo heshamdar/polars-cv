@@ -171,6 +171,32 @@ class TestDetectionTableViews:
         assert "max_score" in per_image.columns
         assert "top_is_tp" in per_image.columns
 
+    @pytest.mark.parametrize(
+        ("is_tp", "top_is_tp"), [([False, True], False), ([True, False], True)]
+    )
+    def test_to_per_image_breaks_a_top_score_tie_by_detection_order(
+        self, is_tp: list[bool], top_is_tp: bool
+    ) -> None:
+        """Tied top scores go to the lowest ``det_idx`` (the matcher's rank),
+        whatever order the rows arrive in, rather than to an unstable sort."""
+        dets = pl.DataFrame(
+            {
+                "image_id": ["a", "a", "a"],
+                "score": [0.7, 0.7, 0.2],
+                "is_tp": [*is_tp, True],
+                "det_idx": pl.Series([0, 1, 2], dtype=pl.UInt32),
+            }
+        )
+        meta = pl.DataFrame({COL_IMAGE_ID: ["a"], COL_N_GTS: [1]})
+        for frame in (dets, dets.reverse()):
+            table = PreMatchedAdapter().match(
+                frame, image_id_col="image_id", det_idx_col="det_idx", image_meta=meta
+            )
+            got = table.to_per_image().collect()
+            assert got["top_is_tp"].to_list() == [top_is_tp]
+            assert got["max_score"].to_list() == [0.7]
+            assert got["best_tp_score"].to_list() == [0.7]
+
     def test_at_iou_threshold(self, detection_table: DetectionTable) -> None:
         """at_iou_threshold recomputes is_tp without re-matching."""
         high_thresh = detection_table.at_iou_threshold(0.99)

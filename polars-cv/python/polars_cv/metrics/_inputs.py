@@ -394,7 +394,13 @@ def _instance_outlines(lf: pl.LazyFrame, geometry: str, image_id: str) -> pl.Laz
 
     checked = pl.struct(
         n=pl.col("_regions").list.len(), id=pl.col(image_id).cast(pl.String)
-    ).map_batches(one_region, return_dtype=pl.UInt32)
+    ).map_batches(
+        # Row by row, so a streaming morsel at a time rather than the whole
+        # column of extracted outlines at once.
+        one_region,
+        return_dtype=pl.UInt32,
+        is_elementwise=True,
+    )
     return extracted.with_columns(
         pl.when(checked == 1).then(pl.col("_regions").list.first()).alias(geometry)
     ).drop("_regions")

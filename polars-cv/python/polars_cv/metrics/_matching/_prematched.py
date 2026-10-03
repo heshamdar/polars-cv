@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
+from .._grouped_scan import RowIndex, grouped_scan
 from .._types import (
     COL_CLASS_ID,
     COL_DET_IDX,
@@ -206,10 +207,18 @@ class PreMatchedAdapter:
 
         # If we used a placeholder det_idx, assign proper ordinals
         if det_idx_col is None:
-            detections_lf = detections_lf.with_columns(
-                pl.int_range(0, pl.len(), dtype=pl.UInt32)
-                .over(COL_IMAGE_ID, COL_CLASS_ID)
-                .alias(COL_DET_IDX)
+            # Ordinals in input order within each (image, class).
+            detections_lf = (
+                grouped_scan(
+                    detections_lf.drop(COL_DET_IDX).with_row_index("_input_row"),
+                    [COL_IMAGE_ID, COL_CLASS_ID],
+                    by=["_input_row"],
+                    descending=[False],
+                    _ordinal=RowIndex(),
+                )
+                .sort("_input_row")
+                .with_columns(pl.col("_ordinal").cast(pl.UInt32).alias(COL_DET_IDX))
+                .select(detections_lf.collect_schema().names())
             )
 
         if meta_lf is None:

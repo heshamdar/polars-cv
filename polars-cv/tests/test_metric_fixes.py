@@ -38,8 +38,8 @@ from polars_cv.metrics import (
 )
 from polars_cv.metrics._auc_expr import (
     collapse_scores,
-    mann_whitney_auc_expr,
-    partial_auc_expr,
+    mann_whitney_auc,
+    partial_auc,
 )
 from polars_cv.metrics._bootstrap import _bootstrap_table_with_draws
 from polars_cv.metrics._matching._contour import ContourMatcher, _detect_source_info
@@ -76,10 +76,10 @@ def _lroc_curve_df(per_image: pl.DataFrame) -> pl.DataFrame:
 
 
 def _mw(scores: list[float], labels: list[float]) -> float:
-    """Mann-Whitney AUC via the two-stage expression, for utility-style tests."""
+    """Mann-Whitney AUC via the two-stage path, for utility-style tests."""
     lf = pl.DataFrame({"score": scores, "label": labels}).lazy()
     bucketed = collapse_scores(lf, score="score", label="label")
-    return bucketed.select(auc=mann_whitney_auc_expr()).collect().item()
+    return mann_whitney_auc(bucketed).collect().item()
 
 
 if TYPE_CHECKING:
@@ -1451,7 +1451,7 @@ class TestCurveOrderIsDeterministic:
     that adds only true positives leaves it unchanged — and Polars' ``sort``
     defaults to ``maintain_order=False``. Sorting the curve on x alone therefore
     leaves the y at each tie boundary unspecified, which is what the integral
-    (``collapse_curve`` → ``trapz_auc_expr``, via ``MetricResult.auc``) reads.
+    (``collapse_curve`` → ``trapz_auc``, via ``MetricResult.auc``) reads.
     """
 
     @staticmethod
@@ -1722,29 +1722,35 @@ class TestFrocBootstrapDrawsAreDistinctUnits:
 
 
 class TestPartialAucIntegerBounds:
-    """partial_auc_expr accepts integer bounds, the natural spelling of fp_range.
+    """partial_auc accepts integer bounds, the natural spelling of fp_range.
 
     ``froc_auc(fp_range=(0, 8))`` — as written in the docs and the metrics
-    example — passes integer bounds straight through to ``partial_auc_expr``,
+    example — passes integer bounds straight through to ``partial_auc``,
     which must integrate rather than raise.
     """
 
     def test_integer_hi_beyond_the_curve(self) -> None:
         """`fp_range=(0, 8)` integer bounds match their float spelling."""
         df = pl.DataFrame({"x": [0.0, 0.5, 1.0], "y": [0.0, 0.5, 0.9]})
-        got_int = df.select(
-            auc=partial_auc_expr(x="x", y="y", lo=0, hi=8, correction="normalize")
-        ).item()
-        got_float = df.select(
-            auc=partial_auc_expr(x="x", y="y", lo=0.0, hi=8.0, correction="normalize")
-        ).item()
+        got_int = (
+            partial_auc(df.lazy(), x="x", y="y", lo=0, hi=8, correction="normalize")
+            .collect()
+            .item()
+        )
+        got_float = (
+            partial_auc(df.lazy(), x="x", y="y", lo=0.0, hi=8.0, correction="normalize")
+            .collect()
+            .item()
+        )
         assert got_int == pytest.approx(got_float)
 
     def test_integer_lo_below_the_curve(self) -> None:
         """A lo bound below the curve integrates the same for int and float."""
         df = pl.DataFrame({"x": [2.0, 3.0], "y": [0.4, 0.8]})
-        got_int = df.select(auc=partial_auc_expr(x="x", y="y", lo=0, hi=4)).item()
-        got_float = df.select(auc=partial_auc_expr(x="x", y="y", lo=0.0, hi=4.0)).item()
+        got_int = partial_auc(df.lazy(), x="x", y="y", lo=0, hi=4).collect().item()
+        got_float = (
+            partial_auc(df.lazy(), x="x", y="y", lo=0.0, hi=4.0).collect().item()
+        )
         assert got_int == pytest.approx(got_float)
 
 
