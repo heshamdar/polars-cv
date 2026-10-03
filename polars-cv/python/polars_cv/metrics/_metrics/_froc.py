@@ -91,10 +91,9 @@ def froc_curve_lazy(
     """
     group_keys = _normalize_group_by(group_by)
 
-    det = table.detections.with_columns(pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP))
-    meta = table.image_metadata.with_columns(
-        pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP)
-    )
+    det, meta = table.frames(group_keys)
+    det = det.with_columns(pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP))
+    meta = meta.with_columns(pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP))
     keys = [_DUMMY_GROUP, *group_keys]
 
     curve = _froc_curve_grouped(det, meta, keys, thresholds, weight_agg)
@@ -300,10 +299,8 @@ def froc_auc(
                 "integral over an FP window."
             )
         if level == "detection":
-            det = table.detections.with_columns(
-                pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP)
-            )
-            meta = table.image_metadata
+            det, meta = table.frames(group_keys)
+            det = det.with_columns(pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP))
             if group_keys:
                 meta_only = [
                     k for k in group_keys if k not in set(det.collect_schema().names())
@@ -332,14 +329,15 @@ def froc_auc(
             # Per-image score: positive images commit their best TP score
             # (0 if none), negative images their max detection score (0 if none);
             # label is the image's gt_label. P(pos-image score > neg-image score).
-            per_img = table.detections.group_by(COL_IMAGE_ID).agg(
+            det, meta = table.frames(group_keys)
+            image_keys = [COL_IMAGE_ID, *table._sweep_key()]
+            per_img = det.group_by(image_keys).agg(
                 _max_tp=pl.when(pl.col(COL_IS_TP))
                 .then(pl.col(COL_SCORE))
                 .otherwise(None)
                 .max(),
                 _max_any=pl.col(COL_SCORE).max(),
             )
-            meta = table.image_metadata
             resolved = resolve_key_weights(meta, image_weight_keys(meta), weight_agg)
             joined = (
                 meta.drop(COL_WEIGHT)
@@ -348,7 +346,7 @@ def froc_auc(
                     pl.col(COL_WEIGHT).fill_null(1.0),
                     pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP),
                 )
-                .join(per_img, on=COL_IMAGE_ID, how="left")
+                .join(per_img, on=image_keys, how="left")
             )
             score_expr = (
                 pl.when(pl.col(COL_GT_LABEL))

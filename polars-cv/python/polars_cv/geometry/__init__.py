@@ -34,7 +34,13 @@ Example:
 """
 
 from .bbox import BBoxNamespace  # noqa: F401 — namespace auto-registers
-from .coords import contour_from_coords, contour_set_from_coords, point_from_coords
+from .coords import (
+    BoxFormat,
+    bbox_from_coords,
+    contour_from_coords,
+    contour_set_from_coords,
+    point_from_coords,
+)
 from .schemas import (
     ANNOTATED_POINT_SCHEMA,
     BBOX_SCHEMA,
@@ -58,6 +64,8 @@ __all__ = [
     "BBOX_SCHEMA",
     # Constructors from coordinate lists
     "point_from_coords",
+    "bbox_from_coords",
+    "BoxFormat",
     "contour_from_coords",
     "contour_set_from_coords",
 ]

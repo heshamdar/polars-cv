@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -12,22 +13,13 @@ from ...geometry.schemas import CONTOUR_SET_SCHEMA, CORRESPONDENCE_SCHEMA
 from ...lazy import LazyPipelineExpr
 from ...pipeline import Pipeline
 from .._types import (
-    COL_CLASS_ID,
-    COL_DET_IDX,
-    COL_GROUP_ID,
-    COL_GT_IDX,
-    COL_GT_LABEL,
     COL_IMAGE_ID,
-    COL_IOU,
-    COL_IS_TP,
-    COL_N_GTS,
-    COL_SCORE,
     COL_WEIGHT,
-    DEFAULT_CLASS,
     DetectionTable,
     ensure_columns_exist,
     to_lazy,
 )
+from ._table import iou_thresholds, matched_table
 
 #: Field names read off the published schema rather than spelled again here.
 #: A private copy of this struct's layout is exactly what the correspondence
@@ -424,80 +416,6 @@ def _filter_zero_score_detections(lf: pl.LazyFrame) -> pl.LazyFrame:
     )
 
 
-def _explode_match_to_detections(
-    image_level: pl.LazyFrame,
-    *,
-    image_id_col: str,
-    scores_col: str,
-    gt_idx_col: str,
-    iou_col: str,
-    class_id: str,
-    ignore_duplicates_col: str | None = None,
-) -> pl.LazyFrame:
-    """Explode per-image match results into per-detection rows.
-
-    Args:
-        image_level: One row per image with list columns.
-        image_id_col: Image identifier column.
-        scores_col: Score list column.
-        gt_idx_col: Matched-index list column.
-        iou_col: IoU list column.
-        class_id: Class label to assign.
-        ignore_duplicates_col: The correspondence's ``duplicate`` list column,
-            when duplicate hits are to be dropped rather than kept as false
-            positives; ``None`` keeps every detection.
-
-    Returns:
-        Per-detection lazy frame with canonical column names.
-    """
-    # A row whose ground-truth column was null gets a null payload, because
-    # `correspond` declines to answer when an operand is null. Metrics has
-    # already decided what a null GT column means -- `_n_gts` reads it as zero
-    # -- so the payload follows: no pairings, one per prediction. Without this
-    # the predictions on a ground-truth-free image would vanish instead of
-    # counting as false positives, which is exactly what they are.
-    unpaired = pl.col(gt_idx_col).is_null()
-    payload = image_level.select(
-        image_id_col,
-        _scores=pl.col(scores_col),
-        _gt_idx=pl.when(unpaired)
-        .then(pl.col(scores_col).list.eval(pl.lit(None, dtype=pl.UInt32)))
-        .otherwise(pl.col(gt_idx_col)),
-        _iou=pl.when(unpaired)
-        .then(pl.col(scores_col).list.eval(pl.lit(0.0)))
-        .otherwise(pl.col(iou_col)),
-        _det_ord=pl.int_ranges(0, pl.col(scores_col).list.len()),
-        _dup=(
-            pl.when(unpaired)
-            .then(pl.col(scores_col).list.eval(pl.lit(False)))
-            .otherwise(pl.col(ignore_duplicates_col))
-            if ignore_duplicates_col is not None
-            else pl.col(scores_col).list.eval(pl.lit(False))
-        ),
-    )
-
-    # One explode, no join. The payload is positionally aligned with the
-    # scores, so the ordinal is just the position -- the join this replaced
-    # existed only to match a `pred_idx` column back up with it, and that
-    # column was `0..n` spelled out.
-    return (
-        payload.explode(
-            "_scores", "_gt_idx", "_iou", "_det_ord", "_dup", empty_as_null=True
-        )
-        .with_columns(_det_ord=pl.col("_det_ord").cast(pl.UInt32))
-        # A repeated hit on a claimed target is dropped, not scored as an FP.
-        .filter(~pl.col("_dup").fill_null(False))
-    ).select(
-        pl.col(image_id_col).alias(COL_IMAGE_ID),
-        pl.lit(class_id).alias(COL_CLASS_ID),
-        pl.col("_scores").alias(COL_SCORE),
-        pl.col("_gt_idx").is_not_null().alias(COL_IS_TP),
-        pl.col("_gt_idx").cast(pl.UInt32).alias(COL_GT_IDX),
-        pl.col("_iou").fill_null(0.0).alias(COL_IOU),
-        pl.col("_det_ord").alias(COL_DET_IDX),
-    )
-
-
 def _is_contour_dtype(dtype: pl.DataType) -> bool:
     """Whether a column holds contours (a contour struct, or a list of them)
     rather than a mask: a struct with an ``exterior`` field, at either level."""
@@ -593,7 +511,9 @@ class ContourMatcher:
     here; an expression is checked per row when the query runs.
 
     Args:
-        iou_threshold: IoU threshold for TP matching.
+        iou_threshold: IoU threshold for TP matching (literal or per-row
+            expression), or a sequence of literal thresholds to match once
+            per threshold (a sweep; see :class:`BBoxMatcher`).
         extraction_threshold: Threshold for contour extraction from heatmaps.
         min_contour_area: Minimum polygon area of an extracted prediction
             contour. Contours are traced along pixel edges, so a region's area
@@ -635,7 +555,7 @@ class ContourMatcher:
 
     def __init__(
         self,
-        iou_threshold: FloatOrExpr = 0.5,
+        iou_threshold: FloatOrExpr | Sequence[float] = 0.5,
         extraction_threshold: FloatOrExpr = 0.1,
         min_contour_area: FloatOrExpr = 0.0,
         auto_resize: bool = True,
@@ -647,8 +567,11 @@ class ContourMatcher:
         score_region_mode: str = "interior",
         min_contour_area_fraction: FloatOrExpr | None = None,
     ) -> None:
-        if not isinstance(iou_threshold, pl.Expr) and not (0.0 < iou_threshold <= 1.0):
-            raise ValueError("`iou_threshold` must be in (0, 1].")
+        thresholds = (
+            iou_threshold
+            if isinstance(iou_threshold, pl.Expr)
+            else iou_thresholds(iou_threshold)
+        )
         if match_by not in ("iou", "coverage"):
             msg = f"match_by must be 'iou' or 'coverage', got {match_by!r}"
             raise ValueError(msg)
@@ -680,7 +603,7 @@ class ContourMatcher:
         self._match_by = match_by
         self._coverage_tolerance = coverage_tolerance
         self._duplicates = duplicates
-        self._iou_threshold = iou_threshold
+        self._iou_threshold = thresholds
         self._extraction_threshold = extraction_threshold
         self._min_contour_area = min_contour_area
         self._min_contour_area_fraction = min_contour_area_fraction
@@ -904,100 +827,28 @@ class ContourMatcher:
         # Pair predictions with GT contours. The order is ours to choose;
         # `correspond` only knows about overlap.
         preds = pl.col("_pred_contours").contour  # ty: ignore[unresolved-attribute]
-        match = (
-            preds.correspond(
-                pl.col("_gt_contours"),
-                threshold=self._iou_threshold,
-                order=_confidence_order("_pred_scores"),
-            )
-            if self._match_by == "iou"
-            else preds.correspond_by_coverage(
+
+        def match(threshold: float | pl.Expr) -> pl.Expr:
+            if self._match_by == "iou":
+                return preds.correspond(
+                    pl.col("_gt_contours"),
+                    threshold=threshold,
+                    order=_confidence_order("_pred_scores"),
+                )
+            return preds.correspond_by_coverage(
                 pl.col("_gt_contours"),
                 tolerance=self._coverage_tolerance,
-                threshold=self._iou_threshold,
+                threshold=threshold,
                 order=_confidence_order("_pred_scores"),
             )
-        )
-        prepared = prepared.with_columns(
-            _match=match,
-            _n_gts=pl.col("_gt_contours").list.len().fill_null(0).cast(pl.Int64),
-        )
 
-        # Build image-level frame with match results
-        image_level = prepared.select(
-            COL_IMAGE_ID,
-            COL_WEIGHT,
-            "_pred_scores",
-            "_n_gts",
-            gt_idx=pl.col("_match").struct.field(_RIGHT_IDX),
-            iou=pl.col("_match").struct.field(_OVERLAP),
-            duplicate=pl.col("_match").struct.field(_DUPLICATE),
-            _gt_label=(pl.col("_gt_contours").list.len().fill_null(0) > 0),
-            **(
-                {COL_CLASS_ID: pl.col(class_col).cast(pl.String)}
-                if class_col is not None
-                else {COL_CLASS_ID: pl.lit(DEFAULT_CLASS)}
-            ),
-            **(
-                {COL_GROUP_ID: pl.col(group_col).cast(pl.String)}
-                if group_col is not None
-                else {}
-            ),
-        )
-
-        # Cache the shared upstream so the two derived branches (detections and
-        # image metadata) run the extraction/correspond graph once — not twice —
-        # under a single collect at the caller's boundary. This replaces an
-        # eager `.collect()` that materialized here only to split the frame; the
-        # explode below enforces prediction/payload alignment structurally, so
-        # the former eager alignment guard is no longer needed. An empty input
-        # now flows through as an empty table rather than a short-circuit.
-        image_level = image_level.cache()
-
-        # Explode into per-detection rows and drop null-score rows (images
-        # with no predictions).  Zero-score artifacts are already removed
-        # upstream by _filter_zero_score_detections.
-        detections_lf = _explode_match_to_detections(
-            image_level,
-            image_id_col=COL_IMAGE_ID,
+        return matched_table(
+            prepared,
+            match=match,
+            thresholds=self._iou_threshold,
             scores_col="_pred_scores",
-            gt_idx_col="gt_idx",
-            iou_col="iou",
-            class_id=DEFAULT_CLASS,
-            ignore_duplicates_col="duplicate" if self._duplicates == "ignore" else None,
-        ).filter(pl.col(COL_SCORE).is_not_null())
-
-        # When a class column was provided, replace the placeholder class with
-        # the per-image class from the image-level frame.
-        if class_col is not None:
-            detections_lf = detections_lf.drop(COL_CLASS_ID).join(
-                image_level.select(COL_IMAGE_ID, COL_CLASS_ID).unique(),
-                on=COL_IMAGE_ID,
-                how="left",
-            )
-
-        # Build image metadata
-        group_cols = (
-            [COL_GROUP_ID]
-            if COL_GROUP_ID in image_level.collect_schema().names()
-            else []
-        )
-        meta_lf = image_level.select(
-            COL_IMAGE_ID,
-            COL_CLASS_ID,
-            pl.col("_n_gts").alias(COL_N_GTS),
-            COL_WEIGHT,
-            pl.col("_gt_label").alias(COL_GT_LABEL),
-            *group_cols,
-        )
-
-        return DetectionTable.from_matched(
-            detections_lf,
-            meta_lf,
-            # A per-row threshold has no single value to warn against.
-            matching_iou_threshold=(
-                None
-                if isinstance(self._iou_threshold, pl.Expr)
-                else self._iou_threshold
-            ),
+            gt_col="_gt_contours",
+            class_col=class_col,
+            group_col=group_col,
+            ignore_duplicates=self._duplicates == "ignore",
         )

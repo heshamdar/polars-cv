@@ -18,7 +18,6 @@ import polars as pl
 from .._auc_expr import ordered_mean, ordered_sum
 from .._result import MetricResult
 from .._types import (
-    COL_CLASS_ID,
     COL_IS_TP,
     COL_N_GTS,
     COL_SCORE,
@@ -274,88 +273,42 @@ def mean_average_precision(
 ) -> float:
     """Compute weighted Mean Average Precision across classes and IoU thresholds.
 
-    If ``iou_thresholds`` is provided, the stored ``iou`` column is re-thresholded
-    at each level to recompute ``is_tp`` -- **no re-matching is needed**.
+    The mean of :class:`~polars_cv.metrics.AP` over every ``(threshold,
+    class)`` cell of the metadata — ``MeanOver(AP(interpolation),
+    undefined="zero")``: a class without ground truth averages in as ``0``
+    (COCO leaves it out instead; see :func:`~polars_cv.metrics.mean_ap`).
+
+    On a table matched at several thresholds (a matcher given a sequence of
+    ``iou_threshold``), each matched threshold is evaluated on its own
+    matching, as COCO does. Any other threshold — and every threshold of a
+    single matching — is evaluated by re-thresholding the stored ``iou``
+    (:meth:`DetectionTable.at_iou_threshold`), which does not re-match.
 
     Args:
         table: Canonical detection table.
-        iou_thresholds: IoU thresholds to average over. Defaults to
-            ``[0.5]`` (Pascal VOC). Use ``[0.5, 0.55, ..., 0.95]`` for COCO.
+        iou_thresholds: IoU thresholds to average over. Defaults to the
+            table's matched thresholds on a sweep, else ``[0.5]`` (Pascal
+            VOC).
         interpolation: AP interpolation method.
         weight_agg: Duplicate-weight resolution policy.
 
     Returns:
         mAP value in [0, 1].
     """
-    thresholds = iou_thresholds or [0.5]
+    from .._statistics import AP, MeanOver
+
     validate_interpolation(interpolation)
-    return _mean_average_precision_grouped(table, thresholds, interpolation, weight_agg)
-
-
-def _mean_average_precision_grouped(
-    table: DetectionTable,
-    thresholds: list[float],
-    interpolation: APInterpolation,
-    weight_agg: WeightAgg = "first",
-) -> float:
-    """Vectorized mAP over every ``(threshold, class)`` cell.
-
-    One lazy plan, one collect: the per-cell APs come from the shared grouped
-    authority :func:`ap_by_group` (the same estimator the scalar
-    ``average_precision`` uses), rather than a Python loop of eager
-    ``average_precision`` collects. Re-thresholding goes through the canonical
-    :meth:`DetectionTable.at_iou_threshold`, so the ``is_tp`` rule and its
-    "lowering has no effect" warning are not re-implemented here.
-
-    The averaging grid is every ``(threshold, class)`` pair — classes from
-    :meth:`DetectionTable.class_ids` — so a class with no detections (or zero
-    GTs) still averages in as ``AP = 0``, exactly as the eager loop did.
-    """
-    class_ids = table.class_ids()
-    if not class_ids or not thresholds:
-        return 0.0
-
-    meta = table.image_metadata
-    gts = weighted_gt_mass(meta, [COL_CLASS_ID], weight_agg)
-
-    # Per-detection rows, stacked across thresholds with ``is_tp`` recomputed by
-    # the canonical re-thresholder (which also emits the lowering warning).
-    per_threshold = [
-        attach_resolved_weight(
-            table.at_iou_threshold(iou_thresh).detections, meta, weight_agg=weight_agg
+    if iou_thresholds is None:
+        if table._sweep:
+            evaluated = table
+        else:
+            evaluated = table.at_iou_threshold(0.5)
+    else:
+        evaluated = DetectionTable.stack(
+            {float(t): table.at_iou_threshold(t) for t in iou_thresholds}
         )
-        .select(COL_CLASS_ID, COL_SCORE, COL_IS_TP, COL_WEIGHT)
-        .with_columns(_iou_t=pl.lit(float(iou_thresh), dtype=pl.Float64))
-        for iou_thresh in thresholds
-    ]
-    expanded = pl.concat(per_threshold, how="vertical").join(
-        gts, on=COL_CLASS_ID, how="left"
-    )
-    ap = ap_by_group(
-        expanded, group_col=["_iou_t", COL_CLASS_ID], interpolation=interpolation
-    )
-
-    grid = (
-        pl.LazyFrame(
-            {"_iou_t": pl.Series([float(t) for t in thresholds], dtype=pl.Float64)}
-        )
-        .join(
-            pl.LazyFrame({COL_CLASS_ID: pl.Series(class_ids, dtype=pl.String)}),
-            how="cross",
-        )
-        .join(gts, on=COL_CLASS_ID, how="left")
-        .join(ap, on=["_iou_t", COL_CLASS_ID], how="left")
-        .with_columns(
-            # A cell with GT mass but no qualifying detections is a null AP →
-            # 0.0; a cell whose class has no GT mass has undefined recall → 0.0.
-            ap=pl.when(pl.col("gt_mass") > 0)
-            .then(pl.col("ap").fill_null(0.0))
-            .otherwise(0.0)
-        )
-        .select(pl.col("ap").mean())
-    )
-    result = grid.collect(engine="streaming").item()
-    return float(result) if result is not None else 0.0
+    statistic = MeanOver(AP(interpolation), undefined="zero")
+    return statistic.value(evaluated, weight_agg=weight_agg)
 
 
 def precision_at_threshold(
