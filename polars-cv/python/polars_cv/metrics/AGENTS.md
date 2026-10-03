@@ -128,28 +128,31 @@ keys on `_sweep_key()` as well as `(image_id, class_id)`.
 
 ## Streaming
 
-Every metrics plan stays on polars' native streaming engine. A step it cannot
-run natively becomes an `in-memory-map` node that collects its whole input,
-and the bootstrap's input is `n_bootstrap × detections` rows.
+Every metrics plan runs on polars' streaming engine. A step it cannot run
+natively becomes an `in-memory-map` node that collects its whole input.
 `tests/test_streaming_plans.py` builds every public lazy entry point and fails
 on any such node (or a whole-column Python UDF) that `KNOWN_FALLBACKS` in
 `tests/_streaming_guard.py` does not name, with its reason.
 
-- **No `.over()` scans, and no sort inside `agg`.** A running sum, running max,
-  lag, row index or first/last flag per group goes through
-  `_grouped_scan.grouped_scan`. It sorts once by `(*keys, *by)`, runs each scan
-  over the whole frame, and restarts it at group starts exactly: integer and
-  Int128 fixed-point sums, rank-encoded maxima. Reductions that must be
-  reproducible go through `exact_sums` / `exact_mean` (Int128 fixed point,
-  NaN/±inf combined as float addition would). Aggregations that are already
-  native stay as they are: `sum`, `max`, `len`, `count`, `any`, and
-  `sum().over()` / `len().over()`, which polars rewrites into a group-by plus a
-  join.
-- **What still falls back** (all `KNOWN_FALLBACKS`, each on a per-object or
-  per-image frame, never the replicate frame): `group_objects`' per-(image,
-  class) object lists, which the elementwise matchers need; a sampling unit's
-  set of weight cells (`_cell`); and an entity's image list (`sample_col=`).
-  polars cannot build a list inside a streaming group-by.
+- **Per-group scans go through `_grouped_scan.grouped_scan`**: one sort by
+  `(*keys, *by)`, then running sums/maxima, lags, row indices and first/last
+  flags as windows `.over(keys)`. A window straight after the sort on its keys
+  reads the frame the sort already holds, so it adds no memory. The guard
+  accepts exactly that shape, checking the window's input in the plan. An
+  all-native rewrite was measured: as much memory, 2.4x slower. A `.over()`
+  scan written anywhere else, or a sort inside `agg`, is a regression.
+- **Reproducible reductions go through `exact_sums` / `exact_mean`**: Int128
+  fixed point, native, and independent of chunking and thread count.
+- Aggregations polars already runs natively stay as they are: `sum`, `max`,
+  `len`, `count`, `any`, and `sum`/`min`/`len().over()` of a plain column,
+  which polars rewrites into a group-by plus a join.
+- **What else falls back** (each on a per-object or per-image frame, never on
+  the replicate frame): `group_objects`' per-(image, class) object lists, which
+  the elementwise matchers need; a sampling unit's set of weight cells
+  (`_cell`); and an entity's image list (`sample_col=`). polars cannot build a
+  list inside a streaming group-by.
+- **No Python UDFs in the package** (`tests/test_no_python_udfs.py`). Per-row
+  work belongs in the plugin, as `.contour.single` replaced the mask check.
 
 ## Bootstrap CIs
 

@@ -1,10 +1,10 @@
 """The grouped-scan and exact-sum authority (``metrics/_grouped_scan.py``).
 
-Each output is pinned against the ``.over()`` form it replaces, on randomised
-grouped data with ties, nulls and null group keys, and each plan is checked for
-in-memory fallbacks. Integer scans must match exactly. A float cumulative sum is
-exact in fixed point and rounded once, so it matches the float ``.over`` form to
-a relative tolerance set by that form's own rounding, not by this one.
+Each scan is pinned exactly against the hand-written sort + ``.over()`` form,
+on randomised grouped data with ties, nulls and null group keys. Each plan is
+checked to fall back only where the guard allows: the windows straight after
+their sort. The exact sums are pinned against the true sum, and shown to be
+independent of chunking where a float sum is not.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from polars_cv.metrics._grouped_scan import (
     exact_sums,
     grouped_scan,
 )
-from tests._streaming_guard import in_memory_nodes
+from tests._streaming_guard import in_memory_nodes, unexplained
 
 
 def _frame(seed: int, n: int = 400) -> pl.DataFrame:
@@ -83,17 +83,13 @@ def test_grouped_scan_matches_over(keys: list[str], seed: int) -> None:
     df = _frame(seed)
     want = _reference(df, keys)
     got = _scan(df, keys).collect(engine="streaming")
-    exact = [
-        *["g", "h", "s", "t", "k", "w", "p"],
-        *["ck", "mx", "fmx", "lag", "idx", "first", "last"],
-    ]
-    assert_frame_equal(got.select(exact), want.select(exact), check_dtypes=False)
-    np.testing.assert_allclose(got["cw"], want["cw"], rtol=1e-12)
+    assert_frame_equal(got, want.select(got.columns), check_dtypes=False)
 
 
 @pytest.mark.parametrize("keys", [[], ["g", "h"]], ids=str)
-def test_grouped_scan_stays_streaming(keys: list[str]) -> None:
-    assert in_memory_nodes(_scan(_frame(0), keys)) == []
+def test_grouped_scan_falls_back_only_on_its_sorted_frame(keys: list[str]) -> None:
+    """The windows follow the sort on their keys: the one accepted fallback."""
+    assert unexplained(in_memory_nodes(_scan(_frame(0), keys))) == []
 
 
 def test_grouped_scan_keeps_nulls_where_over_does() -> None:
