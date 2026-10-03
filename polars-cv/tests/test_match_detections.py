@@ -215,7 +215,7 @@ class TestPolygonsAndMasks:
         )
         gts = GTS.head(1).with_columns(mask=pl.Series([self._mask([(0, 0, 4, 4)])]))
         table = match_detections(preds, gts, geometry="mask")
-        with pytest.raises(ValueError, match="'img1' holds 2 regions"):
+        with pytest.raises(pl.exceptions.ComputeError, match="'img1' holds 2 contours"):
             table.collect()
 
     def test_box_geometry_is_not_mixed_with_polygons(self) -> None:

@@ -3178,6 +3178,25 @@ class _ContourOpsMixin:
         """
         return self._call("contour_simplify", {"tolerance": tolerance})
 
+    def single(self, label: pl.Expr) -> pl.Expr:
+        """The one contour of each row's set; a set of any other size fails.
+
+        For a column whose every row should hold exactly one contour (the
+        outline extracted from an instance mask, say), where taking the first
+        or the largest of several would silently measure a different object.
+        The error quotes the failing row's ``label``, so it can name the image
+        rather than a row number (which, under the streaming engine, is only a
+        position within one batch).
+
+        Args:
+            label: String expression aligned by row, quoted in the error to identify the
+                row (an image id, say).
+
+        Returns:
+            A single-contour column; null where the set is null.
+        """
+        return self._call("contour_single", {"label": label})
+
     def to_absolute(self, width: FloatOrExpr, height: FloatOrExpr) -> pl.Expr:
         """Convert normalized coordinates to pixel coordinates.
 

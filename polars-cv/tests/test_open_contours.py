@@ -56,6 +56,7 @@ READS: dict[str, str] = {
     "flip": "outline",
     "to_coords": "outline",
     "close_along_border": "outline",
+    "single": "outline",
     "point.distance_to_contour": "outline",
     "point.nearest_point_on_contour": "outline",
     "point.signed_distance_to_contour": "region",

@@ -9,6 +9,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`.contour.single(label=)`**: each row's one contour, from a contour-set
+  column. A set of any other size fails the query, and the error quotes that
+  row's `label` (an image id, say) rather than a morsel-local row number. It
+  is how `match_detections` refuses an instance mask of several regions. That
+  failure is now a `polars.exceptions.ComputeError` raised by the plugin
+  ("'img1' holds 2 contours, not one"). It used to be a `ValueError` raised by
+  a Python UDF.
+
 - **One-call evaluation: `evaluate_detections`, `evaluate_heatmaps`,
   `evaluate_segmentation`.** Each goes from predictions and ground truth
   straight to a report.
@@ -129,8 +137,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   - `PreMatchedAdapter`'s `det_idx` ordinals, `to_per_image` and the
     weight-cell clustering use the same scans.
   - The mask-instance region check (`match_detections(geometry=<masks>)`) is
-    an elementwise UDF. It used to receive the whole column of extracted
-    outlines at once.
+    no longer a Python UDF that received the whole column of extracted
+    outlines at once. It is `.contour.single` in the plugin (see Added), and
+    `tests/test_no_python_udfs.py` keeps Python UDFs out of the package.
   - `precision_recall_curve` no longer collects the weighted detection table
     just to test whether it is empty. It collects only the curve and the two
     totals.

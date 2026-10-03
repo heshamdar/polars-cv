@@ -379,28 +379,7 @@ def _instance_outlines(lf: pl.LazyFrame, geometry: str, image_id: str) -> pl.Laz
         lf, handle, threshold=0.5, min_area=0.0, output_col="_regions"
     )
 
-    def one_region(s: pl.Series) -> pl.Series:
-        n = s.struct.field("n")
-        bad = s.filter(n != 1)
-        if bad.len():
-            row = bad[0]
-            msg = (
-                f"an instance mask of image {row['id']!r} holds {row['n']} "
-                "regions, not one: split it into one row per region, or pass "
-                "polygons (CONTOUR_SCHEMA)"
-            )
-            raise ValueError(msg)
-        return n
-
-    checked = pl.struct(
-        n=pl.col("_regions").list.len(), id=pl.col(image_id).cast(pl.String)
-    ).map_batches(
-        # Row by row, so a streaming morsel at a time rather than the whole
-        # column of extracted outlines at once.
-        one_region,
-        return_dtype=pl.UInt32,
-        is_elementwise=True,
-    )
-    return extracted.with_columns(
-        pl.when(checked == 1).then(pl.col("_regions").list.first()).alias(geometry)
-    ).drop("_regions")
+    # The plugin refuses a set of any other size, naming the image.
+    regions = pl.col("_regions").contour  # ty: ignore[unresolved-attribute]
+    one = regions.single(label=pl.col(image_id).cast(pl.String))
+    return extracted.with_columns(one.alias(geometry)).drop("_regions")

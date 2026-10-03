@@ -174,6 +174,8 @@ CONTOUR_CASES: dict[str, object] = {
     "ensure_winding": lambda: pl.col("a").contour.ensure_winding("ccw"),
     "pairwise_iou": lambda: pl.col("aset").contour.pairwise_iou(pl.col("bset")),
     "largest": lambda: pl.col("aset").contour.largest(k=1),
+    # A lone contour is a set of one, the only size `single` accepts.
+    "single": lambda: pl.col("a").contour.single(label=pl.lit("row")),
     "correspond": lambda: pl.col("aset").contour.correspond(
         pl.col("bset"), threshold=0.5
     ),
@@ -283,6 +285,8 @@ SET_ARITY_EXEMPT = {
     # `test_set_level_accessors_take_a_lone_contour`.
     "pairwise_iou": "already takes sets on both sides",
     "largest": "set-level: `aset` is its case, and a lone contour is a set of one",
+    "single": "refuses every set size but one (the sweep's sets hold two); its set "
+    "cases are `TestContourSingle` in test_contour_ops_gaps.py",
     "correspond": "already takes sets on both sides",
     "correspond_by_coverage": "already takes sets on both sides",
     "set_boundary_distances": "already takes sets on both sides",
