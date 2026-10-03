@@ -862,6 +862,31 @@ class TestBoundaryDistances:
             "hd95": 0.0,
         }
 
+    @pytest.mark.parametrize("gt_x", [0.25, 1.0])
+    def test_gt_just_inside_the_frame_does_not_spike(self, gt_x: float) -> None:
+        """An annotation drawn a little inside the image edge, against a
+        prediction cut by it, is ``gt_x`` away — not measured across the
+        region to the prediction's far edges (~30 px) in the GT→pred
+        direction, as when the prediction's frame side was removed."""
+        from polars_cv.geometry import contour_from_coords
+
+        pred = [[20.0, 0.0], [20.0, 50.0], [80.0, 50.0], [80.0, 0.0]]  # [y, x]
+        gt = [[20.0, gt_x], [20.0, 50.0], [80.0, 50.0], [80.0, gt_x]]
+        df = pl.DataFrame(
+            {"pred": [pred], "gt": [gt], "w": [100.0], "h": [100.0]}
+        ).with_columns(
+            pred=contour_from_coords(pl.col("pred"), order="yx"),
+            gt=contour_from_coords(pl.col("gt"), order="yx"),
+        )
+        got = df.select(
+            pl.col("pred").contour.boundary_distances(
+                pl.col("gt"), sample_step=1.0, frame=self._frame()
+            )
+        ).item()
+        assert got["mean_b_to_a"] <= gt_x + 1e-9
+        assert got["hd"] == pytest.approx(gt_x)
+        assert got["hd95"] <= gt_x + 1e-9
+
     def test_a_literal_frame_broadcasts(self) -> None:
         frame = pl.struct(
             pl.lit(0.0).alias("x"),

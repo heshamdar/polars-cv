@@ -189,8 +189,10 @@ sides by the pixel spacing first.
 
 A region cut off by the image edge has a frame segment in its outline that no
 annotation traces. Pass the image as `frame=` (a bbox per row) and boundary on
-or outside it is dropped from both directions; inset the bbox to also drop
-boundary near the edge:
+or outside it is not measured, in either direction. Every remaining sample is
+still measured to the other side's *whole* outline, so an annotation drawn a
+pixel inside the edge is a pixel away rather than measured across the region.
+Inset the bbox to also skip boundary near the edge:
 
 ```python
 frame = pl.struct(  # a BBOX_SCHEMA struct: Float64 fields
