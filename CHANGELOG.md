@@ -9,6 +9,36 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **One-call evaluation: `evaluate_detections`, `evaluate_heatmaps`,
+  `evaluate_segmentation`.** Each goes from predictions and ground truth
+  straight to a report.
+  - `evaluate_detections(preds, gts, box_format=...)` takes long object
+    tables of boxes, polygons or instance masks. By default it follows COCO:
+    it re-matches at 0.50:0.05:0.95, uses 101-point AP, keeps 100 detections
+    per class, and leaves classes without ground truth out of the means. It
+    agrees with pycocotools' `COCOeval` to 1e-12 on mAP, AP50, AP75 and AR@100
+    (`tests/reference/test_coco_parity_ref.py`, which runs when pycocotools is
+    installed). Area ranges and crowd regions are not modelled.
+  - `evaluate_heatmaps(df, heatmap=, gt=, **ContourMatcher options)` adds a
+    FROC summary: sensitivity at each rate and their mean, the CPM.
+  - The `DetectionReport` both return has:
+    - `.summary`, `.per_class`, `.per_threshold`;
+    - `.ci(metric, by=...)`, which is `bootstrap_ci` of the statistic behind
+      each number;
+    - `.matches(t)`, which gives each prediction input row its TP/FP outcome
+      and matched ground-truth row, for error analysis;
+    - `.pr_curve`, `.froc`, `.confusion`, and `.table` for anything lower
+      level.
+  - `evaluate_segmentation(df, pred=, target=)` and the per-row expression
+    `segmentation_measures(...)` give Dice, IoU, ASSD, HD, HD95 and the
+    directed mean distances in one graph per row.
+    - Hole borders count as boundary.
+    - `frame="image"` leaves the image edge unmeasured.
+    - `spacing=` gives physical units.
+    - Empty masks follow an explicit policy.
+    - `SegmentationReport.ci` resamples images with the same seeded hash draw
+      as the detection intervals.
+
 - **`.contour.set_boundary_distances(other, sample_step=, frame=)`.** Boundary
   distances between two contour sets, each read as one boundary (the union of
   its outlines), returned as one struct per row. This is the surface distance
