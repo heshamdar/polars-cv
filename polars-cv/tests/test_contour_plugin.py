@@ -887,6 +887,46 @@ class TestBoundaryDistances:
         assert got["hd"] == pytest.approx(gt_x)
         assert got["hd95"] <= gt_x + 1e-9
 
+    def test_sets_are_measured_as_one_boundary(self) -> None:
+        """``set_boundary_distances`` reads each side's contours as one
+        boundary (a multi-region mask's surface), where
+        ``boundary_distances`` pairs them."""
+        from polars_cv.geometry import contour_set_from_coords
+
+        sq = lambda x: [[x, 0], [x + 10, 0], [x + 10, 10], [x, 10]]  # noqa: E731
+        df = pl.DataFrame(
+            {"a": [[sq(0), sq(50)], [sq(0)], []], "b": [[sq(0)], [sq(0)], [sq(0)]]},
+            schema={
+                "a": pl.List(pl.List(pl.List(pl.Float64))),
+                "b": pl.List(pl.List(pl.List(pl.Float64))),
+            },
+        ).with_columns(
+            a=contour_set_from_coords(pl.col("a")),
+            b=contour_set_from_coords(pl.col("b")),
+        )
+        got = df.select(
+            pl.col("a").contour.set_boundary_distances(pl.col("b"), sample_step=1.0)
+        ).to_series()
+        assert got.dtype == pl.Struct(
+            {
+                k: pl.Float64
+                for k in ("mean_a_to_b", "mean_b_to_a", "assd", "hd", "hd95")
+            }
+        )
+        two, one, empty = got.to_list()
+        assert two["hd"] == pytest.approx(50.0)  # the extra region, to the nearest
+        assert two["mean_b_to_a"] == 0.0
+        assert one["hd"] == 0.0
+        assert empty is None  # an empty mask has no boundary
+        # A lone contour is a set of one.
+        single = (
+            df.slice(1, 1)
+            .with_columns(a=pl.col("a").list.first(), b=pl.col("b").list.first())
+            .select(pl.col("a").contour.set_boundary_distances(pl.col("b")))
+            .item()
+        )
+        assert single["hd"] == 0.0
+
     def test_a_literal_frame_broadcasts(self) -> None:
         frame = pl.struct(
             pl.lit(0.0).alias("x"),

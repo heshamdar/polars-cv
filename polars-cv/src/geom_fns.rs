@@ -230,6 +230,34 @@ pub enum ContourFn<M: Mode = Exec> {
         /// not measured. A null frame row gives null.
         frame: Option<ColumnRef>,
     },
+    /// Boundary distances between two contour sets, each measured as one
+    /// boundary: the union of its contours.
+    ///
+    /// The surface distance of two masks with several regions (MONAI's
+    /// ``compute_average_surface_distance`` / ``compute_hausdorff_distance``):
+    /// every sample of either side is measured to the nearest edge of *any*
+    /// contour of the other, so a region with no counterpart is measured to
+    /// the nearest one there is. ``boundary_distances`` pairs contours
+    /// instead (one result per contour of a set). A single-contour column is
+    /// a set of one. Sampling and ``frame`` are as for
+    /// ``boundary_distances``; an empty set (an empty mask) has no boundary
+    /// and gives null.
+    ///
+    /// Returns:
+    ///     ``Struct{mean_a_to_b, mean_b_to_a, assd, hd, hd95}`` (Float64), one
+    ///     per row.
+    #[op(name = "contour_set_boundary_distances", python = "set_boundary_distances",
+         sample = {"other": {"$slot": 1}, "sample_step": 0.5})]
+    SetBoundaryDistances {
+        /// Another contour (or contour-set) column to compare with.
+        other: ColumnRef,
+        /// Spacing of the points sampled along every edge, > 0; ``None``
+        /// samples the vertices only (literal or expression).
+        sample_step: Option<M::V<f64>>,
+        /// A bbox column, the image frame: boundary not strictly inside it is
+        /// not measured. A null frame row gives null.
+        frame: Option<ColumnRef>,
+    },
     /// Test if contour contains a point.
     ///
     /// Returns:

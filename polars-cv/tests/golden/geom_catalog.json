@@ -541,6 +541,44 @@
   },
   {
     "namespace": "contour",
+    "name": "contour_set_boundary_distances",
+    "python": "set_boundary_distances",
+    "visibility": "public",
+    "doc": "Boundary distances between two contour sets, each measured as one\nboundary: the union of its contours.\n\nThe surface distance of two masks with several regions (MONAI's\n``compute_average_surface_distance`` / ``compute_hausdorff_distance``):\nevery sample of either side is measured to the nearest edge of *any*\ncontour of the other, so a region with no counterpart is measured to\nthe nearest one there is. ``boundary_distances`` pairs contours\ninstead (one result per contour of a set). A single-contour column is\na set of one. Sampling and ``frame`` are as for\n``boundary_distances``; an empty set (an empty mask) has no boundary\nand gives null.\n\nReturns:\n    ``Struct{mean_a_to_b, mean_b_to_a, assd, hd, hd95}`` (Float64), one\n    per row.",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "Another contour (or contour-set) column to compare with.",
+        "type": {
+          "kind": "column"
+        }
+      },
+      {
+        "name": "sample_step",
+        "doc": "Spacing of the points sampled along every edge, > 0; ``None``\nsamples the vertices only (literal or expression).",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
+          }
+        }
+      },
+      {
+        "name": "frame",
+        "doc": "A bbox column, the image frame: boundary not strictly inside it is\nnot measured. A null frame row gives null.",
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "column"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
     "name": "contour_simplify",
     "python": "simplify",
     "visibility": "public",

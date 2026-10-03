@@ -345,13 +345,33 @@ pub fn boundary_distances(
     sample_step: Option<f64>,
     frame: Option<&super::contour::BoundingBox>,
 ) -> Option<BoundaryDistances> {
-    let directed = |from: &Outline, to: &Outline| -> Option<Vec<f64>> {
-        let target = super::measures::PreparedOutline::new(to);
-        let samples = super::measures::sample_outline(from, sample_step);
-        let d: Vec<f64> = samples
+    boundary_distances_sets(
+        std::slice::from_ref(a),
+        std::slice::from_ref(b),
+        sample_step,
+        frame,
+    )
+}
+
+/// [`boundary_distances`] between two sets of outlines, each measured as the
+/// union of its outlines: every sample of one side is measured to the nearest
+/// edge of any outline of the other. This is the surface distance of two
+/// masks with several regions (MONAI's), where a per-pair reading would
+/// measure each region only against one region of the other side. `None`
+/// when either set has no boundary (no outlines, or none with vertices).
+pub fn boundary_distances_sets(
+    a: &[Outline],
+    b: &[Outline],
+    sample_step: Option<f64>,
+    frame: Option<&super::contour::BoundingBox>,
+) -> Option<BoundaryDistances> {
+    let directed = |from: &[Outline], to: &[Outline]| -> Option<Vec<f64>> {
+        let target = super::measures::PreparedOutline::of(to);
+        let d: Vec<f64> = from
             .iter()
+            .flat_map(|outline| super::measures::sample_outline(outline, sample_step))
             .filter(|p| frame.is_none_or(|frame| frame.contains_strictly(p)))
-            .map(|p| target.distance(p))
+            .map(|p| target.distance(&p))
             .collect();
         (!d.is_empty() && d.iter().all(|v| v.is_finite())).then_some(d)
     };
@@ -1107,6 +1127,42 @@ mod boundary_distance_tests {
         let inset = BoundingBox::new(1.0, 1.0, 98.0, 98.0);
         let d = boundary_distances(&near, &annotation, Some(1.0), Some(&inset)).unwrap();
         assert!(d.hd < 1e-12, "{d:?}");
+    }
+
+    /// A set is measured as the union of its outlines: every sample of one
+    /// side to the nearest edge of *any* outline of the other.
+    #[test]
+    fn sets_are_measured_as_unions() {
+        let a = ring(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
+        let b = ring(&[(50.0, 0.0), (60.0, 0.0), (60.0, 10.0), (50.0, 10.0)]);
+        let both = [a.clone(), b];
+        let same = boundary_distances_sets(&both, &both, Some(1.0), None).unwrap();
+        assert!(same.hd < 1e-12, "{same:?}");
+        // {a, b} against {a}: b's boundary is 40-50 from a's, a's is on a.
+        let d = boundary_distances_sets(&both, std::slice::from_ref(&a), Some(1.0), None).unwrap();
+        assert!((d.hd - 50.0).abs() < 1e-12, "{d:?}");
+        assert!(d.mean_b_to_a < 1e-12, "{d:?}");
+    }
+
+    #[test]
+    fn a_set_of_one_is_its_contour() {
+        let a = square_with(3);
+        let b = ring(&[(1.0, 1.0), (9.0, 1.0), (9.0, 9.0), (1.0, 9.0)]);
+        let one = boundary_distances_sets(
+            std::slice::from_ref(&a),
+            std::slice::from_ref(&b),
+            Some(0.5),
+            None,
+        )
+        .unwrap();
+        let single = boundary_distances(&a, &b, Some(0.5), None).unwrap();
+        assert_eq!(one, single);
+    }
+
+    #[test]
+    fn an_empty_set_has_no_boundary() {
+        assert!(boundary_distances_sets(&[], &[square_with(1)], None, None).is_none());
+        assert!(boundary_distances_sets(&[square_with(1)], &[], None, None).is_none());
     }
 
     /// Nothing left inside the frame is nothing to measure.
