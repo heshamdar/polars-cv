@@ -15,7 +15,7 @@ from typing import Literal
 
 import polars as pl
 
-from .._auc_expr import ordered_mean, ordered_sum
+from .._grouped_scan import exact_mean, exact_sums
 from .._result import MetricResult
 from .._types import (
     COL_IS_TP,
@@ -512,10 +512,10 @@ def ap_from_points(
         d_recall = (pl.col("recall") - pl.col("recall").shift(1).over(keys)).fill_null(
             pl.col("recall")
         )
-        return (
-            ordered.with_columns(_area=d_recall * pl.col("precision"))
-            .group_by(keys)
-            .agg(ap=ordered_sum(pl.col("_area")))
+        return exact_sums(
+            ordered.with_columns(_area=d_recall * pl.col("precision")),
+            keys,
+            ap=pl.col("_area"),
         )
 
     grid = pl.LazyFrame(
@@ -533,7 +533,9 @@ def ap_from_points(
         # Both sides are sorted on `_t` globally, hence within every group.
         check_sortedness=False,
     )
-    return reached.group_by(keys).agg(ap=ordered_mean(pl.col("_p").fill_null(0.0)))
+    return exact_mean(
+        reached.with_columns(pl.col("_p").fill_null(0.0)), keys, "_p", "ap"
+    )
 
 
 def all_points_ap_by_group(

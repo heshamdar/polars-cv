@@ -179,7 +179,6 @@ PLANS: dict[str, Callable[[], pl.LazyFrame]] = {
 #: ``strict``: a plan that starts streaming fails here until it leaves the set.
 STILL_FALLING_BACK: frozenset[str] = frozenset(
     {
-        "group_objects(max_detections)",
         "PreMatchedAdapter",
         "AP(all_points)",
         "AP(11_point)",

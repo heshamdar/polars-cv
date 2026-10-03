@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Literal
 
 import polars as pl
 
-from ._auc_expr import ordered_mean
+from ._grouped_scan import exact_mean
 from ._types import COL_CLASS_ID, COL_IMAGE_ID, COL_IS_TP, COL_SCORE, COL_WEIGHT
 from ._weights import WeightAgg, attach_resolved_weight, weighted_gt_mass
 
@@ -380,14 +380,14 @@ class CPM(Statistic):
         )
         # A null sensitivity (off the curve) makes the mean null: an operating
         # point that was not observed is not averaged in as anything.
-        mean = (
-            pl.when(pl.col("sensitivity").is_null().any())
-            .then(None)
-            .otherwise(ordered_mean(pl.col("sensitivity")))
+        off_curve = pl.col("sensitivity").is_null().any().alias("_off_curve")
+        return (
+            exact_mean(sens, keys, "sensitivity", "cpm", extra=[off_curve])
+            .with_columns(
+                pl.when(~pl.col("_off_curve")).then(pl.col("cpm")).alias("cpm")
+            )
+            .drop("_off_curve")
         )
-        if keys:
-            return sens.group_by(keys).agg(mean.alias("cpm"))
-        return sens.select(mean.alias("cpm"))
 
 
 def _froc_sensitivities(
@@ -606,10 +606,7 @@ class MeanOver(Statistic):
                 {self.statistic.name: self.name}
             )
         per = self.per_facet(table, keys, weight_agg=weight_agg)
-        mean = ordered_mean(pl.col(self.statistic.name)).alias(self.name)
-        if keys:
-            return per.group_by(keys).agg(mean)
-        return per.select(mean)
+        return exact_mean(per, keys, self.statistic.name, self.name)
 
 
 def mean_ap(
