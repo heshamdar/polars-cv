@@ -21,6 +21,7 @@ from polars_cv.metrics import (
 from polars_cv.metrics._metrics._precision_recall import (
     _all_points_ap,
     all_points_ap_by_group,
+    ap_by_group,
 )
 from polars_cv.metrics._types import (
     COL_CLASS_ID,
@@ -522,6 +523,189 @@ class TestAllPointsAPAuthority:
         assert self._grouped_ap(scores, permuted_is_tp, 4.0) == pytest.approx(
             grouped, abs=1e-12
         )
+
+
+def _ref_step_ap(scores: list[float], is_tp: list[bool], total_gts: float) -> float:
+    """Independent reference: all-points AP by the step rule.
+
+    One PR point per distinct score (after its whole tied block), precision
+    replaced by its right-to-left envelope, then ``Σ (Rₖ − Rₖ₋₁) · P̂ₖ`` with
+    ``R₀ = 0`` — the Pascal VOC 2010+ / COCO all-points definition. A
+    trapezoid ``(P̂ₖ + P̂ₖ₋₁)/2`` instead overstates AP whenever a tied block
+    mixes TPs and FPs.
+    """
+    points: list[tuple[float, float]] = []
+    tp = fp = 0
+    for s in sorted(set(scores), reverse=True):
+        block = [t for sc, t in zip(scores, is_tp, strict=True) if sc == s]
+        tp += sum(block)
+        fp += len(block) - sum(block)
+        points.append((tp / total_gts, tp / (tp + fp)))
+    ap, prev_r = 0.0, 0.0
+    for k, (r, _) in enumerate(points):
+        envelope = max(p for _, p in points[k:])
+        ap += (r - prev_r) * envelope
+        prev_r = r
+    return ap
+
+
+class TestAllPointsAPStepRule:
+    """All-points AP integrates the envelope as a step function (F5).
+
+    Score ties are where the rules differ: a tied block holding a TP and FPs
+    drops precision while raising recall, and a trapezoid credits that recall
+    step with the *higher* precision of the point before it.
+    """
+
+    CASES = [
+        # TP@0.9, then {TP, FP, FP}@0.5 against 2 GTs: 0.5·1 + 0.5·0.5.
+        ([0.9, 0.5, 0.5, 0.5], [True, True, False, False], 2, 0.75),
+        ([0.9, 0.7, 0.7, 0.3, 0.3], [True, True, False, True, False], 4, None),
+        ([0.8, 0.8, 0.6, 0.6, 0.6], [True, False, True, False, False], 3, None),
+        # Untied scores: unchanged.
+        ([0.9, 0.8, 0.7, 0.5, 0.3], [True, False, True, False, True], 3, None),
+    ]
+
+    @pytest.mark.parametrize(("scores", "is_tp", "gts", "expected"), CASES)
+    def test_grouped_and_scalar_authorities_follow_the_step_rule(
+        self,
+        scores: list[float],
+        is_tp: list[bool],
+        gts: int,
+        expected: float | None,
+    ) -> None:
+        ref = _ref_step_ap(scores, is_tp, float(gts))
+        if expected is not None:
+            assert ref == pytest.approx(expected, abs=1e-12)
+        authority = TestAllPointsAPAuthority
+        assert authority._grouped_ap(scores, is_tp, float(gts)) == pytest.approx(
+            ref, abs=1e-12
+        )
+        assert authority._scalar_ap(scores, is_tp, gts) == pytest.approx(ref, abs=1e-12)
+
+    def test_public_average_precision_on_a_tied_block(self) -> None:
+        det = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a"] * 4,
+                COL_CLASS_ID: [DEFAULT_CLASS] * 4,
+                COL_SCORE: [0.9, 0.5, 0.5, 0.5],
+                COL_IS_TP: [True, True, False, False],
+                COL_GT_IDX: [0, 1, None, None],
+                COL_IOU: [0.9, 0.9, None, None],
+                COL_DET_IDX: [0, 1, 2, 3],
+            },
+            schema_overrides={COL_GT_IDX: pl.UInt32, COL_DET_IDX: pl.UInt32},
+        )
+        meta = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a"],
+                COL_CLASS_ID: [DEFAULT_CLASS],
+                COL_N_GTS: [2],
+                COL_WEIGHT: [1.0],
+                COL_GT_LABEL: [True],
+            }
+        )
+        table = DetectionTable.from_matched(det, meta)
+        assert average_precision(table) == pytest.approx(0.75, abs=1e-12)
+        assert mean_average_precision(table) == pytest.approx(0.75, abs=1e-12)
+
+
+def _ref_coco_101(scores: list[float], is_tp: list[bool], total_gts: float) -> float:
+    """pycocotools' ``COCOeval.accumulate`` for one (class, IoU, area) cell.
+
+    The PR points are taken per score bucket (this library's tie convention;
+    COCO takes them per detection in mergesort order, which only differs
+    inside a tied block), the envelope is built right to left, and precision is
+    read at ``np.searchsorted(recall, np.linspace(0, 1, 101), side="left")``.
+    """
+    import numpy as np
+
+    rc: list[float] = []
+    pr: list[float] = []
+    tp = fp = 0
+    for s in sorted(set(scores), reverse=True):
+        block = [t for sc, t in zip(scores, is_tp, strict=True) if sc == s]
+        tp += sum(block)
+        fp += len(block) - sum(block)
+        rc.append(tp / total_gts)
+        pr.append(tp / (tp + fp))
+    for i in range(len(pr) - 1, 0, -1):
+        pr[i - 1] = max(pr[i - 1], pr[i])
+    rec_thrs = np.linspace(0.0, 1.00, 101)
+    inds = np.searchsorted(np.array(rc), rec_thrs, side="left")
+    q = [pr[i] if i < len(pr) else 0.0 for i in inds]
+    return float(np.mean(q))
+
+
+class TestNPointAP:
+    """11-point (VOC 2007) and 101-point (COCO) AP share one grouped authority."""
+
+    CASES = [
+        ([0.9, 0.8, 0.7, 0.5, 0.3], [True, False, True, False, True], 3),
+        ([0.9, 0.5, 0.5, 0.5], [True, True, False, False], 2),
+        ([0.95, 0.9, 0.6, 0.4, 0.2], [True, True, True, False, True], 10),
+        ([0.9, 0.8, 0.7], [False, False, False], 3),
+        # Recall lands exactly on grid values (k/100).
+        ([0.9 - i / 100 for i in range(7)], [True] * 7, 100),
+    ]
+
+    @pytest.mark.parametrize(("scores", "is_tp", "gts"), CASES)
+    def test_101_point_matches_cocoeval(
+        self, scores: list[float], is_tp: list[bool], gts: int
+    ) -> None:
+        expanded = pl.LazyFrame(
+            {
+                COL_SCORE: scores,
+                COL_IS_TP: is_tp,
+                COL_WEIGHT: [1.0] * len(scores),
+                "gt_mass": [float(gts)] * len(scores),
+                "_g": [0] * len(scores),
+            }
+        )
+        out = ap_by_group(expanded, group_col="_g", interpolation="101_point").collect()
+        assert float(out["ap"][0]) == pytest.approx(
+            _ref_coco_101(scores, is_tp, float(gts)), abs=1e-12
+        )
+        public = average_precision(
+            _single_class_table(scores, is_tp, gts), interpolation="101_point"
+        )
+        assert public == pytest.approx(float(out["ap"][0]), abs=1e-12)
+
+    def test_an_unknown_interpolation_is_refused(self) -> None:
+        table = _single_class_table([0.9], [True], 1)
+        with pytest.raises(ValueError, match="interpolation"):
+            mean_average_precision(table, interpolation="12_point")  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        with pytest.raises(ValueError, match="interpolation"):
+            average_precision(table, interpolation="12_point")  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+
+
+def _single_class_table(scores: list[float], is_tp: list[bool], gts: int):
+    det = pl.DataFrame(
+        {
+            COL_IMAGE_ID: [f"i{i}" for i in range(len(scores))],
+            COL_CLASS_ID: [DEFAULT_CLASS] * len(scores),
+            COL_SCORE: scores,
+            COL_IS_TP: is_tp,
+            COL_GT_IDX: [i if t else None for i, t in enumerate(is_tp)],
+            COL_IOU: [0.9 if t else None for t in is_tp],
+            COL_DET_IDX: list(range(len(scores))),
+        },
+        schema_overrides={
+            COL_GT_IDX: pl.UInt32,
+            COL_DET_IDX: pl.UInt32,
+            COL_IOU: pl.Float64,
+        },
+    )
+    meta = pl.DataFrame(
+        {
+            COL_IMAGE_ID: ["m"],
+            COL_CLASS_ID: [DEFAULT_CLASS],
+            COL_N_GTS: [gts],
+            COL_WEIGHT: [1.0],
+            COL_GT_LABEL: [True],
+        }
+    )
+    return DetectionTable.from_matched(det, meta)
 
 
 class TestConfusionAtThreshold:

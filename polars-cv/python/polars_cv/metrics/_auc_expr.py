@@ -49,6 +49,25 @@ def _as_expr(value: str | pl.Expr) -> pl.Expr:
 # ---------------------------------------------------------------------------
 
 
+def ordered_sum(expr: pl.Expr) -> pl.Expr:
+    """``expr`` summed in a fixed order, reproducible bit for bit.
+
+    ``sum``/``mean`` add per-chunk partial sums, so their last bits depend on
+    how the values happen to be chunked (and a group's rows reach an
+    aggregation in no promised order); float addition is not associative. A
+    sequential prefix sum over the sorted values is independent of both.
+    Bootstrap bounds are compared bit for bit across runs, so every reduction
+    feeding a reported statistic sums this way.
+    """
+    return expr.sort().cum_sum().last().fill_null(0.0)
+
+
+def ordered_mean(expr: pl.Expr) -> pl.Expr:
+    """``expr``'s mean via :func:`ordered_sum`; null for no non-null values."""
+    n = expr.count()
+    return pl.when(n > 0).then(ordered_sum(expr.drop_nulls()) / n).otherwise(None)
+
+
 def collapse_curve(
     lf: pl.LazyFrame,
     *,
@@ -352,6 +371,7 @@ def interpolate_curve_lazy(
     y_col: str,
     at: list[float],
     extrapolate: Extrapolate = "none",
+    group_keys: list[str] | None = None,
 ) -> pl.LazyFrame:
     """Interpolate ``y`` at requested ``x`` operating points, lazily.
 
@@ -363,39 +383,47 @@ def interpolate_curve_lazy(
     ``[min x, max x]`` yields a null ``y`` with ``extrapolate="none"`` (default)
     or the nearest endpoint's ``y`` with ``"flat"`` — the policy
     :func:`partial_auc_expr` integrates by. An exact knot (and the endpoints)
-    yields that knot's collapsed ``y``. Nothing is collected — the caller owns
-    the collect.
+    yields that knot's collapsed ``y``. With ``group_keys`` every group's curve
+    is read independently. Nothing is collected — the caller owns the collect.
 
     Args:
-        curve_lf: Curve carrying ``x_col`` and ``y_col``.
+        curve_lf: Curve carrying ``x_col``, ``y_col`` and every group key.
         x_col: X-axis column name.
         y_col: Y-axis column name.
         at: X operating points to report ``y`` for.
         extrapolate: ``"none"`` (null off the curve) or ``"flat"``.
+        group_keys: Optional grouping columns; ``None`` reads one curve.
 
     Returns:
-        A ``LazyFrame`` with columns ``[x_col, y_col]``, one row per element of
-        ``at`` in the given order; ``y_col`` is Float64 and null off the curve.
+        A ``LazyFrame`` with columns ``[*group_keys, x_col, y_col]``, one row per
+        group and element of ``at`` (in the given order within a group);
+        ``y_col`` is Float64 and null off the curve.
     """
     validate_extrapolate(extrapolate)
-    collapsed = collapse_curve(curve_lf, x_col=x_col, y_col=y_col)
+    keys = list(group_keys or [])
+    collapsed = collapse_curve(curve_lf, x_col=x_col, y_col=y_col, group_keys=keys)
     # `sort` after `select` keeps the join key flagged sorted for `join_asof`.
-    ref = collapsed.select(pl.col(x_col), _xk=pl.col(x_col), _yk=pl.col(y_col)).sort(
-        x_col
-    )
+    ref = collapsed.select(
+        *keys, pl.col(x_col), _xk=pl.col(x_col), _yk=pl.col(y_col)
+    ).sort(x_col)
 
-    query = (
+    points = (
         pl.LazyFrame({x_col: [float(a) for a in at]})
         .with_columns(pl.col(x_col).cast(pl.Float64))
         .with_row_index("_ord")
-        .sort(x_col)
     )
-    bracketed = query.join_asof(ref, on=x_col, strategy="backward").rename(
-        {"_xk": "_x_lo", "_yk": "_y_lo"}
-    )
+    query = (
+        collapsed.select(keys).unique().join(points, how="cross") if keys else points
+    ).sort(x_col)
+    by = keys or None
+    # Both sides are sorted on `x_col` globally, so every `by` group is too;
+    # polars cannot verify that per group and would warn on every call.
+    bracketed = query.join_asof(
+        ref, on=x_col, by=by, strategy="backward", check_sortedness=False
+    ).rename({"_xk": "_x_lo", "_yk": "_y_lo"})
     bracketed = (
         bracketed.sort(x_col)
-        .join_asof(ref, on=x_col, strategy="forward")
+        .join_asof(ref, on=x_col, by=by, strategy="forward", check_sortedness=False)
         .rename({"_xk": "_x_hi", "_yk": "_y_hi"})
     )
 
@@ -423,4 +451,6 @@ def interpolate_curve_lazy(
         .otherwise(interp)
         .cast(pl.Float64)
     )
-    return bracketed.sort("_ord").select(pl.col(x_col), y_out.alias(y_col))
+    return bracketed.sort(*keys, "_ord").select(
+        *keys, pl.col(x_col), y_out.alias(y_col)
+    )

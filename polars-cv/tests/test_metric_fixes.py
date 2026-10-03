@@ -786,7 +786,7 @@ class TestElevenPointApDenominator:
     """
 
     def test_unreachable_thresholds_count_as_zero(self) -> None:
-        from polars_cv.metrics._metrics._precision_recall import _eleven_point_ap
+        from polars_cv.metrics._metrics._precision_recall import _n_point_ap
 
         # Max recall 0.5: thresholds 0.0..0.5 (6 of them) see max precision
         # 1.0; thresholds 0.6..1.0 (5 of them) have no point -> 0.
@@ -797,11 +797,11 @@ class TestElevenPointApDenominator:
                 "precision": [1.0, 0.5],
             }
         )
-        ap = _eleven_point_ap(curve)
+        ap = _n_point_ap(curve, 11)
         assert ap == pytest.approx(6.0 / 11.0, abs=1e-9)
 
     def test_full_recall_curve_unchanged(self) -> None:
-        from polars_cv.metrics._metrics._precision_recall import _eleven_point_ap
+        from polars_cv.metrics._metrics._precision_recall import _n_point_ap
 
         # Recall reaches 1.0 with precision 1.0 everywhere -> AP 1.0.
         curve = pl.DataFrame(
@@ -811,7 +811,7 @@ class TestElevenPointApDenominator:
                 "precision": [1.0, 1.0],
             }
         )
-        ap = _eleven_point_ap(curve)
+        ap = _n_point_ap(curve, 11)
         assert ap == pytest.approx(1.0, abs=1e-9)
 
     def test_integration_via_average_precision(self) -> None:

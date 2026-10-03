@@ -181,6 +181,18 @@ class DetectionTable:
         """Per-image metadata lazy frame."""
         return self._image_meta
 
+    def frames(self, keys: Sequence[str] = ()) -> tuple[pl.LazyFrame, pl.LazyFrame]:
+        """``(detections, image_metadata)`` for an evaluation grouped by ``keys``.
+
+        The frames every grouped metric reads, so a constraint on which
+        groupings of this table are meaningful is enforced in one place.
+        """
+        return self._detections, self._image_meta
+
+    def meta_columns(self) -> list[str]:
+        """The column names of ``image_metadata`` (resolves the schema only)."""
+        return list(self._image_meta.collect_schema().names())
+
     # ------------------------------------------------------------------
     # Convenience views
     # ------------------------------------------------------------------
