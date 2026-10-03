@@ -155,11 +155,12 @@ weights equal the re-estimated weights. That is why there is no reweight hook.
 Unit weights form one cell and leave the draw and the weights bit-identical to
 the unweighted resample.
 
-**No `.cache()`.** On the declared polars floor (1.43.2), a cached frame read
-under different projections returned wrong rows: AP bounds above 1, caught by
-the floors CI job. Under the streaming engine, every read of the replicate
-frames re-runs the draw, since projection pushdown makes each read a distinct
-subplan. Keep the draw's subplan cheap.
+**The units and the draw are `.cache()`-d** in `_replicate_table`. They stay
+lazy, but without the cache the streaming engine re-runs the draw at every read
+of the replicate frames, about 4x slower, because projection pushdown makes
+each read a distinct subplan. This needs polars >= 1.44.2, the declared floor:
+1.43.2 returned wrong rows from a cached frame read under different
+projections, which put AP bounds above 1 in the floors CI job.
 
 `seed=None` maps to a fixed hash constant, so the CI is **deterministic even
 without an explicit seed**. Each draw gets a distinct synthetic `image_id` from
