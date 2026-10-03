@@ -25,7 +25,7 @@ import pytest
 from tests.conftest import plugin_required
 from tests.parity.framework import known
 from tests.parity.framework.budget import DEEP_FACTOR, examples, lane_settings
-from tests.parity.framework.cases import _merge_per_row
+from tests.parity.framework.cases import Batch, _merge_per_row
 from tests.parity.framework.run import PerRow, Step
 from tests.parity.framework.tolerance import (
     EXACT,
@@ -500,3 +500,28 @@ class TestReferenceClaims:
         if claimed:
             assert spec.ref is not None
             spec.ref(x, params)
+
+
+class TestBatchProxy:
+    """``Batch.proxy`` stands in for every row when one literal argument set
+    is drawn, so what a strategy reads off it must hold for every row."""
+
+    def test_a_non_finite_row_reaches_the_proxy(self) -> None:
+        # The deep lane drew `histogram(bins=1)` with an auto range for a
+        # finite proxy while another row held `inf`: the engine refused that
+        # row (numpy's rule: no equal-width bins over infinity) and the
+        # oracle reported a mismatch. The strategy was right; the proxy hid
+        # the row.
+        finite = np.array([[[0.5]]])
+        infinite = np.array([[[np.inf]]])
+        batch = Batch(specs=(None, None), images=(finite, infinite))
+        proxy = batch.proxy()
+        assert not np.isfinite(proxy).all()
+        assert proxy.shape == finite.shape
+        assert np.isfinite(finite).all(), "the row itself is not modified"
+
+    def test_a_finite_batch_keeps_its_smallest_crop(self) -> None:
+        small = np.zeros((2, 2, 1))
+        big = np.ones((4, 3, 1))
+        proxy = Batch(specs=(None, None), images=(big, small)).proxy()
+        assert proxy.shape == (2, 2, 1) and (proxy == 0).all()
