@@ -67,7 +67,11 @@ from .metrics import (
     PreMatchedAdapter,
     average_precision,
     average_precision_ci_lazy,
+    bootstrap_ci,
     confusion_at_threshold,
+    evaluate_detections,
+    evaluate_heatmaps,
+    evaluate_segmentation,
     f1_at_threshold,
     froc_auc,
     froc_auc_ci_lazy,
@@ -79,10 +83,12 @@ from .metrics import (
     lroc_auc_ci_lazy,
     lroc_curve_lazy,
     lroc_sensitivity_at_fpf,
+    match_detections,
     mean_average_precision,
     precision_at_threshold,
     precision_recall_curve,
     recall_at_threshold,
+    segmentation_measures,
 )
 from .pipeline import Pipeline
 
@@ -643,6 +649,13 @@ __all__ = [
     "hash_similarity",
     # Display utilities
     "show_images",
+    # Evaluation — one call from predictions and ground truth to a report
+    "evaluate_detections",
+    "evaluate_heatmaps",
+    "evaluate_segmentation",
+    "segmentation_measures",
+    "match_detections",
+    "bootstrap_ci",
     # Detection metrics — core types
     "DetectionTable",
     "MetricResult",

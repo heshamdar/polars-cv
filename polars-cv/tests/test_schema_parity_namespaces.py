@@ -159,6 +159,9 @@ CONTOUR_CASES: dict[str, object] = {
     "boundary_distances": lambda: pl.col("a").contour.boundary_distances(
         pl.col("b"), sample_step=0.5
     ),
+    "set_boundary_distances": lambda: pl.col("a").contour.set_boundary_distances(
+        pl.col("b"), sample_step=0.5
+    ),
     "translate": lambda: pl.col("a").contour.translate(1.0, 2.0),
     "scale": lambda: pl.col("a").contour.scale(2.0, 2.0),
     "simplify": lambda: pl.col("a").contour.simplify(0.5),
@@ -282,6 +285,7 @@ SET_ARITY_EXEMPT = {
     "largest": "set-level: `aset` is its case, and a lone contour is a set of one",
     "correspond": "already takes sets on both sides",
     "correspond_by_coverage": "already takes sets on both sides",
+    "set_boundary_distances": "already takes sets on both sides",
     # Two contour operands, so the shared frame would make *both* sides sets,
     # which is refused by construction. Swept as set x single below instead.
     "iou": "two contour operands; swept as set x single below",

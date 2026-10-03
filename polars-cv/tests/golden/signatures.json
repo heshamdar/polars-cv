@@ -386,6 +386,28 @@
     "'centroid'"
    ]
   ],
+  "set_boundary_distances": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "sample_step",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "frame",
+    "KEYWORD_ONLY",
+    "None"
+   ]
+  ],
   "simplify": [
    [
     "self",

@@ -41,7 +41,19 @@ from ._metrics import (
     precision_recall_curve,
     recall_at_threshold,
 )
+from ._reports import (
+    COCO_IOU_THRESHOLDS,
+    DetectionReport,
+    ReportMetric,
+    evaluate_detections,
+    evaluate_heatmaps,
+)
 from ._result import MetricResult
+from ._segmentation import (
+    SegmentationReport,
+    evaluate_segmentation,
+    segmentation_measures,
+)
 from ._statistics import (
     AP,
     CPM,
@@ -61,6 +73,15 @@ from ._statistics import (
 from ._types import DetectionTable
 
 __all__ = [
+    # One-call evaluation
+    "evaluate_detections",
+    "evaluate_heatmaps",
+    "evaluate_segmentation",
+    "segmentation_measures",
+    "DetectionReport",
+    "SegmentationReport",
+    "ReportMetric",
+    "COCO_IOU_THRESHOLDS",
     # Core types
     "DetectionTable",
     "MetricResult",
