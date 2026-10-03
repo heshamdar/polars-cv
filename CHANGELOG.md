@@ -7,6 +7,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.32.0] — 2026-10-03
+
+Detection evaluation in one call: `evaluate_detections` (boxes, polygons or
+instance masks, COCO-style by default), `evaluate_heatmaps` (FROC) and
+`evaluate_segmentation`, built on object-table matching, IoU sweeps, COCO
+101-point AP and one bootstrap engine for any `Statistic`. Precision-recall
+metrics are now weighted, and bootstrap memory is bounded by batching the
+replicates. Several metric values were wrong and are now computed as
+documented: multi-class matching, AP over tied scores, and multi-class or
+grouped bootstrap draws. Requires polars >= 1.44.2. Upgrading from 0.31: see
+the [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.32/).
+
 ### Added
 
 - **`.contour.single(label=)`**: each row's one contour, from a contour-set
@@ -294,6 +306,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   per replicate, and replicates held more images than the sample. An image now
   has one draw slot, in the positive stratum if any of its classes is
   positive. Single-class tables are unchanged.
+- **`match_detections(images=...)` repeated an image listed twice.** The
+  `images=` frame's `weight` / `group` columns were joined onto the
+  per-(image, class) object lists, so an `image_id` appearing twice in it
+  repeated that image's detections and ground truth. The join now requires
+  one row per image and fails the query on a repeat.
 - **Grouped bootstrap draws brought other groups' rows.** A draw partitioned by
   a group key was joined back to the metadata and detections on `image_id`
   alone. Under `group_by="class_id"`, a draw in one class's partition therefore
@@ -4363,7 +4380,8 @@ Each item is described in full under its section below.
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
-[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.31.0...HEAD
+[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.32.0...HEAD
+[0.32.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.32.0
 [0.31.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.31.0
 [0.30.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.30.0
 [0.29.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.29.0

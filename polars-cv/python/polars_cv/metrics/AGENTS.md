@@ -205,7 +205,7 @@ size); entity-level (`sample_col`) resamples entities within group, then expands
 to images with a lazy `group_by`/`explode`. An empty base or empty group
 cross-joins to zero rows — it does **not** raise.
 
-**Every CI is weighted and stratifies on weight cells** (`_replicate_table`,
+**Every CI is weighted and stratifies on weight cells** (`_replicate_tables`,
 the one way replicates are built). `_sampling_units` is the single authority for
 the resample's base: one row per sampling unit and group.
 
@@ -235,7 +235,7 @@ weights equal the re-estimated weights. That is why there is no reweight hook.
 Unit weights form one cell and leave the draw and the weights bit-identical to
 the unweighted resample.
 
-**The units and the draw are `.cache()`-d** in `_replicate_table`. They stay
+**The units and the draw are `.cache()`-d** in `_replicate_tables`. They stay
 lazy, but without the cache the streaming engine re-runs the draw at every read
 of the replicate frames, about 4x slower, because projection pushdown makes
 each read a distinct subplan. This needs polars >= 1.44.2, the declared floor:

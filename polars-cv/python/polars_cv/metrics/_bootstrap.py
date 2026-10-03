@@ -500,30 +500,6 @@ def _replicate_tables(
     return tables, units
 
 
-def _replicate_table(
-    table: DetectionTable,
-    *,
-    group_keys: list[str],
-    sample_col: str | None,
-    n_bootstrap: int,
-    seed: int | None,
-    strata: list[str],
-    weight_rtol: float,
-) -> tuple[DetectionTable, pl.LazyFrame]:
-    """Every replicate in one table (:func:`_replicate_tables`, unbatched)."""
-    tables, units = _replicate_tables(
-        table,
-        group_keys=group_keys,
-        sample_col=sample_col,
-        n_bootstrap=n_bootstrap,
-        seed=seed,
-        strata=strata,
-        weight_rtol=weight_rtol,
-        batch=None,
-    )
-    return tables[0], units
-
-
 def _bootstrap_ci_from_replicates(
     replicates: pl.LazyFrame,
     table: DetectionTable,

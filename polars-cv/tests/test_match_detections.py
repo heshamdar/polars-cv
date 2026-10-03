@@ -153,6 +153,26 @@ class TestBoxes:
         ]
         assert set(meta["group_id"]) == {"a", "b"}
 
+    @pytest.mark.parametrize("lazy", [False, True])
+    def test_an_image_listed_twice_in_the_images_frame_is_refused(
+        self, lazy: bool
+    ) -> None:
+        # Joined onto the per-(image, class) lists, a repeated image_id would
+        # repeat that image's detections and ground truth: refused instead.
+        images = pl.DataFrame(
+            {"image_id": ["img1", "img1", "img2"], "w": [1.0, 2.0, 1.0]}
+        )
+        table = match_detections(
+            PREDS,
+            GTS,
+            geometry="box",
+            box_format="xyxy",
+            images=images.lazy() if lazy else images,
+            weight="w",
+        )
+        with pytest.raises(pl.exceptions.ComputeError, match="m:1"):
+            table.collect()
+
     def test_det_idx_maps_back_to_the_input_row(self) -> None:
         table = match_detections(PREDS, GTS, geometry="box", box_format="xyxy")
         grouped = group_objects(PREDS, GTS, geometry="box").collect()

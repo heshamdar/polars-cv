@@ -129,6 +129,21 @@ Integers and `Array(_, 2)` pairs are accepted; a pair that is not two
 non-null, finite numbers is an error naming its row. `contour_set_from_coords`
 builds a set; `.contour.to_coords()` refuses a contour with holes.
 
+Boxes come from four numbers per row, in a layout you name — the three are
+indistinguishable from the data, so `format=` is required:
+
+```python
+from polars_cv.geometry import bbox_from_coords
+
+df.with_columns(
+    box=bbox_from_coords("xyxy_list", format="xyxy"),            # one column of 4
+    coco=bbox_from_coords(["x", "y", "w", "h"], format="xywh"),  # four columns
+    yolo=bbox_from_coords("cxcywh", format="cxcywh"),
+)
+```
+
+The result is `BBOX_SCHEMA` (`x, y, width, height`); a null box gives null.
+
 ---
 
 ## Contours
@@ -157,8 +172,19 @@ because it could mean the N×M matrix (`pairwise_iou`) or an index-wise pairing
 (`.explode()` one side), and those are different answers.
 
 The set-level accessors (`pairwise_iou`, `correspond`,
-`correspond_by_coverage`, `label_reduce`, `largest`) run the rule backwards: a
-lone contour is read as a set of one.
+`correspond_by_coverage`, `label_reduce`, `largest`, `set_boundary_distances`,
+`single`) run the rule backwards: a lone contour is read as a set of one.
+
+`single(label=)` takes each row's one contour from a set, for a column where
+every row should hold exactly one (the outline of an instance mask, say). A set
+of any other size fails the query, quoting that row's `label` rather than a
+row number, which under the streaming engine is only a position in one batch:
+
+```python
+outline = pl.col("contours").contour.single(label=pl.col("image_id"))
+# ComputeError: the plugin failed with message:
+#   contour_single: 'img7' holds 2 contours, not one
+```
 
 ### Measurements
 

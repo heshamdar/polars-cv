@@ -116,7 +116,8 @@ arity or dtype) still raises. See
 
 Build `POINT_SCHEMA` / `CONTOUR_SCHEMA` / `CONTOUR_SET_SCHEMA` columns from
 plain `[x, y]` or `[y, x]` pairs; `.point.to_coords()` and
-`.contour.to_coords()` are the inverse.
+`.contour.to_coords()` are the inverse. `bbox_from_coords` builds
+`BBOX_SCHEMA` boxes from four numbers in a named layout.
 
 ::: polars_cv.geometry.coords.point_from_coords
     options:
@@ -129,6 +130,11 @@ plain `[x, y]` or `[y, x]` pairs; `.point.to_coords()` and
       heading_level: 3
 
 ::: polars_cv.geometry.coords.contour_set_from_coords
+    options:
+      show_root_heading: true
+      heading_level: 3
+
+::: polars_cv.geometry.coords.bbox_from_coords
     options:
       show_root_heading: true
       heading_level: 3

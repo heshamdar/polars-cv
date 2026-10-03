@@ -669,7 +669,7 @@ def _replicates(
     """The CI path's replicate table; ``strata=None`` is a plain, cell-blind draw."""
     from polars_cv.metrics._bootstrap import (
         _bootstrap_table_with_draws,
-        _replicate_table,
+        _replicate_tables,
         _resolve_bootstrap_samples,
     )
 
@@ -682,7 +682,7 @@ def _replicates(
             group_keys=group_keys,
         )
         return _bootstrap_table_with_draws(table, samples, group_keys=group_keys)
-    boot, _ = _replicate_table(
+    (boot,), _ = _replicate_tables(
         table,
         group_keys=group_keys,
         sample_col=sample_col,
@@ -690,6 +690,7 @@ def _replicates(
         seed=3,
         strata=list(strata),
         weight_rtol=weight_rtol,
+        batch=None,
     )
     return boot
 

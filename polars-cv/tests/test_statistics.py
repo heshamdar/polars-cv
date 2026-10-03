@@ -359,10 +359,10 @@ def test_facets_are_paired_within_a_replicate() -> None:
     """A replicate's mAP is the mean of its per-class APs *on the same draws*:
     each drawn image brings every class row, so the classes of one replicate
     come from one resample (not one resample per class)."""
-    from polars_cv.metrics._bootstrap import _COL_BOOT, _replicate_table
+    from polars_cv.metrics._bootstrap import _COL_BOOT, _replicate_tables
 
     table = TABLES["weighted"]
-    boot, _ = _replicate_table(
+    (boot,), _ = _replicate_tables(
         table,
         group_keys=[],
         sample_col=None,
@@ -370,6 +370,7 @@ def test_facets_are_paired_within_a_replicate() -> None:
         seed=5,
         strata=[],
         weight_rtol=1e-6,
+        batch=None,
     )
     _, meta = boot.frames([_COL_BOOT])
     meta = meta.collect()

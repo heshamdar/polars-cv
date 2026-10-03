@@ -148,7 +148,27 @@ fill it in the expression: `pl.col("target_h").fill_null(224)`.
 
 ## Detection Metrics
 
-Evaluate object detectors with industry-standard metrics:
+One call from predictions and ground truth (one row per object: boxes,
+polygons or instance masks) to a COCO-style report:
+
+```python
+from polars_cv.metrics import evaluate_detections
+
+report = evaluate_detections(
+    preds, gts, geometry=("x1", "y1", "x2", "y2"), box_format="xyxy"
+)
+report.summary       # map, map_50, map_75, mar
+report.per_class     # AP and recall per class
+report.ci("map")     # bootstrap interval, images resampled
+```
+
+`evaluate_heatmaps` does the same for probability maps against masks (with a
+FROC summary), and `evaluate_segmentation` gives Dice, IoU and surface
+distances per image. Every number is a `Statistic`, so `bootstrap_ci` gives it
+an interval.
+
+The lower layers stay one step away. Matchers build a `DetectionTable`, and
+every metric reads it:
 
 ```python
 from polars_cv.metrics import PreMatchedAdapter, precision_recall_curve, average_precision
@@ -179,13 +199,15 @@ weights give the plain counts). The bootstrap intervals re-estimate
 sample-derived weights in every replicate by stratifying the resample on
 weight cells, so reweighting a study to a target mix needs no extra step.
 
-Available matchers: `ContourMatcher` (heatmap/mask), `BBoxMatcher` (bounding boxes),
+Available matchers: `match_detections` (object tables of any geometry),
+`ContourMatcher` (heatmap/mask), `BBoxMatcher` (bounding boxes),
 `PreMatchedAdapter` (pre-computed TP/FP).
 
 Available metrics: `precision_recall_curve`, `average_precision`,
 `mean_average_precision`, `froc_auc`, `lroc_auc`, `froc_curve_lazy`,
 `lroc_curve_lazy`, `confusion_at_threshold`, `precision_at_threshold`,
 `recall_at_threshold`, `f1_at_threshold`, and the lazy, group-aware bootstrap
-intervals `froc_auc_ci_lazy`, `lroc_auc_ci_lazy`, `average_precision_ci_lazy`.
+intervals `bootstrap_ci` (any `Statistic`: `AP`, `mean_ap()`, `FROCAUC`, …),
+`froc_auc_ci_lazy`, `lroc_auc_ci_lazy`, `average_precision_ci_lazy`.
 
 For full details, see the [Documentation](https://heshamdar.github.io/polars-cv/)
