@@ -20,6 +20,7 @@ from ._bootstrap import (
     froc_auc_ci_lazy,
     lroc_auc_ci_lazy,
 )
+from ._inputs import group_objects, match_detections
 from ._matching import BBoxMatcher, ContourMatcher, Matcher, PreMatchedAdapter
 from ._metrics import (
     ConfusionResult,
@@ -63,6 +64,9 @@ __all__ = [
     # Core types
     "DetectionTable",
     "MetricResult",
+    # Object tables -> DetectionTable
+    "group_objects",
+    "match_detections",
     # Matchers
     "Matcher",
     "ContourMatcher",

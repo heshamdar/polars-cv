@@ -9,6 +9,36 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`match_detections(predictions, ground_truth, ...)`: object tables in, a
+  `DetectionTable` out.** Takes the long format detections usually arrive in,
+  one row per object, and dispatches on the geometry column's dtype:
+  - boxes, as `BBOX_SCHEMA` or as four numbers in `box_format=`;
+  - polygons (`CONTOUR_SCHEMA`);
+  - per-instance masks, whose single outline is extracted. A mask that holds
+    several regions fails the query and names its image.
+
+  `group_objects` is the reshaping step it uses, from long rows to one row per
+  (image, class) with object lists. It crosses every image with every class,
+  so images and classes that appear on only one side (or only in `images=`)
+  are not lost. It also applies COCO's `max_detections`. `images=` can carry
+  per-image `weight=` and `group=` columns.
+- **`bbox_from_coords(coords, format=...)`.** Reads `"xyxy"`, `"xywh"` or
+  `"cxcywh"` boxes, from one list column or four columns, into `BBOX_SCHEMA`.
+  The format is required.
+- **IoU sweeps: matching once per threshold, as COCO does.**
+  `BBoxMatcher(iou_threshold=[...])` and `ContourMatcher(iou_threshold=[...])`
+  match at each threshold in one plan. The table carries `iou_threshold` on
+  both frames, and `DetectionTable.iou_thresholds` lists them.
+  - A detection that lost its ground truth at 0.5 can now claim it at 0.75,
+    which re-thresholding a single match cannot do.
+  - Evaluations that would pool the thresholds, and so count each ground truth
+    once per threshold, are refused in one place, `DetectionTable.frames`. You
+    can group by `iou_threshold`, average over it (`mean_ap()`), or select one
+    threshold (`at_iou_threshold`, which now slices a matched threshold
+    exactly).
+  - `mean_average_precision` evaluates a sweep's thresholds on their own
+    matchings. The bootstrap keeps a replicate's thresholds paired.
+
 - **`Statistic`: every detection metric as one grouped, lazy reduction.**
   `AP(interpolation)`, `Recall`, `PrecisionAt`/`RecallAt`/`F1At(score)`,
   `FROCSensitivity(fp)`, `CPM(fp_rates)`, `FROCAUC`, `LROCAUC` and
@@ -97,6 +127,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     cell-stratified draw makes the existing weights correct as they stand.
 
 ### Fixed
+
+- **Multi-class matcher input duplicated every detection.** `BBoxMatcher` and
+  `ContourMatcher` read multi-class data as one row per (image, class), but
+  attached `class_id` to detections by joining on `image_id` alone. On an image
+  with *k* classes, every detection appeared *k* times, once under each class,
+  which corrupted per-class AP, mAP and FROC for any multi-class evaluation.
+  The matchers now share one tail (`_matching/_table.py`), and each detection
+  keeps its own row's class. Images with no predictions no longer leave a
+  null-score row in a `BBoxMatcher` table.
 
 - **All-points AP over-counted score ties.** The envelope was integrated as a
   trapezoid, `(Pₖ + Pₖ₋₁)/2`, while the docstring named the step rule

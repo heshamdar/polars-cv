@@ -25,6 +25,7 @@ Everything is one Polars plan:
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from typing import TYPE_CHECKING, Literal
 
 import polars as pl
@@ -506,7 +507,7 @@ def _bootstrap_ci_from_replicates(
     Returns a ``LazyFrame`` with ``[*group_keys, ci_lower, ci_upper]``.
     """
     alpha = (1.0 - confidence) / 2.0
-    meta = table.image_metadata
+    meta = table._all_rows()[1]
     viable = pl.col(COL_GT_LABEL).cast(pl.Int64).sum() > 0
     if require_both_classes:
         viable = viable & ((~pl.col(COL_GT_LABEL)).cast(pl.Int64).sum() > 0)
@@ -644,7 +645,7 @@ def _sampling_units(
             ``weight_rtol`` is not a finite number ``>= 0`` (both checked at build
             time; nothing collects).
     """
-    meta = table.image_metadata
+    meta = table._all_rows()[1]
     aggs: list[pl.Expr] = []
     if sample_col is None:
         aggs.append(pl.col(COL_GT_LABEL).any())
@@ -717,7 +718,7 @@ def _resolve_bootstrap_samples(
     once at the streaming boundary.
     """
     group_keys = list(group_keys or [])
-    meta = table.image_metadata
+    meta = table._all_rows()[1]
     unit = _unit_expr(sample_col)
     unit_col = unit.meta.output_name()
 
@@ -790,27 +791,33 @@ def _bootstrap_table_with_draws(
         + pl.lit("#d")
         + pl.col(_COL_SLOT).cast(pl.String)
     )
-    det_names = set(table.detections.collect_schema().names())
+    det_all, meta_all = table._all_rows()
+    det_names = set(det_all.collect_schema().names())
     det_keys = [COL_IMAGE_ID, *(k for k in g if k in det_names)]
     meta_only = [k for k in g if k not in det_names]
 
     det_boot = (
         samples.drop(*meta_only)
-        .join(table.detections, on=det_keys, how="left", nulls_equal=True)
+        .join(det_all, on=det_keys, how="left", nulls_equal=True)
         .drop_nulls(COL_SCORE)  # zero-detection draws contribute no rows
         .with_columns(pl.col("_draw_uid").alias(COL_IMAGE_ID))
         .drop("_draw_uid", _COL_SLOT)
     )
     meta_boot = samples.join(
-        table.image_metadata, on=[COL_IMAGE_ID, *g], how="left", nulls_equal=True
+        meta_all, on=[COL_IMAGE_ID, *g], how="left", nulls_equal=True
     )
     if image_cells is not None:
         meta_boot = _rescale_to_cell_shares(meta_boot, image_cells, g)
     meta_boot = meta_boot.with_columns(pl.col("_draw_uid").alias(COL_IMAGE_ID)).drop(
         "_draw_uid", _COL_SLOT
     )
-    return DetectionTable.from_matched(
-        det_boot, meta_boot, matching_iou_threshold=table._matching_iou_threshold
+    # `replace` keeps every property of the table (a sweep's thresholds
+    # included): a replicate is the same kind of table, resampled.
+    return replace(
+        DetectionTable.from_matched(det_boot, meta_boot),
+        _matching_iou_threshold=table._matching_iou_threshold,
+        _has_iou=table._has_iou,
+        _sweep=table._sweep,
     )
 
 

@@ -2,26 +2,19 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
 
 import polars as pl
 
 from .._types import (
-    COL_CLASS_ID,
-    COL_GROUP_ID,
-    COL_GT_LABEL,
     COL_IMAGE_ID,
-    COL_N_GTS,
     COL_WEIGHT,
-    DEFAULT_CLASS,
     DetectionTable,
     ensure_columns_exist,
     to_lazy,
 )
-from ._contour import _OVERLAP, _RIGHT_IDX, _confidence_order
-
-if TYPE_CHECKING:
-    pass
+from ._contour import _confidence_order
+from ._table import iou_thresholds, matched_table
 
 
 class BBoxMatcher:
@@ -35,14 +28,19 @@ class BBoxMatcher:
     IoU of two boxes is computed analytically and the greedy assignment is the
     one ``.contour.correspond()`` uses.
 
+    Multi-class data is one row per (image, class); each detection keeps its
+    own row's class.
+
     Args:
-        iou_threshold: IoU threshold for TP matching.
+        iou_threshold: IoU threshold for TP matching, or a sequence of them to
+            match once per threshold (COCO's ``[0.5, 0.55, …, 0.95]``): the
+            table then carries an ``iou_threshold`` column, and a detection
+            that lost its ground truth at one threshold can claim it at
+            another (see :attr:`DetectionTable.iou_thresholds`).
     """
 
-    def __init__(self, iou_threshold: float = 0.5) -> None:
-        if not (0.0 < iou_threshold <= 1.0):
-            raise ValueError("`iou_threshold` must be in (0, 1].")
-        self._iou_threshold = iou_threshold
+    def __init__(self, iou_threshold: float | Sequence[float] = 0.5) -> None:
+        self._iou_thresholds = iou_thresholds(iou_threshold)
 
     def match(
         self,
@@ -114,77 +112,19 @@ class BBoxMatcher:
 
         # Pair predictions with GT boxes. Confidence decides the visit order,
         # which is this layer's choice to make; `correspond` only sees overlap.
-        prepared = prepared.with_columns(
-            _match=pl.col(pred_col).bbox.correspond(  # ty: ignore[unresolved-attribute]
+        def match(threshold: float | pl.Expr) -> pl.Expr:
+            return pl.col(pred_col).bbox.correspond(  # ty: ignore[unresolved-attribute]
                 pl.col(gt_col),
-                threshold=self._iou_threshold,
+                threshold=threshold,
                 order=_confidence_order(score_col),
-            ),
-            _n_gts=pl.col(gt_col).list.len().fill_null(0).cast(pl.Int64),
-        )
-
-        # Build image-level frame
-        select_exprs: list[pl.Expr] = [
-            pl.col(COL_IMAGE_ID),
-            pl.col(COL_WEIGHT),
-            pl.col(score_col).alias("_scores"),
-            pl.col("_n_gts"),
-            pl.col("_match").struct.field(_RIGHT_IDX).alias("gt_idx"),
-            pl.col("_match").struct.field(_OVERLAP).alias("iou"),
-            (pl.col(gt_col).list.len().fill_null(0) > 0).alias("_gt_label"),
-            (
-                pl.col(class_col).cast(pl.String).alias(COL_CLASS_ID)
-                if class_col is not None
-                else pl.lit(DEFAULT_CLASS).alias(COL_CLASS_ID)
-            ),
-        ]
-        if group_col is not None:
-            select_exprs.append(pl.col(group_col).cast(pl.String).alias(COL_GROUP_ID))
-        image_level = prepared.select(select_exprs)
-
-        # Cache the shared upstream so the detections and image-metadata frames
-        # derived below run the correspond graph once under a single collect at
-        # the caller's boundary, rather than eagerly materializing here. The
-        # explode enforces prediction/payload alignment structurally, and an
-        # empty input now flows through as an empty table.
-        image_level = image_level.cache()
-
-        # Explode into per-detection rows
-        from ._contour import _explode_match_to_detections
-
-        detections_lf = _explode_match_to_detections(
-            image_level,
-            image_id_col=COL_IMAGE_ID,
-            scores_col="_scores",
-            gt_idx_col="gt_idx",
-            iou_col="iou",
-            class_id=DEFAULT_CLASS,
-        )
-
-        if class_col is not None:
-            detections_lf = detections_lf.drop(COL_CLASS_ID).join(
-                image_level.select(COL_IMAGE_ID, COL_CLASS_ID).unique(),
-                on=COL_IMAGE_ID,
-                how="left",
             )
 
-        # Build image metadata
-        group_cols = (
-            [COL_GROUP_ID]
-            if COL_GROUP_ID in image_level.collect_schema().names()
-            else []
-        )
-        meta_lf = image_level.select(
-            COL_IMAGE_ID,
-            COL_CLASS_ID,
-            pl.col("_n_gts").alias(COL_N_GTS),
-            COL_WEIGHT,
-            pl.col("_gt_label").alias(COL_GT_LABEL),
-            *group_cols,
-        )
-
-        return DetectionTable.from_matched(
-            detections_lf,
-            meta_lf,
-            matching_iou_threshold=self._iou_threshold,
+        return matched_table(
+            prepared,
+            match=match,
+            thresholds=self._iou_thresholds,
+            scores_col=score_col,
+            gt_col=gt_col,
+            class_col=class_col,
+            group_col=group_col,
         )

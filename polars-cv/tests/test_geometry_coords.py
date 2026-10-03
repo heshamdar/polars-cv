@@ -144,3 +144,63 @@ class TestToCoords:
         )
         with pytest.raises(pl.exceptions.ComputeError, match="holes"):
             df.select(pl.col("c").contour.to_coords())
+
+
+class TestBBoxFromCoords:
+    """Boxes in the three common layouts, into ``BBOX_SCHEMA`` (x, y, w, h)."""
+
+    WANT = {"x": 10.0, "y": 20.0, "width": 30.0, "height": 40.0}
+
+    @pytest.mark.parametrize(
+        ("fmt", "coords"),
+        [
+            ("xyxy", [10, 20, 40, 60]),
+            ("xywh", [10, 20, 30, 40]),
+            ("cxcywh", [25, 40, 30, 40]),
+        ],
+    )
+    def test_each_format_from_a_list_column(self, fmt: str, coords: list) -> None:
+        from polars_cv.geometry import BBOX_SCHEMA, bbox_from_coords
+
+        df = pl.DataFrame({"b": [coords]})
+        out = df.select(bbox_from_coords("b", format=fmt))
+        assert out.schema.dtypes() == [BBOX_SCHEMA]
+        assert out.item() == self.WANT
+
+    def test_from_an_array_column_and_from_four_columns(self) -> None:
+        from polars_cv.geometry import bbox_from_coords
+
+        df = pl.DataFrame(
+            {"b": [[10.0, 20.0, 40.0, 60.0]]},
+            schema={"b": pl.Array(pl.Float64, 4)},
+        ).with_columns(x1=pl.lit(10), y1=pl.lit(20), x2=pl.lit(40), y2=pl.lit(60))
+        assert df.select(bbox_from_coords("b", format="xyxy")).item() == self.WANT
+        four = df.select(
+            bbox_from_coords(("x1", "y1", "x2", "y2"), format="xyxy").alias("box")
+        )
+        assert four.item() == self.WANT
+        assert four.columns == ["box"]
+
+    def test_a_null_box_is_a_null_struct(self) -> None:
+        from polars_cv.geometry import bbox_from_coords
+
+        df = pl.DataFrame({"b": [None, [0, 0, 1, 1]]}, schema={"b": pl.List(pl.Int64)})
+        out = df.select(bbox_from_coords("b", format="xyxy")).to_series()
+        assert out.to_list()[0] is None
+
+    def test_the_format_is_required_and_checked(self) -> None:
+        from polars_cv.geometry import bbox_from_coords
+
+        with pytest.raises(TypeError):
+            bbox_from_coords("b")  # type: ignore[call-arg]  # ty: ignore[missing-argument]
+        with pytest.raises(ValueError, match="format must be one of"):
+            bbox_from_coords("b", format="yxyx")  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+
+    def test_a_box_of_the_wrong_length_is_refused(self) -> None:
+        from polars_cv.geometry import bbox_from_coords
+
+        df = pl.DataFrame({"b": [[0, 0, 1]]})
+        with pytest.raises(pl.exceptions.ComputeError, match="width 4"):
+            df.select(bbox_from_coords("b", format="xyxy"))
+        with pytest.raises(ValueError, match="4 columns"):
+            bbox_from_coords(("a", "b", "c"), format="xyxy")

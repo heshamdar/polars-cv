@@ -126,6 +126,7 @@ def lroc_curve_lazy(
             f"Invalid variant {variant!r}. Expected 'best_tp' or 'top_scoring'."
         )
     group_keys = _normalize_group_by(group_by)
+    table.frames(group_keys)  # a sweep must be read per threshold
     per_image = _scored_per_image_lazy(table, variant)
     keys_w = image_weight_keys(per_image)
     resolved = resolve_key_weights(per_image, keys_w, weight_agg)
@@ -284,10 +285,8 @@ def lroc_auc(
                 "integral over an FPF window."
             )
         if level == "detection":
-            det = table.detections.with_columns(
-                pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP)
-            )
-            meta = table.image_metadata
+            det, meta = table.frames(group_keys)
+            det = det.with_columns(pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP))
             if group_keys:
                 # A metadata-only key (e.g. group_id) is not on the detections
                 # frame; join it in before grouping, as froc_auc does.
@@ -315,6 +314,7 @@ def lroc_auc(
                 .drop(_DUMMY_GROUP)
             )
         if level == "image":
+            table.frames(group_keys)  # a sweep must be read per threshold
             per_image = _scored_per_image_lazy(table, variant)
             keys_w = image_weight_keys(per_image)
             resolved = resolve_key_weights(per_image, keys_w, weight_agg)

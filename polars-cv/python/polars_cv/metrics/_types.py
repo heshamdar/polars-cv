@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -27,6 +27,8 @@ COL_N_GTS = "n_gts"
 COL_WEIGHT = "weight"
 COL_GT_LABEL = "gt_label"
 COL_GROUP_ID = "group_id"
+#: Present on both frames of a table matched at several IoU thresholds.
+COL_IOU_THRESHOLD = "iou_threshold"
 
 DEFAULT_CLASS = "__all__"
 
@@ -118,6 +120,10 @@ class DetectionTable:
     #: Whether ``iou`` holds real overlaps. A pre-matched table built without
     #: an IoU column has none, and :meth:`at_iou_threshold` refuses it.
     _has_iou: bool = True
+    #: The IoU thresholds of a sweep (several matchings, one per threshold,
+    #: told apart by an ``iou_threshold`` column on both frames); empty for a
+    #: table of one matching.
+    _sweep: tuple[float, ...] = field(default=())
 
     # ------------------------------------------------------------------
     # Construction
@@ -173,21 +179,84 @@ class DetectionTable:
 
     @property
     def detections(self) -> pl.LazyFrame:
-        """Per-detection lazy frame."""
-        return self._detections
+        """Per-detection lazy frame.
+
+        Raises:
+            ValueError: On a table matched at several IoU thresholds, whose
+                frames hold one matching per threshold: read them with
+                :meth:`frames` grouped by ``iou_threshold``, or select one
+                matching with :meth:`at_iou_threshold`.
+        """
+        return self.frames()[0]
 
     @property
     def image_metadata(self) -> pl.LazyFrame:
-        """Per-image metadata lazy frame."""
-        return self._image_meta
+        """Per-image metadata lazy frame (see :attr:`detections` for a sweep)."""
+        return self.frames()[1]
+
+    @property
+    def iou_thresholds(self) -> tuple[float, ...]:
+        """The IoU thresholds matched: several for a sweep, one for a single
+        matching at a known threshold, none when unknown (pre-matched, or a
+        per-row threshold)."""
+        if self._sweep:
+            return self._sweep
+        t = self._matching_iou_threshold
+        return () if t is None else (t,)
 
     def frames(self, keys: Sequence[str] = ()) -> tuple[pl.LazyFrame, pl.LazyFrame]:
         """``(detections, image_metadata)`` for an evaluation grouped by ``keys``.
 
-        The frames every grouped metric reads, so a constraint on which
-        groupings of this table are meaningful is enforced in one place.
+        The frames every metric reads. A sweep holds one matching per IoU
+        threshold, so an evaluation that does not keep the thresholds apart
+        would count each ground truth once per threshold: it is refused here,
+        once, for every metric.
+
+        Raises:
+            ValueError: A sweep read without ``iou_threshold`` among ``keys``.
         """
+        if self._sweep and COL_IOU_THRESHOLD not in keys:
+            msg = (
+                f"this DetectionTable was matched at {len(self._sweep)} IoU "
+                f"thresholds {list(self._sweep)}; pooling them would count each "
+                "ground truth once per threshold. Group by 'iou_threshold' "
+                "(group_by= / by_group keys), average over it (MeanOver, e.g. "
+                "mean_ap()), or select one matching with "
+                ".at_iou_threshold(t)."
+            )
+            raise ValueError(msg)
         return self._detections, self._image_meta
+
+    def _all_rows(self) -> tuple[pl.LazyFrame, pl.LazyFrame]:
+        """Both frames unchecked, for transforms that keep every matching
+        apart (filters, resampling); metrics read :meth:`frames`."""
+        return self._detections, self._image_meta
+
+    @classmethod
+    def stack(cls, tables: dict[float, DetectionTable]) -> DetectionTable:
+        """One sweep table from single matchings of the same data, keyed by
+        their IoU threshold. A single entry is returned as it is."""
+        if not tables:
+            raise ValueError("stack needs at least one iou_threshold")
+        if len(tables) == 1:
+            return next(iter(tables.values()))
+        ts = sorted(tables)
+        tag = lambda t: pl.lit(float(t), dtype=pl.Float64).alias(COL_IOU_THRESHOLD)  # noqa: E731
+        det = pl.concat(
+            [tables[t]._detections.with_columns(tag(t)) for t in ts], how="vertical"
+        )
+        meta = pl.concat(
+            [tables[t]._image_meta.with_columns(tag(t)) for t in ts],
+            how="vertical",
+        )
+        first = tables[ts[0]]
+        return cls(
+            _detections=det,
+            _image_meta=meta,
+            _matching_iou_threshold=ts[0],
+            _has_iou=first._has_iou,
+            _sweep=tuple(float(t) for t in ts),
+        )
 
     def meta_columns(self) -> list[str]:
         """The column names of ``image_metadata`` (resolves the schema only)."""
@@ -261,14 +330,18 @@ class DetectionTable:
             ids = pl.Series(list(images), dtype=pl.String)
             predicate = pl.col(COL_IMAGE_ID).is_in(ids.implode())
         meta = self._image_meta.filter(predicate)
-        keys = meta.select(COL_IMAGE_ID, COL_CLASS_ID).unique()
+        on = [COL_IMAGE_ID, COL_CLASS_ID, *self._sweep_key()]
+        keys = meta.select(on).unique()
         return replace(
             self,
-            _detections=self._detections.join(
-                keys, on=[COL_IMAGE_ID, COL_CLASS_ID], how="semi"
-            ),
+            _detections=self._detections.join(keys, on=on, how="semi"),
             _image_meta=meta,
         )
+
+    def _sweep_key(self) -> list[str]:
+        """``["iou_threshold"]`` on a sweep, else nothing: the key that keeps a
+        sweep's matchings apart in per-image work."""
+        return [COL_IOU_THRESHOLD] if self._sweep else []
 
     def class_ids(self) -> list[str]:
         """Return distinct class IDs present in the detections.
@@ -296,16 +369,15 @@ class DetectionTable:
         localized detection), rather than relying only on the top-scoring
         detection.
         """
-        top_det = self._detections.group_by(COL_IMAGE_ID, COL_CLASS_ID).agg(
+        keys = [COL_IMAGE_ID, COL_CLASS_ID, *self._sweep_key()]
+        top_det = self._detections.group_by(keys).agg(
             detections=pl.struct(
                 [COL_SCORE, COL_IS_TP, COL_GT_IDX, COL_IOU, COL_DET_IDX]
             ).sort_by(COL_SCORE, descending=True),
             max_score=pl.col(COL_SCORE).max(),
             top_is_tp=pl.col(COL_IS_TP).sort_by(COL_SCORE, descending=True).first(),
         )
-        return self._image_meta.join(
-            top_det, on=[COL_IMAGE_ID, COL_CLASS_ID], how="left"
-        ).with_columns(
+        return self._image_meta.join(top_det, on=keys, how="left").with_columns(
             pl.col("top_is_tp").fill_null(False),
             pl.col("max_score"),
         )
@@ -315,10 +387,17 @@ class DetectionTable:
     # ------------------------------------------------------------------
 
     def at_iou_threshold(self, iou_threshold: float) -> DetectionTable:
-        """Return a copy with ``is_tp`` recomputed at a different IoU threshold.
+        """Return the table evaluated at one IoU threshold.
 
-        The stored ``iou`` column is compared against *iou_threshold* to set
-        ``is_tp`` without re-running the matching step.
+        On a sweep (a table matched at several thresholds) a matched threshold
+        is selected exactly: its own matching, as the matcher produced it at
+        that threshold. Any other threshold — and every threshold of a single
+        matching — re-thresholds a matching instead: the stored ``iou`` is
+        compared against *iou_threshold* to set ``is_tp``, without matching
+        again (on a sweep, the matching at the highest threshold below it).
+        Re-thresholding is not re-matching: a detection that lost its ground
+        truth at the matching threshold to a higher-scoring one is not given
+        it back, which COCO's per-threshold matching would do.
 
         .. warning::
 
@@ -337,6 +416,11 @@ class DetectionTable:
             ValueError: If the table has no IoU values (a pre-matched table
                 built without ``iou_col``).
         """
+        if self._sweep:
+            matched = [t for t in self._sweep if t <= iou_threshold]
+            base = max(matched) if matched else min(self._sweep)
+            one = self._slice(base)
+            return one if base == iou_threshold else one.at_iou_threshold(iou_threshold)
         if not self._has_iou:
             raise ValueError(
                 "this DetectionTable has no IoU values (it was pre-matched "
@@ -367,6 +451,17 @@ class DetectionTable:
             .alias(COL_IS_TP)
         )
         return replace(self, _detections=new_det)
+
+    def _slice(self, iou_threshold: float) -> DetectionTable:
+        """A sweep's own matching at one of its thresholds."""
+        at = pl.col(COL_IOU_THRESHOLD) == iou_threshold
+        return replace(
+            self,
+            _detections=self._detections.filter(at).drop(COL_IOU_THRESHOLD),
+            _image_meta=self._image_meta.filter(at).drop(COL_IOU_THRESHOLD),
+            _matching_iou_threshold=iou_threshold,
+            _sweep=(),
+        )
 
     # ------------------------------------------------------------------
     # Collect helper
