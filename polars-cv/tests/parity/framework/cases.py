@@ -58,11 +58,24 @@ class Batch:
 
         Arguments drawn for it are valid for every row (a crop inside it is
         inside each row), so one literal set can serve a heterogeneous batch.
+        That holds for what a strategy reads of the *values* too: when any row
+        holds a NaN or infinity the proxy carries one (a copy, its first
+        element replaced), since a strategy that sees only finite values
+        draws arguments — `histogram`'s auto range — no non-finite row can run.
         """
         rows = self.present
         h = min(im.shape[0] for im in rows)
         w = min(im.shape[1] for im in rows)
-        return rows[int(np.argmin([im.shape[0] * im.shape[1] for im in rows]))][:h, :w]
+        crop = rows[int(np.argmin([im.shape[0] * im.shape[1] for im in rows]))][:h, :w]
+        if crop.dtype.kind != "f" or crop.size == 0 or not np.isfinite(crop).all():
+            return crop
+        for im in rows:
+            bad = im[~np.isfinite(im)] if im.dtype.kind == "f" else im[:0]
+            if bad.size:
+                crop = crop.copy()
+                crop.flat[0] = bad[0]
+                break
+        return crop
 
     def __repr__(self) -> str:
         return f"Batch({list(self.specs)!r})"
