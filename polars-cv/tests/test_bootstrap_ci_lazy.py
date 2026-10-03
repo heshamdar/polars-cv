@@ -54,11 +54,17 @@ from polars_cv.metrics._types import (
 Row = tuple[str, float, bool, str]
 
 
-def _table(rows: list[Row], *, cases: dict[str, str] | None = None) -> DetectionTable:
+def _table(
+    rows: list[Row],
+    *,
+    cases: dict[str, str] | None = None,
+    extra: dict[str, dict[str, str]] | None = None,
+) -> DetectionTable:
     """One detection per image; ``gt_label``/``n_gts`` derive from ``is_tp``.
 
     ``group`` becomes a ``group_id`` metadata column. ``cases`` optionally maps
     each image to an entity id (``case_id``) for entity-level resampling.
+    ``extra`` adds String metadata columns, each mapping image → value.
     """
     det = pl.DataFrame(
         {
@@ -99,6 +105,9 @@ def _table(rows: list[Row], *, cases: dict[str, str] | None = None) -> Detection
     if cases is not None:
         meta_cols["case_id"] = [cases[r[0]] for r in rows]
         schema["case_id"] = pl.String
+    for name, values in (extra or {}).items():
+        meta_cols[name] = [values[r[0]] for r in rows]
+        schema[name] = pl.String
     meta = pl.DataFrame(meta_cols, schema=schema)
     return DetectionTable.from_matched(det, meta, matching_iou_threshold=0.5)
 
@@ -552,6 +561,15 @@ class TestThreadCountInvariant:
             t, group_by="group_id", n_bootstrap=200, seed=123, fp_range=(0.0, 8.0), extrapolate="flat"
         )
         print(out.collect().sort("group_id").write_json())
+        # Weighted: the resample is also stratified by weight cell.
+        tw = DetectionTable.from_matched(
+            det, meta.with_columns(pl.Series(COL_WEIGHT, [1.0, 2.0] * 4)),
+            matching_iou_threshold=0.5,
+        )
+        out = froc_auc_ci_lazy(
+            tw, group_by="group_id", n_bootstrap=200, seed=123, method="mann_whitney"
+        )
+        print(out.collect().sort("group_id").write_json())
         """
     )
 
@@ -569,4 +587,349 @@ class TestThreadCountInvariant:
         return out.stdout.strip()
 
     def test_bounds_match_across_thread_counts(self) -> None:
-        assert self._run(1) == self._run(4)
+        one = self._run(1)
+        assert one.count("\n") == 1  # unweighted + weighted outputs
+        assert one == self._run(4)
+
+
+# --- weight-cell stratification ---------------------------------------------------
+
+# Target vendor mix the importance weights reweight to: w = p_v / q̂_v.
+_TARGET = {"A": 0.3, "B": 0.7}
+
+
+def _vendor_table() -> DetectionTable:
+    """Two groups of ten images with different vendor mixes (g1 6A/4B, g2 4A/6B).
+
+    Unit weights; :func:`_importance_weighted` sets ``p / q̂``. Each ``case_id``
+    pairs two images of one vendor, so an entity-level draw keeps the image mix.
+    """
+    rows: list[Row] = []
+    vendor: dict[str, str] = {}
+    cases: dict[str, str] = {}
+    for group, shift, n_a in (("g1", 0, 6), ("g2", 3, 4)):
+        for i in range(10):
+            image = f"{group}_{i}"
+            rows.append((image, ((i * 7 + shift) % 10) / 10 + 0.05, i % 2 == 0, group))
+            vendor[image] = "A" if i < n_a else "B"
+            cases[image] = f"{group}_c{i // 2}"
+    return _table(rows, cases=cases, extra={"vendor": vendor})
+
+
+def _p_over_q(over: list[str]) -> pl.Expr:
+    """``p_v / q̂_v`` with ``q̂_v`` the vendor's share within ``over``."""
+    p = pl.col("vendor").replace_strict(_TARGET, return_dtype=pl.Float64)
+    share = (
+        pl.len().over(*over, "vendor") / pl.len().over(*over)
+        if over
+        else (pl.len().over("vendor") / pl.len())
+    )
+    return (p / share).alias(COL_WEIGHT)
+
+
+def _with_meta(table: DetectionTable, meta: pl.LazyFrame) -> DetectionTable:
+    return DetectionTable.from_matched(
+        table.detections, meta, matching_iou_threshold=0.5
+    )
+
+
+def _importance_weighted(scope: str) -> DetectionTable:
+    """``_vendor_table`` weighted to ``_TARGET``, ``q̂`` per group or global."""
+    table = _vendor_table()
+    over = ["group_id"] if scope == "per_group" else []
+    return _with_meta(table, table.image_metadata.with_columns(_p_over_q(over)))
+
+
+def _replicates(
+    table: DetectionTable,
+    *,
+    group_keys: list[str],
+    sample_col: str | None = None,
+    strata: list[str] | None = (),  # type: ignore[assignment]
+    n_bootstrap: int = 60,
+) -> DetectionTable:
+    """The CI path's replicate table; ``strata=None`` is the unstratified draw."""
+    from polars_cv.metrics._bootstrap import (
+        _bootstrap_table_with_draws,
+        _resolve_bootstrap_samples,
+        _sampling_cells,
+    )
+
+    cells = (
+        None
+        if strata is None
+        else _sampling_cells(
+            table, sample_col=sample_col, group_keys=group_keys, strata=list(strata)
+        )
+    )
+    samples = _resolve_bootstrap_samples(
+        table,
+        sample_col=sample_col,
+        n_bootstrap=n_bootstrap,
+        seed=3,
+        group_keys=group_keys,
+        cells=cells,
+    )
+    return _bootstrap_table_with_draws(table, samples)
+
+
+def _replicate_drift(boot: DetectionTable, scope: str, metric: str) -> float:
+    """Max per-replicate |static − re-estimated-weight| metric difference."""
+    over = ["bootstrap_id", "group_id"] if scope == "per_group" else ["bootstrap_id"]
+    re_estimated = _with_meta(boot, boot.image_metadata.with_columns(_p_over_q(over)))
+    keys = ["group_id", "bootstrap_id"]
+
+    def run(tbl: DetectionTable) -> pl.DataFrame:
+        if metric == "froc_mw":
+            out = froc_auc(tbl, method="mann_whitney", group_by=keys)
+        elif metric == "froc_trap":
+            out = froc_auc(tbl, fp_range=(0.0, 1.0), extrapolate="flat", group_by=keys)
+        else:
+            out = lroc_auc(tbl, group_by=keys)
+        return out.collect().sort(keys)
+
+    static, fresh = run(boot), run(re_estimated)
+    assert static.select(keys).equals(fresh.select(keys))
+    return float((static["auc"] - fresh["auc"]).abs().max())  # type: ignore[arg-type]
+
+
+class TestWeightCellStratification:
+    """Weighted FROC/LROC CIs stratify the resample on weight cells.
+
+    The weighted statistics are weight-scale-invariant ratios, so an importance
+    weight ``p / q̂`` matters only through its cell's count. Redrawing every cell
+    to its own size keeps that count — so the full-sample weights *are* the
+    per-replicate re-estimated weights, and no reweight hook is needed.
+    """
+
+    @pytest.mark.parametrize("metric", ["froc_mw", "froc_trap", "lroc"])
+    @pytest.mark.parametrize("scope", ["per_group", "global"])
+    def test_static_weights_equal_re_estimated_weights(
+        self, scope: str, metric: str
+    ) -> None:
+        table = _importance_weighted(scope)
+        boot = _replicates(table, group_keys=["group_id"])
+        assert _replicate_drift(boot, scope, metric) == pytest.approx(0.0, abs=1e-12)
+
+    @pytest.mark.parametrize("scope", ["per_group", "global"])
+    def test_unstratified_draw_drifts(self, scope: str) -> None:
+        # The discriminating half: without weight cells the vendor mix wanders,
+        # so held-fixed weights are not the re-estimated ones.
+        table = _importance_weighted(scope)
+        boot = _replicates(table, group_keys=["group_id"], strata=None)
+        assert _replicate_drift(boot, scope, "froc_mw") > 0.01
+
+    def test_ungrouped_static_weights_equal_re_estimated_weights(self) -> None:
+        table = _importance_weighted("global")
+        boot = _replicates(table, group_keys=[])
+        meta = boot.image_metadata.with_columns(_p_over_q(["bootstrap_id"]))
+
+        def run(tbl: DetectionTable) -> pl.DataFrame:
+            return (
+                froc_auc(tbl, method="mann_whitney", group_by="bootstrap_id")
+                .collect()
+                .sort("bootstrap_id")
+            )
+
+        assert run(boot)["auc"].to_list() == pytest.approx(
+            run(_with_meta(boot, meta))["auc"].to_list(), abs=1e-12
+        )
+
+    def test_entity_level_static_weights_equal_re_estimated_weights(self) -> None:
+        table = _importance_weighted("per_group")
+        boot = _replicates(table, group_keys=["group_id"], sample_col="case_id")
+        assert _replicate_drift(boot, "per_group", "froc_mw") == pytest.approx(
+            0.0, abs=1e-12
+        )
+
+    @pytest.mark.parametrize("sample_col", [None, "case_id"])
+    def test_every_replicate_keeps_the_vendor_mix(self, sample_col: str | None) -> None:
+        table = _importance_weighted("per_group")
+        boot = _replicates(table, group_keys=["group_id"], sample_col=sample_col)
+        full = (
+            table.image_metadata.group_by("group_id", "vendor")
+            .len()
+            .collect()
+            .sort("group_id", "vendor")
+        )
+        per_rep = boot.image_metadata.group_by(
+            "bootstrap_id", "group_id", "vendor"
+        ).len()
+        mismatched = (
+            per_rep.join(full.lazy(), on=["group_id", "vendor"], suffix="_full")
+            .filter(pl.col("len") != pl.col("len_full"))
+            .collect()
+        )
+        assert per_rep.select(pl.len()).collect().item() == 60 * full.height
+        assert mismatched.height == 0
+
+    # Bounds of `_vendor_table` (unit weights) frozen from the pre-stratification
+    # resampler: one weight cell per group must leave every draw unchanged.
+    _UNIT_WEIGHT_BOUNDS = {
+        "froc_trap_grouped": [
+            ("g1", 0.96875, 0.95125, 0.99003125),
+            ("g2", 0.98, 0.9599687499999999, 0.99875),
+        ],
+        "froc_mw": [(0.5, 0.25462500000000005, 0.735125)],
+        "lroc_grouped": [
+            ("g1", 0.5, 0.22, 0.8405000000000001),
+            ("g2", 0.68, 0.35950000000000004, 0.98),
+        ],
+        "froc_entity": [
+            ("g1", 0.4, 0.04, 0.9210000000000003),
+            ("g2", 0.6, 0.23800000000000032, 1.0),
+        ],
+    }
+
+    def _unit_weight_bounds(self) -> dict[str, list[tuple]]:
+        table = _vendor_table()
+        kw = {"n_bootstrap": 200, "seed": 11}
+        return {
+            "froc_trap_grouped": froc_auc_ci_lazy(
+                table,
+                group_by="group_id",
+                fp_range=_FROC_FP_RANGE,
+                extrapolate="flat",
+                **kw,
+            )
+            .collect()
+            .sort("group_id")
+            .rows(),
+            "froc_mw": froc_auc_ci_lazy(table, method="mann_whitney", **kw)
+            .collect()
+            .rows(),
+            "lroc_grouped": lroc_auc_ci_lazy(table, group_by="group_id", **kw)
+            .collect()
+            .sort("group_id")
+            .rows(),
+            "froc_entity": froc_auc_ci_lazy(
+                table,
+                group_by="group_id",
+                method="mann_whitney",
+                sample_col="case_id",
+                **kw,
+            )
+            .collect()
+            .sort("group_id")
+            .rows(),
+        }
+
+    def test_unit_weights_are_unchanged(self) -> None:
+        assert self._unit_weight_bounds() == self._UNIT_WEIGHT_BOUNDS
+
+    @pytest.mark.parametrize("family", ["froc", "lroc"])
+    def test_singleton_weight_cells_null_the_bounds(self, family: str) -> None:
+        # A continuous weight puts every image in its own cell: every replicate
+        # would be the original sample, a zero-width interval. Null instead.
+        fn, value_col = _CI_FUNCS[family]
+        table = _vendor_table()
+        distinct = (pl.int_range(pl.len()).cast(pl.Float64) + 1.0).alias(COL_WEIGHT)
+        weighted = _with_meta(table, table.image_metadata.with_columns(distinct))
+        out = fn(weighted, n_bootstrap=50, seed=1).collect()
+        assert out["ci_lower"].item() is None
+        assert out["ci_upper"].item() is None
+        point = fn(table, n_bootstrap=50, seed=1).collect()[value_col]
+        assert out[value_col].item() is not None
+        assert point.item() is not None
+
+    def test_singleton_rule_is_per_group(self) -> None:
+        table = _vendor_table()
+        g2_distinct = (
+            pl.when(pl.col("group_id") == "g2")
+            .then(pl.int_range(pl.len()).cast(pl.Float64) + 1.0)
+            .otherwise(1.0)
+            .alias(COL_WEIGHT)
+        )
+        weighted = _with_meta(table, table.image_metadata.with_columns(g2_distinct))
+        out = {
+            r["group_id"]: r
+            for r in froc_auc_ci_lazy(
+                weighted,
+                group_by="group_id",
+                n_bootstrap=50,
+                seed=1,
+                method="mann_whitney",
+            )
+            .collect()
+            .iter_rows(named=True)
+        }
+        assert out["g1"]["ci_lower"] is not None
+        assert out["g2"]["ci_lower"] is None
+        assert out["g2"]["auc"] is not None
+
+    def test_strata_separates_cells_sharing_a_weight(self) -> None:
+        # Both vendors at w = 1.0 share one weight cell; naming the column keeps
+        # each vendor's count fixed, which the weight alone cannot.
+        table = _vendor_table()
+        full = (
+            table.image_metadata.group_by("group_id", "vendor")
+            .len()
+            .collect()
+            .sort("group_id", "vendor")
+        )
+
+        def mismatches(strata: list[str]) -> int:
+            boot = _replicates(table, group_keys=["group_id"], strata=strata)
+            return (
+                boot.image_metadata.group_by("bootstrap_id", "group_id", "vendor")
+                .len()
+                .join(full.lazy(), on=["group_id", "vendor"], how="full", suffix="_f")
+                .filter(pl.col("len").fill_null(0) != pl.col("len_f").fill_null(0))
+                .collect()
+                .height
+            )
+
+        assert mismatches([]) > 0
+        assert mismatches(["vendor"]) == 0
+
+    @pytest.mark.parametrize("family", ["froc", "lroc"])
+    def test_strata_keeps_the_point_and_brackets_it(self, family: str) -> None:
+        fn, value_col = _CI_FUNCS[family]
+        table = _importance_weighted("per_group")
+        plain = fn(table, group_by="group_id", n_bootstrap=100, seed=2).collect()
+        out = fn(
+            table, group_by="group_id", strata="vendor", n_bootstrap=100, seed=2
+        ).collect()
+        assert out.sort("group_id")[value_col].equals(plain.sort("group_id")[value_col])
+        for row in out.iter_rows(named=True):
+            assert row["ci_lower"] <= row[value_col] <= row["ci_upper"]
+
+    @pytest.mark.parametrize("family", ["froc", "lroc"])
+    def test_unknown_strata_column_raises(self, family: str) -> None:
+        fn, _ = _CI_FUNCS[family]
+        with pytest.raises(ValueError, match="strata.*'scanner'"):
+            fn(_vendor_table(), strata="scanner", n_bootstrap=10, seed=1)
+
+    def test_average_precision_is_not_weight_stratified(self) -> None:
+        # AP never reads `weight`, so its weight cells are no part of the
+        # estimator: distinct weights neither change nor null its bounds.
+        table = _vendor_table()
+        distinct = (pl.int_range(pl.len()).cast(pl.Float64) + 1.0).alias(COL_WEIGHT)
+        weighted = _with_meta(table, table.image_metadata.with_columns(distinct))
+        a = average_precision_ci_lazy(
+            table, group_by="group_id", n_bootstrap=100, seed=4
+        )
+        b = average_precision_ci_lazy(
+            weighted, group_by="group_id", n_bootstrap=100, seed=4
+        )
+        out = b.collect().sort("group_id")
+        assert out.equals(a.collect().sort("group_id"))
+        assert out["ci_lower"].null_count() == 0
+
+    @pytest.mark.parametrize("family", ["froc", "lroc"])
+    def test_weighted_build_does_not_collect(self, family: str) -> None:
+        fn, _ = _CI_FUNCS[family]
+        table = _importance_weighted("per_group")
+        assert (
+            _collects_during(
+                lambda: fn(
+                    table,
+                    group_by="group_id",
+                    strata="vendor",
+                    sample_col="case_id",
+                    n_bootstrap=20,
+                    seed=1,
+                )
+            )
+            == 0
+        )

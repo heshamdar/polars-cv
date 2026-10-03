@@ -307,6 +307,50 @@ bootstrapped. A **degenerate group** keeps its point estimate but reports null
 degenerate groups alike. Viability needs at least one positive target — and, for
 `method="mann_whitney"` (a two-class rank statistic), at least one negative too.
 
+### Weighted tables
+
+When `image_metadata.weight` is an importance weight estimated from the sample
+itself (`w = p / q̂`, reweighting a vendor or prevalence mix to a target), the
+correct weights differ in every replicate: each replicate draws a different
+mix. The FROC and LROC intervals handle this without any reweighting hook. They
+also stratify the resample on **weight cells**: units with the same weight
+form a cell, and each `(group, cell)` is redrawn to its own size.
+
+Both weighted statistics are weight-scale-invariant ratios, so a weight that
+depends only on its cell's count (`p / q̂`, post-stratification, raking over
+crossed cells) does not change when the replicates are drawn this way. The
+full-sample weights are then exactly the weights re-estimated in each replicate,
+and the point estimate and the bounds come from the same estimator.
+
+```python
+# Weights computed by the caller, e.g. per (group, vendor) cell:
+meta = meta.with_columns(
+    weight=pl.col("vendor").replace_strict(target)
+    / (pl.len().over("group_id", "vendor") / pl.len().over("group_id"))
+)
+froc_auc_ci_lazy(table, group_by="group_id", method="mann_whitney", seed=42)
+
+# Two cells that happen to share a weight exactly (e.g. several at 1.0)
+# are merged; name the columns the weights were computed over to keep them apart.
+froc_auc_ci_lazy(table, group_by="group_id", strata="vendor", fp_range=(0, 8))
+```
+
+- **Weights computed per group or globally** are both exact. Draws never cross a
+  group, and fixing every `(group, cell)` count also fixes the global count.
+- **Unit weights** form a single cell, so the resample is unchanged.
+- **A weight cell holding a single unit nulls its group's bounds.** That cell has
+  no bootstrap variance. A continuous weight (for example from a propensity
+  model) puts every unit in its own cell and would otherwise report a
+  zero-width interval.
+- **Entity-level resampling (`sample_col`)** stratifies entities by the
+  distinct weights of their images. It is exact when the weights count
+  entities, or when the entities within a cell have equal image counts.
+- Weights are compared **exactly**. One expression evaluated per row (as above)
+  gives every member of a cell the same value. Weights that differ only by
+  floating-point noise split a cell, which stays exact but may leave singletons.
+- **Average precision** is unweighted (it never reads `weight`), so its
+  resample is not stratified by weight.
+
 ## IoU Re-thresholding
 
 The `DetectionTable` stores raw IoU values from matching, enabling
