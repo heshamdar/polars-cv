@@ -408,7 +408,7 @@ def interpolate_curve_lazy(
     forward as-of join and linearly interpolates. A point outside the observed
     ``[min x, max x]`` yields a null ``y`` with ``extrapolate="none"`` (default)
     or the nearest endpoint's ``y`` with ``"flat"`` — the policy
-    :func:`partial_auc_expr` integrates by. An exact knot (and the endpoints)
+    :func:`partial_auc` integrates by. An exact knot (and the endpoints)
     yields that knot's collapsed ``y``. With ``group_keys`` every group's curve
     is read independently. Nothing is collected — the caller owns the collect.
 

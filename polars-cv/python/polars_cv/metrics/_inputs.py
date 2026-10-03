@@ -226,7 +226,9 @@ def match_detections(
         max_detections: Keep each (image, class)'s ``max_detections``
             highest-scoring predictions (COCO: 100).
         images: The image population: ids, or a frame with an ``image_id``
-            column (and the ``weight`` / ``group`` columns when named).
+            column (and the ``weight`` / ``group`` columns when named). With
+            ``weight`` or ``group``, the frame holds one row per image; a
+            repeated ``image_id`` fails the query.
         weight: A per-image weight column of the ``images`` frame.
         group: A per-image subgroup column of the ``images`` frame (e.g. a
             scanner or site), for grouped and stratified evaluation.
@@ -274,7 +276,9 @@ def match_detections(
     )
     extra = _image_columns(images, weight, group)
     if extra is not None:
-        grouped = grouped.join(extra, on=COL_IMAGE_ID, how="left")
+        # One row per image: a repeated image_id would repeat that image's
+        # objects, so the join fails the query on one ("m:1").
+        grouped = grouped.join(extra, on=COL_IMAGE_ID, how="left", validate="m:1")
     weight_col, group_col = weight, group
     common = {
         "pred_col": PRED,
