@@ -9,6 +9,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`.contour.set_boundary_distances(other, sample_step=, frame=)`.** Boundary
+  distances between two contour sets, each read as one boundary (the union of
+  its outlines), returned as one struct per row. This is the surface distance
+  of a mask with several regions, as MONAI computes it. The engine's
+  `boundary_distances` now takes outline sets, and the per-contour accessor is
+  the case of one outline per set, so both share one implementation.
+
 - **`match_detections(predictions, ground_truth, ...)`: object tables in, a
   `DetectionTable` out.** Takes the long format detections usually arrive in,
   one row per object, and dispatches on the geometry column's dtype:

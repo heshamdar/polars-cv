@@ -261,11 +261,16 @@ pub struct PreparedOutline {
 
 impl PreparedOutline {
     pub fn new(outline: &Outline) -> Self {
+        Self::of(std::slice::from_ref(outline))
+    }
+
+    /// The edges of several outlines as one boundary (their union).
+    pub fn of(outlines: &[Outline]) -> Self {
         let mut prepared = PreparedOutline {
             lines: Vec::new(),
             points: Vec::new(),
         };
-        for (path, closed) in outline.paths() {
+        for (path, closed) in outlines.iter().flat_map(Outline::paths) {
             match path {
                 [] => {}
                 [only] => prepared.points.push(*only),

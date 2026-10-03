@@ -11,7 +11,7 @@ use pyo3_polars::derive::polars_expr;
 
 // Import geometry operations from view-buffer
 use view_buffer::geometry::{
-    contour::{Contour, Outline, Winding},
+    contour::{BoundingBox, Contour, Outline, Winding},
     label::score_contours_on_buffer,
     measures,
     ops::ScaleOrigin,
@@ -710,40 +710,114 @@ contour_accessor! {
     reads Outline;
     parse ContourFn::BoundaryDistances { other, sample_step, frame };
     |a, b, params, row| {
-        let step = match sample_step {
-            Some(step) => {
-                let step = params.value(step, row)?;
-                if !(step.is_finite() && step > 0.0) {
-                    polars_bail!(ComputeError:
-                        "boundary_distances: sample_step must be a positive number, \
-                         got {} (row {})", step, row);
-                }
-                Some(step)
-            }
-            None => None,
+        let Some((step, frame)) = boundary_options(params, sample_step, frame, row)? else {
+            return Ok(AnyValue::Null);
         };
-        let frame = match params.optional_column(frame) {
-            None => None,
-            Some(column) => match BBoxColumn::new(column).single(row)? {
-                // A null frame is a null operand: a null result.
-                None => return Ok(AnyValue::Null),
-                Some(f) if f.width > 0.0 && f.height > 0.0 => Some(f),
-                Some(f) => polars_bail!(ComputeError:
-                    "boundary_distances: the frame must have a positive width and \
-                     height, got {} x {} (row {})", f.width, f.height, row),
-            },
-        };
-        Ok(match pairwise::boundary_distances(a, b, step, frame.as_ref()) {
-            None => AnyValue::Null,
-            Some(d) => AnyValue::StructOwned(Box::new((
-                [d.mean_a_to_b, d.mean_b_to_a, d.assd, d.hd, d.hd95]
-                    .into_iter()
-                    .map(AnyValue::Float64)
-                    .collect(),
-                boundary_distance_fields(),
-            ))),
-        })
+        Ok(boundary_distances_anyvalue(pairwise::boundary_distances(
+            a,
+            b,
+            step,
+            frame.as_ref(),
+        )))
     }
+}
+
+/// A boundary-distance row's `sample_step` and `frame`, checked; `None` for a
+/// null frame (a null operand, so a null result). Shared by the per-contour
+/// and the set-level accessor, which read the same options.
+fn boundary_options(
+    params: &GeomParams,
+    sample_step: &Option<Param<f64>>,
+    frame: &Option<ColumnRef>,
+    row: usize,
+) -> PolarsResult<Option<(Option<f64>, Option<BoundingBox>)>> {
+    let step = match sample_step {
+        Some(step) => {
+            let step = params.value(step, row)?;
+            if !(step.is_finite() && step > 0.0) {
+                polars_bail!(ComputeError:
+                    "boundary_distances: sample_step must be a positive number, \
+                     got {} (row {})", step, row);
+            }
+            Some(step)
+        }
+        None => None,
+    };
+    let frame = match params.optional_column(frame) {
+        None => None,
+        Some(column) => match BBoxColumn::new(column).single(row)? {
+            None => return Ok(None),
+            Some(f) if f.width > 0.0 && f.height > 0.0 => Some(f),
+            Some(f) => polars_bail!(ComputeError:
+                "boundary_distances: the frame must have a positive width and \
+                 height, got {} x {} (row {})", f.width, f.height, row),
+        },
+    };
+    Ok(Some((step, frame)))
+}
+
+fn boundary_distances_anyvalue(d: Option<pairwise::BoundaryDistances>) -> AnyValue<'static> {
+    match d {
+        None => AnyValue::Null,
+        Some(d) => AnyValue::StructOwned(Box::new((
+            [d.mean_a_to_b, d.mean_b_to_a, d.assd, d.hd, d.hd95]
+                .into_iter()
+                .map(AnyValue::Float64)
+                .collect(),
+            boundary_distance_fields(),
+        ))),
+    }
+}
+
+fn set_boundary_distances_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
+    let name = input_fields
+        .first()
+        .map(|f| f.name().clone())
+        .unwrap_or_else(|| PlSmallStr::from_static("set_boundary_distances"));
+    Ok(Field::new(name, boundary_distances_dtype()))
+}
+
+/// Boundary distances between two contour sets, each read as one boundary
+/// (the union of its outlines). Set-level, like `pairwise_iou`: a
+/// single-contour column is a set of one, and the result is one struct per
+/// row whichever arity came in.
+#[polars_expr(output_type_func=set_boundary_distances_output_type)]
+fn contour_set_boundary_distances(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "contour_set_boundary_distances";
+    let (op, params) = GeomParams::parse::<ContourFn<Wire>>(inputs, kwargs, NAME)?;
+    let ContourFn::SetBoundaryDistances {
+        other,
+        sample_step,
+        frame,
+    } = &op
+    else {
+        return Err(parsed_as_another(NAME));
+    };
+    let (left, right) = (
+        ContourColumn::new(&inputs[0]),
+        ContourColumn::new(params.column(other)),
+    );
+    let rows = params.map_rows(crate::geom_calls!(), inputs[0].len(), |params, i| {
+        let (Some(a), Some(b)) = (left.outlines(i)?, right.outlines(i)?) else {
+            return Ok(None);
+        };
+        let Some((step, frame)) = boundary_options(params, sample_step, frame, i)? else {
+            return Ok(None);
+        };
+        Ok(Some(boundary_distances_anyvalue(
+            pairwise::boundary_distances_sets(&a, &b, step, frame.as_ref()),
+        )))
+    })?;
+    let rows: Vec<AnyValue> = rows
+        .into_iter()
+        .map(|r| r.unwrap_or(AnyValue::Null))
+        .collect();
+    Series::from_any_values_and_dtype(
+        inputs[0].name().clone(),
+        &rows,
+        &boundary_distances_dtype(),
+        true,
+    )
 }
 
 // ============================================================================

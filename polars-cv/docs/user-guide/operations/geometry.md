@@ -201,6 +201,13 @@ frame = pl.struct(  # a BBOX_SCHEMA struct: Float64 fields
 d = pl.col("pred").contour.boundary_distances(pl.col("gt"), frame=frame)
 ```
 
+For masks with several regions, `.contour.set_boundary_distances(other)` reads
+each side's contour set as **one** boundary, the union of its outlines (the
+surface distance MONAI computes on masks). Every sample is measured to the
+nearest edge of any region on the other side. `boundary_distances` instead
+gives one result per contour of a set. An empty set (an empty mask) has no
+boundary and gives null. `sample_step` and `frame` work as above.
+
 ### Keeping the largest
 
 `largest(k=1)` keeps the `k` largest contours of a set by area, largest first
