@@ -144,7 +144,7 @@ fill it in the expression: `pl.col("target_h").fill_null(224)`.
 - **Metadata**: `.cv.width()`, `.cv.height()`, `.cv.channels()`, `.cv.image_dtype()`.
 - **Byte access**: `.cv.read_bytes()` — read a path column's bytes (local or cloud) without decoding.
 - **Display**: `show_images()` for Jupyter notebook visualization.
-- **Detection Metrics**: Precision-Recall, AP, mAP, FROC, LROC, F1, confusion matrix, bootstrap confidence intervals.
+- **Detection Metrics**: Precision-Recall, AP, mAP, FROC, LROC, F1, confusion matrix, bootstrap confidence intervals — all weighted by `image_metadata.weight`.
 
 ## Detection Metrics
 
@@ -170,8 +170,14 @@ pr = precision_recall_curve(table)
 ap = average_precision(table)
 
 print(f"AP: {ap:.3f}")
-print(pr.curve)  # score, precision, recall, cum_tp, cum_fp
+print(pr.curve)  # score, precision, recall, cum_tp, cum_fp, cum_weighted_tp, cum_weighted_fp
 ```
+
+Every metric is weighted by the table's `image_metadata.weight` (scikit-learn
+`sample_weight` semantics: a weight of `k` counts an image `k` times; unit
+weights give the plain counts). The bootstrap intervals re-estimate
+sample-derived weights in every replicate by stratifying the resample on
+weight cells, so reweighting a study to a target mix needs no extra step.
 
 Available matchers: `ContourMatcher` (heatmap/mask), `BBoxMatcher` (bounding boxes),
 `PreMatchedAdapter` (pre-computed TP/FP).
@@ -179,6 +185,7 @@ Available matchers: `ContourMatcher` (heatmap/mask), `BBoxMatcher` (bounding box
 Available metrics: `precision_recall_curve`, `average_precision`,
 `mean_average_precision`, `froc_auc`, `lroc_auc`, `froc_curve_lazy`,
 `lroc_curve_lazy`, `confusion_at_threshold`, `precision_at_threshold`,
-`recall_at_threshold`, `f1_at_threshold`.
+`recall_at_threshold`, `f1_at_threshold`, and the lazy, group-aware bootstrap
+intervals `froc_auc_ci_lazy`, `lroc_auc_ci_lazy`, `average_precision_ci_lazy`.
 
 For full details, see the [Documentation](https://heshamdar.github.io/polars-cv/)
