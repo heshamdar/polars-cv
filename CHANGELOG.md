@@ -111,6 +111,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **Bounded bootstrap memory.** A confidence interval's replicate frame holds
+  `n_bootstrap × detections` rows, and the metric's sorts and group-bys hold all
+  of them at once, natively or not. The replicates are now evaluated in
+  batches of 50 within the one lazy plan, and the streaming engine runs the
+  batches one after another, so peak memory follows the batch rather than
+  `n_bootstrap`. Each batch draws its own `bootstrap_id` range, and a draw
+  hashes its global slot id, so every bound is bit for bit what one whole draw
+  gives (pinned at batch sizes 1, 7, 50 and unbatched). `bootstrap_ci(AP)`,
+  2000 images and 50k detections, 1000 replicates: peak RSS 4257 MB → 614 MB,
+  20.4 s → 14.8 s. Nothing is collected to choose the batch, and there is no
+  new parameter.
 - **Metrics stay on the streaming engine, except where it cannot help.**
   Polars' streaming engine hands any step it cannot run natively to the
   in-memory engine, which collects that step's whole input first. In the
@@ -155,7 +166,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     `tests/_streaming_guard.py`.
   - Removing these fallbacks does not by itself bound memory. The bootstrap
     holds its whole replicate frame (`n_bootstrap × detections` rows) in its
-    sorts and group-bys, natively or not; see *bounded bootstrap memory*.
+    sorts and group-bys, natively or not; see *Bounded bootstrap memory*.
 - **The AUC integrals take a frame, not an aggregation.** `_auc_expr`'s
   `trapz_auc_expr` / `partial_auc_expr` / `mann_whitney_auc_expr` were `pl.Expr`
   reductions for `group_by().agg()`, which sorted inside the aggregation. They

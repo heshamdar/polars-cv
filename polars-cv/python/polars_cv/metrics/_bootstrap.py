@@ -387,12 +387,12 @@ def _auc_ci_lazy(
     for the point estimate (``keys = group_keys``) and once per replicate
     (``keys = [*group_keys, bootstrap_id]``). ``require_both_classes`` tightens the
     degeneracy rule for the two-class rank statistics (Mann-Whitney). The
-    replicates come from :func:`_replicate_table`, whose sampling-unit weight
-    cells also feed the interval's singleton rule.
+    replicates come in batches from :func:`_replicate_tables`, whose
+    sampling-unit weight cells also feed the interval's singleton rule.
     """
     point = metric(table, group_keys)
 
-    boot, cells = _replicate_table(
+    boots, cells = _replicate_tables(
         table,
         group_keys=group_keys,
         sample_col=sample_col,
@@ -400,8 +400,9 @@ def _auc_ci_lazy(
         seed=seed,
         strata=strata,
         weight_rtol=weight_rtol,
+        batch=_REPLICATES_PER_BATCH,
     )
-    replicates = metric(boot, [*group_keys, _COL_BOOT])
+    replicates = pl.concat([metric(boot, [*group_keys, _COL_BOOT]) for boot in boots])
 
     ci = _bootstrap_ci_from_replicates(
         replicates,
@@ -417,7 +418,14 @@ def _auc_ci_lazy(
     return _join_point_and_ci(point, ci, group_keys, value_col)
 
 
-def _replicate_table(
+#: Replicates evaluated together. The replicate frame holds
+#: ``replicates × detections`` rows and the metric's sorts and group-bys hold
+#: all of them, so the batch bounds peak memory: the batches run one after
+#: another within the one plan. See ``_replicate_tables``.
+_REPLICATES_PER_BATCH = 50
+
+
+def _replicate_tables(
     table: DetectionTable,
     *,
     group_keys: list[str],
@@ -426,8 +434,9 @@ def _replicate_table(
     seed: int | None,
     strata: list[str],
     weight_rtol: float,
-) -> tuple[DetectionTable, pl.LazyFrame]:
-    """The weighted replicate table and its sampling units.
+    batch: int | None,
+) -> tuple[list[DetectionTable], pl.LazyFrame]:
+    """The weighted replicate tables, one per batch, and their sampling units.
 
     The one way every CI builds its replicates: the resample is stratified on the
     sampling units' weight cells (:func:`_sampling_units`), and under
@@ -435,14 +444,23 @@ def _replicate_table(
     full-sample share (:func:`_rescale_to_cell_shares`). An image-level draw
     redraws every ``(group, gt_label, cell)`` to its own size, so its rescale
     factor would be exactly ``1`` and is not applied. Returns
-    ``(replicates, units)``; the units feed the interval's singleton rule.
+    ``(replicate tables, units)``; the units feed the interval's singleton rule.
 
-    The units and the draw are ``cache()``-d (still lazy): the replicate metric
-    reads the replicate frames many times, and projection pushdown leaves each
-    read a slightly different subplan the streaming engine cannot merge, so
-    without a cache it re-runs the draw at every read (~4x here). This needs
-    polars >= 1.44.2 (the declared floor): 1.43.2 returned wrong rows from a
-    cached frame read under different projections.
+    **Batches.** Replicates ``k·batch .. (k+1)·batch − 1`` form table ``k``
+    (``batch=None``: one table). Each batch draws its own range
+    (:func:`_lazy_resample`'s ``first``), which is exactly the slice one
+    whole-range draw would give. The caller evaluates the metric per table and
+    concatenates, and the streaming engine runs those inputs one after another,
+    so peak memory follows the batch rather than ``n_bootstrap``. (Filtering
+    one cached whole-range draw by ``bootstrap_id`` instead tripped a polars
+    optimizer panic, "expected filter", in 1.44.2.)
+
+    The units and each batch's draw are ``cache()``-d (still lazy): the
+    replicate metric reads the replicate frames many times, and projection
+    pushdown leaves each read a slightly different subplan the streaming engine
+    cannot merge, so without a cache it re-runs the draw at every read (~4x
+    here). This needs polars >= 1.44.2 (the declared floor): 1.43.2 returned
+    wrong rows from a cached frame read under different projections.
     """
     units = _sampling_units(
         table,
@@ -450,14 +468,6 @@ def _replicate_table(
         group_keys=group_keys,
         strata=strata,
         weight_rtol=weight_rtol,
-    ).cache()
-    samples = _resolve_bootstrap_samples(
-        table,
-        sample_col=sample_col,
-        n_bootstrap=n_bootstrap,
-        seed=seed,
-        group_keys=group_keys,
-        units=units,
     ).cache()
     image_cells = (
         None
@@ -470,10 +480,48 @@ def _replicate_table(
             weight_rtol=weight_rtol,
         ).cache()
     )
-    boot = _bootstrap_table_with_draws(
-        table, samples, image_cells=image_cells, group_keys=group_keys
+    step = n_bootstrap if batch is None else batch
+    tables = []
+    for first in range(0, n_bootstrap, step):
+        samples = _resolve_bootstrap_samples(
+            table,
+            sample_col=sample_col,
+            n_bootstrap=min(step, n_bootstrap - first),
+            seed=seed,
+            group_keys=group_keys,
+            units=units,
+            first=first,
+        ).cache()
+        tables.append(
+            _bootstrap_table_with_draws(
+                table, samples, image_cells=image_cells, group_keys=group_keys
+            )
+        )
+    return tables, units
+
+
+def _replicate_table(
+    table: DetectionTable,
+    *,
+    group_keys: list[str],
+    sample_col: str | None,
+    n_bootstrap: int,
+    seed: int | None,
+    strata: list[str],
+    weight_rtol: float,
+) -> tuple[DetectionTable, pl.LazyFrame]:
+    """Every replicate in one table (:func:`_replicate_tables`, unbatched)."""
+    tables, units = _replicate_tables(
+        table,
+        group_keys=group_keys,
+        sample_col=sample_col,
+        n_bootstrap=n_bootstrap,
+        seed=seed,
+        strata=strata,
+        weight_rtol=weight_rtol,
+        batch=None,
     )
-    return boot, units
+    return tables[0], units
 
 
 def _bootstrap_ci_from_replicates(
@@ -764,6 +812,7 @@ def _resolve_bootstrap_samples(
     seed: int | None,
     group_keys: list[str] | None = None,
     units: pl.LazyFrame | None = None,
+    first: int = 0,
 ) -> pl.LazyFrame:
     """Seeded, lazy ``(bootstrap_id, *group_keys, image_id, _slot)`` resample.
 
@@ -775,7 +824,8 @@ def _resolve_bootstrap_samples(
     rows. ``units`` (from :func:`_sampling_units`, built with the same
     ``sample_col`` and ``group_keys``) is the base to draw from; a ``_cell``
     column on it further stratifies the draw. Without it the base is the plain
-    :func:`_sampling_units`. The whole frame stays lazy — the caller collects
+    :func:`_sampling_units`. ``first`` starts the replicate range
+    (:func:`_lazy_resample`). The whole frame stays lazy — the caller collects
     once at the streaming boundary.
     """
     group_keys = list(group_keys or [])
@@ -799,6 +849,7 @@ def _resolve_bootstrap_samples(
         seed=seed,
         strata_cols=strata_cols,
         partition_cols=group_keys,
+        first=first,
     )
     if sample_col is None:
         return unit_samples
@@ -929,6 +980,7 @@ def _lazy_resample(
     unit_col: str,
     n_bootstrap: int,
     seed: int | None,
+    first: int = 0,
     strata_cols: list[str] | None = None,
     partition_cols: list[str] | None = None,
 ) -> pl.LazyFrame:
@@ -953,6 +1005,10 @@ def _lazy_resample(
         unit_col: Column naming the sampling unit (e.g. ``image_id``).
         n_bootstrap: Number of replicates (> 0).
         seed: Optional RNG seed (``None`` → deterministic constant).
+        first: The first replicate's ``bootstrap_id``: replicates
+            ``first .. first + n_bootstrap - 1`` are drawn. A draw hashes its
+            global slot id, so a range draws exactly what it would within one
+            larger run (how :func:`_replicate_tables` batches).
         strata_cols: Optional stratum columns on ``base``; a stratum is one
             combination of their values.
         partition_cols: Optional partition columns on ``base`` (e.g. group keys).
@@ -986,7 +1042,11 @@ def _lazy_resample(
     )
 
     reps = pl.LazyFrame(
-        {_COL_BOOT: pl.int_range(0, n_bootstrap, dtype=pl.Int32, eager=True)}
+        {
+            _COL_BOOT: pl.int_range(
+                first, first + n_bootstrap, dtype=pl.Int32, eager=True
+            )
+        }
     )
     # Cross join gives, per replicate, one slot per base unit — so a replicate
     # redraws exactly the base's (partition, stratum) sizes. `_ntot` (the base

@@ -156,6 +156,16 @@ on any such node (or a whole-column Python UDF) that `KNOWN_FALLBACKS` in
 
 ## Bootstrap CIs
 
+**Batches.** `_replicate_tables` builds the replicates in batches of
+`_REPLICATES_PER_BATCH` (50); `_auc_ci_lazy` evaluates the metric per batch and
+`pl.concat`s the results. The streaming engine runs those inputs one after
+another, so peak memory follows the batch, not `n_bootstrap × detections`
+(4257 MB → 614 MB at 50M replicate rows). Each batch draws its own range
+(`_lazy_resample(first=)`), and the draw hashes its global slot id, so the
+bounds are bit-identical to an unbatched run (`TestReplicateBatches`). Do not
+filter one cached whole-range draw by `bootstrap_id` instead: that trips a
+polars 1.44.2 optimizer panic ("expected filter").
+
 Seed-reproducible, group-aware, and **fully lazy** — the entire bootstrap
 (resample, per-replicate metric, and the percentile bounds) is one Polars plan
 the caller collects. Three free functions in `_bootstrap.py` are the only way in:
