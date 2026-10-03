@@ -26,6 +26,12 @@ aligned lazy frames:
 - **image_metadata** — one row per (image, class) with `n_gts`, `weight`,
   `gt_label`.
 
+`weight` (default `1.0`) weights every metric: PR/AP/mAP, the threshold
+metrics, the confusion counts' `weighted_*` fields, FROC/LROC and their
+bootstrap intervals. Use it to reweight a study to a target vendor or prevalence
+mix; see [Weighted tables](#weighted-tables) for how the intervals treat
+weights estimated from the sample.
+
 ## Matchers
 
 ### PreMatchedAdapter
@@ -304,7 +310,11 @@ average_precision_ci_lazy(table, group_by="group_id", n_bootstrap=1000, seed=42)
 The resample is a **position-independent hash** of each unit's global slot,
 built collect-free by cross-joining a constant-length reps frame against the
 units — so it never materializes the `n_bootstrap × n_units` frame and each group
-resamples within itself, stratified by `gt_label`. Because the draw hashes its
+resamples within itself, stratified by `gt_label`. Each image has exactly one
+draw slot, however many class rows it has. It is drawn in the positive stratum
+if any of its classes is positive, and a draw brings only its own group's rows,
+so `group_by="class_id"` keeps every class's replicate the size of that class's
+sample. Because the draw hashes its
 own slot id (never a row position), a given `seed` reproduces the interval
 **bit-for-bit regardless of thread count** (`POLARS_MAX_THREADS`) or streaming
 morselization, and `seed=None` is deterministic (a fixed constant). The `auc` /

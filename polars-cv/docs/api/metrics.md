@@ -20,6 +20,23 @@
       members:
         - auc
 
+::: polars_cv.metrics.PrecisionRecallResult
+    options:
+      show_root_heading: true
+      members:
+        - auc
+        - precision_at
+        - recall_at
+
+::: polars_cv.metrics.ConfusionResult
+    options:
+      show_root_heading: true
+      members:
+        - precision
+        - recall
+        - f1
+        - to_dict
+
 ## Matchers
 
 ::: polars_cv.metrics.ContourMatcher
