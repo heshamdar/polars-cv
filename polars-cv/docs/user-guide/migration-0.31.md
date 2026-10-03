@@ -15,15 +15,18 @@ or refused. This page lists what to check coming from 0.30; the
 
 ## Results that change
 
-**`froc_auc` is null where `fp_range` leaves the curve.** A FROC curve stops
-at the highest FP/image any threshold reaches. `froc_auc` used to fill the
-curve flat past that point (while `froc_summary_table` reported null there),
-which for thresholded-mask detections gave an AUC close to the curve's
-maximum sensitivity. Every FROC/LROC curve reader now takes one
-`extrapolate=` policy, `"none"` by default. Pass `extrapolate="flat"` for the
-previous value (the LUNA16 `np.interp` convention), and report
+**`froc_auc`'s default no longer extends the curve.** Extension is still
+available, opt-in: `froc_auc(..., extrapolate="flat")` gives the 0.30 value
+(the LUNA16 `np.interp` convention). A FROC curve stops at the highest
+FP/image any threshold reaches; `froc_auc` always filled it flat past that
+point, while `froc_summary_table` reported null there — and for
+thresholded-mask detections, which sit at one operating point, that gave an
+AUC close to the curve's maximum sensitivity. Now every FROC/LROC curve
+reader (`froc_auc`, `froc_sensitivity_at_fp`, `froc_summary_table`,
+`lroc_auc`, `lroc_sensitivity_at_fpf` and the bootstrap CIs) takes the same
+`extrapolate=` option, `"none"` (null off the curve) by default. Report
 `froc_operating_range(table)` alongside to show how far each curve reaches.
-LROC values are unchanged.
+LROC values are unchanged (its curve always spans [0, 1]).
 
 **`is_closed=False` is read.** The field was written `True` and ignored, so a
 contour with `is_closed=False` was measured as the ring its closing edge would

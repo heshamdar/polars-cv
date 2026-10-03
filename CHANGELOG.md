@@ -12,8 +12,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 Open polylines become a first-class contour (`is_closed=False` is read),
 with boundary distances, coverage matching for line-shaped ground truth,
 closing a line along the image frame, and coordinate-list constructors.
-FROC/LROC curves are read past their end by one explicit policy, null by
-default. Contour labelling and `label_reduce` region scans are orders of
+FROC/LROC curve readers share one `extrapolate=` option for reading past a
+curve's end: `"flat"` extends it, and the default is now `"none"` (null). Contour labelling and `label_reduce` region scans are orders of
 magnitude faster. Upgrading from 0.30: see the
 [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.31/).
 
@@ -39,8 +39,8 @@ magnitude faster. Upgrading from 0.30: see the
 
 ### Changed
 
-- **FROC/LROC read a curve past its end by one policy, null by default
-  (breaking for `froc_auc`).** `froc_auc(fp_range=...)` filled the curve flat
+- **FROC/LROC read a curve past its end by one `extrapolate=` policy;
+  `froc_auc`'s default changes from extending to null.** `froc_auc(fp_range=...)` filled the curve flat
   past its last operating point while `froc_summary_table` and
   `froc_sensitivity_at_fp` returned null there, so one table reported an
   unknown sensitivity at 2 FP/image and a defined AUC over 0–2 FP/image — for
