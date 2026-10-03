@@ -71,6 +71,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **`.contour.boundary_distances(frame=)` no longer spikes next to the frame.**
+  The frame removed the *target's* boundary lying on it, but kept source samples
+  a hair inside it. An annotation drawn even slightly inside the image edge,
+  against a prediction cut by that edge, therefore lost its nearest partner and
+  was measured across the region: about 30 px instead of 1 px in the reported
+  case, inflating the GT→prediction mean, `hd` and `hd95`. An inset frame only
+  moved where the jump happened. Now the frame only chooses which samples are
+  measured; each one is measured to the other side's whole outline, so distances
+  are continuous as boundary approaches the edge. The engine's clipped-target
+  outline (`PreparedOutline::within`) is deleted, and the Rust test that
+  asserted the 30 px reading is rewritten to assert 1 px.
+
 - **Multi-class bootstrap replicates over-drew mixed-label images.** The
   image-level resample took one base row per distinct `(image_id, gt_label)`.
   `image_metadata` has a row per `(image, class)`, so an image positive for one

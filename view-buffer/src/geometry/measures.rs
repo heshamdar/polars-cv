@@ -275,40 +275,6 @@ impl PreparedOutline {
         prepared
     }
 
-    /// The outline's edges clipped to the open interior of `frame`: what lies
-    /// on the frame's edges or outside it is not part of the boundary. An
-    /// object cut off by the image edge has a frame segment in its outline
-    /// that no annotation of it traces; this is its boundary without one.
-    pub fn within(outline: &Outline, frame: &BoundingBox) -> Self {
-        let mut prepared = PreparedOutline {
-            lines: Vec::new(),
-            points: Vec::new(),
-        };
-        for (path, closed) in outline.paths() {
-            if let [only] = path {
-                if frame.contains_strictly(only) {
-                    prepared.points.push(*only);
-                }
-                continue;
-            }
-            let closing = (closed && path.len() > 2).then(|| (path[path.len() - 1], path[0]));
-            let edges = path.windows(2).map(|w| (w[0], w[1])).chain(closing);
-            for (p, q) in edges {
-                // Clipped to the closed box, a segment either passes through
-                // the interior — then its midpoint does — or lies along one
-                // of the box's edges, which is frame and is dropped.
-                let Some((p, q)) = frame.clip_segment(&p, &q) else {
-                    continue;
-                };
-                let mid = Point::new((p.x + q.x) / 2.0, (p.y + q.y) / 2.0);
-                if frame.contains_strictly(&mid) {
-                    prepared.lines.push(path_line_string(&[p, q], false));
-                }
-            }
-        }
-        prepared
-    }
-
     /// The distance from `point` to the nearest edge (`INFINITY` if none).
     pub fn distance(&self, point: &Point) -> f64 {
         let p = geo_point(point);

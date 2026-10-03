@@ -331,13 +331,14 @@ pub struct BoundaryDistances {
 /// vertices (no boundary to measure to).
 ///
 /// With a `frame` (the image, or an inset of it), boundary on the frame or
-/// outside it is not boundary: samples not strictly inside the frame are
-/// dropped from both directions, and each target is clipped to the frame's
-/// interior ([`PreparedOutline::within`]). A region cut off by the image edge
-/// then agrees with an annotation that traces only its real boundary. `None`
-/// too when either side has no boundary left inside the frame.
-///
-/// [`PreparedOutline::within`]: super::measures::PreparedOutline::within
+/// outside it is not measured: samples not strictly inside the frame are
+/// dropped from both directions. A region cut off by the image edge then
+/// agrees with an annotation that traces only its real boundary. The frame
+/// chooses which samples are measured, never what they are measured to: each
+/// kept sample is measured to the other side's *whole* boundary, so distances
+/// stay continuous as boundary approaches the edge (removing the target's
+/// frame side sent a sample a hair inside the frame across the region).
+/// `None` too when either side has no sample left inside the frame.
 pub fn boundary_distances(
     a: &Outline,
     b: &Outline,
@@ -345,10 +346,7 @@ pub fn boundary_distances(
     frame: Option<&super::contour::BoundingBox>,
 ) -> Option<BoundaryDistances> {
     let directed = |from: &Outline, to: &Outline| -> Option<Vec<f64>> {
-        let target = match frame {
-            Some(frame) => super::measures::PreparedOutline::within(to, frame),
-            None => super::measures::PreparedOutline::new(to),
-        };
+        let target = super::measures::PreparedOutline::new(to);
         let samples = super::measures::sample_outline(from, sample_step);
         let d: Vec<f64> = samples
             .iter()
@@ -1053,17 +1051,46 @@ mod boundary_distance_tests {
         }
     }
 
-    /// The target is clipped too: a sample just inside the frame is measured
-    /// to the target's real boundary, not to its frame side.
+    /// The frame chooses which samples are measured, not what they are
+    /// measured to: a sample just inside the frame is measured to the other
+    /// side's whole boundary, frame side included. Removing the target's frame
+    /// side instead sent this probe across the region (30, not 1) — a spike
+    /// for every annotation drawn a hair inside the image edge.
     #[test]
-    fn the_target_is_clipped_to_the_frame() {
+    fn a_sample_inside_the_frame_is_measured_to_the_whole_target() {
         let region = ring(&[(0.0, 20.0), (50.0, 20.0), (50.0, 80.0), (0.0, 80.0)]);
         // One point 1 px inside the left edge, halfway down the frame side.
         let probe = Outline::Open(vec![Point::new(1.0, 50.0)]);
         let frame = BoundingBox::new(0.0, 0.0, 100.0, 100.0);
         let d = boundary_distances(&probe, &region, None, Some(&frame)).unwrap();
-        // 30 to the top and bottom edges, not 1 to the frame side.
-        assert!((d.mean_a_to_b - 30.0).abs() < 1e-12, "{d:?}");
+        assert!((d.mean_a_to_b - 1.0).abs() < 1e-12, "{d:?}");
+    }
+
+    /// Distances are continuous as boundary approaches the frame: an
+    /// annotation ε inside the edge, against a region cut by it, is ε away
+    /// in both directions — not 0 on the frame and ~30 just off it.
+    #[test]
+    fn distances_are_continuous_at_the_frame() {
+        let region = ring(&[(0.0, 20.0), (50.0, 20.0), (50.0, 80.0), (0.0, 80.0)]);
+        let frame = BoundingBox::new(0.0, 0.0, 100.0, 100.0);
+        for eps in [1e-3, 0.5, 1.0] {
+            let annotation = ring(&[(eps, 20.0), (50.0, 20.0), (50.0, 80.0), (eps, 80.0)]);
+            let d = boundary_distances(&region, &annotation, Some(1.0), Some(&frame)).unwrap();
+            assert!(d.hd <= eps + 1e-12, "eps={eps}: {d:?}");
+            assert!(d.mean_b_to_a <= eps + 1e-12, "eps={eps}: {d:?}");
+        }
+    }
+
+    /// An inset frame moves which samples are measured, never what they are
+    /// measured to: GT 1.5 px from a region cut at x = 0, with the frame inset
+    /// 1 px, is 1.5 away — not measured across the region.
+    #[test]
+    fn an_inset_frame_does_not_remove_the_target() {
+        let region = ring(&[(0.0, 20.0), (50.0, 20.0), (50.0, 80.0), (0.0, 80.0)]);
+        let annotation = ring(&[(1.5, 20.0), (50.0, 20.0), (50.0, 80.0), (1.5, 80.0)]);
+        let inset = BoundingBox::new(1.0, 1.0, 98.0, 98.0);
+        let d = boundary_distances(&region, &annotation, Some(1.0), Some(&inset)).unwrap();
+        assert!((d.hd - 1.5).abs() < 1e-12, "{d:?}");
     }
 
     /// An inset frame is the tolerance: boundary within 1 px of the image

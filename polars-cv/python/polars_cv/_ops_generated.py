@@ -2772,18 +2772,20 @@ class _ContourOpsMixin:
         An object cut off by the image edge has a frame segment in its outline
         that an annotation of it does not trace. With ``frame`` (a bbox per
         row, e.g. ``{x: 0, y: 0, width: w, height: h}``), boundary on the
-        frame's edges or outside it is not boundary: those samples are dropped
-        from both directions, and each side is measured to the other's
-        boundary inside the frame. To also drop boundary *near* the edge,
-        inset the frame (``x: 1, width: w - 2`` drops the outermost pixel).
-        Nothing left inside the frame gives null.
+        frame's edges or outside it is not measured: those samples are dropped
+        from both directions. Each remaining sample is measured to the other
+        side's *whole* boundary, so distances stay continuous as boundary
+        approaches the edge (an annotation 1 px inside it is 1 px away). To
+        also skip boundary *near* the edge, inset the frame (``x: 1,
+        width: w - 2`` skips the outermost pixel). Nothing left inside the
+        frame gives null.
 
         Args:
             other: Another contour column to compare with.
             sample_step: Spacing of the points sampled along every edge, > 0; ``None``
                 samples the vertices only (literal or expression).
             frame: A bbox column, the image frame: boundary not strictly inside it is
-                excluded. A null frame row gives null.
+                not measured. A null frame row gives null.
 
         Returns:
             ``Struct{mean_a_to_b, mean_b_to_a, assd, hd, hd95}`` (Float64):
