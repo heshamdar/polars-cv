@@ -185,7 +185,8 @@ pipe = Pipeline().source("image_bytes").resize(height=224, width=224).cast("f32"
 
 ## `file_path` and Cloud Access
 
-`file_path` supports local paths (bare or `file://` URIs) and remote URIs (for
+`file_path` supports local paths (bare, or `file:///absolute/path` URIs,
+percent-decoded; a `file://` URI naming a host is refused) and remote URIs (for
 example `s3://`, `gs://`, `az://`, `http://`).
 Use `CloudOptions` when credentials or provider settings are needed:
 

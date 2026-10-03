@@ -83,6 +83,44 @@ auc = froc_auc(table, fp_range=(0.0, 8.0)).collect().item()
 `pred_col`/`gt_col`, so a segmentation graph and the contour extraction can
 share one decode and stream from a single collect.
 
+Each detection is scored by the heatmap pixels in its region —
+`score_reduction=` (`"max"` by default, `"mean"` or `"sum"`) over
+`score_region_mode=` (`"interior"`, `"boundary"` or `"bbox"`). A heatmap that
+saturates scores most detections at its peak, so under `"max"` they tie and
+the FROC/LROC curve collapses to a few points; `"mean"` separates them.
+
+`iou_threshold`, `extraction_threshold`, `min_contour_area`,
+`min_contour_area_fraction` (specks relative to each image's size) and
+`coverage_tolerance` each take a Polars expression, read per row — e.g. a
+physical tolerance across devices:
+
+```python
+matcher = ContourMatcher(
+    match_by="coverage",
+    coverage_tolerance=5.0 / pl.col("spacing_mm"),
+    min_contour_area_fraction=1e-4,
+)
+```
+
+A literal is checked when the matcher is built; an expression when its row
+runs.
+
+#### Contour predictions
+
+A model that emits polygons with its own per-object scores skips the heatmap:
+pass a contour or contour-set `pred_col` with `score_col` — `List[float]`
+aligned with a set, or a float for one contour per row — and
+`auto_resize=False` (the contours are in the GT's coordinates). The contours
+are the detections as they are, a 0.0 score included. A score count that does
+not match the contours, or a null score, fails the query rather than dropping
+detections.
+
+```python
+table = ContourMatcher(auto_resize=False).match(
+    data, pred_col="pred_polygons", gt_col="gt_mask", score_col="pred_scores"
+)
+```
+
 #### Line-shaped ground truth
 
 Landmarks annotated as lines (a skinfold, a muscle edge) but predicted as thin
@@ -280,6 +318,22 @@ map_val = mean_average_precision(
     table,
     iou_thresholds=[0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95],
 )
+```
+
+## Stratified Evaluation
+
+`DetectionTable.filter_images` keeps a subset of images — by id, or by a
+predicate over `image_metadata` — with their detections and the stored
+matcher settings, so the same metrics run per device, scan type or size
+bucket without re-matching:
+
+```python
+table = matcher.match(data, pred_col="heatmap", gt_col="gt_mask", group_col="device")
+for device in ["a", "b"]:
+    sub = table.filter_images(pl.col("group_id") == device)
+    print(device, froc_auc(sub, fp_range=(0.0, 8.0)).collect().item())
+
+small = table.filter_images(["img_001", "img_007"])
 ```
 
 ## Class-Aware Metrics

@@ -62,6 +62,17 @@ class TestPointFromCoords:
         with pytest.raises(pl.exceptions.ComputeError, match="null"):
             df.select(point_from_coords(pl.col("p")))
 
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+    def test_a_non_finite_coordinate_is_refused(self, bad: float) -> None:
+        # Every geometry reader refuses a non-finite coordinate, so building
+        # one only moved the error to whichever function read it first.
+        df = pl.DataFrame({"p": [[1.0, bad]]})
+        with pytest.raises(pl.exceptions.ComputeError, match="non-finite"):
+            df.select(point_from_coords(pl.col("p")))
+        rings = pl.DataFrame({"c": [[[0.0, 0.0], [bad, 1.0], [1.0, 1.0]]]})
+        with pytest.raises(pl.exceptions.ComputeError, match="non-finite"):
+            rings.select(contour_from_coords(pl.col("c")))
+
     def test_an_unknown_order_is_refused(self) -> None:
         with pytest.raises(ValueError, match="order"):
             point_from_coords(pl.col("p"), order="zx")

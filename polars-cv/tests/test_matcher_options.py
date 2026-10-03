@@ -339,6 +339,50 @@ class TestContourPredictions:
         with pytest.raises(pl.exceptions.PolarsError):
             _match_contours(df, score_col="scores").collect()
 
+    def test_a_null_score_is_refused(self) -> None:
+        # A null-scored contour used to take part in matching -- claiming the
+        # GT here, as an exact copy of it -- and then be dropped from the
+        # table, so the 0.9 hit beside it was scored a false positive.
+        df = _contour_preds().with_columns(
+            pred=pl.Series(
+                [[_square(0, 0, 10), _square(0, 0, 10)], []], dtype=CONTOUR_SET_SCHEMA
+            ),
+            scores=pl.Series([[None, 0.9], []], dtype=pl.List(pl.Float64)),
+        )
+        with pytest.raises(pl.exceptions.PolarsError):
+            _match_contours(df, score_col="scores").collect()
+
+    def test_a_null_score_list_beside_contours_is_refused(self) -> None:
+        # A null list read as "no scores", so the row's contours vanished.
+        df = _contour_preds().with_columns(
+            scores=pl.Series([None, []], dtype=pl.List(pl.Float64))
+        )
+        with pytest.raises(pl.exceptions.PolarsError):
+            _match_contours(df, score_col="scores").collect()
+
+    def test_a_null_scalar_score_is_refused(self) -> None:
+        df = pl.DataFrame(
+            {"image_id": ["a"], "pred": [_square(0, 0, 10)], "scores": [None]},
+            schema={
+                "image_id": pl.String,
+                "pred": CONTOUR_SET_SCHEMA.inner,
+                "scores": pl.Float64,
+            },
+        ).with_columns(gt=pl.Series([[_square(0, 0, 10)]], dtype=CONTOUR_SET_SCHEMA))
+        with pytest.raises(pl.exceptions.PolarsError):
+            _match_contours(df, score_col="scores").collect()
+
+    def test_a_null_prediction_row_has_no_detections(self) -> None:
+        # A null contour set (with or without scores) is an image without
+        # predictions, as for a heatmap: its GT still counts.
+        df = _contour_preds().with_columns(
+            pred=pl.Series([None, []], dtype=CONTOUR_SET_SCHEMA),
+            scores=pl.Series([None, []], dtype=pl.List(pl.Float64)),
+        )
+        det, meta = _match_contours(df, score_col="scores").collect()
+        assert det.height == 0
+        assert meta["n_gts"].sum() == 2
+
     def test_scores_must_be_a_list_for_a_contour_set(self) -> None:
         df = _contour_preds().with_columns(scores=pl.Series([0.9, 0.1]))
         with pytest.raises(ValueError, match="score_col"):

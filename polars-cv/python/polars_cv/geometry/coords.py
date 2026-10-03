@@ -3,7 +3,7 @@
 The inverse of ``.point.to_coords()`` / ``.contour.to_coords()``. Each pair is
 ``[x, y]`` or ``[y, x]`` (row, column — NumPy's convention), as ``order``
 says; integers and ``Array(_, 2)`` pairs are accepted alike. A pair that does
-not hold exactly two non-null numbers is an error naming its row.
+not hold exactly two non-null, finite numbers is an error naming its row.
 """
 
 from __future__ import annotations

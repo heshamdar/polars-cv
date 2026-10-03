@@ -24,9 +24,12 @@ too.
 
 On `.contour`: `normalize`, `to_absolute`, `translate`, `scale` (`sx`, `sy` and
 `origin`), `simplify`, `ensure_winding(direction=)`, `area(signed=)`,
-`label_reduce(reduction=, region_mode=)` and `correspond(threshold=)`.
-On `.point`: `normalize`, `to_absolute`, `translate`, `scale`, `rotate(angle=)`
-and `interpolate(t=)`. On `.bbox`: `correspond(threshold=)`.
+`largest(k=)`, `close_along_border` (every argument), `to_coords(order=)`,
+`boundary_distances(sample_step=)`, `label_reduce(reduction=, region_mode=)`,
+`correspond(threshold=)` and `correspond_by_coverage(tolerance=, threshold=,
+sample_step=)`. On `.point`: `normalize`, `to_absolute`, `translate`, `scale`,
+`rotate(angle=)`, `interpolate(t=)` and `to_coords(order=)`. On `.bbox`:
+`correspond(threshold=)`.
 
 An aggregation broadcasts, matching Polars' own semantics — `pl.col("w").max()`
 produces one value applied to every row.
@@ -77,7 +80,54 @@ Rings are implicitly closed — do not repeat the first point. A ring is a hole
 because it sits in `holes`, not because of how it is wound: every operation is
 winding-independent, so `flip()` and `ensure_winding()` change what
 `winding()` reports without changing the region the contour describes.
-`is_closed` is reserved and never read.
+
+### Open polylines
+
+`is_closed=False` makes a contour an **open polyline** — an annotated skin
+line or muscle edge — whose edges join consecutive points only. It has no
+region, so the functions split by what they read:
+
+- **Boundary** functions measure it as a line: `perimeter` (its arc length),
+  `hausdorff_distance`, `boundary_distances`, `bounding_box`, `simplify`,
+  `convex_hull`, the point-wise transforms (`translate`, `scale`, `flip`,
+  `normalize`, `to_absolute`), and `.point.distance_to_contour` /
+  `nearest_point_on_contour`.
+- **Region** functions refuse it, naming the row: `area`, `centroid`,
+  `is_convex`, `winding`, `ensure_winding`, `contains_point`, `iou`, `dice`,
+  `pairwise_iou`, `correspond`, `label_reduce`,
+  `.point.signed_distance_to_contour` and the pipeline's `contour` source.
+  `scale(origin="centroid")` refuses one too.
+
+An open contour may not have holes. An unspecified `is_closed` (a null, or a
+struct without the field) reads as closed.
+
+A line whose ends lie on the image frame closes into the region it bounds
+along the frame, through the corners it passes:
+
+```python
+# A pectoral-muscle edge from the top edge to the left edge -> its corner region
+region = pl.col("edge").contour.close_along_border(pl.col("w"), pl.col("h"))
+```
+
+`arc=` picks the way round (`"shortest"`, `"clockwise"`,
+`"counterclockwise"`, as displayed); an end farther than `max_snap` (default
+2 px) from the frame is refused rather than joined.
+
+### From coordinate lists, and back
+
+```python
+from polars_cv.geometry import point_from_coords, contour_from_coords
+
+df.with_columns(
+    pt=point_from_coords(pl.col("yx"), order="yx"),        # [row, col] pairs
+    line=contour_from_coords(pl.col("pts"), closed=False),  # an open polyline
+)
+df.select(pl.col("line").contour.to_coords(order="xy"))    # List(Array(f64, 2))
+```
+
+Integers and `Array(_, 2)` pairs are accepted; a pair that is not two
+non-null, finite numbers is an error naming its row. `contour_set_from_coords`
+builds a set; `.contour.to_coords()` refuses a contour with holes.
 
 ---
 
@@ -106,8 +156,9 @@ whichever side the set is on. A set on *both* sides raises rather than guessing,
 because it could mean the N×M matrix (`pairwise_iou`) or an index-wise pairing
 (`.explode()` one side), and those are different answers.
 
-The set-level accessors (`pairwise_iou`, `correspond`, `label_reduce`) run
-the rule backwards: a lone contour is read as a set of one.
+The set-level accessors (`pairwise_iou`, `correspond`,
+`correspond_by_coverage`, `label_reduce`, `largest`) run the rule backwards: a
+lone contour is read as a set of one.
 
 ### Measurements
 
@@ -117,6 +168,51 @@ df.with_columns(
     perimeter=pl.col("contour").contour.perimeter(),
     centroid=pl.col("contour").contour.centroid(),
     bbox=pl.col("contour").contour.bounding_box(),
+)
+```
+
+### Boundary distances
+
+`hausdorff_distance` is vertex-to-vertex, so two tracings of one outline at
+different vertex densities come out apart. `boundary_distances` measures each
+boundary's samples to the other's *edges*, both directions:
+
+```python
+d = pl.col("pred").contour.boundary_distances(pl.col("gt"), sample_step=0.5)
+# Struct{mean_a_to_b, mean_b_to_a, assd, hd, hd95}
+```
+
+`assd` is the average symmetric surface distance, `hd` the Hausdorff
+distance and `hd95` the larger directed 95th percentile (MONAI's
+convention). For physical units, `.contour.scale(..., origin="origin")` both
+sides by the pixel spacing first.
+
+A region cut off by the image edge has a frame segment in its outline that no
+annotation traces. Pass the image as `frame=` (a bbox per row) and boundary on
+or outside it is dropped from both directions; inset the bbox to also drop
+boundary near the edge:
+
+```python
+frame = pl.struct(  # a BBOX_SCHEMA struct: Float64 fields
+    x=pl.lit(0.0), y=pl.lit(0.0), width=pl.col("w").cast(pl.Float64), height=pl.col("h").cast(pl.Float64)
+)
+d = pl.col("pred").contour.boundary_distances(pl.col("gt"), frame=frame)
+```
+
+### Keeping the largest
+
+`largest(k=1)` keeps the `k` largest contours of a set by area, largest first
+(equal areas in input order) — as `.contour.largest(k)` and as a pipeline op
+after `extract_contours()`. The result is always a set. To drop specks
+relative to each image's size rather than in pixels, filter at extraction with
+`extract_contours(min_area_fraction=...)` (a fraction of height x width, in
+(0, 1]; with `min_area` too, a contour must pass both):
+
+```python
+pipe = (
+    Pipeline().source("image_bytes").grayscale().threshold(128)
+    .extract_contours(min_area_fraction=0.001)
+    .largest(k=3)
 )
 ```
 
@@ -202,7 +298,18 @@ Provide either explicit `width`/`height` **or** `shape=` — not both.
 
 ## Points
 
-The `.point` namespace operates on point columns.
+The `.point` namespace operates on point columns: one point per row
+(`POINT_SCHEMA`) or a point set (`POINT_SET_SCHEMA`, `List(point)`). Over a set
+every method gives one value per point, in input order, as a `List` — so a set
+of points is measured against the row's contour without an explode/group-by:
+
+```python
+pl.col("pts").point.distance_to_contour(pl.col("contour"))  # List(Float64)
+```
+
+A contour or bbox operand broadcasts against the set; two point columns
+broadcast either way (a set against a single point), and a set on both sides is
+refused. A null point in a set gives a null in its place.
 
 ### Transforms
 
@@ -276,9 +383,18 @@ df.with_columns(
 ```
 
 The result is a struct matching `CORRESPONDENCE_SCHEMA`: `right_idx` (the
-partner's index, null where unpaired) and `overlap` (its IoU), both positionally
-aligned with the left column. Counting how many pairings your dataset contains
-is a question about your dataset, so `correspond` does not answer it.
+partner's index, null where unpaired), `overlap` (its IoU) and `duplicate`
+(left unpaired although it cleared the threshold against a partner another
+element had already claimed — a repeated hit, which LUNA16/CAMELYON-style
+evaluation ignores), all positionally aligned with the left column. Counting
+how many pairings your dataset contains is a question about your dataset, so
+`correspond` does not answer it.
+
+`.contour.correspond(...)` is the same rule over contour IoU, and
+`.contour.correspond_by_coverage(other, tolerance, ...)` pairs by *coverage* —
+the fraction of each target's boundary inside the candidate or within
+`tolerance` of its edges — which scores line-shaped targets (polylines) that
+IoU cannot.
 
 ---
 

@@ -233,10 +233,15 @@ pub fn close_along_border(
     arc: BorderArc,
     max_snap: f64,
 ) -> Result<Contour, String> {
-    if !(width > 0.0 && height > 0.0) {
+    if !(width > 0.0 && height > 0.0 && width.is_finite() && height.is_finite()) {
         return Err(format!(
-            "the frame must have a positive size, got {width} x {height}"
+            "the frame must have a positive, finite size, got {width} x {height}"
         ));
+    }
+    // A NaN would pass every `d > max_snap` test below and join a line from
+    // anywhere.
+    if max_snap.is_nan() || max_snap < 0.0 {
+        return Err(format!("max_snap must be >= 0, got {max_snap}"));
     }
     let (Some(&first), Some(&last)) = (line.first(), line.last()) else {
         return Err("an empty line has no ends to close".to_string());
@@ -513,6 +518,27 @@ mod close_along_border_tests {
         let line = pts(&[(60.0, 5.0), (0.0, 40.0)]);
         let err = close_along_border(&line, 100.0, 100.0, BorderArc::Shortest, 2.0).unwrap_err();
         assert!(err.contains("5"), "{err}");
+    }
+
+    /// `max_snap` and the frame are numbers the walk relies on: a NaN
+    /// `max_snap` compared false against every distance and joined a line
+    /// from anywhere; an infinite frame has no perimeter to walk.
+    #[test]
+    fn parameters_no_walk_can_use_are_refused() {
+        let middle = pts(&[(50.0, 50.0), (60.0, 60.0)]);
+        for max_snap in [f64::NAN, -1.0] {
+            let err = close_along_border(&middle, 100.0, 100.0, BorderArc::Shortest, max_snap)
+                .unwrap_err();
+            assert!(err.contains("max_snap"), "{err}");
+        }
+        for (w, h) in [(f64::INFINITY, 100.0), (100.0, f64::NAN), (0.0, 100.0)] {
+            let err = close_along_border(&pectoral(), w, h, BorderArc::Shortest, 2.0).unwrap_err();
+            assert!(err.contains("positive"), "{err}");
+        }
+        // An infinite max_snap is a meaningful "snap any end".
+        assert!(
+            close_along_border(&middle, 100.0, 100.0, BorderArc::Shortest, f64::INFINITY).is_ok()
+        );
     }
 
     #[test]
