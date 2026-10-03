@@ -430,7 +430,8 @@ class TestAllPointsAPAuthority:
             {
                 COL_SCORE: scores,
                 COL_IS_TP: is_tp,
-                "total_gts": [float(total_gts)] * len(scores),
+                COL_WEIGHT: [1.0] * len(scores),
+                "gt_mass": [float(total_gts)] * len(scores),
                 "_g": [0] * len(scores),
             }
         )
@@ -557,3 +558,208 @@ class TestPrecisionRecallResultAtThreshold:
         result = precision_recall_curve(simple_detection_table)
         assert result.precision_at(2.0) == 1.0
         assert result.recall_at(2.0) == 0.0
+
+
+# --- weighting -------------------------------------------------------------------
+
+# (image, class, score, is_tp, iou) detections and (image, class, n_gts) metadata.
+_W_DETS = [
+    ("i0", "car", 0.95, True, 0.90),
+    ("i0", "car", 0.60, False, 0.10),
+    ("i0", "ped", 0.55, True, 0.60),
+    ("i1", "car", 0.85, False, 0.30),
+    ("i1", "ped", 0.80, True, 0.80),
+    ("i1", "ped", 0.35, True, 0.55),
+    ("i2", "car", 0.75, True, 0.70),
+    ("i2", "car", 0.40, True, 0.52),
+    ("i2", "ped", 0.65, False, 0.20),
+    ("i3", "car", 0.50, False, 0.00),
+    ("i3", "ped", 0.45, True, 0.95),
+]
+_W_GTS = {
+    ("i0", "car"): 2,
+    ("i0", "ped"): 1,
+    ("i1", "car"): 1,
+    ("i1", "ped"): 3,
+    ("i2", "car"): 2,
+    ("i2", "ped"): 1,
+    ("i3", "car"): 1,
+    ("i3", "ped"): 1,
+}
+# Integer weights, so a weight of k is the image drawn k times.
+_W_WEIGHTS = {"i0": 2.0, "i1": 1.0, "i2": 3.0, "i3": 1.0}
+
+
+def _weighted_pr_table(
+    weights: dict[str, float], *, replicate: bool = False
+) -> DetectionTable:
+    """``_W_DETS`` with per-image ``weights``, or each image copied ``k`` times."""
+    copies = {img: (int(w) if replicate else 1) for img, w in weights.items()}
+
+    def ids(img: str) -> list[str]:  # an image absent from `weights` is absent
+        return [f"{img}#{r}" for r in range(copies.get(img, 0))]
+
+    det_rows = [
+        (uid, cls, score, tp, iou, k)
+        for k, (img, cls, score, tp, iou) in enumerate(_W_DETS)
+        for uid in ids(img)
+    ]
+    det = pl.DataFrame(
+        {
+            COL_IMAGE_ID: [r[0] for r in det_rows],
+            COL_CLASS_ID: [r[1] for r in det_rows],
+            COL_SCORE: [r[2] for r in det_rows],
+            COL_IS_TP: [r[3] for r in det_rows],
+            COL_GT_IDX: [0 if r[3] else None for r in det_rows],
+            COL_IOU: [r[4] for r in det_rows],
+            COL_DET_IDX: [r[5] for r in det_rows],
+        },
+        schema={
+            COL_IMAGE_ID: pl.String,
+            COL_CLASS_ID: pl.String,
+            COL_SCORE: pl.Float64,
+            COL_IS_TP: pl.Boolean,
+            COL_GT_IDX: pl.UInt32,
+            COL_IOU: pl.Float64,
+            COL_DET_IDX: pl.UInt32,
+        },
+    )
+    meta_rows = [
+        (uid, cls, n, 1.0 if replicate else weights[img])
+        for (img, cls), n in _W_GTS.items()
+        for uid in ids(img)
+    ]
+    meta = pl.DataFrame(
+        {
+            COL_IMAGE_ID: [r[0] for r in meta_rows],
+            COL_CLASS_ID: [r[1] for r in meta_rows],
+            COL_N_GTS: [r[2] for r in meta_rows],
+            COL_WEIGHT: [r[3] for r in meta_rows],
+            COL_GT_LABEL: [r[2] > 0 for r in meta_rows],
+        }
+    )
+    return DetectionTable.from_matched(det, meta, matching_iou_threshold=0.5)
+
+
+class TestWeightedPrecisionRecall:
+    """The PR family is weighted by ``image_metadata.weight``.
+
+    Precision is ``Σw·tp / Σw·(tp+fp)`` and recall ``Σw·tp / Σw·n_gts``, each
+    detection carrying its image's weight (scikit-learn's ``sample_weight``).
+    The oracle: an integer weight ``k`` equals the image drawn ``k`` times.
+    """
+
+    @pytest.fixture()
+    def pair(self) -> tuple[DetectionTable, DetectionTable]:
+        return (
+            _weighted_pr_table(_W_WEIGHTS),
+            _weighted_pr_table(_W_WEIGHTS, replicate=True),
+        )
+
+    @pytest.mark.parametrize("class_id", ["car", "ped", None])
+    def test_curve_matches_replication(self, pair, class_id: str | None) -> None:
+        weighted, replicated = pair
+        w = precision_recall_curve(weighted, class_id=class_id).curve
+        r = precision_recall_curve(replicated, class_id=class_id).curve
+        assert w["score"].to_list() == r["score"].to_list()
+        assert w["precision"].to_list() == pytest.approx(r["precision"].to_list())
+        assert w["recall"].to_list() == pytest.approx(r["recall"].to_list())
+
+    @pytest.mark.parametrize("interpolation", ["all_points", "11_point"])
+    @pytest.mark.parametrize("class_id", ["car", "ped"])
+    def test_average_precision_matches_replication(
+        self, pair, class_id: str, interpolation: str
+    ) -> None:
+        weighted, replicated = pair
+        got = average_precision(
+            weighted, class_id=class_id, interpolation=interpolation
+        )
+        want = average_precision(
+            replicated, class_id=class_id, interpolation=interpolation
+        )
+        assert got == pytest.approx(want, abs=1e-12)
+        # ...and the weighting is not inert on this fixture.
+        unit = _weighted_pr_table(dict.fromkeys(_W_WEIGHTS, 1.0))
+        assert got != pytest.approx(
+            average_precision(unit, class_id=class_id, interpolation=interpolation)
+        )
+
+    @pytest.mark.parametrize("interpolation", ["all_points", "11_point"])
+    def test_mean_average_precision_matches_replication(
+        self, pair, interpolation: str
+    ) -> None:
+        weighted, replicated = pair
+        kw = {"iou_thresholds": [0.5, 0.75], "interpolation": interpolation}
+        assert mean_average_precision(weighted, **kw) == pytest.approx(
+            mean_average_precision(replicated, **kw), abs=1e-12
+        )
+
+    @pytest.mark.parametrize("threshold", [0.3, 0.5, 0.7, 0.9])
+    def test_threshold_metrics_match_replication(self, pair, threshold: float) -> None:
+        weighted, replicated = pair
+        for fn in (precision_at_threshold, recall_at_threshold, f1_at_threshold):
+            assert fn(weighted, threshold) == pytest.approx(
+                fn(replicated, threshold), abs=1e-12
+            )
+
+    @pytest.mark.parametrize("threshold", [0.3, 0.7])
+    def test_confusion_weighted_counts_match_replication(
+        self, pair, threshold: float
+    ) -> None:
+        weighted, replicated = pair
+        w = confusion_at_threshold(weighted, threshold)
+        r = confusion_at_threshold(replicated, threshold)
+        # Raw counts stay counts of the table's own detections...
+        assert (w.tp, w.fp) != (r.tp, r.fp)
+        # ...while the weighted counts and every derived rate are the oracle's.
+        assert (w.weighted_tp, w.weighted_fp, w.weighted_fn) == pytest.approx(
+            (r.tp, r.fp, r.fn)
+        )
+        assert (w.precision, w.recall, w.f1) == pytest.approx(
+            (r.precision, r.recall, r.f1)
+        )
+
+    def test_unit_weights_leave_counts_and_weighted_counts_equal(self) -> None:
+        unit = _weighted_pr_table(dict.fromkeys(_W_WEIGHTS, 1.0))
+        c = confusion_at_threshold(unit, 0.5)
+        assert (c.weighted_tp, c.weighted_fp, c.weighted_fn) == (c.tp, c.fp, c.fn)
+
+    def test_scale_invariant(self) -> None:
+        scaled = _weighted_pr_table({k: 3.7 * v for k, v in _W_WEIGHTS.items()})
+        base = _weighted_pr_table(_W_WEIGHTS)
+        for cls in ("car", "ped"):
+            assert average_precision(scaled, class_id=cls) == pytest.approx(
+                average_precision(base, class_id=cls), abs=1e-12
+            )
+        assert f1_at_threshold(scaled, 0.5) == pytest.approx(
+            f1_at_threshold(base, 0.5), abs=1e-12
+        )
+
+    def test_zero_weight_image_is_dropped(self) -> None:
+        # A weight of 0 removes the image's detections *and* its ground truths.
+        zeroed = _weighted_pr_table({**_W_WEIGHTS, "i2": 0.0})
+        dropped = _weighted_pr_table(
+            {k: v for k, v in _W_WEIGHTS.items() if k != "i2"}, replicate=True
+        )
+        for cls in ("car", "ped"):
+            assert average_precision(zeroed, class_id=cls) == pytest.approx(
+                average_precision(dropped, class_id=cls), abs=1e-12
+            )
+        assert recall_at_threshold(zeroed, 0.3) == pytest.approx(
+            recall_at_threshold(dropped, 0.3), abs=1e-12
+        )
+
+    def test_grouped_authority_matches_scalar_under_weights(self, pair) -> None:
+        # The bootstrap's grouped AP (the CI point column) is the scalar AP.
+        from polars_cv.metrics import average_precision_ci_lazy
+
+        weighted, _ = pair
+        for cls in ("car", "ped"):
+            point = (
+                average_precision_ci_lazy(weighted, class_id=cls, n_bootstrap=5, seed=1)
+                .collect()["ap"]
+                .item()
+            )
+            assert point == pytest.approx(
+                average_precision(weighted, class_id=cls), abs=1e-12
+            )

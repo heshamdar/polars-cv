@@ -598,11 +598,19 @@ class TestThreadCountInvariant:
 _TARGET = {"A": 0.3, "B": 0.7}
 
 
-def _vendor_table() -> DetectionTable:
+# Cases of uneven size, each within one vendor: (group, first image, size).
+_UNEVEN_CASES = {
+    "g1": [(0, 1), (1, 2), (3, 3), (6, 1), (7, 3)],
+    "g2": [(0, 2), (2, 1), (3, 1), (4, 3), (7, 1), (8, 2)],
+}
+
+
+def _vendor_table(*, uneven_cases: bool = False) -> DetectionTable:
     """Two groups of ten images with different vendor mixes (g1 6A/4B, g2 4A/6B).
 
     Unit weights; :func:`_importance_weighted` sets ``p / q̂``. Each ``case_id``
-    pairs two images of one vendor, so an entity-level draw keeps the image mix.
+    pairs two images of one vendor, so an entity-level draw keeps the image mix —
+    unless ``uneven_cases``, whose cases hold one to three images each.
     """
     rows: list[Row] = []
     vendor: dict[str, str] = {}
@@ -613,6 +621,11 @@ def _vendor_table() -> DetectionTable:
             rows.append((image, ((i * 7 + shift) % 10) / 10 + 0.05, i % 2 == 0, group))
             vendor[image] = "A" if i < n_a else "B"
             cases[image] = f"{group}_c{i // 2}"
+    if uneven_cases:
+        for group, spans in _UNEVEN_CASES.items():
+            for first, size in spans:
+                for i in range(first, first + size):
+                    cases[f"{group}_{i}"] = f"{group}_c{first}"
     return _table(rows, cases=cases, extra={"vendor": vendor})
 
 
@@ -633,9 +646,9 @@ def _with_meta(table: DetectionTable, meta: pl.LazyFrame) -> DetectionTable:
     )
 
 
-def _importance_weighted(scope: str) -> DetectionTable:
+def _importance_weighted(scope: str, *, uneven_cases: bool = False) -> DetectionTable:
     """``_vendor_table`` weighted to ``_TARGET``, ``q̂`` per group or global."""
-    table = _vendor_table()
+    table = _vendor_table(uneven_cases=uneven_cases)
     over = ["group_id"] if scope == "per_group" else []
     return _with_meta(table, table.image_metadata.with_columns(_p_over_q(over)))
 
@@ -646,31 +659,35 @@ def _replicates(
     group_keys: list[str],
     sample_col: str | None = None,
     strata: list[str] | None = (),  # type: ignore[assignment]
+    weight_rtol: float = 1e-6,
     n_bootstrap: int = 60,
 ) -> DetectionTable:
-    """The CI path's replicate table; ``strata=None`` is the unstratified draw."""
+    """The CI path's replicate table; ``strata=None`` is a plain, cell-blind draw."""
     from polars_cv.metrics._bootstrap import (
         _bootstrap_table_with_draws,
+        _replicate_table,
         _resolve_bootstrap_samples,
-        _sampling_cells,
     )
 
-    cells = (
-        None
-        if strata is None
-        else _sampling_cells(
-            table, sample_col=sample_col, group_keys=group_keys, strata=list(strata)
+    if strata is None:
+        samples = _resolve_bootstrap_samples(
+            table,
+            sample_col=sample_col,
+            n_bootstrap=n_bootstrap,
+            seed=3,
+            group_keys=group_keys,
         )
-    )
-    samples = _resolve_bootstrap_samples(
+        return _bootstrap_table_with_draws(table, samples)
+    boot, _ = _replicate_table(
         table,
+        group_keys=group_keys,
         sample_col=sample_col,
         n_bootstrap=n_bootstrap,
         seed=3,
-        group_keys=group_keys,
-        cells=cells,
+        strata=list(strata),
+        weight_rtol=weight_rtol,
     )
-    return _bootstrap_table_with_draws(table, samples)
+    return boot
 
 
 def _replicate_drift(boot: DetectionTable, scope: str, metric: str) -> float:
@@ -817,7 +834,7 @@ class TestWeightCellStratification:
     def test_unit_weights_are_unchanged(self) -> None:
         assert self._unit_weight_bounds() == self._UNIT_WEIGHT_BOUNDS
 
-    @pytest.mark.parametrize("family", ["froc", "lroc"])
+    @pytest.mark.parametrize("family", ["froc", "lroc", "pr"])
     def test_singleton_weight_cells_null_the_bounds(self, family: str) -> None:
         # A continuous weight puts every image in its own cell: every replicate
         # would be the original sample, a zero-width interval. Null instead.
@@ -894,29 +911,37 @@ class TestWeightCellStratification:
         for row in out.iter_rows(named=True):
             assert row["ci_lower"] <= row[value_col] <= row["ci_upper"]
 
-    @pytest.mark.parametrize("family", ["froc", "lroc"])
+    @pytest.mark.parametrize("family", ["froc", "lroc", "pr"])
     def test_unknown_strata_column_raises(self, family: str) -> None:
         fn, _ = _CI_FUNCS[family]
         with pytest.raises(ValueError, match="strata.*'scanner'"):
             fn(_vendor_table(), strata="scanner", n_bootstrap=10, seed=1)
 
-    def test_average_precision_is_not_weight_stratified(self) -> None:
-        # AP never reads `weight`, so its weight cells are no part of the
-        # estimator: distinct weights neither change nor null its bounds.
+    def test_average_precision_static_weights_equal_re_estimated_weights(
+        self,
+    ) -> None:
+        # AP is weighted too, so it shares the weight-cell draw.
+        from polars_cv.metrics._bootstrap import _all_points_ap_grouped
+
+        table = _importance_weighted("per_group")
+        boot = _replicates(table, group_keys=["group_id"])
+        meta = boot.image_metadata.with_columns(_p_over_q(["bootstrap_id", "group_id"]))
+        keys = ["group_id", "bootstrap_id"]
+        static = _all_points_ap_grouped(boot, keys).collect().sort(keys)
+        fresh = (
+            _all_points_ap_grouped(_with_meta(boot, meta), keys).collect().sort(keys)
+        )
+        assert static["ap"].to_list() == pytest.approx(fresh["ap"].to_list(), abs=1e-12)
+
+    def test_average_precision_singleton_cells_null_the_bounds(self) -> None:
         table = _vendor_table()
         distinct = (pl.int_range(pl.len()).cast(pl.Float64) + 1.0).alias(COL_WEIGHT)
         weighted = _with_meta(table, table.image_metadata.with_columns(distinct))
-        a = average_precision_ci_lazy(
-            table, group_by="group_id", n_bootstrap=100, seed=4
-        )
-        b = average_precision_ci_lazy(
-            weighted, group_by="group_id", n_bootstrap=100, seed=4
-        )
-        out = b.collect().sort("group_id")
-        assert out.equals(a.collect().sort("group_id"))
-        assert out["ci_lower"].null_count() == 0
+        out = average_precision_ci_lazy(weighted, n_bootstrap=20, seed=4).collect()
+        assert out["ci_lower"].item() is None
+        assert out["ap"].item() == pytest.approx(average_precision(weighted))
 
-    @pytest.mark.parametrize("family", ["froc", "lroc"])
+    @pytest.mark.parametrize("family", ["froc", "lroc", "pr"])
     def test_weighted_build_does_not_collect(self, family: str) -> None:
         fn, _ = _CI_FUNCS[family]
         table = _importance_weighted("per_group")
@@ -931,5 +956,119 @@ class TestWeightCellStratification:
                     seed=1,
                 )
             )
+            == 0
+        )
+
+
+class TestWeightCellTolerance:
+    """Weights within ``weight_rtol`` (relative, default ``1e-6``) share a cell."""
+
+    @staticmethod
+    def _noisy() -> DetectionTable:
+        # One image per (group, vendor) cell recomputes its weight along another
+        # arithmetic path: equal in intent, unequal in the last bits.
+        table = _importance_weighted("per_group")
+        noise = pl.when(pl.col(COL_IMAGE_ID).is_in(["g1_0", "g1_9", "g2_0", "g2_9"]))
+        meta = table.image_metadata.with_columns(
+            noise.then(pl.col(COL_WEIGHT) * (1.0 + 1e-12)).otherwise(pl.col(COL_WEIGHT))
+        )
+        return _with_meta(table, meta)
+
+    @pytest.mark.parametrize("family", ["froc", "lroc", "pr"])
+    def test_float_noise_does_not_split_a_cell(self, family: str) -> None:
+        fn, _ = _CI_FUNCS[family]
+        table = self._noisy()
+        default = fn(table, group_by="group_id", n_bootstrap=50, seed=1).collect()
+        assert default["ci_lower"].null_count() == 0
+        # Exact comparison isolates each perturbed image as a singleton cell.
+        exact = fn(
+            table, group_by="group_id", n_bootstrap=50, seed=1, weight_rtol=0.0
+        ).collect()
+        assert exact["ci_lower"].null_count() == 2
+
+    def test_tolerance_merges_only_weights_within_it(self) -> None:
+        # Vendors at 1.0 and 1.01: apart at 1e-3, merged at 5e-2.
+        table = _vendor_table()
+        meta = table.image_metadata.with_columns(
+            pl.when(pl.col("vendor") == "A").then(1.0).otherwise(1.01).alias(COL_WEIGHT)
+        )
+        weighted = _with_meta(table, meta)
+        full = weighted.image_metadata.group_by("group_id", "vendor").len().collect()
+
+        def mismatches(rtol: float) -> int:
+            boot = _replicates(weighted, group_keys=["group_id"], weight_rtol=rtol)
+            return (
+                boot.image_metadata.group_by("bootstrap_id", "group_id", "vendor")
+                .len()
+                .join(full.lazy(), on=["group_id", "vendor"], how="full", suffix="_f")
+                .filter(pl.col("len").fill_null(0) != pl.col("len_f").fill_null(0))
+                .collect()
+                .height
+            )
+
+        assert mismatches(1e-3) == 0
+        assert mismatches(5e-2) > 0
+
+    @pytest.mark.parametrize("bad", [-1e-6, float("nan"), float("inf")])
+    @pytest.mark.parametrize("family", ["froc", "lroc", "pr"])
+    def test_invalid_tolerance_raises(self, family: str, bad: float) -> None:
+        fn, _ = _CI_FUNCS[family]
+        with pytest.raises(ValueError, match="weight_rtol"):
+            fn(_vendor_table(), weight_rtol=bad, n_bootstrap=10, seed=1)
+
+
+class TestEntityLevelReweighting:
+    """A coarser draw (``sample_col``) re-estimates each replicate's weights.
+
+    Entities of uneven size let a replicate's image mix wander even though its
+    entity mix is fixed; each image's weight is rescaled by
+    ``(n_c/N) / (n*_c/N*)`` so every ``(group, cell)`` keeps its full-sample share
+    of the group's images — what re-estimating ``p / q̂`` on the replicate gives.
+    """
+
+    @pytest.mark.parametrize("metric", ["froc_mw", "froc_trap", "lroc"])
+    def test_rescaled_weights_equal_re_estimated_weights(self, metric: str) -> None:
+        table = _importance_weighted("per_group", uneven_cases=True)
+        boot = _replicates(table, group_keys=["group_id"], sample_col="case_id")
+        assert _replicate_drift(boot, "per_group", metric) == pytest.approx(
+            0.0, abs=1e-12
+        )
+
+    def test_every_replicate_keeps_the_weighted_vendor_share(self) -> None:
+        table = _importance_weighted("per_group", uneven_cases=True)
+        boot = _replicates(table, group_keys=["group_id"], sample_col="case_id")
+
+        def shares(meta: pl.LazyFrame, by: list[str]) -> pl.LazyFrame:
+            mass = pl.col(COL_WEIGHT).sum()
+            return (
+                meta.group_by(*by, "vendor")
+                .agg(mass.alias("_m"))
+                .with_columns(share=pl.col("_m") / pl.col("_m").sum().over(by))
+            )
+
+        full = shares(table.image_metadata, ["group_id"]).select(
+            "group_id", "vendor", "share"
+        )
+        rep = shares(boot.image_metadata, ["bootstrap_id", "group_id"])
+        diff = (
+            rep.join(full, on=["group_id", "vendor"], suffix="_full")
+            .select((pl.col("share") - pl.col("share_full")).abs().max())
+            .collect()
+            .item()
+        )
+        assert diff == pytest.approx(0.0, abs=1e-12)
+
+    def test_image_level_weights_are_untouched(self) -> None:
+        # Stratified image draws keep every cell's count: the factor is exactly 1.
+        table = _importance_weighted("per_group")
+        boot = _replicates(table, group_keys=["group_id"])
+        original = table.image_metadata.select(COL_IMAGE_ID, COL_WEIGHT)
+        drawn = boot.image_metadata.with_columns(
+            pl.col(COL_IMAGE_ID).str.split("#d").list.first()
+        ).join(original, on=COL_IMAGE_ID, suffix="_full")
+        assert (
+            drawn.filter(pl.col(COL_WEIGHT) != pl.col(f"{COL_WEIGHT}_full"))
+            .collect()
+            .height
             == 0
         )

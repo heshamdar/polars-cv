@@ -20,7 +20,7 @@ from typing import Literal
 
 import polars as pl
 
-from ._types import COL_CLASS_ID, COL_IMAGE_ID, COL_WEIGHT
+from ._types import COL_CLASS_ID, COL_IMAGE_ID, COL_N_GTS, COL_WEIGHT
 
 #: How to reduce a key's duplicate weights to a single value. ``"first"`` is the
 #: default and matches the historical ``unique(keep="first")`` behaviour.
@@ -106,3 +106,36 @@ def attach_resolved_weight(
     return detections.join(resolved, on=keys, how="left").with_columns(
         pl.col(COL_WEIGHT).fill_null(1.0)
     )
+
+
+def weighted_gt_mass(
+    meta: pl.LazyFrame,
+    group_keys: list[str],
+    weight_agg: WeightAgg = "first",
+) -> pl.LazyFrame:
+    """The weighted ground-truth mass ``Σ n_gts · w`` per group, lazily.
+
+    The recall denominator of every weighted PR metric. Each metadata row carries
+    its key's resolved weight (:func:`resolve_key_weights`, the same value
+    :func:`attach_resolved_weight` puts on that key's detections, missing → 1.0),
+    so the numerator and the denominator read one weight per key.
+
+    Args:
+        meta: Image-metadata frame with ``n_gts`` and ``weight``.
+        group_keys: Grouping columns; ``[]`` gives a single row.
+        weight_agg: Duplicate-weight resolution policy.
+
+    Returns:
+        ``[*group_keys, gt_mass]`` (Float64).
+    """
+    keys = image_weight_keys(meta)
+    resolved = resolve_key_weights(meta, keys, weight_agg)
+    rows = (
+        meta.drop(COL_WEIGHT)
+        .join(resolved, on=keys, how="left", nulls_equal=True)
+        .with_columns(pl.col(COL_WEIGHT).fill_null(1.0))
+    )
+    mass = (pl.col(COL_N_GTS).cast(pl.Float64) * pl.col(COL_WEIGHT)).sum()
+    if group_keys:
+        return rows.group_by(group_keys).agg(mass.alias("gt_mass"))
+    return rows.select(mass.alias("gt_mass"))

@@ -9,34 +9,59 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
-- **Weighted FROC/LROC bootstrap intervals re-estimate sample-derived weights
-  correctly.** `froc_auc_ci_lazy` and `lroc_auc_ci_lazy` carried each image's
-  `weight` unchanged into every replicate. That is wrong for an importance
-  weight `p / q̂` whose `q̂` comes from the same sample, such as a vendor or
-  prevalence mix reweighted to a target. Each replicate draws a different mix, so
-  the held-fixed weights let the weighted mix drift off target and widened the
-  interval. Both functions now also stratify the resample on **weight cells**:
-  units with equal weights form a cell, and each `(group, cell)` is redrawn to
-  its own size. The weighted statistics are weight-scale-invariant ratios, so a
-  weight that depends only on its cell's count (`p / q̂`, post-stratification,
-  raking) is then exactly the weight re-estimated inside each replicate. The
-  cells come from the weight itself, and the change is fully lazy.
-  - **Point estimates are unchanged.** Unit-weight tables keep bit-identical
-    bounds, apart from single-image groups (see below): one cell per group
-    leaves the draw unchanged.
+- **Precision-recall metrics are weighted.** `precision_recall_curve`,
+  `average_precision` (all-points and 11-point), `mean_average_precision`,
+  `precision_at_threshold`, `recall_at_threshold`, `f1_at_threshold` and
+  `confusion_at_threshold` used to ignore `image_metadata.weight`, so a
+  reweighted study's AP silently ignored its weights while its FROC/LROC were
+  weighted. Each detection now carries its image's weight: precision is
+  `Σw·tp / Σw·(tp + fp)` and recall `Σw·tp / Σw·n_gts`, matching scikit-learn's
+  `sample_weight` (a weight of `k` equals the image drawn `k` times; a test
+  checks this across every entry point).
+  - Unit weights reproduce every previous value exactly.
+  - Each function takes `weight_agg=` like FROC.
+  - Zero-weight detections add no PR point.
+  - The PR curve gains `cum_weighted_tp`/`cum_weighted_fp` and
+    `PrecisionRecallResult` gains `weighted_gts`.
+  - `ConfusionResult` keeps its raw `tp`/`fp`/`fn` counts and `to_dict()`, and
+    gains `weighted_tp`/`weighted_fp`/`weighted_fn`. Its `precision`/`recall`/`f1`
+    now read the weighted values, so they agree with the threshold functions.
+  - The grouped AP authority (`all_points_ap_by_group`) takes `weight` and
+    `gt_mass` columns in place of `total_gts`.
+- **Bootstrap intervals re-estimate sample-derived weights correctly.**
+  `froc_auc_ci_lazy`, `lroc_auc_ci_lazy` and `average_precision_ci_lazy` carried
+  each image's `weight` unchanged into every replicate. That is wrong for an
+  importance weight `p / q̂` whose `q̂` comes from the same sample, such as a
+  vendor or prevalence mix reweighted to a target. Each replicate draws a
+  different mix, so held-fixed weights let the weighted mix drift off target
+  and widened the interval.
+  - **Weight cells.** The resample is now stratified on weight cells: units whose
+    weights agree within the new `weight_rtol` (relative, default `1e-6`) form a
+    cell, and each `(group, cell)` is redrawn to its own size.
+  - **Entity-level draws.** Under `sample_col`, entities of different sizes still
+    let the image mix drift, so each drawn image's weight is rescaled by
+    `(n_c/N) / (n*_c/N*)`. That restores its cell's full-sample share, which is
+    the re-estimated `p / q̂` (exactly 1 for image-level draws).
+  - **Why it is exact.** The weighted statistics are scale-invariant ratios, so a
+    weight that depends only on its cell's count (`p / q̂`, post-stratification,
+    raking) is then exactly the weight re-estimated in each replicate. This holds
+    for weights computed per group or globally. The cells come from the weight
+    itself, everything stays lazy, and point estimates are unchanged.
+  - **Unit weights:** bounds stay bit-identical, apart from single-unit groups
+    (below).
   - **New `strata=` columns** are crossed into the cells. They separate cells
-    that share a weight exactly.
-  - **Behaviour change:** a group with a weight cell holding a **single** unit
-    now reports null `ci_lower`/`ci_upper`, keeping its point estimate, as
-    degenerate groups already do. That cell has no bootstrap variance. A
-    continuous weight (every image its own cell), or a group with a single
-    image, would otherwise report a zero-width interval.
+    that happen to share a weight.
+  - **Behaviour change:** a group with a weight cell holding a single unit now
+    reports null `ci_lower`/`ci_upper`, keeping its point estimate, as
+    degenerate groups already do. That cell has no bootstrap variance: a
+    continuous weight (every image its own cell), or a one-image group, would
+    otherwise report a zero-width interval.
+  - **Behaviour change:** `average_precision_ci_lazy` is now weighted and
+    weight-stratified like the others.
   - A downstream proposal asked for a `reweight` callback hook. It was not
-    adopted: the hook would have re-weighted the replicates but not the point
-    estimate, and it had to handle replicates that draw nothing from a
-    positive-target cell. The cell-stratified draw makes the existing weights
-    correct as they stand.
-  - `average_precision_ci_lazy` is unchanged: AP never reads `weight`.
+    adopted: it re-weighted the replicates but not the point estimate, and had
+    to handle replicates that draw nothing from a positive-target cell. The
+    cell-stratified draw makes the existing weights correct as they stand.
 
 ## [0.31.0] — 2026-10-03
 

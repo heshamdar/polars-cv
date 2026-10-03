@@ -1,4 +1,12 @@
-"""Precision-Recall metrics: PR curve, AP, mAP, P/R/F1 at threshold."""
+"""Precision-Recall metrics: PR curve, AP, mAP, P/R/F1 at threshold.
+
+Every metric here is weighted by ``image_metadata.weight``: a detection carries
+its ``(image[, class])`` key's resolved weight (:mod:`.._weights`), precision is
+``Σw·tp / Σw·(tp + fp)`` and recall ``Σw·tp / Σw·n_gts`` — scikit-learn's
+``sample_weight`` semantics, so an integer weight ``k`` equals the image drawn
+``k`` times. Unit weights reduce every formula to the plain counts exactly.
+Zero-weight detections carry no mass and add no PR point.
+"""
 
 from __future__ import annotations
 
@@ -13,9 +21,11 @@ from .._types import (
     COL_IS_TP,
     COL_N_GTS,
     COL_SCORE,
+    COL_WEIGHT,
     DEFAULT_CLASS,
     DetectionTable,
 )
+from .._weights import WeightAgg, attach_resolved_weight, weighted_gt_mass
 from ._confusion import confusion_at_threshold
 
 
@@ -24,13 +34,17 @@ class PrecisionRecallResult(MetricResult):
     """Precision-Recall curve result.
 
     Attributes:
-        curve: DataFrame with ``score``, ``precision``, ``recall``,
-            ``cum_tp``, ``cum_fp``.
+        curve: DataFrame with ``score``, ``precision``, ``recall``, the raw
+            ``cum_tp``/``cum_fp`` counts and the ``cum_weighted_tp``/
+            ``cum_weighted_fp`` masses precision and recall are computed from.
         total_gts: Total ground-truth count for this class.
+        weighted_gts: Weighted ground-truth mass ``Σ n_gts · w`` — the recall
+            denominator.
         class_id: Class this curve was computed for.
     """
 
     total_gts: int = 0
+    weighted_gts: float = 0.0
     class_id: str = DEFAULT_CLASS
 
     def auc(  # type: ignore[override]
@@ -107,16 +121,21 @@ def precision_recall_curve(
     table: DetectionTable,
     *,
     class_id: str | None = None,
+    weight_agg: WeightAgg = "first",
 ) -> PrecisionRecallResult:
-    """Compute a precision-recall curve from a DetectionTable.
+    """Compute a weighted precision-recall curve from a DetectionTable.
 
-    Detections are sorted by confidence score (descending). At each rank, cumulative
-    TP/FP are computed and precision/recall derived. All computation uses Polars
-    lazy expressions.
+    Detections are bucketed by distinct confidence score and the buckets
+    accumulated in descending score order — one PR point per distinct score,
+    after the whole tied block, so the curve does not depend on the input row
+    order among equal scores. Precision and recall are weighted (see the module
+    docstring).
 
     Args:
         table: Canonical detection table.
         class_id: Restrict to a specific class. ``None`` uses all detections.
+        weight_agg: Duplicate-weight resolution policy (see
+            :func:`~polars_cv.metrics._weights.resolve_key_weights`).
 
     Returns:
         ``PrecisionRecallResult`` with the PR curve.
@@ -125,11 +144,22 @@ def precision_recall_curve(
         table = table.filter_class(class_id)
     resolved_class = class_id or DEFAULT_CLASS
 
-    det_df, meta_df = table.collect(engine="streaming")
+    meta = table.image_metadata
+    det_lf = attach_resolved_weight(
+        table.detections, meta, weight_agg=weight_agg
+    ).filter(pl.col(COL_WEIGHT) != 0.0)
+    totals_lf = pl.concat(
+        [
+            meta.select(total_gts=pl.col(COL_N_GTS).sum().cast(pl.Int64)),
+            weighted_gt_mass(meta, [], weight_agg),
+        ],
+        how="horizontal",
+    )
+    det_df, totals = pl.collect_all([det_lf, totals_lf], engine="streaming")
+    total_gts = int(totals["total_gts"].item() or 0)
+    gt_mass = float(totals["gt_mass"].item() or 0.0)
 
-    total_gts = int(meta_df.select(pl.col(COL_N_GTS).sum()).item())
-
-    if det_df.height == 0 or total_gts == 0:
+    if det_df.height == 0 or total_gts == 0 or not gt_mass > 0.0:
         empty_curve = pl.DataFrame(
             schema={
                 "score": pl.Float64,
@@ -137,35 +167,30 @@ def precision_recall_curve(
                 "recall": pl.Float64,
                 "cum_tp": pl.Int64,
                 "cum_fp": pl.Int64,
+                "cum_weighted_tp": pl.Float64,
+                "cum_weighted_fp": pl.Float64,
             }
         )
         return PrecisionRecallResult(
             curve=empty_curve,
             total_gts=total_gts,
+            weighted_gts=gt_mass,
             class_id=resolved_class,
         )
 
     curve = (
-        det_df.lazy()
+        _score_buckets(det_df.lazy(), [])
         .sort(COL_SCORE, descending=True)
         .with_columns(
-            cum_tp=pl.col(COL_IS_TP).cast(pl.Int64).cum_sum(),
-            cum_fp=(~pl.col(COL_IS_TP)).cast(pl.Int64).cum_sum(),
+            cum_tp=pl.col("_tp").cum_sum(),
+            cum_fp=pl.col("_fp").cum_sum(),
+            cum_weighted_tp=pl.col("_wtp").cum_sum(),
+            cum_weighted_fp=pl.col("_wfp").cum_sum(),
         )
-        # Canonical tie handling: one PR point per distinct score, at the
-        # cumulative counts *after* the whole tied block (max, as cum_tp/cum_fp
-        # only grow in the score-descending sort). This makes the curve -- and
-        # the AP integrated from it -- independent of the input row order among
-        # equal scores, matching the grouped estimator `all_points_ap_by_group`.
-        .group_by(COL_SCORE)
-        .agg(
-            cum_tp=pl.col("cum_tp").max(),
-            cum_fp=pl.col("cum_fp").max(),
-        )
-        .sort(COL_SCORE, descending=True)
         .with_columns(
-            precision=pl.col("cum_tp") / (pl.col("cum_tp") + pl.col("cum_fp")),
-            recall=pl.col("cum_tp") / pl.lit(float(total_gts)),
+            precision=pl.col("cum_weighted_tp")
+            / (pl.col("cum_weighted_tp") + pl.col("cum_weighted_fp")),
+            recall=pl.col("cum_weighted_tp") / pl.lit(gt_mass),
         )
         .select(
             pl.col(COL_SCORE).alias("score"),
@@ -173,6 +198,8 @@ def precision_recall_curve(
             "recall",
             "cum_tp",
             "cum_fp",
+            "cum_weighted_tp",
+            "cum_weighted_fp",
         )
         .collect(engine="streaming")
     )
@@ -180,7 +207,24 @@ def precision_recall_curve(
     return PrecisionRecallResult(
         curve=curve,
         total_gts=total_gts,
+        weighted_gts=gt_mass,
         class_id=resolved_class,
+    )
+
+
+def _score_buckets(det: pl.LazyFrame, keys: list[str]) -> pl.LazyFrame:
+    """Per-``(keys, score)`` TP/FP counts and weighted masses of weighted detections.
+
+    The canonical tie convention shared by the scalar curve and the grouped AP
+    authority: every detection sharing a score is one bucket, so a PR point sits
+    after the whole tied block.
+    """
+    tp = pl.col(COL_IS_TP)
+    return det.group_by(*keys, COL_SCORE).agg(
+        _tp=tp.cast(pl.Int64).sum(),
+        _fp=(~tp).cast(pl.Int64).sum(),
+        _wtp=(tp.cast(pl.Float64) * pl.col(COL_WEIGHT)).sum(),
+        _wfp=((~tp).cast(pl.Float64) * pl.col(COL_WEIGHT)).sum(),
     )
 
 
@@ -189,18 +233,20 @@ def average_precision(
     *,
     class_id: str | None = None,
     interpolation: Literal["all_points", "11_point"] = "all_points",
+    weight_agg: WeightAgg = "first",
 ) -> float:
-    """Compute Average Precision for a single class.
+    """Compute weighted Average Precision for a single class.
 
     Args:
         table: Canonical detection table.
         class_id: Restrict to a specific class.
         interpolation: ``"all_points"`` (trapezoidal) or ``"11_point"`` (VOC).
+        weight_agg: Duplicate-weight resolution policy.
 
     Returns:
         AP value in [0, 1].
     """
-    pr = precision_recall_curve(table, class_id=class_id)
+    pr = precision_recall_curve(table, class_id=class_id, weight_agg=weight_agg)
     return pr.auc(method=interpolation)
 
 
@@ -209,8 +255,9 @@ def mean_average_precision(
     *,
     iou_thresholds: list[float] | None = None,
     interpolation: Literal["all_points", "11_point"] = "all_points",
+    weight_agg: WeightAgg = "first",
 ) -> float:
-    """Compute Mean Average Precision across classes and IoU thresholds.
+    """Compute weighted Mean Average Precision across classes and IoU thresholds.
 
     If ``iou_thresholds`` is provided, the stored ``iou`` column is re-thresholded
     at each level to recompute ``is_tp`` -- **no re-matching is needed**.
@@ -220,6 +267,7 @@ def mean_average_precision(
         iou_thresholds: IoU thresholds to average over. Defaults to
             ``[0.5]`` (Pascal VOC). Use ``[0.5, 0.55, ..., 0.95]`` for COCO.
         interpolation: AP interpolation method.
+        weight_agg: Duplicate-weight resolution policy.
 
     Returns:
         mAP value in [0, 1].
@@ -227,7 +275,7 @@ def mean_average_precision(
     thresholds = iou_thresholds or [0.5]
 
     if interpolation == "all_points":
-        return _mean_average_precision_all_points(table, thresholds)
+        return _mean_average_precision_all_points(table, thresholds, weight_agg)
 
     # The grouped authority implements only the all-points estimator; the VOC
     # 11-point method has no grouped form, so it keeps the per-(threshold, class)
@@ -240,7 +288,10 @@ def mean_average_precision(
         for cid in class_ids:
             ap_values.append(
                 average_precision(
-                    rethresholded, class_id=cid, interpolation=interpolation
+                    rethresholded,
+                    class_id=cid,
+                    interpolation=interpolation,
+                    weight_agg=weight_agg,
                 )
             )
 
@@ -252,6 +303,7 @@ def mean_average_precision(
 def _mean_average_precision_all_points(
     table: DetectionTable,
     thresholds: list[float],
+    weight_agg: WeightAgg = "first",
 ) -> float:
     """Vectorized all-points mAP over every ``(threshold, class)`` cell.
 
@@ -270,15 +322,16 @@ def _mean_average_precision_all_points(
     if not class_ids or not thresholds:
         return 0.0
 
-    gts = table.image_metadata.group_by(COL_CLASS_ID).agg(
-        total_gts=pl.col(COL_N_GTS).sum().cast(pl.Float64)
-    )
+    meta = table.image_metadata
+    gts = weighted_gt_mass(meta, [COL_CLASS_ID], weight_agg)
 
     # Per-detection rows, stacked across thresholds with ``is_tp`` recomputed by
     # the canonical re-thresholder (which also emits the lowering warning).
     per_threshold = [
-        table.at_iou_threshold(iou_thresh)
-        .detections.select(COL_CLASS_ID, COL_SCORE, COL_IS_TP)
+        attach_resolved_weight(
+            table.at_iou_threshold(iou_thresh).detections, meta, weight_agg=weight_agg
+        )
+        .select(COL_CLASS_ID, COL_SCORE, COL_IS_TP, COL_WEIGHT)
         .with_columns(_iou_t=pl.lit(float(iou_thresh), dtype=pl.Float64))
         for iou_thresh in thresholds
     ]
@@ -298,9 +351,9 @@ def _mean_average_precision_all_points(
         .join(gts, on=COL_CLASS_ID, how="left")
         .join(ap, on=["_iou_t", COL_CLASS_ID], how="left")
         .with_columns(
-            # A cell with GTs but no qualifying detections is a null AP → 0.0; a
-            # cell whose class has zero GTs has undefined recall → 0.0.
-            ap=pl.when(pl.col("total_gts") > 0)
+            # A cell with GT mass but no qualifying detections is a null AP →
+            # 0.0; a cell whose class has no GT mass has undefined recall → 0.0.
+            ap=pl.when(pl.col("gt_mass") > 0)
             .then(pl.col("ap").fill_null(0.0))
             .otherwise(0.0)
         )
@@ -315,33 +368,25 @@ def precision_at_threshold(
     threshold: float,
     *,
     class_id: str | None = None,
+    weight_agg: WeightAgg = "first",
 ) -> float:
-    """Compute precision at a given score threshold.
+    """Weighted precision at a given score threshold.
 
     Args:
         table: Canonical detection table.
         threshold: Score threshold.
         class_id: Optional class filter.
+        weight_agg: Duplicate-weight resolution policy.
 
     Returns:
-        Precision value.
+        Precision value; ``1.0`` when no weighted detection is at or above the
+        threshold.
     """
-    if class_id is not None:
-        table = table.filter_class(class_id)
-
-    counts = (
-        table.detections.filter(pl.col(COL_SCORE) >= threshold)
-        .select(
-            tp=pl.col(COL_IS_TP).sum().cast(pl.Int64),
-            fp=(~pl.col(COL_IS_TP)).sum().cast(pl.Int64),
-        )
-        .collect(engine="streaming")
+    conf = confusion_at_threshold(
+        table, threshold, class_id=class_id, weight_agg=weight_agg
     )
-    tp = int(counts["tp"].item())
-    fp = int(counts["fp"].item())
-    if tp + fp == 0:
-        return 1.0
-    return tp / (tp + fp)
+    predicted = conf.weighted_tp + conf.weighted_fp
+    return 1.0 if predicted == 0 else conf.weighted_tp / predicted
 
 
 def recall_at_threshold(
@@ -349,34 +394,22 @@ def recall_at_threshold(
     threshold: float,
     *,
     class_id: str | None = None,
+    weight_agg: WeightAgg = "first",
 ) -> float:
-    """Compute recall at a given score threshold.
+    """Weighted recall at a given score threshold.
 
     Args:
         table: Canonical detection table.
         threshold: Score threshold.
         class_id: Optional class filter.
+        weight_agg: Duplicate-weight resolution policy.
 
     Returns:
-        Recall value.
+        Recall value; ``0.0`` when there is no weighted ground-truth mass.
     """
-    if class_id is not None:
-        table = table.filter_class(class_id)
-
-    tp_count = (
-        table.detections.filter((pl.col(COL_SCORE) >= threshold) & pl.col(COL_IS_TP))
-        .select(pl.len().alias("count"))
-        .collect(engine="streaming")
-        .item()
-    )
-    total_gts = int(
-        table.image_metadata.select(pl.col(COL_N_GTS).sum())
-        .collect(engine="streaming")
-        .item()
-    )
-    if total_gts == 0:
-        return 0.0
-    return int(tp_count) / total_gts
+    return confusion_at_threshold(
+        table, threshold, class_id=class_id, weight_agg=weight_agg
+    ).recall
 
 
 def f1_at_threshold(
@@ -384,27 +417,28 @@ def f1_at_threshold(
     threshold: float,
     *,
     class_id: str | None = None,
+    weight_agg: WeightAgg = "first",
 ) -> float:
-    """Compute F1 score at a given score threshold.
+    """Weighted F1 score at a given score threshold.
 
     Args:
         table: Canonical detection table.
         threshold: Score threshold.
         class_id: Optional class filter.
+        weight_agg: Duplicate-weight resolution policy.
 
     Returns:
         F1 value in [0, 1].
     """
-    # One confusion pass rather than precision + recall separately, which each
-    # re-derived `tp` over the identical ``detections.filter(score >= threshold)``
-    # subplan. `confusion` gives tp/fp/fn from the same filter in one place;
-    # precision and recall fall out arithmetically with the same edge cases the
-    # standalone functions use (precision 1.0 when there are no positives, recall
-    # 0.0 when there are no ground truths).
-    conf = confusion_at_threshold(table, threshold, class_id=class_id)
-    total_gts = conf.tp + conf.fn  # confusion's fn = max(total_gts - tp, 0)
-    p = 1.0 if conf.tp + conf.fp == 0 else conf.tp / (conf.tp + conf.fp)
-    r = 0.0 if total_gts == 0 else conf.tp / total_gts
+    # One confusion pass gives the weighted tp/fp/fn; precision and recall fall
+    # out with the standalone functions' edge cases (precision 1.0 with nothing
+    # predicted, recall 0.0 with no ground-truth mass).
+    conf = confusion_at_threshold(
+        table, threshold, class_id=class_id, weight_agg=weight_agg
+    )
+    predicted = conf.weighted_tp + conf.weighted_fp
+    p = 1.0 if predicted == 0 else conf.weighted_tp / predicted
+    r = conf.recall
     if p + r == 0.0:
         return 0.0
     return 2.0 * p * r / (p + r)
@@ -512,19 +546,21 @@ def all_points_ap_by_group(
     *,
     group_col: str | list[str],
 ) -> pl.LazyFrame:
-    """All-points AP per group — the lazy authority shared by every bootstrap.
+    """Weighted all-points AP per group — the lazy authority every bootstrap shares.
 
-    ``expanded`` carries ``[*group_col, score, is_tp, total_gts]`` (one row per
-    detection, ``total_gts`` broadcast per group). The estimator is identical to
-    the scalar :func:`_all_points_ap`: sort by score within group, cumulative
-    TP/FP, the monotone decreasing precision envelope, then trapezoidal
-    integration anchored at recall = 0. Keeping the sort as the last
-    row-reordering step (nothing joins between it and the windowed ops) makes the
-    curve stable across thread counts.
+    ``expanded`` carries ``[*group_col, score, is_tp, weight, gt_mass]`` (one row
+    per detection; ``weight`` its resolved weight, ``gt_mass`` the group's
+    ``Σ n_gts · w`` broadcast per row). The estimator is identical to the scalar
+    :func:`precision_recall_curve` + :func:`_all_points_ap`: bucket by score
+    (:func:`_score_buckets`), accumulate in descending score order within group,
+    the monotone decreasing precision envelope, then trapezoidal integration
+    anchored at recall = 0. Zero-weight detections are dropped, as there. Keeping
+    the sort as the last row-reordering step (nothing joins between it and the
+    windowed ops) makes the curve stable across thread counts.
 
     Args:
-        expanded: Per-detection frame with the group key(s), ``score``, ``is_tp``
-            and per-group ``total_gts``.
+        expanded: Per-detection frame with the group key(s), ``score``, ``is_tp``,
+            ``weight`` and per-group ``gt_mass``.
         group_col: The grouping column(s) — a single name (e.g. ``bootstrap_id``)
             or a list (e.g. ``[group_id, bootstrap_id]``).
 
@@ -532,28 +568,19 @@ def all_points_ap_by_group(
         ``LazyFrame`` with ``[*group_col, ap]``.
     """
     keys = [group_col] if isinstance(group_col, str) else list(group_col)
+    weighted = expanded.filter(pl.col(COL_WEIGHT) != 0.0)
+    mass = weighted.group_by(keys).agg(pl.col("gt_mass").first())
     pr = (
-        expanded.sort(*keys, COL_SCORE, descending=[False] * len(keys) + [True])
-        .with_columns(
-            cum_tp=pl.col(COL_IS_TP).cast(pl.Int64).cum_sum().over(keys),
-            cum_fp=(~pl.col(COL_IS_TP)).cast(pl.Int64).cum_sum().over(keys),
-        )
-        # Canonical tie handling: collapse all detections sharing a score into a
-        # single PR point, taking the cumulative counts *after* the whole tied
-        # block (the max, since cum_tp/cum_fp only grow in the score-descending
-        # sort). Without this, the intermediate points inside a tie -- and so the
-        # integrated AP -- depend on the input row order among equal scores.
-        .group_by([*keys, COL_SCORE])
-        .agg(
-            cum_tp=pl.col("cum_tp").max(),
-            cum_fp=pl.col("cum_fp").max(),
-            total_gts=pl.col("total_gts").first(),
-        )
+        _score_buckets(weighted, keys)
+        .join(mass, on=keys, how="left", nulls_equal=True)
         .sort(*keys, COL_SCORE, descending=[False] * len(keys) + [True])
         .with_columns(
-            precision=pl.col("cum_tp")
-            / (pl.col("cum_tp") + pl.col("cum_fp")).cast(pl.Float64),
-            recall=pl.col("cum_tp").cast(pl.Float64) / pl.col("total_gts"),
+            cum_wtp=pl.col("_wtp").cum_sum().over(keys),
+            cum_wfp=pl.col("_wfp").cum_sum().over(keys),
+        )
+        .with_columns(
+            precision=pl.col("cum_wtp") / (pl.col("cum_wtp") + pl.col("cum_wfp")),
+            recall=pl.col("cum_wtp") / pl.col("gt_mass"),
         )
         .with_columns(
             precision=pl.col("precision").reverse().cum_max().reverse().over(keys),

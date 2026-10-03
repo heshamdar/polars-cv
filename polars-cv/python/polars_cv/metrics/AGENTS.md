@@ -7,8 +7,9 @@
 
 Detection metrics built from polars-cv primitives and Polars lazy expressions:
 
-- **PR**: `precision_recall_curve`, `average_precision`, `mean_average_precision`
-- **Threshold**: `precision_at_threshold`, `recall_at_threshold`, `f1_at_threshold`, `confusion_at_threshold`
+- **PR** (weighted by `image_metadata.weight`, `sample_weight` semantics):
+  `precision_recall_curve`, `average_precision`, `mean_average_precision`
+- **Threshold** (weighted): `precision_at_threshold`, `recall_at_threshold`, `f1_at_threshold`, `confusion_at_threshold` (raw `tp/fp/fn` counts plus `weighted_*` masses; its derived rates read the masses)
 - **FROC/LROC** (expression-valued, lazy, group-aware): `froc_auc`/`lroc_auc`
   (LazyFrame, one row per group), `froc_curve_lazy`/`lroc_curve_lazy`,
   `froc_sensitivity_at_fp`/`lroc_sensitivity_at_fpf`, `froc_summary_table`
@@ -124,17 +125,27 @@ size); entity-level (`sample_col`) resamples entities within group, then expands
 to images with a lazy `group_by`/`explode`. An empty base or empty group
 cross-joins to zero rows — it does **not** raise.
 
-**Weighted FROC/LROC CIs stratify on weight cells** (`_sampling_cells`, the
-single authority for a unit's cell). Units with equal weights (the sorted
-distinct weights of an image's rows, or of an entity's images) form one cell.
-Optional `strata=` columns are crossed into the cell. The draw is stratified
-within `(group, gt_label, cell)` (image level) or `(group, cell)` (entity level).
-Every weighted statistic is a weight-scale-invariant ratio, so a weight that
-depends only on its cell's count (`p / q̂` estimated from the sample,
-post-stratification, raking) is then exactly the per-replicate re-estimated
-weight. That is why there is no reweight hook. Unit weights form one cell and
-leave the draw bit-identical to the unweighted resample. AP is unweighted and
-passes `weight_strata=None`, so it is not stratified by weight.
+**Every CI is weighted and stratifies on weight cells** (`_replicate_table`,
+the one way replicates are built). `_sampling_cells` is the single authority for
+a unit's cell. Within each `(group, *strata)`, `_weight_clusters` clusters the
+distinct weights by relative gap (`weight_rtol`, default `1e-6`), with no
+rounding boundary. A unit's cell is the sorted distinct clusters (or
+`(*strata, cluster)` structs) of its rows, or of its images for an entity.
+
+The draw is stratified within `(group, gt_label, cell)` at image level, or
+`(group, cell)` at entity level. `_rescale_to_cell_shares` then multiplies each
+drawn image's weight by `(n_c/N) / (n*_c/N*)`. That factor is exactly 1 for
+image-level draws, and at entity level it restores each cell's share of the
+group's images, which is the `p / q̂` weight re-estimated on the replicate.
+
+Every weighted statistic is a weight-scale-invariant ratio, so the replicate
+weights equal the re-estimated weights. That is why there is no reweight hook.
+Unit weights form one cell and leave the draw and the weights bit-identical to
+the unweighted resample.
+
+The cells and the draw are `.cache()`-d. They stay lazy, but without the cache
+the streaming engine recomputes the resample at every read of the replicate
+frames (~15x): projection pushdown makes each read a distinct subplan.
 
 `seed=None` maps to a fixed hash constant, so the CI is **deterministic even
 without an explicit seed**. Each draw gets a distinct synthetic `image_id` from
@@ -151,8 +162,8 @@ detections legitimately scores that). A **degenerate group** nulls its
 point estimate. Viability needs ≥1 positive target (`sum(gt_label) > 0`); for the
 two-class rank statistics (`method="mann_whitney"`, threaded as
 `require_both_classes`) it additionally needs ≥1 negative, since that AUC is
-undefined without both classes. For the weighted families, a group with any
-weight cell of size 1 is also non-viable: that cell has no bootstrap variance,
+undefined without both classes. A group with any weight cell of size 1 is also
+non-viable: that cell has no bootstrap variance,
 and a continuous weight (all singletons) would otherwise report a zero-width
 interval. That viability rule is the one behavioral choice worth knowing.
 
@@ -205,6 +216,14 @@ metrics/
   order among equal scores, and the scalar and grouped paths no longer diverge.
   They remain two functions only because they take different inputs (a pre-built
   curve vs per-detection rows), not because they can disagree.
+- Both are weighted, and both share `_score_buckets`: per-score TP/FP counts
+  and weighted masses. Each accumulates the weighted masses, with precision
+  `Σw·tp / Σw·(tp+fp)` and recall `Σw·tp / gt_mass`. Zero-weight detections are
+  dropped first. `gt_mass` comes from `_weights.weighted_gt_mass`
+  (`Σ n_gts · w`), the recall denominator for every PR metric; the grouped
+  authority's input carries `weight` and `gt_mass` columns. The integer-weight
+  replication oracle (`TestWeightedPrecisionRecall`) checks every PR entry
+  point.
 - `mean_average_precision` keeps the eager per-`(threshold, class)` loop for the
   `"11_point"` (VOC) method only, which has no grouped form; the `"all_points"`
   method is one lazy plan with a single collect.
