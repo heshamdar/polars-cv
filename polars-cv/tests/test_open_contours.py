@@ -46,6 +46,7 @@ READS: dict[str, str] = {
     "bounding_box": "outline",
     "hausdorff_distance": "outline",
     "boundary_distances": "outline",
+    "set_boundary_distances": "outline",
     "translate": "outline",
     "scale": "outline",
     "simplify": "outline",

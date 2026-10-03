@@ -1,5 +1,116 @@
 # Metrics API Reference
 
+## Evaluation
+
+::: polars_cv.metrics.evaluate_detections
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.evaluate_heatmaps
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.evaluate_segmentation
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.segmentation_measures
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.DetectionReport
+    options:
+      show_root_heading: true
+      members:
+        - summary
+        - per_class
+        - per_threshold
+        - ci
+        - matches
+        - pr_curve
+        - froc
+        - confusion
+        - at
+
+::: polars_cv.metrics.SegmentationReport
+    options:
+      show_root_heading: true
+      members:
+        - summary
+        - ci
+
+::: polars_cv.metrics.match_detections
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.group_objects
+    options:
+      show_root_heading: true
+
+## Statistics
+
+::: polars_cv.metrics.Statistic
+    options:
+      show_root_heading: true
+      members:
+        - by_group
+        - value
+        - support
+
+::: polars_cv.metrics.AP
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.Recall
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.PrecisionAt
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.RecallAt
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.F1At
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.FROCSensitivity
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.CPM
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.FROCAUC
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.LROCAUC
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.LROCSensitivity
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.MeanOver
+    options:
+      show_root_heading: true
+      members:
+        - per_facet
+
+::: polars_cv.metrics.mean_ap
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.bootstrap_ci
+    options:
+      show_root_heading: true
+
 ## Core Types
 
 ::: polars_cv.metrics.DetectionTable
@@ -11,6 +122,10 @@
         - filter_class
         - class_ids
         - at_iou_threshold
+        - iou_thresholds
+        - frames
+        - stack
+        - filter_images
         - to_per_image
         - collect
 
