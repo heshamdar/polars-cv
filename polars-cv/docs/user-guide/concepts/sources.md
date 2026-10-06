@@ -325,17 +325,18 @@ total is bounded however many morsels are running. Set it with
 One knob covers both — raising it for a remote scan raises it for image fetching
 too.
 
-Under `.collect(engine="streaming")` a bytes column is therefore
-morsel-bounded: if you filter on it and drop it, only a morsel's worth is
+Under the streaming engine (what a lazy `.collect()` uses by default since
+Polars 2.0) a bytes column is therefore morsel-bounded: if you filter on it and drop it, only a morsel's worth is
 resident at a time, and projection pushdown skips it entirely when nothing
 downstream uses it. It only becomes corpus-resident if you select it in the
 final projection — which is the point when you want the originals.
 
-Under the **default in-memory engine there is no such bound**: `with_columns`
-materializes the whole column, so `read_bytes` over a million-path frame holds
-every file at once. There is also no per-file size cap — whatever the path names
-is read in full. Use `engine="streaming"`, or slice the frame, when the corpus
-does not fit in memory.
+Under the **in-memory engine there is no such bound** — an eager
+`DataFrame.with_columns`, or `collect(engine="in-memory")`: it materializes the
+whole column, so `read_bytes` over a million-path frame holds every file at
+once. There is also no per-file size cap — whatever the path names is read in
+full. Go through a `LazyFrame` (or slice the frame) when the corpus does not
+fit in memory.
 
 !!! warning "Paths are not sandboxed"
     `read_bytes` reads whatever the column names, local or remote, with no

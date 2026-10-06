@@ -246,6 +246,23 @@ class TestFrocStandaloneHelpers:
                 assert sens == pytest.approx(want, abs=1e-9)
 
 
+class TestFrocThresholds:
+    """``thresholds=`` keeps exactly the curve rows at those scores."""
+
+    def test_keeps_the_listed_thresholds(self) -> None:
+        table = _table(multiclass=False)
+        got = froc_curve_lazy(table, thresholds=[0.9, 0.4]).collect()
+        assert got["threshold"].to_list() == [0.9, 0.4]
+
+    def test_integer_thresholds_are_accepted(self) -> None:
+        # polars 2.0's `is_in` refuses to compare Float64 data with an Int64
+        # list, so a plain `thresholds=[1]` used to raise.
+        table = _table(multiclass=False)
+        got = froc_curve_lazy(table, thresholds=[1, 0.9]).collect()
+        assert got["threshold"].to_list() == [0.9]
+        assert froc_curve_lazy(table, thresholds=[1]).collect().height == 0
+
+
 def _one_operating_point() -> DetectionTable:
     """The reporter's case: 100 images, 50 GTs, detections at one operating
     point (30 TPs, 5 FPs), so the curve stops at 0.05 FP/image, sensitivity 0.6."""

@@ -734,6 +734,26 @@ mod tests {
     }
 
     #[test]
+    fn operands_mut_reaches_exactly_the_operands() {
+        // `Plan::spec` renames node references through `operands_mut`; one it
+        // missed would reach the wire under its build-time id.
+        for mut op in TypedOp::samples() {
+            let read: Vec<String> = op.operands().iter().map(|n| n.0.clone()).collect();
+            let renamed: Vec<String> = op
+                .operands_mut()
+                .into_iter()
+                .map(|n| {
+                    n.0.push('!');
+                    n.0.clone()
+                })
+                .collect();
+            let reread: Vec<String> = op.operands().iter().map(|n| n.0.clone()).collect();
+            assert_eq!(renamed, reread, "{}", op.name());
+            assert_eq!(read.len(), renamed.len(), "{}", op.name());
+        }
+    }
+
+    #[test]
     fn samples_round_trip_through_the_wire() {
         for op in TypedOp::samples() {
             let wire = serde_json::to_value(&op).unwrap();

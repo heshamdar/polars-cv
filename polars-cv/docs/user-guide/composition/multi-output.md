@@ -99,6 +99,25 @@ result = df.with_columns(
 )
 ```
 
+### Across expressions
+
+Polars (2.0 and later) also eliminates common subexpressions between whole
+plugin calls in one query. The same pipeline written twice — two columns built
+from one helper, say — runs once:
+
+```python
+def thumb() -> pl.Expr:
+    return pl.col("image").cv.pipe(
+        Pipeline().source("image_bytes").resize(height=64, width=64)
+    ).sink("png")
+
+df.lazy().with_columns(a=thumb(), missing=thumb().is_null())  # one decode per row
+```
+
+Polars merges calls whose pipeline *and* sink are equal. To read several
+outputs of one pipeline, use a multi-output sink (above), which shares
+everything but the encode.
+
 ## Merge Patterns
 
 ### Merging Multiple Branches

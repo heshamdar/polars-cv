@@ -15,8 +15,6 @@ ignore = [
     { id = "RUSTSEC-2026-0105", reason = "core2 unmaintained/yanked; via image->rav1e->ravif, no fix" },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; transitive, no fix published" },
     # Blocked by a pinned major dependency this workspace does not own the bump for.
-    { id = "RUSTSEC-2026-0176", reason = "pyo3 <0.29; pinned by pyo3-polars 0.27 (pyo3 0.28) — needs a coordinated pyo3-polars upgrade" },
-    { id = "RUSTSEC-2026-0177", reason = "pyo3 <0.29; pinned by pyo3-polars 0.27 (pyo3 0.28) — needs a coordinated pyo3-polars upgrade" },
     { id = "RUSTSEC-2026-0194", reason = "quick-xml <0.41; held by object_store 0.13 — needs an object_store bump" },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml <0.41; held by object_store 0.13 — needs an object_store bump" },
 ]

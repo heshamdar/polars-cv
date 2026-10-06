@@ -95,7 +95,11 @@ pub(crate) fn dispatch<K: SimdKernel>(kernel: K) -> K::Output {
             // SAFETY: the CPU supports AVX2, checked just above.
             let out = unsafe { run_avx2(kernel) };
             #[cfg(debug_assertions)]
-            assert_bit_identical(&run_portable_aside(check), &out);
+            {
+                let portable = run_portable_aside(check);
+                assert_bit_identical(&portable, &out);
+                drop_aside(portable);
+            }
             return out;
         }
     }
@@ -114,6 +118,22 @@ pub(crate) fn dispatch<K: SimdKernel>(kernel: K) -> K::Output {
 fn run_portable_aside<K: SimdKernel>(kernel: K) -> K::Output {
     std::thread::scope(|scope| scope.spawn(move || kernel.run()).join())
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+/// Free `value`, made on a helper thread by the debug parity check, on a
+/// helper thread too.
+///
+/// Polars counts the bytes allocated through its allocator (the plugin's
+/// global allocator relays to it) in per-thread batches published past a
+/// threshold, and a thread's unpublished batch dies with it. A small buffer
+/// made on a helper thread is therefore never counted; freed on the calling
+/// thread it was, so each check pushed polars' count below the truth until
+/// its out-of-core engine saw no memory to spill (`test_allocator.py`).
+/// Freed aside, it is either counted both ways or neither.
+#[cfg(debug_assertions)]
+fn drop_aside<T: Send>(value: T) {
+    std::thread::scope(|scope| scope.spawn(move || drop(value)).join())
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
 }
 
 /// A kernel that rewrites a slice in place, for [`dispatch_mut`].
@@ -151,7 +171,10 @@ pub(crate) fn dispatch_mut<T: ViewType, K: SimdKernelMut<T>>(kernel: &K, data: &
             // SAFETY: the CPU supports AVX2, checked just above.
             unsafe { run_mut_avx2(kernel, data) };
             #[cfg(debug_assertions)]
-            assert_bit_identical(portable.as_slice(), &*data);
+            {
+                assert_bit_identical(portable.as_slice(), &*data);
+                drop_aside(portable);
+            }
             return;
         }
     }

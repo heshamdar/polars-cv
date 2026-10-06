@@ -241,12 +241,12 @@ class TestPipelineGraphSerialization:
 
         parsed = json.loads(json_str)
 
-        assert "nodes" in parsed
-        assert "node1" in parsed["nodes"]
+        # The wire names nodes by position, not by their build-time ids.
+        assert list(parsed["nodes"]) == ["n0"]
         # Unified format uses "outputs" with "_output" key for single output
         assert "outputs" in parsed
         assert "_output" in parsed["outputs"]
-        assert parsed["outputs"]["_output"]["node"] == "node1"
+        assert parsed["outputs"]["_output"]["node"] == "n0"
         assert parsed["outputs"]["_output"]["sink"]["format"] == "numpy"
 
     def test_graph_topological_order(self) -> None:
@@ -279,8 +279,7 @@ class TestPipelineGraphSerialization:
         graph.set_output("node2", "numpy")
 
         bindings = graph._to_dict()["column_bindings"]
-        assert bindings["node1"] == 0
-        assert bindings["node2"] == 1
+        assert bindings == {"n0": 0, "n1": 1}
 
     def test_graph_deduplicates_same_column(self) -> None:
         """Same column used by multiple nodes should be deduplicated."""
@@ -297,7 +296,7 @@ class TestPipelineGraphSerialization:
         assert len(graph._slot_table()) == 1
         # Both nodes should point to same index
         bindings = graph._to_dict()["column_bindings"]
-        assert bindings["node1"] == bindings["node2"]
+        assert bindings["n0"] == bindings["n1"]
 
 
 @plugin_required
@@ -624,9 +623,13 @@ class TestLazyCompositionExecution:
         )
 
         graph = mask.sink("numpy", return_expr=False)
-        assert img._node_id in graph._to_dict()["nodes"], (
+        assert img._node_id in graph._nodes, (
             "the shape reference must be part of the graph"
         )
+        # ...and the wire names it by the id its node goes by there.
+        nodes = graph._to_dict()["nodes"]
+        (raster,) = [n for n in nodes.values() if n["ops"]]
+        assert raster["ops"][0]["size"] in nodes
 
         output = numpy_from_struct(df.select(out=mask.sink("numpy")).row(0)[0])
         # Dimensions come from the referenced image: 120x80 (WxH) -> (80, 120).

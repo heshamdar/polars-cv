@@ -136,11 +136,9 @@ on any such node (or a whole-column Python UDF) that `KNOWN_FALLBACKS` in
 
 - **Per-group scans go through `_grouped_scan.grouped_scan`**: one sort by
   `(*keys, *by)`, then running sums/maxima, lags, row indices and first/last
-  flags as windows `.over(keys)`. A window straight after the sort on its keys
-  reads the frame the sort already holds, so it adds no memory. The guard
-  accepts exactly that shape, checking the window's input in the plan. An
-  all-native rewrite was measured: as much memory, 2.4x slower. A `.over()`
-  scan written anywhere else, or a sort inside `agg`, is a regression.
+  flags as windows `.over(keys)`. Since polars 2.0 windows are native streaming
+  nodes, so the scan has no fallback (`test_grouped_scan_stays_streaming`). A
+  sort inside `agg` still falls back and is a regression.
 - **Reproducible reductions go through `exact_sums` / `exact_mean`**: Int128
   fixed point, native, and independent of chunking and thread count.
 - Aggregations polars already runs natively stay as they are: `sum`, `max`,

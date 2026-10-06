@@ -135,7 +135,7 @@ class SourceView:
         return SourceFormat(self._settings["format"])
 
     def to_dict(self, slot_of: Any) -> dict[str, Any]:
-        return self._pipeline._to_spec_dict(slot_of)["source"]
+        return self._pipeline._to_spec_dict(slot_of, {})["source"]
 
     def __getattr__(self, name: str) -> Any:
         from polars_cv._types import normalize_cloud_options

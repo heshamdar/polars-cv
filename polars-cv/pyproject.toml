@@ -12,17 +12,14 @@ license = { text = "MIT OR Apache-2.0" }
 requires-python = ">=3.11"
 # Each floor is the oldest release the full fast suite passes on, and the
 # `dependency-floors` CI job installs exactly these (read by
-# `scripts/dependency_floors.py`) to keep that true (CR-44). polars < 1.36.1
-# lacks the extension-type API the package imports; 1.36.1-1.40.x import but
-# fail the suite; polars < 1.43.2 (1.43.0/1.43.1 are yanked) exports a sliced
-# Array column with nulls across the plugin FFI with its offset applied twice,
-# which panics in the plugin's import; polars < 1.44.2 returns wrong rows from
-# a `cache()`-d frame read under different projections, which the bootstrap
-# CIs' cached draw relies on. numpy 1.x runs the package but not its
-# reference tests (their scipy/imagehash oracles need numpy 2).
+# `scripts/dependency_floors.py`) to keep that true (CR-44). polars 2.0 is
+# the first with `register_plugin_function(is_deterministic=)`, which every
+# plugin call passes (plugin CSE), and the plugin is built against its Rust
+# crates (0.55). numpy 1.x runs the package but not its reference tests
+# (their scipy/imagehash oracles need numpy 2).
 dependencies = [
     "numpy>=2.0.2",
-    "polars>=1.44.2,<2.0",
+    "polars>=2.0.0,<3.0",
 ]
 classifiers = [
     "Programming Language :: Rust",

@@ -24,7 +24,7 @@ from polars_cv.metrics._grouped_scan import (
     exact_sums,
     grouped_scan,
 )
-from tests._streaming_guard import in_memory_nodes, unexplained
+from tests._streaming_guard import in_memory_nodes
 
 
 def _frame(seed: int, n: int = 400) -> pl.DataFrame:
@@ -87,9 +87,9 @@ def test_grouped_scan_matches_over(keys: list[str], seed: int) -> None:
 
 
 @pytest.mark.parametrize("keys", [[], ["g", "h"]], ids=str)
-def test_grouped_scan_falls_back_only_on_its_sorted_frame(keys: list[str]) -> None:
-    """The windows follow the sort on their keys: the one accepted fallback."""
-    assert unexplained(in_memory_nodes(_scan(_frame(0), keys))) == []
+def test_grouped_scan_stays_streaming(keys: list[str]) -> None:
+    """The sort and its windows are native streaming nodes (polars >= 2.0)."""
+    assert in_memory_nodes(_scan(_frame(0), keys)) == []
 
 
 def test_grouped_scan_keeps_nulls_where_over_does() -> None:

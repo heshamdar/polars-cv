@@ -788,21 +788,25 @@ class TestWeightCellStratification:
         assert per_rep.select(pl.len()).collect().item() == 60 * full.height
         assert mismatched.height == 0
 
-    # Bounds of `_vendor_table` (unit weights) frozen from the pre-stratification
-    # resampler: one weight cell per group must leave every draw unchanged.
+    # Bounds of `_vendor_table` (unit weights), originally frozen from the
+    # pre-stratification resampler: one weight cell per group must leave every
+    # draw unchanged. Re-frozen for polars 2.0, whose `Expr.hash` (the draw) gives
+    # new values; the pre-stratification resampler (1012261) reproduces them
+    # under polars 2.0, the lroc g2 upper bound to within 1 ulp (0.96 vs
+    # 0.9600000000000001).
     _UNIT_WEIGHT_BOUNDS = {
         "froc_trap_grouped": [
-            ("g1", 0.96875, 0.95125, 0.99003125),
-            ("g2", 0.98, 0.9599687499999999, 0.99875),
+            ("g1", 0.96875, 0.9499375, 0.99003125),
+            ("g2", 0.98, 0.9636875, 0.9975),
         ],
-        "froc_mw": [(0.5, 0.25462500000000005, 0.735125)],
+        "froc_mw": [(0.5, 0.239875, 0.7503750000000001)],
         "lroc_grouped": [
-            ("g1", 0.5, 0.22, 0.8405000000000001),
-            ("g2", 0.68, 0.35950000000000004, 0.98),
+            ("g1", 0.5, 0.19900000000000015, 0.8405000000000001),
+            ("g2", 0.68, 0.41900000000000015, 0.96),
         ],
         "froc_entity": [
-            ("g1", 0.4, 0.04, 0.9210000000000003),
-            ("g2", 0.6, 0.23800000000000032, 1.0),
+            ("g1", 0.4, 0.04, 0.88),
+            ("g2", 0.6, 0.19900000000000018, 1.0),
         ],
     }
 
@@ -1101,12 +1105,14 @@ class TestWeightScheme:
             fn(_vendor_table(), weight_scheme="fixed", n_bootstrap=10, **kwargs)
 
     def test_a_replicate_without_positives_nulls_its_groups_bounds(self) -> None:
-        # Under "reestimate" g1's replicate 30 draws no positive image. Its
-        # statistic still has a value (0.0 here) that describes no resample of
-        # the group, so it nulls g1's bounds instead of being scored.
+        # Under "reestimate" g1's replicate 43 draws no positive image (seed 40;
+        # the draw is `Expr.hash`, whose values polars may change between
+        # versions). Its statistic still has a value (0.0 here) that describes
+        # no resample of the group, so it nulls g1's bounds instead of being
+        # scored.
         table = TestWeightCellTolerance._noisy()
-        kw = {"group_by": "group_id", "n_bootstrap": 50, "seed": 1}
-        boot = _replicates(table, group_keys=["group_id"], n_bootstrap=50, seed=1)
+        kw = {"group_by": "group_id", "n_bootstrap": 50, "seed": 40}
+        boot = _replicates(table, group_keys=["group_id"], n_bootstrap=50, seed=40)
         drew_none = (
             boot.image_metadata.group_by("bootstrap_id", "group_id")
             .agg(pl.col(COL_GT_LABEL).any())
