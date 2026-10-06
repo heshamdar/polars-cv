@@ -12,8 +12,8 @@ Everything is one Polars plan:
 
 * the resample (:func:`_lazy_resample`) is a position-independent hash-expression
   draw over a cross-join skeleton — no materialization, group-partitioned so each
-  group resamples within itself and stratified within ``gt_label`` and, for the
-  weighted FROC/LROC families, within each weight cell (:func:`_sampling_units`);
+  group resamples within itself and stratified within ``gt_label`` or, for
+  weighted tables, the ``weight_scheme``'s weight cells (:func:`_sampling_units`);
 * the per-replicate metric reuses the existing lazy group-aware authorities
   (``froc_auc`` / ``lroc_auc`` / ``all_points_ap_by_group`` keyed by
   ``bootstrap_id``);
@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, get_args
 
 import polars as pl
 
@@ -52,6 +52,20 @@ _COL_SLOT = "_slot"
 _COL_CELL = "_cell"
 # A metadata row's weight cluster: weights within `weight_rtol` share one.
 _COL_WCLUSTER = "_wc"
+# An image-level unit's `gt_label` stratum: its label, or null where the draw
+# does not stratify on the label (a multi-cell group under "reestimate").
+_COL_LSTRATUM = "_label_stratum"
+# Whether every weight of a unit is zero (its cell is exempt from the
+# singleton rule: it contributes nothing to any statistic).
+_COL_ZERO = "_zero_weight"
+
+#: What a table's weights are, and so how the bootstrap draw treats them:
+#: ``"reestimate"`` (sample-estimated ``p / q̂``), ``"stratified"`` (cell counts
+#: fixed by design) or ``"fixed"`` (known weights). See :func:`froc_auc_ci_lazy`.
+WeightScheme = Literal["reestimate", "stratified", "fixed"]
+
+#: The ``weight_rtol`` a cell-forming scheme uses when none is given.
+_DEFAULT_WEIGHT_RTOL = 1e-6
 
 
 def _normalize_group_by(group_by: str | list[str] | None) -> list[str]:
@@ -90,7 +104,8 @@ def froc_auc_ci_lazy(
     sample_col: str | None = None,
     extrapolate: Extrapolate = "none",
     strata: str | list[str] | None = None,
-    weight_rtol: float = 1e-6,
+    weight_rtol: float | None = None,
+    weight_scheme: WeightScheme = "reestimate",
 ) -> pl.LazyFrame:
     """Lazy, group-aware bootstrap confidence interval for FROC AUC.
 
@@ -105,25 +120,45 @@ def froc_auc_ci_lazy(
     its point estimate but yields null ``ci_lower``/``ci_upper`` instead of raising.
     So does a group any of whose replicates is **undefined** — a resampled curve
     that stops short of ``fp_range`` under ``extrapolate="none"``: its AUC was
-    not observed, and is never scored as an empty draw's ``0.0``.
+    not observed, and is never scored as an empty draw's ``0.0`` — or
+    **degenerate**, a draw with no positive image (or, for Mann-Whitney, no
+    negative one), which only a draw that does not fix the ``gt_label`` counts
+    can make (a cell-stratified or ``sample_col`` draw).
 
-    **Weighted tables.** The resample is stratified on *weight cells* as well as
-    ``gt_label``: units (images, or ``sample_col`` entities) with the same weight
-    form one cell, and each ``(group, cell)`` is redrawn to its own size. The
-    weighted statistics are weight-scale-invariant ratios, so a weight that is a
-    function of its cell's count — an importance weight ``p / q̂`` estimated from
-    the sample, post-stratification, raking over crossed cells — is then exactly
-    the weight re-estimated inside every replicate. Weights computed per group or
-    globally are both exact (draws never cross a group). Unit weights form one
-    cell, which leaves the resample unchanged. Weights within ``weight_rtol`` of
-    each other share a cell. Under ``sample_col`` the draw redraws entities, so a
-    replicate's image mix can still wander (entities differ in size): each
-    image's weight is then rescaled by ``(n_c/N) / (n*_c/N*)`` — its cell's
-    full-sample over replicate share of the group's images — which is the
-    ``p / q̂`` weight re-estimated on the replicate (exactly ``1`` for image-level
-    draws). A group with a weight cell holding a **single** unit nulls its
-    bounds: that cell has no bootstrap variance, and a continuous weight (every
-    unit its own cell) would otherwise report a zero-width interval.
+    **Weighted tables.** ``weight_scheme`` says what the weights are:
+
+    * ``"reestimate"`` (default) — weights estimated from the sample: an
+      importance weight ``p / q̂`` over target distributions (conditional ones
+      included), post-stratification, raking over crossed cells. Units (images,
+      or ``sample_col`` entities) with the same weight form a *weight cell*, and
+      each ``(group, cell)`` is redrawn to its own size. The weighted statistics
+      are weight-scale-invariant ratios, so a weight that is a function of its
+      cell's count is then exactly the weight re-estimated inside every
+      replicate — computed from the weights given, with no target distributions
+      needed. ``gt_label`` is **not** crossed with the cells: each cell's
+      positive count is random when the weights were estimated over all images,
+      and fixing it narrows the interval (in simulation, an SE about 10% low and
+      a 95% interval covering 0.90-0.93). Targets conditioned on ``gt_label``
+      give each label its own weights, so their cells already carry the label. A
+      group with a single cell (unit weights) keeps the ``gt_label`` stratum, so
+      its draw is the unweighted one.
+    * ``"stratified"`` — each cell's positive count was fixed by the study
+      design: the draw keeps every ``(group, gt_label, cell)`` count.
+    * ``"fixed"`` — known weights (design weights, a continuous weight): carried
+      unchanged on the ``gt_label``-stratified draw, with no weight cells, so
+      ``strata`` and ``weight_rtol`` raise.
+
+    Weights computed per group or globally are both exact (draws never cross a
+    group). Weights within ``weight_rtol`` of each other share a cell. Under
+    ``sample_col`` the draw redraws entities, so a replicate's image mix can
+    still wander (entities differ in size): each image's weight is then rescaled
+    by ``(n_c/N) / (n*_c/N*)`` — its cell's full-sample over replicate share of
+    the group's images — which is the ``p / q̂`` weight re-estimated on the
+    replicate (exactly ``1`` for image-level draws). With weight cells, a group
+    with a cell holding a **single** unit nulls its bounds: that cell has no
+    bootstrap variance, and a continuous weight (every unit its own cell) would
+    otherwise report a zero-width interval — use ``"fixed"`` for one. A cell of
+    zero weights (images outside the target) is exempt.
 
     Args:
         table: Canonical detection table.
@@ -147,8 +182,10 @@ def froc_auc_ci_lazy(
             only when two cells share a weight (several at ``1.0``).
         weight_rtol: Relative tolerance within which two weights share a cell
             (sorted distinct weights split where consecutive values differ by
-            more than ``weight_rtol`` times the larger). The default ``1e-6``
-            absorbs arithmetic noise; ``0.0`` compares exactly.
+            more than ``weight_rtol`` times the larger). ``None`` is ``1e-6``,
+            which absorbs arithmetic noise; ``0.0`` compares exactly.
+        weight_scheme: ``"reestimate"``, ``"stratified"`` or ``"fixed"``: what
+            the weights are, and so how the draw treats them (see above).
 
     Returns:
         ``LazyFrame`` with ``[*group_by, auc, ci_lower, ci_upper]``.
@@ -171,6 +208,7 @@ def froc_auc_ci_lazy(
         sample_col=sample_col,
         strata=strata,
         weight_rtol=weight_rtol,
+        weight_scheme=weight_scheme,
     )
 
 
@@ -189,12 +227,13 @@ def lroc_auc_ci_lazy(
     sample_col: str | None = None,
     extrapolate: Extrapolate = "none",
     strata: str | list[str] | None = None,
-    weight_rtol: float = 1e-6,
+    weight_rtol: float | None = None,
+    weight_scheme: WeightScheme = "reestimate",
 ) -> pl.LazyFrame:
     """Lazy, group-aware bootstrap confidence interval for LROC AUC.
 
     The LROC counterpart of :func:`froc_auc_ci_lazy`; see it for the shared
-    behavior, weight-cell stratification included. Returns
+    behavior, ``weight_scheme`` included. Returns
     ``[*group_by, auc, ci_lower, ci_upper]``.
 
     Args:
@@ -214,7 +253,10 @@ def lroc_auc_ci_lazy(
         extrapolate: Off-curve policy passed to :func:`lroc_auc`.
         strata: Optional metadata column(s) crossed into the weight cells (see
             :func:`froc_auc_ci_lazy`).
-        weight_rtol: Relative tolerance within which weights share a cell.
+        weight_rtol: Relative tolerance within which weights share a cell
+            (``None``: ``1e-6``).
+        weight_scheme: What the weights are — ``"reestimate"``,
+            ``"stratified"`` or ``"fixed"`` (see :func:`froc_auc_ci_lazy`).
 
     Returns:
         ``LazyFrame`` with ``[*group_by, auc, ci_lower, ci_upper]``.
@@ -238,6 +280,7 @@ def lroc_auc_ci_lazy(
         sample_col=sample_col,
         strata=strata,
         weight_rtol=weight_rtol,
+        weight_scheme=weight_scheme,
     )
 
 
@@ -251,7 +294,8 @@ def average_precision_ci_lazy(
     class_id: str | None = None,
     sample_col: str | None = None,
     strata: str | list[str] | None = None,
-    weight_rtol: float = 1e-6,
+    weight_rtol: float | None = None,
+    weight_scheme: WeightScheme = "reestimate",
 ) -> pl.LazyFrame:
     """Lazy, group-aware bootstrap confidence interval for weighted all-points AP.
 
@@ -259,8 +303,8 @@ def average_precision_ci_lazy(
     deterministic point estimate (the same all-points estimator as
     :func:`~polars_cv.metrics.average_precision`); only the bounds are
     bootstrapped. Nothing is collected here. The AP is weighted by
-    ``image_metadata.weight`` and its resample is stratified on weight cells, as
-    for :func:`froc_auc_ci_lazy` (see it for the rules).
+    ``image_metadata.weight`` and its resample follows ``weight_scheme``, as for
+    :func:`froc_auc_ci_lazy` (see it for the rules).
 
     Args:
         table: Canonical detection table.
@@ -271,7 +315,10 @@ def average_precision_ci_lazy(
         class_id: Optional class filter applied before sampling and scoring.
         sample_col: Optional entity column to resample at the entity level.
         strata: Optional metadata column(s) crossed into the weight cells.
-        weight_rtol: Relative tolerance within which weights share a cell.
+        weight_rtol: Relative tolerance within which weights share a cell
+            (``None``: ``1e-6``).
+        weight_scheme: What the weights are — ``"reestimate"``,
+            ``"stratified"`` or ``"fixed"`` (see :func:`froc_auc_ci_lazy`).
 
     Returns:
         ``LazyFrame`` with ``[*group_by, ap, ci_lower, ci_upper]``.
@@ -290,6 +337,7 @@ def average_precision_ci_lazy(
         sample_col=sample_col,
         strata=strata,
         weight_rtol=weight_rtol,
+        weight_scheme=weight_scheme,
     )
 
 
@@ -303,7 +351,8 @@ def bootstrap_ci(
     seed: int | None = None,
     sample_col: str | None = None,
     strata: str | list[str] | None = None,
-    weight_rtol: float = 1e-6,
+    weight_rtol: float | None = None,
+    weight_scheme: WeightScheme = "reestimate",
     weight_agg: WeightAgg = "first",
 ) -> pl.LazyFrame:
     """Lazy, group-aware percentile bootstrap CI for any :class:`Statistic`.
@@ -312,9 +361,10 @@ def bootstrap_ci(
     ``average_precision_ci_lazy`` are this with ``FROCAUC``, ``LROCAUC`` and
     ``AP``. The point estimate is ``statistic.by_group(table, group_by)``; each
     replicate is the same statistic on a resample of the table keyed by
-    ``bootstrap_id``. Resampling, stratification (``gt_label`` and weight
-    cells), entity-level draws and the degenerate-group rules are those of
-    :func:`froc_auc_ci_lazy` (see it for the details).
+    ``bootstrap_id``. Resampling, stratification (``gt_label`` and the
+    ``weight_scheme``'s weight cells), entity-level draws and the
+    degenerate-group rules are those of :func:`froc_auc_ci_lazy` (see it for
+    the details).
 
     Images are the resampling unit and ``group_by`` partitions the draw, so
     keys a statistic averages *over* (a :class:`MeanOver` facet such as
@@ -333,7 +383,10 @@ def bootstrap_ci(
         seed: Optional RNG seed (``None`` → deterministic constant).
         sample_col: Optional entity column to resample at the entity level.
         strata: Optional metadata column(s) crossed into the weight cells.
-        weight_rtol: Relative tolerance within which weights share a cell.
+        weight_rtol: Relative tolerance within which weights share a cell
+            (``None``: ``1e-6``).
+        weight_scheme: What the weights are — ``"reestimate"``,
+            ``"stratified"`` or ``"fixed"`` (see :func:`froc_auc_ci_lazy`).
         weight_agg: Duplicate-weight resolution policy.
 
     Returns:
@@ -355,6 +408,7 @@ def bootstrap_ci(
         sample_col=sample_col,
         strata=_normalize_group_by(strata),
         weight_rtol=weight_rtol,
+        weight_scheme=weight_scheme,
         empty_value=statistic.empty_value,
         require_both_classes=statistic.require_both_classes,
     )
@@ -376,7 +430,8 @@ def _auc_ci_lazy(
     seed: int | None,
     sample_col: str | None,
     strata: list[str],
-    weight_rtol: float,
+    weight_rtol: float | None,
+    weight_scheme: WeightScheme,
     empty_value: float,
     require_both_classes: bool = False,
 ) -> pl.LazyFrame:
@@ -400,6 +455,7 @@ def _auc_ci_lazy(
         seed=seed,
         strata=strata,
         weight_rtol=weight_rtol,
+        weight_scheme=weight_scheme,
         batch=_REPLICATES_PER_BATCH,
     )
     replicates = pl.concat([metric(boot, [*group_keys, _COL_BOOT]) for boot in boots])
@@ -407,6 +463,7 @@ def _auc_ci_lazy(
     ci = _bootstrap_ci_from_replicates(
         replicates,
         table,
+        boots=boots,
         group_keys=group_keys,
         value_col=value_col,
         n_bootstrap=n_bootstrap,
@@ -433,18 +490,21 @@ def _replicate_tables(
     n_bootstrap: int,
     seed: int | None,
     strata: list[str],
-    weight_rtol: float,
+    weight_rtol: float | None,
+    weight_scheme: WeightScheme,
     batch: int | None,
-) -> tuple[list[DetectionTable], pl.LazyFrame]:
+) -> tuple[list[DetectionTable], pl.LazyFrame | None]:
     """The weighted replicate tables, one per batch, and their sampling units.
 
-    The one way every CI builds its replicates: the resample is stratified on the
-    sampling units' weight cells (:func:`_sampling_units`), and under
-    ``sample_col`` each drawn image's weight is rescaled to its cell's
+    The one way every CI builds its replicates. ``weight_scheme``
+    (:func:`_weight_cells`) decides whether the units carry weight cells. With
+    cells the resample is stratified on them (:func:`_sampling_units`), and
+    under ``sample_col`` each drawn image's weight is rescaled to its cell's
     full-sample share (:func:`_rescale_to_cell_shares`). An image-level draw
-    redraws every ``(group, gt_label, cell)`` to its own size, so its rescale
-    factor would be exactly ``1`` and is not applied. Returns
-    ``(replicate tables, units)``; the units feed the interval's singleton rule.
+    redraws every ``(group, cell)`` to its own size, so its rescale factor
+    would be exactly ``1`` and is not applied. ``"fixed"`` has no cells: the
+    weights ride along unchanged. Returns ``(replicate tables, units)``; the
+    units feed the interval's singleton rule (``None`` without weight cells).
 
     **Batches.** Replicates ``k·batch .. (k+1)·batch − 1`` form table ``k``
     (``batch=None``: one table). Each batch draws its own range
@@ -462,22 +522,26 @@ def _replicate_tables(
     here). This needs polars >= 1.44.2 (the declared floor): 1.43.2 returned
     wrong rows from a cached frame read under different projections.
     """
+    cells, rtol = _weight_cells(weight_scheme, strata, weight_rtol)
+    label_in_cells = weight_scheme == "stratified"
     units = _sampling_units(
         table,
         sample_col=sample_col,
         group_keys=group_keys,
-        strata=strata,
-        weight_rtol=weight_rtol,
+        strata=cells,
+        weight_rtol=rtol,
+        label_in_cells=label_in_cells,
     ).cache()
     image_cells = (
         None
-        if sample_col is None
+        if sample_col is None or cells is None
         else _sampling_units(
             table,
             sample_col=None,
             group_keys=group_keys,
-            strata=strata,
-            weight_rtol=weight_rtol,
+            strata=cells,
+            weight_rtol=rtol,
+            label_in_cells=label_in_cells,
         ).cache()
     )
     step = n_bootstrap if batch is None else batch
@@ -497,19 +561,55 @@ def _replicate_tables(
                 table, samples, image_cells=image_cells, group_keys=group_keys
             )
         )
-    return tables, units
+    return tables, (None if cells is None else units)
+
+
+def _weight_cells(
+    weight_scheme: WeightScheme, strata: list[str], weight_rtol: float | None
+) -> tuple[list[str] | None, float]:
+    """The weight-cell columns and tolerance a scheme draws with.
+
+    Returns ``(strata, weight_rtol)`` for :func:`_sampling_units`: ``strata`` is
+    ``None`` under ``"fixed"`` (no weight cells), else the given columns (which
+    may be ``[]``: the weight alone forms the cells).
+
+    Raises:
+        ValueError: ``weight_scheme`` is not a :data:`WeightScheme`, or
+            ``"fixed"`` is given ``strata`` or ``weight_rtol`` — both describe
+            weight cells, which it does not form, so neither would be read.
+    """
+    schemes = get_args(WeightScheme)
+    if weight_scheme not in schemes:
+        raise ValueError(
+            f"Unknown weight_scheme {weight_scheme!r}. Expected one of {list(schemes)}."
+        )
+    if weight_scheme == "fixed":
+        for name, given in (
+            ("strata", bool(strata)),
+            ("weight_rtol", weight_rtol is not None),
+        ):
+            if given:
+                raise ValueError(
+                    f"`{name}` describes weight cells, which "
+                    "weight_scheme='fixed' does not form (its weights are "
+                    "carried unchanged); drop it, or use 'reestimate' or "
+                    "'stratified'."
+                )
+        return None, 0.0
+    return strata, _DEFAULT_WEIGHT_RTOL if weight_rtol is None else weight_rtol
 
 
 def _bootstrap_ci_from_replicates(
     replicates: pl.LazyFrame,
     table: DetectionTable,
     *,
+    boots: list[DetectionTable],
     group_keys: list[str],
     value_col: str,
     n_bootstrap: int,
     confidence: float,
     empty_value: float,
-    cells: pl.LazyFrame,
+    cells: pl.LazyFrame | None,
     require_both_classes: bool = False,
 ) -> pl.LazyFrame:
     """Per-group percentile bounds from a per-replicate grouped-metric frame.
@@ -520,14 +620,21 @@ def _bootstrap_ci_from_replicates(
     filled with ``empty_value`` (a resample that drew no detections legitimately
     scores ``0.0`` / ``0.5``). A replicate that is *present with a null value*
     is undefined (its curve does not reach the window), which is different: it
-    nulls its group's bounds rather than being filled. A **non-viable group** nulls its bounds instead of
+    nulls its group's bounds rather than being filled. So does a **degenerate
+    replicate**: one whose draw in ``boots`` (the replicate tables) fails the
+    viability rule below. Its statistic still has a value (``NaN`` for AP, ``0.5``
+    or ``0.0`` for the AUCs), but it describes no resample of the group, so it is
+    never scored. A draw that keeps the ``gt_label`` counts cannot be degenerate;
+    a cell-stratified (``"reestimate"``) or entity-level one can. A **non-viable group** nulls its bounds instead of
     reporting a spurious interval: viability needs at least one positive target,
     and — for the two-class rank statistics (``require_both_classes``, i.e.
     Mann-Whitney) — at least one negative as well, since the AUC is undefined
     without both classes. Given the sampling units' weight ``cells``
     (:func:`_sampling_units`), a group is also non-viable when any of its weight cells holds a single unit:
     every replicate redraws that unit, so its variance is invisible — and a
-    continuous weight, all singletons, would report a zero-width interval.
+    continuous weight, all singletons, would report a zero-width interval. A
+    cell whose weights are all zero is exempt (it adds nothing to any
+    statistic), and ``cells=None`` (``weight_scheme="fixed"``) has no cells.
 
     Returns a ``LazyFrame`` with ``[*group_keys, ci_lower, ci_upper]``.
     """
@@ -546,46 +653,49 @@ def _bootstrap_ci_from_replicates(
         pl.col(value_col).is_null().cast(pl.Int64).alias("_undefined"),
     )
 
-    cell_sizes = cells.group_by(*group_keys, _COL_CELL).agg(_n=pl.len())
-    min_cell = pl.col("_n").min().alias("_min_cell")
-
     if group_keys:
-        groups = _require_no_singleton_cell(
-            meta.group_by(group_keys)
-            .agg(viable_expr)
-            .join(
-                cell_sizes.group_by(group_keys).agg(min_cell),
-                on=group_keys,
-                how="left",
-                nulls_equal=True,
+        groups = meta.group_by(group_keys).agg(viable_expr)
+        if cells is not None:
+            groups = _require_no_singleton_cell(
+                groups.join(
+                    _min_cell_size(cells, group_keys),
+                    on=group_keys,
+                    how="left",
+                    nulls_equal=True,
+                )
             )
-        )
-        grid = groups.join(reps, how="cross")
-        joined = grid.join(
-            rep_marked, on=[*group_keys, _COL_BOOT], how="left"
-        ).with_columns(
-            pl.when(pl.col("_present").is_null())
-            .then(pl.lit(empty_value))
-            .otherwise(pl.col(value_col))
-            .alias(value_col),
-            pl.col("_present").fill_null(0),
-            pl.col("_undefined").fill_null(0),
-        )
-        agg = _percentile_bounds(joined, group_keys, value_col, n_bootstrap, alpha)
     else:
-        groups = _require_no_singleton_cell(
-            meta.select(viable_expr).join(cell_sizes.select(min_cell), how="cross")
-        )
-        grid = groups.join(reps, how="cross")
-        joined = grid.join(rep_marked, on=_COL_BOOT, how="left").with_columns(
+        groups = meta.select(viable_expr)
+        if cells is not None:
+            groups = _require_no_singleton_cell(
+                groups.join(_min_cell_size(cells, []), how="cross")
+            )
+    on = [*group_keys, _COL_BOOT]
+    degenerate = pl.concat(
+        [
+            boot._all_rows()[1]
+            .group_by(on)
+            .agg((~viable).cast(pl.Int64).alias("_degenerate"))
+            for boot in boots
+        ]
+    )
+    joined = (
+        groups.join(reps, how="cross")
+        .join(rep_marked, on=on, how="left", nulls_equal=True)
+        .join(degenerate, on=on, how="left", nulls_equal=True)
+        .with_columns(
             pl.when(pl.col("_present").is_null())
             .then(pl.lit(empty_value))
             .otherwise(pl.col(value_col))
             .alias(value_col),
             pl.col("_present").fill_null(0),
-            pl.col("_undefined").fill_null(0),
+            pl.max_horizontal(
+                pl.col("_undefined").fill_null(0), pl.col("_degenerate").fill_null(0)
+            ).alias("_undefined"),
         )
-        agg = _percentile_bounds(joined, [], value_col, n_bootstrap, alpha)
+        .drop("_degenerate")
+    )
+    agg = _percentile_bounds(joined, group_keys, value_col, n_bootstrap, alpha)
 
     viable = (
         pl.col("_viable") & (pl.col("_n_present") > 0) & (pl.col("_n_undefined") == 0)
@@ -647,6 +757,24 @@ def _percentile_bounds(
     )
 
 
+def _min_cell_size(cells: pl.LazyFrame, group_keys: list[str]) -> pl.LazyFrame:
+    """``[*group_keys, _min_cell]``: each group's smallest weight cell.
+
+    Counts units per ``(group, cell)``; a cell whose weights are all zero is
+    left out (an image outside the target adds nothing to any statistic, so a
+    lone one hides no variance).
+    """
+    sizes = cells.group_by(*group_keys, _COL_CELL).agg(
+        _n=pl.len(), _zero=pl.col(_COL_ZERO).all()
+    )
+    smallest = pl.col("_n").filter(~pl.col("_zero")).min().alias("_min_cell")
+    return (
+        sizes.group_by(group_keys).agg(smallest)
+        if group_keys
+        else sizes.select(smallest)
+    )
+
+
 def _require_no_singleton_cell(groups: pl.LazyFrame) -> pl.LazyFrame:
     """Fold ``_min_cell >= 2`` into a groups frame's ``_viable`` flag."""
     return groups.with_columns(
@@ -688,6 +816,7 @@ def _sampling_units(
     group_keys: list[str],
     strata: list[str] | None = None,
     weight_rtol: float = 0.0,
+    label_in_cells: bool = True,
 ) -> pl.LazyFrame:
     """One row per sampling unit and group: the resample's base, lazily.
 
@@ -698,10 +827,18 @@ def _sampling_units(
     * ``gt_label`` (image-level units): positive if **any** of the image's
       ``(image, class)`` rows is. One row per image, so an image positive for one
       class and negative for another has one draw slot, not one per label.
-    * ``_cell`` (when ``strata`` is given): the sorted distinct weight clusters
-      (:func:`_with_weight_clusters`) — or ``(*strata, cluster)`` structs —
-      across the unit's metadata rows. A weight is a property of an image, so
-      this is normally one value; a unit whose rows disagree still has one
+    * ``_label_stratum`` (image-level units): the ``gt_label`` stratum the draw
+      uses — the label, or null in a group of several weight cells unless
+      ``label_in_cells``. Crossing the label with the cells fixes each cell's
+      positive count, which is random when the weights are estimated over all
+      images, and the weighted statistics depend on it: the interval comes out
+      too narrow. A group with one cell (unit weights) keeps the label stratum,
+      so its draw is the unweighted one.
+    * ``_cell`` and ``_zero_weight`` (when ``strata`` is given): the sorted
+      distinct weight clusters (:func:`_with_weight_clusters`) — or
+      ``(*strata, cluster)`` structs — across the unit's metadata rows, and
+      whether all its weights are zero. A weight is a property of an image, so
+      the cell is normally one value; a unit whose rows disagree still has one
       well-defined cell, its combination.
 
     Raises:
@@ -729,8 +866,31 @@ def _sampling_units(
         part = [*group_keys, *(c for c in extra if c not in group_keys)]
         meta = _with_weight_clusters(meta, part, weight_rtol)
         value = pl.struct(*extra, _COL_WCLUSTER) if extra else pl.col(_COL_WCLUSTER)
+        # `_cell` stays the last aggregate: the list build is a known streaming
+        # fallback (`tests/_streaming_guard.py`), matched by that position.
+        aggs.append((pl.col(COL_WEIGHT).fill_null(1.0) == 0.0).all().alias(_COL_ZERO))
         aggs.append(value.unique().sort().alias(_COL_CELL))
-    return meta.group_by(_unit_expr(sample_col), *group_keys).agg(*aggs)
+    units = meta.group_by(_unit_expr(sample_col), *group_keys).agg(*aggs)
+    if sample_col is not None:
+        return units
+    label = pl.col(COL_GT_LABEL)
+    if strata is None or label_in_cells:
+        return units.with_columns(label.alias(_COL_LSTRATUM))
+    n_cells = units.group_by(*group_keys, _COL_CELL).agg(pl.len())
+    n_cells = (
+        n_cells.group_by(group_keys).agg(_n_cells=pl.len())
+        if group_keys
+        else n_cells.select(_n_cells=pl.len())
+    )
+    joined = (
+        units.join(n_cells, on=group_keys, how="left", nulls_equal=True)
+        if group_keys
+        else units.join(n_cells, how="cross")
+    )
+    single = pl.col("_n_cells") == 1
+    return joined.with_columns(pl.when(single).then(label).alias(_COL_LSTRATUM)).drop(
+        "_n_cells"
+    )
 
 
 def _with_weight_clusters(
@@ -793,13 +953,13 @@ def _resolve_bootstrap_samples(
     """Seeded, lazy ``(bootstrap_id, *group_keys, image_id, _slot)`` resample.
 
     Image-level (``sample_col is None``) resamples images directly, stratified by
-    ``gt_label``. Entity-level (``sample_col`` set) resamples entities and expands
+    their ``gt_label`` stratum (:func:`_sampling_units`). Entity-level (``sample_col`` set) resamples entities and expands
     each drawn entity to its images. Both partition draws within ``group_keys`` so
     an image (or entity) is only ever redrawn to replace one in the same group,
     and each draw carries its partition's keys so it brings only that group's
     rows. ``units`` (from :func:`_sampling_units`, built with the same
-    ``sample_col`` and ``group_keys``) is the base to draw from; a ``_cell``
-    column on it further stratifies the draw. Without it the base is the plain
+    ``sample_col`` and ``group_keys``) is the base to draw from; its
+    ``_label_stratum`` (image level) and ``_cell`` columns are the strata. Without it the base is the plain
     :func:`_sampling_units`. ``first`` starts the replicate range
     (:func:`_lazy_resample`). The whole frame stays lazy — the caller collects
     once at the streaming boundary.
@@ -814,7 +974,7 @@ def _resolve_bootstrap_samples(
         if units is None
         else units
     )
-    strata_cols = [COL_GT_LABEL] if sample_col is None else []
+    strata_cols = [_COL_LSTRATUM] if sample_col is None else []
     if _COL_CELL in base.collect_schema().names():
         strata_cols.append(_COL_CELL)
 

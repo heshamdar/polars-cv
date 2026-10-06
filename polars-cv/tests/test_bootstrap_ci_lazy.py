@@ -663,8 +663,10 @@ def _replicates(
     group_keys: list[str],
     sample_col: str | None = None,
     strata: list[str] | None = (),  # type: ignore[assignment]
-    weight_rtol: float = 1e-6,
+    weight_rtol: float | None = None,
     n_bootstrap: int = 60,
+    weight_scheme: str = "reestimate",
+    seed: int = 3,
 ) -> DetectionTable:
     """The CI path's replicate table; ``strata=None`` is a plain, cell-blind draw."""
     from polars_cv.metrics._bootstrap import (
@@ -678,7 +680,7 @@ def _replicates(
             table,
             sample_col=sample_col,
             n_bootstrap=n_bootstrap,
-            seed=3,
+            seed=seed,
             group_keys=group_keys,
         )
         return _bootstrap_table_with_draws(table, samples, group_keys=group_keys)
@@ -687,9 +689,10 @@ def _replicates(
         group_keys=group_keys,
         sample_col=sample_col,
         n_bootstrap=n_bootstrap,
-        seed=3,
+        seed=seed,
         strata=list(strata),
         weight_rtol=weight_rtol,
+        weight_scheme=weight_scheme,
         batch=None,
     )
     return boot
@@ -934,7 +937,11 @@ class TestWeightCellStratification:
         keys = ["group_id", "bootstrap_id"]
         static = AP().by_group(boot, keys).collect().sort(keys)
         fresh = AP().by_group(_with_meta(boot, meta), keys).collect().sort(keys)
-        assert static["ap"].to_list() == pytest.approx(fresh["ap"].to_list(), abs=1e-12)
+        # A replicate that drew no positives has AP NaN under both weightings
+        # (the interval treats it as degenerate; see TestWeightScheme).
+        assert static["ap"].to_list() == pytest.approx(
+            fresh["ap"].to_list(), abs=1e-12, nan_ok=True
+        )
 
     def test_average_precision_singleton_cells_null_the_bounds(self) -> None:
         table = _vendor_table()
@@ -963,6 +970,167 @@ class TestWeightCellStratification:
         )
 
 
+def _count_mismatches(
+    table: DetectionTable, boot: DetectionTable, by: list[str]
+) -> int:
+    """Replicate ``(group_id, *by)`` counts that differ from the full sample's."""
+    full = table.image_metadata.group_by("group_id", *by).len().collect()
+    return (
+        boot.image_metadata.group_by("bootstrap_id", "group_id", *by)
+        .len()
+        .join(full.lazy(), on=["group_id", *by], how="full", suffix="_f")
+        .filter(pl.col("len").fill_null(0) != pl.col("len_f").fill_null(0))
+        .collect()
+        .height
+    )
+
+
+def _continuous(table: DetectionTable) -> DetectionTable:
+    """``table`` with a distinct weight on every image (a continuous weight)."""
+    distinct = (pl.int_range(pl.len()).cast(pl.Float64) + 1.0).alias(COL_WEIGHT)
+    return _with_meta(table, table.image_metadata.with_columns(distinct))
+
+
+class TestWeightScheme:
+    """``weight_scheme`` says what the weights are, and so how the draw treats them.
+
+    * ``"reestimate"`` (default): ``p / q̂`` weights estimated from the sample.
+      Each weight cell is redrawn to its own size, so the weights are their
+      per-replicate re-estimates, but ``gt_label`` is not crossed with the cells:
+      each cell's positive count is random in the population, and the weighted
+      statistics depend on it. A group with a single cell keeps the ``gt_label``
+      stratum.
+    * ``"stratified"``: each cell's positive count was fixed by the study design;
+      the draw keeps ``(gt_label, cell)`` counts.
+    * ``"fixed"``: known (design) weights, carried unchanged; no weight cells.
+    """
+
+    def test_reestimate_lets_each_cells_label_count_vary(self) -> None:
+        table = _importance_weighted("per_group")
+        boot = _replicates(table, group_keys=["group_id"])
+        assert _count_mismatches(table, boot, ["vendor"]) == 0
+        assert _count_mismatches(table, boot, [COL_GT_LABEL, "vendor"]) > 0
+
+    def test_stratified_freezes_each_cells_label_count(self) -> None:
+        table = _importance_weighted("per_group")
+        boot = _replicates(table, group_keys=["group_id"], weight_scheme="stratified")
+        assert _count_mismatches(table, boot, [COL_GT_LABEL, "vendor"]) == 0
+
+    def test_reestimate_keeps_the_label_stratum_in_a_single_cell_group(self) -> None:
+        # g1 is importance-weighted (two cells), g2 carries unit weights (one cell).
+        table = _importance_weighted("per_group")
+        meta = table.image_metadata.with_columns(
+            pl.when(pl.col("group_id") == "g2")
+            .then(1.0)
+            .otherwise(pl.col(COL_WEIGHT))
+            .alias(COL_WEIGHT)
+        )
+        mixed = _with_meta(table, meta)
+        boot = _replicates(mixed, group_keys=["group_id"])
+        full = mixed.image_metadata.group_by("group_id", COL_GT_LABEL).len().collect()
+        per_rep = (
+            boot.image_metadata.group_by("bootstrap_id", "group_id", COL_GT_LABEL)
+            .len()
+            .join(full.lazy(), on=["group_id", COL_GT_LABEL], suffix="_f")
+            .filter(pl.col("len") != pl.col("len_f"))
+            .collect()
+        )
+        assert set(per_rep["group_id"]) == {"g1"}
+
+    def test_fixed_carries_weights_on_a_label_stratified_draw(self) -> None:
+        table = _continuous(_vendor_table())
+        boot = _replicates(table, group_keys=["group_id"], weight_scheme="fixed")
+        assert _count_mismatches(table, boot, [COL_GT_LABEL]) == 0
+        assert _count_mismatches(table, boot, ["vendor"]) > 0
+        source = table.image_metadata.select(
+            COL_IMAGE_ID, pl.col(COL_WEIGHT).alias("_w0")
+        )
+        drawn = boot.image_metadata.with_columns(
+            pl.col(COL_IMAGE_ID).str.replace(r"#d\d+$", "")
+        ).join(source, on=COL_IMAGE_ID)
+        assert drawn.filter(pl.col(COL_WEIGHT) != pl.col("_w0")).collect().height == 0
+
+    @pytest.mark.parametrize("family", ["froc", "lroc", "pr"])
+    def test_fixed_bounds_a_continuous_weight(self, family: str) -> None:
+        fn, value_col = _CI_FUNCS[family]
+        table = _continuous(_vendor_table())
+        out = fn(table, n_bootstrap=50, seed=1, weight_scheme="fixed").collect()
+        assert out["ci_lower"].item() <= out[value_col].item() <= out["ci_upper"].item()
+        assert out["ci_lower"].item() < out["ci_upper"].item()
+        # The default reads a continuous weight as all-singleton cells: no bounds.
+        assert fn(table, n_bootstrap=50, seed=1).collect()["ci_lower"].item() is None
+
+    @pytest.mark.parametrize("scheme", ["reestimate", "stratified", "fixed"])
+    def test_unit_weights_draw_alike_under_every_scheme(self, scheme: str) -> None:
+        table = _vendor_table()
+        kw = {"group_by": "group_id", "n_bootstrap": 100, "seed": 7}
+        base = lroc_auc_ci_lazy(table, **kw).collect().sort("group_id")
+        out = lroc_auc_ci_lazy(table, weight_scheme=scheme, **kw).collect()
+        assert_frame_equal(out.sort("group_id"), base)
+
+    @pytest.mark.parametrize("scheme", ["reestimate", "stratified"])
+    @pytest.mark.parametrize("family", ["froc", "lroc", "pr"])
+    def test_a_zero_weight_singleton_does_not_null_the_bounds(
+        self, family: str, scheme: str
+    ) -> None:
+        # An image outside the target (weight 0) is its own cell but contributes
+        # nothing to any statistic: it has no variance to hide.
+        fn, _ = _CI_FUNCS[family]
+        table = _vendor_table()
+        meta = table.image_metadata.with_columns(
+            pl.when(pl.col(COL_IMAGE_ID) == "g1_9")
+            .then(0.0)
+            .otherwise(pl.col(COL_WEIGHT))
+            .alias(COL_WEIGHT)
+        )
+        out = fn(
+            _with_meta(table, meta), n_bootstrap=50, seed=1, weight_scheme=scheme
+        ).collect()
+        assert out["ci_lower"].item() is not None
+
+    @pytest.mark.parametrize("family", ["froc", "lroc", "pr"])
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [({"strata": "vendor"}, "strata"), ({"weight_rtol": 0.0}, "weight_rtol")],
+    )
+    def test_fixed_rejects_cell_arguments(
+        self, family: str, kwargs: dict, match: str
+    ) -> None:
+        fn, _ = _CI_FUNCS[family]
+        with pytest.raises(ValueError, match=match):
+            fn(_vendor_table(), weight_scheme="fixed", n_bootstrap=10, **kwargs)
+
+    def test_a_replicate_without_positives_nulls_its_groups_bounds(self) -> None:
+        # Under "reestimate" g1's replicate 30 draws no positive image. Its
+        # statistic still has a value (0.0 here) that describes no resample of
+        # the group, so it nulls g1's bounds instead of being scored.
+        table = TestWeightCellTolerance._noisy()
+        kw = {"group_by": "group_id", "n_bootstrap": 50, "seed": 1}
+        boot = _replicates(table, group_keys=["group_id"], n_bootstrap=50, seed=1)
+        drew_none = (
+            boot.image_metadata.group_by("bootstrap_id", "group_id")
+            .agg(pl.col(COL_GT_LABEL).any())
+            .filter(~pl.col(COL_GT_LABEL))
+            .collect()
+        )
+        assert set(drew_none["group_id"]) == {"g1"}
+        out = {
+            r["group_id"]: r
+            for r in lroc_auc_ci_lazy(table, **kw).collect().iter_rows(named=True)
+        }
+        assert out["g1"]["ci_lower"] is None
+        assert out["g1"]["auc"] is not None
+        assert out["g2"]["ci_lower"] is not None
+        kept = lroc_auc_ci_lazy(table, weight_scheme="stratified", **kw).collect()
+        assert kept["ci_lower"].null_count() == 0
+
+    @pytest.mark.parametrize("family", ["froc", "lroc", "pr"])
+    def test_unknown_scheme_raises(self, family: str) -> None:
+        fn, _ = _CI_FUNCS[family]
+        with pytest.raises(ValueError, match="weight_scheme.*'design'"):
+            fn(_vendor_table(), weight_scheme="design", n_bootstrap=10)
+
+
 class TestWeightCellTolerance:
     """Weights within ``weight_rtol`` (relative, default ``1e-6``) share a cell."""
 
@@ -979,7 +1147,9 @@ class TestWeightCellTolerance:
 
     @pytest.mark.parametrize("family", ["froc", "lroc", "pr"])
     def test_float_noise_does_not_split_a_cell(self, family: str) -> None:
-        fn, _ = _CI_FUNCS[family]
+        # "stratified" keeps every replicate's gt_label counts, so a null bound
+        # here can only come from a cell split, not a degenerate replicate.
+        fn = functools.partial(_CI_FUNCS[family][0], weight_scheme="stratified")
         table = self._noisy()
         default = fn(table, group_by="group_id", n_bootstrap=50, seed=1).collect()
         assert default["ci_lower"].null_count() == 0

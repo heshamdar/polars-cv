@@ -197,7 +197,8 @@ Every metric is weighted by the table's `image_metadata.weight` (scikit-learn
 `sample_weight` semantics: a weight of `k` counts an image `k` times; unit
 weights give the plain counts). The bootstrap intervals re-estimate
 sample-derived weights in every replicate by stratifying the resample on
-weight cells, so reweighting a study to a target mix needs no extra step.
+weight cells, so reweighting a study to a target mix needs no extra step;
+`weight_scheme="fixed"` carries known (design or continuous) weights instead.
 
 Available matchers: `match_detections` (object tables of any geometry),
 `ContourMatcher` (heatmap/mask), `BBoxMatcher` (bounding boxes),

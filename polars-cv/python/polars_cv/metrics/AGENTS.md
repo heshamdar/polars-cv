@@ -205,20 +205,29 @@ size); entity-level (`sample_col`) resamples entities within group, then expands
 to images with a lazy `group_by`/`explode`. An empty base or empty group
 cross-joins to zero rows — it does **not** raise.
 
-**Every CI is weighted and stratifies on weight cells** (`_replicate_tables`,
-the one way replicates are built). `_sampling_units` is the single authority for
-the resample's base: one row per sampling unit and group.
+**Every CI is weighted, and its `weight_scheme` decides the weight cells**
+(`_replicate_tables`, the one way replicates are built; `_weight_cells` resolves
+and validates the scheme). `_sampling_units` is the single authority for the
+resample's base: one row per sampling unit and group.
 
-- At image level, a unit's `gt_label` stratum is positive if **any** of its
+- At image level, a unit's `gt_label` is positive if **any** of its
   `(image, class)` rows is. A mixed-label multi-class image used to sit in both
   strata, so it had two draw slots per replicate.
+- Its `_label_stratum` is the `gt_label` the draw stratifies on. Under
+  `"reestimate"` it is null in a group of several weight cells: crossing the
+  label with the cells fixes each cell's positive count, which is random when
+  the weights were estimated over all images, and the weighted statistics
+  depend on it (SE ~10% low in simulation). A single-cell group (unit weights)
+  keeps the label, so its draw is bit-identical to the unweighted one.
+  `"stratified"` keeps the label everywhere; `"fixed"` has no cells at all.
 - Its `_cell` is the sorted distinct weight clusters (or `(*strata, cluster)`
-  structs) of its rows, or of its images for an entity.
+  structs) of its rows, or of its images for an entity, and `_zero_weight`
+  says whether all its weights are zero (exempt from the singleton rule).
 - `_with_weight_clusters` assigns each metadata row a cluster within
   `(group, *strata)` by relative gap (`weight_rtol`, default `1e-6`), with no
   rounding boundary. It is one sort plus a window, with no self-join.
 
-The draw is stratified within `(group, gt_label, cell)` at image level, or
+The draw is stratified within `(group, _label_stratum, cell)` at image level, or
 `(group, cell)` at entity level. Each draw carries its partition keys, and
 `_bootstrap_table_with_draws` joins the metadata on `[image_id, *group_keys]`
 and the detections on the group keys they carry. A draw therefore brings only
@@ -260,7 +269,13 @@ two-class rank statistics (`method="mann_whitney"`, threaded as
 undefined without both classes. A group with any weight cell of size 1 is also
 non-viable: that cell has no bootstrap variance,
 and a continuous weight (all singletons) would otherwise report a zero-width
-interval. That viability rule is the one behavioral choice worth knowing.
+interval (`weight_scheme="fixed"` forms no cells; a cell of zero weights is
+exempt). A **degenerate replicate** — one whose own draw fails that viability
+rule, possible whenever the draw does not fix the `gt_label` counts
+(`"reestimate"` with several cells, or `sample_col`) — nulls its group's bounds
+like an undefined one: its statistic has a value (`NaN`, `0.5`, `0.0`) that
+describes no resample. These viability rules are the behavioral choices worth
+knowing.
 
 ## File Layout
 

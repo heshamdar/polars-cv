@@ -370,6 +370,7 @@ def test_facets_are_paired_within_a_replicate() -> None:
         seed=5,
         strata=[],
         weight_rtol=1e-6,
+        weight_scheme="reestimate",
         batch=None,
     )
     _, meta = boot.frames([_COL_BOOT])

@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import polars as pl
 
-from ._bootstrap import bootstrap_ci
+from ._bootstrap import WeightScheme, bootstrap_ci
 from ._inputs import GT_ROW, PRED_ROW, group_objects, match_detections
 from ._statistics import (
     AP,
@@ -244,6 +244,8 @@ class DetectionReport:
         seed: int | None = None,
         sample_col: str | None = None,
         strata: str | list[str] | None = None,
+        weight_rtol: float | None = None,
+        weight_scheme: WeightScheme = "reestimate",
     ) -> pl.DataFrame:
         """Percentile bootstrap intervals for summary numbers.
 
@@ -262,6 +264,10 @@ class DetectionReport:
             sample_col: Optional entity column (e.g. a patient id) to resample
                 instead of images.
             strata: Optional metadata column(s) crossed into the weight cells.
+            weight_rtol: Relative tolerance within which weights share a cell.
+            weight_scheme: What the weights are, and so how the draw treats
+                them: ``"reestimate"``, ``"stratified"`` or ``"fixed"`` (see
+                :func:`~polars_cv.metrics.froc_auc_ci_lazy`).
 
         Returns:
             ``[*by, metric, value, ci_lower, ci_upper]``.
@@ -290,6 +296,8 @@ class DetectionReport:
                     seed=seed,
                     sample_col=sample_col,
                     strata=strata,
+                    weight_rtol=weight_rtol,
+                    weight_scheme=weight_scheme,
                 )
                 .rename({m.statistic.name: "value"})
                 .with_columns(pl.lit(name).alias("metric"))
