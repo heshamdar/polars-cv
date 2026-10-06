@@ -545,6 +545,7 @@ lroc_auc_ci_lazy(table, group_by="group_id", weight_scheme="fixed")
   counts were fixed by design, `"stratified"` cannot.
 - **`"fixed"`** forms no cells, so it raises if given `strata` or
   `weight_rtol`. It does not rescale under `sample_col` either.
+- **`Report.ci`** takes the same `strata`, `weight_rtol` and `weight_scheme`.
 
 ## IoU thresholds: re-matching vs re-thresholding
 

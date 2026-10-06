@@ -7,6 +7,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.33.0] — 2026-10-06
+
+Weighted bootstrap intervals are corrected: 0.32 fixed each weight cell's
+positive count in every replicate, which made intervals for sample-estimated
+weights too narrow. The new `weight_scheme=` says what the weights are
+(`"reestimate"`, the default; `"stratified"`, 0.32's draw; `"fixed"`, for known
+or continuous weights). Unweighted intervals and every point estimate are
+unchanged. Upgrading from 0.32: see the
+[migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.33/).
+
 ### Added
 
 - **`weight_scheme=` on every bootstrap interval** (`bootstrap_ci`,
@@ -4424,7 +4434,8 @@ Each item is described in full under its section below.
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
-[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.32.0...HEAD
+[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.33.0...HEAD
+[0.33.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.33.0
 [0.32.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.32.0
 [0.31.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.31.0
 [0.30.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.30.0
