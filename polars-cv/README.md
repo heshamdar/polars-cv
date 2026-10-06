@@ -37,14 +37,14 @@ result = df.with_columns(
 Each `.cv.pipe(...)` call spreads its rows over the plugin's thread pool (sized
 by `POLARS_MAX_THREADS`), so a plain eager `DataFrame.with_columns(...)` uses
 every core. For data larger than memory, run through the lazy **streaming**
-engine, which processes the column in morsels and can spill intermediate state
-to disk:
+engine (a lazy `.collect()`'s default since Polars 2.0), which processes the
+column in morsels and spills intermediate state to disk:
 
 ```python
 result = (
     df.lazy()
     .with_columns(processed=pl.col("image").cv.pipe(pipe).sink("blob"))
-    .collect(engine="streaming")
+    .collect()
 )
 ```
 

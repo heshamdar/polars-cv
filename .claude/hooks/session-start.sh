@@ -53,7 +53,7 @@ fi
 
 # 1. Rust toolchain. `rust-toolchain.toml` pins `channel = "stable"`, and both
 #    crates require MSRV 1.96 — but a fresh container commonly ships an older
-#    cached `stable` (e.g. 1.94) that fails to compile the polars 0.54 stack
+#    cached `stable` (e.g. 1.94) that fails to compile the polars 0.54+ stack
 #    (E0658 on now-stable APIs), which then makes the whole plugin-dependent
 #    suite self-skip silently. `rustup update stable` upgrades the installed
 #    stable that the pin resolves to (and self-updates rustup itself), so the

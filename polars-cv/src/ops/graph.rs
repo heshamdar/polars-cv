@@ -383,6 +383,30 @@ impl<M: Mode> GraphOp<M> {
         }
     }
 
+    /// [`operands`](Self::operands), writable: how a plan renames the nodes
+    /// it reads to their wire ids (`Plan::spec`). A second match over the ops
+    /// only because [`role`](Self::role) borrows them shared;
+    /// `operands_mut_reaches_exactly_the_operands` holds the two together.
+    pub fn operands_mut(&mut self) -> Vec<&mut NodeRef> {
+        match self {
+            GraphOp::Add { other }
+            | GraphOp::Subtract { other }
+            | GraphOp::Multiply { other }
+            | GraphOp::Divide { other }
+            | GraphOp::Blend { other }
+            | GraphOp::Maximum { other }
+            | GraphOp::Minimum { other }
+            | GraphOp::BitwiseAnd { other }
+            | GraphOp::BitwiseOr { other }
+            | GraphOp::BitwiseXor { other } => vec![other],
+            GraphOp::ApplyMask { mask, .. } => vec![mask],
+            GraphOp::ChannelMerge { others } => others.iter_mut().collect(),
+            GraphOp::AssertShape { .. } | GraphOp::ExtractShape | GraphOp::LabelReduce { .. } => {
+                Vec::new()
+            }
+        }
+    }
+
     /// How the op's output shape follows from its inputs.
     pub fn shape(&self) -> OpShape {
         match self.role() {

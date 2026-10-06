@@ -39,19 +39,38 @@ default.
 
 ## Use the streaming engine for larger-than-memory data
 
-The streaming engine processes the column in *morsels* and can spill
-intermediate state to disk when memory is tight:
+The streaming engine processes the column in *morsels* and spills
+intermediate state to disk when memory is tight. Since Polars 2.0 it is what a
+lazy `.collect()` uses by default; an eager `DataFrame.with_columns` still runs
+in memory.
 
 ```python
 result = (
     df.lazy()
     .with_columns(processed=pl.col("image").cv.pipe(pipe).sink("blob"))
-    .collect(engine="streaming")
+    .collect()  # the streaming engine (Polars >= 2.0)
 )
 ```
 
 The plugin's graph is compiled once and cached process-wide, so per-morsel
 overhead is just a hash lookup.
+
+Spilling applies to the operators that buffer — `sort`, `group_by`, joins and
+windows — and every polars-cv output survives it unchanged, including the
+`polars_cv.ndarray`/`point`/`contour`/`bbox` extension types. The memory
+polars-cv allocates counts toward the same budget, so a query whose decoded
+images fill memory spills like any other. Polars' knobs, set before it is
+imported:
+
+| Variable | Meaning |
+|----------|---------|
+| `POLARS_OOC_MEMORY_BUDGET_FRACTION` | Spill past this share of system memory (default 0.8) |
+| `POLARS_OOC_MEMORY_BUDGET_MB` | ... or past this many MB, if lower |
+| `POLARS_OOC_SPILL_DIR` | Where spill files go (Linux default `/var/tmp/polars-$USER/spill`) |
+| `POLARS_OOC_DISK_BUDGET_MB` | Abort the query past this much spilled data (default 64 GB) |
+
+A row is one plugin call's unit of work: an image is decoded, processed and
+encoded whole, so a single image must still fit in memory.
 
 !!! note
     The detection-metrics APIs already collect with `engine="streaming"`

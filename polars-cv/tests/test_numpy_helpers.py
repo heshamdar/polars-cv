@@ -189,10 +189,13 @@ class TestNumpyFromStructPolars:
                         "data": arr.tobytes(),
                         "dtype": "uint8",
                         "shape": [2, 3],
+                        "strides": None,
+                        "offset": None,
                     }
                 ]
-            }
-        ).cast({"output": NUMPY_OUTPUT_SCHEMA})
+            },
+            schema={"output": NUMPY_OUTPUT_SCHEMA},
+        )
 
         # Get the struct value
         struct_val = df["output"][0]

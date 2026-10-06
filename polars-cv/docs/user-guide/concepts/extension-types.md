@@ -95,7 +95,8 @@ the type.
 ## Persistence
 
 A tagged column written to Parquet reads back tagged in any process that has
-imported `polars_cv`. A process that has not reads the plain struct — no data
-is lost — and Polars prints a warning that the extension type is not
-registered. Setting `POLARS_UNKNOWN_EXTENSION_TYPE_BEHAVIOR=load_as_extension`
-keeps the name as a generic extension instead.
+imported `polars_cv`. A process that has not reads it as Polars' generic
+extension of the same name (`pl.Extension("polars_cv.point", ...)`, Polars 2.0's
+default) — no data is lost, and `.ext.storage()` gives the plain struct. Setting
+`POLARS_UNKNOWN_EXTENSION_TYPE_BEHAVIOR=load_as_storage` reads the plain struct
+directly instead.

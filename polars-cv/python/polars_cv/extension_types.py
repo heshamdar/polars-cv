@@ -36,7 +36,7 @@ metadata) comes back as polars' generic :class:`polars.Extension` instead — so
 ``src/ext_types.rs`` names the four types there and ``_lib.extension_types()``
 publishes them. They are restated here only so ``import polars_cv`` can register
 the types without loading the compiled extension (registering late would let a
-Parquet read decay a tagged column to its storage). The parity test
+Parquet read decay a tagged column to polars' generic extension). The parity test
 ``test_python_types_match_the_rust_declaration`` holds the two together.
 
 .. warning::

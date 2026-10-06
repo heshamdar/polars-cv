@@ -59,12 +59,17 @@ def parse_logical_graph(pipeline_graph: PipelineGraph) -> LogicalGraph:
     plugin wire format carries no display metadata)."""
     spec = pipeline_graph._to_dict()
     graph = LogicalGraph()
+    # The spec names nodes by their wire ids; the Python nodes go by build ids.
+    by_wire = {
+        wire: pipeline_graph._nodes[node_id]
+        for node_id, wire in pipeline_graph._wire_ids().items()
+    }
 
     # Parse compute + source nodes
     for node_id, payload in spec["nodes"].items():
         upstream = payload.get("upstream", [])
         is_source = len(upstream) == 0
-        node = pipeline_graph._nodes[node_id]
+        node = by_wire[node_id]
 
         graph.nodes[node_id] = ComputeNode(
             node_id=node_id,

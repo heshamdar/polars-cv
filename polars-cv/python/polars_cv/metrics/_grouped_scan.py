@@ -2,16 +2,11 @@
 
 **The grouped scan** (:func:`grouped_scan`) sorts once by ``(*keys, *by)``
 and computes each scan (running sum, running max, lag, row index, first/last
-flag) as a window ``.over(keys)`` on the sorted frame. The streaming engine
-runs such a window in the in-memory engine, which collects its input. That
-input is the frame the sort has just collected, so the window adds no memory
-of its own. An all-native version (restarting frame-wide scans at group starts
-with exact Int128 arithmetic and rank-encoded maxima) was built and measured:
-it held as much memory and ran 2.4x slower on the bootstrap. The guard
-(``tests/test_streaming_plans.py``) accepts this fallback only where the plan
-shows it straight after the sort on its window keys, which is what this
-function produces. Anywhere else, a ``.over()`` scan or a sort inside an
-``agg`` is a regression.
+flag) as a window ``.over(keys)`` on the sorted frame. Since polars 2.0 both
+the sort and the windows are native streaming nodes
+(``tests/test_grouped_scan.py`` holds it to no fallback at all). A sort inside
+an ``agg`` still falls back to the in-memory engine, so per-group scans are
+written here rather than there.
 
 **Exact sums** (:func:`exact_sums`) convert each value to Int128 fixed point
 and sum those integers natively in a group-by. The scale is a power of two

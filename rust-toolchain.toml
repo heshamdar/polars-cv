@@ -1,4 +1,4 @@
-# Use latest stable Rust. Minimum supported is 1.96: the polars 0.54 stack pulls
+# Use latest stable Rust. Minimum supported is 1.96: the polars 0.54+ stack pulls
 # in polars-ooc, which calls the now-stabilized `std::hint::cold_path()` and
 # `atomic_try_update` without a nightly opt-in, so older stables fail to build
 # with E0658. (1.78+ is also required for Cargo.lock version 4.)

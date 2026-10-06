@@ -92,8 +92,13 @@ When `.sink()` is called, a `PipelineGraph` is built:
 2. Each becomes a `GraphNode` with its pipeline spec, upstream dependencies, and optional alias
 3. Output specs are attached to terminal nodes
 4. Common subexpression elimination (CSE) shares common prefixes
-5. The graph is serialized to JSON
-6. `_plugin.call("vb_graph", ...)` is called (the package's only route to `register_plugin_function`)
+5. The graph is serialized to JSON. Nodes are named by position (`n0`, `n1`,
+   ...), never by their build-time `uuid4` ids: `Plan.to_spec` renames every
+   node an op reads and refuses one the graph does not name. The same pipeline
+   built twice therefore serializes identically, which is what polars' plugin
+   CSE (it compares kwargs) and the compiled-graph cache key on
+   (`tests/test_plugin_cse.py`)
+6. `_plugin.call("vb_graph", ...)` is called (the package's only route to `register_plugin_function`, which declares every call `is_deterministic=True`)
 
 **A node reference is not a dependency until it is an upstream edge.** An op
 that points at another `LazyPipelineExpr` by node id — `rasterize(shape=)`, a binary operand — is recorded in `Pipeline._node_refs`

@@ -198,7 +198,7 @@ class TestStaging:
 
     def test_serialization_is_verbatim(self) -> None:
         # _to_spec_dict never optimizes; it serializes the ops as written.
-        spec = _removable_op_pipe()._to_spec_dict(SlotTable().index)
+        spec = _removable_op_pipe()._to_spec_dict(SlotTable().index, {})
         assert [op["op"] for op in spec["ops"]] == ["resize", "crop"]
 
     def test_optimize_none_changes_nothing(self) -> None:

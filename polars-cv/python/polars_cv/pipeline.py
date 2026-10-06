@@ -1224,7 +1224,7 @@ class Pipeline(_OpsMixin):
         if planned is not None:
             self._plan = planned
 
-    def _to_spec_dict(self, slot_of: "SlotOf") -> dict:
+    def _to_spec_dict(self, slot_of: "SlotOf", node_of: "dict[str, str]") -> dict:
         """
         Convert pipeline to specification dictionary (without sink).
 
@@ -1238,11 +1238,16 @@ class Pipeline(_OpsMixin):
         Args:
             slot_of: The graph's slot resolver (``SlotTable.index``), mapping
                 each expression parameter to its plugin input position.
+            node_of: The id each node this pipeline reads goes by on the
+                wire, keyed by its build-time id. Rust refuses a read node
+                it does not name.
 
         Returns:
             Dictionary with source and ops.
         """
-        return json.loads(self._plan.to_spec([slot_of(e) for e in self._exprs]))
+        return json.loads(
+            self._plan.to_spec([slot_of(e) for e in self._exprs], node_of)
+        )
 
     # --- Serialization ---
 
@@ -1263,7 +1268,7 @@ class Pipeline(_OpsMixin):
         table.add(pl.col("__input__"))
         for expr in self._exprs:
             table.add(expr)
-        return json.dumps(self._to_spec_dict(table.index))
+        return json.dumps(self._to_spec_dict(table.index, {}))
 
     def _get_expr_columns(self) -> list[pl.Expr]:
         """

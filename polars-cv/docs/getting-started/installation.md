@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Python 3.11+
-- Polars 1.44.2+
+- Polars 2.0+
 
 ## Installing with pip
 

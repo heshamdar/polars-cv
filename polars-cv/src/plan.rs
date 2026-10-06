@@ -783,6 +783,47 @@ impl Plan {
     }
 }
 
+/// A graph's node ids as the wire names them, keyed by build-time id.
+pub(crate) type NodeMap = std::collections::HashMap<String, String>;
+
+impl Plan {
+    /// The node spec a graph serializes, with slot `i` renumbered to graph
+    /// input `slot_map[i]` and each node an op reads (its
+    /// [`operands`](crate::graph::step::GraphStep::operands)) renamed by
+    /// `nodes`. Build-time node ids are generated per build, so the graph
+    /// names nodes by position instead; then the same pipeline built twice
+    /// serializes the same, which is what lets polars' CSE merge the plugin
+    /// calls and the compiled-graph cache reuse an entry. A reference `nodes`
+    /// does not name is refused rather than emitted under its build-time id.
+    pub(crate) fn spec(
+        &self,
+        slot_map: &[usize],
+        nodes: &NodeMap,
+    ) -> Result<serde_json::Value, String> {
+        let mut ops = Vec::with_capacity(self.ops.len());
+        for planned in &self.ops {
+            let mut op = planned.op.clone();
+            for node in op.operands_mut() {
+                let named = nodes.get(&node.0).ok_or_else(|| {
+                    format!(
+                        "{}() reads node '{}', which is not in the graph",
+                        planned.op.name(),
+                        node.0
+                    )
+                })?;
+                node.0.clone_from(named);
+            }
+            ops.push(wire(&op));
+        }
+        let mut spec = serde_json::json!({
+            "source": self.source.as_ref().map(wire),
+            "ops": ops,
+        });
+        remap_slots(&mut spec, slot_map)?;
+        Ok(spec)
+    }
+}
+
 /// `value` with every `{"$slot": i}` replaced by `{"$slot": map[i]}`.
 fn remap_slots(value: &mut serde_json::Value, map: &[usize]) -> Result<(), String> {
     use crate::ops::param::SLOT_KEY;
@@ -961,14 +1002,12 @@ impl Plan {
     }
 
     /// The node spec a graph serializes (`{"source": ..., "ops": [...]}`) with
-    /// slot `i` renumbered to graph input `slot_map[i]`.
-    fn to_spec(&self, slot_map: Vec<usize>) -> PyResult<String> {
-        let mut spec = serde_json::json!({
-            "source": self.source.as_ref().map(wire),
-            "ops": self.ops.iter().map(|p| wire(&p.op)).collect::<Vec<_>>(),
-        });
-        remap_slots(&mut spec, &slot_map).map_err(py_value_error)?;
-        Ok(spec.to_string())
+    /// slot `i` renumbered to graph input `slot_map[i]` and every node it
+    /// reads named by `node_map` (see [`Plan::spec`]).
+    fn to_spec(&self, slot_map: Vec<usize>, node_map: NodeMap) -> PyResult<String> {
+        self.spec(&slot_map, &node_map)
+            .map(|spec| spec.to_string())
+            .map_err(py_value_error)
     }
 
     fn __copy__(slf: Py<Self>) -> Py<Self> {
@@ -1029,6 +1068,23 @@ mod tests {
         );
         let mut v = json!({"a": {"$slot": 2}});
         assert!(remap_slots(&mut v, &[0]).unwrap_err().contains("slot 2"));
+    }
+
+    #[test]
+    fn a_spec_names_every_node_reference_by_its_wire_id() {
+        let refs: Refs = [("node_3f2a".to_string(), image())].into();
+        let plan = Plan::continuing(image())
+            .pushed(op(json!({"op": "add", "other": "node_3f2a"})), refs.clone())
+            .unwrap()
+            .pushed(op(json!({"op": "apply_mask", "mask": "node_3f2a"})), refs)
+            .unwrap();
+        let nodes = [("node_3f2a".to_string(), "n1".to_string())].into();
+        let spec = plan.spec(&[], &nodes).unwrap();
+        assert_eq!(spec["ops"][0]["other"], "n1");
+        assert_eq!(spec["ops"][1]["mask"], "n1");
+        // A reference the map does not name is refused, never emitted raw.
+        let err = plan.spec(&[], &NodeMap::new()).unwrap_err();
+        assert!(err.contains("node_3f2a"), "{err}");
     }
 
     #[test]

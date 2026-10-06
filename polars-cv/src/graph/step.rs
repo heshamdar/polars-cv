@@ -182,6 +182,22 @@ impl<M: Mode> GraphStep<M> {
         }
     }
 
+    /// [`operands`](Self::operands), writable (see [`GraphOp::operands_mut`]).
+    pub fn operands_mut(&mut self) -> Vec<&mut NodeRef> {
+        match self {
+            GraphStep::Graph(op) => op.operands_mut(),
+            GraphStep::Geometry(view_buffer::GeometryOp::Rasterize {
+                size: view_buffer::geometry::ops::RasterSize::FromNode(node),
+                ..
+            }) => vec![node],
+            GraphStep::Buffer(_)
+            | GraphStep::Geometry(_)
+            | GraphStep::Reduction(_)
+            | GraphStep::Histogram(_)
+            | GraphStep::PerceptualHash(_) => Vec::new(),
+        }
+    }
+
     /// The domains a node this step reads (an [`operand`](Self::operands))
     /// may be in. The planner refuses any other at build; execution reads the
     /// same operands through [`input_domains`](Self::input_domains), which a

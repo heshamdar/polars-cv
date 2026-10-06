@@ -36,33 +36,11 @@ _LF = pl.LazyFrame({"g": [1, 1, 2], "x": [1.0, 2.0, 3.0], "t": [3, 2, 1]})
     "plan",
     [
         pytest.param(
-            _LF.with_columns(pl.col("x").cum_sum().over("g")), id="cum_sum-over"
-        ),
-        pytest.param(
             _LF.group_by("g").agg(pl.col("x").sort().cum_sum().last()),
             id="sorted-scan-in-agg",
         ),
         pytest.param(
-            _LF.with_columns(pl.int_range(pl.len()).over("g")), id="int_range-over"
-        ),
-        pytest.param(
             _LF.with_columns(pl.col("x").map_batches(lambda s: s)), id="column-udf"
-        ),
-        pytest.param(
-            _LF.sort("x", "g").with_columns(pl.col("x").cum_sum().over("g")),
-            id="over-after-a-sort-on-other-keys",
-        ),
-        pytest.param(
-            _LF.sort("g", "x").with_columns(pl.col("x").rank().over("g")),
-            id="unlisted-window-after-its-sort",
-        ),
-        pytest.param(
-            # A computed column between the sort and the window: the window's
-            # input is that computation, not the frame the sort holds.
-            _LF.sort("g", "x")
-            .with_columns(y=pl.col("x").cum_sum())
-            .with_columns(pl.col("y").cum_sum().over("g")),
-            id="over-not-straight-after-the-sort",
         ),
     ],
 )
@@ -78,15 +56,6 @@ def test_guard_rejects_known_fallbacks(plan: pl.LazyFrame) -> None:
         pytest.param(
             _LF.group_by("g").agg(pl.col("x").alias("pred"), pl.col("t").alias("gt")),
             id="object-lists",
-        ),
-        pytest.param(
-            _LF.sort("g", "x").with_columns(
-                pl.col("x").cum_sum().over("g"),
-                pl.col("x").cum_max(reverse=True).over("g").alias("m"),
-                pl.col("x").shift(1).over("g").alias("p"),
-                pl.int_range(pl.len(), dtype=pl.Int64).over("g").alias("i"),
-            ),
-            id="scans-straight-after-their-sort",
         ),
     ],
 )
@@ -126,6 +95,15 @@ def test_guard_rejects_other_list_building(plan: pl.LazyFrame) -> None:
             id="elementwise-udf",
         ),
         pytest.param(_LF.with_columns(pl.col("x").rank()), id="rank"),
+        # Windows are native streaming nodes since polars 2.0.
+        pytest.param(_LF.with_columns(pl.col("x").cum_sum().over("g")), id="over"),
+        pytest.param(
+            _LF.with_columns(pl.int_range(pl.len()).over("g")), id="int_range-over"
+        ),
+        pytest.param(
+            _LF.sort("x", "g").with_columns(pl.col("x").cum_sum().over("g")),
+            id="over-after-a-sort-on-other-keys",
+        ),
     ],
 )
 def test_guard_accepts_native_nodes(plan: pl.LazyFrame) -> None:
@@ -248,9 +226,8 @@ def test_plan_stays_streaming(name: str) -> None:
     assert offenders == [], (
         f"{name} falls back to the in-memory engine at:\n  "
         + "\n  ".join(offenders)
-        + "\nWrite the scan through metrics/_grouped_scan.py, or rewrite the "
-        "step natively, or add it to KNOWN_FALLBACKS with the reason it "
-        "cannot be."
+        + "\nRewrite the step natively, or add it to KNOWN_FALLBACKS with the "
+        "reason it cannot be."
     )
 
 

@@ -289,10 +289,11 @@ class PipelineGraph:
             # their wire form over the graph's one slot table, so two
             # expression parameters are the same iff they bind the same input.
             table = self._slot_table()
+            same = {node_id: node_id for node_id in self._nodes}
             ops_lists = [
                 [
                     json.dumps(op, sort_keys=True)
-                    for op in node.pipeline._to_spec_dict(table.index)["ops"]
+                    for op in node.pipeline._to_spec_dict(table.index, same)["ops"]
                 ]
                 for node in nodes
             ]
@@ -321,6 +322,7 @@ class PipelineGraph:
         """
         groups: dict[str, list[GraphNode]] = {}
         table = self._slot_table()
+        same = {node_id: node_id for node_id in self._nodes}
 
         for node in self._nodes.values():
             # Only consider root nodes (those with column bindings)
@@ -332,7 +334,7 @@ class PipelineGraph:
             # would bucket two *different* sources together and fuse a shared
             # prefix node with the wrong source. String equality cannot collide.
             col_key = table.index(node.column)
-            source = node.pipeline._to_spec_dict(table.index)["source"]
+            source = node.pipeline._to_spec_dict(table.index, same)["source"]
             source_key = json.dumps(source, sort_keys=True)
             group_key = f"{col_key}:{source_key}"
 
@@ -522,9 +524,23 @@ class PipelineGraph:
 
         check_graph(self._to_json())
 
+    def _wire_ids(self) -> dict[str, str]:
+        """Each node's id on the wire, keyed by its build-time id.
+
+        Node ids are generated per build (``uuid4``), so the wire names each
+        node by its position instead (ops that read a node included, through
+        ``Plan.to_spec``): the same pipeline built twice then serializes to the
+        same JSON, which is what lets polars' CSE merge the two plugin calls
+        (it compares their kwargs) and the compiled-graph cache reuse one
+        entry.
+        """
+        return {node_id: f"n{i}" for i, node_id in enumerate(self._nodes)}
+
     def _to_dict(self) -> dict[str, Any]:
         if self._output is None and self._multi_output is None:
             raise ValueError("No output set")
+
+        wire = self._wire_ids()
 
         # Build nodes dict
         table = self._slot_table()
@@ -532,9 +548,9 @@ class PipelineGraph:
         for node_id, node in self._nodes.items():
             # Get the pipeline's JSON representation without sink
             # We'll add sink info to the output specification
-            node_spec = node.pipeline._to_spec_dict(table.index)
-            node_spec["upstream"] = node.upstream
-            nodes_dict[node_id] = node_spec
+            node_spec = node.pipeline._to_spec_dict(table.index, wire)
+            node_spec["upstream"] = [wire[u] for u in node.upstream]
+            nodes_dict[wire[node_id]] = node_spec
 
         # Build unified outputs dict (always use "outputs" format)
         outputs_spec: dict[str, Any] = {}
@@ -542,12 +558,12 @@ class PipelineGraph:
         if self._multi_output is not None:
             # Multi-output mode
             for alias, (node_id, fmt, params) in self._multi_output.outputs.items():
-                outputs_spec[alias] = self._output_spec(node_id, fmt, params)
+                outputs_spec[alias] = self._output_spec(wire[node_id], fmt, params)
         else:
             # Single output mode - use "_output" as the key
             assert self._output is not None
             outputs_spec["_output"] = self._output_spec(
-                self._output.node_id, self._output.format, self._output.params
+                wire[self._output.node_id], self._output.format, self._output.params
             )
 
         graph_spec = {
@@ -557,7 +573,7 @@ class PipelineGraph:
             "nodes": nodes_dict,
             "outputs": outputs_spec,
             "column_bindings": {
-                node_id: table.index(node.column)
+                wire[node_id]: table.index(node.column)
                 for node_id, node in self._nodes.items()
                 if node.column is not None
             },

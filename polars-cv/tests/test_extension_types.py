@@ -204,8 +204,9 @@ def test_a_foreign_claim_on_our_name_is_refused(monkeypatch) -> None:
 
 def test_parquet_round_trip_keeps_the_tag(tmp_path) -> None:
     """A tagged column written to Parquet reads back tagged in a polars-cv
-    process, and as its plain storage (with polars' warning) in one that never
-    imported polars-cv — the documented degradation, not data loss."""
+    process, and in one that never imported polars-cv as polars' generic
+    extension of the same name (polars 2.0's default, without a warning) — the
+    storage one ``.ext.storage()`` away, no data lost."""
     path = tmp_path / "points.parquet"
     _point_column(ext.PointType()).write_parquet(path)
 
@@ -216,11 +217,14 @@ def test_parquet_round_trip_keeps_the_tag(tmp_path) -> None:
         f"""
         import warnings
         import polars as pl
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            s = pl.read_parquet(r"{path}")["p"]
-        assert s.dtype == pl.Struct({{"x": pl.Float64, "y": pl.Float64}}), s.dtype
-        assert s.to_list() == [{{"x": 1.0, "y": 2.0}}, {{"x": 3.0, "y": 4.0}}]
+        warnings.simplefilter("error")
+        s = pl.read_parquet(r"{path}")["p"]
+        storage = pl.Struct({{"x": pl.Float64, "y": pl.Float64}})
+        assert s.dtype == pl.Extension("polars_cv.point", storage), s.dtype
+        assert s.ext.storage().to_list() == [
+            {{"x": 1.0, "y": 2.0}},
+            {{"x": 3.0, "y": 4.0}},
+        ]
         print("OK")
         """
     )

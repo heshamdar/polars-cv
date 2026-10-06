@@ -2,7 +2,7 @@
 name = "polars-cv"
 version = "0.33.0"
 edition = "2021"
-# Bumped by the polars 0.54 upgrade: polars-ooc needs cold_path/atomic_try_update,
+# Set by the polars 0.54 upgrade (still sufficient for 0.55): polars-ooc needs cold_path/atomic_try_update,
 # stabilized in Rust 1.96. cargo errors clearly on older toolchains instead of E0658.
 rust-version = "1.96"
 description = "A Polars plugin for vision/array operations powered by view-buffer"
@@ -33,10 +33,10 @@ serde_path_to_error = "0.1"
 # A binary row's aligned copy writes its words as bytes (`graph::decode`).
 bytemuck = "1.14"
 
-# Polars plugin essentials - use pyo3 0.28 which is compatible with pyo3-polars 0.27
+# Polars plugin essentials - use pyo3 0.29 which is compatible with pyo3-polars 0.28
 # Note: dtype-i8/dtype-u8/dtype-i16/dtype-u16 required for Int8/UInt8/Int16/UInt16 Series
 # See: https://github.com/pola-rs/polars/issues/24171
-polars = { version = "0.54", default-features = false, features = [
+polars = { version = "0.55", default-features = false, features = [
     "dtype-array",
     "dtype-struct",
     # Arrow extension types (`DataType::Extension`, `Series::into_extension`):
@@ -73,15 +73,15 @@ polars = { version = "0.54", default-features = false, features = [
     "gcp",
     "azure",
 ] }
-polars-arrow = { version = "0.54" }
-polars-buffer = { version = "0.54" }
+polars-arrow = { version = "0.55" }
+polars-buffer = { version = "0.55" }
 # `PlRefPath` / `CloudScheme` — the path types `build_object_store` and
 # `CloudOptions::from_untyped_config` take. Declared directly rather than reached
 # through `polars::polars_utils`, which is `#[doc(hidden)]`; the lockfile pins
 # both to the same version regardless.
-polars-utils = { version = "0.54" }
-pyo3 = { version = "0.28" }
-pyo3-polars = { version = "0.27", features = ["derive", "lazy"] }
+polars-utils = { version = "0.55" }
+pyo3 = { version = "0.29" }
+pyo3-polars = { version = "0.28", features = ["derive", "lazy"] }
 
 # Image encoding support
 image = "0.25"
@@ -107,7 +107,7 @@ thiserror = "1.0"
 # the ambient ADC is a federated `external_account_authorized_user` credential
 # object_store cannot parse. 0.13 guards the read behind
 # `service_account_credentials.is_none() && self.credentials.is_none()`. Also
-# dedupes with polars 0.54, which already pulls object_store 0.13.
+# dedupes with polars 0.55, which already pulls object_store 0.13.
 object_store = { version = "0.13", features = ["aws", "gcp", "azure"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 url = { version = "2" }
@@ -132,4 +132,4 @@ pyo3-extension = ["pyo3/extension-module", "pyo3/abi3-py311"]
 
 [dev-dependencies]
 # For testing
-polars = { version = "0.54", features = ["dtype-array", "dtype-struct", "lazy", "object", "strings", "dtype-datetime"] }
+polars = { version = "0.55", features = ["dtype-array", "dtype-struct", "lazy", "object", "strings", "dtype-datetime"] }

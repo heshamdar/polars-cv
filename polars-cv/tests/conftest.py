@@ -25,12 +25,13 @@ sys.path.insert(0, str(python_src))
 import polars_cv  # noqa: E402, F401
 
 # Streaming is the project's default execution engine (see
-# docs/user-guide/concepts/streaming.md): the plugin only runs multi-threaded
-# when the streaming engine slices input into morsels, and the two engines chunk
-# a plugin's inputs differently, so bugs at chunk boundaries hide under whichever
-# engine a bare `.collect()` happens to pick. Default every bare `.collect()` in
-# the suite to streaming so it is the path exercised by default, and run a second
-# CI lane under `in-memory` for the dual-path guarantee.
+# docs/user-guide/concepts/streaming.md), and polars' too for lazy queries since
+# 2.0: the plugin only runs multi-threaded when the streaming engine slices input
+# into morsels, and the two engines chunk a plugin's inputs differently, so bugs
+# at chunk boundaries hide under whichever engine a bare `.collect()` happens to
+# pick. The suite pins every bare `.collect()` to streaming explicitly (not
+# relying on polars' default), and a second CI lane runs it under `in-memory`
+# for the dual-path guarantee.
 #
 # `setdefault` lets a lane that exports POLARS_ENGINE_AFFINITY explicitly win
 # (the in-memory lane sets it before pytest starts), and `set_engine_affinity`
@@ -38,8 +39,7 @@ import polars_cv  # noqa: E402, F401
 # this ran. Tests that pass `engine=` explicitly (the streaming-vs-eager
 # equivalence checks) are unaffected — the variable only changes the *default*.
 _ENGINE_AFFINITY = os.environ.setdefault("POLARS_ENGINE_AFFINITY", "streaming")
-if hasattr(pl.Config, "set_engine_affinity"):  # absent on the oldest supported polars
-    pl.Config.set_engine_affinity(_ENGINE_AFFINITY)  # type: ignore[arg-type]
+pl.Config.set_engine_affinity(_ENGINE_AFFINITY)  # type: ignore[arg-type]
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -75,13 +75,11 @@ def in_memory_engine() -> Iterator[None]:
     equivalence tests.
     """
     previous = os.environ.get("POLARS_ENGINE_AFFINITY")
-    if hasattr(pl.Config, "set_engine_affinity"):
-        pl.Config.set_engine_affinity("in-memory")
+    pl.Config.set_engine_affinity("in-memory")
     try:
         yield
     finally:
-        if hasattr(pl.Config, "set_engine_affinity"):
-            pl.Config.set_engine_affinity(previous)  # type: ignore[arg-type]  # None clears it
+        pl.Config.set_engine_affinity(previous)  # type: ignore[arg-type]  # None clears it
 
 
 def make_test_png(

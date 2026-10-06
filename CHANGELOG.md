@@ -7,6 +7,67 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+Polars 2.0 support. The plugin is built against the polars 0.55 Rust crates
+(pyo3-polars 0.28, pyo3 0.29) and requires `polars>=2.0.0,<3.0`. Equal
+pipelines in one query now run once (Polars' plugin CSE), and polars-cv's
+outputs and memory take part in Polars' new out-of-core spilling.
+
+### Changed
+
+- **Requires polars 2.0** (`polars>=2.0.0,<3.0`; was `>=1.44.2,<2.0`). Every
+  plugin call passes `register_plugin_function(is_deterministic=True)`, which
+  polars 1.x does not accept.
+- **Seeded bootstrap intervals differ from 1.x for the same seed.** The draw is
+  `hash(slot) % n`, and polars 2.0 changed `Expr.hash`'s values (polars
+  guarantees hash stability only within a version). Intervals stay
+  reproducible for a given seed and polars version; the method is unchanged.
+- **A Parquet file with a tagged column, read without importing polars-cv**,
+  now loads as polars' generic `pl.Extension("polars_cv.point", ...)` rather
+  than its plain struct (polars 2.0's default for unknown extension types). No
+  data is lost: `.ext.storage()` gives the struct, or set
+  `POLARS_UNKNOWN_EXTENSION_TYPE_BEHAVIOR=load_as_storage`.
+- **Metrics windows stream natively.** Polars 2.0 runs `.over()` windows in
+  the streaming engine, so `grouped_scan` (every per-group scan in the
+  metrics) no longer falls back to the in-memory engine; its allowance in the
+  streaming guard is removed, and `test_grouped_scan_stays_streaming` holds it
+  to no fallback at all.
+
+### Added
+
+- **Plugin CSE.** Two equal pipeline expressions in one query (the same
+  pipeline and sink, built separately) run as one plugin call. Graph node ids
+  were random per build and went into the plugin's kwargs, which polars
+  compares, so no two builds were ever equal; the wire now names nodes by
+  position, including the nodes an op reads (`Plan.to_spec` renames every
+  `NodeRef` and refuses one the graph does not name). The same change lets the
+  compiled-graph cache reuse an entry across rebuilt expressions.
+
+### Fixed
+
+- **`froc_curve_lazy(thresholds=[1, ...])` raised** under polars 2.0, whose
+  `is_in` refuses to compare Float64 data with an Int64 list. Thresholds are
+  now passed as Float64.
+- **Debug builds undercounted their memory to polars.** The SIMD dispatcher's
+  debug parity check made a buffer on a helper thread and freed it on the
+  caller's; polars' allocation count (which its out-of-core engine spills by)
+  saw the free but not the allocation, so each check pushed the count down,
+  to zero after a few calls. The check now frees aside as well. Release wheels
+  were not affected. `test_polars_counts_the_plugins_memory` holds the count
+  to the truth.
+
+### Removed
+
+- `POLARS_OOC_SPILL_POLICY` from the out-of-core tests: polars 0.55 no longer
+  reads it, so the tests that set it exercised nothing. The canary pinning the
+  0.54 stub spill backend (no spill files) is replaced by a test that forces a
+  real spill (1 MB budget), reads the spill count from
+  `POLARS_OOC_LOG_METRICS`, and checks every sink against the in-memory
+  engine.
+- `read_ipc(memory_map=False)` in the benchmark harness (removed in polars 2.0;
+  `read_ipc` no longer maps).
+- The `RUSTSEC-2026-0176`/`-0177` (pyo3 < 0.29) advisory ignores: fixed by the
+  pyo3 0.29 bump.
+
 ## [0.33.0] — 2026-10-06
 
 Weighted bootstrap intervals are corrected: 0.32 fixed each weight cell's

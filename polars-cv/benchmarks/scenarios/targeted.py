@@ -104,7 +104,7 @@ def _stored(build: Callable[..., pl.DataFrame]) -> Callable[..., pl.DataFrame]:
             tmp = path.with_suffix(f".{os.getpid()}.tmp")
             build(*args).write_ipc(tmp)
             tmp.replace(path)
-        return pl.read_ipc(path, memory_map=False)
+        return pl.read_ipc(path)
 
     return load
 

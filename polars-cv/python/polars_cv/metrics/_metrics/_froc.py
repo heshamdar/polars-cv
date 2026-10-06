@@ -227,8 +227,9 @@ def _froc_curve_grouped(
         *keys, "threshold", descending=[False] * len(keys) + [True]
     )
     if thresholds is not None:
-        threshold_set = set(thresholds)
-        curve = curve.filter(pl.col("threshold").is_in(threshold_set))
+        # Float64 like the column: polars >= 2.0 refuses an Int64 needle list.
+        wanted = pl.Series(list(set(thresholds)), dtype=pl.Float64)
+        curve = curve.filter(pl.col("threshold").is_in(wanted.implode()))
     return curve
 
 
