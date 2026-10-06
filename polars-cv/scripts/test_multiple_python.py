@@ -8,7 +8,7 @@ isolated environments dynamically.
 Usage:
     python scripts/test_multiple_python.py                    # Use current Python environment
     python scripts/test_multiple_python.py --all              # Test all versions
-    python scripts/test_multiple_python.py --versions 3.10 3.13  # Test specific versions
+    python scripts/test_multiple_python.py --versions 3.11 3.13  # Test specific versions
     python scripts/test_multiple_python.py --fast             # Test only min and max versions
 """
 
@@ -20,8 +20,7 @@ from typing import List, Optional, Tuple
 
 # Python versions to test against
 DEFAULT_VERSIONS = [
-    "3.10",  # Minimum supported version
-    "3.11",
+    "3.11",  # Minimum supported version
     "3.12",
     "3.13",  # Latest version
 ]
@@ -70,7 +69,7 @@ def _test_python_version(version: str, project_root: Path) -> Tuple[bool, str, s
             "--release",
             "--no-default-features",
             "--features",
-            "pyo3/extension-module,pyo3/abi3-py310",
+            "pyo3/extension-module,pyo3/abi3-py311",
         ]
         exit_code, stdout, stderr = run_command(build_cmd, cwd=project_root)
         if exit_code != 0:
@@ -138,7 +137,7 @@ def _test_python_version(version: str, project_root: Path) -> Tuple[bool, str, s
             "--release",
             "--no-default-features",
             "--features",
-            "pyo3/extension-module,pyo3/abi3-py310",
+            "pyo3/extension-module,pyo3/abi3-py311",
         ]
         exit_code, stdout, stderr = run_command(build_cmd, cwd=project_root)
         if exit_code != 0:
@@ -197,17 +196,17 @@ def main():
     parser.add_argument(
         "--versions",
         nargs="+",
-        help="Specific Python versions to test (e.g., --versions 3.10 3.13)",
+        help="Specific Python versions to test (e.g., --versions 3.11 3.13)",
     )
     parser.add_argument(
         "--fast",
         action="store_true",
-        help="Test only minimum and maximum versions (3.10 and 3.13)",
+        help="Test only minimum and maximum versions (3.11 and 3.13)",
     )
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Test all default Python versions (3.10, 3.11, 3.12, 3.13)",
+        help="Test all default Python versions (3.11, 3.12, 3.13)",
     )
     parser.add_argument(
         "--skip-versions",

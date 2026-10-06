@@ -59,10 +59,7 @@ if [[ "${1:-}" == "--check" ]]; then
     # environment, i.e. this script's derivation has drifted from maturin's.
     cd "$_pyo3_env_root" || exit 1
     features="$("$_pyo3_env_python" -c '
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10
-    import tomli as tomllib
+import tomllib
 with open("polars-cv/pyproject.toml", "rb") as f:
     print(",".join(tomllib.load(f)["tool"]["maturin"].get("features", [])))
 ')" || exit 1

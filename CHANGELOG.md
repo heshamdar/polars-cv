@@ -14,8 +14,16 @@ positive count in every replicate, which made intervals for sample-estimated
 weights too narrow. The new `weight_scheme=` says what the weights are
 (`"reestimate"`, the default; `"stratified"`, 0.32's draw; `"fixed"`, for known
 or continuous weights). Unweighted intervals and every point estimate are
-unchanged. Upgrading from 0.32: see the
+unchanged. Requires Python >= 3.11. Upgrading from 0.32: see the
 [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.33/).
+
+### Changed
+
+- **Python 3.11 or newer is required** (`requires-python = ">=3.11"`; was
+  3.10). Python 3.10 has reached end of life. Wheels are tagged `cp311-abi3`,
+  and the CI matrix, the dependency-floors job and ty/ruff's target versions
+  move with it; a structural test now holds all of them to `requires-python`.
+  The `tomli` and `typing_extensions` fallbacks for older Pythons are gone.
 
 ### Added
 

@@ -308,7 +308,7 @@ def numpy_from_struct(
 
     # The row's bytes as a uint8 array: it owns (references) `data` and
     # names its address, and `_view` reads the row through it, checked.
-    backing = np.frombuffer(_as_buffer(data), dtype=np.uint8)  # ty: ignore[no-matching-overload]
+    backing = np.frombuffer(_as_buffer(data), dtype=np.uint8)
     return _view(
         backing,
         backing.__array_interface__["data"][0],
@@ -481,7 +481,7 @@ def numpy_from_column(
     return arrays
 
 
-def _as_buffer(data: object) -> object:
+def _as_buffer(data: object) -> bytes | bytearray | memoryview:
     """Get a buffer-protocol object from data, avoiding unnecessary copies.
 
     Tries to use memoryview for zero-copy access. Falls back to bytes()

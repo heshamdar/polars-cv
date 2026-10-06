@@ -7,13 +7,7 @@ This module contains the core type definitions used throughout the package.
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Union
-
-try:
-    from typing import TypeAlias
-except ImportError:
-    # Python < 3.10 compatibility
-    from typing_extensions import TypeAlias
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, TypeAlias, Union
 
 import polars as pl
 

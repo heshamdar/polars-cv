@@ -44,7 +44,7 @@ maturin build --release
 
 ### Build for Specific Python Version
 
-The container includes Debian bookworm's Python 3.11; polars-cv needs 3.10+. To use a specific Python version:
+The container includes Debian bookworm's Python 3.11; polars-cv needs 3.11+. To use a specific Python version:
 
 ```bash
 # Inside the container

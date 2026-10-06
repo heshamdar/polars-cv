@@ -9,19 +9,19 @@ To test against multiple Python versions locally using `uv`:
 # Use current Python environment (default - no arguments needed)
 python scripts/test_multiple_python.py
 
-# Test all supported Python versions (3.10, 3.11, 3.12, 3.13)
+# Test all supported Python versions (3.11, 3.12, 3.13)
 python scripts/test_multiple_python.py --all
 
 # Test only minimum and maximum versions (faster)
 python scripts/test_multiple_python.py --fast
 
 # Test specific versions
-python scripts/test_multiple_python.py --versions 3.10 3.13
+python scripts/test_multiple_python.py --versions 3.11 3.13
 ```
 
 **Prerequisites:**
 - Install `uv`: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- For multi-version testing, install Python versions: `uv python install 3.10 3.11 3.12 3.13`
+- For multi-version testing, install Python versions: `uv python install 3.11 3.12 3.13`
 
 The test script will:
 1. Use current environment if no versions specified (default behavior)
@@ -54,7 +54,7 @@ This project uses GitHub Actions for continuous integration and publishing to Py
 
 - **CI** (`ci.yml`): Runs on push/PR to main
   - Linting (ruff, cargo clippy, cargo fmt)
-  - Tests across Python 3.10-3.13 on Linux (and macOS on pushes to main)
+  - Tests across Python 3.11-3.13 on Linux (and macOS on pushes to main)
   - Build verification
 
 - **Publish** (`publish.yml`): Runs on release creation

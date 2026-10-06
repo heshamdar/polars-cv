@@ -12,16 +12,12 @@ import re
 import subprocess
 import sys
 import textwrap
+import tomllib
 from pathlib import Path
 
 import pytest
 
 from .conftest import plugin_required
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # Python 3.10: `tomllib` is 3.11+ stdlib; `tomli` is its exact predecessor.
-    import tomli as tomllib
 
 pytestmark = pytest.mark.structural
 
@@ -90,6 +86,59 @@ def test_the_abi3_floor_matches_requires_python() -> None:
         f"Cargo.toml builds abi3-py3{abi3} wheels but requires-python is "
         f"{_PYPROJECT['project']['requires-python']!r}"
     )
+
+
+def _ci_jobs() -> dict[str, str]:
+    """``ci.yml``'s jobs, each key mapped to its block's text."""
+    ci = (_PKG.parent / ".github" / "workflows" / "ci.yml").read_text()
+    body = ci[ci.index("\njobs:\n") :]
+    return dict(
+        re.findall(
+            r"^  ([a-z][a-z-]*):\n(.*?)(?=^  [a-z][a-z-]*:\n|\Z)", body, re.M | re.S
+        )
+    )
+
+
+def test_every_python_floor_matches_requires_python() -> None:
+    """The tooling that restates the minimum Python agrees with ``requires-python``.
+
+    The test matrix's lowest version, the dependency-floors job, ty's and
+    ruff's target versions and the multi-Python script each name the floor.
+    One left behind tests, type-checks or lints a version the package does
+    not support, or never tests the one it does. Read by text, so a renamed
+    job or key fails the lookup rather than matching nothing.
+    """
+    requires = re.fullmatch(r">=3\.(\d+)", _PYPROJECT["project"]["requires-python"])
+    assert requires, "requires-python is not a plain >=3.N floor"
+    jobs = _ci_jobs()
+    matrix = re.search(r"python-version: \[([^\]]*)\]", jobs["test"])
+    floors_job = re.findall(r'python-version: "3\.(\d+)"', jobs["dependency-floors"])
+    assert matrix and len(floors_job) == 1, "ci.yml's Python versions not found"
+    multi = (_PKG / "scripts" / "test_multiple_python.py").read_text()
+    script_versions = re.search(r"DEFAULT_VERSIONS = \[(.*?)\]", multi, re.S)
+    assert script_versions, "test_multiple_python.py's DEFAULT_VERSIONS not found"
+    tool = _PYPROJECT["tool"]
+    found = {
+        "ci.yml test matrix (lowest)": min(
+            re.findall(r'"3\.(\d+)"', matrix[1]), key=int
+        ),
+        "ci.yml dependency-floors job": floors_job[0],
+        "[tool.ty.environment] python-version": re.fullmatch(
+            r"3\.(\d+)", tool["ty"]["environment"]["python-version"]
+        )[1],  # type: ignore[index]
+        "[tool.ruff] target-version": re.fullmatch(
+            r"py3(\d+)", tool["ruff"]["target-version"]
+        )[1],  # type: ignore[index]
+        "test_multiple_python.py DEFAULT_VERSIONS (lowest)": min(
+            re.findall(r'"3\.(\d+)"', script_versions[1]), key=int
+        ),
+        **{
+            f"test_multiple_python.py abi3-py3{v}": v
+            for v in re.findall(r"abi3-py3(\d+)", multi)
+        },
+    }
+    wrong = {where: f"3.{v}" for where, v in found.items() if v != requires[1]}
+    assert not wrong, f"requires-python is >=3.{requires[1]}, but {wrong}"
 
 
 @plugin_required
