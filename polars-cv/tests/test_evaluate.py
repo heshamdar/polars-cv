@@ -137,6 +137,22 @@ class TestEvaluateDetections:
         with pytest.raises(ValueError, match="unknown metric"):
             r.ci("nope")
 
+    def test_intervals_take_the_weight_scheme(self) -> None:
+        r = self.report()
+        with pytest.raises(ValueError, match="weight_scheme.*'design'"):
+            r.ci("map", n_bootstrap=5, weight_scheme="design")  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="weight_rtol"):
+            r.ci("map", n_bootstrap=5, weight_scheme="fixed", weight_rtol=0.0)
+        fixed = r.ci("map", n_bootstrap=20, seed=3, weight_scheme="fixed")
+        direct = M.bootstrap_ci(
+            r.table,
+            r.metrics["map"].statistic,
+            n_bootstrap=20,
+            seed=3,
+            weight_scheme="fixed",
+        ).collect()
+        assert fixed["ci_lower"].item() == direct["ci_lower"].item()
+
     def test_matches_are_the_prediction_rows(self) -> None:
         r = self.report()
         at50 = r.matches(0.5).sort("score", descending=True)

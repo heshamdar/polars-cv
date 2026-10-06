@@ -7,6 +7,50 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+
+- **`weight_scheme=` on every bootstrap interval** (`bootstrap_ci`,
+  `froc_auc_ci_lazy`, `lroc_auc_ci_lazy`, `average_precision_ci_lazy`,
+  `Report.ci`), saying what the weights are and so how the resample treats
+  them. `Report.ci` also takes `weight_rtol=`.
+  - `"reestimate"` (default): weights estimated from the sample (`p / q̂` over
+    target distributions, conditional ones included). Each `(group, weight
+    cell)` is redrawn to its own size, so the weights given are the
+    per-replicate re-estimates.
+  - `"stratified"`: 0.32's draw, which also fixes each cell's `gt_label`
+    counts. Use it when those counts were fixed by the study design.
+  - `"fixed"`: known weights (design weights, a continuous weight), carried
+    unchanged on a `gt_label`-stratified draw with no weight cells. A
+    continuous weight now gets an interval instead of null bounds; 0.32 had no
+    way out of weight cells short of `weight_rtol=1e300`. `"fixed"` raises if
+    given `strata` or `weight_rtol`, which describe cells it does not form.
+  - An unknown scheme raises.
+
+### Fixed
+
+- **Weighted bootstrap intervals were too narrow.** 0.32 stratified the
+  image-level draw on `gt_label` crossed with the weight cells, so every
+  replicate kept each cell's positive count. When the weights were estimated
+  over all images that count is random, and the weighted statistics depend on
+  it: the positives' mix across cells follows each cell's observed prevalence.
+  In simulation (and in a downstream report) the bootstrap SE came out 7-17%
+  below the estimate's actual spread, and 95% intervals covered 0.88-0.93.
+  `"reestimate"` (the default) no longer crosses the label with the cells,
+  which brings the SE within a few percent; targets conditioned on `gt_label`
+  already give each label its own cells. A group with a single cell (unit
+  weights) keeps the `gt_label` stratum, so unweighted intervals are
+  bit-identical.
+- **A replicate that drew no positive image scored a value.** A draw that does
+  not fix the `gt_label` counts (`sample_col`, and now `"reestimate"`) can draw
+  no positive (or, for Mann-Whitney, no negative) image in a small group. Its
+  statistic still has a value (`NaN` for AP, `0.5` or `0.0` for the AUCs) that
+  describes no resample; it was scored, pulling the bounds. Such a replicate
+  now nulls its group's bounds, like an undefined one.
+- **A weight-0 image no longer nulls its group's bounds.** An image outside the
+  target forms a singleton weight cell, and the singleton rule nulled the whole
+  group although the image contributes nothing to any statistic. Cells whose
+  weights are all zero are exempt.
+
 ## [0.32.0] — 2026-10-03
 
 Detection evaluation in one call: `evaluate_detections` (boxes, polygons or

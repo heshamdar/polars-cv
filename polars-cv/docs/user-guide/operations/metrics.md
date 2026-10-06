@@ -468,19 +468,33 @@ degenerate groups alike. Viability needs at least one positive target — and, f
 
 ### Weighted tables
 
-When `image_metadata.weight` is an importance weight estimated from the sample
-itself (`w = p / q̂`, reweighting a vendor or prevalence mix to a target), the
-correct weights differ in every replicate, because each replicate draws a
-different mix. All three intervals (FROC, LROC and AP) handle this without a
-reweighting hook. They stratify the resample on **weight cells**: units whose
-weights agree within `weight_rtol` form a cell, and each `(group, cell)` is
-redrawn to its own size.
+Resampling a weighted table has to respect where the weights came from, so all
+three intervals (FROC, LROC and AP) take a `weight_scheme`:
 
-Every weighted statistic is a ratio that does not change when all weights are
-rescaled. So a weight that depends only on its cell's count (`p / q̂`,
-post-stratification, raking over crossed cells) does not change under this
-draw. The full-sample weights are then exactly the weights re-estimated in each
-replicate, and the point estimate and the bounds come from the same estimator.
+| `weight_scheme` | The weights are | The draw |
+|---|---|---|
+| `"reestimate"` (default) | estimated from the sample: `p / q̂` over target distributions (conditional ones included), post-stratification, raking | each `(group, weight cell)` redrawn to its own size |
+| `"stratified"` | as above, and each cell's positive count was fixed by the study design | each `(group, gt_label, weight cell)` redrawn to its own size |
+| `"fixed"` | known in advance: design weights, a continuous weight | `gt_label`-stratified, weights carried unchanged |
+
+**`"reestimate"`.** When the weights are estimated from the sample itself, the
+correct weights differ in every replicate, because each replicate draws a
+different mix. Units whose weights agree within `weight_rtol` form a **weight
+cell**, and each `(group, cell)` is redrawn to its own size. Every weighted
+statistic is a ratio that does not change when all weights are rescaled, so a
+weight that depends only on its cell's count does not change under this draw:
+the weights given are exactly the weights re-estimated in each replicate. No
+target distributions or reweighting hook are needed.
+
+`gt_label` is **not** crossed with the cells. When the weights were estimated
+over all images, each cell's positive count is random, and the weighted
+statistics depend on it (the positives' mix across cells follows each cell's
+observed prevalence). Fixing it too, as `"stratified"` does, drops that
+variance: in simulation the bootstrap SE came out about 10% low, and 95%
+intervals covered 0.90-0.93. Targets conditioned on `gt_label` give each label
+its own weights, so their cells already carry the label. A group with a single
+cell (unit weights) keeps the `gt_label` stratum, so its draw is the unweighted
+one.
 
 ```python
 # Weights computed by the caller, e.g. per (group, vendor) cell:
@@ -496,11 +510,13 @@ froc_auc_ci_lazy(table, group_by="group_id", strata="vendor", fp_range=(0, 8))
 
 # Coarser weights (e.g. read back from a 3-significant-figure CSV):
 average_precision_ci_lazy(table, group_by="group_id", weight_rtol=1e-3)
+
+# Known design weights, or a continuous weight (e.g. from a propensity model):
+lroc_auc_ci_lazy(table, group_by="group_id", weight_scheme="fixed")
 ```
 
 - **Weights computed per group or globally** are both exact. Draws never cross a
   group, and fixing every `(group, cell)` count also fixes the global count.
-- **Unit weights** form a single cell, so the resample is unchanged.
 - **`weight_rtol`** (default `1e-6`, relative) sets how close two weights must
   be to share a cell. The sorted distinct weights split wherever consecutive
   values differ by more than that, so there is no rounding boundary for
@@ -514,13 +530,21 @@ average_precision_ci_lazy(table, group_by="group_id", weight_rtol=1e-3)
   group's images over its share in the replicate. That is the `p / q̂` weight
   re-estimated on the replicate, recomputed at the coarser level and assigned
   back to the images. For image-level draws the factor is exactly 1.
+  `"stratified"` draws entities the same way: an entity has no single label.
 - **A weight cell holding a single unit nulls its group's bounds.** That cell has
-  no bootstrap variance. A continuous weight (for example from a propensity
-  model) puts every unit in its own cell and would otherwise report a
-  zero-width interval.
-- The rescale treats weights as **estimated from the sample**. Fixed design
-  weights (known in advance, not estimated) under entity-level resampling would
-  lose the variance that comes from the cell mix drifting.
+  no bootstrap variance. A continuous weight puts every unit in its own cell and
+  would otherwise report a zero-width interval: use `"fixed"` for one. A cell
+  whose weights are all zero (images outside the target) is exempt, since it
+  contributes nothing to any statistic.
+- **A replicate that draws no positive image** (or, for Mann-Whitney, no
+  negative one) nulls its group's bounds. Its statistic still has a value, but
+  it describes no resample of the group. Only a draw that does not fix the
+  `gt_label` counts can make one — `"reestimate"` with several cells, or
+  `sample_col` — and only in small groups: each replicate draws none with
+  probability about `(1 − prevalence)^n`. For a very small study whose cell
+  counts were fixed by design, `"stratified"` cannot.
+- **`"fixed"`** forms no cells, so it raises if given `strata` or
+  `weight_rtol`. It does not rescale under `sample_col` either.
 
 ## IoU thresholds: re-matching vs re-thresholding
 
