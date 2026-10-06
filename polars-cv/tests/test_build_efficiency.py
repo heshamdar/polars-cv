@@ -19,18 +19,13 @@ fixture-backed parser in ``test_sanitation`` rather than a second regex.
 
 from __future__ import annotations
 
-import sys
+import tomllib
 from pathlib import Path
 
 import pytest
 
 from tests._discovery import workflow_files
 from tests.test_sanitation import _ci_run_commands
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # Python 3.10: `tomllib` is 3.11+ stdlib; `tomli` is its exact predecessor.
-    import tomli as tomllib
 
 pytestmark = pytest.mark.structural
 

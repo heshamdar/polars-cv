@@ -9,7 +9,7 @@ description = "A Polars plugin for vision/array operations"
 authors = [{ name = "Hesham Dar", email = "heshamdar@gmail.com" }]
 readme = "README.md"
 license = { text = "MIT OR Apache-2.0" }
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 # Each floor is the oldest release the full fast suite passes on, and the
 # `dependency-floors` CI job installs exactly these (read by
 # `scripts/dependency_floors.py`) to keep that true (CR-44). polars < 1.36.1
@@ -27,7 +27,6 @@ dependencies = [
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -60,8 +59,6 @@ dev = [
     "pre-commit>=4.5.1",
     "pytest-cov>=5.0",
     "hypothesis>=6.100",
-    # `tomllib` is 3.11+ stdlib; on 3.10 the test suite reads TOML via `tomli`.
-    "tomli>=2.0; python_version < '3.11'",
     # Ten of the thirteen runnable examples plot their results, and
     # `test_examples_run` executes all thirteen. Without this they would not
     # skip, they would fail: the runner asserts exit 0.
@@ -159,10 +156,10 @@ show_missing = true
 include = ["python/polars_cv"]
 
 [tool.ty.environment]
-python-version = "3.10"
+python-version = "3.11"
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 88
 src = ["python"]
 extend-exclude = ["benchmarks", "examples", "docs"]

@@ -34,11 +34,11 @@ jobs:
             && fromJSON('["ubuntu-latest", "macos-latest"]')
             || fromJSON('["ubuntu-latest"]')
           }}
-        # Full supported range: the package advertises 3.10-3.13 but CI used to
+        # Full supported range: the package advertises 3.11-3.13 but CI used to
         # test only 3.13. abi3 means the matrix is a test-only cost, not extra
         # wheels. The behavioural lane here runs under the default (streaming)
         # engine; the dual-engine and coverage gates live in dedicated jobs below.
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
@@ -176,7 +176,7 @@ jobs:
         id: setup_python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2

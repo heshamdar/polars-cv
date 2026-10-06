@@ -14,13 +14,8 @@ its oldest version, so it is an error rather than something to skip.
 from __future__ import annotations
 
 import re
-import sys
+import tomllib
 from pathlib import Path
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # Python 3.10: `tomllib` is 3.11+ stdlib; `tomli` is its exact predecessor.
-    import tomli as tomllib
 
 PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
 

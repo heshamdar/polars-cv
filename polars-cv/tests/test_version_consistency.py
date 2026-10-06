@@ -13,14 +13,10 @@ Guards against the two ways a reported version can be wrong.
 """
 
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # Python 3.10: `tomllib` is 3.11+ stdlib; `tomli` is its exact predecessor.
-    import tomli as tomllib
 
 import polars_cv
 from tests._discovery import CHECKOUT_MARKERS, requires_checkout

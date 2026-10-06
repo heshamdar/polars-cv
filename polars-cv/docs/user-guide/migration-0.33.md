@@ -6,6 +6,11 @@
 changes. This page lists what to check coming from 0.32; the
 [changelog](../changelog.md) has the full list.
 
+## Requirements
+
+- **Python `>=3.11`** (was `>=3.10`). Python 3.10 has reached end of life;
+  on it, `pip` now resolves polars-cv 0.32.x instead.
+
 ## Results that change
 
 **Weighted intervals are wider, and now the right width.** 0.32 stratified the

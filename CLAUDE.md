@@ -258,7 +258,7 @@ source hash the extension was built from against the working tree's, and
 uv run pytest tests/                            # Full suite; plugin tests self-skip if unbuilt
 uv run pytest tests/test_pipeline_builder.py   # Single test file
 uv run pytest tests/ -k "test_resize"          # Single test by name
-python scripts/test_multiple_python.py --all   # Test across Python 3.10–3.13
+python scripts/test_multiple_python.py --all   # Test across Python 3.11–3.13
 ```
 
 Tests are marked with `network` (needs network access) and `slow` (excluded from

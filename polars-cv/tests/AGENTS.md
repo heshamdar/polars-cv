@@ -33,7 +33,7 @@ uv run pytest tests/ -m "structural and not slow"   # the pre-commit lane; ~5s, 
 uv run pytest tests/ -m "not network and not slow"  # what CI runs on every push
 uv run pytest tests/                                # everything; plugin tests self-skip if unbuilt
 uv run pytest tests/reference/ -v                   # reference tests
-python scripts/test_multiple_python.py --all        # multi-Python (3.10-3.13)
+python scripts/test_multiple_python.py --all        # multi-Python (3.11-3.13)
 ```
 
 The compiled plugin (`.so`/`.pyd`) must exist at `python/polars_cv/_lib.abi3.so`.
