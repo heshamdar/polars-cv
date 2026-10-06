@@ -13,7 +13,7 @@ operators on both sides:
   - plugin *input* arrives via a spill-capable operator's result
     (group_by upstream of `.cv.pipe()`),
 
-and that a query forced to spill (a 1 MB budget) really does spill — read
+and that a query forced to spill (a 32 MB budget) really does spill — read
 from polars' own `POLARS_OOC_LOG_METRICS` report — and still matches the
 in-memory engine. (Up to polars 1.x / polars-ooc 0.54 the spill backend was
 an in-memory stub, which a canary here pinned; it is real now.) That the
@@ -234,14 +234,22 @@ def _run_subprocess_driver(
     """Run `driver_code` in a fresh interpreter with `env_overrides` set
     before startup (the OOC config is a process-wide LazyLock read once)."""
     env = {**os.environ, **env_overrides}
-    result = subprocess.run(
-        [sys.executable, "-c", driver_code],
-        cwd=str(Path(__file__).parent.parent),
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", driver_code],
+            cwd=str(Path(__file__).parent.parent),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(
+            "the driver did not finish in 300 s. Under a spill budget, check "
+            "for polars' `MemoryManager::do_spill` livelock (gdb: `thread apply "
+            "all bt`) before suspecting polars-cv; see "
+            "benchmarks/reports/2026-10-06-polars-2.0-upgrade."
+        )
     assert result.returncode == 0, (
         f"subprocess failed:\nstdout={result.stdout}\nstderr={result.stderr}"
     )
@@ -312,7 +320,12 @@ class TestOutOfCore:
     def test_correct_when_forced_to_spill(self, tmp_path: Path) -> None:
         r = _run_subprocess_driver(
             {
-                "POLARS_OOC_MEMORY_BUDGET_MB": "1",
+                # Low enough that the sort spills (~85 spills here), but
+                # reachable: polars 2.0.0's memory manager can spin forever in
+                # `do_spill` when nothing left can bring usage under the budget
+                # (reproduced with polars alone at 1 MB, about 1 run in 4; see
+                # benchmarks/reports/2026-10-06-polars-2.0-upgrade).
+                "POLARS_OOC_MEMORY_BUDGET_MB": "32",
                 "POLARS_OOC_SPILL_MIN_BYTES": "0",
                 "POLARS_OOC_LOG_METRICS": "1",
                 "POLARS_OOC_SPILL_DIR": str(tmp_path),

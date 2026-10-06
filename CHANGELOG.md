@@ -60,7 +60,8 @@ outputs and memory take part in Polars' new out-of-core spilling.
 - `POLARS_OOC_SPILL_POLICY` from the out-of-core tests: polars 0.55 no longer
   reads it, so the tests that set it exercised nothing. The canary pinning the
   0.54 stub spill backend (no spill files) is replaced by a test that forces a
-  real spill (1 MB budget), reads the spill count from
+  real spill (32 MB budget; lower can hit a polars 2.0.0 livelock in its
+  spill loop, reproduced without polars-cv), reads the spill count from
   `POLARS_OOC_LOG_METRICS`, and checks every sink against the in-memory
   engine.
 - `read_ipc(memory_map=False)` in the benchmark harness (removed in polars 2.0;
