@@ -26,6 +26,9 @@ outputs and memory take part in Polars' new out-of-core spilling.
   than its plain struct (polars 2.0's default for unknown extension types). No
   data is lost: `.ext.storage()` gives the struct, or set
   `POLARS_UNKNOWN_EXTENSION_TYPE_BEHAVIOR=load_as_storage`.
+- **Performance:** no regression across the 83-case regression suite
+  (median +0.7%); `.point` accessors are 12–43% faster with ~25–30% less
+  peak memory under polars 2.0 (see the upgrade report).
 - **Metrics windows stream natively.** Polars 2.0 runs `.over()` windows in
   the streaming engine, so `grouped_scan` (every per-group scan in the
   metrics) no longer falls back to the in-memory engine; its allowance in the
