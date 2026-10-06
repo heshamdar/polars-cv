@@ -72,9 +72,18 @@ budget, `sort`, `group_by`, joins and windows write Arrow IPC to
 
 - **All polars-cv outputs survive a real spill byte-identically:** Binary,
   the numpy Struct, the `polars_cv.ndarray` extension type (tag kept), nested
-  List and fixed Array. Checked with a 1 MB budget against the in-memory
-  engine; `POLARS_OOC_LOG_METRICS` reported 84 spills across sort/partition/sink
-  contexts.
+  List and fixed Array. Checked against the in-memory engine under 1 MB and
+  32 MB budgets; `POLARS_OOC_LOG_METRICS` reported ~85 spills across
+  sort/partition/sink contexts.
+- **Upstream livelock (polars 2.0.0).** With a budget the query cannot get
+  under, a streaming `sort` can spin forever in
+  `polars_ooc::MemoryManager::do_spill`: `while should_spill()` keeps finding
+  the same pinned spillables and never yields to the spill tasks it spawned.
+  Reproduced with polars alone, polars-cv not imported:
+  `ooc_livelock_repro.py` here hangs in roughly 1 run in 4–6 at
+  `POLARS_OOC_MEMORY_BUDGET_MB=1` (gdb: one executor thread in `do_spill`,
+  every other thread parked). The forced-spill test uses 32 MB, which still
+  spills and did not hang in 30 runs. Worth reporting upstream.
 - **`POLARS_OOC_SPILL_POLICY` no longer exists.** The repo's OOC tests set it,
   so they had been exercising nothing. They are rewritten to force a spill by
   budget and to *prove* it happened from the metrics report; the old canary
@@ -123,8 +132,12 @@ in-memory CI lane), so nothing broke. Related wins:
 | Removed deprecated APIs (`melt`, `with_row_count`, `profile`, ...) | None used (grep of package, tests, benchmarks, docs) | None |
 | `cut`/`qcut` deprecated | Not used | None |
 
-Test-suite result before fixes: 13 of 5,462 fast tests failed (all accounted for
-above); after: see `scripts/verify.sh` in the commit message.
+Test-suite result before fixes: 13 of 5,462 fast tests failed (all accounted
+for above). One slow-lane failure is not from this upgrade:
+`test_chain_matches_composed_references_deep` finds `resize_to_height(1)` then
+`cast("u8")` where the resize lands one ulp below 0.5 (`0x1.fffffffffffffp-2`)
+and the engine and the oracle round differently. The same example fails
+identically on the pre-upgrade commit with polars 1.44.2.
 
 ## Bootstrap re-pin
 
@@ -136,6 +149,11 @@ the current values. `test_a_replicate_without_positives_nulls_its_groups_bounds`
 moved to seed 40, where g1's replicate 43 draws no positive.
 
 ## Follow-ups (not done here)
+
+0. **Report the `do_spill` livelock upstream** with `ooc_livelock_repro.py`.
+   Until it is fixed, a very low `POLARS_OOC_MEMORY_BUDGET_MB` can hang a
+   query; a realistic budget (a share of RAM, the default) is far from this
+   regime.
 
 1. **Bootstrap reproducibility across polars versions.** The draw depends on
    `Expr.hash`, which polars does not keep stable across versions. A fixed

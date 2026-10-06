@@ -56,7 +56,7 @@ unsafe impl std::alloc::GlobalAlloc for PluginAllocator {
 /// cannot be imported (`PolarsAllocator` then falls back to the system one,
 /// silently). `tests/test_allocator.py` makes either a failure.
 ///
-/// The capsule half repeats `PolarsAllocator`'s own lookup (pyo3-polars 0.27):
+/// The capsule half repeats `PolarsAllocator`'s own lookup (pyo3-polars 0.28):
 /// the capsule by its name, with Python running -- which it is while this
 /// module loads, after the plugin's first allocations.
 pub(crate) fn allocator_name() -> &'static str {
