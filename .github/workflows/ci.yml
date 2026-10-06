@@ -94,9 +94,10 @@ jobs:
           cargo check -p view-buffer
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
+          version-file: .tool-versions
 
       - name: Determine package directory
         id: package_dir
@@ -185,9 +186,10 @@ jobs:
           key: floors-py-${{ steps.setup_python.outputs.python-version }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
+          version-file: .tool-versions
 
       - name: Install dependencies at their declared floors
         working-directory: polars-cv
@@ -221,9 +223,10 @@ jobs:
           workspaces: ". -> target"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
+          version-file: .tool-versions
 
       - name: Check formatting and clippy
         run: |
@@ -257,9 +260,10 @@ jobs:
           python-version: "3.13"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
+          version-file: .tool-versions
 
       - name: Build MkDocs site (strict)
         run: |
@@ -287,9 +291,10 @@ jobs:
           python-version: "3.13"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
+          version-file: .tool-versions
 
       - name: ty check
         # `--project polars-cv` is the same invocation scripts/verify.sh and the
@@ -339,9 +344,10 @@ jobs:
           key: py-${{ steps.setup_python.outputs.python-version }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
+          version-file: .tool-versions
 
       - name: Determine package directory
         id: package_dir
@@ -415,9 +421,10 @@ jobs:
           key: py-${{ steps.setup_python.outputs.python-version }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
+          version-file: .tool-versions
 
       - name: Determine package directory
         id: package_dir

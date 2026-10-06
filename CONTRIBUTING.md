@@ -21,6 +21,8 @@ python scripts/test_multiple_python.py --versions 3.11 3.13
 
 **Prerequisites:**
 - Install `uv`: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+  (CI installs the exact uv pinned in the repo-root `.tool-versions`; bump it
+  there, and every workflow's `astral-sh/setup-uv` step follows)
 - For multi-version testing, install Python versions: `uv python install 3.11 3.12 3.13`
 
 The test script will:
