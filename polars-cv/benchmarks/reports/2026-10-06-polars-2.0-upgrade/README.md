@@ -148,6 +148,42 @@ under polars 2.0 reproduces the new values, the lroc g2 upper bound to within
 the current values. `test_a_replicate_without_positives_nulls_its_groups_bounds`
 moved to seed 40, where g1's replicate 43 draws no positive.
 
+## Performance
+
+Both sides built with `maturin develop --profile benchmark` on one 4-core
+container: **base** = `ee982f0` (polars 1.44.2 / crates 0.54.4) in its own
+worktree and venv, **head** = `ab350a1` (polars 2.0.0 / crates 0.55.2). Every
+scenario (`single_ops,pipelines,e2e,targeted,zero_copy,remote`, 83 results,
+defaults: 300 × 256², 1 thread, best of 3), run interleaved base → head →
+base → head (`base1/2.json`, `head1/2.json` here).
+
+The host is noisier than the harness's 7% gate: the same binary against itself
+flagged 19 (base) and 14 (head) of 83 results. So a case counts as changed only
+when **both** base→head pairs move the same way by more than that case's own
+same-binary spread and more than 7%.
+
+- **No regressions.** Median change +0.7%, geometric mean +1.1%. No case is
+  worse in both pairs beyond its noise.
+- **Four consistent improvements:**
+
+| case | Δ throughput (pair 1 / pair 2) | Δ peak memory |
+|------|-------------------------------|---------------|
+| `geom_point_translate` | +39% / +47% | −29% |
+| `geom_point_distance` | +12% / +22% | −25% |
+| `zero_copy_list_explicit_dtype` | +8% / +10% | — |
+| `medium_pipeline` (eager) | +9% / +7% | +2% |
+
+  The point accessors' gain survived a focused re-run (5 repeats, interleaved
+  ×2): `geom_point_translate` +24% / +20%, `geom_point_distance` +17% / +7%,
+  both with ~25–31% less memory. polars-cv's point code did not change, so
+  the gain comes from the polars side; which part was not investigated.
+- **Two borderline dips checked and cleared:** `sink_array_transposed_u8`
+  (−6% in the full run) was −3% / +1% in the focused re-run, and
+  `remote_local_paths` (−9%) was +1% over four alternations at 20 iterations
+  (1,231 vs 1,244 img/s).
+- Peak RSS is ~10 MB higher across the board (the polars 2.0 runtime itself);
+  advisory, as the harness treats memory.
+
 ## Follow-ups (not done here)
 
 0. **Report the `do_spill` livelock upstream** with `ooc_livelock_repro.py`.
@@ -168,5 +204,3 @@ moved to seed 40, where g1's replicate 43 draws no positive.
 4. **Next polars crate release:** object_store 0.14 / reqwest 0.13 (TLS
    feature rename, see above), and re-check the `quick-xml` advisory ignores,
    which that bump resolves.
-5. **Benchmarks were not re-run** (they need an optimised build). The previous
-   upgrade's report shows how to compare back-to-back on one host.
