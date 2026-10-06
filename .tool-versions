@@ -1,0 +1,3 @@
+# The uv every CI job installs (astral-sh/setup-uv reads it via `version-file`).
+# Bump deliberately; tests/test_ci_tool_pins.py rejects a step that ignores it.
+uv 0.12.23
