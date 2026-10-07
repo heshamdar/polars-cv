@@ -47,6 +47,14 @@ outputs and memory take part in Polars' new out-of-core spilling.
 
 ### Fixed
 
+- **The extension segfaulted on import on macOS** (every Python version).
+  pyo3-polars' `PolarsAllocator` looks up polars' allocator under
+  `Python::attach` on the first allocation; under pyo3 0.29.3 that attach
+  locks a mutex whose first lock allocates on macOS, so the lookup re-entered
+  itself until the stack overflowed (pola-rs/polars#29731). The plugin's
+  allocator now does the lookup through the C API alone, which cannot
+  allocate through it, and aborts with the reason should a lookup ever
+  re-enter. Linux and Windows were not affected.
 - **`froc_curve_lazy(thresholds=[1, ...])` raised** under polars 2.0, whose
   `is_in` refuses to compare Float64 data with an Int64 list. Thresholds are
   now passed as Float64.

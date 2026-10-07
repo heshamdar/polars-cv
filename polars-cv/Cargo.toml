@@ -82,6 +82,9 @@ polars-buffer = { version = "0.55" }
 polars-utils = { version = "0.55" }
 pyo3 = { version = "0.29" }
 pyo3-polars = { version = "0.28", features = ["derive", "lazy"] }
+# The allocator reports a re-entered capsule lookup with a raw write to
+# stderr: anything that allocates would re-enter it again (`allocator.rs`).
+libc = "0.2"
 
 # Image encoding support
 image = "0.25"
