@@ -736,8 +736,17 @@ mod tests {
     #[test]
     fn operands_mut_reaches_exactly_the_operands() {
         // `Plan::spec` renames node references through `operands_mut`; one it
-        // missed would reach the wire under its build-time id.
-        for mut op in TypedOp::samples() {
+        // missed would reach the wire under its build-time id. The catalogue
+        // sample of `rasterize` has a literal size, so its node-sized form,
+        // which reads a node, is added here.
+        let node_sized_rasterize = TypedOp::from_fields(
+            "rasterize",
+            json!({"size": "n0", "fill_value": 255, "background": 0}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(node_sized_rasterize.operands().len(), 1);
+        for mut op in TypedOp::samples().into_iter().chain([node_sized_rasterize]) {
             let read: Vec<String> = op.operands().iter().map(|n| n.0.clone()).collect();
             let renamed: Vec<String> = op
                 .operands_mut()
