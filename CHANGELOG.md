@@ -7,10 +7,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.34.0] — 2026-10-07
+
 Polars 2.0 support. The plugin is built against the polars 0.55 Rust crates
 (pyo3-polars 0.28, pyo3 0.29) and requires `polars>=2.0.0,<3.0`. Equal
 pipelines in one query now run once (Polars' plugin CSE), and polars-cv's
-outputs and memory take part in Polars' new out-of-core spilling.
+outputs and memory take part in Polars' new out-of-core spilling. The
+polars-cv API is unchanged; seeded bootstrap intervals differ from 0.33 for
+the same seed. Upgrading from 0.33: see the
+[migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.34/).
 
 ### Changed
 
@@ -47,7 +52,8 @@ outputs and memory take part in Polars' new out-of-core spilling.
 
 ### Fixed
 
-- **The extension segfaulted on import on macOS** (every Python version).
+- **The extension segfaulted on import on macOS** (every Python version),
+  introduced by this release's pyo3 0.29 bump; no released wheel was affected.
   pyo3-polars' `PolarsAllocator` looks up polars' allocator under
   `Python::attach` on the first allocation; under pyo3 0.29.3 that attach
   locks a mutex whose first lock allocates on macOS, so the lookup re-entered
@@ -79,6 +85,14 @@ outputs and memory take part in Polars' new out-of-core spilling.
   `read_ipc` no longer maps).
 - The `RUSTSEC-2026-0176`/`-0177` (pyo3 < 0.29) advisory ignores: fixed by the
   pyo3 0.29 bump.
+
+### Internal
+
+- CI pins uv through a root `.tool-versions` (uv 0.12.23, read by every
+  `astral-sh/setup-uv` step, now v10.2.0) instead of resolving `latest` per
+  job; `tests/test_ci_tool_pins.py` holds every step to it.
+- `uv.lock` moves numpy off the yanked 2.4.0 (2.4.6 on Python 3.11, 2.5.3 on
+  3.12+).
 
 ## [0.33.0] — 2026-10-06
 
@@ -4515,7 +4529,8 @@ Each item is described in full under its section below.
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
-[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.33.0...HEAD
+[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.34.0...HEAD
+[0.34.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.34.0
 [0.33.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.33.0
 [0.32.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.32.0
 [0.31.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.31.0
