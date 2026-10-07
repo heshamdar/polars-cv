@@ -2807,6 +2807,7 @@ dependencies = [
  "half",
  "image",
  "jpeg-decoder",
+ "libc",
  "object_store",
  "polars",
  "polars-arrow",
