@@ -37,7 +37,9 @@ _PIPE = Pipeline().source("image_bytes").resize(height=4, width=4).grayscale()
 
 
 def _plugin_calls(lf: pl.LazyFrame) -> int:
-    return lf.explain().count(":vb_graph()")
+    # A call with expression inputs prints as `vb_graph([...])`, one without
+    # as `vb_graph()`: match the name and the opening parenthesis only.
+    return lf.explain().count(":vb_graph(")
 
 
 def _sink() -> pl.Expr:
@@ -85,6 +87,23 @@ def test_ops_reading_other_nodes_built_twice_are_equal() -> None:
     assert _plugin_calls(lf) == 1
     out = lf.collect()
     assert out["a"].to_list() == out["b"].to_list()
+
+
+def test_per_row_parameters_merge_only_on_the_same_column() -> None:
+    # A per-row parameter is an extra plugin input, so polars compares the
+    # column it reads, not just the `{"$slot": n}` in the kwargs.
+    df = _DF.with_columns(h=pl.Series([2, 3, 4]), h2=pl.Series([5, 6, 7]))
+
+    def sized(column: str) -> pl.Expr:
+        pipe = Pipeline().source("image_bytes").resize(height=pl.col(column), width=4)
+        return pl.col("img").cv.pipe(pipe).sink("numpy")
+
+    same = df.lazy().with_columns(a=sized("h"), b=sized("h"))
+    different = df.lazy().with_columns(a=sized("h"), b=sized("h2"))
+    assert _plugin_calls(same) == 1
+    assert _plugin_calls(different) == 2
+    out = different.collect()
+    assert out["a"].to_list() != out["b"].to_list()
 
 
 def test_different_pipelines_are_not_merged() -> None:
