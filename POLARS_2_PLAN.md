@@ -283,6 +283,20 @@ message and the CHANGELOG.
 
 ### Phase 6 — Document streaming for image-sized rows (F2, F10)
 
+**Status: implemented.** `streaming.md` gains "How big a call is" (rows per
+call, the memory estimate, row groups sized by bytes, the chunk-size knob and
+why polars-cv does not set it) and "Feeding a training loop"
+(`collect_batches` with a fixed-shape `array` sink). That gives
+`(rows, *shape)` uint8 batches that view the batch rather than copy it
+(`to_numpy()`). `tests/test_streaming_morsels.py` checks each claim at the
+plugin through a new `_lib._take_max_split_rows()`:
+- a Parquet call is at most one row group (600 rows in groups of 100: ≤ 100);
+- the chunk size bounds in-memory frames and splits a large row group;
+- the training-loop batches have the documented shape and are views.
+
+Watched failing: a single row group gives 150-row calls against the ≤ 100
+bound.
+
 In `docs/user-guide/concepts/streaming.md`:
 - **A morsel is a plugin call.** Peak memory is roughly rows per morsel ×
   output size × pipelines, and the Parquet row group sets rows per
@@ -297,6 +311,16 @@ In `docs/user-guide/concepts/streaming.md`:
   as a doc-tested example.
 
 ### Phase 7 — Upstream issues (no code here)
+
+**Status: drafted** in `UPSTREAM_ISSUES.md`, ready to file on
+`pola-rs/polars`. That repository is outside this session's GitHub scope,
+and filing is an outward-facing action for the user. Each issue was reproduced
+on Polars 2.0.0 alone:
+- implode / implicit list / head in a streaming group-by;
+- the morsel-size hint (feature request);
+- the zero-width `Array` across the C interface, which panics while width 2
+  round-trips;
+- the `do_spill` livelock (repro from 2026-10-06).
 
 - Ordered `implode` in streaming `group_by` (it would remove the last
   `KnownFallback`).

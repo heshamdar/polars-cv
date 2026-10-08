@@ -519,6 +519,8 @@ def test_registry_parity_no_dead_contracts():
 
 
 _REQUIRED_LIB_HOOKS = (
+    # The most rows one call ran, read by `test_streaming_morsels.py`.
+    "_take_max_split_rows",
     # The most fetched remote bodies one call held at once, read by
     # `test_fetch_window.py`.
     "_last_fetch_peak_resident",
