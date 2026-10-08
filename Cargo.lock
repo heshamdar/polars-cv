@@ -2822,7 +2822,6 @@ dependencies = [
  "serde_path_to_error",
  "smallvec",
  "thiserror 1.0.69",
- "tokio",
  "url",
  "view-buffer",
 ]

@@ -54,11 +54,12 @@ polars = { version = "0.55", default-features = false, features = [
     # without enabling polars-time itself (upstream feature-graph gap).
     "dtype-datetime",
     # Cloud transport is *delegated* to polars-io rather than reimplemented here.
-    # These unlock `polars::io::cloud`: `build_object_store` and its process-wide
-    # store cache, `PolarsObjectStore` (credential-expiry rebuild-and-retry), the
-    # credential-provider machinery, and `pl_async`'s global concurrency budget.
-    # Every one of those is process-wide there and was per-file here, which is
-    # why this plugin opened a fresh connection for every image it read.
+    # These unlock `polars::io::cloud`: `build_object_store` and its store
+    # cache, `PolarsObjectStore` (credential-expiry rebuild-and-retry), the
+    # credential-provider machinery, and `pl_async`'s concurrency budget.
+    # Every one of those is shared across calls there and was per-file here,
+    # which is why this plugin opened a fresh connection for every image it
+    # read. They are the plugin's copy, separate from the host's (`cloud.rs`).
     #
     # `polars-io` was already in the build graph (the `object` and `dtype-*`
     # features pull it in, and `polars` re-exports it as `polars::io`), but
@@ -112,15 +113,14 @@ thiserror = "1.0"
 # `service_account_credentials.is_none() && self.credentials.is_none()`. Also
 # dedupes with polars 0.55, which already pulls object_store 0.13.
 object_store = { version = "0.13", features = ["aws", "gcp", "azure"] }
-tokio = { version = "1", features = ["rt-multi-thread"] }
 url = { version = "2" }
 # The fan-out in `read_files_concurrent`. `buffer_unordered` rather than a
-# thread pool: the reads are IO-bound futures on a shared runtime, and the
-# process-wide semaphore is what bounds them.
+# thread pool: the reads are IO-bound futures on polars' `ASYNC` runtime, and
+# the plugin-wide semaphore is what bounds them.
 futures = "0.3"
 
 # HTTP support for URL sources (http://, https://)
-# Uses async client within tokio runtime (same as cloud storage)
+# An async client, driven on polars' `ASYNC` runtime (same as cloud storage)
 #
 # `rustls-tls` is load-bearing for more than our own `http(s)://` reads:
 # polars-io declares reqwest with `default-features = false, features = ["json"]`

@@ -151,7 +151,7 @@ def test_connections_are_reused_across_files(tmp_path):
 
 @plugin_required
 def test_in_flight_requests_stay_within_the_global_budget(tmp_path):
-    """`POLARS_CONCURRENCY_BUDGET` bounds concurrent requests, process-wide.
+    """`POLARS_CONCURRENCY_BUDGET` bounds concurrent requests across calls.
 
     The fan-out used to be a constant 16 *per plugin call*, which the streaming
     engine multiplies by the number of morsels in flight — so nothing bounded

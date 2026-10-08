@@ -1,0 +1,44 @@
+[
+  {
+    "framework": "polars-cv-eager",
+    "operation": "remote_http_paths",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.2513952280000922,
+    "throughput_images_per_second": 1193.340074060157,
+    "latency_ms_per_image": 0.8379840933336405,
+    "peak_memory_mb": 337.09375,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "remote_http_read_bytes",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.19039607200011233,
+    "throughput_images_per_second": 1575.662758419843,
+    "latency_ms_per_image": 0.6346535733337078,
+    "peak_memory_mb": 203.73046875,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "remote_local_paths",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.07342773599998509,
+    "throughput_images_per_second": 4085.649597041381,
+    "latency_ms_per_image": 0.2447591199999503,
+    "peak_memory_mb": 327.9375,
+    "gpu_mode": null
+  }
+]
