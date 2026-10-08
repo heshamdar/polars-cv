@@ -21,7 +21,7 @@ env:
 
 jobs:
   test:
-    name: Test on ${{ matrix.os }}
+    name: Test on ${{ matrix.os }} / Python ${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -39,6 +39,14 @@ jobs:
         # wheels. The behavioural lane here runs under the default (streaming)
         # engine; the dual-engine and coverage gates live in dedicated jobs below.
         python-version: ["3.11", "3.12", "3.13"]
+        # Ubuntu on 3.13 is the dual-engine-and-coverage job: the same Python
+        # and the same (streaming) lane, plus the coverage gate and the
+        # in-memory lane. Running it here as well ran that lane twice per PR.
+        # The Rust tests this job also runs are covered by its other cells;
+        # macOS on 3.13 (pushes to main) still runs here.
+        exclude:
+          - os: ubuntu-latest
+            python-version: "3.13"
 
     steps:
       - uses: actions/checkout@v4
