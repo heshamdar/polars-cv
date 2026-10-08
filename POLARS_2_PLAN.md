@@ -263,6 +263,16 @@ upstream instead (Phase 7).
 
 ### Phase 5 — Delete the `is_elementwise` knob (F6)
 
+**Status: implemented.** Checking the declaration first found a gap: with
+`is_elementwise=False` a plugin call becomes a whole-column
+`columnar-function`, which the streaming guard only flagged for Python UDFs,
+and no streaming plan covered the plugin's own entry points, so flipping it
+failed nothing. The guard now flags a `columnar-function` over a compiled
+plugin (polars' own `int_range` columnar nodes stay native). `PLANS` gains
+`cv.pipe`, `cv.read_bytes`, `cv.width`, `contour.area` and `point.translate`,
+plus a fixture test of a non-elementwise call. Watched failing: 30 plans
+with the flag flipped. The parameter is then deleted.
+
 `_plugin.call` and `_PluginNamespace._plugin` lose the parameter, and the
 call always registers `is_elementwise=True`. The docstring gains a fourth
 "cannot be skipped" item: every function is row-independent. A future

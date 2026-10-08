@@ -7,8 +7,11 @@ build side) is *not* a fallback; it is the streaming engine doing its job.
 
 :func:`in_memory_nodes` reads the physical streaming graph
 (``show_graph(engine="streaming", plan_stage="physical", raw_output=True)``)
-and returns every ``in-memory-map`` node, plus any Python UDF that is handed
-its whole input column.
+and returns every ``in-memory-map`` node, plus any Python UDF or compiled
+plugin call that is handed its whole input column (a ``columnar-function``).
+A plugin call is one only when it is not declared elementwise: every polars-cv
+function is, in ``polars_cv._plugin.call``, so that each streaming morsel is
+its own call.
 
 Since polars 2.0 a window ``.over()`` is a native streaming node (``window``),
 not a fallback; what remains are the list-building aggregations
@@ -30,9 +33,13 @@ import polars as pl
 
 _NODE = re.compile(r'^(\d+) \[label="((?:[^"\\]|\\.)*)"', re.M)
 _FALLBACK = "in-memory-map"
-#: A Python UDF that is not marked elementwise is handed its whole input
-#: column at once: as costly as a fallback, under another node name.
-_WHOLE_COLUMN_UDF = re.compile(r"^columnar-function .*python_udf")
+#: A Python UDF or a compiled plugin call that is not marked elementwise is
+#: handed its whole input column at once: as costly as a fallback, under
+#: another node name. A plugin call names its library (``<path>.so:<fn>``);
+#: polars' own columnar functions (``int_range``) do not.
+_WHOLE_COLUMN_UDF = re.compile(
+    r"^columnar-function .*(python_udf|\.(so|pyd|dll|dylib):)"
+)
 
 
 @dataclass(frozen=True)

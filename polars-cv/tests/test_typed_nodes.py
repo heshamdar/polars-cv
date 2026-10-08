@@ -642,7 +642,6 @@ class TestRasterizeShapeReference:
             "vb_graph",
             args=[pl.col("image")],
             kwargs={"graph_json": json.dumps(spec)},
-            is_elementwise=True,
         )
         df = pl.DataFrame({"image": [self._png(16, 16)]})
         with pytest.raises(pl.exceptions.ComputeError, match="'ghost'"):

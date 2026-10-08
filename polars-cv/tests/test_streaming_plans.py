@@ -20,6 +20,7 @@ import polars as pl
 import pytest
 
 import polars_cv.metrics as M
+from polars_cv import Pipeline
 from tests._streaming_guard import KNOWN_FALLBACKS, in_memory_nodes, unexplained
 
 from .conftest import plugin_required
@@ -48,6 +49,30 @@ def test_guard_rejects_known_fallbacks(plan: pl.LazyFrame) -> None:
     nodes = in_memory_nodes(plan)
     assert nodes, "the scanner no longer sees in-memory fallbacks"
     assert unexplained(nodes) == [n.label for n in nodes]
+
+
+@plugin_required
+def test_guard_rejects_a_whole_column_plugin_call() -> None:
+    """A plugin call not declared elementwise gets the whole column in one
+    call; the scanner must report it (polars-cv declares every call
+    elementwise in ``_plugin.call``, the one way in)."""
+    from polars.plugins import register_plugin_function
+
+    from polars_cv._plugin import plugin_path
+
+    def call(elementwise: bool) -> pl.LazyFrame:
+        expr = register_plugin_function(
+            plugin_path=plugin_path(),
+            function_name="read_file_bytes",
+            args=[pl.col("p")],
+            is_elementwise=elementwise,
+        )
+        return pl.LazyFrame({"p": ["a.png"]}).select(expr)
+
+    nodes = in_memory_nodes(call(elementwise=False))
+    assert nodes, "the scanner no longer sees a whole-column plugin call"
+    assert unexplained(nodes) == [n.label for n in nodes]
+    assert in_memory_nodes(call(elementwise=True)) == []
 
 
 @pytest.mark.parametrize(
@@ -159,7 +184,33 @@ def _table() -> M.DetectionTable:
 
 _BOOT = {"n_bootstrap": 4, "seed": 0}
 
+_PATHS = pl.LazyFrame({"p": ["a.png", "b.png"], "b": [b"x", b"y"]})
+_CONTOURS = pl.LazyFrame(
+    {
+        "c": [
+            {
+                "exterior": [
+                    {"x": 0.0, "y": 0.0},
+                    {"x": 4.0, "y": 0.0},
+                    {"x": 0.0, "y": 4.0},
+                ],
+                "holes": [],
+                "is_closed": True,
+            }
+        ],
+        "q": [{"x": 1.0, "y": 1.0}],
+    }
+)
+
 PLANS: dict[str, Callable[[], pl.LazyFrame]] = {
+    # The plugin's own entry points: each streaming morsel is one call.
+    "cv.pipe": lambda: _PATHS.select(
+        pl.col("b").cv.pipe(Pipeline().source("raw", dtype="u8")).sink("blob")
+    ),
+    "cv.read_bytes": lambda: _PATHS.select(pl.col("p").cv.read_bytes()),
+    "cv.width": lambda: _PATHS.select(pl.col("p").cv.width()),
+    "contour.area": lambda: _CONTOURS.select(pl.col("c").contour.area()),
+    "point.translate": lambda: _CONTOURS.select(pl.col("q").point.translate(1.0, 2.0)),
     "group_objects": lambda: M.group_objects(_PREDS, _GTS, geometry="bbox"),
     "group_objects(max_detections)": lambda: M.group_objects(
         _PREDS, _GTS, geometry="bbox", max_detections=1

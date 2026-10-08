@@ -490,7 +490,6 @@ class PipelineGraph:
             "vb_graph",
             args=table.columns,
             kwargs={"graph_json": self._to_json()},
-            is_elementwise=True,
         )
 
     def _slot_table(self) -> SlotTable:

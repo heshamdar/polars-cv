@@ -289,7 +289,6 @@ class TestGraphVersionField:
             "vb_graph",
             args=[pl.col("img")],
             kwargs={"graph_json": json.dumps(spec)},
-            is_elementwise=True,
         )
         df = pl.DataFrame({"img": [_png(4, 4)]})
         with pytest.raises(pl.exceptions.ComputeError, match="version"):
@@ -318,7 +317,6 @@ class TestGraphStructureValidation:
             "vb_graph",
             args=[pl.col("img")],
             kwargs={"graph_json": json.dumps(spec)},
-            is_elementwise=True,
         )
         df = pl.DataFrame({"img": [_png(4, 4)]})
         return df.with_columns(out=expr)

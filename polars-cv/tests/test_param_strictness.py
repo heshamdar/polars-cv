@@ -860,7 +860,6 @@ class TestInputSlotsAreValidated:
                 "on_null": "raise",
                 "on_error": "raise",
             },
-            is_elementwise=True,
         )
 
     def test_unclaimed_extra_input_is_rejected(self) -> None:

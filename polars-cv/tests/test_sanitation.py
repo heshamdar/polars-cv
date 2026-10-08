@@ -2301,7 +2301,6 @@ class TestPluginKwargsRejectUnknownFields:
                 function_name,
                 args=[pl.col("x")],
                 kwargs=kwargs,
-                is_elementwise=True,
             )
         )
 
