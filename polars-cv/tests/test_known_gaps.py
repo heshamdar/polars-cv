@@ -25,11 +25,15 @@ broken", never "sometimes fails".
 
 from __future__ import annotations
 
+import numpy as np
+import polars as pl
 import pytest
 
+from tests.conftest import plugin_required
+
 # Each gap carries its own lane: a source scan is `structural` (pre-commit runs
-# it with no compiled extension), a runtime one `plugin_required`. No gap is
-# open: the planned-size defects closed with rank-N planned shapes (0.29.0).
+# it with no compiled extension), a runtime one `plugin_required`. Each is
+# listed, with its fix, under its id in the root `ISSUES.md`.
 
 
 def _gap(reason: str) -> pytest.MarkDecorator:
@@ -41,3 +45,58 @@ def _gap(reason: str) -> pytest.MarkDecorator:
     than reading as the defect.
     """
     return pytest.mark.xfail(strict=True, raises=AssertionError, reason=reason)
+
+
+# Two detections on one image, each overlapping its ground-truth box.
+_PREDS = pl.DataFrame(
+    {
+        "image_id": ["a", "a"],
+        "class_id": ["c", "c"],
+        "score": [0.9, 0.8],
+        "bbox": [[0.0, 0.0, 10.0, 10.0], [20.0, 20.0, 10.0, 10.0]],
+    }
+)
+_GTS = pl.DataFrame(
+    {
+        "image_id": ["a", "a"],
+        "class_id": ["c", "c"],
+        "bbox": [[0.0, 0.0, 10.0, 11.0], [20.0, 20.0, 10.0, 14.0]],
+    }
+)
+
+
+@plugin_required
+@_gap("CR-77: sweep thresholds are compared by exact float equality")
+def test_a_swept_threshold_reports_its_metrics() -> None:
+    """``np.arange(0.5, 0.96, 0.05)`` stores 0.75 as ``0.7500000000000002``, so
+    the report drops ``map_75``. Fixed when a sweep normalises its thresholds
+    once where it is built, and this report names ``map_75``."""
+    from polars_cv.metrics import evaluate_detections
+
+    report = evaluate_detections(
+        _PREDS,
+        _GTS,
+        box_format="xywh",
+        iou_thresholds=list(np.arange(0.5, 0.96, 0.05)),
+    )
+    assert "map_75" in report.metrics
+
+
+@plugin_required
+@_gap("CR-76: negative-size boxes are accepted and score as false positives")
+def test_a_negative_size_box_is_refused() -> None:
+    """``xywh`` data passed as ``"xyxy"`` gives boxes of negative size, which
+    the bbox reader accepts and the matcher scores as 0-IoU false positives.
+    Fixed when the reader refuses ``width < 0`` / ``height < 0`` as it refuses
+    a non-finite field."""
+    from polars_cv.metrics import match_detections
+
+    swapped = _PREDS.with_columns(
+        pl.Series("bbox", [[10.0, 10.0, 0.0, 0.0], [30.0, 30.0, 20.0, 20.0]])
+    )
+    raised = False
+    try:
+        match_detections(swapped, _GTS, box_format="xyxy").detections.collect()
+    except (pl.exceptions.ComputeError, ValueError):
+        raised = True
+    assert raised, "a box of negative size was accepted"

@@ -1,4 +1,4 @@
-# Remote fetch as a window ahead of the rows (Phase 2 of `POLARS_2_PLAN.md`)
+# Remote fetch as a window ahead of the rows (Phase 2 of the Polars 2.0 plan, PR #124)
 
 A call's remote paths used to be fetched all at once before its first row
 decoded. Now each row fetches its own path and those of the next rows, up to

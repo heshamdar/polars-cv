@@ -1,4 +1,4 @@
-# One async runtime (Phase 3 of `POLARS_2_PLAN.md`)
+# One async runtime (Phase 3 of the Polars 2.0 plan, PR #124)
 
 Remote reads moved from a tokio runtime of the plugin's own (one worker per
 CPU) to polars' `ASYNC` runtime (the plugin's copy, `min(POLARS_MAX_THREADS,

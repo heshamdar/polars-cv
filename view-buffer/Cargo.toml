@@ -70,8 +70,8 @@ criterion = { version = "0.5", features = ["html_reports"] }
 zune-png = "0.4"
 
 [[bench]]
-# Kernel micro-benchmarks (`benches/kernels.rs`): the baseline and gate for
-# PERFORMANCE_PLAN.md. Needs the image codecs, hence the feature.
+# Kernel micro-benchmarks (`benches/kernels.rs`): the base-vs-head gate for a
+# kernel change. Needs the image codecs, hence the feature.
 name = "kernels"
 harness = false
 required-features = ["image_interop"]

@@ -68,6 +68,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Docs
 
+- **One issues ledger: `ISSUES.md`.** The open items of seven root documents
+  (`CODE_REVIEW_FINDINGS.md`, `FOLLOW_UPS_0.32.md`, `PERFORMANCE_PLAN.md`,
+  `PERFORMANCE_HANDOVER.md`, `EXTENSION_TYPES_PLAN.md`, `POLARS_2_PLAN.md`,
+  `UPSTREAM_ISSUES.md`) were re-checked against the code and moved into one
+  file, continuing the `CR-NN` ids; the rest had shipped. CR-11 and CR-50
+  were already resolved and FU-05 (yanked numpy) was fixed, so they close;
+  the PR #124 regressions found after merge are CR-67 and CR-68. Every closed
+  id keeps a one-line entry, so ids cited in code still resolve. 22 benchmark
+  report directories that measured superseded code, cited only by those
+  documents, are removed (git history keeps them). The two metrics defects
+  still open (CR-76, CR-77) are now `xfail(strict=True)` pins in
+  `test_known_gaps.py`.
+
 - **The streaming guide says how big a call is and how to bound it.** A
   streaming call is one morsel and holds its whole output. Polars sizes
   morsels by rows, and a Parquet scan gives a call a whole row group: 20,000
@@ -93,8 +106,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   and `compare` refuses results run on different thread counts.
 - `_lib._take_max_split_rows()` reports the most rows one plugin call ran
   since it was last read (and resets).
-- `UPSTREAM_ISSUES.md`: four Polars issues reproduced on 2.0.0 alone,
-  drafted to file. They are list aggregation in a streaming group-by, a
+- Four Polars issues reproduced on 2.0.0 alone, drafted to file (now
+  CR-83 to CR-86 in `ISSUES.md`). They are list aggregation in a streaming group-by, a
   per-plugin morsel-size hint, zero-width `Array` across the C interface,
   and the out-of-core spill livelock.
 - `_plugin.call` and `_PluginNamespace._plugin` lose their `is_elementwise`

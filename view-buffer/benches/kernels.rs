@@ -2,8 +2,7 @@
 //! the public API the plugin itself uses (`ViewExpr` → plan → execute, and
 //! `ImageAdapter` for the codecs).
 //!
-//! These are the baseline and the gate for the performance plan
-//! (`PERFORMANCE_PLAN.md`): each phase compares its kernels here, base vs
+//! These are the gate for a kernel change: compare its kernels here, base vs
 //! head, before the end-to-end regression harness runs. Run it twice to see
 //! what runtime CPU dispatch buys over the wheels' baseline target:
 //!

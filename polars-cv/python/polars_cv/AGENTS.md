@@ -402,7 +402,7 @@ struct operations (measured on py-polars 1.42):
 
 Polars documents the extension-type API as unstable: keep every use of it in
 `extension_types.py` and `src/ext_types.rs`. Remaining work (tagged geometry
-outputs, defaults) is in the root `EXTENSION_TYPES_PLAN.md`.
+outputs, defaults, metadata) is CR-80 to CR-82 in the root `ISSUES.md`.
 
 ## Common Pitfalls
 
