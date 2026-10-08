@@ -43,11 +43,16 @@ morsels). The **gate metric is throughput only** — latency is its reciprocal
 (double-counting), and peak memory is whole-process RSS (advisory; enable with
 `--gate-memory`). The 7% threshold sits above the ≤5% noise floor with margin.
 
-For broader across-the-board coverage add the other scenarios (slower):
+For broader across-the-board coverage add the other scenarios (slower). The
+`targeted` scenario includes the `split_` cases, which need a parallel pool
+(see `@threads=N` below), so the whole suite runs on 4 threads; for the 1-thread
+view, name its other prefixes:
 
 ```bash
-python -m benchmarks.regression.run_suite --out candidate.json \
-    --select single_ops,pipelines,e2e,targeted
+python -m benchmarks.regression.run_suite --out candidate-t4.json --threads 4 \
+    --select single_ops,pipelines,e2e,targeted,zero_copy,remote
+python -m benchmarks.regression.run_suite --out candidate-t1.json \
+    --select single_ops,pipelines,e2e,zero_copy,remote,targeted:codec_*,targeted:sink_*,targeted:blob_*,targeted:geom_*
 ```
 
 ## Running only what a change can move
@@ -83,6 +88,35 @@ SEL=$(python -m benchmarks.regression.relevance origin/main)
 
 and pass `--select "$SEL"` to both runs (the `.meta.json` records the
 `selection` each run used, too).
+
+### Code that only runs in parallel: `@threads=N`
+
+The plugin's row splitter (`row_split.rs`) spreads a call's rows over the
+pool, and on one thread it does nothing. Benchmarked at the default
+`--threads 1`, a change to it times every case it selects and measures none
+of itself. That is how PR #124's splitter rewrite shipped with the eager
+`list` sink 15.6% slower and streaming `sobel_x` 11.5% slower at 4 threads:
+the cases it ran held, and the ones that moved were neither selected nor run
+in parallel.
+
+So a selection carries the pool it needs (`Selection.min_threads`):
+
+- the `@threads=N` marker, which `relevance` adds for the splitter, and which
+  `SEL` therefore carries to both sides: `…,targeted:sink_list_u8,@threads=4`;
+- a case's own requirement: `targeted`'s `split_` cases declare
+  `min_threads=2`, so a selection that includes them (a bare `targeted` too)
+  needs a parallel pool.
+
+`run_suite` refuses a smaller `--threads` (and, as a backstop for programmatic
+callers, a smaller actual pool), and `compare` refuses two results run on
+different thread counts. The count cannot default from the selection, since
+reading the cases sizes the pool, so pass it: `--threads 4` on both sides.
+
+Noise is larger on a parallel pool. Measured in a 4-vCPU container at the
+default count, a case can move ±10% between runs of one binary at 4 threads
+(against ≤5% at 1). Confirm a flagged case by interleaving the sides
+(base, head, head, base, …) and comparing medians, rather than trusting one
+pair of runs.
 
 ### The `targeted` scenario
 
@@ -190,7 +224,7 @@ python -m benchmarks.regression.compare a.json b.json   # expect all NEUTRAL, ex
 
 ## Options
 
-`run_suite`: `--out` (required), `--select scenario[:glob],...` or
+`run_suite`: `--out` (required), `--select scenario[:glob],...[,@threads=N]` or
 `--changed REF`, `--counts`, `--sizes`, `--threads`, `--repeats`, `--warmup`,
 `--iterations`, `--quiet`, `--allow-debug-build`.
 

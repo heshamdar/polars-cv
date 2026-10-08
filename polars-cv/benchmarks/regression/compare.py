@@ -78,10 +78,12 @@ def refuse_incomparable_builds(baseline: str | Path, candidate: str | Path) -> N
     smoke-test the harness; its numbers must never reach a verdict), and two
     different Cargo profiles — a thin-LTO ``benchmark`` build runs a few percent
     off a fat-LTO ``release`` one per case, which would be reported as the
-    change. A result without a sidecar (older than these fields) is compared
-    with a warning, since its build cannot be checked.
+    change — and two different thread counts, which would report the pool. A
+    result without a sidecar (older than these fields) is compared with a
+    warning, since its build cannot be checked.
     """
     profiles: dict[str, str] = {}
+    threads: dict[str, int] = {}
     for path in (baseline, candidate):
         meta_path = Path(f"{path}.meta.json")
         meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
@@ -92,8 +94,13 @@ def refuse_incomparable_builds(baseline: str | Path, candidate: str | Path) -> N
             profiles[str(path)] = meta["build_profile"]
         else:
             print(f"warning: {path} does not record its build profile", file=sys.stderr)
+        if "num_threads" in meta:
+            threads[str(path)] = meta["num_threads"]
     if len(set(profiles.values())) > 1:
         msg = f"results from different build profiles, not comparable: {profiles}"
+        raise SystemExit(msg)
+    if len(set(threads.values())) > 1:
+        msg = f"results run on different thread counts, not comparable: {threads}"
         raise SystemExit(msg)
 
 
