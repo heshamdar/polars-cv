@@ -142,7 +142,7 @@ pub struct MetaKwargs {
 
 /// Each row's header metadata: from the bytes of a `Binary` column, or from
 /// the files a `String` column of paths names — read only as far as the
-/// header needs ([`crate::fetch::row_header`]). `None` for a null row, an
+/// header needs ([`crate::fetch::Fetcher::header`]). `None` for a null row, an
 /// unrecognised format, or (with `on_error="null"`) an unreadable path.
 fn metas(
     inputs: &[Series],
@@ -184,21 +184,12 @@ fn metas(
                 .as_deref()
                 .map(crate::fetch::PathPolicy::new)
                 .unwrap_or_default();
-            let batch = crate::fetch::prefetch(ca, options.as_ref(), &policy);
-            ca.iter()
-                .map(|path| {
-                    let Some(path) = path else { return Ok(None) };
-                    match crate::fetch::row_header(
-                        &batch,
-                        path,
-                        options.as_ref(),
-                        &policy,
-                        extract_metadata,
-                    ) {
-                        Ok(meta) => Ok(meta),
-                        Err(_) if null_on_error => Ok(None),
-                        Err(e) => Err(polars_err!(ComputeError: "{}: {}", name, e)),
-                    }
+            let fetcher = crate::fetch::Fetcher::new(ca, options.as_ref(), &policy);
+            (0..ca.len())
+                .map(|row| match fetcher.header(row, extract_metadata) {
+                    Ok(meta) => Ok(meta),
+                    Err(_) if null_on_error => Ok(None),
+                    Err(e) => Err(polars_err!(ComputeError: "{}: {}", name, e)),
                 })
                 .collect()
         }

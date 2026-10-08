@@ -114,9 +114,10 @@ thiserror = "1.0"
 # dedupes with polars 0.55, which already pulls object_store 0.13.
 object_store = { version = "0.13", features = ["aws", "gcp", "azure"] }
 url = { version = "2" }
-# The fan-out in `read_files_concurrent`. `buffer_unordered` rather than a
-# thread pool: the reads are IO-bound futures on polars' `ASYNC` runtime, and
-# the plugin-wide semaphore is what bounds them.
+# `abortable`: `fetch::Fetcher` spawns each read as its own task on polars'
+# `ASYNC` runtime and aborts the ones no row waited for when its call ends
+# (tokio's own abort handle would need a direct tokio dependency, which
+# `clippy.toml`'s one-runtime rule keeps out).
 futures = "0.3"
 
 # HTTP support for URL sources (http://, https://)

@@ -7,9 +7,9 @@ and `http://` path goes through — was never measured. This scenario measures i
 ## Why HTTP against a local server, and not S3
 
 The transports differ in *signing*, not in structure: every remote scheme lands
-in `cloud::read_file`, which builds a backend client and issues one GET per
-file, and every one of them is driven by the same `fetch::prefetch` →
-`cloud::read_files_concurrent` batching. A loopback HTTP server exercises that
+in `cloud::read_remote_budgeted`, which reaches a cached backend client and
+issues one GET per file, and every one of them is driven by the same
+`fetch::Fetcher` window. A loopback HTTP server exercises that
 structure with the wide-area latency taken out, which is the point — a WAN
 measurement is dominated by the network and hides what the plugin costs. Real
 S3/GCS numbers need credentials and a bucket, so they cannot be a committed
@@ -368,7 +368,7 @@ def main(argv: list[str] | None = None) -> int:
         f"1.00 means no reuse, inf means every request rode a pooled connection)"
     )
     print(
-        "fetch concurrency is polars' process-wide budget "
+        "fetch concurrency is the plugin's copy of polars' budget "
         "(POLARS_CONCURRENCY_BUDGET, default max(rayon threads, 10))"
     )
     return 0

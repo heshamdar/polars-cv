@@ -24,8 +24,8 @@ pipe = Pipeline().source().resize(height=224, width=224)
 
 The column dtype is constant across rows, so the resolution happens once per
 batch — the default path adds no per-row cost. Options that apply to the
-resolved format still apply to `auto`: `cloud_options` and concurrent remote
-prefetch (over a `String` URL column), `decode_max_size`, and
+resolved format still apply to `auto`: `cloud_options` and the windowed remote
+fetch (over a `String` URL column), `decode_max_size`, and
 `require_contiguous`.
 
 Pass an explicit format when the dtype cannot be routed — a plain numeric
@@ -314,9 +314,15 @@ fetch independently.
 
 ### Memory and streaming
 
-Fetching is per plugin call — one morsel under the streaming engine. Within a
-call, distinct remote paths are fetched concurrently up front (exactly as the
-`file_path` source already does) and local files are read per row.
+Fetching is per plugin call — one morsel under the streaming engine, which for
+a Parquet scan is a whole row group. Within a call, remote paths are fetched a
+window ahead of the rows being read (exactly as the `file_path` source does):
+each row starts fetching its own path and those of the next rows, up to the
+concurrency budget below, then decodes or copies its bytes while the window
+downloads. So network time overlaps decoding, and a call holds about a
+window's worth of encoded files per row thread, not the whole call's. Each
+distinct path is still fetched once per call, and its bytes are freed once
+the last row naming it has read them. Local files are read per row.
 
 How many are in flight is **not** per call: every remote request takes one
 permit from one budget shared by all of polars-cv's reads, so the total is
