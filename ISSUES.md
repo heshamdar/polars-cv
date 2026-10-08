@@ -47,6 +47,8 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
 | CR-86 | Upstream | To file | `MemoryManager::do_spill` can livelock under a small budget |
 | CR-87 | Upstream | To file | `register_extension_type`'s duplicate check, and `ext_from_params` panics |
+| CR-91 | Parity framework | Low | `to_hsv` on an f32 image with a non-finite alpha builds an invalid tolerance (`ValueError`) |
+| CR-92 | Engine / parity | Low | `to_lab` on u16 input misses its reference by 0.568 (allowed 0.509) |
 
 ## Performance
 
@@ -128,6 +130,33 @@ against `main` at `e788d72` that day, and their full text is in git history).
   (portable and AVX2); the table strategy alone is 80 copies of about 2,600
   instructions. Nothing measured slower for it. A table lookup gains nothing
   from AVX2 (scalar loads), so it could skip dispatch if size ever matters.
+
+## Found by the randomized deep parity lane
+
+The deep lane (`verify.sh`'s slow lane, CI's scheduled one) draws fresh
+examples every run, so it keeps finding long-standing edge cases; CR-88 to
+CR-90 were three. These two were found on 2026-10-08 on `main` and have not
+been investigated. Each reproduces by adding the decorator to
+`tests/parity/oracle/test_parity_single_ops.py::test_op_matches_its_reference`
+(the deep lane wraps it).
+
+### CR-91 — `to_hsv` with a non-finite alpha breaks the tolerance builder
+
+- `@reproduce_failure('6.168.0', b'AXicc2R1ZIBDdmeGGYaOjGAOAC++A6Q=')`,
+  method `to_hsv`: one f32 pixel `[0.607, 0.189, 0.450, inf]`. The parity
+  framework raises `ValueError: the sparse bound cannot be tighter than the
+  dense one: Tol(atol=inf, frac=0.005@360)`, so the case is never compared.
+  The hue tolerance's dense part becomes infinite with a non-finite alpha;
+  either the reference should not model that input (`ref_accepts`) or the
+  bound should be built so its sparse part stays valid.
+
+### CR-92 — `to_lab` on u16 input misses its reference by 0.57
+
+- `@reproduce_failure('6.168.0', b'AEECQQFBAUEWQQFBHkEARQCkrBE2QQEAQQBBAA==')`,
+  method `to_lab`: a `uint16[22, 30, 3]` image; one of 1,980 elements is
+  off by 0.568 against `Tol(atol=0.5, rtol=0.001)` (−9.771 vs −9.203 at
+  `(21, 24, 1)`, the `a` channel). Decide whether the engine's u16 path
+  loses precision (it may compute in f32) or the bound is too tight for u16.
 
 ## Fetch
 

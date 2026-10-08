@@ -110,22 +110,30 @@ export POLARS_CV_REQUIRE_PLUGIN=1
 run_check "pytest (structural lane)" \
     uv run --no-sync --directory polars-cv pytest tests/ -q -m "structural and not slow"
 
+# The lanes below run on every core (`-n auto`, pytest-xdist): each was
+# single-threaded and they were 89% of this script's time (2026-10-08, 4 cores:
+# fast lanes 4.8 + 3.4 min -> 1.7 + 1.1, slow lane 25 -> ~8). The tests are
+# independent processes' work (each worker imports its own polars and plugin),
+# and pytest-cov combines the workers' coverage before the gate. The slow
+# lane's floor is its longest single test (`test_every_execution_axis_agrees_deep`,
+# ~6 min), which no worker count splits.
+#
 # The primary behavioural lane runs under the default engine (streaming; the
 # tests' conftest sets POLARS_ENGINE_AFFINITY via setdefault) and carries the
 # coverage gate (`--cov`; the 95% floor is `fail_under` in pyproject).
 run_check "pytest (fast lane, streaming + coverage)" \
-    uv run --no-sync --directory polars-cv pytest tests/ -q -m "not network and not slow" --cov=polars_cv
+    uv run --no-sync --directory polars-cv pytest tests/ -q -n auto -m "not network and not slow" --cov=polars_cv
 
 # The dual-path guarantee: the same lane under the in-memory engine. The two
 # engines chunk a plugin's inputs differently, so a chunk-boundary bug that
 # passes under one fails under the other. No coverage here (same tests).
 run_check "pytest (fast lane, in-memory)" \
     env POLARS_ENGINE_AFFINITY=in-memory \
-    uv run --no-sync --directory polars-cv pytest tests/ -q -m "not network and not slow"
+    uv run --no-sync --directory polars-cv pytest tests/ -q -n auto -m "not network and not slow"
 
 if [[ $FAST -eq 0 ]]; then
     run_check "pytest (slow lane)" \
-        uv run --no-sync --directory polars-cv pytest tests/ -q -m "slow and not network"
+        uv run --no-sync --directory polars-cv pytest tests/ -q -n auto -m "slow and not network"
 fi
 
 run_check "ruff check"  uvx ruff check polars-cv/python polars-cv/tests polars-cv/benchmarks
