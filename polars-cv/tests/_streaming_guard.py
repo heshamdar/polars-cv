@@ -85,23 +85,6 @@ KNOWN_FALLBACKS: tuple[KnownFallback, ...] = (
             "group-by. Users who already hold per-image lists skip this."
         ),
     ),
-    KnownFallback(
-        pattern=r'\.unique\(\)\.sort\(asc\)\.implode\(\)\.alias\("_cell"\)\] BY',
-        reason=(
-            "_sampling_units: the set of weight cells a sampling unit's "
-            "metadata rows fall in (normally one). One row per unit."
-        ),
-    ),
-    KnownFallback(
-        pattern=(
-            r'^in-memory-map AGGREGATE\[[^]]*\] \[col\("image_id"\)\.implode\(\)\] '
-            r'BY \[col\("_entity"\)\]$'
-        ),
-        reason=(
-            "_resolve_bootstrap_samples: the images of each sampling entity "
-            "(sample_col=), exploded per draw. One row per entity."
-        ),
-    ),
 )
 
 

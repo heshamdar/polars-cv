@@ -77,4 +77,4 @@ class MetricResult:
                 hi=x_range[1],
                 correction=correction,
             )
-        return auc.collect(engine="streaming").item()
+        return auc.collect().item()

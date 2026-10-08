@@ -160,7 +160,7 @@ class DetectionReport:
             )
             for name, m in self.metrics.items()
         ]
-        values = pl.collect_all(frames, engine="streaming")
+        values = pl.collect_all(frames)
         rows = [
             df if df.height else pl.DataFrame({"metric": [name], "value": [None]})
             for name, df in zip(self.metrics, values, strict=True)
@@ -178,9 +178,7 @@ class DetectionReport:
         without ground truth (undefined, as COCO's ``-1``)."""
         ts = self.iou_thresholds or (None,)
         frames = [self._class_rows(t) for t in ts]
-        return pl.concat(pl.collect_all(frames, engine="streaming")).sort(
-            _THR, COL_CLASS_ID
-        )
+        return pl.concat(pl.collect_all(frames)).sort(_THR, COL_CLASS_ID)
 
     def _class_rows(self, t: float | None) -> pl.LazyFrame:
         view = self.at(t)
@@ -303,9 +301,7 @@ class DetectionReport:
                 .with_columns(pl.lit(name).alias("metric"))
             )
         keys = [by] if isinstance(by, str) else list(by or [])
-        out = pl.concat(
-            pl.collect_all(frames, engine="streaming"), how="vertical_relaxed"
-        )
+        out = pl.concat(pl.collect_all(frames), how="vertical_relaxed")
         return out.select(*keys, "metric", "value", "ci_lower", "ci_upper")
 
     # -- the lower layers ----------------------------------------------------
@@ -327,9 +323,7 @@ class DetectionReport:
         """The FROC curve at one threshold (default: the lowest matched)."""
         from ._metrics import froc_curve_lazy
 
-        return froc_curve_lazy(self.at(iou_threshold), group_by=group_by).collect(
-            engine="streaming"
-        )
+        return froc_curve_lazy(self.at(iou_threshold), group_by=group_by).collect()
 
     def confusion(
         self,
@@ -355,7 +349,7 @@ class DetectionReport:
         """
         det = self.at(iou_threshold).detections
         if self._objects is None or self._predictions is None:
-            return det.collect(engine="streaming")
+            return det.collect()
         keys = [COL_IMAGE_ID, COL_CLASS_ID]
         located = det.join(self._objects, on=keys, how="left").select(
             pl.col(PRED_ROW).list.get(pl.col("det_idx")).alias("_row"),
@@ -369,7 +363,7 @@ class DetectionReport:
             self._predictions.with_row_index("_row")
             .join(located, on="_row", how="left")
             .drop("_row")
-            .collect(engine="streaming")
+            .collect()
         )
 
     def __repr__(self) -> str:

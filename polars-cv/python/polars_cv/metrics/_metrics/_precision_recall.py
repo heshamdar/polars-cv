@@ -185,7 +185,7 @@ def precision_recall_curve(
         "cum_weighted_tp",
         "cum_weighted_fp",
     )
-    scanned, totals = pl.collect_all([curve_lf, totals_lf], engine="streaming")
+    scanned, totals = pl.collect_all([curve_lf, totals_lf])
     total_gts = int(totals["total_gts"].item() or 0)
     gt_mass = float(totals["gt_mass"].item() or 0.0)
 
@@ -423,7 +423,7 @@ def _curve_ap(curve: pl.DataFrame, interpolation: APInterpolation) -> float:
         pl.col("recall").cast(pl.Float64),
         pl.col("precision").cast(pl.Float64),
     )
-    out = ap_from_points(points, ["_g"], interpolation).collect(engine="streaming")
+    out = ap_from_points(points, ["_g"], interpolation).collect()
     return float(out["ap"].item()) if out.height else 0.0
 
 

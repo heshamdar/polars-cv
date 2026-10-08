@@ -213,6 +213,23 @@ against `POLARS_ASYNC_THREAD_COUNT=3`) and now passes. `remote` benchmark at
 
 ### Phase 4 — Metrics: fewer fallbacks, one engine decision (F7, F8, F9)
 
+**Status: implemented** (4.3 measured, not adopted).
+- 4.1 and 4.2: done. Removing the two `KNOWN_FALLBACKS` entries first made the
+  six bootstrap plans fail `test_plan_stays_streaming`; the rewrites make
+  them pass. `_UNIT_WEIGHT_BOUNDS` and the slow lane are unchanged.
+- 4.3: the ordered window is 15–35% faster than sort-then-window on the scan
+  alone (2M rows, 1,000 groups), with equal values. It is not adopted.
+  `over()` takes one `descending` for all keys and two callers mix
+  directions; negating a key misplaces NaN. `_lazy_resample` consumes the
+  sorted order. A second scan path for some callers is not worth it. The
+  reasons are recorded in `_grouped_scan.py`.
+- 4.4: there is no helper. "auto" is polars' default, so the rule is simply
+  that the package never chooses an engine:
+  `tests/test_engine_choice.py` (AST scan with fixtures, watched failing on
+  the 14 call sites and on `DetectionTable.collect`'s default) refuses a
+  literal `engine=` keyword or an `engine` parameter defaulting to anything
+  but `"auto"`.
+
 1. **`_sampling_units`.** Change `value.unique().sort()` to
    `value.unique()` in the `agg`, followed by `.list.sort()`. Remove its
    `KnownFallback`. The `test_guard_*` fixtures that use it as "a known

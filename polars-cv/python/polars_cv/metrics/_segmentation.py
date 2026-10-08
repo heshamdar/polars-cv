@@ -204,7 +204,7 @@ class SegmentationReport:
                 pl.col(n).quantile(1.0 - alpha, "linear").alias(f"{n}:hi")
                 for n in names
             ),
-        ).collect(engine="streaming")
+        ).collect()
         bounds = pl.DataFrame(
             {
                 "metric": names,
@@ -282,6 +282,6 @@ def evaluate_segmentation(
             ),
         )
         .unnest("segmentation")
-        .collect(engine="streaming")
+        .collect()
     )
     return SegmentationReport(per_image=per_image)

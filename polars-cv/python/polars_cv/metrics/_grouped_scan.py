@@ -8,6 +8,15 @@ the sort and the windows are native streaming nodes
 an ``agg`` still falls back to the in-memory engine, so per-group scans are
 written here rather than there.
 
+Polars 2.0 also streams an ordered window, ``.over(keys, order_by=...)``,
+with no global sort. It is not used here. ``over`` takes one ``descending``
+flag for all its keys, and callers mix directions (score descending, then a
+tie-break ascending); negating a key instead would misplace NaNs. Several
+callers also consume the sorted order itself (the bootstrap's row index
+seeds its draws). Measured on 2M rows over 1,000 groups, the ordered window
+was 15-35% faster than sort-then-window on the scan alone, which is not
+worth a second scan path that only some callers could take.
+
 **Exact sums** (:func:`exact_sums`) convert each value to Int128 fixed point
 and sum those integers natively in a group-by. The scale is a power of two
 chosen from the frame's largest finite magnitude and its row count, and the

@@ -44,11 +44,27 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   20 ms latency. At 4 threads over loopback with no latency it is −4 to −6%,
   where decoding now shares the cores with the downloads. See
   `benchmarks/reports/2026-10-08-fetch-window`.
+- **Bootstrap intervals ran two steps on Polars' in-memory engine.** The
+  weight cells of each sampling unit (`unique().sort()` inside a group-by)
+  and the entity-to-image expansion for `sample_col=` (a list per entity,
+  exploded per draw) each collected their whole input. They are now a
+  native `unique()` aggregate sorted outside it, and a join, so every
+  bootstrap plan streams; `KNOWN_FALLBACKS` loses both entries. Bounds are
+  unchanged to the ulp (the pinned bounds hold exactly).
 - **The docs claimed polars-cv's fetches shared Polars' concurrency budget.**
   The plugin links its own copy of Polars' I/O layer, so its budget, store
   cache and runtime are its own: `POLARS_CONCURRENCY_BUDGET` bounds polars-cv's
   requests and, separately, Polars' scans. `sources.md` and the `cloud.rs`
   docs now say so.
+
+### Changed
+
+- **The metrics collect with Polars' default engine.** They passed
+  `engine="streaming"` at 14 call sites, which since Polars 2.0 restates the
+  default and overrode a user's `pl.Config.set_engine_affinity`.
+  `DetectionTable.collect(engine=)` defaults to `"auto"` (was
+  `"streaming"`). Results are unchanged; a test refuses any literal engine
+  choice in the package (`test_engine_choice.py`).
 
 ### Internal
 

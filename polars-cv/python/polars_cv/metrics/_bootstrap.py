@@ -866,11 +866,14 @@ def _sampling_units(
         part = [*group_keys, *(c for c in extra if c not in group_keys)]
         meta = _with_weight_clusters(meta, part, weight_rtol)
         value = pl.struct(*extra, _COL_WCLUSTER) if extra else pl.col(_COL_WCLUSTER)
-        # `_cell` stays the last aggregate: the list build is a known streaming
-        # fallback (`tests/_streaming_guard.py`), matched by that position.
         aggs.append((pl.col(COL_WEIGHT).fill_null(1.0) == 0.0).all().alias(_COL_ZERO))
-        aggs.append(value.unique().sort().alias(_COL_CELL))
+        # The distinct cells as a list, sorted outside the aggregation: a
+        # `unique()` aggregate streams natively, a `unique().sort()` one falls
+        # back to the in-memory engine (`tests/test_streaming_plans.py`).
+        aggs.append(value.unique().alias(_COL_CELL))
     units = meta.group_by(_unit_expr(sample_col), *group_keys).agg(*aggs)
+    if strata is not None:
+        units = units.with_columns(pl.col(_COL_CELL).list.sort())
     if sample_col is not None:
         return units
     label = pl.col(COL_GT_LABEL)
@@ -990,20 +993,15 @@ def _resolve_bootstrap_samples(
     if sample_col is None:
         return unit_samples
 
-    # Entity-level: expand each drawn entity to its images within its group.
-    ent_map = (
-        meta.select(unit, *group_keys, COL_IMAGE_ID)
-        .unique()
-        .group_by(unit_col, *group_keys)
-        .agg(pl.col(COL_IMAGE_ID))
-    )
-    return (
-        unit_samples.join(
-            ent_map, on=[unit_col, *group_keys], how="left", nulls_equal=True
-        )
-        .explode(COL_IMAGE_ID, empty_as_null=True)
-        .select(_COL_BOOT, *group_keys, COL_IMAGE_ID, _COL_SLOT)
-    )
+    # Entity-level: expand each drawn entity to its images within its group,
+    # one row per (draw, image). A join, not a list per entity exploded per
+    # draw: a list aggregation falls back to the in-memory engine. A drawn
+    # entity with no image keeps one row with a null image, as the left join
+    # gives.
+    ent_map = meta.select(unit, *group_keys, COL_IMAGE_ID).unique()
+    return unit_samples.join(
+        ent_map, on=[unit_col, *group_keys], how="left", nulls_equal=True
+    ).select(_COL_BOOT, *group_keys, COL_IMAGE_ID, _COL_SLOT)
 
 
 def _bootstrap_table_with_draws(

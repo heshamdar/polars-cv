@@ -309,7 +309,7 @@ metrics/
 - **Cumulative-sum curves**: FROC and LROC use sorted score buckets + cumulative sums to avoid quadratic scaling.
 - **Class-aware**: `class_id` is optional; when present, metric functions include it in `group_by`.
 - **IoU preservation**: IoU values from matching enable re-thresholding without re-running the matcher.
-- **Streaming materialization**: Materialization points use `collect(engine="streaming")`.
+- **Streaming materialization**: Materialization points use polars' default engine (`collect()`; streaming since 2.0, or the user's `set_engine_affinity`). The package never passes a literal `engine=` (`tests/test_engine_choice.py`); `tests/test_streaming_plans.py` holds every plan to the streaming engine.
 
 ## Important Patterns
 
