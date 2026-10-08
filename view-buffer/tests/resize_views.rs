@@ -1,7 +1,9 @@
 //! Resize reads a view whose pixels are packed within each row — a crop, a
-//! vertical flip, both — where it lies, and must produce exactly the bytes
-//! fast_image_resize produces from the same pixels packed into one slice and
-//! read by its own `ImageRef`, independently of the engine's row adapter.
+//! vertical flip, both — where it lies, and must produce exactly the bytes of
+//! the same pixels packed into one slice and resampled independently of the
+//! engine's row reads: by fast_image_resize's own `ImageRef` for the
+//! convolution filters, and by an exact pixel-centre gather for nearest
+//! (which the engine computes in integers, not by fir's floating-point steps).
 //!
 //! Every native fast_image_resize pixel type (u8/u16/f32 × 1–4 channels) and a
 //! rank-2 image are covered, each through downscale and upscale with the
@@ -84,7 +86,34 @@ fn bytes(buf: &ViewBuffer) -> Vec<u8> {
     }
 }
 
-/// fast_image_resize run directly on `packed`'s pixels: the oracle.
+/// Nearest on `packed`'s bytes: output pixel `i` of `n` takes source pixel
+/// `floor((2i + 1) * src / (2n))`, the one under its centre, exactly.
+fn nearest_reference(packed: &ViewBuffer, h: u32, w: u32) -> Vec<u8> {
+    let (src_h, src_w) = (packed.shape()[0], packed.shape()[1]);
+    let pixel = packed.shape().get(2).copied().unwrap_or(1) * packed.dtype().size_of();
+    let all = bytes(packed);
+    let at = |i: usize, src: usize, n: usize| (2 * i + 1) * src / (2 * n);
+    let mut out = Vec::new();
+    for y in 0..h as usize {
+        let r = at(y, src_h, h as usize);
+        for x in 0..w as usize {
+            let start = (r * src_w + at(x, src_w, w as usize)) * pixel;
+            out.extend_from_slice(&all[start..start + pixel]);
+        }
+    }
+    out
+}
+
+/// The oracle for `filter` on `packed`'s pixels.
+fn reference(packed: &ViewBuffer, h: u32, w: u32, filter: FilterType) -> Vec<u8> {
+    match filter {
+        FilterType::Nearest => nearest_reference(packed, h, w),
+        _ => fir_reference(packed, h, w, filter),
+    }
+}
+
+/// fast_image_resize run directly on `packed`'s pixels: the convolution
+/// filters' oracle.
 fn fir_reference(packed: &ViewBuffer, h: u32, w: u32, filter: FilterType) -> Vec<u8> {
     use fir::PixelType as PT;
     let channels = packed.shape().get(2).copied().unwrap_or(1);
@@ -104,7 +133,6 @@ fn fir_reference(packed: &ViewBuffer, h: u32, w: u32, filter: FilterType) -> Vec
         other => unreachable!("no native resize for {other:?}"),
     };
     let algorithm = match filter {
-        FilterType::Nearest => fir::ResizeAlg::Nearest,
         FilterType::Triangle => fir::ResizeAlg::Convolution(fir::FilterType::Bilinear),
         FilterType::Lanczos3 => fir::ResizeAlg::Convolution(fir::FilterType::Lanczos3),
         other => unreachable!("not exercised: {other:?}"),
@@ -155,7 +183,7 @@ fn resizing_a_view_matches_resizing_it_packed() {
                         assert_eq!(got.shape(), shape, "{label}: shape");
                         assert_eq!(got.dtype(), dtype, "{label}: dtype");
                         assert!(
-                            bytes(&got) == fir_reference(&packed, h, w, filter),
+                            bytes(&got) == reference(&packed, h, w, filter),
                             "{label}: pixels differ"
                         );
                     }

@@ -319,7 +319,11 @@ fn convert_to_u8_for_image(buf: ViewBuffer) -> ViewBuffer {
 #[inline]
 fn to_fir_algorithm(filter: &FilterType) -> fir::ResizeAlg {
     match filter {
-        FilterType::Nearest => fir::ResizeAlg::Nearest,
+        // fir steps through source positions in floating point and breaks an
+        // exact pixel-centre tie either way; nearest never reaches it.
+        FilterType::Nearest => unreachable!(
+            "nearest is resampled exactly by `execution::resample::nearest` (resize_strided)"
+        ),
         FilterType::Triangle => fir::ResizeAlg::Convolution(fir::FilterType::Bilinear),
         FilterType::CatmullRom => fir::ResizeAlg::Convolution(fir::FilterType::CatmullRom),
         FilterType::Gaussian => fir::ResizeAlg::Convolution(fir::FilterType::Gaussian),
@@ -329,10 +333,13 @@ fn to_fir_algorithm(filter: &FilterType) -> fir::ResizeAlg {
 
 /// Resize using fast_image_resize with SIMD optimization.
 ///
-/// U8, U16 and F32 with 1–4 channels are fast_image_resize's own pixel types
-/// ([`resize_pixels`]). i8 and i16 are resized as F32 (which holds them
-/// exactly) and cast back; the 32/64-bit integers and f64 are resampled in
-/// f64 by `execution::resample`. The output keeps the input's dtype and rank.
+/// Nearest, of any dtype, is an exact gather (`execution::resample::nearest`):
+/// fir's floating-point source positions break exact pixel-centre ties
+/// either way. For the convolution filters, U8, U16 and F32 with 1–4
+/// channels are fast_image_resize's own pixel types ([`resize_pixels`]). i8
+/// and i16 are resized as F32 (which holds them exactly) and cast back; the
+/// 32/64-bit integers and f64 are resampled in f64 by `execution::resample`.
+/// The output keeps the input's dtype and rank.
 #[cfg(feature = "image_interop")]
 fn resize_strided(
     buf: ViewBuffer,
@@ -342,6 +349,9 @@ fn resize_strided(
 ) -> ViewBuffer {
     use fir::pixels::{F32x2, F32x3, F32x4, U16x2, U16x3, U16x4, U8x2, U8x3, U8x4, F32, U16, U8};
     let (w, h) = (target_width, target_height);
+    if filter == FilterType::Nearest {
+        return super::resample::nearest(&buf, w as usize, h as usize);
+    }
     let channels = buf.shape().get(2).copied().unwrap_or(1);
     match (buf.dtype(), channels) {
         (DType::U8, 1) => resize_pixels::<U8>(buf, w, h, filter),

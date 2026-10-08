@@ -68,7 +68,7 @@ class OpSpec:
     ref: Reference | None = None
     ref_accepts: Callable[[np.ndarray, Params], bool] = _always
     tol: Tol | Callable[[np.ndarray, Params], Tol] = EXACT
-    gain: float | Callable[[Params], float] = 1.0
+    gain: float | Callable[[np.ndarray, Params], float] = 1.0
     kind: str = "pointwise"
     domain_in: str = "buffer"
     domain_out: str = "buffer"
@@ -98,9 +98,9 @@ class OpSpec:
         """The step's own error bound on input *x* with arguments *p*."""
         return self.tol(x, p) if callable(self.tol) else self.tol
 
-    def gain_for(self, p: Params) -> float:
-        """The step's Lipschitz bound with arguments *p*."""
-        return self.gain(p) if callable(self.gain) else self.gain
+    def gain_for(self, x: np.ndarray, p: Params) -> float:
+        """The step's Lipschitz bound on input *x* with arguments *p*."""
+        return self.gain(x, p) if callable(self.gain) else self.gain
 
     def has_reference(self, x: np.ndarray, p: Params) -> bool:
         """Whether the reference models this call on this input.
@@ -142,8 +142,17 @@ def float_out(x: np.ndarray) -> np.dtype:
 
 
 def round_half_away(v: np.ndarray) -> np.ndarray:
-    """Round half away from zero (the engine's float → integer rule)."""
-    return np.sign(v) * np.floor(np.abs(v) + 0.5)
+    """Round half away from zero (the engine's float → integer rule, Rust's
+    ``f64::round``), exactly.
+
+    Not ``floor(|v| + 0.5)``: that addition rounds, so the largest double
+    below 0.5 becomes 1 and an odd integer above 2**52 the even one after it.
+    ``|v| - floor(|v|)`` is exact (the two are within 1 of each other), so the
+    comparison with 0.5 decides the tie, and only the tie.
+    """
+    a = np.abs(v)
+    f = np.floor(a)
+    return np.sign(v) * (f + (a - f >= 0.5))
 
 
 def to_dtype(values: np.ndarray, dtype: np.dtype) -> np.ndarray:
@@ -383,6 +392,16 @@ def _cast_ref(x: np.ndarray, p: Params) -> np.ndarray:
     # Integer to integer is a plain `as`: narrowing wraps (two's complement),
     # which is what NumPy's unsafe astype does too.
     return x.astype(target)
+
+
+def _cast_gain(x: np.ndarray, p: Params) -> float:
+    """1, unless an integer-to-integer cast can wrap: then a one-level error
+    on the input (127 vs 128 into ``i8``) is a 255-level one on the output,
+    so the cast is discontinuous there. A float cast saturates instead."""
+    target = DTYPES[p["dtype"]]
+    if x.dtype.kind in "iu" and target.kind in "iu":
+        return 1.0 if np.can_cast(x.dtype, target, casting="safe") else _INF
+    return 1.0
 
 
 def _cast_ref_accepts(x: np.ndarray, p: Params) -> bool:
@@ -700,26 +719,12 @@ def _nearest_indices(src: int, dst: int) -> np.ndarray:
     """Nearest-neighbour source index per output pixel, in exact arithmetic.
 
     Output pixel ``i`` samples the source pixel under its centre,
-    ``floor((i + 0.5) * src / dst)``. Where that centre falls exactly on a
-    source pixel boundary (a tie) either neighbour is a correct answer, and
-    the engine's choice follows its resizer's floating-point internals rather
-    than any rule (measured: 8 -> 12 takes the lower pixel at 3.0 and the
-    upper at 7.0), so :func:`_nearest_tie_share` excuses exactly those pixels.
+    ``floor((i + 0.5) * src / dst)``; a centre exactly on a source pixel
+    boundary takes the pixel after it. The engine computes the same integers
+    (``view-buffer``'s ``resample::nearest_indices``), so nearest is exact.
     """
     i = np.arange(dst)
     return ((2 * i + 1) * src) // (2 * dst)
-
-
-def _nearest_ties(src: int, dst: int) -> int:
-    """How many of *dst* output pixels sample exactly on a boundary."""
-    i = np.arange(dst)
-    return int(np.count_nonzero(((2 * i + 1) * src) % (2 * dst) == 0))
-
-
-def _nearest_tie_share(h0: int, w0: int, h: int, w: int) -> float:
-    """Fraction of output pixels on a tie row or a tie column."""
-    rows, cols = _nearest_ties(h0, h), _nearest_ties(w0, w)
-    return 1.0 - (1.0 - rows / h) * (1.0 - cols / w)
 
 
 def _pil_resize_premultiplied(
@@ -778,35 +783,10 @@ def _resize_ref_accepts(x: np.ndarray, p: Params) -> bool:
     return x.dtype == np.uint8 or (x.dtype == np.float32 and x.shape[2] in (1, 3))
 
 
-def _resize_target(x: np.ndarray, p: Params) -> tuple[int, int]:
-    """The (height, width) a resize-family call resamples *x* to."""
-    h, w = x.shape[:2]
-    if "max_size" in p:
-        s = Fraction(p["max_size"], max(h, w))
-        return _scaled(h, s), _scaled(w, s)
-    if "min_size" in p:
-        s = Fraction(p["min_size"], min(h, w))
-        return _scaled(h, s), _scaled(w, s)
-    if "scale_x" in p:
-        return _scaled(h, p["scale_y"]), _scaled(w, p["scale_x"])
-    if "value" in p:  # letterbox: the fitted content, before padding
-        s = min(Fraction(p["height"], h), Fraction(p["width"], w))
-        return min(p["height"], _scaled(h, s)), min(p["width"], _scaled(w, s))
-    if "height" in p and "width" in p:
-        return p["height"], p["width"]
-    if "height" in p:
-        return p["height"], _scaled(w, Fraction(p["height"], h))
-    return _scaled(h, Fraction(p["width"], w)), p["width"]
-
-
 def _resize_tol(x: np.ndarray, p: Params) -> Tol:
     flt = p.get("filter")
     if flt == "nearest":
-        h, w = _resize_target(x, p)
-        share = _nearest_tie_share(x.shape[0], x.shape[1], h, w)
-        if "value" in p:  # letterbox: the tie pixels are a share of the content
-            share = min(1.0, share * h * w / (p["height"] * p["width"]))
-        return EXACT if share == 0 else sparse(atol=0, frac=share, frac_atol=math.inf)
+        return EXACT
     if x.dtype == np.uint8 and x.shape[2] in (2, 4):
         # Both sides resample premultiplied, in 8 bits. Un-premultiplied, each
         # side's rounding is scaled by 255 / alpha (3.4x at alpha 74), so no
@@ -1213,7 +1193,7 @@ def _convolve_tol(x: np.ndarray, p: Params) -> Tol:
     return close(atol=16 * eps * weight * magnitude(x), rtol=16 * eps)
 
 
-def _kernel_gain(p: Params) -> float:
+def _kernel_gain(_x: np.ndarray, p: Params) -> float:
     kernel = np.abs(np.asarray(p["kernel"], dtype=np.float64))
     return 1.0 if p["normalize"] else float(kernel.sum())
 
@@ -1519,7 +1499,7 @@ OPS: dict[str, OpSpec] = {
             _cast_params,
             ref=_cast_ref,
             ref_accepts=_cast_ref_accepts,
-            gain=1.0,
+            gain=_cast_gain,
             note="view-buffer/src/core/convert.rs: float -> int rounds half "
             "away from zero and saturates (NaN -> 0); int -> int is a plain "
             "`as`, so narrowing wraps",
@@ -1602,14 +1582,14 @@ OPS: dict[str, OpSpec] = {
             "scale",
             _factor_params,
             ref=_scalar(lambda x, p: x * x.dtype.type(p["factor"])),
-            gain=lambda p: abs(p["factor"]),
+            gain=lambda _x, p: abs(p["factor"]),
             **_float_scalar,
         ),
         _spec(
             "adjust_brightness",
             _brightness_params,
             ref=_scalar(lambda x, p: np.clip(x * x.dtype.type(p["factor"]), 0, 255)),
-            gain=lambda p: abs(p["factor"]),
+            gain=lambda _x, p: abs(p["factor"]),
             note="scale then clamp to [0, 255] whatever the dtype",
             **_float_scalar,
         ),
@@ -1619,7 +1599,7 @@ OPS: dict[str, OpSpec] = {
             ref=_contrast_ref,
             tol=_stat_tol,
             kind="global",
-            gain=lambda p: 2 * abs(p["factor"]) + 1,
+            gain=lambda _x, p: 2 * abs(p["factor"]) + 1,
             note="mean over every element (all channels together)",
         ),
         _spec(
@@ -1931,7 +1911,7 @@ OPS: dict[str, OpSpec] = {
             tol=lambda x, p: _convolve_tol(
                 x, {"kernel": _sharpen_kernel(p["strength"])}
             ),
-            gain=lambda p: 1 + 16 * abs(p["strength"]),
+            gain=lambda _x, p: 1 + 16 * abs(p["strength"]),
             kind="spatial",
         ),
         _spec(

@@ -263,6 +263,14 @@ fn layout_kernels(c: &mut Criterion) {
     bench_sizes(c, "resize_224_u8", rgb, |b| {
         exec(b, |e| e.resize(224, 224, FilterType::Triangle))
     });
+    // Nearest is the engine's own exact gather, not fir's: down and up.
+    bench_sizes(c, "resize_nearest_224_u8", rgb, |b| {
+        exec(b, |e| e.resize(224, 224, FilterType::Nearest))
+    });
+    bench_sizes(c, "resize_nearest_2x_u8", rgb, |b| {
+        let s = b.shape()[0] as u32;
+        exec(b, |e| e.resize(2 * s, 2 * s, FilterType::Nearest))
+    });
     bench_sizes(c, "crop_then_resize_224_u8", rgb, |b| {
         let s = b.shape()[0];
         exec(b, |e| {

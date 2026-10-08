@@ -299,7 +299,7 @@ class ChainChecker:
         self.tol = propagate(
             self.tol,
             own,
-            spec.gain_for(params),
+            spec.gain_for(self.expected, params),
             kind=spec.kind,
             integer_out=np.asarray(expected).dtype.kind in "iu",
         )

@@ -6,9 +6,9 @@
 //! are resampled here instead, with fir's own algorithm in f64:
 //!
 //! - **nearest** is a gather in the image's own dtype ([`nearest`]), so it is
-//!   exact on every dtype; its source positions are fir's
-//!   (`resample_nearest`: the column table by multiplication, the rows by
-//!   accumulated steps);
+//!   exact on every dtype, fir's included: its source positions are computed
+//!   in integers ([`nearest_indices`]), where fir's accumulate floating-point
+//!   steps and break an exact pixel-centre tie either way;
 //! - the **convolution** filters ([`convolve`]) use fir's filter functions
 //!   and `precompute_coefficients` (adaptive kernel width, normalized
 //!   weights, zero weights trimmed from each bound), horizontal pass first as
@@ -16,9 +16,9 @@
 //!   4-channel images as fir does. The result is stored in the input dtype
 //!   by the crate's conversion rule (round, saturate).
 //!
-//! `nearest_matches_fast_image_resize` and
-//! `convolution_matches_fast_image_resize` hold both to fir on the inputs
-//! fir accepts.
+//! `nearest_takes_the_pixel_under_each_centre_exactly` holds nearest to the
+//! pixel-centre rule on every path, and `convolution_matches_fast_image_resize`
+//! holds the convolution to fir on the inputs fir accepts.
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{with_dtype, DType};
@@ -50,37 +50,118 @@ fn dims(buf: &ViewBuffer, target_w: usize, target_h: usize) -> ((usize, usize, u
     ((shape[0], shape[1], c), out)
 }
 
-/// Nearest-neighbour resampling: a gather, in the input's own dtype.
-fn nearest(buf: &ViewBuffer, target_w: usize, target_h: usize) -> ViewBuffer {
+/// The source index each of `dst` output positions samples: the pixel under
+/// its centre, `floor((i + 1/2) * src / dst) = floor((2i + 1) * src / (2 * dst))`,
+/// in integers. A centre exactly on a boundary (`2 -> 21`, row 10 at 1.0)
+/// takes the pixel after it, as exact arithmetic does; a floating-point step
+/// lands on either side of it. Always `< src`, since `2i + 1 < 2 * dst`.
+pub(crate) fn nearest_indices(src: usize, dst: usize) -> Vec<usize> {
+    let (src, dst) = (src as u128, dst as u128);
+    (0..dst)
+        .map(|i| ((2 * i + 1) * src / (2 * dst)) as usize)
+        .collect()
+}
+
+/// Nearest-neighbour resampling of any dtype: a gather of whole pixels at
+/// [`nearest_indices`], in the input's own dtype.
+///
+/// Pure data movement, so it copies each pixel's bytes: a fixed-size copy per
+/// pixel ([`gather`]), and an output row that samples the same source row as
+/// the one before is a copy of it. A view whose pixels are packed within each
+/// row (a crop, a vertical flip) is read where it lies, as fir reads one; any
+/// other layout is packed first.
+pub(crate) fn nearest(buf: &ViewBuffer, target_w: usize, target_h: usize) -> ViewBuffer {
     let ((h, w, c), out_shape) = dims(buf, target_w, target_h);
     if target_w == 0 || target_h == 0 || h == 0 || w == 0 {
         return with_dtype!(buf.dtype(), T => ViewBuffer::from_vec_with_shape(Vec::<T>::new(), out_shape));
     }
-    // fir's positions: the centre of each output pixel, mapped back.
-    let x_scale = w as f64 / target_w as f64;
-    let y_scale = h as f64 / target_h as f64;
-    let x_start = x_scale * 0.5;
-    let cols: Vec<usize> = (0..target_w)
-        .map(|x| ((x_start + x_scale * x as f64) as usize).min(w - 1))
+    let rows = nearest_indices(h, target_h);
+    let packed;
+    let src = if buf.layout_facts().is_dense_rows() {
+        buf
+    } else {
+        packed = buf.to_contiguous();
+        &packed
+    };
+    let pixel = c * src.dtype().size_of();
+    let offsets: Vec<usize> = nearest_indices(w, target_w)
+        .into_iter()
+        .map(|x| x * pixel)
         .collect();
-    let mut rows = Vec::with_capacity(target_h);
-    let mut y = y_scale * 0.5;
-    for _ in 0..target_h {
-        rows.push((y as usize).min(h - 1));
-        y += y_scale;
-    }
-    let contig = buf.to_contiguous();
-    with_dtype!(buf.dtype(), T => {
-        let src = contig.as_slice::<T>();
-        let mut out: Vec<T> = Vec::with_capacity(target_w * target_h * c);
-        for &r in &rows {
-            for &col in &cols {
-                let at = (r * w + col) * c;
-                out.extend_from_slice(&src[at..at + c]);
+    let row_bytes = target_w * pixel;
+    with_dtype!(src.dtype(), T => {
+        let src_rows = src
+            .dense_rows::<T>()
+            .expect("a contiguous buffer has packed rows");
+        let len = target_h * target_w * c;
+        let mut out: Vec<T> = Vec::with_capacity(len);
+        // Written row by row below, every byte once, before `set_len`: no
+        // zeroing pass over an output this loop overwrites entirely.
+        let base: *mut u8 = out.as_mut_ptr().cast();
+        for (y, &r) in rows.iter().enumerate() {
+            // SAFETY: row `y` is `row_bytes` inside the `len * size_of::<T>()`
+            // bytes reserved; each branch writes all of it, from bytes it
+            // reads in bounds (the previous output row, already written, or a
+            // source row checked by slicing).
+            unsafe {
+                let dst = base.add(y * row_bytes);
+                if y > 0 && rows[y - 1] == r {
+                    std::ptr::copy_nonoverlapping(dst.sub(row_bytes), dst, row_bytes);
+                } else if target_w == w {
+                    let row = &bytes(src_rows[r])[..row_bytes];
+                    std::ptr::copy_nonoverlapping(row.as_ptr(), dst, row_bytes);
+                } else {
+                    gather(bytes(src_rows[r]), &offsets, pixel, dst);
+                }
             }
         }
+        // SAFETY: every one of the `len` elements was written above.
+        unsafe { out.set_len(len) };
         ViewBuffer::from_vec_with_shape(out, out_shape)
     })
+}
+
+/// Write the `pixel`-byte pixels of `row` starting at `offsets` to `dst`,
+/// one after another, one fixed-size copy each for the common pixel sizes.
+///
+/// # Safety
+/// `dst` must be valid for writes of `offsets.len() * pixel` bytes. Every
+/// read is bounds-checked against `row`.
+unsafe fn gather(row: &[u8], offsets: &[usize], pixel: usize, dst: *mut u8) {
+    #[inline(always)]
+    unsafe fn fixed<const N: usize>(row: &[u8], offsets: &[usize], dst: *mut u8) {
+        for (i, &at) in offsets.iter().enumerate() {
+            let px: &[u8; N] = row[at..at + N].try_into().expect("N bytes");
+            // SAFETY: pixel `i` of `offsets.len()` is inside `dst` (caller).
+            unsafe { std::ptr::copy_nonoverlapping(px.as_ptr(), dst.add(i * N), N) };
+        }
+    }
+    // SAFETY: forwarded from the caller.
+    unsafe {
+        match pixel {
+            1 => fixed::<1>(row, offsets, dst),
+            2 => fixed::<2>(row, offsets, dst),
+            3 => fixed::<3>(row, offsets, dst),
+            4 => fixed::<4>(row, offsets, dst),
+            6 => fixed::<6>(row, offsets, dst),
+            8 => fixed::<8>(row, offsets, dst),
+            12 => fixed::<12>(row, offsets, dst),
+            16 => fixed::<16>(row, offsets, dst),
+            _ => {
+                for (i, &at) in offsets.iter().enumerate() {
+                    let px = &row[at..at + pixel];
+                    std::ptr::copy_nonoverlapping(px.as_ptr(), dst.add(i * pixel), pixel);
+                }
+            }
+        }
+    }
+}
+
+/// The bytes of `values`.
+fn bytes<T: crate::core::dtype::ViewType>(values: &[T]) -> &[u8] {
+    // SAFETY: a `ViewType` is a plain numeric type (no padding, every bit
+    // pattern a value), and `u8` needs no alignment.
+    unsafe { std::slice::from_raw_parts(values.as_ptr().cast(), std::mem::size_of_val(values)) }
 }
 
 /// One output position's taps: the first input index and its weights.
@@ -268,6 +349,7 @@ fn lanczos3(x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::convert::CastFrom;
     use crate::{ImageOp, ImageOpKind, ViewDto, ViewExpr};
 
     /// fir's own resize, through the engine's u8/f32 path.
@@ -289,19 +371,42 @@ mod tests {
     const SIZES: [(usize, usize); 4] = [(1, 1), (3, 5), (7, 4), (9, 9)];
     const TARGETS: [(usize, usize); 5] = [(1, 1), (2, 3), (5, 8), (13, 6), (16, 16)];
 
+    /// Output pixel `i` of `dst` takes the source pixel under its centre,
+    /// `floor((i + 1/2) * src / dst)`, exactly: a centre on a boundary (a
+    /// tie, e.g. row 10 of 2 -> 21 at exactly 1.0) takes the pixel after it.
+    /// Through the public resize, on a native fir dtype (u8), on f32, and on
+    /// i32 (the f64 resampler), with each pixel's value its source index.
     #[test]
-    fn nearest_matches_fast_image_resize() {
-        for (h, w) in SIZES {
-            for c in 1..=4 {
-                let buf = ViewBuffer::from_vec_with_shape(pattern(h * w * c), vec![h, w, c]);
-                for (th, tw) in TARGETS {
-                    let ours = nearest(&buf, tw, th);
-                    let fir = fir_resize(buf.clone(), tw as u32, th as u32, FilterType::Nearest);
-                    assert_eq!(
-                        ours.as_slice::<u8>(),
-                        fir.to_contiguous().as_slice::<u8>(),
-                        "{h}x{w}x{c} -> {th}x{tw}"
+    fn nearest_takes_the_pixel_under_each_centre_exactly() {
+        let exact = |i: usize, src: usize, dst: usize| (2 * i + 1) * src / (2 * dst);
+        for src in 1..=24 {
+            let rows: Vec<usize> = (0..src).collect();
+            let column = |dtype: DType| -> ViewBuffer {
+                with_dtype!(dtype, T => ViewBuffer::from_vec_with_shape(
+                    rows.iter().map(|&r| T::cast_from(r as f64)).collect::<Vec<T>>(),
+                    vec![src, 1, 1],
+                ))
+            };
+            for dst in 1..=24 {
+                for dtype in [DType::U8, DType::F32, DType::I32] {
+                    // Rows: an `src x 1` column of row indices; columns: its transpose.
+                    let tall = fir_resize(column(dtype), 1, dst as u32, FilterType::Nearest);
+                    let wide = fir_resize(
+                        column(dtype).reshape(vec![1, src, 1]),
+                        dst as u32,
+                        1,
+                        FilterType::Nearest,
                     );
+                    let expect: Vec<f64> = (0..dst).map(|i| exact(i, src, dst) as f64).collect();
+                    for (axis, out) in [("rows", tall), ("cols", wide)] {
+                        let got: Vec<f64> = with_dtype!(dtype, T => out
+                            .to_contiguous()
+                            .as_slice::<T>()
+                            .iter()
+                            .map(|&v| f64::cast_from(v))
+                            .collect());
+                        assert_eq!(got, expect, "{dtype:?} {axis}: {src} -> {dst}");
+                    }
                 }
             }
         }
