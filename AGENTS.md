@@ -359,12 +359,10 @@ current instead.
 should have but does not — are pinned executably in
 `polars-cv/tests/test_known_gaps.py`, one `xfail(strict=True)` each, so a fix
 turns the suite red rather than passing unnoticed; prefer adding an entry there
-to extending a prose list. No gap is open (the planned-size defects closed in
-0.29.0 with rank-N planned shapes). The
-broader structural-review backlog — dead code, duplicate declarations, coverage
-holes — lives in the root `CODE_REVIEW_FINDINGS.md` ledger with a stable id per
-item, since most of those are cleanups rather than xfail-able wrong-behaviour
-defects.
+to extending a prose list. Everything else open (cleanups, coverage holes,
+performance gaps, pending decisions and upstream drafts, most of which are not
+xfail-able wrong behaviour) lives in the root `ISSUES.md` ledger with a stable
+`CR-NN` id per item; a pinned defect is listed there too.
 
 (An earlier version of this section claimed the two items below were each pinned
 in `test_known_gaps.py`. They were not — one was a missing feature, the other a

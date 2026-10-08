@@ -66,7 +66,7 @@ results equal to `comm_subexpr_elim=False` under both engines).
 ### Out-of-core spilling
 
 In polars-ooc 0.54 the `DataFrame` spill backend was an in-memory stub (see
-`../2026-06-27-polars-0.54-upgrade`). In 0.55 it is real. Past the memory
+`benchmarks/reports/2026-06-27-polars-0.54-upgrade` in git history). In 0.55 it is real. Past the memory
 budget, `sort`, `group_by`, joins and windows write Arrow IPC to
 `POLARS_OOC_SPILL_DIR` and read it back.
 

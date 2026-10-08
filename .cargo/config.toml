@@ -1,7 +1,7 @@
 # Local-dev SIMD flags — x86_64 hosts only.
 #
-# Enables AVX2/BMI2/FMA auto-vectorization. Measured in release (CR-35 in
-# CODE_REVIEW_FINDINGS.md), only the separable blur gains from it, and blur
+# Enables AVX2/BMI2/FMA auto-vectorization. Measured in release (CR-35, see
+# ISSUES.md), only the separable blur gains from it, and blur
 # now dispatches to an AVX2 build at runtime, so the baseline wheels get that
 # gain too. Grayscale, threshold, the fused kernel, cast and resize are as fast
 # or faster at the SSE2 baseline the published wheels use.

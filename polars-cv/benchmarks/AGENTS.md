@@ -66,9 +66,9 @@ benchmarks/
 │   ├── relevance.py                # Changed files -> selection (--changed)
 │   ├── config.py                   # Regression thresholds + config
 │   └── README.md                   # Regression framework docs
-└── reports/                        # Dated benchmark runs + analysis writeups
-    └── 2026-06-12-streaming-analysis/  # main vs OpenCV/Pillow/torchvision,
-                                        # streaming-engine deep dive, raw JSON
+└── reports/                        # Dated benchmark runs + analysis writeups,
+                                    # kept while they back an unreleased change
+                                    # or a test; older ones are in git history
 ```
 
 ## Frameworks Compared

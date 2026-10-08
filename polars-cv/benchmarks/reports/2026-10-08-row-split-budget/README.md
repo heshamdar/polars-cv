@@ -1,4 +1,4 @@
-# Row splitting from a plugin-wide budget (Phase 1 of `POLARS_2_PLAN.md`)
+# Row splitting from a plugin-wide budget (Phase 1 of the Polars 2.0 plan, PR #124)
 
 Base-vs-head gate for `9e0426f` ("Row splitting decides from what runs now,
 never from history").
