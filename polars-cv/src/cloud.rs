@@ -41,8 +41,9 @@
 //!
 //! The plugin runs **one** async runtime, polars' `ASYNC` (sized by
 //! `POLARS_ASYNC_THREAD_COUNT`), which polars-io's stores already spawn onto
-//! (DNS resolution, credential refresh). Every future here is driven by
-//! `ASYNC.block_on`; `clippy.toml` refuses building another runtime
+//! (DNS resolution, credential refresh). Every read here runs there:
+//! `fetch::Fetcher` spawns each one on it ([`read_remote_budgeted`]), and
+//! `clippy.toml` refuses building another runtime
 //! (`tests/test_async_runtime.py` counts the threads).
 //!
 //! `CloudOptions.config` is a generic pass-through map keyed by
@@ -61,7 +62,6 @@
 //!   `external_account_authorized_user` Application Default Credentials): mint
 //!   a token out of band and hand it over directly.
 
-use futures::StreamExt;
 use object_store::aws::AmazonS3ConfigKey;
 use object_store::azure::AzureConfigKey;
 use object_store::gcp::GoogleConfigKey;
@@ -70,7 +70,6 @@ use object_store::ObjectStoreExt;
 use polars::io::cloud::{build_object_store, CloudOptions as PlCloudOptions, CloudType};
 use polars::io::pl_async::with_concurrency_budget;
 use polars_utils::pl_path::{CloudScheme, PlRefPath};
-use pyo3_polars::export::polars_core::runtime::ASYNC;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -82,9 +81,6 @@ use url::Url;
 pub enum CloudError {
     #[error("Failed to parse URL: {0}")]
     UrlParse(String),
-
-    #[error("Unsupported URL scheme: {0}")]
-    UnsupportedScheme(String),
 
     #[error("Failed to read file: {0}")]
     ReadError(String),
@@ -288,39 +284,34 @@ fn polars_options(
     }
 }
 
-/// Read a file from a path (local, cloud, or HTTP URL).
+/// One remote read under one permit of the concurrency budget: what
+/// `fetch::Fetcher` spawns per distinct path, and the only way the plugin
+/// reaches the network.
 ///
-/// # Arguments
-/// * `path` - The file path (local path, or URL like s3://, gs://, az://, http://, https://)
-/// * `options` - Optional cloud configuration
+/// **The bound is across calls, not per call.** The fan-out used to be a
+/// constant 16 *per invocation*, and the streaming engine invokes the plugin
+/// once per morsel concurrently across threads — so the real number of
+/// in-flight requests was (morsels in flight x 16), unbounded by anything the
+/// user could see or set. Every request takes one permit from polars-io's
+/// semaphore, so the plugin's fetches, whatever calls they come from, stay
+/// inside `POLARS_CONCURRENCY_BUDGET` (default: `max(rayon threads, 10)`).
+/// That semaphore is the plugin's copy: the host's scans count against their
+/// own (see the module docs).
 ///
-/// # Returns
-/// The file contents as bytes.
-pub fn read_file(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudError> {
-    // Try to parse as URL first
-    if let Ok(url) = Url::parse(path) {
-        match url.scheme() {
-            "file" => read_local_path(path),
-            "http" | "https" | "s3" | "s3a" | "gs" | "gcs" | "az" | "azure" | "abfs" | "abfss"
-            | "adl" => {
-                // One permit, exactly as the batched path takes: a single read
-                // and a read inside a batch cost the process the same thing.
-                ASYNC.block_on(with_concurrency_budget(1, || read_remote(path, options)))
-            }
-            scheme => Err(CloudError::UnsupportedScheme(scheme.to_string())),
-        }
-    } else {
-        // Not a valid URL, treat as local path
-        read_local_path(path)
-    }
+/// **There is no barrier.** Reads were once fetched in waves of 16 scoped
+/// threads, each wave joined before the next, so the slowest file stalled its
+/// wave. Each read is now its own task that takes a permit when one frees.
+pub(crate) async fn read_remote_budgeted(
+    path: &str,
+    options: Option<&CloudOptions>,
+) -> Result<Vec<u8>, String> {
+    with_concurrency_budget(1, || read_remote(path, options))
+        .await
+        .map_err(|e| e.to_string())
 }
 
-/// Read one remote file, whichever scheme names it.
-///
-/// The single async remote read. Both entry points funnel through it — the
-/// one-off [`read_file`] and the batched [`read_files_concurrent`] — so a change
-/// to auth, retries or error text lands for both, and neither can acquire a
-/// concurrency permit the other does not.
+/// Read one remote file, whichever scheme names it: the single async remote
+/// read, so a change to auth, retries or error text lands for every caller.
 async fn read_remote(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudError> {
     if path.starts_with("http://") || path.starts_with("https://") {
         read_http(path).await
@@ -500,67 +491,6 @@ async fn read_http(url: &str) -> Result<Vec<u8>, CloudError> {
     }
 }
 
-/// Fetch many files concurrently, bounded by the plugin-wide budget.
-///
-/// Each path is fetched with the same logic (and credentials) as [`read_file`];
-/// results are keyed by path, errors carried per path as strings. Graph
-/// execution uses this to prefetch a batch's remote sources before the row loop,
-/// converting per-row network latency into per-batch latency.
-///
-/// Two things changed here when the stores moved to `polars-io`, and both matter
-/// under the streaming engine rather than in a single eager call.
-///
-/// **The bound is global, not per call.** It used to be a constant 16 *per
-/// invocation*, and the streaming engine invokes the plugin once per morsel
-/// concurrently across threads — so the real number of in-flight requests was
-/// (morsels in flight x 16), unbounded by anything the user could see or set.
-/// Every request now takes one permit from polars-io's semaphore, so the
-/// plugin's fetches, whatever calls they come from, stay inside
-/// `POLARS_CONCURRENCY_BUDGET` (default: `max(rayon threads, 10)`). That
-/// semaphore is the plugin's copy: the host's scans count against their own
-/// (see the module docs).
-///
-/// **There is no barrier.** The old shape spawned a chunk of 16 scoped OS
-/// threads and joined *all* of them before starting the next chunk, so the
-/// slowest file in each wave stalled the wave. `buffer_unordered` starts the
-/// next file the moment any one finishes; results are keyed by path, so
-/// completion order carries no information.
-///
-/// The local `buffer_unordered` width is the batch size rather than a second
-/// constant: a future that has not acquired a permit is parked on the semaphore,
-/// costing a wait-list entry, and re-deriving the budget here would make this a
-/// second authority for the one number the change exists to centralise.
-pub fn read_files_concurrent(
-    paths: &[String],
-    options: Option<&CloudOptions>,
-) -> HashMap<String, Result<Vec<u8>, String>> {
-    // Fetch each distinct path once, even when many rows repeat it.
-    let unique: Vec<&str> = {
-        let mut seen = std::collections::HashSet::new();
-        paths
-            .iter()
-            .map(String::as_str)
-            .filter(|p| seen.insert(*p))
-            .collect()
-    };
-    if unique.is_empty() {
-        return HashMap::new();
-    }
-
-    let width = unique.len();
-    ASYNC.block_on(async move {
-        futures::stream::iter(unique.into_iter().map(|path| async move {
-            let result = with_concurrency_budget(1, || read_remote(path, options))
-                .await
-                .map_err(|e| e.to_string());
-            (path.to_string(), result)
-        }))
-        .buffer_unordered(width)
-        .collect::<HashMap<String, Result<Vec<u8>, String>>>()
-        .await
-    })
-}
-
 /// Check if a path is a remote URL (cloud storage or HTTP).
 ///
 /// Returns true for:
@@ -586,6 +516,7 @@ pub fn is_remote_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pyo3_polars::export::polars_core::runtime::ASYNC;
 
     #[test]
     fn test_is_remote_path() {
@@ -610,7 +541,7 @@ mod tests {
         let test_path = temp_dir.join("polars_cv_test.txt");
         std::fs::write(&test_path, b"test content").unwrap();
 
-        let result = read_file(test_path.to_str().unwrap(), None);
+        let result = read_local_path(test_path.to_str().unwrap());
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), b"test content");
 
@@ -838,14 +769,16 @@ mod tests {
         // An unrecognized key should fail loudly at build time rather than be
         // silently dropped.
         //
-        // Driven through the user-facing `read_file` rather than a helper: the
+        // Driven through the one remote read rather than a helper: the
         // point is that the *query* fails, and polars' own `parse_untyped_config`
         // would silently drop this key, so what is pinned here is our check
         // sitting in front of it. No store is built and no network is touched —
         // validation happens first — which is also what keeps this hermetic in a
         // shared test process.
         let opts = CloudOptions::from_map(&map(&[("not_a_real_key", "x")]));
-        let err = read_file("gs://bucket/obj.png", Some(&opts)).unwrap_err();
+        let err = ASYNC
+            .block_on(read_remote("gs://bucket/obj.png", Some(&opts)))
+            .unwrap_err();
         assert!(
             matches!(err, CloudError::StoreError(_)),
             "expected StoreError, got {err:?}"
@@ -859,7 +792,9 @@ mod tests {
         // must reject it (before any network I/O) rather than silently ignore a
         // credential the user believes is in effect.
         let opts = CloudOptions::from_map(&map(&[("token_command", "printf tok")]));
-        let err = read_file("s3://bucket/obj.png", Some(&opts)).unwrap_err();
+        let err = ASYNC
+            .block_on(read_remote("s3://bucket/obj.png", Some(&opts)))
+            .unwrap_err();
         assert!(
             matches!(err, CloudError::StoreError(_)),
             "expected StoreError, got {err:?}"
@@ -933,7 +868,7 @@ mod tests {
     #[ignore]
     fn test_read_http_image() {
         // Test with httpbin's PNG image endpoint
-        let result = read_file("https://httpbin.org/image/png", None);
+        let result = ASYNC.block_on(read_remote("https://httpbin.org/image/png", None));
         assert!(result.is_ok());
         // PNG files start with these magic bytes
         let bytes = result.unwrap();

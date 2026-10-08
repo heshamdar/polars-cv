@@ -1,0 +1,13 @@
+  remote_local_paths: BenchmarkResult(polars-cv-eager: 1084.6 img/s, 0.92 ms/img, 294.2 MB)
+  remote_http_paths: BenchmarkResult(polars-cv-eager: 452.5 img/s, 2.21 ms/img, 290.0 MB)
+  remote_http_read_bytes: BenchmarkResult(polars-cv-eager: 465.1 img/s, 2.15 ms/img, 258.5 MB)
+
+========================================================================
+operation                        img/s      ms/img     peak MB
+------------------------------------------------------------------------
+remote_local_paths              1084.6       0.922       294.2
+remote_http_paths                452.5       2.210       290.0
+remote_http_read_bytes           465.1       2.150       258.5
+------------------------------------------------------------------------
+connections=0 requests=1200 (inf requests/connection; 1.00 means no reuse, inf means every request rode a pooled connection)
+fetch concurrency is polars' process-wide budget (POLARS_CONCURRENCY_BUDGET, default max(rayon threads, 10))

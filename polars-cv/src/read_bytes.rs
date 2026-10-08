@@ -66,23 +66,20 @@ fn read_file_bytes(inputs: &[Series], kwargs: ReadBytesKwargs) -> PolarsResult<S
         )
     })?;
 
-    // Same batching as the `file_path` source: this call's remote paths are
-    // deduped and fetched concurrently up front, local ones read per row.
+    // The same fetch window as the `file_path` source: remote rows fetch
+    // ahead as the column is read, local ones are read per row.
     let policy = kwargs
         .allowed_roots
         .as_deref()
         .map(fetch::PathPolicy::new)
         .unwrap_or_default();
-    let batch = fetch::prefetch(ca, options.as_ref(), &policy);
+    let fetcher = fetch::Fetcher::new(ca, options.as_ref(), &policy);
 
     let mut builder = BinaryChunkedBuilder::new(name, ca.len());
-    for path in ca.iter() {
-        let Some(path) = path else {
-            builder.append_null();
-            continue;
-        };
-        match fetch::row_bytes(&batch, path, options.as_ref(), &policy) {
-            Ok(bytes) => builder.append_value(bytes.as_ref()),
+    for row in 0..ca.len() {
+        match fetcher.bytes(row) {
+            Ok(Some(bytes)) => builder.append_value(&*bytes),
+            Ok(None) => builder.append_null(),
             Err(_) if null_on_error => builder.append_null(),
             Err(e) => return Err(polars_err!(ComputeError: "{}", e)),
         }

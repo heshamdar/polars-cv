@@ -158,11 +158,11 @@ struct ExecState<'a> {
     /// Output specs with `"auto"` dtype/ndim resolved from the input column
     /// type, sorted by alias.
     resolved_outputs: Vec<(String, OutputSpec)>,
-    /// Bytes of this batch's remote `file_path` sources, fetched concurrently
-    /// up front (node_id → batch). Converts per-row network latency into
-    /// per-batch latency; per-path errors surface at their row so the usual
-    /// error policies apply.
-    prefetched: Vec<Option<crate::fetch::FetchedBatch>>,
+    /// Each path-reading (`file_path`, or `"auto"` over a `String` column)
+    /// node's fetch window over this call's column, aligned with `plan`.
+    /// Per-path errors surface at their row so the usual error policies
+    /// apply.
+    fetchers: Vec<Option<crate::fetch::Fetcher<'a>>>,
     /// The concrete source each `"auto"` source node reads this batch's column
     /// as ([`Source::route`]), aligned with `plan`. The column dtype is
     /// constant across rows, so this is taken once per batch; a routing error
@@ -332,7 +332,7 @@ impl CompiledGraph {
         let state = ExecState {
             inputs,
             resolved_outputs,
-            prefetched: self.prefetch_remote_sources(inputs),
+            fetchers: self.fetchers(inputs),
             routed_sources: self.route_auto_sources(inputs),
             output_nodes,
         };
@@ -716,9 +716,7 @@ impl CompiledGraph {
                             &inputs[col_idx],
                             row_idx,
                             RowFetch {
-                                cloud_options: np.cloud_options.as_ref(),
-                                path_policy: &np.path_policy,
-                                prefetched: state.prefetched[idx].as_ref(),
+                                fetcher: state.fetchers[idx].as_ref(),
                             },
                         )
                     });
@@ -1119,19 +1117,17 @@ impl CompiledGraph {
             .collect()
     }
 
-    /// Concurrently fetch every remote `file_path` source in this batch.
+    /// The fetch window of every path-reading node over this call's column.
     ///
-    /// Per-call (per morsel) and derived only from this batch's path values —
-    /// nothing here is cached on the compiled graph. Distinct paths are
-    /// fetched once; wrong-dtype columns are skipped so the row loop reports
-    /// them with its usual error message. `"auto"` nodes are included too: an
-    /// auto source over a `String` column resolves to `file_path`, and the
-    /// `series.str()` check below naturally skips auto nodes bound to any other
-    /// column type. Aligned with `plan`.
-    fn prefetch_remote_sources(
-        &self,
-        inputs: &[Series],
-    ) -> Vec<Option<crate::fetch::FetchedBatch>> {
+    /// Per call (per morsel) and derived only from this call's path values —
+    /// nothing here is cached on the compiled graph. Building one makes no
+    /// request; rows fetch ahead as they run (`crate::fetch`). Wrong-dtype
+    /// columns get none, so the row loop reports them with its usual error
+    /// message. `"auto"` nodes are included too: an auto source over a
+    /// `String` column resolves to `file_path`, and the `series.str()` check
+    /// below skips auto nodes bound to any other column type. Aligned with
+    /// `plan`.
+    fn fetchers<'a>(&'a self, inputs: &'a [Series]) -> Vec<Option<crate::fetch::Fetcher<'a>>> {
         self.plan
             .iter()
             .map(|np| {
@@ -1139,7 +1135,7 @@ impl CompiledGraph {
                     return None;
                 }
                 let ca = inputs.get(np.column?)?.str().ok()?;
-                Some(crate::fetch::prefetch(
+                Some(crate::fetch::Fetcher::new(
                     ca,
                     np.cloud_options.as_ref(),
                     &np.path_policy,

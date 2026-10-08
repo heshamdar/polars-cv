@@ -80,6 +80,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<output::ArrowBytes>()?;
     m.add_function(wrap_pyfunction!(output::binary_rows, m)?)?;
     m.add_function(wrap_pyfunction!(_last_split_workers, m)?)?;
+    m.add_function(wrap_pyfunction!(_last_fetch_peak_resident, m)?)?;
     Ok(())
 }
 
@@ -90,6 +91,14 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[pyfunction]
 fn _last_split_workers() -> usize {
     row_split::last_split_workers()
+}
+
+/// The most fetched remote bodies the most recent fetching call held at once
+/// (`fetch`): lets a Python test bound a call's memory at the user-facing
+/// entry point.
+#[pyfunction]
+fn _last_fetch_peak_resident() -> usize {
+    fetch::last_peak_resident()
 }
 
 // ============================================================================

@@ -20,13 +20,12 @@ use super::encode::{
 use super::sink_kind::SinkKind;
 use super::types::{OutputSpec, RowResult};
 
-/// What a path-based source (`file_path`) needs to fetch a row's bytes: the
-/// node's cloud options and path sandbox, and the remote bytes this call
-/// prefetched for the node's column.
+/// What a path-based source (`file_path`) reads a row's bytes through: this
+/// call's [`Fetcher`](crate::fetch::Fetcher) for the node's column (its cloud
+/// options and path sandbox included). `None` when the column holds no paths,
+/// which a `file_path` source then refuses.
 pub(crate) struct RowFetch<'a> {
-    pub(crate) cloud_options: Option<&'a crate::cloud::CloudOptions>,
-    pub(crate) path_policy: &'a crate::fetch::PathPolicy,
-    pub(crate) prefetched: Option<&'a crate::fetch::FetchedBatch>,
+    pub(crate) fetcher: Option<&'a crate::fetch::Fetcher<'a>>,
 }
 
 /// Decode row `row` of a root node's column through its concrete `source`
@@ -72,18 +71,14 @@ pub(crate) fn decode_source_row(
             let Some(path) = ca.get(row) else {
                 return Ok(None);
             };
-            // Stage 1: bytes. Remote paths were fetched concurrently before
-            // the row loop; local files are read inline.
-            let empty;
-            let batch = match fetch.prefetched {
-                Some(b) => b,
-                None => {
-                    empty = crate::fetch::FetchedBatch::empty();
-                    &empty
-                }
+            // Stage 1: bytes, from the call's fetch window (local files are
+            // read inline).
+            let fetcher = fetch.fetcher.ok_or_else(|| {
+                format!("internal: file_path source '{node_id}' has no fetcher for its column")
+            })?;
+            let Some(bytes) = fetcher.bytes(row)? else {
+                return Ok(None);
             };
-            let bytes =
-                crate::fetch::row_bytes(batch, path, fetch.cloud_options, fetch.path_policy)?;
             // Stage 2: the contents decode like image bytes.
             decode_image_bytes(&bytes, source)
                 .map(buffer)

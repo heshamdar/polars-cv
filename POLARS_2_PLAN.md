@@ -126,6 +126,25 @@ about 5–6 s).
 
 ### Phase 2 — Remote fetch is a bounded window, overlapped with decode (F3, F2)
 
+**Status: implemented.** `fetch::Fetcher` (one per call and path column)
+replaces `prefetch`/`FetchedBatch` for all three consumers. A row starts its
+own fetch and the next `get_concurrency_limit()` rows' fetches, each its own
+abortable task on `ASYNC`, and waits only for its own. A body is freed after
+its last row. The window is per row thread, with no range plumbing: a
+thread's window can reach into the next range, which only means that range
+finds its first rows already fetched.
+
+The `bytes`-ahead peak was measured at the user-facing entry point
+(`_lib._last_fetch_peak_resident`; `tests/test_fetch_window.py` was watched
+failing at 64/64 and 128/128 resident, and now passes at 3–7). Dedup is held
+(one request per distinct path per call). The test-design note above about
+server-side counting gave way to that hook: a server cannot see consumption.
+
+Gate (`benchmarks/reports/2026-10-08-fetch-window`): remote `file_path`
++51–61% at 1 thread; with 20 ms latency +43–45% / +6% at 1 / 4 threads.
+At 4 threads with no latency −4 to −6% (decode now shares the cores with the
+downloads). Connection reuse is unchanged.
+
 **Root cause.** "Prefetch the call" was written when a call was assumed to be
 small. Under 2.0 a call is a row group (F2), and under eager it is the whole
 column.

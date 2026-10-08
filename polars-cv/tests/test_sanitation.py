@@ -519,6 +519,9 @@ def test_registry_parity_no_dead_contracts():
 
 
 _REQUIRED_LIB_HOOKS = (
+    # The most fetched remote bodies one call held at once, read by
+    # `test_fetch_window.py`.
+    "_last_fetch_peak_resident",
     # How many workers ran the most recent call's rows, read by
     # `test_an_eager_call_after_a_streaming_run_uses_the_pool`.
     "_last_split_workers",

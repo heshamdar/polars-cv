@@ -11,13 +11,23 @@
 //! a credential fix, a retry policy — lands once and applies to both, and the
 //! error text a user sees is the same either way.
 //!
-//! # Batching
+//! # A window ahead of the rows
 //!
-//! Fetching is **per plugin call**, which under the streaming engine is one
-//! morsel: [`prefetch`] dedups the call's remote paths and fetches them
-//! concurrently up front, converting per-row network latency into per-call
-//! latency. Local paths are not touched there — [`row_bytes`] reads them inline
-//! per row, so only one local file is resident at a time.
+//! Fetching is **per plugin call** — one morsel under the streaming engine,
+//! which for a Parquet scan is a whole row group, and the whole column under
+//! the in-memory engine. A [`Fetcher`] covers one call's path column. When a
+//! row asks for its bytes ([`Fetcher::bytes`]), the fetcher starts fetching
+//! that row's remote path and those of the next rows up to polars'
+//! concurrency budget (`pl_async::get_concurrency_limit`, set by
+//! `POLARS_CONCURRENCY_BUDGET`) on polars' `ASYNC` runtime, then waits for its
+//! own. Each row thread therefore keeps a window of fetches in flight just
+//! ahead of what it decodes. Network time overlaps decoding, and a call holds
+//! a window's worth of encoded images rather than all of them. Each distinct
+//! path is fetched once per call; its body is freed when the last row naming
+//! it has read it. Local paths are read inline per row, one at a time.
+//!
+//! It used to fetch every remote path of the call before the first row
+//! decoded (`tests/test_fetch_window.py`).
 //!
 //! # Security
 //!
@@ -36,11 +46,15 @@
 //! from a field somewhere: a caller that forgets it does not silently get the
 //! unrestricted behaviour, it fails to compile.
 
-use std::borrow::Cow;
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
+use futures::future::AbortHandle;
 use polars::prelude::*;
+use pyo3_polars::export::polars_core::runtime::ASYNC;
 
 use crate::cloud::{self, CloudOptions};
 
@@ -227,123 +241,295 @@ impl PathPolicy {
     }
 }
 
-/// One call's fetched remote bytes for a single path column (path → result).
+/// One call's fetches for one path column: a window ahead of its rows (see
+/// the module docs).
 ///
-/// Errors are carried per path rather than raised, so each surfaces at the row
-/// that asked for it and the caller's error policy applies as usual.
-#[derive(Default)]
-pub struct FetchedBatch {
-    remote: HashMap<String, Result<Vec<u8>, String>>,
+/// Built per call; building reads only the column (which rows name which
+/// distinct remote path), so it makes no request. Shared by every thread that
+/// runs the call's rows. Dropping it aborts the fetches no row waited for.
+pub struct Fetcher<'a> {
+    ca: &'a StringChunked,
+    policy: &'a PathPolicy,
+    /// Per row, the index in `entries` of its remote path, when the policy
+    /// admits it; `None` for a null, local or refused path. A refused path is
+    /// never requested: the point of a sandbox is that the request is not
+    /// made, and [`Fetcher::bytes`] reports the refusal for the row.
+    slots: Vec<Option<usize>>,
+    /// One per distinct remote path.
+    entries: Vec<Arc<Entry>>,
+    shared: Arc<Shared>,
+    /// How many rows past the one being read a read starts fetching: polars'
+    /// concurrency budget, which also bounds the requests in flight.
+    window: usize,
 }
 
-impl FetchedBatch {
-    /// An empty batch — nothing prefetched, every path read inline.
-    pub fn empty() -> Self {
-        Self::default()
-    }
+/// What a call's in-flight fetches share with it.
+struct Shared {
+    options: Option<CloudOptions>,
+    /// Fetched bodies held now, and the most held at once.
+    resident: AtomicUsize,
+    peak: AtomicUsize,
 }
 
-/// Dedup and concurrently fetch the remote paths in `ca`.
-///
-/// Local paths are deliberately skipped: [`row_bytes`] reads them inline, which
-/// keeps at most one local file in memory instead of the whole call's worth.
-/// A column with no remote paths yields an empty batch and costs nothing.
-/// `policy` is required rather than optional so a new caller cannot reach the
-/// network by omitting it. Denied paths are filtered out here — the point of a
-/// sandbox is that the request is never made — and [`row_bytes`] then produces
-/// the refusal for the row that asked, so the message is written once.
-pub fn prefetch(
-    ca: &StringChunked,
-    options: Option<&CloudOptions>,
-    policy: &PathPolicy,
-) -> FetchedBatch {
-    let remote: Vec<String> = ca
-        .iter()
-        .flatten()
-        .filter(|p| cloud::is_remote_path(p) && policy.check(p).is_ok())
-        .map(str::to_string)
-        .collect();
-    if remote.is_empty() {
-        return FetchedBatch::empty();
-    }
-    FetchedBatch {
-        // `read_files_concurrent` dedups internally, so repeated paths across
-        // rows are fetched once.
-        remote: cloud::read_files_concurrent(&remote, options),
-    }
+/// One distinct remote path of a call.
+struct Entry {
+    path: String,
+    /// Rows that have yet to read this path. The body is freed when the last
+    /// one has.
+    uses_left: AtomicUsize,
+    state: Mutex<State>,
+    done: Condvar,
 }
 
-/// Bytes for one row's path.
-///
-/// Remote paths come from `batch`; a miss falls back to an inline fetch rather
-/// than failing, so a caller that prefetched a different column (or skipped
-/// prefetching entirely) still works. Local paths are read here.
-///
-/// Borrows prefetched bytes and owns freshly-read ones, so the common remote
-/// path stays copy-free.
-pub fn row_bytes<'a>(
-    batch: &'a FetchedBatch,
-    path: &str,
-    options: Option<&CloudOptions>,
-    policy: &PathPolicy,
-) -> Result<Cow<'a, [u8]>, String> {
-    // Every read in the plugin passes through here, so this is the check that
-    // makes the policy total: the local branch below has no other gate, and the
-    // remote branch can fall back to an inline fetch that `prefetch` never saw.
-    policy.check(path)?;
-    if cloud::is_remote_path(path) {
-        return match batch.remote.get(path) {
-            Some(Ok(bytes)) => Ok(Cow::Borrowed(bytes.as_slice())),
-            Some(Err(e)) => Err(format!("Failed to read remote file '{path}': {e}")),
-            // Defensive: every remote path in the call is prefetched, but fall
-            // back to an inline fetch rather than miss.
-            None => cloud::read_file(path, options)
-                .map(Cow::Owned)
-                .map_err(|e| format!("Failed to read remote file '{path}': {e}")),
-        };
-    }
-    // Already known non-remote: read the path `cloud::local_file_path`
-    // resolves, as the policy check above judged it. (Routing through the
-    // general `read_file` would re-parse a bare colon-bearing filename as a
-    // bogus cloud URL.)
-    cloud::read_local_path(path)
-        .map(Cow::Owned)
-        .map_err(|e| format!("Failed to read local file '{path}': {e}"))
+enum State {
+    /// Not requested yet.
+    Idle,
+    /// Requested; the handle aborts it if the call ends first.
+    Fetching(AbortHandle),
+    /// Fetched (or failed), awaiting the rows that read it.
+    Done(Result<Arc<Vec<u8>>, String>),
+    /// Every row that names it has read it.
+    Released,
 }
 
-/// Read one row's path only as far as `parse` needs: `parse` over the
-/// file's leading bytes, `None` when it cannot tell from them.
-///
-/// A local file is read in a growing prefix (64 KiB, then four times as much
-/// each time `parse` cannot tell yet) until `parse` answers or the file ends —
-/// an image header is usually in the first few KiB, but a JPEG's frame header
-/// may sit behind large EXIF/comment segments. A remote file is the whole
-/// object from `batch` ([`row_bytes`]): ranged reads would nest the store's
-/// concurrency permits (`cloud::read_object`). The [`PathPolicy`] check is
-/// [`row_bytes`]'s, applied to both.
-pub fn row_header<T>(
-    batch: &FetchedBatch,
-    path: &str,
-    options: Option<&CloudOptions>,
-    policy: &PathPolicy,
-    parse: impl Fn(&[u8]) -> Option<T>,
-) -> Result<Option<T>, String> {
-    if cloud::is_remote_path(path) {
-        return row_bytes(batch, path, options, policy).map(|bytes| parse(&bytes));
+impl Entry {
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
-    policy.check(path)?;
-    let mut limit = 64 * 1024;
-    loop {
-        let (bytes, eof) = cloud::read_local_prefix(path, limit)
-            .map_err(|e| format!("Failed to read local file '{path}': {e}"))?;
-        if let Some(found) = parse(&bytes) {
-            return Ok(Some(found));
+
+    /// Start fetching, on polars' runtime, unless already started.
+    fn start(self: &Arc<Self>, shared: &Arc<Shared>) {
+        let mut state = self.lock();
+        if !matches!(*state, State::Idle) {
+            return;
         }
-        if eof {
+        let (entry, shared) = (Arc::clone(self), Arc::clone(shared));
+        let (fetch, handle) = futures::future::abortable(async move {
+            let result = cloud::read_remote_budgeted(&entry.path, shared.options.as_ref()).await;
+            entry.finish(result, &shared);
+        });
+        *state = State::Fetching(handle);
+        drop(state);
+        drop(ASYNC.spawn(fetch));
+    }
+
+    fn finish(&self, result: Result<Vec<u8>, String>, shared: &Shared) {
+        let mut state = self.lock();
+        if !matches!(*state, State::Fetching(_)) {
+            return;
+        }
+        if result.is_ok() {
+            let now = shared.resident.fetch_add(1, Ordering::SeqCst) + 1;
+            shared.peak.fetch_max(now, Ordering::SeqCst);
+        }
+        *state = State::Done(result.map(Arc::new));
+        self.done.notify_all();
+    }
+
+    /// The fetched body, once fetched. The entry must have been started.
+    fn wait(&self) -> Result<Arc<Vec<u8>>, String> {
+        let mut state = self.lock();
+        loop {
+            match &*state {
+                State::Done(result) => return result.clone(),
+                State::Fetching(_) => {
+                    state = self.done.wait(state).unwrap_or_else(|p| p.into_inner());
+                }
+                State::Idle | State::Released => {
+                    return Err(format!(
+                        "internal: '{}' read outside its fetch window",
+                        self.path
+                    ))
+                }
+            }
+        }
+    }
+
+    /// One row has read this path; free the body after the last.
+    fn release_one(&self, shared: &Shared) {
+        if self.uses_left.fetch_sub(1, Ordering::SeqCst) != 1 {
+            return;
+        }
+        let mut state = self.lock();
+        if matches!(*state, State::Done(Ok(_))) {
+            shared.resident.fetch_sub(1, Ordering::SeqCst);
+        }
+        *state = State::Released;
+    }
+}
+
+impl<'a> Fetcher<'a> {
+    /// The fetcher for `ca`, a call's path column.
+    ///
+    /// `policy` is required rather than optional so a new caller cannot reach
+    /// the network by omitting it.
+    pub fn new(
+        ca: &'a StringChunked,
+        options: Option<&CloudOptions>,
+        policy: &'a PathPolicy,
+    ) -> Self {
+        let mut index: HashMap<&str, usize> = HashMap::new();
+        let mut entries: Vec<Arc<Entry>> = Vec::new();
+        let slots = ca
+            .iter()
+            .map(|path| {
+                let path = path.filter(|p| cloud::is_remote_path(p) && policy.check(p).is_ok())?;
+                let slot = *index.entry(path).or_insert_with(|| {
+                    entries.push(Arc::new(Entry {
+                        path: path.to_string(),
+                        uses_left: AtomicUsize::new(0),
+                        state: Mutex::new(State::Idle),
+                        done: Condvar::new(),
+                    }));
+                    entries.len() - 1
+                });
+                entries[slot].uses_left.fetch_add(1, Ordering::Relaxed);
+                Some(slot)
+            })
+            .collect();
+        Fetcher {
+            ca,
+            policy,
+            slots,
+            entries,
+            shared: Arc::new(Shared {
+                options: options.cloned(),
+                resident: AtomicUsize::new(0),
+                peak: AtomicUsize::new(0),
+            }),
+            window: polars::io::pl_async::get_concurrency_limit().max(1) as usize,
+        }
+    }
+
+    /// Row `row`'s bytes: `None` for a null path.
+    ///
+    /// Every read in the plugin passes through here (or [`Fetcher::header`]),
+    /// so the policy check here is what makes the sandbox total. A remote
+    /// path's bytes are shared, not copied; a local file is read now.
+    pub fn bytes(&self, row: usize) -> Result<Option<Bytes<'_>>, String> {
+        let Some(path) = self.ca.get(row) else {
             return Ok(None);
+        };
+        self.policy.check(path)?;
+        if !cloud::is_remote_path(path) {
+            // Already known non-remote: read the path `cloud::local_file_path`
+            // resolves, as the policy check above judged it. (Routing it
+            // through a URL parser would read a bare colon-bearing filename as
+            // a bogus cloud URL.)
+            return cloud::read_local_path(path)
+                .map(|b| Some(Bytes::Local(b)))
+                .map_err(|e| format!("Failed to read local file '{path}': {e}"));
         }
-        limit = limit.saturating_mul(4);
+        let entry = self.slots[row]
+            .map(|slot| &self.entries[slot])
+            .ok_or_else(|| format!("internal: remote path '{path}' has no fetch"))?;
+        for ahead in row..(row + 1 + self.window).min(self.slots.len()) {
+            if let Some(slot) = self.slots[ahead] {
+                self.entries[slot].start(&self.shared);
+            }
+        }
+        match entry.wait() {
+            Ok(body) => Ok(Some(Bytes::Remote(RemoteBytes {
+                body,
+                entry,
+                shared: &self.shared,
+            }))),
+            Err(e) => {
+                entry.release_one(&self.shared);
+                Err(format!("Failed to read remote file '{path}': {e}"))
+            }
+        }
     }
+
+    /// Read row `row`'s path only as far as `parse` needs: `parse` over the
+    /// file's leading bytes, `None` when it cannot tell from them or the path
+    /// is null.
+    ///
+    /// A local file is read in a growing prefix (64 KiB, then four times as
+    /// much each time `parse` cannot tell yet) until `parse` answers or the
+    /// file ends — an image header is usually in the first few KiB, but a
+    /// JPEG's frame header may sit behind large EXIF/comment segments. A
+    /// remote file is the whole object ([`Fetcher::bytes`]): ranged reads
+    /// would nest the store's concurrency permits (`cloud::read_object`).
+    /// The [`PathPolicy`] check applies to both.
+    pub fn header<T>(
+        &self,
+        row: usize,
+        parse: impl Fn(&[u8]) -> Option<T>,
+    ) -> Result<Option<T>, String> {
+        let Some(path) = self.ca.get(row) else {
+            return Ok(None);
+        };
+        if cloud::is_remote_path(path) {
+            return self.bytes(row).map(|bytes| bytes.and_then(|b| parse(&b)));
+        }
+        self.policy.check(path)?;
+        let mut limit = 64 * 1024;
+        loop {
+            let (bytes, eof) = cloud::read_local_prefix(path, limit)
+                .map_err(|e| format!("Failed to read local file '{path}': {e}"))?;
+            if let Some(found) = parse(&bytes) {
+                return Ok(Some(found));
+            }
+            if eof {
+                return Ok(None);
+            }
+            limit = limit.saturating_mul(4);
+        }
+    }
+}
+
+impl Drop for Fetcher<'_> {
+    fn drop(&mut self) {
+        for entry in &self.entries {
+            if let State::Fetching(handle) = &*entry.lock() {
+                handle.abort();
+            }
+        }
+        if !self.entries.is_empty() {
+            LAST_PEAK_RESIDENT.store(self.shared.peak.load(Ordering::SeqCst), Ordering::SeqCst);
+        }
+    }
+}
+
+/// One row's bytes: a fetched remote body (shared with the call's other rows
+/// naming the same path) or a local file read for this row.
+pub enum Bytes<'f> {
+    Remote(RemoteBytes<'f>),
+    Local(Vec<u8>),
+}
+
+/// A fetched body held for one row; dropping it counts the row as read.
+pub struct RemoteBytes<'f> {
+    body: Arc<Vec<u8>>,
+    entry: &'f Arc<Entry>,
+    shared: &'f Shared,
+}
+
+impl Drop for RemoteBytes<'_> {
+    fn drop(&mut self) {
+        self.entry.release_one(self.shared);
+    }
+}
+
+impl Deref for Bytes<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Bytes::Remote(remote) => remote.body.as_slice(),
+            Bytes::Local(bytes) => bytes,
+        }
+    }
+}
+
+/// The most fetched remote bodies one call held at once, for the most recent
+/// call that fetched any (`_lib._last_fetch_peak_resident`).
+static LAST_PEAK_RESIDENT: AtomicUsize = AtomicUsize::new(0);
+
+/// See [`LAST_PEAK_RESIDENT`].
+pub(crate) fn last_peak_resident() -> usize {
+    LAST_PEAK_RESIDENT.load(Ordering::SeqCst)
 }
 
 /// What an unreadable path does to the query.
@@ -399,8 +585,62 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    fn empty_string_ca() -> StringChunked {
-        StringChunked::from_iter_options("paths".into(), std::iter::empty::<Option<&str>>())
+    fn column(paths: &[Option<&str>]) -> StringChunked {
+        StringChunked::from_iter_options("paths".into(), paths.iter().copied())
+    }
+
+    /// One path read through a one-row call's fetcher, as every consumer
+    /// reads it.
+    fn read(path: &str, policy: &PathPolicy) -> Result<Option<Vec<u8>>, String> {
+        let ca = column(&[Some(path)]);
+        let fetcher = Fetcher::new(&ca, None, policy);
+        fetcher.bytes(0).map(|b| b.map(|b| b.to_vec()))
+    }
+
+    /// A loopback HTTP server answering every GET with `body`, and how many
+    /// requests it has answered.
+    fn serve(body: &'static [u8]) -> (String, Arc<AtomicUsize>) {
+        use std::io::{BufRead, BufReader};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&hits);
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let hits = Arc::clone(&counted);
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut stream = stream;
+                    loop {
+                        // One request: lines up to the blank one.
+                        let mut line = String::new();
+                        let mut saw_request = false;
+                        loop {
+                            line.clear();
+                            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                                return;
+                            }
+                            if line == "\r\n" {
+                                break;
+                            }
+                            saw_request = true;
+                        }
+                        if !saw_request {
+                            return;
+                        }
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        let head =
+                            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+                        if stream.write_all(head.as_bytes()).is_err()
+                            || stream.write_all(body).is_err()
+                        {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        (base, hits)
     }
 
     fn policy(roots: &[&str]) -> PathPolicy {
@@ -485,16 +725,10 @@ mod tests {
         std::fs::write(&outside, b"secret").unwrap();
         let escape = format!("file://anyhost{}", outside.display());
         assert!(p.check(&escape).is_err(), "{escape}");
-        let err = row_bytes(&FetchedBatch::empty(), &escape, None, &p).unwrap_err();
+        let err = read(&escape, &p).unwrap_err();
         assert!(!err.contains("secret"), "{err}");
         // Unrestricted, a host still names no local file: refused, not guessed.
-        assert!(row_bytes(
-            &FetchedBatch::empty(),
-            &escape,
-            None,
-            &PathPolicy::default()
-        )
-        .is_err());
+        assert!(read(&escape, &PathPolicy::default()).is_err());
         std::fs::remove_file(&outside).ok();
 
         // A percent-encoded file URL is the decoded file, for both.
@@ -504,9 +738,7 @@ mod tests {
         let p = policy(&[root.to_str().unwrap()]);
         let url = format!("file://{}/a%20b.bin", root.display());
         assert!(p.check(&url).is_ok(), "{url}");
-        let batch = FetchedBatch::empty();
-        let bytes = row_bytes(&batch, &url, None, &p).unwrap();
-        assert_eq!(&*bytes, b"spaced");
+        assert_eq!(read(&url, &p).unwrap().unwrap(), b"spaced");
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -519,34 +751,26 @@ mod tests {
     }
 
     #[test]
-    fn prefetch_does_not_fetch_a_denied_remote_path() {
-        // The point of a sandbox is that the request is never made. A denied
-        // path must not reach `read_files_concurrent` at all, so it is absent
-        // from the batch rather than present with an error.
-        let ca = StringChunked::from_iter_options(
-            "paths".into(),
-            [Some("s3://blocked/a.png")].into_iter(),
-        );
-        let batch = prefetch(&ca, None, &policy(&["s3://allowed/"]));
-        assert!(batch.remote.is_empty());
+    fn a_denied_remote_path_is_never_fetched() {
+        // The point of a sandbox is that the request is never made: a denied
+        // path gets no fetch at all, and its row reports the refusal.
+        let ca = column(&[Some("s3://blocked/a.png")]);
+        let p = policy(&["s3://allowed/"]);
+        let fetcher = Fetcher::new(&ca, None, &p);
+        assert!(fetcher.entries.is_empty());
+        let err = fetcher.bytes(0).err().unwrap();
+        assert!(err.contains("is not permitted"), "{err}");
     }
 
     #[test]
-    fn row_bytes_refuses_a_denied_path_before_reading() {
+    fn a_denied_local_path_is_refused_before_reading() {
         let dir = std::env::temp_dir().join("polars_cv_policy_deny");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("readable.bin");
         std::fs::write(&path, b"payload").unwrap();
 
         // The file exists and is readable; only the policy stands in the way.
-        let batch = FetchedBatch::empty();
-        let err = row_bytes(
-            &batch,
-            path.to_str().unwrap(),
-            None,
-            &policy(&["/some/other/root"]),
-        )
-        .unwrap_err();
+        let err = read(path.to_str().unwrap(), &policy(&["/some/other/root"])).unwrap_err();
         assert!(err.contains("is not permitted"), "{err}");
         assert!(
             err.contains("allowed_roots"),
@@ -557,20 +781,16 @@ mod tests {
     }
 
     #[test]
-    fn prefetch_skips_columns_without_remote_paths() {
-        let ca = StringChunked::from_iter_options(
-            "paths".into(),
-            [Some("/tmp/a.png"), None, Some("relative/b.png")].into_iter(),
-        );
-        let batch = prefetch(&ca, None, &PathPolicy::default());
-        assert!(batch.remote.is_empty());
-        assert!(prefetch(&empty_string_ca(), None, &PathPolicy::default())
-            .remote
-            .is_empty());
+    fn local_and_null_paths_make_no_fetch() {
+        let ca = column(&[Some("/tmp/a.png"), None, Some("relative/b.png")]);
+        let p = PathPolicy::default();
+        assert!(Fetcher::new(&ca, None, &p).entries.is_empty());
+        assert!(Fetcher::new(&column(&[]), None, &p).entries.is_empty());
+        assert!(Fetcher::new(&ca, None, &p).bytes(1).unwrap().is_none());
     }
 
     #[test]
-    fn row_bytes_reads_local_files_verbatim() {
+    fn local_files_are_read_verbatim() {
         let dir = std::env::temp_dir().join("polars_cv_fetch_local");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("bytes.bin");
@@ -581,58 +801,89 @@ mod tests {
             .write_all(&payload)
             .unwrap();
 
-        let batch = FetchedBatch::empty();
-        let got = row_bytes(&batch, path.to_str().unwrap(), None, &PathPolicy::default()).unwrap();
-        assert_eq!(got.as_ref(), payload.as_slice());
-
+        let p = PathPolicy::default();
+        assert_eq!(read(path.to_str().unwrap(), &p).unwrap().unwrap(), payload);
         // The `file://` form resolves to the same file.
         let uri = format!("file://{}", path.to_str().unwrap());
-        assert_eq!(
-            row_bytes(&batch, &uri, None, &PathPolicy::default())
-                .unwrap()
-                .as_ref(),
-            &payload[..]
-        );
+        assert_eq!(read(&uri, &p).unwrap().unwrap(), payload);
 
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
-    fn row_bytes_reports_missing_local_files() {
-        let batch = FetchedBatch::empty();
-        let err = row_bytes(
-            &batch,
-            "/nonexistent/polars-cv/missing.png",
-            None,
-            &PathPolicy::default(),
-        )
-        .unwrap_err();
+    fn a_missing_local_file_is_reported() {
+        let err = read("/nonexistent/polars-cv/missing.png", &PathPolicy::default()).unwrap_err();
         assert!(err.contains("Failed to read local file"), "{err}");
         assert!(err.contains("missing.png"), "{err}");
     }
 
     #[test]
-    fn row_bytes_surfaces_prefetched_errors() {
-        let batch = FetchedBatch {
-            remote: HashMap::from([(
-                "s3://bucket/key.png".to_string(),
-                Err("access denied".to_string()),
-            )]),
-        };
-        let err =
-            row_bytes(&batch, "s3://bucket/key.png", None, &PathPolicy::default()).unwrap_err();
-        assert!(err.contains("Failed to read remote file"), "{err}");
-        assert!(err.contains("access denied"), "{err}");
+    fn a_failed_fetch_is_reported_at_its_row() {
+        // An S3 store refuses a bearer-token command before any request.
+        let ca = column(&[Some("s3://bucket/key.png")]);
+        let options = CloudOptions::from_map(&HashMap::from([(
+            "token_command".to_string(),
+            "printf tok".to_string(),
+        )]));
+        let p = PathPolicy::default();
+        let fetcher = Fetcher::new(&ca, Some(&options), &p);
+        let err = fetcher.bytes(0).err().unwrap();
+        assert!(
+            err.contains("Failed to read remote file 's3://bucket/key.png'"),
+            "{err}"
+        );
+        assert!(err.contains("S3 does not"), "{err}");
     }
 
+    /// Rows naming one path share one fetch and one body, which is freed once
+    /// the last of them has read it.
     #[test]
-    fn row_bytes_borrows_prefetched_bytes() {
-        let batch = FetchedBatch {
-            remote: HashMap::from([("s3://bucket/key.png".to_string(), Ok(vec![1, 2, 3]))]),
-        };
-        let got = row_bytes(&batch, "s3://bucket/key.png", None, &PathPolicy::default()).unwrap();
-        assert!(matches!(got, Cow::Borrowed(_)));
-        assert_eq!(got.as_ref(), &[1, 2, 3]);
+    fn rows_naming_one_path_share_one_fetch() {
+        let (base, hits) = serve(b"body");
+        let (a, b) = (format!("{base}/a.png"), format!("{base}/b.png"));
+        let ca = column(&[Some(&a), Some(&b), Some(&a)]);
+        let p = PathPolicy::default();
+        let fetcher = Fetcher::new(&ca, None, &p);
+        assert_eq!(fetcher.entries.len(), 2);
+        let first = fetcher.bytes(0).unwrap().unwrap();
+        let again = fetcher.bytes(2).unwrap().unwrap();
+        assert_eq!(&*first, b"body");
+        assert_eq!(
+            first.as_ptr(),
+            again.as_ptr(),
+            "one body, not a copy per row"
+        );
+        drop((first, again));
+        assert_eq!(&*fetcher.bytes(1).unwrap().unwrap(), b"body");
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            fetcher.shared.resident.load(Ordering::SeqCst),
+            0,
+            "all freed"
+        );
+    }
+
+    /// A read fetches its own row and the window after it: never more, and
+    /// the window does fill.
+    #[test]
+    fn a_read_fetches_its_window_ahead() {
+        let (base, hits) = serve(b"x");
+        let window = polars::io::pl_async::get_concurrency_limit() as usize;
+        let urls: Vec<String> = (0..window + 8).map(|i| format!("{base}/{i}.png")).collect();
+        let ca = column(&urls.iter().map(|u| Some(u.as_str())).collect::<Vec<_>>());
+        let p = PathPolicy::default();
+        let fetcher = Fetcher::new(&ca, None, &p);
+        drop(fetcher.bytes(0).unwrap());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while hits.load(Ordering::SeqCst) < window + 1 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the window never filled"
+            );
+            std::thread::yield_now();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(hits.load(Ordering::SeqCst), window + 1);
     }
 
     #[test]

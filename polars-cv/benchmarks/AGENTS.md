@@ -26,8 +26,8 @@ This directory contains a comprehensive benchmarking suite for comparing polars-
 - GPU-based augmentation pipelines
 - Real S3/GCS/Azure endpoints. Those need credentials and a bucket, so they
   cannot be a committed benchmark. `remote_source.py` measures the structure
-  they share — one client built and one GET issued per file, batched by
-  `fetch::prefetch` — with the wide-area latency removed, and can inject a
+  they share — one client built and one GET issued per file, windowed by
+  `fetch::Fetcher` — with the wide-area latency removed, and can inject a
   synthetic latency (`--latency-ms`) when the point is to model the link.
 
 ## Directory Structure

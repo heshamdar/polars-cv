@@ -31,6 +31,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   Every remote read now runs on Polars' runtime alone, sized by
   `POLARS_ASYNC_THREAD_COUNT` (default `min(POLARS_MAX_THREADS, 32)`), and a
   root `clippy.toml` refuses building another (`test_async_runtime.py`).
+- **A call held every remote file it read before decoding any.** Remote
+  paths (`file_path` sources, `.cv.read_bytes()`, the header-only
+  `.cv.width()` and friends) were all fetched before the call's first row.
+  Under Polars 2.0's streaming default a call is a morsel, and a Parquet
+  morsel is a whole row group, so thousands of encoded images could be
+  resident at once, with no download overlapping a decode. Each row now
+  fetches its own path and the next rows' up to `POLARS_CONCURRENCY_BUDGET`
+  ahead, and a body is freed after the last row naming it has read it. Each
+  distinct path is still fetched once per call. Benchmark profile: remote
+  `file_path` +51–61% at 1 thread, and +43–45% / +6% at 1 / 4 threads with
+  20 ms latency. At 4 threads over loopback with no latency it is −4 to −6%,
+  where decoding now shares the cores with the downloads. See
+  `benchmarks/reports/2026-10-08-fetch-window`.
 - **The docs claimed polars-cv's fetches shared Polars' concurrency budget.**
   The plugin links its own copy of Polars' I/O layer, so its budget, store
   cache and runtime are its own: `POLARS_CONCURRENCY_BUDGET` bounds polars-cv's
@@ -41,6 +54,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 - The direct `tokio` dependency and `CloudError::RuntimeError` are removed
   (nothing builds a runtime any more).
+- `fetch::prefetch`/`FetchedBatch`/`row_bytes`/`row_header`,
+  `cloud::read_file`, `cloud::read_files_concurrent` and
+  `CloudError::UnsupportedScheme` are removed. `fetch::Fetcher` replaces them,
+  and `cloud::read_remote_budgeted` is the one remote read. Gone with them:
+  the "fetch inline when a row is missing from the batch" fallback, which no
+  row can reach any more, and `read_file`'s second list of remote schemes
+  (`is_remote_path` is the one).
+- `_lib._last_fetch_peak_resident()` reports the most fetched bodies the most
+  recent call held at once, read by `test_fetch_window.py`.
 - `row_split::CallTracker`, `Call::spreads` and the `geom_calls!` macro are
   removed, with the `calls` parameter every geometry row loop took. The
   budget replaces them (`row_split::split`).

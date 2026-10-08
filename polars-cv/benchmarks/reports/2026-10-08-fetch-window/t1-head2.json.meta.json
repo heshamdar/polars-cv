@@ -1,0 +1,26 @@
+{
+  "git_sha": "67f656bb7f4b1a2b19c4ad322562b3155c226650",
+  "debug_build": false,
+  "build_profile": "benchmark",
+  "selection": "remote",
+  "timestamp_utc": "2026-10-08T06:28:56.803899+00:00",
+  "num_threads": 1,
+  "adapters": [
+    "polars-cv-eager",
+    "polars-cv-streaming"
+  ],
+  "config": {
+    "image_counts": [
+      300
+    ],
+    "image_sizes": [
+      [
+        256,
+        256
+      ]
+    ],
+    "warmup_iterations": 3,
+    "benchmark_iterations": 10,
+    "suite_repeats": 3
+  }
+}
