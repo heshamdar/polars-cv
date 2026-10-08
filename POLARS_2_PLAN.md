@@ -72,6 +72,18 @@ Deletions land in the same commit as the mechanism that replaces them.
 
 ### Phase 1 — Row splitting decides from the present, never from history (F1)
 
+**Status: implemented** (candidate (a), extended so a running call keeps
+inviting idle threads before each range). A call runs its ranges on its own
+thread; idle pool threads join while the plugin-wide `BUSY` count is under
+the pool size, and leave after a range that finds it over. Tests
+`a_lone_call_spreads_whatever_ran_before` and
+`a_call_beside_a_small_call_takes_the_idle_threads` were watched failing on
+the old tracker; `test_an_eager_call_after_a_streaming_run_uses_the_pool`
+was watched failing with helpers disabled. Debug-build timings: eager after
+streaming 18.1 s → 4.6 s; uneven row groups 13.5 s → 4.8 s. The
+benchmark-profile gate (4 threads, interleaved) is recorded in
+`benchmarks/reports/` when run.
+
 **Root cause.** Whether a call spreads is inferred from a `static`/cached
 history bit. That bit carries state between unrelated queries, between
 engines, and (since 0.34) between rebuilt expressions.
@@ -191,10 +203,8 @@ large single call.
    `engine="streaming"` arguments are deleted. Enforce it with a ruff
    `banned-api`-style check, or the existing structural lane, rejecting
    `engine=` in `python/polars_cv` outside the helper (with fixtures).
-   **Decision needed (see below):** should the helper pin `"streaming"`, or
-   pass `"auto"`, which is streaming in 2.0 and honours the user's
-   `set_engine_affinity`? `DetectionTable.collect(engine=)` follows the
-   same choice.
+   The helper passes `"auto"` (see *Decisions*), and
+   `DetectionTable.collect(engine=)` defaults to it.
 
 `group_objects` stays a fallback. Polars cannot build an ordered list inside
 a streaming group-by. A `struct(row, …).unique()` followed by `list.sort()`
@@ -249,14 +259,13 @@ In `docs/user-guide/concepts/streaming.md`:
 | 6 | Docs + one test | S | After 1 (uses its counter) |
 | 7 | Upstream | — | Any time |
 
-## Decision needed
+## Decisions
 
-**Metrics engine (Phase 4.4):** pin `engine="streaming"` in the one helper
-(today's behaviour), or pass `"auto"`, which is streaming by default in 2.0
-but follows `pl.Config.set_engine_affinity`. I recommend `"auto"`. Polars
-now owns the default, and a user who sets an affinity (for example in-memory
-while debugging) expects it to apply. The no-fallback guards keep collecting
-with `engine="streaming"`, so streaming coverage is unaffected.
+**Metrics engine (Phase 4.4): `"auto"`** (user, 2026-10-08). The one collect
+helper passes `"auto"`, which is streaming by default in 2.0 and follows
+`pl.Config.set_engine_affinity`; `DetectionTable.collect(engine=)` defaults
+to `"auto"` too. The no-fallback guards keep collecting with
+`engine="streaming"`, so streaming coverage is unaffected.
 
 ## Reproducing the measurements
 

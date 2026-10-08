@@ -15,7 +15,7 @@ import pytest
 
 from polars_cv import Pipeline, numpy_from_struct
 
-from .conftest import plugin_required
+from .conftest import make_test_png, plugin_required
 
 N = 300
 BAD_EARLY, BAD_LATE = 120, 250
@@ -81,3 +81,24 @@ class TestParallelRows:
         ]
         assert "magic" in errors[BAD_EARLY]
         assert "too short" in errors[BAD_LATE]
+
+    def test_an_eager_call_after_a_streaming_run_uses_the_pool(self) -> None:
+        """How many threads a call gets depends on what runs now, not on what
+        ran before. A streaming run's morsels overlap; the eager call after it
+        runs alone and must spread. It used to inherit the overlap and run on
+        one thread (3.9x slower on four cores)."""
+        import polars_cv._lib as lib
+
+        if pl.thread_pool_size() < 2:
+            pytest.skip("the pool has a single thread")
+        images = [
+            make_test_png(96, 96, (i % 256, (3 * i) % 256, (7 * i) % 256))
+            for i in range(64)
+        ]
+        df = pl.DataFrame({"image": images})
+        pipe = Pipeline().source("image_bytes").resize(height=64, width=64).blur(1.5)
+        expr = pl.col("image").cv.pipe(pipe).sink("numpy").alias("o")
+        streamed = df.lazy().select(expr).collect(engine="streaming")
+        eager = df.select(expr)
+        assert lib._last_split_workers() > 1
+        assert eager.equals(streamed)

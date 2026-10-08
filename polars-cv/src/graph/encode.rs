@@ -248,7 +248,7 @@ fn flat_values(
     rows: &[TypedListRow],
     dtype: DType,
     null_fill: Option<usize>,
-    split: Option<&Split<'_>>,
+    split: Option<&Split>,
 ) -> PolarsResult<Box<dyn polars_arrow::array::Array>> {
     use polars_arrow::array::PrimitiveArray;
     // Checked before anything is written, so a bad row cannot leave the
@@ -312,7 +312,7 @@ fn fill_rows<T: view_buffer::core::ViewType + Default + Send>(
     rows: &[TypedListRow],
     starts: &[usize],
     out: &mut [MaybeUninit<T>],
-    split: Option<&Split<'_>>,
+    split: Option<&Split>,
 ) {
     /// `out`, shared by the row ranges. Each writes only its own rows'
     /// slots, which do not overlap.
@@ -371,7 +371,7 @@ pub(super) fn build_typed_list_series_from_rows_with_dtype(
     dtype: PlannedDType,
     expected_shape: Option<&Vec<usize>>,
     expected_ndim: Option<usize>,
-    split: Option<&Split<'_>>,
+    split: Option<&Split>,
 ) -> PolarsResult<Series> {
     use polars_arrow::array::ListArray;
     use polars_arrow::offset::{Offsets, OffsetsBuffer};
@@ -445,7 +445,7 @@ pub(super) fn build_typed_array_series_from_rows_with_dtype(
     dtype: PlannedDType,
     sink_shape: &Option<Vec<usize>>,
     expected_shape: Option<&Vec<usize>>,
-    split: Option<&Split<'_>>,
+    split: Option<&Split>,
 ) -> PolarsResult<Series> {
     use polars_arrow::array::FixedSizeListArray;
 

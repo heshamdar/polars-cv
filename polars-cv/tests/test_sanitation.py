@@ -519,6 +519,9 @@ def test_registry_parity_no_dead_contracts():
 
 
 _REQUIRED_LIB_HOOKS = (
+    # How many workers ran the most recent call's rows, read by
+    # `test_an_eager_call_after_a_streaming_run_uses_the_pool`.
+    "_last_split_workers",
     # Unpickles a `PlanState` (its `__reduce__` names it); Python never calls
     # it directly.
     "_plan_state_from_json",

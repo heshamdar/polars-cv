@@ -8,7 +8,13 @@ Each case here times one of them directly, eager.
 
 Case names are grouped by prefix so a selector can take a subsystem at once
 (``targeted:geom_*``): ``codec_`` (decode/encode), ``sink_`` (tensor sinks),
-``blob_`` (the blob source), ``geom_`` (geometry accessors).
+``blob_`` (the blob source), ``geom_`` (geometry accessors), ``split_`` (how
+calls spread over the plugin's pool across engines and morsel shapes).
+
+The ``split_`` cases only measure something with more than one thread: run
+them with ``--threads`` above 1 (the suite pins 1 by default). One iteration
+is a whole query, and they run several in a process on purpose: whether a
+call spread once depended on how the previous call had run.
 
 Image cases run once per suite (count, size). Geometry cases run once per
 count, over ``count * ROWS_PER_IMAGE[kind]`` rows, and report ``image_size`` as
@@ -94,7 +100,7 @@ def _stored(build: Callable[..., pl.DataFrame]) -> Callable[..., pl.DataFrame]:
     measures heap-resident inputs as before. The key covers this module's
     source, so changing how an input is made cannot reuse the old one.
     """
-    root = Path(tempfile.gettempdir()) / "polars-cv-bench-inputs" / _SOURCE_KEY
+    root = _INPUT_ROOT
 
     @cache
     def load(*args: Any) -> pl.DataFrame:
@@ -110,6 +116,8 @@ def _stored(build: Callable[..., pl.DataFrame]) -> Callable[..., pl.DataFrame]:
 
 
 _SOURCE_KEY = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
+#: Where the inputs live, per machine and per version of this module.
+_INPUT_ROOT = Path(tempfile.gettempdir()) / "polars-cv-bench-inputs" / _SOURCE_KEY
 
 
 @_stored
@@ -182,6 +190,38 @@ def _array(
     return build
 
 
+def _heavy() -> Pipeline:
+    """Enough work per row that how a call's rows spread decides its time."""
+    return _src().resize(height=128, width=128).blur(sigma=2.0)
+
+
+def _streaming_then_eager(i: _Inputs) -> Callable[[], Any]:
+    """A streaming run (concurrent morsel calls), then the same pipeline eager
+    (one lone call), as in a notebook: the eager call must use the pool."""
+    df = i.png
+    expr = pl.col("img").cv.pipe(_heavy()).sink("numpy")
+
+    def run() -> Any:
+        df.lazy().select(expr).collect(engine="streaming")
+        return df.select(expr)
+
+    return run
+
+
+def _uneven_row_groups(i: _Inputs) -> Callable[[], Any]:
+    """A streaming scan of Parquet row groups of two thirds and one third of
+    the rows: one call per row group, so a large call runs beside small ones
+    (the last row group is split across the pipelines)."""
+    path = _INPUT_ROOT / f"uneven-{i.count}-{i.height}-{i.width}.parquet"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        i.png.write_parquet(tmp, row_group_size=max(1, 2 * i.count // 3))
+        tmp.replace(path)
+    expr = pl.col("img").cv.pipe(_heavy()).sink("numpy")
+    return lambda: pl.scan_parquet(path).select(expr).collect(engine="streaming")
+
+
 def _geom(
     expr: Callable[[], pl.Expr], frame: str = "geometry"
 ) -> Callable[[_Inputs], Callable[[], Any]]:
@@ -233,6 +273,8 @@ CASES: tuple[Case, ...] = (
         "image",
         _pipe("blobs", lambda: Pipeline().source("blob").scale(2.0), "numpy"),
     ),
+    Case("split_streaming_then_eager", "image", _streaming_then_eager),
+    Case("split_streaming_uneven_row_groups", "image", _uneven_row_groups),
     Case("geom_contour_area", "geometry", _geom(lambda: pl.col("c").contour.area())),
     Case(
         "geom_contour_translate",

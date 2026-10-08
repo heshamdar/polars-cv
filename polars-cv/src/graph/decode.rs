@@ -981,7 +981,7 @@ pub(crate) fn build_series_from_spec(
     name: PlSmallStr,
     spec: &OutputSpec,
     data: RowParts,
-    split: Option<&crate::row_split::Split<'_>>,
+    split: Option<&crate::row_split::Split>,
 ) -> PolarsResult<Series> {
     let dtype = spec.expected_dtype;
     let kind = SinkKind::resolve(spec)?;

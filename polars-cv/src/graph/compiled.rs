@@ -39,7 +39,6 @@ use crate::params::ParamCtx;
 use view_buffer::geometry::ops::RasterSize;
 
 use super::step::GraphStep;
-use crate::row_split::CallTracker;
 
 use super::decode::{
     build_series_from_spec, decode_source_row, dtype_from_polars_leaf, null_row_result_for_spec,
@@ -128,10 +127,6 @@ pub struct CompiledGraph {
     /// The exact kwargs this graph was compiled from, kept for exact-match
     /// cache validation.
     key: GraphKwargsKey,
-    /// How this graph's calls overlap, which decides whether one spreads its
-    /// rows over the thread pool. Every streaming morsel of a query runs this
-    /// same cached graph.
-    calls: CallTracker,
     /// Which threads executed rows of this graph (test instrumentation).
     #[cfg(test)]
     row_threads: Mutex<std::collections::HashSet<std::thread::ThreadId>>,
@@ -142,6 +137,16 @@ pub struct CompiledGraph {
     /// so a test of parallelism does not depend on scheduling luck.
     #[cfg(test)]
     rendezvous: std::sync::atomic::AtomicBool,
+    /// Threads whose rows wait until they are released, so a test can keep
+    /// calls running while another starts (test instrumentation).
+    #[cfg(test)]
+    held: Mutex<std::collections::HashSet<std::thread::ThreadId>>,
+    /// Signalled when `held` is emptied (test instrumentation).
+    #[cfg(test)]
+    released: std::sync::Condvar,
+    /// Rows waiting on `held` now (test instrumentation).
+    #[cfg(test)]
+    held_rows: AtomicUsize,
     /// How many times a buffer-op segment was planned (test instrumentation).
     #[cfg(test)]
     plan_builds: AtomicUsize,
@@ -269,13 +274,18 @@ impl CompiledGraph {
             key: GraphKwargsKey {
                 graph_json: graph_json.to_string(),
             },
-            calls: CallTracker::new(),
             #[cfg(test)]
             row_threads: Mutex::default(),
             #[cfg(test)]
             row_threads_seen: std::sync::Condvar::new(),
             #[cfg(test)]
             rendezvous: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            held: Mutex::default(),
+            #[cfg(test)]
+            released: std::sync::Condvar::new(),
+            #[cfg(test)]
+            held_rows: AtomicUsize::new(0),
             #[cfg(test)]
             plan_builds: AtomicUsize::new(0),
         })
@@ -328,9 +338,8 @@ impl CompiledGraph {
         };
 
         // Rows are independent: the call's rows run in contiguous ranges on
-        // the plugin's pool when it runs alone, and inline under the streaming
-        // engine, which already runs morsels as concurrent calls
-        // (`row_split::run_split`, shared with the geometry accessors).
+        // this thread and on whatever pool threads are idle
+        // (`row_split::split`, shared with the geometry accessors).
         let plan_cache = PlanCache::new(&self.plan);
         let first_failure = AtomicUsize::new(usize::MAX);
         let run_range = |range_idx: usize, rows: Range<usize>| -> RangeOutcome {
@@ -344,7 +353,7 @@ impl CompiledGraph {
             .map_err(|msg| polars_err!(ComputeError : "Pipeline execution failed: {}", msg))
         };
         // Held until the columns are built: filling them splits the same way.
-        let split = self.calls.split();
+        let split = crate::row_split::split();
         let outcomes = split.run(len, run_range);
 
         // Concatenate in row order. Under `on_error="raise"` the first failing
@@ -504,6 +513,17 @@ impl CompiledGraph {
     ) -> Result<(), String> {
         #[cfg(test)]
         {
+            // A held thread's rows wait here, before they are recorded, so
+            // a held call stays running without counting as a row thread.
+            let held = self.held.lock().unwrap();
+            let me = std::thread::current().id();
+            if held.contains(&me) {
+                self.held_rows.fetch_add(1, Ordering::SeqCst);
+                drop(self.released.wait_while(held, |h| h.contains(&me)).unwrap());
+                self.held_rows.fetch_sub(1, Ordering::SeqCst);
+            } else {
+                drop(held);
+            }
             let mut seen = self.row_threads.lock().unwrap();
             seen.insert(std::thread::current().id());
             self.row_threads_seen.notify_all();
@@ -2436,27 +2456,49 @@ mod tests {
         }
     }
 
-    /// While another call of the same graph runs (the streaming engine's
-    /// concurrent morsels of one query), a call runs its rows on its own
-    /// thread: the host is already parallel across the calls, and handing
-    /// each call's rows to the pool made every row's buffers cross threads,
-    /// costing up to half the throughput of a byte-heavy streaming query.
-    #[test]
-    fn a_call_runs_inline_while_another_call_of_its_graph_runs() {
-        let compiled = CompiledGraph::compile(RAW_CHAIN_GRAPH).unwrap();
-        compiled.calls.running.fetch_add(1, Ordering::SeqCst); // another call
-        assert_eq!(threads_of_a_call(&compiled, false), 1);
-        assert_eq!(compiled.calls.running.load(Ordering::SeqCst), 1);
-        // It overlapped, so its host is running this graph in parallel.
-        assert!(compiled.calls.overlapping.load(Ordering::SeqCst));
+    /// Run `during` while `calls` one-row calls of `compiled` are running,
+    /// each held inside its row on a thread of its own, then release them.
+    fn while_calls_run<R>(compiled: &CompiledGraph, calls: usize, during: impl FnOnce() -> R) -> R {
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..calls)
+                .map(|_| {
+                    scope.spawn(|| {
+                        crate::row_split::exclusive::admit_current_thread();
+                        compiled
+                            .held
+                            .lock()
+                            .unwrap()
+                            .insert(std::thread::current().id());
+                        let row = vec![vec![7u8; 64]];
+                        let out = compiled.execute(&[Series::new("r".into(), &row)]).unwrap();
+                        assert_eq!(out.len(), 1);
+                    })
+                })
+                .collect();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while compiled.held_rows.load(Ordering::SeqCst) < calls {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "held calls never started"
+                );
+                std::thread::yield_now();
+            }
+            let out = during();
+            compiled.held.lock().unwrap().clear();
+            compiled.released.notify_all();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+            out
+        })
     }
 
-    /// A streaming query's first morsel starts a moment before the others,
-    /// alone: it runs inline because the last call overlapped. A call that
-    /// runs alone throughout lets the next one spread again (the in-memory
-    /// engine's one call per query).
+    /// Whether a call spreads depends on what runs now, never on what ran
+    /// before: a lone call after calls that overlapped (a streaming query's
+    /// morsels) spreads. It used to inherit the last call's overlap, so an
+    /// eager query after a streaming one ran on one thread (3.9x slower).
     #[test]
-    fn a_call_after_overlapping_calls_runs_inline() {
+    fn a_lone_call_spreads_whatever_ran_before() {
         let _pool = crate::row_split::exclusive_pool();
         use pyo3_polars::export::polars_core::runtime::THREAD_POOL;
         if THREAD_POOL.current_num_threads() < 2 {
@@ -2464,10 +2506,40 @@ mod tests {
             return;
         }
         let compiled = CompiledGraph::compile(RAW_CHAIN_GRAPH).unwrap();
-        compiled.calls.overlapping.store(true, Ordering::SeqCst);
-        assert_eq!(threads_of_a_call(&compiled, false), 1);
-        assert!(!compiled.calls.overlapping.load(Ordering::SeqCst));
-        assert!(threads_of_a_call(&compiled, true) > 1);
+        // Two calls that overlap, as a streaming query's morsels do.
+        while_calls_run(&compiled, 1, || threads_of_a_call(&compiled, false));
+        let threads = threads_of_a_call(&compiled, true);
+        assert!(threads > 1, "a lone call ran on {threads} thread(s)");
+    }
+
+    /// A call that starts while a smaller call of its graph runs (a large
+    /// row group's morsel beside a small one) still takes the pool's idle
+    /// threads: overlapping is not the same as the cores being busy.
+    #[test]
+    fn a_call_beside_a_small_call_takes_the_idle_threads() {
+        let _pool = crate::row_split::exclusive_pool();
+        use pyo3_polars::export::polars_core::runtime::THREAD_POOL;
+        if THREAD_POOL.current_num_threads() < 2 {
+            eprintln!("skipped: the pool has a single thread");
+            return;
+        }
+        let compiled = CompiledGraph::compile(RAW_CHAIN_GRAPH).unwrap();
+        let threads = while_calls_run(&compiled, 1, || threads_of_a_call(&compiled, true));
+        assert!(threads > 1, "the call ran on {threads} thread(s)");
+    }
+
+    /// While as many calls run as the pool has threads (the streaming
+    /// engine's steady state), a call runs its rows on its own thread: the
+    /// cores are busy, and handing its rows to the pool would only move
+    /// every row's buffers between threads.
+    #[test]
+    fn a_call_runs_inline_while_the_pool_is_busy() {
+        let _pool = crate::row_split::exclusive_pool();
+        use pyo3_polars::export::polars_core::runtime::THREAD_POOL;
+        let busy = THREAD_POOL.current_num_threads();
+        let compiled = CompiledGraph::compile(RAW_CHAIN_GRAPH).unwrap();
+        let threads = while_calls_run(&compiled, busy, || threads_of_a_call(&compiled, false));
+        assert_eq!(threads, 1);
     }
 
     /// How many threads ran rows of one 256-row call; with `rendezvous`, a

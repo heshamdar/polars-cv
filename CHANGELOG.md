@@ -7,6 +7,32 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+
+- **A query could make the next run of the same pipeline single-threaded.**
+  Whether a call spread its rows over the plugin's thread pool was decided
+  by history: whether the previous call of the same compiled graph (cached
+  process-wide, and since 0.34 shared by rebuilt expressions) had overlapped
+  another. After a streaming run, an eager `with_columns` of the same
+  pipeline ran on one thread (3.9× slower on 4 cores, debug build), and a
+  streaming scan whose Parquet row groups differed in size ran its large
+  row group on one thread on every run after the first (2.3×). A call now
+  runs its rows on its own thread and on whichever pool threads are idle,
+  under one plugin-wide budget of `POLARS_MAX_THREADS` threads, re-checked
+  before each row range; nothing outlives a call. Concurrent streaming
+  calls still keep their rows on their own threads once the budget is used.
+
+### Internal
+
+- `row_split::CallTracker`, `Call::spreads` and the `geom_calls!` macro are
+  removed, with the `calls` parameter every geometry row loop took. The
+  budget replaces them (`row_split::split`).
+- New `targeted` benchmark cases `split_streaming_then_eager` and
+  `split_streaming_uneven_row_groups` (run with `--threads` above 1).
+- `_lib._last_split_workers()` reports how many workers (the calling thread
+  and each pool thread that helped) ran the most recent call's rows, read by
+  `test_parallel_rows.py`.
+
 ## [0.34.0] — 2026-10-07
 
 Polars 2.0 support. The plugin is built against the polars 0.55 Rust crates

@@ -18,24 +18,30 @@ reporting and `on_error` behave exactly as a row-by-row run would: rows come
 back in order, and under `on_error="raise"` the error reported is the earliest
 failing row's.
 
-### Two pools, one setting
+### Two pools, one budget
 
 The plugin's pool is its **own** — a plugin links its own copy of Polars, so it
-cannot join the host's — and both are sized by `POLARS_MAX_THREADS`. A call
-spreads its rows over the plugin's pool only when it runs alone; when calls
-overlap — the streaming engine running morsels concurrently, or the in-memory
-engine evaluating several `.cv`/geometry expressions of one `select` at once —
-the overlapping calls run on the Polars thread that made them. So while one
-call is spread and others run inline, up to about twice `POLARS_MAX_THREADS`
-threads can be runnable at once.
+cannot join the host's — and both are sized by `POLARS_MAX_THREADS`. Every
+call runs its rows on the Polars thread that made it, and the plugin's idle
+pool threads join in while the threads running polars-cv rows number fewer
+than `POLARS_MAX_THREADS`. How many threads a call gets therefore depends only
+on what is running at that moment:
 
-That is usually the fastest arrangement. If a query with many plugin
-expressions shows a load average well above the core count and erratic run
-times — most likely on machines with mixed performance/efficiency cores, or
-when every row holds large buffers and memory is tight — lower
-`POLARS_MAX_THREADS` (set it before importing Polars). Measure: on a 4-core
-machine, nine large-image pipelines in one streaming query ran fastest at the
-default.
+- **A call running alone** — an eager `with_columns`, or one large morsel —
+  uses the whole pool.
+- **Concurrent calls** — the streaming engine running one call per morsel, or
+  the in-memory engine evaluating several `.cv`/geometry expressions of one
+  `select` at once — each keep their rows on their own thread once the budget
+  is used up, so a row's buffers do not move between threads.
+- **A large call beside small ones** (a big Parquet row group next to a small
+  one) picks up the threads the small calls free as they finish.
+
+Threads running polars-cv rows stay within `POLARS_MAX_THREADS`, except that
+each concurrent call always runs on its own thread, and a pool thread that
+joined finishes the range it started before it leaves. If a query with many
+plugin expressions still shows a load average well above the core count —
+most likely on machines with mixed performance/efficiency cores — lower
+`POLARS_MAX_THREADS` (set it before importing Polars).
 
 ## Use the streaming engine for larger-than-memory data
 

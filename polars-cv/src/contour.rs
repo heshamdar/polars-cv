@@ -261,7 +261,7 @@ fn correspond_rows<T>(
 ) -> PolarsResult<Series> {
     // `order` is read through its reference: it is optional, so nothing here
     // may read a fixed position.
-    let rows = params.map_rows(crate::geom_calls!(), inputs[0].len(), |params, i| {
+    let rows = params.map_rows(inputs[0].len(), |params, i| {
         let (Some(left), Some(right)) = sides(i)? else {
             return Ok(None);
         };
@@ -302,7 +302,7 @@ fn pairwise_rows<T>(
     sides: impl Fn(usize) -> PolarsResult<Sides<T>> + Sync,
     build_matrix: impl Fn(&[T], &[T]) -> Vec<Vec<f64>> + Sync,
 ) -> PolarsResult<Series> {
-    let rows = params.map_rows(crate::geom_calls!(), inputs[0].len(), |_, i| {
+    let rows = params.map_rows(inputs[0].len(), |_, i| {
         let (Some(left), Some(right)) = sides(i)? else {
             return Ok(None);
         };
@@ -419,7 +419,7 @@ fn contour_contains_point(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult
     };
     let contours = ContourColumn::new(&inputs[0]);
     let points = PointColumn::new(params.column(point));
-    let rows = params.map_rows(crate::geom_calls!(), inputs[0].len(), |_, i| {
+    let rows = params.map_rows(inputs[0].len(), |_, i| {
         let Some(p) = points.get(i)? else {
             return Ok(None);
         };
@@ -487,7 +487,7 @@ fn contour_largest(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series
         return Err(parsed_as_another(NAME));
     };
     let contours = ContourColumn::new(&inputs[0]);
-    let rows = params.map_rows(crate::geom_calls!(), inputs[0].len(), |params, i| {
+    let rows = params.map_rows(inputs[0].len(), |params, i| {
         let Some(row) = contours.row(i)? else {
             return Ok(None);
         };
@@ -534,7 +534,7 @@ fn contour_single(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series>
             .get(at)
             .map_or_else(|| "a null label".to_string(), |l| format!("'{l}'"))
     };
-    let rows = params.map_rows(crate::geom_calls!(), inputs[0].len(), |_, i| {
+    let rows = params.map_rows(inputs[0].len(), |_, i| {
         let Some(row) = contours.outlines(i)? else {
             return Ok(None);
         };
@@ -651,7 +651,7 @@ fn contour_label_reduce(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<S
     };
     let contours = ContourColumn::new(&inputs[0]);
     let heatmap_series = params.column(image);
-    let rows = params.map_rows(crate::geom_calls!(), inputs[0].len(), |params, i| {
+    let rows = params.map_rows(inputs[0].len(), |params, i| {
         // The heatmap decodes as the pipeline's `list`/`array` source does:
         // a grid of values, `[H, W]` or `[H, W, 1]`, refused if jagged or
         // holding a null. A null or empty heatmap is a null row.
@@ -844,7 +844,7 @@ fn contour_set_boundary_distances(inputs: &[Series], kwargs: GeomKwargs) -> Pola
         ContourColumn::new(&inputs[0]),
         ContourColumn::new(params.column(other)),
     );
-    let rows = params.map_rows(crate::geom_calls!(), inputs[0].len(), |params, i| {
+    let rows = params.map_rows(inputs[0].len(), |params, i| {
         let (Some(a), Some(b)) = (left.outlines(i)?, right.outlines(i)?) else {
             return Ok(None);
         };
