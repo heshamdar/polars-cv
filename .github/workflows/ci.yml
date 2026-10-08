@@ -158,7 +158,8 @@ jobs:
           # whole suite. Run them out-of-band, not as a CI gate.
           # Exclude slow-marked tests (e.g. test_streaming_ooc.py): heavier,
           # subprocess-based out-of-core verification not needed on every PR.
-          pytest tests/ -x -v --tb=short -m "not network and not slow"
+          # On every core (pytest-xdist), as scripts/verify.sh runs it.
+          pytest tests/ -x -v --tb=short -n auto -m "not network and not slow"
 
   dependency-floors:
     # The locked environment tests the newest versions; this job tests the
@@ -204,7 +205,7 @@ jobs:
         run: |
           source .venv/bin/activate
           maturin develop
-          pytest tests/ -x -q --tb=short -m "not network and not slow"
+          pytest tests/ -x -q --tb=short -n auto -m "not network and not slow"
 
   lint:
     name: Lint
@@ -379,7 +380,7 @@ jobs:
         # --cov enforces the 95% floor (fail_under in pyproject).
         run: |
           source .venv/bin/activate
-          pytest tests/ -q -m "not network and not slow" --cov=polars_cv
+          pytest tests/ -q -n auto -m "not network and not slow" --cov=polars_cv
 
       - name: In-memory lane
         working-directory: ${{ steps.package_dir.outputs.dir }}
@@ -389,7 +390,7 @@ jobs:
           POLARS_ENGINE_AFFINITY: in-memory
         run: |
           source .venv/bin/activate
-          pytest tests/ -q -m "not network and not slow"
+          pytest tests/ -q -n auto -m "not network and not slow"
 
   slow-tests:
     name: Slow / OOC tests
@@ -450,4 +451,4 @@ jobs:
           source .venv/bin/activate
           maturin develop
           # Only the slow-marked tests; still skip network ones.
-          pytest tests/ -v --tb=short -m "slow and not network"
+          pytest tests/ -v --tb=short -n auto -m "slow and not network"

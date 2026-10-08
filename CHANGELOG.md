@@ -127,6 +127,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   gain of 1, so the chain check failed on a correct engine. An op's gain now
   sees its input as its tolerance does (`OpSpec.gain_for(x, p)`), and cast's
   is infinite exactly when `np.can_cast(..., "safe")` refuses (CR-90).
+- **Two more parity-oracle defects, both on correct engine output.**
+  A colour conversion's float bound was scaled by the whole image, alpha
+  included, though alpha passes through: an infinite alpha made `to_hsv`'s
+  bound unbuildable and `to_ycbcr`'s infinite (so it accepted anything), and
+  a large one inflated all three (`grayscale` too). They now scale by the
+  colour channels (`color_magnitude`, CR-91). The `to_lab` reference was
+  OpenCV's float Lab, whose sRGB curve is approximate: 0.57 off in a* on a
+  dark pixel, where the engine matches the definition. It is now Lab by its
+  definition in float64, and the bound tightens from 0.5 to 0.01 (CR-92).
 
 - **Benchmarks: a change to the row splitter is measured on a parallel pool.**
   The splitter does nothing on one thread, and `relevance` mapped it to
