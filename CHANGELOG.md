@@ -108,6 +108,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Internal
 
+- **`scripts/verify.sh` runs its pytest lanes on every core.** They were 89%
+  of its time, single-threaded: on 4 cores the full run took ~37 minutes,
+  25 of them the slow lane. With `pytest-xdist` (`-n auto`, a new dev
+  dependency) the two fast lanes take 1.7 and 1.1 minutes instead of 4.8
+  and 3.4, and the slow lane ~8 instead of 25, bounded by its longest single
+  test. The coverage gate holds across workers (pytest-cov combines them).
+
 - **The parity oracle rounded the largest double below 0.5 up.** Its
   float → integer rule was `floor(|v| + 0.5)`, whose addition rounds:
   0.49999999999999994 became 1 (the engine, correctly, 0) and an odd integer
