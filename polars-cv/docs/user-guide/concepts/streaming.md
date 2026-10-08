@@ -79,8 +79,10 @@ A row is one plugin call's unit of work: an image is decoded, processed and
 encoded whole, so a single image must still fit in memory.
 
 !!! note
-    The detection-metrics APIs already collect with `engine="streaming"`
-    internally, so you don't need to opt in when using them.
+    The detection-metrics APIs collect with Polars' default engine, the
+    streaming engine since Polars 2.0, so you don't need to opt in. They
+    follow `pl.Config.set_engine_affinity` like any lazy query: setting an
+    in-memory affinity while debugging makes them run in memory too.
 
 ## Cheaper decoding for curation passes
 

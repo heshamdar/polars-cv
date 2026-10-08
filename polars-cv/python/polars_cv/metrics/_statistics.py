@@ -147,7 +147,7 @@ class Statistic(ABC):
         :attr:`empty_value`; a null (an operating point the curve does not
         reach) is returned as ``nan``.
         """
-        out = self.by_group(table, weight_agg=weight_agg).collect(engine="streaming")
+        out = self.by_group(table, weight_agg=weight_agg).collect()
         if out.height == 0:
             return self.empty_value
         v = out[self.name].item()

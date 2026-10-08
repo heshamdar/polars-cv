@@ -105,11 +105,7 @@ def confusion_at_threshold(
         ],
         how="horizontal",
     )
-    row = (
-        pl.concat([det, gts], how="horizontal")
-        .collect(engine="streaming")
-        .row(0, named=True)
-    )
+    row = pl.concat([det, gts], how="horizontal").collect().row(0, named=True)
     n_tp, wtp = int(row["tp"] or 0), float(row["weighted_tp"] or 0.0)
     return ConfusionResult(
         tp=n_tp,

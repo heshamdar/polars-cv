@@ -49,8 +49,9 @@ result = (
 ```
 
 The compiled graph is cached process-wide, so per-morsel overhead is just a
-hash lookup. (The detection-metrics APIs already collect with
-`engine="streaming"` internally.)
+hash lookup. (The detection-metrics APIs collect with polars' default engine,
+streaming since Polars 2.0, so they stream unless you set another engine
+affinity.)
 
 The plugin's pool and Polars' own are separate and both sized by
 `POLARS_MAX_THREADS`, so a query with many plugin expressions can briefly run up

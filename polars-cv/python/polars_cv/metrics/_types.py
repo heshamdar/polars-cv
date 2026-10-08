@@ -11,6 +11,8 @@ import polars as pl
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
+    from polars._typing import EngineType
+
 # ---------------------------------------------------------------------------
 # Canonical column names
 # ---------------------------------------------------------------------------
@@ -350,7 +352,7 @@ class DetectionTable:
         """
         return (
             self._image_meta.select(pl.col(COL_CLASS_ID).unique())
-            .collect(engine="streaming")
+            .collect()
             .get_column(COL_CLASS_ID)
             .to_list()
         )
@@ -480,7 +482,7 @@ class DetectionTable:
     # Collect helper
     # ------------------------------------------------------------------
 
-    def collect(self, engine: str = "streaming") -> tuple[pl.DataFrame, pl.DataFrame]:
+    def collect(self, engine: EngineType = "auto") -> tuple[pl.DataFrame, pl.DataFrame]:
         """Materialize both frames in one pass.
 
         Uses ``pl.collect_all`` so that a shared upstream subplan (e.g. the
@@ -489,12 +491,16 @@ class DetectionTable:
         rather than once per frame. Common-subplan elimination is what makes the
         decode-once, collect-once path hold end to end.
 
+        Args:
+            engine: Polars' engine. ``"auto"`` (the default) is polars' own
+                choice: the streaming engine, unless
+                ``pl.Config.set_engine_affinity`` says otherwise.
+
         Returns:
             Tuple of ``(detections_df, image_meta_df)``.
         """
         det_df, meta_df = pl.collect_all(
-            [self._detections, self._image_meta],
-            engine=engine,  # ty: ignore[invalid-argument-type]
+            [self._detections, self._image_meta], engine=engine
         )
         return det_df, meta_df
 
