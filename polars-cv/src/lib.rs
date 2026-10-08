@@ -79,7 +79,17 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(extension_types, m)?)?;
     m.add_class::<output::ArrowBytes>()?;
     m.add_function(wrap_pyfunction!(output::binary_rows, m)?)?;
+    m.add_function(wrap_pyfunction!(_last_split_workers, m)?)?;
     Ok(())
+}
+
+/// How many workers ran the rows of the most recent split call (the calling
+/// thread and each pool thread that helped): lets a Python test check a
+/// call's parallelism at the user-facing entry point
+/// (`row_split::LAST_SPLIT_WORKERS`).
+#[pyfunction]
+fn _last_split_workers() -> usize {
+    row_split::last_split_workers()
 }
 
 // ============================================================================

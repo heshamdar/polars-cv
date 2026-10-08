@@ -48,7 +48,6 @@ use view_buffer::geometry::contour::{Contour, Outline};
 use crate::geom_columns::ContourColumn;
 use crate::geom_params::GeomParams;
 use crate::geom_schema::POINT_FIELD_SPELLINGS;
-use crate::row_split::CallTracker;
 
 /// Whether a geometry column holds one contour per row or a set per row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,12 +328,11 @@ fn contour_column<C: crate::geom_schema::ContourParts>(
 pub(crate) fn map_contours<T: ReadContour, R: ContourOutput + Send>(
     series: &Series,
     params: &GeomParams,
-    calls: &CallTracker,
     elem: DataType,
     compute: impl Fn(&T, &GeomParams, usize) -> PolarsResult<R> + Sync,
 ) -> PolarsResult<Series> {
     let column = ContourColumn::new(series);
-    let rows = params.map_rows(calls, series.len(), |params, i| {
+    let rows = params.map_rows(series.len(), |params, i| {
         let Some(contours) = T::read(&column, i)? else {
             return Ok(None);
         };
@@ -362,7 +360,6 @@ pub(crate) fn zip_contours<T: ReadContour, R: ContourOutput + Send>(
     a: &Series,
     b: &Series,
     params: &GeomParams,
-    calls: &CallTracker,
     name: &'static str,
     elem: DataType,
     compute: impl Fn(&T, &T, &GeomParams, usize) -> PolarsResult<R> + Sync,
@@ -404,7 +401,7 @@ pub(crate) fn zip_contours<T: ReadContour, R: ContourOutput + Send>(
         }?;
         Ok(Some(results))
     };
-    let rows = params.map_rows(calls, a.len(), row)?;
+    let rows = params.map_rows(a.len(), row)?;
     R::column(a.name().clone(), rows, arity, &elem)
 }
 
@@ -465,7 +462,6 @@ macro_rules! contour_accessor {
             $crate::geom_arity::map_contours::<$read, _>(
                 &inputs[0],
                 &geom_params,
-                $crate::geom_calls!(),
                 $elem,
                 |$c, $params, $row| $body,
             )
@@ -495,7 +491,6 @@ macro_rules! contour_accessor {
                 &inputs[0],
                 params.column($other),
                 &params,
-                $crate::geom_calls!(),
                 stringify!($name),
                 $elem,
                 |$a, $b, $params, $row| $body,
@@ -660,18 +655,12 @@ mod split_tests {
         let inputs = [column(256)];
         let params = params(&inputs);
         let rendezvous = Rendezvous::new(true);
-        let calls = CallTracker::new();
-        let out = map_contours::<Contour, _>(
-            &inputs[0],
-            &params,
-            &calls,
-            DataType::Float64,
-            |c, _, row| {
+        let out =
+            map_contours::<Contour, _>(&inputs[0], &params, DataType::Float64, |c, _, row| {
                 rendezvous.visit(row);
                 Ok(AnyValue::Float64(c.exterior[0].x))
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         // Rows come back in order.
         let xs: Vec<f64> = out.f64().unwrap().into_no_null_iter().collect();
         assert_eq!(xs, (0..256).map(f64::from).collect::<Vec<_>>());
@@ -694,7 +683,6 @@ mod split_tests {
             a,
             b,
             &params,
-            &CallTracker::new(),
             "test",
             DataType::Float64,
             |l, r, _params, row| {
@@ -712,28 +700,24 @@ mod split_tests {
         assert!(threads > 1, "256 rows ran on {threads} thread(s)");
     }
 
-    /// Under the streaming engine an accessor's morsels are concurrent calls,
-    /// already parallel: a call that overlaps another runs its rows inline.
+    /// While as many calls run as the pool has threads (the streaming
+    /// engine's steady state), an accessor call runs its rows on its own
+    /// thread.
     #[test]
-    fn a_call_overlapping_another_runs_inline() {
+    fn a_call_runs_inline_while_the_pool_is_busy() {
+        let _pool = crate::row_split::exclusive_pool();
+        let _busy: Vec<_> = (0..THREAD_POOL.current_num_threads())
+            .map(|_| crate::row_split::split())
+            .collect();
         let inputs = [column(256)];
         let params = params(&inputs);
-        let calls = CallTracker::new();
-        calls
-            .running
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst); // another call
         let rendezvous = Rendezvous::new(false);
-        let out = map_contours::<Contour, _>(
-            &inputs[0],
-            &params,
-            &calls,
-            DataType::Float64,
-            |c, _, row| {
+        let out =
+            map_contours::<Contour, _>(&inputs[0], &params, DataType::Float64, |c, _, row| {
                 rendezvous.visit(row);
                 Ok(AnyValue::Float64(c.exterior[0].x))
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         assert_eq!(out.len(), 256);
         assert_eq!(rendezvous.threads(), 1);
     }
@@ -769,7 +753,7 @@ mod split_tests {
         };
         let rendezvous = Rendezvous::new(true);
         let rows = params
-            .map_rows(&CallTracker::new(), 256, |params, i| {
+            .map_rows(256, |params, i| {
                 rendezvous.visit(i);
                 params.value(dx, i).map(Some)
             })
@@ -780,7 +764,7 @@ mod split_tests {
         assert!(threads > 1, "256 rows ran on {threads} thread(s)");
 
         let err = params
-            .map_rows(&CallTracker::new(), 256, |_, i| match i {
+            .map_rows(256, |_, i| match i {
                 100 | 220 => Err(polars_err!(ComputeError: "row {} failed", i)),
                 _ => Ok(Some(i)),
             })

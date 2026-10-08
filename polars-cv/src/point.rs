@@ -28,12 +28,10 @@ use view_buffer::geometry::contour::{Contour, Outline, Point};
 use view_buffer::geometry::{measures, predicates};
 
 use crate::geom_arity::{Arity, ReadContour};
-use crate::geom_calls;
 use crate::geom_columns::{BBoxColumn, ContourColumn, PointColumn};
 use crate::geom_fns::PointFn;
 use crate::geom_params::{parsed_as_another, GeomKwargs, GeomParams};
 use crate::ops::ColumnRef;
-use crate::row_split::CallTracker;
 use view_buffer::mode::Wire;
 
 /// A per-point result of a point function, and the column of them.
@@ -198,12 +196,11 @@ fn pair_point_output(f: &[Field]) -> PolarsResult<Field> {
 fn map_points<C, T: PointOutput>(
     inputs: &[Series],
     params: &GeomParams,
-    calls: &CallTracker,
     ctx: impl Fn(&GeomParams, usize) -> PolarsResult<Option<C>> + Sync,
     f: impl Fn(&C, Point) -> PolarsResult<Option<T>> + Sync,
 ) -> PolarsResult<Series> {
     let points = PointColumn::new(&inputs[0]);
-    let rows = params.map_rows(calls, inputs[0].len(), |params, i| {
+    let rows = params.map_rows(inputs[0].len(), |params, i| {
         let Some(row) = points.row(i)? else {
             return Ok(None);
         };
@@ -225,7 +222,6 @@ fn zip_points<T: PointOutput>(
     inputs: &[Series],
     params: &GeomParams,
     other: &ColumnRef,
-    calls: &CallTracker,
     name: &'static str,
     f: impl Fn(&GeomParams, usize, Point, Point) -> PolarsResult<T> + Sync,
 ) -> PolarsResult<Series> {
@@ -247,7 +243,7 @@ fn zip_points<T: PointOutput>(
             name
         );
     }
-    let rows = params.map_rows(calls, inputs[0].len(), |params, i| {
+    let rows = params.map_rows(inputs[0].len(), |params, i| {
         let (Some(left), Some(right)) = (a.row(i)?, b.row(i)?) else {
             return Ok(None);
         };
@@ -288,14 +284,14 @@ fn none(_: &GeomParams, _: usize) -> PolarsResult<Option<()>> {
 #[polars_expr(output_type_func=f64_output)]
 fn point_x(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
     parse_as!(params = inputs, kwargs, "point_x", X);
-    map_points(inputs, &params, geom_calls!(), none, |_, p| Ok(Some(p.x)))
+    map_points(inputs, &params, none, |_, p| Ok(Some(p.x)))
 }
 
 /// The y coordinate.
 #[polars_expr(output_type_func=f64_output)]
 fn point_y(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
     parse_as!(params = inputs, kwargs, "point_y", Y);
-    map_points(inputs, &params, geom_calls!(), none, |_, p| Ok(Some(p.y)))
+    map_points(inputs, &params, none, |_, p| Ok(Some(p.y)))
 }
 
 /// The point's coordinates as a pair, in `order`.
@@ -310,7 +306,6 @@ fn point_to_coords(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series
     map_points(
         inputs,
         &params,
-        geom_calls!(),
         |params, i| params.value(order, i).map(Some),
         |order, p| Ok(Some(order.pair(&p))),
     )
@@ -332,7 +327,6 @@ fn point_normalize(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series
     map_points(
         inputs,
         &params,
-        geom_calls!(),
         |params, i| {
             let (w, h) = (params.value(width, i)?, params.value(height, i)?);
             // Per-row dimensions cannot be validated once per batch.
@@ -357,7 +351,6 @@ fn point_to_absolute(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Seri
     map_points(
         inputs,
         &params,
-        geom_calls!(),
         |params, i| Ok(Some((params.value(width, i)?, params.value(height, i)?))),
         |&(w, h), p| Ok(Some(Point::new(p.x * w, p.y * h))),
     )
@@ -375,7 +368,6 @@ fn point_translate(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series
     map_points(
         inputs,
         &params,
-        geom_calls!(),
         |params, i| Ok(Some((params.value(dx, i)?, params.value(dy, i)?))),
         |&(dx, dy), p| Ok(Some(Point::new(p.x + dx, p.y + dy))),
     )
@@ -388,7 +380,6 @@ fn point_scale(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
     map_points(
         inputs,
         &params,
-        geom_calls!(),
         |params, i| Ok(Some((params.value(sx, i)?, params.value(sy, i)?))),
         |&(sx, sy), p| Ok(Some(Point::new(p.x * sx, p.y * sy))),
     )
@@ -412,7 +403,6 @@ fn point_rotate(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
     map_points(
         inputs,
         &params,
-        geom_calls!(),
         |params, i| {
             let o = match &origins {
                 Some(origins) => match origins.get(i)? {
@@ -446,14 +436,9 @@ fn point_distance(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series>
         "point_distance",
         Distance { other }
     );
-    zip_points(
-        inputs,
-        &params,
-        other,
-        geom_calls!(),
-        "point_distance",
-        |_, _, p, q| Ok((q.x - p.x).hypot(q.y - p.y)),
-    )
+    zip_points(inputs, &params, other, "point_distance", |_, _, p, q| {
+        Ok((q.x - p.x).hypot(q.y - p.y))
+    })
 }
 
 /// Compute Manhattan (L1) distance between two points.
@@ -469,7 +454,6 @@ fn point_manhattan_distance(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResu
         inputs,
         &params,
         other,
-        geom_calls!(),
         "point_manhattan_distance",
         |_, _, p, q| Ok((q.x - p.x).abs() + (q.y - p.y).abs()),
     )
@@ -479,14 +463,9 @@ fn point_manhattan_distance(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResu
 #[polars_expr(output_type_func=pair_f64_output)]
 fn point_angle_to(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
     parse_as!(params = inputs, kwargs, "point_angle_to", AngleTo { other });
-    zip_points(
-        inputs,
-        &params,
-        other,
-        geom_calls!(),
-        "point_angle_to",
-        |_, _, p, q| Ok((q.y - p.y).atan2(q.x - p.x)),
-    )
+    zip_points(inputs, &params, other, "point_angle_to", |_, _, p, q| {
+        Ok((q.y - p.y).atan2(q.x - p.x))
+    })
 }
 
 /// Compute midpoint between two points.
@@ -498,14 +477,9 @@ fn point_midpoint(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series>
         "point_midpoint",
         Midpoint { other }
     );
-    zip_points(
-        inputs,
-        &params,
-        other,
-        geom_calls!(),
-        "point_midpoint",
-        |_, _, p, q| Ok(Point::new((p.x + q.x) / 2.0, (p.y + q.y) / 2.0)),
-    )
+    zip_points(inputs, &params, other, "point_midpoint", |_, _, p, q| {
+        Ok(Point::new((p.x + q.x) / 2.0, (p.y + q.y) / 2.0))
+    })
 }
 
 /// Linear interpolation between two points.
@@ -521,7 +495,6 @@ fn point_interpolate(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Seri
         inputs,
         &params,
         other,
-        geom_calls!(),
         "point_interpolate",
         |params, i, p, q| {
             let t = params.value(t, i)?;
@@ -540,14 +513,12 @@ fn with_contour<C: ReadContour, T: PointOutput>(
     inputs: &[Series],
     params: &GeomParams,
     contour: &ColumnRef,
-    calls: &CallTracker,
     f: impl Fn(Point, &C) -> Option<T> + Sync,
 ) -> PolarsResult<Series> {
     let contours = ContourColumn::new(params.column(contour));
     map_points(
         inputs,
         params,
-        calls,
         |_, i| contours.single_as::<C>(i),
         |c, p| Ok(f(p, c)),
     )
@@ -563,7 +534,7 @@ fn point_distance_to_contour(inputs: &[Series], kwargs: GeomKwargs) -> PolarsRes
         DistanceToContour { contour }
     );
     // A boundary measure: an open polyline is measured to its segments only.
-    with_contour(inputs, &params, contour, geom_calls!(), |p, c: &Outline| {
+    with_contour(inputs, &params, contour, |p, c: &Outline| {
         Some(measures::distance_to_outline(&p, c))
     })
 }
@@ -579,7 +550,7 @@ fn point_signed_distance_to_contour(inputs: &[Series], kwargs: GeomKwargs) -> Po
         SignedDistanceToContour { contour }
     );
     // Inside/outside needs a region, so an open polyline is refused.
-    with_contour(inputs, &params, contour, geom_calls!(), |p, c: &Contour| {
+    with_contour(inputs, &params, contour, |p, c: &Contour| {
         let dist = measures::distance_to_contour(&p, c);
         Some(if predicates::contains_point(c, p.x, p.y) {
             -dist
@@ -598,7 +569,7 @@ fn point_nearest_on_contour(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResu
         "point_nearest_on_contour",
         NearestOnContour { contour }
     );
-    with_contour(inputs, &params, contour, geom_calls!(), |p, c: &Outline| {
+    with_contour(inputs, &params, contour, |p, c: &Outline| {
         measures::nearest_point_on_outline(&p, c)
     })
 }
@@ -616,7 +587,6 @@ fn point_within_bbox(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Seri
     map_points(
         inputs,
         &params,
-        geom_calls!(),
         |_, i| bboxes.single(i),
         |b, p| {
             Ok(Some(

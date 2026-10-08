@@ -98,7 +98,7 @@ RULES: tuple[tuple[str, str], ...] = (
     ("polars-cv/src/execute.rs", f"{_OPS},targeted:codec_*"),
     ("polars-cv/src/output.rs", f"{_OPS},zero_copy,targeted:blob_*"),
     ("polars-cv/src/ext_types.rs", _NONE),  # tagged (`ndarray`) outputs only
-    ("polars-cv/src/row_split.rs", f"pipelines,{_GEOM}"),
+    ("polars-cv/src/row_split.rs", f"pipelines,{_GEOM},targeted:split_*"),
     ("polars-cv/src/geom_*.rs", _GEOM),
     ("polars-cv/src/contour.rs", _GEOM),
     ("polars-cv/src/point.rs", _GEOM),

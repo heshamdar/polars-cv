@@ -99,3 +99,7 @@ class ArrowBytes:
 
 def binary_rows(series: pl.Series) -> list[tuple[ArrowBytes, int, int] | None]:
     """Each row of a Binary column as ``(owner, address, length)``; no copies."""
+
+def _last_split_workers() -> int:
+    """Workers (calling thread + pool helpers) that ran the most recent split
+    call's rows; racy under concurrent calls, meant for tests."""

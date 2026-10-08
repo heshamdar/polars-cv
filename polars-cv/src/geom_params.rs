@@ -154,12 +154,11 @@ impl<'a> GeomParams<'a> {
     /// failing row's, as a sequential loop would report.
     pub fn map_rows<T: Send>(
         &self,
-        calls: &crate::row_split::CallTracker,
         len: usize,
         row: impl Fn(&GeomParams, usize) -> PolarsResult<Option<T>> + Sync,
     ) -> PolarsResult<Vec<Option<T>>> {
         let shared = self.shared();
-        let parts = crate::row_split::run_split(calls, len, |_, range| {
+        let parts = crate::row_split::run_split(len, |_, range| {
             let params = shared.params();
             range
                 .map(|i| params.row(|| row(&params, i)).map(Option::flatten))
