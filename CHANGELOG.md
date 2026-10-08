@@ -21,6 +21,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   under one plugin-wide budget of `POLARS_MAX_THREADS` threads, re-checked
   before each row range; nothing outlives a call. Concurrent streaming
   calls still keep their rows on their own threads once the budget is used.
+  Benchmark profile, 4 threads: `split_streaming_then_eager` 2.2× faster,
+  `split_streaming_uneven_row_groups` +11%, eager pipelines unchanged,
+  streaming pipelines −3.8% to +6.5% (`medium` the one consistent dip, under
+  the 7% gate); see `benchmarks/reports/2026-10-08-row-split-budget`.
 
 ### Internal
 
