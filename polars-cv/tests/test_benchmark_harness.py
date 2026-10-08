@@ -82,6 +82,43 @@ def test_a_whole_scenario_absorbs_its_globs() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Thread requirements: code a selection measures only on a parallel pool
+# ---------------------------------------------------------------------------
+
+
+def test_a_threads_marker_is_carried_by_the_selection() -> None:
+    sel = selection.parse("pipelines,@threads=4")
+    assert sel.min_threads == 4
+    assert sel.scenarios() == ("pipelines",)
+    assert selection.parse(sel.render()) == sel
+
+
+def test_merged_selections_keep_the_larger_thread_requirement() -> None:
+    sel = selection.parse("@threads=2,single_ops:invert") | selection.parse(
+        "@threads=4,pipelines"
+    )
+    assert sel.min_threads == 4
+
+
+def test_a_selection_without_a_marker_needs_one_thread() -> None:
+    assert selection.parse("single_ops:invert").min_threads == 1
+
+
+@pytest.mark.parametrize("bad", ["@threads=0", "@threads=x", "@threads", "@cores=4"])
+def test_a_malformed_marker_is_an_error(bad: str) -> None:
+    with pytest.raises(ValueError, match="marker"):
+        selection.parse(f"pipelines,{bad}")
+
+
+def test_parallel_only_cases_carry_their_own_requirement() -> None:
+    # The split_ cases time how a call spreads over the pool: on one thread
+    # there is nothing to spread, and their numbers would measure nothing.
+    assert selection.parse("targeted:split_*").min_threads >= 2
+    assert selection.parse("targeted").min_threads >= 2
+    assert selection.parse("targeted:geom_*").min_threads == 1
+
+
+# ---------------------------------------------------------------------------
 # Relevance: changed files -> selection
 # ---------------------------------------------------------------------------
 
@@ -135,6 +172,21 @@ def test_every_tracked_code_file_is_covered_by_a_rule() -> None:
     assert any(f.startswith("polars-cv/python/polars_cv/") for f in code)
     uncovered = [f for f in code if relevance.rule_for(f) is None]
     assert uncovered == [], f"add a relevance.RULES entry for: {uncovered}"
+
+
+def test_a_row_split_change_selects_every_split_path_on_a_parallel_pool() -> None:
+    # Every call's rows and every tensor sink's fill phase run through the
+    # splitter, and it does nothing on one thread: PR #124 regressed the list
+    # sink and streaming sobel_x at 4 threads, which a 1-thread run of the
+    # cases it selected could not see.
+    sel, _ = relevance.select_for(["polars-cv/src/row_split.rs"])
+    assert sel.min_threads >= 2
+    for scenario in ("single_ops", "pipelines", "e2e"):
+        assert sel.cases(scenario) is None
+    targeted = sel.cases("targeted")
+    assert targeted is not None
+    for prefix in ("sink_", "split_", "geom_"):
+        assert any(c.startswith(prefix) for c in targeted), prefix
 
 
 def test_every_rule_selector_resolves() -> None:
@@ -209,6 +261,45 @@ def test_the_suite_refuses_a_debug_build(
         )
 
 
+def test_a_thread_requirement_is_met_or_refused() -> None:
+    from benchmarks.regression.run_suite import check_threads
+
+    check_threads(4, selection.parse("pipelines,@threads=4"))
+    check_threads(8, selection.parse("pipelines,@threads=4"))
+    check_threads(1, selection.parse("pipelines"))
+    with pytest.raises(SystemExit, match="needs --threads >= 4"):
+        check_threads(2, selection.parse("pipelines,@threads=4"))
+
+
+def test_the_cli_refuses_fewer_threads_than_the_selection_needs(
+    tmp_path: Path,
+) -> None:
+    # Refused before anything is pinned or run.
+    with pytest.raises(SystemExit, match="needs --threads >= 4"):
+        run_suite_main(
+            [
+                "--out",
+                str(tmp_path / "r.json"),
+                "--select",
+                "pipelines:light_pipeline,@threads=4",
+                "--threads",
+                "1",
+            ]
+        )
+
+
+def test_the_suite_refuses_a_pool_smaller_than_the_selection_needs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The backstop for a programmatic caller: the pool the cases will actually
+    # run on, not an argument, decides.
+    from benchmarks.regression import run_suite as module
+
+    monkeypatch.setattr(module, "pool_threads", lambda: 1)
+    with pytest.raises(SystemExit, match="1-thread pool"):
+        run_suite(_tiny("targeted:split_*"), allow_debug_build=True)
+
+
 @plugin_required
 def test_compare_refuses_debug_build_results(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -271,7 +362,9 @@ def test_the_extension_names_the_profile_it_was_built_with() -> None:
     assert lib.__debug_assertions__ is (lib.__build_profile__ == "debug")
 
 
-def _results(tmp_path: Path, name: str, profile: str | None) -> Path:
+def _results(
+    tmp_path: Path, name: str, profile: str | None, *, threads: int = 1
+) -> Path:
     row = {
         "framework": "polars-cv-eager",
         "operation": "invert",
@@ -285,7 +378,7 @@ def _results(tmp_path: Path, name: str, profile: str | None) -> Path:
     path = tmp_path / name
     path.write_text(json.dumps([row]))
     if profile is not None:
-        meta = {"debug_build": False, "build_profile": profile}
+        meta = {"debug_build": False, "build_profile": profile, "num_threads": threads}
         Path(f"{path}.meta.json").write_text(json.dumps(meta))
     return path
 
@@ -296,6 +389,16 @@ def test_compare_refuses_results_from_different_build_profiles(tmp_path: Path) -
     base = _results(tmp_path, "base.json", "release")
     head = _results(tmp_path, "head.json", "benchmark")
     with pytest.raises(SystemExit, match="build profile"):
+        compare_main([str(base), str(head)])
+
+
+def test_compare_refuses_results_run_on_different_thread_counts(
+    tmp_path: Path,
+) -> None:
+    # A 1-thread base against a 4-thread head reports the pool, not the change.
+    base = _results(tmp_path, "base.json", "benchmark", threads=1)
+    head = _results(tmp_path, "head.json", "benchmark", threads=4)
+    with pytest.raises(SystemExit, match="thread"):
         compare_main([str(base), str(head)])
 
 

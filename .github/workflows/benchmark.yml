@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       select:
-        description: "Comma-separated scenario[:glob] selectors (single_ops,pipelines,e2e,targeted,zero_copy,remote; e.g. targeted:geom_*)"
+        description: "Comma-separated scenario[:glob] selectors (single_ops,pipelines,e2e,targeted,zero_copy,remote; e.g. targeted:geom_*; a selection carrying @threads=N, or targeted's split_ cases, needs threads >= N)"
         default: "pipelines"
         type: string
       counts:

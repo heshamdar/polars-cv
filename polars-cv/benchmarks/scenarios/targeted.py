@@ -11,10 +11,12 @@ Case names are grouped by prefix so a selector can take a subsystem at once
 ``blob_`` (the blob source), ``geom_`` (geometry accessors), ``split_`` (how
 calls spread over the plugin's pool across engines and morsel shapes).
 
-The ``split_`` cases only measure something with more than one thread: run
-them with ``--threads`` above 1 (the suite pins 1 by default). One iteration
-is a whole query, and they run several in a process on purpose: whether a
-call spread once depended on how the previous call had run.
+The ``split_`` cases only measure something with more than one thread, so
+they declare it (``Case.min_threads``): a selection that includes them needs a
+pool that large, and the suite refuses a smaller one rather than time a split
+with nothing to split over (``selection.Selection.min_threads``). One
+iteration is a whole query, and they run several in a process on purpose:
+whether a call spread once depended on how the previous call had run.
 
 Image cases run once per suite (count, size). Geometry cases run once per
 count, over ``count * ROWS_PER_IMAGE[kind]`` rows, and report ``image_size`` as
@@ -237,6 +239,8 @@ class Case:
     name: str
     kind: Literal["image", "geometry", "points"]
     build: Callable[[_Inputs], Callable[[], Any]]
+    # The smallest pool on which the case measures what it is for.
+    min_threads: int = 1
 
 
 # Pipelines are built when a case runs, not at import: listing the cases (for
@@ -273,8 +277,10 @@ CASES: tuple[Case, ...] = (
         "image",
         _pipe("blobs", lambda: Pipeline().source("blob").scale(2.0), "numpy"),
     ),
-    Case("split_streaming_then_eager", "image", _streaming_then_eager),
-    Case("split_streaming_uneven_row_groups", "image", _uneven_row_groups),
+    Case("split_streaming_then_eager", "image", _streaming_then_eager, min_threads=2),
+    Case(
+        "split_streaming_uneven_row_groups", "image", _uneven_row_groups, min_threads=2
+    ),
     Case("geom_contour_area", "geometry", _geom(lambda: pl.col("c").contour.area())),
     Case(
         "geom_contour_translate",
@@ -323,6 +329,11 @@ CASES: tuple[Case, ...] = (
 def case_names() -> list[str]:
     """Every case, by the ``operation`` name its result carries."""
     return [c.name for c in CASES]
+
+
+def case_min_threads() -> dict[str, int]:
+    """The cases that need a pool of more than one thread, and how large."""
+    return {c.name: c.min_threads for c in CASES if c.min_threads > 1}
 
 
 def run_case(

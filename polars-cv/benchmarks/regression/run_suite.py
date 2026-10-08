@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from collections.abc import Collection
 
     from benchmarks.frameworks import BaseFrameworkAdapter, BenchmarkResult
+    from benchmarks.regression.selection import Selection
 
 from benchmarks.regression.config import (
     ALL_SCENARIOS,
@@ -45,6 +46,36 @@ def _pin_threads(n: int) -> None:
     os.environ["POLARS_MAX_THREADS"] = str(n)
     os.environ["RAYON_NUM_THREADS"] = str(n)
     os.environ["OMP_NUM_THREADS"] = str(n)
+
+
+def pool_threads() -> int:
+    """The thread pool the cases will run on: the smaller of this process's
+    (the adapter scenarios) and what ``POLARS_MAX_THREADS`` gives the
+    per-case children (``targeted``). The plugin sizes its own pool from the
+    same variable."""
+    import polars as pl
+
+    pinned = os.environ.get("POLARS_MAX_THREADS", "")
+    here = pl.thread_pool_size()
+    return min(here, int(pinned)) if pinned.isdigit() else here
+
+
+def check_threads(threads: int, sel: Selection) -> None:
+    """Refuse a thread count below what ``sel`` needs (``Selection.min_threads``).
+
+    The count cannot default from the selection: the pool is sized when polars
+    is first imported, and reading the selection's cases imports it. So a
+    selection that needs N threads is run with an explicit ``--threads N`` or
+    more, on both sides of a comparison; fewer would time code that does
+    nothing on that pool.
+    """
+    if threads < sel.min_threads:
+        msg = (
+            f"the selection needs --threads >= {sel.min_threads} (it selects "
+            f"code that only runs in parallel; see selection.Selection."
+            f"min_threads), got --threads {threads}"
+        )
+        raise SystemExit(msg)
 
 
 def build_adapters(names: list[str]) -> list[BaseFrameworkAdapter]:
@@ -286,6 +317,15 @@ def run_suite(
             "`--release`. Pass --allow-debug-build only to smoke-test the harness."
         )
         raise SystemExit(msg)
+    pool = pool_threads()
+    if pool < cfg.selection.min_threads:
+        msg = (
+            f"the selection needs a pool of {cfg.selection.min_threads}+ threads "
+            f"and the cases would run on a {pool}-thread pool, where the code "
+            f"they select does nothing it could be timed doing; run with "
+            f"--threads {cfg.selection.min_threads} (POLARS_MAX_THREADS)"
+        )
+        raise SystemExit(msg)
     adapters = build_adapters(POLARS_CV_ADAPTERS)
     runs = [_run_once(adapters, cfg, quiet=quiet) for _ in range(cfg.suite_repeats)]
     return _aggregate_best(runs)
@@ -352,7 +392,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--counts", help="comma-separated image counts override")
     parser.add_argument("--sizes", help="comma-separated square sizes override")
-    parser.add_argument("--threads", type=int, default=DEFAULT.num_threads)
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=DEFAULT.num_threads,
+        help=(
+            f"thread pool size (default: {DEFAULT.num_threads}); at least the "
+            "selection's `@threads=N` requirement"
+        ),
+    )
     parser.add_argument("--repeats", type=int, default=DEFAULT.suite_repeats)
     parser.add_argument("--warmup", type=int, default=DEFAULT.warmup_iterations)
     parser.add_argument("--iterations", type=int, default=DEFAULT.benchmark_iterations)
@@ -379,6 +427,7 @@ def _cfg_from_args(args: argparse.Namespace) -> SuiteConfig:
             sel = selection.parse(args.select or DEFAULT_SELECTION)
     except ValueError as e:
         raise SystemExit(str(e)) from e
+    check_threads(args.threads, sel)
     counts = (
         [int(c) for c in args.counts.split(",")]
         if args.counts

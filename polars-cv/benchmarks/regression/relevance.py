@@ -38,6 +38,10 @@ _ALL = ",".join(SCENARIOS)
 _OPS = "single_ops,pipelines,e2e"
 _GEOM = "targeted:geom_*"
 _NONE = ""  # no scenario measures this code
+# Code that only runs on a parallel pool: its cases need one this large. Four
+# threads, where PR #124's splitter regressions showed (a GitHub runner's
+# size).
+_PARALLEL = "@threads=4"
 
 # Product code: what a benchmark executes. Tests, docs and the harness itself
 # are not in it, so they select nothing.
@@ -98,7 +102,14 @@ RULES: tuple[tuple[str, str], ...] = (
     ("polars-cv/src/execute.rs", f"{_OPS},targeted:codec_*"),
     ("polars-cv/src/output.rs", f"{_OPS},zero_copy,targeted:blob_*"),
     ("polars-cv/src/ext_types.rs", _NONE),  # tagged (`ndarray`) outputs only
-    ("polars-cv/src/row_split.rs", f"pipelines,{_GEOM},targeted:split_*"),
+    # Every call's rows, and every tensor sink's fill phase, run through the
+    # splitter, and on one thread it does nothing: its cases need a parallel
+    # pool. PR #124 moved the list sink and streaming sobel_x by 11-16% at 4
+    # threads while the cases it ran (pipelines, geometry, split_) held.
+    (
+        "polars-cv/src/row_split.rs",
+        f"{_OPS},{_GEOM},targeted:split_*,targeted:sink_*,{_PARALLEL}",
+    ),
     ("polars-cv/src/geom_*.rs", _GEOM),
     ("polars-cv/src/contour.rs", _GEOM),
     ("polars-cv/src/point.rs", _GEOM),

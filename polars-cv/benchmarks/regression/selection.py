@@ -12,6 +12,18 @@ Each scenario's case list is read from the scenario itself (its
 ``get_*_benchmarks()`` or ``CASES``), never restated here. ``zero_copy`` and
 ``remote`` run as a unit with their own fixed matrix, so they take no glob.
 
+A selection also says how large a thread pool it must run on
+(``Selection.min_threads``): code that only does anything on a parallel pool
+(the plugin's row splitter) is unmeasured by a 1-thread run, however many
+cases that run times. The requirement comes from the ``@threads=N`` marker,
+which ``relevance`` adds for such code::
+
+    pipelines,single_ops,@threads=4   both, on a pool of at least 4 threads
+
+and from cases that declare one (``targeted``'s ``split_`` cases). It travels
+in the rendered selection, so both sides of a comparison inherit it, and the
+suite refuses a smaller pool (``run_suite``).
+
 Nothing here degrades silently: an unknown scenario, a glob matching no case,
 or a glob on a scenario that runs as a whole is a ``ValueError`` — each of
 those would otherwise run less than asked and compare as "no regressions".
@@ -56,6 +68,15 @@ def _targeted() -> list[str]:
     return case_names()
 
 
+def _case_min_threads(scenario: str) -> Mapping[str, int]:
+    """The cases of ``scenario`` that declare a pool larger than one thread."""
+    if scenario != "targeted":
+        return {}
+    from benchmarks.scenarios.targeted import case_min_threads
+
+    return case_min_threads()
+
+
 # None: the scenario runs as a whole (its own fixed matrix, no case filter).
 _CASE_LISTS: Mapping[str, Callable[[], list[str]] | None] = {
     "single_ops": _single_ops,
@@ -78,9 +99,22 @@ def case_names(scenario: str) -> list[str] | None:
 
 @dataclass(frozen=True)
 class Selection:
-    """Scenario -> selected case names (``None`` = every case), in suite order."""
+    """Scenario -> selected case names (``None`` = every case), in suite order,
+    and the ``@threads=N`` marker's pool requirement."""
 
     _entries: tuple[tuple[str, frozenset[str] | None], ...] = ()
+    _marker_threads: int = 1
+
+    @property
+    def min_threads(self) -> int:
+        """The smallest pool these cases measure their code on: the marker's,
+        or a selected case's own requirement, whichever is larger."""
+        needed = self._marker_threads
+        for scenario, cases in self._entries:
+            for name, threads in _case_min_threads(scenario).items():
+                if cases is None or name in cases:
+                    needed = max(needed, threads)
+        return needed
 
     def scenarios(self) -> tuple[str, ...]:
         return tuple(s for s, _ in self._entries)
@@ -104,21 +138,43 @@ class Selection:
                 merged[s] = None if prev is None or cases is None else prev | cases
             else:
                 merged[s] = cases
-        return _ordered(merged)
+        return _ordered(merged, max(self._marker_threads, other._marker_threads))
 
     def render(self) -> str:
         """The selector string that parses back to this selection."""
         parts: list[str] = []
         for s, cases in self._entries:
             parts += [s] if cases is None else [f"{s}:{c}" for c in sorted(cases)]
+        if self._marker_threads > 1:
+            parts.append(f"{_THREADS_MARKER}{self._marker_threads}")
         return ",".join(parts)
 
 
-def _ordered(entries: Mapping[str, frozenset[str] | None]) -> Selection:
-    return Selection(tuple((s, entries[s]) for s in SCENARIOS if s in entries))
+def _ordered(
+    entries: Mapping[str, frozenset[str] | None], marker_threads: int = 1
+) -> Selection:
+    return Selection(
+        tuple((s, entries[s]) for s in SCENARIOS if s in entries), marker_threads
+    )
+
+
+_THREADS_MARKER = "@threads="
+
+
+def _marker(selector: str) -> Selection:
+    threads = selector.removeprefix(_THREADS_MARKER)
+    if threads == selector or not threads.isdigit() or int(threads) < 1:
+        msg = (
+            f"unknown marker {selector!r}: the one marker is "
+            f"`{_THREADS_MARKER}N`, N a thread count >= 1"
+        )
+        raise ValueError(msg)
+    return Selection((), int(threads))
 
 
 def _one(selector: str) -> Selection:
+    if selector.startswith("@"):
+        return _marker(selector)
     scenario, _, glob = selector.partition(":")
     if scenario not in _CASE_LISTS:
         msg = f"unknown scenario {scenario!r} in {selector!r}; valid: {SCENARIOS}"

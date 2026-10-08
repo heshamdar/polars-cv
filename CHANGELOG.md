@@ -81,6 +81,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Internal
 
+- **Benchmarks: a change to the row splitter is measured on a parallel pool.**
+  The splitter does nothing on one thread, and `relevance` mapped it to
+  `pipelines`, the geometry and the `split_` cases only; PR #124's rewrite
+  passed those while the eager `list` sink lost 15.6% and streaming
+  `sobel_x` 11.5% at 4 threads. `row_split.rs` now also selects
+  `single_ops`, `e2e` and the `sink_` cases, with a new `@threads=N`
+  selector marker (`@threads=4`) that travels in `SEL` to both sides;
+  `targeted`'s `split_` cases declare `min_threads=2` themselves. `run_suite`
+  refuses fewer threads than a selection needs (and a smaller actual pool),
+  and `compare` refuses results run on different thread counts.
 - `_lib._take_max_split_rows()` reports the most rows one plugin call ran
   since it was last read (and resets).
 - `UPSTREAM_ISSUES.md`: four Polars issues reproduced on 2.0.0 alone,
