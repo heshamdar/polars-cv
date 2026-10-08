@@ -1,0 +1,86 @@
+[
+  {
+    "framework": "polars-cv-eager",
+    "operation": "heavy_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.03850533389977499,
+    "throughput_images_per_second": 7791.1283870662155,
+    "latency_ms_per_image": 0.12835111299924998,
+    "peak_memory_mb": 234.1953125,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "light_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.05322236349984451,
+    "throughput_images_per_second": 5636.72825241736,
+    "latency_ms_per_image": 0.17740787833281502,
+    "peak_memory_mb": 428.5859375,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "medium_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.04538503369985847,
+    "throughput_images_per_second": 6610.10856539114,
+    "latency_ms_per_image": 0.1512834456661949,
+    "peak_memory_mb": 423.66796875,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "heavy_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.03763044980005361,
+    "throughput_images_per_second": 7972.267182402178,
+    "latency_ms_per_image": 0.12543483266684535,
+    "peak_memory_mb": 248.390625,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "light_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.05228535019987248,
+    "throughput_images_per_second": 5737.744872190446,
+    "latency_ms_per_image": 0.1742845006662416,
+    "peak_memory_mb": 407.4765625,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "medium_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.047382651799944144,
+    "throughput_images_per_second": 6331.43120116282,
+    "latency_ms_per_image": 0.15794217266648047,
+    "peak_memory_mb": 419.1015625,
+    "gpu_mode": null
+  }
+]

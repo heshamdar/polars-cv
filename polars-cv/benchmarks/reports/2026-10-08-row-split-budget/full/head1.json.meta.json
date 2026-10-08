@@ -1,0 +1,26 @@
+{
+  "git_sha": "9e0426f7afb39eaab1d5beddde3eccc27b0fa213",
+  "debug_build": false,
+  "build_profile": "benchmark",
+  "selection": "pipelines,targeted:geom_contour_area,targeted:geom_contour_contains_point,targeted:geom_contour_iou,targeted:geom_contour_rasterize,targeted:geom_contour_translate,targeted:geom_point_distance,targeted:geom_point_distance_to_contour,targeted:geom_point_translate,targeted:split_streaming_then_eager,targeted:split_streaming_uneven_row_groups",
+  "timestamp_utc": "2026-10-08T04:35:23.455237+00:00",
+  "num_threads": 4,
+  "adapters": [
+    "polars-cv-eager",
+    "polars-cv-streaming"
+  ],
+  "config": {
+    "image_counts": [
+      300
+    ],
+    "image_sizes": [
+      [
+        256,
+        256
+      ]
+    ],
+    "warmup_iterations": 3,
+    "benchmark_iterations": 10,
+    "suite_repeats": 3
+  }
+}

@@ -81,8 +81,11 @@ the pool size, and leave after a range that finds it over. Tests
 the old tracker; `test_an_eager_call_after_a_streaming_run_uses_the_pool`
 was watched failing with helpers disabled. Debug-build timings: eager after
 streaming 18.1 s → 4.6 s; uneven row groups 13.5 s → 4.8 s. The
-benchmark-profile gate (4 threads, interleaved) is recorded in
-`benchmarks/reports/` when run.
+benchmark-profile gate (4 threads, interleaved;
+`benchmarks/reports/2026-10-08-row-split-budget`): `split_streaming_then_eager`
+2.2×, `split_streaming_uneven_row_groups` +11%, eager pipelines neutral,
+streaming `medium` −3.8% (consistent, under the 7% gate; one helper range
+per query crossing threads), streaming `light`/`heavy` +6.5%/+5.5%.
 
 **Root cause.** Whether a call spreads is inferred from a `static`/cached
 history bit. That bit carries state between unrelated queries, between
