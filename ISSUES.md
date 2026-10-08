@@ -47,7 +47,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
 | CR-86 | Upstream | To file | `MemoryManager::do_spill` can livelock under a small budget |
 | CR-87 | Upstream | To file | `register_extension_type`'s duplicate check, and `ext_from_params` panics |
-| CR-88 | Engine / parity | Low | Nearest-neighbour resize breaks an exact pixel-centre tie the wrong way; the deep parity lane can fail on it |
 
 ## Performance
 
@@ -129,34 +128,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
   (portable and AVX2); the table strategy alone is 80 copies of about 2,600
   instructions. Nothing measured slower for it. A table lookup gains nothing
   from AVX2 (scalar loads), so it could skip dispatch if size ever matters.
-
-### CR-88 — Nearest resize breaks exact pixel-centre ties the wrong way
-
-**decision** (which side to fix)
-
-- **Found:** the randomized deep parity lane (`verify.sh` slow lane,
-  2026-10-08) on `main` at `e788d72`; the lane is not derandomized
-  (`tests/parity/framework/budget.py`), so it passed on the same code
-  earlier that day. Hypothesis repro:
-  `@reproduce_failure('6.168.0', b'AXicc2RwBEFGMMnkyACHTI6ajqJwHrcjIwB5kQWl')`
-  on `test_chain_matches_composed_references_deep`.
-- **Evidence:** a 2×1 image (rows 10 and 233),
-  `resize_to_height(height=21, filter="nearest")`: the engine maps output rows
-  0–10 to source row 0 and 11–20 to row 1. Row 10's pixel-centre source
-  coordinate is exactly `(10 + 0.5) × 2/21 = 1.0`, so exact arithmetic gives
-  row 1; the engine gives row 0, presumably from the scale computed in
-  floating point. Identical under every optimizer setting, so it is the
-  kernel, not a pass.
-- **Why the lane fails:** the parity framework tolerates such tie rows with
-  a sparse budget proportional to the output size. A following
-  `crop(height=11)` leaves 33 elements and a budget of 2, and one tie row
-  costs 3 (one per channel).
-- **Options:** (a) make the nearest kernel's source coordinate exact at
-  ties (integer arithmetic: `floor((2·dst + 1)·src / (2·dst_len))`), which
-  also makes it agree with the reference everywhere; or (b) have the
-  framework's tie budget count whole tie rows/columns propagated through a
-  crop. (a) changes output bytes for some sizes, so it needs the owner's
-  go-ahead under "bit-identical output is the default".
 
 ## Fetch
 
@@ -530,3 +501,6 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 | CR-65 | The half-precision sink converted in the serial column build, one element at a time | Resolved |
 | CR-66 | The warp's border fill truncated, and stored 0 for an out-of-range border | Resolved |
 | FU-05 | `uv.lock` pinned a yanked numpy (2.4.0) | Resolved (numpy 2.4.6 in `uv.lock`) |
+| CR-88 | Nearest resize broke exact pixel-centre ties the wrong way (fir's floating-point steps) | Resolved: one exact integer gather for every dtype; the parity oracle compares nearest exactly |
+| CR-89 | The parity oracle's round-half-away used `floor(\|v\| + 0.5)`, rounding 0.49999999999999994 up | Resolved: exact rounding, with fixture tests (the engine was right) |
+| CR-90 | The parity framework propagated a bound through a wrapping integer cast (gain 1) | Resolved: `gain_for(x, p)` sees the input; a cast that can wrap is discontinuous |

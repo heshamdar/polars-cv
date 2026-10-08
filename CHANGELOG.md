@@ -9,6 +9,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **Nearest-neighbour resize took the wrong pixel at an exact tie.** Output
+  pixel `i` takes the source pixel under its centre, `floor((i + 0.5) ×
+  src / dst)`; when that centre falls exactly on a pixel boundary (2 → 21
+  rows: row 10 at exactly 1.0; 2 → 7: row 3), the u8/u16/f32 path
+  (fast_image_resize's nearest, stepping in floating point) could take the
+  pixel before it. Nearest of every dtype is now one exact integer gather,
+  reading a crop or vertical flip where it lies. Output changes only at
+  those tie rows and columns. Kernel benchmarks (u8 RGB, interleaved A/B):
+  downscale to 224 unchanged to 13% faster, 2× upscale 1.6–1.9× faster.
+  The parity oracle's allowance for tie pixels is removed: nearest is now
+  compared exactly (found by the randomized deep parity lane, CR-88). The
+  golden corpus is re-recorded for the 7 `expr/*.filter` cases, whose
+  nearest row (16×16 → 7×7) has a tie at row and column 3.
+
 - **A query could make the next run of the same pipeline single-threaded.**
   Whether a call spread its rows over the plugin's thread pool was decided
   by history: whether the previous call of the same compiled graph (cached
@@ -93,6 +107,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   batch's memory.
 
 ### Internal
+
+- **The parity oracle rounded the largest double below 0.5 up.** Its
+  float → integer rule was `floor(|v| + 0.5)`, whose addition rounds:
+  0.49999999999999994 became 1 (the engine, correctly, 0) and an odd integer
+  above 2⁵² the even one after it. It is now exact, with fixture tests
+  (CR-89, found by the randomized deep parity lane on a `cast("u8")` of a
+  chroma channel that resampled to one ulp below 0.5).
+- **The parity framework carried a bound through a wrapping cast.** An
+  integer cast that can wrap (`u8 → i8`) turns a one-level difference
+  upstream (bilinear 127 vs 128) into 255, but cast declared a Lipschitz
+  gain of 1, so the chain check failed on a correct engine. An op's gain now
+  sees its input as its tolerance does (`OpSpec.gain_for(x, p)`), and cast's
+  is infinite exactly when `np.can_cast(..., "safe")` refuses (CR-90).
 
 - **Benchmarks: a change to the row splitter is measured on a parallel pool.**
   The splitter does nothing on one thread, and `relevance` mapped it to

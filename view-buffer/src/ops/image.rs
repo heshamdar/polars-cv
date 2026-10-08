@@ -492,7 +492,7 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::Threshold { .. } => MemoryEffect::StridePreserving,
             // The resizes read rows packed within themselves (a crop, a
             // vertical flip) where they lie and pack any other layout
-            // themselves (`resize_pixels`), so a planned materialize would
+            // themselves (`resize_pixels`, `resample::nearest`), so a planned materialize would
             // only copy a view they can read.
             ImageOpKind::Resize { .. }
             | ImageOpKind::ResizeScale { .. }

@@ -305,18 +305,25 @@ fn resizing_a_view_with_packed_rows_allocates_only_its_output() {
             pattern_u8(3).slice(&[0, 0, 0], &[384, 384, 3]).flip(&[0]),
         ),
     ];
-    for (label, view) in views {
-        let (h, w) = (view.shape()[0] as u32 + 16, view.shape()[1] as u32 + 16);
-        run_owned(view.clone(), |e| e.resize(w, h, FilterType::Triangle));
-        let view_bytes = view.shape().iter().product::<usize>();
-        let (out, count) = large_allocations(view_bytes, || {
-            run_owned(view, |e| e.resize(w, h, FilterType::Triangle))
-        });
-        assert_eq!(out.shape(), [h as usize, w as usize, 3], "{label}");
-        assert_eq!(
-            count, 1,
-            "{label}: {count} view-sized allocations, the output is the only one needed"
-        );
+    // Nearest is the engine's own gather (`execution::resample::nearest`),
+    // the others fir's: both read the view where it lies.
+    for filter in [FilterType::Triangle, FilterType::Nearest] {
+        for (label, view) in views.clone() {
+            let (h, w) = (view.shape()[0] as u32 + 16, view.shape()[1] as u32 + 16);
+            run_owned(view.clone(), |e| e.resize(w, h, filter));
+            let view_bytes = view.shape().iter().product::<usize>();
+            let (out, count) =
+                large_allocations(view_bytes, || run_owned(view, |e| e.resize(w, h, filter)));
+            assert_eq!(
+                out.shape(),
+                [h as usize, w as usize, 3],
+                "{label} {filter:?}"
+            );
+            assert_eq!(
+                count, 1,
+                "{label} {filter:?}: {count} view-sized allocations, the output is the only one needed"
+            );
+        }
     }
 }
 

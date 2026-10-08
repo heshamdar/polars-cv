@@ -47,6 +47,56 @@ u8 = np.uint8
 # ---------------------------------------------------------------------------
 
 
+class TestRoundHalfAway:
+    """The oracle's float -> integer rounding is the engine's (Rust's
+    ``f64::round``), exactly: ``floor(|v| + 0.5)`` rounds the largest double
+    below 0.5 up, because the addition itself rounds to 1.0."""
+
+    def test_just_below_a_half_rounds_down(self) -> None:
+        from tests.parity.framework.oracle import round_half_away
+
+        below = np.nextafter(0.5, 0.0)
+        assert round_half_away(np.array([below, -below])).tolist() == [0.0, -0.0]
+
+    def test_halves_round_away_from_zero(self) -> None:
+        from tests.parity.framework.oracle import round_half_away
+
+        v = np.array([0.5, 1.5, 2.5, -0.5, -2.5, 0.49, 0.51, 7.0])
+        assert round_half_away(v).tolist() == [1.0, 2.0, 3.0, -1.0, -3.0, 0.0, 1.0, 7.0]
+
+    def test_large_odd_integers_stay_put(self) -> None:
+        # Above 2**52 every double is an integer, and |v| + 0.5 rounds to the
+        # next even one.
+        from tests.parity.framework.oracle import round_half_away
+
+        v = np.array([2.0**52 + 1, -(2.0**52 + 1)])
+        assert round_half_away(v).tolist() == v.tolist()
+
+
+class TestCastGain:
+    """A narrowing or sign-changing integer cast wraps, so a one-level error
+    on its input (127 vs 128 into ``i8``) is a 255-level one on its output:
+    it is discontinuous there, and the chain's bound must not survive it.
+    A widening cast, or a float one (which saturates), is a plain 1."""
+
+    def test_a_wrapping_cast_is_discontinuous(self) -> None:
+        from tests.parity.framework.oracle import spec_for
+
+        cast = spec_for("cast")
+        u8 = np.zeros((1, 1, 1), np.uint8)
+        assert math.isinf(cast.gain_for(u8, {"dtype": "i8"}))
+        assert math.isinf(cast.gain_for(np.zeros((1, 1, 1), np.int16), {"dtype": "u8"}))
+        assert math.isinf(cast.gain_for(np.zeros((1, 1, 1), np.int8), {"dtype": "u16"}))
+
+    def test_a_cast_that_cannot_wrap_has_unit_gain(self) -> None:
+        from tests.parity.framework.oracle import spec_for
+
+        cast = spec_for("cast")
+        assert cast.gain_for(np.zeros((1, 1, 1), np.uint8), {"dtype": "i16"}) == 1.0
+        assert cast.gain_for(np.zeros((1, 1, 1), np.float32), {"dtype": "u8"}) == 1.0
+        assert cast.gain_for(np.zeros((1, 1, 1), np.uint8), {"dtype": "f32"}) == 1.0
+
+
 class TestCompare:
     """``compare`` must reject every kind of disagreement it claims to."""
 
