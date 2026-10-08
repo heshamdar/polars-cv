@@ -68,6 +68,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Internal
 
+- `_plugin.call` and `_PluginNamespace._plugin` lose their `is_elementwise`
+  parameter, which every caller passed or defaulted as `True`. Every plugin
+  function is elementwise, and `_plugin.call` declares it once. The streaming
+  guard now treats a whole-column plugin call (`columnar-function` over the
+  `.so`) as a fallback, and `test_streaming_plans.py` covers the plugin's own
+  entry points (`cv.pipe`, `read_bytes`, `width`, a contour and a point
+  accessor). With the declaration flipped to `False`, those and every metrics
+  plan built on the plugin fail, 30 in all; before this nothing did.
 - The direct `tokio` dependency and `CloudError::RuntimeError` are removed
   (nothing builds a runtime any more).
 - `fetch::prefetch`/`FetchedBatch`/`row_bytes`/`row_header`,

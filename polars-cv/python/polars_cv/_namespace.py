@@ -49,7 +49,6 @@ class _PluginNamespace:
         *,
         args: list[pl.Expr] | None = None,
         kwargs: dict[str, Any] | None = None,
-        is_elementwise: bool = True,
     ) -> pl.Expr:
         """Invoke a plugin function with ``self._expr`` as the first argument.
 
@@ -57,13 +56,11 @@ class _PluginNamespace:
             function_name: Name of the registered Rust plugin function.
             args: Additional expression arguments after ``self._expr``.
             kwargs: Static keyword arguments passed to the plugin.
-            is_elementwise: Whether the function is elementwise.
         """
         return _plugin.call(
             function_name,
             args=[self._expr, *(args or [])],
             kwargs=kwargs,
-            is_elementwise=is_elementwise,
         )
 
 

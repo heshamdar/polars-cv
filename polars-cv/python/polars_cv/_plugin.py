@@ -3,7 +3,7 @@
 Every expression that runs Rust — the ``vb_graph`` pipeline engine and every
 ``.cv`` / ``.point`` / ``.contour`` / ``.bbox`` accessor — is built by
 :func:`call`. ``test_only_the_plugin_module_registers_plugin_functions`` fails
-on any other ``register_plugin_function`` reference in the package, so the three
+on any other ``register_plugin_function`` reference in the package, so the four
 things this module does cannot be skipped:
 
 1. **It pins polars to the exact extension file Python imports.** Handed a
@@ -29,6 +29,16 @@ things this module does cannot be skipped:
    storage as it is during the query, as polars' own scans do. Polars compares
    calls by their kwargs, so the graph wire carries nothing build-specific
    (``PipelineGraph._to_dict`` names nodes by position).
+
+4. **It declares every plugin function elementwise.** Every function maps
+   each row to one output row, independently of the others, so the streaming
+   engine hands each morsel to its own call and runs morsels in parallel. A
+   function that is not elementwise is called once with the whole column: no
+   morsels, no parallelism, and all of it in memory.
+   ``tests/test_streaming_plans.py`` holds every entry point to that (a
+   whole-column plugin call is a fallback there). A function that needed the
+   whole column would be a new design with its own streaming story, not a
+   flag on this call.
 """
 
 from __future__ import annotations
@@ -59,7 +69,6 @@ def call(
     *,
     args: Sequence[pl.Expr],
     kwargs: dict[str, Any] | None = None,
-    is_elementwise: bool = True,
 ) -> pl.Expr:
     """Build an expression that runs the plugin function *function_name*.
 
@@ -68,7 +77,6 @@ def call(
         args: Expression inputs, in the order the Rust function reads them.
             Each reaches the plugin as its storage (see the module docstring).
         kwargs: Static keyword arguments, serialized to the plugin.
-        is_elementwise: Whether the function is elementwise.
     """
     inputs: list[pl.Expr] = []
     for arg in args:
@@ -84,6 +92,6 @@ def call(
         function_name=function_name,
         args=inputs,
         kwargs=kwargs,
-        is_elementwise=is_elementwise,
+        is_elementwise=True,
         is_deterministic=True,
     )
