@@ -80,6 +80,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<output::ArrowBytes>()?;
     m.add_function(wrap_pyfunction!(output::binary_rows, m)?)?;
     m.add_function(wrap_pyfunction!(_last_split_workers, m)?)?;
+    m.add_function(wrap_pyfunction!(_take_max_split_rows, m)?)?;
     m.add_function(wrap_pyfunction!(_last_fetch_peak_resident, m)?)?;
     Ok(())
 }
@@ -91,6 +92,13 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[pyfunction]
 fn _last_split_workers() -> usize {
     row_split::last_split_workers()
+}
+
+/// The most rows one plugin call ran since this was last read (and reset):
+/// the largest morsel the streaming engine handed the plugin.
+#[pyfunction]
+fn _take_max_split_rows() -> usize {
+    row_split::take_max_split_rows()
 }
 
 /// The most fetched remote bodies the most recent fetching call held at once

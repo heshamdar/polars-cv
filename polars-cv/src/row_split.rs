@@ -186,6 +186,7 @@ impl Split {
         len: usize,
         run: impl Fn(usize, Range<usize>) -> R + Sync,
     ) -> Vec<R> {
+        MAX_SPLIT_ROWS.fetch_max(len, Ordering::SeqCst);
         let ranges = row_ranges(len, THREAD_POOL.current_num_threads());
         if let [only] = ranges.as_slice() {
             let out = run(0, only.clone());
@@ -278,6 +279,17 @@ static LAST_SPLIT_WORKERS: AtomicUsize = AtomicUsize::new(0);
 /// See [`LAST_SPLIT_WORKERS`].
 pub(crate) fn last_split_workers() -> usize {
     LAST_SPLIT_WORKERS.load(Ordering::SeqCst)
+}
+
+/// The most rows one call ran since [`take_max_split_rows`] was last read:
+/// under the streaming engine, the largest morsel a plugin call received.
+/// Read through `_lib._take_max_split_rows` by the test that holds the
+/// streaming guide's claims about morsel size to the plugin.
+static MAX_SPLIT_ROWS: AtomicUsize = AtomicUsize::new(0);
+
+/// See [`MAX_SPLIT_ROWS`]; reading it starts a new count.
+pub(crate) fn take_max_split_rows() -> usize {
+    MAX_SPLIT_ROWS.swap(0, Ordering::SeqCst)
 }
 
 #[cfg(test)]

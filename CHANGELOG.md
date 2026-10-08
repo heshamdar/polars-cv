@@ -66,8 +66,27 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `"streaming"`). Results are unchanged; a test refuses any literal engine
   choice in the package (`test_engine_choice.py`).
 
+### Docs
+
+- **The streaming guide says how big a call is and how to bound it.** A
+  streaming call is one morsel and holds its whole output. Polars sizes
+  morsels by rows, and a Parquet scan gives a call a whole row group: 20,000
+  images at 224×224×3 `f32` is about 12 GB in one call. The two knobs are
+  row groups sized by bytes, or `pl.Config.set_streaming_chunk_size`
+  (process-global, which is why polars-cv does not set it).
+  `tests/test_streaming_morsels.py` checks these claims at the plugin.
+- **Feeding a training loop:** `LazyFrame.collect_batches` with a fixed-shape
+  `array` sink gives one `(rows, *shape)` NumPy tensor per batch, viewing the
+  batch's memory.
+
 ### Internal
 
+- `_lib._take_max_split_rows()` reports the most rows one plugin call ran
+  since it was last read (and resets).
+- `UPSTREAM_ISSUES.md`: four Polars issues reproduced on 2.0.0 alone,
+  drafted to file. They are list aggregation in a streaming group-by, a
+  per-plugin morsel-size hint, zero-width `Array` across the C interface,
+  and the out-of-core spill livelock.
 - `_plugin.call` and `_PluginNamespace._plugin` lose their `is_elementwise`
   parameter, which every caller passed or defaulted as `True`. Every plugin
   function is elementwise, and `_plugin.call` declares it once. The streaming

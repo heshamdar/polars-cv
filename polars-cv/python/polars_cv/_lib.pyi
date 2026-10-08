@@ -104,6 +104,10 @@ def _last_fetch_peak_resident() -> int:
     """The most fetched remote bodies the most recent fetching call held at
     once; racy under concurrent calls, meant for tests."""
 
+def _take_max_split_rows() -> int:
+    """The most rows one plugin call ran since this was last called (which
+    resets it); meant for tests."""
+
 def _last_split_workers() -> int:
     """Workers (calling thread + pool helpers) that ran the most recent split
     call's rows; racy under concurrent calls, meant for tests."""
