@@ -97,6 +97,60 @@ class TestCastGain:
         assert cast.gain_for(np.zeros((1, 1, 1), np.uint8), {"dtype": "f32"}) == 1.0
 
 
+class TestColourBoundsIgnoreAlpha:
+    """A colour conversion runs on the colour channels and carries alpha
+    through (``color_channels``), so its float bound scales with the colour
+    channels alone. Scaled by the whole image, an infinite alpha made
+    ``to_hsv``'s dense bound infinite and the tolerance unbuildable (CR-91),
+    and ``to_ycbcr``'s bound infinite, accepting anything."""
+
+    @pytest.mark.parametrize(
+        ("method", "params"),
+        [
+            ("to_hsv", {}),
+            ("to_ycbcr", {}),
+            ("grayscale", {}),
+            ("convert_color", {"from_space": "rgb", "to_space": "gray"}),
+        ],
+    )
+    def test_alpha_does_not_move_the_bound(self, method: str, params: dict) -> None:
+        from tests.parity.framework.oracle import spec_for
+
+        spec = spec_for(method)
+        finite = np.array([[[0.607, 0.189, 0.450, 1.0]]], dtype=np.float32)
+        bounds = []
+        for alpha in (1.0, 1e30, np.inf):
+            x = finite.copy()
+            x[..., 3] = alpha
+            bounds.append(spec.tolerance(x, params))
+        assert all(math.isfinite(b.atol) for b in bounds), bounds
+        assert bounds[0] == bounds[1] == bounds[2], bounds
+
+
+class TestLabReference:
+    """The Lab reference is CIE Lab by its definition (sRGB curve, D65), in
+    float64. OpenCV's float Lab approximates the sRGB curve and is 0.57 off
+    in a* on a dark pixel (CR-92), more than the bound it was given."""
+
+    def test_a_dark_pixel_matches_the_definition(self) -> None:
+        from tests.parity.framework.oracle import _lab_ref
+
+        # The CR-92 pixel; its Lab by the definition, worked independently.
+        x = np.array([[[3363, 7165, 3444]]], dtype=np.uint16)
+        lab = _lab_ref(x, {})[0, 0]
+        np.testing.assert_allclose(lab, [8.4907, -9.7715, 6.8934], atol=2e-3)
+
+    def test_the_anchor_colours(self) -> None:
+        from tests.parity.framework.oracle import _lab_ref
+
+        x = np.array([[[1.0, 1.0, 1.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]], np.float32)
+        lab = _lab_ref(x, {})[0]
+        np.testing.assert_allclose(lab[0], [100.0, 0.0, 0.0], atol=2e-3)
+        np.testing.assert_allclose(lab[1], [0.0, 0.0, 0.0], atol=2e-3)
+        # sRGB red: L 53.24, a 80.09, b 67.20 (D65).
+        np.testing.assert_allclose(lab[2], [53.24, 80.09, 67.20], atol=1e-2)
+
+
 class TestCompare:
     """``compare`` must reject every kind of disagreement it claims to."""
 

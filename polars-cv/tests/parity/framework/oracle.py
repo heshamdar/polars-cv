@@ -198,6 +198,17 @@ def magnitude(x: np.ndarray) -> float:
     return max(1.0, float(np.max(np.abs(x.astype(np.float64)))))
 
 
+def color_magnitude(x: np.ndarray) -> float:
+    """:func:`magnitude` of the colour channels alone, for a ``ColorChannels``
+    op's bound: alpha is carried through unchanged (:func:`color_channels`),
+    so it cannot scale the colour error. Scaled by the whole image, an
+    infinite alpha made the bound infinite (CR-91)."""
+    colour = x[:, :, :3] if x.ndim == 3 and x.shape[2] == 4 else x
+    if x.ndim == 3 and x.shape[2] == 2:  # gray + alpha
+        colour = x[:, :, :1]
+    return magnitude(colour)
+
+
 def _accumulated(x: np.ndarray, own: Tol) -> Tol:
     """*own*, plus the accumulator's rounding on a 64-bit integer image.
 
@@ -566,10 +577,10 @@ def _grayscale_tol(x: np.ndarray, p: Params) -> Tol:
     if x.shape[2] in (1, 2):
         return EXACT
     if not is_int(x):
-        return close(atol=1e-6 * magnitude(x), rtol=1e-6)
+        return close(atol=1e-6 * color_magnitude(x), rtol=1e-6)
     # The luma is computed in f64 (an integer's accumulator) on both sides,
     # in different orders: beyond 2**53 that is a few f64 spacings apart.
-    return lsb(max(1.0, 4 * float(np.spacing(float(magnitude(x))))))
+    return lsb(max(1.0, 4 * float(np.spacing(float(color_magnitude(x))))))
 
 
 def _to_bgr_ref(x: np.ndarray, p: Params) -> np.ndarray:
@@ -641,12 +652,34 @@ def _ycbcr_ref(x: np.ndarray, p: Params) -> np.ndarray:
     return color_channels(ycbcr, x)
 
 
+#: sRGB primaries to CIE XYZ (IEC 61966-2-1), and the D65 white those rows
+#: sum to.
+_SRGB_TO_XYZ = np.array(
+    [
+        [0.4124564, 0.3575761, 0.1804375],
+        [0.2126729, 0.7151522, 0.0721750],
+        [0.0193339, 0.1191920, 0.9503041],
+    ]
+)
+_D65_WHITE = _SRGB_TO_XYZ.sum(axis=1)
+
+
 def _lab_ref(x: np.ndarray, p: Params) -> np.ndarray:
-    """OpenCV's float Lab of the image scaled to [0, 1] (OpenCV has no
-    16-bit Lab)."""
+    """CIE Lab (D65) of the image scaled to [0, 1], by its definition, in
+    float64: the sRGB curve, the sRGB-to-XYZ matrix, then ``f(t)``.
+
+    Not OpenCV's float Lab: it approximates the sRGB curve and is 0.57 off in
+    a* on a dark pixel (CR-92), more than a bound worth having.
+    """
     scale = 1.0 if x.dtype.kind == "f" else float(np.iinfo(x.dtype).max)
-    rgb = (x[:, :, :3].astype(np.float64) / scale).astype(np.float32)
-    return cv2.cvtColor(rgb, cv2.COLOR_RGB2Lab).astype(np.float32)
+    rgb = x[:, :, :3].astype(np.float64) / scale
+    linear = np.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)
+    xyz = linear @ _SRGB_TO_XYZ.T / _D65_WHITE
+    delta = 6.0 / 29.0
+    f = np.where(xyz > delta**3, np.cbrt(xyz), xyz / (3 * delta**2) + 4.0 / 29.0)
+    fx, fy, fz = f[..., 0], f[..., 1], f[..., 2]
+    lab = np.stack([116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)], axis=2)
+    return lab.astype(np.float32)
 
 
 def _color_ref_dtype(x: np.ndarray) -> bool:
@@ -670,7 +703,7 @@ def _hsv_tol(x: np.ndarray, p: Params) -> Tol:
         return sparse(atol=2, frac=0.005, frac_atol=180)
     if x.dtype == np.uint16:
         return sparse(atol=2, frac=0.005, frac_atol=65536)
-    return sparse(atol=1e-3 * magnitude(x), frac=0.005, frac_atol=360)
+    return sparse(atol=1e-3 * color_magnitude(x), frac=0.005, frac_atol=360)
 
 
 # ---------------------------------------------------------------------------
@@ -1658,7 +1691,9 @@ OPS: dict[str, OpSpec] = {
             ref_accepts=lambda x, p: _color_ref_dtype(x),
             ref_dtypes=("u8", "u16", "f32"),
             tol=lambda x, p: (
-                lsb(1) if is_int(x) else close(atol=1e-5 * magnitude(x), rtol=1e-5)
+                lsb(1)
+                if is_int(x)
+                else close(atol=1e-5 * color_magnitude(x), rtol=1e-5)
             ),
             gain=1.0,
             note="full-range BT.601 (JFIF) by its definition; chroma centred "
@@ -1672,11 +1707,14 @@ OPS: dict[str, OpSpec] = {
                 _color_ref_dtype(x) and x.shape[2] == 3 and _unit(x)
             ),
             ref_dtypes=("u8", "u16", "f32"),
-            tol=close(atol=0.5, rtol=1e-3),
+            # The engine's D65 white is OpenCV's (0.950456, 1.088754), the
+            # reference's the sRGB matrix's (0.95047, 1.08883): ~0.003 in a*
+            # and b*. Then f32 storage of values up to ~128.
+            tol=close(atol=1e-2, rtol=1e-5),
             gain=_INF,
-            note="OpenCV's float Lab of RGB scaled to [0, 1] (L in [0, 100]); a* and b* "
-            "agree to ~0.2 (OpenCV's float path approximates the sRGB "
-            "curve), well under one just-noticeable difference",
+            note="CIE Lab (D65) of RGB scaled to [0, 1] by its definition "
+            "(L in [0, 100]), in float64: not OpenCV's float Lab, whose sRGB "
+            "curve is approximate (0.57 off in a* on dark pixels, CR-92)",
         ),
         _spec(
             "convert_color",
