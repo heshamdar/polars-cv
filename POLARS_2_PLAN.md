@@ -161,6 +161,17 @@ large single call.
 
 ### Phase 3 — One async runtime, and honest docs about what is shared (F4, F5)
 
+**Status: implemented.** `cloud::get_runtime()`, `CloudError::RuntimeError`
+and the direct `tokio` dependency are deleted; every future runs on
+`ASYNC.block_on`. The root `clippy.toml` disallows
+`Runtime::new`/`Builder::new_{multi,current}_thread`. It was watched failing
+on the old `cloud.rs`, and again with `tokio` re-added and both constructors
+called, so it is dormant, not broken, while no crate names `tokio`.
+`test_async_runtime.py` was watched failing (4 threads started, one per CPU,
+against `POLARS_ASYNC_THREAD_COUNT=3`) and now passes. `remote` benchmark at
+1 and 4 threads: no regression, `remote_http_paths` +4–9%
+(`benchmarks/reports/2026-10-08-one-async-runtime`).
+
 - Delete `cloud::get_runtime()` and drive every remote read on
   `polars_core::runtime::ASYNC`, reached the way `THREAD_POOL` already is
   (`pyo3_polars::export::polars_core`). That leaves one runtime, sized by

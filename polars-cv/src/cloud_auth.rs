@@ -28,7 +28,7 @@
 //! # Why providers are memoized
 //!
 //! A provider is not just a way to get a token: its `Arc` address *is* the
-//! identity polars keys its process-wide object-store cache on
+//! identity polars keys its (plugin-wide) object-store cache on
 //! (`PlCredentialProvider::stable_cache_key`). Handing back a fresh provider for
 //! the same credential would therefore defeat that cache entirely — every read
 //! would rebuild its store and its connection pool — while handing back a shared
@@ -405,8 +405,7 @@ mod tests {
         use polars::io::cloud::credential_provider::IntoCredentialProvider;
 
         let os_provider = provider.clone().into_gcp_provider();
-        crate::cloud::get_runtime()
-            .unwrap()
+        pyo3_polars::export::polars_core::runtime::ASYNC
             .block_on(os_provider.get_credential())
             .map(|c| c.bearer.clone())
             .map_err(|e| e.to_string())

@@ -25,9 +25,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `split_streaming_uneven_row_groups` +11%, eager pipelines unchanged,
   streaming pipelines −3.8% to +6.5% (`medium` the one consistent dip, under
   the 7% gate); see `benchmarks/reports/2026-10-08-row-split-budget`.
+- **Remote reads started a second async runtime.** The plugin built its own
+  tokio runtime (one worker per CPU, ignoring Polars' settings) beside
+  Polars' `ASYNC` runtime, which the 0.55 object stores already spawn onto.
+  Every remote read now runs on Polars' runtime alone, sized by
+  `POLARS_ASYNC_THREAD_COUNT` (default `min(POLARS_MAX_THREADS, 32)`), and a
+  root `clippy.toml` refuses building another (`test_async_runtime.py`).
+- **The docs claimed polars-cv's fetches shared Polars' concurrency budget.**
+  The plugin links its own copy of Polars' I/O layer, so its budget, store
+  cache and runtime are its own: `POLARS_CONCURRENCY_BUDGET` bounds polars-cv's
+  requests and, separately, Polars' scans. `sources.md` and the `cloud.rs`
+  docs now say so.
 
 ### Internal
 
+- The direct `tokio` dependency and `CloudError::RuntimeError` are removed
+  (nothing builds a runtime any more).
 - `row_split::CallTracker`, `Call::spreads` and the `geom_calls!` macro are
   removed, with the `calls` parameter every geometry row loop took. The
   budget replaces them (`row_split::split`).

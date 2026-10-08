@@ -16,7 +16,7 @@
 //!
 //! For `s3://`, `gs://` and `az://` this module builds **nothing**: it
 //! translates our options ([`polars_options`]) and hands them to
-//! `polars-io`'s [`build_object_store`], which owns a process-wide store cache,
+//! `polars-io`'s [`build_object_store`], which owns a store cache,
 //! credential-expiry refresh and rebuild-on-error retry. That is not a detail —
 //! this crate previously built a store per *file*, so every image paid a fresh
 //! DNS lookup, TLS handshake and connection pool, and under the streaming engine
@@ -26,6 +26,24 @@
 //! stores (only Aws/Gcp/Azure take a cache key), which suits reading a few large
 //! Parquet files and not many small images. That path keeps its own pooled
 //! [`http_client`].
+//!
+//! # What is shared, and with whom
+//!
+//! A plugin links its **own copy** of polars, polars-io included, so
+//! everything this module borrows from polars is the plugin's copy: the
+//! object-store cache, the concurrency semaphore (`with_concurrency_budget`)
+//! and the async runtime (`polars_core::runtime::ASYNC`). They are shared by
+//! every read the plugin makes, across calls, morsels and queries, and by
+//! nothing in the host: polars' own scans keep their own cache, semaphore and
+//! runtime. Both copies read the same environment variables, so
+//! `POLARS_CONCURRENCY_BUDGET` bounds the plugin's requests and, separately,
+//! the host's. Each other mention of "shared" below means plugin-wide.
+//!
+//! The plugin runs **one** async runtime, polars' `ASYNC` (sized by
+//! `POLARS_ASYNC_THREAD_COUNT`), which polars-io's stores already spawn onto
+//! (DNS resolution, credential refresh). Every future here is driven by
+//! `ASYNC.block_on`; `clippy.toml` refuses building another runtime
+//! (`tests/test_async_runtime.py` counts the threads).
 //!
 //! `CloudOptions.config` is a generic pass-through map keyed by
 //! `object_store`'s own configuration keys (e.g. `aws_region`,
@@ -52,11 +70,11 @@ use object_store::ObjectStoreExt;
 use polars::io::cloud::{build_object_store, CloudOptions as PlCloudOptions, CloudType};
 use polars::io::pl_async::with_concurrency_budget;
 use polars_utils::pl_path::{CloudScheme, PlRefPath};
+use pyo3_polars::export::polars_core::runtime::ASYNC;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use thiserror::Error;
-use tokio::runtime::Runtime;
 use url::Url;
 
 /// Errors that can occur during cloud file operations.
@@ -73,9 +91,6 @@ pub enum CloudError {
 
     #[error("Failed to build object store: {0}")]
     StoreError(String),
-
-    #[error("Failed to create runtime: {0}")]
-    RuntimeError(String),
 }
 
 /// Cloud storage options for explicit credential configuration.
@@ -288,10 +303,9 @@ pub fn read_file(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u8>, 
             "file" => read_local_path(path),
             "http" | "https" | "s3" | "s3a" | "gs" | "gcs" | "az" | "azure" | "abfs" | "abfss"
             | "adl" => {
-                let runtime = get_runtime()?;
                 // One permit, exactly as the batched path takes: a single read
                 // and a read inside a batch cost the process the same thing.
-                runtime.block_on(with_concurrency_budget(1, || read_remote(path, options)))
+                ASYNC.block_on(with_concurrency_budget(1, || read_remote(path, options)))
             }
             scheme => Err(CloudError::UnsupportedScheme(scheme.to_string())),
         }
@@ -318,7 +332,7 @@ async fn read_remote(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u
 /// Read one object from S3, GCS or Azure through `polars-io`'s cached store.
 ///
 /// The whole reason this delegates rather than building its own client: the
-/// store comes from `polars-io`'s process-wide `OBJECT_STORE_CACHE`, so the
+/// store comes from `polars-io`'s `OBJECT_STORE_CACHE` (plugin-wide), so the
 /// second and every later read of a bucket is a map lookup rather than a fresh
 /// DNS lookup, TLS handshake and connection pool. Under the streaming engine the
 /// plugin is invoked once per morsel, so a per-call store is rebuilt on every
@@ -411,22 +425,7 @@ pub fn read_local_prefix(path: &str, limit: usize) -> Result<(Vec<u8>, bool), Cl
     Ok((bytes, eof))
 }
 
-/// Get or create a tokio runtime for async operations.
-///
-/// Reuses a thread-local runtime to avoid the overhead of creating a new
-/// runtime for every cloud file read.
-pub(crate) fn get_runtime() -> Result<&'static Runtime, CloudError> {
-    use std::sync::OnceLock;
-    static RUNTIME: OnceLock<Runtime> = OnceLock::new();
-    if let Some(rt) = RUNTIME.get() {
-        return Ok(rt);
-    }
-    let rt = Runtime::new().map_err(|e| CloudError::RuntimeError(e.to_string()))?;
-    // Race is fine - OnceLock guarantees only one wins, others drop theirs
-    Ok(RUNTIME.get_or_init(|| rt))
-}
-
-/// The process-wide HTTP client, and therefore the process-wide connection pool.
+/// The plugin-wide HTTP client, and therefore the plugin-wide connection pool.
 ///
 /// A `reqwest::Client` *is* the pool: it owns the idle connections, the DNS
 /// resolver and the TLS session cache, and cloning it is an `Arc` bump. Building
@@ -435,9 +434,9 @@ pub(crate) fn get_runtime() -> Result<&'static Runtime, CloudError> {
 /// handshake too. The benchmark server counted it exactly: one connection per
 /// request, no reuse at all.
 ///
-/// Shared for the same reason [`get_runtime`] is, and note where the sharing
-/// has to happen: the streaming engine calls the plugin once per morsel, so a
-/// client scoped to a call is rebuilt on every morsel however wide the batch is.
+/// Note where the sharing has to happen: the streaming engine calls the plugin
+/// once per morsel, so a client scoped to a call is rebuilt on every morsel
+/// however wide the batch is.
 ///
 /// Deliberately *not* delegated to polars. `polars-io` builds an object-store
 /// for `http://` but does not cache it (`object_store_setup.rs`: only Aws/Gcp/
@@ -463,8 +462,7 @@ fn http_client() -> &'static reqwest::Client {
 
 /// Read a file from an HTTP or HTTPS URL.
 ///
-/// Uses async reqwest within a tokio runtime to avoid blocking issues
-/// when called from within Polars plugin execution context.
+/// Async reqwest, driven on polars' `ASYNC` runtime by the callers.
 ///
 /// # Arguments
 /// * `url` - The HTTP/HTTPS URL to fetch
@@ -502,7 +500,7 @@ async fn read_http(url: &str) -> Result<Vec<u8>, CloudError> {
     }
 }
 
-/// Fetch many files concurrently, bounded by the process-wide budget.
+/// Fetch many files concurrently, bounded by the plugin-wide budget.
 ///
 /// Each path is fetched with the same logic (and credentials) as [`read_file`];
 /// results are keyed by path, errors carried per path as strings. Graph
@@ -516,9 +514,11 @@ async fn read_http(url: &str) -> Result<Vec<u8>, CloudError> {
 /// invocation*, and the streaming engine invokes the plugin once per morsel
 /// concurrently across threads — so the real number of in-flight requests was
 /// (morsels in flight x 16), unbounded by anything the user could see or set.
-/// Every request now takes one permit from polars' own semaphore, so the whole
-/// process — our fetches and polars' own scans together — stays inside
-/// `POLARS_CONCURRENCY_BUDGET` (default: `max(rayon threads, 10)`).
+/// Every request now takes one permit from polars-io's semaphore, so the
+/// plugin's fetches, whatever calls they come from, stay inside
+/// `POLARS_CONCURRENCY_BUDGET` (default: `max(rayon threads, 10)`). That
+/// semaphore is the plugin's copy: the host's scans count against their own
+/// (see the module docs).
 ///
 /// **There is no barrier.** The old shape spawned a chunk of 16 scoped OS
 /// threads and joined *all* of them before starting the next chunk, so the
@@ -548,18 +548,7 @@ pub fn read_files_concurrent(
     }
 
     let width = unique.len();
-    let runtime = match get_runtime() {
-        Ok(runtime) => runtime,
-        Err(e) => {
-            let message = e.to_string();
-            return unique
-                .into_iter()
-                .map(|p| (p.to_string(), Err(message.clone())))
-                .collect();
-        }
-    };
-
-    runtime.block_on(async move {
+    ASYNC.block_on(async move {
         futures::stream::iter(unique.into_iter().map(|path| async move {
             let result = with_concurrency_budget(1, || read_remote(path, options))
                 .await
@@ -916,7 +905,7 @@ mod tests {
         // so the poisoned ADC is never read. The user-visible fact is identical.
         let options = polars_options(CloudScheme::Gs, Some(&opts))
             .expect("translating options must not read the ADC");
-        let built = get_runtime().unwrap().block_on(build_object_store(
+        let built = ASYNC.block_on(build_object_store(
             PlRefPath::new("gs://bucket/obj.png"),
             Some(&options),
             false,
@@ -935,9 +924,7 @@ mod tests {
     #[ignore]
     fn test_read_http_url() {
         // Use httpbin.org which returns known content
-        let result = get_runtime()
-            .unwrap()
-            .block_on(read_http("https://httpbin.org/bytes/100"));
+        let result = ASYNC.block_on(read_http("https://httpbin.org/bytes/100"));
         assert!(result.is_ok());
         assert_eq!(result.unwrap().len(), 100);
     }

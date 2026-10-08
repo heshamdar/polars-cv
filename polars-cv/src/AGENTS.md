@@ -34,7 +34,7 @@ LTO); `--release` is for distributable wheels.
 |------|---------------|
 | `lib.rs` | PyO3 module entry, `vb_graph` expression function, `unified_output_dtype`, and the planner-facing FFI (the `Plan`/`PlanState` classes from `plan.rs`, `enum_catalog`, `op_catalog`, `io_catalog`, `check_graph`) |
 | `image_metadata.rs` | Header-only metadata plugin functions (`image_width`, `image_height`, `image_channels`, `image_dtype`) |
-| `fetch.rs` | Stage one of every path-based read: path column → bytes (`prefetch`, `row_bytes`, `parse_on_error`). Shared by the `file_path` source and `read_bytes.rs`; owns `PathPolicy`, the `allowed_roots` sandbox both of them check against. Fetch concurrency is **not** a knob here — it is polars' process-wide `POLARS_CONCURRENCY_BUDGET` semaphore, taken one permit per request in `cloud.rs` |
+| `fetch.rs` | Stage one of every path-based read: path column → bytes (`prefetch`, `row_bytes`, `parse_on_error`). Shared by the `file_path` source and `read_bytes.rs`; owns `PathPolicy`, the `allowed_roots` sandbox both of them check against. Fetch concurrency is **not** a knob here — it is polars-io's `POLARS_CONCURRENCY_BUDGET` semaphore (the plugin's copy, separate from the host's), taken one permit per request in `cloud.rs` |
 | `read_bytes.rs` | `read_file_bytes` plugin function — `fetch.rs` with the decode omitted, for byte-identical passthrough |
 | `graph/types.rs` | `UnifiedGraph`, `GraphNode`, `OutputSpec`, `RowResult` — graph execution engine, `on_error` handling |
 | `graph/compiled.rs` | `CompiledGraph` — process-wide compiled-graph cache (parsed spec, topo order, slot-bound params) |
@@ -218,4 +218,4 @@ encoding (`encode_sink`), shared by the graph executor.
 | `object_store` | Cloud storage (S3, GCS, Azure) |
 | `reqwest` | HTTP file fetching |
 | `serde` / `serde_json` | JSON graph deserialization |
-| `tokio` | Async runtime for cloud/HTTP ops |
+| (no `tokio` dependency) | Futures run on polars' `ASYNC` runtime (`polars_core::runtime::ASYNC`, the plugin's copy); root `clippy.toml` refuses building another tokio runtime |

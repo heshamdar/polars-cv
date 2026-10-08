@@ -1,0 +1,13 @@
+# Lint configuration for every crate in the workspace (clippy reads the nearest
+# clippy.toml up from each crate's manifest).
+
+# One async runtime per process image. The plugin links its own copy of polars,
+# and with it polars' tokio runtime (`polars_core::runtime::ASYNC`, sized by
+# `POLARS_ASYNC_THREAD_COUNT`), which polars-io's object stores already spawn
+# onto. A second runtime doubles every remote read's threads and ignores that
+# setting (`tests/test_async_runtime.py`). Drive futures with `ASYNC.block_on`.
+disallowed-methods = [
+    { path = "tokio::runtime::Runtime::new", reason = "use polars' ASYNC runtime (clippy.toml)" },
+    { path = "tokio::runtime::Builder::new_multi_thread", reason = "use polars' ASYNC runtime (clippy.toml)" },
+    { path = "tokio::runtime::Builder::new_current_thread", reason = "use polars' ASYNC runtime (clippy.toml)" },
+]

@@ -319,11 +319,14 @@ call, distinct remote paths are fetched concurrently up front (exactly as the
 `file_path` source already does) and local files are read per row.
 
 How many are in flight is **not** per call: every remote request takes one
-permit from the same process-wide budget polars uses for its own scans, so the
-total is bounded however many morsels are running. Set it with
+permit from one budget shared by all of polars-cv's reads, so the total is
+bounded however many morsels are running. Set it with
 `POLARS_CONCURRENCY_BUDGET` (default: the larger of the thread count and 10).
-One knob covers both — raising it for a remote scan raises it for image fetching
-too.
+polars-cv is a plugin with its own copy of Polars' I/O layer, so this budget is
+separate from the one Polars' own scans use, though both read the same
+variable: a query that scans remote Parquet while polars-cv fetches remote
+images can have up to twice the budget in flight. The fetches run on Polars'
+async runtime (the plugin's copy), sized by `POLARS_ASYNC_THREAD_COUNT`.
 
 Under the streaming engine (what a lazy `.collect()` uses by default since
 Polars 2.0) a bytes column is therefore morsel-bounded: if you filter on it and drop it, only a morsel's worth is
