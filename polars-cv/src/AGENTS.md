@@ -212,6 +212,20 @@ The crop stays the one authority on its window. Scaled decodes
 (`decode_max_size`) and non-image sources never take the pass
 (`roi_decodable`), and the `roi_decode` engine flag turns it off.
 
+**Shared decodes** (`shared_decode.rs`). A node that takes the pass also keeps
+a `SharedDecodes` per call (`ExecState::shared_decodes`, passed down in
+`RowFetch`): the rows of one image share its one whole decode, so patch rows
+(`patch_grid` → `explode` → crop → ops) decode each image once. Keys are
+identity, not location: bytes by content (`ImageKey::bytes`, XXH3-128 and the
+length), paths by path. For a path, the probe, read and decode are one load
+(`get_or_load`): a TIFF the chunk decoder carries loads as `Loaded::Windowed`,
+and each row reads its own window. Every whole decode of encoded bytes goes
+through `execute::decode_whole`, counted for `_lib._image_decodes()`.
+`tests/test_shared_decode.py` pins one decode per image across formats, file
+reads, dtypes and errors. Overlapping patches through in-place ops check the
+sharing is copy-on-write; that test was watched failing with `Arc::get_mut`'s
+uniqueness check forced open.
+
 A TIFF layout the chunk decoder does not carry (`TiffImage::unsupported`, with
 the reason) read by path is read whole only when the file is within
 `DECODE_LIMIT_BYTES`; a larger one is the row's error naming the layout,

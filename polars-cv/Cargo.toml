@@ -89,6 +89,8 @@ libc = "0.2"
 
 # Image encoding support
 image = "0.25"
+# Content keys for whole decodes shared between a call's rows (`shared_decode`).
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 # Serialization. `float_roundtrip`: a literal f64 in the graph JSON parses to
 # the nearest f64, so it equals the same value read from a column

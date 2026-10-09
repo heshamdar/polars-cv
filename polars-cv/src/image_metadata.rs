@@ -267,7 +267,7 @@ enum RangedSlide {
 fn ranged_slide(fetcher: &crate::fetch::Fetcher<'_>, row: usize) -> Result<RangedSlide, String> {
     use std::io::{ErrorKind, Read};
     use view_buffer::interop::tiff_region::{self, TiffError};
-    let Some(mut file) = fetcher.open(row)? else {
+    let Some(mut file) = fetcher.open_header(row)? else {
         return Ok(RangedSlide::Read(None));
     };
     let mut magic = [0u8; 4];

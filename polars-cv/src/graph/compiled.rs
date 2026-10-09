@@ -174,6 +174,10 @@ struct ExecState<'a> {
     /// Per-path errors surface at their row so the usual error policies
     /// apply.
     fetchers: Vec<Option<crate::fetch::Fetcher<'a>>>,
+    /// Each node whose rows crop their image (`roi_decode`): the whole
+    /// decodes its rows share, so the patches of an image decode it once
+    /// (`shared_decode`). Aligned with `plan`.
+    shared_decodes: Vec<Option<crate::shared_decode::SharedDecodes>>,
     /// The concrete source each `"auto"` source node reads this batch's column
     /// as ([`Source::route`]), aligned with `plan`. The column dtype is
     /// constant across rows, so this is taken once per batch; a routing error
@@ -347,6 +351,11 @@ impl CompiledGraph {
             inputs,
             resolved_outputs,
             fetchers: self.fetchers(inputs),
+            shared_decodes: self
+                .plan
+                .iter()
+                .map(|np| np.roi.then(Default::default))
+                .collect(),
             routed_sources: self.route_auto_sources(inputs),
             output_nodes,
         };
@@ -787,6 +796,7 @@ impl CompiledGraph {
                             row_idx,
                             RowFetch {
                                 fetcher: state.fetchers[idx].as_ref(),
+                                decodes: state.shared_decodes[idx].as_ref(),
                             },
                             crop,
                             level,

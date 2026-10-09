@@ -478,7 +478,23 @@ impl<'a> Fetcher<'a> {
     /// Row `row`'s file opened for reads by range — a local file, or a remote
     /// object through the call's shared [`RemoteObject`] — or `Ok(None)` for
     /// a null path. The policy check and its refusal are [`Fetcher::bytes`]'s.
+    ///
+    /// This is the row's own read of its chunks: a remote row begins reading
+    /// and takes its read-ahead ([`RemoteReader::for_row`]). A read of the
+    /// file's header alone is [`Fetcher::open_header`].
     pub fn open(&self, row: usize) -> Result<Option<RangedFile>, String> {
+        self.open_as(row, true)
+    }
+
+    /// Row `row`'s file opened to read its header only (a format probe,
+    /// `slide_info`): as [`Fetcher::open`], but neither taking the row's
+    /// read-ahead nor marking the row as reading, which would leave its
+    /// read-ahead to be fetched again by the row's own read.
+    pub fn open_header(&self, row: usize) -> Result<Option<RangedFile>, String> {
+        self.open_as(row, false)
+    }
+
+    fn open_as(&self, row: usize, chunks: bool) -> Result<Option<RangedFile>, String> {
         let Some(path) = self.ca.get(row) else {
             return Ok(None);
         };
@@ -488,10 +504,12 @@ impl<'a> Fetcher<'a> {
         self.policy.check(path)?;
         let slot = self.slots[row]
             .ok_or_else(|| format!("internal: remote path '{path}' has no fetch"))?;
-        Ok(Some(RangedFile::Remote(RemoteReader::for_row(
-            Arc::clone(&self.remote[slot]),
-            row,
-        ))))
+        let object = Arc::clone(&self.remote[slot]);
+        Ok(Some(RangedFile::Remote(if chunks {
+            RemoteReader::for_row(object, row)
+        } else {
+            RemoteReader::new(object)
+        })))
     }
 
     /// The rows after `row` whose windows a row thread reads ahead: remote

@@ -412,6 +412,22 @@ impl ImageAdapter {
         crop: &crate::ops::ViewOp,
         level: u32,
     ) -> Result<RegionDecode, image::ImageError> {
+        Self::decode_region_with(encoded_bytes, crop, level, Self::decode_level)
+    }
+
+    /// [`Self::decode_region`] with the whole decode supplied: `whole`
+    /// decodes level `level` of the bytes when no window decode can (any
+    /// format but a TIFF the chunk decoder carries), so a caller can share
+    /// one whole decode between the patches of an image.
+    ///
+    /// The error is `whole`'s, which a TIFF's own errors convert into, so a
+    /// caller sharing decodes can report a shared failure exactly as its own.
+    pub fn decode_region_with<E: From<image::ImageError>>(
+        encoded_bytes: &[u8],
+        crop: &crate::ops::ViewOp,
+        level: u32,
+        whole: impl FnOnce(&[u8], u32) -> Result<ViewBuffer, E>,
+    ) -> Result<RegionDecode, E> {
         use crate::interop::tiff_region;
         // A TIFF the chunk decoder carries reads only the window's chunks.
         if tiff_region::is_tiff(encoded_bytes) {
@@ -421,16 +437,19 @@ impl ImageAdapter {
                 return Ok(decoded);
             }
         }
-        let buffer = Self::decode_level(encoded_bytes, level)?;
+        Ok(Self::crop_decoded(whole(encoded_bytes, level)?, crop))
+    }
+
+    /// `crop` of an image already decoded whole: the crop's window, as the
+    /// view the executor's crop takes, or the crop's own refusal.
+    pub fn crop_decoded(buffer: ViewBuffer, crop: &crate::ops::ViewOp) -> RegionDecode {
         let shape = buffer.shape().to_vec();
-        Ok(
-            match crate::ops::validation::validate_concrete(crop, &[&shape], &[buffer.dtype()]) {
-                Err(e) => RegionDecode::Refused(e),
-                Ok(()) => {
-                    RegionDecode::Window(crate::execution::runner::apply_view(buffer, crop.clone()))
-                }
-            },
-        )
+        match crate::ops::validation::validate_concrete(crop, &[&shape], &[buffer.dtype()]) {
+            Err(e) => RegionDecode::Refused(e),
+            Ok(()) => {
+                RegionDecode::Window(crate::execution::runner::apply_view(buffer, crop.clone()))
+            }
+        }
     }
 
     /// Pyramid level `level` of the TIFF `source` holds, opened: its header

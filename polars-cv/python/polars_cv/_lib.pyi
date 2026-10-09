@@ -108,6 +108,10 @@ def _fetch_bytes_read() -> int:
     """Every byte the plugin's path reads have taken from files and stores,
     cumulative; meant for tests (read it before and after a query)."""
 
+def _image_decodes() -> int:
+    """Every whole-image decode of encoded bytes the plugin's sources have
+    made, cumulative; meant for tests (read it before and after a query)."""
+
 def _take_max_split_rows() -> int:
     """The most rows one plugin call ran since this was last called (which
     resets it); meant for tests."""

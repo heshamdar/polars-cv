@@ -713,3 +713,36 @@ class TestRemoteConcurrency:
             srv.close()
         assert all(len(i["levels"]) == 3 for i in info)
         assert srv.peak > 1, srv.peak
+
+    def test_a_probe_does_not_take_a_rows_read_ahead(self, tmp_path: Path) -> None:
+        """Row 0 (another file) reads ahead the slide's rows before any of
+        them runs, so the slide's first row finds its window claimed. That
+        row's format probe must leave the claim to the row's own read, or
+        the window is fetched twice."""
+        fx = _slide(tmp_path)
+        png = tmp_path / "first.png"
+        png.write_bytes(make_image_png(80, 80, seed=4))
+        srv = _Server(tmp_path)
+        try:
+            origins = _ORIGINS[:8]
+            df = pl.DataFrame(
+                {
+                    "p": [f"{srv.base}/first.png"] + [f"{srv.base}/{fx.path.name}"] * 8,
+                    "t": [0] + [o[0] for o in origins],
+                    "l": [0] + [o[1] for o in origins],
+                }
+            )
+            out = _crop(df)
+        finally:
+            srv.close()
+        for (t, left), row in zip(origins, out["o"][1:], strict=True):
+            np.testing.assert_array_equal(
+                numpy_from_struct(row), fx.levels[0][t : t + 64, left : left + 64]
+            )
+        chunks = [
+            r[2]
+            for r in srv.requests
+            if r[0] == "GET" and r[2] and r[1].endswith(".tif") and not _is_block(r)
+        ]
+        repeated = sorted({c for c in chunks if chunks.count(c) > 1})
+        assert repeated == [], repeated

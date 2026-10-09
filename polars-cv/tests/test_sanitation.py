@@ -527,6 +527,9 @@ _REQUIRED_LIB_HOOKS = (
     # Every byte path reads have taken from files and stores, read by
     # `test_ranged_reads.py`.
     "_fetch_bytes_read",
+    # Every whole-image decode of encoded bytes, read by
+    # `test_shared_decode.py`.
+    "_image_decodes",
     # How many workers ran the most recent call's rows, read by
     # `test_an_eager_call_after_a_streaming_run_uses_the_pool`.
     "_last_split_workers",

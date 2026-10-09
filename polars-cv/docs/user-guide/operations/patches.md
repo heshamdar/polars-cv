@@ -1,20 +1,21 @@
-# Patches & Whole-Slide Images
+# Patches
 
-Cut images into patches with ordinary Polars rows. Each patch is one row. A
-crop after the source reads only that patch's pixels, even from a pyramidal
-TIFF of tens of gigabytes on S3.
+Cut images into patches as ordinary Polars rows, one row per patch, and run a
+pipeline on each patch: for training on patches of photos, scans or
+microscopy, for tiling large images for inference, or for whole-slide images.
 
-The model is three steps:
+The recipe is three steps, all in Polars:
 
 1. **List the patches.** `polars_cv.patch_grid()` gives each image's grid as a
    list of cells; `explode` makes one row per cell.
-2. **Read each patch.** A `crop` right after the source, driven by the cell's
-   columns, decodes only the window. For a tiled TIFF (a whole-slide image) it
-   reads only the tiles under the window.
-3. **Do anything Polars does.** Filter, join, group and pivot the patch rows
-   like any other rows.
+2. **Process each patch.** A pipeline that starts with a `crop` driven by the
+   cell's columns, followed by any ops, runs once per patch row.
+3. **Do anything Polars does.** Filter, sample, join, group and pivot the
+   patch rows like any other rows.
 
-## Listing patches: `patch_grid`
+## The recipe
+
+### Listing patches: `patch_grid`
 
 ```python
 import polars as pl
@@ -40,33 +41,97 @@ row-major order. The field names are `crop`'s keywords.
 Every patch is whole and inside the image. An image smaller than a patch has an
 empty list, and a null size gives a null row.
 
-## Reading patches: a crop after the source
+### Processing patches: a crop, then any ops
 
 ```python
 from polars_cv import Pipeline
 
 pipe = (
     Pipeline()
-    .source("file_path")
+    .source("image_bytes")  # or "file_path"
     .crop(top=pl.col("top"), left=pl.col("left"), height=256, width=256)
     .resize(height=224, width=224)
+    .cast("f32")
+    .scale(1 / 255)
 )
-patches = cells.with_columns(x=pl.col("path").cv.pipe(pipe).sink("torch"))
+patches = cells.with_columns(x=pl.col("image").cv.pipe(pipe).sink("torch"))
 ```
 
-A crop that is the first op of a pipeline is handed to the decoder (the
-`roi_decode` optimization, on by default). Spatial-window pushdown also moves a
-crop ahead of the pointwise ops before it.
+Every op works on a patch exactly as on an image: the crop makes each row a
+`[256, 256, C]` patch.
 
-- **Any image:** the result is exactly the crop of the full decode.
+**Each image is decoded once, whatever the number of its patches.** The rows
+of one image share one decode within a query. Images are matched by their
+bytes, or their path, which is also read once. So 64 patches of a JPEG cost
+one JPEG decode and 64 crops, not 64 decodes. A tiled TIFF goes further: each
+patch decodes only the tiles under it (see [Large images](#large-images-tiled-tiffs-and-whole-slide-images)).
+
+- The result is exactly the crop of the whole decode.
+- **A window outside the image** is that row's error, with `crop`'s usual
+  message, under the pipeline's `on_error`.
+- **A null window parameter** nulls or fails the row under `on_null_param`.
+- Per-row parameters make augmentation a column: random offsets
+  (`top=pl.col("top") + jitter`), a per-row `rotate(angle=...)` or contrast.
+- Up to 1 GiB of decoded images is kept per query; past that, the least
+  recently used are dropped, and decoded again if a later patch needs one.
+
+### Putting patch results back on the grid
+
+Per-patch scores go back onto each image's grid with a plain pivot, which
+gives a heatmap:
+
+```python
+scores = patches.with_columns(score=...)
+heat = scores.filter(pl.col("image_id") == 0).pivot(on="col", index="row", values="score")
+```
+
+## One batch per image: `tile`
+
+When you want an image's patches together, as one `[N, height, width, C]`
+array per row (a batch for a model), `tile` cuts the decoded image in one
+step:
+
+```python
+pipe = Pipeline().source("image_bytes", dtype="u8").tile(height=224, width=224, edge="shift")
+batches = df.select(pl.col("image").cv.pipe(pipe).sink("numpy"))
+```
+
+It uses the same grid as `patch_grid`, so patch `i` is the grid's cell `i`. The
+strides and `edge` may be expressions. Ops that read `[H, W, C]` (`resize`,
+`grayscale`, ...) refuse its rank-4 output when the pipeline is built: for
+per-patch work, use the recipe above, or explode `tile`'s output and run a
+second pipeline over it.
+
+### Choosing a route
+
+Measured on 8 images of 2048 x 2048 cut into 512 patches of 256, then resized
+to 224 and scaled to `f32` (4 threads; times relative to the lower bound of
+decoding each image once plus the ops on already-cut patches):
+
+| Route | JPEG | PNG |
+|---|---|---|
+| The recipe: `patch_grid` → `explode` → one pipeline (`crop` → ops) | 1.4x | 1.4x |
+| `tile` → `sink("array")` → `explode` → `source("array")` → ops | 1.1x | 1.0x |
+| `tile` → `sink("numpy")` → split in NumPy → `source("array")` → ops | 1.8x | 1.9x |
+| `tile` → `sink("list")` → `explode` → `source("list")` → ops | 3.0x | 3.3x |
+
+The recipe is the general route: any image sizes, per-row windows and
+parameters, one pipeline. The `array` route is slightly faster but needs every
+image's size known when the pipeline is built (an `assert_shape` before
+`tile`), since an `array` sink's shape is fixed. Avoid the `list` route: its
+nested lists cost more than the decode.
+
+## Large images: tiled TIFFs and whole-slide images
+
+A crop that is the first op of a pipeline is handed to the decoder (the
+`roi_decode` optimization, on by default; spatial-window pushdown also moves a
+crop ahead of the pointwise ops before it). For a TIFF it reads only the patch:
+
 - **A tiled or strip TIFF:** only the chunks under the window are decoded. Read
   by path, only the file's header and those chunks are read, locally or from
   S3, GCS, Azure or HTTP (by byte range).
-- **A window outside the image** is that row's error, with `crop`'s usual
-  message, under the pipeline's `on_error`. For a TIFF it is found from the
-  header, without decoding any pixels.
-- **A null window parameter** nulls or fails the row under
-  `on_null_param`, without reading a TIFF's pixels.
+- **A window outside the image, or a null window parameter**, is decided
+  from the header: the row fails or nulls without any pixels decoded.
 - **The cost of a patch** is the file's header, the patch's tiles and their
   entries in the tile index, whatever the size of the slide.
 - **Remote slides** are read ahead. While a row decodes, the windows of the rows
@@ -76,7 +141,7 @@ crop ahead of the pointwise ops before it.
   once and reused by later queries while the object's ETag (or Last-Modified
   time) is unchanged.
 
-## Pyramid levels
+### Pyramid levels
 
 A whole-slide image stores reduced copies of itself. `.cv.slide_info()` lists
 them from the header:
@@ -104,7 +169,7 @@ low = Pipeline().source("file_path", level=2).crop(
 file lacks, or any level above 0 of an image that is not a pyramid, is the
 row's decode error.
 
-## Example: tissue patches of a slide
+### Example: tissue patches of a slide
 
 Find tissue on a small level, then read only the full-resolution patches that
 hold it. `examples/14_whole_slide_patches.py` runs this end to end.
@@ -138,22 +203,7 @@ heatmap:
 heat = keep.pivot(on="col", index="row", values="tissue")
 ```
 
-## An image in memory: `tile`
-
-When the image is already decoded, or small enough to decode whole, `tile` cuts
-it into all its patches in one step: `[N, height, width, C]`.
-
-```python
-pipe = Pipeline().source("image_bytes", dtype="u8").tile(height=224, width=224, edge="shift")
-rows = df.select(pl.col("image").cv.pipe(pipe).sink("list")).explode("image")
-```
-
-It uses the same grid as `patch_grid`, so patch `i` is the grid's cell `i`. The
-strides and `edge` may be expressions. Ops that read `[H, W, C]` refuse its
-rank-4 output when the pipeline is built, so put per-patch work before `tile`,
-or explode and run a second pipeline over the patches.
-
-## Formats
+### TIFF formats
 
 | Supported | Not supported |
 |---|---|

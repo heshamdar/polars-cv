@@ -151,6 +151,23 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     header-prefix read.
   - New `targeted:wsi_patch_window_file` benchmark case.
 
+- **The patches of an image decode it once.** A node whose rows crop their
+  image (`roi_decode`) shares one whole decode between its rows of the same
+  image, for the call. So `patch_grid` → `explode` → `crop` → per-patch ops is
+  one pipeline over patch rows that decodes each image once, for any format.
+  - Before, a PNG, JPEG or WebP decoded whole for every patch: 64 patches of a
+    2048-pixel JPEG cost 64 full decodes.
+  - Images are matched by identity, not by where they lie: encoded bytes by
+    content (a 128-bit XXH3 and the length, so rows need not share a buffer),
+    and paths by path, which also reads each file once.
+  - Rows of an image that start together wait for one decode, and a failed
+    decode fails each of its rows with the same message.
+  - At most 1 GiB of decoded images is kept per node and call, least recently
+    used dropped first.
+  - Tiled TIFFs keep reading only each patch's window.
+  - New `_lib._image_decodes()` counts whole-image decodes, so tests can
+    measure this at the user-facing call.
+
 - **`Pipeline.tile(height=, width=, stride_height=, stride_width=,
   edge=)` cuts an image into its patches.** The output is `[N, height, width,
   C]` (`[N, height, width]` for a 2-D image), in row-major grid order.
@@ -166,7 +183,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     NumPy parity reference written from the definition, and a user-level
     comparison with the `patch_grid` recipe.
 
-- **A user-guide page, "Patches & Whole-Slide Images", and
+- **A user-guide page, "Patches", and
   `examples/14_whole_slide_patches.py`.** The page covers the grid →
   explode → crop recipe, pyramid levels, tissue filtering from a small level,
   heatmaps by pivot, `tile`, and which formats are supported. The example
