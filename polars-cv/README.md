@@ -53,11 +53,13 @@ hash lookup. (The detection-metrics APIs collect with polars' default engine,
 streaming since Polars 2.0, so they stream unless you set another engine
 affinity.)
 
-The plugin's pool and Polars' own are separate and both sized by
-`POLARS_MAX_THREADS`, so a query with many plugin expressions can briefly run up
-to about twice that many threads. If such a query shows a load average far
-above the core count and erratic timings, lower `POLARS_MAX_THREADS` — see
-[Streaming & Scaling](https://heshamdar.github.io/polars-cv/user-guide/concepts/streaming/#two-pools-one-setting).
+The plugin's pool and Polars' own are separate, and both are sized by
+`POLARS_MAX_THREADS`. Threads running polars-cv rows share one budget of
+`POLARS_MAX_THREADS`: a call running alone uses the whole pool, and concurrent
+calls (one per streaming morsel) keep their rows on their own threads once the
+budget is used. If a query with many plugin expressions still shows a load
+average far above the core count, lower `POLARS_MAX_THREADS` — see
+[Streaming & Scaling](https://heshamdar.github.io/polars-cv/user-guide/concepts/streaming/#two-pools-one-budget).
 
 ## Source Behavior (Auto DType)
 
@@ -127,7 +129,7 @@ fill it in the expression: `pl.col("target_h").fill_null(224)`.
 
 ## Operations
 
-- **Image**: `resize`, `resize_scale`, `resize_to_height`, `resize_to_width`, `resize_max`, `resize_min`, `thumbnail`, `grayscale`, `blur`, `threshold`, `crop`, `rotate`, `pad`, `letterbox`, `flip_h`, `flip_v`.
+- **Image**: `resize`, `resize_scale`, `resize_to_height`, `resize_to_width`, `resize_max`, `resize_min`, `thumbnail`, `grayscale`, `blur`, `threshold`, `crop`, `rotate`, `pad`, `pad_to_size`, `letterbox`, `flip`, `flip_h`, `flip_v`.
 - **Color**: `convert_color`, `to_hsv`, `to_lab`, `to_bgr`, `to_ycbcr`.
 - **Channels**: `channel_select`, `channel_swap`.
 - **Intensity**: `adjust_contrast`, `adjust_gamma`, `adjust_brightness`, `invert`.
@@ -135,13 +137,15 @@ fill it in the expression: `pl.col("target_h").fill_null(224)`.
 - **Morphology**: `erode`, `dilate`, `morphology_open`, `morphology_close`, `morphology_gradient`.
 - **Affine Transforms**: `warp_affine`, `shear`, `rotate_and_scale`.
 - **Enhancement**: `equalize_histogram`.
-- **Compute**: `normalize`, `scale`, `clamp`, `relu`, `cast`.
-- **Layout**: `transpose`, `reshape`.
-- **Geometry**: `extract_contours`, `rasterize`, `area`, `perimeter`, `centroid`, `bounding_box`.
+- **Compute**: `normalize`, `scale`, `add_constant`, `subtract_constant`, `clamp`, `clamp_min`, `clamp_max`, `relu`, `cast`.
+- **Element-wise math**: `abs`, `neg`, `sign`, `sqrt`, `square`, `reciprocal`, `round`, `floor`, `ceil`, `trunc`.
+- **Binary** (on `LazyPipelineExpr`, between two pipelines): `add`, `subtract`, `multiply`, `divide`, `blend`, `maximum`, `minimum`, `bitwise_and`, `bitwise_or`, `bitwise_xor`, `apply_mask`, `apply_contour_mask`, `channel_merge`.
+- **Layout**: `transpose`, `reshape`, `assert_shape`.
+- **Geometry**: `extract_contours`, `rasterize`, `simplify`, `convex_hull`, `scale_contour`, `largest`, `area`, `perimeter`, `centroid`, `bounding_box`; the `.contour` namespace adds `iou`, `dice`, `hausdorff_distance`, `contains_point`, `boundary_distances` and more.
 - **Points**: `normalize`, `translate`, `scale`, `rotate`, `distance`, `manhattan_distance`, `distance_to_contour`, `signed_distance_to_contour`, `nearest_point_on_contour`, `angle_to`, `midpoint`, `interpolate`, `within_bbox`.
 - **Bounding Boxes**: `pairwise_iou`, `correspond` (via `.bbox` namespace).
 - **Analysis**: `histogram`, `perceptual_hash`, `extract_shape`, `label_reduce`.
-- **Reductions**: `reduce_sum`, `reduce_mean`, `reduce_std`, `reduce_max`, `reduce_min`, `reduce_argmax`, `reduce_argmin`, `reduce_percentile`, `reduce_popcount`.
+- **Reductions**: `reduce_sum`, `reduce_mean`, `reduce_std`, `reduce_max`, `reduce_min`, `reduce_argmax`, `reduce_argmin`, `reduce_percentile`, `reduce_popcount`, and `statistics()` for several in one pass.
 - **Metadata**: `.cv.width()`, `.cv.height()`, `.cv.channels()`, `.cv.image_dtype()`.
 - **Byte access**: `.cv.read_bytes()` — read a path column's bytes (local or cloud) without decoding.
 - **Display**: `show_images()` for Jupyter notebook visualization.

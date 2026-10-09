@@ -7,6 +7,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.35.0] — 2026-10-09
+
+Fixes and performance. A call's rows now spread over the thread pool whatever
+ran before it, remote reads stream through a fetch window on Polars' own async
+runtime, and every bootstrap plan streams. No method or parameter is added or
+removed. Two results can change: nearest-neighbour resize at exact pixel-centre
+ties, and `DetectionTable.collect()`, which now respects
+`pl.Config.set_engine_affinity`. Upgrading from 0.34: see the
+[migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.35/).
+
 ### Fixed
 
 - **Nearest-neighbour resize took the wrong pixel at an exact tie.** Output
@@ -81,6 +91,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   choice in the package (`test_engine_choice.py`).
 
 ### Docs
+
+- **Release docs pass.** Migration guide 0.34 → 0.35. The API reference now
+  covers every public export: `OptFlags`, `build_info`, `dtype_name_for`,
+  `IMAGENET_MEAN`/`IMAGENET_STD`, the remaining geometry schemas
+  (`RING_SCHEMA`, `POINT_SET_SCHEMA`, `ANNOTATED_POINT_SCHEMA`,
+  `CORRESPONDENCE_SCHEMA`) and `BoxFormat`, and in metrics `ReportMetric`,
+  `Matcher`, `COCO_IOU_THRESHOLDS` and `FROC_RATES`. The README's operation
+  list gains the element-wise math, binary and mask ops, `flip`, `pad_to_size`,
+  `assert_shape` and the contour ops. Its threading paragraph described the
+  pre-budget behaviour ("about twice `POLARS_MAX_THREADS`") and linked a
+  renamed anchor; it now matches the streaming guide. The streaming guide and
+  example 06 no longer pass `engine="streaming"`, the default. The panic-audit
+  page (September 2026) is removed: the fix it recommended shipped as CR-34
+  and `test_engine_no_panics.py` guards it. Git history keeps the page.
 
 - **One issues ledger: `ISSUES.md`.** The open items of seven root documents
   (`CODE_REVIEW_FINDINGS.md`, `FOLLOW_UPS_0.32.md`, `PERFORMANCE_PLAN.md`,
@@ -4703,7 +4727,8 @@ Each item is described in full under its section below.
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
-[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.34.0...HEAD
+[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.35.0...HEAD
+[0.35.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.35.0
 [0.34.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.34.0
 [0.33.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.33.0
 [0.32.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.32.0

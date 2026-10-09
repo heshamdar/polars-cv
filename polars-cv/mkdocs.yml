@@ -99,6 +99,7 @@ nav:
       - Chaining: user-guide/composition/chaining.md
       - Multi-Output: user-guide/composition/multi-output.md
       - Binary Operations: user-guide/composition/binary-ops.md
+    - Migrating from 0.34: user-guide/migration-0.35.md
     - Migrating from 0.33: user-guide/migration-0.34.md
     - Migrating from 0.32: user-guide/migration-0.33.md
     - Migrating from 0.31: user-guide/migration-0.32.md
@@ -112,6 +113,4 @@ nav:
     - Geometry: api/geometry.md
     - Metrics: api/metrics.md
     - Functions: api/functions.md
-  - Development:
-    - Panic Audit: panic-audit.md
   - Changelog: changelog.md

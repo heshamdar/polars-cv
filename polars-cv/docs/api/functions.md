@@ -191,6 +191,23 @@ options = CloudOptions(gcs_bearer_token=token)
 pipe = Pipeline().source("file_path", cloud_options=options)
 ```
 
+### dtype_name_for
+
+Name a Polars dtype the way `source(dtype=)` and `cast()` take it
+(`pl.Float32` → `"f32"`), for building a pipeline over a column whose dtype is
+only known at run time.
+
+```python
+from polars_cv import Pipeline, dtype_name_for
+
+pipe = Pipeline().source("list", dtype=dtype_name_for(df.schema["values"].inner))
+```
+
+### IMAGENET_MEAN / IMAGENET_STD
+
+The ImageNet per-channel RGB mean `[0.485, 0.456, 0.406]` and standard
+deviation `[0.229, 0.224, 0.225]`, on a `[0, 1]` scale.
+
 ### HashAlgorithm
 
 Perceptual hash algorithm selection.
@@ -203,3 +220,17 @@ Pipeline().perceptual_hash(algorithm=HashAlgorithm.AVERAGE)
 Pipeline().perceptual_hash(algorithm=HashAlgorithm.DIFFERENCE)
 Pipeline().perceptual_hash(algorithm=HashAlgorithm.BLOCKHASH)
 ```
+
+## Optimization
+
+::: polars_cv.OptFlags
+    options:
+      show_root_heading: true
+      heading_level: 3
+
+## Build Information
+
+::: polars_cv.build_info
+    options:
+      show_root_heading: true
+      heading_level: 3

@@ -501,8 +501,8 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 | CR-65 | The half-precision sink converted in the serial column build, one element at a time | Resolved |
 | CR-66 | The warp's border fill truncated, and stored 0 for an out-of-range border | Resolved |
 | FU-05 | `uv.lock` pinned a yanked numpy (2.4.0) | Resolved (numpy 2.4.6 in `uv.lock`) |
-| CR-88 | Nearest resize broke exact pixel-centre ties the wrong way (fir's floating-point steps) | Resolved: one exact integer gather for every dtype; the parity oracle compares nearest exactly |
-| CR-89 | The parity oracle's round-half-away used `floor(\|v\| + 0.5)`, rounding 0.49999999999999994 up | Resolved: exact rounding, with fixture tests (the engine was right) |
-| CR-90 | The parity framework propagated a bound through a wrapping integer cast (gain 1) | Resolved: `gain_for(x, p)` sees the input; a cast that can wrap is discontinuous |
-| CR-91 | A colour conversion's float bound scaled with its alpha (an infinite alpha made `to_hsv`'s unbuildable, `to_ycbcr`'s infinite) | Resolved: `color_magnitude` scales `to_hsv`, `to_ycbcr` and `grayscale` bounds by the colour channels |
-| CR-92 | The `to_lab` reference was OpenCV's float Lab, 0.57 off in a* on dark pixels (the engine was exact) | Resolved: Lab by its definition in float64; bound 0.5 -> 0.01 |
+| CR-88 | Nearest resize broke exact pixel-centre ties the wrong way (fir's floating-point steps) | Resolved: one exact integer gather for every dtype; the parity oracle compares nearest exactly (0.35.0) |
+| CR-89 | The parity oracle's round-half-away used `floor(\|v\| + 0.5)`, rounding 0.49999999999999994 up | Resolved: exact rounding, with fixture tests (the engine was right) (0.35.0) |
+| CR-90 | The parity framework propagated a bound through a wrapping integer cast (gain 1) | Resolved: `gain_for(x, p)` sees the input; a cast that can wrap is discontinuous (0.35.0) |
+| CR-91 | A colour conversion's float bound scaled with its alpha (an infinite alpha made `to_hsv`'s unbuildable, `to_ycbcr`'s infinite) | Resolved: `color_magnitude` scales `to_hsv`, `to_ycbcr` and `grayscale` bounds by the colour channels (0.35.0) |
+| CR-92 | The `to_lab` reference was OpenCV's float Lab, 0.57 off in a* on dark pixels (the engine was exact) | Resolved: Lab by its definition in float64; bound 0.5 -> 0.01 (0.35.0) |
