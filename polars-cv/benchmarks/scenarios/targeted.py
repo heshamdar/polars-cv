@@ -80,6 +80,14 @@ class _Inputs:
         return _encoded(self.count, self.height, self.width, "JPEG")
 
     @property
+    def tiled_tiff(self) -> pl.DataFrame:
+        return _tiled_tiff(self.count, self.height, self.width)
+
+    @property
+    def slide_windows(self) -> pl.DataFrame:
+        return _slide_windows(self.count, self.height, self.width)
+
+    @property
     def blobs(self) -> pl.DataFrame:
         return _blobs(self.count, self.height, self.width)
 
@@ -133,6 +141,49 @@ def _encoded(count: int, height: int, width: int, fmt: str) -> pl.DataFrame:
         Image.fromarray(arr).save(buf, format=fmt)
         out.append(buf.getvalue())
     return pl.DataFrame({"img": out})
+
+
+@_stored
+def _tiled_tiff(count: int, height: int, width: int) -> pl.DataFrame:
+    """The PNG frame's pixels as LZW-compressed TIFFs in 64-pixel tiles."""
+    import tifffile
+
+    rng = np.random.default_rng(0)
+    out = []
+    for _ in range(count):
+        arr = (rng.integers(0, 255, (height, width, 3)) // 64 * 64).astype(np.uint8)
+        buf = io.BytesIO()
+        tifffile.imwrite(buf, arr, tile=(64, 64), compression="lzw", photometric="rgb")
+        out.append(buf.getvalue())
+    return pl.DataFrame({"img": out})
+
+
+@_stored
+def _slide_windows(count: int, height: int, width: int) -> pl.DataFrame:
+    """``count`` windows of one image-sized patch each, at spread origins, of
+    a local slide 8x the image on each side (LZW, 256-pixel tiles): what a
+    patch pipeline over a whole-slide image reads."""
+    import tifffile
+
+    slide = _INPUT_ROOT / f"slide-{height}x{width}.tif"
+    if not slide.exists():
+        rng = np.random.default_rng(0)
+        arr = (rng.integers(0, 255, (8 * height, 8 * width, 3)) // 64 * 64).astype(
+            np.uint8
+        )
+        tmp = slide.with_suffix(f".{os.getpid()}.tmp")
+        tifffile.imwrite(
+            tmp, arr, tile=(256, 256), compression="lzw", photometric="rgb"
+        )
+        tmp.replace(slide)
+    rng = np.random.default_rng(1)
+    return pl.DataFrame(
+        {
+            "img": [str(slide)] * count,
+            "top": rng.integers(0, 7 * height, count).tolist(),
+            "left": rng.integers(0, 7 * width, count).tolist(),
+        }
+    )
 
 
 @_stored
@@ -234,6 +285,26 @@ def _geom(
     return build
 
 
+def _tiff_window(i: _Inputs) -> Callable[[], Any]:
+    """A window of a quarter of each side (at most 64 pixels), off the origin."""
+    h, w = min(64, i.height // 2), min(64, i.width // 2)
+    pipe = _src().crop(top=i.height // 4, left=i.width // 4, height=h, width=w)
+    df = i.tiled_tiff
+    expr = pl.col("img").cv.pipe(pipe).sink("numpy")
+    return lambda: df.select(expr)
+
+
+def _slide_window(i: _Inputs) -> Callable[[], Any]:
+    pipe = (
+        Pipeline()
+        .source("file_path")
+        .crop(top=pl.col("top"), left=pl.col("left"), height=i.height, width=i.width)
+    )
+    df = i.slide_windows
+    expr = pl.col("img").cv.pipe(pipe).sink("numpy")
+    return lambda: df.select(expr)
+
+
 @dataclass(frozen=True)
 class Case:
     name: str
@@ -257,6 +328,13 @@ CASES: tuple[Case, ...] = (
     Case("codec_png_decode", "image", _pipe("png", _src, "numpy")),
     Case("codec_jpeg_decode", "image", _pipe("jpeg", _src, "numpy")),
     Case("codec_png_roundtrip", "image", _pipe("png", _src, "png")),
+    Case("codec_tiff_tiled_decode", "image", _pipe("tiled_tiff", _src, "numpy")),
+    # A window of at most 64x64 of a tiled TIFF: decodes the (at most four)
+    # tiles it overlaps, against the whole image above.
+    Case("codec_tiff_tiled_window", "image", _tiff_window),
+    # One image-sized window per row of a local slide 8x the size, by path:
+    # reads the window's tiles, not the file.
+    Case("wsi_patch_window_file", "image", _slide_window),
     Case("codec_jpeg_roundtrip", "image", _pipe("jpeg", _src, "jpeg")),
     Case("sink_array_u8", "image", _array(_u8, lambda i: [i.height, i.width, 3])),
     Case("sink_list_u8", "image", _pipe("png", _u8, "list")),

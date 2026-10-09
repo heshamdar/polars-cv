@@ -844,6 +844,29 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().threshold(value=value))
 
+    def tile(
+        self,
+        *,
+        height: int,
+        width: int,
+        stride_height: IntOrExpr | None = None,
+        stride_width: IntOrExpr | None = None,
+        edge: str | pl.Expr = "drop",
+    ) -> LazyPipelineExpr:
+        """Cut the image into patches: ``[N, height, width, C]`` (``[N, height,
+
+        Lazy form of :meth:`Pipeline.tile` on this expression's output.
+        """
+        return self.pipe(
+            self._continuation().tile(
+                height=height,
+                width=width,
+                stride_height=stride_height,
+                stride_width=stride_width,
+                edge=edge,
+            )
+        )
+
     def to_bgr(self) -> LazyPipelineExpr:
         """Convert from RGB to BGR channel order.
 

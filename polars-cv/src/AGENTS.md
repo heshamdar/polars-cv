@@ -190,6 +190,18 @@ the one mode where the two happened to agree.
 Source decoding (`decode_image_bytes`) and byte-sink
 encoding (`encode_sink`), shared by the graph executor.
 
+**ROI decode.** When a root node's first op is a crop (the planner's
+spatial-window pushdown puts one there when it can), `graph/compiled.rs`
+resolves that crop for the row *before* decoding and passes it down
+(`decode_source_row` → `decode_image_bytes` → `ImageAdapter::decode_cropped`).
+The decoder returns only the window and reports it applied; the row then
+skips the crop (`ResolvedStep::Absorbed`, which keeps step positions and so
+segment cache slots unchanged). The crop stays the one authority on its
+window: `decode_cropped` validates it with the crop's own `validate_concrete`
+and, when that refuses, decodes whole and leaves the crop to raise its usual
+error. Scaled decodes (`decode_max_size`) and non-image sources never take
+it (`roi_decodable`), and the `roi_decode` engine flag turns it off.
+
 ## Adding a New Operation (Rust Side)
 
 1. **`view-buffer`**: Implement the op — see [`view-buffer/AGENTS.md`](../../view-buffer/AGENTS.md)

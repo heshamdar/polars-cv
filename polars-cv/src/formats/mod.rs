@@ -13,8 +13,9 @@
 //!   `tests/golden/io_catalog.json`) is what `scripts/gen_ops.py` generates
 //!   Python's `SourceFormat`/`SinkFormat` from.
 //!
-//! Neither end has a per-row value (a contour canvas is the `rasterize`
-//! op's), so the families have no mode: each is its own wire form.
+//! The families have no mode: each is its own wire form. Their one per-row
+//! value, a source's pyramid `level`, is a [`Param`](crate::ops::Param) field
+//! the executor resolves for each row before decoding it.
 
 pub mod sink;
 pub mod sink_dtype;
@@ -31,6 +32,10 @@ pub trait Format: WireOps + 'static {
 
     /// Every format's description, built once.
     fn formats() -> &'static [OpDesc];
+
+    /// Refuse a combination of settings no row can use. Required, so a new
+    /// family states its cross-field rules rather than inheriting none.
+    fn check(&self) -> Result<(), String>;
 
     /// The format's wire name.
     fn name(&self) -> &'static str {
@@ -95,6 +100,7 @@ fn from_wire<F: Format>(
     }
     F::from_wire(&name, serde_json::Value::Object(fields))
         .expect("a catalogued format parses")
+        .and_then(|format: F| format.check().map(|()| format))
         .map_err(|e| format!("{kind} '{name}': {e}"))
 }
 

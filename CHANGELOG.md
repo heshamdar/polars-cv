@@ -7,6 +7,159 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+
+- **`polars_cv.patch_grid(height, width, *, size, stride=None, edge="drop")`
+  lists the patches that tile each row's image.** It returns one
+  `List(Struct{row, col, top, left, height, width})` per row (all `UInt32`),
+  row-major. `explode` turns the patches into rows, and their fields are
+  `crop`'s keywords, so `crop(top=pl.col("top"), ...)` cuts each one.
+  - `size` and `stride` take `n` or `(rows, cols)`; the stride defaults to the
+    size.
+  - `edge` takes a new `GridEdge`: `"drop"` leaves a remainder too small for a
+    whole patch uncovered; `"shift"` adds one patch aligned to the far edge.
+  - Every patch is whole and in bounds. An image smaller than a patch gets an
+    empty list, and a null height or width gives a null row.
+  - The call is elementwise, so it streams.
+  - The grid itself is `view_buffer::geometry::grid::PatchGrid`, the one
+    definition of where each patch lies, swept against a naive reference over
+    every size, stride and edge.
+
+  This is the first step of patch and whole-slide-image support.
+- **A crop right after an image source decodes only its window.** A new
+  engine pass, `roi_decode` (`OptFlags(roi_decode=...)`, on by default), runs
+  when a node's first op is a crop. Spatial-window pushdown already moves a
+  crop ahead of the pointwise ops it commutes with.
+  - The executor resolves the crop for the row before decoding, and the
+    decoder (`ImageAdapter::decode_cropped`) returns the window.
+  - The output is the crop of the full decode, element for element. The
+    window is the crop's own: validated by its own check, and when that
+    refuses (a window outside the image) the image decodes whole and the crop
+    raises its usual error.
+  - Scaled decodes (`decode_max_size`) keep the crop.
+  - For now every codec decodes in full and cuts the window, so nothing gets
+    faster yet. This is the plumbing a tile-aware TIFF decoder plugs into.
+  - One visible difference: with `source(dtype=...)`, the cast now applies to
+    the window instead of the whole image. A `numpy` row's array is
+    unchanged, but its zero-copy struct can carry different strides.
+
+- **A crop of a tiled or strip TIFF reads only the chunks it overlaps.** A
+  crop right after the source decodes its window from the tiles (or strips)
+  under it. The new `view_buffer::interop::tiff_region` decodes them
+  itself, while the `tiff` crate still parses the file structure.
+  - Codecs: uncompressed, LZW, Deflate, PackBits and JPEG, with horizontal
+    differencing.
+  - Samples: u8/u16 in gray, gray+alpha, RGB or RGBA; f32/f64 in gray or RGB.
+  - Whole-image TIFF decodes go through the same chunk decoder, so a window
+    is exactly the crop of the whole.
+  - A window still decodes when tiles elsewhere in the file are damaged.
+  - Other layouts decode whole through the `tiff` crate, as before.
+  - Decoding more than 256 MiB of pixels at once (the `tiff` crate's former
+    limit) is a row error that suggests cropping.
+  - New `targeted:codec_tiff_*` benchmark cases.
+
+- **`source(level=k)` decodes level `k` of a pyramidal TIFF.** Whole-slide
+  images store reduced copies of the full-resolution image, and this picks
+  one.
+  - Level 0 is the image itself and is the default.
+  - `level` may be an expression, so each row can read its own level. A null
+    level follows `on_null_param`.
+  - A level the file lacks, or any level above 0 of a non-pyramidal image, is
+    the row's decode error.
+  - A crop after the source names pixels of that level and decodes only its
+    window there.
+  - `level` and `decode_max_size` both pick a resolution, so a source taking
+    both is refused.
+  - What counts as a level: IFD 0, then each later image that is tiled or
+    flagged reduced-resolution, smaller in both axes, and of level 0's
+    aspect. An SVS's thumbnail, label and macro images are therefore not
+    levels.
+  - SubIFD pyramids (OME-TIFF) are not followed.
+  - `tiff_region::pyramid_levels` is the one definition of a level.
+  - The source formats gained `Format::check`, a required cross-field rule
+    every format family states.
+- **`.cv.slide_info()` reads a slide's pyramid and scale from its header.**
+  It returns `Struct{levels: List(Struct{level, width, height, downsample,
+  tile_width, tile_height}), mpp_x, mpp_y}`.
+  - The levels are exactly those `source(level=)` decodes.
+  - Microns per pixel come from an Aperio description's `MPP`, or from a
+    resolution in pixels per centimetre.
+  - Any other image is one untiled level.
+  - It takes bytes or paths, like `.cv.width()`.
+
+- **A crop or a level of a local TIFF read by path reads only what it
+  decodes.** A `file_path` source used to read the whole file for every row,
+  so one 256-pixel patch of a 2 GB slide read 2 GB.
+  - With a crop right after the source, or `level` above 0, a local TIFF is
+    opened and only its header and the chunks it needs are read. In a test,
+    four 64-pixel windows of a 3 MiB slide read 3.4% of it.
+  - Other files, and TIFF layouts the chunk decoder does not carry, are read
+    whole as before. `allowed_roots` and `on_error` apply unchanged.
+  - New `_lib._fetch_bytes_read()` counts every byte path reads take from
+    files and stores, so tests can measure this at the user-facing call.
+- **Remote TIFFs (S3, GCS, Azure, HTTP) are read by range too.**
+  - A node with a crop first or a level reads its TIFFs through a per-call
+    `RemoteObject`. The object's size is asked once, its structure is read
+    in 64 KiB blocks shared by every row naming it, and the chunks a window
+    needs come in one coalesced request.
+  - Object stores use the raw store's `head` and `get_ranges`, which take no
+    budget permit of their own.
+  - HTTP uses `Range` requests. A server that ignores `Range` sends the whole
+    body once, and the ranges are cut from it.
+  - In such a node a row no longer prefetches whole objects for the rows
+    after it. A non-TIFF remote file there costs one extra small read (the
+    format sniff) before its whole fetch.
+  - `.cv.slide_info()` on a path reads a TIFF's IFDs by range instead of
+    downloading it.
+  - New `targeted:wsi_patch_window_file` benchmark case.
+
+- **`Pipeline.tile(height=, width=, stride_height=, stride_width=,
+  edge=)` cuts an image into its patches.** The output is `[N, height, width,
+  C]` (`[N, height, width]` for a 2-D image), in row-major grid order.
+  - It is the in-memory counterpart of `patch_grid` + `explode` + `crop`: the
+    image decodes once and every patch is cut from it. The grid is the same
+    `PatchGrid`, so patch `i` is `patch_grid`'s cell `i`.
+  - The patch size is structural (literal). The strides and the edge rule
+    change only `N`, so they may be expressions.
+  - `explode` on a `list` sink gives one row per patch.
+  - Ops that read `[H, W, C]` refuse the rank-4 output when the pipeline is
+    built.
+  - Checked by a Rust cross-check against crops (strided inputs included), a
+    NumPy parity reference written from the definition, and a user-level
+    comparison with the `patch_grid` recipe.
+
+- **A user-guide page, "Patches & Whole-Slide Images", and
+  `examples/14_whole_slide_patches.py`.** The page covers the grid →
+  explode → crop recipe, pyramid levels, tissue filtering from a small level,
+  heatmaps by pivot, `tile`, and which formats are supported. The example
+  runs the whole recipe on a synthetic JPEG-tiled pyramid.
+
+### Fixed
+
+- **`.cv.width()`/`height()`/`channels()`/`image_dtype()`/`image_info()`
+  read TIFF headers through the TIFF decoder's own parser.** JPEG-compressed
+  and BigTIFF files, which the `image` crate's header reader could not read,
+  reported null and now report their size.
+- **JPEG-compressed TIFFs decode, in correct colour.** The `tiff` crate
+  passed a JPEG tile's components through unconverted.
+  - YCbCr tiles (what libtiff writes) were refused ("Unsupported TIFF color
+    type: YCbCr").
+  - RGB-coded tiles failed ("Unimplemented colorspace mapping").
+  - The colour space now follows libjpeg's rules: an Adobe marker's
+    transform, else components named `R`,`G`,`B`, else YCbCr.
+  - Conversion is libjpeg's fixed point. Pixels stay within a few levels of
+    libjpeg's own decode.
+- **BigTIFF files decode.** Their header (`II+\0`/`MM\0+`) was not
+  recognised as a TIFF, and the fallback decoder refused them.
+- **Tiled LZW TIFFs written by tifffile/imagecodecs decode.** The `tiff`
+  crate's streaming LZW reader panicked on some valid tiles (an
+  `assert_eq!` in its no-progress path) or reported "invalid code in LZW
+  stream". LZW chunks are now decoded in one piece by `weezl`.
+- **A planar-separate TIFF is a row error, not an engine panic.**
+  PlanarConfiguration 2 stores one plane per sample. The `tiff` crate read
+  only the first plane, and reshaping it to `[H, W, C]` panicked. It is now
+  refused, naming the layout.
+
 ### Changed
 
 - **`scripts/verify.sh` runs the slow lane only with `--slow`.** By default it
@@ -29,6 +182,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   The structural lane runs on every core (18 s → 11 s), and the in-memory
   lane no longer re-runs the structural guards, which read the source tree
   rather than an engine's output and have already run twice by then.
+- **Tiled and pyramidal TIFF test fixtures.** `tests/conftest.py` gains
+  `write_tiled_tiff` and its `tiled_tiff` fixture, plus `TiffFixture`. They
+  write seeded tiled, strip, pyramidal, BigTIFF and JPEG-tiled TIFFs and
+  return each level's decoded truth. `tifffile` and `imagecodecs` join the
+  dev group for them, because polars-cv's own TIFF encoder writes strips
+  only. JPEG fixtures come in both colour layouts a decoder must handle: a
+  YCbCr-coded stream tagged YCbCr, and an RGB-coded stream (Adobe transform
+  0) tagged RGB. `tests/test_wsi_fixtures.py` checks the fixtures
+  themselves: tiling, level IFDs, BigTIFF headers and JPEG stream encoding.
+  It also has a `network` test of the real Aperio sample (`svs_sample`).
+  `test_no_local_png_factories` covers the new factory.
 
 ## [0.35.0] — 2026-10-09
 

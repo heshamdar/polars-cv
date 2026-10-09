@@ -8,9 +8,9 @@
 
 use polars::prelude::*;
 use view_buffer::ops::NodeOutput;
-use view_buffer::{PlannedDType, ViewBuffer};
+use view_buffer::{PlannedDType, ViewBuffer, ViewOp};
 
-use crate::execute::decode_image_bytes;
+use crate::execute::{decode_image_bytes, decode_tiff_source};
 use crate::formats::source::Source;
 
 use super::encode::{
@@ -28,17 +28,43 @@ pub(crate) struct RowFetch<'a> {
     pub(crate) fetcher: Option<&'a crate::fetch::Fetcher<'a>>,
 }
 
+/// One row's decoded source.
+pub(crate) struct DecodedRow {
+    /// The decoded value; `None` for a null row.
+    pub(crate) output: Option<NodeOutput>,
+    /// `output` is already the `crop` the caller passed (see
+    /// [`decode_source_row`]).
+    pub(crate) crop_applied: bool,
+}
+
 /// Decode row `row` of a root node's column through its concrete `source`
 /// (an `auto` source is routed per batch before it gets here).
+///
+/// `crop` is the node's leading crop when the `roi_decode` pass may apply
+/// it: an encoded-image source then decodes only its window
+/// (`ImageAdapter::decode_cropped`) and says so in `crop_applied`. Every
+/// other source ignores it, and so does a window outside the image. `level`
+/// is the row's resolved pyramid level (`Source::level`), which only an
+/// encoded-image source has.
 pub(crate) fn decode_source_row(
     node_id: &str,
     source: &Source,
     series: &Series,
     row: usize,
     fetch: RowFetch<'_>,
-) -> Result<Option<NodeOutput>, String> {
+    crop: Option<&ViewOp>,
+    level: u32,
+) -> Result<DecodedRow, String> {
+    let whole = |output: Option<NodeOutput>| DecodedRow {
+        output,
+        crop_applied: false,
+    };
+    let image = |decoded: (ViewBuffer, bool)| DecodedRow {
+        output: Some(NodeOutput::from_buffer(decoded.0)),
+        crop_applied: decoded.1,
+    };
     if series.dtype() == &DataType::Null {
-        return Ok(None);
+        return Ok(whole(None));
     }
     let binary = || {
         series.binary().map_err(|_| {
@@ -55,7 +81,7 @@ pub(crate) fn decode_source_row(
         // follows, if any.
         Source::Contour { .. } => crate::geom_columns::ContourColumn::new(series)
             .row(row)
-            .map(|set| set.map(NodeOutput::from_contours))
+            .map(|set| whole(set.map(NodeOutput::from_contours)))
             .map_err(|e| format!("Contour decode error: {e}")),
         // `file_path` is fetch + decode: `crate::fetch` reads the bytes the
         // path names (applying its `PathPolicy` sandbox), then they decode as
@@ -69,35 +95,44 @@ pub(crate) fn decode_source_row(
                 )
             })?;
             let Some(path) = ca.get(row) else {
-                return Ok(None);
+                return Ok(whole(None));
             };
-            // Stage 1: bytes, from the call's fetch window (local files are
-            // read inline).
             let fetcher = fetch.fetcher.ok_or_else(|| {
                 format!("internal: file_path source '{node_id}' has no fetcher for its column")
             })?;
+            // A crop's window or a level of a TIFF: read its header and the
+            // chunks it needs, not the file.
+            if crop.is_some() || level > 0 {
+                if let Some(decoded) = decode_ranged_tiff(fetcher, row, source, crop, level)
+                    .map_err(|e| format!("Decode error for file '{path}': {e}"))?
+                {
+                    return Ok(image(decoded));
+                }
+            }
+            // Stage 1: bytes, from the call's fetch window (local files are
+            // read inline).
             let Some(bytes) = fetcher.bytes(row)? else {
-                return Ok(None);
+                return Ok(whole(None));
             };
             // Stage 2: the contents decode like image bytes.
-            decode_image_bytes(&bytes, source)
-                .map(buffer)
+            decode_image_bytes(&bytes, source, crop, level)
+                .map(image)
                 .map_err(|e| format!("Decode error for file '{path}': {e}"))
         }
         Source::List { .. } | Source::Array { .. } => {
             decode_list_or_array_source(series, row, source.dtype(), source.require_contiguous())
-                .map(|buf| buf.map(NodeOutput::from_buffer))
+                .map(|buf| whole(buf.map(NodeOutput::from_buffer)))
                 .map_err(|e| format!("List/Array decode error: {e}"))
         }
         // Raw bytes take the declared dtype.
-        Source::Raw { dtype, .. } => {
-            Ok(decode_binary_row(binary()?, row, Some(dtype.get()))?.and_then(buffer))
-        }
+        Source::Raw { dtype, .. } => Ok(whole(
+            decode_binary_row(binary()?, row, Some(dtype.get()))?.and_then(buffer),
+        )),
         // A blob carries its own dtype, which a declared one must match: the
         // planner (and identity elimination) takes the declaration as fact.
         Source::Blob { dtype, .. } => {
             let Some(buf) = decode_binary_row(binary()?, row, None)? else {
-                return Ok(None);
+                return Ok(whole(None));
             };
             match dtype.map(|d| d.get()) {
                 Some(declared) if declared != buf.dtype() => Err(format!(
@@ -108,20 +143,45 @@ pub(crate) fn decode_source_row(
                     declared.short_name(),
                     declared.short_name()
                 )),
-                _ => Ok(buffer(buf)),
+                _ => Ok(whole(buffer(buf))),
             }
         }
         Source::ImageBytes { .. } => match binary()?.get(row) {
-            Some(bytes) => decode_image_bytes(bytes, source)
-                .map(buffer)
+            Some(bytes) => decode_image_bytes(bytes, source, crop, level)
+                .map(image)
                 .map_err(|e| format!("Decode error: {e}")),
-            None => Ok(None),
+            None => Ok(whole(None)),
         },
         Source::Auto { .. } => Err(format!(
             "internal: auto source '{}' reached decoding unrouted",
             node_id
         )),
     }
+}
+
+/// Row `row`'s TIFF, local or remote, decoded by range
+/// ([`decode_tiff_source`]): `Ok(None)` when the file is not a TIFF, or a
+/// TIFF layout the chunk decoder does not carry — the caller then reads it
+/// whole.
+fn decode_ranged_tiff(
+    fetcher: &crate::fetch::Fetcher<'_>,
+    row: usize,
+    source: &Source,
+    crop: Option<&ViewOp>,
+    level: u32,
+) -> Result<Option<(ViewBuffer, bool)>, String> {
+    use std::io::{Read, Seek};
+    let Some(mut file) = fetcher.open(row)? else {
+        return Ok(None);
+    };
+    let mut magic = [0u8; 4];
+    let tiff = file.read_exact(&mut magic).is_ok()
+        && view_buffer::interop::tiff_region::is_tiff(&magic)
+        && file.rewind().is_ok();
+    if !tiff {
+        return Ok(None);
+    }
+    decode_tiff_source(file, source, crop, level).map_err(|e| e.to_string())
 }
 
 /// Decode row `row` of a binary column: a raw row as `raw_dtype`, or (with

@@ -38,5 +38,10 @@
     "name": "scalar_fusion",
     "tier": "engine",
     "summary": "Fuse adjacent scalar/compute ops into one kernel (f64 chains stay unfused — a mandatory precision guard, not this toggle)."
+  },
+  {
+    "name": "roi_decode",
+    "tier": "engine",
+    "summary": "Decode only the window of a crop that directly follows an image source, instead of the whole image (the result is the crop of the full decode, byte for byte)."
   }
 ]

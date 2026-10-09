@@ -280,6 +280,43 @@ def _crop_ref(x: np.ndarray, p: Params) -> np.ndarray:
     return x[top : top + p["height"], left : left + p["width"]].copy()
 
 
+def _tile_params(draw: st.DrawFn, x: np.ndarray) -> Params:
+    # A patch no larger than the image, so there is at least one: zero
+    # patches leave an empty outer axis, which a nested-list sink cannot shape
+    # and `assert_shape` cannot state (as `_crop_params` draws no empty crop).
+    # The empty grid is `tests/test_tile.py`'s and the Rust cross-check's.
+    h, w = x.shape[:2]
+    return {
+        "height": draw(st.integers(1, max(h, 1)), label="height"),
+        "width": draw(st.integers(1, max(w, 1)), label="width"),
+        "stride_height": draw(st.integers(1, max(h, 1) + 1), label="stride_height"),
+        "stride_width": draw(st.integers(1, max(w, 1) + 1), label="stride_width"),
+        "edge": draw(st.sampled_from(["drop", "shift"]), label="edge"),
+    }
+
+
+def _tile_ref(x: np.ndarray, p: Params) -> np.ndarray:
+    """Every whole patch on the stride lattice, plus (``shift``) one aligned
+    to the far edge where the lattice leaves a remainder: written out here
+    from the definition, not from the engine's grid."""
+
+    def starts(extent: int, size: int, stride: int) -> list[int]:
+        if extent < size:
+            return []
+        out = list(range(0, extent - size + 1, stride))
+        if p["edge"] == "shift" and out[-1] != extent - size:
+            out.append(extent - size)
+        return out
+
+    ph, pw = p["height"], p["width"]
+    tops = starts(x.shape[0], ph, p["stride_height"])
+    lefts = starts(x.shape[1], pw, p["stride_width"])
+    patches = [x[t : t + ph, left : left + pw] for t in tops for left in lefts]
+    if not patches:
+        return np.empty((0, ph, pw, *x.shape[2:]), dtype=x.dtype)
+    return np.stack(patches)
+
+
 def _flip_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     axes = draw(
         st.lists(st.integers(0, x.ndim - 1), min_size=1, max_size=x.ndim, unique=True),
@@ -1979,6 +2016,15 @@ OPS: dict[str, OpSpec] = {
             "rounding differs); a single-valued channel has no "
             "CDF to spread (OpenCV keeps the value, the engine maps it to 0) "
             "and the op documents neither",
+        ),
+        # --- terminal: patches ([N, h, w, C], rank 4) ---------------------------------
+        _spec(
+            "tile",
+            _tile_params,
+            accepts=is_rank3,
+            ref=_tile_ref,
+            terminal=True,
+            **_movement,
         ),
         # --- terminal: scalar ----------------------------------------------------------
         _spec(

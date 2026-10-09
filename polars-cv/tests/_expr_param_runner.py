@@ -25,6 +25,8 @@ harness exists to find.
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 import polars as pl
@@ -37,10 +39,16 @@ from tests._expr_param_cases import (
     DIAMOND,
     DIAMOND_SET,
     IMAGE,
+    PYRAMID,
     RECT,
     RING,
 )
-from tests.conftest import make_image_png, make_rect_png, make_ring_png
+from tests.conftest import (
+    make_image_png,
+    make_rect_png,
+    make_ring_png,
+    write_tiled_tiff,
+)
 
 if TYPE_CHECKING:
     from tests._expr_param_cases import ExprCase
@@ -162,12 +170,21 @@ _SIDE = 16
 PARAM = "p"
 
 
+def _pyramid() -> bytes:
+    """A three-level pyramidal TIFF of ``_SIDE``-pixel level 0."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "pyramid.tif"
+        write_tiled_tiff(path, height=_SIDE, width=_SIDE, levels=3, tile=(16, 16))
+        return path.read_bytes()
+
+
 def input_images() -> dict[str, bytes]:
     """The input columns, built once per test that needs them."""
     return {
         IMAGE: make_image_png(_SIDE, _SIDE, 3, seed=7),
         RECT: make_rect_png(_SIDE, _SIDE, 3),
         RING: make_ring_png(_SIDE, _SIDE, 3),
+        PYRAMID: _pyramid(),
     }
 
 

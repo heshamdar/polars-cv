@@ -8,7 +8,7 @@ use polars_cv_macros::Ops;
 use view_buffer::DType;
 
 use crate::fetch::FetchErrorPolicy;
-use crate::ops::Literal;
+use crate::ops::{Literal, Param};
 
 /// Define the input source format.
 ///
@@ -37,6 +37,14 @@ use crate::ops::Literal;
 /// never upscales; other encodings decode at full size. A scaled decode
 /// followed by a resize is not bit-identical to a full decode and the same
 /// resize, hence the explicit opt-in.
+///
+/// ``level`` picks a level of a pyramidal TIFF (a whole-slide image): 0, the
+/// default, is the full-resolution image; each further level is a reduced copy
+/// the file stores. It may be a column, so each row can read its own level; a
+/// level the file does not have is the row's decode error, and so is any level
+/// above 0 of an image that is not a pyramid. A crop after the source names
+/// pixels of that level. ``level`` and ``decode_max_size`` both choose the
+/// resolution to decode, so a source takes one of them.
 ///
 /// ``allowed_roots`` restricts which locations a path column may read from.
 /// An entry that parses as a remote URI (``"s3://bucket/public/"``) is
@@ -94,6 +102,10 @@ pub enum Source {
         /// Decode only enough pixels for this long side (JPEG IDCT scaling;
         /// see above).
         decode_max_size: Option<Literal<NonZeroU32>>,
+        /// Pyramid level of a pyramidal TIFF to decode; 0 is the image itself
+        /// (see above). May vary per row.
+        #[param(default = 0)]
+        level: Param<u32>,
         /// "raise" or "null": what a row that cannot be decoded does.
         #[param(default = "raise")]
         on_error: Literal<FetchErrorPolicy>,
@@ -131,6 +143,10 @@ pub enum Source {
         /// Decode only enough pixels for this long side (JPEG IDCT scaling;
         /// see above).
         decode_max_size: Option<Literal<NonZeroU32>>,
+        /// Pyramid level of a pyramidal TIFF to decode; 0 is the image itself
+        /// (see above). May vary per row.
+        #[param(default = 0)]
+        level: Param<u32>,
         /// "raise" or "null": what a row that cannot be read or decoded does.
         #[param(default = "raise")]
         on_error: Literal<FetchErrorPolicy>,
@@ -143,6 +159,10 @@ pub enum Source {
         /// Decode only enough pixels for this long side (JPEG IDCT scaling;
         /// see above).
         decode_max_size: Option<Literal<NonZeroU32>>,
+        /// Pyramid level of a pyramidal TIFF to decode; 0 is the image itself
+        /// (see above). May vary per row.
+        #[param(default = 0)]
+        level: Param<u32>,
         /// "raise" or "null": what a row that cannot be decoded does.
         #[param(default = "raise")]
         on_error: Literal<FetchErrorPolicy>,
@@ -178,6 +198,21 @@ impl Source {
 
 impl super::Format for Source {
     const KIND: &'static str = "source";
+
+    /// `level` and `decode_max_size` both choose the resolution to decode: a
+    /// source naming a level other than 0 cannot also ask for a scaled decode.
+    fn check(&self) -> Result<(), String> {
+        let resolution_twice =
+            self.decode_max_size().is_some() && self.level().is_some_and(|l| l != Param::Lit(0));
+        if resolution_twice {
+            return Err(
+                "`level` and `decode_max_size` both choose the resolution to decode; \
+                 pass one of them"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
     fn formats() -> &'static [view_buffer::mode::OpDesc] {
         static CATALOG: std::sync::LazyLock<Vec<view_buffer::mode::OpDesc>> =
             std::sync::LazyLock::new(Source::catalog);
@@ -204,19 +239,26 @@ impl Source {
             cloud_options,
             allowed_roots,
             decode_max_size,
+            level,
             on_error,
         } = self
         else {
             return None;
         };
-        let (dtype, require_contiguous, decode_max_size, on_error) =
-            (*dtype, *require_contiguous, *decode_max_size, *on_error);
+        let (dtype, require_contiguous, decode_max_size, level, on_error) = (
+            *dtype,
+            *require_contiguous,
+            *decode_max_size,
+            *level,
+            *on_error,
+        );
         Some(match column.dtype() {
             DataType::String => Ok(Source::FilePath {
                 dtype,
                 cloud_options: cloud_options.clone(),
                 allowed_roots: allowed_roots.clone(),
                 decode_max_size,
+                level,
                 on_error,
             }),
             DataType::List(_) => Ok(Source::List {
@@ -243,6 +285,7 @@ impl Source {
                     Source::ImageBytes {
                         dtype,
                         decode_max_size,
+                        level,
                         on_error,
                     }
                 })
@@ -345,6 +388,21 @@ impl Source {
             | Source::ImageBytes {
                 decode_max_size, ..
             } => decode_max_size.map(|s| s.get().get()),
+            Source::Array { .. }
+            | Source::Blob { .. }
+            | Source::Contour { .. }
+            | Source::List { .. }
+            | Source::Raw { .. } => None,
+        }
+    }
+
+    /// The pyramid level an image source decodes (`None`: a source with no
+    /// image to level).
+    pub fn level(&self) -> Option<Param<u32>> {
+        match self {
+            Source::Auto { level, .. }
+            | Source::FilePath { level, .. }
+            | Source::ImageBytes { level, .. } => Some(*level),
             Source::Array { .. }
             | Source::Blob { .. }
             | Source::Contour { .. }

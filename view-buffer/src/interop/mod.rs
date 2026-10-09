@@ -42,6 +42,9 @@ pub mod arrow_ffi;
 pub mod fir;
 
 #[cfg(feature = "image_interop")]
+pub mod tiff_region;
+
+#[cfg(feature = "image_interop")]
 pub mod image;
 
 #[cfg(feature = "polars_interop")]

@@ -47,7 +47,7 @@
 //! unrestricted behaviour, it fails to compile.
 
 use std::collections::HashMap;
-use std::ops::Deref;
+use std::ops::{Deref, Range};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -261,6 +261,10 @@ pub struct Fetcher<'a> {
     /// How many rows past the one being read a read starts fetching: polars'
     /// concurrency budget, which also bounds the requests in flight.
     window: usize,
+    /// Per entry, the object read by range ([`Fetcher::open`]).
+    remote: Vec<Arc<RemoteObject>>,
+    /// The rows may read their files by range ([`Fetcher::ranged`]).
+    ranged: bool,
 }
 
 /// What a call's in-flight fetches share with it.
@@ -318,7 +322,8 @@ impl Entry {
         if !matches!(*state, State::Fetching(_)) {
             return;
         }
-        if result.is_ok() {
+        if let Ok(body) = &result {
+            count_read(body.len());
             let now = shared.resident.fetch_add(1, Ordering::SeqCst) + 1;
             shared.peak.fetch_max(now, Ordering::SeqCst);
         }
@@ -387,10 +392,21 @@ impl<'a> Fetcher<'a> {
                 Some(slot)
             })
             .collect();
+        let remote = entries
+            .iter()
+            .map(|e| {
+                Arc::new(RemoteObject::new(CloudRanges {
+                    path: e.path.clone(),
+                    options: options.cloned(),
+                }))
+            })
+            .collect();
         Fetcher {
             ca,
             policy,
             slots,
+            remote,
+            ranged: false,
             entries,
             shared: Arc::new(Shared {
                 options: options.cloned(),
@@ -417,13 +433,20 @@ impl<'a> Fetcher<'a> {
             // through a URL parser would read a bare colon-bearing filename as
             // a bogus cloud URL.)
             return cloud::read_local_path(path)
-                .map(|b| Some(Bytes::Local(b)))
+                .map(|b| {
+                    count_read(b.len());
+                    Some(Bytes::Local(b))
+                })
                 .map_err(|e| format!("Failed to read local file '{path}': {e}"));
         }
         let entry = self.slots[row]
             .map(|slot| &self.entries[slot])
             .ok_or_else(|| format!("internal: remote path '{path}' has no fetch"))?;
-        for ahead in row..(row + 1 + self.window).min(self.slots.len()) {
+        // Rows that may read by range fetch only their own object whole
+        // (when it is not one to read by range): fetching ahead would pull
+        // whole slides the next rows read only a window of.
+        let window = if self.ranged { 0 } else { self.window };
+        for ahead in row..(row + 1 + window).min(self.slots.len()) {
             if let Some(slot) = self.slots[ahead] {
                 self.entries[slot].start(&self.shared);
             }
@@ -439,6 +462,53 @@ impl<'a> Fetcher<'a> {
                 Err(format!("Failed to read remote file '{path}': {e}"))
             }
         }
+    }
+
+    /// This fetcher for rows that may read their files by range
+    /// ([`Fetcher::open`]): a read of a whole object starts no fetch for the
+    /// rows after it.
+    pub fn ranged(mut self) -> Self {
+        self.ranged = true;
+        self
+    }
+
+    /// Row `row`'s file opened for reads by range — a local file, or a remote
+    /// object through the call's shared [`RemoteObject`] — or `Ok(None)` for
+    /// a null path. The policy check and its refusal are [`Fetcher::bytes`]'s.
+    pub fn open(&self, row: usize) -> Result<Option<RangedFile>, String> {
+        let Some(path) = self.ca.get(row) else {
+            return Ok(None);
+        };
+        if !cloud::is_remote_path(path) {
+            return Ok(self.local_file(row)?.map(RangedFile::Local));
+        }
+        self.policy.check(path)?;
+        let slot = self.slots[row]
+            .ok_or_else(|| format!("internal: remote path '{path}' has no fetch"))?;
+        Ok(Some(RangedFile::Remote(RemoteReader::new(Arc::clone(
+            &self.remote[slot],
+        )))))
+    }
+
+    /// Row `row`'s file opened for reads by range, when its path is local:
+    /// `Ok(None)` for a null or remote path (read those with
+    /// [`Fetcher::bytes`]). The policy check and the error text are
+    /// [`Fetcher::bytes`]'s.
+    pub fn local_file(&self, row: usize) -> Result<Option<LocalFile>, String> {
+        let Some(path) = self.ca.get(row) else {
+            return Ok(None);
+        };
+        if cloud::is_remote_path(path) {
+            return Ok(None);
+        }
+        self.policy.check(path)?;
+        let file = cloud::local_file_path(path)
+            .map_err(|e| e.to_string())
+            .and_then(|p| std::fs::File::open(p).map_err(|e| e.to_string()))
+            .map_err(|e| format!("Failed to read local file '{path}': {e}"))?;
+        Ok(Some(LocalFile {
+            reader: std::io::BufReader::with_capacity(LOCAL_BUFFER, file),
+        }))
     }
 
     /// Read row `row`'s path only as far as `parse` needs: `parse` over the
@@ -468,6 +538,7 @@ impl<'a> Fetcher<'a> {
         loop {
             let (bytes, eof) = cloud::read_local_prefix(path, limit)
                 .map_err(|e| format!("Failed to read local file '{path}': {e}"))?;
+            count_read(bytes.len());
             if let Some(found) = parse(&bytes) {
                 return Ok(Some(found));
             }
@@ -532,6 +603,272 @@ pub(crate) fn last_peak_resident() -> usize {
     LAST_PEAK_RESIDENT.load(Ordering::SeqCst)
 }
 
+/// Every byte the plugin's path reads have taken from a file or a store, ever
+/// (`_lib._fetch_bytes_read`): whole reads, header prefixes and ranged reads.
+/// Cumulative, so a test reads it before and after a query and concurrent
+/// calls cannot reset it under it.
+static BYTES_READ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Count `n` bytes read from a file or store ([`BYTES_READ`]).
+fn count_read(n: usize) {
+    BYTES_READ.fetch_add(n as u64, Ordering::Relaxed);
+}
+
+/// See [`BYTES_READ`].
+pub(crate) fn bytes_read() -> u64 {
+    BYTES_READ.load(Ordering::Relaxed)
+}
+
+/// A file opened for reads by range, counting what it reads ([`BYTES_READ`]).
+pub struct LocalFile {
+    reader: std::io::BufReader<std::fs::File>,
+}
+
+/// Small buffers: a ranged read seeks between an IFD, its tag values and a
+/// few chunks, and each seek refills the buffer.
+const LOCAL_BUFFER: usize = 4 * 1024;
+
+impl std::io::Read for LocalFile {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.reader.read(buf)?;
+        count_read(n);
+        Ok(n)
+    }
+}
+
+impl std::io::Seek for LocalFile {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.reader.seek(pos)
+    }
+}
+
+impl view_buffer::interop::tiff_region::TiffSource for LocalFile {
+    fn prefetch(&mut self, _: &[std::ops::Range<u64>]) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Where a [`RemoteObject`]'s bytes come from: a store answering size and
+/// byte-range requests. [`CloudRanges`] in the plugin; a counting in-memory
+/// store in the tests.
+pub trait RangeStore: Send + Sync {
+    /// The object's size in bytes.
+    fn size(&self) -> Result<u64, String>;
+    /// The bytes of each of `ranges`, in one operation.
+    fn read(&self, ranges: &[Range<u64>]) -> Result<Vec<Vec<u8>>, String>;
+}
+
+/// A remote path's bytes by range, through `cloud` on polars' runtime.
+pub struct CloudRanges {
+    path: String,
+    options: Option<CloudOptions>,
+}
+
+/// Run `future` on polars' `ASYNC` runtime and wait for it on this (row)
+/// thread, as the window's fetches are waited for.
+fn block_on<T: Send + 'static>(future: impl std::future::Future<Output = T> + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    drop(ASYNC.spawn(async move {
+        let _ = tx.send(future.await);
+    }));
+    rx.recv().expect("a remote read ended without answering")
+}
+
+impl RangeStore for CloudRanges {
+    fn size(&self) -> Result<u64, String> {
+        let (path, options) = (self.path.clone(), self.options.clone());
+        block_on(async move { cloud::remote_size_budgeted(&path, options.as_ref()).await })
+    }
+
+    fn read(&self, ranges: &[Range<u64>]) -> Result<Vec<Vec<u8>>, String> {
+        let (path, options, ranges) = (self.path.clone(), self.options.clone(), ranges.to_vec());
+        let parts = block_on(async move {
+            cloud::read_remote_ranges_budgeted(&path, options.as_ref(), &ranges).await
+        })?;
+        count_read(parts.iter().map(Vec::len).sum());
+        Ok(parts)
+    }
+}
+
+/// The block size a [`RemoteReader`] reads a file's structure in: one
+/// request brings a TIFF's header, first IFD and small tag values together.
+const REMOTE_BLOCK: u64 = 64 * 1024;
+
+/// Ranges no further apart than this are fetched as one: a request costs
+/// more than the gap's bytes.
+const COALESCE_GAP: u64 = 16 * 1024;
+
+/// One remote object of a call, read by range: its size, once asked, and the
+/// blocks structure reads have fetched, shared by every row naming it — so a
+/// call's rows parse a slide's IFDs from one set of requests.
+pub struct RemoteObject<S: RangeStore = CloudRanges> {
+    store: S,
+    size: std::sync::OnceLock<Result<u64, String>>,
+    blocks: Mutex<HashMap<u64, Arc<Vec<u8>>>>,
+}
+
+impl<S: RangeStore> RemoteObject<S> {
+    pub fn new(store: S) -> Self {
+        RemoteObject {
+            store,
+            size: std::sync::OnceLock::new(),
+            blocks: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn size(&self) -> Result<u64, String> {
+        self.size.get_or_init(|| self.store.size()).clone()
+    }
+
+    /// Block `index`, fetched once per call.
+    fn block(&self, index: u64) -> Result<Arc<Vec<u8>>, String> {
+        if let Some(block) = self
+            .blocks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&index)
+        {
+            return Ok(Arc::clone(block));
+        }
+        let start = index * REMOTE_BLOCK;
+        let end = (start + REMOTE_BLOCK).min(self.size()?);
+        let mut parts = self.store.read(std::slice::from_ref(&(start..end)))?;
+        let block = Arc::new(parts.pop().unwrap_or_default());
+        self.blocks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(index, Arc::clone(&block));
+        Ok(block)
+    }
+}
+
+/// One row's view of a [`RemoteObject`]: `Read + Seek` over it for the TIFF
+/// decoder. Structure reads come from the object's shared blocks; the
+/// chunks a decode prefetches are fetched in one coalesced request and kept
+/// for this row only.
+pub struct RemoteReader<S: RangeStore = CloudRanges> {
+    object: Arc<RemoteObject<S>>,
+    pos: u64,
+    prefetched: Vec<(Range<u64>, Vec<u8>)>,
+}
+
+impl<S: RangeStore> RemoteReader<S> {
+    pub fn new(object: Arc<RemoteObject<S>>) -> Self {
+        RemoteReader {
+            object,
+            pos: 0,
+            prefetched: Vec::new(),
+        }
+    }
+}
+
+fn io_error(e: String) -> std::io::Error {
+    std::io::Error::other(e)
+}
+
+impl<S: RangeStore> std::io::Read for RemoteReader<S> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let pos = self.pos;
+        let served =
+            if let Some((range, data)) = self.prefetched.iter().find(|(r, _)| r.contains(&pos)) {
+                let from = (pos - range.start) as usize;
+                let n = buf.len().min(data.len() - from);
+                buf[..n].copy_from_slice(&data[from..from + n]);
+                n
+            } else {
+                if pos >= self.object.size().map_err(io_error)? {
+                    return Ok(0);
+                }
+                let block = self.object.block(pos / REMOTE_BLOCK).map_err(io_error)?;
+                let from = (pos % REMOTE_BLOCK) as usize;
+                let n = buf.len().min(block.len().saturating_sub(from));
+                buf[..n].copy_from_slice(&block[from..from + n]);
+                n
+            };
+        self.pos += served as u64;
+        Ok(served)
+    }
+}
+
+impl<S: RangeStore> std::io::Seek for RemoteReader<S> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        let target = match pos {
+            std::io::SeekFrom::Start(n) => Some(n),
+            std::io::SeekFrom::Current(d) => self.pos.checked_add_signed(d),
+            std::io::SeekFrom::End(d) => {
+                self.object.size().map_err(io_error)?.checked_add_signed(d)
+            }
+        };
+        self.pos = target.ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek before the start")
+        })?;
+        Ok(self.pos)
+    }
+}
+
+impl<S: RangeStore> view_buffer::interop::tiff_region::TiffSource for RemoteReader<S> {
+    /// Fetch `ranges` (a decode's chunks) in one request, ranges close
+    /// together merged.
+    fn prefetch(&mut self, ranges: &[Range<u64>]) -> std::io::Result<()> {
+        let mut wanted: Vec<Range<u64>> = ranges
+            .iter()
+            .filter(|r| !r.is_empty())
+            .filter(|r| {
+                !self
+                    .prefetched
+                    .iter()
+                    .any(|(p, _)| p.start <= r.start && r.end <= p.end)
+            })
+            .cloned()
+            .collect();
+        wanted.sort_by_key(|r| r.start);
+        let mut merged: Vec<Range<u64>> = Vec::new();
+        for r in wanted {
+            match merged.last_mut() {
+                Some(last) if r.start <= last.end + COALESCE_GAP => last.end = last.end.max(r.end),
+                _ => merged.push(r),
+            }
+        }
+        let parts = self.object.store.read(&merged).map_err(io_error)?;
+        self.prefetched.extend(merged.into_iter().zip(parts));
+        Ok(())
+    }
+}
+
+/// A path's file opened for reads by range: local, or remote through a
+/// call's shared [`RemoteObject`].
+pub enum RangedFile {
+    Local(LocalFile),
+    Remote(RemoteReader),
+}
+
+impl std::io::Read for RangedFile {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            RangedFile::Local(f) => f.read(buf),
+            RangedFile::Remote(r) => r.read(buf),
+        }
+    }
+}
+
+impl std::io::Seek for RangedFile {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        match self {
+            RangedFile::Local(f) => f.seek(pos),
+            RangedFile::Remote(r) => r.seek(pos),
+        }
+    }
+}
+
+impl view_buffer::interop::tiff_region::TiffSource for RangedFile {
+    fn prefetch(&mut self, ranges: &[Range<u64>]) -> std::io::Result<()> {
+        match self {
+            RangedFile::Local(f) => f.prefetch(ranges),
+            RangedFile::Remote(r) => r.prefetch(ranges),
+        }
+    }
+}
+
 /// What an unreadable path does to the query.
 ///
 /// Distinct from the graph's [`RowErrorPolicy`](crate::graph::RowErrorPolicy):
@@ -584,6 +921,196 @@ pub fn parse_on_error(value: &str, context: &str) -> PolarsResult<bool> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// An object in memory, recording every request a reader makes of it.
+    struct MemStore {
+        data: Vec<u8>,
+        reads: Mutex<Vec<Vec<Range<u64>>>>,
+    }
+
+    impl MemStore {
+        fn new(data: Vec<u8>) -> Self {
+            MemStore {
+                data,
+                reads: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn reads(&self) -> Vec<Vec<Range<u64>>> {
+            self.reads.lock().unwrap().clone()
+        }
+
+        fn bytes_read(&self) -> u64 {
+            self.reads().iter().flatten().map(|r| r.end - r.start).sum()
+        }
+    }
+
+    impl RangeStore for MemStore {
+        fn size(&self) -> Result<u64, String> {
+            Ok(self.data.len() as u64)
+        }
+
+        fn read(&self, ranges: &[Range<u64>]) -> Result<Vec<Vec<u8>>, String> {
+            self.reads.lock().unwrap().push(ranges.to_vec());
+            Ok(ranges
+                .iter()
+                .map(|r| self.data[r.start as usize..r.end as usize].to_vec())
+                .collect())
+        }
+    }
+
+    /// An uncompressed 8-bit gray tiled TIFF, `side`x`side` in `tile`-pixel
+    /// tiles, built by hand (the `tiff` crate's encoder writes strips only),
+    /// and its pixels.
+    fn tiled_gray_tiff(side: u32, tile: u32) -> (Vec<u8>, Vec<u8>) {
+        let pixel = |y: u32, x: u32| ((y * 7 + x * 3) % 251) as u8;
+        let across = side.div_ceil(tile);
+        let mut file = b"II*\0\0\0\0\0".to_vec();
+        let mut offsets = Vec::new();
+        for ty in 0..across {
+            for tx in 0..across {
+                offsets.push(file.len() as u32);
+                for y in 0..tile {
+                    for x in 0..tile {
+                        file.push(pixel(ty * tile + y, tx * tile + x));
+                    }
+                }
+            }
+        }
+        let array = |file: &mut Vec<u8>, values: &[u32]| {
+            let at = file.len() as u32;
+            for v in values {
+                file.extend_from_slice(&v.to_le_bytes());
+            }
+            at
+        };
+        let counts = vec![tile * tile; offsets.len()];
+        let (offsets_at, counts_at) = (array(&mut file, &offsets), array(&mut file, &counts));
+        let ifd = file.len() as u32;
+        file[4..8].copy_from_slice(&ifd.to_le_bytes());
+        // (tag, type, count, value): type 3 SHORT, 4 LONG.
+        let n = offsets.len() as u32;
+        let entries: [(u16, u16, u32, u32); 10] = [
+            (256, 4, 1, side),
+            (257, 4, 1, side),
+            (258, 3, 1, 8),
+            (259, 3, 1, 1),
+            (262, 3, 1, 1),
+            (277, 3, 1, 1),
+            (322, 4, 1, tile),
+            (323, 4, 1, tile),
+            (324, 4, n, offsets_at),
+            (325, 4, n, counts_at),
+        ];
+        file.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        for (tag, kind, count, value) in entries {
+            file.extend_from_slice(&tag.to_le_bytes());
+            file.extend_from_slice(&kind.to_le_bytes());
+            file.extend_from_slice(&count.to_le_bytes());
+            file.extend_from_slice(&value.to_le_bytes());
+        }
+        file.extend_from_slice(&0u32.to_le_bytes());
+        let pixels = (0..side)
+            .flat_map(|y| (0..side).map(move |x| pixel(y, x)))
+            .collect();
+        (file, pixels)
+    }
+
+    #[test]
+    fn a_remote_reader_reads_the_object_at_any_position() {
+        use std::io::{Read, Seek, SeekFrom};
+        let data: Vec<u8> = (0..300_000u32).map(|i| (i % 253) as u8).collect();
+        let object = Arc::new(RemoteObject::new(MemStore::new(data.clone())));
+        let mut reader = RemoteReader::new(Arc::clone(&object));
+        for (at, len) in [
+            (0, 10),
+            (65_530, 20),
+            (131_071, 1),
+            (299_990, 50),
+            (150_000, 70_000),
+        ] {
+            reader.seek(SeekFrom::Start(at)).unwrap();
+            let mut got = Vec::new();
+            reader.by_ref().take(len).read_to_end(&mut got).unwrap();
+            let end = (at + len).min(data.len() as u64) as usize;
+            assert_eq!(got, data[at as usize..end], "at {at}");
+        }
+        assert_eq!(reader.seek(SeekFrom::End(-1)).unwrap(), 299_999);
+    }
+
+    #[test]
+    fn rows_share_the_blocks_of_an_objects_structure() {
+        use std::io::Read;
+        let object = Arc::new(RemoteObject::new(MemStore::new(vec![7u8; 200_000])));
+        for _ in 0..3 {
+            let mut header = [0u8; 100];
+            RemoteReader::new(Arc::clone(&object))
+                .read_exact(&mut header)
+                .unwrap();
+        }
+        let first_block: Range<u64> = 0..REMOTE_BLOCK;
+        assert_eq!(object.store.reads(), vec![vec![first_block]]);
+    }
+
+    #[test]
+    fn a_prefetch_is_one_request_of_merged_ranges_and_serves_its_reads() {
+        use std::io::{Read, Seek, SeekFrom};
+        use view_buffer::interop::tiff_region::TiffSource;
+        let data: Vec<u8> = (0..1_000_000u32).map(|i| (i % 249) as u8).collect();
+        let object = Arc::new(RemoteObject::new(MemStore::new(data.clone())));
+        let mut reader = RemoteReader::new(Arc::clone(&object));
+        reader
+            .prefetch(&[500_000..500_100, 0..10, 500_200..500_300, 900_000..900_010])
+            .unwrap();
+        assert_eq!(
+            object.store.reads(),
+            vec![vec![0..10, 500_000..500_300, 900_000..900_010]],
+            "one request; ranges close together merged"
+        );
+        reader.seek(SeekFrom::Start(500_210)).unwrap();
+        let mut got = [0u8; 20];
+        reader.read_exact(&mut got).unwrap();
+        assert_eq!(got, data[500_210..500_230]);
+        assert_eq!(
+            object.store.reads().len(),
+            1,
+            "a prefetched read makes no request"
+        );
+    }
+
+    /// The point of it all: a window of a remote tiled TIFF decodes from its
+    /// header and the tiles under it — a small fraction of the object.
+    #[test]
+    fn a_window_of_a_remote_tiff_reads_its_tiles_not_the_file() {
+        use view_buffer::ops::ViewOp;
+        // Large enough that the 64 KiB structure blocks are the small part,
+        // as they are for a real slide.
+        let (file, pixels) = tiled_gray_tiff(2048, 64);
+        let size = file.len() as u64;
+        let object = Arc::new(RemoteObject::new(MemStore::new(file)));
+        let crop = ViewOp::Crop {
+            top: 100,
+            left: 200,
+            height: Some(20),
+            width: Some(30),
+        };
+        let decoded = view_buffer::ImageAdapter::decode_tiff_from(
+            RemoteReader::new(Arc::clone(&object)),
+            Some(&crop),
+            0,
+        )
+        .unwrap()
+        .expect("an uncompressed gray TIFF is the chunk decoder's");
+        assert!(decoded.applied);
+        let got = decoded.buffer.to_contiguous();
+        assert_eq!(got.shape(), &[20, 30, 1]);
+        let want: Vec<u8> = (100..120)
+            .flat_map(|y| pixels[y * 2048 + 200..y * 2048 + 230].iter().copied())
+            .collect();
+        assert_eq!(got.as_slice::<u8>(), want.as_slice());
+        let read = object.store.bytes_read();
+        assert!(read * 20 < size, "read {read} of {size} bytes");
+    }
 
     fn column(paths: &[Option<&str>]) -> StringChunked {
         StringChunked::from_iter_options("paths".into(), paths.iter().copied())

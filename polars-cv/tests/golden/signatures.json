@@ -1934,6 +1934,38 @@
     ""
    ]
   ],
+  "tile": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "height",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "width",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "stride_height",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "stride_width",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "edge",
+    "KEYWORD_ONLY",
+    "'drop'"
+   ]
+  ],
   "to_bgr": [
    [
     "self",
@@ -3253,6 +3285,11 @@
     "None"
    ],
    [
+    "level",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
     "on_error",
     "KEYWORD_ONLY",
     "None"
@@ -3311,6 +3348,38 @@
     "max_size",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ]
+  ],
+  "tile": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "height",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "width",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "stride_height",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "stride_width",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "edge",
+    "KEYWORD_ONLY",
+    "'drop'"
    ]
   ],
   "to_bgr": [

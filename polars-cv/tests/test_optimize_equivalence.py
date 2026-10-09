@@ -540,6 +540,7 @@ _PER_OPT_CASES: list[tuple[str, object, str]] = [
         "numpy",
     ),
     ("scalar_fusion", lambda p: p.cast("f32").scale(0.5).invert(), "numpy"),
+    ("roi_decode", lambda p: p.crop(top=8, left=4, height=40, width=50), "numpy"),
 ]
 
 #: The one pass not expressible as a single-pipeline case; covered elsewhere.

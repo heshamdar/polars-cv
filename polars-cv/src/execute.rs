@@ -5,7 +5,7 @@
 
 use polars::prelude::*;
 
-use view_buffer::{ImageAdapter, PlannedDType, ViewBuffer};
+use view_buffer::{ImageAdapter, PlannedDType, ViewBuffer, ViewOp};
 
 use crate::formats::sink::Sink;
 use crate::formats::source::Source;
@@ -52,25 +52,64 @@ fn decode_jpeg_scaled(bytes: &[u8], max_size: u32) -> Option<ViewBuffer> {
 /// `decode_max_size`. `blob`/`raw`
 /// sources never reach it: they decode zero-copy via
 /// `graph::decode::decode_binary_row`.
-pub fn decode_image_bytes(bytes: &[u8], source: &Source) -> PolarsResult<ViewBuffer> {
+///
+/// With `crop` (the node's leading crop, under the `roi_decode` pass) only
+/// its window is decoded when it lies inside the image; the `bool` says
+/// whether the buffer is that window. A declared dtype then casts the window:
+/// a cast is per element, so this is the cast of the full decode, cropped.
+///
+/// `level` is the row's pyramid level (`source(level=)`, resolved by the
+/// executor): 0 is the image; above 0 only a pyramidal TIFF has one.
+pub fn decode_image_bytes(
+    bytes: &[u8],
+    source: &Source,
+    crop: Option<&ViewOp>,
+    level: u32,
+) -> PolarsResult<(ViewBuffer, bool)> {
+    let failed = |e| polars_err!(ComputeError: "Failed to decode image: {:?}", e);
     // An explicit decode-scale assertion lets JPEG decode skip work via IDCT
-    // scaling; other formats fall through to a full decode.
+    // scaling; other formats fall through to a full decode. A scaled decode
+    // is never given a crop (`compiled::roi_decodable`).
     let scaled = source
         .decode_max_size()
         .and_then(|max_size| decode_jpeg_scaled(bytes, max_size));
-    let buf = match scaled {
-        Some(buf) => buf,
-        None => ImageAdapter::decode(bytes)
-            .map_err(|e| polars_err!(ComputeError: "Failed to decode image: {:?}", e))?,
-    };
-    // If source spec declares an expected dtype, cast to it.
-    // This is a no-op when the decoded dtype already matches.
-    if let Some(target) = source.dtype() {
-        if buf.dtype() != target {
-            return Ok(buf.cast(target));
+    let (buf, crop_applied) = match (scaled, crop) {
+        (Some(buf), _) => (buf, false),
+        (None, Some(crop)) => {
+            let decoded = ImageAdapter::decode_cropped(bytes, crop, level).map_err(failed)?;
+            (decoded.buffer, decoded.applied)
         }
+        (None, None) => (
+            ImageAdapter::decode_level(bytes, level).map_err(failed)?,
+            false,
+        ),
+    };
+    Ok((with_declared_dtype(buf, source), crop_applied))
+}
+
+/// A TIFF read through `tiff` (a file or object read by range) rather than
+/// from its bytes: [`decode_image_bytes`] for the TIFFs the chunk decoder
+/// carries, reading only the chunks a crop's window or the level needs.
+/// `Ok(None)` for a layout it does not carry; the caller then reads the
+/// bytes whole and decodes them.
+pub fn decode_tiff_source<S: view_buffer::interop::tiff_region::TiffSource>(
+    tiff: S,
+    source: &Source,
+    crop: Option<&ViewOp>,
+    level: u32,
+) -> PolarsResult<Option<(ViewBuffer, bool)>> {
+    let decoded = ImageAdapter::decode_tiff_from(tiff, crop, level)
+        .map_err(|e| polars_err!(ComputeError: "Failed to decode image: {:?}", e))?;
+    Ok(decoded.map(|d| (with_declared_dtype(d.buffer, source), d.applied)))
+}
+
+/// `buf` cast to the dtype the source declares, if it declares one (a no-op
+/// when it already has it).
+fn with_declared_dtype(buf: ViewBuffer, source: &Source) -> ViewBuffer {
+    match source.dtype() {
+        Some(target) if buf.dtype() != target => buf.cast(target),
+        _ => buf,
     }
-    Ok(buf)
 }
 
 /// Encode the result buffer to a binary sink format.

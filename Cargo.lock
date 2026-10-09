@@ -4751,6 +4751,7 @@ dependencies = [
  "bytemuck",
  "criterion",
  "fast_image_resize",
+ "flate2",
  "geo",
  "half",
  "image",
@@ -4766,6 +4767,9 @@ dependencies = [
  "smallvec",
  "thiserror 1.0.69",
  "tiff",
+ "weezl",
+ "zune-core 0.5.0",
+ "zune-jpeg 0.5.8",
  "zune-png",
 ]
 
