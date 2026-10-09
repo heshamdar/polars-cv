@@ -404,7 +404,8 @@ impl ImageAdapter {
         );
         // A TIFF the chunk decoder carries reads only the window's chunks.
         if crate::interop::tiff_region::is_tiff(encoded_bytes) {
-            if let Some(decoded) = Self::decode_tiff_window(encoded_bytes, crop, level)? {
+            let source = std::io::Cursor::new(encoded_bytes);
+            if let Some(decoded) = Self::decode_tiff_from(source, Some(crop), level)? {
                 return Ok(decoded);
             }
         }
@@ -424,35 +425,45 @@ impl ImageAdapter {
         })
     }
 
-    /// [`Self::decode_cropped`] for a TIFF whose layout `tiff_region` decodes:
-    /// the window when the crop accepts it against the header's shape, else
-    /// `None` (the caller decodes whole and lets the crop refuse).
-    fn decode_tiff_window(
-        encoded_bytes: &[u8],
-        crop: &crate::ops::ViewOp,
+    /// A TIFF read from `source` by the chunk decoder (`tiff_region`):
+    /// the crop's window when there is a crop and it accepts the level's
+    /// shape (only the chunks under it are read), else the whole level.
+    /// `None` for a layout the chunk decoder leaves to the `tiff` crate.
+    ///
+    /// The one TIFF entry for every source of bytes: memory
+    /// ([`Self::decode_cropped`]), a local file or a remote object (the
+    /// plugin's ranged path reads), so each decodes a window identically.
+    pub fn decode_tiff_from<S: crate::interop::tiff_region::TiffSource>(
+        source: S,
+        crop: Option<&crate::ops::ViewOp>,
         level: u32,
     ) -> Result<Option<CroppedDecode>, image::ImageError> {
-        use crate::interop::tiff_region::{self, TiffDecode};
-        let Some((shape, dtype)) =
-            tiff_region::image_shape(encoded_bytes, level).map_err(tiff_error)?
-        else {
+        use crate::interop::tiff_region::{TiffImage, Window};
+        let mut image = TiffImage::open(source, level).map_err(tiff_error)?;
+        let Some((shape, dtype)) = image.shape() else {
             return Ok(None);
         };
-        if crate::ops::validation::validate_concrete(crop, &[&shape[..]], &[dtype]).is_err() {
-            return Ok(None);
-        }
+        let crop = crop.filter(|crop| {
+            crate::ops::validation::validate_concrete(*crop, &[&shape[..]], &[dtype]).is_ok()
+        });
+        let Some(crop) = crop else {
+            let whole = image.decode(None).map_err(tiff_error)?;
+            return Ok(whole.map(|buffer| CroppedDecode {
+                buffer,
+                applied: false,
+            }));
+        };
         let (start, end) = crop.window().expect("a crop has a window");
-        let window = tiff_region::Window {
+        let window = Window {
             top: start[0],
             left: start[1],
             bottom: end[0].min(shape[0]),
             right: end[1].min(shape[1]),
         };
-        let TiffDecode::Pixels(buffer) =
-            tiff_region::decode(encoded_bytes, Some(window), level).map_err(tiff_error)?
-        else {
-            unreachable!("image_shape accepted this layout")
-        };
+        let buffer = image
+            .decode(Some(window))
+            .map_err(tiff_error)?
+            .expect("shape() accepted this layout");
         // What the window leaves of the channel axis, cut as the crop would.
         let channels = crate::ops::ViewOp::Slice {
             start: vec![0, 0, start[2]],

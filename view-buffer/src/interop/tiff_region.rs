@@ -19,6 +19,7 @@
 //! is exactly the crop of the whole.
 
 use std::io::{Cursor, Read, Seek};
+use std::ops::Range;
 
 use tiff::decoder::{Decoder, Limits};
 use tiff::tags::Tag;
@@ -723,6 +724,108 @@ fn seek_level<R: Read + Seek>(d: &mut Decoder<R>, level: u32) -> Result<usize, S
     Ok(info.ifd)
 }
 
+/// Where a TIFF's bytes come from: memory, a local file, or (through the
+/// plugin) a remote object read by byte range.
+pub trait TiffSource: Read + Seek {
+    /// Bring `ranges` in ahead of reading them. A remote source fetches them
+    /// in one request; memory and local files have nothing to do.
+    fn prefetch(&mut self, ranges: &[Range<u64>]) -> std::io::Result<()>;
+}
+
+impl<T: AsRef<[u8]>> TiffSource for Cursor<T> {
+    fn prefetch(&mut self, _: &[Range<u64>]) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<R: Read + Seek> TiffSource for std::io::BufReader<R> {
+    fn prefetch(&mut self, _: &[Range<u64>]) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<S: TiffSource + ?Sized> TiffSource for &mut S {
+    fn prefetch(&mut self, ranges: &[Range<u64>]) -> std::io::Result<()> {
+        (**self).prefetch(ranges)
+    }
+}
+
+/// One pyramid level of a TIFF, opened: its header read, its chunks not.
+pub struct TiffImage<S: TiffSource> {
+    decoder: Decoder<S>,
+    /// `None` for a layout this module leaves to the `tiff` crate.
+    layout: Option<Layout>,
+    ifd: usize,
+}
+
+impl<S: TiffSource> TiffImage<S> {
+    /// Open pyramid level `level` of the TIFF `source` holds.
+    pub fn open(mut source: S, level: u32) -> Result<Self, String> {
+        let mut magic = [0u8; 2];
+        source
+            .read_exact(&mut magic)
+            .and_then(|()| source.rewind())
+            .map_err(|e| format!("TIFF header: {e}"))?;
+        let mut decoder = open(source)?;
+        let ifd = seek_level(&mut decoder, level)?;
+        let layout = Layout::read(&mut decoder, &magic == b"MM")?;
+        Ok(TiffImage {
+            decoder,
+            layout,
+            ifd,
+        })
+    }
+
+    /// The image's position in the file's IFD chain.
+    pub fn ifd(&self) -> usize {
+        self.ifd
+    }
+
+    /// The `[H, W, C]` shape and element type a decode produces, or `None`
+    /// for a layout this module does not decode.
+    pub fn shape(&self) -> Option<([usize; 3], DType)> {
+        self.layout
+            .as_ref()
+            .map(|l| ([l.height, l.width, l.channels()], l.dtype()))
+    }
+
+    /// Decode `window` (`None`: the whole image), reading only the chunks it
+    /// overlaps — prefetched together, then read one by one. `None` for a
+    /// layout this module does not decode. `window` must lie inside the image
+    /// ([`Self::shape`]).
+    pub fn decode(&mut self, window: Option<Window>) -> Result<Option<ViewBuffer>, String> {
+        let Some(layout) = &self.layout else {
+            return Ok(None);
+        };
+        let window = window.unwrap_or(Window {
+            top: 0,
+            left: 0,
+            bottom: layout.height,
+            right: layout.width,
+        });
+        let ranges: Vec<Range<u64>> = layout
+            .chunks_in(&window)
+            .iter()
+            .map(|&(index, ..)| layout.chunk_range(index))
+            .collect();
+        let reader = self.decoder.inner();
+        reader
+            .prefetch(&ranges)
+            .map_err(|e| format!("reading TIFF chunks: {e}"))?;
+        layout
+            .decode_window(&window, |index| {
+                let range = layout.chunk_range(index);
+                let mut chunk = vec![0u8; (range.end - range.start) as usize];
+                reader
+                    .seek(std::io::SeekFrom::Start(range.start))
+                    .and_then(|_| reader.read_exact(&mut chunk))
+                    .map_err(|e| format!("TIFF chunk {index}: {e}"))?;
+                Ok(chunk)
+            })
+            .map(Some)
+    }
+}
+
 /// What decoding a TIFF image gave.
 #[derive(Debug)]
 pub enum TiffDecode {
@@ -738,37 +841,18 @@ pub enum TiffDecode {
 /// `window` must lie inside the image (the caller validates it against
 /// [`image_shape`]).
 pub fn decode(bytes: &[u8], window: Option<Window>, level: u32) -> Result<TiffDecode, String> {
-    let mut d = open(Cursor::new(bytes))?;
-    let big_endian = bytes.starts_with(b"MM");
-    let ifd = seek_level(&mut d, level)?;
-    let Some(layout) = Layout::read(&mut d, big_endian)? else {
-        return Ok(TiffDecode::Unsupported { ifd });
-    };
-    let window = window.unwrap_or(Window {
-        top: 0,
-        left: 0,
-        bottom: layout.height,
-        right: layout.width,
-    });
-    let buffer = layout.decode_window(&window, |index| {
-        let range = layout.chunk_range(index);
-        let (start, end) = (range.start as usize, range.end as usize);
-        bytes
-            .get(start..end)
-            .map(<[u8]>::to_vec)
-            .ok_or_else(|| format!("TIFF chunk {index} lies past the end of the file"))
-    })?;
-    Ok(TiffDecode::Pixels(buffer))
+    let mut image = TiffImage::open(Cursor::new(bytes), level)?;
+    Ok(match image.decode(window)? {
+        Some(buffer) => TiffDecode::Pixels(buffer),
+        None => TiffDecode::Unsupported { ifd: image.ifd() },
+    })
 }
 
 /// The `[H, W, C]` shape and element type a decode of pyramid level `level`
 /// of an in-memory TIFF produces, or `Ok(None)` when this module does not
 /// decode it.
 pub fn image_shape(bytes: &[u8], level: u32) -> Result<Option<([usize; 3], DType)>, String> {
-    let mut d = open(Cursor::new(bytes))?;
-    seek_level(&mut d, level)?;
-    Ok(Layout::read(&mut d, bytes.starts_with(b"MM"))?
-        .map(|l| ([l.height, l.width, l.channels()], l.dtype())))
+    Ok(TiffImage::open(Cursor::new(bytes), level)?.shape())
 }
 
 #[cfg(test)]

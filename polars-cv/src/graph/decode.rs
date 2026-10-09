@@ -10,7 +10,7 @@ use polars::prelude::*;
 use view_buffer::ops::NodeOutput;
 use view_buffer::{PlannedDType, ViewBuffer, ViewOp};
 
-use crate::execute::decode_image_bytes;
+use crate::execute::{decode_image_bytes, decode_tiff_source};
 use crate::formats::source::Source;
 
 use super::encode::{
@@ -97,11 +97,20 @@ pub(crate) fn decode_source_row(
             let Some(path) = ca.get(row) else {
                 return Ok(whole(None));
             };
-            // Stage 1: bytes, from the call's fetch window (local files are
-            // read inline).
             let fetcher = fetch.fetcher.ok_or_else(|| {
                 format!("internal: file_path source '{node_id}' has no fetcher for its column")
             })?;
+            // A crop's window or a level of a local TIFF: read its header and
+            // the chunks it needs, not the file.
+            if crop.is_some() || level > 0 {
+                if let Some(decoded) = decode_local_tiff(fetcher, row, source, crop, level)
+                    .map_err(|e| format!("Decode error for file '{path}': {e}"))?
+                {
+                    return Ok(image(decoded));
+                }
+            }
+            // Stage 1: bytes, from the call's fetch window (local files are
+            // read inline).
             let Some(bytes) = fetcher.bytes(row)? else {
                 return Ok(whole(None));
             };
@@ -148,6 +157,30 @@ pub(crate) fn decode_source_row(
             node_id
         )),
     }
+}
+
+/// Row `row`'s local TIFF, decoded by range ([`decode_tiff_source`]):
+/// `Ok(None)` when the path is not local, not a TIFF, or a TIFF layout the
+/// chunk decoder does not carry — the caller then reads it whole.
+fn decode_local_tiff(
+    fetcher: &crate::fetch::Fetcher<'_>,
+    row: usize,
+    source: &Source,
+    crop: Option<&ViewOp>,
+    level: u32,
+) -> Result<Option<(ViewBuffer, bool)>, String> {
+    use std::io::{Read, Seek};
+    let Some(mut file) = fetcher.local_file(row)? else {
+        return Ok(None);
+    };
+    let mut magic = [0u8; 4];
+    let tiff = file.read_exact(&mut magic).is_ok()
+        && view_buffer::interop::tiff_region::is_tiff(&magic)
+        && file.rewind().is_ok();
+    if !tiff {
+        return Ok(None);
+    }
+    decode_tiff_source(file, source, crop, level).map_err(|e| e.to_string())
 }
 
 /// Decode row `row` of a binary column: a raw row as `raw_dtype`, or (with

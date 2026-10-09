@@ -318,7 +318,8 @@ impl Entry {
         if !matches!(*state, State::Fetching(_)) {
             return;
         }
-        if result.is_ok() {
+        if let Ok(body) = &result {
+            count_read(body.len());
             let now = shared.resident.fetch_add(1, Ordering::SeqCst) + 1;
             shared.peak.fetch_max(now, Ordering::SeqCst);
         }
@@ -417,7 +418,10 @@ impl<'a> Fetcher<'a> {
             // through a URL parser would read a bare colon-bearing filename as
             // a bogus cloud URL.)
             return cloud::read_local_path(path)
-                .map(|b| Some(Bytes::Local(b)))
+                .map(|b| {
+                    count_read(b.len());
+                    Some(Bytes::Local(b))
+                })
                 .map_err(|e| format!("Failed to read local file '{path}': {e}"));
         }
         let entry = self.slots[row]
@@ -439,6 +443,27 @@ impl<'a> Fetcher<'a> {
                 Err(format!("Failed to read remote file '{path}': {e}"))
             }
         }
+    }
+
+    /// Row `row`'s file opened for reads by range, when its path is local:
+    /// `Ok(None)` for a null or remote path (read those with
+    /// [`Fetcher::bytes`]). The policy check and the error text are
+    /// [`Fetcher::bytes`]'s.
+    pub fn local_file(&self, row: usize) -> Result<Option<LocalFile>, String> {
+        let Some(path) = self.ca.get(row) else {
+            return Ok(None);
+        };
+        if cloud::is_remote_path(path) {
+            return Ok(None);
+        }
+        self.policy.check(path)?;
+        let file = cloud::local_file_path(path)
+            .map_err(|e| e.to_string())
+            .and_then(|p| std::fs::File::open(p).map_err(|e| e.to_string()))
+            .map_err(|e| format!("Failed to read local file '{path}': {e}"))?;
+        Ok(Some(LocalFile {
+            reader: std::io::BufReader::with_capacity(LOCAL_BUFFER, file),
+        }))
     }
 
     /// Read row `row`'s path only as far as `parse` needs: `parse` over the
@@ -468,6 +493,7 @@ impl<'a> Fetcher<'a> {
         loop {
             let (bytes, eof) = cloud::read_local_prefix(path, limit)
                 .map_err(|e| format!("Failed to read local file '{path}': {e}"))?;
+            count_read(bytes.len());
             if let Some(found) = parse(&bytes) {
                 return Ok(Some(found));
             }
@@ -530,6 +556,51 @@ static LAST_PEAK_RESIDENT: AtomicUsize = AtomicUsize::new(0);
 /// See [`LAST_PEAK_RESIDENT`].
 pub(crate) fn last_peak_resident() -> usize {
     LAST_PEAK_RESIDENT.load(Ordering::SeqCst)
+}
+
+/// Every byte the plugin's path reads have taken from a file or a store, ever
+/// (`_lib._fetch_bytes_read`): whole reads, header prefixes and ranged reads.
+/// Cumulative, so a test reads it before and after a query and concurrent
+/// calls cannot reset it under it.
+static BYTES_READ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Count `n` bytes read from a file or store ([`BYTES_READ`]).
+fn count_read(n: usize) {
+    BYTES_READ.fetch_add(n as u64, Ordering::Relaxed);
+}
+
+/// See [`BYTES_READ`].
+pub(crate) fn bytes_read() -> u64 {
+    BYTES_READ.load(Ordering::Relaxed)
+}
+
+/// A file opened for reads by range, counting what it reads ([`BYTES_READ`]).
+pub struct LocalFile {
+    reader: std::io::BufReader<std::fs::File>,
+}
+
+/// Small buffers: a ranged read seeks between an IFD, its tag values and a
+/// few chunks, and each seek refills the buffer.
+const LOCAL_BUFFER: usize = 4 * 1024;
+
+impl std::io::Read for LocalFile {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.reader.read(buf)?;
+        count_read(n);
+        Ok(n)
+    }
+}
+
+impl std::io::Seek for LocalFile {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.reader.seek(pos)
+    }
+}
+
+impl view_buffer::interop::tiff_region::TiffSource for LocalFile {
+    fn prefetch(&mut self, _: &[std::ops::Range<u64>]) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// What an unreadable path does to the query.

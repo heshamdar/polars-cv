@@ -87,6 +87,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   - Any other image is one untiled level.
   - It takes bytes or paths, like `.cv.width()`.
 
+- **A crop or a level of a local TIFF read by path reads only what it
+  decodes.** A `file_path` source used to read the whole file for every row,
+  so one 256-pixel patch of a 2 GB slide read 2 GB.
+  - With a crop right after the source, or `level` above 0, a local TIFF is
+    opened and only its header and the chunks it needs are read. In a test,
+    four 64-pixel windows of a 3 MiB slide read 3.4% of it.
+  - Other files, and TIFF layouts the chunk decoder does not carry, are read
+    whole as before. `allowed_roots` and `on_error` apply unchanged.
+  - New `_lib._fetch_bytes_read()` counts every byte path reads take from
+    files and stores, so tests can measure this at the user-facing call.
+  - Remote paths still read whole for now.
+
 ### Fixed
 
 - **`.cv.width()`/`height()`/`channels()`/`image_dtype()`/`image_info()`
