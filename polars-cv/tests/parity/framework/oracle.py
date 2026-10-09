@@ -281,10 +281,14 @@ def _crop_ref(x: np.ndarray, p: Params) -> np.ndarray:
 
 
 def _tile_params(draw: st.DrawFn, x: np.ndarray) -> Params:
+    # A patch no larger than the image, so there is at least one: zero
+    # patches leave an empty outer axis, which a nested-list sink cannot shape
+    # and `assert_shape` cannot state (as `_crop_params` draws no empty crop).
+    # The empty grid is `tests/test_tile.py`'s and the Rust cross-check's.
     h, w = x.shape[:2]
     return {
-        "height": draw(st.integers(1, max(h, 1) + 1), label="height"),
-        "width": draw(st.integers(1, max(w, 1) + 1), label="width"),
+        "height": draw(st.integers(1, max(h, 1)), label="height"),
+        "width": draw(st.integers(1, max(w, 1)), label="width"),
         "stride_height": draw(st.integers(1, max(h, 1) + 1), label="stride_height"),
         "stride_width": draw(st.integers(1, max(w, 1) + 1), label="stride_width"),
         "edge": draw(st.sampled_from(["drop", "shift"]), label="edge"),
