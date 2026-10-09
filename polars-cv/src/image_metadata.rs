@@ -170,7 +170,23 @@ struct SlideMeta {
 fn extract_slide(bytes: &[u8]) -> Option<SlideMeta> {
     use view_buffer::interop::tiff_region;
     if tiff_region::is_tiff(bytes) {
-        let info = tiff_region::slide_info(Cursor::new(bytes)).ok()?;
+        return slide_meta(tiff_region::slide_info(Cursor::new(bytes)).ok()?);
+    }
+    let meta = extract_metadata(bytes)?;
+    Some(SlideMeta {
+        levels: vec![SlideLevel {
+            width: meta.width,
+            height: meta.height,
+            downsample: 1.0,
+            tile: None,
+        }],
+        mpp: None,
+    })
+}
+
+/// A TIFF's [`SlideMeta`] from its parsed header; `None` with no levels.
+fn slide_meta(info: view_buffer::interop::tiff_region::SlideInfo) -> Option<SlideMeta> {
+    {
         let base = info.levels.first()?;
         let (w0, h0) = (base.width as f64, base.height as f64);
         let levels = info
@@ -183,21 +199,62 @@ fn extract_slide(bytes: &[u8]) -> Option<SlideMeta> {
                 tile: l.tile.map(|(w, h)| (w as u32, h as u32)),
             })
             .collect();
-        return Some(SlideMeta {
+        Some(SlideMeta {
             levels,
             mpp: info.mpp,
-        });
+        })
     }
-    let meta = extract_metadata(bytes)?;
-    Some(SlideMeta {
-        levels: vec![SlideLevel {
-            width: meta.width,
-            height: meta.height,
-            downsample: 1.0,
-            tile: None,
-        }],
-        mpp: None,
-    })
+}
+
+/// Every row's [`SlideMeta`]. A path naming a TIFF is read by range — its
+/// IFDs, not its pixels (a remote slide is not downloaded to list its
+/// levels); anything else, and any failure on that path, is read as
+/// [`headers`] reads it, so errors and nulls are exactly its.
+fn slides(inputs: &[Series], kwargs: &MetaKwargs) -> PolarsResult<Vec<Option<SlideMeta>>> {
+    let name = "slide_info()";
+    if inputs[0].dtype() != &DataType::String {
+        return headers(inputs, kwargs, name, extract_slide);
+    }
+    let ca = inputs[0].str()?;
+    let null_on_error =
+        crate::fetch::parse_on_error(kwargs.on_error.as_deref().unwrap_or("raise"), name)?;
+    let options = kwargs
+        .cloud_options
+        .as_ref()
+        .map(crate::cloud::CloudOptions::from_map);
+    let policy = kwargs
+        .allowed_roots
+        .as_deref()
+        .map(crate::fetch::PathPolicy::new)
+        .unwrap_or_default();
+    let fetcher = crate::fetch::Fetcher::new(ca, options.as_ref(), &policy).ranged();
+    (0..ca.len())
+        .map(|row| {
+            if let Some(meta) = ranged_slide(&fetcher, row) {
+                return Ok(Some(meta));
+            }
+            match fetcher.header(row, extract_slide) {
+                Ok(meta) => Ok(meta),
+                Err(_) if null_on_error => Ok(None),
+                Err(e) => Err(polars_err!(ComputeError: "{}: {}", name, e)),
+            }
+        })
+        .collect()
+}
+
+/// Row `row`'s slide read by range, when its path names a TIFF whose header
+/// parses; `None` otherwise (the caller reads it the plain way).
+fn ranged_slide(fetcher: &crate::fetch::Fetcher<'_>, row: usize) -> Option<SlideMeta> {
+    use std::io::{Read, Seek};
+    use view_buffer::interop::tiff_region;
+    let mut file = fetcher.open(row).ok()??;
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic).ok()?;
+    if !tiff_region::is_tiff(&magic) {
+        return None;
+    }
+    file.rewind().ok()?;
+    slide_meta(tiff_region::slide_info(file).ok()?)
 }
 
 /// Static kwargs of the metadata functions: how to reach a *path* column's
@@ -409,7 +466,7 @@ fn slide_info(inputs: &[Series], kwargs: MetaKwargs) -> PolarsResult<Series> {
     use polars_arrow::array::{ListArray, PrimitiveArray, StructArray};
     use polars_arrow::offset::Offsets;
 
-    let slides = headers(inputs, &kwargs, "slide_info()", extract_slide)?;
+    let slides = slides(inputs, &kwargs)?;
     let flat: Vec<(u32, &SlideLevel)> = slides
         .iter()
         .flatten()

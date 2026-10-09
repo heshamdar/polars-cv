@@ -100,10 +100,10 @@ pub(crate) fn decode_source_row(
             let fetcher = fetch.fetcher.ok_or_else(|| {
                 format!("internal: file_path source '{node_id}' has no fetcher for its column")
             })?;
-            // A crop's window or a level of a local TIFF: read its header and
-            // the chunks it needs, not the file.
+            // A crop's window or a level of a TIFF: read its header and the
+            // chunks it needs, not the file.
             if crop.is_some() || level > 0 {
-                if let Some(decoded) = decode_local_tiff(fetcher, row, source, crop, level)
+                if let Some(decoded) = decode_ranged_tiff(fetcher, row, source, crop, level)
                     .map_err(|e| format!("Decode error for file '{path}': {e}"))?
                 {
                     return Ok(image(decoded));
@@ -159,10 +159,11 @@ pub(crate) fn decode_source_row(
     }
 }
 
-/// Row `row`'s local TIFF, decoded by range ([`decode_tiff_source`]):
-/// `Ok(None)` when the path is not local, not a TIFF, or a TIFF layout the
-/// chunk decoder does not carry — the caller then reads it whole.
-fn decode_local_tiff(
+/// Row `row`'s TIFF, local or remote, decoded by range
+/// ([`decode_tiff_source`]): `Ok(None)` when the file is not a TIFF, or a
+/// TIFF layout the chunk decoder does not carry — the caller then reads it
+/// whole.
+fn decode_ranged_tiff(
     fetcher: &crate::fetch::Fetcher<'_>,
     row: usize,
     source: &Source,
@@ -170,7 +171,7 @@ fn decode_local_tiff(
     level: u32,
 ) -> Result<Option<(ViewBuffer, bool)>, String> {
     use std::io::{Read, Seek};
-    let Some(mut file) = fetcher.local_file(row)? else {
+    let Some(mut file) = fetcher.open(row)? else {
         return Ok(None);
     };
     let mut magic = [0u8; 4];

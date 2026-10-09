@@ -80,7 +80,7 @@ RULES: tuple[tuple[str, str], ...] = (
     ("view-buffer/src/geometry/**", _GEOM),
     ("view-buffer/src/interop/**", "zero_copy,targeted:sink_*,targeted:blob_*"),
     ("view-buffer/src/interop/image.rs", f"{_OPS},targeted:codec_*"),
-    ("view-buffer/src/interop/tiff_region.rs", "targeted:codec_tiff_*"),
+    ("view-buffer/src/interop/tiff_region.rs", "targeted:codec_tiff_*,targeted:wsi_*"),
     ("view-buffer/src/protocol.rs", "zero_copy,targeted:blob_*"),
     # --- polars-cv, the plugin ---
     ("polars-cv/src/lib.rs", _OPS),
@@ -114,7 +114,7 @@ RULES: tuple[tuple[str, str], ...] = (
     ("polars-cv/src/geom_*.rs", _GEOM),
     ("polars-cv/src/contour.rs", _GEOM),
     ("polars-cv/src/point.rs", _GEOM),
-    ("polars-cv/src/fetch.rs", "remote"),
+    ("polars-cv/src/fetch.rs", "remote,targeted:wsi_*"),
     ("polars-cv/src/cloud.rs", "remote"),
     ("polars-cv/src/cloud_auth.rs", "remote"),
     ("polars-cv/src/read_bytes.rs", "remote"),

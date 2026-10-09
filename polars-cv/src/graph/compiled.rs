@@ -1197,11 +1197,12 @@ impl CompiledGraph {
                     return None;
                 }
                 let ca = inputs.get(np.column?)?.str().ok()?;
-                Some(crate::fetch::Fetcher::new(
-                    ca,
-                    np.cloud_options.as_ref(),
-                    &np.path_policy,
-                ))
+                let fetcher =
+                    crate::fetch::Fetcher::new(ca, np.cloud_options.as_ref(), &np.path_policy);
+                // A node whose rows may read a window or a level reads TIFFs
+                // by range: no row may start whole-object fetches for others.
+                let ranged = np.roi || np.source.level().is_some_and(|l| l != Param::Lit(0));
+                Some(if ranged { fetcher.ranged() } else { fetcher })
             })
             .collect()
     }

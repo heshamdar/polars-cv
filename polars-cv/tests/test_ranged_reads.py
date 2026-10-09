@@ -147,3 +147,183 @@ class TestLocalFiles:
             numpy_from_struct(on["o"][0])[..., 0], data[8:72, 8:72]
         )
         assert read >= path.stat().st_size
+
+
+class _Server:
+    """A loopback HTTP server over a directory, logging every request.
+
+    It answers ``HEAD`` and ranged ``GET`` (206) like a real object store's
+    HTTP front, unless ``honour_ranges`` is off, when it sends the whole body
+    (200) whatever was asked, as some servers do.
+    """
+
+    def __init__(self, root: Path, *, honour_ranges: bool = True) -> None:
+        import http.server
+        import threading
+
+        self.requests: list[tuple[str, str, str | None]] = []
+        self.served = 0
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def _body(self) -> bytes | None:
+                path = root / self.path.lstrip("/")
+                return path.read_bytes() if path.is_file() else None
+
+            def do_HEAD(self) -> None:  # noqa: N802
+                body = self._body()
+                outer.requests.append(("HEAD", self.path, None))
+                if body is None:
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+
+            def do_GET(self) -> None:  # noqa: N802
+                body = self._body()
+                asked = self.headers.get("Range")
+                outer.requests.append(("GET", self.path, asked))
+                if body is None:
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                if asked and honour_ranges:
+                    first, last = asked.removeprefix("bytes=").split("-")
+                    start, end = int(first), min(int(last) + 1, len(body))
+                    part = body[start:end]
+                    self.send_response(206)
+                    self.send_header(
+                        "Content-Range", f"bytes {start}-{end - 1}/{len(body)}"
+                    )
+                else:
+                    part = body
+                    self.send_response(200)
+                self.send_header("Content-Length", str(len(part)))
+                self.end_headers()
+                self.wfile.write(part)
+                outer.served += len(part)
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._server.daemon_threads = True
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self._server.server_address[1]}"
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+@pytest.fixture
+def server(tmp_path: Path):  # type: ignore[no-untyped-def]
+    srv = _Server(tmp_path)
+    yield srv
+    srv.close()
+
+
+@plugin_required
+class TestRemoteFiles:
+    def test_a_window_reads_ranges_of_the_object(
+        self, tmp_path: Path, server: _Server
+    ) -> None:
+        """Windows of a remote slide decode exactly, from ranged requests
+        totalling a small part of it; no request fetches it whole."""
+        fx = _slide(tmp_path)
+        size = fx.path.stat().st_size
+        url = f"{server.base}/{fx.path.name}"
+        origins = [(0, 0), (100, 200), (512, 960)]
+        df = pl.DataFrame(
+            {"p": [url] * 3, "t": [o[0] for o in origins], "l": [o[1] for o in origins]}
+        )
+        out, read = _measured(lambda: _crop(df))
+        for (t, left), row in zip(origins, out["o"], strict=True):
+            np.testing.assert_array_equal(
+                numpy_from_struct(row), fx.levels[0][t : t + 64, left : left + 64]
+            )
+        gets = [r for r in server.requests if r[0] == "GET"]
+        assert gets and all(asked is not None for _, _, asked in gets), server.requests
+        assert server.served < 0.10 * size, (server.served, size)
+        assert read == server.served
+
+    def test_without_the_pass_the_object_is_fetched_whole(
+        self, tmp_path: Path, server: _Server
+    ) -> None:
+        fx = _slide(tmp_path)
+        df = pl.DataFrame({"p": [f"{server.base}/{fx.path.name}"], "t": [0], "l": [0]})
+        _crop(df, _OFF)
+        assert server.requests == [("GET", f"/{fx.path.name}", None)]
+
+    def test_a_level_reads_ranges_too(self, tmp_path: Path, server: _Server) -> None:
+        fx = _slide(tmp_path, levels=3)
+        df = pl.DataFrame({"p": [f"{server.base}/{fx.path.name}"]})
+        pipe = Pipeline().source("file_path", level=2)
+        out = df.select(o=pl.col("p").cv.pipe(pipe).sink("numpy"))
+        np.testing.assert_array_equal(numpy_from_struct(out["o"][0]), fx.levels[2])
+        assert server.served < 0.15 * fx.path.stat().st_size
+
+    def test_a_server_ignoring_ranges_still_gives_the_window(
+        self, tmp_path: Path
+    ) -> None:
+        """A 200 to a ranged request is the whole body: the ranges are cut
+        from it, and the pixels are right."""
+        fx = _slide(tmp_path)
+        srv = _Server(tmp_path, honour_ranges=False)
+        try:
+            df = pl.DataFrame(
+                {"p": [f"{srv.base}/{fx.path.name}"], "t": [64], "l": [128]}
+            )
+            out = _crop(df)
+        finally:
+            srv.close()
+        np.testing.assert_array_equal(
+            numpy_from_struct(out["o"][0]), fx.levels[0][64:128, 128:192]
+        )
+
+    def test_any_other_remote_file_is_fetched_whole(
+        self, tmp_path: Path, server: _Server
+    ) -> None:
+        path = tmp_path / "a.png"
+        path.write_bytes(make_image_png(80, 80, seed=2))
+        df = pl.DataFrame({"p": [f"{server.base}/a.png"], "t": [8], "l": [8]})
+        out = _crop(df)
+        assert numpy_from_struct(out["o"][0]).shape == (64, 64, 3)
+        assert ("GET", "/a.png", None) in server.requests
+
+    def test_the_sandbox_refuses_before_any_request(
+        self, tmp_path: Path, server: _Server
+    ) -> None:
+        fx = _slide(tmp_path)
+        df = pl.DataFrame({"p": [f"{server.base}/{fx.path.name}"], "t": [0], "l": [0]})
+        assert _crop(df, allowed_roots=["https://elsewhere/"], on_error="null")[
+            "o"
+        ].to_list() == [None]
+        assert server.requests == []
+
+    def test_a_missing_object_is_the_rows_error(
+        self, tmp_path: Path, server: _Server
+    ) -> None:
+        df = pl.DataFrame({"p": [f"{server.base}/absent.tif"], "t": [0], "l": [0]})
+        with pytest.raises(pl.exceptions.ComputeError, match="404"):
+            _crop(df)
+        assert _crop(df, on_error="null")["o"].to_list() == [None]
+
+    def test_slide_info_reads_the_header_not_the_object(
+        self, tmp_path: Path, server: _Server
+    ) -> None:
+        """A remote slide's pyramid comes from ranged reads of its IFDs, and
+        matches the local file's."""
+        fx = _slide(tmp_path, levels=3, svs_extras=True)
+        remote = pl.DataFrame({"p": [f"{server.base}/{fx.path.name}"]})
+        local = pl.DataFrame({"p": [str(fx.path)]})
+        info = remote.select(pl.col("p").cv.slide_info())["p"].to_list()
+        assert info == local.select(pl.col("p").cv.slide_info())["p"].to_list()
+        assert len(info[0]["levels"]) == 3
+        assert server.served < 0.10 * fx.path.stat().st_size, server.served

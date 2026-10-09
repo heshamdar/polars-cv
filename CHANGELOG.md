@@ -97,7 +97,21 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     whole as before. `allowed_roots` and `on_error` apply unchanged.
   - New `_lib._fetch_bytes_read()` counts every byte path reads take from
     files and stores, so tests can measure this at the user-facing call.
-  - Remote paths still read whole for now.
+- **Remote TIFFs (S3, GCS, Azure, HTTP) are read by range too.**
+  - A node with a crop first or a level reads its TIFFs through a per-call
+    `RemoteObject`. The object's size is asked once, its structure is read
+    in 64 KiB blocks shared by every row naming it, and the chunks a window
+    needs come in one coalesced request.
+  - Object stores use the raw store's `head` and `get_ranges`, which take no
+    budget permit of their own.
+  - HTTP uses `Range` requests. A server that ignores `Range` sends the whole
+    body once, and the ranges are cut from it.
+  - In such a node a row no longer prefetches whole objects for the rows
+    after it. A non-TIFF remote file there costs one extra small read (the
+    format sniff) before its whole fetch.
+  - `.cv.slide_info()` on a path reads a TIFF's IFDs by range instead of
+    downloading it.
+  - New `targeted:wsi_patch_window_file` benchmark case.
 
 ### Fixed
 
