@@ -69,6 +69,39 @@ class TestTiledTiffFixture:
                 assert page.is_tiled
                 np.testing.assert_array_equal(page.asarray(), truth)
 
+    def test_svs_extras_sit_around_the_levels(self, tmp_path: Path) -> None:
+        """The thumbnail follows level 0, label and macro end the file, and
+        none is tiled; the levels' truth is unaffected."""
+        fx = write_tiled_tiff(
+            tmp_path / "svs.tif", height=96, width=128, levels=3, svs_extras=True
+        )
+        with tifffile.TiffFile(fx.path) as tif:
+            pages = list(tif.pages)
+            assert [p.is_tiled for p in pages] == [
+                True,
+                False,
+                True,
+                True,
+                False,
+                False,
+            ]
+            assert [p.subfiletype for p in pages] == [0, 0, 1, 1, 1, 9]
+            for page, truth in zip(
+                [pages[0], pages[2], pages[3]], fx.levels, strict=True
+            ):
+                np.testing.assert_array_equal(page.asarray(), truth)
+
+    def test_resolution_in_centimetres(self, tmp_path: Path) -> None:
+        """``resolution_cm`` writes level 0's resolution tags in cm."""
+        fx = write_tiled_tiff(
+            tmp_path / "r.tif", height=40, width=50, resolution_cm=20000.0
+        )
+        with tifffile.TiffFile(fx.path) as tif:
+            page = tif.pages[0]
+            assert page.tags["ResolutionUnit"].value == 3
+            num, den = page.tags["XResolution"].value
+            assert num / den == pytest.approx(20000.0)
+
     def test_strips_when_no_tile_is_given(self, tmp_path: Path) -> None:
         """``tile=None`` writes a strip TIFF, for the strip region-decode path."""
         fx = write_tiled_tiff(tmp_path / "s.tif", height=40, width=50, tile=None)

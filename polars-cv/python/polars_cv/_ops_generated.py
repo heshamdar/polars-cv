@@ -1176,6 +1176,7 @@ SOURCE_FIELDS: dict[str, dict[str, Any]] = {
             "f64",
         ],
     },
+    "level": {"kind": "scalar", "per_row": True, "py": "int"},
     "on_error": {
         "kind": "scalar",
         "per_row": False,
@@ -1202,6 +1203,7 @@ class _OpsMixin:
         cloud_options: CloudOptions | dict[str, Any] | None = None,
         decode_max_size: int | None = None,
         dtype: str | None = None,
+        level: IntOrExpr | None = None,
         on_error: str | None = None,
         require_contiguous: bool | None = None,
     ) -> Pipeline:
@@ -1232,6 +1234,14 @@ class _OpsMixin:
         never upscales; other encodings decode at full size. A scaled decode
         followed by a resize is not bit-identical to a full decode and the same
         resize, hence the explicit opt-in.
+
+        ``level`` picks a level of a pyramidal TIFF (a whole-slide image): 0, the
+        default, is the full-resolution image; each further level is a reduced copy
+        the file stores. It may be a column, so each row can read its own level; a
+        level the file does not have is the row's decode error, and so is any level
+        above 0 of an image that is not a pyramid. A crop after the source names
+        pixels of that level. ``level`` and ``decode_max_size`` both choose the
+        resolution to decode, so a source takes one of them.
 
         ``allowed_roots`` restricts which locations a path column may read from.
         An entry that parses as a remote URI (``"s3://bucket/public/"``) is
@@ -1267,6 +1277,9 @@ class _OpsMixin:
                 error. ``file_path``, ``image_bytes``: Asserted element dtype: a decoded
                 image with another dtype is cast. ``raw``: The element dtype: raw bytes
                 carry no type metadata, so it is required.
+            level: ``auto``, ``file_path``, ``image_bytes``: Pyramid level of a
+                pyramidal TIFF to decode; 0 is the image itself (see above). May vary
+                per row.
             on_error: ``array``, ``auto``, ``blob``, ``contour``, ``image_bytes``,
                 ``list``, ``raw``: "raise" or "null": what a row that cannot be decoded
                 does. ``file_path``: "raise" or "null": what a row that cannot be read
@@ -1300,6 +1313,7 @@ class _OpsMixin:
                 "cloud_options": cloud_options,
                 "decode_max_size": decode_max_size,
                 "dtype": dtype,
+                "level": level,
                 "on_error": on_error,
                 "require_contiguous": require_contiguous,
             },

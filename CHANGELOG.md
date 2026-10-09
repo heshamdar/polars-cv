@@ -58,8 +58,41 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     limit) is a row error that suggests cropping.
   - New `targeted:codec_tiff_*` benchmark cases.
 
+- **`source(level=k)` decodes level `k` of a pyramidal TIFF.** Whole-slide
+  images store reduced copies of the full-resolution image, and this picks
+  one.
+  - Level 0 is the image itself and is the default.
+  - `level` may be an expression, so each row can read its own level. A null
+    level follows `on_null_param`.
+  - A level the file lacks, or any level above 0 of a non-pyramidal image, is
+    the row's decode error.
+  - A crop after the source names pixels of that level and decodes only its
+    window there.
+  - `level` and `decode_max_size` both pick a resolution, so a source taking
+    both is refused.
+  - What counts as a level: IFD 0, then each later image that is tiled or
+    flagged reduced-resolution, smaller in both axes, and of level 0's
+    aspect. An SVS's thumbnail, label and macro images are therefore not
+    levels.
+  - SubIFD pyramids (OME-TIFF) are not followed.
+  - `tiff_region::pyramid_levels` is the one definition of a level.
+  - The source formats gained `Format::check`, a required cross-field rule
+    every format family states.
+- **`.cv.slide_info()` reads a slide's pyramid and scale from its header.**
+  It returns `Struct{levels: List(Struct{level, width, height, downsample,
+  tile_width, tile_height}), mpp_x, mpp_y}`.
+  - The levels are exactly those `source(level=)` decodes.
+  - Microns per pixel come from an Aperio description's `MPP`, or from a
+    resolution in pixels per centimetre.
+  - Any other image is one untiled level.
+  - It takes bytes or paths, like `.cv.width()`.
+
 ### Fixed
 
+- **`.cv.width()`/`height()`/`channels()`/`image_dtype()`/`image_info()`
+  read TIFF headers through the TIFF decoder's own parser.** JPEG-compressed
+  and BigTIFF files, which the `image` crate's header reader could not read,
+  reported null and now report their size.
 - **JPEG-compressed TIFFs decode, in correct colour.** The `tiff` crate
   passed a JPEG tile's components through unconverted.
   - YCbCr tiles (what libtiff writes) were refused ("Unsupported TIFF color

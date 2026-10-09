@@ -34,7 +34,7 @@ use view_buffer::{Op, PlannedDType, ViewBuffer, ViewDto, ViewExpr};
 
 use crate::formats::source::Source;
 use crate::ops::graph::Role;
-use crate::ops::{NodeRef, TypedOp};
+use crate::ops::{NodeRef, Param, ParamExt, TypedOp};
 use crate::params::ParamCtx;
 use view_buffer::geometry::ops::RasterSize;
 
@@ -736,6 +736,19 @@ impl CompiledGraph {
                         Some(GraphStep::Buffer(ViewDto::View(op))) => Some(op),
                         _ => None,
                     };
+                    // The row's pyramid level: a per-row value is read like
+                    // an op's, so a null one follows `on_null_param`.
+                    let level = match np.source.level() {
+                        None | Some(Param::Lit(0)) => 0,
+                        Some(param) => {
+                            ctx.clear_null();
+                            match param.resolve(row_idx, ctx) {
+                                Ok(level) => level,
+                                Err(_) if ctx.took_null() => continue 'nodes,
+                                Err(e) => return Err(format!("source level: {e}")),
+                            }
+                        }
+                    };
                     // An `"auto"` source reads as the concrete source it was
                     // routed to once per batch (`route_auto_sources`).
                     let decode_result = match state.routed_sources[idx].as_ref() {
@@ -754,6 +767,7 @@ impl CompiledGraph {
                                 fetcher: state.fetchers[idx].as_ref(),
                             },
                             crop,
+                            level,
                         )
                     });
                     match decode_result {

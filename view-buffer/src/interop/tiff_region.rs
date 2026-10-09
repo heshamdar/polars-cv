@@ -570,17 +570,179 @@ pub fn is_tiff(bytes: &[u8]) -> bool {
         )
 }
 
-/// The first image of an in-memory TIFF, decoded over `window` (`None`: the
-/// whole image) — or `Ok(None)` when its layout is one this module leaves to
-/// the `tiff` crate.
+/// One level of a TIFF pyramid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LevelInfo {
+    /// The image's position in the file's IFD chain.
+    pub ifd: usize,
+    pub width: usize,
+    pub height: usize,
+    /// `(width, height)` of its tiles; `None` for strips.
+    pub tile: Option<(usize, usize)>,
+}
+
+/// The most IFDs a level scan walks: far beyond any pyramid, and a bound on
+/// a malformed chain.
+const MAX_IFDS: usize = 1024;
+
+/// The pyramid levels of a TIFF: IFD 0, then each later image that is a
+/// reduced copy of the level before it — tiled or flagged reduced-resolution
+/// (NewSubfileType bit 0), smaller in both axes, and of level 0's aspect to
+/// within a pixel of rounding. The other images a slide carries (an SVS's
+/// strip thumbnail, its label and macro photos) fail one of these and are
+/// skipped. A SubIFD pyramid (OME-TIFF) is not followed: its file has one
+/// level here.
+///
+/// The one definition of what a level is: `source(level=)` and
+/// `.cv.slide_info()` both read it.
+pub fn pyramid_levels<R: Read + Seek>(d: &mut Decoder<R>) -> Result<Vec<LevelInfo>, String> {
+    let mut images = Vec::new();
+    d.seek_to_image(0).map_err(|e| format!("TIFF IFD 0: {e}"))?;
+    for ifd in 0..MAX_IFDS {
+        let (width, height) = d
+            .dimensions()
+            .map_err(|e| format!("TIFF IFD {ifd} dimensions: {e}"))?;
+        let tile = match tag_u64(d, Tag::TileWidth)? {
+            Some(tw) => Some((
+                tw as usize,
+                tag_u64(d, Tag::TileLength)?.unwrap_or(0) as usize,
+            )),
+            None => None,
+        };
+        let reduced = tag_u64(d, Tag::NewSubfileType)?.is_some_and(|t| t & 1 == 1);
+        images.push((
+            LevelInfo {
+                ifd,
+                width: width as usize,
+                height: height as usize,
+                tile,
+            },
+            reduced,
+        ));
+        if !d.more_images() {
+            break;
+        }
+        d.next_image()
+            .map_err(|e| format!("TIFF IFD {}: {e}", ifd + 1))?;
+    }
+    let mut images = images.into_iter();
+    let Some((base, _)) = images.next() else {
+        return Ok(Vec::new());
+    };
+    let mut levels = vec![base];
+    for (image, reduced) in images {
+        let (first, last) = (&levels[0], levels.last().expect("level 0"));
+        let smaller = image.width < last.width && image.height < last.height;
+        let expected_height = first.height as f64 * image.width as f64 / first.width as f64;
+        let same_aspect =
+            (expected_height - image.height as f64).abs() <= 1.0 + 0.01 * image.height as f64;
+        if (image.tile.is_some() || reduced) && smaller && same_aspect {
+            levels.push(image);
+        }
+    }
+    Ok(levels)
+}
+
+/// A slide's header facts: its pyramid and its scale.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SlideInfo {
+    /// [`pyramid_levels`], level 0 first.
+    pub levels: Vec<LevelInfo>,
+    /// Microns per pixel of level 0, `(x, y)`, when the file records it.
+    pub mpp: Option<(f64, f64)>,
+}
+
+/// The pyramid and scale of a TIFF, read from its IFDs alone.
+pub fn slide_info<R: Read + Seek>(reader: R) -> Result<SlideInfo, String> {
+    let mut d = open(reader)?;
+    let mpp = microns_per_pixel(&mut d)?;
+    let levels = pyramid_levels(&mut d)?;
+    Ok(SlideInfo { levels, mpp })
+}
+
+/// Level 0's microns per pixel: an Aperio ImageDescription's `MPP = m`, else
+/// a resolution in pixels per centimetre (ResolutionUnit 3). A resolution
+/// per inch is not used: writers default it to 72 dpi whatever the scale.
+fn microns_per_pixel<R: Read + Seek>(d: &mut Decoder<R>) -> Result<Option<(f64, f64)>, String> {
+    let description = d
+        .find_tag(Tag::ImageDescription)
+        .map_err(|e| format!("TIFF tag ImageDescription: {e}"))?
+        .and_then(|v| v.into_string().ok());
+    if let Some(text) = description.filter(|t| t.starts_with("Aperio")) {
+        let mpp = text.split('|').find_map(|field| {
+            let (key, value) = field.split_once('=')?;
+            (key.trim() == "MPP").then(|| value.trim().parse::<f64>().ok())?
+        });
+        if let Some(m) = mpp.filter(|m| *m > 0.0) {
+            return Ok(Some((m, m)));
+        }
+    }
+    if tag_u64(d, Tag::ResolutionUnit)? != Some(3) {
+        return Ok(None);
+    }
+    let mut rational = |tag: Tag| -> Result<Option<f64>, String> {
+        Ok(
+            match d
+                .find_tag(tag)
+                .map_err(|e| format!("TIFF tag {tag:?}: {e}"))?
+            {
+                Some(tiff::decoder::ifd::Value::Rational(n, den)) if den != 0 => {
+                    Some(f64::from(n) / f64::from(den))
+                }
+                Some(tiff::decoder::ifd::Value::RationalBig(n, den)) if den != 0 => {
+                    Some(n as f64 / den as f64)
+                }
+                _ => None,
+            },
+        )
+    };
+    let (x, y) = (rational(Tag::XResolution)?, rational(Tag::YResolution)?);
+    Ok(match (x, y) {
+        (Some(x), Some(y)) if x > 0.0 && y > 0.0 => Some((1e4 / x, 1e4 / y)),
+        _ => None,
+    })
+}
+
+/// The decoder positioned at pyramid level `level`.
+fn seek_level<R: Read + Seek>(d: &mut Decoder<R>, level: u32) -> Result<usize, String> {
+    if level == 0 {
+        d.seek_to_image(0).map_err(|e| format!("TIFF IFD 0: {e}"))?;
+        return Ok(0);
+    }
+    let levels = pyramid_levels(d)?;
+    let Some(info) = levels.get(level as usize) else {
+        let n = levels.len();
+        return Err(format!(
+            "level {level} does not exist: this TIFF has {n} pyramid level{} (0..={})",
+            if n == 1 { "" } else { "s" },
+            n.saturating_sub(1)
+        ));
+    };
+    d.seek_to_image(info.ifd)
+        .map_err(|e| format!("TIFF IFD {}: {e}", info.ifd))?;
+    Ok(info.ifd)
+}
+
+/// What decoding a TIFF image gave.
+#[derive(Debug)]
+pub enum TiffDecode {
+    /// The image (or window), decoded by this module.
+    Pixels(ViewBuffer),
+    /// A layout this module leaves to the `tiff` crate, at this IFD.
+    Unsupported { ifd: usize },
+}
+
+/// Pyramid level `level` of an in-memory TIFF, decoded over `window`
+/// (`None`: the whole image).
 ///
 /// `window` must lie inside the image (the caller validates it against
 /// [`image_shape`]).
-pub fn decode(bytes: &[u8], window: Option<Window>) -> Result<Option<ViewBuffer>, String> {
+pub fn decode(bytes: &[u8], window: Option<Window>, level: u32) -> Result<TiffDecode, String> {
     let mut d = open(Cursor::new(bytes))?;
     let big_endian = bytes.starts_with(b"MM");
+    let ifd = seek_level(&mut d, level)?;
     let Some(layout) = Layout::read(&mut d, big_endian)? else {
-        return Ok(None);
+        return Ok(TiffDecode::Unsupported { ifd });
     };
     let window = window.unwrap_or(Window {
         top: 0,
@@ -596,13 +758,15 @@ pub fn decode(bytes: &[u8], window: Option<Window>) -> Result<Option<ViewBuffer>
             .map(<[u8]>::to_vec)
             .ok_or_else(|| format!("TIFF chunk {index} lies past the end of the file"))
     })?;
-    Ok(Some(buffer))
+    Ok(TiffDecode::Pixels(buffer))
 }
 
-/// The `[H, W, C]` shape and element type a decode of the first image of an
-/// in-memory TIFF produces, or `Ok(None)` when this module does not decode it.
-pub fn image_shape(bytes: &[u8]) -> Result<Option<([usize; 3], DType)>, String> {
+/// The `[H, W, C]` shape and element type a decode of pyramid level `level`
+/// of an in-memory TIFF produces, or `Ok(None)` when this module does not
+/// decode it.
+pub fn image_shape(bytes: &[u8], level: u32) -> Result<Option<([usize; 3], DType)>, String> {
     let mut d = open(Cursor::new(bytes))?;
+    seek_level(&mut d, level)?;
     Ok(Layout::read(&mut d, bytes.starts_with(b"MM"))?
         .map(|l| ([l.height, l.width, l.channels()], l.dtype())))
 }

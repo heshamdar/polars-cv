@@ -3253,6 +3253,11 @@
     "None"
    ],
    [
+    "level",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
     "on_error",
     "KEYWORD_ONLY",
     "None"

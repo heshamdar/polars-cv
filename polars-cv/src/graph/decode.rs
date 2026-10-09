@@ -43,7 +43,9 @@ pub(crate) struct DecodedRow {
 /// `crop` is the node's leading crop when the `roi_decode` pass may apply
 /// it: an encoded-image source then decodes only its window
 /// (`ImageAdapter::decode_cropped`) and says so in `crop_applied`. Every
-/// other source ignores it, and so does a window outside the image.
+/// other source ignores it, and so does a window outside the image. `level`
+/// is the row's resolved pyramid level (`Source::level`), which only an
+/// encoded-image source has.
 pub(crate) fn decode_source_row(
     node_id: &str,
     source: &Source,
@@ -51,6 +53,7 @@ pub(crate) fn decode_source_row(
     row: usize,
     fetch: RowFetch<'_>,
     crop: Option<&ViewOp>,
+    level: u32,
 ) -> Result<DecodedRow, String> {
     let whole = |output: Option<NodeOutput>| DecodedRow {
         output,
@@ -103,7 +106,7 @@ pub(crate) fn decode_source_row(
                 return Ok(whole(None));
             };
             // Stage 2: the contents decode like image bytes.
-            decode_image_bytes(&bytes, source, crop)
+            decode_image_bytes(&bytes, source, crop, level)
                 .map(image)
                 .map_err(|e| format!("Decode error for file '{path}': {e}"))
         }
@@ -135,7 +138,7 @@ pub(crate) fn decode_source_row(
             }
         }
         Source::ImageBytes { .. } => match binary()?.get(row) {
-            Some(bytes) => decode_image_bytes(bytes, source, crop)
+            Some(bytes) => decode_image_bytes(bytes, source, crop, level)
                 .map(image)
                 .map_err(|e| format!("Decode error: {e}")),
             None => Ok(whole(None)),

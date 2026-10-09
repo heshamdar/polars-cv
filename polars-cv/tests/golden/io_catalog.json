@@ -1,5 +1,5 @@
 {
-  "source_doc": "Define the input source format.\n\nThe default ``\"auto\"`` infers the decode path from the column's Polars\ndtype at runtime. Pass an explicit format to override the inference (or\nwhen the column dtype cannot be routed, such as a plain numeric column).\n\nImage sources (``\"image_bytes\"`` and ``\"file_path\"``) auto-detect the\nencoding and preserve its dtype: PNG/JPEG decode to u8, 16-bit PNG to u16,\nand TIFF may produce u8, u16, f32 or f64. Decoded images are always 3D\n``[H, W, C]``. Until then the dtype is ``\"auto\"``: a ``list``/``array``\nsink needs it known at planning time, from ``dtype=`` here, a ``cast()``,\nor an operation that fixes it.\n\nA ``\"contour\"`` source decodes to the contour domain; rasterize it with\n:meth:`rasterize`.\n\nEach keyword applies to some formats and not others, and defaults to\n``None`` (the format's own default). One that does not apply to the chosen\nformat is **rejected**, naming the formats it applies to.\n\n``decode_max_size`` asserts the pipeline needs at most this many pixels on\nthe decoded long side, so JPEG decoding uses IDCT scaling (1/8, 1/4 or\n1/2) to skip work. The long side never drops below\n``min(decode_max_size, original)``, so a downstream resize to that size\nnever upscales; other encodings decode at full size. A scaled decode\nfollowed by a resize is not bit-identical to a full decode and the same\nresize, hence the explicit opt-in.\n\n``allowed_roots`` restricts which locations a path column may read from.\nAn entry that parses as a remote URI (``\"s3://bucket/public/\"``) is\nmatched as a URI prefix, anything else (``\"/srv/images\"``) as a local\ndirectory. Local paths are canonicalized first, so ``..`` and symlinks\ncannot escape, and matching is component-wise (``\"/srv/images\"`` does not\nadmit ``\"/srv/images-private\"``). A path matching no entry is refused, and\nthe refusal is subject to ``on_error``.\n\nExample:\n    ```python\n    >>> # Decode PNG/JPEG bytes from a column\n    >>> pipe = Pipeline().source(\"image_bytes\").resize(height=224, width=224)\n    >>>\n    >>> # Read from file paths or URLs, sandboxed\n    >>> pipe = Pipeline().source(\"file_path\", allowed_roots=[\"/srv/images\"])\n    >>>\n    >>> # Assert dtype for a list sink (cast if needed at runtime)\n    >>> pipe = Pipeline().source(\"image_bytes\", dtype=\"f32\")\n    >>>\n    >>> # Gracefully handle corrupt images as null\n    >>> pipe = Pipeline().source(\"image_bytes\", on_error=\"null\")\n    >>>\n    >>> # Rasterize a contour column to a mask\n    >>> pipe = Pipeline().source(\"contour\").rasterize(width=64, height=64)\n    ```",
+  "source_doc": "Define the input source format.\n\nThe default ``\"auto\"`` infers the decode path from the column's Polars\ndtype at runtime. Pass an explicit format to override the inference (or\nwhen the column dtype cannot be routed, such as a plain numeric column).\n\nImage sources (``\"image_bytes\"`` and ``\"file_path\"``) auto-detect the\nencoding and preserve its dtype: PNG/JPEG decode to u8, 16-bit PNG to u16,\nand TIFF may produce u8, u16, f32 or f64. Decoded images are always 3D\n``[H, W, C]``. Until then the dtype is ``\"auto\"``: a ``list``/``array``\nsink needs it known at planning time, from ``dtype=`` here, a ``cast()``,\nor an operation that fixes it.\n\nA ``\"contour\"`` source decodes to the contour domain; rasterize it with\n:meth:`rasterize`.\n\nEach keyword applies to some formats and not others, and defaults to\n``None`` (the format's own default). One that does not apply to the chosen\nformat is **rejected**, naming the formats it applies to.\n\n``decode_max_size`` asserts the pipeline needs at most this many pixels on\nthe decoded long side, so JPEG decoding uses IDCT scaling (1/8, 1/4 or\n1/2) to skip work. The long side never drops below\n``min(decode_max_size, original)``, so a downstream resize to that size\nnever upscales; other encodings decode at full size. A scaled decode\nfollowed by a resize is not bit-identical to a full decode and the same\nresize, hence the explicit opt-in.\n\n``level`` picks a level of a pyramidal TIFF (a whole-slide image): 0, the\ndefault, is the full-resolution image; each further level is a reduced copy\nthe file stores. It may be a column, so each row can read its own level; a\nlevel the file does not have is the row's decode error, and so is any level\nabove 0 of an image that is not a pyramid. A crop after the source names\npixels of that level. ``level`` and ``decode_max_size`` both choose the\nresolution to decode, so a source takes one of them.\n\n``allowed_roots`` restricts which locations a path column may read from.\nAn entry that parses as a remote URI (``\"s3://bucket/public/\"``) is\nmatched as a URI prefix, anything else (``\"/srv/images\"``) as a local\ndirectory. Local paths are canonicalized first, so ``..`` and symlinks\ncannot escape, and matching is component-wise (``\"/srv/images\"`` does not\nadmit ``\"/srv/images-private\"``). A path matching no entry is refused, and\nthe refusal is subject to ``on_error``.\n\nExample:\n    ```python\n    >>> # Decode PNG/JPEG bytes from a column\n    >>> pipe = Pipeline().source(\"image_bytes\").resize(height=224, width=224)\n    >>>\n    >>> # Read from file paths or URLs, sandboxed\n    >>> pipe = Pipeline().source(\"file_path\", allowed_roots=[\"/srv/images\"])\n    >>>\n    >>> # Assert dtype for a list sink (cast if needed at runtime)\n    >>> pipe = Pipeline().source(\"image_bytes\", dtype=\"f32\")\n    >>>\n    >>> # Gracefully handle corrupt images as null\n    >>> pipe = Pipeline().source(\"image_bytes\", on_error=\"null\")\n    >>>\n    >>> # Rasterize a contour column to a mask\n    >>> pipe = Pipeline().source(\"contour\").rasterize(width=64, height=64)\n    ```",
   "default_source": "auto",
   "sources": [
     {
@@ -133,6 +133,16 @@
               "per_row": false,
               "py": "int"
             }
+          }
+        },
+        {
+          "name": "level",
+          "doc": "Pyramid level of a pyramidal TIFF to decode; 0 is the image itself\n(see above). May vary per row.",
+          "default": 0,
+          "type": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "int"
           }
         },
         {
@@ -287,6 +297,16 @@
           }
         },
         {
+          "name": "level",
+          "doc": "Pyramid level of a pyramidal TIFF to decode; 0 is the image itself\n(see above). May vary per row.",
+          "default": 0,
+          "type": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "int"
+          }
+        },
+        {
           "name": "on_error",
           "doc": "\"raise\" or \"null\": what a row that cannot be read or decoded does.",
           "default": "raise",
@@ -342,6 +362,16 @@
               "per_row": false,
               "py": "int"
             }
+          }
+        },
+        {
+          "name": "level",
+          "doc": "Pyramid level of a pyramidal TIFF to decode; 0 is the image itself\n(see above). May vary per row.",
+          "default": 0,
+          "type": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "int"
           }
         },
         {

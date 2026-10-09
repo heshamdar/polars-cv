@@ -283,3 +283,42 @@ class CvNamespace(_PluginNamespace):
             "image_info",
             kwargs=self._metadata_kwargs(cloud_options, on_error, allowed_roots),
         )
+
+    def slide_info(
+        self,
+        *,
+        cloud_options: "CloudOptions | dict[str, Any] | None" = None,
+        on_error: str | None = None,
+        allowed_roots: "Sequence[str] | None" = None,
+    ) -> pl.Expr:
+        """
+        A slide's pyramid levels and scale, from its header alone.
+
+        Takes bytes or paths, as :meth:`width` does (see it for the options).
+        A pyramidal TIFF (a whole-slide image) lists every level
+        ``source(level=)`` decodes: IFD 0 and each later reduced copy of it,
+        skipping the thumbnail, label and macro images a slide also carries.
+        Any other image is one untiled level.
+
+        Returns:
+            ``Struct{levels: List(Struct{level, width, height: UInt32,
+            downsample: Float64, tile_width, tile_height: UInt32}),
+            mpp_x: Float64, mpp_y: Float64}``. ``downsample`` is level 0's
+            size over the level's (the mean of both axes); the tile size is
+            null for an untiled level. ``mpp_x``/``mpp_y`` are level 0's
+            microns per pixel, from an Aperio description's ``MPP`` or a
+            resolution in pixels per centimetre, and null when the file
+            records neither. Null for a null input or an unrecognised format.
+
+        Example:
+            ```python
+            >>> info = pl.col("path").cv.slide_info()
+            >>> df.with_columns(info=info).select(
+            ...     pl.col("info").struct.field("levels").list.len()
+            ... )
+            ```
+        """
+        return self._plugin(
+            "slide_info",
+            kwargs=self._metadata_kwargs(cloud_options, on_error, allowed_roots),
+        )

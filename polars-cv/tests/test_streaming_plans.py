@@ -210,6 +210,7 @@ PLANS: dict[str, Callable[[], pl.LazyFrame]] = {
     ),
     "cv.read_bytes": lambda: _PATHS.select(pl.col("p").cv.read_bytes()),
     "cv.width": lambda: _PATHS.select(pl.col("p").cv.width()),
+    "cv.slide_info": lambda: _PATHS.select(pl.col("b").cv.slide_info()),
     "patch_grid": lambda: pl.LazyFrame({"h": [8, 9], "w": [9, 8]}).select(
         cv.patch_grid("h", "w", size=4)
     ),

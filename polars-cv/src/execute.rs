@@ -57,10 +57,14 @@ fn decode_jpeg_scaled(bytes: &[u8], max_size: u32) -> Option<ViewBuffer> {
 /// its window is decoded when it lies inside the image; the `bool` says
 /// whether the buffer is that window. A declared dtype then casts the window:
 /// a cast is per element, so this is the cast of the full decode, cropped.
+///
+/// `level` is the row's pyramid level (`source(level=)`, resolved by the
+/// executor): 0 is the image; above 0 only a pyramidal TIFF has one.
 pub fn decode_image_bytes(
     bytes: &[u8],
     source: &Source,
     crop: Option<&ViewOp>,
+    level: u32,
 ) -> PolarsResult<(ViewBuffer, bool)> {
     let failed = |e| polars_err!(ComputeError: "Failed to decode image: {:?}", e);
     // An explicit decode-scale assertion lets JPEG decode skip work via IDCT
@@ -72,10 +76,13 @@ pub fn decode_image_bytes(
     let (buf, crop_applied) = match (scaled, crop) {
         (Some(buf), _) => (buf, false),
         (None, Some(crop)) => {
-            let decoded = ImageAdapter::decode_cropped(bytes, crop).map_err(failed)?;
+            let decoded = ImageAdapter::decode_cropped(bytes, crop, level).map_err(failed)?;
             (decoded.buffer, decoded.applied)
         }
-        (None, None) => (ImageAdapter::decode(bytes).map_err(failed)?, false),
+        (None, None) => (
+            ImageAdapter::decode_level(bytes, level).map_err(failed)?,
+            false,
+        ),
     };
     // If source spec declares an expected dtype, cast to it.
     // This is a no-op when the decoded dtype already matches.

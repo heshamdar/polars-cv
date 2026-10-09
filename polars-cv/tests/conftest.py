@@ -271,6 +271,8 @@ def write_tiled_tiff(
     jpeg_photometric: str = "ycbcr",
     bigtiff: bool = False,
     description: str | None = None,
+    svs_extras: bool = False,
+    resolution_cm: float | None = None,
     seed: int = 0,
 ) -> TiffFixture:
     """Write a deterministic tiled (or strip) TIFF, optionally a pyramid.
@@ -297,6 +299,12 @@ def write_tiled_tiff(
             Adobe APP14 transform 0, Photometric=RGB).
         bigtiff: Write a BigTIFF.
         description: ImageDescription of level 0 (e.g. an Aperio header).
+        svs_extras: Interleave the images an Aperio SVS carries besides its
+            levels: a strip thumbnail right after level 0 (same aspect, not
+            tiled, not flagged reduced), and a label and a macro image at the
+            end (strips, another aspect). None of them is a pyramid level.
+        resolution_cm: Pixels per centimetre, written as level 0's X/Y
+            resolution (ResolutionUnit 3).
         seed: Noise seed.
 
     Returns:
@@ -330,22 +338,46 @@ def write_tiled_tiff(
         elif jpeg_photometric != "ycbcr":
             raise ValueError(f"unknown jpeg_photometric {jpeg_photometric!r}")
 
+    def extra(data: np.ndarray, subfiletype: int) -> None:
+        plain = data[..., 0] if channels == 1 else data
+        tw.write(
+            np.ascontiguousarray(plain),
+            subfiletype=subfiletype,
+            photometric=photometric,
+            compression=None,
+            metadata=None,
+        )
+
     with tifffile.TiffWriter(path, bigtiff=bigtiff) as tw:
         for k, level in enumerate(written):
             data = level[..., 0] if channels == 1 else level
+            extras: dict[str, object] = {}
+            if k == 0 and resolution_cm is not None:
+                extras = {
+                    "resolution": (resolution_cm, resolution_cm),
+                    "resolutionunit": "CENTIMETER",
+                }
             tw.write(
                 data,
                 subfiletype=1 if k else 0,
                 description=description if k == 0 else None,
                 metadata=None,
                 **kwargs,
+                **extras,
             )
+            if k == 0 and svs_extras:
+                extra(base[::8, ::8], 0)
+        if svs_extras:
+            extra(base[: max(height // 4, 1), : max(height // 4, 1)], 1)
+            extra(base[: max(height // 3, 1), : max(width // 6, 1)], 9)
 
     if compression == "jpeg":
+        # Level k's page: the thumbnail, when written, follows level 0.
+        pages = [k + (1 if svs_extras and k else 0) for k in range(levels)]
         with tifffile.TiffFile(path) as tif:
             truth = tuple(
-                p.asarray().reshape(lv.shape)
-                for p, lv in zip(tif.pages, written, strict=True)
+                tif.pages[i].asarray().reshape(lv.shape)
+                for i, lv in zip(pages, written, strict=True)
             )
         return TiffFixture(path=path, levels=truth, lossless=False)
     return TiffFixture(

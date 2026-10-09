@@ -56,6 +56,10 @@ CONTOURS = "contours"
 #: which is what makes ``label_reduce(region_mode=)`` observable.
 DIAMOND = "diamond"
 
+#: A three-level pyramidal TIFF (16, 8 and 4 pixels square), for
+#: ``source(level=)``: each level decodes to a different size.
+PYRAMID = "pyramid"
+
 
 # --- Base pipelines --------------------------------------------------------
 
@@ -810,6 +814,14 @@ CASES: list[ExprCase] = [
             contours=pl.col(DIAMOND), reduction="mean", region_mode=v
         ),
         ("interior", "boundary", "bbox"),
+    ),
+    # Each level of the pyramid decodes to its own size.
+    ExprCase(
+        "source",
+        "level",
+        lambda v: Pipeline().source("image_bytes", dtype="u8", level=v),
+        (0, 1, 2),
+        column=PYRAMID,
     ),
 ]
 

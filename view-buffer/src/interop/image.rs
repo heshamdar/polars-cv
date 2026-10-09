@@ -355,13 +355,27 @@ pub struct CroppedDecode {
 impl ImageAdapter {
     /// Decodes raw image bytes (PNG, JPEG, etc.) into a ViewBuffer [H, W, C].
     pub fn decode(encoded_bytes: &[u8]) -> Result<ViewBuffer, image::ImageError> {
+        Self::decode_level(encoded_bytes, 0)
+    }
+
+    /// Decodes pyramid level `level` of an image: level 0 is the image
+    /// itself; a pyramidal TIFF has more ([`tiff_region::pyramid_levels`]).
+    /// Any other image asked for a level above 0 is an error.
+    ///
+    /// [`tiff_region::pyramid_levels`]: crate::interop::tiff_region::pyramid_levels
+    pub fn decode_level(encoded_bytes: &[u8], level: u32) -> Result<ViewBuffer, image::ImageError> {
+        use crate::interop::tiff_region::{self, TiffDecode};
         // TIFF and BigTIFF, by magic bytes: decoded chunk by chunk where the
         // layout allows (`tiff_region`), else whole by the `tiff` crate.
-        if crate::interop::tiff_region::is_tiff(encoded_bytes) {
-            match crate::interop::tiff_region::decode(encoded_bytes, None).map_err(tiff_error)? {
-                Some(buf) => Ok(buf),
-                None => Self::decode_tiff(encoded_bytes),
+        if tiff_region::is_tiff(encoded_bytes) {
+            match tiff_region::decode(encoded_bytes, None, level).map_err(tiff_error)? {
+                TiffDecode::Pixels(buf) => Ok(buf),
+                TiffDecode::Unsupported { ifd } => Self::decode_tiff_ifd(encoded_bytes, ifd),
             }
+        } else if level != 0 {
+            Err(tiff_error(format!(
+                "level {level} does not exist: only a pyramidal TIFF has levels above 0"
+            )))
         } else {
             // Use image crate for other formats
             let img = image::load_from_memory(encoded_bytes)?;
@@ -382,6 +396,7 @@ impl ImageAdapter {
     pub fn decode_cropped(
         encoded_bytes: &[u8],
         crop: &crate::ops::ViewOp,
+        level: u32,
     ) -> Result<CroppedDecode, image::ImageError> {
         assert!(
             crate::ops::Op::is_spatial_window(crop),
@@ -389,11 +404,11 @@ impl ImageAdapter {
         );
         // A TIFF the chunk decoder carries reads only the window's chunks.
         if crate::interop::tiff_region::is_tiff(encoded_bytes) {
-            if let Some(decoded) = Self::decode_tiff_window(encoded_bytes, crop)? {
+            if let Some(decoded) = Self::decode_tiff_window(encoded_bytes, crop, level)? {
                 return Ok(decoded);
             }
         }
-        let buffer = Self::decode(encoded_bytes)?;
+        let buffer = Self::decode_level(encoded_bytes, level)?;
         let in_bounds =
             crate::ops::validation::validate_concrete(crop, &[buffer.shape()], &[buffer.dtype()])
                 .is_ok();
@@ -415,9 +430,11 @@ impl ImageAdapter {
     fn decode_tiff_window(
         encoded_bytes: &[u8],
         crop: &crate::ops::ViewOp,
+        level: u32,
     ) -> Result<Option<CroppedDecode>, image::ImageError> {
-        use crate::interop::tiff_region;
-        let Some((shape, dtype)) = tiff_region::image_shape(encoded_bytes).map_err(tiff_error)?
+        use crate::interop::tiff_region::{self, TiffDecode};
+        let Some((shape, dtype)) =
+            tiff_region::image_shape(encoded_bytes, level).map_err(tiff_error)?
         else {
             return Ok(None);
         };
@@ -431,9 +448,11 @@ impl ImageAdapter {
             bottom: end[0].min(shape[0]),
             right: end[1].min(shape[1]),
         };
-        let buffer = tiff_region::decode(encoded_bytes, Some(window))
-            .map_err(tiff_error)?
-            .expect("image_shape accepted this layout");
+        let TiffDecode::Pixels(buffer) =
+            tiff_region::decode(encoded_bytes, Some(window), level).map_err(tiff_error)?
+        else {
+            unreachable!("image_shape accepted this layout")
+        };
         // What the window leaves of the channel axis, cut as the crop would.
         let channels = crate::ops::ViewOp::Slice {
             start: vec![0, 0, start[2]],
@@ -730,6 +749,12 @@ impl ImageAdapter {
     /// making it suitable for reading medical imaging and scientific data.
     /// Uses the tiff crate directly for native floating-point support.
     pub fn decode_tiff(encoded_bytes: &[u8]) -> Result<ViewBuffer, image::ImageError> {
+        Self::decode_tiff_ifd(encoded_bytes, 0)
+    }
+
+    /// [`Self::decode_tiff`] of the image at position `ifd` of the file's
+    /// IFD chain.
+    fn decode_tiff_ifd(encoded_bytes: &[u8], ifd: usize) -> Result<ViewBuffer, image::ImageError> {
         use std::io::Cursor;
         use tiff::decoder::{Decoder, DecodingResult};
 
@@ -740,6 +765,9 @@ impl ImageAdapter {
                 format!("TIFF decoder creation failed: {e}"),
             ))
         })?;
+        decoder
+            .seek_to_image(ifd)
+            .map_err(|e| tiff_error(format!("TIFF IFD {ifd}: {e}")))?;
 
         // Get image dimensions and format info
         let (width, height) = decoder.dimensions().map_err(|e| {
@@ -1421,7 +1449,7 @@ mod tests {
         for (name, bytes) in &images {
             let full = ImageAdapter::decode(bytes).unwrap();
             for window in &windows {
-                let got = ImageAdapter::decode_cropped(bytes, window).unwrap();
+                let got = ImageAdapter::decode_cropped(bytes, window, 0).unwrap();
                 assert!(
                     got.applied,
                     "{name} {window:?}: an in-bounds window applies"
@@ -1460,7 +1488,7 @@ mod tests {
                 width: None,
             },
         ] {
-            let got = ImageAdapter::decode_cropped(&png, &window).unwrap();
+            let got = ImageAdapter::decode_cropped(&png, &window, 0).unwrap();
             assert!(!got.applied, "{window:?}");
             assert_eq!(got.buffer.shape(), &[6, 5, 3], "{window:?}");
         }
