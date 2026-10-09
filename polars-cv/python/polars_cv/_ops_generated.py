@@ -140,6 +140,18 @@ class FilterType(str, Enum):
     LANCZOS3 = "lanczos3"
 
 
+class GridEdge(str, Enum):
+    """What a patch grid does with the remainder of an axis a whole patch no longer fits.
+
+    - DROP: leave it uncovered; only whole patches at multiples of the stride (default).
+    - SHIFT: add one patch aligned to the far edge, overlapping its neighbour, so
+      every pixel is covered and every patch stays whole.
+    """
+
+    DROP = "drop"
+    SHIFT = "shift"
+
+
 class HashAlgorithm(str, Enum):
     """Perceptual hash algorithm selection.
 
@@ -430,6 +442,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "subtract",
         "subtract_constant",
         "threshold",
+        "tile",
         "transpose",
         "trunc",
         "warp_affine",
@@ -478,6 +491,11 @@ PASS_CATALOG: tuple[tuple[str, str, str], ...] = (
         "engine",
         "Fuse adjacent scalar/compute ops into one kernel (f64 chains stay unfused — a mandatory precision guard, not this toggle).",
     ),
+    (
+        "roi_decode",
+        "engine",
+        "Decode only the window of a crop that directly follows an image source, instead of the whole image (the result is the crop of the full decode, byte for byte).",
+    ),
 )
 
 
@@ -493,6 +511,7 @@ class _OptFlagFields:
     view_flip_involution: bool = True
     view_transpose_merge: bool = True
     scalar_fusion: bool = True
+    roi_decode: bool = True
 
 
 #: Each typed op's field types, as the catalogue describes them.
@@ -943,6 +962,24 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "subtract": {"other": {"kind": "node"}},
     "subtract_constant": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "threshold": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "tile": {
+        "height": {"kind": "scalar", "per_row": False, "py": "int"},
+        "width": {"kind": "scalar", "per_row": False, "py": "int"},
+        "stride_height": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": True, "py": "int"},
+        },
+        "stride_width": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": True, "py": "int"},
+        },
+        "edge": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "GridEdge",
+            "variants": ["drop", "shift"],
+        },
+    },
     "transpose": {
         "axes": {
             "kind": "list",
@@ -1128,6 +1165,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     ],
     "subtract_constant": [{"input": "buffer", "output": "buffer"}],
     "threshold": [{"input": "buffer", "output": "buffer"}],
+    "tile": [{"input": "buffer", "output": "buffer"}],
     "transpose": [{"input": "buffer", "output": "buffer"}],
     "trunc": [{"input": "buffer", "output": "buffer"}],
     "warp_affine": [{"input": "buffer", "output": "buffer"}],
@@ -1158,6 +1196,7 @@ SOURCE_FIELDS: dict[str, dict[str, Any]] = {
             "f64",
         ],
     },
+    "level": {"kind": "scalar", "per_row": True, "py": "int"},
     "on_error": {
         "kind": "scalar",
         "per_row": False,
@@ -1184,6 +1223,7 @@ class _OpsMixin:
         cloud_options: CloudOptions | dict[str, Any] | None = None,
         decode_max_size: int | None = None,
         dtype: str | None = None,
+        level: IntOrExpr | None = None,
         on_error: str | None = None,
         require_contiguous: bool | None = None,
     ) -> Pipeline:
@@ -1214,6 +1254,14 @@ class _OpsMixin:
         never upscales; other encodings decode at full size. A scaled decode
         followed by a resize is not bit-identical to a full decode and the same
         resize, hence the explicit opt-in.
+
+        ``level`` picks a level of a pyramidal TIFF (a whole-slide image): 0, the
+        default, is the full-resolution image; each further level is a reduced copy
+        the file stores. It may be a column, so each row can read its own level; a
+        level the file does not have is the row's decode error, and so is any level
+        above 0 of an image that is not a pyramid. A crop after the source names
+        pixels of that level. ``level`` and ``decode_max_size`` both choose the
+        resolution to decode, so a source takes one of them.
 
         ``allowed_roots`` restricts which locations a path column may read from.
         An entry that parses as a remote URI (``"s3://bucket/public/"``) is
@@ -1249,6 +1297,9 @@ class _OpsMixin:
                 error. ``file_path``, ``image_bytes``: Asserted element dtype: a decoded
                 image with another dtype is cast. ``raw``: The element dtype: raw bytes
                 carry no type metadata, so it is required.
+            level: ``auto``, ``file_path``, ``image_bytes``: Pyramid level of a
+                pyramidal TIFF to decode; 0 is the image itself (see above). May vary
+                per row.
             on_error: ``array``, ``auto``, ``blob``, ``contour``, ``image_bytes``,
                 ``list``, ``raw``: "raise" or "null": what a row that cannot be decoded
                 does. ``file_path``: "raise" or "null": what a row that cannot be read
@@ -1282,6 +1333,7 @@ class _OpsMixin:
                 "cloud_options": cloud_options,
                 "decode_max_size": decode_max_size,
                 "dtype": dtype,
+                "level": level,
                 "on_error": on_error,
                 "require_contiguous": require_contiguous,
             },
@@ -2452,6 +2504,50 @@ class _OpsMixin:
             value: Threshold value (int or float, or Polars expression).
         """
         return self._append_typed("threshold", {"value": value})
+
+    def tile(
+        self,
+        *,
+        height: int,
+        width: int,
+        stride_height: IntOrExpr | None = None,
+        stride_width: IntOrExpr | None = None,
+        edge: str | pl.Expr = "drop",
+    ) -> Pipeline:
+        """Cut the image into patches: ``[N, height, width, C]`` (``[N, height,
+        width]`` for a 2-D image), the patches in row-major grid order, each
+        whole and inside the image. The grid is the one ``polars_cv.patch_grid``
+        lists, so patch ``i`` here is that grid's cell ``i``. An image smaller
+        than a patch has none (``N`` is 0).
+
+        Domain: buffer → buffer
+
+        Args:
+            height: Patch height (structural: it is an axis of the output).
+            width: Patch width (structural: it is an axis of the output).
+            stride_height: Rows between patch origins (default: ``height``, patches that
+                touch). A smaller stride overlaps patches; a larger one leaves gaps.
+            stride_width: Columns between patch origins (default: ``width``).
+            edge: What to do with a remainder too small for a whole patch: ``"drop"``
+                leaves it uncovered, ``"shift"`` adds a patch aligned to the far edge.
+
+        Example:
+            >>> pipe = Pipeline().source("image_bytes").tile(height=224, width=224)
+            >>> # Overlapping patches covering the whole image:
+            >>> pipe = Pipeline().source("image_bytes").tile(
+            ...     height=224, width=224, stride_height=112, stride_width=112, edge="shift"
+            ... )
+        """
+        return self._append_typed(
+            "tile",
+            {
+                "height": height,
+                "width": width,
+                "stride_height": stride_height,
+                "stride_width": stride_width,
+                "edge": edge,
+            },
+        )
 
     def transpose(self, axes: Sequence[int]) -> Pipeline:
         """Transpose dimensions.

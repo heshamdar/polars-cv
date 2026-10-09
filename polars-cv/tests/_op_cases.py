@@ -78,6 +78,7 @@ OP_CASES: dict[str, tuple[str, dict] | None] = {
     "resize_scale": (BUFFER, {"scale_x": 0.5, "scale_y": 0.5}),
     "resize_to_height": (BUFFER, {"height": 50}),
     "resize_to_width": (BUFFER, {"width": 50}),
+    "tile": (BUFFER, {"height": 32, "width": 32, "edge": "shift"}),
     "rotate": (BUFFER, {"angle": 90}),
     "rotate_and_scale": (
         BUFFER,

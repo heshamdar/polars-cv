@@ -187,6 +187,16 @@ pub enum OpShape {
     /// A single-channel canvas the size of input `of`'s H and W:
     /// `[H, W, 1]`. No output when that input has fewer than two axes.
     Canvas { of: usize },
+    /// The patches of a [`PatchGrid`](crate::geometry::grid::PatchGrid) cut
+    /// from `[H, W, ...]`: `[N, h, w, ...]`, `N` the grid's cell count over
+    /// `H × W` (known when H, W, the stride and the edge rule are). No output
+    /// below rank 2, or for a grid of zero size or stride.
+    Tiles {
+        h: usize,
+        w: usize,
+        stride: (Sym<usize>, Sym<usize>),
+        edge: Sym<crate::geometry::grid::GridEdge>,
+    },
 }
 
 /// `n * t / d` rounded to the nearest integer, a tie up, and at least 1: the
@@ -376,6 +386,30 @@ impl OpShape {
                 vec![hw[0], hw[1], Dim::Known(*n)]
             }
             OpShape::InputRank => vec![Dim::Known(input.len())],
+            OpShape::Tiles { h, w, stride, edge } => {
+                let [_, _, rest @ ..] = input else {
+                    return None;
+                };
+                let grid = |sy, sx, edge| {
+                    crate::geometry::grid::PatchGrid::new([*h as u32, *w as u32], [sy, sx], edge)
+                };
+                let count = match (known_hw, stride.0.known(), stride.1.known(), edge.known()) {
+                    (Some((ih, iw)), Some(sy), Some(sx), Some(edge)) => {
+                        let grid = grid(sy as u32, sx as u32, edge).ok()?;
+                        Dim::Known(grid.cells(ih as u32, iw as u32).len())
+                    }
+                    _ => {
+                        // Whatever the stride, a zero patch size has no grid.
+                        if *h == 0 || *w == 0 {
+                            return None;
+                        }
+                        Dim::Unknown
+                    }
+                };
+                let mut out = vec![count, Dim::Known(*h), Dim::Known(*w)];
+                out.extend_from_slice(rest);
+                out
+            }
             OpShape::Canvas { of } => match inputs.get(*of) {
                 Some([h, w, ..]) => vec![*h, *w, Dim::Known(1)],
                 _ => return None,
@@ -784,6 +818,18 @@ mod symbolic_tests {
             OpShape::StackChannels(2),
             OpShape::InputRank,
             OpShape::Canvas { of: 1 },
+            OpShape::Tiles {
+                h: 2,
+                w: 3,
+                stride: (k(2), Sym::PerRow),
+                edge: Sym::Known(crate::geometry::grid::GridEdge::Shift),
+            },
+            OpShape::Tiles {
+                h: 2,
+                w: 2,
+                stride: (k(1), k(3)),
+                edge: Sym::Known(crate::geometry::grid::GridEdge::Drop),
+            },
         ];
         for shape in &samples {
             match shape {
@@ -810,7 +856,8 @@ mod symbolic_tests {
                 | OpShape::Broadcast
                 | OpShape::StackChannels(_)
                 | OpShape::InputRank
-                | OpShape::Canvas { .. } => {}
+                | OpShape::Canvas { .. }
+                | OpShape::Tiles { .. } => {}
             }
         }
         samples

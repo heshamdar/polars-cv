@@ -80,6 +80,7 @@ RULES: tuple[tuple[str, str], ...] = (
     ("view-buffer/src/geometry/**", _GEOM),
     ("view-buffer/src/interop/**", "zero_copy,targeted:sink_*,targeted:blob_*"),
     ("view-buffer/src/interop/image.rs", f"{_OPS},targeted:codec_*"),
+    ("view-buffer/src/interop/tiff_region/**", "targeted:codec_tiff_*,targeted:wsi_*"),
     ("view-buffer/src/protocol.rs", "zero_copy,targeted:blob_*"),
     # --- polars-cv, the plugin ---
     ("polars-cv/src/lib.rs", _OPS),
@@ -100,6 +101,9 @@ RULES: tuple[tuple[str, str], ...] = (
     ),
     ("polars-cv/src/formats/**", f"{_OPS},zero_copy,targeted"),
     ("polars-cv/src/execute.rs", f"{_OPS},targeted:codec_*"),
+    # Whole decodes shared by a crop-first node's rows: every crop after an
+    # encoded-image source, and the patch reads.
+    ("polars-cv/src/shared_decode.rs", f"{_OPS},targeted:codec_*,targeted:wsi_*"),
     ("polars-cv/src/output.rs", f"{_OPS},zero_copy,targeted:blob_*"),
     ("polars-cv/src/ext_types.rs", _NONE),  # tagged (`ndarray`) outputs only
     # Every call's rows, and every tensor sink's fill phase, run through the
@@ -113,11 +117,12 @@ RULES: tuple[tuple[str, str], ...] = (
     ("polars-cv/src/geom_*.rs", _GEOM),
     ("polars-cv/src/contour.rs", _GEOM),
     ("polars-cv/src/point.rs", _GEOM),
-    ("polars-cv/src/fetch.rs", "remote"),
+    ("polars-cv/src/fetch.rs", "remote,targeted:wsi_*"),
     ("polars-cv/src/cloud.rs", "remote"),
     ("polars-cv/src/cloud_auth.rs", "remote"),
     ("polars-cv/src/read_bytes.rs", "remote"),
     ("polars-cv/src/image_metadata.rs", _NONE),
+    ("polars-cv/src/patch_grid.rs", _NONE),  # a list of integers per row
     # The global allocator: every allocation any case makes (CR-60).
     ("polars-cv/src/allocator.rs", _ALL),
     ("polars-cv/src/test_alloc.rs", _NONE),  # test-only allocator
@@ -125,6 +130,7 @@ RULES: tuple[tuple[str, str], ...] = (
     ("polars-cv/python/polars_cv/*.py", _OPS),
     ("polars-cv/python/polars_cv/display.py", _NONE),
     ("polars-cv/python/polars_cv/_graph_viz.py", _NONE),
+    ("polars-cv/python/polars_cv/patches.py", _NONE),
     ("polars-cv/python/polars_cv/geometry/**", _GEOM),
     ("polars-cv/python/polars_cv/metrics/**", _NONE),  # pure polars; unbenchmarked
 )

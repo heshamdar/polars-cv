@@ -62,6 +62,11 @@ engine_passes! {
     view_transpose_merge: "Merge two adjacent transposes into one (or into the identity).",
     /// Fuse adjacent scalar/compute ops into a single kernel.
     scalar_fusion: "Fuse adjacent scalar/compute ops into one kernel (f64 chains stay unfused — a mandatory precision guard, not this toggle).",
+    /// Decode only the window of a crop that directly follows an image
+    /// source (`ImageAdapter::decode_region`). Read by the plugin's row
+    /// executor, which owns decoding; the result is the crop of the full
+    /// decode, byte for byte.
+    roi_decode: "Decode only the window of a crop that directly follows an image source, instead of the whole image (the result is the crop of the full decode, byte for byte).",
 }
 
 /// A node in the expression graph.

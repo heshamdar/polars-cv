@@ -95,6 +95,7 @@ nav:
       - Reductions: user-guide/operations/reductions.md
       - Detection Metrics: user-guide/operations/metrics.md
       - Metadata & Display: user-guide/operations/metadata.md
+      - Patches: user-guide/operations/patches.md
     - Composition:
       - Chaining: user-guide/composition/chaining.md
       - Multi-Output: user-guide/composition/multi-output.md

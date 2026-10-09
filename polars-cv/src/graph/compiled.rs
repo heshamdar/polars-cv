@@ -34,7 +34,7 @@ use view_buffer::{Op, PlannedDType, ViewBuffer, ViewDto, ViewExpr};
 
 use crate::formats::source::Source;
 use crate::ops::graph::Role;
-use crate::ops::{NodeRef, TypedOp};
+use crate::ops::{NodeRef, Param, ParamExt, TypedOp};
 use crate::params::ParamCtx;
 use view_buffer::geometry::ops::RasterSize;
 
@@ -42,10 +42,11 @@ use super::step::GraphStep;
 
 use super::decode::{
     build_series_from_spec, decode_source_row, dtype_from_polars_leaf, null_row_result_for_spec,
-    RowFetch, RowParts,
+    DecodedRow, RowFetch, RowParts,
 };
 use super::encode::{encode_node_output, execute_geometry_op};
 use super::types::{OutputSpec, OutputValue, RowErrorPolicy, RowResult, UnifiedGraph};
+use crate::execute::RowCrop;
 use crate::plan::State;
 
 /// The exact graph JSON a graph was compiled from. Stored on the compiled
@@ -74,6 +75,10 @@ pub(crate) enum OpResolver {
 /// One op of a node's chain, resolved for the current row.
 enum ResolvedStep<'a> {
     Step(Cow<'a, GraphStep>),
+    /// A leading crop the decoder already applied (the `roi_decode` pass).
+    /// Kept in place, so step positions — and the segment cache slots they
+    /// key — are the same whether or not a row's window was decoded.
+    Absorbed,
     RasterizeShapeRef {
         op: &'a view_buffer::GeometryOp<view_buffer::mode::Wire>,
         shape_node: &'a str,
@@ -93,6 +98,9 @@ struct NodePlan {
     /// The source declared `on_error: "null"`: a decode error becomes a null
     /// node output instead of failing the row.
     source_null: bool,
+    /// The node's first op is a crop its source may decode as a window
+    /// (`roi_decode`): see [`roi_decodable`].
+    roi: bool,
     /// Cloud credentials for a `file_path` source, parsed once at the edge
     /// from the source spec's string map.
     cloud_options: Option<crate::cloud::CloudOptions>,
@@ -150,6 +158,9 @@ pub struct CompiledGraph {
     /// How many times a buffer-op segment was planned (test instrumentation).
     #[cfg(test)]
     plan_builds: AtomicUsize,
+    /// Rows whose leading crop was decoded as a window (`roi_decode`).
+    #[cfg(test)]
+    roi_rows: AtomicUsize,
 }
 
 /// Per-call execution state: everything derived from the actual input series.
@@ -163,6 +174,10 @@ struct ExecState<'a> {
     /// Per-path errors surface at their row so the usual error policies
     /// apply.
     fetchers: Vec<Option<crate::fetch::Fetcher<'a>>>,
+    /// Each node whose rows crop their image (`roi_decode`): the whole
+    /// decodes its rows share, so the patches of an image decode it once
+    /// (`shared_decode`). Aligned with `plan`.
+    shared_decodes: Vec<Option<crate::shared_decode::SharedDecodes>>,
     /// The concrete source each `"auto"` source node reads this batch's column
     /// as ([`Source::route`]), aligned with `plan`. The column dtype is
     /// constant across rows, so this is taken once per batch; a routing error
@@ -249,6 +264,7 @@ impl CompiledGraph {
                 column,
                 upstream,
                 source_null: node.source.nulls_on_error(),
+                roi: column.is_some() && roi_decodable(&graph.opt, &node.source, &node.ops),
                 cloud_options: node
                     .source
                     .path_settings()
@@ -288,6 +304,8 @@ impl CompiledGraph {
             held_rows: AtomicUsize::new(0),
             #[cfg(test)]
             plan_builds: AtomicUsize::new(0),
+            #[cfg(test)]
+            roi_rows: AtomicUsize::new(0),
         })
     }
 
@@ -333,6 +351,11 @@ impl CompiledGraph {
             inputs,
             resolved_outputs,
             fetchers: self.fetchers(inputs),
+            shared_decodes: self
+                .plan
+                .iter()
+                .map(|np| np.roi.then(Default::default))
+                .collect(),
             routed_sources: self.route_auto_sources(inputs),
             output_nodes,
         };
@@ -699,8 +722,64 @@ impl CompiledGraph {
             // how a null *input* already propagates (see the `else` branch of
             // `if let Some(input)` below, and `execute_one_row`).
             'nodes: for (idx, np) in self.plan.iter().enumerate() {
+                // The decoder applied the node's leading crop (`roi_decode`).
+                let mut absorbed = false;
                 let node_input: Option<NodeOutput> = if let Some(col_idx) = np.column {
                     let on_error_null = np.source_null;
+                    // The leading crop, resolved for this row ahead of the
+                    // decode. A row whose crop does not resolve (a null or a
+                    // refused parameter) keeps the failure: the decoder then
+                    // reads no pixels it could avoid, and the row fails or
+                    // nulls below exactly as its crop's resolution does
+                    // without the pass.
+                    let mut unresolved: Option<(String, bool)> = None;
+                    let window: Option<Cow<'_, GraphStep>> = if np.roi {
+                        match &np.resolvers[0] {
+                            OpResolver::Static(step) => Some(Cow::Borrowed(step)),
+                            OpResolver::Dynamic(spec) => {
+                                ctx.clear_null();
+                                match spec.resolve(row_idx, ctx) {
+                                    Ok(step) => Some(Cow::Owned(step)),
+                                    Err(e) => {
+                                        unresolved = Some((e.to_string(), ctx.took_null()));
+                                        None
+                                    }
+                                }
+                            }
+                            OpResolver::RasterizeShapeRef { .. } => None,
+                        }
+                    } else {
+                        None
+                    };
+                    let window_dto = match window.as_deref() {
+                        Some(GraphStep::Buffer(dto @ ViewDto::View(_))) => Some(dto),
+                        _ => None,
+                    };
+                    let crop = match (window_dto, &unresolved) {
+                        (Some(ViewDto::View(op)), _) => RowCrop::Window(op),
+                        (_, Some(_)) => RowCrop::Unresolved,
+                        _ => RowCrop::None,
+                    };
+                    // The row's pyramid level: a per-row value is read like
+                    // an op's, so a null one follows `on_null_param`.
+                    let level = match np.source.level() {
+                        None | Some(Param::Lit(0)) => 0,
+                        Some(param) => {
+                            ctx.clear_null();
+                            match param.resolve(row_idx, ctx) {
+                                Ok(level) => level,
+                                Err(_) if ctx.took_null() => continue 'nodes,
+                                Err(e) => return Err(format!("source level: {e}")),
+                            }
+                        }
+                    };
+                    // Remote windows are latency-bound: start the next rows'
+                    // reads before this row's own blocks on its request.
+                    if np.roi {
+                        if let Some(fetcher) = state.fetchers[idx].as_ref() {
+                            Self::read_ahead(np, fetcher, ctx, row_idx);
+                        }
+                    }
                     // An `"auto"` source reads as the concrete source it was
                     // routed to once per batch (`route_auto_sources`).
                     let decode_result = match state.routed_sources[idx].as_ref() {
@@ -717,11 +796,36 @@ impl CompiledGraph {
                             row_idx,
                             RowFetch {
                                 fetcher: state.fetchers[idx].as_ref(),
+                                decodes: state.shared_decodes[idx].as_ref(),
                             },
+                            crop,
+                            level,
                         )
                     });
                     match decode_result {
-                        Ok(output) => output,
+                        Ok(DecodedRow::Value(output)) => output,
+                        Ok(DecodedRow::Window(output)) => {
+                            absorbed = true;
+                            #[cfg(test)]
+                            self.roi_rows.fetch_add(1, Ordering::Relaxed);
+                            Some(output)
+                        }
+                        // Not a decode error: the crop's own, raised as the
+                        // crop raises it after a whole decode.
+                        Ok(DecodedRow::Refused(e)) => {
+                            let dto = window_dto.expect("only a window is refused");
+                            return Err(op_refused(dto, &e));
+                        }
+                        // The crop's resolution failed before the decode;
+                        // the op loop would fail (or null) on it first.
+                        Ok(DecodedRow::Unread) => {
+                            let (e, null) =
+                                unresolved.expect("only an unresolved window is unread");
+                            if null {
+                                continue 'nodes;
+                            }
+                            return Err(op_resolution_failed(&e));
+                        }
                         Err(_e) if on_error_null => None,
                         Err(e) => return Err(e),
                     }
@@ -744,7 +848,11 @@ impl CompiledGraph {
                     // allocate nothing here.
                     dto_scratch.clear();
                     {
-                        for resolver in &np.resolvers {
+                        for (op_idx, resolver) in np.resolvers.iter().enumerate() {
+                            if absorbed && op_idx == 0 {
+                                dto_scratch.push(ResolvedStep::Absorbed);
+                                continue;
+                            }
                             match resolver {
                                 OpResolver::Static(step) => {
                                     dto_scratch.push(ResolvedStep::Step(Cow::Borrowed(step)))
@@ -759,7 +867,7 @@ impl CompiledGraph {
                                         // parameter is not a failure — this
                                         // node just has no output for this row.
                                         Err(_) if ctx.took_null() => continue 'nodes,
-                                        Err(e) => return Err(format!("Op resolution error: {e}")),
+                                        Err(e) => return Err(op_resolution_failed(&e)),
                                     }
                                 }
                                 OpResolver::RasterizeShapeRef { op, shape_node } => dto_scratch
@@ -836,6 +944,7 @@ impl CompiledGraph {
                                 current_output = execute_geometry_op(current_output, &geo_op)?;
                                 continue;
                             }
+                            ResolvedStep::Absorbed => continue,
                             ResolvedStep::Step(step) => step,
                         };
                         match graph_step.as_ref() {
@@ -1135,11 +1244,12 @@ impl CompiledGraph {
                     return None;
                 }
                 let ca = inputs.get(np.column?)?.str().ok()?;
-                Some(crate::fetch::Fetcher::new(
-                    ca,
-                    np.cloud_options.as_ref(),
-                    &np.path_policy,
-                ))
+                let fetcher =
+                    crate::fetch::Fetcher::new(ca, np.cloud_options.as_ref(), &np.path_policy);
+                // A node whose rows may read a window or a level reads TIFFs
+                // by range: no row may start whole-object fetches for others.
+                let ranged = np.roi || np.source.level().is_some_and(|l| l != Param::Lit(0));
+                Some(if ranged { fetcher.ranged() } else { fetcher })
             })
             .collect()
     }
@@ -1268,7 +1378,7 @@ fn run_segment(
             // shape reaching it is this row's error, not a kernel panic.
             expr = expr
                 .try_apply_op((*op).clone())
-                .map_err(|e| format!("{}: {e}", op.as_op().name()))?;
+                .map_err(|e| op_refused(op, &e))?;
         }
         Ok(expr.plan_with(cfg).steps.into())
     };
@@ -1327,6 +1437,70 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// consume: nothing reads it afterwards, so its buffer can be moved rather
 /// than shared. Anything else keeps it shared, so an unrecognised reader can
 /// only cost a copy, never corrupt a value another reader sees.
+impl CompiledGraph {
+    /// Start the window reads of the rows after `row_idx` in a node whose
+    /// leading crop the decoder takes ([`crate::fetch::Fetcher::read_ahead`]):
+    /// each row's crop and level resolved as its own decode resolves them. A
+    /// row whose parameters do not resolve is left to report itself.
+    fn read_ahead(
+        np: &NodePlan,
+        fetcher: &crate::fetch::Fetcher<'_>,
+        ctx: &ParamCtx<'_>,
+        row_idx: usize,
+    ) {
+        for row in fetcher.rows_ahead(row_idx) {
+            ctx.clear_null();
+            let step = match &np.resolvers[0] {
+                OpResolver::Static(step) => Cow::Borrowed(step),
+                OpResolver::Dynamic(spec) => match spec.resolve(row, ctx) {
+                    Ok(step) => Cow::Owned(step),
+                    Err(_) => continue,
+                },
+                OpResolver::RasterizeShapeRef { .. } => continue,
+            };
+            let GraphStep::Buffer(ViewDto::View(crop)) = step.as_ref() else {
+                continue;
+            };
+            let level = match np.source.level() {
+                None | Some(Param::Lit(0)) => 0,
+                Some(param) => match param.resolve(row, ctx) {
+                    Ok(level) => level,
+                    Err(_) => continue,
+                },
+            };
+            fetcher.read_ahead(row, level, crop);
+        }
+        ctx.clear_null();
+    }
+}
+
+/// A row's error for an op whose parameters did not resolve.
+fn op_resolution_failed(e: &dyn std::fmt::Display) -> String {
+    format!("Op resolution error: {e}")
+}
+
+/// A row's error for an op that refuses the shape reaching it: the one
+/// wording, whether the engine refuses it or the decoder refuses its window.
+fn op_refused(op: &ViewDto, e: &view_buffer::ops::validation::ValidationError) -> String {
+    format!("{}: {e}", op.as_op().name())
+}
+
+/// Whether a root node's leading op may be decoded as a window: the
+/// `roi_decode` pass is on, the op is a spatial window (a crop; the planner's
+/// spatial-window pushdown has already moved one ahead of the ops it commutes
+/// with), and the source decodes encoded image bytes at full scale. A scaled
+/// decode (`decode_max_size`) changes the coordinates a crop names, so it
+/// keeps the crop.
+fn roi_decodable(opt: &view_buffer::OptConfig, source: &Source, ops: &[TypedOp]) -> bool {
+    opt.roi_decode
+        && matches!(
+            source,
+            Source::ImageBytes { .. } | Source::FilePath { .. } | Source::Auto { .. }
+        )
+        && source.decode_max_size().is_none()
+        && ops.first().is_some_and(TypedOp::is_spatial_window)
+}
+
 fn node_readers(
     graph: &UnifiedGraph,
     order: &[String],
@@ -1669,6 +1843,127 @@ fn validate_output_schema(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A graph of one `image_bytes` node running `ops` (a JSON list), with
+    /// the `roi_decode` engine pass `on` or off.
+    fn roi_graph(source: &str, ops: &str, on: bool) -> String {
+        format!(
+            r#"{{
+                "nodes": {{"n0": {{"source": {source}, "ops": {ops}}}}},
+                "outputs": {{"_output": {{"node": "n0", "sink": {{"format": "blob"}}}}}},
+                "column_bindings": {{"n0": 0}},
+                "opt": {{"roi_decode": {on}}}
+            }}"#
+        )
+    }
+
+    /// Three PNGs of different sizes and channel counts.
+    fn png_column() -> Series {
+        let pngs: Vec<Vec<u8>> = [(9usize, 11usize, 3usize), (12, 10, 1), (10, 10, 4)]
+            .iter()
+            .map(|&(h, w, c)| {
+                let data: Vec<u8> = (0..h * w * c).map(|i| (i * 31 % 253) as u8).collect();
+                let buf = ViewBuffer::from_vec_with_shape(data, vec![h, w, c]);
+                view_buffer::ImageAdapter::encode(&buf, image::ImageFormat::Png).unwrap()
+            })
+            .collect();
+        Series::new("png".into(), pngs)
+    }
+
+    /// The rows a call decoded as a window, and its output.
+    fn roi_run(graph: &str, inputs: &[Series]) -> (usize, PolarsResult<Series>) {
+        let compiled = CompiledGraph::compile(graph).unwrap();
+        let out = compiled.execute(inputs);
+        (compiled.roi_rows.load(Ordering::Relaxed), out)
+    }
+
+    /// A crop leading an image node is decoded as a window, row by row,
+    /// static or per-row, and the output is what the full decode gives.
+    #[test]
+    fn a_leading_crop_is_decoded_as_its_window() {
+        let src = r#"{"format": "image_bytes"}"#;
+        let per_row = Series::new("t".into(), &[1u32, 2, 0]);
+        let cases: [(&str, Vec<Series>); 3] = [
+            (
+                r#"[{"op": "crop", "top": 1, "left": 2, "height": 5, "width": 6}]"#,
+                vec![png_column()],
+            ),
+            (
+                r#"[{"op": "crop", "top": {"$slot": 1}, "left": 1, "height": 4, "width": 4},
+                    {"op": "invert"}]"#,
+                vec![png_column(), per_row],
+            ),
+            (
+                r#"[{"op": "crop", "top": 3, "left": 3}]"#,
+                vec![png_column()],
+            ),
+        ];
+        for (ops, inputs) in &cases {
+            let (rows_on, on) = roi_run(&roi_graph(src, ops, true), inputs);
+            let (rows_off, off) = roi_run(&roi_graph(src, ops, false), inputs);
+            assert_eq!(rows_on, 3, "{ops}: every row decodes as a window");
+            assert_eq!(rows_off, 0, "{ops}: the pass off decodes whole images");
+            let (on, off) = (on.unwrap(), off.unwrap());
+            assert!(on.equals_missing(&off), "{ops}: the output changed");
+        }
+    }
+
+    /// A row whose window lies outside its image decodes whole and fails in
+    /// the crop, with the crop's message, as it does with the pass off.
+    #[test]
+    fn an_out_of_bounds_window_fails_in_the_crop() {
+        let src = r#"{"format": "image_bytes"}"#;
+        let ops = r#"[{"op": "crop", "top": {"$slot": 1}, "left": 0, "height": 4, "width": 4}]"#;
+        let inputs = [png_column(), Series::new("t".into(), &[0u32, 50, 0])];
+        let (_, on) = roi_run(&roi_graph(src, ops, true), &inputs);
+        let (_, off) = roi_run(&roi_graph(src, ops, false), &inputs);
+        let (on, off) = (on.unwrap_err().to_string(), off.unwrap_err().to_string());
+        assert_eq!(on, off);
+        assert!(on.contains("window"), "{on}");
+    }
+
+    /// Where a window decode cannot stand in for the crop, the pass is not
+    /// planned: a crop that does not lead, a scaled decode, a source that is
+    /// not encoded image bytes, the pass off.
+    #[test]
+    fn the_window_decode_is_planned_only_where_it_is_the_crop() {
+        let crop = r#"{"op": "crop", "top": 1, "left": 1, "height": 2, "width": 2}"#;
+        let planned = |source: &str, ops: String, on: bool| {
+            CompiledGraph::compile(&roi_graph(source, &ops, on))
+                .unwrap()
+                .node_plan("n0")
+                .roi
+        };
+        let bytes = r#"{"format": "image_bytes"}"#;
+        assert!(planned(bytes, format!("[{crop}]"), true));
+        assert!(planned(
+            r#"{"format": "file_path"}"#,
+            format!("[{crop}]"),
+            true
+        ));
+        assert!(planned(r#"{"format": "auto"}"#, format!("[{crop}]"), true));
+        assert!(!planned(bytes, format!("[{crop}]"), false), "the pass off");
+        assert!(
+            !planned(bytes, format!(r#"[{{"op": "invert"}}, {crop}]"#), true),
+            "not leading"
+        );
+        assert!(
+            !planned(bytes, r#"[{"op": "invert"}]"#.to_string(), true),
+            "no crop"
+        );
+        assert!(
+            !planned(
+                r#"{"format": "image_bytes", "decode_max_size": 8}"#,
+                format!("[{crop}]"),
+                true
+            ),
+            "a scaled decode"
+        );
+        assert!(
+            !planned(r#"{"format": "blob"}"#, format!("[{crop}]"), true),
+            "not encoded"
+        );
+    }
 
     const SIMPLE_GRAPH: &str = r#"{
         "nodes": {

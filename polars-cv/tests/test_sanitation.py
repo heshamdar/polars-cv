@@ -524,6 +524,12 @@ _REQUIRED_LIB_HOOKS = (
     # The most fetched remote bodies one call held at once, read by
     # `test_fetch_window.py`.
     "_last_fetch_peak_resident",
+    # Every byte path reads have taken from files and stores, read by
+    # `test_ranged_reads.py`.
+    "_fetch_bytes_read",
+    # Every whole-image decode of encoded bytes, read by
+    # `test_shared_decode.py`.
+    "_image_decodes",
     # How many workers ran the most recent call's rows, read by
     # `test_an_eager_call_after_a_streaming_run_uses_the_pool`.
     "_last_split_workers",
@@ -1232,7 +1238,7 @@ def test_no_local_plugin_available_definitions() -> None:
 #: to carry a copy of `encode_png` that had dropped conftest's
 #: `except ImportError: pytest.skip("PIL/Pillow required")` arm -- so without
 #: Pillow they errored where the suite means to skip.
-_CONFTEST_PNG_FACTORIES = ("create_test_png", "encode_png")
+_CONFTEST_PNG_FACTORIES = ("create_test_png", "encode_png", "write_tiled_tiff")
 
 #: conftest-owned image *data* fixtures (as opposed to the factory functions
 #: above). Overriding one per-module is a legitimate pytest pattern *when it
@@ -1490,6 +1496,12 @@ ALLOWED_PARTIAL_VARIANT_MAPS = frozenset(
         # with "Unsupported Arrow type" rather than guessing, so the missing
         # arms are an honest refusal, not silent drift.
         "view-buffer/src/interop/arrow_ffi.rs::from_arrow_ffi",
+        # The TIFF sample formats the chunk decoder carries (8/16-bit unsigned,
+        # 32/64-bit float, as the whole-image TIFF decoder before it). Any
+        # other layout is not read by it at all (`Layout::read` returns None)
+        # and decodes through the `tiff` crate, so the missing arms are never
+        # reached rather than mapped to a wrong dtype.
+        "view-buffer/src/interop/tiff_region/mod.rs::dtype",
     }
 )
 
@@ -2291,6 +2303,7 @@ class TestPluginKwargsRejectUnknownFields:
         "read_file_bytes": {"on_error": "raise"},
         "contour_area": {},
         "point_scale": {},
+        "patch_grid": {"size": [4, 4], "stride": [4, 4], "edge": "drop"},
     }
 
     @staticmethod

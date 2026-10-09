@@ -69,6 +69,11 @@ pub enum Sink {
 
 impl super::Format for Sink {
     const KIND: &'static str = "sink";
+
+    /// Every sink setting stands alone; the derived wire checks each.
+    fn check(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn formats() -> &'static [view_buffer::mode::OpDesc] {
         static CATALOG: std::sync::LazyLock<Vec<view_buffer::mode::OpDesc>> =
             std::sync::LazyLock::new(Sink::catalog);

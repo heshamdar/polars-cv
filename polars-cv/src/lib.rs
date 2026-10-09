@@ -24,10 +24,12 @@ mod ops;
 mod output;
 mod params;
 mod passes;
+mod patch_grid;
 mod plan;
 mod point;
 mod read_bytes;
 mod row_split;
+mod shared_decode;
 #[cfg(test)]
 mod test_alloc;
 
@@ -82,6 +84,8 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_last_split_workers, m)?)?;
     m.add_function(wrap_pyfunction!(_take_max_split_rows, m)?)?;
     m.add_function(wrap_pyfunction!(_last_fetch_peak_resident, m)?)?;
+    m.add_function(wrap_pyfunction!(_fetch_bytes_read, m)?)?;
+    m.add_function(wrap_pyfunction!(_image_decodes, m)?)?;
     Ok(())
 }
 
@@ -107,6 +111,22 @@ fn _take_max_split_rows() -> usize {
 #[pyfunction]
 fn _last_fetch_peak_resident() -> usize {
     fetch::last_peak_resident()
+}
+
+/// Every byte the plugin's path reads have taken from files and stores, ever
+/// (`fetch`): lets a Python test measure what a query read at the
+/// user-facing entry point.
+#[pyfunction]
+fn _fetch_bytes_read() -> u64 {
+    fetch::bytes_read()
+}
+
+/// Every whole-image decode of encoded bytes the plugin's sources have made,
+/// ever (`execute::decode_whole`): lets a Python test count what a query
+/// decoded at the user-facing entry point.
+#[pyfunction]
+fn _image_decodes() -> u64 {
+    execute::image_decodes()
 }
 
 // ============================================================================

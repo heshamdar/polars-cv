@@ -174,6 +174,20 @@ def test_every_tracked_code_file_is_covered_by_a_rule() -> None:
     assert uncovered == [], f"add a relevance.RULES entry for: {uncovered}"
 
 
+def test_every_rule_matches_a_tracked_file() -> None:
+    # A rule whose file moved matches nothing, and the moved file falls to
+    # whatever broader rule covers it, selecting the wrong cases silently.
+    files = subprocess.run(
+        ["git", "ls-files"], cwd=_ROOT, capture_output=True, text=True, check=True
+    ).stdout.split()
+    dead = [
+        pattern
+        for pattern, _spec in relevance.RULES
+        if not any(relevance._regex(pattern).fullmatch(f) for f in files)
+    ]
+    assert dead == [], f"relevance.RULES entries matching no tracked file: {dead}"
+
+
 def test_a_row_split_change_selects_every_split_path_on_a_parallel_pool() -> None:
     # Every call's rows and every tensor sink's fill phase run through the
     # splitter, and it does nothing on one thread: PR #124 regressed the list

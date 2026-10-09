@@ -121,9 +121,167 @@ fn try_image_header(bytes: &[u8]) -> Option<ImageMeta> {
     })
 }
 
-/// Extract metadata by trying VIEW protocol first, then image format.
+/// A TIFF's level-0 metadata as the TIFF decoder reads it
+/// (`tiff_region`), so a TIFF it decodes reports its size even where the
+/// `image` crate's header reader does not (JPEG-compressed, BigTIFF). A
+/// layout it does not decode, or a header past the bytes read so far, falls
+/// to the `image` crate.
+fn try_tiff_header(bytes: &[u8]) -> Option<ImageMeta> {
+    use view_buffer::interop::tiff_region;
+    if !tiff_region::is_tiff(bytes) {
+        return None;
+    }
+    let ([height, width, channels], dtype) = tiff_region::image_shape(bytes, 0).ok()??;
+    Some(ImageMeta {
+        width: width as u32,
+        height: height as u32,
+        channels: Some(channels as u32),
+        dtype: Some(dtype.numpy_name()),
+    })
+}
+
+/// Extract metadata by trying VIEW protocol first, then TIFF, then image
+/// format.
 fn extract_metadata(bytes: &[u8]) -> Option<ImageMeta> {
-    try_view_header(bytes).or_else(|| try_image_header(bytes))
+    try_view_header(bytes)
+        .or_else(|| try_tiff_header(bytes))
+        .or_else(|| try_image_header(bytes))
+}
+
+/// One level of [`SlideMeta`].
+struct SlideLevel {
+    width: u32,
+    height: u32,
+    downsample: f64,
+    tile: Option<(u32, u32)>,
+}
+
+/// A slide's pyramid and scale, as `.cv.slide_info()` reports it.
+struct SlideMeta {
+    levels: Vec<SlideLevel>,
+    mpp: Option<(f64, f64)>,
+}
+
+/// A TIFF's pyramid (`tiff_region::slide_info`, the levels
+/// `source(level=)` decodes), or any other image as its one level. `None`
+/// for bytes that are no image — and for a TIFF whose IFDs lie past the
+/// bytes read so far, so a path read grows its prefix rather than report a
+/// partial pyramid.
+fn extract_slide(bytes: &[u8]) -> Option<SlideMeta> {
+    use view_buffer::interop::tiff_region;
+    if tiff_region::is_tiff(bytes) {
+        return slide_meta(tiff_region::slide_info(Cursor::new(bytes)).ok()?);
+    }
+    let meta = extract_metadata(bytes)?;
+    Some(SlideMeta {
+        levels: vec![SlideLevel {
+            width: meta.width,
+            height: meta.height,
+            downsample: 1.0,
+            tile: None,
+        }],
+        mpp: None,
+    })
+}
+
+/// A TIFF's [`SlideMeta`] from its parsed header; `None` with no levels.
+fn slide_meta(info: view_buffer::interop::tiff_region::SlideInfo) -> Option<SlideMeta> {
+    {
+        let base = info.levels.first()?;
+        let (w0, h0) = (base.width as f64, base.height as f64);
+        let levels = info
+            .levels
+            .iter()
+            .map(|l| SlideLevel {
+                width: l.width as u32,
+                height: l.height as u32,
+                downsample: (w0 / l.width as f64 + h0 / l.height as f64) / 2.0,
+                tile: l.tile.map(|(w, h)| (w as u32, h as u32)),
+            })
+            .collect();
+        Some(SlideMeta {
+            levels,
+            mpp: info.mpp,
+        })
+    }
+}
+
+/// Every row's [`SlideMeta`]. A path naming a TIFF is read by range — its
+/// IFDs, not its pixels (a remote slide is not downloaded to list its
+/// levels); anything else, and any failure on that path, is read as
+/// [`headers`] reads it, so errors and nulls are exactly its.
+fn slides(inputs: &[Series], kwargs: &MetaKwargs) -> PolarsResult<Vec<Option<SlideMeta>>> {
+    let name = "slide_info()";
+    if inputs[0].dtype() != &DataType::String {
+        return headers(inputs, kwargs, name, extract_slide);
+    }
+    let ca = inputs[0].str()?;
+    let null_on_error =
+        crate::fetch::parse_on_error(kwargs.on_error.as_deref().unwrap_or("raise"), name)?;
+    let options = kwargs
+        .cloud_options
+        .as_ref()
+        .map(crate::cloud::CloudOptions::from_map);
+    let policy = kwargs
+        .allowed_roots
+        .as_deref()
+        .map(crate::fetch::PathPolicy::new)
+        .unwrap_or_default();
+    let fetcher = crate::fetch::Fetcher::new(ca, options.as_ref(), &policy).ranged();
+    // Rows read side by side over the plugin's threads: a remote slide's
+    // header is a few latency-bound requests.
+    crate::row_split::run_split(ca.len(), |_, rows| {
+        rows.map(|row| {
+            let read = match ranged_slide(&fetcher, row) {
+                Ok(RangedSlide::Read(meta)) => Ok(meta),
+                Ok(RangedSlide::NotTiff) => fetcher.header(row, extract_slide),
+                Err(e) => Err(e),
+            };
+            match read {
+                Ok(meta) => Ok(meta),
+                Err(_) if null_on_error => Ok(None),
+                Err(e) => Err(polars_err!(ComputeError: "{}: {}", name, e)),
+            }
+        })
+        .collect::<PolarsResult<Vec<_>>>()
+    })
+    .into_iter()
+    .try_fold(Vec::with_capacity(ca.len()), |mut all, part| {
+        all.extend(part?);
+        Ok(all)
+    })
+}
+
+/// What reading a row's slide by range gave.
+enum RangedSlide {
+    /// The path names no TIFF: the caller reads it the plain way.
+    NotTiff,
+    /// The row's slide: `None` for a null path, or a TIFF whose structure
+    /// does not parse — no image, as its bytes would give.
+    Read(Option<SlideMeta>),
+}
+
+/// Row `row`'s slide read by range: its IFD entries, never the file. A path
+/// that cannot be opened or read (a refused, missing or unreachable one) is
+/// the row's error.
+fn ranged_slide(fetcher: &crate::fetch::Fetcher<'_>, row: usize) -> Result<RangedSlide, String> {
+    use std::io::{ErrorKind, Read};
+    use view_buffer::interop::tiff_region::{self, TiffError};
+    let Some(mut file) = fetcher.open_header(row)? else {
+        return Ok(RangedSlide::Read(None));
+    };
+    let mut magic = [0u8; 4];
+    match file.read_exact(&mut magic) {
+        Ok(()) if tiff_region::is_tiff(&magic) => {}
+        Ok(()) => return Ok(RangedSlide::NotTiff),
+        Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Ok(RangedSlide::NotTiff),
+        Err(e) => return Err(e.to_string()),
+    }
+    match tiff_region::slide_info(file) {
+        Ok(info) => Ok(RangedSlide::Read(slide_meta(info))),
+        Err(TiffError::Format(_)) => Ok(RangedSlide::Read(None)),
+        Err(e @ TiffError::Io(_)) => Err(e.to_string()),
+    }
 }
 
 /// Static kwargs of the metadata functions: how to reach a *path* column's
@@ -149,6 +307,18 @@ fn metas(
     kwargs: &MetaKwargs,
     name: &str,
 ) -> PolarsResult<Vec<Option<ImageMeta>>> {
+    headers(inputs, kwargs, name, extract_metadata)
+}
+
+/// Each row's header, parsed by `parse`: from the bytes of a `Binary`
+/// column, or from the files a `String` column of paths names — read only
+/// as far as `parse` needs ([`crate::fetch::Fetcher::header`]).
+fn headers<T>(
+    inputs: &[Series],
+    kwargs: &MetaKwargs,
+    name: &str,
+    parse: fn(&[u8]) -> Option<T>,
+) -> PolarsResult<Vec<Option<T>>> {
     let input = &inputs[0];
     match input.dtype() {
         DataType::Binary => {
@@ -162,11 +332,7 @@ fn metas(
                     name
                 );
             }
-            Ok(input
-                .binary()?
-                .iter()
-                .map(|b| b.and_then(extract_metadata))
-                .collect())
+            Ok(input.binary()?.iter().map(|b| b.and_then(parse)).collect())
         }
         DataType::String | DataType::Null => {
             if input.dtype() == &DataType::Null {
@@ -186,7 +352,7 @@ fn metas(
                 .unwrap_or_default();
             let fetcher = crate::fetch::Fetcher::new(ca, options.as_ref(), &policy);
             (0..ca.len())
-                .map(|row| match fetcher.header(row, extract_metadata) {
+                .map(|row| match fetcher.header(row, parse) {
                     Ok(meta) => Ok(meta),
                     Err(_) if null_on_error => Ok(None),
                     Err(e) => Err(polars_err!(ComputeError: "{}: {}", name, e)),
@@ -283,6 +449,104 @@ fn image_info(inputs: &[Series], kwargs: MetaKwargs) -> PolarsResult<Series> {
     let mut out = StructChunked::from_series(inputs[0].name().clone(), metas.len(), fields.iter())?;
     if metas.iter().any(Option::is_none) {
         let validity: polars_arrow::bitmap::Bitmap = metas.iter().map(Option::is_some).collect();
+        out = out.with_outer_validity(Some(validity));
+    }
+    Ok(out.into_series())
+}
+
+/// The fields of one `slide_info` level, in order.
+fn slide_level_fields() -> Vec<Field> {
+    let u32_field = |n: &'static str| Field::new(PlSmallStr::from_static(n), DataType::UInt32);
+    vec![
+        u32_field("level"),
+        u32_field("width"),
+        u32_field("height"),
+        Field::new(PlSmallStr::from_static("downsample"), DataType::Float64),
+        u32_field("tile_width"),
+        u32_field("tile_height"),
+    ]
+}
+
+/// The fields of `slide_info`: the levels, then level 0's microns per pixel.
+fn slide_info_fields() -> Vec<Field> {
+    vec![
+        Field::new(
+            PlSmallStr::from_static("levels"),
+            DataType::List(Box::new(DataType::Struct(slide_level_fields()))),
+        ),
+        Field::new(PlSmallStr::from_static("mpp_x"), DataType::Float64),
+        Field::new(PlSmallStr::from_static("mpp_y"), DataType::Float64),
+    ]
+}
+
+fn slide_info_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
+    let name = input_fields.first().map_or_else(
+        || PlSmallStr::from_static("slide_info"),
+        |f| f.name().clone(),
+    );
+    Ok(Field::new(name, DataType::Struct(slide_info_fields())))
+}
+
+/// A slide's pyramid levels and scale, from one header read per row.
+#[polars_expr(output_type_func=slide_info_output_type)]
+fn slide_info(inputs: &[Series], kwargs: MetaKwargs) -> PolarsResult<Series> {
+    use polars_arrow::array::{ListArray, PrimitiveArray, StructArray};
+    use polars_arrow::offset::Offsets;
+
+    let slides = slides(inputs, &kwargs)?;
+    let flat: Vec<(u32, &SlideLevel)> = slides
+        .iter()
+        .flatten()
+        .flat_map(|s| (0u32..).zip(&s.levels))
+        .collect();
+    let u32s = |f: &dyn Fn(u32, &SlideLevel) -> Option<u32>| {
+        PrimitiveArray::from_iter(flat.iter().map(|&(i, l)| f(i, l))).boxed()
+    };
+    let level_fields: Vec<_> = slide_level_fields()
+        .iter()
+        .map(|f| f.to_arrow(CompatLevel::newest()))
+        .collect();
+    let values = StructArray::try_new(
+        ArrowDataType::Struct(level_fields),
+        flat.len(),
+        vec![
+            u32s(&|i, _| Some(i)),
+            u32s(&|_, l| Some(l.width)),
+            u32s(&|_, l| Some(l.height)),
+            PrimitiveArray::from_iter(flat.iter().map(|(_, l)| Some(l.downsample))).boxed(),
+            u32s(&|_, l| l.tile.map(|t| t.0)),
+            u32s(&|_, l| l.tile.map(|t| t.1)),
+        ],
+        None,
+    )?;
+    let offsets = Offsets::<i64>::try_from_lengths(
+        slides
+            .iter()
+            .map(|s| s.as_ref().map_or(0, |s| s.levels.len())),
+    )?;
+    let list_dtype =
+        ListArray::<i64>::default_datatype(polars_arrow::array::Array::dtype(&values).clone());
+    let levels = ListArray::<i64>::try_new(list_dtype, offsets.into(), values.boxed(), None)?;
+    let levels = Series::from_arrow(PlSmallStr::from_static("levels"), levels.boxed())?;
+    let mpp = |pick: fn((f64, f64)) -> f64| -> Float64Chunked {
+        slides
+            .iter()
+            .map(|s| s.as_ref().and_then(|s| s.mpp).map(pick))
+            .collect()
+    };
+    let fields = [
+        levels,
+        mpp(|m| m.0)
+            .with_name(PlSmallStr::from_static("mpp_x"))
+            .into_series(),
+        mpp(|m| m.1)
+            .with_name(PlSmallStr::from_static("mpp_y"))
+            .into_series(),
+    ];
+    let mut out =
+        StructChunked::from_series(inputs[0].name().clone(), slides.len(), fields.iter())?;
+    if slides.iter().any(Option::is_none) {
+        let validity: polars_arrow::bitmap::Bitmap = slides.iter().map(Option::is_some).collect();
         out = out.with_outer_validity(Some(validity));
     }
     Ok(out.into_series())

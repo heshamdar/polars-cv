@@ -116,6 +116,14 @@
     ]
   },
   {
+    "name": "GridEdge",
+    "doc": "What a patch grid does with the remainder of an axis a whole patch no longer fits.\n\n- DROP: leave it uncovered; only whole patches at multiples of the stride (default).\n- SHIFT: add one patch aligned to the far edge, overlapping its neighbour, so\n  every pixel is covered and every patch stays whole.",
+    "variants": [
+      "drop",
+      "shift"
+    ]
+  },
+  {
     "name": "HashAlgorithm",
     "doc": "Perceptual hash algorithm selection.\n\nDifferent algorithms trade off speed vs robustness to transformations:\n- AVERAGE: Fastest, least robust. Good for exact/near-exact matches.\n- DIFFERENCE: Gradient-based, good balance of speed and robustness.\n- PERCEPTUAL: DCT-based, most robust to resize/compression. Recommended default.\n- BLOCKHASH: Block-based, good resistance to cropping.",
     "variants": [

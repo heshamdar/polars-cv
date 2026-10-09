@@ -328,29 +328,211 @@ impl AsImageView for ViewBuffer {
     }
 }
 
+/// A `tiff_region` failure as the image error the decoders return.
+fn tiff_error(message: impl std::fmt::Display) -> image::ImageError {
+    image::ImageError::IoError(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        message.to_string(),
+    ))
+}
+
 // --- Image I/O Adapter ---
 
 /// Adapter for image file I/O operations.
 pub struct ImageAdapter;
 
+/// What a decode asked for a crop's window gave
+/// ([`ImageAdapter::decode_region`], [`ImageAdapter::decode_tiff_region`]).
+#[derive(Debug)]
+pub enum RegionDecode {
+    /// The whole image: no crop was asked.
+    Whole(ViewBuffer),
+    /// The crop's output: exactly `crop(decode(bytes))`.
+    Window(ViewBuffer),
+    /// The crop refuses the image's shape: its own validation error, which
+    /// the caller raises as the crop would. A TIFF the chunk decoder carries
+    /// learns it from the header, decoding no pixels.
+    Refused(crate::ops::validation::ValidationError),
+}
+
+/// What reading a TIFF through the chunk decoder gave.
+#[derive(Debug)]
+pub enum TiffRegion {
+    Decoded(RegionDecode),
+    /// A layout the chunk decoder leaves to the `tiff` crate, and why.
+    Unsupported {
+        reason: String,
+    },
+}
+
 impl ImageAdapter {
     /// Decodes raw image bytes (PNG, JPEG, etc.) into a ViewBuffer [H, W, C].
     pub fn decode(encoded_bytes: &[u8]) -> Result<ViewBuffer, image::ImageError> {
-        // Check if it's a TIFF file by magic bytes
-        if encoded_bytes.len() >= 4
-            && (
-                &encoded_bytes[0..4] == b"II*\x00" ||  // Little-endian TIFF
-            &encoded_bytes[0..4] == b"MM\x00*"
-                // Big-endian TIFF
-            )
-        {
-            // Use our custom TIFF decoder for floating-point support
-            Self::decode_tiff(encoded_bytes)
+        Self::decode_level(encoded_bytes, 0)
+    }
+
+    /// Decodes pyramid level `level` of an image: level 0 is the image
+    /// itself; a pyramidal TIFF has more ([`tiff_region::pyramid_levels`]).
+    /// Any other image asked for a level above 0 is an error.
+    ///
+    /// [`tiff_region::pyramid_levels`]: crate::interop::tiff_region::pyramid_levels
+    pub fn decode_level(encoded_bytes: &[u8], level: u32) -> Result<ViewBuffer, image::ImageError> {
+        use crate::interop::tiff_region::{self, TiffDecode};
+        // TIFF and BigTIFF, by magic bytes: decoded chunk by chunk where the
+        // layout allows (`tiff_region`), else whole by the `tiff` crate.
+        if tiff_region::is_tiff(encoded_bytes) {
+            match tiff_region::decode(encoded_bytes, None, level).map_err(tiff_error)? {
+                TiffDecode::Pixels(buf) => Ok(buf),
+                TiffDecode::Unsupported { ifd, .. } => Self::decode_tiff_ifd(encoded_bytes, ifd),
+            }
+        } else if level != 0 {
+            Err(tiff_error(format!(
+                "level {level} does not exist: only a pyramidal TIFF has levels above 0"
+            )))
         } else {
             // Use image crate for other formats
             let img = image::load_from_memory(encoded_bytes)?;
             Ok(Self::from_dynamic_image(img))
         }
+    }
+
+    /// Decodes only what a following `crop` keeps.
+    ///
+    /// The window is the crop's own: it is checked with the crop's validation
+    /// against the decoded shape and cut by the same view the executor
+    /// applies, so the result is exactly `crop(decode(bytes))`. A window the
+    /// crop would refuse comes back as [`RegionDecode::Refused`] with the
+    /// crop's error — for a TIFF the chunk decoder carries, without decoding
+    /// any pixels.
+    ///
+    /// # Panics
+    /// When `crop` is not a spatial window (a crop or a slice).
+    pub fn decode_region(
+        encoded_bytes: &[u8],
+        crop: &crate::ops::ViewOp,
+        level: u32,
+    ) -> Result<RegionDecode, image::ImageError> {
+        Self::decode_region_with(encoded_bytes, crop, level, Self::decode_level)
+    }
+
+    /// [`Self::decode_region`] with the whole decode supplied: `whole`
+    /// decodes level `level` of the bytes when no window decode can (any
+    /// format but a TIFF the chunk decoder carries), so a caller can share
+    /// one whole decode between the patches of an image.
+    ///
+    /// The error is `whole`'s, which a TIFF's own errors convert into, so a
+    /// caller sharing decodes can report a shared failure exactly as its own.
+    pub fn decode_region_with<E: From<image::ImageError>>(
+        encoded_bytes: &[u8],
+        crop: &crate::ops::ViewOp,
+        level: u32,
+        whole: impl FnOnce(&[u8], u32) -> Result<ViewBuffer, E>,
+    ) -> Result<RegionDecode, E> {
+        use crate::interop::tiff_region;
+        // A TIFF the chunk decoder carries reads only the window's chunks.
+        if tiff_region::is_tiff(encoded_bytes) {
+            let mut image = Self::open_tiff(std::io::Cursor::new(encoded_bytes), level)?;
+            if let TiffRegion::Decoded(decoded) = Self::decode_tiff_region(&mut image, Some(crop))?
+            {
+                return Ok(decoded);
+            }
+        }
+        Ok(Self::crop_decoded(whole(encoded_bytes, level)?, crop))
+    }
+
+    /// `crop` of an image already decoded whole: the crop's window, as the
+    /// view the executor's crop takes, or the crop's own refusal.
+    pub fn crop_decoded(buffer: ViewBuffer, crop: &crate::ops::ViewOp) -> RegionDecode {
+        let shape = buffer.shape().to_vec();
+        match crate::ops::validation::validate_concrete(crop, &[&shape], &[buffer.dtype()]) {
+            Err(e) => RegionDecode::Refused(e),
+            Ok(()) => {
+                RegionDecode::Window(crate::execution::runner::apply_view(buffer, crop.clone()))
+            }
+        }
+    }
+
+    /// Pyramid level `level` of the TIFF `source` holds, opened: its header
+    /// and IFD entries read, nothing else (`tiff_region::TiffImage`). A
+    /// header that does not read is the decode error a whole decode gives.
+    pub fn open_tiff<S: crate::interop::tiff_region::TiffSource>(
+        source: S,
+        level: u32,
+    ) -> Result<crate::interop::tiff_region::TiffImage<S>, image::ImageError> {
+        crate::interop::tiff_region::TiffImage::open(source, level).map_err(tiff_error)
+    }
+
+    /// The pixel window a `crop` takes of a TIFF level of `shape` and
+    /// `dtype` ([`tiff_region::TiffImage::shape`]), or the crop's own
+    /// refusal. The one mapping from a crop to the window
+    /// [`Self::decode_tiff_region`] decodes, so a caller reading the window's
+    /// chunks ahead reads exactly those.
+    ///
+    /// [`tiff_region::TiffImage::shape`]: crate::interop::tiff_region::TiffImage::shape
+    pub fn tiff_window(
+        crop: &crate::ops::ViewOp,
+        shape: [usize; 3],
+        dtype: DType,
+    ) -> Result<crate::interop::tiff_region::Window, crate::ops::validation::ValidationError> {
+        crate::ops::validation::validate_concrete(crop, &[&shape[..]], &[dtype])?;
+        let (start, end) = crop.window().expect("a crop has a window");
+        Ok(crate::interop::tiff_region::Window {
+            top: start[0],
+            left: start[1],
+            bottom: end[0].min(shape[0]),
+            right: end[1].min(shape[1]),
+        })
+    }
+
+    /// An opened TIFF level decoded by the chunk decoder (`tiff_region`):
+    /// the crop's window when there is a crop (only the chunks under it, and
+    /// their table entries, are read), else the whole level. A window the
+    /// crop refuses is [`RegionDecode::Refused`], decided from the header.
+    ///
+    /// The one TIFF entry for every source of bytes: memory
+    /// ([`Self::decode_region`]), a local file or a remote object (the
+    /// plugin's ranged path reads), so each decodes a window identically.
+    ///
+    /// # Panics
+    /// When `crop` is not a spatial window (a crop or a slice).
+    pub fn decode_tiff_region<S: crate::interop::tiff_region::TiffSource>(
+        image: &mut crate::interop::tiff_region::TiffImage<S>,
+        crop: Option<&crate::ops::ViewOp>,
+    ) -> Result<TiffRegion, image::ImageError> {
+        use crate::interop::tiff_region::Window;
+        let Some((shape, dtype)) = image.shape() else {
+            let reason = image.unsupported().unwrap_or_default().to_string();
+            return Ok(TiffRegion::Unsupported { reason });
+        };
+        let decoded = |w: Option<Window>, image: &mut crate::interop::tiff_region::TiffImage<S>| {
+            image
+                .decode(w)
+                .map_err(tiff_error)
+                .map(|b| b.expect("shape() accepted this layout"))
+        };
+        let Some(crop) = crop else {
+            return Ok(TiffRegion::Decoded(RegionDecode::Whole(decoded(
+                None, image,
+            )?)));
+        };
+        assert!(
+            crate::ops::Op::is_spatial_window(crop),
+            "decode_tiff_region takes a crop, got {crop:?}"
+        );
+        let window = match Self::tiff_window(crop, shape, dtype) {
+            Ok(window) => window,
+            Err(e) => return Ok(TiffRegion::Decoded(RegionDecode::Refused(e))),
+        };
+        let (start, end) = crop.window().expect("a crop has a window");
+        let buffer = decoded(Some(window), image)?;
+        // What the window leaves of the channel axis, cut as the crop would.
+        let channels = crate::ops::ViewOp::Slice {
+            start: vec![0, 0, start[2]],
+            end: vec![usize::MAX, usize::MAX, end[2]],
+        };
+        Ok(TiffRegion::Decoded(RegionDecode::Window(
+            crate::execution::runner::apply_view(buffer, channels),
+        )))
     }
 
     /// Opens an image from disk and decodes it into a ViewBuffer.
@@ -638,6 +820,12 @@ impl ImageAdapter {
     /// making it suitable for reading medical imaging and scientific data.
     /// Uses the tiff crate directly for native floating-point support.
     pub fn decode_tiff(encoded_bytes: &[u8]) -> Result<ViewBuffer, image::ImageError> {
+        Self::decode_tiff_ifd(encoded_bytes, 0)
+    }
+
+    /// [`Self::decode_tiff`] of the image at position `ifd` of the file's
+    /// IFD chain.
+    fn decode_tiff_ifd(encoded_bytes: &[u8], ifd: usize) -> Result<ViewBuffer, image::ImageError> {
         use std::io::Cursor;
         use tiff::decoder::{Decoder, DecodingResult};
 
@@ -648,6 +836,9 @@ impl ImageAdapter {
                 format!("TIFF decoder creation failed: {e}"),
             ))
         })?;
+        decoder
+            .seek_to_image(ifd)
+            .map_err(|e| tiff_error(format!("TIFF IFD {ifd}: {e}")))?;
 
         // Get image dimensions and format info
         let (width, height) = decoder.dimensions().map_err(|e| {
@@ -663,6 +854,26 @@ impl ImageAdapter {
                 format!("Failed to get TIFF color type: {e}"),
             ))
         })?;
+
+        // The crate reads only the first plane of a planar-separate image
+        // (one plane per sample), which then could not hold the image's
+        // samples: refuse it rather than misread it.
+        let planar = decoder
+            .find_tag_unsigned::<u16>(tiff::tags::Tag::PlanarConfiguration)
+            .ok()
+            .flatten();
+        let samples = decoder
+            .find_tag_unsigned::<u16>(tiff::tags::Tag::SamplesPerPixel)
+            .ok()
+            .flatten()
+            .unwrap_or(1);
+        if planar == Some(2) && samples > 1 {
+            return Err(image::ImageError::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unsupported TIFF layout: planar-separate samples (PlanarConfiguration 2, one \
+                 plane per sample)",
+            )));
+        }
 
         // Decode the image data
         let decoding_result = decoder.read_image().map_err(|e| {
@@ -1251,6 +1462,114 @@ mod tests {
         for (name, img, ptr) in cases {
             let buf = ImageAdapter::from_dynamic_image(img);
             assert_eq!(buf.data.as_ptr(), ptr, "{name}: decoded pixels were copied");
+        }
+    }
+
+    /// Every codec, every kind of window: a cropped decode is exactly the
+    /// crop of the full decode, and says so.
+    #[test]
+    fn a_cropped_decode_is_the_crop_of_the_full_decode() {
+        use crate::ops::ViewOp;
+
+        let pattern = |h: usize, w: usize, c: usize| -> Vec<u8> {
+            (0..h * w * c)
+                .map(|i| ((i * 37 + i / 7) % 251) as u8)
+                .collect()
+        };
+        let (h, w) = (13usize, 17usize);
+        let mut images: Vec<(String, Vec<u8>)> = Vec::new();
+        for c in [1usize, 2, 3, 4] {
+            let buf = ViewBuffer::from_vec_with_shape(pattern(h, w, c), vec![h, w, c]);
+            images.push((
+                format!("png c{c}"),
+                ImageAdapter::encode(&buf, image::ImageFormat::Png).unwrap(),
+            ));
+            images.push((
+                format!("tiff c{c}"),
+                ImageAdapter::encode_tiff(&buf).unwrap(),
+            ));
+        }
+        let rgb = ViewBuffer::from_vec_with_shape(pattern(h, w, 3), vec![h, w, 3]);
+        images.push(("jpeg".into(), ImageAdapter::encode_jpeg(&rgb, 90).unwrap()));
+        let wide: Vec<u16> = (0..h * w).map(|i| (i * 977 % 65_521) as u16).collect();
+        let u16_buf = ViewBuffer::from_vec_with_shape(wide, vec![h, w, 1]);
+        images.push((
+            "png u16".into(),
+            ImageAdapter::encode(&u16_buf, image::ImageFormat::Png).unwrap(),
+        ));
+        let floats: Vec<f32> = (0..h * w).map(|i| i as f32 * 0.25).collect();
+        let f32_buf = ViewBuffer::from_vec_with_shape(floats, vec![h, w, 1]);
+        images.push((
+            "tiff f32".into(),
+            ImageAdapter::encode_tiff(&f32_buf).unwrap(),
+        ));
+
+        let crop = |top: u32, left: u32, height: Option<u32>, width: Option<u32>| ViewOp::Crop {
+            top,
+            left,
+            height,
+            width,
+        };
+        let windows = [
+            crop(3, 4, Some(5), Some(6)),   // interior
+            crop(0, 0, Some(13), Some(17)), // the whole image
+            crop(12, 16, Some(1), Some(1)), // the last pixel
+            crop(8, 9, None, None),         // to the far edges
+            crop(13, 0, Some(0), Some(17)), // empty, at the bottom edge
+        ];
+        for (name, bytes) in &images {
+            let full = ImageAdapter::decode(bytes).unwrap();
+            for window in &windows {
+                let got = match ImageAdapter::decode_region(bytes, window, 0).unwrap() {
+                    RegionDecode::Window(buffer) => buffer,
+                    other => panic!("{name} {window:?}: an in-bounds window applies: {other:?}"),
+                };
+                let want = crate::execution::runner::apply_view(full.clone(), window.clone());
+                assert_eq!(got.shape(), want.shape(), "{name} {window:?}");
+                assert_eq!(got.dtype(), want.dtype(), "{name} {window:?}");
+                assert_eq!(
+                    got.to_contiguous().to_blob(),
+                    want.to_contiguous().to_blob(),
+                    "{name} {window:?}"
+                );
+            }
+        }
+    }
+
+    /// A window the crop would refuse is refused with the crop's own error,
+    /// for every format: the error validating the crop against the full
+    /// decode gives.
+    #[test]
+    fn an_out_of_bounds_window_is_the_crops_refusal() {
+        use crate::ops::ViewOp;
+
+        let buf = ViewBuffer::from_vec_with_shape(vec![7u8; 6 * 5 * 3], vec![6, 5, 3]);
+        let png = ImageAdapter::encode(&buf, image::ImageFormat::Png).unwrap();
+        let tiff = ImageAdapter::encode_tiff(&buf).unwrap();
+        for window in [
+            ViewOp::Crop {
+                top: 2,
+                left: 0,
+                height: Some(5),
+                width: Some(5),
+            },
+            ViewOp::Crop {
+                top: 0,
+                left: 6,
+                height: None,
+                width: None,
+            },
+        ] {
+            let want =
+                crate::ops::validation::validate_concrete(&window, &[&[6, 5, 3]], &[DType::U8])
+                    .unwrap_err()
+                    .to_string();
+            for bytes in [&png, &tiff] {
+                match ImageAdapter::decode_region(bytes, &window, 0).unwrap() {
+                    RegionDecode::Refused(e) => assert_eq!(e.to_string(), want, "{window:?}"),
+                    other => panic!("{window:?}: {other:?}"),
+                }
+            }
         }
     }
 }

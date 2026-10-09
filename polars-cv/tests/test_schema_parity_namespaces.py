@@ -137,6 +137,7 @@ CV_CASES: dict[str, object] = {
     "channels": lambda: pl.col("img").cv.channels(),
     "image_dtype": lambda: pl.col("img").cv.image_dtype(),
     "image_info": lambda: pl.col("img").cv.image_info(),
+    "slide_info": lambda: pl.col("img").cv.slide_info(),
 }
 
 #: ``.cv`` members that are not metadata accessors.

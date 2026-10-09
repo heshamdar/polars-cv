@@ -23,8 +23,8 @@ result = df.with_columns(
 | `.cv.height()` | `UInt32` | Image height in pixels |
 | `.cv.channels()` | `UInt32` | Number of channels (1, 3, 4, etc.) |
 | `.cv.image_dtype()` | `String` | Element dtype name (e.g., `"uint8"`, `"float32"`) |
-
 | `.cv.image_info()` | `Struct` | All four from one header read: `{width, height, channels, dtype}` |
+| `.cv.slide_info()` | `Struct` | A pyramidal TIFF's levels and microns per pixel (see [Patches](patches.md#pyramid-levels)); any other image is one level |
 
 These methods work on binary columns containing encoded images (PNG, JPEG, TIFF,
 etc.) and on **path** columns. A local file is read only as far as its header

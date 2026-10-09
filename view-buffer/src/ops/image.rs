@@ -1,4 +1,5 @@
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
+use crate::geometry::grid::GridEdge;
 use crate::mode::{known, size, Exec, Mode};
 use crate::ops::pad::{PadMode, PadPosition};
 use crate::ops::shape_rule::{OpShape, Sym};
@@ -203,6 +204,35 @@ pub enum ImageOpKind<M: Mode = Exec> {
         #[param(default = "constant")]
         mode: M::V<PadMode>,
     },
+    /// Cut the image into patches: ``[N, height, width, C]`` (``[N, height,
+    /// width]`` for a 2-D image), the patches in row-major grid order, each
+    /// whole and inside the image. The grid is the one ``polars_cv.patch_grid``
+    /// lists, so patch ``i`` here is that grid's cell ``i``. An image smaller
+    /// than a patch has none (``N`` is 0).
+    ///
+    /// Example:
+    ///     >>> pipe = Pipeline().source("image_bytes").tile(height=224, width=224)
+    ///     >>> # Overlapping patches covering the whole image:
+    ///     >>> pipe = Pipeline().source("image_bytes").tile(
+    ///     ...     height=224, width=224, stride_height=112, stride_width=112, edge="shift"
+    ///     ... )
+    #[op(name = "tile", sample = {"height": 2, "width": 2, "stride_height": 1, "edge": "shift"})]
+    Tile {
+        /// Patch height (structural: it is an axis of the output).
+        height: M::L<u32>,
+        /// Patch width (structural: it is an axis of the output).
+        width: M::L<u32>,
+        /// Rows between patch origins (default: ``height``, patches that
+        /// touch). A smaller stride overlaps patches; a larger one leaves gaps.
+        stride_height: Option<M::V<u32>>,
+        /// Columns between patch origins (default: ``width``).
+        stride_width: Option<M::V<u32>>,
+        /// What to do with a remainder too small for a whole patch:
+        /// ``"drop"`` leaves it uncovered, ``"shift"`` adds a patch aligned to
+        /// the far edge.
+        #[param(default = "drop")]
+        edge: M::V<GridEdge>,
+    },
     /// Pad image to exact target size (computed at runtime). A larger image is
     /// not cropped - resize first if needed.
     ///
@@ -261,6 +291,31 @@ impl<M: Mode> ImageOpKind<M> {
     /// Refuse a parameter combination no row can execute. Every image op's
     /// parameters are independent, so there is none.
     pub fn check(&self) -> Result<(), String> {
+        // A patch grid has a positive size and stride (`PatchGrid::new`).
+        if let ImageOpKind::Tile {
+            height,
+            width,
+            stride_height,
+            stride_width,
+            ..
+        } = self
+        {
+            let stride = |s: &Option<M::V<u32>>, size: u32| match s {
+                Some(s) => M::sym(s).known(),
+                None => Some(size),
+            };
+            let (h, w) = (M::lit(height), M::lit(width));
+            for (name, v) in [
+                ("height", Some(h)),
+                ("width", Some(w)),
+                ("stride_height", stride(stride_height, h)),
+                ("stride_width", stride(stride_width, w)),
+            ] {
+                if v == Some(0) {
+                    return Err(format!("tile: {name} must be positive"));
+                }
+            }
+        }
         // A scale factor is finite and positive: NaN, infinity and a negative
         // factor have no output size (`shape_rule::scaled_by`).
         if let ImageOpKind::ResizeScale {
@@ -322,7 +377,50 @@ impl<M: Mode> ImageOpKind<M> {
                 h: size::<M>(height),
                 w: size::<M>(width),
             },
+            ImageOpKind::Tile {
+                height,
+                width,
+                stride_height,
+                stride_width,
+                edge,
+            } => {
+                let (h, w) = (M::lit(height), M::lit(width));
+                let stride = |s: &Option<M::V<u32>>, n: u32| match s {
+                    Some(s) => size::<M>(s),
+                    None => Sym::Known(n as usize),
+                };
+                OpShape::Tiles {
+                    h: h as usize,
+                    w: w as usize,
+                    stride: (stride(stride_height, h), stride(stride_width, w)),
+                    edge: M::sym(edge),
+                }
+            }
         }
+    }
+}
+
+impl ImageOpKind {
+    /// The grid a [`ImageOpKind::Tile`] cuts with: its patch size, its stride
+    /// (defaulting to the size) and its edge rule. `None` for any other op,
+    /// or a grid `check` refuses.
+    pub fn patch_grid(&self) -> Option<crate::geometry::grid::PatchGrid> {
+        let ImageOpKind::Tile {
+            height,
+            width,
+            stride_height,
+            stride_width,
+            edge,
+        } = self
+        else {
+            return None;
+        };
+        let size = [*height, *width];
+        let stride = [
+            stride_height.unwrap_or(*height),
+            stride_width.unwrap_or(*width),
+        ];
+        crate::geometry::grid::PatchGrid::new(size, stride, *edge).ok()
     }
 }
 
@@ -412,6 +510,8 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::Blur { .. }
             | ImageOpKind::HistogramEqualize
             | ImageOpKind::PadToSize { .. }
+            // Patches are cut over axes 0/1, the channel axis carried whole.
+            | ImageOpKind::Tile { .. }
             | ImageOpKind::Canny { .. }
             | ImageOpKind::Grayscale => require_hw_or_hwc(shape),
             // The resampler handles one to four interleaved channels, and
@@ -480,6 +580,7 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::PadToSize { .. } => "PadToSize",
             ImageOpKind::Letterbox { .. } => "Letterbox",
             ImageOpKind::ChannelSwap { .. } => "ChannelSwap",
+            ImageOpKind::Tile { .. } => "Tile",
         }
     }
 
@@ -513,6 +614,9 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::Pad { .. }
             | ImageOpKind::PadToSize { .. }
             | ImageOpKind::ChannelSwap { .. } => MemoryEffect::RequiresContiguous,
+            // Each patch is a window of the input, packed into the output
+            // from wherever it lies (`ViewBuffer::append_to`).
+            ImageOpKind::Tile { .. } => MemoryEffect::StridePreserving,
         }
     }
 
@@ -543,7 +647,9 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::Dilate { .. }
             | ImageOpKind::MorphGradient { .. }
             | ImageOpKind::Canny { .. }
-            | ImageOpKind::HistogramEqualize => IdentityRule::Never,
+            | ImageOpKind::HistogramEqualize
+            // Adds the patch axis: never the input's shape.
+            | ImageOpKind::Tile { .. } => IdentityRule::Never,
         }
     }
 
@@ -583,6 +689,8 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::Canny { .. } => SpatialDependency::Global,
             // Histogram equalization builds a global CDF over all pixels.
             ImageOpKind::HistogramEqualize => SpatialDependency::Global,
+            // Rearranges H/W into a patch axis: no window commutes with it.
+            ImageOpKind::Tile { .. } => SpatialDependency::Global,
             // Every resize variant resamples, and pad/letterbox offset the
             // content — all coordinate transforms.
             ImageOpKind::Resize { .. }
@@ -646,7 +754,8 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::Pad { .. }
             | ImageOpKind::PadToSize { .. }
             | ImageOpKind::Letterbox { .. }
-            | ImageOpKind::ChannelSwap { .. } => None,
+            | ImageOpKind::ChannelSwap { .. }
+            | ImageOpKind::Tile { .. } => None,
         }
     }
 
@@ -678,7 +787,8 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::Pad { .. }
             | ImageOpKind::PadToSize { .. }
             | ImageOpKind::Letterbox { .. }
-            | ImageOpKind::ChannelSwap { .. } => OutputDTypeRule::PreserveInput,
+            | ImageOpKind::ChannelSwap { .. }
+            | ImageOpKind::Tile { .. } => OutputDTypeRule::PreserveInput,
         }
     }
 }

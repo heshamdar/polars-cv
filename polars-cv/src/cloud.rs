@@ -67,7 +67,9 @@ use object_store::azure::AzureConfigKey;
 use object_store::gcp::GoogleConfigKey;
 use object_store::path::Path as ObjectPath;
 use object_store::ObjectStoreExt;
-use polars::io::cloud::{build_object_store, CloudOptions as PlCloudOptions, CloudType};
+use polars::io::cloud::{
+    build_object_store, CloudOptions as PlCloudOptions, CloudType, PolarsObjectStore,
+};
 use polars::io::pl_async::with_concurrency_budget;
 use polars_utils::pl_path::{CloudScheme, PlRefPath};
 use std::collections::HashMap;
@@ -342,33 +344,152 @@ async fn read_remote(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u
 /// and `get_range` take permits internally, and holding one while asking for
 /// another is a deadlock at any budget smaller than twice the in-flight count.
 async fn read_object(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudError> {
+    let (store, key) = object_store_for(path, options).await?;
+    store
+        .exec_with_rebuild_retry_on_err(|store| {
+            let key = &key;
+            async move { store.get(key).await?.bytes().await }
+        })
+        .await
+        .map(|bytes| bytes.to_vec())
+        .map_err(|e| CloudError::ReadError(e.to_string()))
+}
+
+/// The cached store and the object key a remote (non-HTTP) path names.
+async fn object_store_for(
+    path: &str,
+    options: Option<&CloudOptions>,
+) -> Result<(PolarsObjectStore, ObjectPath), CloudError> {
     let url = PlRefPath::new(path);
     let scheme = url
         .scheme()
         .ok_or_else(|| CloudError::UrlParse(format!("no scheme in remote path '{path}'")))?;
     let pl_options = polars_options(scheme, options)?;
+    let (location, store) = build_object_store(url, Some(&pl_options), false)
+        .await
+        .map_err(|e| CloudError::StoreError(e.to_string()))?;
+    // `location.prefix` is the raw key after the authority. Parsed rather
+    // than `Path::from`: `from` percent-encodes, and this string has already
+    // been through the URL, so encoding it again turned `a b.png` into
+    // `a%2520b.png` on the old S3 path.
+    let key = ObjectPath::parse(&location.prefix)
+        .map_err(|e| CloudError::UrlParse(format!("bad object key '{}': {e}", location.prefix)))?;
+    Ok((store, key))
+}
 
-    {
-        let (location, store) = build_object_store(url, Some(&pl_options), false)
-            .await
-            .map_err(|e| CloudError::StoreError(e.to_string()))?;
-        // `location.prefix` is the raw key after the authority. Parsed rather
-        // than `Path::from`: `from` percent-encodes, and this string has already
-        // been through the URL, so encoding it again turned `a b.png` into
-        // `a%2520b.png` on the old S3 path.
-        let key = ObjectPath::parse(&location.prefix).map_err(|e| {
-            CloudError::UrlParse(format!("bad object key '{}': {e}", location.prefix))
-        })?;
+/// What a size or ranged request of a remote file gave.
+pub(crate) enum RangedReply<T> {
+    /// What was asked: the size, or each range's bytes.
+    Asked(T),
+    /// The server ignored the range and sent the whole object, which every
+    /// later range is cut from (an HTTP server answering 200).
+    Whole(Vec<u8>),
+}
 
-        store
-            .exec_with_rebuild_retry_on_err(|store| {
-                let key = &key;
-                async move { store.get(key).await?.bytes().await }
-            })
-            .await
-            .map(|bytes| bytes.to_vec())
-            .map_err(|e| CloudError::ReadError(e.to_string()))
+/// `ranges` cut from a whole object's `body`.
+pub(crate) fn cut_ranges(
+    body: &[u8],
+    ranges: &[std::ops::Range<u64>],
+    path: &str,
+) -> Result<Vec<Vec<u8>>, String> {
+    ranges
+        .iter()
+        .map(|r| {
+            body.get(r.start as usize..r.end as usize)
+                .map(<[u8]>::to_vec)
+                .ok_or_else(|| {
+                    format!(
+                        "range {}..{} lies past the end of {path} ({} bytes)",
+                        r.start,
+                        r.end,
+                        body.len()
+                    )
+                })
+        })
+        .collect()
+}
+
+/// An object's size and version, from one `HEAD`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Head {
+    pub size: u64,
+    /// A validator that changes whenever the object does: its ETag, else its
+    /// last-modified time. `None` when the store gives neither, and then
+    /// nothing read of the object is reused by a later call.
+    pub version: Option<String>,
+}
+
+/// A remote file's size and version, under the concurrency budget like every
+/// read ([`read_remote_budgeted`]).
+pub(crate) async fn remote_head_budgeted(
+    path: &str,
+    options: Option<&CloudOptions>,
+) -> Result<RangedReply<Head>, String> {
+    with_concurrency_budget(1, || remote_head(path, options))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// `ranges` of a remote file, in one budgeted operation: the ranged half of
+/// remote reading, for a decoder that needs a file's header and a few of its
+/// chunks rather than all of it (a window of a whole-slide image).
+pub(crate) async fn read_remote_ranges_budgeted(
+    path: &str,
+    options: Option<&CloudOptions>,
+    ranges: &[std::ops::Range<u64>],
+) -> Result<RangedReply<Vec<Vec<u8>>>, String> {
+    with_concurrency_budget(1, || read_remote_ranges(path, options, ranges))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn remote_head(
+    path: &str,
+    options: Option<&CloudOptions>,
+) -> Result<RangedReply<Head>, CloudError> {
+    if path.starts_with("http://") || path.starts_with("https://") {
+        return http_head(path).await;
     }
+    let (store, key) = object_store_for(path, options).await?;
+    // The raw store, not `PolarsObjectStore::head`: that takes a budget
+    // permit itself, and this already holds one (see `read_object`).
+    store
+        .exec_with_rebuild_retry_on_err(|store| {
+            let key = &key;
+            async move { store.head(key).await }
+        })
+        .await
+        .map(|meta| {
+            RangedReply::Asked(Head {
+                size: meta.size,
+                version: meta.e_tag.or_else(|| Some(meta.last_modified.to_rfc3339())),
+            })
+        })
+        .map_err(|e| CloudError::ReadError(e.to_string()))
+}
+
+async fn read_remote_ranges(
+    path: &str,
+    options: Option<&CloudOptions>,
+    ranges: &[std::ops::Range<u64>],
+) -> Result<RangedReply<Vec<Vec<u8>>>, CloudError> {
+    if ranges.is_empty() {
+        return Ok(RangedReply::Asked(Vec::new()));
+    }
+    if path.starts_with("http://") || path.starts_with("https://") {
+        return read_http_ranges(path, ranges).await;
+    }
+    let (store, key) = object_store_for(path, options).await?;
+    // The raw store's `get_ranges` (coalesced requests), not
+    // `PolarsObjectStore::get_ranges_sort`, which takes permits itself.
+    store
+        .exec_with_rebuild_retry_on_err(|store| {
+            let key = &key;
+            async move { store.get_ranges(key, ranges).await }
+        })
+        .await
+        .map(|parts| RangedReply::Asked(parts.into_iter().map(|b| b.to_vec()).collect()))
+        .map_err(|e| CloudError::ReadError(e.to_string()))
 }
 
 /// The filesystem path a local path names: a bare path as written, or a
@@ -489,6 +610,109 @@ async fn read_http(url: &str) -> Result<Vec<u8>, CloudError> {
             .map(|b| b.to_vec())
             .map_err(|e| CloudError::ReadError(format!("Failed to read response body: {e}")))
     }
+}
+
+/// An HTTP resource's size: `HEAD`'s `Content-Length`, or, from a server
+/// that does not answer `HEAD` with one, the total of a one-byte ranged
+/// `GET`'s `Content-Range`.
+async fn http_head(url: &str) -> Result<RangedReply<Head>, CloudError> {
+    let client = http_client();
+    let failed = |e: reqwest::Error| CloudError::ReadError(format!("HTTP request failed: {e}"));
+    let head = client.head(url).send().await.map_err(failed)?;
+    if head.status().is_success() {
+        let header = |name| {
+            head.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        if let Some(size) =
+            header(reqwest::header::CONTENT_LENGTH).and_then(|v| v.parse::<u64>().ok())
+        {
+            let version =
+                header(reqwest::header::ETAG).or_else(|| header(reqwest::header::LAST_MODIFIED));
+            return Ok(RangedReply::Asked(Head { size, version }));
+        }
+    }
+    let probe = client
+        .get(url)
+        .header(reqwest::header::RANGE, "bytes=0-0")
+        .send()
+        .await
+        .map_err(failed)?;
+    if !probe.status().is_success() {
+        return Err(CloudError::ReadError(format!(
+            "HTTP {} for URL: {url}",
+            probe.status()
+        )));
+    }
+    let total = probe
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok()?.rsplit('/').next()?.parse::<u64>().ok());
+    // A size from a ranged probe comes with no version: such an object is
+    // read afresh by each call.
+    match total {
+        Some(total) => Ok(RangedReply::Asked(Head {
+            size: total,
+            version: None,
+        })),
+        // The server ignored the range and sent the body: it is the object.
+        None => probe
+            .bytes()
+            .await
+            .map(|b| RangedReply::Whole(b.to_vec()))
+            .map_err(|e| CloudError::ReadError(format!("Failed to read response body: {e}"))),
+    }
+}
+
+/// `ranges` of an HTTP resource, one `Range` request each. A server that
+/// ignores `Range` (answers 200 with the whole body) is read once: the body
+/// comes back whole, for the caller to cut this and every later range from.
+async fn read_http_ranges(
+    url: &str,
+    ranges: &[std::ops::Range<u64>],
+) -> Result<RangedReply<Vec<Vec<u8>>>, CloudError> {
+    let client = http_client();
+    let mut parts = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if range.is_empty() {
+            parts.push(Vec::new());
+            continue;
+        }
+        let response = client
+            .get(url)
+            .header(
+                reqwest::header::RANGE,
+                format!("bytes={}-{}", range.start, range.end - 1),
+            )
+            .send()
+            .await
+            .map_err(|e| CloudError::ReadError(format!("HTTP request failed: {e}")))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(CloudError::ReadError(format!(
+                "HTTP {status} for URL: {url}"
+            )));
+        }
+        let body = response
+            .bytes()
+            .await
+            .map_err(|e| CloudError::ReadError(format!("Failed to read response body: {e}")))?;
+        if status != reqwest::StatusCode::PARTIAL_CONTENT {
+            return Ok(RangedReply::Whole(body.to_vec()));
+        }
+        if body.len() as u64 != range.end - range.start {
+            return Err(CloudError::ReadError(format!(
+                "HTTP range {}..{} of {url} returned {} bytes",
+                range.start,
+                range.end,
+                body.len()
+            )));
+        }
+        parts.push(body.to_vec());
+    }
+    Ok(RangedReply::Asked(parts))
 }
 
 /// Check if a path is a remote URL (cloud storage or HTTP).
