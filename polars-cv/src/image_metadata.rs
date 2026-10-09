@@ -230,10 +230,12 @@ fn slides(inputs: &[Series], kwargs: &MetaKwargs) -> PolarsResult<Vec<Option<Sli
     let fetcher = crate::fetch::Fetcher::new(ca, options.as_ref(), &policy).ranged();
     (0..ca.len())
         .map(|row| {
-            if let Some(meta) = ranged_slide(&fetcher, row) {
-                return Ok(Some(meta));
-            }
-            match fetcher.header(row, extract_slide) {
+            let read = match ranged_slide(&fetcher, row) {
+                Ok(RangedSlide::Read(meta)) => Ok(meta),
+                Ok(RangedSlide::NotTiff) => fetcher.header(row, extract_slide),
+                Err(e) => Err(e),
+            };
+            match read {
                 Ok(meta) => Ok(meta),
                 Err(_) if null_on_error => Ok(None),
                 Err(e) => Err(polars_err!(ComputeError: "{}: {}", name, e)),
@@ -242,19 +244,36 @@ fn slides(inputs: &[Series], kwargs: &MetaKwargs) -> PolarsResult<Vec<Option<Sli
         .collect()
 }
 
-/// Row `row`'s slide read by range, when its path names a TIFF whose header
-/// parses; `None` otherwise (the caller reads it the plain way).
-fn ranged_slide(fetcher: &crate::fetch::Fetcher<'_>, row: usize) -> Option<SlideMeta> {
-    use std::io::{Read, Seek};
-    use view_buffer::interop::tiff_region;
-    let mut file = fetcher.open(row).ok()??;
+/// What reading a row's slide by range gave.
+enum RangedSlide {
+    /// The path names no TIFF: the caller reads it the plain way.
+    NotTiff,
+    /// The row's slide: `None` for a null path, or a TIFF whose structure
+    /// does not parse — no image, as its bytes would give.
+    Read(Option<SlideMeta>),
+}
+
+/// Row `row`'s slide read by range: its IFD entries, never the file. A path
+/// that cannot be opened or read (a refused, missing or unreachable one) is
+/// the row's error.
+fn ranged_slide(fetcher: &crate::fetch::Fetcher<'_>, row: usize) -> Result<RangedSlide, String> {
+    use std::io::{ErrorKind, Read};
+    use view_buffer::interop::tiff_region::{self, TiffError};
+    let Some(mut file) = fetcher.open(row)? else {
+        return Ok(RangedSlide::Read(None));
+    };
     let mut magic = [0u8; 4];
-    file.read_exact(&mut magic).ok()?;
-    if !tiff_region::is_tiff(&magic) {
-        return None;
+    match file.read_exact(&mut magic) {
+        Ok(()) if tiff_region::is_tiff(&magic) => {}
+        Ok(()) => return Ok(RangedSlide::NotTiff),
+        Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Ok(RangedSlide::NotTiff),
+        Err(e) => return Err(e.to_string()),
     }
-    file.rewind().ok()?;
-    slide_meta(tiff_region::slide_info(file).ok()?)
+    match tiff_region::slide_info(file) {
+        Ok(info) => Ok(RangedSlide::Read(slide_meta(info))),
+        Err(TiffError::Format(_)) => Ok(RangedSlide::Read(None)),
+        Err(e @ TiffError::Io(_)) => Err(e.to_string()),
+    }
 }
 
 /// Static kwargs of the metadata functions: how to reach a *path* column's

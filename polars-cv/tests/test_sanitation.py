@@ -1498,7 +1498,7 @@ ALLOWED_PARTIAL_VARIANT_MAPS = frozenset(
         # other layout is not read by it at all (`Layout::read` returns None)
         # and decodes through the `tiff` crate, so the missing arms are never
         # reached rather than mapped to a wrong dtype.
-        "view-buffer/src/interop/tiff_region.rs::dtype",
+        "view-buffer/src/interop/tiff_region/mod.rs::dtype",
     }
 )
 

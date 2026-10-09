@@ -270,6 +270,7 @@ def write_tiled_tiff(
     compression: str | None = None,
     jpeg_photometric: str = "ycbcr",
     bigtiff: bool = False,
+    byteorder: str = "<",
     description: str | None = None,
     svs_extras: bool = False,
     resolution_cm: float | None = None,
@@ -298,6 +299,8 @@ def write_tiled_tiff(
             JPEG, Photometric=YCbCr) or ``"rgb"`` (RGB-coded JPEG marked by an
             Adobe APP14 transform 0, Photometric=RGB).
         bigtiff: Write a BigTIFF.
+        byteorder: ``"<"`` (little-endian, ``II``) or ``">"`` (big-endian,
+            ``MM``).
         description: ImageDescription of level 0 (e.g. an Aperio header).
         svs_extras: Interleave the images an Aperio SVS carries besides its
             levels: a strip thumbnail right after level 0 (same aspect, not
@@ -348,7 +351,7 @@ def write_tiled_tiff(
             metadata=None,
         )
 
-    with tifffile.TiffWriter(path, bigtiff=bigtiff) as tw:
+    with tifffile.TiffWriter(path, bigtiff=bigtiff, byteorder=byteorder) as tw:
         for k, level in enumerate(written):
             data = level[..., 0] if channels == 1 else level
             extras: dict[str, object] = {}

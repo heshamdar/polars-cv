@@ -137,6 +137,30 @@ class TestLosslessRegions:
                     got, _truth(fx, window), err_msg=str(window)
                 )
 
+    @pytest.mark.parametrize("bigtiff", [False, True], ids=["classic", "bigtiff"])
+    @pytest.mark.parametrize(("dtype", "channels"), [("u8", 3), ("u16", 3), ("f32", 1)])
+    def test_big_endian(
+        self, tmp_path: Path, bigtiff: bool, dtype: str, channels: int
+    ) -> None:
+        """A big-endian (``MM``) file: its IFDs, tag values and chunk tables
+        are read big-endian, and its samples byte-swapped."""
+        fx = write_tiled_tiff(
+            tmp_path / "m.tif",
+            height=_H,
+            width=_W,
+            channels=channels,
+            dtype=dtype,
+            byteorder=">",
+            bigtiff=bigtiff,
+            compression="deflate",
+        )
+        assert fx.path.read_bytes()[:2] == b"MM"
+        for flags in (_ON, _OFF):
+            for window, got in zip(_WINDOWS, _crop_rows(fx, flags), strict=True):
+                np.testing.assert_array_equal(
+                    got, _truth(fx, window), err_msg=str(window)
+                )
+
     def test_pyramid_level_zero(self, tmp_path: Path) -> None:
         """A pyramidal file's first IFD is the image a source decodes."""
         fx = write_tiled_tiff(tmp_path / "p.tif", height=_H, width=_W, levels=3)

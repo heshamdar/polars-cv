@@ -327,3 +327,216 @@ class TestRemoteFiles:
         assert info == local.select(pl.col("p").cv.slide_info())["p"].to_list()
         assert len(info[0]["levels"]) == 3
         assert server.served < 0.10 * fx.path.stat().st_size, server.served
+
+
+def _window(
+    path: str, top: int | None, left: int, size: int, **source: object
+) -> pl.DataFrame:
+    """One ``size``-pixel window of ``path`` (``top`` may be null), under
+    ``source(**source)``; ``on_null_param`` is taken from ``source`` too."""
+    on_null = source.pop("on_null_param", "raise")
+    df = pl.DataFrame(
+        {"p": [path], "t": [top], "l": [left]},
+        schema={"p": pl.String, "t": pl.UInt32, "l": pl.UInt32},
+    )
+    pipe = (
+        Pipeline()
+        .source("file_path", **source)  # type: ignore[arg-type]
+        .on_null_param(on_null)  # type: ignore[arg-type]
+        .crop(top=pl.col("t"), left=pl.col("l"), height=size, width=size)
+    )
+    return df.select(o=pl.col("p").cv.pipe(pipe).sink("numpy"))
+
+
+def _huge_slide(path: Path, side: int = 10240) -> Path:
+    """A slide whose level 0 decodes to more than the decode limit (300 MiB
+    at the default side) but whose file is small: constant 256-pixel RGB
+    tiles, Deflate-compressed, written one tile at a time."""
+    tile = np.full((256, 256, 3), 200, np.uint8)
+    n = (side // 256) ** 2
+    tifffile.imwrite(
+        path,
+        (tile for _ in range(n)),
+        shape=(side, side, 3),
+        dtype=np.uint8,
+        tile=(256, 256),
+        photometric="rgb",
+        compression="zlib",
+    )
+    return path
+
+
+@plugin_required
+class TestWindowCost:
+    """A window costs its header, its tiles' entries in the chunk tables and
+    its tiles: never the whole tile index, so a patch of a large slide costs
+    what a patch of a small one does."""
+
+    @pytest.mark.parametrize("level", [0, 2])
+    def test_a_window_costs_the_same_whatever_the_slide_size(
+        self, tmp_path: Path, level: int
+    ) -> None:
+        """The large slide's level-0 tile index alone (65,536 tiles: 512 KiB)
+        is many times what a window of the small one reads in all."""
+        reads = {}
+        for name, side in (("small", 512), ("large", 4096)):
+            fx = write_tiled_tiff(
+                tmp_path / f"{name}.tif",
+                height=side,
+                width=side,
+                channels=1,
+                tile=(16, 16),
+                levels=3,
+            )
+            out, reads[name] = _measured(
+                lambda fx=fx: _window(str(fx.path), 40, 24, 16, level=level)
+            )
+            np.testing.assert_array_equal(
+                numpy_from_struct(out["o"][0]), fx.levels[level][40:56, 24:40]
+            )
+        assert reads["large"] <= reads["small"] + 16 * 1024, reads
+        assert reads["large"] < 64 * 1024, reads
+
+    def test_a_remote_window_costs_the_same_whatever_the_slide_size(
+        self, tmp_path: Path, server: _Server
+    ) -> None:
+        """Remote, the index is not fetched either: the large slide serves
+        a few structure blocks and the window's tiles."""
+        fx = write_tiled_tiff(
+            tmp_path / "large.tif", height=4096, width=4096, channels=1, tile=(16, 16)
+        )
+        out = _window(f"{server.base}/{fx.path.name}", 2000, 3000, 16)
+        np.testing.assert_array_equal(
+            numpy_from_struct(out["o"][0]), fx.levels[0][2000:2016, 3000:3016]
+        )
+        assert server.served < 320 * 1024, server.served
+
+
+@plugin_required
+class TestRefusedWindows:
+    """A window that does not resolve, or that the crop refuses, decodes no
+    pixels: the row fails, or nulls, exactly as the crop would after a whole
+    decode — at the cost of the header."""
+
+    def test_a_null_window_parameter_nulls_the_row_unread(self, tmp_path: Path) -> None:
+        fx = _slide(tmp_path)
+        size = fx.path.stat().st_size
+        out, read = _measured(
+            lambda: _window(str(fx.path), None, 0, 64, on_null_param="null")
+        )
+        assert out["o"].to_list() == [None]
+        assert read < 0.05 * size, (read, size)
+
+    def test_a_null_window_parameter_raises_unread(self, tmp_path: Path) -> None:
+        fx = _slide(tmp_path)
+        size = fx.path.stat().st_size
+        before = lib._fetch_bytes_read()
+        with pytest.raises(pl.exceptions.ComputeError, match="null value"):
+            _window(str(fx.path), None, 0, 64)
+        assert lib._fetch_bytes_read() - before < 0.05 * size
+
+    def test_a_null_window_parameter_of_a_null_path_is_null(self) -> None:
+        """A null input is null before any parameter is read, as without
+        the pass."""
+        df = pl.DataFrame(
+            {"p": [None], "t": [None], "l": [0]},
+            schema={"p": pl.String, "t": pl.UInt32, "l": pl.UInt32},
+        )
+        pipe = (
+            Pipeline()
+            .source("file_path")
+            .crop(top=pl.col("t"), left=pl.col("l"), height=4, width=4)
+        )
+        for flags in (_ON, _OFF):
+            out = df.select(o=pl.col("p").cv.pipe(pipe).sink("numpy", opt_flags=flags))
+            assert out["o"].to_list() == [None]
+
+    def test_a_window_outside_a_slide_is_the_crops_error(self, tmp_path: Path) -> None:
+        """Outside a slide too large to decode whole, the row fails with the
+        crop's own message (not the decode limit's), having read the header."""
+        path = _huge_slide(tmp_path / "huge.tif")
+        before = lib._fetch_bytes_read()
+        with pytest.raises(
+            pl.exceptions.ComputeError, match=r"Crop: .*lies outside the input"
+        ):
+            _window(str(path), 0, 10200, 64)
+        assert lib._fetch_bytes_read() - before < 64 * 1024
+
+    def test_a_window_outside_the_image_reads_only_the_header(
+        self, tmp_path: Path
+    ) -> None:
+        """The same message as without the pass, without decoding the file."""
+        fx = _slide(tmp_path)
+        size = fx.path.stat().st_size
+        df = pl.DataFrame({"p": [str(fx.path)], "t": [1000], "l": [0]})
+        messages, reads = [], []
+        for flags in (_ON, _OFF):
+            before = lib._fetch_bytes_read()
+            with pytest.raises(pl.exceptions.ComputeError) as excinfo:
+                _crop(df, flags)
+            reads.append(lib._fetch_bytes_read() - before)
+            messages.append(str(excinfo.value))
+        assert messages[0] == messages[1]
+        assert "lies outside" in messages[0]
+        assert reads[0] < 0.05 * size, reads
+
+
+@plugin_required
+class TestNoSilentWholeReads:
+    """Where a ranged read cannot serve a TIFF, the file is read whole only
+    when that is a read a whole decode could use; otherwise the row fails
+    naming why, without reading it."""
+
+    def test_an_unsupported_layout_too_large_to_read_whole_fails_unread(
+        self, tmp_path: Path
+    ) -> None:
+        """Zstandard tiles in a file over the whole-read limit: the error
+        names the compression, and the file is not read."""
+        path = tmp_path / "z.tif"
+        data = np.zeros((64, 64), np.uint8)
+        tifffile.imwrite(path, data, tile=(16, 16), compression="zstd")
+        with path.open("r+b") as f:
+            f.truncate(300 * 1024 * 1024)  # sparse padding past the limit
+        before = lib._fetch_bytes_read()
+        with pytest.raises(pl.exceptions.ComputeError, match="(?i)compression 50000"):
+            _window(str(path), 0, 0, 8)
+        assert lib._fetch_bytes_read() - before < 1024 * 1024
+
+    def test_slide_info_of_an_unreadable_tiff_reads_only_its_header(
+        self, tmp_path: Path
+    ) -> None:
+        """A TIFF whose first IFD lies past its end is no image (null, as its
+        bytes give) — found from the header, not by reading the file."""
+        path = tmp_path / "broken.tif"
+        path.write_bytes(b"II*\x00" + (1 << 30).to_bytes(4, "little"))
+        with path.open("r+b") as f:
+            f.truncate(64 * 1024 * 1024)
+        before = lib._fetch_bytes_read()
+        df = pl.DataFrame({"p": [str(path)]})
+        assert df.select(pl.col("p").cv.slide_info())["p"].to_list() == [None]
+        assert lib._fetch_bytes_read() - before < 1024 * 1024
+
+    def test_a_server_ignoring_ranges_is_read_once(self, tmp_path: Path) -> None:
+        """A server that answers every ranged request with the whole body is
+        downloaded once per call, not once per block or window."""
+        fx = _slide(tmp_path, levels=2)
+        size = fx.path.stat().st_size
+        srv = _Server(tmp_path, honour_ranges=False)
+        try:
+            df = pl.DataFrame(
+                {
+                    "p": [f"{srv.base}/{fx.path.name}"] * 3,
+                    "t": [0, 64, 512],
+                    "l": [0, 128, 960],
+                }
+            )
+            out = _crop(df)
+        finally:
+            srv.close()
+        for row, (t, left) in zip(
+            out["o"], [(0, 0), (64, 128), (512, 960)], strict=True
+        ):
+            np.testing.assert_array_equal(
+                numpy_from_struct(row), fx.levels[0][t : t + 64, left : left + 64]
+            )
+        assert srv.served <= size, (srv.served, size)

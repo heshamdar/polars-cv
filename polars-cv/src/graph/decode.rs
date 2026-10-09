@@ -7,10 +7,11 @@
 //! - Padding and masking operations
 
 use polars::prelude::*;
+use view_buffer::ops::validation::ValidationError;
 use view_buffer::ops::NodeOutput;
-use view_buffer::{PlannedDType, ViewBuffer, ViewOp};
+use view_buffer::{ImageAdapter, PlannedDType, ViewBuffer};
 
-use crate::execute::{decode_image_bytes, decode_tiff_source};
+use crate::execute::{decode_image_bytes, decode_tiff_image, ImageDecode, RowCrop};
 use crate::formats::source::Source;
 
 use super::encode::{
@@ -29,12 +30,28 @@ pub(crate) struct RowFetch<'a> {
 }
 
 /// One row's decoded source.
-pub(crate) struct DecodedRow {
-    /// The decoded value; `None` for a null row.
-    pub(crate) output: Option<NodeOutput>,
-    /// `output` is already the `crop` the caller passed (see
-    /// [`decode_source_row`]).
-    pub(crate) crop_applied: bool,
+pub(crate) enum DecodedRow {
+    /// The decoded value (`None` for a null row); any crop is still to run.
+    Value(Option<NodeOutput>),
+    /// The node's leading crop, already applied by the decoder.
+    Window(NodeOutput),
+    /// The leading crop refuses the row's image: its own error, to raise as
+    /// the crop would.
+    Refused(ValidationError),
+    /// The leading crop's parameters did not resolve for the row
+    /// ([`RowCrop::Unresolved`]); the image's pixels were left unread.
+    Unread,
+}
+
+impl DecodedRow {
+    fn image(decoded: ImageDecode) -> Self {
+        match decoded {
+            ImageDecode::Whole(buf) => DecodedRow::Value(Some(NodeOutput::from_buffer(buf))),
+            ImageDecode::Window(buf) => DecodedRow::Window(NodeOutput::from_buffer(buf)),
+            ImageDecode::Refused(e) => DecodedRow::Refused(e),
+            ImageDecode::Unread => DecodedRow::Unread,
+        }
+    }
 }
 
 /// Decode row `row` of a root node's column through its concrete `source`
@@ -42,27 +59,20 @@ pub(crate) struct DecodedRow {
 ///
 /// `crop` is the node's leading crop when the `roi_decode` pass may apply
 /// it: an encoded-image source then decodes only its window
-/// (`ImageAdapter::decode_cropped`) and says so in `crop_applied`. Every
-/// other source ignores it, and so does a window outside the image. `level`
-/// is the row's resolved pyramid level (`Source::level`), which only an
-/// encoded-image source has.
+/// (`ImageAdapter::decode_region`), refuses one outside the image with the
+/// crop's error, and leaves a TIFF unread when the window did not resolve.
+/// Every other source ignores it. `level` is the row's resolved pyramid
+/// level (`Source::level`), which only an encoded-image source has.
 pub(crate) fn decode_source_row(
     node_id: &str,
     source: &Source,
     series: &Series,
     row: usize,
     fetch: RowFetch<'_>,
-    crop: Option<&ViewOp>,
+    crop: RowCrop<'_>,
     level: u32,
 ) -> Result<DecodedRow, String> {
-    let whole = |output: Option<NodeOutput>| DecodedRow {
-        output,
-        crop_applied: false,
-    };
-    let image = |decoded: (ViewBuffer, bool)| DecodedRow {
-        output: Some(NodeOutput::from_buffer(decoded.0)),
-        crop_applied: decoded.1,
-    };
+    let whole = DecodedRow::Value;
     if series.dtype() == &DataType::Null {
         return Ok(whole(None));
     }
@@ -102,11 +112,11 @@ pub(crate) fn decode_source_row(
             })?;
             // A crop's window or a level of a TIFF: read its header and the
             // chunks it needs, not the file.
-            if crop.is_some() || level > 0 {
+            if !matches!(crop, RowCrop::None) || level > 0 {
                 if let Some(decoded) = decode_ranged_tiff(fetcher, row, source, crop, level)
                     .map_err(|e| format!("Decode error for file '{path}': {e}"))?
                 {
-                    return Ok(image(decoded));
+                    return Ok(DecodedRow::image(decoded));
                 }
             }
             // Stage 1: bytes, from the call's fetch window (local files are
@@ -116,7 +126,7 @@ pub(crate) fn decode_source_row(
             };
             // Stage 2: the contents decode like image bytes.
             decode_image_bytes(&bytes, source, crop, level)
-                .map(image)
+                .map(DecodedRow::image)
                 .map_err(|e| format!("Decode error for file '{path}': {e}"))
         }
         Source::List { .. } | Source::Array { .. } => {
@@ -148,7 +158,7 @@ pub(crate) fn decode_source_row(
         }
         Source::ImageBytes { .. } => match binary()?.get(row) {
             Some(bytes) => decode_image_bytes(bytes, source, crop, level)
-                .map(image)
+                .map(DecodedRow::image)
                 .map_err(|e| format!("Decode error: {e}")),
             None => Ok(whole(None)),
         },
@@ -160,28 +170,49 @@ pub(crate) fn decode_source_row(
 }
 
 /// Row `row`'s TIFF, local or remote, decoded by range
-/// ([`decode_tiff_source`]): `Ok(None)` when the file is not a TIFF, or a
-/// TIFF layout the chunk decoder does not carry — the caller then reads it
-/// whole.
+/// ([`decode_tiff_image`]): its header, then only what the window or level
+/// needs. `Ok(None)` when the file is not a TIFF, or is one whose layout the
+/// chunk decoder does not carry and is small enough to read whole — the
+/// caller then reads it whole. A larger file of such a layout is refused,
+/// naming the layout, rather than read whole to decode a window.
 fn decode_ranged_tiff(
     fetcher: &crate::fetch::Fetcher<'_>,
     row: usize,
     source: &Source,
-    crop: Option<&ViewOp>,
+    crop: RowCrop<'_>,
     level: u32,
-) -> Result<Option<(ViewBuffer, bool)>, String> {
-    use std::io::{Read, Seek};
+) -> Result<Option<ImageDecode>, String> {
+    use std::io::{ErrorKind, Read, Seek, SeekFrom};
+    use view_buffer::interop::tiff_region::{is_tiff, DECODE_LIMIT_BYTES};
     let Some(mut file) = fetcher.open(row)? else {
         return Ok(None);
     };
     let mut magic = [0u8; 4];
-    let tiff = file.read_exact(&mut magic).is_ok()
-        && view_buffer::interop::tiff_region::is_tiff(&magic)
-        && file.rewind().is_ok();
-    if !tiff {
+    match file.read_exact(&mut magic) {
+        Ok(()) if is_tiff(&magic) => {}
+        // Shorter than a TIFF header, or not one.
+        Ok(()) => return Ok(None),
+        Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    }
+    let mut image = ImageAdapter::open_tiff(file, level)
+        .map_err(|e| format!("Failed to decode image: {e:?}"))?;
+    if let Some(reason) = image.unsupported().map(str::to_string) {
+        let size = image
+            .source()
+            .seek(SeekFrom::End(0))
+            .map_err(|e| e.to_string())?;
+        if size > DECODE_LIMIT_BYTES as u64 {
+            return Err(format!(
+                "{reason} is not decoded by window, and reading the whole file \
+                 ({} MiB) is over the {} MiB limit",
+                size >> 20,
+                DECODE_LIMIT_BYTES >> 20
+            ));
+        }
         return Ok(None);
     }
-    decode_tiff_source(file, source, crop, level).map_err(|e| e.to_string())
+    decode_tiff_image(&mut image, source, crop).map_err(|e| e.to_string())
 }
 
 /// Decode row `row` of a binary column: a raw row as `raw_dtype`, or (with

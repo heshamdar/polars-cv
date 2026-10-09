@@ -63,7 +63,12 @@ crop ahead of the pointwise ops before it.
   by path, only the file's header and those chunks are read, locally or from
   S3, GCS, Azure or HTTP (by byte range).
 - **A window outside the image** is that row's error, with `crop`'s usual
-  message, under the source's `on_error`.
+  message, under the pipeline's `on_error`. For a TIFF it is found from the
+  header, without decoding any pixels.
+- **A null window parameter** nulls or fails the row under
+  `on_null_param`, without reading a TIFF's pixels.
+- **The cost of a patch** is the file's header, the patch's tiles and their
+  entries in the tile index, whatever the size of the slide.
 
 ## Pyramid levels
 
@@ -152,6 +157,9 @@ or explode and run a second pipeline over the patches.
 | u8/u16 gray, gray + alpha, RGB, RGBA; f32/f64 gray, RGB | |
 
 Other TIFF layouts (palette images, the floating-point predictor) decode whole.
+Read by path with a crop or a level, such a file is read whole only when it is
+within the 256 MiB decode limit; a larger one is the row's error, naming the
+layout.
 For a vendor format, read regions with a library such as openslide-python or
 tiffslide and hand the bytes or arrays to `source("image_bytes")` or
 `source("array")`.

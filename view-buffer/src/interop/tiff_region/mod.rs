@@ -1,42 +1,41 @@
 //! TIFF decoding chunk by chunk: a window of an image reads only the tiles
-//! (or strips) it overlaps.
+//! (or strips) it overlaps, and only their entries of the chunk tables.
 //!
-//! The `tiff` crate parses the file structure (header, IFDs, tags, BigTIFF);
-//! this module decodes the chunks itself, for two reasons. A window of a
-//! whole-slide image must touch only its own chunks, located through the
-//! offset/byte-count tables, and later fetched by byte range. And the
-//! crate's own chunk reader gets two common layouts wrong: it panics on LZW
-//! streams libtiff and tifffile read without complaint, and it passes a JPEG
-//! tile's components through unconverted (YCbCr data comes back as if it were
-//! RGB, and RGB-coded tiles fail outright).
+//! The structure is read lazily by [`ifd`]: a patch of a slide costs its
+//! header, its tiles' table entries and its tiles, whatever the slide's size.
+//! The chunks are decoded here too, for the same reason and two more: the
+//! `tiff` crate panics on LZW streams libtiff and tifffile read without
+//! complaint, and passes a JPEG tile's components through unconverted
+//! (YCbCr data comes back as if it were RGB, and RGB-coded tiles fail
+//! outright).
 //!
 //! A layout this module does not carry — palette images, separate sample
 //! planes, raw (non-JPEG) YCbCr, WhiteIsZero, signed or odd-width samples,
 //! the floating-point predictor, codecs other than none/LZW/Deflate/PackBits/
-//! JPEG — reports [`Layout::read`] `None`, and the caller decodes through the
-//! `tiff` crate as before. A whole-image decode and a window decode of the
-//! same file therefore always go through the same chunk decoder, so a window
-//! is exactly the crop of the whole.
+//! JPEG — reads as [`Readable::Unsupported`] with the reason, and the caller
+//! may decode it whole through the `tiff` crate. A whole-image decode and a
+//! window decode of a layout this module carries therefore always go through
+//! the same chunk decoder, so a window is exactly the crop of the whole.
+
+mod ifd;
 
 use std::io::{Cursor, Read, Seek};
 use std::ops::Range;
 
-use tiff::decoder::{Decoder, Limits};
-use tiff::tags::Tag;
+use tiff::tags::{CompressionMethod, Tag};
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::DType;
 
+pub use ifd::TiffError;
+use ifd::{malformed, Entry, Ifd, TiffFile};
+
 /// The most decoded pixel data one decode may produce, in bytes: the `tiff`
 /// crate's own default whole-image limit, kept so that what decoded before
 /// still does and what refused still does. A window of a larger image is
-/// within it; the whole image is not.
+/// within it; the whole image is not. A file this module cannot decode by
+/// window is read whole only when it is no larger than this either.
 pub const DECODE_LIMIT_BYTES: usize = 256 * 1024 * 1024;
-
-/// IFD values (the chunk offset and byte-count tables above all) may be this
-/// large: a 100k × 100k slide in 256-pixel tiles has ~150k chunks, an
-/// 8-byte offset each in BigTIFF — beyond the `tiff` crate's 1 MiB default.
-const IFD_VALUE_LIMIT: usize = 64 * 1024 * 1024;
 
 /// A window of the image: rows `top..bottom`, columns `left..right`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,15 +44,6 @@ pub struct Window {
     pub left: usize,
     pub bottom: usize,
     pub right: usize,
-}
-
-/// Open `bytes` with limits sized for large tiled images.
-pub(crate) fn open<R: Read + Seek>(reader: R) -> Result<Decoder<R>, String> {
-    let mut limits = Limits::default();
-    limits.ifd_value_size = IFD_VALUE_LIMIT;
-    Decoder::new(reader)
-        .map(|d| d.with_limits(limits))
-        .map_err(|e| format!("TIFF decoder creation failed: {e}"))
 }
 
 /// The element type of a TIFF's samples, as this module decodes them.
@@ -86,7 +76,9 @@ enum Codec {
     Jpeg,
 }
 
-/// One image (IFD) of a TIFF: its geometry, sample format and chunk tables.
+/// One image (IFD) of a TIFF: its geometry, sample format and chunk tables
+/// (their entries, not their values: [`Layout::chunk_ranges`] reads the few
+/// a window needs).
 #[derive(Debug, Clone)]
 pub(crate) struct Layout {
     pub(crate) width: usize,
@@ -95,60 +87,58 @@ pub(crate) struct Layout {
     chunk_width: usize,
     chunk_height: usize,
     tiled: bool,
-    offsets: Vec<u64>,
-    byte_counts: Vec<u64>,
+    offsets: Entry,
+    byte_counts: Entry,
     codec: Codec,
     /// Horizontal differencing (TIFF predictor 2).
     differenced: bool,
     sample: Sample,
     /// Samples stored per pixel.
     samples: usize,
-    /// The data is YCbCr-coded JPEG to convert to RGB (decided per tile from
-    /// the JPEG stream; see [`jpeg_is_ycbcr`]).
+    /// JPEG tables shared by every chunk (JPEGTables), spliced into each.
     jpeg_tables: Option<Vec<u8>>,
     big_endian: bool,
 }
 
-/// Read a tag's unsigned value, if present.
-fn tag_u64<R: Read + Seek>(d: &mut Decoder<R>, tag: Tag) -> Result<Option<u64>, String> {
-    d.find_tag_unsigned::<u64>(tag)
-        .map_err(|e| format!("TIFF tag {tag:?}: {e}"))
+/// An image's layout, or why this module does not decode it.
+#[derive(Debug, Clone)]
+pub(crate) enum Readable {
+    Layout(Layout),
+    Unsupported(String),
 }
 
 impl Layout {
-    /// The layout of the decoder's current image, or `None` when it is one
-    /// this module does not decode (the caller then uses the `tiff` crate).
-    pub(crate) fn read<R: Read + Seek>(
-        d: &mut Decoder<R>,
-        big_endian: bool,
-    ) -> Result<Option<Layout>, String> {
-        let (width, height) = d
-            .dimensions()
-            .map_err(|e| format!("Failed to get TIFF dimensions: {e}"))?;
-        let samples = tag_u64(d, Tag::SamplesPerPixel)?.unwrap_or(1) as usize;
-        let bits: Vec<u64> = d
-            .find_tag_unsigned_vec::<u64>(Tag::BitsPerSample)
-            .map_err(|e| format!("TIFF tag BitsPerSample: {e}"))?
+    /// The layout of `ifd`, or the reason this module does not decode it
+    /// (the caller may then use the `tiff` crate).
+    pub(crate) fn read<R: Read + Seek>(f: &mut TiffFile<R>, ifd: &Ifd) -> ifd::Result<Readable> {
+        let unsupported = |reason: String| Ok(Readable::Unsupported(reason));
+        let (width, height) = dimensions(f, ifd)?;
+        let samples = f.tag_u64(ifd, Tag::SamplesPerPixel)?.unwrap_or(1) as usize;
+        let bits = f
+            .tag_u64s(ifd, Tag::BitsPerSample)?
             .unwrap_or_else(|| vec![1]);
-        let format = d
-            .find_tag_unsigned_vec::<u64>(Tag::SampleFormat)
-            .map_err(|e| format!("TIFF tag SampleFormat: {e}"))?
+        let format = f
+            .tag_u64s(ifd, Tag::SampleFormat)?
             .unwrap_or_else(|| vec![1]);
-        let photometric = tag_u64(d, Tag::PhotometricInterpretation)?;
-        let compression = tag_u64(d, Tag::Compression)?.unwrap_or(1);
-        let predictor = tag_u64(d, Tag::Predictor)?.unwrap_or(1);
-        let planar = tag_u64(d, Tag::PlanarConfiguration)?.unwrap_or(1);
+        let photometric = f.tag_u64(ifd, Tag::PhotometricInterpretation)?;
+        let compression = f.tag_u64(ifd, Tag::Compression)?.unwrap_or(1);
+        let predictor = f.tag_u64(ifd, Tag::Predictor)?.unwrap_or(1);
+        let planar = f.tag_u64(ifd, Tag::PlanarConfiguration)?.unwrap_or(1);
 
-        // Every sample the same width and format.
+        if bits.is_empty() || format.is_empty() {
+            return malformed("TIFF BitsPerSample or SampleFormat without a value");
+        }
         if bits.iter().any(|&b| b != bits[0]) || format.iter().any(|&f| f != format[0]) {
-            return Ok(None);
+            return unsupported(format!(
+                "TIFF samples of mixed widths or formats ({bits:?} bits, format {format:?})"
+            ));
         }
         let sample = match (bits[0], format[0]) {
             (8, 1) => Sample::U8,
             (16, 1) => Sample::U16,
             (32, 3) => Sample::F32,
             (64, 3) => Sample::F64,
-            _ => return Ok(None),
+            (b, f) => return unsupported(format!("{b}-bit TIFF samples of SampleFormat {f}")),
         };
         let codec = match compression {
             1 => Codec::None,
@@ -156,7 +146,12 @@ impl Layout {
             8 | 32946 => Codec::Deflate,
             32773 => Codec::PackBits,
             7 => Codec::Jpeg,
-            _ => return Ok(None),
+            n => {
+                let name = u16::try_from(n)
+                    .map(|n| format!(" ({:?})", CompressionMethod::from_u16_exhaustive(n)))
+                    .unwrap_or_default();
+                return unsupported(format!("TIFF compression {n}{name}"));
+            }
         };
         let integer = matches!(sample, Sample::U8 | Sample::U16);
         // The channel rules of the whole-image decoder: gray, gray + alpha,
@@ -171,52 +166,47 @@ impl Layout {
             (Some(1), 2, _) | (Some(2), 4, _) => integer,
             _ => false,
         };
+        if !supported {
+            return unsupported(format!(
+                "TIFF PhotometricInterpretation {photometric:?} with {samples} \
+                 {}-bit samples under {codec:?} compression",
+                bits[0]
+            ));
+        }
         let differenced = match predictor {
             1 => false,
             2 if integer && codec != Codec::Jpeg => true,
-            _ => return Ok(None),
+            p => return unsupported(format!("TIFF predictor {p} on {codec:?} {sample:?} data")),
         };
-        if !supported || (planar != 1 && samples > 1) {
-            return Ok(None);
+        if planar != 1 && samples > 1 {
+            return unsupported(
+                "planar-separate TIFF samples (PlanarConfiguration 2, one plane per sample)"
+                    .to_string(),
+            );
         }
 
-        let tiled = d
-            .find_tag(Tag::TileWidth)
-            .map_err(|e| format!("TIFF tag TileWidth: {e}"))?
-            .is_some();
-        let (chunk_width, chunk_height, offsets, byte_counts) = if tiled {
-            let tw = tag_u64(d, Tag::TileWidth)?.unwrap_or(0) as usize;
-            let th = tag_u64(d, Tag::TileLength)?.unwrap_or(0) as usize;
-            let offsets = d
-                .get_tag_u64_vec(Tag::TileOffsets)
-                .map_err(|e| format!("TIFF tag TileOffsets: {e}"))?;
-            let counts = d
-                .get_tag_u64_vec(Tag::TileByteCounts)
-                .map_err(|e| format!("TIFF tag TileByteCounts: {e}"))?;
-            (tw, th, offsets, counts)
+        let tiled = ifd.has(Tag::TileWidth);
+        let (chunk_width, chunk_height, offsets, counts) = if tiled {
+            let tw = f.tag_u64(ifd, Tag::TileWidth)?.unwrap_or(0) as usize;
+            let th = f.tag_u64(ifd, Tag::TileLength)?.unwrap_or(0) as usize;
+            (tw, th, Tag::TileOffsets, Tag::TileByteCounts)
         } else {
-            let rows = tag_u64(d, Tag::RowsPerStrip)?
-                .map_or(height as usize, |r| (r as usize).min(height as usize));
-            let offsets = d
-                .get_tag_u64_vec(Tag::StripOffsets)
-                .map_err(|e| format!("TIFF tag StripOffsets: {e}"))?;
-            let counts = d
-                .get_tag_u64_vec(Tag::StripByteCounts)
-                .map_err(|e| format!("TIFF tag StripByteCounts: {e}"))?;
-            (width as usize, rows, offsets, counts)
+            let rows = f
+                .tag_u64(ifd, Tag::RowsPerStrip)?
+                .map_or(height, |r| (r as usize).min(height));
+            (width, rows, Tag::StripOffsets, Tag::StripByteCounts)
+        };
+        let (Some(&offsets), Some(&byte_counts)) = (ifd.get(offsets), ifd.get(counts)) else {
+            return malformed(format!("TIFF without {offsets:?} and {counts:?}"));
         };
         let jpeg_tables = if codec == Codec::Jpeg {
-            d.find_tag(Tag::JPEGTables)
-                .map_err(|e| format!("TIFF tag JPEGTables: {e}"))?
-                .map(|v| v.into_u8_vec())
-                .transpose()
-                .map_err(|e| format!("TIFF tag JPEGTables: {e}"))?
+            f.tag_bytes(ifd, Tag::JPEGTables)?
         } else {
             None
         };
         let layout = Layout {
-            width: width as usize,
-            height: height as usize,
+            width,
+            height,
             chunk_width,
             chunk_height,
             tiled,
@@ -227,16 +217,17 @@ impl Layout {
             sample,
             samples,
             jpeg_tables,
-            big_endian,
+            big_endian: f.big_endian(),
         };
+        let chunks = (layout.across() * layout.down()) as u64;
         if chunk_width == 0
             || chunk_height == 0
-            || layout.offsets.len() != layout.byte_counts.len()
-            || layout.offsets.len() < layout.across() * layout.down()
+            || offsets.count() < chunks
+            || byte_counts.count() < chunks
         {
-            return Err("TIFF chunk tables do not cover the image".to_string());
+            return malformed("TIFF chunk tables do not cover the image");
         }
-        Ok(Some(layout))
+        Ok(Readable::Layout(layout))
     }
 
     /// Chunks per row of chunks.
@@ -269,7 +260,27 @@ impl Layout {
         (w.bottom - w.top) * (w.right - w.left) * self.samples * self.sample.bytes()
     }
 
-    /// The chunks `window` overlaps, as `(chunk index, chunk row, chunk col)`.
+    /// Refuse a window over [`DECODE_LIMIT_BYTES`], before anything of it
+    /// is read.
+    fn check_size(&self, window: &Window) -> ifd::Result<()> {
+        let bytes = self.window_bytes(window);
+        if bytes > DECODE_LIMIT_BYTES {
+            return malformed(format!(
+                "decoding {}x{} pixels of this {}x{} TIFF needs {} MiB, over the {} MiB \
+                 limit; crop it (a crop right after the source decodes only its window)",
+                window.bottom - window.top,
+                window.right - window.left,
+                self.height,
+                self.width,
+                bytes >> 20,
+                DECODE_LIMIT_BYTES >> 20
+            ));
+        }
+        Ok(())
+    }
+
+    /// The chunks `window` overlaps, as `(chunk index, chunk row, chunk col)`,
+    /// row-major.
     fn chunks_in(&self, w: &Window) -> Vec<(usize, usize, usize)> {
         if w.bottom <= w.top || w.right <= w.left {
             return Vec::new();
@@ -280,10 +291,34 @@ impl Layout {
             .collect()
     }
 
-    /// The byte range of chunk `index` in the file.
-    pub(crate) fn chunk_range(&self, index: usize) -> std::ops::Range<u64> {
-        let start = self.offsets[index];
-        start..start + self.byte_counts[index]
+    /// The byte ranges of `chunks` in the file: their table entries read run
+    /// by run (a window's chunks in one chunk row are consecutive entries),
+    /// nothing else of the tables.
+    fn chunk_ranges<R: Read + Seek>(
+        &self,
+        f: &mut TiffFile<R>,
+        chunks: &[(usize, usize, usize)],
+    ) -> ifd::Result<Vec<Range<u64>>> {
+        let mut ranges = Vec::with_capacity(chunks.len());
+        let mut i = 0;
+        while i < chunks.len() {
+            let start = chunks[i].0;
+            let mut end = start + 1;
+            while i + (end - start) < chunks.len() && chunks[i + (end - start)].0 == end {
+                end += 1;
+            }
+            let run = start as u64..end as u64;
+            let offsets = f.u64s(&self.offsets, run.clone())?;
+            let counts = f.u64s(&self.byte_counts, run)?;
+            for (offset, count) in offsets.into_iter().zip(counts) {
+                let Some(stop) = offset.checked_add(count) else {
+                    return malformed("TIFF chunk past the end of any file");
+                };
+                ranges.push(offset..stop);
+            }
+            i += end - start;
+        }
+        Ok(ranges)
     }
 
     /// Decode one chunk's compressed bytes into native-endian samples, rows of
@@ -378,30 +413,19 @@ impl Layout {
         Ok(pixels)
     }
 
-    /// Decode `window` from `read_chunk`, which returns a chunk's compressed
-    /// bytes by index. Only the chunks the window overlaps are read.
-    pub(crate) fn decode_window(
+    /// Decode `window` from its `chunks` ([`Self::chunks_in`]), whose
+    /// compressed bytes `read_chunk` returns by position in `chunks`.
+    fn decode_window(
         &self,
         window: &Window,
-        mut read_chunk: impl FnMut(usize) -> Result<Vec<u8>, String>,
-    ) -> Result<ViewBuffer, String> {
-        let bytes = self.window_bytes(window);
-        if bytes > DECODE_LIMIT_BYTES {
-            return Err(format!(
-                "decoding {}x{} pixels of this {}x{} TIFF needs {} MiB, over the {} MiB \
-                 limit; crop it (a crop right after the source decodes only its window)",
-                window.bottom - window.top,
-                window.right - window.left,
-                self.height,
-                self.width,
-                bytes >> 20,
-                DECODE_LIMIT_BYTES >> 20
-            ));
-        }
+        chunks: &[(usize, usize, usize)],
+        mut read_chunk: impl FnMut(usize) -> ifd::Result<Vec<u8>>,
+    ) -> ifd::Result<ViewBuffer> {
+        self.check_size(window)?;
         let px = self.samples * self.sample.bytes();
         let (out_h, out_w) = (window.bottom - window.top, window.right - window.left);
-        let mut out = vec![0u8; bytes];
-        for (index, r, c) in self.chunks_in(window) {
+        let mut out = vec![0u8; self.window_bytes(window)];
+        for (k, &(_, r, c)) in chunks.iter().enumerate() {
             let (y0, x0) = (r * self.chunk_height, c * self.chunk_width);
             // A tile is always stored whole (padded past the image); the last
             // strip holds only the image's remaining rows.
@@ -410,7 +434,9 @@ impl Layout {
             } else {
                 self.chunk_height.min(self.height - y0)
             };
-            let data = self.decode_chunk(&read_chunk(index)?, rows)?;
+            let data = self
+                .decode_chunk(&read_chunk(k)?, rows)
+                .map_err(TiffError::Format)?;
             let (ys, ye) = (y0.max(window.top), (y0 + rows).min(window.bottom));
             let (xs, xe) = (
                 x0.max(window.left),
@@ -431,6 +457,17 @@ impl Layout {
             Sample::F32 => ViewBuffer::from_vec_with_shape(from_ne::<f32, 4>(&out), shape),
             Sample::F64 => ViewBuffer::from_vec_with_shape(from_ne::<f64, 8>(&out), shape),
         })
+    }
+}
+
+/// An image's `(width, height)`: ImageWidth and ImageLength, both required.
+fn dimensions<R: Read + Seek>(f: &mut TiffFile<R>, ifd: &Ifd) -> ifd::Result<(usize, usize)> {
+    match (
+        f.tag_u64(ifd, Tag::ImageWidth)?,
+        f.tag_u64(ifd, Tag::ImageLength)?,
+    ) {
+        (Some(w), Some(h)) => Ok((w as usize, h as usize)),
+        _ => malformed("TIFF image without ImageWidth and ImageLength"),
     }
 }
 
@@ -586,62 +623,61 @@ pub struct LevelInfo {
 /// a malformed chain.
 const MAX_IFDS: usize = 1024;
 
-/// The pyramid levels of a TIFF: IFD 0, then each later image that is a
-/// reduced copy of the level before it — tiled or flagged reduced-resolution
-/// (NewSubfileType bit 0), smaller in both axes, and of level 0's aspect to
-/// within a pixel of rounding. The other images a slide carries (an SVS's
-/// strip thumbnail, its label and macro photos) fail one of these and are
-/// skipped. A SubIFD pyramid (OME-TIFF) is not followed: its file has one
-/// level here.
+/// The pyramid levels of a TIFF, each with its IFD: IFD 0, then each later
+/// image that is a reduced copy of the level before it — tiled or flagged
+/// reduced-resolution (NewSubfileType bit 0), smaller in both axes, and of
+/// level 0's aspect to within a pixel of rounding. The other images a slide
+/// carries (an SVS's strip thumbnail, its label and macro photos) fail one of
+/// these and are skipped. A SubIFD pyramid (OME-TIFF) is not followed: its
+/// file has one level here.
 ///
 /// The one definition of what a level is: `source(level=)` and
-/// `.cv.slide_info()` both read it.
-pub fn pyramid_levels<R: Read + Seek>(d: &mut Decoder<R>) -> Result<Vec<LevelInfo>, String> {
+/// `.cv.slide_info()` both read it. Only IFD entries are read, never their
+/// chunk tables.
+fn levels<R: Read + Seek>(f: &mut TiffFile<R>) -> ifd::Result<Vec<(LevelInfo, Ifd)>> {
     let mut images = Vec::new();
-    d.seek_to_image(0).map_err(|e| format!("TIFF IFD 0: {e}"))?;
-    for ifd in 0..MAX_IFDS {
-        let (width, height) = d
-            .dimensions()
-            .map_err(|e| format!("TIFF IFD {ifd} dimensions: {e}"))?;
-        let tile = match tag_u64(d, Tag::TileWidth)? {
+    for (index, ifd) in f.ifds(MAX_IFDS)?.into_iter().enumerate() {
+        let (width, height) = dimensions(f, &ifd)?;
+        let tile = match f.tag_u64(&ifd, Tag::TileWidth)? {
             Some(tw) => Some((
                 tw as usize,
-                tag_u64(d, Tag::TileLength)?.unwrap_or(0) as usize,
+                f.tag_u64(&ifd, Tag::TileLength)?.unwrap_or(0) as usize,
             )),
             None => None,
         };
-        let reduced = tag_u64(d, Tag::NewSubfileType)?.is_some_and(|t| t & 1 == 1);
-        images.push((
-            LevelInfo {
-                ifd,
-                width: width as usize,
-                height: height as usize,
-                tile,
-            },
-            reduced,
-        ));
-        if !d.more_images() {
-            break;
-        }
-        d.next_image()
-            .map_err(|e| format!("TIFF IFD {}: {e}", ifd + 1))?;
+        let reduced = f
+            .tag_u64(&ifd, Tag::NewSubfileType)?
+            .is_some_and(|t| t & 1 == 1);
+        let info = LevelInfo {
+            ifd: index,
+            width,
+            height,
+            tile,
+        };
+        images.push((info, reduced, ifd));
     }
     let mut images = images.into_iter();
-    let Some((base, _)) = images.next() else {
+    let Some((base, _, base_ifd)) = images.next() else {
         return Ok(Vec::new());
     };
-    let mut levels = vec![base];
-    for (image, reduced) in images {
-        let (first, last) = (&levels[0], levels.last().expect("level 0"));
+    let mut levels = vec![(base, base_ifd)];
+    for (image, reduced, ifd) in images {
+        let (first, last) = (&levels[0].0, &levels.last().expect("level 0").0);
         let smaller = image.width < last.width && image.height < last.height;
         let expected_height = first.height as f64 * image.width as f64 / first.width as f64;
         let same_aspect =
             (expected_height - image.height as f64).abs() <= 1.0 + 0.01 * image.height as f64;
         if (image.tile.is_some() || reduced) && smaller && same_aspect {
-            levels.push(image);
+            levels.push((image, ifd));
         }
     }
     Ok(levels)
+}
+
+/// The pyramid levels of the TIFF `reader` holds ([`levels`]).
+pub fn pyramid_levels<R: Read + Seek>(reader: R) -> Result<Vec<LevelInfo>, TiffError> {
+    let mut f = TiffFile::open(reader)?;
+    Ok(levels(&mut f)?.into_iter().map(|(l, _)| l).collect())
 }
 
 /// A slide's header facts: its pyramid and its scale.
@@ -653,22 +689,32 @@ pub struct SlideInfo {
     pub mpp: Option<(f64, f64)>,
 }
 
-/// The pyramid and scale of a TIFF, read from its IFDs alone.
-pub fn slide_info<R: Read + Seek>(reader: R) -> Result<SlideInfo, String> {
-    let mut d = open(reader)?;
-    let mpp = microns_per_pixel(&mut d)?;
-    let levels = pyramid_levels(&mut d)?;
-    Ok(SlideInfo { levels, mpp })
+/// The pyramid and scale of a TIFF, read from its IFD entries alone.
+pub fn slide_info<R: Read + Seek>(reader: R) -> Result<SlideInfo, TiffError> {
+    let mut f = TiffFile::open(reader)?;
+    let levels = levels(&mut f)?;
+    let mpp = match levels.first() {
+        Some((_, ifd0)) => microns_per_pixel(&mut f, ifd0)?,
+        None => None,
+    };
+    Ok(SlideInfo {
+        levels: levels.into_iter().map(|(l, _)| l).collect(),
+        mpp,
+    })
 }
 
 /// Level 0's microns per pixel: an Aperio ImageDescription's `MPP = m`, else
 /// a resolution in pixels per centimetre (ResolutionUnit 3). A resolution
 /// per inch is not used: writers default it to 72 dpi whatever the scale.
-fn microns_per_pixel<R: Read + Seek>(d: &mut Decoder<R>) -> Result<Option<(f64, f64)>, String> {
-    let description = d
-        .find_tag(Tag::ImageDescription)
-        .map_err(|e| format!("TIFF tag ImageDescription: {e}"))?
-        .and_then(|v| v.into_string().ok());
+fn microns_per_pixel<R: Read + Seek>(
+    f: &mut TiffFile<R>,
+    ifd0: &Ifd,
+) -> ifd::Result<Option<(f64, f64)>> {
+    let description = f.tag_bytes(ifd0, Tag::ImageDescription)?.map(|b| {
+        String::from_utf8_lossy(&b)
+            .trim_end_matches('\0')
+            .to_string()
+    });
     if let Some(text) = description.filter(|t| t.starts_with("Aperio")) {
         let mpp = text.split('|').find_map(|field| {
             let (key, value) = field.split_once('=')?;
@@ -678,50 +724,34 @@ fn microns_per_pixel<R: Read + Seek>(d: &mut Decoder<R>) -> Result<Option<(f64, 
             return Ok(Some((m, m)));
         }
     }
-    if tag_u64(d, Tag::ResolutionUnit)? != Some(3) {
+    if f.tag_u64(ifd0, Tag::ResolutionUnit)? != Some(3) {
         return Ok(None);
     }
-    let mut rational = |tag: Tag| -> Result<Option<f64>, String> {
-        Ok(
-            match d
-                .find_tag(tag)
-                .map_err(|e| format!("TIFF tag {tag:?}: {e}"))?
-            {
-                Some(tiff::decoder::ifd::Value::Rational(n, den)) if den != 0 => {
-                    Some(f64::from(n) / f64::from(den))
-                }
-                Some(tiff::decoder::ifd::Value::RationalBig(n, den)) if den != 0 => {
-                    Some(n as f64 / den as f64)
-                }
-                _ => None,
-            },
-        )
-    };
-    let (x, y) = (rational(Tag::XResolution)?, rational(Tag::YResolution)?);
+    let x = f.tag_rational(ifd0, Tag::XResolution)?;
+    let y = f.tag_rational(ifd0, Tag::YResolution)?;
     Ok(match (x, y) {
         (Some(x), Some(y)) if x > 0.0 && y > 0.0 => Some((1e4 / x, 1e4 / y)),
         _ => None,
     })
 }
 
-/// The decoder positioned at pyramid level `level`.
-fn seek_level<R: Read + Seek>(d: &mut Decoder<R>, level: u32) -> Result<usize, String> {
+/// Pyramid level `level`'s position in the IFD chain, and its IFD. Level 0
+/// reads the first IFD alone; a higher level walks the chain's entries.
+fn level_ifd<R: Read + Seek>(f: &mut TiffFile<R>, level: u32) -> ifd::Result<(usize, Ifd)> {
     if level == 0 {
-        d.seek_to_image(0).map_err(|e| format!("TIFF IFD 0: {e}"))?;
-        return Ok(0);
+        return Ok((0, f.first_ifd()?));
     }
-    let levels = pyramid_levels(d)?;
-    let Some(info) = levels.get(level as usize) else {
-        let n = levels.len();
-        return Err(format!(
+    let mut levels = levels(f)?;
+    let n = levels.len();
+    if (level as usize) >= n {
+        return malformed(format!(
             "level {level} does not exist: this TIFF has {n} pyramid level{} (0..={})",
             if n == 1 { "" } else { "s" },
             n.saturating_sub(1)
         ));
-    };
-    d.seek_to_image(info.ifd)
-        .map_err(|e| format!("TIFF IFD {}: {e}", info.ifd))?;
-    Ok(info.ifd)
+    }
+    let (info, ifd) = levels.swap_remove(level as usize);
+    Ok((info.ifd, ifd))
 }
 
 /// Where a TIFF's bytes come from: memory, a local file, or (through the
@@ -750,30 +780,21 @@ impl<S: TiffSource + ?Sized> TiffSource for &mut S {
     }
 }
 
-/// One pyramid level of a TIFF, opened: its header read, its chunks not.
+/// One pyramid level of a TIFF, opened: its header and IFD entries read,
+/// neither its chunk tables nor its chunks.
 pub struct TiffImage<S: TiffSource> {
-    decoder: Decoder<S>,
-    /// `None` for a layout this module leaves to the `tiff` crate.
-    layout: Option<Layout>,
+    file: TiffFile<S>,
+    layout: Readable,
     ifd: usize,
 }
 
 impl<S: TiffSource> TiffImage<S> {
     /// Open pyramid level `level` of the TIFF `source` holds.
-    pub fn open(mut source: S, level: u32) -> Result<Self, String> {
-        let mut magic = [0u8; 2];
-        source
-            .read_exact(&mut magic)
-            .and_then(|()| source.rewind())
-            .map_err(|e| format!("TIFF header: {e}"))?;
-        let mut decoder = open(source)?;
-        let ifd = seek_level(&mut decoder, level)?;
-        let layout = Layout::read(&mut decoder, &magic == b"MM")?;
-        Ok(TiffImage {
-            decoder,
-            layout,
-            ifd,
-        })
+    pub fn open(source: S, level: u32) -> Result<Self, TiffError> {
+        let mut file = TiffFile::open(source)?;
+        let (ifd, entries) = level_ifd(&mut file, level)?;
+        let layout = Layout::read(&mut file, &entries)?;
+        Ok(TiffImage { file, layout, ifd })
     }
 
     /// The image's position in the file's IFD chain.
@@ -784,17 +805,31 @@ impl<S: TiffSource> TiffImage<S> {
     /// The `[H, W, C]` shape and element type a decode produces, or `None`
     /// for a layout this module does not decode.
     pub fn shape(&self) -> Option<([usize; 3], DType)> {
-        self.layout
-            .as_ref()
-            .map(|l| ([l.height, l.width, l.channels()], l.dtype()))
+        match &self.layout {
+            Readable::Layout(l) => Some(([l.height, l.width, l.channels()], l.dtype())),
+            Readable::Unsupported(_) => None,
+        }
+    }
+
+    /// Why this module does not decode the image, or `None` when it does.
+    pub fn unsupported(&self) -> Option<&str> {
+        match &self.layout {
+            Readable::Layout(_) => None,
+            Readable::Unsupported(reason) => Some(reason),
+        }
+    }
+
+    /// The source, positioned anywhere.
+    pub fn source(&mut self) -> &mut S {
+        self.file.reader()
     }
 
     /// Decode `window` (`None`: the whole image), reading only the chunks it
-    /// overlaps — prefetched together, then read one by one. `None` for a
-    /// layout this module does not decode. `window` must lie inside the image
-    /// ([`Self::shape`]).
-    pub fn decode(&mut self, window: Option<Window>) -> Result<Option<ViewBuffer>, String> {
-        let Some(layout) = &self.layout else {
+    /// overlaps and their table entries — the chunks prefetched together,
+    /// then read one by one. `None` for a layout this module does not
+    /// decode. `window` must lie inside the image ([`Self::shape`]).
+    pub fn decode(&mut self, window: Option<Window>) -> Result<Option<ViewBuffer>, TiffError> {
+        let Readable::Layout(layout) = &self.layout else {
             return Ok(None);
         };
         let window = window.unwrap_or(Window {
@@ -803,23 +838,19 @@ impl<S: TiffSource> TiffImage<S> {
             bottom: layout.height,
             right: layout.width,
         });
-        let ranges: Vec<Range<u64>> = layout
-            .chunks_in(&window)
-            .iter()
-            .map(|&(index, ..)| layout.chunk_range(index))
-            .collect();
-        let reader = self.decoder.inner();
-        reader
-            .prefetch(&ranges)
-            .map_err(|e| format!("reading TIFF chunks: {e}"))?;
+        layout.check_size(&window)?;
+        let chunks = layout.chunks_in(&window);
+        let ranges = layout.chunk_ranges(&mut self.file, &chunks)?;
+        let reader = self.file.reader();
+        reader.prefetch(&ranges)?;
         layout
-            .decode_window(&window, |index| {
-                let range = layout.chunk_range(index);
-                let mut chunk = vec![0u8; (range.end - range.start) as usize];
-                reader
-                    .seek(std::io::SeekFrom::Start(range.start))
-                    .and_then(|_| reader.read_exact(&mut chunk))
-                    .map_err(|e| format!("TIFF chunk {index}: {e}"))?;
+            .decode_window(&window, &chunks, |k| {
+                let range = &ranges[k];
+                let len = usize::try_from(range.end - range.start)
+                    .map_err(|_| TiffError::Format("TIFF chunk too large".into()))?;
+                let mut chunk = vec![0u8; len];
+                reader.seek(std::io::SeekFrom::Start(range.start))?;
+                reader.read_exact(&mut chunk)?;
                 Ok(chunk)
             })
             .map(Some)
@@ -831,8 +862,8 @@ impl<S: TiffSource> TiffImage<S> {
 pub enum TiffDecode {
     /// The image (or window), decoded by this module.
     Pixels(ViewBuffer),
-    /// A layout this module leaves to the `tiff` crate, at this IFD.
-    Unsupported { ifd: usize },
+    /// A layout this module leaves to the `tiff` crate, at this IFD, and why.
+    Unsupported { ifd: usize, reason: String },
 }
 
 /// Pyramid level `level` of an in-memory TIFF, decoded over `window`
@@ -840,18 +871,21 @@ pub enum TiffDecode {
 ///
 /// `window` must lie inside the image (the caller validates it against
 /// [`image_shape`]).
-pub fn decode(bytes: &[u8], window: Option<Window>, level: u32) -> Result<TiffDecode, String> {
+pub fn decode(bytes: &[u8], window: Option<Window>, level: u32) -> Result<TiffDecode, TiffError> {
     let mut image = TiffImage::open(Cursor::new(bytes), level)?;
     Ok(match image.decode(window)? {
         Some(buffer) => TiffDecode::Pixels(buffer),
-        None => TiffDecode::Unsupported { ifd: image.ifd() },
+        None => TiffDecode::Unsupported {
+            ifd: image.ifd(),
+            reason: image.unsupported().unwrap_or_default().to_string(),
+        },
     })
 }
 
 /// The `[H, W, C]` shape and element type a decode of pyramid level `level`
 /// of an in-memory TIFF produces, or `Ok(None)` when this module does not
 /// decode it.
-pub fn image_shape(bytes: &[u8], level: u32) -> Result<Option<([usize; 3], DType)>, String> {
+pub fn image_shape(bytes: &[u8], level: u32) -> Result<Option<([usize; 3], DType)>, TiffError> {
     Ok(TiffImage::open(Cursor::new(bytes), level)?.shape())
 }
 
@@ -942,8 +976,8 @@ mod tests {
             chunk_width: 16,
             chunk_height: 16,
             tiled: true,
-            offsets: vec![0; 20],
-            byte_counts: vec![0; 20],
+            offsets: Entry::unread(20),
+            byte_counts: Entry::unread(20),
             codec: Codec::None,
             differenced: false,
             sample: Sample::U8,

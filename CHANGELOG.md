@@ -31,11 +31,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   when a node's first op is a crop. Spatial-window pushdown already moves a
   crop ahead of the pointwise ops it commutes with.
   - The executor resolves the crop for the row before decoding, and the
-    decoder (`ImageAdapter::decode_cropped`) returns the window.
+    decoder (`ImageAdapter::decode_region`) returns the window.
   - The output is the crop of the full decode, element for element. The
-    window is the crop's own: validated by its own check, and when that
-    refuses (a window outside the image) the image decodes whole and the crop
-    raises its usual error.
+    window is the crop's own, validated by its own check. A window it refuses
+    (one outside the image) is the row's error with the crop's usual message.
+    For a TIFF this is known from the header, so no pixels are decoded:
+    before, the whole image was decoded first, and a slide too large for
+    that failed with the decode limit's message ("crop it") instead.
+  - A window whose parameter is null (or does not resolve) nulls or fails the
+    row as the crop would, under `on_null_param`. For a TIFF the pixels are
+    not read: before, the whole file was read and decoded first, so one null
+    `top` on a 1.5 GB slide read 1.5 GB and failed on the decode limit, even
+    under `on_null_param("null")`.
   - Scaled decodes (`decode_max_size`) keep the crop.
   - For now every codec decodes in full and cuts the window, so nothing gets
     faster yet. This is the plumbing a tile-aware TIFF decoder plugs into.
@@ -46,14 +53,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **A crop of a tiled or strip TIFF reads only the chunks it overlaps.** A
   crop right after the source decodes its window from the tiles (or strips)
   under it. The new `view_buffer::interop::tiff_region` decodes them
-  itself, while the `tiff` crate still parses the file structure.
+  itself.
+  - It reads the file's structure lazily too (`tiff_region::ifd`): only the
+    IFD entries, and only the entries of the chunk tables that the window's
+    chunks need. Every Rust TIFF reader, the `tiff` crate included, loads an
+    IFD's whole offset and byte-count tables (~2.4 MB for a 100k × 100k
+    slide), so a patch read through one cost more the larger the slide was.
+    On a 98k × 98k JPEG slide with 147k tiles, a random 256-pixel patch read
+    5.2 MB through the `tiff` crate's parser, and about 30 KB now.
   - Codecs: uncompressed, LZW, Deflate, PackBits and JPEG, with horizontal
     differencing.
   - Samples: u8/u16 in gray, gray+alpha, RGB or RGBA; f32/f64 in gray or RGB.
   - Whole-image TIFF decodes go through the same chunk decoder, so a window
     is exactly the crop of the whole.
   - A window still decodes when tiles elsewhere in the file are damaged.
-  - Other layouts decode whole through the `tiff` crate, as before.
+  - Other layouts decode whole through the `tiff` crate, as before. The
+    `tiff` crate now does only that.
   - Decoding more than 256 MiB of pixels at once (the `tiff` crate's former
     limit) is a row error that suggests cropping.
   - New `targeted:codec_tiff_*` benchmark cases.
@@ -93,8 +108,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   - With a crop right after the source, or `level` above 0, a local TIFF is
     opened and only its header and the chunks it needs are read. In a test,
     four 64-pixel windows of a 3 MiB slide read 3.4% of it.
-  - Other files, and TIFF layouts the chunk decoder does not carry, are read
-    whole as before. `allowed_roots` and `on_error` apply unchanged.
+  - Other files are read whole as before. So is a TIFF layout the chunk
+    decoder does not carry (JPEG 2000 or Zstandard tiles, say), but only when
+    the file is within the 256 MiB decode limit. A larger one is the row's
+    error naming the layout: reading a multi-gigabyte slide whole to decode
+    one window was never going to succeed.
+  - `allowed_roots` and `on_error` apply unchanged.
   - New `_lib._fetch_bytes_read()` counts every byte path reads take from
     files and stores, so tests can measure this at the user-facing call.
 - **Remote TIFFs (S3, GCS, Azure, HTTP) are read by range too.**
@@ -105,12 +124,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   - Object stores use the raw store's `head` and `get_ranges`, which take no
     budget permit of their own.
   - HTTP uses `Range` requests. A server that ignores `Range` sends the whole
-    body once, and the ranges are cut from it.
+    body, which the call keeps: every later block and window is cut from it,
+    so such a server is read once per call, not once per request.
+  - Rows needing the same structure block wait for one fetch of it rather
+    than each requesting it.
   - In such a node a row no longer prefetches whole objects for the rows
     after it. A non-TIFF remote file there costs one extra small read (the
     format sniff) before its whole fetch.
-  - `.cv.slide_info()` on a path reads a TIFF's IFDs by range instead of
-    downloading it.
+  - `.cv.slide_info()` on a path reads a TIFF's IFD entries by range instead
+    of downloading it. A TIFF whose structure does not parse is null (as its
+    bytes give), found from its header; an unreadable path follows
+    `on_error`. Only a file that is not a TIFF falls back to the
+    header-prefix read.
   - New `targeted:wsi_patch_window_file` benchmark case.
 
 - **`Pipeline.tile(height=, width=, stride_height=, stride_width=,

@@ -377,12 +377,44 @@ async fn object_store_for(
     Ok((store, key))
 }
 
+/// What a size or ranged request of a remote file gave.
+pub(crate) enum RangedReply<T> {
+    /// What was asked: the size, or each range's bytes.
+    Asked(T),
+    /// The server ignored the range and sent the whole object, which every
+    /// later range is cut from (an HTTP server answering 200).
+    Whole(Vec<u8>),
+}
+
+/// `ranges` cut from a whole object's `body`.
+pub(crate) fn cut_ranges(
+    body: &[u8],
+    ranges: &[std::ops::Range<u64>],
+    path: &str,
+) -> Result<Vec<Vec<u8>>, String> {
+    ranges
+        .iter()
+        .map(|r| {
+            body.get(r.start as usize..r.end as usize)
+                .map(<[u8]>::to_vec)
+                .ok_or_else(|| {
+                    format!(
+                        "range {}..{} lies past the end of {path} ({} bytes)",
+                        r.start,
+                        r.end,
+                        body.len()
+                    )
+                })
+        })
+        .collect()
+}
+
 /// A remote file's size in bytes, under the concurrency budget like every
 /// read ([`read_remote_budgeted`]).
 pub(crate) async fn remote_size_budgeted(
     path: &str,
     options: Option<&CloudOptions>,
-) -> Result<u64, String> {
+) -> Result<RangedReply<u64>, String> {
     with_concurrency_budget(1, || remote_size(path, options))
         .await
         .map_err(|e| e.to_string())
@@ -395,13 +427,16 @@ pub(crate) async fn read_remote_ranges_budgeted(
     path: &str,
     options: Option<&CloudOptions>,
     ranges: &[std::ops::Range<u64>],
-) -> Result<Vec<Vec<u8>>, String> {
+) -> Result<RangedReply<Vec<Vec<u8>>>, String> {
     with_concurrency_budget(1, || read_remote_ranges(path, options, ranges))
         .await
         .map_err(|e| e.to_string())
 }
 
-async fn remote_size(path: &str, options: Option<&CloudOptions>) -> Result<u64, CloudError> {
+async fn remote_size(
+    path: &str,
+    options: Option<&CloudOptions>,
+) -> Result<RangedReply<u64>, CloudError> {
     if path.starts_with("http://") || path.starts_with("https://") {
         return http_size(path).await;
     }
@@ -414,7 +449,7 @@ async fn remote_size(path: &str, options: Option<&CloudOptions>) -> Result<u64, 
             async move { store.head(key).await }
         })
         .await
-        .map(|meta| meta.size)
+        .map(|meta| RangedReply::Asked(meta.size))
         .map_err(|e| CloudError::ReadError(e.to_string()))
 }
 
@@ -422,9 +457,9 @@ async fn read_remote_ranges(
     path: &str,
     options: Option<&CloudOptions>,
     ranges: &[std::ops::Range<u64>],
-) -> Result<Vec<Vec<u8>>, CloudError> {
+) -> Result<RangedReply<Vec<Vec<u8>>>, CloudError> {
     if ranges.is_empty() {
-        return Ok(Vec::new());
+        return Ok(RangedReply::Asked(Vec::new()));
     }
     if path.starts_with("http://") || path.starts_with("https://") {
         return read_http_ranges(path, ranges).await;
@@ -438,7 +473,7 @@ async fn read_remote_ranges(
             async move { store.get_ranges(key, ranges).await }
         })
         .await
-        .map(|parts| parts.into_iter().map(|b| b.to_vec()).collect())
+        .map(|parts| RangedReply::Asked(parts.into_iter().map(|b| b.to_vec()).collect()))
         .map_err(|e| CloudError::ReadError(e.to_string()))
 }
 
@@ -565,7 +600,7 @@ async fn read_http(url: &str) -> Result<Vec<u8>, CloudError> {
 /// An HTTP resource's size: `HEAD`'s `Content-Length`, or, from a server
 /// that does not answer `HEAD` with one, the total of a one-byte ranged
 /// `GET`'s `Content-Range`.
-async fn http_size(url: &str) -> Result<u64, CloudError> {
+async fn http_size(url: &str) -> Result<RangedReply<u64>, CloudError> {
     let client = http_client();
     let failed = |e: reqwest::Error| CloudError::ReadError(format!("HTTP request failed: {e}"));
     let head = client.head(url).send().await.map_err(failed)?;
@@ -575,7 +610,7 @@ async fn http_size(url: &str) -> Result<u64, CloudError> {
             .get(reqwest::header::CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok()?.parse::<u64>().ok())
         {
-            return Ok(len);
+            return Ok(RangedReply::Asked(len));
         }
     }
     let probe = client
@@ -595,24 +630,23 @@ async fn http_size(url: &str) -> Result<u64, CloudError> {
         .get(reqwest::header::CONTENT_RANGE)
         .and_then(|v| v.to_str().ok()?.rsplit('/').next()?.parse::<u64>().ok());
     match total {
-        Some(total) => Ok(total),
-        // The server ignored the range and sent the body: its length is the
-        // size.
+        Some(total) => Ok(RangedReply::Asked(total)),
+        // The server ignored the range and sent the body: it is the object.
         None => probe
             .bytes()
             .await
-            .map(|b| b.len() as u64)
+            .map(|b| RangedReply::Whole(b.to_vec()))
             .map_err(|e| CloudError::ReadError(format!("Failed to read response body: {e}"))),
     }
 }
 
 /// `ranges` of an HTTP resource, one `Range` request each. A server that
-/// ignores `Range` (answers 200 with the whole body) is read once, and every
-/// range cut from that body.
+/// ignores `Range` (answers 200 with the whole body) is read once: the body
+/// comes back whole, for the caller to cut this and every later range from.
 async fn read_http_ranges(
     url: &str,
     ranges: &[std::ops::Range<u64>],
-) -> Result<Vec<Vec<u8>>, CloudError> {
+) -> Result<RangedReply<Vec<Vec<u8>>>, CloudError> {
     let client = http_client();
     let mut parts = Vec::with_capacity(ranges.len());
     for range in ranges {
@@ -640,20 +674,7 @@ async fn read_http_ranges(
             .await
             .map_err(|e| CloudError::ReadError(format!("Failed to read response body: {e}")))?;
         if status != reqwest::StatusCode::PARTIAL_CONTENT {
-            // Ranges ignored: cut every range from the whole body.
-            let cut = |r: &std::ops::Range<u64>| {
-                body.get(r.start as usize..r.end as usize)
-                    .map(<[u8]>::to_vec)
-                    .ok_or_else(|| {
-                        CloudError::ReadError(format!(
-                            "range {}..{} lies past the end of {url} ({} bytes)",
-                            r.start,
-                            r.end,
-                            body.len()
-                        ))
-                    })
-            };
-            return ranges.iter().map(cut).collect();
+            return Ok(RangedReply::Whole(body.to_vec()));
         }
         if body.len() as u64 != range.end - range.start {
             return Err(CloudError::ReadError(format!(
@@ -665,7 +686,7 @@ async fn read_http_ranges(
         }
         parts.push(body.to_vec());
     }
-    Ok(parts)
+    Ok(RangedReply::Asked(parts))
 }
 
 /// Check if a path is a remote URL (cloud storage or HTTP).

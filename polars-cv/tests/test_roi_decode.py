@@ -1,7 +1,7 @@
 """ROI decode: a crop right after an image source decodes only its window.
 
 The ``roi_decode`` engine pass hands a node's leading crop to the decoder
-(``ImageAdapter::decode_cropped``) instead of decoding the whole image and
+(``ImageAdapter::decode_region``) instead of decoding the whole image and
 cropping after. It must never change a result: every case here runs with the
 pass on and off and compares whole output columns — values, nulls and error
 messages — at the user-facing entry point (``.sink()``).

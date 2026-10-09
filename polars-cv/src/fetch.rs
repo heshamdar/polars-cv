@@ -50,13 +50,13 @@ use std::collections::HashMap;
 use std::ops::{Deref, Range};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 
 use futures::future::AbortHandle;
 use polars::prelude::*;
 use pyo3_polars::export::polars_core::runtime::ASYNC;
 
-use crate::cloud::{self, CloudOptions};
+use crate::cloud::{self, CloudOptions, RangedReply};
 
 /// Make `path` absolute and resolve `.` / `..` textually.
 ///
@@ -395,10 +395,10 @@ impl<'a> Fetcher<'a> {
         let remote = entries
             .iter()
             .map(|e| {
-                Arc::new(RemoteObject::new(CloudRanges {
-                    path: e.path.clone(),
-                    options: options.cloned(),
-                }))
+                Arc::new(RemoteObject::new(CloudRanges::new(
+                    e.path.clone(),
+                    options.cloned(),
+                )))
             })
             .collect();
         Fetcher {
@@ -662,6 +662,34 @@ pub trait RangeStore: Send + Sync {
 pub struct CloudRanges {
     path: String,
     options: Option<CloudOptions>,
+    /// The whole object, once a server ignoring ranges has sent it: every
+    /// later size and range is answered from it, so such a server is read
+    /// once per call rather than once per request.
+    whole: OnceLock<Vec<u8>>,
+}
+
+impl CloudRanges {
+    fn new(path: String, options: Option<CloudOptions>) -> Self {
+        CloudRanges {
+            path,
+            options,
+            whole: OnceLock::new(),
+        }
+    }
+
+    /// The whole object a server sent, kept, and counted as read once.
+    fn keep_whole(&self, body: Vec<u8>) -> &Vec<u8> {
+        let n = body.len();
+        let mut kept = false;
+        let whole = self.whole.get_or_init(|| {
+            kept = true;
+            body
+        });
+        if kept {
+            count_read(n);
+        }
+        whole
+    }
 }
 
 /// Run `future` on polars' `ASYNC` runtime and wait for it on this (row)
@@ -676,17 +704,33 @@ fn block_on<T: Send + 'static>(future: impl std::future::Future<Output = T> + Se
 
 impl RangeStore for CloudRanges {
     fn size(&self) -> Result<u64, String> {
+        if let Some(whole) = self.whole.get() {
+            return Ok(whole.len() as u64);
+        }
         let (path, options) = (self.path.clone(), self.options.clone());
-        block_on(async move { cloud::remote_size_budgeted(&path, options.as_ref()).await })
+        match block_on(async move { cloud::remote_size_budgeted(&path, options.as_ref()).await })? {
+            RangedReply::Asked(size) => Ok(size),
+            RangedReply::Whole(body) => Ok(self.keep_whole(body).len() as u64),
+        }
     }
 
     fn read(&self, ranges: &[Range<u64>]) -> Result<Vec<Vec<u8>>, String> {
-        let (path, options, ranges) = (self.path.clone(), self.options.clone(), ranges.to_vec());
-        let parts = block_on(async move {
-            cloud::read_remote_ranges_budgeted(&path, options.as_ref(), &ranges).await
+        if let Some(whole) = self.whole.get() {
+            return cloud::cut_ranges(whole, ranges, &self.path);
+        }
+        let (path, options, wanted) = (self.path.clone(), self.options.clone(), ranges.to_vec());
+        let reply = block_on(async move {
+            cloud::read_remote_ranges_budgeted(&path, options.as_ref(), &wanted).await
         })?;
-        count_read(parts.iter().map(Vec::len).sum());
-        Ok(parts)
+        match reply {
+            RangedReply::Asked(parts) => {
+                count_read(parts.iter().map(Vec::len).sum());
+                Ok(parts)
+            }
+            RangedReply::Whole(body) => {
+                cloud::cut_ranges(self.keep_whole(body), ranges, &self.path)
+            }
+        }
     }
 }
 
@@ -704,8 +748,12 @@ const COALESCE_GAP: u64 = 16 * 1024;
 pub struct RemoteObject<S: RangeStore = CloudRanges> {
     store: S,
     size: std::sync::OnceLock<Result<u64, String>>,
-    blocks: Mutex<HashMap<u64, Arc<Vec<u8>>>>,
+    /// Each block's one fetch: rows wanting a block another row is
+    /// fetching wait for it rather than request it again.
+    blocks: Mutex<HashMap<u64, Arc<BlockCell>>>,
 }
+
+type BlockCell = OnceLock<Result<Arc<Vec<u8>>, String>>;
 
 impl<S: RangeStore> RemoteObject<S> {
     pub fn new(store: S) -> Self {
@@ -722,23 +770,20 @@ impl<S: RangeStore> RemoteObject<S> {
 
     /// Block `index`, fetched once per call.
     fn block(&self, index: u64) -> Result<Arc<Vec<u8>>, String> {
-        if let Some(block) = self
-            .blocks
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(&index)
-        {
-            return Ok(Arc::clone(block));
-        }
-        let start = index * REMOTE_BLOCK;
-        let end = (start + REMOTE_BLOCK).min(self.size()?);
-        let mut parts = self.store.read(std::slice::from_ref(&(start..end)))?;
-        let block = Arc::new(parts.pop().unwrap_or_default());
-        self.blocks
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(index, Arc::clone(&block));
-        Ok(block)
+        let cell = Arc::clone(
+            self.blocks
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .entry(index)
+                .or_default(),
+        );
+        cell.get_or_init(|| {
+            let start = index * REMOTE_BLOCK;
+            let end = (start + REMOTE_BLOCK).min(self.size()?);
+            let mut parts = self.store.read(std::slice::from_ref(&(start..end)))?;
+            Ok(Arc::new(parts.pop().unwrap_or_default()))
+        })
+        .clone()
     }
 }
 
@@ -1094,15 +1139,14 @@ mod tests {
             height: Some(20),
             width: Some(30),
         };
-        let decoded = view_buffer::ImageAdapter::decode_tiff_from(
-            RemoteReader::new(Arc::clone(&object)),
-            Some(&crop),
-            0,
-        )
-        .unwrap()
-        .expect("an uncompressed gray TIFF is the chunk decoder's");
-        assert!(decoded.applied);
-        let got = decoded.buffer.to_contiguous();
+        use view_buffer::interop::image::{RegionDecode, TiffRegion};
+        let mut image =
+            view_buffer::ImageAdapter::open_tiff(RemoteReader::new(Arc::clone(&object)), 0)
+                .unwrap();
+        let got = match view_buffer::ImageAdapter::decode_tiff_region(&mut image, Some(&crop)) {
+            Ok(TiffRegion::Decoded(RegionDecode::Window(buffer))) => buffer.to_contiguous(),
+            other => panic!("an uncompressed gray TIFF is the chunk decoder's: {other:?}"),
+        };
         assert_eq!(got.shape(), &[20, 30, 1]);
         let want: Vec<u8> = (100..120)
             .flat_map(|y| pixels[y * 2048 + 200..y * 2048 + 230].iter().copied())

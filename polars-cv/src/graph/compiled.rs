@@ -42,10 +42,11 @@ use super::step::GraphStep;
 
 use super::decode::{
     build_series_from_spec, decode_source_row, dtype_from_polars_leaf, null_row_result_for_spec,
-    RowFetch, RowParts,
+    DecodedRow, RowFetch, RowParts,
 };
 use super::encode::{encode_node_output, execute_geometry_op};
 use super::types::{OutputSpec, OutputValue, RowErrorPolicy, RowResult, UnifiedGraph};
+use crate::execute::RowCrop;
 use crate::plan::State;
 
 /// The exact graph JSON a graph was compiled from. Stored on the compiled
@@ -718,23 +719,37 @@ impl CompiledGraph {
                     let on_error_null = np.source_null;
                     // The leading crop, resolved for this row ahead of the
                     // decode. A row whose crop does not resolve (a null or a
-                    // refused parameter) decodes whole, and its crop fails
-                    // below exactly as it does without the pass.
+                    // refused parameter) keeps the failure: the decoder then
+                    // reads no pixels it could avoid, and the row fails or
+                    // nulls below exactly as its crop's resolution does
+                    // without the pass.
+                    let mut unresolved: Option<(String, bool)> = None;
                     let window: Option<Cow<'_, GraphStep>> = if np.roi {
                         match &np.resolvers[0] {
                             OpResolver::Static(step) => Some(Cow::Borrowed(step)),
                             OpResolver::Dynamic(spec) => {
                                 ctx.clear_null();
-                                spec.resolve(row_idx, ctx).ok().map(Cow::Owned)
+                                match spec.resolve(row_idx, ctx) {
+                                    Ok(step) => Some(Cow::Owned(step)),
+                                    Err(e) => {
+                                        unresolved = Some((e.to_string(), ctx.took_null()));
+                                        None
+                                    }
+                                }
                             }
                             OpResolver::RasterizeShapeRef { .. } => None,
                         }
                     } else {
                         None
                     };
-                    let crop = match window.as_deref() {
-                        Some(GraphStep::Buffer(ViewDto::View(op))) => Some(op),
+                    let window_dto = match window.as_deref() {
+                        Some(GraphStep::Buffer(dto @ ViewDto::View(_))) => Some(dto),
                         _ => None,
+                    };
+                    let crop = match (window_dto, &unresolved) {
+                        (Some(ViewDto::View(op)), _) => RowCrop::Window(op),
+                        (_, Some(_)) => RowCrop::Unresolved,
+                        _ => RowCrop::None,
                     };
                     // The row's pyramid level: a per-row value is read like
                     // an op's, so a null one follows `on_null_param`.
@@ -771,13 +786,28 @@ impl CompiledGraph {
                         )
                     });
                     match decode_result {
-                        Ok(decoded) => {
-                            absorbed = decoded.crop_applied;
+                        Ok(DecodedRow::Value(output)) => output,
+                        Ok(DecodedRow::Window(output)) => {
+                            absorbed = true;
                             #[cfg(test)]
-                            if absorbed {
-                                self.roi_rows.fetch_add(1, Ordering::Relaxed);
+                            self.roi_rows.fetch_add(1, Ordering::Relaxed);
+                            Some(output)
+                        }
+                        // Not a decode error: the crop's own, raised as the
+                        // crop raises it after a whole decode.
+                        Ok(DecodedRow::Refused(e)) => {
+                            let dto = window_dto.expect("only a window is refused");
+                            return Err(op_refused(dto, &e));
+                        }
+                        // The crop's resolution failed before the decode;
+                        // the op loop would fail (or null) on it first.
+                        Ok(DecodedRow::Unread) => {
+                            let (e, null) =
+                                unresolved.expect("only an unresolved window is unread");
+                            if null {
+                                continue 'nodes;
                             }
-                            decoded.output
+                            return Err(op_resolution_failed(&e));
                         }
                         Err(_e) if on_error_null => None,
                         Err(e) => return Err(e),
@@ -820,7 +850,7 @@ impl CompiledGraph {
                                         // parameter is not a failure — this
                                         // node just has no output for this row.
                                         Err(_) if ctx.took_null() => continue 'nodes,
-                                        Err(e) => return Err(format!("Op resolution error: {e}")),
+                                        Err(e) => return Err(op_resolution_failed(&e)),
                                     }
                                 }
                                 OpResolver::RasterizeShapeRef { op, shape_node } => dto_scratch
@@ -1331,7 +1361,7 @@ fn run_segment(
             // shape reaching it is this row's error, not a kernel panic.
             expr = expr
                 .try_apply_op((*op).clone())
-                .map_err(|e| format!("{}: {e}", op.as_op().name()))?;
+                .map_err(|e| op_refused(op, &e))?;
         }
         Ok(expr.plan_with(cfg).steps.into())
     };
@@ -1390,6 +1420,17 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// consume: nothing reads it afterwards, so its buffer can be moved rather
 /// than shared. Anything else keeps it shared, so an unrecognised reader can
 /// only cost a copy, never corrupt a value another reader sees.
+/// A row's error for an op whose parameters did not resolve.
+fn op_resolution_failed(e: &dyn std::fmt::Display) -> String {
+    format!("Op resolution error: {e}")
+}
+
+/// A row's error for an op that refuses the shape reaching it: the one
+/// wording, whether the engine refuses it or the decoder refuses its window.
+fn op_refused(op: &ViewDto, e: &view_buffer::ops::validation::ValidationError) -> String {
+    format!("{}: {e}", op.as_op().name())
+}
+
 /// Whether a root node's leading op may be decoded as a window: the
 /// `roi_decode` pass is on, the op is a spatial window (a crop; the planner's
 /// spatial-window pushdown has already moved one ahead of the ops it commutes

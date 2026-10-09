@@ -193,14 +193,29 @@ encoding (`encode_sink`), shared by the graph executor.
 **ROI decode.** When a root node's first op is a crop (the planner's
 spatial-window pushdown puts one there when it can), `graph/compiled.rs`
 resolves that crop for the row *before* decoding and passes it down
-(`decode_source_row` → `decode_image_bytes` → `ImageAdapter::decode_cropped`).
-The decoder returns only the window and reports it applied; the row then
-skips the crop (`ResolvedStep::Absorbed`, which keeps step positions and so
-segment cache slots unchanged). The crop stays the one authority on its
-window: `decode_cropped` validates it with the crop's own `validate_concrete`
-and, when that refuses, decodes whole and leaves the crop to raise its usual
-error. Scaled decodes (`decode_max_size`) and non-image sources never take
-it (`roi_decodable`), and the `roi_decode` engine flag turns it off.
+(`decode_source_row` → `decode_image_bytes` → `ImageAdapter::decode_region`,
+or for a TIFF read by path, `decode_ranged_tiff` → `ImageAdapter::decode_tiff_region`).
+The decoder returns one `ImageDecode`:
+- `Window`: the crop's output; the row then skips the crop
+  (`ResolvedStep::Absorbed`, which keeps step positions and so segment cache
+  slots unchanged).
+- `Refused`: the crop's own `validate_concrete` refused the image's shape (for
+  a TIFF, from its header, so no pixels are decoded). The executor raises it
+  through `op_refused`, the one wording the engine's own refusal uses.
+- `Unread`: the crop's parameters did not resolve for the row (a null, or a
+  refused value), and the image is a TIFF whose header reads. Its pixels are
+  never decoded; the executor fails or nulls the node as the op loop's
+  resolution does (`op_resolution_failed`, or `continue 'nodes` under
+  `on_null_param("null")`). A null input is null before this, as without the pass.
+
+The crop stays the one authority on its window. Scaled decodes
+(`decode_max_size`) and non-image sources never take the pass
+(`roi_decodable`), and the `roi_decode` engine flag turns it off.
+
+A TIFF layout the chunk decoder does not carry (`TiffImage::unsupported`, with
+the reason) read by path is read whole only when the file is within
+`DECODE_LIMIT_BYTES`; a larger one is the row's error naming the layout,
+rather than a whole download to decode a window.
 
 ## Adding a New Operation (Rust Side)
 
@@ -215,7 +230,7 @@ it (`roi_decodable`), and the `roi_decode` engine flag turns it off.
 - Null inputs produce null outputs (null propagation)
 - `on_error="null"` on source spec: decode errors produce `None` for that node instead of propagating (parsed once at compile into `CompiledGraph::source_null_nodes`)
 - Graph-level `RowErrorPolicy` (`graph.on_error`: `raise` | `null` | `null_with_message`): any `Result` error while producing a row either fails the expression (raise), nulls all of that row's outputs (null), or additionally records the message in a reserved `_error: String` struct field (null_with_message — forces struct output even for single-output graphs; `unified_output_dtype` mirrors this so plan==exec). Set from Python via `Pipeline.on_error()`. Engine panics are covered: they are caught per row and treated as that row's error (CR-34).
-- `NullParamPolicy` (`params.rs`; `graph.on_null_param`: `raise` | `null`) — a **null in a per-row expression parameter column**, which is not the same thing as an error. It is a shared mechanism, not per-op: every null reaches `ParamCol::on_null`, the only caller of the null error, which flags the `ParamCtx` (`null_hit: Cell<bool>`) under `Null` and always returns `Err` so resolution short-circuits with no placeholder value reaching an op. Two sites in `compiled.rs` clear the flag before a fallible resolution and test it after — dynamic op resolution and shape-ref rasterize (a source has no per-row parameter) — and turn a flagged error into `continue 'nodes`, leaving the node out of `node_outputs`. That is the *existing* null-propagation path (`source(on_error="null")`), so nulling is **node-scoped**: only outputs depending on that node go null. Set from Python via `Pipeline.on_null_param()`; the geometry namespaces get it as an `on_null` kwarg applied by `GeomParams::row`. Independent of `RowErrorPolicy`, so it records no `_error` message and does not weaken any other error reporting.
+- `NullParamPolicy` (`params.rs`; `graph.on_null_param`: `raise` | `null`) — a **null in a per-row expression parameter column**, which is not the same thing as an error. It is a shared mechanism, not per-op: every null reaches `ParamCol::on_null`, the only caller of the null error, which flags the `ParamCtx` (`null_hit: Cell<bool>`) under `Null` and always returns `Err` so resolution short-circuits with no placeholder value reaching an op. The sites in `compiled.rs` that clear the flag before a fallible resolution and test it after are dynamic op resolution, the `roi_decode` pre-resolution of a leading crop, a source's per-row `level`, and shape-ref rasterize — and turn a flagged error into `continue 'nodes`, leaving the node out of `node_outputs`. That is the *existing* null-propagation path (`source(on_error="null")`), so nulling is **node-scoped**: only outputs depending on that node go null. Set from Python via `Pipeline.on_null_param()`; the geometry namespaces get it as an `on_null` kwarg applied by `GeomParams::row`. Independent of `RowErrorPolicy`, so it records no `_error` message and does not weaken any other error reporting.
 - `CompiledGraph::operand` distinguishes "node is in the graph but produced no output for this row" (→ null this node too) from "node is not in the graph" (→ error), so a null upstream propagates instead of raising "references unknown node". **Every cross-node read of `node_outputs` must go through it** — there are four (`Binary`, `ApplyMask`, `ChannelMerge` and the rasterize shape ref, `rasterize(shape=node)`). Enumerating the sites is exactly how one got missed the first time; grep for `node_outputs.get(` when adding a step that reads another node.
 - One exception, and it is not a parameter: `GraphOp::LabelReduce` (`Role::LabelReduce`) reads its *contours operand* by column name through `ParamCol::at` (the column and its broadcast row, read by `ContourColumn`) and maps a null to an **empty score vector**, not a null. That is a data operand with pre-existing semantics, deliberately left alone — `at` is the one accessor with no `on_null` path.
 
