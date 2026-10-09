@@ -10,8 +10,10 @@ All Python tests for polars-cv. Tests use **pytest** exclusively. Coverage inclu
 ## Running Tests
 
 To verify a change, run **`scripts/verify.sh`** from the repo root. It runs
-every check CI runs, prints each one's exit code, and ends in a single
-`PASS`/`FAIL` line computed from those codes.
+every check CI runs on a push or PR, prints each one's exit code and duration,
+and ends in a single `PASS`/`FAIL` line computed from those codes.
+`scripts/verify.sh --slow` adds the slow lane (CI's weekly job); run it before
+a release and after engine changes.
 
 Use it in preference to running the checks by hand and reading the output.
 Reading a *filtered view* of a check has produced false "all green" reports
@@ -49,7 +51,7 @@ Three markers are declared in `pyproject.toml` (`[tool.pytest.ini_options]`), an
 | Marker | Meaning | Where it runs |
 |--------|---------|---------------|
 | `network` | Needs network access | Never in CI |
-| `slow` | Long-running | `slow-tests` job only — weekly schedule or manual dispatch, `-m "slow and not network"` (`.github/workflows/ci.yml`) |
+| `slow` | Long-running | `slow-tests` job only — weekly schedule or manual dispatch, `-m "slow and not network"` (`.github/workflows/ci.yml`); locally `scripts/verify.sh --slow` |
 | `structural` | Checks codebase *shape*, not runtime behaviour | The pre-commit hook, its own step in the `test` job (after `maturin develop`), and its own `verify.sh` line — as well as the fast lane, which it is a subset of |
 
 The per-push lane is `-m "not network and not slow"`. Mark a new test `network`

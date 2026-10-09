@@ -97,9 +97,10 @@ and the guard that enforces each one.
 
 ### Verification
 
-- Run `scripts/verify.sh` (add `--fast` to skip the slow lane). It runs every
-  check CI runs, captures each exit code directly, and prints one PASS/FAIL
-  computed from those codes. **The script lives at the repo root, not the
+- Run `scripts/verify.sh` (add `--slow` for the slow lane, CI's weekly job:
+  before a release and after engine changes). It runs every check CI runs on a
+  push or PR, captures each exit code directly, and prints one PASS/FAIL
+  computed from those codes, with each check's duration. **The script lives at the repo root, not the
   `polars-cv/` subdirectory** — invoke it as `scripts/verify.sh` from the root
   (or by absolute path from anywhere; it `cd`s to the root itself). From the
   `polars-cv/` working directory the path is `../scripts/verify.sh`.

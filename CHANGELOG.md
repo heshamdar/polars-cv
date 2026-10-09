@@ -7,6 +7,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Changed
+
+- **`scripts/verify.sh` runs the slow lane only with `--slow`.** By default it
+  now runs what CI runs on every push and PR: about 5 minutes on 4 cores
+  instead of about 14.5. The slow lane was 65% of a full run, and it is CI's
+  weekly search rather than a per-change check: its floor is one randomised
+  2,000-example parity search (449 s) that no worker count splits. Run
+  `--slow` before a release (CONTRIBUTING's release process now says so) and
+  after engine changes. `--fast` is removed and fails with a message, since
+  its behaviour is now the default; any other unknown argument fails too.
+
 ### Internal
 
 - **`scripts/verify.sh` prints each check's duration**, and drops work it
