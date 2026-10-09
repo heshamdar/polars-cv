@@ -50,6 +50,18 @@ boundary functions and refused by the region ones (see
 unspecified `is_closed` reads as closed. Rings are implicitly closed, so do not
 repeat the first point at the end.
 
+### Other schemas
+
+| Name | Type | What it holds |
+|------|------|---------------|
+| `RING_SCHEMA` | `List(POINT_SCHEMA)` | One ring: the `exterior` field, or one entry of `holes` |
+| `CONTOUR_SET_SCHEMA` | `List(CONTOUR_SCHEMA)` | Several contours per row, as `extract_contours` returns |
+| `POINT_SET_SCHEMA` | `List(POINT_SCHEMA)` | Several points per row (keypoints, landmarks) |
+| `ANNOTATED_POINT_SCHEMA` | `Struct({x, y, label: String, confidence: Float64})` | A point with a label and score |
+| `CORRESPONDENCE_SCHEMA` | `Struct({right_idx: List(UInt32), overlap: List(Float64), duplicate: List(Boolean)})` | What `.contour.correspond()` / `.bbox.correspond()` return, each list aligned with the left set |
+
+All are importable from `polars_cv` and `polars_cv.geometry`.
+
 ## Helper Functions
 
 ```python
@@ -117,7 +129,8 @@ arity or dtype) still raises. See
 Build `POINT_SCHEMA` / `CONTOUR_SCHEMA` / `CONTOUR_SET_SCHEMA` columns from
 plain `[x, y]` or `[y, x]` pairs; `.point.to_coords()` and
 `.contour.to_coords()` are the inverse. `bbox_from_coords` builds
-`BBOX_SCHEMA` boxes from four numbers in a named layout.
+`BBOX_SCHEMA` boxes from four numbers in a named layout, one of
+`BoxFormat` (`"xyxy"`, `"xywh"`, `"cxcywh"`; `from polars_cv.geometry import BoxFormat`).
 
 ::: polars_cv.geometry.coords.point_from_coords
     options:

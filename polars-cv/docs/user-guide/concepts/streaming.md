@@ -166,7 +166,7 @@ lf = (
     .with_columns(thumb=pl.col("raw").cv.pipe(pipe).sink("png"))
     .drop("raw")
 )
-lf.collect(engine="streaming")
+lf.collect()
 ```
 
 Dropping `raw` before collecting keeps it morsel-bounded; keep it in the

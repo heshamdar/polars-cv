@@ -40,6 +40,7 @@ from polars_cv import (
     recall_at_threshold,
 )
 from polars_cv.metrics import (
+    DetectionTable,
     average_precision_ci_lazy,
     evaluate_detections,
     evaluate_heatmaps,
@@ -79,7 +80,7 @@ def plot_curve(
 
 
 def build_prematched_input_from_table(
-    table: object,
+    table: DetectionTable,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Build adapter input from a matched DetectionTable.
 
@@ -92,7 +93,7 @@ def build_prematched_input_from_table(
     from detections alone, an image the detector found nothing in would have no
     metadata row and would silently vanish from the denominators.
     """
-    detections_df, meta_df = table.collect(engine="streaming")  # type: ignore[call-arg]
+    detections_df, meta_df = table.collect()
     detections = detections_df.select(
         image_id=pl.col(COL_IMAGE_ID),
         class_id=pl.col(COL_CLASS_ID),
@@ -304,7 +305,7 @@ def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> objec
     return contour_table
 
 
-def bbox_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> object:
+def bbox_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> DetectionTable:
     """Evaluate bbox matching and metrics on the same dataset."""
     table = BBoxMatcher(iou_threshold=args.bbox_iou_threshold).match(
         df,
@@ -319,7 +320,7 @@ def bbox_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> object:
     return table
 
 
-def prematched_section(bbox_table: object) -> None:
+def prematched_section(bbox_table: DetectionTable) -> None:
     """Run metrics through PreMatchedAdapter from already matched detections."""
     pre, population = build_prematched_input_from_table(bbox_table)
     table = PreMatchedAdapter().match(

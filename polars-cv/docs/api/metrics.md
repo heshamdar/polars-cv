@@ -39,6 +39,10 @@
         - summary
         - ci
 
+::: polars_cv.metrics.ReportMetric
+    options:
+      show_root_heading: true
+
 ::: polars_cv.metrics.match_detections
     options:
       show_root_heading: true
@@ -48,6 +52,11 @@
       show_root_heading: true
 
 ## Statistics
+
+`COCO_IOU_THRESHOLDS` (0.50:0.05:0.95, COCO's IoU sweep) and `FROC_RATES`
+(0.125 to 8 false positives per image, the standard FROC operating points) are
+the defaults the evaluation functions use; both are importable from
+`polars_cv.metrics`.
 
 ::: polars_cv.metrics.Statistic
     options:
@@ -153,6 +162,10 @@
         - to_dict
 
 ## Matchers
+
+::: polars_cv.metrics.Matcher
+    options:
+      show_root_heading: true
 
 ::: polars_cv.metrics.ContourMatcher
     options:
