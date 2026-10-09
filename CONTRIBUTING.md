@@ -44,8 +44,10 @@ maturin develop
 # Run the Python tests
 uv run --no-sync pytest tests/
 
-# Run every check CI runs (from the repo root)
+# Run every check CI runs on a push or PR (from the repo root)
 ../scripts/verify.sh
+# ... plus the slow lane, CI's weekly job (before a release)
+../scripts/verify.sh --slow
 ```
 
 ## CI/CD and Publishing
@@ -110,15 +112,17 @@ production publishing (consider adding required reviewers).
    — the install is editable, so Python edits are live but the extension is not
    rebuilt until you run `maturin develop`, and the versions agree throughout a
    release cycle. See `polars_cv.build_info()`.
-2. Roll the `CHANGELOG.md` `[Unreleased]` section into a dated entry for the new
+2. Run `scripts/verify.sh --slow`: the release gate includes the slow lane,
+   which per-change runs skip.
+3. Roll the `CHANGELOG.md` `[Unreleased]` section into a dated entry for the new
    version, and leave a fresh empty `[Unreleased]` heading above it
-3. Commit and push to main
-4. Create a GitHub release with a version tag matching the bumped version,
+4. Commit and push to main
+5. Create a GitHub release with a version tag matching the bumped version,
    prefixed with `v` (e.g. `v0.1.0`). `.github/workflows/publish.yml` checks the
    tag against `polars-cv/pyproject.toml` and refuses to build if they disagree,
    so a release tagged ahead of (or behind) the manifests fails loudly instead
    of publishing the wrong version.
-5. GitHub Actions automatically:
+6. GitHub Actions automatically:
    - Verifies the tag matches the declared version
    - Builds `abi3` wheels for linux-x86_64, linux-aarch64 and macOS-arm64, plus
      an sdist, and rejects any wheel that is not `abi3`

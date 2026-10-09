@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Run every check CI runs, report each one's exit code, and exit non-zero if
-# any failed.
+# Run every check CI runs on a push or PR, report each one's exit code and
+# duration, and exit non-zero if any failed. `--slow` adds CI's weekly lane.
 #
 # This exists because reading a *filtered view* of a check's output has
 # repeatedly produced false "all green" reports on this repo: a `grep | head`
@@ -12,8 +12,13 @@
 # anything a human or an agent read off the screen.
 #
 # Usage:
-#   scripts/verify.sh            # everything
-#   scripts/verify.sh --fast     # skip the slow lane
+#   scripts/verify.sh            # what CI runs on every push and PR
+#   scripts/verify.sh --slow     # also the slow lane (CI's weekly job)
+#
+# The slow lane is opt-in because it is CI's weekly search, not a per-change
+# check: it was ~65% of a full run (562 s of ~870 s on 4 cores, 2026-10-09),
+# bounded by one randomised 2,000-example parity search (449 s) that no
+# worker count splits. Run it before a release and after changing the engine.
 #
 # Run from anywhere; paths are resolved relative to the repo root.
 
@@ -41,8 +46,18 @@ if ! source "$REPO_ROOT/scripts/with-pyo3-env.sh"; then
     exit 1
 fi
 
-FAST=0
-[[ "${1:-}" == "--fast" ]] && FAST=1
+SLOW=0
+for arg in "$@"; do
+    case "$arg" in
+        --slow) SLOW=1 ;;
+        --fast)
+            echo "verify.sh: --fast is gone; skipping the slow lane is now the default (add --slow to run it)" >&2
+            exit 2 ;;
+        *)
+            echo "verify.sh: unknown argument '$arg' (usage: scripts/verify.sh [--slow])" >&2
+            exit 2 ;;
+    esac
+done
 
 FAILED=0
 declare -a RESULTS
@@ -137,7 +152,7 @@ run_check "pytest (fast lane, in-memory)" \
     env POLARS_ENGINE_AFFINITY=in-memory \
     uv run --no-sync --directory polars-cv pytest tests/ -q -n auto -m "not network and not slow and not structural"
 
-if [[ $FAST -eq 0 ]]; then
+if [[ $SLOW -eq 1 ]]; then
     run_check "pytest (slow lane)" \
         uv run --no-sync --directory polars-cv pytest tests/ -q -n auto -m "slow and not network"
 fi
