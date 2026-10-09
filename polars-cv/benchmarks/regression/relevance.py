@@ -80,7 +80,7 @@ RULES: tuple[tuple[str, str], ...] = (
     ("view-buffer/src/geometry/**", _GEOM),
     ("view-buffer/src/interop/**", "zero_copy,targeted:sink_*,targeted:blob_*"),
     ("view-buffer/src/interop/image.rs", f"{_OPS},targeted:codec_*"),
-    ("view-buffer/src/interop/tiff_region.rs", "targeted:codec_tiff_*,targeted:wsi_*"),
+    ("view-buffer/src/interop/tiff_region/**", "targeted:codec_tiff_*,targeted:wsi_*"),
     ("view-buffer/src/protocol.rs", "zero_copy,targeted:blob_*"),
     # --- polars-cv, the plugin ---
     ("polars-cv/src/lib.rs", _OPS),
@@ -101,6 +101,9 @@ RULES: tuple[tuple[str, str], ...] = (
     ),
     ("polars-cv/src/formats/**", f"{_OPS},zero_copy,targeted"),
     ("polars-cv/src/execute.rs", f"{_OPS},targeted:codec_*"),
+    # Whole decodes shared by a crop-first node's rows: every crop after an
+    # encoded-image source, and the patch reads.
+    ("polars-cv/src/shared_decode.rs", f"{_OPS},targeted:codec_*,targeted:wsi_*"),
     ("polars-cv/src/output.rs", f"{_OPS},zero_copy,targeted:blob_*"),
     ("polars-cv/src/ext_types.rs", _NONE),  # tagged (`ndarray`) outputs only
     # Every call's rows, and every tensor sink's fill phase, run through the
