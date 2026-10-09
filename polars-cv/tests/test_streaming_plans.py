@@ -19,6 +19,7 @@ from collections.abc import Callable
 import polars as pl
 import pytest
 
+import polars_cv as cv
 import polars_cv.metrics as M
 from polars_cv import Pipeline
 from tests._streaming_guard import KNOWN_FALLBACKS, in_memory_nodes, unexplained
@@ -209,6 +210,9 @@ PLANS: dict[str, Callable[[], pl.LazyFrame]] = {
     ),
     "cv.read_bytes": lambda: _PATHS.select(pl.col("p").cv.read_bytes()),
     "cv.width": lambda: _PATHS.select(pl.col("p").cv.width()),
+    "patch_grid": lambda: pl.LazyFrame({"h": [8, 9], "w": [9, 8]}).select(
+        cv.patch_grid("h", "w", size=4)
+    ),
     "contour.area": lambda: _CONTOURS.select(pl.col("c").contour.area()),
     "point.translate": lambda: _CONTOURS.select(pl.col("q").point.translate(1.0, 2.0)),
     "group_objects": lambda: M.group_objects(_PREDS, _GTS, geometry="bbox"),

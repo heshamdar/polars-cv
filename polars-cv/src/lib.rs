@@ -24,6 +24,7 @@ mod ops;
 mod output;
 mod params;
 mod passes;
+mod patch_grid;
 mod plan;
 mod point;
 mod read_bytes;

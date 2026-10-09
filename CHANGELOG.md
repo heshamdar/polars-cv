@@ -7,6 +7,26 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+
+- **`polars_cv.patch_grid(height, width, *, size, stride=None, edge="drop")`
+  lists the patches that tile each row's image.** It returns one
+  `List(Struct{row, col, top, left, height, width})` per row (all `UInt32`),
+  row-major. `explode` turns the patches into rows, and their fields are
+  `crop`'s keywords, so `crop(top=pl.col("top"), ...)` cuts each one.
+  - `size` and `stride` take `n` or `(rows, cols)`; the stride defaults to the
+    size.
+  - `edge` takes a new `GridEdge`: `"drop"` leaves a remainder too small for a
+    whole patch uncovered; `"shift"` adds one patch aligned to the far edge.
+  - Every patch is whole and in bounds. An image smaller than a patch gets an
+    empty list, and a null height or width gives a null row.
+  - The call is elementwise, so it streams.
+  - The grid itself is `view_buffer::geometry::grid::PatchGrid`, the one
+    definition of where each patch lies, swept against a naive reference over
+    every size, stride and edge.
+
+  This is the first step of patch and whole-slide-image support.
+
 ### Changed
 
 - **`scripts/verify.sh` runs the slow lane only with `--slow`.** By default it

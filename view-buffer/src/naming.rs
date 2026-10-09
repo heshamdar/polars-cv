@@ -145,6 +145,7 @@ registry!(
     crate::geometry::contour::Winding,
     crate::geometry::contour::CoordOrder,
     crate::geometry::contour::BorderArc,
+    crate::geometry::grid::GridEdge,
     crate::ops::binary::BinaryOp,
     crate::ops::Domain,
     crate::ops::color::ColorSpace,

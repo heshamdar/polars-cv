@@ -140,6 +140,18 @@ class FilterType(str, Enum):
     LANCZOS3 = "lanczos3"
 
 
+class GridEdge(str, Enum):
+    """What a patch grid does with the remainder of an axis a whole patch no longer fits.
+
+    - DROP: leave it uncovered; only whole patches at multiples of the stride (default).
+    - SHIFT: add one patch aligned to the far edge, overlapping its neighbour, so
+      every pixel is covered and every patch stays whole.
+    """
+
+    DROP = "drop"
+    SHIFT = "shift"
+
+
 class HashAlgorithm(str, Enum):
     """Perceptual hash algorithm selection.
 

@@ -46,6 +46,7 @@
 
 pub mod contour;
 pub mod extract;
+pub mod grid;
 pub mod label;
 pub mod measures;
 pub mod ops;

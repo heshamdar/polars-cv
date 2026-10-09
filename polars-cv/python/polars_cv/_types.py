@@ -38,6 +38,9 @@ from polars_cv._ops_generated import (
     FilterType as FilterType,
 )
 from polars_cv._ops_generated import (
+    GridEdge as GridEdge,
+)
+from polars_cv._ops_generated import (
     HashAlgorithm as HashAlgorithm,
 )
 from polars_cv._ops_generated import (

@@ -31,6 +31,7 @@ from ._types import (
     IMAGENET_STD,
     CloudOptions,
     ColorSpace,
+    GridEdge,
     HashAlgorithm,
     dtype_name_for,
 )
@@ -90,6 +91,7 @@ from .metrics import (
     recall_at_threshold,
     segmentation_measures,
 )
+from .patches import patch_grid
 from .pipeline import Pipeline
 
 # Registered at import, not on first use: a Parquet/IPC read of a tagged column
@@ -627,6 +629,7 @@ __all__ = [
     # Types
     "CloudOptions",
     "ColorSpace",
+    "GridEdge",
     "HashAlgorithm",
     "dtype_name_for",
     # ImageNet normalization constants
@@ -647,6 +650,8 @@ __all__ = [
     # Hash comparison functions
     "hamming_distance",
     "hash_similarity",
+    # Patches: one row per patch of each image
+    "patch_grid",
     # Display utilities
     "show_images",
     # Evaluation — one call from predictions and ground truth to a report

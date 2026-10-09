@@ -2291,6 +2291,7 @@ class TestPluginKwargsRejectUnknownFields:
         "read_file_bytes": {"on_error": "raise"},
         "contour_area": {},
         "point_scale": {},
+        "patch_grid": {"size": [4, 4], "stride": [4, 4], "edge": "drop"},
     }
 
     @staticmethod

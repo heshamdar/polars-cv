@@ -118,6 +118,7 @@ RULES: tuple[tuple[str, str], ...] = (
     ("polars-cv/src/cloud_auth.rs", "remote"),
     ("polars-cv/src/read_bytes.rs", "remote"),
     ("polars-cv/src/image_metadata.rs", _NONE),
+    ("polars-cv/src/patch_grid.rs", _NONE),  # a list of integers per row
     # The global allocator: every allocation any case makes (CR-60).
     ("polars-cv/src/allocator.rs", _ALL),
     ("polars-cv/src/test_alloc.rs", _NONE),  # test-only allocator
@@ -125,6 +126,7 @@ RULES: tuple[tuple[str, str], ...] = (
     ("polars-cv/python/polars_cv/*.py", _OPS),
     ("polars-cv/python/polars_cv/display.py", _NONE),
     ("polars-cv/python/polars_cv/_graph_viz.py", _NONE),
+    ("polars-cv/python/polars_cv/patches.py", _NONE),
     ("polars-cv/python/polars_cv/geometry/**", _GEOM),
     ("polars-cv/python/polars_cv/metrics/**", _NONE),  # pure polars; unbenchmarked
 )

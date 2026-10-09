@@ -59,6 +59,16 @@ row into Python `bytes` first.
         - EXTENSION_TYPES
         - register_extension_types
 
+## Patches
+
+::: polars_cv.patch_grid
+
+### GridEdge
+
+What a patch grid does with the remainder of an axis that a whole patch no
+longer fits: `GridEdge.DROP` leaves it uncovered, `GridEdge.SHIFT` adds one
+patch aligned to the far edge.
+
 ## Mask Metrics
 
 ### mask_iou
