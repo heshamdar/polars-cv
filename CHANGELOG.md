@@ -128,6 +128,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     NumPy parity reference written from the definition, and a user-level
     comparison with the `patch_grid` recipe.
 
+- **A user-guide page, "Patches & Whole-Slide Images", and
+  `examples/14_whole_slide_patches.py`.** The page covers the grid →
+  explode → crop recipe, pyramid levels, tissue filtering from a small level,
+  heatmaps by pivot, `tile`, and which formats are supported. The example
+  runs the whole recipe on a synthetic JPEG-tiled pyramid.
+
 ### Fixed
 
 - **`.cv.width()`/`height()`/`channels()`/`image_dtype()`/`image_info()`
