@@ -333,6 +333,17 @@ impl AsImageView for ViewBuffer {
 /// Adapter for image file I/O operations.
 pub struct ImageAdapter;
 
+/// A decode asked for only a crop's window ([`ImageAdapter::decode_cropped`]).
+#[derive(Debug)]
+pub struct CroppedDecode {
+    /// The window when `applied`, else the whole image.
+    pub buffer: ViewBuffer,
+    /// Whether `buffer` is already the crop's output. When it is not (the
+    /// window lies outside the image), the caller runs the crop as usual,
+    /// which raises the crop's own out-of-bounds error.
+    pub applied: bool,
+}
+
 impl ImageAdapter {
     /// Decodes raw image bytes (PNG, JPEG, etc.) into a ViewBuffer [H, W, C].
     pub fn decode(encoded_bytes: &[u8]) -> Result<ViewBuffer, image::ImageError> {
@@ -351,6 +362,40 @@ impl ImageAdapter {
             let img = image::load_from_memory(encoded_bytes)?;
             Ok(Self::from_dynamic_image(img))
         }
+    }
+
+    /// Decodes only what a following `crop` keeps.
+    ///
+    /// The window is the crop's own: it is checked with the crop's validation
+    /// against the decoded shape and cut by the same view the executor
+    /// applies, so the result is exactly `crop(decode(bytes))`. A window the
+    /// crop would refuse is not applied, and the whole image comes back for
+    /// the crop to refuse with its usual error.
+    ///
+    /// # Panics
+    /// When `crop` is not a spatial window (a crop or a slice).
+    pub fn decode_cropped(
+        encoded_bytes: &[u8],
+        crop: &crate::ops::ViewOp,
+    ) -> Result<CroppedDecode, image::ImageError> {
+        assert!(
+            crate::ops::Op::is_spatial_window(crop),
+            "decode_cropped takes a crop, got {crop:?}"
+        );
+        let buffer = Self::decode(encoded_bytes)?;
+        let in_bounds =
+            crate::ops::validation::validate_concrete(crop, &[buffer.shape()], &[buffer.dtype()])
+                .is_ok();
+        if !in_bounds {
+            return Ok(CroppedDecode {
+                buffer,
+                applied: false,
+            });
+        }
+        Ok(CroppedDecode {
+            buffer: crate::execution::runner::apply_view(buffer, crop.clone()),
+            applied: true,
+        })
     }
 
     /// Opens an image from disk and decodes it into a ViewBuffer.
@@ -1251,6 +1296,106 @@ mod tests {
         for (name, img, ptr) in cases {
             let buf = ImageAdapter::from_dynamic_image(img);
             assert_eq!(buf.data.as_ptr(), ptr, "{name}: decoded pixels were copied");
+        }
+    }
+
+    /// Every codec, every kind of window: a cropped decode is exactly the
+    /// crop of the full decode, and says so.
+    #[test]
+    fn a_cropped_decode_is_the_crop_of_the_full_decode() {
+        use crate::ops::ViewOp;
+
+        let pattern = |h: usize, w: usize, c: usize| -> Vec<u8> {
+            (0..h * w * c)
+                .map(|i| ((i * 37 + i / 7) % 251) as u8)
+                .collect()
+        };
+        let (h, w) = (13usize, 17usize);
+        let mut images: Vec<(String, Vec<u8>)> = Vec::new();
+        for c in [1usize, 2, 3, 4] {
+            let buf = ViewBuffer::from_vec_with_shape(pattern(h, w, c), vec![h, w, c]);
+            images.push((
+                format!("png c{c}"),
+                ImageAdapter::encode(&buf, image::ImageFormat::Png).unwrap(),
+            ));
+            images.push((
+                format!("tiff c{c}"),
+                ImageAdapter::encode_tiff(&buf).unwrap(),
+            ));
+        }
+        let rgb = ViewBuffer::from_vec_with_shape(pattern(h, w, 3), vec![h, w, 3]);
+        images.push(("jpeg".into(), ImageAdapter::encode_jpeg(&rgb, 90).unwrap()));
+        let wide: Vec<u16> = (0..h * w).map(|i| (i * 977 % 65_521) as u16).collect();
+        let u16_buf = ViewBuffer::from_vec_with_shape(wide, vec![h, w, 1]);
+        images.push((
+            "png u16".into(),
+            ImageAdapter::encode(&u16_buf, image::ImageFormat::Png).unwrap(),
+        ));
+        let floats: Vec<f32> = (0..h * w).map(|i| i as f32 * 0.25).collect();
+        let f32_buf = ViewBuffer::from_vec_with_shape(floats, vec![h, w, 1]);
+        images.push((
+            "tiff f32".into(),
+            ImageAdapter::encode_tiff(&f32_buf).unwrap(),
+        ));
+
+        let crop = |top: u32, left: u32, height: Option<u32>, width: Option<u32>| ViewOp::Crop {
+            top,
+            left,
+            height,
+            width,
+        };
+        let windows = [
+            crop(3, 4, Some(5), Some(6)),   // interior
+            crop(0, 0, Some(13), Some(17)), // the whole image
+            crop(12, 16, Some(1), Some(1)), // the last pixel
+            crop(8, 9, None, None),         // to the far edges
+            crop(13, 0, Some(0), Some(17)), // empty, at the bottom edge
+        ];
+        for (name, bytes) in &images {
+            let full = ImageAdapter::decode(bytes).unwrap();
+            for window in &windows {
+                let got = ImageAdapter::decode_cropped(bytes, window).unwrap();
+                assert!(
+                    got.applied,
+                    "{name} {window:?}: an in-bounds window applies"
+                );
+                let want = crate::execution::runner::apply_view(full.clone(), window.clone());
+                assert_eq!(got.buffer.shape(), want.shape(), "{name} {window:?}");
+                assert_eq!(got.buffer.dtype(), want.dtype(), "{name} {window:?}");
+                assert_eq!(
+                    got.buffer.to_contiguous().to_blob(),
+                    want.to_contiguous().to_blob(),
+                    "{name} {window:?}"
+                );
+            }
+        }
+    }
+
+    /// A window the crop would refuse is not applied: the whole image comes
+    /// back, for the crop to refuse with its own error.
+    #[test]
+    fn an_out_of_bounds_window_is_left_to_the_crop() {
+        use crate::ops::ViewOp;
+
+        let buf = ViewBuffer::from_vec_with_shape(vec![7u8; 6 * 5 * 3], vec![6, 5, 3]);
+        let png = ImageAdapter::encode(&buf, image::ImageFormat::Png).unwrap();
+        for window in [
+            ViewOp::Crop {
+                top: 2,
+                left: 0,
+                height: Some(5),
+                width: Some(5),
+            },
+            ViewOp::Crop {
+                top: 0,
+                left: 6,
+                height: None,
+                width: None,
+            },
+        ] {
+            let got = ImageAdapter::decode_cropped(&png, &window).unwrap();
+            assert!(!got.applied, "{window:?}");
+            assert_eq!(got.buffer.shape(), &[6, 5, 3], "{window:?}");
         }
     }
 }

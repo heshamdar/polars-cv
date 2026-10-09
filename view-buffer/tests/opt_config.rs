@@ -18,6 +18,7 @@ fn all_off() -> OptConfig {
         cast_identity: false,
         cast_chain_collapse: false,
         scalar_fusion: false,
+        roi_decode: false,
     }
 }
 

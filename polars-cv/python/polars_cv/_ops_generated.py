@@ -490,6 +490,11 @@ PASS_CATALOG: tuple[tuple[str, str, str], ...] = (
         "engine",
         "Fuse adjacent scalar/compute ops into one kernel (f64 chains stay unfused — a mandatory precision guard, not this toggle).",
     ),
+    (
+        "roi_decode",
+        "engine",
+        "Decode only the window of a crop that directly follows an image source, instead of the whole image (the result is the crop of the full decode, byte for byte).",
+    ),
 )
 
 
@@ -505,6 +510,7 @@ class _OptFlagFields:
     view_flip_involution: bool = True
     view_transpose_merge: bool = True
     scalar_fusion: bool = True
+    roi_decode: bool = True
 
 
 #: Each typed op's field types, as the catalogue describes them.

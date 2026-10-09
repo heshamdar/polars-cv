@@ -26,6 +26,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     every size, stride and edge.
 
   This is the first step of patch and whole-slide-image support.
+- **A crop right after an image source decodes only its window.** A new
+  engine pass, `roi_decode` (`OptFlags(roi_decode=...)`, on by default), runs
+  when a node's first op is a crop. Spatial-window pushdown already moves a
+  crop ahead of the pointwise ops it commutes with.
+  - The executor resolves the crop for the row before decoding, and the
+    decoder (`ImageAdapter::decode_cropped`) returns the window.
+  - The output is the crop of the full decode, element for element. The
+    window is the crop's own: validated by its own check, and when that
+    refuses (a window outside the image) the image decodes whole and the crop
+    raises its usual error.
+  - Scaled decodes (`decode_max_size`) keep the crop.
+  - For now every codec decodes in full and cuts the window, so nothing gets
+    faster yet. This is the plumbing a tile-aware TIFF decoder plugs into.
+  - One visible difference: with `source(dtype=...)`, the cast now applies to
+    the window instead of the whole image. A `numpy` row's array is
+    unchanged, but its zero-copy struct can carry different strides.
 
 ### Changed
 
