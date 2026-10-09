@@ -328,6 +328,14 @@ impl AsImageView for ViewBuffer {
     }
 }
 
+/// A `tiff_region` failure as the image error the decoders return.
+fn tiff_error(message: String) -> image::ImageError {
+    image::ImageError::IoError(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        message,
+    ))
+}
+
 // --- Image I/O Adapter ---
 
 /// Adapter for image file I/O operations.
@@ -347,16 +355,13 @@ pub struct CroppedDecode {
 impl ImageAdapter {
     /// Decodes raw image bytes (PNG, JPEG, etc.) into a ViewBuffer [H, W, C].
     pub fn decode(encoded_bytes: &[u8]) -> Result<ViewBuffer, image::ImageError> {
-        // Check if it's a TIFF file by magic bytes
-        if encoded_bytes.len() >= 4
-            && (
-                &encoded_bytes[0..4] == b"II*\x00" ||  // Little-endian TIFF
-            &encoded_bytes[0..4] == b"MM\x00*"
-                // Big-endian TIFF
-            )
-        {
-            // Use our custom TIFF decoder for floating-point support
-            Self::decode_tiff(encoded_bytes)
+        // TIFF and BigTIFF, by magic bytes: decoded chunk by chunk where the
+        // layout allows (`tiff_region`), else whole by the `tiff` crate.
+        if crate::interop::tiff_region::is_tiff(encoded_bytes) {
+            match crate::interop::tiff_region::decode(encoded_bytes, None).map_err(tiff_error)? {
+                Some(buf) => Ok(buf),
+                None => Self::decode_tiff(encoded_bytes),
+            }
         } else {
             // Use image crate for other formats
             let img = image::load_from_memory(encoded_bytes)?;
@@ -382,6 +387,12 @@ impl ImageAdapter {
             crate::ops::Op::is_spatial_window(crop),
             "decode_cropped takes a crop, got {crop:?}"
         );
+        // A TIFF the chunk decoder carries reads only the window's chunks.
+        if crate::interop::tiff_region::is_tiff(encoded_bytes) {
+            if let Some(decoded) = Self::decode_tiff_window(encoded_bytes, crop)? {
+                return Ok(decoded);
+            }
+        }
         let buffer = Self::decode(encoded_bytes)?;
         let in_bounds =
             crate::ops::validation::validate_concrete(crop, &[buffer.shape()], &[buffer.dtype()])
@@ -396,6 +407,42 @@ impl ImageAdapter {
             buffer: crate::execution::runner::apply_view(buffer, crop.clone()),
             applied: true,
         })
+    }
+
+    /// [`Self::decode_cropped`] for a TIFF whose layout `tiff_region` decodes:
+    /// the window when the crop accepts it against the header's shape, else
+    /// `None` (the caller decodes whole and lets the crop refuse).
+    fn decode_tiff_window(
+        encoded_bytes: &[u8],
+        crop: &crate::ops::ViewOp,
+    ) -> Result<Option<CroppedDecode>, image::ImageError> {
+        use crate::interop::tiff_region;
+        let Some((shape, dtype)) = tiff_region::image_shape(encoded_bytes).map_err(tiff_error)?
+        else {
+            return Ok(None);
+        };
+        if crate::ops::validation::validate_concrete(crop, &[&shape[..]], &[dtype]).is_err() {
+            return Ok(None);
+        }
+        let (start, end) = crop.window().expect("a crop has a window");
+        let window = tiff_region::Window {
+            top: start[0],
+            left: start[1],
+            bottom: end[0].min(shape[0]),
+            right: end[1].min(shape[1]),
+        };
+        let buffer = tiff_region::decode(encoded_bytes, Some(window))
+            .map_err(tiff_error)?
+            .expect("image_shape accepted this layout");
+        // What the window leaves of the channel axis, cut as the crop would.
+        let channels = crate::ops::ViewOp::Slice {
+            start: vec![0, 0, start[2]],
+            end: vec![usize::MAX, usize::MAX, end[2]],
+        };
+        Ok(Some(CroppedDecode {
+            buffer: crate::execution::runner::apply_view(buffer, channels),
+            applied: true,
+        }))
     }
 
     /// Opens an image from disk and decodes it into a ViewBuffer.
@@ -708,6 +755,26 @@ impl ImageAdapter {
                 format!("Failed to get TIFF color type: {e}"),
             ))
         })?;
+
+        // The crate reads only the first plane of a planar-separate image
+        // (one plane per sample), which then could not hold the image's
+        // samples: refuse it rather than misread it.
+        let planar = decoder
+            .find_tag_unsigned::<u16>(tiff::tags::Tag::PlanarConfiguration)
+            .ok()
+            .flatten();
+        let samples = decoder
+            .find_tag_unsigned::<u16>(tiff::tags::Tag::SamplesPerPixel)
+            .ok()
+            .flatten()
+            .unwrap_or(1);
+        if planar == Some(2) && samples > 1 {
+            return Err(image::ImageError::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unsupported TIFF layout: planar-separate samples (PlanarConfiguration 2, one \
+                 plane per sample)",
+            )));
+        }
 
         // Decode the image data
         let decoding_result = decoder.read_image().map_err(|e| {

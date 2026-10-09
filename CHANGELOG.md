@@ -43,6 +43,43 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     the window instead of the whole image. A `numpy` row's array is
     unchanged, but its zero-copy struct can carry different strides.
 
+- **A crop of a tiled or strip TIFF reads only the chunks it overlaps.** A
+  crop right after the source decodes its window from the tiles (or strips)
+  under it. The new `view_buffer::interop::tiff_region` decodes them
+  itself, while the `tiff` crate still parses the file structure.
+  - Codecs: uncompressed, LZW, Deflate, PackBits and JPEG, with horizontal
+    differencing.
+  - Samples: u8/u16 in gray, gray+alpha, RGB or RGBA; f32/f64 in gray or RGB.
+  - Whole-image TIFF decodes go through the same chunk decoder, so a window
+    is exactly the crop of the whole.
+  - A window still decodes when tiles elsewhere in the file are damaged.
+  - Other layouts decode whole through the `tiff` crate, as before.
+  - Decoding more than 256 MiB of pixels at once (the `tiff` crate's former
+    limit) is a row error that suggests cropping.
+  - New `targeted:codec_tiff_*` benchmark cases.
+
+### Fixed
+
+- **JPEG-compressed TIFFs decode, in correct colour.** The `tiff` crate
+  passed a JPEG tile's components through unconverted.
+  - YCbCr tiles (what libtiff writes) were refused ("Unsupported TIFF color
+    type: YCbCr").
+  - RGB-coded tiles failed ("Unimplemented colorspace mapping").
+  - The colour space now follows libjpeg's rules: an Adobe marker's
+    transform, else components named `R`,`G`,`B`, else YCbCr.
+  - Conversion is libjpeg's fixed point. Pixels stay within a few levels of
+    libjpeg's own decode.
+- **BigTIFF files decode.** Their header (`II+\0`/`MM\0+`) was not
+  recognised as a TIFF, and the fallback decoder refused them.
+- **Tiled LZW TIFFs written by tifffile/imagecodecs decode.** The `tiff`
+  crate's streaming LZW reader panicked on some valid tiles (an
+  `assert_eq!` in its no-progress path) or reported "invalid code in LZW
+  stream". LZW chunks are now decoded in one piece by `weezl`.
+- **A planar-separate TIFF is a row error, not an engine panic.**
+  PlanarConfiguration 2 stores one plane per sample. The `tiff` crate read
+  only the first plane, and reshaping it to `[H, W, C]` panicked. It is now
+  refused, naming the layout.
+
 ### Changed
 
 - **`scripts/verify.sh` runs the slow lane only with `--slow`.** By default it

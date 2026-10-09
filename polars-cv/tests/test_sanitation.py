@@ -1490,6 +1490,12 @@ ALLOWED_PARTIAL_VARIANT_MAPS = frozenset(
         # with "Unsupported Arrow type" rather than guessing, so the missing
         # arms are an honest refusal, not silent drift.
         "view-buffer/src/interop/arrow_ffi.rs::from_arrow_ffi",
+        # The TIFF sample formats the chunk decoder carries (8/16-bit unsigned,
+        # 32/64-bit float, as the whole-image TIFF decoder before it). Any
+        # other layout is not read by it at all (`Layout::read` returns None)
+        # and decodes through the `tiff` crate, so the missing arms are never
+        # reached rather than mapped to a wrong dtype.
+        "view-buffer/src/interop/tiff_region.rs::dtype",
     }
 )
 

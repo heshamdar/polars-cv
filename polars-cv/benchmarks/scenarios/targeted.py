@@ -80,6 +80,10 @@ class _Inputs:
         return _encoded(self.count, self.height, self.width, "JPEG")
 
     @property
+    def tiled_tiff(self) -> pl.DataFrame:
+        return _tiled_tiff(self.count, self.height, self.width)
+
+    @property
     def blobs(self) -> pl.DataFrame:
         return _blobs(self.count, self.height, self.width)
 
@@ -131,6 +135,21 @@ def _encoded(count: int, height: int, width: int, fmt: str) -> pl.DataFrame:
         arr = (rng.integers(0, 255, (height, width, 3)) // 64 * 64).astype(np.uint8)
         buf = io.BytesIO()
         Image.fromarray(arr).save(buf, format=fmt)
+        out.append(buf.getvalue())
+    return pl.DataFrame({"img": out})
+
+
+@_stored
+def _tiled_tiff(count: int, height: int, width: int) -> pl.DataFrame:
+    """The PNG frame's pixels as LZW-compressed TIFFs in 64-pixel tiles."""
+    import tifffile
+
+    rng = np.random.default_rng(0)
+    out = []
+    for _ in range(count):
+        arr = (rng.integers(0, 255, (height, width, 3)) // 64 * 64).astype(np.uint8)
+        buf = io.BytesIO()
+        tifffile.imwrite(buf, arr, tile=(64, 64), compression="lzw", photometric="rgb")
         out.append(buf.getvalue())
     return pl.DataFrame({"img": out})
 
@@ -234,6 +253,15 @@ def _geom(
     return build
 
 
+def _tiff_window(i: _Inputs) -> Callable[[], Any]:
+    """A window of a quarter of each side (at most 64 pixels), off the origin."""
+    h, w = min(64, i.height // 2), min(64, i.width // 2)
+    pipe = _src().crop(top=i.height // 4, left=i.width // 4, height=h, width=w)
+    df = i.tiled_tiff
+    expr = pl.col("img").cv.pipe(pipe).sink("numpy")
+    return lambda: df.select(expr)
+
+
 @dataclass(frozen=True)
 class Case:
     name: str
@@ -257,6 +285,10 @@ CASES: tuple[Case, ...] = (
     Case("codec_png_decode", "image", _pipe("png", _src, "numpy")),
     Case("codec_jpeg_decode", "image", _pipe("jpeg", _src, "numpy")),
     Case("codec_png_roundtrip", "image", _pipe("png", _src, "png")),
+    Case("codec_tiff_tiled_decode", "image", _pipe("tiled_tiff", _src, "numpy")),
+    # A window of at most 64x64 of a tiled TIFF: decodes the (at most four)
+    # tiles it overlaps, against the whole image above.
+    Case("codec_tiff_tiled_window", "image", _tiff_window),
     Case("codec_jpeg_roundtrip", "image", _pipe("jpeg", _src, "jpeg")),
     Case("sink_array_u8", "image", _array(_u8, lambda i: [i.height, i.width, 3])),
     Case("sink_list_u8", "image", _pipe("png", _u8, "list")),

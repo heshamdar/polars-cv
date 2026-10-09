@@ -78,6 +78,9 @@ bench = [
     "matplotlib>=3.9.4",
     "jupyterlab",
     "datasets>=2.0",
+    # The tiled-TIFF inputs of `targeted:codec_tiff_*`.
+    "tifffile>=2025.1",
+    "imagecodecs>=2025.3",
 ]
 docs = [
     "mkdocs-material>=9.0",

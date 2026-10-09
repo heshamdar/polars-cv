@@ -2920,6 +2920,8 @@ viz = [
 [package.dev-dependencies]
 bench = [
     { name = "datasets" },
+    { name = "imagecodecs", version = "2026.3.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "imagecodecs", version = "2026.8.16", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "jupyterlab" },
     { name = "matplotlib" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -2928,6 +2930,8 @@ bench = [
     { name = "pillow" },
     { name = "psutil" },
     { name = "rich" },
+    { name = "tifffile", version = "2026.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "tifffile", version = "2026.9.20", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "torch" },
     { name = "torchvision" },
 ]
@@ -2974,6 +2978,7 @@ provides-extras = ["viz"]
 [package.metadata.requires-dev]
 bench = [
     { name = "datasets", specifier = ">=2.0" },
+    { name = "imagecodecs", specifier = ">=2025.3" },
     { name = "jupyterlab" },
     { name = "matplotlib", specifier = ">=3.9.4" },
     { name = "numpy", specifier = ">=1.20" },
@@ -2981,6 +2986,7 @@ bench = [
     { name = "pillow", specifier = ">=10.0" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "rich", specifier = ">=13.0" },
+    { name = "tifffile", specifier = ">=2025.1" },
     { name = "torch", specifier = ">=2.0" },
     { name = "torchvision", specifier = ">=0.15" },
 ]
