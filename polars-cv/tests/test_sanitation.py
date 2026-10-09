@@ -1232,7 +1232,7 @@ def test_no_local_plugin_available_definitions() -> None:
 #: to carry a copy of `encode_png` that had dropped conftest's
 #: `except ImportError: pytest.skip("PIL/Pillow required")` arm -- so without
 #: Pillow they errored where the suite means to skip.
-_CONFTEST_PNG_FACTORIES = ("create_test_png", "encode_png")
+_CONFTEST_PNG_FACTORIES = ("create_test_png", "encode_png", "write_tiled_tiff")
 
 #: conftest-owned image *data* fixtures (as opposed to the factory functions
 #: above). Overriding one per-module is a legitimate pytest pattern *when it

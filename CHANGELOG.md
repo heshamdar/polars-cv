@@ -29,6 +29,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   The structural lane runs on every core (18 s → 11 s), and the in-memory
   lane no longer re-runs the structural guards, which read the source tree
   rather than an engine's output and have already run twice by then.
+- **Tiled and pyramidal TIFF test fixtures.** `tests/conftest.py` gains
+  `write_tiled_tiff` and its `tiled_tiff` fixture, plus `TiffFixture`. They
+  write seeded tiled, strip, pyramidal, BigTIFF and JPEG-tiled TIFFs and
+  return each level's decoded truth. `tifffile` and `imagecodecs` join the
+  dev group for them, because polars-cv's own TIFF encoder writes strips
+  only. JPEG fixtures come in both colour layouts a decoder must handle: a
+  YCbCr-coded stream tagged YCbCr, and an RGB-coded stream (Adobe transform
+  0) tagged RGB. `tests/test_wsi_fixtures.py` checks the fixtures
+  themselves: tiling, level IFDs, BigTIFF headers and JPEG stream encoding.
+  It also has a `network` test of the real Aperio sample (`svs_sample`).
+  `test_no_local_png_factories` covers the new factory.
 
 ## [0.35.0] — 2026-10-09
 

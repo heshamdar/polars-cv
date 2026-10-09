@@ -7,6 +7,8 @@ from __future__ import annotations
 import io
 import os
 import sys
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -200,6 +202,205 @@ def make_ring_png(height: int = 100, width: int = 200, channels: int = 3) -> byt
     buf = io.BytesIO()
     Image.fromarray(arr, mode=_MODE_FOR_CHANNELS[channels]).save(buf, format="PNG")
     return buf.getvalue()
+
+
+@dataclass(frozen=True)
+class TiffFixture:
+    """A TIFF written by :func:`write_tiled_tiff` and the pixels it holds.
+
+    Attributes:
+        path: Where the file was written.
+        levels: The decoded truth of every pyramid level, level 0 first, each
+            ``[H, W, C]`` (a single channel keeps its axis, as polars-cv decodes
+            it). For a lossless file it is exactly what was written; for JPEG
+            it is tifffile's own decode of the file.
+        lossless: Whether ``levels`` is the written data (not a codec's decode).
+    """
+
+    path: Path
+    levels: tuple[np.ndarray, ...]
+    lossless: bool
+
+
+_TIFF_DTYPES = {"u8": np.uint8, "u16": np.uint16, "f32": np.float32}
+_TIFF_COMPRESSION = {
+    None: None,
+    "lzw": "lzw",
+    "deflate": "adobe_deflate",
+    "jpeg": "jpeg",
+}
+
+
+def _tiff_content(
+    height: int, width: int, channels: int, dtype: str, seed: int
+) -> np.ndarray:
+    """Smooth gradients plus seeded low-amplitude noise, ``[H, W, C]``.
+
+    Gradients make every tile distinct (a misplaced tile cannot compare equal)
+    and stay JPEG-friendly; the noise keeps lossless codecs honest.
+    """
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:height, 0:width].astype(np.float64)
+    planes = [
+        (
+            xx / max(width - 1, 1) * (0.6 + 0.1 * c)
+            + yy / max(height - 1, 1) * (0.3 - 0.05 * c)
+        )
+        % 1.0
+        for c in range(channels)
+    ]
+    unit = (
+        np.stack(planes, axis=-1) * 0.9 + rng.random((height, width, channels)) * 0.03
+    )
+    if dtype == "f32":
+        return unit.astype(np.float32)
+    top = np.iinfo(_TIFF_DTYPES[dtype]).max
+    return np.clip(np.round(unit * top), 0, top).astype(_TIFF_DTYPES[dtype])
+
+
+def write_tiled_tiff(
+    path: Path,
+    *,
+    height: int,
+    width: int,
+    channels: int = 3,
+    dtype: str = "u8",
+    tile: tuple[int, int] | None = (32, 32),
+    levels: int = 1,
+    compression: str | None = None,
+    jpeg_photometric: str = "ycbcr",
+    bigtiff: bool = False,
+    description: str | None = None,
+    seed: int = 0,
+) -> TiffFixture:
+    """Write a deterministic tiled (or strip) TIFF, optionally a pyramid.
+
+    The tiled, pyramidal and JPEG-tiled TIFFs a whole-slide image is made of
+    are what polars-cv's own encoder (strips only) cannot write, so tests build
+    them with tifffile. Levels are top-level IFDs, SVS-style: level ``k`` is
+    level 0 subsampled by ``2**k`` and flagged reduced-resolution
+    (SubfileType 1).
+
+    Args:
+        path: Output file.
+        height: Level-0 height.
+        width: Level-0 width.
+        channels: 1 (gray), 3 (RGB) or 4 (RGBA).
+        dtype: ``"u8"``, ``"u16"`` or ``"f32"``.
+        tile: ``(tile_height, tile_width)``, each a multiple of 16 (a TIFF
+            rule), or ``None`` for strips.
+        levels: Number of pyramid levels.
+        compression: ``None``, ``"lzw"``, ``"deflate"`` or ``"jpeg"`` (u8, 1 or
+            3 channels).
+        jpeg_photometric: For JPEG: ``"ycbcr"`` (libtiff style: YCbCr-coded
+            JPEG, Photometric=YCbCr) or ``"rgb"`` (RGB-coded JPEG marked by an
+            Adobe APP14 transform 0, Photometric=RGB).
+        bigtiff: Write a BigTIFF.
+        description: ImageDescription of level 0 (e.g. an Aperio header).
+        seed: Noise seed.
+
+    Returns:
+        The file and its per-level truth.
+    """
+    tifffile = pytest.importorskip("tifffile")
+    if compression not in _TIFF_COMPRESSION:
+        raise ValueError(f"unknown compression {compression!r}")
+    if channels not in (1, 3, 4):
+        raise ValueError(f"unsupported channel count for a TIFF fixture: {channels}")
+    if compression == "jpeg" and (dtype != "u8" or channels == 4):
+        raise ValueError("jpeg fixtures hold u8 samples in 1 or 3 channels only")
+
+    base = _tiff_content(height, width, channels, dtype, seed)
+    written = [base[:: 2**k, :: 2**k] for k in range(levels)]
+    photometric = "minisblack" if channels == 1 else "rgb"
+    kwargs: dict[str, object] = {
+        "compression": _TIFF_COMPRESSION[compression],
+        "photometric": photometric,
+    }
+    if tile is not None:
+        kwargs["tile"] = tile
+    if channels == 4:
+        kwargs["extrasamples"] = ("unassalpha",)
+    if compression == "jpeg" and channels == 3:
+        # tifffile converts RGB input to YCbCr and tags it so by default (the
+        # libtiff style); `photometric="ycbcr"` would instead declare the input
+        # already YCbCr. `outcolorspace="RGB"` codes the JPEG itself in RGB.
+        if jpeg_photometric == "rgb":
+            kwargs["compressionargs"] = {"outcolorspace": "RGB"}
+        elif jpeg_photometric != "ycbcr":
+            raise ValueError(f"unknown jpeg_photometric {jpeg_photometric!r}")
+
+    with tifffile.TiffWriter(path, bigtiff=bigtiff) as tw:
+        for k, level in enumerate(written):
+            data = level[..., 0] if channels == 1 else level
+            tw.write(
+                data,
+                subfiletype=1 if k else 0,
+                description=description if k == 0 else None,
+                metadata=None,
+                **kwargs,
+            )
+
+    if compression == "jpeg":
+        with tifffile.TiffFile(path) as tif:
+            truth = tuple(
+                p.asarray().reshape(lv.shape)
+                for p, lv in zip(tif.pages, written, strict=True)
+            )
+        return TiffFixture(path=path, levels=truth, lossless=False)
+    return TiffFixture(
+        path=path,
+        levels=tuple(np.ascontiguousarray(lv) for lv in written),
+        lossless=True,
+    )
+
+
+@pytest.fixture
+def tiled_tiff(tmp_path: Path) -> Callable[..., TiffFixture]:
+    """Fixture form of :func:`write_tiled_tiff`, writing into ``tmp_path``.
+
+    Returns:
+        ``make(name="slide.tif", **kwargs)``; ``kwargs`` as ``write_tiled_tiff``.
+    """
+
+    def _make(name: str = "slide.tif", **kwargs: object) -> TiffFixture:
+        return write_tiled_tiff(tmp_path / name, **kwargs)  # type: ignore[arg-type]
+
+    return _make
+
+
+#: OpenSlide's public Aperio sample: JPEG tiles, a pyramid, and the
+#: thumbnail/label/macro IFDs real slides interleave with their levels.
+SVS_SAMPLE_URL = "https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/CMU-1-Small-Region.svs"
+
+
+@pytest.fixture(scope="session")
+def svs_sample(pytestconfig: pytest.Config) -> Path:
+    """A real Aperio SVS slide, downloaded once into the pytest cache.
+
+    For ``network``-marked tests only. Skips when the download fails. The file
+    is checked by parsing it as an Aperio SVS (a truncated or substituted
+    download does not parse as one) rather than by a pinned digest.
+    """
+    tifffile = pytest.importorskip("tifffile")
+    import urllib.request
+
+    cache = getattr(pytestconfig, "cache", None)  # absent under -p no:cacheprovider
+    directory = cache.mkdir("svs") if cache is not None else Path(tempfile.mkdtemp())
+    target = directory / "CMU-1-Small-Region.svs"
+    if not target.exists():
+        partial = target.with_suffix(".part")
+        try:
+            with urllib.request.urlopen(SVS_SAMPLE_URL, timeout=60) as resp:  # noqa: S310
+                partial.write_bytes(resp.read())
+        except OSError as exc:
+            pytest.skip(f"cannot download the SVS sample: {exc}")
+        partial.rename(target)
+    with tifffile.TiffFile(target) as tif:
+        if not tif.is_svs:
+            target.unlink()
+            pytest.fail("the downloaded SVS sample does not parse as an Aperio SVS")
+    return target
 
 
 @pytest.fixture

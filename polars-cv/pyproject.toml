@@ -61,6 +61,11 @@ dev = [
     # skip, they would fail: the runner asserts exit 0.
     "matplotlib>=3.9.4",
     "pytest-xdist>=3.6",
+    # Tiled, pyramidal and JPEG-tiled TIFF fixtures for the patch / whole-slide
+    # tests: the `tiff` crate's encoder writes strips only, and imagecodecs
+    # supplies tifffile's JPEG codec and a reference decode to compare against.
+    "tifffile>=2025.1",
+    "imagecodecs>=2025.3",
 ]
 bench = [
     "opencv-python>=4.8",
