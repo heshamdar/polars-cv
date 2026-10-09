@@ -1070,6 +1070,7 @@ fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
             value,
             mode,
         } => crate::ops::pad::pad(&work_buf, top, bottom, left, right, value, mode),
+        ref kind @ ImageOpKind::Tile { .. } => tile(&work_buf, kind),
         ImageOpKind::PadToSize {
             height,
             width,
@@ -1588,6 +1589,32 @@ where
     };
     F::give_slab(slab);
     result
+}
+
+/// `ImageOpKind::Tile`: every cell of the op's grid
+/// ([`ImageOpKind::patch_grid`], the grid `patch_grid` lists) cut from `buf`
+/// and packed one after another: `[N, h, w, ...]`, shaped by the op's
+/// `OpShape` like every op.
+#[cfg(feature = "image_interop")]
+fn tile(buf: &ViewBuffer, kind: &ImageOpKind) -> ViewBuffer {
+    let grid = kind
+        .patch_grid()
+        .expect("a tile's grid passed its check before it ran");
+    let shape = buf.shape();
+    let out_shape = kind.shape().concrete(&[shape]);
+    let [ph, pw] = grid.size().map(|n| n as usize);
+    let cells = grid.cells(shape[0] as u32, shape[1] as u32);
+    let mut end = vec![usize::MAX; shape.len()];
+    crate::core::dtype::with_dtype!(buf.dtype(), T => {
+        let mut out: Vec<T> = Vec::with_capacity(out_shape.iter().product());
+        for cell in &cells {
+            let mut start = vec![0; shape.len()];
+            (start[0], start[1]) = (cell.top as usize, cell.left as usize);
+            (end[0], end[1]) = (start[0] + ph, start[1] + pw);
+            buf.slice(&start, &end).append_to::<T>(&mut out);
+        }
+        ViewBuffer::from_vec_with_shape(out, out_shape)
+    })
 }
 
 #[cfg(not(feature = "image_interop"))]

@@ -442,6 +442,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "subtract",
         "subtract_constant",
         "threshold",
+        "tile",
         "transpose",
         "trunc",
         "warp_affine",
@@ -961,6 +962,24 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "subtract": {"other": {"kind": "node"}},
     "subtract_constant": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "threshold": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "tile": {
+        "height": {"kind": "scalar", "per_row": False, "py": "int"},
+        "width": {"kind": "scalar", "per_row": False, "py": "int"},
+        "stride_height": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": True, "py": "int"},
+        },
+        "stride_width": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": True, "py": "int"},
+        },
+        "edge": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "GridEdge",
+            "variants": ["drop", "shift"],
+        },
+    },
     "transpose": {
         "axes": {
             "kind": "list",
@@ -1146,6 +1165,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     ],
     "subtract_constant": [{"input": "buffer", "output": "buffer"}],
     "threshold": [{"input": "buffer", "output": "buffer"}],
+    "tile": [{"input": "buffer", "output": "buffer"}],
     "transpose": [{"input": "buffer", "output": "buffer"}],
     "trunc": [{"input": "buffer", "output": "buffer"}],
     "warp_affine": [{"input": "buffer", "output": "buffer"}],
@@ -2484,6 +2504,50 @@ class _OpsMixin:
             value: Threshold value (int or float, or Polars expression).
         """
         return self._append_typed("threshold", {"value": value})
+
+    def tile(
+        self,
+        *,
+        height: int,
+        width: int,
+        stride_height: IntOrExpr | None = None,
+        stride_width: IntOrExpr | None = None,
+        edge: str | pl.Expr = "drop",
+    ) -> Pipeline:
+        """Cut the image into patches: ``[N, height, width, C]`` (``[N, height,
+        width]`` for a 2-D image), the patches in row-major grid order, each
+        whole and inside the image. The grid is the one ``polars_cv.patch_grid``
+        lists, so patch ``i`` here is that grid's cell ``i``. An image smaller
+        than a patch has none (``N`` is 0).
+
+        Domain: buffer → buffer
+
+        Args:
+            height: Patch height (structural: it is an axis of the output).
+            width: Patch width (structural: it is an axis of the output).
+            stride_height: Rows between patch origins (default: ``height``, patches that
+                touch). A smaller stride overlaps patches; a larger one leaves gaps.
+            stride_width: Columns between patch origins (default: ``width``).
+            edge: What to do with a remainder too small for a whole patch: ``"drop"``
+                leaves it uncovered, ``"shift"`` adds a patch aligned to the far edge.
+
+        Example:
+            >>> pipe = Pipeline().source("image_bytes").tile(height=224, width=224)
+            >>> # Overlapping patches covering the whole image:
+            >>> pipe = Pipeline().source("image_bytes").tile(
+            ...     height=224, width=224, stride_height=112, stride_width=112, edge="shift"
+            ... )
+        """
+        return self._append_typed(
+            "tile",
+            {
+                "height": height,
+                "width": width,
+                "stride_height": stride_height,
+                "stride_width": stride_width,
+                "edge": edge,
+            },
+        )
 
     def transpose(self, axes: Sequence[int]) -> Pipeline:
         """Transpose dimensions.

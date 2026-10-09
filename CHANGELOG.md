@@ -113,6 +113,21 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     downloading it.
   - New `targeted:wsi_patch_window_file` benchmark case.
 
+- **`Pipeline.tile(height=, width=, stride_height=, stride_width=,
+  edge=)` cuts an image into its patches.** The output is `[N, height, width,
+  C]` (`[N, height, width]` for a 2-D image), in row-major grid order.
+  - It is the in-memory counterpart of `patch_grid` + `explode` + `crop`: the
+    image decodes once and every patch is cut from it. The grid is the same
+    `PatchGrid`, so patch `i` is `patch_grid`'s cell `i`.
+  - The patch size is structural (literal). The strides and the edge rule
+    change only `N`, so they may be expressions.
+  - `explode` on a `list` sink gives one row per patch.
+  - Ops that read `[H, W, C]` refuse the rank-4 output when the pipeline is
+    built.
+  - Checked by a Rust cross-check against crops (strided inputs included), a
+    NumPy parity reference written from the definition, and a user-level
+    comparison with the `patch_grid` recipe.
+
 ### Fixed
 
 - **`.cv.width()`/`height()`/`channels()`/`image_dtype()`/`image_info()`
