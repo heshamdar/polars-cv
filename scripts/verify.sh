@@ -51,12 +51,15 @@ run_check() {
     local label="$1"; shift
     local log
     log="$(mktemp)"
+    local start=$SECONDS
     "$@" >"$log" 2>&1
     local code=$?
+    local took
+    took="$(printf '%4ds' $((SECONDS - start)))"
     if [[ $code -eq 0 ]]; then
-        RESULTS+=("  ok    (exit 0)   $label")
+        RESULTS+=("  ok    (exit 0)   $took  $label")
     else
-        RESULTS+=("  FAIL  (exit $code)   $label")
+        RESULTS+=("  FAIL  (exit $code)   $took  $label")
         FAILED=1
         echo "===== FAILED: $label (exit $code) ====="
         tail -40 "$log"
@@ -105,10 +108,11 @@ export POLARS_CV_REQUIRE_PLUGIN=1
 # The structural lane runs first and on its own: it is what pre-commit runs,
 # so when it fails the local hook would have caught this before the push, and
 # saying so up front beats finding it under the full suite's output. It is a
-# subset of the fast lane below, which still runs it -- the point is the
-# separate exit code, not skipping it later.
+# subset of the streaming fast lane below, which still runs it -- the point is
+# the separate exit code, not skipping it later (and the coverage gate counts
+# it). On every core like the lanes below: 18 s serial, 11 s with `-n auto`.
 run_check "pytest (structural lane)" \
-    uv run --no-sync --directory polars-cv pytest tests/ -q -m "structural and not slow"
+    uv run --no-sync --directory polars-cv pytest tests/ -q -n auto -m "structural and not slow"
 
 # The lanes below run on every core (`-n auto`, pytest-xdist): each was
 # single-threaded and they were 89% of this script's time (2026-10-08, 4 cores:
@@ -126,10 +130,12 @@ run_check "pytest (fast lane, streaming + coverage)" \
 
 # The dual-path guarantee: the same lane under the in-memory engine. The two
 # engines chunk a plugin's inputs differently, so a chunk-boundary bug that
-# passes under one fails under the other. No coverage here (same tests).
+# passes under one fails under the other. No coverage here (same tests), and
+# no structural guards: they read the source tree, not an engine's output, and
+# both lanes above already ran them.
 run_check "pytest (fast lane, in-memory)" \
     env POLARS_ENGINE_AFFINITY=in-memory \
-    uv run --no-sync --directory polars-cv pytest tests/ -q -n auto -m "not network and not slow"
+    uv run --no-sync --directory polars-cv pytest tests/ -q -n auto -m "not network and not slow and not structural"
 
 if [[ $FAST -eq 0 ]]; then
     run_check "pytest (slow lane)" \

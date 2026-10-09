@@ -7,6 +7,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Internal
+
+- **`scripts/verify.sh` prints each check's duration**, and drops work it
+  repeated. Profiled on 4 cores (warm tree, ~14.5 min): the slow lane 562 s,
+  the fast lanes 124 s and 85 s, `cargo test -p view-buffer` 62 s. Of that
+  62 s, 49 s was one test, `sixteen_bit_ops_match_the_legacy_code_through_the_lookup_table`,
+  looping over two dtypes and two layouts serially. It is now four tests over
+  the same cases, which libtest runs side by side (lib tests 51 s → 24 s).
+  The structural lane runs on every core (18 s → 11 s), and the in-memory
+  lane no longer re-runs the structural guards, which read the source tree
+  rather than an engine's output and have already run twice by then.
+
 ## [0.35.0] — 2026-10-09
 
 Fixes and performance. A call's rows now spread over the thread pool whatever

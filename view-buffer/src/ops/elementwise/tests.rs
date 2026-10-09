@@ -421,31 +421,50 @@ fn per_channel_kernels_match_the_legacy_code_across_blocks_and_runs() {
 
 /// 16-bit input switches to a lookup table at 65,536 elements per table;
 /// both sides of the threshold must agree with the oracle.
-#[test]
-fn sixteen_bit_ops_match_the_legacy_code_through_the_lookup_table() {
-    for dtype in [DType::U16, DType::I16] {
-        let parent = sample(dtype, 260, 260, 3);
-        let n = 260 * 260 * 3;
-        let gamma = FusedKernel {
-            ops: vec![ScalarOp::Pow(0.45)],
-            out_dtype: DType::F32,
-        };
-        let preset = vec![gamma.clone(); 3];
-        assert_eq!(
-            strategy(dtype, n, std::slice::from_ref(&gamma)),
-            Strategy::Lut
-        );
-        assert_eq!(strategy(dtype, n, &preset), Strategy::Lut);
-        for (layout, view) in layouts(&parent, false) {
-            for op in per_value_ops() {
-                check(
-                    &op,
-                    &view,
-                    &format!("{op:?} on {dtype:?} 260x260x3 {layout}"),
-                );
-            }
-        }
+///
+/// One test per dtype and layout (`layouts(.., false)`'s index), not one loop:
+/// each case is ~12 s in a debug build, and as a single test the four were the
+/// floor of the whole `cargo test -p view-buffer` run (49 of its 51 s). Split,
+/// libtest runs them side by side.
+fn sixteen_bit_ops_match_the_legacy_code_through_the_lookup_table(dtype: DType, layout: usize) {
+    let parent = sample(dtype, 260, 260, 3);
+    let n = 260 * 260 * 3;
+    let gamma = FusedKernel {
+        ops: vec![ScalarOp::Pow(0.45)],
+        out_dtype: DType::F32,
+    };
+    let preset = vec![gamma.clone(); 3];
+    assert_eq!(
+        strategy(dtype, n, std::slice::from_ref(&gamma)),
+        Strategy::Lut
+    );
+    assert_eq!(strategy(dtype, n, &preset), Strategy::Lut);
+    let mut views = layouts(&parent, false);
+    assert_eq!(views.len(), 2, "one test per layout below");
+    let (name, view) = views.swap_remove(layout);
+    for op in per_value_ops() {
+        check(&op, &view, &format!("{op:?} on {dtype:?} 260x260x3 {name}"));
     }
+}
+
+#[test]
+fn u16_contiguous_ops_match_the_legacy_code_through_the_lookup_table() {
+    sixteen_bit_ops_match_the_legacy_code_through_the_lookup_table(DType::U16, 0);
+}
+
+#[test]
+fn u16_flipped_ops_match_the_legacy_code_through_the_lookup_table() {
+    sixteen_bit_ops_match_the_legacy_code_through_the_lookup_table(DType::U16, 1);
+}
+
+#[test]
+fn i16_contiguous_ops_match_the_legacy_code_through_the_lookup_table() {
+    sixteen_bit_ops_match_the_legacy_code_through_the_lookup_table(DType::I16, 0);
+}
+
+#[test]
+fn i16_flipped_ops_match_the_legacy_code_through_the_lookup_table() {
+    sixteen_bit_ops_match_the_legacy_code_through_the_lookup_table(DType::I16, 1);
 }
 
 #[test]
