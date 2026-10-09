@@ -157,13 +157,42 @@ class _Server:
     (200) whatever was asked, as some servers do.
     """
 
-    def __init__(self, root: Path, *, honour_ranges: bool = True) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        honour_ranges: bool = True,
+        latency: float = 0.0,
+        etag: bool = False,
+    ) -> None:
+        import hashlib
         import http.server
         import threading
+        import time
 
         self.requests: list[tuple[str, str, str | None]] = []
         self.served = 0
+        #: The most requests in flight at once.
+        self.peak = 0
+        in_flight = 0
+        lock = threading.Lock()
         outer = self
+
+        def enter() -> None:
+            nonlocal in_flight
+            with lock:
+                in_flight += 1
+                outer.peak = max(outer.peak, in_flight)
+            time.sleep(latency)
+
+        def leave() -> None:
+            nonlocal in_flight
+            with lock:
+                in_flight -= 1
+
+        def validator(handler: http.server.BaseHTTPRequestHandler, body: bytes) -> None:
+            if etag:
+                handler.send_header("ETag", f'"{hashlib.sha1(body).hexdigest()}"')
 
         class Handler(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
@@ -173,6 +202,13 @@ class _Server:
                 return path.read_bytes() if path.is_file() else None
 
             def do_HEAD(self) -> None:  # noqa: N802
+                enter()
+                try:
+                    self._head()
+                finally:
+                    leave()
+
+            def _head(self) -> None:
                 body = self._body()
                 outer.requests.append(("HEAD", self.path, None))
                 if body is None:
@@ -182,9 +218,17 @@ class _Server:
                     return
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(body)))
+                validator(self, body)
                 self.end_headers()
 
             def do_GET(self) -> None:  # noqa: N802
+                enter()
+                try:
+                    self._get()
+                finally:
+                    leave()
+
+            def _get(self) -> None:
                 body = self._body()
                 asked = self.headers.get("Range")
                 outer.requests.append(("GET", self.path, asked))
@@ -205,6 +249,7 @@ class _Server:
                     part = body
                     self.send_response(200)
                 self.send_header("Content-Length", str(len(part)))
+                validator(self, body)
                 self.end_headers()
                 self.wfile.write(part)
                 outer.served += len(part)
@@ -540,3 +585,131 @@ class TestNoSilentWholeReads:
                 numpy_from_struct(row), fx.levels[0][t : t + 64, left : left + 64]
             )
         assert srv.served <= size, (srv.served, size)
+
+
+def _windows_frame(url: str, origins: list[tuple[int, int]]) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "p": [url] * len(origins),
+            "t": [o[0] for o in origins],
+            "l": [o[1] for o in origins],
+        }
+    )
+
+
+def _is_block(request: tuple[str, str, str | None]) -> bool:
+    """Whether a request fetched a structure block: 64 KiB at a multiple of
+    64 KiB (the last block of a file may be shorter)."""
+    method, _, asked = request
+    if method != "GET" or not asked:
+        return False
+    first, last = (int(v) for v in asked.removeprefix("bytes=").split("-"))
+    return first % 65536 == 0 and last == first + 65535
+
+
+#: 48 windows of a 1024x1024 slide in 64-pixel tiles, each over its own
+#: 2x2 tiles: no two windows share a chunk.
+_ORIGINS = [(128 * (i // 8) + 3, 128 * (i % 8) + 5) for i in range(48)]
+
+
+@plugin_required
+class TestRemoteConcurrency:
+    """Remote windows are latency-bound: a call keeps many requests in
+    flight, not one per thread, and a later call does not re-read a
+    slide's structure it has already read."""
+
+    def test_windows_are_read_ahead_of_their_rows(self, tmp_path: Path) -> None:
+        """With 100 ms per request, the server sees more requests at once
+        than the plugin has threads: each row's chunks are already in flight
+        when it runs."""
+        fx = _slide(tmp_path)
+        srv = _Server(tmp_path, latency=0.1)
+        try:
+            out = _crop(_windows_frame(f"{srv.base}/{fx.path.name}", _ORIGINS))
+        finally:
+            srv.close()
+        for (t, left), row in zip(_ORIGINS, out["o"], strict=True):
+            np.testing.assert_array_equal(
+                numpy_from_struct(row), fx.levels[0][t : t + 64, left : left + 64]
+            )
+        assert srv.peak > pl.thread_pool_size(), (srv.peak, pl.thread_pool_size())
+        # Read ahead, not read twice: no chunk range is requested twice.
+        # (Structure blocks may be: the streaming engine can split the rows
+        # over several calls, and without a validator each reads them.)
+        chunks = [
+            r[2] for r in srv.requests if r[0] == "GET" and r[2] and not _is_block(r)
+        ]
+        repeated = sorted({c for c in chunks if chunks.count(c) > 1})
+        assert repeated == [], repeated
+
+    def test_a_later_call_reuses_the_structure_it_read(self, tmp_path: Path) -> None:
+        """A second call on an unchanged object (same ETag) asks its head
+        and fetches each row's chunks: no structure block again."""
+        fx = _slide(tmp_path)
+        srv = _Server(tmp_path, etag=True)
+        try:
+            df = _windows_frame(f"{srv.base}/{fx.path.name}", _ORIGINS[:6])
+            _crop(df)
+            first = len(srv.requests)
+            out = _crop(df)
+            second = srv.requests[first:]
+        finally:
+            srv.close()
+        for (t, left), row in zip(_ORIGINS[:6], out["o"], strict=True):
+            np.testing.assert_array_equal(
+                numpy_from_struct(row), fx.levels[0][t : t + 64, left : left + 64]
+            )
+        assert [r for r in second if _is_block(r)] == [], second
+        assert any(_is_block(r) for r in srv.requests[:first])
+
+    def test_a_changed_object_is_read_afresh(self, tmp_path: Path) -> None:
+        """A rewritten object (a new ETag) is not served the old structure:
+        its windows are the new pixels, even where its tiles moved."""
+        fx = _slide(tmp_path)
+        srv = _Server(tmp_path, etag=True)
+        try:
+            df = _windows_frame(f"{srv.base}/{fx.path.name}", _ORIGINS[:6])
+            _crop(df)
+            fx = _slide(tmp_path, tile=(32, 32), seed=7)
+            out = _crop(df)
+        finally:
+            srv.close()
+        for (t, left), row in zip(_ORIGINS[:6], out["o"], strict=True):
+            np.testing.assert_array_equal(
+                numpy_from_struct(row), fx.levels[0][t : t + 64, left : left + 64]
+            )
+
+    def test_without_a_validator_nothing_is_reused(self, tmp_path: Path) -> None:
+        """An object with no ETag or Last-Modified cannot be told unchanged,
+        so each call reads its structure again."""
+        fx = _slide(tmp_path)
+        srv = _Server(tmp_path)
+        try:
+            df = _windows_frame(f"{srv.base}/{fx.path.name}", _ORIGINS[:6])
+            _crop(df)
+            first = len(srv.requests)
+            _crop(df)
+            second = srv.requests[first:]
+        finally:
+            srv.close()
+        assert any(_is_block(r) for r in second), second
+
+    def test_slide_info_reads_rows_concurrently(self, tmp_path: Path) -> None:
+        """Remote ``slide_info`` rows run side by side, not one after the
+        other."""
+        if pl.thread_pool_size() < 2:
+            pytest.skip("one thread: nothing to run side by side")
+        fx = _slide(tmp_path, levels=3)
+        names = []
+        for i in range(12):
+            copy = tmp_path / f"s{i}.tif"
+            copy.write_bytes(fx.path.read_bytes())
+            names.append(copy.name)
+        srv = _Server(tmp_path, latency=0.1)
+        try:
+            df = pl.DataFrame({"p": [f"{srv.base}/{n}" for n in names]})
+            info = df.select(pl.col("p").cv.slide_info())["p"].to_list()
+        finally:
+            srv.close()
+        assert all(len(i["levels"]) == 3 for i in info)
+        assert srv.peak > 1, srv.peak

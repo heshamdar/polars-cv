@@ -824,6 +824,28 @@ impl<S: TiffSource> TiffImage<S> {
         self.file.reader()
     }
 
+    /// The file byte ranges of the chunks `window` (`None`: the whole image)
+    /// overlaps — what [`Self::decode`] of it reads, so a caller can fetch
+    /// them ahead. Reads only their table entries; `None` for a layout this
+    /// module does not decode.
+    pub fn chunk_ranges(
+        &mut self,
+        window: Option<Window>,
+    ) -> Result<Option<Vec<Range<u64>>>, TiffError> {
+        let Readable::Layout(layout) = &self.layout else {
+            return Ok(None);
+        };
+        let window = window.unwrap_or(Window {
+            top: 0,
+            left: 0,
+            bottom: layout.height,
+            right: layout.width,
+        });
+        layout.check_size(&window)?;
+        let chunks = layout.chunks_in(&window);
+        Ok(Some(layout.chunk_ranges(&mut self.file, &chunks)?))
+    }
+
     /// Decode `window` (`None`: the whole image), reading only the chunks it
     /// overlaps and their table entries — the chunks prefetched together,
     /// then read one by one. `None` for a layout this module does not

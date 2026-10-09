@@ -228,8 +228,10 @@ fn slides(inputs: &[Series], kwargs: &MetaKwargs) -> PolarsResult<Vec<Option<Sli
         .map(crate::fetch::PathPolicy::new)
         .unwrap_or_default();
     let fetcher = crate::fetch::Fetcher::new(ca, options.as_ref(), &policy).ranged();
-    (0..ca.len())
-        .map(|row| {
+    // Rows read side by side over the plugin's threads: a remote slide's
+    // header is a few latency-bound requests.
+    crate::row_split::run_split(ca.len(), |_, rows| {
+        rows.map(|row| {
             let read = match ranged_slide(&fetcher, row) {
                 Ok(RangedSlide::Read(meta)) => Ok(meta),
                 Ok(RangedSlide::NotTiff) => fetcher.header(row, extract_slide),
@@ -241,7 +243,13 @@ fn slides(inputs: &[Series], kwargs: &MetaKwargs) -> PolarsResult<Vec<Option<Sli
                 Err(e) => Err(polars_err!(ComputeError: "{}: {}", name, e)),
             }
         })
-        .collect()
+        .collect::<PolarsResult<Vec<_>>>()
+    })
+    .into_iter()
+    .try_fold(Vec::with_capacity(ca.len()), |mut all, part| {
+        all.extend(part?);
+        Ok(all)
+    })
 }
 
 /// What reading a row's slide by range gave.

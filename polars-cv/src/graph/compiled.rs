@@ -764,6 +764,13 @@ impl CompiledGraph {
                             }
                         }
                     };
+                    // Remote windows are latency-bound: start the next rows'
+                    // reads before this row's own blocks on its request.
+                    if np.roi {
+                        if let Some(fetcher) = state.fetchers[idx].as_ref() {
+                            Self::read_ahead(np, fetcher, ctx, row_idx);
+                        }
+                    }
                     // An `"auto"` source reads as the concrete source it was
                     // routed to once per batch (`route_auto_sources`).
                     let decode_result = match state.routed_sources[idx].as_ref() {
@@ -1420,6 +1427,43 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// consume: nothing reads it afterwards, so its buffer can be moved rather
 /// than shared. Anything else keeps it shared, so an unrecognised reader can
 /// only cost a copy, never corrupt a value another reader sees.
+impl CompiledGraph {
+    /// Start the window reads of the rows after `row_idx` in a node whose
+    /// leading crop the decoder takes ([`crate::fetch::Fetcher::read_ahead`]):
+    /// each row's crop and level resolved as its own decode resolves them. A
+    /// row whose parameters do not resolve is left to report itself.
+    fn read_ahead(
+        np: &NodePlan,
+        fetcher: &crate::fetch::Fetcher<'_>,
+        ctx: &ParamCtx<'_>,
+        row_idx: usize,
+    ) {
+        for row in fetcher.rows_ahead(row_idx) {
+            ctx.clear_null();
+            let step = match &np.resolvers[0] {
+                OpResolver::Static(step) => Cow::Borrowed(step),
+                OpResolver::Dynamic(spec) => match spec.resolve(row, ctx) {
+                    Ok(step) => Cow::Owned(step),
+                    Err(_) => continue,
+                },
+                OpResolver::RasterizeShapeRef { .. } => continue,
+            };
+            let GraphStep::Buffer(ViewDto::View(crop)) = step.as_ref() else {
+                continue;
+            };
+            let level = match np.source.level() {
+                None | Some(Param::Lit(0)) => 0,
+                Some(param) => match param.resolve(row, ctx) {
+                    Ok(level) => level,
+                    Err(_) => continue,
+                },
+            };
+            fetcher.read_ahead(row, level, crop);
+        }
+        ctx.clear_null();
+    }
+}
+
 /// A row's error for an op whose parameters did not resolve.
 fn op_resolution_failed(e: &dyn std::fmt::Display) -> String {
     format!("Op resolution error: {e}")

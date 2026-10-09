@@ -443,6 +443,28 @@ impl ImageAdapter {
         crate::interop::tiff_region::TiffImage::open(source, level).map_err(tiff_error)
     }
 
+    /// The pixel window a `crop` takes of a TIFF level of `shape` and
+    /// `dtype` ([`tiff_region::TiffImage::shape`]), or the crop's own
+    /// refusal. The one mapping from a crop to the window
+    /// [`Self::decode_tiff_region`] decodes, so a caller reading the window's
+    /// chunks ahead reads exactly those.
+    ///
+    /// [`tiff_region::TiffImage::shape`]: crate::interop::tiff_region::TiffImage::shape
+    pub fn tiff_window(
+        crop: &crate::ops::ViewOp,
+        shape: [usize; 3],
+        dtype: DType,
+    ) -> Result<crate::interop::tiff_region::Window, crate::ops::validation::ValidationError> {
+        crate::ops::validation::validate_concrete(crop, &[&shape[..]], &[dtype])?;
+        let (start, end) = crop.window().expect("a crop has a window");
+        Ok(crate::interop::tiff_region::Window {
+            top: start[0],
+            left: start[1],
+            bottom: end[0].min(shape[0]),
+            right: end[1].min(shape[1]),
+        })
+    }
+
     /// An opened TIFF level decoded by the chunk decoder (`tiff_region`):
     /// the crop's window when there is a crop (only the chunks under it, and
     /// their table entries, are read), else the whole level. A window the
@@ -478,16 +500,11 @@ impl ImageAdapter {
             crate::ops::Op::is_spatial_window(crop),
             "decode_tiff_region takes a crop, got {crop:?}"
         );
-        if let Err(e) = crate::ops::validation::validate_concrete(crop, &[&shape[..]], &[dtype]) {
-            return Ok(TiffRegion::Decoded(RegionDecode::Refused(e)));
-        }
-        let (start, end) = crop.window().expect("a crop has a window");
-        let window = Window {
-            top: start[0],
-            left: start[1],
-            bottom: end[0].min(shape[0]),
-            right: end[1].min(shape[1]),
+        let window = match Self::tiff_window(crop, shape, dtype) {
+            Ok(window) => window,
+            Err(e) => return Ok(TiffRegion::Decoded(RegionDecode::Refused(e))),
         };
+        let (start, end) = crop.window().expect("a crop has a window");
         let buffer = decoded(Some(window), image)?;
         // What the window leaves of the channel axis, cut as the crop would.
         let channels = crate::ops::ViewOp::Slice {

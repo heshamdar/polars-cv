@@ -69,6 +69,12 @@ crop ahead of the pointwise ops before it.
   `on_null_param`, without reading a TIFF's pixels.
 - **The cost of a patch** is the file's header, the patch's tiles and their
   entries in the tile index, whatever the size of the slide.
+- **Remote slides** are read ahead. While a row decodes, the windows of the rows
+  after it are already being fetched, up to polars' concurrency budget. That
+  budget defaults to 10 requests in flight; for a high-latency store, raise it
+  with `POLARS_CONCURRENCY_BUDGET` (for example `64`). A slide's header is read
+  once and reused by later queries while the object's ETag (or Last-Modified
+  time) is unchanged.
 
 ## Pyramid levels
 

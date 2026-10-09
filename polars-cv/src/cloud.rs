@@ -409,13 +409,23 @@ pub(crate) fn cut_ranges(
         .collect()
 }
 
-/// A remote file's size in bytes, under the concurrency budget like every
+/// An object's size and version, from one `HEAD`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Head {
+    pub size: u64,
+    /// A validator that changes whenever the object does: its ETag, else its
+    /// last-modified time. `None` when the store gives neither, and then
+    /// nothing read of the object is reused by a later call.
+    pub version: Option<String>,
+}
+
+/// A remote file's size and version, under the concurrency budget like every
 /// read ([`read_remote_budgeted`]).
-pub(crate) async fn remote_size_budgeted(
+pub(crate) async fn remote_head_budgeted(
     path: &str,
     options: Option<&CloudOptions>,
-) -> Result<RangedReply<u64>, String> {
-    with_concurrency_budget(1, || remote_size(path, options))
+) -> Result<RangedReply<Head>, String> {
+    with_concurrency_budget(1, || remote_head(path, options))
         .await
         .map_err(|e| e.to_string())
 }
@@ -433,12 +443,12 @@ pub(crate) async fn read_remote_ranges_budgeted(
         .map_err(|e| e.to_string())
 }
 
-async fn remote_size(
+async fn remote_head(
     path: &str,
     options: Option<&CloudOptions>,
-) -> Result<RangedReply<u64>, CloudError> {
+) -> Result<RangedReply<Head>, CloudError> {
     if path.starts_with("http://") || path.starts_with("https://") {
-        return http_size(path).await;
+        return http_head(path).await;
     }
     let (store, key) = object_store_for(path, options).await?;
     // The raw store, not `PolarsObjectStore::head`: that takes a budget
@@ -449,7 +459,12 @@ async fn remote_size(
             async move { store.head(key).await }
         })
         .await
-        .map(|meta| RangedReply::Asked(meta.size))
+        .map(|meta| {
+            RangedReply::Asked(Head {
+                size: meta.size,
+                version: meta.e_tag.or_else(|| Some(meta.last_modified.to_rfc3339())),
+            })
+        })
         .map_err(|e| CloudError::ReadError(e.to_string()))
 }
 
@@ -600,17 +615,23 @@ async fn read_http(url: &str) -> Result<Vec<u8>, CloudError> {
 /// An HTTP resource's size: `HEAD`'s `Content-Length`, or, from a server
 /// that does not answer `HEAD` with one, the total of a one-byte ranged
 /// `GET`'s `Content-Range`.
-async fn http_size(url: &str) -> Result<RangedReply<u64>, CloudError> {
+async fn http_head(url: &str) -> Result<RangedReply<Head>, CloudError> {
     let client = http_client();
     let failed = |e: reqwest::Error| CloudError::ReadError(format!("HTTP request failed: {e}"));
     let head = client.head(url).send().await.map_err(failed)?;
     if head.status().is_success() {
-        if let Some(len) = head
-            .headers()
-            .get(reqwest::header::CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok()?.parse::<u64>().ok())
+        let header = |name| {
+            head.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        if let Some(size) =
+            header(reqwest::header::CONTENT_LENGTH).and_then(|v| v.parse::<u64>().ok())
         {
-            return Ok(RangedReply::Asked(len));
+            let version =
+                header(reqwest::header::ETAG).or_else(|| header(reqwest::header::LAST_MODIFIED));
+            return Ok(RangedReply::Asked(Head { size, version }));
         }
     }
     let probe = client
@@ -629,8 +650,13 @@ async fn http_size(url: &str) -> Result<RangedReply<u64>, CloudError> {
         .headers()
         .get(reqwest::header::CONTENT_RANGE)
         .and_then(|v| v.to_str().ok()?.rsplit('/').next()?.parse::<u64>().ok());
+    // A size from a ranged probe comes with no version: such an object is
+    // read afresh by each call.
     match total {
-        Some(total) => Ok(RangedReply::Asked(total)),
+        Some(total) => Ok(RangedReply::Asked(Head {
+            size: total,
+            version: None,
+        })),
         // The server ignored the range and sent the body: it is the object.
         None => probe
             .bytes()

@@ -50,7 +50,7 @@ use std::collections::HashMap;
 use std::ops::{Deref, Range};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, OnceLock};
 
 use futures::future::AbortHandle;
 use polars::prelude::*;
@@ -265,6 +265,8 @@ pub struct Fetcher<'a> {
     remote: Vec<Arc<RemoteObject>>,
     /// The rows may read their files by range ([`Fetcher::ranged`]).
     ranged: bool,
+    /// Per row, whether its read-ahead was planned ([`Fetcher::read_ahead`]).
+    ahead_planned: Vec<std::sync::atomic::AtomicBool>,
 }
 
 /// What a call's in-flight fetches share with it.
@@ -407,6 +409,7 @@ impl<'a> Fetcher<'a> {
             slots,
             remote,
             ranged: false,
+            ahead_planned: (0..ca.len()).map(|_| Default::default()).collect(),
             entries,
             shared: Arc::new(Shared {
                 options: options.cloned(),
@@ -485,9 +488,49 @@ impl<'a> Fetcher<'a> {
         self.policy.check(path)?;
         let slot = self.slots[row]
             .ok_or_else(|| format!("internal: remote path '{path}' has no fetch"))?;
-        Ok(Some(RangedFile::Remote(RemoteReader::new(Arc::clone(
-            &self.remote[slot],
-        )))))
+        Ok(Some(RangedFile::Remote(RemoteReader::for_row(
+            Arc::clone(&self.remote[slot]),
+            row,
+        ))))
+    }
+
+    /// The rows after `row` whose windows a row thread reads ahead: remote
+    /// rows not yet planned, as far ahead as the window `bytes` keeps in
+    /// flight (polars' concurrency budget, which also bounds the requests).
+    pub fn rows_ahead(&self, row: usize) -> impl Iterator<Item = usize> + '_ {
+        (row + 1..(row + 1 + self.window).min(self.slots.len()))
+            .filter(|&r| self.slots[r].is_some() && !self.ahead_planned[r].load(Ordering::Relaxed))
+    }
+
+    /// Start reading row `row`'s window ahead of the row: its remote TIFF's
+    /// header (from the call's shared structure blocks), then the chunks
+    /// `crop` takes of level `level`, on a background task the row's own
+    /// read then takes ([`RemoteReader::for_row`]). Once per row; nothing
+    /// for a local or null path, a refused path, a file that is not a TIFF
+    /// the chunk decoder carries, or a window the crop refuses — the row
+    /// itself reads, and reports, those.
+    pub fn read_ahead(&self, row: usize, level: u32, crop: &view_buffer::ViewOp) {
+        if self.ahead_planned[row].swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let (Some(slot), Some(path)) = (self.slots[row], self.ca.get(row)) else {
+            return;
+        };
+        if self.policy.check(path).is_err() {
+            return;
+        }
+        let object = &self.remote[slot];
+        let Some(cell) = object.claim_ahead(row) else {
+            return;
+        };
+        let plan = || {
+            let mut reader = RemoteReader::new(Arc::clone(object));
+            let mut image = view_buffer::ImageAdapter::open_tiff(&mut reader, level).ok()?;
+            let (shape, dtype) = image.shape()?;
+            let window = view_buffer::ImageAdapter::tiff_window(crop, shape, dtype).ok()?;
+            image.chunk_ranges(Some(window)).ok()?
+        };
+        object.read_ahead(cell, plan());
     }
 
     /// Row `row`'s file opened for reads by range, when its path is local:
@@ -648,12 +691,17 @@ impl view_buffer::interop::tiff_region::TiffSource for LocalFile {
     }
 }
 
-/// Where a [`RemoteObject`]'s bytes come from: a store answering size and
+pub use crate::cloud::Head;
+
+/// Where a [`RemoteObject`]'s bytes come from: a store answering head and
 /// byte-range requests. [`CloudRanges`] in the plugin; a counting in-memory
 /// store in the tests.
-pub trait RangeStore: Send + Sync {
-    /// The object's size in bytes.
-    fn size(&self) -> Result<u64, String>;
+pub trait RangeStore: Send + Sync + 'static {
+    /// Which object this is, across calls: its path and the options that
+    /// reach it.
+    fn identity(&self) -> String;
+    /// The object's size and version.
+    fn head(&self) -> Result<Head, String>;
     /// The bytes of each of `ranges`, in one operation.
     fn read(&self, ranges: &[Range<u64>]) -> Result<Vec<Vec<u8>>, String>;
 }
@@ -703,14 +751,32 @@ fn block_on<T: Send + 'static>(future: impl std::future::Future<Output = T> + Se
 }
 
 impl RangeStore for CloudRanges {
-    fn size(&self) -> Result<u64, String> {
+    fn identity(&self) -> String {
+        use std::hash::{Hash, Hasher};
+        // Credentials enter only as a hash, and only in memory.
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        if let Some(o) = &self.options {
+            let mut config: Vec<_> = o.config.iter().collect();
+            config.sort();
+            (config, &o.bearer_token, &o.token_command, o.anonymous).hash(&mut h);
+        }
+        format!("{}\u{0}{:016x}", self.path, h.finish())
+    }
+
+    fn head(&self) -> Result<Head, String> {
         if let Some(whole) = self.whole.get() {
-            return Ok(whole.len() as u64);
+            return Ok(Head {
+                size: whole.len() as u64,
+                version: None,
+            });
         }
         let (path, options) = (self.path.clone(), self.options.clone());
-        match block_on(async move { cloud::remote_size_budgeted(&path, options.as_ref()).await })? {
-            RangedReply::Asked(size) => Ok(size),
-            RangedReply::Whole(body) => Ok(self.keep_whole(body).len() as u64),
+        match block_on(async move { cloud::remote_head_budgeted(&path, options.as_ref()).await })? {
+            RangedReply::Asked(head) => Ok(head),
+            RangedReply::Whole(body) => Ok(Head {
+                size: self.keep_whole(body).len() as u64,
+                version: None,
+            }),
         }
     }
 
@@ -742,36 +808,174 @@ const REMOTE_BLOCK: u64 = 64 * 1024;
 /// more than the gap's bytes.
 const COALESCE_GAP: u64 = 16 * 1024;
 
-/// One remote object of a call, read by range: its size, once asked, and the
-/// blocks structure reads have fetched, shared by every row naming it — so a
-/// call's rows parse a slide's IFDs from one set of requests.
-pub struct RemoteObject<S: RangeStore = CloudRanges> {
-    store: S,
-    size: std::sync::OnceLock<Result<u64, String>>,
-    /// Each block's one fetch: rows wanting a block another row is
-    /// fetching wait for it rather than request it again.
-    blocks: Mutex<HashMap<u64, Arc<BlockCell>>>,
+/// Ranges `ranges`, sorted, with those no further apart than
+/// [`COALESCE_GAP`] merged: what one request fetches.
+fn coalesce(ranges: impl IntoIterator<Item = Range<u64>>) -> Vec<Range<u64>> {
+    let mut wanted: Vec<Range<u64>> = ranges.into_iter().filter(|r| !r.is_empty()).collect();
+    wanted.sort_by_key(|r| r.start);
+    let mut merged: Vec<Range<u64>> = Vec::new();
+    for r in wanted {
+        match merged.last_mut() {
+            Some(last) if r.start <= last.end + COALESCE_GAP => last.end = last.end.max(r.end),
+            _ => merged.push(r),
+        }
+    }
+    merged
 }
 
 type BlockCell = OnceLock<Result<Arc<Vec<u8>>, String>>;
+
+/// The structure blocks read of one version of an object: shared by every
+/// row of a call naming it, and by later calls while the version holds.
+#[derive(Default)]
+struct Structure {
+    /// Each block's one fetch: rows wanting a block another row is fetching
+    /// wait for it rather than request it again.
+    blocks: Mutex<HashMap<u64, Arc<BlockCell>>>,
+    /// The bytes its blocks hold, for the cache's budget.
+    bytes: AtomicUsize,
+}
+
+/// The most structure bytes kept across calls, over every object: a slide's
+/// IFDs and the table blocks its patches touched, a few MiB at most.
+const STRUCTURE_CACHE_BYTES: usize = 256 << 20;
+
+/// Structure blocks kept across calls, by object identity, each with the
+/// [`Head`] it was read under: a call reuses an object's blocks only when its
+/// own `HEAD` gives the same size and version, and an object without a
+/// version is never kept. Least recently used objects go first.
+#[derive(Default)]
+struct StructureCache {
+    entries: HashMap<String, (Head, Arc<Structure>, u64)>,
+    clock: u64,
+}
+
+static STRUCTURES: LazyLock<Mutex<StructureCache>> = LazyLock::new(Default::default);
+
+/// The structure of `identity` at `head`: kept from an earlier call when the
+/// version matches, else new (and kept, when it has a version).
+fn structure_for(identity: String, head: &Head) -> Arc<Structure> {
+    if head.version.is_none() {
+        return Arc::default();
+    }
+    let mut cache = STRUCTURES.lock().unwrap_or_else(|p| p.into_inner());
+    cache.clock += 1;
+    let now = cache.clock;
+    if let Some((kept, structure, used)) = cache.entries.get_mut(&identity) {
+        if kept == head {
+            *used = now;
+            return Arc::clone(structure);
+        }
+    }
+    let structure = Arc::<Structure>::default();
+    cache.entries.insert(
+        identity.clone(),
+        (head.clone(), Arc::clone(&structure), now),
+    );
+    let held = |c: &StructureCache| -> usize {
+        c.entries
+            .values()
+            .map(|(_, s, _)| s.bytes.load(Ordering::Relaxed))
+            .sum()
+    };
+    while held(&cache) > STRUCTURE_CACHE_BYTES {
+        let oldest = cache
+            .entries
+            .iter()
+            .filter(|(k, _)| **k != identity)
+            .min_by_key(|(_, (_, _, used))| *used)
+            .map(|(k, _)| k.clone());
+        match oldest {
+            Some(k) => drop(cache.entries.remove(&k)),
+            None => break,
+        }
+    }
+    structure
+}
+
+/// Fetched ranges and their bytes, as one request returns them.
+type Fetched = Vec<(Range<u64>, Vec<u8>)>;
+
+/// A row's chunk fetch, started ahead of the row ([`RemoteObject::read_ahead`]).
+#[derive(Default)]
+struct Ahead {
+    result: Mutex<Option<Result<Fetched, String>>>,
+    done: Condvar,
+}
+
+impl Ahead {
+    fn finish(&self, result: Result<Fetched, String>) {
+        *self.result.lock().unwrap_or_else(|p| p.into_inner()) = Some(result);
+        self.done.notify_all();
+    }
+
+    /// The fetch's result, once finished.
+    fn wait(&self) -> Result<Fetched, String> {
+        let mut result = self.result.lock().unwrap_or_else(|p| p.into_inner());
+        loop {
+            if let Some(done) = result.take() {
+                return done;
+            }
+            result = self.done.wait(result).unwrap_or_else(|p| p.into_inner());
+        }
+    }
+}
+
+/// Who reads a row's chunks: a planner that claimed them ahead of the row,
+/// or the row itself, which began before any planner reached it.
+enum AheadSlot {
+    Claimed(Arc<Ahead>),
+    Reading,
+}
+
+/// The most bytes one row's read-ahead fetches: a patch's chunks, not a
+/// whole level.
+const AHEAD_ROW_BYTES: u64 = 16 << 20;
+
+/// One remote object of a call, read by range: its head, once asked; the
+/// blocks structure reads have fetched ([`Structure`], shared by every row
+/// naming it and kept across calls while its version holds); and the chunk
+/// fetches started ahead of the rows that will read them.
+pub struct RemoteObject<S: RangeStore = CloudRanges> {
+    store: S,
+    head: OnceLock<Result<Head, String>>,
+    structure: OnceLock<Arc<Structure>>,
+    /// Per row, who reads its chunks: decided once, under this lock, so a
+    /// row is fetched by a planner or by itself, never both.
+    ahead: Mutex<HashMap<usize, AheadSlot>>,
+}
 
 impl<S: RangeStore> RemoteObject<S> {
     pub fn new(store: S) -> Self {
         RemoteObject {
             store,
-            size: std::sync::OnceLock::new(),
-            blocks: Mutex::new(HashMap::new()),
+            head: OnceLock::new(),
+            structure: OnceLock::new(),
+            ahead: Mutex::new(HashMap::new()),
         }
     }
 
-    fn size(&self) -> Result<u64, String> {
-        self.size.get_or_init(|| self.store.size()).clone()
+    fn head(&self) -> Result<Head, String> {
+        self.head.get_or_init(|| self.store.head()).clone()
     }
 
-    /// Block `index`, fetched once per call.
+    fn size(&self) -> Result<u64, String> {
+        self.head().map(|h| h.size)
+    }
+
+    fn structure(&self) -> Result<&Arc<Structure>, String> {
+        let head = self.head()?;
+        Ok(self
+            .structure
+            .get_or_init(|| structure_for(self.store.identity(), &head)))
+    }
+
+    /// Block `index`, fetched once per version of the object.
     fn block(&self, index: u64) -> Result<Arc<Vec<u8>>, String> {
+        let structure = self.structure()?;
         let cell = Arc::clone(
-            self.blocks
+            structure
+                .blocks
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .entry(index)
@@ -781,20 +985,69 @@ impl<S: RangeStore> RemoteObject<S> {
             let start = index * REMOTE_BLOCK;
             let end = (start + REMOTE_BLOCK).min(self.size()?);
             let mut parts = self.store.read(std::slice::from_ref(&(start..end)))?;
-            Ok(Arc::new(parts.pop().unwrap_or_default()))
+            let block = parts.pop().unwrap_or_default();
+            structure.bytes.fetch_add(block.len(), Ordering::Relaxed);
+            Ok(Arc::new(block))
         })
         .clone()
+    }
+
+    /// Claim row `row`'s read-ahead: its cell, registered before the row's
+    /// window is even planned, so the row waits for its planner rather than
+    /// fetching the same chunks itself. `None` when the row was claimed or
+    /// has begun reading for itself.
+    fn claim_ahead(&self, row: usize) -> Option<Arc<Ahead>> {
+        let mut ahead = self.ahead.lock().unwrap_or_else(|p| p.into_inner());
+        if ahead.contains_key(&row) {
+            return None;
+        }
+        let cell = Arc::<Ahead>::default();
+        ahead.insert(row, AheadSlot::Claimed(Arc::clone(&cell)));
+        Some(cell)
+    }
+
+    /// Row `row` begins reading: its read-ahead, when a planner claimed it
+    /// first; else the row is marked as reading for itself, so no planner
+    /// fetches it after.
+    fn begin_row(&self, row: usize) -> Option<Arc<Ahead>> {
+        let mut ahead = self.ahead.lock().unwrap_or_else(|p| p.into_inner());
+        match ahead.insert(row, AheadSlot::Reading) {
+            Some(AheadSlot::Claimed(cell)) => Some(cell),
+            Some(AheadSlot::Reading) | None => None,
+        }
+    }
+
+    /// Fetch `ranges` (a claimed row's chunks, coalesced as its own prefetch
+    /// would) on a blocking task into `cell`; `None` (nothing planned) or a
+    /// fetch over [`AHEAD_ROW_BYTES`] leaves the row to fetch for itself.
+    fn read_ahead(self: &Arc<Self>, cell: Arc<Ahead>, ranges: Option<Vec<Range<u64>>>) {
+        let merged = ranges.map(coalesce).unwrap_or_default();
+        let total: u64 = merged.iter().map(|r| r.end - r.start).sum();
+        if merged.is_empty() || total > AHEAD_ROW_BYTES {
+            cell.finish(Ok(Vec::new()));
+            return;
+        }
+        let object = Arc::clone(self);
+        drop(ASYNC.spawn_blocking(move || {
+            let result = object
+                .store
+                .read(&merged)
+                .map(|parts| merged.into_iter().zip(parts).collect());
+            cell.finish(result);
+        }));
     }
 }
 
 /// One row's view of a [`RemoteObject`]: `Read + Seek` over it for the TIFF
 /// decoder. Structure reads come from the object's shared blocks; the
-/// chunks a decode prefetches are fetched in one coalesced request and kept
-/// for this row only.
+/// chunks a decode prefetches come from the row's read-ahead when one was
+/// started, else in one coalesced request, and are kept for this row only.
 pub struct RemoteReader<S: RangeStore = CloudRanges> {
     object: Arc<RemoteObject<S>>,
     pos: u64,
-    prefetched: Vec<(Range<u64>, Vec<u8>)>,
+    prefetched: Fetched,
+    /// The row's read-ahead, which its first prefetch takes.
+    ahead: Option<Arc<Ahead>>,
 }
 
 impl<S: RangeStore> RemoteReader<S> {
@@ -803,6 +1056,18 @@ impl<S: RangeStore> RemoteReader<S> {
             object,
             pos: 0,
             prefetched: Vec::new(),
+            ahead: None,
+        }
+    }
+
+    /// Row `row`'s reader: the row begins reading
+    /// ([`RemoteObject::begin_row`]), and its first prefetch takes the row's
+    /// read-ahead if a planner claimed it first.
+    pub fn for_row(object: Arc<RemoteObject<S>>, row: usize) -> Self {
+        let ahead = object.begin_row(row);
+        RemoteReader {
+            ahead,
+            ..Self::new(object)
         }
     }
 }
@@ -852,27 +1117,30 @@ impl<S: RangeStore> std::io::Seek for RemoteReader<S> {
 }
 
 impl<S: RangeStore> view_buffer::interop::tiff_region::TiffSource for RemoteReader<S> {
-    /// Fetch `ranges` (a decode's chunks) in one request, ranges close
-    /// together merged.
+    /// Bring in `ranges` (a decode's chunks): from the row's read-ahead
+    /// when one was started, the rest in one request, ranges close together
+    /// merged.
     fn prefetch(&mut self, ranges: &[Range<u64>]) -> std::io::Result<()> {
-        let mut wanted: Vec<Range<u64>> = ranges
-            .iter()
-            .filter(|r| !r.is_empty())
-            .filter(|r| {
-                !self
-                    .prefetched
-                    .iter()
-                    .any(|(p, _)| p.start <= r.start && r.end <= p.end)
-            })
-            .cloned()
-            .collect();
-        wanted.sort_by_key(|r| r.start);
-        let mut merged: Vec<Range<u64>> = Vec::new();
-        for r in wanted {
-            match merged.last_mut() {
-                Some(last) if r.start <= last.end + COALESCE_GAP => last.end = last.end.max(r.end),
-                _ => merged.push(r),
+        if let Some(ahead) = self.ahead.take() {
+            // A failed read-ahead is left for the row's own request to
+            // report.
+            if let Ok(parts) = ahead.wait() {
+                self.prefetched.extend(parts);
             }
+        }
+        let merged = coalesce(
+            ranges
+                .iter()
+                .filter(|r| {
+                    !self
+                        .prefetched
+                        .iter()
+                        .any(|(p, _)| p.start <= r.start && r.end <= p.end)
+                })
+                .cloned(),
+        );
+        if merged.is_empty() {
+            return Ok(());
         }
         let parts = self.object.store.read(&merged).map_err(io_error)?;
         self.prefetched.extend(merged.into_iter().zip(parts));
@@ -971,13 +1239,27 @@ mod tests {
     struct MemStore {
         data: Vec<u8>,
         reads: Mutex<Vec<Vec<Range<u64>>>>,
+        name: String,
+        version: Option<String>,
     }
 
     impl MemStore {
+        /// An object with no version: never kept across calls.
         fn new(data: Vec<u8>) -> Self {
             MemStore {
                 data,
                 reads: Mutex::new(Vec::new()),
+                name: "mem".to_string(),
+                version: None,
+            }
+        }
+
+        /// Object `name` at `version`.
+        fn versioned(data: Vec<u8>, name: &str, version: Option<&str>) -> Self {
+            MemStore {
+                name: name.to_string(),
+                version: version.map(str::to_string),
+                ..Self::new(data)
             }
         }
 
@@ -991,8 +1273,15 @@ mod tests {
     }
 
     impl RangeStore for MemStore {
-        fn size(&self) -> Result<u64, String> {
-            Ok(self.data.len() as u64)
+        fn identity(&self) -> String {
+            self.name.clone()
+        }
+
+        fn head(&self) -> Result<Head, String> {
+            Ok(Head {
+                size: self.data.len() as u64,
+                version: self.version.clone(),
+            })
         }
 
         fn read(&self, ranges: &[Range<u64>]) -> Result<Vec<Vec<u8>>, String> {
@@ -1121,6 +1410,78 @@ mod tests {
             1,
             "a prefetched read makes no request"
         );
+    }
+
+    /// A later call's object reuses the structure blocks an earlier call
+    /// read, only while the identity and version both match.
+    #[test]
+    fn a_later_call_reuses_structure_only_at_the_same_version() {
+        use std::io::Read;
+        let data = vec![9u8; 100_000];
+        let name = "a_later_call_reuses_structure_only_at_the_same_version";
+        let header = |store: MemStore| -> usize {
+            let object = Arc::new(RemoteObject::new(store));
+            let mut buf = [0u8; 16];
+            RemoteReader::new(Arc::clone(&object))
+                .read_exact(&mut buf)
+                .unwrap();
+            object.store.reads().len()
+        };
+        assert_eq!(
+            header(MemStore::versioned(data.clone(), name, Some("v1"))),
+            1
+        );
+        assert_eq!(
+            header(MemStore::versioned(data.clone(), name, Some("v1"))),
+            0,
+            "same version: the block is kept"
+        );
+        assert_eq!(
+            header(MemStore::versioned(data.clone(), name, Some("v2"))),
+            1,
+            "a new version is read afresh"
+        );
+        let unversioned = format!("{name}-unversioned");
+        assert_eq!(
+            header(MemStore::versioned(data.clone(), &unversioned, None)),
+            1
+        );
+        assert_eq!(
+            header(MemStore::versioned(data, &unversioned, None)),
+            1,
+            "no version: never kept"
+        );
+    }
+
+    /// A row's read-ahead is the one request for its chunks: the row's own
+    /// prefetch takes it, and reads the bytes it fetched.
+    #[test]
+    fn a_rows_prefetch_takes_its_read_ahead() {
+        use std::io::{Read, Seek, SeekFrom};
+        use view_buffer::interop::tiff_region::TiffSource;
+        let data: Vec<u8> = (0..1_000_000u32).map(|i| (i % 241) as u8).collect();
+        let object = Arc::new(RemoteObject::new(MemStore::new(data.clone())));
+        let ranges = vec![500_000..500_100, 500_200..500_300, 900_000..900_010];
+        let cell = object.claim_ahead(7).expect("unclaimed");
+        assert!(object.claim_ahead(7).is_none(), "claimed once");
+        object.read_ahead(cell, Some(ranges.clone()));
+        let mut reader = RemoteReader::for_row(Arc::clone(&object), 7);
+        reader.prefetch(&ranges).unwrap();
+        assert_eq!(
+            object.store.reads(),
+            vec![vec![500_000..500_300, 900_000..900_010]],
+            "one request, made ahead"
+        );
+        reader.seek(SeekFrom::Start(900_002)).unwrap();
+        let mut got = [0u8; 8];
+        reader.read_exact(&mut got).unwrap();
+        assert_eq!(got, data[900_002..900_010]);
+        // A row that began before any planner reached it reads for itself,
+        // and is never claimed after.
+        let mut other = RemoteReader::for_row(Arc::clone(&object), 8);
+        assert!(object.claim_ahead(8).is_none(), "already reading");
+        other.prefetch(std::slice::from_ref(&(10..20))).unwrap();
+        assert_eq!(object.store.reads().len(), 2);
     }
 
     /// The point of it all: a window of a remote tiled TIFF decodes from its

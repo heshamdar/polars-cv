@@ -217,6 +217,26 @@ the reason) read by path is read whole only when the file is within
 `DECODE_LIMIT_BYTES`; a larger one is the row's error naming the layout,
 rather than a whole download to decode a window.
 
+### `fetch.rs`: remote windows
+
+A ranged read of a remote TIFF goes through the call's `RemoteObject` per
+path. Three mechanisms keep it latency-bound rather than request-bound:
+- **Structure blocks** are 64 KiB blocks of the header, IFDs and chunk tables,
+  each fetched once (single-flight `BlockCell`). They are kept across calls in
+  `STRUCTURES` only under the `Head` (size and version) they were read at; an
+  object with no version is never kept.
+- **Read-ahead**: the executor's `CompiledGraph::read_ahead` resolves the
+  crop and level of the next rows (`Fetcher::rows_ahead`, the same window
+  `bytes` uses) and calls `Fetcher::read_ahead`. That plans each row's chunk
+  ranges with the decoder's own mapping (`ImageAdapter::tiff_window`,
+  `TiffImage::chunk_ranges`), so it fetches exactly what the decode reads,
+  then spawns the fetch. The row's `RemoteReader::for_row` takes the result
+  on its first prefetch. `tests/test_ranged_reads.py::TestRemoteConcurrency`
+  pins both more requests in flight than threads, and no range fetched twice
+  (watched failing with the take disabled: 191 requests for 97 ranges).
+- **Whole bodies**: a server that ignores `Range` sends the whole object once
+  per call (`CloudRanges::whole`).
+
 ## Adding a New Operation (Rust Side)
 
 1. **`view-buffer`**: Implement the op — see [`view-buffer/AGENTS.md`](../../view-buffer/AGENTS.md)

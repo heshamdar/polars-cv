@@ -131,8 +131,21 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   - In such a node a row no longer prefetches whole objects for the rows
     after it. A non-TIFF remote file there costs one extra small read (the
     format sniff) before its whole fetch.
+  - Instead, a row reads its windows ahead. Before decoding, a row thread
+    resolves the crop and level of the rows after it, as far ahead as
+    polars' concurrency budget allows. It then starts their chunk fetches on
+    background tasks, and each row takes its own when it runs. Remote
+    windows are latency-bound, so a call keeps as many requests in flight as
+    the budget allows, not one per thread. Each chunk is still fetched once.
+    A row's read-ahead is capped at 16 MiB, and a whole level is never read
+    ahead.
+  - A slide's structure blocks are kept across calls, up to 256 MiB over
+    every object. A later call still asks the object's head, and reuses the
+    blocks only when its size and version (ETag, else Last-Modified) match.
+    An object with neither is read afresh by every call, since it cannot be
+    told unchanged.
   - `.cv.slide_info()` on a path reads a TIFF's IFD entries by range instead
-    of downloading it. A TIFF whose structure does not parse is null (as its
+    of downloading it, with its rows side by side over the plugin's threads. A TIFF whose structure does not parse is null (as its
     bytes give), found from its header; an unreadable path follows
     `on_error`. Only a file that is not a TIFF falls back to the
     header-prefix read.
