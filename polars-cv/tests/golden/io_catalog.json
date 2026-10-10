@@ -544,6 +544,16 @@
               ]
             }
           }
+        },
+        {
+          "name": "compact",
+          "doc": "Make each row's ``data`` exactly its elements, row-major, at\noffset zero, instead of the storage the row is a view into (whole,\nwith the strides and offset that read the view out of it). Copies\nonly a row that is not already that. Set it for a column that will\nbe persisted: Parquet and IPC write each row's ``data`` whole.",
+          "default": false,
+          "type": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "bool"
+          }
         }
       ]
     },
@@ -567,6 +577,16 @@
                 "float16"
               ]
             }
+          }
+        },
+        {
+          "name": "compact",
+          "doc": "Make each row's ``data`` exactly its elements, row-major, at\noffset zero, instead of the storage the row is a view into (whole,\nwith the strides and offset that read the view out of it). Copies\nonly a row that is not already that. Set it for a column that will\nbe persisted: Parquet and IPC write each row's ``data`` whole.",
+          "default": false,
+          "type": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "bool"
           }
         }
       ]
@@ -605,6 +625,16 @@
                 "float16"
               ]
             }
+          }
+        },
+        {
+          "name": "compact",
+          "doc": "Make each row's ``data`` exactly its elements, row-major, at\noffset zero, instead of the storage the row is a view into (whole,\nwith the strides and offset that read the view out of it). Copies\nonly a row that is not already that. Set it for a column that will\nbe persisted: Parquet and IPC write each row's ``data`` whole.",
+          "default": false,
+          "type": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "bool"
           }
         }
       ]

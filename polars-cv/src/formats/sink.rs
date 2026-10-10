@@ -33,20 +33,34 @@ pub enum Sink {
     #[op(name = "native", sample = {})]
     Native,
     /// The `polars_cv.ndarray` extension type: a zero-copy tensor struct.
-    #[op(name = "ndarray", sample = {"dtype": "f16"})]
+    #[op(name = "ndarray", sample = {"dtype": "f16", "compact": true})]
     NdArray {
         /// Downcast the elements to this dtype at encode time: only half
         /// precision (``"f16"``/``"float16"``); use ``.cast(...)`` for any
         /// other dtype.
         dtype: Option<Literal<SinkDType>>,
+        /// Make each row's ``data`` exactly its elements, row-major, at
+        /// offset zero, instead of the storage the row is a view into (whole,
+        /// with the strides and offset that read the view out of it). Copies
+        /// only a row that is not already that. Set it for a column that will
+        /// be persisted: Parquet and IPC write each row's ``data`` whole.
+        #[param(default = false)]
+        compact: Literal<bool>,
     },
     /// A zero-copy tensor struct `numpy_from_struct` reads.
-    #[op(name = "numpy", sample = {})]
+    #[op(name = "numpy", sample = {"compact": true})]
     Numpy {
         /// Downcast the elements to this dtype at encode time: only half
         /// precision (``"f16"``/``"float16"``); use ``.cast(...)`` for any
         /// other dtype.
         dtype: Option<Literal<SinkDType>>,
+        /// Make each row's ``data`` exactly its elements, row-major, at
+        /// offset zero, instead of the storage the row is a view into (whole,
+        /// with the strides and offset that read the view out of it). Copies
+        /// only a row that is not already that. Set it for a column that will
+        /// be persisted: Parquet and IPC write each row's ``data`` whole.
+        #[param(default = false)]
+        compact: Literal<bool>,
     },
     /// Re-encoded as PNG.
     #[op(name = "png", sample = {})]
@@ -61,6 +75,13 @@ pub enum Sink {
         /// precision (``"f16"``/``"float16"``); use ``.cast(...)`` for any
         /// other dtype.
         dtype: Option<Literal<SinkDType>>,
+        /// Make each row's ``data`` exactly its elements, row-major, at
+        /// offset zero, instead of the storage the row is a view into (whole,
+        /// with the strides and offset that read the view out of it). Copies
+        /// only a row that is not already that. Set it for a column that will
+        /// be persisted: Parquet and IPC write each row's ``data`` whole.
+        #[param(default = false)]
+        compact: Literal<bool>,
     },
     /// Re-encoded as WebP (lossless).
     #[op(name = "webp", sample = {})]
@@ -118,9 +139,28 @@ impl Sink {
     /// Whether a tensor sink downcasts to half precision.
     pub fn as_f16(&self) -> bool {
         match self {
-            Sink::NdArray { dtype } | Sink::Numpy { dtype } | Sink::Torch { dtype } => {
+            Sink::NdArray { dtype, .. } | Sink::Numpy { dtype, .. } | Sink::Torch { dtype, .. } => {
                 matches!(dtype, Some(Literal(SinkDType::F16)))
             }
+            Sink::Array { .. }
+            | Sink::Blob
+            | Sink::Jpeg { .. }
+            | Sink::List
+            | Sink::Native
+            | Sink::Png
+            | Sink::Tiff
+            | Sink::WebP => false,
+        }
+    }
+}
+
+impl Sink {
+    /// Whether a tensor sink compacts each row to exactly its elements.
+    pub fn compact(&self) -> bool {
+        match self {
+            Sink::NdArray { compact, .. }
+            | Sink::Numpy { compact, .. }
+            | Sink::Torch { compact, .. } => compact.get(),
             Sink::Array { .. }
             | Sink::Blob
             | Sink::Jpeg { .. }

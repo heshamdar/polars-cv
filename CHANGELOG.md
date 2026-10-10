@@ -7,6 +7,28 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+
+- **`sink("numpy"|"ndarray"|"torch", compact=True)`** makes each row's
+  `data` exactly its elements, row-major, at offset 0. By default a tensor
+  sink hands a view over with the storage it reads from (a crop, transpose or
+  flip of a decoded or in-place row, a blob's payload behind its header), so
+  Parquet and IPC write that whole storage: 16 rows of a 200×200 crop of
+  256×256 images wrote 3.15 MB for 1.92 MB of pixels. A compact row is
+  copied only when it is not already exactly its elements. A packed run of an
+  input column (a passthrough, a crop of whole rows) is sliced in place. The
+  other sinks refuse `compact`.
+
+### Performance
+
+- **A tensor sink that has to copy a view copies it once.** When a numpy,
+  ndarray or torch row could not hand its storage over (a slice below the 50%
+  rule, a buffer another output shares), the view was packed with
+  `to_contiguous()` and the result copied again into the column's buffer: two
+  view-sized copies for a strided view. Every such path now packs straight
+  into the buffer Polars receives (`ViewBuffer::packed_polars_buffer`), held to
+  one allocation by `copy_counts.rs`.
+
 ### Changed
 
 - **`scripts/verify.sh` runs the slow lane only with `--slow`.** By default it

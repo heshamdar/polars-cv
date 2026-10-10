@@ -579,11 +579,18 @@ pub(crate) fn encode_node_output(
             let buf = require_buffer(output, domain, format)?;
             // A half-precision sink converts here, on the row's thread,
             // not in the serial column build; the row then holds the f16
-            // bits (`crate::output::NumpyRowOutput::from_f16_bits`).
-            Ok(OutputValue::NumpyStruct(if sink.as_f16() {
+            // bits (`crate::output::NumpyRowOutput::from_f16_bits`). So
+            // does a compacting one, whose row then holds only its elements
+            // and is handed to the column as it is.
+            let row = if sink.as_f16() {
                 buf.to_f16_bits()
             } else {
                 buf.clone()
+            };
+            Ok(OutputValue::NumpyStruct(if sink.compact() {
+                row.compact()
+            } else {
+                row
             }))
         }
         SinkKind::EncodedImage | SinkKind::Blob => {
