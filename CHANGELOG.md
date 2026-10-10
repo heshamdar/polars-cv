@@ -66,6 +66,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Internal
 
+- **fast_image_resize 6.1** (from 5.6.0, which upstream yanked: it added a
+  default `std` feature, a break). 6.0's only change is that opt-in `std`
+  feature, which default features keep. 6.1 speeds up the AVX2 vertical pass
+  for `u8` pixel types. Resize output is unchanged: the bit-exact resize tests
+  and the reference parity suite pass as before.
 - **A census of what a view costs each op** (`polars-cv/src/graph/copy_census.rs`).
   Every catalogue op runs on a crop, a vertical flip, a transpose and a
   horizontal flip, and on a contiguous image of the same shape. The extra
