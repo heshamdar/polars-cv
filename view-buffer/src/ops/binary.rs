@@ -214,30 +214,58 @@ impl<T> FromAny for T where
 
 /// Elements `start..start + dst.len()` of `buf` broadcast to `shape`, in
 /// logical order, each converted to `T`.
+///
+/// Read where they lie: an operand of the output's shape whose rows are each
+/// packed (a crop, a vertical flip) a row segment at a time, and a broadcast
+/// one through its own strides.
 fn read_as<T: FromAny>(buf: &ViewBuffer, shape: &[usize], start: usize, dst: &mut [T]) {
     with_dtype!(buf.dtype(), S => {
-        let src = buf.as_slice::<S>();
-        if buf.shape() == shape {
+        if buf.shape() == shape && buf.layout.is_contiguous() {
+            let src = buf.as_slice::<S>();
             let end = start + dst.len();
             for (d, &x) in dst.iter_mut().zip(&src[start..end]) {
                 *d = T::cast_from(x);
             }
+        } else if let Some(rows) = (buf.shape() == shape)
+            .then(|| buf.dense_rows::<S>())
+            .flatten()
+        {
+            let row_len = rows.first().map_or(1, |r| r.len().max(1));
+            let (mut y, mut x) = (start / row_len, start % row_len);
+            let mut filled = 0;
+            while filled < dst.len() {
+                let n = (row_len - x).min(dst.len() - filled);
+                for (d, &v) in dst[filled..filled + n].iter_mut().zip(&rows[y][x..x + n]) {
+                    *d = T::cast_from(v);
+                }
+                filled += n;
+                (y, x) = (y + 1, 0);
+            }
         } else {
             // Walk the output positions with an odometer, carrying the source
-            // index along: each step adds the axis's broadcast step (0 where
-            // the source axis is 1), with no division or allocation per element.
-            let steps = broadcast_steps(buf.shape(), shape);
+            // index along: each step adds the axis's element step (the view's
+            // own stride, 0 where the source axis is broadcast from 1), with no
+            // division or allocation per element.
+            let steps = view_steps(buf, shape);
             let mut coords = linear_to_coords(start, shape);
-            let mut at: usize = coords.iter().zip(&steps).map(|(c, s)| c * s).sum();
+            let mut at: isize = coords
+                .iter()
+                .zip(&steps)
+                .map(|(&c, &s)| c as isize * s)
+                .sum();
+            // SAFETY: `base` is the view's first logical element, and `at` is
+            // always the offset of the element at `coords` (each in its axis's
+            // range), which the view's validated layout keeps inside its data.
+            let base = unsafe { buf.as_ptr::<S>() };
             for d in dst.iter_mut() {
-                *d = T::cast_from(src[at]);
+                *d = T::cast_from(unsafe { *base.offset(at) });
                 for ax in (0..shape.len()).rev() {
                     coords[ax] += 1;
                     at += steps[ax];
                     if coords[ax] < shape[ax] {
                         break;
                     }
-                    at -= steps[ax] * shape[ax];
+                    at -= steps[ax] * shape[ax] as isize;
                     coords[ax] = 0;
                 }
             }
@@ -247,37 +275,51 @@ fn read_as<T: FromAny>(buf: &ViewBuffer, shape: &[usize], start: usize, dst: &mu
 
 /// `f(a, b)` element-wise in the dtype `T`, broadcast to `output_shape`.
 ///
-/// Operands already of dtype `T` and of the output's shape are read where
-/// they lie. Otherwise each is read in its own dtype and converted to `T`
-/// (which holds every value of both: [`DType::promote`]) a block at a time,
-/// so mixed operands cost two blocks of scratch rather than a converted copy
-/// of each.
+/// An operand whose rows are each packed (contiguous, a crop, a vertical
+/// flip) is read where it lies; any other layout (a transpose, a horizontal
+/// flip) is packed first (`to_dense_rows`), since walking it element by
+/// element measured ~4x slower than a coalesced pack and a vectorised zip.
+/// Two operands of dtype `T` and of the output's shape are then zipped slice
+/// against slice, or row against row. Otherwise each is read in its own dtype
+/// and converted to `T` (which holds every value of both: [`DType::promote`])
+/// a block at a time, so the operands cost two blocks of scratch rather than
+/// a converted copy of each.
 fn zip_with<T: FromAny, Fun: Fn(T, T) -> T>(
     a: &ViewBuffer,
     b: &ViewBuffer,
     output_shape: &[usize],
     f: Fun,
 ) -> ViewBuffer {
-    let (ca, cb) = (a.to_contiguous(), b.to_contiguous());
+    let (a, b) = (&a.to_dense_rows(), &b.to_dense_rows());
     let direct = |x: &ViewBuffer| x.dtype() == T::DTYPE && x.shape() == output_shape;
-    let out: Vec<T> = if direct(&ca) && direct(&cb) {
-        let (sa, sb) = (ca.as_slice::<T>(), cb.as_slice::<T>());
-        sa.iter().zip(sb).map(|(&x, &y)| f(x, y)).collect()
-    } else {
-        const BLOCK: usize = 1024;
-        let total: usize = output_shape.iter().product();
-        let mut out = Vec::with_capacity(total);
-        let (mut xa, mut xb) = ([T::default(); BLOCK], [T::default(); BLOCK]);
-        let mut start = 0;
-        while start < total {
-            let n = BLOCK.min(total - start);
-            read_as(&ca, output_shape, start, &mut xa[..n]);
-            read_as(&cb, output_shape, start, &mut xb[..n]);
-            out.extend(xa[..n].iter().zip(&xb[..n]).map(|(&x, &y)| f(x, y)));
-            start += n;
-        }
-        out
-    };
+    let out: Vec<T> =
+        if direct(a) && direct(b) && a.layout.is_contiguous() && b.layout.is_contiguous() {
+            let (sa, sb) = (a.as_slice::<T>(), b.as_slice::<T>());
+            sa.iter().zip(sb).map(|(&x, &y)| f(x, y)).collect()
+        } else if let (Some(ra), Some(rb)) = (
+            packed_rows::<T>(a, output_shape),
+            packed_rows::<T>(b, output_shape),
+        ) {
+            let mut out = Vec::with_capacity(output_shape.iter().product());
+            for (xa, xb) in ra.iter().zip(&rb) {
+                out.extend(xa.iter().zip(xb.iter()).map(|(&x, &y)| f(x, y)));
+            }
+            out
+        } else {
+            const BLOCK: usize = 1024;
+            let total: usize = output_shape.iter().product();
+            let mut out = Vec::with_capacity(total);
+            let (mut xa, mut xb) = ([T::default(); BLOCK], [T::default(); BLOCK]);
+            let mut start = 0;
+            while start < total {
+                let n = BLOCK.min(total - start);
+                read_as(a, output_shape, start, &mut xa[..n]);
+                read_as(b, output_shape, start, &mut xb[..n]);
+                out.extend(xa[..n].iter().zip(&xb[..n]).map(|(&x, &y)| f(x, y)));
+                start += n;
+            }
+            out
+        };
     ViewBuffer::from_vec_with_shape(out, output_shape.to_vec())
 }
 
@@ -401,8 +443,10 @@ impl Op for BinaryOp {
     }
 
     fn memory_effect(&self) -> MemoryEffect {
-        // Binary ops require contiguous input for efficient SIMD
-        MemoryEffect::RequiresContiguous
+        // Reads each operand one packed row at a time where it lies, and
+        // packs any other layout itself (`zip_with`, `to_dense_rows`): binary
+        // ops run outside the planner.
+        MemoryEffect::RequiresDenseRows
     }
 
     fn identity_rule(&self) -> IdentityRule {
@@ -560,18 +604,29 @@ pub fn broadcast_shapes(a: &[usize], b: &[usize]) -> Option<Vec<usize>> {
 
 use super::util::linear_to_coords;
 
-/// Each axis of `out`'s step through a packed `src` broadcast to it: the
-/// source's stride, or 0 where the source axis is 1 or absent (axes align from
-/// the last).
-fn broadcast_steps(src: &[usize], out: &[usize]) -> Vec<usize> {
+/// `buf`'s rows as `T` slices when it is of dtype `T` and of `shape` exactly
+/// and each of its rows is packed (any row stride): the rows `zip_with` pairs
+/// directly.
+fn packed_rows<'a, T: ViewType>(buf: &'a ViewBuffer, shape: &[usize]) -> Option<Vec<&'a [T]>> {
+    if buf.dtype() == T::DTYPE && buf.shape() == shape {
+        buf.dense_rows::<T>()
+    } else {
+        None
+    }
+}
+
+/// The element step each axis of `out` takes through `buf` broadcast to it:
+/// the view's own stride (any sign) for a real axis, and 0 for one broadcast
+/// from size 1 or absent.
+fn view_steps(buf: &ViewBuffer, out: &[usize]) -> Vec<isize> {
+    let (src, strides) = (buf.shape(), buf.strides_bytes());
+    let elem = buf.dtype().size_of() as isize;
     let offset = out.len() - src.len();
     let mut steps = vec![0; out.len()];
-    let mut stride = 1;
-    for i in (0..src.len()).rev() {
+    for i in 0..src.len() {
         if src[i] != 1 {
-            steps[offset + i] = stride;
+            steps[offset + i] = strides[i] / elem;
         }
-        stride *= src[i];
     }
     steps
 }
