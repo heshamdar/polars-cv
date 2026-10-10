@@ -21,10 +21,11 @@ use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criteri
 use std::hint::black_box;
 use std::time::Duration;
 use view_buffer::execution::ExecutionPlan;
+use view_buffer::ops::filter::{BorderMode, ConvolveOp};
 use view_buffer::ops::scalar::{FusedKernel, ScalarOp};
 use view_buffer::{
-    ComputeOp, DType, FilterType, ImageAdapter, InterpolationType, Normalization, ViewBuffer,
-    ViewDto, ViewExpr,
+    BinaryOp, ComputeOp, DType, FilterType, ImageAdapter, InterpolationType, Normalization,
+    ViewBuffer, ViewDto, ViewExpr,
 };
 
 const SIZES: [usize; 3] = [256, 512, 1024];
@@ -355,6 +356,136 @@ fn spatial_kernels(c: &mut Criterion) {
         rotate(30.0, InterpolationType::Nearest),
     );
     bench_sizes(c, "rotate_0_u8_rgb", rgb, rotate(0.0, bilinear));
+
+    // convolve2d accumulates in f32 for these inputs. An f32 input is read at
+    // the view's own strides: rows in place where they are packed (crop,
+    // vertical flip), a transpose or horizontal flip a gathered row at a time.
+    let convolve = |side: usize| {
+        ViewDto::Filter(ConvolveOp {
+            kernel: (0..side * side).map(|i| (i % 7) as f32 - 3.0).collect(),
+            normalize: false,
+            border: BorderMode::Reflect,
+        })
+    };
+    for side in [3, 5, 9] {
+        bench_sizes(c, &format!("convolve2d_k{side}_f32_rgb"), rgb_f32, |b| {
+            exec(b, |e| e.apply_op(convolve(side)))
+        });
+    }
+    bench_sizes(c, "convolve2d_k3_f32_rgb_crop", rgb_f32, |b| {
+        let s = b.shape()[0];
+        exec(b, |e| {
+            e.crop(vec![8, 8, 0], vec![s - 8, s - 8, 3])
+                .apply_op(convolve(3))
+        })
+    });
+    bench_sizes(c, "convolve2d_k3_f32_rgb_flip_v", rgb_f32, |b| {
+        exec(b, |e| e.flip(vec![0]).apply_op(convolve(3)))
+    });
+    bench_sizes(c, "convolve2d_k3_f32_rgb_flip_h", rgb_f32, |b| {
+        exec(b, |e| e.flip(vec![1]).apply_op(convolve(3)))
+    });
+    bench_sizes(c, "convolve2d_k3_f32_rgb_transpose", rgb_f32, |b| {
+        exec(b, |e| e.transpose(vec![1, 0, 2]).apply_op(convolve(3)))
+    });
+    // A u8 input is converted to f32 first, which reads any view once.
+    bench_sizes(c, "convolve2d_k3_u8_rgb", rgb, |b| {
+        exec(b, |e| e.apply_op(convolve(3)))
+    });
+    bench_sizes(c, "convolve2d_k3_u8_rgb_transpose", rgb, |b| {
+        exec(b, |e| e.transpose(vec![1, 0, 2]).apply_op(convolve(3)))
+    });
+}
+
+/// Time `op` on the operand pair `make` builds, at every size. Binary ops
+/// borrow their operands, so one pair serves every iteration.
+fn bench_pairs(
+    c: &mut Criterion,
+    name: &str,
+    op: BinaryOp,
+    make: impl Fn(usize) -> (ViewBuffer, ViewBuffer),
+) {
+    let mut group = c.benchmark_group(name);
+    for size in SIZES {
+        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {
+            let (x, y) = make(size);
+            b.iter(|| black_box(op.execute(&x, &y)));
+        });
+    }
+    group.finish();
+}
+
+fn owned_u16(data: &[u8], size: usize, channels: usize) -> ViewBuffer {
+    let v: Vec<u16> = data.iter().map(|&x| u16::from(x) * 257).collect();
+    ViewBuffer::from_vec_with_shape(v, vec![size, size, channels])
+}
+
+/// Binary ops (`zip_with`): two operands of one dtype and shape are zipped
+/// slice against slice or row against row; otherwise each is read a block
+/// at a time, a packed run at once. A transpose or horizontal flip is
+/// packed first.
+fn binary_kernels(c: &mut Criterion) {
+    let rgb = |s| owned_u8(&image_u8(s, 3), s, 3);
+    let rgb_u16 = |s| owned_u16(&image_u8(s, 3), s, 3);
+    let rgb_f32 = |s| owned_f32(&image_u8(s, 3), s, 3);
+    let add = BinaryOp::Add;
+    let blend = BinaryOp::Blend;
+
+    bench_pairs(c, "add_u8_rgb", add, |s| (rgb(s), rgb(s)));
+    bench_pairs(c, "add_u8_rgb_crop", add, |s| {
+        let big = rgb(s + 16);
+        let crop = big.slice(&[8, 8, 0], &[s + 8, s + 8, 3]);
+        (crop.clone(), crop)
+    });
+    bench_pairs(c, "add_u8_u16_rgb", add, |s| (rgb(s), rgb_u16(s)));
+    bench_pairs(c, "add_u8_flip_v_u16_rgb", add, |s| {
+        (rgb(s).flip(&[0]), rgb_u16(s))
+    });
+    bench_pairs(c, "add_u8_transpose_u16_rgb", add, |s| {
+        (rgb(s).permute(&[1, 0, 2]), rgb_u16(s))
+    });
+    // Broadcasts: a [h, w, 1] mask reads one element per run, a [3] channel
+    // vector and a [h, 1, 3] column one pixel per run.
+    bench_pairs(c, "blend_f32_rgb_mask", blend, |s| {
+        (rgb_f32(s), owned_f32(&image_u8(s, 1), s, 1))
+    });
+    bench_pairs(c, "blend_f32_rgb_mask_crop", blend, |s| {
+        let image = rgb_f32(s + 16).slice(&[8, 8, 0], &[s + 8, s + 8, 3]);
+        let mask = owned_f32(&image_u8(s + 16, 1), s + 16, 1);
+        (image, mask.slice(&[8, 8, 0], &[s + 8, s + 8, 1]))
+    });
+    bench_pairs(c, "blend_f32_rgb_channels", blend, |s| {
+        let channels = ViewBuffer::from_vec_with_shape(vec![0.2f32, 0.5, 0.9], vec![3]);
+        (rgb_f32(s), channels)
+    });
+    bench_pairs(c, "blend_f32_rgb_column", blend, |s| {
+        let column = rgb_f32(s).slice(&[0, 0, 0], &[s, 1, 3]).to_contiguous();
+        (rgb_f32(s), column)
+    });
+    // Contiguous operands of rank 1 and 4: read in place, never packed.
+    bench_pairs(c, "add_u8_rank1", add, |s| {
+        let v = ViewBuffer::from_vec(image_u8(s, 3));
+        (v.clone(), v)
+    });
+    bench_pairs(c, "add_f32_rank4", add, |s| {
+        // Four [s/2, s/2, 3] images: as many elements as one [s, s, 3].
+        let h = s / 2;
+        let image: Vec<f32> = image_u8(h, 3).iter().map(|&v| f32::from(v)).collect();
+        let batch = ViewBuffer::from_vec_with_shape(image.repeat(4), vec![4, h, h, 3]);
+        (batch.clone(), batch)
+    });
+    // A tall, narrow view: a block spans many short rows.
+    let mut group = c.benchmark_group("add_u8_flip_v_u16_tall");
+    group.bench_function("65536x4", |b| {
+        let data = image_u8(512, 3);
+        let x = ViewBuffer::from_vec_with_shape(data.clone(), vec![65536, 4, 3]).flip(&[0]);
+        let y = ViewBuffer::from_vec_with_shape(
+            data.iter().map(|&v| u16::from(v) * 257).collect::<Vec<_>>(),
+            vec![65536, 4, 3],
+        );
+        b.iter(|| black_box(add.execute(&x, &y)));
+    });
+    group.finish();
 }
 
 fn codec_kernels(c: &mut Criterion) {
@@ -419,6 +550,6 @@ fn config() -> Criterion {
 criterion_group! {
     name = benches;
     config = config();
-    targets = color_kernels, value_kernels, layout_kernels, spatial_kernels, codec_kernels, sink_kernels
+    targets = color_kernels, value_kernels, layout_kernels, spatial_kernels, binary_kernels, codec_kernels, sink_kernels
 }
 criterion_main!(benches);
