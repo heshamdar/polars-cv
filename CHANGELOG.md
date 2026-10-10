@@ -45,7 +45,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   broadcasts. Only a transpose or a horizontal flip is packed, since walking
   one element by element measured ~4x slower than packing it. 1024×1024×3 u8
   `add`: crop 0.90 → 0.36 ms, vertical flip 0.84 → 0.33 ms, others
-  unchanged. `apply_mask` writes an inverted mask, or a 2-D mask expanded
+  unchanged. A vertical flip added to a u16 image: 2.4–3.3 → 0.7–0.8 ms at
+  1024×1024×3, 32 → 0.6 ms at 65536×4×3. A contiguous rank-1 or rank-4
+  operand is no longer copied: 3M-element u8 `add` 0.83 → 0.23 ms, a
+  [12, 256, 256, 4] f32 batch 7.2 → 2.0 ms. An f32 `blend` with a [h, w, 1]
+  mask: 8.6 → 7.0 ms. `apply_mask` writes an inverted mask, or a 2-D mask expanded
   across the channels, once from the view instead of packing it first.
 - **Resize of f64, `convert_color` of f64, `convolve2d` of f32 and f64, and
   `equalize_histogram` of any dtype but u8 read a crop or a flip in place.** Each converted its input
@@ -54,7 +58,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   view-sized copy per call. They now read the view once, in the conversion.
   `convolve2d` reads its accumulator-dtype input at the view's own strides:
   rows in place where they are packed, a transpose or a horizontal flip
-  gathered a row at a time into a ring of `ksize` rows.
+  gathered a row at a time into a ring of `ksize` rows. 1024×1024×3 f32, 3×3:
+  crop 9 → 6.3 ms, vertical flip 27 → 7 ms, horizontal flip 27 → 12 ms,
+  transpose 31 → 17.5 ms; contiguous input and u8 input unchanged.
 - **A tensor sink that has to copy a view copies it once.** When a numpy,
   ndarray or torch row could not hand its storage over (a slice below the 50%
   rule, a buffer another output shares), the view was packed with

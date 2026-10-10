@@ -271,28 +271,54 @@ impl<'a> Reader<'a> {
         // (that is what makes them a run), all inside the view's validated
         // data, so `pos + n <= run` of them may be read.
         let base = unsafe { self.buf.as_ptr::<S>() };
-        let mut filled = 0;
-        while filled < dst.len() {
-            let n = (self.run - self.pos).min(dst.len() - filled);
-            let src = unsafe { std::slice::from_raw_parts(base.offset(self.at).add(self.pos), n) };
-            for (d, &x) in dst[filled..filled + n].iter_mut().zip(src) {
-                *d = T::cast_from(x);
+        // The odometer's state as plain slices and a local offset for the
+        // block: indexing the inline vectors re-checks where they live on
+        // every access, which a per-element loop pays per element.
+        let (shape, steps) = (&self.shape[..self.outer], &self.steps[..self.outer]);
+        let coords = &mut self.coords[..];
+        let mut at = self.at;
+        if self.run == 1 {
+            // Runs of one element (an operand broadcast along its last
+            // axis): step the odometer per element, without the per-run
+            // bookkeeping below.
+            for d in dst.iter_mut() {
+                // SAFETY: as above, with `pos` always 0: `at` is the element
+                // at `coords`.
+                *d = T::cast_from(unsafe { *base.offset(at) });
+                advance(coords, steps, shape, &mut at);
             }
-            filled += n;
-            self.pos += n;
-            if self.pos == self.run {
-                self.pos = 0;
-                for ax in (0..self.outer).rev() {
-                    self.coords[ax] += 1;
-                    self.at += self.steps[ax];
-                    if self.coords[ax] < self.shape[ax] {
-                        break;
-                    }
-                    self.at -= self.steps[ax] * self.shape[ax] as isize;
-                    self.coords[ax] = 0;
+        } else {
+            let mut filled = 0;
+            while filled < dst.len() {
+                let n = (self.run - self.pos).min(dst.len() - filled);
+                let src = unsafe { std::slice::from_raw_parts(base.offset(at).add(self.pos), n) };
+                for (d, &x) in dst[filled..filled + n].iter_mut().zip(src) {
+                    *d = T::cast_from(x);
+                }
+                filled += n;
+                self.pos += n;
+                if self.pos == self.run {
+                    self.pos = 0;
+                    advance(coords, steps, shape, &mut at);
                 }
             }
         }
+        self.at = at;
+    }
+}
+
+/// Step an odometer over `shape` one position on, keeping `at` the offset of
+/// the position `coords` names (`steps` per axis).
+#[inline(always)]
+fn advance(coords: &mut [usize], steps: &[isize], shape: &[usize], at: &mut isize) {
+    for ax in (0..coords.len()).rev() {
+        coords[ax] += 1;
+        *at += steps[ax];
+        if coords[ax] < shape[ax] {
+            break;
+        }
+        *at -= steps[ax] * shape[ax] as isize;
+        coords[ax] = 0;
     }
 }
 
