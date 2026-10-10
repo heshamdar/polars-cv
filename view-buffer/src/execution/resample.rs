@@ -258,8 +258,11 @@ fn convolve(
     if target_w == 0 || target_h == 0 || h == 0 || w == 0 {
         return ViewBuffer::from_vec_with_shape(Vec::<f64>::new(), out_shape).cast(dtype);
     }
-    let packed = buf.cast(DType::F64).to_contiguous();
-    let mut data: Vec<f64> = packed.as_slice::<f64>().to_vec();
+    // Written once from the input where it lies (`append_to` walks a view):
+    // an f64 input's cast is the input itself, so packing it first was a
+    // second copy of a crop or flip.
+    let mut data: Vec<f64> = Vec::with_capacity(h * w * c);
+    buf.cast(DType::F64).append_to(&mut data);
     let alpha = crate::ops::color::has_alpha(c);
     if alpha {
         for px in data.chunks_exact_mut(c) {

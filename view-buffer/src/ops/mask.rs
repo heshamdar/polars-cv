@@ -50,36 +50,40 @@ pub fn apply_mask(buffer: &ViewBuffer, mask: &ViewBuffer, invert: bool) -> ViewB
         let h = mask_shape[0];
         let w = mask_shape[1];
         let c = buf_shape[2];
+        // Expanded straight from the mask where it lies (its runs, in
+        // logical order): packing a mask view first was a second mask-sized
+        // copy.
+        fn expand<T: crate::core::dtype::ViewType>(
+            mask: &ViewBuffer,
+            (h, w, c): (usize, usize, usize),
+            f: impl Fn(T) -> T,
+        ) -> ViewBuffer {
+            let mut expanded: Vec<T> = Vec::with_capacity(h * w * c);
+            crate::core::map::for_each_run::<T>(mask, |run| {
+                for &raw in run {
+                    expanded.extend(std::iter::repeat_n(f(raw), c));
+                }
+            });
+            ViewBuffer::from_vec_with_shape(expanded, vec![h, w, c])
+        }
         if is_float {
             // For float buffers, mask values should be in [0, 1]
-            let mask_f32 = mask.cast_to(DType::F32).to_contiguous();
-            let mask_data = mask_f32.as_slice::<f32>();
-            let mut expanded: Vec<f32> = Vec::with_capacity(h * w * c);
-            for y in 0..h {
-                for x in 0..w {
-                    let raw_val = mask_data[y * w + x];
-                    let mask_val = if invert { 1.0 - raw_val } else { raw_val };
-                    for _ in 0..c {
-                        expanded.push(mask_val);
-                    }
+            expand(&mask.cast_to(DType::F32), (h, w, c), |v: f32| {
+                if invert {
+                    1.0 - v
+                } else {
+                    v
                 }
-            }
-            ViewBuffer::from_vec_with_shape(expanded, vec![h, w, c])
+            })
         } else {
             // For U8 buffers, mask values in [0, 255]
-            let mask_contig = mask.cast_to(DType::U8).to_contiguous();
-            let mask_data = mask_contig.as_slice::<u8>();
-            let mut expanded: Vec<u8> = Vec::with_capacity(h * w * c);
-            for y in 0..h {
-                for x in 0..w {
-                    let raw_val = mask_data[y * w + x];
-                    let mask_val = if invert { 255 - raw_val } else { raw_val };
-                    for _ in 0..c {
-                        expanded.push(mask_val);
-                    }
+            expand(&mask.cast_to(DType::U8), (h, w, c), |v: u8| {
+                if invert {
+                    255 - v
+                } else {
+                    v
                 }
-            }
-            ViewBuffer::from_vec_with_shape(expanded, vec![h, w, c])
+            })
         }
     } else if invert {
         // Written once, straight from the mask where it lies (`append_to`

@@ -39,12 +39,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **Binary ops (`add`, `subtract`, `multiply`, `divide`, `blend`, `maximum`,
   `minimum`, `bitwise_*`, `apply_mask`) read a crop or a vertical flip where it
   lies.** `zip_with` packed both operands, whatever their layout: two
-  view-sized copies per call on any view. An operand whose rows are each
-  packed is now zipped row against row in place. Only a transpose or a
-  horizontal flip is packed, since walking one element by element measured
-  ~4x slower than packing it. 1024×1024×3 u8 `add`: crop 0.90 → 0.36 ms,
-  vertical flip 0.84 → 0.33 ms, others unchanged. An inverted `apply_mask`
-  writes its mask once from the view instead of packing it first.
+  view-sized copies per call on any view. A contiguous operand of any rank,
+  and an operand whose rows are each packed, are now read in place: zipped
+  row against row, or read a run at a time when the dtypes differ or one
+  broadcasts. Only a transpose or a horizontal flip is packed, since walking
+  one element by element measured ~4x slower than packing it. 1024×1024×3 u8
+  `add`: crop 0.90 → 0.36 ms, vertical flip 0.84 → 0.33 ms, others
+  unchanged. `apply_mask` writes an inverted mask, or a 2-D mask expanded
+  across the channels, once from the view instead of packing it first.
+- **Resize of f64, `convert_color` of f64, `convolve2d` of f32 and f64, and
+  `equalize_histogram` of any dtype but u8 read a crop or a flip in place.** Each converted its input
+  before reading it, and packed it when the conversion was the identity (f64
+  to f64) or after it (`equalize_histogram`'s conversion to u8): one
+  view-sized copy per call. They now read the view once, in the conversion.
+  `convolve2d` reads its accumulator-dtype input at the view's own strides:
+  rows in place where they are packed, a transpose or a horizontal flip
+  gathered a row at a time into a ring of `ksize` rows.
 - **A tensor sink that has to copy a view copies it once.** When a numpy,
   ndarray or torch row could not hand its storage over (a slice below the 50%
   rule, a buffer another output shares), the view was packed with
@@ -70,8 +80,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   place and packs any other layout itself: the resizes and letterbox (which
   declared `StridePreserving`, though they pack a transpose or a horizontal
   flip) and the binary ops (which declared `RequiresDenseRows`, though they run
-  outside the planner). No copy count changes. The copy census now also fails
-  when an op's declared effect disagrees with the copies it pays.
+  outside the planner). No copy count changes.
+- **The copy census holds every dtype to each op's declared memory effect.**
+  An op pays no copy on any dtype for a layout its declaration reads in place,
+  and (on u8) pays one where it packs. It is what found the f64 and
+  non-u8 copies above. `copy_counts.rs` adds that a contiguous
+  buffer of any rank is never copied to be read, that a binary op or
+  `apply_mask` allocates the same number of times at any size (the reader
+  that first read views rebuilt every row's slice per 1024-element block:
+  58x slower than packing on a 65536-row view), and that a mask with packed
+  rows costs `apply_mask` no copy. `binary_views.rs` covers rank 1, 2 and 4,
+  lower-rank broadcasts, empty axes and float dtype pairs.
 - **fast_image_resize 6.1** (from 5.6.0, which upstream yanked: it added a
   default `std` feature, a break). 6.0's only change is that opt-in `std`
   feature, which default features keep. 6.1 speeds up the AVX2 vertical pass

@@ -610,3 +610,214 @@ fn compact_copies_only_a_view_that_is_not_its_whole_storage() {
         assert_eq!(strides[2], 1, "{label}");
     }
 }
+
+// --- Reading an operand: what a layout costs, at any rank, dtype and size ---
+
+use view_buffer::{apply_mask, BinaryOp};
+
+/// A patterned buffer of `shape` in `dtype`.
+fn patterned(shape: &[usize], dtype: DType) -> ViewBuffer {
+    let n = shape.iter().product::<usize>();
+    let data: Vec<u8> = (0..n).map(|i| (i * 37 % 241) as u8).collect();
+    ViewBuffer::from_vec_with_shape(data, shape.to_vec()).cast(dtype)
+}
+
+/// The ways an operand of shape `[h, w, tail..]` can arrive, each cut from a
+/// larger base: contiguous, a crop and a vertical flip (packed rows), a
+/// horizontal flip and a transpose (neither).
+fn operand_layouts(
+    h: usize,
+    w: usize,
+    tail: &[usize],
+    dtype: DType,
+) -> Vec<(&'static str, ViewBuffer)> {
+    let shape = |a: usize, b: usize| [&[a, b][..], tail].concat();
+    let ends = |a: usize, b: usize| [&[a, b][..], tail].concat();
+    let zeros = |a: usize, b: usize| [&[a, b][..], &vec![0; tail.len()]].concat();
+    let base = patterned(&shape(h + 8, w + 8), dtype);
+    let mut swap: Vec<usize> = (0..2 + tail.len()).collect();
+    swap.swap(0, 1);
+    let transposed = patterned(&shape(w + 8, h + 8), dtype).permute(&swap);
+    vec![
+        ("contiguous", patterned(&shape(h, w), dtype)),
+        ("crop", base.slice(&zeros(3, 2), &ends(3 + h, 2 + w))),
+        (
+            "vflip",
+            base.flip(&[0]).slice(&zeros(1, 1), &ends(1 + h, 1 + w)),
+        ),
+        (
+            "hflip",
+            base.flip(&[1]).slice(&zeros(2, 0), &ends(2 + h, w)),
+        ),
+        ("transpose", transposed.slice(&zeros(0, 1), &ends(h, 1 + w))),
+    ]
+}
+
+/// A buffer of every rank 1-5, contiguous, of 4096 elements.
+fn contiguous_of_every_rank(dtype: DType) -> Vec<ViewBuffer> {
+    [
+        &[4096][..],
+        &[64, 64],
+        &[32, 32, 4],
+        &[4, 16, 16, 4],
+        &[2, 4, 8, 8, 8],
+    ]
+    .iter()
+    .map(|shape| {
+        assert_eq!(shape.iter().product::<usize>(), 4096, "{shape:?}");
+        patterned(shape, dtype)
+    })
+    .collect()
+}
+
+/// A contiguous buffer is already every layout a reader asks for, at any
+/// rank: asking for it packed, as packed rows or compacted copies nothing.
+/// `to_dense_rows` once packed every rank but 2 and 3, contiguous or not.
+#[test]
+fn a_contiguous_buffer_of_any_rank_is_read_without_a_copy() {
+    for dtype in [DType::U8, DType::F32] {
+        for buf in contiguous_of_every_rank(dtype) {
+            let bytes = 4096 * dtype.size_of();
+            let (_, count) = large_allocations(bytes, || {
+                (buf.to_contiguous(), buf.to_dense_rows(), buf.compact())
+            });
+            assert_eq!(count, 0, "{dtype:?} {:?}: {count} copies", buf.shape());
+        }
+    }
+}
+
+/// A binary op on contiguous operands of any rank allocates only its output,
+/// whatever their dtypes.
+#[test]
+fn a_binary_op_on_contiguous_operands_of_any_rank_allocates_only_its_output() {
+    for (da, db) in [
+        (DType::U8, DType::U8),
+        (DType::U8, DType::U16),
+        (DType::F32, DType::F64),
+    ] {
+        for (a, b) in contiguous_of_every_rank(da)
+            .iter()
+            .zip(contiguous_of_every_rank(db))
+        {
+            for op in [BinaryOp::Add, BinaryOp::Blend] {
+                let (out, count) = large_allocations(4096, || op.execute(a, &b));
+                assert_eq!(out.shape(), a.shape());
+                assert_eq!(
+                    count,
+                    1,
+                    "{op:?} of {da:?} and {db:?} {:?}: {count} operand-sized allocations, the output is the only one needed",
+                    a.shape()
+                );
+            }
+        }
+    }
+}
+
+/// Every allocation `f` makes, of any size.
+fn all_allocations<R>(f: impl FnOnce() -> R) -> usize {
+    large_allocations(1, f).1
+}
+
+/// The binary op cases at height `h`: every pair of operand layouts, for two
+/// dtype pairs (one zipped directly, one converted a block at a time), and a
+/// `[h, w, 1]` operand broadcast across the channels.
+fn binary_cases(h: usize) -> Vec<(String, ViewBuffer, ViewBuffer)> {
+    let w = 24;
+    let mut cases = Vec::new();
+    for (da, db, tb) in [
+        (DType::U8, DType::U8, 3),
+        (DType::U8, DType::U16, 3),
+        (DType::F32, DType::F32, 1),
+    ] {
+        for (la, a) in operand_layouts(h, w, &[3], da) {
+            for (lb, b) in operand_layouts(h, w, &[tb], db) {
+                cases.push((
+                    format!("{da:?} {la} with {db:?} [h, w, {tb}] {lb}"),
+                    a.clone(),
+                    b,
+                ));
+            }
+        }
+    }
+    cases
+}
+
+/// How many allocations a binary op makes does not depend on the size of its
+/// operands, for every layout, dtype pair and broadcast: a row table or a
+/// scratch buffer rebuilt per row or per block grows with the input, and is
+/// work no output shows. (Building every row's slice for each block made a
+/// tall view 58x slower than packing it.)
+#[test]
+fn a_binary_ops_allocation_count_does_not_grow_with_its_operands() {
+    let (small, tall) = (binary_cases(16), binary_cases(16 * 64));
+    for ((label, a, b), (_, ta, tb)) in small.iter().zip(&tall) {
+        for op in [BinaryOp::Add, BinaryOp::Blend] {
+            let n = all_allocations(|| op.execute(a, b));
+            let n_tall = all_allocations(|| op.execute(ta, tb));
+            assert_eq!(
+                n, n_tall,
+                "{op:?} {label}: {n} allocations at height 16, {n_tall} at 1024"
+            );
+        }
+    }
+}
+
+/// The masks `apply_mask` can meet at height `h`: `[h, w, 3]` and `[h, w]`,
+/// in every layout, over a contiguous u8 image.
+fn mask_cases(h: usize) -> Vec<(String, ViewBuffer, ViewBuffer)> {
+    let w = 24;
+    let image = patterned(&[h, w, 3], DType::U8);
+    let mut cases = Vec::new();
+    for tail in [&[3][..], &[]] {
+        for (lm, m) in operand_layouts(h, w, tail, DType::U8) {
+            cases.push((format!("{} mask {lm}", 2 + tail.len()), image.clone(), m));
+        }
+    }
+    cases
+}
+
+/// `apply_mask` allocates the same number of times at any size.
+#[test]
+fn apply_masks_allocation_count_does_not_grow_with_its_operands() {
+    let (small, tall) = (mask_cases(16), mask_cases(16 * 64));
+    for ((label, a, m), (_, ta, tm)) in small.iter().zip(&tall) {
+        for invert in [false, true] {
+            let n = all_allocations(|| apply_mask(a, m, invert));
+            let n_tall = all_allocations(|| apply_mask(ta, tm, invert));
+            assert_eq!(
+                n, n_tall,
+                "{label}, invert={invert}: {n} allocations at height 16, {n_tall} at 1024"
+            );
+        }
+    }
+}
+
+/// A mask with packed rows (a crop, a vertical flip), of either rank, costs
+/// `apply_mask` no copy beyond what the same mask contiguous costs.
+#[test]
+fn apply_mask_reads_a_mask_with_packed_rows_in_place() {
+    let (h, w) = (256, 192);
+    let image = patterned(&[h, w, 3], DType::U8);
+    for tail in [&[3][..], &[]] {
+        let mask_bytes = h * w * tail.iter().product::<usize>();
+        let layouts = operand_layouts(h, w, tail, DType::U8);
+        let contiguous = &layouts[0].1;
+        for invert in [false, true] {
+            let (_, packed) =
+                large_allocations(mask_bytes, || apply_mask(&image, contiguous, invert));
+            for (lm, m) in layouts
+                .iter()
+                .filter(|(l, _)| matches!(*l, "crop" | "vflip"))
+            {
+                let (out, count) = large_allocations(mask_bytes, || apply_mask(&image, m, invert));
+                assert_eq!(out.shape(), [h, w, 3]);
+                assert_eq!(
+                    count,
+                    packed,
+                    "{}-D {lm} mask, invert={invert}: {count} mask-sized allocations, {packed} for the same mask contiguous",
+                    2 + tail.len()
+                );
+            }
+        }
+    }
+}

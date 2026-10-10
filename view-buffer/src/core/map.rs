@@ -154,6 +154,24 @@ pub(crate) fn for_each_run<T: ViewType>(buf: &ViewBuffer, mut f: impl FnMut(&[T]
     }
 }
 
+/// [`for_each_run`] in whole pixels of `channels` elements: every run holds
+/// a whole number of them, whatever the layout (a short unit is packed into a
+/// stack scratch first), so a pixel never straddles two runs.
+///
+/// # Panics
+/// Panics if `T` is not `buf`'s dtype, or its elements are not whole pixels.
+pub(crate) fn for_each_pixel_run<T: ViewType>(
+    buf: &ViewBuffer,
+    channels: usize,
+    mut f: impl FnMut(&[T]),
+) {
+    if buf.layout.is_contiguous() {
+        f(buf.as_slice::<T>());
+    } else {
+        Walk::of(buf).for_each_run::<T>(channels, &mut f);
+    }
+}
+
 // The kernels below are dispatched bodies: every loop is written in them, or
 // in an `#[inline(always)]` method, never in a closure. A closure is its own
 // function, compiled without the dispatched build's instruction set unless

@@ -567,25 +567,27 @@ fn convert_ranged(buf: &ViewBuffer, op: &ColorConvertOp, out_dtype: DType) -> Vi
     } else {
         in_range.full
     };
-    let contig = buf.cast(DType::F64).to_contiguous();
-    let src = contig.as_slice::<f64>();
     let wrap = (op.to_space == ColorSpace::Hsv && DTypeCategory::Integer.accepts(out_dtype))
         .then(|| out_range.hue_period())
         .flatten();
     let mut out: Vec<f64> = Vec::with_capacity(h * w * out_c);
-    for px in src.chunks_exact(in_c) {
-        let rgb = decode_rgb(op.from_space, px, &in_range, scale);
-        let mut v = encode(op.to_space, rgb, scale, &out_range);
-        if let Some(period) = wrap {
-            let rounded = v[0].round();
-            v[0] = if rounded >= period {
-                rounded - period
-            } else {
-                rounded
-            };
+    // Pixel runs read where they lie: an f64 input's cast is the input itself,
+    // so packing it first was a second copy of a view.
+    crate::core::map::for_each_pixel_run::<f64>(&buf.cast(DType::F64), in_c, |run| {
+        for px in run.chunks_exact(in_c) {
+            let rgb = decode_rgb(op.from_space, px, &in_range, scale);
+            let mut v = encode(op.to_space, rgb, scale, &out_range);
+            if let Some(period) = wrap {
+                let rounded = v[0].round();
+                v[0] = if rounded >= period {
+                    rounded - period
+                } else {
+                    rounded
+                };
+            }
+            out.extend_from_slice(&v[..out_c]);
         }
-        out.extend_from_slice(&v[..out_c]);
-    }
+    });
     ViewBuffer::from_vec_with_shape(out, vec![h, w, out_c]).cast(out_dtype)
 }
 

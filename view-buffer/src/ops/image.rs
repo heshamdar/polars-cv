@@ -493,8 +493,9 @@ impl<M: Mode> Op for ImageOp<M> {
             // The resizes read rows packed within themselves (a crop, a
             // vertical flip) where they lie and pack any other layout
             // themselves (`resize_pixels`, `resample::nearest`). The
-            // casting paths (i8/i16, the 32/64-bit integers, f64) pack in
-            // their cast, so a planned pack would be a second copy.
+            // other dtypes read any view: i8/i16 through their cast to f32,
+            // the 32/64-bit integers and f64 through `resample::convolve`'s
+            // one read into f64. A planned pack would be a second copy.
             ImageOpKind::Resize { .. }
             | ImageOpKind::ResizeScale { .. }
             | ImageOpKind::ResizeToHeight { .. }

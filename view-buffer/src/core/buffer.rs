@@ -1327,13 +1327,14 @@ impl ViewBuffer {
     }
 
     /// This view with each row packed, at any row stride: itself when it
-    /// already is (a crop or a vertical flip is), else packed.
+    /// already is (a crop or a vertical flip is) or is contiguous (at any
+    /// rank), else packed.
     ///
     /// What an op declaring `RequiresDenseRows` reads its input through, and
     /// what the planner's `MaterializeDenseRows` step applies: the rows are
     /// then read in place with [`dense_rows`](Self::dense_rows).
     pub fn to_dense_rows(&self) -> Self {
-        if self.layout_facts().is_dense_rows() {
+        if self.layout.is_contiguous() || self.layout_facts().is_dense_rows() {
             self.clone()
         } else {
             self.packed()
