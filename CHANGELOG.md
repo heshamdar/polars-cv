@@ -42,6 +42,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Internal
 
+- **A census of what a view costs each op** (`polars-cv/src/graph/copy_census.rs`).
+  Every catalogue op runs on a crop, a vertical flip, a transpose and a
+  horizontal flip, and on a contiguous image of the same shape. The extra
+  view-sized allocations are the copies the view cost. Each must be listed with
+  its reason (`KNOWN`), and a listed copy that no longer happens fails too.
+  At introduction: element-wise and view ops pay nothing on any layout. Every
+  `RequiresContiguous` op pays one pack. Binary ops pay two, packing both
+  operands. Resize packs only a transpose or a horizontal flip.
 - **`scripts/verify.sh` prints each check's duration**, and drops work it
   repeated. Profiled on 4 cores (warm tree, ~14.5 min): the slow lane 562 s,
   the fast lanes 124 s and 85 s, `cargo test -p view-buffer` 62 s. Of that
