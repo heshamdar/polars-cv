@@ -263,57 +263,25 @@ fn convert_to_u8_for_image(buf: ViewBuffer) -> ViewBuffer {
         return buf;
     }
 
-    let contig = buf.to_contiguous();
-    let shape = crate::core::layout::Dims::from_slice(contig.shape());
-
-    match contig.dtype() {
-        DType::F32 => {
-            let src = contig.as_slice::<f32>();
-            // Scale from [0.0, 1.0] to [0, 255], clamping values outside range
-            let new_data: Vec<u8> = src
-                .iter()
-                .map(|&x| (x.clamp(0.0, 1.0) * 255.0).round() as u8)
-                .collect();
-            ViewBuffer::from_vec(new_data).reshape(shape)
-        }
-        DType::F64 => {
-            let src = contig.as_slice::<f64>();
-            let new_data: Vec<u8> = src
-                .iter()
-                .map(|&x| (x.clamp(0.0, 1.0) * 255.0).round() as u8)
-                .collect();
-            ViewBuffer::from_vec(new_data).reshape(shape)
-        }
-        DType::U16 => {
-            let src = contig.as_slice::<u16>();
-            // Scale from [0, 65535] to [0, 255]
-            let new_data: Vec<u8> = src.iter().map(|&x| (x >> 8) as u8).collect();
-            ViewBuffer::from_vec(new_data).reshape(shape)
-        }
-        DType::I16 => {
-            let src = contig.as_slice::<i16>();
-            let new_data: Vec<u8> = src.iter().map(|&x| x.clamp(0, 255) as u8).collect();
-            ViewBuffer::from_vec(new_data).reshape(shape)
-        }
-        DType::U32 => {
-            let src = contig.as_slice::<u32>();
-            let new_data: Vec<u8> = src.iter().map(|&x| (x.min(255)) as u8).collect();
-            ViewBuffer::from_vec(new_data).reshape(shape)
-        }
-        DType::I32 => {
-            let src = contig.as_slice::<i32>();
-            let new_data: Vec<u8> = src.iter().map(|&x| x.clamp(0, 255) as u8).collect();
-            ViewBuffer::from_vec(new_data).reshape(shape)
-        }
-        DType::I8 => {
-            let src = contig.as_slice::<i8>();
-            let new_data: Vec<u8> = src.iter().map(|&x| x.max(0) as u8).collect();
-            ViewBuffer::from_vec(new_data).reshape(shape)
-        }
-        _ => {
-            // For other types, use the cast method
-            contig.cast(DType::U8)
-        }
+    // Each conversion reads the input's runs where they lie: packing a view
+    // first was a second copy of it, the size of the input.
+    fn to_u8<S: crate::core::dtype::ViewType>(buf: &ViewBuffer, f: impl Fn(S) -> u8) -> ViewBuffer {
+        let mut out: Vec<u8> = Vec::with_capacity(buf.layout.num_elements());
+        crate::core::map::for_each_run::<S>(buf, |run| out.extend(run.iter().map(|&x| f(x))));
+        ViewBuffer::from_vec_with_shape(out, buf.shape().to_vec())
+    }
+    match buf.dtype() {
+        // Scale from [0.0, 1.0] to [0, 255], clamping values outside range
+        DType::F32 => to_u8(&buf, |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u8),
+        DType::F64 => to_u8(&buf, |x: f64| (x.clamp(0.0, 1.0) * 255.0).round() as u8),
+        // Scale from [0, 65535] to [0, 255]
+        DType::U16 => to_u8(&buf, |x: u16| (x >> 8) as u8),
+        DType::I16 => to_u8(&buf, |x: i16| x.clamp(0, 255) as u8),
+        DType::U32 => to_u8(&buf, |x: u32| x.min(255) as u8),
+        DType::I32 => to_u8(&buf, |x: i32| x.clamp(0, 255) as u8),
+        DType::I8 => to_u8(&buf, |x: i8| x.max(0) as u8),
+        // For other types, use the cast method (which reads a view in place)
+        _ => buf.cast(DType::U8),
     }
 }
 

@@ -120,15 +120,27 @@ fn ops(c: usize, dtype: DType) -> Vec<(&'static str, ViewDto)> {
 
 /// Ops that read any layout through the cast their arithmetic starts with
 /// (`StridePreserving`): a widening cast walks the view once.
+///
+/// `convolve2d` in every border mode and at three kernel sides: 3 and 5 take
+/// the fixed-size interior, 9 the dynamic one. Its input in the accumulator
+/// dtype (f32, f64) is read at the view's own strides, a transpose or a
+/// horizontal flip a gathered row at a time.
 fn cast_reading_ops(c: usize) -> Vec<(&'static str, ViewDto)> {
-    let mut ops = vec![(
-        "convolve2d",
-        ViewDto::Filter(ConvolveOp {
-            kernel: vec![1.0, 2.0, 1.0, 0.0, 0.0, 0.0, -1.0, -2.0, -1.0],
-            normalize: false,
-            border: BorderMode::Reflect,
-        }),
-    )];
+    let mut ops = Vec::new();
+    for (side, border) in [
+        (3, BorderMode::Reflect),
+        (5, BorderMode::Zero),
+        (9, BorderMode::Replicate),
+    ] {
+        ops.push((
+            "convolve2d",
+            ViewDto::Filter(ConvolveOp {
+                kernel: (0..side * side).map(|i| (i % 7) as f32 - 3.0).collect(),
+                normalize: side == 5,
+                border,
+            }),
+        ));
+    }
     if c == 3 {
         ops.push((
             "cvt_color",
@@ -192,6 +204,13 @@ fn a_cast_reading_op_reads_a_view_as_its_packed_copy() {
         ] {
             for (name, op) in cast_reading_ops(c) {
                 assert_eq!(layout_of(&op), InputLayout::Any, "{name}");
+                assert_reads_views_as_packed(name, &op, &base);
+            }
+        }
+        // f64 accumulates in f64; a 9-row image under a 9x9 kernel (side
+        // > half the size) is all border, gathered pixel by pixel.
+        for base in [image::<f64>(29, 23, c), image::<f32>(9, 11, c)] {
+            for (name, op) in cast_reading_ops(c) {
                 assert_reads_views_as_packed(name, &op, &base);
             }
         }

@@ -23,6 +23,7 @@ use crate::core::convert::CastFrom;
 use crate::core::dtype::{
     with_dtype, DType, DTypeCategory, OutputDTypeRule, PlannedDType, ViewType,
 };
+use crate::core::layout::{Dims, Strides};
 use crate::ops::shape_rule::{show_dims, Dim, OpShape};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
@@ -212,65 +213,87 @@ impl<T> FromAny for T where
 {
 }
 
-/// Elements `start..start + dst.len()` of `buf` broadcast to `shape`, in
-/// logical order, each converted to `T`.
+/// One operand of [`zip_with`] broadcast to the output's shape, read in
+/// logical order a block at a time and converted to `T`.
 ///
-/// Read where they lie: an operand of the output's shape whose rows are each
-/// packed (a crop, a vertical flip) a row segment at a time, and a broadcast
-/// one through its own strides.
-fn read_as<T: FromAny>(buf: &ViewBuffer, shape: &[usize], start: usize, dst: &mut [T]) {
-    with_dtype!(buf.dtype(), S => {
-        if buf.shape() == shape && buf.layout.is_contiguous() {
-            let src = buf.as_slice::<S>();
-            let end = start + dst.len();
-            for (d, &x) in dst.iter_mut().zip(&src[start..end]) {
+/// Built once per operand, it walks the operand in runs: the longest suffix
+/// of output axes over which the operand is packed (all of a contiguous one,
+/// a row of a crop or a vertical flip, one element along a broadcast axis).
+/// Its position carries from block to block, so a read allocates nothing and
+/// does index arithmetic only at run boundaries.
+struct Reader<'a> {
+    buf: &'a ViewBuffer,
+    shape: &'a [usize],
+    /// The element step each output axis takes through the operand.
+    steps: Strides,
+    /// Elements per run: the product of the axes from `outer` on.
+    run: usize,
+    outer: usize,
+    /// The outer axes' coordinates, the operand offset (in elements) of the
+    /// current run's first element, and how far into the run the next read
+    /// starts.
+    coords: Dims,
+    at: isize,
+    pos: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn new(buf: &'a ViewBuffer, shape: &'a [usize]) -> Self {
+        let steps = view_steps(buf, shape);
+        let (mut run, mut outer) = (1usize, shape.len());
+        // An axis extends the run while stepping it moves exactly one run on
+        // (a size-1 axis never moves).
+        while outer > 0 && (shape[outer - 1] == 1 || steps[outer - 1] == run as isize) {
+            run *= shape[outer - 1];
+            outer -= 1;
+        }
+        Self {
+            buf,
+            shape,
+            steps,
+            run,
+            outer,
+            coords: Dims::from_elem(0, outer),
+            at: 0,
+            pos: 0,
+        }
+    }
+
+    /// The next `dst.len()` elements, each converted to `T`.
+    fn read<T: FromAny>(&mut self, dst: &mut [T]) {
+        with_dtype!(self.buf.dtype(), S => self.read_typed::<S, T>(dst))
+    }
+
+    fn read_typed<S: ViewType, T: CastFrom<S>>(&mut self, dst: &mut [T]) {
+        // SAFETY: `base` is the operand's first logical element. `at` is the
+        // offset of the element at `coords` (each in its axis's range) with
+        // the inner axes at 0, and the `run` elements from it are packed
+        // (that is what makes them a run), all inside the view's validated
+        // data, so `pos + n <= run` of them may be read.
+        let base = unsafe { self.buf.as_ptr::<S>() };
+        let mut filled = 0;
+        while filled < dst.len() {
+            let n = (self.run - self.pos).min(dst.len() - filled);
+            let src = unsafe { std::slice::from_raw_parts(base.offset(self.at).add(self.pos), n) };
+            for (d, &x) in dst[filled..filled + n].iter_mut().zip(src) {
                 *d = T::cast_from(x);
             }
-        } else if let Some(rows) = (buf.shape() == shape)
-            .then(|| buf.dense_rows::<S>())
-            .flatten()
-        {
-            let row_len = rows.first().map_or(1, |r| r.len().max(1));
-            let (mut y, mut x) = (start / row_len, start % row_len);
-            let mut filled = 0;
-            while filled < dst.len() {
-                let n = (row_len - x).min(dst.len() - filled);
-                for (d, &v) in dst[filled..filled + n].iter_mut().zip(&rows[y][x..x + n]) {
-                    *d = T::cast_from(v);
-                }
-                filled += n;
-                (y, x) = (y + 1, 0);
-            }
-        } else {
-            // Walk the output positions with an odometer, carrying the source
-            // index along: each step adds the axis's element step (the view's
-            // own stride, 0 where the source axis is broadcast from 1), with no
-            // division or allocation per element.
-            let steps = view_steps(buf, shape);
-            let mut coords = linear_to_coords(start, shape);
-            let mut at: isize = coords
-                .iter()
-                .zip(&steps)
-                .map(|(&c, &s)| c as isize * s)
-                .sum();
-            // SAFETY: `base` is the view's first logical element, and `at` is
-            // always the offset of the element at `coords` (each in its axis's
-            // range), which the view's validated layout keeps inside its data.
-            let base = unsafe { buf.as_ptr::<S>() };
-            for d in dst.iter_mut() {
-                *d = T::cast_from(unsafe { *base.offset(at) });
-                for ax in (0..shape.len()).rev() {
-                    coords[ax] += 1;
-                    at += steps[ax];
-                    if coords[ax] < shape[ax] {
+            filled += n;
+            self.pos += n;
+            if self.pos == self.run {
+                self.pos = 0;
+                for ax in (0..self.outer).rev() {
+                    self.coords[ax] += 1;
+                    self.at += self.steps[ax];
+                    if self.coords[ax] < self.shape[ax] {
                         break;
                     }
-                    at -= steps[ax] * shape[ax] as isize;
-                    coords[ax] = 0;
+                    self.at -= self.steps[ax] * self.shape[ax] as isize;
+                    self.coords[ax] = 0;
                 }
             }
         }
-    })
+    }
 }
 
 /// `f(a, b)` element-wise in the dtype `T`, broadcast to `output_shape`.
@@ -310,11 +333,12 @@ fn zip_with<T: FromAny, Fun: Fn(T, T) -> T>(
             let total: usize = output_shape.iter().product();
             let mut out = Vec::with_capacity(total);
             let (mut xa, mut xb) = ([T::default(); BLOCK], [T::default(); BLOCK]);
+            let (mut ra, mut rb) = (Reader::new(a, output_shape), Reader::new(b, output_shape));
             let mut start = 0;
             while start < total {
                 let n = BLOCK.min(total - start);
-                read_as(a, output_shape, start, &mut xa[..n]);
-                read_as(b, output_shape, start, &mut xb[..n]);
+                ra.read(&mut xa[..n]);
+                rb.read(&mut xb[..n]);
                 out.extend(xa[..n].iter().zip(&xb[..n]).map(|(&x, &y)| f(x, y)));
                 start += n;
             }
@@ -602,8 +626,6 @@ pub fn broadcast_shapes(a: &[usize], b: &[usize]) -> Option<Vec<usize>> {
     Some(result)
 }
 
-use super::util::linear_to_coords;
-
 /// `buf`'s rows as `T` slices when it is of dtype `T` and of `shape` exactly
 /// and each of its rows is packed (any row stride): the rows `zip_with` pairs
 /// directly.
@@ -618,11 +640,11 @@ fn packed_rows<'a, T: ViewType>(buf: &'a ViewBuffer, shape: &[usize]) -> Option<
 /// The element step each axis of `out` takes through `buf` broadcast to it:
 /// the view's own stride (any sign) for a real axis, and 0 for one broadcast
 /// from size 1 or absent.
-fn view_steps(buf: &ViewBuffer, out: &[usize]) -> Vec<isize> {
+fn view_steps(buf: &ViewBuffer, out: &[usize]) -> Strides {
     let (src, strides) = (buf.shape(), buf.strides_bytes());
     let elem = buf.dtype().size_of() as isize;
     let offset = out.len() - src.len();
-    let mut steps = vec![0; out.len()];
+    let mut steps = Strides::from_elem(0, out.len());
     for i in 0..src.len() {
         if src[i] != 1 {
             steps[offset + i] = strides[i] / elem;

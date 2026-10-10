@@ -16,13 +16,14 @@
 //! the reason it is paid. An unlisted one fails, and so does a listed one that
 //! no longer happens, so the table cannot go stale in either direction.
 //!
-//! Limits: one dtype (u8), one base size, and the samples' own parameters. An
-//! op whose copies depend on a parameter the sample does not exercise is not
-//! seen through that parameter.
+//! Limits: the exact table ([`KNOWN`]) is u8 only (every dtype is held to its
+//! op's declared memory effect instead), one base size, and the samples' own
+//! parameters. An op whose copies depend on a parameter the sample does not
+//! exercise is not seen through that parameter.
 
 use polars::prelude::*;
 use view_buffer::ops::MemoryEffect;
-use view_buffer::ViewBuffer;
+use view_buffer::{DType, ViewBuffer};
 
 use super::compiled::CompiledGraph;
 use crate::ops::TypedOp;
@@ -197,18 +198,20 @@ const EXEMPT: &[(&str, &str)] = &[
     ),
 ];
 
-/// A u8 blob of `shape` with a recognisable pattern.
-fn blob(shape: [usize; 3]) -> Series {
+/// A `dtype` blob of `shape` with a recognisable pattern.
+fn blob(shape: [usize; 3], dtype: DType) -> Series {
     let n = shape.iter().product::<usize>();
     let data: Vec<u8> = (0..n).map(|i| (i * 31 % 251) as u8).collect();
-    let blob = ViewBuffer::from_vec_with_shape(data, shape.to_vec()).to_blob();
+    let blob = ViewBuffer::from_vec_with_shape(data, shape.to_vec())
+        .cast(dtype)
+        .to_blob();
     Series::new("b".into(), std::slice::from_ref(&blob))
 }
 
 /// The graph running `op` after the `prefix` view ops, into `sink`. A binary
 /// op (one reading node `n0`) reads the viewed node as both operands.
-fn graph(op: &str, prefix: &str, sink: &str) -> String {
-    let source = r#"{"format": "blob", "dtype": "u8"}"#;
+fn graph(op: &str, prefix: &str, sink: &str, dtype: DType) -> String {
+    let source = format!(r#"{{"format": "blob", "dtype": "{}"}}"#, dtype.short_name());
     if op.contains(r#""n0""#) {
         format!(
             r#"{{"nodes": {{"n0": {{"source": {source}, "ops": [{prefix}]}},
@@ -247,12 +250,12 @@ fn copies(graph: &str, input: &Series, threshold: usize) -> Result<usize, String
 /// The sink and channel count an op runs with: three channels unless it only
 /// takes one, and the numpy sink unless its output is not a buffer. `None` if
 /// it runs with none of them.
-fn runnable(op: &str) -> Option<(usize, &'static str)> {
+fn runnable(op: &str, dtype: DType) -> Option<(usize, &'static str)> {
     for c in [3, 1] {
         for sink in [r#"{"format": "numpy"}"#, r#"{"format": "native"}"#] {
             let shape = [H, W, c];
-            let threshold = shape.iter().product();
-            if copies(&graph(op, "", sink), &blob(shape), threshold).is_ok() {
+            let threshold = shape.iter().product::<usize>() * dtype.size_of();
+            if copies(&graph(op, "", sink, dtype), &blob(shape, dtype), threshold).is_ok() {
                 return Some((c, sink));
             }
         }
@@ -260,23 +263,24 @@ fn runnable(op: &str) -> Option<(usize, &'static str)> {
     None
 }
 
-/// Every runnable op's view-caused copies per layout, and the ops that ran.
-fn census() -> (Vec<(String, &'static str, usize)>, Vec<String>) {
+/// Every op's view-caused copies per layout on `dtype` input, and the ops that
+/// ran (an op refusing `dtype` does not).
+fn census(dtype: DType) -> (Vec<(String, &'static str, usize)>, Vec<String>) {
     let mut measured = Vec::new();
     let mut ran = Vec::new();
     for sample in TypedOp::samples() {
         let name = sample.name().to_string();
         let op = serde_json::to_string(&sample).unwrap();
-        let Some((c, sink)) = runnable(&op) else {
+        let Some((c, sink)) = runnable(&op, dtype) else {
             continue;
         };
         ran.push(name.clone());
-        let base = blob([H, W, c]);
+        let base = blob([H, W, c], dtype);
         for (layout, prefix, shape) in layouts(c) {
-            let threshold = shape.iter().product::<usize>();
-            let viewed = copies(&graph(&op, &prefix, sink), &base, threshold)
+            let threshold = shape.iter().product::<usize>() * dtype.size_of();
+            let viewed = copies(&graph(&op, &prefix, sink, dtype), &base, threshold)
                 .unwrap_or_else(|e| panic!("{name} on a {layout} view: {e}"));
-            let dense = copies(&graph(&op, "", sink), &blob(shape), threshold)
+            let dense = copies(&graph(&op, "", sink, dtype), &blob(shape, dtype), threshold)
                 .unwrap_or_else(|e| panic!("{name} on a contiguous {shape:?}: {e}"));
             measured.push((name.clone(), layout, viewed.saturating_sub(dense)));
         }
@@ -286,7 +290,7 @@ fn census() -> (Vec<(String, &'static str, usize)>, Vec<String>) {
 
 #[test]
 fn a_view_costs_each_op_only_its_known_copies() {
-    let (measured, ran) = census();
+    let (measured, ran) = census(DType::U8);
     assert!(
         ran.len() > 40,
         "only {} ops ran; the census is not measuring the catalogue",
@@ -335,40 +339,101 @@ fn a_view_costs_each_op_only_its_known_copies() {
     assert!(problems.is_empty(), "\n{}", problems.join("\n"));
 }
 
-/// What a declared [`MemoryEffect`] promises each [`COUNTED`] layout costs:
-/// nothing on a layout it reads in place, at least one copy on one it packs.
-fn pays_on(effect: MemoryEffect, layout: &str) -> bool {
+/// Ops that declare no [`MemoryEffect`] (graph ops other than the binary
+/// ones, which run outside the engine's planner), so only [`KNOWN`] holds
+/// their copies, and on u8 only. Listing one is checked both ways, like
+/// [`EXEMPT`].
+const UNDECLARED: &[(&str, &str)] = &[
+    (
+        "apply_mask",
+        "a graph op run by the executor itself; KNOWN holds its u8 copies",
+    ),
+    (
+        "extract_shape",
+        "a graph op reading only the shape; KNOWN would list any copy",
+    ),
+];
+
+/// Whether an op declaring `effect` may pay a view-caused copy on `layout`,
+/// and whether it must: nothing on a layout it reads in place, at least one
+/// on a layout it packs. `(may, must)`.
+fn bounds(effect: MemoryEffect, layout: &str) -> (bool, bool) {
     let dense_rows = matches!(layout, "crop" | "vflip");
     match effect {
-        MemoryEffect::View | MemoryEffect::StridePreserving => false,
-        MemoryEffect::RequiresDenseRows | MemoryEffect::PacksOwnRows => !dense_rows,
-        MemoryEffect::RequiresContiguous | MemoryEffect::ViewOfContiguous => true,
+        MemoryEffect::View | MemoryEffect::StridePreserving => (false, false),
+        MemoryEffect::RequiresDenseRows | MemoryEffect::PacksOwnRows => (!dense_rows, !dense_rows),
+        MemoryEffect::RequiresContiguous | MemoryEffect::ViewOfContiguous => (true, true),
     }
 }
 
 /// An op's `memory_effect` is its account of which input layouts cost it a
-/// copy, and who makes it. The census holds the "which" half to what the op
-/// pays: `StridePreserving` on a kernel that packs a transpose itself fails.
-/// Who makes the copy (`RequiresDenseRows` vs `PacksOwnRows`) is the same
-/// count either way, so this cannot tell them apart.
+/// copy. Held on every dtype an op accepts, since a kernel's paths split by
+/// dtype (resize takes fast_image_resize for u8/u16/f32, a cast for i8/i16,
+/// an f64 resampler for the rest):
+///
+/// - on every dtype, an op pays no copy on a layout its declaration reads in
+///   place (`StridePreserving` on a kernel that packs a crop fails);
+/// - on u8, it also pays one where its declaration packs (`StridePreserving`
+///   on a kernel that packs a transpose fails). Only on u8, because a dtype
+///   path may read a layout in place that the declaration allows it to pack.
+///
+/// Who makes a copy (`RequiresDenseRows` vs `PacksOwnRows`) is the same count
+/// either way, so this cannot tell those two apart.
 #[test]
 fn each_op_pays_the_copies_its_memory_effect_declares() {
-    let (measured, _) = census();
+    let samples = TypedOp::samples();
     let mut problems = Vec::new();
-    for sample in TypedOp::samples() {
-        let Some(effect) = sample.declared_memory_effect() else {
-            continue;
-        };
-        let name = sample.name();
-        for (op, layout, extra) in &measured {
-            if op != name || !COUNTED.contains(layout) {
+    let mut undeclared = Vec::new();
+    for &dtype in DType::ALL {
+        let (measured, ran) = census(dtype);
+        let mut compared = 0;
+        for sample in &samples {
+            let name = sample.name();
+            if !ran.iter().any(|r| r == name) {
                 continue;
             }
-            if pays_on(effect, layout) != (*extra > 0) {
-                problems.push(format!(
-                    "{name} declares {effect:?} but pays {extra} copies on a {layout} view"
-                ));
+            let Some(effect) = sample.declared_memory_effect() else {
+                if !undeclared.contains(&name) {
+                    undeclared.push(name);
+                }
+                continue;
+            };
+            for (op, layout, extra) in &measured {
+                if op != name || !COUNTED.contains(layout) {
+                    continue;
+                }
+                compared += 1;
+                let (may, must) = bounds(effect, layout);
+                let paid = *extra > 0;
+                if (paid && !may) || (dtype == DType::U8 && must && !paid) {
+                    problems.push(format!(
+                        "{name} declares {effect:?} but pays {extra} copies on a {} {layout} view",
+                        dtype.short_name()
+                    ));
+                }
             }
+        }
+        // Every dtype some ops accept: a census that compared nothing is a
+        // census that stopped measuring, not a pass.
+        assert!(
+            compared >= 4 * 10,
+            "{} compared only {compared} (op, layout) pairs",
+            dtype.short_name()
+        );
+    }
+    for name in &undeclared {
+        if !UNDECLARED.iter().any(|(u, _)| u == name) {
+            problems.push(format!(
+                "{name} declares no memory effect and is not UNDECLARED"
+            ));
+        }
+    }
+    for (name, why) in UNDECLARED {
+        assert!(why.len() > 20, "{name}: an UNDECLARED row needs its reason");
+        if !undeclared.contains(name) {
+            problems.push(format!(
+                "UNDECLARED lists {name}, which declares an effect or never ran"
+            ));
         }
     }
     assert!(problems.is_empty(), "\n{}", problems.join("\n"));
