@@ -143,12 +143,15 @@ pub fn apply_channel_swap(buf: &ViewBuffer, order: &[usize]) -> ViewBuffer {
         order.len(),
         c
     );
-    let contig = buf.to_contiguous();
+    // Read in place, at the view's own row stride (a crop, a vertical flip).
+    let rows_buf = buf.to_dense_rows();
     crate::core::dtype::with_dtype!(buf.dtype(), T => {
-        let src = contig.as_slice::<T>();
-        let mut out: Vec<T> = Vec::with_capacity(src.len());
-        for pixel in src.chunks_exact(c) {
-            out.extend(order.iter().map(|&i| pixel[i]));
+        let rows = rows_buf.dense_rows::<T>().expect("to_dense_rows packs the rows");
+        let mut out: Vec<T> = Vec::with_capacity(h * w * c);
+        for row in rows {
+            for pixel in row.chunks_exact(c) {
+                out.extend(order.iter().map(|&i| pixel[i]));
+            }
         }
         ViewBuffer::from_vec_with_shape(out, vec![h, w, c])
     })
@@ -2104,13 +2107,16 @@ fn canny_core<T: CannyNum>(
 /// Input must be U8 (enforced by `working_dtype`). Output is U8.
 #[cfg(feature = "image_interop")]
 fn apply_histogram_equalize(buf: ViewBuffer) -> ViewBuffer {
-    let contig = buf.to_contiguous();
-    let shape = contig.shape();
+    // Read in place, at the view's own row stride (a crop, a vertical flip).
+    let rows_buf = buf.to_dense_rows();
+    let shape = rows_buf.shape();
     let h = shape[0];
     let w = shape[1];
     let c = shape.get(2).copied().unwrap_or(1);
-    let count = contig.layout.num_elements();
-    let src = contig.as_slice::<u8>();
+    let count = rows_buf.layout.num_elements();
+    let rows = rows_buf
+        .dense_rows::<u8>()
+        .expect("to_dense_rows packs the rows");
 
     let total_pixels = h * w;
     let mut output = vec![0u8; count];
@@ -2118,10 +2124,9 @@ fn apply_histogram_equalize(buf: ViewBuffer) -> ViewBuffer {
     for ch in 0..c {
         // Compute histogram for this channel
         let mut hist = [0u32; 256];
-        for y in 0..h {
+        for row in &rows {
             for x in 0..w {
-                let idx = (y * w + x) * c + ch;
-                hist[src[idx] as usize] += 1;
+                hist[row[x * c + ch] as usize] += 1;
             }
         }
 
@@ -2137,10 +2142,10 @@ fn apply_histogram_equalize(buf: ViewBuffer) -> ViewBuffer {
 
         // Map pixels through equalized CDF
         let denominator = (total_pixels as f64 - cdf_min as f64).max(1.0);
-        for y in 0..h {
+        for (y, row) in rows.iter().enumerate() {
             for x in 0..w {
                 let idx = (y * w + x) * c + ch;
-                let val = src[idx] as usize;
+                let val = row[x * c + ch] as usize;
                 let equalized =
                     ((cdf[val] as f64 - cdf_min as f64) / denominator * 255.0).round() as u8;
                 output[idx] = equalized;

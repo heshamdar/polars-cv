@@ -135,7 +135,10 @@ impl<M: Mode> Op for ColorConvertOp<M> {
     }
 
     fn memory_effect(&self) -> MemoryEffect {
-        MemoryEffect::RequiresContiguous
+        // Reads any layout: each conversion packs its input at most once
+        // itself, and a ranged one (HSV, Lab, YCbCr) starts by casting to f64
+        // (`convert_ranged`), which walks a view without a separate pack.
+        MemoryEffect::StridePreserving
     }
 
     fn identity_rule(&self) -> IdentityRule {

@@ -101,7 +101,11 @@ impl<M: Mode> Op for ConvolveOp<M> {
     }
 
     fn memory_effect(&self) -> MemoryEffect {
-        MemoryEffect::RequiresContiguous
+        // Reads any layout: its arithmetic starts by casting the input to the
+        // accumulator (`convolve_in`), which walks a view once, and packs only
+        // an input already in the accumulator's dtype. A planned pack would
+        // copy the view first and cast the copy.
+        MemoryEffect::StridePreserving
     }
 
     fn identity_rule(&self) -> IdentityRule {
