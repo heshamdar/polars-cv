@@ -143,6 +143,46 @@ def generate_pattern_image(
     return np.stack([result] * channels, axis=-1)
 
 
+def generate_blob_image(
+    height: int,
+    width: int,
+    channels: int = 3,
+    seed: int | None = None,
+    cell: int = 16,
+) -> "npt.NDArray[np.uint8]":
+    """
+    Generate a smooth random field: one random value per ``cell`` pixels,
+    upsampled bicubically.
+
+    Thresholded at mid-grey it falls into many separate regions with curved
+    borders, so it gives segmentation and contour workloads real work where
+    a gradient gives one region and noise gives thousands of specks.
+
+    Args:
+        height: Image height in pixels.
+        width: Image width in pixels.
+        channels: Number of color channels.
+        seed: Random seed for reproducibility.
+        cell: Feature size in pixels.
+
+    Returns:
+        NumPy array of shape (height, width, channels) with uint8 values.
+    """
+    from PIL import Image
+
+    rng = np.random.default_rng(seed)
+    small_h, small_w = max(2, height // cell), max(2, width // cell)
+    bands = [
+        np.asarray(
+            Image.fromarray(
+                rng.integers(0, 256, (small_h, small_w), dtype=np.uint8)
+            ).resize((width, height), Image.Resampling.BICUBIC)
+        )
+        for _ in range(channels)
+    ]
+    return np.stack(bands, axis=-1)
+
+
 def array_to_png_bytes(arr: "npt.NDArray[np.uint8]") -> bytes:
     """
     Convert a NumPy array to PNG bytes.
@@ -189,8 +229,8 @@ def generate_image_bytes(
         height: Image height in pixels.
         width: Image width in pixels.
         channels: Number of color channels.
-        pattern: Image pattern ("gradient", "noise", "checkerboard").
-        seed: Random seed for noise pattern.
+        pattern: Image pattern ("gradient", "noise", "checkerboard", "blobs").
+        seed: Random seed for the noise and blobs patterns.
 
     Returns:
         PNG-encoded bytes.
@@ -201,6 +241,8 @@ def generate_image_bytes(
         arr = generate_noise_image(height, width, channels, seed)
     elif pattern == "checkerboard":
         arr = generate_pattern_image(height, width, channels, "checkerboard")
+    elif pattern == "blobs":
+        arr = generate_blob_image(height, width, channels, seed)
     else:
         msg = f"Unknown pattern: {pattern}"
         raise ValueError(msg)
@@ -225,7 +267,8 @@ def generate_image_set(
         height: Image height in pixels.
         width: Image width in pixels.
         channels: Number of color channels.
-        pattern: Image pattern ("gradient", "noise", "checkerboard", "mixed").
+        pattern: Image pattern ("gradient", "noise", "checkerboard", "blobs",
+            "mixed").
         create_files: Whether to create temporary files in addition to bytes.
         base_seed: Base random seed for reproducibility.
 
@@ -246,7 +289,7 @@ def generate_image_set(
 
     for i in range(count):
         current_pattern = patterns[i % len(patterns)]
-        seed = base_seed + i if current_pattern == "noise" else None
+        seed = base_seed + i if current_pattern in ("noise", "blobs") else None
         img_bytes = generate_image_bytes(height, width, channels, current_pattern, seed)
         image_bytes.append(img_bytes)
 
@@ -362,7 +405,8 @@ def generate_imagefolder_dataset(
         num_classes: Number of classification categories.
         height: Image height in pixels.
         width: Image width in pixels.
-        pattern: Image pattern ("gradient", "noise", "checkerboard", "mixed").
+        pattern: Image pattern ("gradient", "noise", "checkerboard", "blobs",
+            "mixed").
         base_seed: Random seed for reproducibility.
 
     Returns:
@@ -409,7 +453,7 @@ def generate_imagefolder_dataset(
 
         # Generate image with varied patterns
         current_pattern = patterns[i % len(patterns)]
-        seed = base_seed + i if current_pattern == "noise" else None
+        seed = base_seed + i if current_pattern in ("noise", "blobs") else None
 
         # Add some per-image variation to make images distinguishable
         if current_pattern == "gradient":

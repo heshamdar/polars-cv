@@ -9,7 +9,7 @@ and ``adjust_brightness`` truncated to u8 against a float result, and
 ``rotate`` truncated its expanded size and so rotated 90° non-square images
 into the wrong shape.
 
-For each reference library (OpenCV, Pillow) every single-op benchmark is
+For each reference library (OpenCV, Pillow, pyvips) every single-op benchmark is
 listed in ``TOLERANCE`` with the largest per-pixel difference allowed between
 that library's adapter and each polars-cv adapter, and why it is not 0 — or in
 ``UNSUPPORTED``, when the library has no call that computes the op, where its
@@ -41,7 +41,8 @@ H, W = 96, 128
 
 _EXACT = dict.fromkeys(
     ["flip_horizontal", "flip_vertical", "crop_center", "invert", "pad", "threshold"]
-    + ["erode", "dilate"],
+    + ["erode", "dilate", "morphology_open", "morphology_close"]
+    + ["morphology_gradient"],
     0.0,
 )
 
@@ -53,21 +54,28 @@ TOLERANCE: dict[str, dict[str, float]] = {
         "histogram_equalize": 0,
         "canny": 0,
         "sobel_x": 0,
+        "laplacian": 0,
         "sharpen": 0,
         "normalize": 1e-6,
         "adjust_contrast": 1e-3,  # f32 arithmetic in both
         "adjust_brightness": 1e-3,
+        "adjust_gamma": 1e-3,
+        "convolve2d_5x5": 1e-3,
         # OpenCV converts with 14-bit fixed-point weights, polars-cv with 8-bit.
         "grayscale": 1,
+        "to_hsv": 1,
         # OpenCV's u8 Gaussian runs a fixed-point kernel.
         "blur": 1,
-        # Inside the rotated content; its rim is `RIM_TOLERANCE`'s.
+        # Inside the resampled content; its rim is `RIM_TOLERANCE`'s.
         "rotate_45": 1,
+        "warp_affine": 1,
         # polars-cv's bilinear antialiases a downscale (as Pillow does); OpenCV's
         # INTER_LINEAR does not, and OpenCV has no antialiased bilinear. On
         # this smooth image the two differ by a few levels; against Pillow the
         # same resize agrees to 1.
         "resize": 4,
+        # An upscale, where neither antialiases: fixed-point rounding only.
+        "letterbox": 1,
     },
     "pillow": {
         **_EXACT,
@@ -76,6 +84,7 @@ TOLERANCE: dict[str, dict[str, float]] = {
         "adjust_contrast": 1e-3,
         "adjust_brightness": 1e-3,
         "resize": 1,
+        "letterbox": 1,
         # Pillow's "L" conversion rounds ITU-R 601 weights over 1000.
         "grayscale": 1,
         # Pillow approximates a Gaussian with repeated box blurs.
@@ -84,13 +93,42 @@ TOLERANCE: dict[str, dict[str, float]] = {
         # rule from OpenCV's (which polars-cv matches exactly).
         "histogram_equalize": 2,
         "rotate_45": 1,
+        "warp_affine": 1,
+    },
+    "pyvips": {
+        **_EXACT,
+        "rotate_90": 0,
+        "sobel_x": 0,  # an integer kernel on u8, summed in float
+        "laplacian": 0,
+        "normalize": 1e-6,
+        "adjust_contrast": 1e-3,
+        "adjust_brightness": 1e-3,
+        "adjust_gamma": 1e-3,
+        "sharpen": 1e-3,
+        "convolve2d_5x5": 1e-3,
+        # A recombination in float, rounded once.
+        "grayscale": 1,
+        # libvips's default u8 Gaussian is fixed-point with coarser weights
+        # than OpenCV's (its float precision agrees to 0.5, at a cost).
+        "blur": 3,
+        "resize": 1,
+        "letterbox": 1,
+        "rotate_45": 1,
+        "warp_affine": 1,
+        # `hist_equal` scales the cumulative histogram with its own rounding.
+        "histogram_equalize": 2,
     },
 }
 
 #: Ops a reference library has no call for: its adapter raises.
 UNSUPPORTED: dict[str, set[str]] = {
     "opencv": set(),
-    "pillow": {"canny", "sobel_x", "sharpen"},
+    # No f32 output for a convolution or a lookup table; HSV in [0, 255] hue.
+    "pillow": {"canny", "sobel_x", "sharpen", "laplacian", "convolve2d_5x5"}
+    | {"adjust_gamma", "to_hsv"},
+    # `canny` returns a gradient magnitude, not hysteresis edges; libvips's
+    # HSV scales hue to [0, 255] where polars-cv (as OpenCV) uses [0, 180).
+    "pyvips": {"canny", "to_hsv"},
 }
 
 #: Larger tolerance on the rim of a resampled op's content, where the
@@ -98,11 +136,24 @@ UNSUPPORTED: dict[str, set[str]] = {
 #: warpAffine blends with it (up to 4 levels here), Pillow does not blend at
 #: all (a rim pixel is sampled or filled, so any value can differ).
 RIM_TOLERANCE: dict[str, dict[str, float]] = {
-    "opencv": {"rotate_45": 4},
-    "pillow": {"rotate_45": 255},
+    "opencv": {"rotate_45": 4, "warp_affine": 4},
+    "pillow": {"rotate_45": 255, "warp_affine": 255},
+    "pyvips": {"rotate_45": 255, "warp_affine": 255},
 }
 
-_GRAY_FIRST = {"threshold", "erode", "dilate", "histogram_equalize", "canny", "sobel_x"}
+_GRAY_FIRST = {
+    "threshold",
+    "erode",
+    "dilate",
+    "histogram_equalize",
+    "canny",
+    "sobel_x",
+} | {
+    "laplacian",
+    "morphology_open",
+    "morphology_close",
+    "morphology_gradient",
+}
 
 
 def _png(arr: np.ndarray) -> bytes:
@@ -185,6 +236,14 @@ def test_the_reference_and_polars_cv_compute_the_same_op(
         f"{ref} vs {engine}, {name}: max |diff| {diff.max()} > {tol} "
         f"({(diff > tol).mean():.1%} of values)"
     )
+
+
+def test_the_pyvips_adapter_disables_the_operation_cache() -> None:
+    """libvips caches recent operations by their arguments, so every timed
+    iteration after the first would time a cache hit, not the op."""
+    pyvips = pytest.importorskip("pyvips")
+    get_adapter("pyvips")
+    assert pyvips.cache_get_max() == 0
 
 
 @pytest.mark.parametrize("ref", REFERENCES)

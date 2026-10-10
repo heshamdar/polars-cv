@@ -461,6 +461,9 @@ def run_all_e2e_workflows(
                                         f"img/s",
                                         flush=True,
                                     )
+                        except NotImplementedError:
+                            print(" unsupported", flush=True)
+                            continue
                         except Exception as e:
                             if verbose:
                                 print(f" ERROR: {e}", flush=True)

@@ -1,0 +1,470 @@
+<title>polars-cv Benchmark Comparison</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&display=swap">
+<style>
+/* Layout: a spec-sheet header, one control bar, then summary -> matrix -> per-scenario
+   dot plots -> scaling -> method, in a single 1120px column. */
+:root {
+  --bg: #f6f7f8;
+  --surface: #ffffff;
+  --ink: #15181b;
+  --ink-2: #4a525a;
+  --ink-3: #737c85;
+  --rule: #dce0e4;
+  --rule-strong: #b9c0c7;
+  --accent: #2a78d6;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
+  --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
+  --h-r3: #b3302f; --h-r2: #e34948; --h-r1: #f5c0bd; --h-0: #ecebe7;
+  --h-b1: #c2dbf7; --h-b2: #5598e7; --h-b3: #1c5cab;
+  --h-ink-light: #ffffff; --h-ink-dark: #15181b;
+  --na: #eef0f2;
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111315; --surface: #181b1e; --ink: #eef0f2; --ink-2: #b6bdc4; --ink-3: #858e97;
+    --rule: #2a2f34; --rule-strong: #414850; --accent: #3987e5;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+    --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+    --h-r3: #f08a89; --h-r2: #c23f3e; --h-r1: #4f2423; --h-0: #2a2c2e;
+    --h-b1: #1c3555; --h-b2: #256abf; --h-b3: #7cb2f0;
+    --h-ink-light: #eef0f2; --h-ink-dark: #111315;
+    --na: #1f2326;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111315; --surface: #181b1e; --ink: #eef0f2; --ink-2: #b6bdc4; --ink-3: #858e97;
+  --rule: #2a2f34; --rule-strong: #414850; --accent: #3987e5;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+  --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+  --h-r3: #f08a89; --h-r2: #c23f3e; --h-r1: #4f2423; --h-0: #2a2c2e;
+  --h-b1: #1c3555; --h-b2: #256abf; --h-b3: #7cb2f0;
+  --h-ink-light: #eef0f2; --h-ink-dark: #111315;
+  --na: #1f2326;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.55 var(--font-body); margin: 0; }
+.page { max-width: 1120px; margin: 0 auto; padding-inline: 20px; padding-block: 32px 64px; display: grid; gap: 40px; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; letter-spacing: 0.005em; }
+h1 { font-size: clamp(28px, 4.4vw, 42px); line-height: 1.08; font-weight: 700; }
+h2 { font-size: 24px; line-height: 1.2; font-weight: 700; }
+h3 { font-size: 18px; font-weight: 600; }
+p { margin: 0; max-width: 68ch; }
+.muted { color: var(--ink-2); }
+.eyebrow { font: 500 12px/1 var(--font-data); text-transform: uppercase; letter-spacing: 0.12em; color: var(--ink-3); }
+section { display: grid; gap: 16px; min-width: 0; }
+.section-head { display: grid; gap: 6px; }
+
+/* Header spec sheet */
+header { display: grid; gap: 18px; }
+.spec { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); border-top: 2px solid var(--ink); border-bottom: 1px solid var(--rule); }
+.spec div { padding: 10px 12px 10px 0; display: grid; gap: 2px; min-width: 0; }
+.spec dt { font: 500 11px/1.2 var(--font-data); text-transform: uppercase; letter-spacing: 0.1em; color: var(--ink-3); }
+.spec dd { margin: 0; font: 400 13px/1.35 var(--font-data); overflow-wrap: anywhere; }
+
+/* Controls */
+.controls { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); padding-block: 10px; border-bottom: 1px solid var(--rule); display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; }
+.controls label { font: 500 12px var(--font-data); text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); display: flex; gap: 8px; align-items: center; }
+select { font: 500 14px var(--font-body); color: var(--ink); background: var(--surface); border: 1px solid var(--rule-strong); border-radius: 6px; padding: 6px 10px; }
+select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--ink-2); }
+.legend span { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+
+/* Headline tiles */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.tile { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 16px; display: grid; gap: 6px; align-content: start; }
+.tile .who { display: flex; gap: 8px; align-items: center; font-weight: 600; }
+.tile .big { font: 700 40px/1 var(--font-display); font-variant-numeric: tabular-nums; }
+.tile .verdict { font-size: 13px; color: var(--ink-2); }
+.tile .fine { font: 400 12px/1.4 var(--font-data); color: var(--ink-3); }
+
+/* Tables */
+.scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { padding: 6px 10px; text-align: right; white-space: nowrap; font-size: 13px; }
+th { font: 500 11px/1.2 var(--font-data); text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); border-bottom: 1px solid var(--rule-strong); vertical-align: bottom; }
+th:first-child, td:first-child { text-align: left; position: sticky; left: 0; background: var(--surface); }
+td.op { font: 400 13px var(--font-data); }
+tr.group td { font: 600 12px var(--font-data); text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-2); padding-top: 16px; border-bottom: 1px solid var(--rule); }
+td.heat { font-family: var(--font-data); border: 2px solid var(--surface); border-radius: 4px; min-width: 76px; }
+td.na { color: var(--ink-3); background: repeating-linear-gradient(45deg, var(--na), var(--na) 4px, transparent 4px, transparent 8px); text-align: center; }
+td.base { font-family: var(--font-data); color: var(--ink-2); }
+td.fastest { box-shadow: inset 0 -3px 0 var(--ink); }
+.scale-key { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font: 12px var(--font-data); color: var(--ink-2); }
+.scale-key i { display: inline-block; width: 34px; height: 14px; border-radius: 3px; }
+
+/* Scenario summary chips */
+.chip { display: inline-block; min-width: 58px; padding: 2px 8px; border-radius: 4px; font-family: var(--font-data); text-align: center; }
+
+/* Charts */
+.chart { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 12px 8px 4px; min-width: 0; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart text { fill: var(--ink-2); font: 12px var(--font-data); }
+.chart .axis line, .chart .grid line { stroke: var(--rule); }
+.chart .row-label { fill: var(--ink); }
+.chart .rowband { fill: var(--bg); }
+.chart .mark { stroke: var(--surface); stroke-width: 1.5; }
+.chart .hit { fill: transparent; cursor: default; }
+.chart .ref { stroke: var(--ink-3); stroke-dasharray: 4 3; }
+.tip { position: fixed; z-index: 10; pointer-events: none; background: var(--ink); color: var(--bg); font: 12px/1.45 var(--font-data); padding: 8px 10px; border-radius: 6px; max-width: 300px; box-shadow: 0 4px 14px rgb(0 0 0 / 0.18); }
+.tip b { font-weight: 500; }
+.scenario { display: grid; gap: 12px; }
+.method { display: grid; gap: 10px; }
+.method ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; max-width: 80ch; }
+code { font: 13px var(--font-data); }
+footer { font: 12px var(--font-data); color: var(--ink-3); }
+@media (max-width: 560px) {
+  .page { padding-inline: 16px; gap: 32px; }
+  .tile .big { font-size: 34px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .tile { transition: border-color .15s; }
+}
+</style>
+
+<div class="page">
+  <header>
+    <div class="eyebrow">polars-cv · comparison run</div>
+    <h1 id="headline">polars-cv against other image-processing libraries</h1>
+    <p class="muted" id="intro"></p>
+    <dl class="spec" id="spec"></dl>
+  </header>
+
+  <div class="controls">
+    <label for="config">Workload <select id="config"></select></label>
+    <div class="legend" id="legend" aria-label="Libraries"></div>
+  </div>
+
+  <section aria-labelledby="h-summary">
+    <div class="section-head">
+      <h2 id="h-summary">How much faster is polars-cv?</h2>
+      <p class="muted" id="summary-note"></p>
+    </div>
+    <div class="tiles" id="tiles"></div>
+    <div class="scroll"><table id="by-scenario"></table></div>
+  </section>
+
+  <section aria-labelledby="h-matrix">
+    <div class="section-head">
+      <h2 id="h-matrix">Every case, relative to polars-cv</h2>
+      <p class="muted">Each cell is polars-cv eager's throughput divided by that library's: above 1× polars-cv is faster. The first column is polars-cv's own throughput in images per second. An underlined cell is the fastest library for that row; a hatched cell is an operation the library has no call for. Hover a cell for absolute numbers.</p>
+      <div class="scale-key" id="scale-key"></div>
+    </div>
+    <div class="scroll"><table id="matrix"></table></div>
+  </section>
+
+  <div id="scenarios" style="display:grid;gap:40px"></div>
+
+  <section aria-labelledby="h-scaling" id="scaling-section">
+    <div class="section-head">
+      <h2 id="h-scaling">Speedup as the workload grows</h2>
+      <p class="muted">Geometric-mean speedup of polars-cv eager over each library across every workload in the run. The dashed line is parity.</p>
+    </div>
+    <div class="chart" id="scaling"></div>
+  </section>
+
+  <section class="method" aria-labelledby="h-method">
+    <h2 id="h-method">How this was measured</h2>
+    <ul id="method"></ul>
+  </section>
+
+  <footer id="footer"></footer>
+</div>
+<div class="tip" id="tip" hidden></div>
+
+<script id="report-data" type="application/json">__REPORT_DATA__</script>
+<script>
+(() => {
+  const D = JSON.parse(document.getElementById("report-data").textContent);
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const NAMES = {
+    "polars-cv-eager": "polars-cv (eager)", "polars-cv-streaming": "polars-cv (streaming)",
+    "opencv": "OpenCV", "pillow": "Pillow", "pyvips": "pyvips (libvips)",
+    "torchvision-cpu": "torchvision (CPU)", "torchvision-cuda": "torchvision (CUDA)", "torchvision-mps": "torchvision (MPS)",
+  };
+  const name = (fw) => NAMES[fw] || fw;
+  const color = (fw) => `var(--s${(D.frameworks.indexOf(fw) % 8) + 1})`;
+  const SHAPES = ["circle", "square", "diamond", "triangle", "triangle-down", "cross", "circle", "square"];
+  const shapeOf = (fw) => SHAPES[D.frameworks.indexOf(fw) % SHAPES.length];
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+  const fmtTp = (n) => n >= 10000 ? `${(n / 1000).toFixed(0)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : n >= 100 ? n.toFixed(0) : n >= 10 ? n.toFixed(1) : n.toFixed(2);
+  const fmtX = (r) => r >= 10 ? `${r.toFixed(0)}×` : `${r.toFixed(r >= 1 ? 2 : 2)}×`;
+  const opLabel = (op) => op.replace(/^workflow_/, "").replace(/^e2e_/, "");
+  const competitors = D.frameworks.filter((f) => f !== D.baseline);
+
+  // Diverging bins on log2(ratio): blue where polars-cv is faster, red where slower.
+  const BINS = [
+    {max: 0.25, v: "--h-r3", ink: "light", label: "≤0.25×"},
+    {max: 0.5, v: "--h-r2", ink: "light", label: "0.5×"},
+    {max: 0.8, v: "--h-r1", ink: "dark", label: "0.8×"},
+    {max: 1.25, v: "--h-0", ink: "dark", label: "≈1×"},
+    {max: 2, v: "--h-b1", ink: "dark", label: "1.25×"},
+    {max: 4, v: "--h-b2", ink: "light", label: "2×"},
+    {max: Infinity, v: "--h-b3", ink: "light", label: "≥4×"},
+  ];
+  const binOf = (r) => BINS.find((b) => r < b.max) || BINS[BINS.length - 1];
+  const heatStyle = (r) => { const b = binOf(r); return `background:var(${b.v});color:var(--h-ink-${b.ink})`; };
+
+  function marker(shape, x, y, r, fill) {
+    let el;
+    if (shape === "circle") { el = document.createElementNS(SVGNS, "circle"); el.setAttribute("cx", x); el.setAttribute("cy", y); el.setAttribute("r", r); }
+    else {
+      const k = r * 1.05;
+      const pts = {
+        square: [[-k, -k], [k, -k], [k, k], [-k, k]],
+        diamond: [[0, -k * 1.3], [k * 1.3, 0], [0, k * 1.3], [-k * 1.3, 0]],
+        triangle: [[0, -k * 1.3], [k * 1.2, k], [-k * 1.2, k]],
+        "triangle-down": [[0, k * 1.3], [k * 1.2, -k], [-k * 1.2, -k]],
+        cross: [[-k / 2.6, -k * 1.2], [k / 2.6, -k * 1.2], [k / 2.6, -k / 2.6], [k * 1.2, -k / 2.6], [k * 1.2, k / 2.6], [k / 2.6, k / 2.6], [k / 2.6, k * 1.2], [-k / 2.6, k * 1.2], [-k / 2.6, k / 2.6], [-k * 1.2, k / 2.6], [-k * 1.2, -k / 2.6], [-k / 2.6, -k / 2.6]],
+      }[shape];
+      el = document.createElementNS(SVGNS, "polygon");
+      el.setAttribute("points", pts.map(([dx, dy]) => `${x + dx},${y + dy}`).join(" "));
+    }
+    el.setAttribute("fill", fill);
+    el.setAttribute("class", "mark");
+    return el;
+  }
+  const swatch = (fw, size = 12) => {
+    const svg = document.createElementNS(SVGNS, "svg");
+    svg.setAttribute("width", size); svg.setAttribute("height", size); svg.setAttribute("viewBox", "0 0 12 12"); svg.setAttribute("aria-hidden", "true");
+    const m = marker(shapeOf(fw), 6, 6, 4.2, color(fw)); m.removeAttribute("class"); svg.appendChild(m);
+    return svg.outerHTML;
+  };
+  const el = (tag, attrs = {}, text) => {
+    const e = document.createElementNS(SVGNS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    if (text !== undefined) e.textContent = text;
+    return e;
+  };
+
+  // Tooltip
+  const tip = $("tip");
+  const showTip = (ev, html) => {
+    tip.innerHTML = html; tip.hidden = false;
+    const pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
+    let x = ev.clientX + pad, y = ev.clientY + pad;
+    if (x + w > innerWidth - 8) x = ev.clientX - w - pad;
+    if (y + h > innerHeight - 8) y = ev.clientY - h - pad;
+    tip.style.left = `${Math.max(8, x)}px`; tip.style.top = `${Math.max(8, y)}px`;
+  };
+  const hideTip = () => { tip.hidden = true; };
+  const cellTip = (op, fw, c) => {
+    const desc = D.descriptions[op] ? `<br>${esc(D.descriptions[op])}` : "";
+    if (!c) return `<b>${esc(name(fw))}</b> · ${esc(opLabel(op))}${desc}<br>No equivalent call: not run`;
+    const rel = c.ratio == null ? "" : fw === D.baseline ? "" : `<br>polars-cv ${c.ratio >= 1 ? `${fmtX(c.ratio)} faster` : `${fmtX(1 / c.ratio)} slower`}`;
+    return `<b>${esc(name(fw))}</b> · ${esc(opLabel(op))}${desc}<br>${fmtTp(c.throughput)} img/s · ${c.latency_ms.toFixed(3)} ms/img<br>peak RSS growth ${c.memory_mb.toFixed(1)} MB${rel}`;
+  };
+
+  // Header
+  const M = D.meta || {};
+  $("headline").textContent = `polars-cv against ${competitors.filter((f) => !f.startsWith("polars-cv")).map(name).join(", ").replace(/, ([^,]*)$/, " and $1")}`;
+  $("intro").textContent = "Throughput of the same image operations, pipelines and multi-branch workflows across libraries, on one machine. Every library computes the same result: the suite's parity tests hold each implementation to polars-cv's output within a stated tolerance.";
+  const versions = M.versions || {};
+  const spec = [
+    ["Run", M.date], ["Commit", M.commit ? `${M.commit}${M.dirty ? " + local changes" : ""}` : null],
+    ["CPU", M.cpu], ["Cores", M.cores], ["Python", M.python], ["Platform", M.platform],
+    ["Timing", M.iterations ? `${M.warmup} warmup + mean of ${M.iterations} runs` : null],
+    ["Libraries", Object.entries(versions).map(([k, v]) => `${k} ${v}`).join(" · ")],
+  ].filter(([, v]) => v !== null && v !== undefined && v !== "");
+  $("spec").innerHTML = spec.map(([k, v]) => `<div${k === "Libraries" ? ' style="grid-column:1/-1"' : ""}><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("");
+
+  // Controls
+  const sel = $("config");
+  sel.innerHTML = D.configs.map((c, i) => `<option value="${i}">${esc(c.key)}</option>`).join("");
+  let stored = null;
+  try { stored = localStorage.getItem("pcv-report-config"); } catch (e) { /* storage unavailable */ }
+  const largest = D.configs.reduce((best, c, i) => (c.size * c.count > D.configs[best].size * D.configs[best].count ? i : best), 0);
+  sel.value = stored !== null && D.configs[+stored] ? stored : String(largest);
+  $("legend").innerHTML = D.frameworks.map((fw) => `<span>${swatch(fw)}${esc(name(fw))}</span>`).join("");
+  $("scale-key").innerHTML = "polars-cv slower " + BINS.map((b) => `<i style="background:var(${b.v})" title="${esc(b.label)}"></i>`).join("") + " polars-cv faster";
+
+  const ratioChip = (r) => r == null ? "—" : `<span class="chip" style="${heatStyle(r)}">${fmtX(r)}</span>`;
+
+  function renderSummary(key) {
+    const sp = D.speedups[key] || [];
+    $("summary-note").textContent = sp.length
+      ? "Geometric mean of polars-cv eager's speedup over every case both libraries ran in this workload. polars-cv streaming is listed as a library of its own."
+      : "No library shares a case with polars-cv eager in this workload.";
+    $("tiles").innerHTML = sp.map((s) => {
+      const faster = s.geomean >= 1;
+      return `<div class="tile">
+        <div class="who">${swatch(s.framework, 14)}${esc(name(s.framework))}</div>
+        <div class="big">${fmtX(faster ? s.geomean : 1 / s.geomean)}</div>
+        <div class="verdict">${faster ? "polars-cv is faster" : `${esc(name(s.framework))} is faster`}</div>
+        <div class="fine">polars-cv faster in ${s.wins} of ${s.cases} cases<br>range ${fmtX(s.min)} – ${fmtX(s.max)}</div>
+      </div>`;
+    }).join("");
+    const byS = D.scenario_speedups[key] || {};
+    const fws = competitors.filter((fw) => Object.values(byS).some((list) => list.some((s) => s.framework === fw)));
+    $("by-scenario").innerHTML = `<thead><tr><th>Scenario</th>${fws.map((fw) => `<th>${esc(name(fw))}</th>`).join("")}</tr></thead><tbody>` +
+      D.scenarios.filter((s) => byS[s.key]).map((s) => `<tr><td>${esc(s.title)}</td>${fws.map((fw) => {
+        const hit = byS[s.key].find((x) => x.framework === fw);
+        return `<td title="${hit ? `${hit.cases} cases` : "no shared cases"}">${hit ? ratioChip(hit.geomean) : "—"}</td>`;
+      }).join("")}</tr>`).join("") + "</tbody>";
+  }
+
+  function renderMatrix(key) {
+    const t = D.tables[key] || {};
+    let html = `<thead><tr><th>Case</th><th>polars-cv<br>img/s</th>${competitors.map((fw) => `<th>${esc(name(fw))}</th>`).join("")}</tr></thead><tbody>`;
+    for (const s of D.scenarios) {
+      if (!t[s.key]) continue;
+      html += `<tr class="group"><td colspan="${competitors.length + 2}">${esc(s.title)}</td></tr>`;
+      for (const row of t[s.key]) {
+        const base = row.cells[D.baseline];
+        html += `<tr><td class="op">${esc(opLabel(row.op))}</td>`;
+        html += base ? `<td class="base${row.fastest === D.baseline ? " fastest" : ""}" data-op="${esc(row.op)}" data-fw="${esc(D.baseline)}">${fmtTp(base.throughput)}</td>` : `<td class="na">—</td>`;
+        for (const fw of competitors) {
+          const c = row.cells[fw];
+          const fastest = row.fastest === fw ? " fastest" : "";
+          if (!c) html += `<td class="na" data-op="${esc(row.op)}" data-fw="${esc(fw)}">n/a</td>`;
+          else if (c.ratio == null) html += `<td class="base${fastest}" data-op="${esc(row.op)}" data-fw="${esc(fw)}">${fmtTp(c.throughput)}</td>`;
+          else html += `<td class="heat${fastest}" style="${heatStyle(c.ratio)}" data-op="${esc(row.op)}" data-fw="${esc(fw)}">${fmtX(c.ratio)}</td>`;
+        }
+        html += "</tr>";
+      }
+    }
+    $("matrix").innerHTML = html + "</tbody>";
+    $("matrix").onpointermove = (ev) => {
+      const td = ev.target.closest("td[data-fw]");
+      if (!td) return hideTip();
+      const row = Object.values(t).flat().find((r) => r.op === td.dataset.op);
+      showTip(ev, cellTip(td.dataset.op, td.dataset.fw, row && row.cells[td.dataset.fw]));
+    };
+    $("matrix").onpointerleave = hideTip;
+  }
+
+  // Dot plot: one row per case, one marker per library on a log throughput axis.
+  function dotPlot(container, rows) {
+    container.innerHTML = "";
+    const W = Math.max(320, container.clientWidth - 16);
+    const narrow = W < 560;
+    const left = narrow ? 118 : 178, right = 16, top = 44, rowH = 24;
+    const H = top + rows.length * rowH + 8;
+    const vals = rows.flatMap((r) => D.frameworks.map((fw) => r.cells[fw]).filter(Boolean).map((c) => c.throughput)).filter((v) => v > 0);
+    if (!vals.length) return;
+    const lo = Math.pow(10, Math.floor(Math.log10(Math.min(...vals))));
+    const hi = Math.pow(10, Math.ceil(Math.log10(Math.max(...vals))));
+    const x = (v) => left + (Math.log10(v) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo)) * (W - left - right);
+    const svg = el("svg", {viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Throughput per case and library, images per second, log scale"});
+    rows.forEach((r, i) => { if (i % 2 === 0) svg.appendChild(el("rect", {x: 0, y: top + i * rowH, width: W, height: rowH, class: "rowband"})); });
+    const grid = el("g", {class: "grid"});
+    for (let d = lo; d <= hi * 1.0001; d *= 10) {
+      grid.appendChild(el("line", {x1: x(d), x2: x(d), y1: top - 4, y2: H - 8}));
+      const lbl = el("text", {x: x(d), y: top - 10, "text-anchor": "middle"}, `${fmtTp(d)}`);
+      grid.appendChild(lbl);
+    }
+    svg.appendChild(grid);
+    svg.appendChild(el("text", {x: left, y: top - 28}, "images per second →"));
+    rows.forEach((r, i) => {
+      const cy = top + i * rowH + rowH / 2;
+      const label = opLabel(r.op);
+      svg.appendChild(el("text", {x: left - 8, y: cy + 4, "text-anchor": "end", class: "row-label"}, narrow && label.length > 15 ? `${label.slice(0, 14)}…` : label));
+      const present = D.frameworks.filter((fw) => r.cells[fw]);
+      const xs = present.map((fw) => x(r.cells[fw].throughput));
+      if (xs.length > 1) svg.appendChild(el("line", {x1: Math.min(...xs), x2: Math.max(...xs), y1: cy, y2: cy, stroke: "var(--rule-strong)", "stroke-width": 2}));
+      // Draw the baseline last so it sits on top.
+      [...present].sort((a, b) => (a === D.baseline) - (b === D.baseline)).forEach((fw) => {
+        const cx = x(r.cells[fw].throughput);
+        svg.appendChild(marker(shapeOf(fw), cx, cy, fw === D.baseline ? 6 : 5, color(fw)));
+        const hit = el("circle", {cx, cy, r: 10, class: "hit"});
+        hit.addEventListener("pointermove", (ev) => showTip(ev, cellTip(r.op, fw, r.cells[fw])));
+        hit.addEventListener("pointerleave", hideTip);
+        svg.appendChild(hit);
+      });
+    });
+    container.appendChild(svg);
+  }
+
+  function renderScenarios(key) {
+    const host = $("scenarios");
+    host.innerHTML = "";
+    const t = D.tables[key] || {};
+    for (const s of D.scenarios) {
+      if (!t[s.key] || !t[s.key].length) continue;
+      const sec = document.createElement("section");
+      sec.className = "scenario";
+      sec.innerHTML = `<div class="section-head"><div class="eyebrow">Throughput · log scale</div><h2>${esc(s.title)}</h2><p class="muted">${esc(s.blurb)} Further right is faster; a missing marker is an operation that library has no call for.</p></div><div class="chart"></div>`;
+      host.appendChild(sec);
+      dotPlot(sec.querySelector(".chart"), t[s.key]);
+    }
+  }
+
+  function renderScaling() {
+    const host = $("scaling");
+    if (D.configs.length < 2) { $("scaling-section").hidden = true; return; }
+    host.innerHTML = "";
+    const series = competitors.map((fw) => ({fw, pts: D.configs.map((c, i) => {
+      const s = (D.speedups[c.key] || []).find((x) => x.framework === fw);
+      return s ? {i, v: s.geomean, s} : null;
+    }).filter(Boolean)})).filter((s) => s.pts.length);
+    const vals = series.flatMap((s) => s.pts.map((p) => p.v)).concat([1]);
+    const W = Math.max(320, host.clientWidth - 16), H = 300;
+    const left = 52, right = W < 560 ? 16 : 150, top = 16, bottom = 54;
+    const lo = Math.min(...vals) / 1.15, hi = Math.max(...vals) * 1.15;
+    const x = (i) => left + (D.configs.length === 1 ? 0.5 : i / (D.configs.length - 1)) * (W - left - right);
+    const y = (v) => top + (Math.log(hi) - Math.log(v)) / (Math.log(hi) - Math.log(lo)) * (H - top - bottom);
+    const svg = el("svg", {viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Geometric-mean speedup per workload, log scale"});
+    const ticks = [0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64].filter((t) => t >= lo && t <= hi);
+    const g = el("g", {class: "grid"});
+    for (const t of ticks) { g.appendChild(el("line", {x1: left, x2: W - right, y1: y(t), y2: y(t)})); g.appendChild(el("text", {x: left - 8, y: y(t) + 4, "text-anchor": "end"}, `${t}×`)); }
+    svg.appendChild(g);
+    svg.appendChild(el("line", {x1: left, x2: W - right, y1: y(1), y2: y(1), class: "ref"}));
+    D.configs.forEach((c, i) => {
+      const [a, b] = c.key.split(" · ");
+      svg.appendChild(el("text", {x: x(i), y: H - bottom + 20, "text-anchor": "middle"}, a));
+      svg.appendChild(el("text", {x: x(i), y: H - bottom + 36, "text-anchor": "middle"}, b));
+    });
+    for (const s of series) {
+      svg.appendChild(el("polyline", {points: s.pts.map((p) => `${x(p.i)},${y(p.v)}`).join(" "), fill: "none", stroke: color(s.fw), "stroke-width": 2, "stroke-linejoin": "round"}));
+      for (const p of s.pts) {
+        svg.appendChild(marker(shapeOf(s.fw), x(p.i), y(p.v), 4.5, color(s.fw)));
+        const hit = el("circle", {cx: x(p.i), cy: y(p.v), r: 11, class: "hit"});
+        hit.addEventListener("pointermove", (ev) => showTip(ev, `<b>${esc(name(s.fw))}</b> · ${esc(D.configs[p.i].key)}<br>polars-cv ${p.v >= 1 ? `${fmtX(p.v)} faster` : `${fmtX(1 / p.v)} slower`} (geomean)<br>faster in ${p.s.wins} of ${p.s.cases} cases`));
+        hit.addEventListener("pointerleave", hideTip);
+        svg.appendChild(hit);
+      }
+    }
+    if (right > 100) {
+      // End labels, pushed apart so none overlaps the one above it.
+      const ends = series.map((s) => ({fw: s.fw, last: s.pts[s.pts.length - 1]}))
+        .map((e) => ({...e, ly: y(e.last.v) + 4})).sort((a, b) => a.ly - b.ly);
+      for (let i = 1; i < ends.length; i++) ends[i].ly = Math.max(ends[i].ly, ends[i - 1].ly + 14);
+      for (const e of ends) svg.appendChild(el("text", {x: x(e.last.i) + 10, y: e.ly, class: "row-label"}, name(e.fw)));
+    }
+    host.appendChild(svg);
+  }
+
+  // Method
+  const method = [
+    `Each case runs ${M.warmup ?? "several"} untimed warmup passes, then the mean of ${M.iterations ?? "several"} timed passes over the whole batch. Throughput is images per second over that batch.`,
+    "Single operations and pipelines start from images already decoded into each library's native form (a NumPy array, a PIL image, a libvips image in memory, a polars-cv VIEW blob in a DataFrame), so decoding is not timed. Workflows and end-to-end cases start from encoded PNG bytes or files, and decoding is timed.",
+    "polars-cv runs each batch as one Polars expression, so rows are spread across all cores. OpenCV, Pillow and pyvips run as a Python loop over images, as their users typically write them; OpenCV and libvips use their own internal threads within an image, Pillow does not.",
+    "pyvips's operation cache is disabled and every result is materialised in memory, otherwise libvips's lazy evaluation would time a cache hit or only the building of its graph. libvips pays a fixed cost each time it evaluates a pipeline (it is built to stream very large images through small tiles), so per-image loops over small images are its least favourable case; its gap narrows as images grow.",
+    "Every single-op benchmark and workflow is held to polars-cv's output by <code>tests/test_benchmark_adapters.py</code> and <code>tests/test_benchmark_workflows.py</code>, each library within a stated per-pixel tolerance, so the libraries compare the same work. Operations a library has no equivalent call for are not run (n/a) rather than approximated.",
+    "Peak memory is the growth of the process's resident set during a timed pass, sampled every 10 ms; it is coarse for short passes.",
+    "These are the numbers of one machine and one run. Re-run with <code>python -m benchmarks.run_benchmarks --html report.html</code> against a <code>maturin develop --profile benchmark</code> build.",
+  ];
+  $("method").innerHTML = method.map((m) => `<li>${m}</li>`).join("");
+  $("footer").textContent = `Generated by benchmarks/report.py${M.commit ? ` at ${M.commit}` : ""}.`;
+
+  function render() {
+    const key = D.configs[+sel.value] ? D.configs[+sel.value].key : null;
+    if (!key) return;
+    renderSummary(key);
+    renderMatrix(key);
+    renderScenarios(key);
+    renderScaling();
+  }
+  sel.addEventListener("change", () => { try { localStorage.setItem("pcv-report-config", sel.value); } catch (e) { /* storage unavailable */ } render(); });
+  let resizeTimer;
+  addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 150); });
+  render();
+})();
+</script>

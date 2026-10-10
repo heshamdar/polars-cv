@@ -103,6 +103,25 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Internal
 
+- **Benchmarks: pyvips, the newer ops, multi-branch workflows and an HTML
+  report.** The comparison suite gains a `pyvips` (libvips) adapter, with its
+  operation cache disabled and every result materialised, so a timed pass is
+  neither a cache hit nor only the building of libvips's lazy graph. Nine
+  newer ops join the single-op benchmarks (`letterbox`, `adjust_gamma`,
+  `to_hsv`, `laplacian`, `morphology_open`/`close`/`gradient`,
+  `warp_affine`, a 5x5 `convolve2d`), four pipelines are built from them,
+  and a `workflows` scenario times graphs that branch and rejoin (one decode
+  feeding a tensor, a thumbnail and a statistic; unsharp masking;
+  mask-gated statistics; mask to contours to areas), written once per
+  library and held to polars-cv's result by `test_benchmark_workflows.py`.
+  `test_benchmark_adapters.py` now holds pyvips to polars-cv as it does OpenCV
+  and Pillow, and pyvips joins the `dev` group so CI runs those rows.
+  `run_benchmarks --save-json/--html` writes a run and a self-contained
+  report, `python -m benchmarks.report` re-renders and merges saved runs, and
+  `run_benchmarks` refuses a debug extension as `run_suite` does. The Pillow
+  adapter now decodes when preparing pre-decoded images: `Image.open` is
+  lazy, so the first timed pass over each image paid its PNG decode.
+  First run: `benchmarks/reports/2026-10-10-library-comparison`.
 - **Per-value conversions run through `core::map`.** The u8 conversion of the
   image ops working in u8 (`ImageU8`), `apply_mask`'s mask inversion and its
   2-D mask expansion (a stride-0 broadcast, packed or mapped), and the ranged

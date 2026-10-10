@@ -11,8 +11,15 @@ This directory contains a comprehensive benchmarking suite for comparing polars-
 
 ### What the benchmarks test:
 - Batch image decoding and preprocessing
-- Single operations (20 benchmarks: resize, grayscale, normalize, flip_horizontal, flip_vertical, crop_center, blur, threshold, rotate_90, rotate_45, invert, adjust_contrast, adjust_brightness, sharpen, pad, erode, dilate, histogram_equalize, canny, sobel_x). The authority is `get_single_op_benchmarks()` in `scenarios/single_ops.py`; `test_benchmark_list_is_current` pins this sentence to it.
-- Multi-operation pipelines (light, medium, heavy)
+- Single operations (29 benchmarks: resize, grayscale, normalize, flip_horizontal, flip_vertical, crop_center, blur, threshold, rotate_90, rotate_45, invert, adjust_contrast, adjust_brightness, sharpen, pad, erode, dilate, histogram_equalize, canny, sobel_x, letterbox, adjust_gamma, to_hsv, laplacian, morphology_open, morphology_close, morphology_gradient, warp_affine, convolve2d_5x5). The authority is `get_single_op_benchmarks()` in `scenarios/single_ops.py`; `test_benchmark_list_is_current` pins this sentence to it.
+- Multi-operation pipelines (light, medium, heavy), including detector
+  letterboxing, document binarization, affine + photometric and edge-outline
+  chains built from the newer ops
+- Multi-branch workflows (`scenarios/workflows.py`): graphs that branch and
+  rejoin — one decode feeding a tensor, a thumbnail and a statistic; unsharp
+  masking; mask-gated statistics; mask → contours → areas — written once per
+  library in its own idiom, from encoded bytes, and held to polars-cv's result
+  by `tests/test_benchmark_workflows.py`
 - End-to-end file-to-memory workflows
 - Zero-copy ingestion performance
 - The remote (`file_path`) fetch stage, against a loopback HTTP server —
@@ -37,6 +44,8 @@ benchmarks/
 ├── __init__.py
 ├── conftest.py                     # BenchmarkConfig, pytest CLI options
 ├── run_benchmarks.py               # CLI entry point
+├── report.py                       # Saved run -> HTML comparison report (all arithmetic)
+├── report_template.html            # The report page (draws what report.py computed)
 ├── inference_pipeline_comparison.py # Inference-focused comparisons
 ├── batch_throughput.py             # Batch decode/preprocess throughput benchmarks
 ├── plugin_overhead.py              # Per-call plugin/dispatch overhead measurement
@@ -46,12 +55,14 @@ benchmarks/
 │   ├── polars_cv_adapter.py        # polars-cv (eager + streaming)
 │   ├── opencv_adapter.py           # OpenCV adapter
 │   ├── pillow_adapter.py           # PIL/Pillow adapter
+│   ├── pyvips_adapter.py           # pyvips (libvips) adapter
 │   └── torchvision_adapter.py      # torchvision (CPU + MPS)
 ├── scenarios/                      # Benchmark scenarios
 │   ├── single_ops.py               # Individual operation benchmarks
 │   ├── pipelines.py                # Multi-op pipeline benchmarks
 │   ├── e2e_workflow.py             # End-to-end file-to-memory
 │   ├── zero_copy_ingestion.py      # Zero-copy path benchmarks
+│   ├── workflows.py                # Multi-branch workflows, one implementation per library
 │   ├── remote_source.py            # Remote/cloud fetch path (loopback HTTP)
 │   └── targeted.py                 # Geometry, tensor sinks, codecs, blob (direct, eager)
 ├── utils/                          # Shared utilities
@@ -79,6 +90,7 @@ benchmarks/
 | `polars-cv-streaming` | polars-cv with `.collect(engine="streaming")` |
 | `opencv` | NumPy + OpenCV (industry standard baseline) |
 | `pillow` | PIL/Pillow |
+| `pyvips` | libvips through pyvips (demand-driven, tiled, threaded); operation cache disabled, every result materialised |
 | `torchvision-cpu` | torchvision on CPU |
 | `torchvision-mps` | torchvision on Apple Metal GPU |
 
@@ -109,6 +121,13 @@ uv run --no-sync python -m benchmarks.run_benchmarks --frameworks polars-cv-eage
 # With validation (compare outputs against OpenCV reference)
 uv run --no-sync python -m benchmarks.run_benchmarks --validate
 
+# The comparison report: every scenario, all libraries, saved and rendered
+uv run --no-sync python -m benchmarks.run_benchmarks \
+    --sizes 256,512,1024 --counts 200 --warmup 2 --iterations 5 \
+    --save-json run.json --html report.html
+# Re-render a saved run (e.g. after changing the page)
+uv run --no-sync python -m benchmarks.report run.json -o report.html
+
 # Custom sizes and counts (comma-separated)
 uv run --no-sync python -m benchmarks.run_benchmarks --counts 100,500 --sizes 256,512,1024
 ```
@@ -118,7 +137,7 @@ uv run --no-sync python -m benchmarks.run_benchmarks --counts 100,500 --sizes 25
 ### Adapter Pattern
 
 Each framework implements `BaseFrameworkAdapter` (in `frameworks/base.py`) which provides a consistent interface for:
-- Single operations (20 benchmarks covering spatial, intensity, morphological, and edge detection operations)
+- Single operations (benchmarks covering spatial, intensity, morphological, and edge detection operations)
 - Pipeline execution (chained operations)
 - End-to-end workflows (decode → process → encode)
 
@@ -142,7 +161,7 @@ Defined in `conftest.py`. Controls image counts, sizes, warmup/iterations, and o
 
 A benchmark compares frameworks doing the *same* work.
 `tests/test_benchmark_adapters.py` runs every single-op benchmark through the
-OpenCV and Pillow adapters and both polars-cv engines, and holds each pair to a
+OpenCV, Pillow and pyvips adapters and both polars-cv engines, and holds each pair to a
 stated per-pixel tolerance — or lists the op as unsupported by that library,
 whose adapter must then raise `NotImplementedError`. Adding a single-op
 benchmark means adding its row there; an op missing from the tables fails.
