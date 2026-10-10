@@ -5,9 +5,12 @@
 //! H in [0, 180); u16/u32/u64 0..MAX with a full-range hue; floats [0, 1]
 //! with H in degrees. Signed integers have no colour range.
 
+use std::mem::MaybeUninit;
+
 use crate::core::buffer::ViewBuffer;
 use crate::core::convert::CastFrom;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
+use crate::core::map::{map_pixels, PixelMap};
 use crate::ops::shape_rule::OpShape;
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
@@ -570,14 +573,48 @@ fn convert_ranged(buf: &ViewBuffer, op: &ColorConvertOp, out_dtype: DType) -> Vi
     let wrap = (op.to_space == ColorSpace::Hsv && DTypeCategory::Integer.accepts(out_dtype))
         .then(|| out_range.hue_period())
         .flatten();
-    let mut out: Vec<f64> = Vec::with_capacity(h * w * out_c);
-    // Pixel runs read where they lie: an f64 input's cast is the input itself,
-    // so packing it first was a second copy of a view.
-    crate::core::map::for_each_pixel_run::<f64>(&buf.cast(DType::F64), in_c, |run| {
-        for px in run.chunks_exact(in_c) {
-            let rgb = decode_rgb(op.from_space, px, &in_range, scale);
-            let mut v = encode(op.to_space, rgb, scale, &out_range);
-            if let Some(period) = wrap {
+    let map = Ranged {
+        from: op.from_space,
+        to: op.to_space,
+        in_range,
+        out_range,
+        scale,
+        wrap,
+    };
+    // A pixel map (`core::map`), so a view is read where it lies: an f64
+    // input's cast is the input itself.
+    let src = buf.cast(DType::F64);
+    let out = match (in_c, out_c) {
+        (1, 1) => map_pixels::<f64, f64, 1, 1, _>(&src, &map),
+        (1, 3) => map_pixels::<f64, f64, 1, 3, _>(&src, &map),
+        (3, 1) => map_pixels::<f64, f64, 3, 1, _>(&src, &map),
+        (3, 3) => map_pixels::<f64, f64, 3, 3, _>(&src, &map),
+        (i, o) => unreachable!("a colour space has 1 or 3 channels, not {i} or {o}"),
+    };
+    debug_assert_eq!(out.shape(), [h, w, out_c]);
+    out.cast(out_dtype)
+}
+
+/// [`convert_ranged`]'s per-pixel conversion: decode to RGB in the input's
+/// range, encode the target in the output's, in f64.
+struct Ranged {
+    from: ColorSpace,
+    to: ColorSpace,
+    in_range: ColorRange,
+    out_range: ColorRange,
+    scale: f64,
+    /// The hue period an integer HSV output wraps at.
+    wrap: Option<f64>,
+}
+
+// SAFETY: `map_into` writes all `O` slots of every output pixel.
+unsafe impl<const C: usize, const O: usize> PixelMap<f64, f64, C, O> for Ranged {
+    #[inline(always)]
+    fn map_into(&self, src: &[[f64; C]], dst: &mut [MaybeUninit<f64>]) {
+        for (px, out) in src.iter().zip(dst.as_chunks_mut::<O>().0) {
+            let rgb = decode_rgb(self.from, px, &self.in_range, self.scale);
+            let mut v = encode(self.to, rgb, self.scale, &self.out_range);
+            if let Some(period) = self.wrap {
                 let rounded = v[0].round();
                 v[0] = if rounded >= period {
                     rounded - period
@@ -585,10 +622,11 @@ fn convert_ranged(buf: &ViewBuffer, op: &ColorConvertOp, out_dtype: DType) -> Vi
                     rounded
                 };
             }
-            out.extend_from_slice(&v[..out_c]);
+            for (o, &x) in out.iter_mut().zip(&v[..O]) {
+                o.write(x);
+            }
         }
-    });
-    ViewBuffer::from_vec_with_shape(out, vec![h, w, out_c]).cast(out_dtype)
+    }
 }
 
 // =============================================================================

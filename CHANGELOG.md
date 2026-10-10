@@ -96,6 +96,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Internal
 
+- **Per-value conversions run through `core::map`.** The u8 conversion of the
+  image ops working in u8 (`ImageU8`), `apply_mask`'s mask inversion and its
+  2-D mask expansion (a stride-0 broadcast, packed or mapped), and the ranged
+  `convert_color` (`PixelMap` now has an output width: `Ranged` maps 1 or 3
+  channels to 1 or 3) are element and pixel maps: dispatched, reading any
+  view in its walk's runs. `for_each_pixel_run`, their side channel, is gone.
 - **`MemoryEffect::PacksOwnRows`** for a kernel that reads packed rows in
   place and packs any other layout itself: the resizes and letterbox (which
   declared `StridePreserving`, though they pack a transpose or a horizontal

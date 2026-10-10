@@ -54,17 +54,17 @@ pub(crate) trait ElementMapInPlace<T: ViewType>: ElementMap<T, T> {
     fn map_in_place(&self, data: &mut [T]);
 }
 
-/// A map from each `C`-element pixel of `S` to one value of `D`.
+/// A map from each `C`-element pixel of `S` to an `O`-element pixel of `D`
+/// (grayscale: 3 to 1; a colour space conversion: 3 to 3, 1 to 3, …).
 ///
 /// # Safety
 /// As [`ElementMap`]: [`map_into`](Self::map_into) initialises all of `dst`.
-#[cfg(feature = "image_interop")] // Grayscale, its one user, needs it.
-pub(crate) unsafe trait PixelMap<S: ViewType, D: ViewType, const C: usize>:
+pub(crate) unsafe trait PixelMap<S: ViewType, D: ViewType, const C: usize, const O: usize>:
     Sync
 {
-    /// Write the map of `src[i]` to `dst[i]` for every pixel `i` (`dst` is
-    /// exactly as long as `src`). `#[inline(always)]`, as
-    /// [`ElementMap::map_into`].
+    /// Write the map of pixel `src[i]` to `dst[i * O..(i + 1) * O]` for every
+    /// pixel `i` (`dst` is exactly `O` times as long as `src`).
+    /// `#[inline(always)]`, as [`ElementMap::map_into`].
     fn map_into(&self, src: &[[S; C]], dst: &mut [MaybeUninit<D>]);
 }
 
@@ -113,16 +113,19 @@ where
 }
 
 /// `map` of every `C`-element pixel of `buf`, whose last axis holds its `C`
-/// channels, in a new packed buffer of `buf`'s shape with that axis of size 1.
+/// channels, in a new packed buffer of `buf`'s shape with that axis of size
+/// `O`.
 ///
 /// # Panics
 /// Panics unless `buf`'s last axis has `C` elements.
-#[cfg(feature = "image_interop")] // Grayscale, its one user, needs it.
-pub(crate) fn map_pixels<S, D, const C: usize, M>(buf: &ViewBuffer, map: &M) -> ViewBuffer
+pub(crate) fn map_pixels<S, D, const C: usize, const O: usize, M>(
+    buf: &ViewBuffer,
+    map: &M,
+) -> ViewBuffer
 where
     S: ViewType,
     D: ViewType,
-    M: PixelMap<S, D, C>,
+    M: PixelMap<S, D, C, O>,
 {
     let mut shape = Dims::from_slice(buf.shape());
     let channels = shape.last_mut().expect("a pixel map reads a channel axis");
@@ -130,8 +133,8 @@ where
         *channels, C,
         "map_pixels: a {C}-channel map over {channels} channels"
     );
-    *channels = 1;
-    let out = dispatch(MapPixels::<S, D, C, M> {
+    *channels = O;
+    let out = dispatch(MapPixels::<S, D, C, O, M> {
         buf,
         map,
         _types: PhantomData,
@@ -151,24 +154,6 @@ pub(crate) fn for_each_run<T: ViewType>(buf: &ViewBuffer, mut f: impl FnMut(&[T]
         f(buf.as_slice::<T>());
     } else {
         Walk::of(buf).for_each_run::<T>(1, &mut f);
-    }
-}
-
-/// [`for_each_run`] in whole pixels of `channels` elements: every run holds
-/// a whole number of them, whatever the layout (a short unit is packed into a
-/// stack scratch first), so a pixel never straddles two runs.
-///
-/// # Panics
-/// Panics if `T` is not `buf`'s dtype, or its elements are not whole pixels.
-pub(crate) fn for_each_pixel_run<T: ViewType>(
-    buf: &ViewBuffer,
-    channels: usize,
-    mut f: impl FnMut(&[T]),
-) {
-    if buf.layout.is_contiguous() {
-        f(buf.as_slice::<T>());
-    } else {
-        Walk::of(buf).for_each_run::<T>(channels, &mut f);
     }
 }
 
@@ -199,34 +184,32 @@ impl<S: ViewType, D: ViewType, M: ElementMap<S, D>> RunSink<S> for MapRuns<'_, S
 }
 
 /// The runs of a walk, whole `C`-element pixels, written through a pixel
-/// map into consecutive output slots.
-#[cfg(feature = "image_interop")] // Grayscale, its one user, needs it.
-struct PixelRuns<'a, S, D, const C: usize, M> {
+/// map into consecutive `O`-element output pixels.
+struct PixelRuns<'a, S, D, const C: usize, const O: usize, M> {
     map: &'a M,
     dst: &'a mut [MaybeUninit<D>],
     at: usize,
     _source: PhantomData<fn(S)>,
 }
 
-#[cfg(feature = "image_interop")] // Grayscale, its one user, needs it.
-impl<S, D, const C: usize, M> RunSink<S> for PixelRuns<'_, S, D, C, M>
+impl<S, D, const C: usize, const O: usize, M> RunSink<S> for PixelRuns<'_, S, D, C, O, M>
 where
     S: ViewType,
     D: ViewType,
-    M: PixelMap<S, D, C>,
+    M: PixelMap<S, D, C, O>,
 {
     #[inline(always)]
     fn take(&mut self, run: &[S]) {
         let run = pixels::<S, C>(run);
         let at = self.at;
-        self.map.map_into(run, &mut self.dst[at..at + run.len()]);
+        self.map
+            .map_into(run, &mut self.dst[at * O..(at + run.len()) * O]);
         self.at = at + run.len();
     }
 }
 
 /// `run` as whole `C`-element pixels: every run a pixel map is handed is a
 /// whole number of them.
-#[cfg(feature = "image_interop")] // Grayscale, its one user, needs it.
 #[inline(always)]
 fn pixels<S, const C: usize>(run: &[S]) -> &[[S; C]] {
     let (pixels, rest) = run.as_chunks::<C>();
@@ -329,15 +312,13 @@ impl<T: ViewType, M: ElementMapInPlace<T>> SimdKernelMut<T> for InPlace<'_, M> {
     }
 }
 
-#[cfg(feature = "image_interop")] // Grayscale, its one user, needs it.
-struct MapPixels<'a, S, D, const C: usize, M> {
+struct MapPixels<'a, S, D, const C: usize, const O: usize, M> {
     buf: &'a ViewBuffer,
     map: &'a M,
     _types: PhantomData<(S, D)>,
 }
 
-#[cfg(feature = "image_interop")] // Grayscale, its one user, needs it.
-impl<S, D, const C: usize, M> Clone for MapPixels<'_, S, D, C, M> {
+impl<S, D, const C: usize, const O: usize, M> Clone for MapPixels<'_, S, D, C, O, M> {
     fn clone(&self) -> Self {
         MapPixels {
             buf: self.buf,
@@ -347,12 +328,11 @@ impl<S, D, const C: usize, M> Clone for MapPixels<'_, S, D, C, M> {
     }
 }
 
-#[cfg(feature = "image_interop")] // Grayscale, its one user, needs it.
-impl<S, D, const C: usize, M> SimdKernel for MapPixels<'_, S, D, C, M>
+impl<S, D, const C: usize, const O: usize, M> SimdKernel for MapPixels<'_, S, D, C, O, M>
 where
     S: ViewType,
     D: ViewType,
-    M: PixelMap<S, D, C>,
+    M: PixelMap<S, D, C, O>,
 {
     type Output = Vec<D>;
 
@@ -360,12 +340,12 @@ where
     fn run(self) -> Vec<D> {
         let (buf, map) = (self.buf, self.map);
         let n = buf.shape().iter().product::<usize>() / C;
-        let mut out = Vec::with_capacity(n);
-        let dst = &mut out.spare_capacity_mut()[..n];
+        let mut out = Vec::with_capacity(n * O);
+        let dst = &mut out.spare_capacity_mut()[..n * O];
         if buf.layout.is_contiguous() {
             map.map_into(pixels::<S, C>(buf.as_slice::<S>()), dst);
         } else {
-            let mut runs = PixelRuns::<S, D, C, M> {
+            let mut runs = PixelRuns::<S, D, C, O, M> {
                 map,
                 dst,
                 at: 0,
@@ -377,8 +357,9 @@ where
             assert_eq!(at, n, "internal: the walk read {at} of {n} pixels");
         }
         // SAFETY: as in `MapNew`, counting pixels: every one of the `n`
-        // slots was handed to `map_into` exactly once (asserted).
-        unsafe { out.set_len(n) };
+        // output pixels' `O` slots was handed to `map_into` exactly once
+        // (asserted).
+        unsafe { out.set_len(n * O) };
         out
     }
 }
