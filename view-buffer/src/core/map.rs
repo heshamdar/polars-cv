@@ -75,12 +75,22 @@ where
     D: ViewType,
     M: ElementMap<S, D>,
 {
-    let out = dispatch(MapNew {
+    ViewBuffer::from_vec_with_shape(map_vec(buf, map), Dims::from_slice(buf.shape()))
+}
+
+/// [`map_new`]'s elements, row-major, as the vector itself: for a kernel that
+/// goes on working in it (the f64 resampler's working buffer).
+pub(crate) fn map_vec<S, D, M>(buf: &ViewBuffer, map: &M) -> Vec<D>
+where
+    S: ViewType,
+    D: ViewType,
+    M: ElementMap<S, D>,
+{
+    dispatch(MapNew {
         buf,
         map,
         _types: PhantomData,
-    });
-    ViewBuffer::from_vec_with_shape(out, Dims::from_slice(buf.shape()))
+    })
 }
 
 /// `map` of every element of `buf`: rewritten where they lie when `buf` is

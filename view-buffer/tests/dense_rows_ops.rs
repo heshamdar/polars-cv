@@ -12,7 +12,7 @@ use view_buffer::ops::color::{ColorConvertOp, ColorSpace};
 use view_buffer::ops::filter::{BorderMode, ConvolveOp};
 use view_buffer::ops::pad::{PadMode, PadPosition};
 use view_buffer::ops::{InputLayout, Op};
-use view_buffer::{DType, ImageOp, ImageOpKind, ViewBuffer, ViewDto, ViewExpr};
+use view_buffer::{ImageOp, ImageOpKind, ViewBuffer, ViewDto, ViewExpr};
 
 /// A patterned `[h, w, c]` image of `T`.
 fn image<T: view_buffer::core::dtype::ViewType + num_traits::FromPrimitive>(
@@ -54,8 +54,8 @@ fn image_op(kind: ImageOpKind) -> ViewDto {
     ViewDto::Image(ImageOp { kind })
 }
 
-/// The dense-rows ops, as they are planned, for a `c`-channel `dtype` image.
-fn ops(c: usize, dtype: DType) -> Vec<(&'static str, ViewDto)> {
+/// The dense-rows ops, as they are planned, for a `c`-channel image.
+fn ops(c: usize) -> Vec<(&'static str, ViewDto)> {
     let mut ops = vec![
         ("blur", image_op(ImageOpKind::Blur { sigma: 1.3 })),
         (
@@ -107,12 +107,6 @@ fn ops(c: usize, dtype: DType) -> Vec<(&'static str, ViewDto)> {
             image_op(ImageOpKind::ChannelSwap {
                 order: vec![2, 0, 1],
             }),
-        ));
-    }
-    if dtype == DType::U8 {
-        ops.push((
-            "equalize_histogram",
-            image_op(ImageOpKind::HistogramEqualize),
         ));
     }
     ops
@@ -186,7 +180,7 @@ fn a_dense_rows_op_reads_a_view_as_its_packed_copy() {
             image::<f32>(29, 23, c),
             image::<u16>(29, 23, c),
         ] {
-            for (name, op) in ops(c, base.dtype()) {
+            for (name, op) in ops(c) {
                 assert_eq!(layout_of(&op), InputLayout::DenseRows, "{name}");
                 assert_reads_views_as_packed(name, &op, &base);
             }
@@ -229,14 +223,10 @@ fn a_cast_reading_op_reads_a_view_as_its_packed_copy() {
 fn the_planner_packs_none_of_these_views() {
     let base = image::<u8>(29, 23, 3);
     let gray = image::<u8>(29, 23, 1);
-    let cases = ops(3, DType::U8)
+    let cases = ops(3)
         .into_iter()
         .map(|(n, op)| (n, op, base.slice(&[3, 2, 0], &[26, 20, 3])))
-        .chain(
-            ops(1, DType::U8)
-                .into_iter()
-                .map(|(n, op)| (n, op, gray.flip(&[0]))),
-        )
+        .chain(ops(1).into_iter().map(|(n, op)| (n, op, gray.flip(&[0]))))
         .chain(
             cast_reading_ops(3)
                 .into_iter()
@@ -249,5 +239,34 @@ fn the_planner_packs_none_of_these_views() {
             "{name}: the planner packs a view the op reads in place: {:?}",
             plan.steps
         );
+    }
+}
+
+/// `equalize_histogram` packs nothing in the planner (`PacksOwnRows`): a u8
+/// input's rows are read in place and one without packed rows is packed by
+/// the kernel, and any other dtype is converted to u8 straight from the view.
+/// Every layout of every dtype gives what its packed copy gives.
+#[test]
+fn equalize_reads_any_view_of_any_dtype_as_its_packed_copy() {
+    let op = image_op(ImageOpKind::HistogramEqualize);
+    assert_eq!(layout_of(&op), InputLayout::Any);
+    for c in [1, 3] {
+        for base in [
+            image::<u8>(29, 23, c),
+            image::<u16>(29, 23, c),
+            image::<f32>(29, 23, c),
+            image::<f64>(29, 23, c),
+        ] {
+            assert_reads_views_as_packed("equalize_histogram", &op, &base);
+            for (layout, view) in views(&base) {
+                let plan = ViewExpr::new_source(view).apply_op(op.clone()).plan();
+                assert!(
+                    !format!("{:?}", plan.steps).contains("Materialize"),
+                    "equalize_histogram on a {:?} {layout}: {:?}",
+                    base.dtype(),
+                    plan.steps
+                );
+            }
+        }
     }
 }

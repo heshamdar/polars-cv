@@ -510,8 +510,12 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::MorphGradient { .. }
             | ImageOpKind::Pad { .. }
             | ImageOpKind::PadToSize { .. }
-            | ImageOpKind::HistogramEqualize
             | ImageOpKind::ChannelSwap { .. } => MemoryEffect::RequiresDenseRows,
+            // Reads a u8 input one packed row at a time and packs one without
+            // packed rows itself (`apply_histogram_equalize`); any other
+            // dtype is first converted to u8 (`ImageU8`), which reads any
+            // view, so a planned pack would only copy the wide input.
+            ImageOpKind::HistogramEqualize => MemoryEffect::PacksOwnRows,
             // A per-pixel map (`grayscale_strided`): reads any view where it
             // lies, which measured faster than packing a transpose or a
             // horizontal flip first.

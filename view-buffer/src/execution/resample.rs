@@ -21,7 +21,9 @@
 //! holds the convolution to fir on the inputs fir accepts.
 
 use crate::core::buffer::ViewBuffer;
-use crate::core::dtype::{with_dtype, DType};
+use crate::core::convert::Convert;
+use crate::core::dtype::with_dtype;
+use crate::core::map::map_vec;
 use crate::ops::FilterType;
 
 /// Resample `[H, W]` or `[H, W, C]` to `target_h × target_w`.
@@ -258,11 +260,12 @@ fn convolve(
     if target_w == 0 || target_h == 0 || h == 0 || w == 0 {
         return ViewBuffer::from_vec_with_shape(Vec::<f64>::new(), out_shape).cast(dtype);
     }
-    // Written once from the input where it lies (`append_to` walks a view):
-    // an f64 input's cast is the input itself, so packing it first was a
-    // second copy of a crop or flip.
-    let mut data: Vec<f64> = Vec::with_capacity(h * w * c);
-    buf.cast(DType::F64).append_to(&mut data);
+    // Converted into the working buffer in one read of the input where it
+    // lies (`core::map`): casting first allocated the f64 copy and then copied
+    // it again, and an f64 input's cast is the input itself.
+    let mut data: Vec<f64> = with_dtype!(dtype, S => {
+        map_vec::<S, f64, _>(buf, &Convert::<S, f64>::new())
+    });
     let alpha = crate::ops::color::has_alpha(c);
     if alpha {
         for px in data.chunks_exact_mut(c) {
@@ -353,6 +356,7 @@ fn lanczos3(x: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::core::convert::CastFrom;
+    use crate::core::dtype::DType;
     use crate::{ImageOp, ImageOpKind, ViewDto, ViewExpr};
 
     /// fir's own resize, through the engine's u8/f32 path.

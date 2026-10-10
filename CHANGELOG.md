@@ -55,16 +55,23 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   operand is not copied: 3M-element u8 `add` 0.83 → 0.23 ms. `apply_mask`
   writes an inverted mask, or a 2-D mask expanded across the channels, once
   from the view instead of packing it first.
-- **Resize of f64, `convert_color` of f64, `convolve2d` of f32 and f64, and
-  `equalize_histogram` of any dtype but u8 read a crop or a flip in place.** Each converted its input
-  before reading it, and packed it when the conversion was the identity (f64
-  to f64) or after it (`equalize_histogram`'s conversion to u8): one
-  view-sized copy per call. They now read the view once, in the conversion.
-  `convolve2d` reads its accumulator-dtype input a row at a time, top down:
-  rows in place where they are packed, a transpose's or a horizontal flip's
-  each packed once, through its walk, into a ring of the `ksize` rows a tap
-  reaches. 1024×1024×3 f32, 3×3:
-  crop 9 → 6.3 ms, vertical flip 27 → 7 ms, horizontal flip 27 → 12 ms,
+- **Convolution resizes of f64 and the 32/64-bit integers, `convert_color`
+  of f64, `convolve2d` of f32 and f64, and `equalize_histogram` of any dtype
+  but u8 read a view of any layout without packing it.** Each converted its
+  input before reading it, and packed it when the conversion was the
+  identity (f64 to f64), or after it (`equalize_histogram`'s conversion to
+  u8, behind a planned pack of the wide input). They now read the view once,
+  in the conversion: the resampler converts straight into its working buffer
+  (one allocation for every dtype, where the integer resizes made two), and
+  `equalize_histogram` declares `PacksOwnRows`, so only a u8 input without
+  packed rows is packed, by the kernel. A nearest resize still packs a
+  transpose or a horizontal flip, as fast_image_resize does. `convolve2d`
+  reads its accumulator-dtype input a row at a time, top down: rows in place
+  where they are packed, a transpose's or a horizontal flip's each packed
+  once, through its walk, into a ring of the `ksize` rows a tap reaches.
+  1024×1024×3 f32, 3×3, timed with a throwaway harness (warm memory; the
+  `kernels.rs` cases allocate fresh inputs and read ~3x higher): crop
+  9 → 6.3 ms, vertical flip 27 → 7 ms, horizontal flip 27 → 12 ms,
   transpose 31 → 17.5 ms; contiguous input and u8 input unchanged.
 - **A tensor sink that has to copy a view copies it once.** When a numpy,
   ndarray or torch row could not hand its storage over (a slice below the 50%
@@ -109,7 +116,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   outside the planner). No copy count changes.
 - **The copy census holds every dtype to each op's declared memory effect.**
   An op pays no copy on any dtype for a layout its declaration reads in place,
-  and (on u8) pays one where it packs. It is what found the f64 and
+  and (on u8) pays one where it packs; on no dtype does it pay more than its
+  exact u8 count in `KNOWN`. An op that runs on u8 must run on every dtype its
+  contract accepts (`accepted_input_dtypes`), and an engine panic fails the
+  census rather than reading as a refusal. Copies are counted from one byte
+  per element, so a narrow copy of a wide input (a u8 working copy of f32)
+  counts. It is what found the f64 and
   non-u8 copies above. `copy_counts.rs` adds that a contiguous
   buffer of any rank is never copied to be read, that a binary op or
   `apply_mask` allocates the same number of times at any size (the reader
