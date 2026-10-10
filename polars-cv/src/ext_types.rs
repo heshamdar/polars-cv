@@ -156,88 +156,6 @@ impl ExtensionTypeImpl for CvExtension {
     }
 }
 
-/// Arrow's canonical `arrow.fixed_shape_tensor` over `Array(dtype, n)`.
-///
-/// Not an [`ExtType`]: those are polars-cv's own names over one fixed
-/// storage each, mirrored by Python classes. This type is Arrow's, and it is
-/// parametric (its storage depends on the dtype and element count, its
-/// metadata on the shape), so nothing registers it. Python sees Polars'
-/// generic `pl.Extension`, and PyArrow its own `FixedShapeTensorType`.
-///
-/// Only the required `shape` key is written. `dim_names` has no source, and
-/// `permutation` is omitted because the elements are always written in the
-/// logical row-major order.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FixedShapeTensor {
-    shape: Vec<usize>,
-}
-
-impl FixedShapeTensor {
-    /// The extension name, written to `ARROW:extension:name`.
-    pub(crate) const NAME: &'static str = "arrow.fixed_shape_tensor";
-
-    /// The tagged dtype: a tensor of `shape` over `Array(inner, prod(shape))`.
-    pub(crate) fn dtype(inner: DataType, shape: &[usize]) -> DataType {
-        DataType::Extension(
-            Self::instance(shape),
-            Box::new(DataType::Array(Box::new(inner), shape.iter().product())),
-        )
-    }
-
-    /// Tag `series`, an `Array(_, prod(shape))` column of row-major
-    /// elements, as a tensor of `shape`. Errors on any other storage, as
-    /// [`ExtType::tag`] does.
-    pub(crate) fn tag(series: Series, shape: &[usize]) -> PolarsResult<Series> {
-        let n: usize = shape.iter().product();
-        polars_ensure!(
-            matches!(series.dtype(), DataType::Array(inner, size) if *size == n && !inner.is_nested()),
-            SchemaMismatch: "cannot tag a {} column as `{}` of shape {:?}: expected a flat Array of {} elements",
-            series.dtype(), Self::NAME, shape, n
-        );
-        Ok(series.into_extension(Self::instance(shape)))
-    }
-
-    fn instance(shape: &[usize]) -> ExtensionTypeInstance {
-        ExtensionTypeInstance(Box::new(Self {
-            shape: shape.to_vec(),
-        }))
-    }
-}
-
-impl ExtensionTypeImpl for FixedShapeTensor {
-    fn name(&self) -> Cow<'_, str> {
-        Cow::Borrowed(Self::NAME)
-    }
-
-    fn serialize_metadata(&self) -> Option<Cow<'_, str>> {
-        Some(Cow::Owned(
-            serde_json::json!({ "shape": self.shape }).to_string(),
-        ))
-    }
-
-    fn dyn_clone(&self) -> Box<dyn ExtensionTypeImpl> {
-        Box::new(self.clone())
-    }
-
-    fn dyn_eq(&self, other: &dyn ExtensionTypeImpl) -> bool {
-        (other as &dyn Any)
-            .downcast_ref::<Self>()
-            .is_some_and(|o| self == o)
-    }
-
-    fn dyn_hash(&self) -> u64 {
-        PlFixedStateQuality::default().hash_one((Self::NAME, &self.shape))
-    }
-
-    fn dyn_display(&self) -> Cow<'_, str> {
-        Cow::Owned(format!("fixed_shape_tensor{:?}", self.shape))
-    }
-
-    fn dyn_debug(&self) -> Cow<'_, str> {
-        Cow::Owned(format!("{self:?}"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,36 +230,6 @@ mod tests {
 
         let err = ExtType::Point.tag(s).unwrap_err();
         assert!(err.to_string().contains("polars_cv.point"), "{err}");
-    }
-
-    #[test]
-    fn a_fixed_shape_tensor_writes_its_shape_and_tags_only_flat_storage() {
-        let dtype = FixedShapeTensor::dtype(DataType::UInt8, &[2, 3, 4]);
-        let DataType::Extension(ext, storage) = &dtype else {
-            panic!("{dtype:?}")
-        };
-        assert_eq!(ext.0.name(), "arrow.fixed_shape_tensor");
-        assert_eq!(
-            ext.0.serialize_metadata().as_deref(),
-            Some(r#"{"shape":[2,3,4]}"#)
-        );
-        assert_eq!(**storage, DataType::Array(Box::new(DataType::UInt8), 24));
-        assert_ne!(dtype, FixedShapeTensor::dtype(DataType::UInt8, &[4, 3, 2]));
-
-        let flat = Series::new(PlSmallStr::from_static("t"), [0u8; 24])
-            .reshape_array(&[
-                ReshapeDimension::new_dimension(1),
-                ReshapeDimension::new_dimension(24),
-            ])
-            .unwrap();
-        assert_eq!(
-            FixedShapeTensor::tag(flat.clone(), &[2, 3, 4])
-                .unwrap()
-                .dtype(),
-            &dtype
-        );
-        let err = FixedShapeTensor::tag(flat, &[2, 3]).unwrap_err();
-        assert!(err.to_string().contains("6 elements"), "{err}");
     }
 
     #[test]

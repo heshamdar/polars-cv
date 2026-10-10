@@ -14,9 +14,8 @@ use crate::execute::decode_image_bytes;
 use crate::formats::source::Source;
 
 use super::encode::{
-    build_fixed_shape_tensor_series_from_rows, build_typed_array_series_from_rows_with_dtype,
-    build_typed_list_series_from_rows_with_dtype, contour_set_series,
-    histogram_buckets_to_polars_value, histogram_struct_dtype, TypedListRow,
+    build_typed_array_series_from_rows_with_dtype, build_typed_list_series_from_rows_with_dtype,
+    contour_set_series, histogram_buckets_to_polars_value, histogram_struct_dtype, TypedListRow,
 };
 use super::sink_kind::SinkKind;
 use super::types::{OutputSpec, RowResult};
@@ -832,19 +831,39 @@ fn output_schema(spec: &OutputSpec, facts: ColumnFacts) -> PolarsResult<DataType
             }
             Ok(dtype)
         }
-        SinkKind::BufferArray => fixed_shape_dtype(spec, facts, "array", |inner, shape| {
-            let mut dtype = inner;
-            for &dim in shape.iter().rev() {
-                dtype = DataType::Array(Box::new(dtype), dim);
+        SinkKind::BufferArray => {
+            let inner = inner("array")?;
+            let sink_shape = spec.sink.shape();
+            let shape = sink_shape.as_ref().or(spec.expected_shape.as_ref());
+            if let Some(shape) = shape {
+                let mut dtype = inner;
+                for &dim in shape.iter().rev() {
+                    dtype = DataType::Array(Box::new(dtype), dim);
+                }
+                Ok(dtype)
+            } else if facts == (ColumnFacts::Pending { sizes: true }) {
+                // A fixed-size `Array` column's type states every size, so
+                // this is decided when the query is planned with the column.
+                // The dtype is not returned for `Pending`.
+                Ok(inner)
+            } else {
+                // Names what each remedy actually supplies. The advice this
+                // replaces was circular for the source that reaches it most: a
+                // list column's sizes vary per row, so it lands here — and was
+                // told to call `.assert_shape()`, which
+                // published nothing without a rank, and `.resize()`, which never
+                // supplies the channel count.
+                polars_bail!(ComputeError:
+                    "an 'array' sink needs the full output shape at planning time, and \
+                     this pipeline's is not known. Three ways to supply it:\n  \
+                     .sink('array', shape=[8, 8, 3])   — always works; the shape belongs \
+                     to the sink\n  \
+                     .assert_shape(dims=[8, 8, 3])     — when you know it and the source \
+                     does not (a list column's sizes are only settled per row)\n  \
+                     .resize(height=8, width=8)        — supplies height and width only"
+                );
             }
-            dtype
-        }),
-        SinkKind::FixedShapeTensor => fixed_shape_dtype(
-            spec,
-            facts,
-            "fixed_shape_tensor",
-            crate::ext_types::FixedShapeTensor::dtype,
-        ),
+        }
         SinkKind::Scalar => Ok(DataType::Float64),
         SinkKind::VectorList => {
             // Reject an unresolved "auto" element dtype the same way the
@@ -893,42 +912,6 @@ fn output_schema(spec: &OutputSpec, facts: ColumnFacts) -> PolarsResult<DataType
         )))),
     }
 }
-/// The dtype of a sink whose type states the full shape (`array`,
-/// `fixed_shape_tensor`): `build` over the element dtype and the shape, the
-/// sink's own or the planned one.
-fn fixed_shape_dtype(
-    spec: &OutputSpec,
-    facts: ColumnFacts,
-    sink: &str,
-    build: impl FnOnce(DataType, &[usize]) -> DataType,
-) -> PolarsResult<DataType> {
-    let inner = list_array_inner_dtype(spec.expected_dtype, sink, facts)?;
-    let sink_shape = spec.sink.shape();
-    if let Some(shape) = sink_shape.as_ref().or(spec.expected_shape.as_ref()) {
-        Ok(build(inner, shape))
-    } else if facts == (ColumnFacts::Pending { sizes: true }) {
-        // A fixed-size `Array` column's type states every size, so this is
-        // decided when the query is planned with the column. The dtype is
-        // not returned for `Pending`.
-        Ok(inner)
-    } else {
-        // Names what each remedy actually supplies. The advice this
-        // replaces was circular for the source that reaches it most: a list
-        // column's sizes vary per row, so it lands here — and was told to
-        // call `.assert_shape()`, which published nothing without a rank,
-        // and `.resize()`, which never supplies the channel count.
-        polars_bail!(ComputeError:
-            "the '{sink}' sink needs the full output shape at planning time, and \
-             this pipeline's is not known. Three ways to supply it:\n  \
-             .sink('{sink}', shape=[8, 8, 3])   — always works; the shape belongs \
-             to the sink\n  \
-             .assert_shape(dims=[8, 8, 3])     — when you know it and the source \
-             does not (a list column's sizes are only settled per row)\n  \
-             .resize(height=8, width=8)        — supplies height and width only"
-        );
-    }
-}
-
 /// Create a null RowResult with the correct type based on OutputSpec.
 ///
 /// This ensures that null values are pushed with the appropriate type variant,
@@ -940,9 +923,7 @@ pub(crate) fn null_row_result_for_spec(spec: &OutputSpec) -> PolarsResult<RowRes
         SinkKind::NumpyStruct | SinkKind::NdArray => RowResult::NumpyStruct(None),
         SinkKind::EncodedImage | SinkKind::Blob => RowResult::Binary(None),
         SinkKind::BufferList | SinkKind::VectorList => RowResult::TypedList(None),
-        SinkKind::BufferArray | SinkKind::VectorArray | SinkKind::FixedShapeTensor => {
-            RowResult::TypedArray(None)
-        }
+        SinkKind::BufferArray | SinkKind::VectorArray => RowResult::TypedArray(None),
         SinkKind::Scalar => RowResult::Scalar(None),
         SinkKind::Contours => RowResult::Contours(None),
     })
@@ -1068,20 +1049,6 @@ pub(crate) fn build_series_from_spec(
                 other => Err(other.variant_name()),
             })?;
             build_typed_array_series_from_rows_with_dtype(
-                name,
-                &rows,
-                dtype,
-                &spec.sink.shape(),
-                spec.expected_shape.as_ref(),
-                split,
-            )
-        }
-        SinkKind::FixedShapeTensor => {
-            let rows = convert_rows(kind, data, |r| match r {
-                RowResult::TypedArray(t) => Ok(t),
-                other => Err(other.variant_name()),
-            })?;
-            build_fixed_shape_tensor_series_from_rows(
                 name,
                 &rows,
                 dtype,

@@ -60,14 +60,6 @@ pub(crate) enum SinkKind {
     BufferList,
     /// `buffer` × `array` — fixed-shape `Array`.
     BufferArray,
-    /// `buffer` × `fixed_shape_tensor` — Arrow's canonical tensor type, a flat
-    /// `Array` of the row-major elements tagged with the shape
-    /// ([`crate::ext_types::FixedShapeTensor`]).
-    ///
-    /// Its own kind, not `BufferArray` with a flag: it publishes a different
-    /// dtype, so every half has to answer for it. The rows are
-    /// `BufferArray`'s, and the column the same flat values, wrapped once.
-    FixedShapeTensor,
     /// `scalar` × `native` — `Float64`.
     Scalar,
     /// `vector` × `native`/`list` — nested `List`.
@@ -104,7 +96,6 @@ impl SinkKind {
             (Domain::Buffer, Sink::Blob) => Ok(Self::Blob),
             (Domain::Buffer, Sink::List) => Ok(Self::BufferList),
             (Domain::Buffer, Sink::Array { .. }) => Ok(Self::BufferArray),
-            (Domain::Buffer, Sink::FixedShapeTensor { .. }) => Ok(Self::FixedShapeTensor),
             (Domain::Scalar, Sink::Native) => Ok(Self::Scalar),
             (Domain::Vector, Sink::Native | Sink::List) => Ok(Self::VectorList),
             (Domain::Vector, Sink::Array { .. }) => Ok(Self::VectorArray),
@@ -166,7 +157,6 @@ mod tests {
         ("buffer", "blob", SinkKind::Blob),
         ("buffer", "list", SinkKind::BufferList),
         ("buffer", "array", SinkKind::BufferArray),
-        ("buffer", "fixed_shape_tensor", SinkKind::FixedShapeTensor),
         ("scalar", "native", SinkKind::Scalar),
         ("vector", "native", SinkKind::VectorList),
         ("vector", "list", SinkKind::VectorList),
@@ -178,7 +168,7 @@ mod tests {
     /// need a shape, the list kinds a rank).
     fn buildable_spec(domain: &str, format: &str) -> OutputSpec {
         let mut s = spec(domain, format);
-        if let Sink::Array { shape } | Sink::FixedShapeTensor { shape } = &mut s.sink {
+        if let Sink::Array { shape } = &mut s.sink {
             *shape = Some(vec![crate::ops::Literal(1)]);
         }
         s.expected_ndim = Some(1);
@@ -239,7 +229,6 @@ mod tests {
             SinkKind::Blob => "Blob",
             SinkKind::BufferList => "BufferList",
             SinkKind::BufferArray => "BufferArray",
-            SinkKind::FixedShapeTensor => "FixedShapeTensor",
             SinkKind::Scalar => "Scalar",
             SinkKind::VectorList => "VectorList",
             SinkKind::VectorArray => "VectorArray",

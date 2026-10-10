@@ -61,7 +61,6 @@ dev = [
     # skip, they would fail: the runner asserts exit 0.
     "matplotlib>=3.9.4",
     "pytest-xdist>=3.6",
-    "pyarrow>=18",
 ]
 bench = [
     "opencv-python>=4.8",

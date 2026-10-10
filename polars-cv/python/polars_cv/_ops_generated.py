@@ -332,7 +332,6 @@ class SinkFormat(str, Enum):
 
     ARRAY = "array"
     BLOB = "blob"
-    FIXED_SHAPE_TENSOR = "fixed_shape_tensor"
     JPEG = "jpeg"
     LIST = "list"
     NATIVE = "native"

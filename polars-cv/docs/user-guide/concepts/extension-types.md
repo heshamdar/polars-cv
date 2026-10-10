@@ -92,36 +92,6 @@ This is why `sink("numpy")` stays untagged: tagging it would break existing
 code that unnests or casts its output. Choose `sink("ndarray")` when you want
 the type.
 
-## Arrow's tensor type
-
-`sink("fixed_shape_tensor")` emits Arrow's canonical
-[`arrow.fixed_shape_tensor`](https://arrow.apache.org/docs/format/CanonicalExtensions.html#fixed-shape-tensor):
-each row is one flat `Array(dtype, n)` of its elements in row-major order, and
-the shape is in the type's metadata. PyArrow reads it as a
-`FixedShapeTensorArray`, and so does any other reader of the canonical type.
-A `sink("array")` column holds the same values nested one `Array` per axis,
-which only Polars reads as a tensor.
-
-```python
-out = df.select(t=pl.col("image").cv.pipe(pipe).sink("fixed_shape_tensor"))
-out.schema["t"]
-# Extension('arrow.fixed_shape_tensor', Array(UInt8, shape=(150528,)), '{"shape":[224,224,3]}')
-```
-
-`out.to_arrow()` hands PyArrow the column as its `FixedShapeTensorArray`, whose
-`to_numpy_ndarray()` gives one `(n_rows, 224, 224, 3)` array.
-
-Like `array`, it needs the full shape at planning time (`shape=[...]` on the
-sink supplies it), and every row is copied once into the column's values. The
-type is Arrow's, so polars-cv registers no class for it: Polars shows its
-generic `pl.Extension`.
-
-!!! note
-    A row that is null cannot cross Parquet between Polars and PyArrow in any
-    fixed-size list column, this one and `array` included: PyArrow (22) can
-    neither write such a column nor read the one Polars writes. Polars itself
-    round-trips it.
-
 ## Persistence
 
 A tagged column written to Parquet reads back tagged in any process that has

@@ -151,7 +151,6 @@ Alpha channels are always preserved during image decoding. RGBA → `[H, W, 4]`,
 | `blob` | Binary | VIEW protocol serialization |
 | `list` | List(...) | Typed nested list preserving dtype |
 | `array` | Array(..., shape) | Fixed-size array preserving dtype |
-| `fixed_shape_tensor` | `arrow.fixed_shape_tensor` over Array(dtype, n) | The same flat values as `array`, wrapped once; shape in the type's metadata (`ext_types::FixedShapeTensor`) |
 | `native` | Varies | Domain-dependent: scalar → Float64, vector → List(Float64), contour → List[Struct] |
 
 ### Planning-Time Type Inference (`unified_output_dtype`)

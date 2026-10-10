@@ -82,7 +82,6 @@ NON_CODEC_SINKS: dict[str, str] = {
     "ndarray": "the numpy struct tagged polars_cv.ndarray, no re-encode",
     "blob": "the self-describing VIEW protocol, no codec preconditions",
     "array": "Polars Array, fixed shape",
-    "fixed_shape_tensor": "Arrow's canonical tensor type over a flat Array, no re-encode",
     "list": "Polars nested List",
     "native": "the domain's Polars-native type; an error for buffers",
 }
