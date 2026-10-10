@@ -226,57 +226,109 @@ fn copies(graph: &str, input: &Series, threshold: usize) -> Result<usize, String
     }
 }
 
+/// Allocations of at least this many bytes are counted for a view of
+/// `shape`: one byte per element, whatever the dtype, so a copy made after a
+/// narrowing conversion (a u8 working copy of an f32 view) is counted too.
+fn threshold(shape: [usize; 3]) -> usize {
+    shape.iter().product()
+}
+
+/// How an op fared on a contiguous input of a dtype.
+enum Run {
+    /// It ran, with this channel count and sink.
+    Ran(usize, &'static str),
+    /// Every channel count and sink was refused; the last refusal.
+    Refused(String),
+    /// The engine panicked: a bug, never a refusal.
+    Panicked(String),
+}
+
 /// The sink and channel count an op runs with: three channels unless it only
-/// takes one, and the numpy sink unless its output is not a buffer. `None` if
-/// it runs with none of them.
-fn runnable(op: &str, dtype: DType) -> Option<(usize, &'static str)> {
+/// takes one, and the numpy sink unless its output is not a buffer.
+fn runnable(op: &str, dtype: DType) -> Run {
+    let mut refusal = String::new();
     for c in [3, 1] {
         for sink in [r#"{"format": "numpy"}"#, r#"{"format": "native"}"#] {
             let shape = [H, W, c];
-            let threshold = shape.iter().product::<usize>() * dtype.size_of();
-            if copies(&graph(op, "", sink, dtype), &blob(shape, dtype), threshold).is_ok() {
-                return Some((c, sink));
+            match copies(
+                &graph(op, "", sink, dtype),
+                &blob(shape, dtype),
+                threshold(shape),
+            ) {
+                Ok(_) => return Run::Ran(c, sink),
+                Err(e) if e.contains("the engine panicked") => return Run::Panicked(e),
+                Err(e) => refusal = e,
             }
         }
     }
-    None
+    Run::Refused(refusal)
 }
 
-/// Every op's view-caused copies per layout on `dtype` input, and the ops that
-/// ran (an op refusing `dtype` does not).
-fn census(dtype: DType) -> (Vec<(String, &'static str, usize)>, Vec<String>) {
-    let mut measured = Vec::new();
-    let mut ran = Vec::new();
+/// A census of one dtype: each op's view-caused copies per layout, the ops
+/// that ran, the ops refused (with why) and the ops that panicked.
+struct Census {
+    measured: Vec<(String, &'static str, usize)>,
+    ran: Vec<String>,
+    refused: Vec<(String, String)>,
+    panicked: Vec<(String, String)>,
+}
+
+/// Every op's view-caused copies per layout on `dtype` input.
+fn census(dtype: DType) -> Census {
+    let mut census = Census {
+        measured: Vec::new(),
+        ran: Vec::new(),
+        refused: Vec::new(),
+        panicked: Vec::new(),
+    };
     for sample in TypedOp::samples() {
         let name = sample.name().to_string();
         let op = serde_json::to_string(&sample).unwrap();
-        let Some((c, sink)) = runnable(&op, dtype) else {
-            continue;
+        let (c, sink) = match runnable(&op, dtype) {
+            Run::Ran(c, sink) => (c, sink),
+            Run::Refused(why) => {
+                census.refused.push((name, why));
+                continue;
+            }
+            Run::Panicked(why) => {
+                census.panicked.push((name, why));
+                continue;
+            }
         };
-        ran.push(name.clone());
+        census.ran.push(name.clone());
         let base = blob([H, W, c], dtype);
         for (layout, prefix, shape) in layouts(c) {
-            let threshold = shape.iter().product::<usize>() * dtype.size_of();
+            let threshold = threshold(shape);
             let viewed = copies(&graph(&op, &prefix, sink, dtype), &base, threshold)
                 .unwrap_or_else(|e| panic!("{name} on a {layout} view: {e}"));
             let dense = copies(&graph(&op, "", sink, dtype), &blob(shape, dtype), threshold)
                 .unwrap_or_else(|e| panic!("{name} on a contiguous {shape:?}: {e}"));
-            measured.push((name.clone(), layout, viewed.saturating_sub(dense)));
+            census
+                .measured
+                .push((name.clone(), layout, viewed.saturating_sub(dense)));
         }
     }
-    (measured, ran)
+    census
 }
 
 #[test]
 fn a_view_costs_each_op_only_its_known_copies() {
-    let (measured, ran) = census(DType::U8);
+    let Census {
+        measured,
+        ran,
+        panicked,
+        ..
+    } = census(DType::U8);
     assert!(
         ran.len() > 40,
         "only {} ops ran; the census is not measuring the catalogue",
         ran.len()
     );
 
-    let mut problems = Vec::new();
+    let mut problems: Vec<String> = panicked
+        .iter()
+        .map(|(op, why)| format!("{op} panicked on u8: {why}"))
+        .collect();
     for (op, layout, extra) in &measured {
         let known = match COUNTED.iter().position(|l| l == layout) {
             None => 0,
@@ -363,12 +415,34 @@ fn each_op_pays_the_copies_its_memory_effect_declares() {
     let samples = TypedOp::samples();
     let mut problems = Vec::new();
     let mut undeclared = Vec::new();
+    let ran_u8 = census(DType::U8).ran;
     for &dtype in DType::ALL {
-        let (measured, ran) = census(dtype);
+        let Census {
+            measured,
+            ran,
+            refused,
+            panicked,
+        } = census(dtype);
+        for (op, why) in &panicked {
+            problems.push(format!("{op} panicked on {}: {why}", dtype.short_name()));
+        }
         let mut compared = 0;
         for sample in &samples {
             let name = sample.name();
             if !ran.iter().any(|r| r == name) {
+                // An op that runs on u8 and whose contract accepts this dtype
+                // must run on it too: a failure here is a bug, not a refusal.
+                let accepts = sample
+                    .declared_input_dtypes()
+                    .is_some_and(|accepted| accepted.accepts(dtype));
+                let panicked_here = panicked.iter().any(|(o, _)| o == name);
+                if accepts && !panicked_here && ran_u8.iter().any(|r| r == name) {
+                    let why = refused.iter().find(|(o, _)| o == name).map_or("", |r| &r.1);
+                    problems.push(format!(
+                        "{name} accepts {} but did not run on it: {why}",
+                        dtype.short_name()
+                    ));
+                }
                 continue;
             }
             let Some(effect) = sample.declared_memory_effect() else {
@@ -387,6 +461,21 @@ fn each_op_pays_the_copies_its_memory_effect_declares() {
                 if (paid && !may) || (dtype == DType::U8 && must && !paid) {
                     problems.push(format!(
                         "{name} declares {effect:?} but pays {extra} copies on a {} {layout} view",
+                        dtype.short_name()
+                    ));
+                }
+                // No dtype pays more than the u8 count KNOWN holds exactly.
+                let i = COUNTED
+                    .iter()
+                    .position(|l| l == layout)
+                    .expect("a counted layout");
+                let known = KNOWN
+                    .iter()
+                    .find(|(o, _, _)| *o == name)
+                    .map_or(0, |k| k.1[i]);
+                if *extra > known {
+                    problems.push(format!(
+                        "{name} pays {extra} copies on a {} {layout} view, {known} on u8",
                         dtype.short_name()
                     ));
                 }

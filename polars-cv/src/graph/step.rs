@@ -235,6 +235,16 @@ impl<M: Mode> GraphStep<M> {
         }
     }
 
+    /// The input dtypes an engine op or a binary graph op declares it accepts,
+    /// for the copy census to require that it runs on each of them.
+    #[cfg(test)]
+    pub(crate) fn declared_input_dtypes(&self) -> Option<view_buffer::core::dtype::DTypeCategory> {
+        match self.rules() {
+            Rules::Engine(op) => Some(op.accepted_input_dtypes()),
+            Rules::Graph(op) => op.binary().map(|(op, _)| op.accepted_input_dtypes()),
+        }
+    }
+
     /// Whether this step is a hoistable H/W spatial window (a crop/ROI) — the
     /// plan-time authority the spatial-window pushdown reads.
     pub fn is_spatial_window(&self) -> bool {
