@@ -159,7 +159,7 @@ fn pad_generic<T: FillValue>(
     let rows_buf = buffer.to_dense_rows();
     let rows: Vec<&[T]> = rows_buf
         .dense_rows::<T>()
-        .expect("to_dense_rows packs the rows");
+        .expect("a rank-2 or rank-3 buffer has packed rows after to_dense_rows");
     let fill = T::from_f32(value);
     let mut output = vec![fill; output_h * output_w * channels];
     let out_shape = if shape.len() == 2 {

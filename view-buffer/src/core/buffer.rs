@@ -541,6 +541,11 @@ impl ViewBuffer {
         );
 
         let len: usize = self.layout.shape.iter().product();
+        if len == 0 {
+            // An empty buffer's storage may be a dangling pointer aligned for
+            // bytes only (an empty `Vec<u8>`), which no `&[T]` may point at.
+            return &[];
+        }
         unsafe {
             let ptr = self.as_ptr::<T>();
             std::slice::from_raw_parts(ptr, len)
@@ -1286,6 +1291,64 @@ impl ViewBuffer {
         }
     }
 
+    /// This view broadcast to `shape`, aligned at the last axis as numpy
+    /// does: a new leading axis, or an axis of size 1 widened, repeats the
+    /// elements with a stride of 0. Read-only: nothing writes through it
+    /// (it is not contiguous, so in-place paths refuse it), and it is read
+    /// through [`Walk`](crate::core::strided::Walk) like any view.
+    ///
+    /// # Panics
+    /// Panics if an axis is neither `shape`'s size nor 1, or `shape` has
+    /// fewer axes than the view.
+    pub(crate) fn broadcast_to(&self, shape: &[usize]) -> Self {
+        let src = &self.layout.shape;
+        assert!(
+            shape.len() >= src.len(),
+            "broadcast_to: {src:?} has more axes than {shape:?}"
+        );
+        let lead = shape.len() - src.len();
+        let mut strides = Strides::from_elem(0, shape.len());
+        for (i, &n) in src.iter().enumerate() {
+            match n {
+                _ if n == shape[lead + i] => strides[lead + i] = self.layout.strides[i],
+                1 => {}
+                _ => panic!("broadcast_to: {src:?} does not broadcast to {shape:?}"),
+            }
+        }
+        Self {
+            data: self.data.clone(),
+            layout: Layout {
+                shape: Dims::from_slice(shape),
+                strides,
+                offset: self.layout.offset,
+                dtype: self.layout.dtype,
+            },
+        }
+    }
+
+    /// This view's first `n` axes, the rest (each of size 1) dropped: the
+    /// same elements, in the same order.
+    ///
+    /// # Panics
+    /// Panics if a dropped axis is not of size 1.
+    pub(crate) fn leading_axes(&self, n: usize) -> Self {
+        let layout = &self.layout;
+        assert!(
+            layout.shape[n..].iter().all(|&d| d == 1),
+            "leading_axes: {:?} has an axis beyond {n} not of size 1",
+            layout.shape
+        );
+        Self {
+            data: self.data.clone(),
+            layout: Layout {
+                shape: Dims::from_slice(&layout.shape[..n]),
+                strides: Strides::from_slice(&layout.strides[..n]),
+                offset: layout.offset,
+                dtype: layout.dtype,
+            },
+        }
+    }
+
     /// Flips the buffer along the specified axes.
     pub fn flip(&self, axes: &[usize]) -> Self {
         let mut new_strides = self.layout.strides.clone();
@@ -1331,8 +1394,9 @@ impl ViewBuffer {
     /// rank), else packed.
     ///
     /// What an op declaring `RequiresDenseRows` reads its input through, and
-    /// what the planner's `MaterializeDenseRows` step applies: the rows are
-    /// then read in place with [`dense_rows`](Self::dense_rows).
+    /// what the planner's `MaterializeDenseRows` step applies: a rank-2 or
+    /// rank-3 result's rows are then read in place with
+    /// [`dense_rows`](Self::dense_rows) (other ranks have no rows to read).
     pub fn to_dense_rows(&self) -> Self {
         if self.layout.is_contiguous() || self.layout_facts().is_dense_rows() {
             self.clone()
@@ -1814,6 +1878,34 @@ mod scalar_dual_path_tests {
                 ScalarOp::Round.apply_f64(x as f64),
                 (x as f64).round_ties_even()
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod empty_tests {
+    use super::*;
+
+    /// An empty buffer of any dtype reads as an empty slice, and casts and
+    /// packs, however its (empty) storage is aligned: a packed empty view's
+    /// storage is a dangling pointer, aligned for bytes only.
+    #[test]
+    fn an_empty_buffer_reads_casts_and_packs_at_every_dtype() {
+        for &dtype in DType::ALL {
+            let base = ViewBuffer::from_vec_with_shape(vec![1u8; 12], vec![2, 2, 3]).cast(dtype);
+            let empty = base
+                .flip(&[0])
+                .slice(&[1, 0, 0], &[1, 2, 3])
+                .to_contiguous();
+            assert_eq!(empty.shape(), [0, 2, 3]);
+            with_dtype!(dtype, T => assert!(empty.as_slice::<T>().is_empty()));
+            for &target in DType::ALL {
+                assert_eq!(
+                    empty.cast_to(target).shape(),
+                    [0, 2, 3],
+                    "{dtype:?} -> {target:?}"
+                );
+            }
         }
     }
 }

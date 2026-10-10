@@ -16,9 +16,10 @@
 //!
 //! Every reader of a view's elements goes through it: packing
 //! ([`ViewBuffer::to_contiguous`], `append_to`/`write_to` and so every
-//! list/array sink), and converting a view's elements to another dtype
+//! list/array sink), converting a view's elements to another dtype
 //! (`cast`, the element-wise engine's f32 read), through
-//! `convert::convert_view`.
+//! `convert::convert_view`, and reading two views in step a block at a time
+//! ([`Walk::cursor`], the binary ops).
 
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
@@ -341,6 +342,137 @@ impl<'a> Walk<'a> {
     }
 }
 
+impl<'a> Walk<'a> {
+    /// A [`Cursor`] over this walk, before its first element.
+    pub(crate) fn cursor(&self) -> Cursor<'_> {
+        let Geometry {
+            unit,
+            row_len,
+            step,
+            ..
+        } = self.geometry;
+        Cursor {
+            rows: self.rows(),
+            row: std::ptr::null(),
+            unit,
+            row_len,
+            step,
+            k: row_len,
+            b: 0,
+            _view: PhantomData,
+        }
+    }
+}
+
+/// A [`Walk`] read a block at a time, for a consumer that reads two views in
+/// step (a binary op's operands) and so cannot hand either a callback.
+///
+/// Each [`next`](Self::next) resumes where the last left off. A block that
+/// lies inside one packed unit is returned where it lies; any other is
+/// packed into the caller's scratch with the walk's own unit copies.
+pub(crate) struct Cursor<'w> {
+    rows: Rows<'w>,
+    /// The current row's first unit, once a row has been entered.
+    row: *const u8,
+    unit: usize,
+    row_len: usize,
+    step: isize,
+    /// The unit of the current row the next element is in (`row_len`: the
+    /// row is used up), and the byte inside it.
+    k: usize,
+    b: usize,
+    _view: PhantomData<&'w ViewBuffer>,
+}
+
+impl<'w> Cursor<'w> {
+    /// The next `n` elements of `T`, in logical order: in place when they
+    /// are the rest of one packed unit, else packed into `scratch`.
+    ///
+    /// # Panics
+    /// Panics if `scratch` holds fewer than `n` elements of `T`, or if fewer
+    /// than `n` elements are left.
+    #[inline]
+    pub(crate) fn next<'s, T: ViewType>(
+        &'s mut self,
+        n: usize,
+        scratch: &'s mut [MaybeUninit<u64>],
+    ) -> &'s [T]
+    where
+        'w: 's,
+    {
+        let bytes = n * std::mem::size_of::<T>();
+        if bytes == 0 {
+            return &[];
+        }
+        self.enter_row();
+        if self.unit - self.b >= bytes {
+            let at = self
+                .row
+                .wrapping_offset(self.k as isize * self.step)
+                .wrapping_add(self.b);
+            self.consume(bytes);
+            // SAFETY: the `n` elements from `at` lie inside one packed unit
+            // of the view's data, aligned for `T` (offsets and strides are
+            // whole elements, CR-41), and live as long as the view.
+            return unsafe { std::slice::from_raw_parts(at.cast::<T>(), n) };
+        }
+        assert!(
+            scratch.len() * 8 >= bytes,
+            "Cursor::next: {n} elements exceed the scratch"
+        );
+        let out = scratch.as_mut_ptr().cast::<u8>();
+        let mut done = 0;
+        while done < bytes {
+            self.enter_row();
+            let src = self.row.wrapping_offset(self.k as isize * self.step);
+            if self.b > 0 || bytes - done < self.unit {
+                // Part of a unit.
+                let take = (self.unit - self.b).min(bytes - done);
+                // SAFETY: bytes `b..b + take` of unit `k` lie inside the
+                // view's data; `done + take <= bytes` fit the scratch.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(src.add(self.b), out.add(done), take);
+                }
+                done += take;
+                self.consume(take);
+            } else {
+                // Whole units of this row.
+                let units = (self.row_len - self.k).min((bytes - done) / self.unit);
+                // SAFETY: units `k..k + units` of the row lie inside the
+                // view's data; their bytes fit the scratch after `done`.
+                unsafe { copy_any(src, out.add(done), units, self.step, self.unit) };
+                done += units * self.unit;
+                self.k += units;
+            }
+        }
+        // SAFETY: the scratch's first `bytes` bytes were written with whole
+        // elements of `T` in logical order; it is 8-byte aligned.
+        unsafe { std::slice::from_raw_parts(out.cast::<T>(), n) }
+    }
+
+    /// Move to the next row once the current one is used up.
+    #[inline(always)]
+    fn enter_row(&mut self) {
+        if self.k == self.row_len {
+            self.row = self
+                .rows
+                .next()
+                .expect("Cursor::next: read past the view's last element");
+            self.k = 0;
+        }
+    }
+
+    /// Advance `bytes` bytes, inside the current unit.
+    #[inline(always)]
+    fn consume(&mut self, bytes: usize) {
+        self.b += bytes;
+        if self.b == self.unit {
+            self.b = 0;
+            self.k += 1;
+        }
+    }
+}
+
 /// The consumer of [`Walk::for_each_run`]'s runs.
 ///
 /// A dispatched kernel implements it on a struct with an `#[inline(always)]`
@@ -625,6 +757,61 @@ mod tests {
             }
         }));
         out
+    }
+
+    /// Read `view` with a cursor in blocks of the given sizes, cycled.
+    fn cursor_bytes(view: &ViewBuffer, blocks: &[usize]) -> Vec<u8> {
+        let total = view.shape().iter().product::<usize>();
+        let mut out = Vec::new();
+        let mut scratch = [MaybeUninit::<u64>::uninit(); 512];
+        let walk = Walk::of(view);
+        let mut cursor = walk.cursor();
+        let (mut read, mut i) = (0, 0);
+        while read < total {
+            let n = blocks[i % blocks.len()].min(total - read);
+            with_dtype!(view.dtype(), T => {
+                for x in cursor.next::<T>(n, &mut scratch) {
+                    out.extend_from_slice(&x.to_ne_bytes());
+                }
+            });
+            read += n;
+            i += 1;
+        }
+        out
+    }
+
+    /// A cursor reads every random view in logical order, whatever the block
+    /// sizes (one element, a few, more than a unit, a scratchful), and a view
+    /// broadcast along an axis (stride 0) as the packed broadcast.
+    #[test]
+    fn a_cursor_reads_every_random_view_in_logical_order() {
+        let mut rng = Lcg(0xC0_FFEE);
+        for dtype in [DType::U8, DType::U16, DType::F32, DType::F64] {
+            for case in 0..300 {
+                let view = random_view(&mut rng, dtype);
+                let want = naive_bytes(&view);
+                let elems = 4096 / dtype.size_of();
+                for blocks in [&[1][..], &[3, 7], &[64, 1, 500], &[elems]] {
+                    assert_eq!(
+                        cursor_bytes(&view, blocks),
+                        want,
+                        "{dtype:?} case {case}: shape {:?} strides {:?}, blocks {blocks:?}",
+                        view.shape(),
+                        view.strides_bytes()
+                    );
+                }
+                // Broadcast a new leading axis and, when there is one, every
+                // size-1 axis to 3.
+                let mut shape = vec![3];
+                shape.extend(view.shape().iter().map(|&d| if d == 1 { 3 } else { d }));
+                let broadcast = view.broadcast_to(&shape);
+                assert_eq!(
+                    cursor_bytes(&broadcast, &[5, 300]),
+                    naive_bytes(&broadcast),
+                    "{dtype:?} case {case}: broadcast to {shape:?}"
+                );
+            }
+        }
     }
 
     /// Every way of reading a view agrees with the per-element reference,

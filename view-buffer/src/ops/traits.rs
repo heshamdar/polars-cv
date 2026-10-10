@@ -31,9 +31,8 @@ pub enum MemoryEffect {
     /// Allocates, reads a view whose rows are each packed where it lies, as
     /// [`RequiresDenseRows`](Self::RequiresDenseRows) does, but packs any other
     /// layout itself, so the planner adds no step. For a kernel that hands its
-    /// input to a reader with its own layout rule (fast_image_resize), or that
-    /// runs outside the planner (the binary ops): the copies are the same, and
-    /// the declaration says who makes them.
+    /// input to a reader with its own layout rule (fast_image_resize): the
+    /// copies are the same, and the declaration says who makes them.
     PacksOwnRows,
     /// Metadata-only over a contiguous input (`reshape`: row-major order is
     /// what it reinterprets); a strided input is packed first.

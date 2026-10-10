@@ -6,6 +6,7 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
+use crate::core::strided::Walk;
 use crate::ops::shape_rule::OpShape;
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
@@ -102,8 +103,9 @@ impl<M: Mode> Op for ConvolveOp<M> {
 
     fn memory_effect(&self) -> MemoryEffect {
         // Reads any layout: the input in the accumulator's dtype (itself, or
-        // its conversion, which walks a view once) is read at its own strides
-        // (`Src`, `Rows`). A planned pack would copy the view first.
+        // its conversion, which walks a view once) is read a row at a time,
+        // in place where the rows are packed, else each packed once into a
+        // ring of `ksize` rows (`Rows`). A planned pack would copy the view.
         MemoryEffect::StridePreserving
     }
 
@@ -187,106 +189,79 @@ pub fn apply_convolve2d(buf: &ViewBuffer, op: &ConvolveOp) -> ViewBuffer {
     }
 }
 
-/// The input read where it lies, at its own strides: a pixel by position
-/// (the border's gather) or a whole row (the interior's).
-struct Src<'a, F> {
-    base: *const F,
-    /// Element steps of the row, column and channel axes (any sign).
-    sy: isize,
-    sx: isize,
-    sc: isize,
-    h: usize,
-    w: usize,
-    c: usize,
-    _view: std::marker::PhantomData<&'a [F]>,
-}
-
-impl<'a, F: Acc> Src<'a, F> {
-    fn of(view: &'a ViewBuffer) -> Self {
-        let shape = view.shape();
-        let elem = F::DTYPE.size_of() as isize;
-        let strides = view.strides_bytes();
-        Self {
-            // SAFETY: the view's first logical element; every read below is
-            // of an element inside its shape.
-            base: unsafe { view.as_ptr::<F>() },
-            sy: strides[0] / elem,
-            sx: strides[1] / elem,
-            sc: strides.get(2).map_or(0, |s| s / elem),
-            h: shape[0],
-            w: shape[1],
-            c: shape.get(2).copied().unwrap_or(1),
-            _view: std::marker::PhantomData,
-        }
-    }
-
-    /// The element at row `y`, column `x`, channel `ch`.
-    #[inline(always)]
-    fn at(&self, y: usize, x: usize, ch: usize) -> F {
-        debug_assert!(y < self.h && x < self.w && ch < self.c);
-        // SAFETY: `y < h`, `x < w` and `ch < c` put the element inside the
-        // view, whose validated layout keeps it inside its data.
-        unsafe {
-            *self
-                .base
-                .offset(y as isize * self.sy + x as isize * self.sx + ch as isize * self.sc)
-        }
-    }
-}
-
-/// The rows the interior reads, `w * c` packed elements each: the view's own
-/// rows where they are packed (contiguous, a crop, a vertical flip), or, for
-/// a layout without packed rows (a transpose, a horizontal flip), each row
-/// gathered once into a ring of the `ksize` rows a tap can reach. Either way
-/// no copy of the image is made.
+/// The rows the convolution reads, `w * c` packed elements each, from the
+/// top down: the view's own rows where they are packed (contiguous, a crop, a
+/// vertical flip), or else each row packed once, through its [`Walk`], into
+/// a ring of the `ksize` rows a tap can reach. No copy of the image is made.
+///
+/// Output row `y` reads source rows `y - half ..= y + half` only, each
+/// replicated or reflected into `0..h` (which lands no further from `y`), so
+/// rows `..min(y + half + 1, h)` loaded and the last `ksize` of them kept
+/// are every row it needs.
 enum Rows<'a, F> {
     Packed(Vec<&'a [F]>),
-    Gathered {
-        src: &'a Src<'a, F>,
+    Ring {
+        view: &'a ViewBuffer,
         ring: Vec<F>,
-        /// Rows `0..loaded` have been gathered (the last `ksize` of them are
-        /// in the ring).
+        row_elems: usize,
+        /// Rows `0..loaded` have been packed; the last `ksize` are kept.
         loaded: usize,
     },
 }
 
 impl<'a, F: Acc> Rows<'a, F> {
-    fn of(view: &'a ViewBuffer, src: &'a Src<'a, F>, ksize: usize) -> Self {
+    fn of(view: &'a ViewBuffer, ksize: usize) -> Self {
         match view.dense_rows::<F>() {
             Some(rows) => Rows::Packed(rows),
-            None => Rows::Gathered {
-                src,
-                ring: vec![F::zero(); ksize * src.w * src.c],
-                loaded: 0,
-            },
+            None => {
+                let shape = view.shape();
+                let row_elems = shape[1..].iter().product();
+                Rows::Ring {
+                    view,
+                    ring: vec![F::zero(); ksize * row_elems],
+                    row_elems,
+                    loaded: 0,
+                }
+            }
         }
     }
 
     /// Make rows `..upto` readable.
     fn load(&mut self, upto: usize) {
-        if let Rows::Gathered { src, ring, loaded } = self {
-            let wc = src.w * src.c;
-            let slots = ring.len() / wc;
+        if let Rows::Ring {
+            view,
+            ring,
+            row_elems,
+            loaded,
+        } = self
+        {
+            let slots = ring.len() / *row_elems;
+            let rank = view.shape().len();
+            let mut end = view.shape().to_vec();
             while *loaded < upto {
                 let y = *loaded;
-                let row = &mut ring[(y % slots) * wc..][..wc];
-                for x in 0..src.w {
-                    for ch in 0..src.c {
-                        row[x * src.c + ch] = src.at(y, x, ch);
-                    }
-                }
+                let mut start = vec![0; rank];
+                (start[0], end[0]) = (y, y + 1);
+                let row = view.slice(&start, &end);
+                let slot = &mut ring[(y % slots) * *row_elems..][..*row_elems];
+                // SAFETY: `slot` holds exactly the row's elements, of the
+                // row's dtype `F`, and is not the view's data.
+                unsafe { Walk::of(&row).copy_to(slot.as_mut_ptr().cast()) };
                 *loaded += 1;
             }
         }
     }
 
     /// Row `y`, loaded and among the last `ksize` loaded.
+    #[inline(always)]
     fn row(&self, y: usize) -> &[F] {
         match self {
             Rows::Packed(rows) => rows[y],
-            Rows::Gathered { src, ring, .. } => {
-                let wc = src.w * src.c;
-                &ring[(y % (ring.len() / wc)) * wc..][..wc]
+            Rows::Ring {
+                ring, row_elems, ..
+            } => {
+                let slot = y % (ring.len() / row_elems);
+                &ring[slot * row_elems..][..*row_elems]
             }
         }
     }
@@ -301,8 +276,6 @@ fn convolve_in<F: Acc>(buf: &ViewBuffer, op: &ConvolveOp) -> ViewBuffer {
     let h = shape[0];
     let w = shape[1];
     let c = shape.get(2).copied().unwrap_or(1);
-
-    let src = Src::<F>::of(&view);
 
     // The coefficients in the accumulator's precision (an f32 kernel widens
     // exactly).
@@ -327,66 +300,65 @@ fn convolve_in<F: Acc>(buf: &ViewBuffer, op: &ConvolveOp) -> ViewBuffer {
     };
 
     let mut output = vec![F::zero(); h * w * c];
-
-    if h > 2 * half && w > 2 * half {
-        let mut rows = Rows::of(&view, &src, ksize);
-        match ksize {
-            3 => convolve_interior::<F, 3>(&mut rows, &mut output, h, w, c, kernel, norm_factor),
-            5 => convolve_interior::<F, 5>(&mut rows, &mut output, h, w, c, kernel, norm_factor),
-            7 => convolve_interior::<F, 7>(&mut rows, &mut output, h, w, c, kernel, norm_factor),
-            _ => convolve_interior_dyn(&mut rows, &mut output, h, w, c, kernel, ksize, norm_factor),
+    let out_shape = if c == 1 && shape.len() == 2 {
+        vec![h, w]
+    } else {
+        vec![h, w, c]
+    };
+    if output.is_empty() {
+        return ViewBuffer::from_vec_with_shape(output, out_shape);
+    }
+    let mut rows = Rows::of(&view, ksize);
+    // An image no larger than the kernel is gathered everywhere; otherwise
+    // the interior of each row is shifted-slice multiply-adds and its two
+    // ends, and the top and bottom `half` rows, are gathered.
+    let interior = h > 2 * half && w > 2 * half;
+    let gather = |rows: &Rows<'_, F>, out: &mut [F], y, x0, x1| {
+        convolve_gather_row(rows, out, h, w, c, op, kernel, norm_factor, y, x0, x1)
+    };
+    for y in 0..h {
+        rows.load((y + half + 1).min(h));
+        if interior && (half..h - half).contains(&y) {
+            match ksize {
+                3 => convolve_interior::<F, 3>(&rows, &mut output, y, w, c, kernel, norm_factor),
+                5 => convolve_interior::<F, 5>(&rows, &mut output, y, w, c, kernel, norm_factor),
+                7 => convolve_interior::<F, 7>(&rows, &mut output, y, w, c, kernel, norm_factor),
+                _ => convolve_interior_dyn(&rows, &mut output, y, w, c, kernel, ksize, norm_factor),
+            }
+            gather(&rows, &mut output, y, 0, half);
+            gather(&rows, &mut output, y, w - half, w);
+        } else {
+            gather(&rows, &mut output, y, 0, w);
         }
-        convolve_border_ring(&src, &mut output, h, w, c, op, kernel, norm_factor);
-    } else {
-        // Image no larger than the kernel: clamped/reflected gather everywhere.
-        convolve_gather_rect(
-            &src,
-            &mut output,
-            h,
-            w,
-            c,
-            op,
-            kernel,
-            norm_factor,
-            0,
-            h,
-            0,
-            w,
-        );
     }
 
-    if c == 1 && shape.len() == 2 {
-        ViewBuffer::from_vec_with_shape(output, vec![h, w])
-    } else {
-        ViewBuffer::from_vec_with_shape(output, vec![h, w, c])
-    }
+    ViewBuffer::from_vec_with_shape(output, out_shape)
 }
 
-/// Interior convolution with the kernel size known at compile time.
-///
-/// Requires `h > 2*(K/2)` and `w > 2*(K/2)`. Writes only the interior
-/// rows/columns of `out`; the border ring is left untouched (zero).
+/// [`convolve_interior_dyn`] with the kernel side known at compile time.
 #[allow(clippy::too_many_arguments)]
 fn convolve_interior<F: Acc, const K: usize>(
-    src: &mut Rows<'_, F>,
+    rows: &Rows<'_, F>,
     out: &mut [F],
-    h: usize,
+    y: usize,
     w: usize,
     c: usize,
     kernel: &[F],
     norm_factor: F,
 ) {
-    convolve_interior_dyn(src, out, h, w, c, kernel, K, norm_factor);
+    convolve_interior_dyn(rows, out, y, w, c, kernel, K, norm_factor);
 }
 
-/// Interior convolution: per-tap shifted-slice multiply-adds over contiguous
-/// row segments, then a final `norm_factor` multiply.
+/// The interior of output row `y` (columns `half..w - half`; requires
+/// `half <= y < h - half` and `w > 2 * half`): per-tap shifted-slice
+/// multiply-adds over packed row segments, then a final `norm_factor`
+/// multiply.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 fn convolve_interior_dyn<F: Acc>(
-    src: &mut Rows<'_, F>,
+    rows: &Rows<'_, F>,
     out: &mut [F],
-    h: usize,
+    y: usize,
     w: usize,
     c: usize,
     kernel: &[F],
@@ -399,32 +371,30 @@ fn convolve_interior_dyn<F: Acc>(
     let hi = (w - half) * c;
     let seg = hi - lo;
 
-    for y in half..h - half {
-        src.load(y + half + 1);
-        let out_row = &mut out[y * wc + lo..y * wc + hi];
-        for ky in 0..ksize {
-            let src_row = src.row(y + ky - half);
-            for kx in 0..ksize {
-                let kw = kernel[ky * ksize + kx];
-                // Column shift of (kx - half) whole pixels within the row.
-                let start = lo + kx * c - half * c;
-                let src_seg = &src_row[start..start + seg];
-                for (o, &v) in out_row.iter_mut().zip(src_seg) {
-                    *o += kw * v;
-                }
+    let out_row = &mut out[y * wc + lo..y * wc + hi];
+    for ky in 0..ksize {
+        let src_row = rows.row(y + ky - half);
+        for kx in 0..ksize {
+            let kw = kernel[ky * ksize + kx];
+            // Column shift of (kx - half) whole pixels within the row.
+            let start = lo + kx * c - half * c;
+            let src_seg = &src_row[start..start + seg];
+            for (o, &v) in out_row.iter_mut().zip(src_seg) {
+                *o += kw * v;
             }
         }
-        for o in out_row.iter_mut() {
-            *o *= norm_factor;
-        }
+    }
+    for o in out_row.iter_mut() {
+        *o *= norm_factor;
     }
 }
 
-/// Convolve the border ring (top/bottom rows plus left/right columns of the
-/// remaining rows) with the original per-pixel gather.
+/// Per-pixel gather convolution over columns `x0..x1` of output row `y`,
+/// with the border handling: the taps in `ky`-outer, `kx`-inner order, as
+/// the interior visits them.
 #[allow(clippy::too_many_arguments)]
-fn convolve_border_ring<F: Acc>(
-    src: &Src<'_, F>,
+fn convolve_gather_row<F: Acc>(
+    rows: &Rows<'_, F>,
     out: &mut [F],
     h: usize,
     w: usize,
@@ -432,33 +402,7 @@ fn convolve_border_ring<F: Acc>(
     op: &ConvolveOp,
     kernel: &[F],
     norm_factor: F,
-) {
-    let half = op.side() / 2;
-    let rect = |out: &mut [F], y0, y1, x0, x1| {
-        convolve_gather_rect(src, out, h, w, c, op, kernel, norm_factor, y0, y1, x0, x1)
-    };
-    // Top and bottom rows.
-    rect(out, 0, half, 0, w);
-    rect(out, h - half, h, 0, w);
-    // Left and right columns of the interior rows.
-    rect(out, half, h - half, 0, half);
-    rect(out, half, h - half, w - half, w);
-}
-
-/// Per-pixel gather convolution over the rectangle `[y0,y1) × [x0,x1)`,
-/// preserving the original tap order and border handling.
-#[allow(clippy::too_many_arguments)]
-fn convolve_gather_rect<F: Acc>(
-    src: &Src<'_, F>,
-    out: &mut [F],
-    h: usize,
-    w: usize,
-    c: usize,
-    op: &ConvolveOp,
-    kernel: &[F],
-    norm_factor: F,
-    y0: usize,
-    y1: usize,
+    y: usize,
     x0: usize,
     x1: usize,
 ) {
@@ -466,20 +410,18 @@ fn convolve_gather_rect<F: Acc>(
     let half = (ksize / 2) as i64;
 
     for ch in 0..c {
-        for y in y0..y1 {
-            for x in x0..x1 {
-                let mut sum = F::zero();
-                for ky in 0..ksize {
-                    for kx in 0..ksize {
-                        let sy = y as i64 + ky as i64 - half;
-                        let sx = x as i64 + kx as i64 - half;
+        for x in x0..x1 {
+            let mut sum = F::zero();
+            for ky in 0..ksize {
+                for kx in 0..ksize {
+                    let sy = y as i64 + ky as i64 - half;
+                    let sx = x as i64 + kx as i64 - half;
 
-                        let pixel = sample_pixel(src, h, w, ch, sy, sx, op.border);
-                        sum += kernel[ky * ksize + kx] * pixel;
-                    }
+                    let pixel = sample_pixel(rows, h, w, c, ch, sy, sx, op.border);
+                    sum += kernel[ky * ksize + kx] * pixel;
                 }
-                out[(y * w + x) * c + ch] = sum * norm_factor;
             }
+            out[(y * w + x) * c + ch] = sum * norm_factor;
         }
     }
 }
@@ -488,9 +430,10 @@ fn convolve_gather_rect<F: Acc>(
 #[inline]
 #[allow(clippy::too_many_arguments)]
 fn sample_pixel<F: Acc>(
-    src: &Src<'_, F>,
+    rows: &Rows<'_, F>,
     h: usize,
     w: usize,
+    c: usize,
     ch: usize,
     y: i64,
     x: i64,
@@ -514,7 +457,7 @@ fn sample_pixel<F: Acc>(
             (sy, sx)
         }
     };
-    src.at(sy, sx, ch)
+    rows.row(sy)[sx * c + ch]
 }
 
 /// Reflect an index about the edge: dcba|abcd|dcba

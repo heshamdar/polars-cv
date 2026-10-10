@@ -207,9 +207,15 @@ fn a_cast_reading_op_reads_a_view_as_its_packed_copy() {
                 assert_reads_views_as_packed(name, &op, &base);
             }
         }
-        // f64 accumulates in f64; a 9-row image under a 9x9 kernel (side
-        // > half the size) is all border, gathered pixel by pixel.
-        for base in [image::<f64>(29, 23, c), image::<f32>(9, 11, c)] {
+        // f64 accumulates in f64. Under the 9x9 kernel, a 9x11 image has one
+        // interior row (and its crops none), and a 6x7 image is all border in
+        // every layout, gathered pixel by pixel from rows read in place or
+        // packed into the ring.
+        for base in [
+            image::<f64>(29, 23, c),
+            image::<f32>(9, 11, c),
+            image::<f32>(6, 7, c),
+        ] {
             for (name, op) in cast_reading_ops(c) {
                 assert_reads_views_as_packed(name, &op, &base);
             }

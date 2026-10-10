@@ -144,9 +144,14 @@ view). `with_dtype!` is the one runtime `DType` → element-type match.
 A view's elements are read in logical order only through `core::strided::Walk`:
 it coalesces the layout once into packed units, evenly spaced rows and outer
 axes, then packs them (`copy_to`, behind `to_contiguous`/`append_to`/
-`write_to`) or hands out runs (`for_each_run`, behind `convert_view`). Do not
-write another index odometer over strides; a kernel that cannot read a view in
-place packs it with `to_contiguous()` and runs its dense path.
+`write_to`) or hands out runs (`for_each_run`, behind `convert_view`). A
+consumer that reads two views in step, and so cannot hand either a callback,
+pulls blocks from a `Walk::cursor()`: in place inside a packed unit, else
+packed into its scratch by the same unit copies (the binary ops, each operand
+broadcast to the output by `broadcast_to`'s stride-0 axes). Do not write
+another index odometer over strides; a kernel that cannot read a view in place
+packs it with `to_contiguous()` (or a row of it, as convolve2d's ring does)
+and runs its dense path.
 
 Per-value compute ops (the scalar family, scale, relu, clamp, invert, gamma,
 contrast, normalize, fused chains) run only through `ops::elementwise::apply`:
@@ -173,9 +178,10 @@ horizontal flip) through `ViewBuffer::to_dense_rows`, and the kernel reads rows
 at the view's own stride (blur, erode/dilate/gradient, pad, equalize,
 channel swap). Resize hands such
 a view to fast_image_resize through `interop::fir::FirViewAdapter` and packs
-any other layout itself (or in the cast its non-fir dtypes take), declaring
-`MemoryEffect::PacksOwnRows`: the same copies, made by the kernel rather than
-the planner. The binary ops, which run outside the planner, declare it too.
+any other layout itself, declaring `MemoryEffect::PacksOwnRows`: the same
+copies, made by the kernel rather than the planner. (Its other dtypes read
+any layout: i8/i16 through their cast to f32, the 32/64-bit integers and f64
+through the f64 resampler's one read; nearest packs as fir does.)
 What a view costs each op is counted by `polars-cv/src/graph/copy_census.rs`,
 which also holds each op's declared effect to the copies it pays.
 

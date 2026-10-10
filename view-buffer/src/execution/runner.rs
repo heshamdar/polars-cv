@@ -146,7 +146,7 @@ pub fn apply_channel_swap(buf: &ViewBuffer, order: &[usize]) -> ViewBuffer {
     // Read in place, at the view's own row stride (a crop, a vertical flip).
     let rows_buf = buf.to_dense_rows();
     crate::core::dtype::with_dtype!(buf.dtype(), T => {
-        let rows = rows_buf.dense_rows::<T>().expect("to_dense_rows packs the rows");
+        let rows = rows_buf.dense_rows::<T>().expect("a rank-2 or rank-3 buffer has packed rows after to_dense_rows");
         let mut out: Vec<T> = Vec::with_capacity(h * w * c);
         for row in rows {
             for pixel in row.chunks_exact(c) {
@@ -1741,7 +1741,7 @@ where
     let w = shape[1];
     let src_rows: Vec<&[T]> = rows_buf
         .dense_rows::<T>()
-        .expect("to_dense_rows packs the rows");
+        .expect("a rank-2 or rank-3 buffer has packed rows after to_dense_rows");
 
     // ── Row pass ─────────────────────────────────────────────────────────
     let mut row_out: Vec<T> = vec![T::default(); h * w];
@@ -2086,7 +2086,7 @@ fn apply_histogram_equalize(buf: ViewBuffer) -> ViewBuffer {
     let count = rows_buf.layout.num_elements();
     let rows = rows_buf
         .dense_rows::<u8>()
-        .expect("to_dense_rows packs the rows");
+        .expect("a rank-2 or rank-3 buffer has packed rows after to_dense_rows");
 
     let total_pixels = h * w;
     let mut output = vec![0u8; count];
