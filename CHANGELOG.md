@@ -30,6 +30,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   flip), through `ViewBuffer::to_dense_rows`, and the kernels read rows at the
   view's own stride. One view-sized copy fewer per crop→op, held by the copy
   census and by `tests/dense_rows_ops.rs` (byte-equal to the packed copy).
+  `equalize_histogram` and `channel_swap` read rows the same way.
+- **`convolve2d` and `convert_color` read any view without a planned pack.**
+  Their arithmetic starts with a widening cast (to the accumulator, or f64 for
+  the ranged color spaces), which walks a view once. Packing first only copied
+  the view before casting the copy. A u8 crop, flip or transpose now costs them
+  no extra copy.
 - **A tensor sink that has to copy a view copies it once.** When a numpy,
   ndarray or torch row could not hand its storage over (a slice below the 50%
   rule, a buffer another output shares), the view was packed with

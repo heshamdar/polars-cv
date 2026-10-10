@@ -170,7 +170,8 @@ Row-wise kernels read a view where it lies through `ViewBuffer::dense_rows`
 An op whose kernel reads that way declares `MemoryEffect::RequiresDenseRows`:
 the planner packs only a layout without packed rows (a transpose, a
 horizontal flip) through `ViewBuffer::to_dense_rows`, and the kernel reads rows
-at the view's own stride (blur, erode/dilate/gradient, pad). Resize hands such
+at the view's own stride (blur, erode/dilate/gradient, pad, equalize,
+channel swap). Resize hands such
 a view to fast_image_resize through `interop::fir::FirViewAdapter` and packs
 any other layout itself, declaring `MemoryEffect::StridePreserving`. What a
 view costs each op is counted by `polars-cv/src/graph/copy_census.rs`.

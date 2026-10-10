@@ -507,13 +507,13 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::Dilate { .. }
             | ImageOpKind::MorphGradient { .. }
             | ImageOpKind::Pad { .. }
-            | ImageOpKind::PadToSize { .. } => MemoryEffect::RequiresDenseRows,
+            | ImageOpKind::PadToSize { .. }
+            | ImageOpKind::HistogramEqualize
+            | ImageOpKind::ChannelSwap { .. } => MemoryEffect::RequiresDenseRows,
             // Reads rows packed within themselves in place and packs any
             // other layout itself (`grayscale_strided`).
             ImageOpKind::Grayscale => MemoryEffect::StridePreserving,
             ImageOpKind::Canny { .. } => MemoryEffect::RequiresContiguous,
-            ImageOpKind::HistogramEqualize => MemoryEffect::RequiresContiguous,
-            ImageOpKind::ChannelSwap { .. } => MemoryEffect::RequiresContiguous,
         }
     }
 
