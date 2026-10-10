@@ -446,7 +446,7 @@ impl Op for BinaryOp {
         // Reads each operand one packed row at a time where it lies, and
         // packs any other layout itself (`zip_with`, `to_dense_rows`): binary
         // ops run outside the planner.
-        MemoryEffect::RequiresDenseRows
+        MemoryEffect::PacksOwnRows
     }
 
     fn identity_rule(&self) -> IdentityRule {

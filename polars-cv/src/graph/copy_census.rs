@@ -21,6 +21,7 @@
 //! seen through that parameter.
 
 use polars::prelude::*;
+use view_buffer::ops::MemoryEffect;
 use view_buffer::ViewBuffer;
 
 use super::compiled::CompiledGraph;
@@ -67,9 +68,9 @@ const COUNTED: [&str; 4] = ["crop", "vflip", "transpose", "hflip"];
 const PACKED_FIRST: &str =
     "declares RequiresContiguous, so the planner packs any non-contiguous input";
 
-/// An op that reads packed rows (`RequiresDenseRows`, or fast_image_resize's
-/// own row reader in `interop/fir.rs`): a crop or a vertical flip is read in
-/// place, a transpose or a horizontal flip, which has no packed rows, is not.
+/// An op that reads packed rows (`RequiresDenseRows`, or `PacksOwnRows` for
+/// the resizes' own row readers): a crop or a vertical flip is read in place,
+/// a transpose or a horizontal flip, which has no packed rows, is not.
 const PACKED_ROWS_ONLY: &str =
     "reads packed rows only; a transpose or horizontal flip has none and is packed";
 
@@ -329,6 +330,45 @@ fn a_view_costs_each_op_only_its_known_copies() {
         assert!(why.len() > 20, "{name}: an exemption needs its reason");
         if !names.iter().any(|n| n == name) {
             problems.push(format!("EXEMPT lists {name}, which is not a catalogue op"));
+        }
+    }
+    assert!(problems.is_empty(), "\n{}", problems.join("\n"));
+}
+
+/// What a declared [`MemoryEffect`] promises each [`COUNTED`] layout costs:
+/// nothing on a layout it reads in place, at least one copy on one it packs.
+fn pays_on(effect: MemoryEffect, layout: &str) -> bool {
+    let dense_rows = matches!(layout, "crop" | "vflip");
+    match effect {
+        MemoryEffect::View | MemoryEffect::StridePreserving => false,
+        MemoryEffect::RequiresDenseRows | MemoryEffect::PacksOwnRows => !dense_rows,
+        MemoryEffect::RequiresContiguous | MemoryEffect::ViewOfContiguous => true,
+    }
+}
+
+/// An op's `memory_effect` is its account of which input layouts cost it a
+/// copy, and who makes it. The census holds the "which" half to what the op
+/// pays: `StridePreserving` on a kernel that packs a transpose itself fails.
+/// Who makes the copy (`RequiresDenseRows` vs `PacksOwnRows`) is the same
+/// count either way, so this cannot tell them apart.
+#[test]
+fn each_op_pays_the_copies_its_memory_effect_declares() {
+    let (measured, _) = census();
+    let mut problems = Vec::new();
+    for sample in TypedOp::samples() {
+        let Some(effect) = sample.declared_memory_effect() else {
+            continue;
+        };
+        let name = sample.name();
+        for (op, layout, extra) in &measured {
+            if op != name || !COUNTED.contains(layout) {
+                continue;
+            }
+            if pays_on(effect, layout) != (*extra > 0) {
+                problems.push(format!(
+                    "{name} declares {effect:?} but pays {extra} copies on a {layout} view"
+                ));
+            }
         }
     }
     assert!(problems.is_empty(), "\n{}", problems.join("\n"));
