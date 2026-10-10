@@ -34,7 +34,7 @@ geo = { version = "0.33", default-features = false }
 ndarray = { version = "0.17", optional = true }
 image = { version = "0.25", optional = true }
 tiff = { version = "0.10", optional = true }
-fast_image_resize = { version = "5.0", optional = true }
+fast_image_resize = { version = "6.1", optional = true }
 arrow = { version = "59.0", features = ["ffi"], optional = true }
 image_hasher = { version = "3.0", optional = true }
 polars-arrow = { version = "0.55", optional = true }
@@ -57,7 +57,7 @@ anyhow = "1.0"
 ndarray = "0.17"
 image = "0.25"
 tiff = "0.10"
-fast_image_resize = "5.0"
+fast_image_resize = "6.1"
 arrow = { version = "59.0", features = ["ffi"] }
 polars-arrow = "0.55"
 polars-buffer = "0.55"
