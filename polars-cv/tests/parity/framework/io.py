@@ -23,6 +23,7 @@ from __future__ import annotations
 import atexit
 import hashlib
 import importlib.util
+import json
 import shutil
 import tempfile
 from dataclasses import dataclass, field
@@ -426,6 +427,19 @@ def _decode_array(series: pl.Series, info: OutputInfo) -> list[Any]:
     return [None if v is None else np.asarray(v, dtype=dtype) for v in series]
 
 
+def _decode_fixed_shape_tensor(series: pl.Series, info: OutputInfo) -> list[Any]:
+    # The shape is read from the type's own metadata, not from `info`: a
+    # tensor whose metadata disagreed with its elements would otherwise pass.
+    dtype = DTYPES[info.dtype]
+    assert isinstance(series.dtype, pl.Extension), series.dtype
+    assert series.dtype.ext_name() == "arrow.fixed_shape_tensor"
+    shape = json.loads(series.dtype.ext_metadata())["shape"]
+    return [
+        None if v is None else np.asarray(v, dtype=dtype).reshape(shape)
+        for v in series.ext.storage()
+    ]
+
+
 def _decode_blob(series: pl.Series, info: OutputInfo) -> list[Any]:
     # The one sink whose bytes only the engine can read (see _blob_row).
     out = series.to_frame("b").select(
@@ -507,7 +521,7 @@ class SinkSpec:
 
     def kwargs(self, info: OutputInfo) -> dict[str, Any]:
         """The ``sink()`` keyword arguments for this output."""
-        if self.name == "array" and info.domain == "buffer":
+        if self.name in ("array", "fixed_shape_tensor") and info.domain == "buffer":
             return {"shape": list(info.shapes[0])}
         return {}
 
@@ -524,6 +538,13 @@ SINKS: dict[str, SinkSpec] = {
             "list", frozenset({"buffer", "vector"}), _decode_list, needs_dtype=True
         ),
         SinkSpec("array", BUFFER, _decode_array, needs_dtype=True, homogeneous=True),
+        SinkSpec(
+            "fixed_shape_tensor",
+            BUFFER,
+            _decode_fixed_shape_tensor,
+            needs_dtype=True,
+            homogeneous=True,
+        ),
         SinkSpec("blob", BUFFER, _decode_blob),
         # Image codecs hold at most four channels (gray, gray+alpha, RGB, RGBA).
         SinkSpec(

@@ -15,6 +15,15 @@ pub enum Sink {
         /// The output shape; inferred from the planned shape when absent.
         shape: Option<Vec<Literal<u32>>>,
     },
+    /// Arrow's canonical `arrow.fixed_shape_tensor`: each row one flat
+    /// `FixedSizeList` of its elements in row-major order, with the shape in
+    /// the type's metadata. The tensor column PyArrow, Ray and Lance read; an
+    /// `array` sink nests one `Array` level per axis instead.
+    #[op(name = "fixed_shape_tensor", sample = {"shape": [2, 2]})]
+    FixedShapeTensor {
+        /// The tensor shape; inferred from the planned shape when absent.
+        shape: Option<Vec<Literal<u32>>>,
+    },
     /// The self-describing VIEW protocol, as `Binary`.
     #[op(name = "blob", sample = {})]
     Blob,
@@ -108,6 +117,7 @@ impl Sink {
             Sink::WebP => Some(ImageCodec::WebP),
             Sink::Tiff => Some(ImageCodec::Tiff),
             Sink::Array { .. }
+            | Sink::FixedShapeTensor { .. }
             | Sink::Blob
             | Sink::List
             | Sink::Native
@@ -117,10 +127,10 @@ impl Sink {
         }
     }
 
-    /// The `array` sink's explicit shape.
+    /// The `array`/`fixed_shape_tensor` sink's explicit shape.
     pub fn shape(&self) -> Option<Vec<usize>> {
         match self {
-            Sink::Array { shape } => shape
+            Sink::Array { shape } | Sink::FixedShapeTensor { shape } => shape
                 .as_ref()
                 .map(|s| s.iter().map(|d| d.get() as usize).collect()),
             Sink::Blob
@@ -143,6 +153,7 @@ impl Sink {
                 matches!(dtype, Some(Literal(SinkDType::F16)))
             }
             Sink::Array { .. }
+            | Sink::FixedShapeTensor { .. }
             | Sink::Blob
             | Sink::Jpeg { .. }
             | Sink::List
@@ -162,6 +173,7 @@ impl Sink {
             | Sink::Numpy { compact, .. }
             | Sink::Torch { compact, .. } => compact.get(),
             Sink::Array { .. }
+            | Sink::FixedShapeTensor { .. }
             | Sink::Blob
             | Sink::Jpeg { .. }
             | Sink::List
