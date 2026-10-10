@@ -147,6 +147,61 @@ def get_pipeline_benchmarks(
             description="Grayscale + normalize + resize (medical imaging style)",
             complexity="medium",
         ),
+        # Detector input (YOLO style): fit into a padded square, scale to [0, 1]
+        PipelineBenchmarkConfig(
+            name="detector_letterbox",
+            operations=[
+                OperationParams(
+                    operation=OperationType.LETTERBOX, height=640, width=640
+                ),
+                OperationParams(operation=OperationType.NORMALIZE),
+            ],
+            description="Letterbox into 640x640 + normalize (detector input)",
+            complexity="light",
+        ),
+        # Document scan cleanup: denoise, even out contrast, binarize, despeckle
+        PipelineBenchmarkConfig(
+            name="document_binarize",
+            operations=[
+                OperationParams(operation=OperationType.GRAYSCALE),
+                OperationParams(operation=OperationType.BLUR, sigma=1.0),
+                OperationParams(operation=OperationType.HISTOGRAM_EQUALIZE),
+                OperationParams(operation=OperationType.THRESHOLD, threshold_value=127),
+                OperationParams(operation=OperationType.MORPH_OPEN, ksize=3),
+            ],
+            description="Gray + blur + equalize + threshold + opening (scan cleanup)",
+            complexity="heavy",
+        ),
+        # Deterministic geometric + photometric preprocessing for a model
+        PipelineBenchmarkConfig(
+            name="affine_photometric",
+            operations=[
+                OperationParams(
+                    operation=OperationType.WARP_AFFINE,
+                    matrix=(0.9, 0.2, 5.0, -0.1, 1.1, 3.0),
+                    height=source_height,
+                    width=source_width,
+                ),
+                OperationParams(operation=OperationType.RESIZE, height=224, width=224),
+                OperationParams(operation=OperationType.ADJUST_GAMMA, gamma=0.8),
+                OperationParams(operation=OperationType.NORMALIZE),
+            ],
+            description="Affine warp + resize 224 + gamma + normalize",
+            complexity="heavy",
+        ),
+        # Edge outline for segmentation masks / feature maps
+        PipelineBenchmarkConfig(
+            name="edge_outline",
+            operations=[
+                OperationParams(operation=OperationType.RESIZE, height=256, width=256),
+                OperationParams(operation=OperationType.GRAYSCALE),
+                OperationParams(operation=OperationType.BLUR, sigma=1.0),
+                OperationParams(operation=OperationType.MORPH_GRADIENT, ksize=3),
+                OperationParams(operation=OperationType.THRESHOLD, threshold_value=20),
+            ],
+            description="Resize + gray + blur + morphological gradient + threshold",
+            complexity="heavy",
+        ),
     ]
 
 
@@ -450,6 +505,9 @@ def run_all_pipelines(
                                     f" {result.throughput_images_per_second:.1f} img/s",
                                     flush=True,
                                 )
+                    except NotImplementedError:
+                        print(" unsupported", flush=True)
+                        continue
                     except Exception as e:
                         if verbose:
                             print(f" ERROR: {e}", flush=True)

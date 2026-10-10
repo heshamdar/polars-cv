@@ -18,6 +18,7 @@ from .base import (
     OperationType,
     brightness_f32,
     contrast_f32,
+    letterbox_geometry,
     rotation_matrix,
 )
 
@@ -242,7 +243,6 @@ class PillowAdapter(BaseFrameworkAdapter):
         angle resamples bilinearly with polars-cv's centre and canvas —
         ``Image.rotate`` sizes its expanded canvas differently.
         """
-        import numpy as np
         from PIL import Image
 
         lattice = {
@@ -258,6 +258,12 @@ class PillowAdapter(BaseFrameworkAdapter):
         mat, (out_h, out_w) = rotation_matrix(
             img.height, img.width, angle, expand=expand
         )
+        return self._affine(img, mat, out_h, out_w)
+
+    def _affine(self, img: Any, mat: Any, out_h: int, out_w: int) -> Any:
+        """Bilinear warp by the forward 2x3 ``mat`` (pixel-centre coordinates,
+        OpenCV's convention) onto an ``out_h`` x ``out_w`` canvas."""
+        Image, _ = self._get_modules()
         # Pillow wants the output-to-input map in pixel-corner coordinates;
         # the matrix is in pixel-centre ones (a centre is corner + 0.5).
         inv = np.linalg.inv(np.vstack([mat, [0.0, 0.0, 1.0]]))
@@ -269,6 +275,36 @@ class PillowAdapter(BaseFrameworkAdapter):
             tuple(data),
             Image.Resampling.BILINEAR,
         )
+
+    def warp_affine(
+        self, img: Any, matrix: tuple[float, ...], height: int, width: int
+    ) -> Any:
+        """``Image.transform`` with the inverted matrix (:meth:`_affine`)."""
+        return self._affine(img, np.asarray(matrix).reshape(2, 3), height, width)
+
+    def letterbox(self, img: Any, height: int, width: int) -> Any:
+        """Bilinear fit pasted centred on a black canvas."""
+        Image, _ = self._get_modules()
+        new_h, new_w, top, left = letterbox_geometry(
+            img.height, img.width, height, width
+        )
+        canvas = Image.new(img.mode, (width, height), 0)
+        canvas.paste(img.resize((new_w, new_h), Image.Resampling.BILINEAR), (left, top))
+        return canvas
+
+    def morphology(self, img: Any, op: str, ksize: int) -> Any:
+        """Min/Max filters (Pillow's erosion and dilation) on the "L" image."""
+        from PIL import ImageChops
+
+        _, ImageFilter = self._get_modules()
+        if img.mode != "L":
+            img = img.convert("L")
+        erode, dilate = ImageFilter.MinFilter(ksize), ImageFilter.MaxFilter(ksize)
+        if op == "open":
+            return img.filter(erode).filter(dilate)
+        if op == "close":
+            return img.filter(dilate).filter(erode)
+        return ImageChops.subtract(img.filter(dilate), img.filter(erode))
 
     def invert(self, img: Any) -> Any:
         """Invert pixel values."""
@@ -328,6 +364,14 @@ class PillowAdapter(BaseFrameworkAdapter):
         for _ in range(iterations):
             img = img.filter(ImageFilter.MaxFilter(size=ksize))
         return img
+
+    def prepare_decoded_images(self, png_bytes_list: list[bytes]) -> list[Any]:
+        """Decode now: ``Image.open`` is lazy, so the first timed op on each
+        image would otherwise pay its PNG decode."""
+        images = super().prepare_decoded_images(png_bytes_list)
+        for img in images:
+            img.load()
+        return images
 
     def to_numpy(
         self, img: "PILImageModule.Image | npt.NDArray[np.float32]"

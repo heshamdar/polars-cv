@@ -2,7 +2,7 @@
 Framework adapters for benchmarking.
 
 Each adapter provides a consistent interface for image processing operations
-across different frameworks (polars-cv, OpenCV, PIL, torchvision).
+across different frameworks (polars-cv, OpenCV, PIL, pyvips, torchvision).
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from .polars_cv_adapter import (
     PolarsCVEagerAdapter,
     PolarsCVStreamingAdapter,
 )
+from .pyvips_adapter import PyVipsAdapter
 from .torchvision_adapter import (
     TorchvisionAdapter,
     TorchvisionCPUAdapter,
@@ -32,6 +33,7 @@ __all__ = [
     "PolarsCVAdapter",
     "PolarsCVEagerAdapter",
     "PolarsCVStreamingAdapter",
+    "PyVipsAdapter",
     "TorchvisionAdapter",
     "TorchvisionCPUAdapter",
     "TorchvisionCUDAAdapter",
@@ -55,6 +57,7 @@ def get_adapter(name: str) -> BaseFrameworkAdapter:
     adapters: dict[str, type[BaseFrameworkAdapter]] = {
         "opencv": OpenCVAdapter,
         "pillow": PillowAdapter,
+        "pyvips": PyVipsAdapter,
         "polars-cv-eager": PolarsCVEagerAdapter,
         "polars-cv-streaming": PolarsCVStreamingAdapter,
         "torchvision-cpu": TorchvisionCPUAdapter,
@@ -82,6 +85,7 @@ def get_available_adapters() -> list[BaseFrameworkAdapter]:
         PolarsCVStreamingAdapter(),
         OpenCVAdapter(),
         PillowAdapter(),
+        PyVipsAdapter(),
         TorchvisionCPUAdapter(),
         TorchvisionMPSAdapter(),
     ]

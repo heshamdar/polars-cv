@@ -46,6 +46,8 @@ dev = [
     "pydot>=4.0.1",
     "pytest>=7.0",
     "opencv-python>=4.8",
+    # tests/test_benchmark_adapters.py holds the pyvips adapter to polars-cv.
+    "pyvips[binary]>=3.0",
     "scipy>=1.10",
     "imagehash>=4.3",
     "pillow>=10.0",
@@ -65,6 +67,8 @@ dev = [
 bench = [
     "opencv-python>=4.8",
     "pillow>=10.0",
+    # libvips bundled by pyvips-binary, so no system package is needed.
+    "pyvips[binary]>=3.0",
     "torch>=2.0",
     "torchvision>=0.15",
     "rich>=13.0",

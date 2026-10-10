@@ -43,6 +43,15 @@ class OperationType(Enum):
     HISTOGRAM_EQUALIZE = auto()
     CANNY = auto()
     SOBEL = auto()
+    LETTERBOX = auto()
+    ADJUST_GAMMA = auto()
+    TO_HSV = auto()
+    LAPLACIAN = auto()
+    MORPH_OPEN = auto()
+    MORPH_CLOSE = auto()
+    MORPH_GRADIENT = auto()
+    WARP_AFFINE = auto()
+    CONVOLVE2D = auto()
 
 
 @dataclass
@@ -75,6 +84,12 @@ class OperationParams:
     low_threshold: float | None = None  # For canny
     high_threshold: float | None = None
     sobel_axis: str | None = None  # For sobel: "x" or "y"
+    gamma: float | None = None  # For adjust_gamma
+    # For warp_affine: the forward 2x3 matrix [a, b, tx, c, d, ty] (OpenCV's
+    # convention); `height`/`width` give the output size.
+    matrix: tuple[float, ...] | None = None
+    # For convolve2d: a square kernel, flattened row-major.
+    kernel: tuple[float, ...] | None = None
 
 
 @dataclass
@@ -153,6 +168,33 @@ def rotation_matrix(
     mat[0, 2] += (new_w - width) / 2
     mat[1, 2] += (new_h - height) / 2
     return mat, (new_h, new_w)
+
+
+def letterbox_geometry(
+    height: int, width: int, target_h: int, target_w: int
+) -> tuple[int, int, int, int]:
+    """polars-cv's ``letterbox`` geometry: the fitted ``(h, w)`` (scaled by
+    the smaller of the two ratios, rounded to the nearest pixel) and the
+    ``(top, left)`` offset that centres it, rounding the padding down."""
+    scale = min(target_h / height, target_w / width)
+    new_h, new_w = round(height * scale), round(width * scale)
+    return new_h, new_w, (target_h - new_h) // 2, (target_w - new_w) // 2
+
+
+def gamma_lut(gamma: float) -> "npt.NDArray[np.float32]":
+    """polars-cv's ``adjust_gamma`` on u8 as a 256-entry f32 table:
+    ``(v / 255) ** gamma * 255``, unrounded."""
+    import numpy as np
+
+    v = np.arange(256, dtype=np.float32) / np.float32(255)
+    return (v ** np.float32(gamma) * np.float32(255)).astype(np.float32)
+
+
+_MORPHOLOGY = {
+    OperationType.MORPH_OPEN: "open",
+    OperationType.MORPH_CLOSE: "close",
+    OperationType.MORPH_GRADIENT: "gradient",
+}
 
 
 class BaseFrameworkAdapter(ABC):
@@ -506,6 +548,68 @@ class BaseFrameworkAdapter(ABC):
         """
         raise NotImplementedError
 
+    def letterbox(self, img: Any, height: int, width: int) -> Any:
+        """Fit inside ``height`` x ``width`` keeping the aspect ratio (bilinear),
+        centred on a zero canvas (:func:`letterbox_geometry`).
+
+        Raises:
+            NotImplementedError: If the framework does not support this operation.
+        """
+        raise NotImplementedError
+
+    def adjust_gamma(self, img: Any, gamma: float) -> Any:
+        """``(pixel / 255) ** gamma * 255`` as f32 (:func:`gamma_lut`).
+
+        Raises:
+            NotImplementedError: If the framework does not support this operation.
+        """
+        raise NotImplementedError
+
+    def to_hsv(self, img: Any) -> Any:
+        """RGB to HSV in u8, hue halved into [0, 180) (OpenCV's convention).
+
+        Raises:
+            NotImplementedError: If the framework does not support this operation.
+        """
+        raise NotImplementedError
+
+    def laplacian(self, img: Any) -> Any:
+        """4-neighbour 3x3 Laplacian of the grayscale image, f32, replicated border.
+
+        Raises:
+            NotImplementedError: If the framework does not support this operation.
+        """
+        raise NotImplementedError
+
+    def morphology(self, img: Any, op: str, ksize: int) -> Any:
+        """Grayscale ``open``, ``close`` or ``gradient`` (dilate - erode) with a
+        ``ksize`` square.
+
+        Raises:
+            NotImplementedError: If the framework does not support this operation.
+        """
+        raise NotImplementedError
+
+    def warp_affine(
+        self, img: Any, matrix: tuple[float, ...], height: int, width: int
+    ) -> Any:
+        """Bilinear affine warp by the forward 2x3 ``matrix`` onto a
+        ``height`` x ``width`` canvas, zero border.
+
+        Raises:
+            NotImplementedError: If the framework does not support this operation.
+        """
+        raise NotImplementedError
+
+    def convolve2d(self, img: Any, kernel: tuple[float, ...]) -> Any:
+        """Correlate every channel with the square ``kernel`` (row-major), f32,
+        replicated border, unnormalized.
+
+        Raises:
+            NotImplementedError: If the framework does not support this operation.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def to_numpy(self, img: Any) -> "npt.NDArray[np.uint8] | npt.NDArray[np.float32]":
         """
@@ -647,6 +751,47 @@ class BaseFrameworkAdapter(ABC):
 
         elif op == OperationType.SOBEL:
             return self.sobel(img, params.sobel_axis or "x")
+
+        elif op == OperationType.LETTERBOX:
+            if params.height is None or params.width is None:
+                msg = "Letterbox requires height and width"
+                raise ValueError(msg)
+            return self.letterbox(img, params.height, params.width)
+
+        elif op == OperationType.ADJUST_GAMMA:
+            if params.gamma is None:
+                msg = "Adjust gamma requires gamma"
+                raise ValueError(msg)
+            return self.adjust_gamma(img, params.gamma)
+
+        elif op == OperationType.TO_HSV:
+            return self.to_hsv(img)
+
+        elif op == OperationType.LAPLACIAN:
+            return self.laplacian(img)
+
+        elif op in _MORPHOLOGY:
+            if params.ksize is None:
+                msg = "Morphology requires ksize"
+                raise ValueError(msg)
+            return self.morphology(img, _MORPHOLOGY[op], params.ksize)
+
+        elif op == OperationType.WARP_AFFINE:
+            if (
+                params.matrix is None
+                or len(params.matrix) != 6
+                or params.height is None
+                or params.width is None
+            ):
+                msg = "Warp affine requires a 6-element matrix, height and width"
+                raise ValueError(msg)
+            return self.warp_affine(img, params.matrix, params.height, params.width)
+
+        elif op == OperationType.CONVOLVE2D:
+            if params.kernel is None:
+                msg = "Convolve2d requires kernel"
+                raise ValueError(msg)
+            return self.convolve2d(img, params.kernel)
 
         else:
             msg = f"Unsupported operation: {op}"

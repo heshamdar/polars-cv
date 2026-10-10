@@ -25,6 +25,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from typing import TYPE_CHECKING
 
@@ -48,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--scenario",
         type=str,
-        choices=["all", "single_ops", "pipelines", "e2e"],
+        choices=["all", "single_ops", "pipelines", "e2e", "workflows"],
         default="all",
         help="Benchmark scenario to run (default: all)",
     )
@@ -59,7 +60,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Comma-separated list of frameworks to benchmark "
-            "(default: all available). Options: opencv, pillow, "
+            "(default: all available). Options: opencv, pillow, pyvips, "
             "polars-cv-eager, polars-cv-streaming, "
             "torchvision-cpu, torchvision-mps"
         ),
@@ -99,6 +100,31 @@ def parse_args() -> argparse.Namespace:
         choices=["table", "json", "csv"],
         default="table",
         help="Output format (default: table)",
+    )
+
+    parser.add_argument(
+        "--save-json",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Write the results and run metadata to PATH as JSON",
+    )
+
+    parser.add_argument(
+        "--html",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Write a self-contained HTML report to PATH "
+            "(re-render a saved run with `python -m benchmarks.report`)"
+        ),
+    )
+
+    parser.add_argument(
+        "--allow-debug-build",
+        action="store_true",
+        help="Run against a debug extension (only to smoke-test the harness)",
     )
 
     parser.add_argument(
@@ -222,8 +248,9 @@ def run_benchmarks(args: argparse.Namespace) -> int:
     from benchmarks.scenarios.e2e_workflow import run_all_e2e_workflows
     from benchmarks.scenarios.pipelines import run_all_pipelines
     from benchmarks.scenarios.single_ops import run_all_single_ops
+    from benchmarks.scenarios.workflows import run_all_workflows
     from benchmarks.utils.data_gen import generate_image_bytes
-    from benchmarks.utils.results import ResultsCollector
+    from benchmarks.utils.results import ResultsCollector, results_to_dict_list
     from benchmarks.utils.validation import OutputValidator
 
     if not args.quiet:
@@ -259,8 +286,21 @@ def run_benchmarks(args: argparse.Namespace) -> int:
         print(f"Benchmark iterations: {args.iterations}", flush=True)
         print(flush=True)
 
+    from benchmarks.regression.run_suite import is_debug_build
+
+    if is_debug_build() and not args.allow_debug_build:
+        print(
+            "Error: the imported polars-cv extension is a debug build, which "
+            "measures nothing useful. Build it with `maturin develop --profile "
+            "benchmark`, or pass --allow-debug-build to smoke-test the harness.",
+            flush=True,
+        )
+        return 1
+
     # Collect results
     collector = ResultsCollector()
+    # Which scenario produced each result (by identity), for the report.
+    scenario_of: dict[int, str] = {}
 
     # Run benchmarks based on scenario
     if args.scenario in ("all", "single_ops"):
@@ -275,6 +315,7 @@ def run_benchmarks(args: argparse.Namespace) -> int:
             verbose=not args.quiet,
         )
         collector.add_many(results)
+        scenario_of.update({id(r): "single_ops" for r in results})
 
     if args.scenario in ("all", "pipelines"):
         if not args.quiet:
@@ -289,6 +330,7 @@ def run_benchmarks(args: argparse.Namespace) -> int:
             verbose=not args.quiet,
         )
         collector.add_many(results)
+        scenario_of.update({id(r): "pipelines" for r in results})
 
     if args.scenario in ("all", "e2e"):
         if not args.quiet:
@@ -302,6 +344,50 @@ def run_benchmarks(args: argparse.Namespace) -> int:
             verbose=not args.quiet,
         )
         collector.add_many(results)
+        scenario_of.update({id(r): "e2e" for r in results})
+
+    if args.scenario in ("all", "workflows"):
+        if not args.quiet:
+            print("\nRunning multi-branch workflow benchmarks...", flush=True)
+        results = run_all_workflows(
+            adapters=adapters,
+            image_counts=counts,
+            image_sizes=sizes,
+            warmup_iterations=args.warmup,
+            benchmark_iterations=args.iterations,
+            verbose=not args.quiet,
+        )
+        collector.add_many(results)
+        scenario_of.update({id(r): "workflows" for r in results})
+
+    if args.save_json or args.html:
+        from pathlib import Path
+
+        from benchmarks.report import (
+            build_report_data,
+            collect_run_metadata,
+            render_html,
+        )
+
+        run = {
+            "meta": collect_run_metadata(
+                counts=counts,
+                sizes=sizes,
+                warmup=args.warmup,
+                iterations=args.iterations,
+                frameworks=[a.name for a in adapters],
+            ),
+            "results": [
+                {**results_to_dict_list([r])[0], "scenario": scenario_of[id(r)]}
+                for r in collector.results
+            ],
+        }
+        if args.save_json:
+            Path(args.save_json).write_text(json.dumps(run, indent=2) + "\n")
+            print(f"Results written to {args.save_json}", flush=True)
+        if args.html:
+            Path(args.html).write_text(render_html(build_report_data(run)))
+            print(f"HTML report written to {args.html}", flush=True)
 
     # Output results
     if args.output == "json":

@@ -16,6 +16,8 @@ from .base import (
     OperationParams,
     brightness_f32,
     contrast_f32,
+    gamma_lut,
+    letterbox_geometry,
     rotation_matrix,
 )
 
@@ -340,6 +342,67 @@ class OpenCVAdapter(BaseFrameworkAdapter):
         dx, dy = (1, 0) if axis == "x" else (0, 1)
         return cv2.Sobel(
             img, cv2.CV_32F, dx, dy, ksize=3, borderType=cv2.BORDER_REPLICATE
+        )
+
+    def letterbox(self, img: Any, height: int, width: int) -> Any:
+        """Bilinear fit centred on a zero canvas, polars-cv's geometry."""
+        cv2 = self._get_cv2()
+        new_h, new_w, top, left = letterbox_geometry(*img.shape[:2], height, width)
+        fitted = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        return cv2.copyMakeBorder(
+            fitted,
+            top,
+            height - new_h - top,
+            left,
+            width - new_w - left,
+            cv2.BORDER_CONSTANT,
+            value=0,
+        )
+
+    def adjust_gamma(self, img: Any, gamma: float) -> Any:
+        """A u8 -> f32 lookup table (``cv2.LUT`` keeps the table's dtype)."""
+        return self._get_cv2().LUT(img, gamma_lut(gamma))
+
+    def to_hsv(self, img: Any) -> Any:
+        """``COLOR_RGB2HSV``: hue halved into [0, 180), as polars-cv."""
+        cv2 = self._get_cv2()
+        return cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+
+    def laplacian(self, img: Any) -> Any:
+        """``cv2.Laplacian`` with ``ksize=1`` is the 4-neighbour 3x3 kernel."""
+        cv2 = self._get_cv2()
+        if img.ndim == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        return cv2.Laplacian(img, cv2.CV_32F, ksize=1, borderType=cv2.BORDER_REPLICATE)
+
+    def morphology(self, img: Any, op: str, ksize: int) -> Any:
+        """``cv2.morphologyEx`` with a square kernel, on the grayscale image."""
+        cv2 = self._get_cv2()
+        if img.ndim == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        ops = {
+            "open": cv2.MORPH_OPEN,
+            "close": cv2.MORPH_CLOSE,
+            "gradient": cv2.MORPH_GRADIENT,
+        }
+        kernel = np.ones((ksize, ksize), dtype=np.uint8)
+        return cv2.morphologyEx(img, ops[op], kernel)
+
+    def warp_affine(
+        self, img: Any, matrix: tuple[float, ...], height: int, width: int
+    ) -> Any:
+        """``cv2.warpAffine`` takes the same forward matrix as polars-cv."""
+        cv2 = self._get_cv2()
+        mat = np.asarray(matrix, dtype=np.float64).reshape(2, 3)
+        return cv2.warpAffine(img, mat, (width, height), flags=cv2.INTER_LINEAR)
+
+    def convolve2d(self, img: Any, kernel: tuple[float, ...]) -> Any:
+        """``cv2.filter2D`` (a correlation, as polars-cv's) into f32."""
+        cv2 = self._get_cv2()
+        side = int(round(len(kernel) ** 0.5))
+        k = np.asarray(kernel, dtype=np.float32).reshape(side, side)
+        return cv2.filter2D(
+            img.astype(np.float32), cv2.CV_32F, k, borderType=cv2.BORDER_REPLICATE
         )
 
     def to_numpy(

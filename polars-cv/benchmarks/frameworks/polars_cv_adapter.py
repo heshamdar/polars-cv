@@ -100,22 +100,9 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
         """
         return data
 
-    def _build_pipeline(
-        self, operations: list[OperationParams], sink_format: str = "numpy"
-    ) -> Any:
-        """
-        Build a polars-cv pipeline from operations.
-
-        Args:
-            operations: List of operations to apply.
-            sink_format: Output format for the sink.
-
-        Returns:
-            Pipeline instance.
-        """
-        Pipeline = self._get_pipeline_class()
-        pipe = Pipeline().source("image_bytes")
-
+    def _append_ops(self, pipe: Any, operations: list[OperationParams]) -> Any:
+        """Append ``operations`` to ``pipe``: the one mapping from benchmark
+        operations to polars-cv ops, whatever the source."""
         for op in operations:
             if op.operation == OperationType.RESIZE:
                 # Use bilinear interpolation for consistency across frameworks
@@ -179,8 +166,49 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
                 )
             elif op.operation == OperationType.SOBEL:
                 pipe = pipe.grayscale().sobel(axis=op.sobel_axis or "x")
+            elif op.operation == OperationType.LETTERBOX:
+                pipe = pipe.letterbox(
+                    height=op.height, width=op.width, filter="bilinear"
+                )
+            elif op.operation == OperationType.ADJUST_GAMMA:
+                pipe = pipe.adjust_gamma(gamma=op.gamma)
+            elif op.operation == OperationType.TO_HSV:
+                pipe = pipe.to_hsv()
+            elif op.operation == OperationType.LAPLACIAN:
+                pipe = pipe.grayscale().laplacian()
+            elif op.operation == OperationType.MORPH_OPEN:
+                pipe = pipe.grayscale().morphology_open(ksize=op.ksize)
+            elif op.operation == OperationType.MORPH_CLOSE:
+                pipe = pipe.grayscale().morphology_close(ksize=op.ksize)
+            elif op.operation == OperationType.MORPH_GRADIENT:
+                pipe = pipe.grayscale().morphology_gradient(ksize=op.ksize)
+            elif op.operation == OperationType.WARP_AFFINE:
+                pipe = pipe.warp_affine(
+                    matrix=list(op.matrix), output_size=[op.height, op.width]
+                )
+            elif op.operation == OperationType.CONVOLVE2D:
+                pipe = pipe.convolve2d(list(op.kernel))
+            else:
+                msg = f"No polars-cv mapping for {op.operation}"
+                raise NotImplementedError(msg)
 
         return pipe
+
+    def _build_pipeline(
+        self, operations: list[OperationParams], sink_format: str = "numpy"
+    ) -> Any:
+        """
+        Build a polars-cv pipeline from operations.
+
+        Args:
+            operations: List of operations to apply.
+            sink_format: Output format for the sink.
+
+        Returns:
+            Pipeline instance.
+        """
+        Pipeline = self._get_pipeline_class()
+        return self._append_ops(Pipeline().source("image_bytes"), operations)
 
     def _build_pipeline_blob_source(
         self, operations: list[OperationParams], sink_format: str = "numpy"
@@ -199,71 +227,7 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
             Pipeline instance.
         """
         Pipeline = self._get_pipeline_class()
-        pipe = Pipeline().source("blob")
-
-        for op in operations:
-            if op.operation == OperationType.RESIZE:
-                pipe = pipe.resize(height=op.height, width=op.width, filter="bilinear")
-            elif op.operation == OperationType.GRAYSCALE:
-                pipe = pipe.grayscale()
-            elif op.operation == OperationType.NORMALIZE:
-                pipe = pipe.normalize(method="minmax")
-            elif op.operation == OperationType.FLIP_H:
-                pipe = pipe.flip_h()
-            elif op.operation == OperationType.FLIP_V:
-                pipe = pipe.flip_v()
-            elif op.operation == OperationType.CROP:
-                pipe = pipe.crop(
-                    top=op.crop_top,
-                    left=op.crop_left,
-                    height=op.crop_height,
-                    width=op.crop_width,
-                )
-            elif op.operation == OperationType.BLUR:
-                pipe = pipe.blur(sigma=op.sigma)
-            elif op.operation == OperationType.THRESHOLD:
-                pipe = pipe.grayscale().threshold(value=op.threshold_value)
-            elif op.operation == OperationType.CAST:
-                pipe = pipe.cast(dtype=op.dtype)
-            elif op.operation == OperationType.SCALE:
-                pipe = pipe.scale(factor=op.scale_factor)
-            elif op.operation == OperationType.ROTATE:
-                pipe = pipe.rotate(angle=op.angle, expand=op.expand)
-            elif op.operation == OperationType.ERODE:
-                pipe = pipe.grayscale().erode(
-                    ksize=op.ksize, iterations=op.iterations or 1
-                )
-            elif op.operation == OperationType.DILATE:
-                pipe = pipe.grayscale().dilate(
-                    ksize=op.ksize, iterations=op.iterations or 1
-                )
-            elif op.operation == OperationType.INVERT:
-                pipe = pipe.invert()
-            elif op.operation == OperationType.ADJUST_CONTRAST:
-                pipe = pipe.adjust_contrast(factor=op.contrast_factor)
-            elif op.operation == OperationType.ADJUST_BRIGHTNESS:
-                pipe = pipe.adjust_brightness(factor=op.brightness_factor)
-            elif op.operation == OperationType.SHARPEN:
-                pipe = pipe.sharpen(strength=op.sharpen_strength or 1.0)
-            elif op.operation == OperationType.PAD:
-                pipe = pipe.pad(
-                    top=op.pad_top or 0,
-                    bottom=op.pad_bottom or 0,
-                    left=op.pad_left or 0,
-                    right=op.pad_right or 0,
-                    value=op.pad_value or 0,
-                )
-            elif op.operation == OperationType.HISTOGRAM_EQUALIZE:
-                pipe = pipe.grayscale().equalize_histogram()
-            elif op.operation == OperationType.CANNY:
-                pipe = pipe.grayscale().canny(
-                    low_threshold=op.low_threshold,
-                    high_threshold=op.high_threshold,
-                )
-            elif op.operation == OperationType.SOBEL:
-                pipe = pipe.grayscale().sobel(axis=op.sobel_axis or "x")
-
-        return pipe
+        return self._append_ops(Pipeline().source("blob"), operations)
 
     def prepare_blob_images(self, png_bytes_list: list[bytes]) -> list[bytes]:
         """

@@ -24,6 +24,14 @@ if TYPE_CHECKING:
     from collections.abc import Collection
 
 
+#: A 5x5 kernel no library can take a separable shortcut on.
+CONVOLVE_5X5 = tuple(
+    float(v) / 10
+    for v in [-2, -1, 0, 1, 2, -1, 0, 1, 2, 1, 0, 1, 3, 1, 0]
+    + [1, 2, 1, 0, -1, 2, 1, 0, -1, -2]
+)
+
+
 @dataclass
 class SingleOpBenchmarkConfig:
     """Configuration for a single operation benchmark."""
@@ -227,6 +235,69 @@ def get_single_op_benchmarks(
                 sobel_axis="x",
             ),
             description="Sobel gradient (X axis)",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.LETTERBOX,
+            name="letterbox",
+            params=OperationParams(
+                operation=OperationType.LETTERBOX, height=320, width=320
+            ),
+            description="Aspect-preserving resize into a padded 320x320 canvas",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.ADJUST_GAMMA,
+            name="adjust_gamma",
+            params=OperationParams(operation=OperationType.ADJUST_GAMMA, gamma=0.5),
+            description="Gamma correction (gamma=0.5), f32 output",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.TO_HSV,
+            name="to_hsv",
+            params=OperationParams(operation=OperationType.TO_HSV),
+            description="RGB to HSV (u8, hue in [0, 180))",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.LAPLACIAN,
+            name="laplacian",
+            params=OperationParams(operation=OperationType.LAPLACIAN),
+            description="3x3 Laplacian of the grayscale image (f32)",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.MORPH_OPEN,
+            name="morphology_open",
+            params=OperationParams(operation=OperationType.MORPH_OPEN, ksize=5),
+            description="Grayscale opening (5x5)",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.MORPH_CLOSE,
+            name="morphology_close",
+            params=OperationParams(operation=OperationType.MORPH_CLOSE, ksize=5),
+            description="Grayscale closing (5x5)",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.MORPH_GRADIENT,
+            name="morphology_gradient",
+            params=OperationParams(operation=OperationType.MORPH_GRADIENT, ksize=3),
+            description="Morphological gradient (3x3)",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.WARP_AFFINE,
+            name="warp_affine",
+            params=OperationParams(
+                operation=OperationType.WARP_AFFINE,
+                matrix=(0.9, 0.2, 5.0, -0.1, 1.1, 3.0),
+                height=source_height,
+                width=source_width,
+            ),
+            description="Bilinear affine warp (scale + shear + shift)",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.CONVOLVE2D,
+            name="convolve2d_5x5",
+            params=OperationParams(
+                operation=OperationType.CONVOLVE2D, kernel=CONVOLVE_5X5
+            ),
+            description="Generic 5x5 convolution on every channel (f32)",
         ),
     ]
 
@@ -527,6 +598,9 @@ def run_all_single_ops(
                                     f" {result.throughput_images_per_second:.1f} img/s",
                                     flush=True,
                                 )
+                    except NotImplementedError:
+                        print(" unsupported", flush=True)
+                        continue
                     except Exception as e:
                         if verbose:
                             print(f" ERROR: {e}", flush=True)
