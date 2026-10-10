@@ -264,26 +264,57 @@ fn convert_to_u8_for_image(buf: ViewBuffer) -> ViewBuffer {
         return buf;
     }
 
-    // Each conversion reads the input's runs where they lie: packing a view
-    // first was a second copy of it, the size of the input.
-    fn to_u8<S: crate::core::dtype::ViewType>(buf: &ViewBuffer, f: impl Fn(S) -> u8) -> ViewBuffer {
-        let mut out: Vec<u8> = Vec::with_capacity(buf.layout.num_elements());
-        crate::core::map::for_each_run::<S>(buf, |run| out.extend(run.iter().map(|&x| f(x))));
-        ViewBuffer::from_vec_with_shape(out, buf.shape().to_vec())
-    }
-    match buf.dtype() {
-        // Scale from [0.0, 1.0] to [0, 255], clamping values outside range
-        DType::F32 => to_u8(&buf, |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u8),
-        DType::F64 => to_u8(&buf, |x: f64| (x.clamp(0.0, 1.0) * 255.0).round() as u8),
-        // Scale from [0, 65535] to [0, 255]
-        DType::U16 => to_u8(&buf, |x: u16| (x >> 8) as u8),
-        DType::I16 => to_u8(&buf, |x: i16| x.clamp(0, 255) as u8),
-        DType::U32 => to_u8(&buf, |x: u32| x.min(255) as u8),
-        DType::I32 => to_u8(&buf, |x: i32| x.clamp(0, 255) as u8),
-        DType::I8 => to_u8(&buf, |x: i8| x.max(0) as u8),
-        DType::U64 => to_u8(&buf, |x: u64| x.min(255) as u8),
-        DType::I64 => to_u8(&buf, |x: i64| x.clamp(0, 255) as u8),
-        DType::U8 => unreachable!("a u8 buffer is returned as it is above"),
+    with_dtype!(buf.dtype(), S => map_new::<S, u8, _>(&buf, &ImageU8))
+}
+
+/// The u8 an image op working in u8 reads an element of each dtype as:
+/// floats in `[0, 1]` scaled to `[0, 255]` (clamped first), u16 scaled by
+/// its range (`>> 8`), every other integer saturated into `[0, 255]`.
+#[cfg(feature = "image_interop")]
+trait ToImageU8: crate::core::dtype::ViewType {
+    fn to_image_u8(self) -> u8;
+}
+
+#[cfg(feature = "image_interop")]
+macro_rules! to_image_u8 {
+    ($($t:ty => |$x:ident| $body:expr),+ $(,)?) => {$(
+        impl ToImageU8 for $t {
+            #[inline(always)]
+            fn to_image_u8(self) -> u8 {
+                let $x = self;
+                $body
+            }
+        }
+    )+};
+}
+
+#[cfg(feature = "image_interop")]
+to_image_u8!(
+    u8 => |x| x,
+    f32 => |x| (x.clamp(0.0, 1.0) * 255.0).round() as u8,
+    f64 => |x| (x.clamp(0.0, 1.0) * 255.0).round() as u8,
+    u16 => |x| (x >> 8) as u8,
+    i8 => |x| x.max(0) as u8,
+    i16 => |x| x.clamp(0, 255) as u8,
+    i32 => |x| x.clamp(0, 255) as u8,
+    i64 => |x| x.clamp(0, 255) as u8,
+    u32 => |x| x.min(255) as u8,
+    u64 => |x| x.min(255) as u8,
+);
+
+/// [`ToImageU8`] as an element map (`core::map`): dispatched, reading any
+/// view where it lies.
+#[cfg(feature = "image_interop")]
+struct ImageU8;
+
+// SAFETY: `map_into` writes every slot of `dst`.
+#[cfg(feature = "image_interop")]
+unsafe impl<S: ToImageU8> ElementMap<S, u8> for ImageU8 {
+    #[inline(always)]
+    fn map_into(&self, src: &[S], dst: &mut [MaybeUninit<u8>], _at: usize) {
+        for (d, &x) in dst.iter_mut().zip(src) {
+            d.write(x.to_image_u8());
+        }
     }
 }
 
@@ -451,9 +482,9 @@ fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
     }
     fn gray<T: Luma>(buf: &ViewBuffer, channels: usize) -> ViewBuffer {
         match channels {
-            2 => map_pixels::<T, T, 2, _>(buf, &Grayscale),
-            3 => map_pixels::<T, T, 3, _>(buf, &Grayscale),
-            4 => map_pixels::<T, T, 4, _>(buf, &Grayscale),
+            2 => map_pixels::<T, T, 2, 1, _>(buf, &Grayscale),
+            3 => map_pixels::<T, T, 3, 1, _>(buf, &Grayscale),
+            4 => map_pixels::<T, T, 4, 1, _>(buf, &Grayscale),
             other => unreachable!("grayscale maps 2-4 channels, not {other}"),
         }
     }
@@ -468,7 +499,7 @@ struct Grayscale;
 // SAFETY: `map_into` writes one value per pixel of `src`, into `dst`'s
 // matching slot.
 #[cfg(feature = "image_interop")]
-unsafe impl<T: crate::ops::color::Luma, const C: usize> PixelMap<T, T, C> for Grayscale {
+unsafe impl<T: crate::ops::color::Luma, const C: usize> PixelMap<T, T, C, 1> for Grayscale {
     #[inline(always)]
     fn map_into(&self, src: &[[T; C]], dst: &mut [MaybeUninit<T>]) {
         for (d, p) in dst.iter_mut().zip(src) {

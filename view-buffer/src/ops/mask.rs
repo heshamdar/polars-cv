@@ -3,8 +3,11 @@
 //! Moved from the polars-cv plugin's graph executor so all buffer math lives
 //! in the engine; the graph layer only resolves which node provides the mask.
 
+use std::mem::MaybeUninit;
+
 use crate::core::buffer::ViewBuffer;
-use crate::core::dtype::DType;
+use crate::core::dtype::{DType, ViewType};
+use crate::core::map::{map_new, ElementMap};
 use crate::ops::binary::BinaryOp;
 
 /// Apply a mask to a buffer via normalized blending (`pixel * mask`).
@@ -50,60 +53,64 @@ pub fn apply_mask(buffer: &ViewBuffer, mask: &ViewBuffer, invert: bool) -> ViewB
         let h = mask_shape[0];
         let w = mask_shape[1];
         let c = buf_shape[2];
-        // Expanded straight from the mask where it lies (its runs, in
-        // logical order): packing a mask view first was a second mask-sized
-        // copy.
-        fn expand<T: crate::core::dtype::ViewType>(
-            mask: &ViewBuffer,
-            (h, w, c): (usize, usize, usize),
-            f: impl Fn(T) -> T,
-        ) -> ViewBuffer {
-            let mut expanded: Vec<T> = Vec::with_capacity(h * w * c);
-            crate::core::map::for_each_run::<T>(mask, |run| {
-                for &raw in run {
-                    expanded.extend(std::iter::repeat_n(f(raw), c));
-                }
-            });
-            ViewBuffer::from_vec_with_shape(expanded, vec![h, w, c])
-        }
+        // The mask broadcast across the channels (a stride-0 axis) and
+        // packed, inverted on the way when asked, straight from the view.
         if is_float {
-            // For float buffers, mask values should be in [0, 1]
-            expand(&mask.cast_to(DType::F32), (h, w, c), |v: f32| {
-                if invert {
-                    1.0 - v
-                } else {
-                    v
-                }
-            })
+            expand::<f32>(&mask.cast_to(DType::F32), (h, w, c), invert)
         } else {
-            // For U8 buffers, mask values in [0, 255]
-            expand(&mask.cast_to(DType::U8), (h, w, c), |v: u8| {
-                if invert {
-                    255 - v
-                } else {
-                    v
-                }
-            })
+            expand::<u8>(&mask.cast_to(DType::U8), (h, w, c), invert)
         }
     } else if invert {
-        // Written once, straight from the mask where it lies (`append_to`
-        // walks a view), then inverted in place: packing the view first was
-        // a second mask-sized copy.
+        // Written once, straight from the mask where it lies.
         if is_float {
-            let mut inverted: Vec<f32> = Vec::new();
-            mask.cast_to(DType::F32).append_to(&mut inverted);
-            inverted.iter_mut().for_each(|v| *v = 1.0 - *v);
-            ViewBuffer::from_vec_with_shape(inverted, mask_shape.to_vec())
+            map_new::<f32, f32, _>(&mask.cast_to(DType::F32), &InvertMask)
         } else {
-            let mut inverted: Vec<u8> = Vec::new();
-            mask.cast_to(DType::U8).append_to(&mut inverted);
-            inverted.iter_mut().for_each(|v| *v = 255 - *v);
-            ViewBuffer::from_vec_with_shape(inverted, mask_shape.to_vec())
+            map_new::<u8, u8, _>(&mask.cast_to(DType::U8), &InvertMask)
         }
     } else {
         mask.clone()
     };
     BinaryOp::Blend.execute(buffer, &effective_mask)
+}
+
+/// A `[h, w]` mask broadcast to `[h, w, c]` and packed (inverted on the way
+/// when `invert`): a stride-0 channel axis, read through its walk.
+fn expand<T: ViewType>(
+    mask: &ViewBuffer,
+    (h, w, c): (usize, usize, usize),
+    invert: bool,
+) -> ViewBuffer
+where
+    InvertMask: ElementMap<T, T>,
+{
+    let broadcast = mask.broadcast_to(&[c, h, w]).permute(&[1, 2, 0]);
+    if invert {
+        map_new::<T, T, _>(&broadcast, &InvertMask)
+    } else {
+        broadcast.to_contiguous()
+    }
+}
+
+/// A mask inverted: `255 - m` for a u8 mask, `1 - m` for an f32 one.
+struct InvertMask;
+
+// SAFETY (both): `map_into` writes every slot of `dst`.
+unsafe impl ElementMap<u8, u8> for InvertMask {
+    #[inline(always)]
+    fn map_into(&self, src: &[u8], dst: &mut [MaybeUninit<u8>], _at: usize) {
+        for (d, &m) in dst.iter_mut().zip(src) {
+            d.write(255 - m);
+        }
+    }
+}
+
+unsafe impl ElementMap<f32, f32> for InvertMask {
+    #[inline(always)]
+    fn map_into(&self, src: &[f32], dst: &mut [MaybeUninit<f32>], _at: usize) {
+        for (d, &m) in dst.iter_mut().zip(src) {
+            d.write(1.0 - m);
+        }
+    }
 }
 
 #[cfg(test)]
