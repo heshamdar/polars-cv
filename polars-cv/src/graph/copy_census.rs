@@ -72,10 +72,11 @@ const PACKED_FIRST: &str =
 const BOTH_OPERANDS: &str =
     "the planner packs the left operand and the kernel packs both operands again";
 
-/// fast_image_resize reads packed rows (`interop/fir.rs`): a crop or a
-/// vertical flip is read in place, a transpose or a horizontal flip is not.
+/// An op that reads packed rows (`RequiresDenseRows`, or fast_image_resize's
+/// own row reader in `interop/fir.rs`): a crop or a vertical flip is read in
+/// place, a transpose or a horizontal flip, which has no packed rows, is not.
 const PACKED_ROWS_ONLY: &str =
-    "fast_image_resize reads packed rows only; a transpose or horizontal flip has none";
+    "reads packed rows only; a transpose or horizontal flip has none and is packed";
 
 /// View-caused copies an op is known to pay, per [`COUNTED`] layout, and why.
 ///
@@ -93,7 +94,7 @@ const KNOWN: &[(&str, [usize; 4], &str)] = &[
     ("minimum", [2, 2, 2, 2], BOTH_OPERANDS),
     ("multiply", [2, 2, 2, 2], BOTH_OPERANDS),
     ("subtract", [2, 2, 2, 2], BOTH_OPERANDS),
-    ("blur", [1, 1, 1, 1], PACKED_FIRST),
+    ("blur", [0, 0, 1, 1], PACKED_ROWS_ONLY),
     (
         "canny",
         [1, 1, 1, 2],
@@ -102,14 +103,14 @@ const KNOWN: &[(&str, [usize; 4], &str)] = &[
     ("channel_swap", [1, 1, 1, 1], PACKED_FIRST),
     ("convolve2d", [1, 1, 1, 1], PACKED_FIRST),
     ("cvt_color", [1, 1, 1, 1], PACKED_FIRST),
-    ("dilate", [1, 1, 1, 1], PACKED_FIRST),
+    ("dilate", [0, 0, 1, 1], PACKED_ROWS_ONLY),
     ("equalize_histogram", [1, 1, 1, 1], PACKED_FIRST),
-    ("erode", [1, 1, 1, 1], PACKED_FIRST),
+    ("erode", [0, 0, 1, 1], PACKED_ROWS_ONLY),
     ("extract_contours", [1, 1, 1, 1], PACKED_FIRST),
     ("histogram", [1, 1, 1, 1], PACKED_FIRST),
-    ("morphology_gradient", [1, 1, 1, 1], PACKED_FIRST),
-    ("pad", [1, 1, 1, 1], PACKED_FIRST),
-    ("pad_to_size", [1, 1, 1, 1], PACKED_FIRST),
+    ("morphology_gradient", [0, 0, 1, 1], PACKED_ROWS_ONLY),
+    ("pad", [0, 0, 1, 1], PACKED_ROWS_ONLY),
+    ("pad_to_size", [0, 0, 1, 1], PACKED_ROWS_ONLY),
     ("perceptual_hash", [1, 1, 1, 1], PACKED_FIRST),
     ("reduce_argmax", [1, 1, 1, 1], PACKED_FIRST),
     ("reduce_argmin", [1, 1, 1, 1], PACKED_FIRST),

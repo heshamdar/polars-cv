@@ -167,9 +167,13 @@ a heap copy per call was most of the row (`layout_bookkeeping_allocates_nothing`
 
 Row-wise kernels read a view where it lies through `ViewBuffer::dense_rows`
 (contiguous, crops, vertical flips) instead of calling `to_contiguous()` first.
-Resize hands such a view to fast_image_resize through
-`interop::fir::FirViewAdapter`, so the resizes declare
-`MemoryEffect::StridePreserving` and pack only a layout the adapter refuses.
+An op whose kernel reads that way declares `MemoryEffect::RequiresDenseRows`:
+the planner packs only a layout without packed rows (a transpose, a
+horizontal flip) through `ViewBuffer::to_dense_rows`, and the kernel reads rows
+at the view's own stride (blur, erode/dilate/gradient, pad). Resize hands such
+a view to fast_image_resize through `interop::fir::FirViewAdapter` and packs
+any other layout itself, declaring `MemoryEffect::StridePreserving`. What a
+view costs each op is counted by `polars-cv/src/graph/copy_census.rs`.
 
 ### Operation Categories
 
@@ -202,7 +206,7 @@ pub trait Op {
     // The contract — seven required rules, no defaults.
     fn shape(&self) -> OpShape; // the one authority for shape arithmetic
     fn output_dtype_rule(&self) -> OutputDTypeRule;
-    fn memory_effect(&self) -> MemoryEffect; // View, StridePreserving, RequiresContiguous
+    fn memory_effect(&self) -> MemoryEffect; // View, StridePreserving, RequiresDenseRows, RequiresContiguous, ViewOfContiguous
     fn spatial_dependency(&self) -> SpatialDependency; // Global is the safe answer
     fn identity_rule(&self) -> IdentityRule;           // Never is the safe answer
     fn is_spatial_window(&self) -> bool; // a hoistable H/W window (spatial pushdown)

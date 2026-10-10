@@ -1028,17 +1028,13 @@ fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
         ImageOpKind::Dilate { ksize, iterations } => apply_dilate(work_buf, ksize, iterations),
         ImageOpKind::MorphGradient { ksize } => apply_morph_gradient(work_buf, ksize),
         ImageOpKind::Blur { sigma } => {
-            let contig_buf = if work_buf.layout.is_contiguous() {
-                work_buf
-            } else {
-                work_buf.to_contiguous()
-            };
+            let rows_buf = work_buf.to_dense_rows();
             // Every dtype in its own element type, accumulating in its
             // `DType::accumulator`.
-            let dtype = contig_buf.dtype();
+            let dtype = rows_buf.dtype();
             with_dtype!(dtype, T => match dtype.accumulator() {
-                DType::F64 => separable_gaussian_blur_typed::<T, f64>(&contig_buf, sigma),
-                _ => separable_gaussian_blur_typed::<T, f32>(&contig_buf, sigma),
+                DType::F64 => separable_gaussian_blur_typed::<T, f64>(&rows_buf, sigma),
+                _ => separable_gaussian_blur_typed::<T, f32>(&rows_buf, sigma),
             })
         }
         // Deferred resizes: dimensions come from the kind's shape — the same
@@ -1487,12 +1483,12 @@ mod blur_dispatch_tests {
 
 #[cfg(feature = "image_interop")]
 #[inline(always)]
-fn separable_gaussian_blur_body<T, F>(contig_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
+fn separable_gaussian_blur_body<T, F>(rows_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
 where
     T: crate::core::dtype::ViewType + Default + Copy + CastFrom<F>,
     F: BlurAcc + CastFrom<T>,
 {
-    let shape = contig_buf.shape();
+    let shape = rows_buf.shape();
     let h = shape[0];
     let w = shape[1];
     let c = shape.get(2).copied().unwrap_or(1);
@@ -1501,7 +1497,10 @@ where
 
     let kernel: Vec<F> = gaussian_kernel_1d(sigma);
     let radius = kernel.len() / 2;
-    let src: &[T] = contig_buf.as_slice::<T>();
+    // Read in place, at the view's own row stride (a crop, a vertical flip).
+    let src_rows: Vec<&[T]> = rows_buf
+        .dense_rows::<T>()
+        .expect("the blur is handed packed rows (`to_dense_rows`)");
 
     // The scratch slab is taken out of the thread-local for the duration of
     // the call rather than used inside a `with` closure: the passes must be in
@@ -1520,7 +1519,7 @@ where
 
         // ── Horizontal pass (T → F row → F) ─────────────────────────────
         for y in 0..h {
-            for (dst, &v) in row_in.iter_mut().zip(&src[y * wc..(y + 1) * wc]) {
+            for (dst, &v) in row_in.iter_mut().zip(src_rows[y]) {
                 *dst = F::cast_from(v);
             }
             let row_out = &mut horiz[y * wc..(y + 1) * wc];
@@ -1762,16 +1761,19 @@ fn morph_minmax_typed<T, const IS_MIN: bool>(buf: &ViewBuffer, radius: usize) ->
 where
     T: crate::core::dtype::ViewType + Default + Copy + PartialOrd,
 {
-    let contig = buf.to_contiguous();
-    let shape = contig.shape();
+    // Read in place, at the view's own row stride (a crop, a vertical flip).
+    let rows_buf = buf.to_dense_rows();
+    let shape = rows_buf.shape();
     let h = shape[0];
     let w = shape[1];
-    let src: &[T] = contig.as_slice::<T>();
+    let src_rows: Vec<&[T]> = rows_buf
+        .dense_rows::<T>()
+        .expect("to_dense_rows packs the rows");
 
     // ── Row pass ─────────────────────────────────────────────────────────
     let mut row_out: Vec<T> = vec![T::default(); h * w];
     for y in 0..h {
-        let row_in = &src[y * w..(y + 1) * w];
+        let row_in = src_rows[y];
         let row_dst = &mut row_out[y * w..(y + 1) * w];
 
         if w <= 2 * radius {

@@ -18,6 +18,9 @@ pub enum PlanStep {
     Filter(ConvolveOp),
     /// Ensure the buffer is contiguous before passing to the next op.
     MaterializeContiguous,
+    /// Ensure each row of the buffer is packed (any row stride) before
+    /// passing it to the next op.
+    MaterializeDenseRows,
 }
 
 /// A compiled execution plan: a source buffer and an ordered list of steps.
@@ -58,5 +61,6 @@ pub(crate) fn apply_step(buf: ViewBuffer, step: PlanStep) -> ViewBuffer {
         PlanStep::Color(op) => apply_color_convert(&buf, &op),
         PlanStep::Filter(op) => apply_convolve2d(&buf, &op),
         PlanStep::MaterializeContiguous => buf.to_contiguous(),
+        PlanStep::MaterializeDenseRows => buf.to_dense_rows(),
     }
 }
