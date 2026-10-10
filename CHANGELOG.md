@@ -69,6 +69,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   into the buffer Polars receives (`ViewBuffer::packed_polars_buffer`), held to
   one allocation by `copy_counts.rs`.
 
+### Fixed
+
+- **`equalize_histogram` and `perceptual_hash` of a u64 or i64 image
+  saturate into u8 instead of wrapping.** Their conversion to u8 sent the
+  64-bit integers through a plain cast, so an i64 300 became 44 and a -5
+  became 251, while every narrower integer saturated (300 to 255, -5 to 0).
+  The 64-bit dtypes now saturate too, and the conversion matches every dtype
+  explicitly rather than through a fallback arm.
+
 ### Changed
 
 - **`scripts/verify.sh` runs the slow lane only with `--slow`.** By default it
