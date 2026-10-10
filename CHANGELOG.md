@@ -37,28 +37,33 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   the view before casting the copy. A u8 crop, flip or transpose now costs them
   no extra copy.
 - **Binary ops (`add`, `subtract`, `multiply`, `divide`, `blend`, `maximum`,
-  `minimum`, `bitwise_*`, `apply_mask`) read a crop or a vertical flip where it
-  lies.** `zip_with` packed both operands, whatever their layout: two
-  view-sized copies per call on any view. A contiguous operand of any rank,
-  and an operand whose rows are each packed, are now read in place: zipped
-  row against row, or read a run at a time when the dtypes differ or one
-  broadcasts. Only a transpose or a horizontal flip is packed, since walking
-  one element by element measured ~4x slower than packing it. 1024×1024×3 u8
-  `add`: crop 0.90 → 0.36 ms, vertical flip 0.84 → 0.33 ms, others
-  unchanged. A vertical flip added to a u16 image: 2.4–3.3 → 0.7–0.8 ms at
-  1024×1024×3, 32 → 0.6 ms at 65536×4×3. A contiguous rank-1 or rank-4
-  operand is no longer copied: 3M-element u8 `add` 0.83 → 0.23 ms, a
-  [12, 256, 256, 4] f32 batch 7.2 → 2.0 ms. An f32 `blend` with a [h, w, 1]
-  mask: 8.6 → 7.0 ms. `apply_mask` writes an inverted mask, or a 2-D mask expanded
-  across the channels, once from the view instead of packing it first.
+  `minimum`, `bitwise_*`, `apply_mask`) read their operands where they lie,
+  in any layout.** `zip_with` packed both operands, whatever their layout:
+  two view-sized copies per call on any view. Each operand, broadcast to the
+  output, is now read a block at a time through its walk's cursor
+  (`Walk::cursor`): a block inside a packed unit (a contiguous operand of any
+  rank, a row of a crop or a vertical flip) in place, any other (a transpose,
+  a horizontal flip, a broadcast) packed into a stack scratch, never the whole
+  operand. An operand broadcast along its trailing axes (a `[h, w, 1]` mask)
+  is read once per element and repeated in the block. 1024×1024×3 u8 `add`:
+  crop 0.90 → 0.24 ms, vertical flip 0.84 → 0.33 ms. Measured with
+  `benches/kernels.rs` at 1024 against this cycle's first in-place reader:
+  u8 + u16 over a transpose 3.4 → 2.9 ms, over a vertical flip at 65536×4×3
+  0.59 → 0.20 ms (32 ms before this cycle), an f32 `blend` with a
+  `[h, w, 1]` mask 9.5 → 5.0 ms, with a `[3]` channel vector 7.6 → 2.3 ms,
+  with a `[h, 1, 3]` column 8.6 → 2.7 ms. A contiguous rank-1 or rank-4
+  operand is not copied: 3M-element u8 `add` 0.83 → 0.23 ms. `apply_mask`
+  writes an inverted mask, or a 2-D mask expanded across the channels, once
+  from the view instead of packing it first.
 - **Resize of f64, `convert_color` of f64, `convolve2d` of f32 and f64, and
   `equalize_histogram` of any dtype but u8 read a crop or a flip in place.** Each converted its input
   before reading it, and packed it when the conversion was the identity (f64
   to f64) or after it (`equalize_histogram`'s conversion to u8): one
   view-sized copy per call. They now read the view once, in the conversion.
-  `convolve2d` reads its accumulator-dtype input at the view's own strides:
-  rows in place where they are packed, a transpose or a horizontal flip
-  gathered a row at a time into a ring of `ksize` rows. 1024×1024×3 f32, 3×3:
+  `convolve2d` reads its accumulator-dtype input a row at a time, top down:
+  rows in place where they are packed, a transpose's or a horizontal flip's
+  each packed once, through its walk, into a ring of the `ksize` rows a tap
+  reaches. 1024×1024×3 f32, 3×3:
   crop 9 → 6.3 ms, vertical flip 27 → 7 ms, horizontal flip 27 → 12 ms,
   transpose 31 → 17.5 ms; contiguous input and u8 input unchanged.
 - **A tensor sink that has to copy a view copies it once.** When a numpy,

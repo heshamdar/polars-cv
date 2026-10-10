@@ -75,32 +75,11 @@ const PACKED_FIRST: &str =
 const PACKED_ROWS_ONLY: &str =
     "reads packed rows only; a transpose or horizontal flip has none and is packed";
 
-/// A binary op reads each operand's packed rows in place and packs an operand
-/// without them (`zip_with`). The census reads one view as both operands, so
-/// a transpose or horizontal flip is packed twice.
-const BOTH_PACKED: &str =
-    "packs each operand without packed rows; walking one element by element measured ~4x slower";
-
 /// View-caused copies an op is known to pay, per [`COUNTED`] layout, and why.
 ///
 /// Each is a debt or a limit of what reads the input, not a target. Removing
 /// a copy means changing its row here, and the census fails until you do.
 const KNOWN: &[(&str, [usize; 4], &str)] = &[
-    ("add", [0, 0, 2, 2], BOTH_PACKED),
-    (
-        "apply_mask",
-        [0, 0, 1, 1],
-        "packs an image without packed rows; the inverted mask is written packed already",
-    ),
-    ("bitwise_and", [0, 0, 2, 2], BOTH_PACKED),
-    ("bitwise_or", [0, 0, 2, 2], BOTH_PACKED),
-    ("bitwise_xor", [0, 0, 2, 2], BOTH_PACKED),
-    ("blend", [0, 0, 2, 2], BOTH_PACKED),
-    ("divide", [0, 0, 2, 2], BOTH_PACKED),
-    ("maximum", [0, 0, 2, 2], BOTH_PACKED),
-    ("minimum", [0, 0, 2, 2], BOTH_PACKED),
-    ("multiply", [0, 0, 2, 2], BOTH_PACKED),
-    ("subtract", [0, 0, 2, 2], BOTH_PACKED),
     ("blur", [0, 0, 1, 1], PACKED_ROWS_ONLY),
     (
         "canny",
