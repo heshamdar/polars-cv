@@ -115,6 +115,7 @@ A null in a parameter column fails the query by default;
 | `blob` | Self-describing VIEW binary | Round-tripping buffers between pipelines |
 | `list` | Polars nested List | Internal Polars analysis |
 | `array` | Fixed-size Polars Array | Fixed-shape tensors |
+| `fixed_shape_tensor` | Arrow's canonical `arrow.fixed_shape_tensor` | Tensor columns for PyArrow, Ray, Lance (see [Extension Types](../user-guide/concepts/extension-types.md#arrows-tensor-type)) |
 | `native` | Python primitive | Scalars (Area, Mean) |
 
 The `numpy` and `torch` sinks accept `dtype="f16"` to downcast the output tensor
