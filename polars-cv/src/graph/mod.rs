@@ -15,6 +15,9 @@ pub(crate) mod step;
 
 pub(crate) mod sink_kind;
 
+#[cfg(test)]
+mod copy_census;
+
 #[path = "decode.rs"]
 pub(crate) mod decode;
 
