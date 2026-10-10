@@ -21,6 +21,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Performance
 
+- **Blur, erode, dilate, morphology gradient, pad and pad_to_size read a crop
+  or a vertical flip where it lies.** These ops walk their input one row at a
+  time. They used to declare `RequiresContiguous`, so the planner packed a view
+  first, even one whose rows are each packed and that only a row stride sets
+  apart. They now declare `RequiresDenseRows`, a new `MemoryEffect`. The
+  planner packs only a layout without packed rows (a transpose, a horizontal
+  flip), through `ViewBuffer::to_dense_rows`, and the kernels read rows at the
+  view's own stride. One view-sized copy fewer per crop→op, held by the copy
+  census and by `tests/dense_rows_ops.rs` (byte-equal to the packed copy).
 - **A tensor sink that has to copy a view copies it once.** When a numpy,
   ndarray or torch row could not hand its storage over (a slice below the 50%
   rule, a buffer another output shares), the view was packed with

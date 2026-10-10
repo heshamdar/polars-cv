@@ -155,8 +155,11 @@ fn pad_generic<T: FillValue>(
     let input_row = input_w * channels;
     let output_row = output_w * channels;
 
-    let contig = buffer.to_contiguous();
-    let input = contig.as_slice::<T>();
+    // Read in place, at the view's own row stride (a crop, a vertical flip).
+    let rows_buf = buffer.to_dense_rows();
+    let rows: Vec<&[T]> = rows_buf
+        .dense_rows::<T>()
+        .expect("to_dense_rows packs the rows");
     let fill = T::from_f32(value);
     let mut output = vec![fill; output_h * output_w * channels];
     let out_shape = if shape.len() == 2 {
@@ -166,7 +169,7 @@ fn pad_generic<T: FillValue>(
     };
     // An empty input is extended only by "constant" (the op's contract), so
     // under any other mode its output is empty too: nothing to read or write.
-    if input.is_empty() && mode != PadMode::Constant {
+    if input_h * input_row == 0 && mode != PadMode::Constant {
         debug_assert!(
             output.is_empty(),
             "the contract refuses extending an empty axis"
@@ -177,30 +180,27 @@ fn pad_generic<T: FillValue>(
     match mode {
         PadMode::Constant => {
             // Interior rows are memcpy'd; the fill initialization covers borders.
-            for y in 0..input_h {
-                let src = y * input_row;
+            for (y, row) in rows.iter().enumerate() {
                 let dst = (y + top) * output_row + left * channels;
-                output[dst..dst + input_row].copy_from_slice(&input[src..src + input_row]);
+                output[dst..dst + input_row].copy_from_slice(row);
             }
         }
         PadMode::Edge => {
             for dst_y in 0..output_h {
                 let src_y = dst_y.saturating_sub(top).min(input_h - 1);
-                let src_row_start = src_y * input_row;
+                let src_row = rows[src_y];
                 let dst_row_start = dst_y * output_row;
                 // Left border: replicate the first pixel.
-                let first = &input[src_row_start..src_row_start + channels];
+                let first = &src_row[..channels];
                 for i in 0..left {
                     let d = dst_row_start + i * channels;
                     output[d..d + channels].copy_from_slice(first);
                 }
                 // Interior: copy the source row.
                 let d = dst_row_start + left * channels;
-                output[d..d + input_row]
-                    .copy_from_slice(&input[src_row_start..src_row_start + input_row]);
+                output[d..d + input_row].copy_from_slice(src_row);
                 // Right border: replicate the last pixel.
-                let last_start = src_row_start + (input_w - 1) * channels;
-                let last = &input[last_start..last_start + channels];
+                let last = &src_row[(input_w - 1) * channels..];
                 for i in 0..right {
                     let d = dst_row_start + (left + input_w + i) * channels;
                     output[d..d + channels].copy_from_slice(last);
@@ -213,9 +213,9 @@ fn pad_generic<T: FillValue>(
                 let src_y = reflect_index(dst_y as isize - top as isize, input_h, symmetric);
                 for dst_x in 0..output_w {
                     let src_x = reflect_index(dst_x as isize - left as isize, input_w, symmetric);
-                    let s = (src_y * input_w + src_x) * channels;
+                    let s = src_x * channels;
                     let d = (dst_y * output_w + dst_x) * channels;
-                    output[d..d + channels].copy_from_slice(&input[s..s + channels]);
+                    output[d..d + channels].copy_from_slice(&rows[src_y][s..s + channels]);
                 }
             }
         }

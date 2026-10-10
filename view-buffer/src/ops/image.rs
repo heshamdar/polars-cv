@@ -501,18 +501,19 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::ResizeMax { .. }
             | ImageOpKind::ResizeMin { .. }
             | ImageOpKind::Letterbox { .. } => MemoryEffect::StridePreserving,
-            ImageOpKind::Blur { .. } => MemoryEffect::RequiresContiguous,
+            // Read their input one packed row at a time (`to_dense_rows`).
+            ImageOpKind::Blur { .. }
+            | ImageOpKind::Erode { .. }
+            | ImageOpKind::Dilate { .. }
+            | ImageOpKind::MorphGradient { .. }
+            | ImageOpKind::Pad { .. }
+            | ImageOpKind::PadToSize { .. } => MemoryEffect::RequiresDenseRows,
             // Reads rows packed within themselves in place and packs any
             // other layout itself (`grayscale_strided`).
             ImageOpKind::Grayscale => MemoryEffect::StridePreserving,
             ImageOpKind::Canny { .. } => MemoryEffect::RequiresContiguous,
             ImageOpKind::HistogramEqualize => MemoryEffect::RequiresContiguous,
-            ImageOpKind::Erode { .. } => MemoryEffect::RequiresContiguous,
-            ImageOpKind::Dilate { .. } => MemoryEffect::RequiresContiguous,
-            ImageOpKind::MorphGradient { .. } => MemoryEffect::RequiresContiguous,
-            ImageOpKind::Pad { .. }
-            | ImageOpKind::PadToSize { .. }
-            | ImageOpKind::ChannelSwap { .. } => MemoryEffect::RequiresContiguous,
+            ImageOpKind::ChannelSwap { .. } => MemoryEffect::RequiresContiguous,
         }
     }
 

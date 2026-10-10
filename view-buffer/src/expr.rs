@@ -6,7 +6,7 @@ use crate::core::layout::Layout;
 use crate::execution::{ExecutionPlan, PlanStep};
 use crate::ops::affine::AffineParams;
 use crate::ops::scalar::FusedKernel;
-use crate::ops::traits::MemoryEffect;
+use crate::ops::traits::{InputLayout, MemoryEffect};
 use crate::ops::{
     ColorConvertOp, ComputeOp, ConvolveOp, FilterType, ImageOp, ImageOpKind, Normalization, Op,
     ViewDto, ViewOp,
@@ -678,17 +678,24 @@ impl ViewExpr {
     }
 }
 
-/// Pack the plan's current buffer before an op that needs a contiguous input
-/// ([`MemoryEffect::needs_contiguous_input`]) when it may not be one: after a
-/// view step, or from a strided source. The one place the planner decides
-/// it, for every kind of step. Packing a buffer that turns out contiguous
-/// returns it as it is.
+/// Pack the plan's current buffer before an op that needs a layout it may not
+/// have ([`MemoryEffect::input_layout`]): after a view step, or from a source
+/// without it. The one place the planner decides it, for every kind of step.
+/// Each step checks the buffer it is handed and packs only when the layout is
+/// not there, so a planned step over a buffer that has it returns it as it is.
 fn materialize_if_needed(plan: &mut ExecutionPlan, effect: MemoryEffect) {
-    if effect.needs_contiguous_input()
-        && (plan_ends_in_view(plan) || !plan.source.layout.is_contiguous())
-    {
-        plan.steps.push(PlanStep::MaterializeContiguous);
-    }
+    let source = plan.source.layout_facts();
+    let step = match effect.input_layout() {
+        InputLayout::Any => return,
+        InputLayout::Contiguous if plan_ends_in_view(plan) || !source.is_contiguous() => {
+            PlanStep::MaterializeContiguous
+        }
+        InputLayout::DenseRows if plan_ends_in_view(plan) || !source.is_dense_rows() => {
+            PlanStep::MaterializeDenseRows
+        }
+        InputLayout::Contiguous | InputLayout::DenseRows => return,
+    };
+    plan.steps.push(step);
 }
 
 fn plan_ends_in_view(plan: &ExecutionPlan) -> bool {

@@ -23,19 +23,38 @@ pub enum MemoryEffect {
     StridePreserving,
     /// Allocates, and needs its input contiguous first.
     RequiresContiguous,
+    /// Allocates, and reads its input one packed row at a time
+    /// ([`ViewBuffer::dense_rows`](crate::ViewBuffer)): a rank-2/3 view whose
+    /// rows are each packed (a crop, a vertical flip: any row stride) is read
+    /// where it lies, and any other layout is packed first.
+    RequiresDenseRows,
     /// Metadata-only over a contiguous input (`reshape`: row-major order is
     /// what it reinterprets); a strided input is packed first.
     ViewOfContiguous,
 }
 
+/// The layout an op needs its input in, which the planner supplies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputLayout {
+    /// Any layout: the op reads strides itself, or moves no data.
+    Any,
+    /// Row-major contiguous.
+    Contiguous,
+    /// Each row packed, at any row stride.
+    DenseRows,
+}
+
 impl MemoryEffect {
-    /// Whether the planner must hand this op a contiguous input — the one
-    /// rule `ViewExpr::build_plan` reads for every kind of step.
-    pub fn needs_contiguous_input(self) -> bool {
-        matches!(
-            self,
-            MemoryEffect::RequiresContiguous | MemoryEffect::ViewOfContiguous
-        )
+    /// The layout the planner must hand this op — the one rule
+    /// `ViewExpr::build_plan` reads for every kind of step.
+    pub fn input_layout(self) -> InputLayout {
+        match self {
+            MemoryEffect::View | MemoryEffect::StridePreserving => InputLayout::Any,
+            MemoryEffect::RequiresContiguous | MemoryEffect::ViewOfContiguous => {
+                InputLayout::Contiguous
+            }
+            MemoryEffect::RequiresDenseRows => InputLayout::DenseRows,
+        }
     }
 }
 

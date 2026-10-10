@@ -1089,7 +1089,6 @@ impl ViewBuffer {
     ///
     /// # Panics
     /// Panics if `T` is not this buffer's dtype.
-    #[cfg(feature = "image_interop")]
     pub(crate) fn dense_rows<T: ViewType>(&self) -> Option<Vec<&[T]>> {
         assert_eq!(
             T::DTYPE,
@@ -1325,6 +1324,20 @@ impl ViewBuffer {
             return self.clone();
         }
         self.packed()
+    }
+
+    /// This view with each row packed, at any row stride: itself when it
+    /// already is (a crop or a vertical flip is), else packed.
+    ///
+    /// What an op declaring `RequiresDenseRows` reads its input through, and
+    /// what the planner's `MaterializeDenseRows` step applies: the rows are
+    /// then read in place with [`dense_rows`](Self::dense_rows).
+    pub fn to_dense_rows(&self) -> Self {
+        if self.layout_facts().is_dense_rows() {
+            self.clone()
+        } else {
+            self.packed()
+        }
     }
 
     /// This view with storage that holds exactly its elements, row-major,

@@ -80,7 +80,10 @@ fn test_view_ops_declare_zero_copy() {
 fn test_reshape_declares_a_view_of_contiguous_input() {
     let op: ViewOp = ViewOp::Reshape { shape: vec![100] };
     assert_eq!(op.memory_effect(), MemoryEffect::ViewOfContiguous);
-    assert!(op.memory_effect().needs_contiguous_input());
+    assert_eq!(
+        op.memory_effect().input_layout(),
+        view_buffer::ops::InputLayout::Contiguous
+    );
 }
 
 #[test]
