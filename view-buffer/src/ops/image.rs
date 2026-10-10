@@ -492,15 +492,16 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::Threshold { .. } => MemoryEffect::StridePreserving,
             // The resizes read rows packed within themselves (a crop, a
             // vertical flip) where they lie and pack any other layout
-            // themselves (`resize_pixels`, `resample::nearest`), so a planned materialize would
-            // only copy a view they can read.
+            // themselves (`resize_pixels`, `resample::nearest`). The
+            // casting paths (i8/i16, the 32/64-bit integers, f64) pack in
+            // their cast, so a planned pack would be a second copy.
             ImageOpKind::Resize { .. }
             | ImageOpKind::ResizeScale { .. }
             | ImageOpKind::ResizeToHeight { .. }
             | ImageOpKind::ResizeToWidth { .. }
             | ImageOpKind::ResizeMax { .. }
             | ImageOpKind::ResizeMin { .. }
-            | ImageOpKind::Letterbox { .. } => MemoryEffect::StridePreserving,
+            | ImageOpKind::Letterbox { .. } => MemoryEffect::PacksOwnRows,
             // Read their input one packed row at a time (`to_dense_rows`).
             ImageOpKind::Blur { .. }
             | ImageOpKind::Erode { .. }
@@ -510,8 +511,9 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::PadToSize { .. }
             | ImageOpKind::HistogramEqualize
             | ImageOpKind::ChannelSwap { .. } => MemoryEffect::RequiresDenseRows,
-            // Reads rows packed within themselves in place and packs any
-            // other layout itself (`grayscale_strided`).
+            // A per-pixel map (`grayscale_strided`): reads any view where it
+            // lies, which measured faster than packing a transpose or a
+            // horizontal flip first.
             ImageOpKind::Grayscale => MemoryEffect::StridePreserving,
             ImageOpKind::Canny { .. } => MemoryEffect::RequiresContiguous,
         }

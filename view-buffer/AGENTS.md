@@ -173,8 +173,11 @@ horizontal flip) through `ViewBuffer::to_dense_rows`, and the kernel reads rows
 at the view's own stride (blur, erode/dilate/gradient, pad, equalize,
 channel swap). Resize hands such
 a view to fast_image_resize through `interop::fir::FirViewAdapter` and packs
-any other layout itself, declaring `MemoryEffect::StridePreserving`. What a
-view costs each op is counted by `polars-cv/src/graph/copy_census.rs`.
+any other layout itself (or in the cast its non-fir dtypes take), declaring
+`MemoryEffect::PacksOwnRows`: the same copies, made by the kernel rather than
+the planner. The binary ops, which run outside the planner, declare it too.
+What a view costs each op is counted by `polars-cv/src/graph/copy_census.rs`,
+which also holds each op's declared effect to the copies it pays.
 
 ### Operation Categories
 
@@ -207,7 +210,7 @@ pub trait Op {
     // The contract — seven required rules, no defaults.
     fn shape(&self) -> OpShape; // the one authority for shape arithmetic
     fn output_dtype_rule(&self) -> OutputDTypeRule;
-    fn memory_effect(&self) -> MemoryEffect; // View, StridePreserving, RequiresDenseRows, RequiresContiguous, ViewOfContiguous
+    fn memory_effect(&self) -> MemoryEffect; // View, StridePreserving, RequiresDenseRows, PacksOwnRows, RequiresContiguous, ViewOfContiguous
     fn spatial_dependency(&self) -> SpatialDependency; // Global is the safe answer
     fn identity_rule(&self) -> IdentityRule;           // Never is the safe answer
     fn is_spatial_window(&self) -> bool; // a hoistable H/W window (spatial pushdown)

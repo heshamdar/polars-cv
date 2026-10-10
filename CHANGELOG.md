@@ -66,6 +66,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Internal
 
+- **`MemoryEffect::PacksOwnRows`** for a kernel that reads packed rows in
+  place and packs any other layout itself: the resizes and letterbox (which
+  declared `StridePreserving`, though they pack a transpose or a horizontal
+  flip) and the binary ops (which declared `RequiresDenseRows`, though they run
+  outside the planner). No copy count changes. The copy census now also fails
+  when an op's declared effect disagrees with the copies it pays.
 - **fast_image_resize 6.1** (from 5.6.0, which upstream yanked: it added a
   default `std` feature, a break). 6.0's only change is that opt-in `std`
   feature, which default features keep. 6.1 speeds up the AVX2 vertical pass

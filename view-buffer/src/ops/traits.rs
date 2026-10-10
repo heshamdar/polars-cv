@@ -28,6 +28,13 @@ pub enum MemoryEffect {
     /// rows are each packed (a crop, a vertical flip: any row stride) is read
     /// where it lies, and any other layout is packed first.
     RequiresDenseRows,
+    /// Allocates, reads a view whose rows are each packed where it lies, as
+    /// [`RequiresDenseRows`](Self::RequiresDenseRows) does, but packs any other
+    /// layout itself, so the planner adds no step. For a kernel that hands its
+    /// input to a reader with its own layout rule (fast_image_resize), or that
+    /// runs outside the planner (the binary ops): the copies are the same, and
+    /// the declaration says who makes them.
+    PacksOwnRows,
     /// Metadata-only over a contiguous input (`reshape`: row-major order is
     /// what it reinterprets); a strided input is packed first.
     ViewOfContiguous,
@@ -49,7 +56,9 @@ impl MemoryEffect {
     /// `ViewExpr::build_plan` reads for every kind of step.
     pub fn input_layout(self) -> InputLayout {
         match self {
-            MemoryEffect::View | MemoryEffect::StridePreserving => InputLayout::Any,
+            MemoryEffect::View | MemoryEffect::StridePreserving | MemoryEffect::PacksOwnRows => {
+                InputLayout::Any
+            }
             MemoryEffect::RequiresContiguous | MemoryEffect::ViewOfContiguous => {
                 InputLayout::Contiguous
             }
