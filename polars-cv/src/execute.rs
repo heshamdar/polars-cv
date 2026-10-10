@@ -109,7 +109,6 @@ pub fn encode_sink(buffer: &ViewBuffer, sink: &Sink) -> PolarsResult<Vec<u8>> {
         Sink::WebP => ImageAdapter::encode(buffer, image::ImageFormat::WebP),
         Sink::Tiff => ImageAdapter::encode_tiff(buffer),
         Sink::Array { .. }
-        | Sink::FixedShapeTensor { .. }
         | Sink::Blob
         | Sink::List
         | Sink::Native

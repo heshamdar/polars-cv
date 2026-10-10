@@ -449,10 +449,41 @@ pub(super) fn build_typed_array_series_from_rows_with_dtype(
 ) -> PolarsResult<Series> {
     use polars_arrow::array::FixedSizeListArray;
 
-    let (mut array, shape) =
-        fixed_shape_values(rows, dtype, sink_shape, expected_shape, split, "array")?;
+    // Spec first, and no data fallback: an `array` sink's whole point is a
+    // fixed shape published at plan time. Taking it from the first non-null row
+    // would make the column's dtype depend on which row happened to arrive
+    // first — and `dtype_for_output` has already refused any array sink whose
+    // shape it could not name, so a planned query always supplies one here.
+    let shape = sink_shape.clone().or_else(|| expected_shape.cloned());
+    let Some(shape) = shape.filter(|s| !s.is_empty()) else {
+        // Not user-facing advice: `dtype_for_output` reads the same two fields
+        // and refuses first, so reaching here means the schema half and the
+        // encode half disagreed about the same `OutputSpec`. Restating the
+        // "how to supply a shape" guidance here made this a second copy of it,
+        // which would drift — and would tell the user to fix something they
+        // cannot, because a query that got this far already passed the check.
+        polars_bail!(ComputeError:
+            "internal: the array sink reached encoding with no shape, which \
+             dtype_for_output refuses. The schema and encode halves of the sink \
+             contract disagree about this output."
+        );
+    };
+    let dtype = element_dtype(rows, dtype)?;
+    let expected_len: usize = shape.iter().product();
+    for (i, row) in rows.iter().enumerate() {
+        if let Some(data) = row {
+            polars_ensure!(
+                element_count(data) == expected_len,
+                ComputeError:
+                "row {} has {} values but the array column was planned with shape {:?} ({} values)",
+                i, element_count(data), shape, expected_len
+            );
+        }
+    }
+
     // Innermost dimension first; level `k` holds rows * prod(shape[..k]) slots
     // of size shape[k]. Lengths are explicit so a zero-sized dimension works.
+    let mut array = flat_values(rows, dtype, Some(expected_len), split)?;
     for level in (0..shape.len()).rev() {
         let length = rows.len() * shape[..level].iter().product::<usize>();
         let validity = if level == 0 { row_validity(rows) } else { None };
@@ -465,77 +496,6 @@ pub(super) fn build_typed_array_series_from_rows_with_dtype(
         )?);
     }
     Series::from_arrow(name, array)
-}
-
-/// The `fixed_shape_tensor` column: the same flat values an `array` sink
-/// builds, wrapped once (one `FixedSizeList` of `prod(shape)` per row) and
-/// tagged with the shape ([`crate::ext_types::FixedShapeTensor`]).
-pub(super) fn build_fixed_shape_tensor_series_from_rows(
-    name: PlSmallStr,
-    rows: &[TypedListRow],
-    dtype: PlannedDType,
-    sink_shape: &Option<Vec<usize>>,
-    expected_shape: Option<&Vec<usize>>,
-    split: Option<&Split>,
-) -> PolarsResult<Series> {
-    use polars_arrow::array::FixedSizeListArray;
-
-    let (values, shape) = fixed_shape_values(
-        rows,
-        dtype,
-        sink_shape,
-        expected_shape,
-        split,
-        "fixed_shape_tensor",
-    )?;
-    let size = shape.iter().product::<usize>();
-    let arrow_dtype = FixedSizeListArray::default_datatype(values.dtype().clone(), size);
-    let array = FixedSizeListArray::try_new(arrow_dtype, rows.len(), values, row_validity(rows))?;
-    crate::ext_types::FixedShapeTensor::tag(Series::from_arrow(name, Box::new(array))?, &shape)
-}
-
-/// The row-major values of a fixed-shape column, every row checked against
-/// the shape, with that shape: the sink's own, else the planned one.
-fn fixed_shape_values(
-    rows: &[TypedListRow],
-    dtype: PlannedDType,
-    sink_shape: &Option<Vec<usize>>,
-    expected_shape: Option<&Vec<usize>>,
-    split: Option<&Split>,
-    sink: &str,
-) -> PolarsResult<(Box<dyn polars_arrow::array::Array>, Vec<usize>)> {
-    // Spec first, and no data fallback: a fixed-shape sink's whole point is a
-    // shape published at plan time. Taking it from the first non-null row
-    // would make the column's dtype depend on which row happened to arrive
-    // first — and `dtype_for_output` has already refused any such sink whose
-    // shape it could not name, so a planned query always supplies one here.
-    let shape = sink_shape.clone().or_else(|| expected_shape.cloned());
-    let Some(shape) = shape.filter(|s| !s.is_empty()) else {
-        // Not user-facing advice: `dtype_for_output` reads the same two fields
-        // and refuses first, so reaching here means the schema half and the
-        // encode half disagreed about the same `OutputSpec`. Restating the
-        // "how to supply a shape" guidance here made this a second copy of it,
-        // which would drift — and would tell the user to fix something they
-        // cannot, because a query that got this far already passed the check.
-        polars_bail!(ComputeError:
-            "internal: the {sink} sink reached encoding with no shape, which \
-             dtype_for_output refuses. The schema and encode halves of the sink \
-             contract disagree about this output."
-        );
-    };
-    let dtype = element_dtype(rows, dtype)?;
-    let expected_len: usize = shape.iter().product();
-    for (i, row) in rows.iter().enumerate() {
-        if let Some(data) = row {
-            polars_ensure!(
-                element_count(data) == expected_len,
-                ComputeError:
-                "row {} has {} values but the {} column was planned with shape {:?} ({} values)",
-                i, element_count(data), sink, shape, expected_len
-            );
-        }
-    }
-    Ok((flat_values(rows, dtype, Some(expected_len), split)?, shape))
 }
 /// The buffer behind a node output, or an error naming what was there instead.
 fn require_buffer<'a>(
@@ -641,7 +601,7 @@ pub(crate) fn encode_node_output(
         SinkKind::BufferList => Ok(OutputValue::TypedList(
             require_buffer(output, domain, format)?.clone(),
         )),
-        SinkKind::BufferArray | SinkKind::FixedShapeTensor => typed_array_of(
+        SinkKind::BufferArray => typed_array_of(
             require_buffer(output, domain, format)?,
             sink.shape().as_ref(),
         ),

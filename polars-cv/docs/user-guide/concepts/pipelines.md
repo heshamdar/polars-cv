@@ -63,7 +63,7 @@ Because of this variability, the pipeline tracks dtype as `auto` until it can be
 - `source(..., dtype="...")`
 - a dtype-fixing operation such as `normalize`, `threshold`, or `cast`
 
-If you use `sink("list")`, `sink("array")` or `sink("fixed_shape_tensor")`, dtype must be known at planning time.
+If you use `sink("list")` or `sink("array")`, dtype must be known at planning time.
 
 ## Sink Formats
 
@@ -79,7 +79,6 @@ If you use `sink("list")`, `sink("array")` or `sink("fixed_shape_tensor")`, dtyp
 | `blob` | Binary | Self-describing VIEW binary protocol |
 | `list` | List | Polars nested List |
 | `array` | Array | Polars fixed-size Array |
-| `fixed_shape_tensor` | `arrow.fixed_shape_tensor` | Arrow's canonical tensor type: one flat Array per row, shape in the type ([details](extension-types.md#arrows-tensor-type)) |
 | `native` | Varies | Native Python type (for scalars/vectors) |
 
 Float buffers cannot be encoded to PNG/JPEG/WebP — `.cast("u8")`/`.cast("u16")`

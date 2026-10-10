@@ -226,7 +226,7 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
                     physical graph — see :mod:`polars_cv._optimize`.
             kwargs: Parameters for the sink. ``quality`` for the jpeg sink
                     (the other encoders take none); ``shape`` for the array
-                    and fixed_shape_tensor sinks; ``dtype="f16"`` for the numpy/torch/ndarray sink to downcast
+                    sink; ``dtype="f16"`` for the numpy/torch/ndarray sink to downcast
                     the output tensor to half precision at the encode boundary
                     (halving the tensor bytes and H2D transfer). ``dtype`` only
                     accepts half precision, as ``"f16"`` or ``"float16"`` —

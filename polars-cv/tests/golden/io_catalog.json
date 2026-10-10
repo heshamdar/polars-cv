@@ -485,29 +485,6 @@
       ]
     },
     {
-      "name": "fixed_shape_tensor",
-      "python": "fixed_shape_tensor",
-      "visibility": "public",
-      "doc": "Arrow's canonical `arrow.fixed_shape_tensor`: each row one flat\n`FixedSizeList` of its elements in row-major order, with the shape in\nthe type's metadata. The tensor column PyArrow, Ray and Lance read; an\n`array` sink nests one `Array` level per axis instead.",
-      "fields": [
-        {
-          "name": "shape",
-          "doc": "The tensor shape; inferred from the planned shape when absent.",
-          "type": {
-            "kind": "optional",
-            "inner": {
-              "kind": "list",
-              "inner": {
-                "kind": "scalar",
-                "per_row": false,
-                "py": "int"
-              }
-            }
-          }
-        }
-      ]
-    },
-    {
       "name": "blob",
       "python": "blob",
       "visibility": "public",

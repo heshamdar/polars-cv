@@ -9,16 +9,6 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
-- **`sink("fixed_shape_tensor")`** emits Arrow's canonical
-  `arrow.fixed_shape_tensor`: each row one flat `Array(dtype, n)` of its
-  elements in row-major order, with `{"shape": [...]}` in the type's metadata.
-  PyArrow reads the column as a `FixedShapeTensorArray`. A `sink("array")`
-  column nests one `Array` per axis instead, which Arrow readers see as nested
-  lists, not a tensor. It takes `shape=` and needs the full shape at planning
-  time, like `array`. The column is Polars' generic `pl.Extension`, since the
-  name is Arrow's, not polars-cv's. A null row cannot cross Parquet between
-  Polars and PyArrow in any fixed-size list column (a PyArrow limitation, as of
-  22). `pyarrow` joins the dev group so the tests read the column with it.
 - **`sink("numpy"|"ndarray"|"torch", compact=True)`** makes each row's
   `data` exactly its elements, row-major, at offset 0. By default a tensor
   sink hands a view over with the storage it reads from (a crop, transpose or
