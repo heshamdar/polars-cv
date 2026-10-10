@@ -491,3 +491,122 @@ fn layout_bookkeeping_allocates_nothing() {
         assert_eq!(count, 0, "{label}: {count} allocations");
     }
 }
+
+// --- Handing a buffer to Polars: a copy, when one is made, is made once ---
+
+/// Every storage a view can sit on when it reaches the numpy sink: the
+/// engine's own allocation (solely owned, and shared with another holder)
+/// and a Polars buffer it was read from in place.
+#[cfg(feature = "polars_interop")]
+fn handed_over_views() -> Vec<(String, ViewBuffer, Option<ViewBuffer>)> {
+    let polars_backed = || {
+        let bytes = pattern_u8(3).to_contiguous().as_slice::<u8>().to_vec();
+        ViewBuffer::from_polars_buffer(
+            polars_buffer::Buffer::from(bytes),
+            0,
+            vec![H, W, 3],
+            DType::U8,
+        )
+    };
+    let mut out = Vec::new();
+    for (layout, view) in views_u8(3) {
+        out.push((format!("owned {layout}"), view, None));
+    }
+    for (layout, view) in views_u8(3) {
+        let holder = view.clone();
+        out.push((format!("shared {layout}"), view, Some(holder)));
+    }
+    let base = polars_backed();
+    out.push(("polars flip_h".into(), base.flip(&[1]), None));
+    out.push(("polars transpose".into(), base.permute(&[1, 0, 2]), None));
+    out.push((
+        "polars crop".into(),
+        base.slice(&[64, 32, 0], &[448, 416, 3]),
+        None,
+    ));
+    out
+}
+
+/// Materializing a view for Polars packs its elements once, straight into
+/// the buffer Polars receives. Packing into an intermediate and copying that
+/// is a second view-sized allocation.
+#[cfg(feature = "polars_interop")]
+#[test]
+fn materializing_a_strided_handover_copies_once() {
+    for (label, view, _holder) in handed_over_views() {
+        let expected = view.to_contiguous().as_slice::<u8>().to_vec();
+        let view_bytes = expected.len();
+        let ((data, shape, strides, offset, _), count) = large_allocations(view_bytes, || {
+            view.into_polars_buffer_strided_with_policy(view_buffer::SlicePolicy::AlwaysCopy)
+        });
+        assert_eq!(
+            count, 1,
+            "{label}: {count} view-sized allocations, one is the copy"
+        );
+        assert_eq!(offset, 0, "{label}");
+        assert_eq!(strides, vec![(shape[1] * 3) as isize, 3, 1], "{label}");
+        assert_eq!(data.as_slice(), &expected[..], "{label}");
+    }
+}
+
+/// The same for the unstrided handover, which always packs a strided view.
+#[cfg(feature = "polars_interop")]
+#[test]
+fn materializing_an_unstrided_handover_copies_once() {
+    for (label, view, _holder) in handed_over_views() {
+        let expected = view.to_contiguous().as_slice::<u8>().to_vec();
+        let view_bytes = expected.len();
+        let ((data, _, _), count) = large_allocations(view_bytes, || {
+            view.into_polars_buffer_with_policy(Default::default())
+        });
+        assert_eq!(
+            count, 1,
+            "{label}: {count} view-sized allocations, one is the copy"
+        );
+        assert_eq!(data.as_slice(), &expected[..], "{label}");
+    }
+}
+
+/// `compact` copies a view that reads only part of its storage, once, and
+/// leaves one that is its whole storage (or a packed run of a Polars buffer,
+/// which it slices) where it lies.
+#[cfg(feature = "polars_interop")]
+#[test]
+fn compact_copies_only_a_view_that_is_not_its_whole_storage() {
+    let polars_rows = {
+        let bytes = pattern_u8(3).as_slice::<u8>().to_vec();
+        ViewBuffer::from_polars_buffer(
+            polars_buffer::Buffer::from(bytes),
+            0,
+            vec![H, W, 3],
+            DType::U8,
+        )
+        .slice(&[64, 0, 0], &[448, W, 3])
+    };
+    let cases: Vec<(String, ViewBuffer, usize)> = views_u8(3)
+        .into_iter()
+        .map(|(layout, view)| (format!("owned {layout}"), view, 1))
+        .chain([
+            (
+                "owned crop of whole rows".into(),
+                pattern_u8(3).slice(&[64, 0, 0], &[448, W, 3]),
+                1,
+            ),
+            ("owned whole image".into(), pattern_u8(3), 0),
+            ("polars crop of whole rows".into(), polars_rows, 0),
+        ])
+        .collect();
+    for (label, view, copies) in cases {
+        let expected = view.to_contiguous().as_slice::<u8>().to_vec();
+        let (compact, count) = large_allocations(expected.len(), || view.compact());
+        assert_eq!(count, copies, "{label}: view-sized allocations");
+        assert_eq!(compact.as_slice::<u8>(), &expected[..], "{label}");
+        let (data, _, strides, offset, _) = compact.into_polars_buffer_strided();
+        assert_eq!(
+            (data.len(), offset),
+            (expected.len(), 0),
+            "{label}: holds only its elements"
+        );
+        assert_eq!(strides[2], 1, "{label}");
+    }
+}

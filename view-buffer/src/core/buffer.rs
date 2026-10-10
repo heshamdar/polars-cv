@@ -757,17 +757,14 @@ impl ViewBuffer {
                 }
             }
 
-            // Non-contiguous or non-zero-copy storage - materialize via to_contiguous
-            _ => {
-                let contig = ViewBuffer {
-                    data: self.data,
+            // Non-contiguous or non-zero-copy storage - pack it
+            data => {
+                let packed = ViewBuffer {
+                    data,
                     layout: self.layout,
                 }
-                .to_contiguous();
-                let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
-                let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
-                let buffer = polars_buffer::Buffer::from(slice.to_vec());
-                (buffer, shape, dtype)
+                .packed_polars_buffer();
+                (packed.0, shape, dtype)
             }
         }
     }
@@ -854,8 +851,7 @@ impl ViewBuffer {
                     // Return the original buffer with stride info
                     (polars_buf, shape, strides, combined_offset, dtype)
                 } else {
-                    // Materialize to contiguous
-                    let contig = ViewBuffer {
+                    ViewBuffer {
                         data: BufferStorage::PolarsArrow {
                             buffer: polars_buf,
                             offset: buf_offset,
@@ -863,14 +859,7 @@ impl ViewBuffer {
                         },
                         layout: self.layout,
                     }
-                    .to_contiguous();
-                    let contig_shape = contig.layout.shape.to_vec();
-                    let contig_strides = contig.layout.strides.to_vec();
-                    let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
-                    let slice =
-                        unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
-                    let buffer = polars_buffer::Buffer::from(slice.to_vec());
-                    (buffer, contig_shape, contig_strides, 0, dtype)
+                    .packed_polars_buffer()
                 }
             }
 
@@ -900,57 +889,62 @@ impl ViewBuffer {
                             let full_buffer = polars_buffer::Buffer::from_owner(bytes);
                             (full_buffer, shape, strides, offset, dtype)
                         }
-                        Err(arc) => {
-                            // Arc unwrap failed - copy to contiguous
-                            let contig = ViewBuffer {
-                                data: BufferStorage::Rust(arc),
-                                layout: self.layout,
-                            }
-                            .to_contiguous();
-                            let contig_shape = contig.layout.shape.to_vec();
-                            let contig_strides = contig.layout.strides.to_vec();
-                            let data_len =
-                                contig.layout.num_elements() * contig.layout.dtype.size_of();
-                            let slice = unsafe {
-                                std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len)
-                            };
-                            let buffer = polars_buffer::Buffer::from(slice.to_vec());
-                            (buffer, contig_shape, contig_strides, 0, dtype)
+                        Err(arc) => ViewBuffer {
+                            data: BufferStorage::Rust(arc),
+                            layout: self.layout,
                         }
+                        .packed_polars_buffer(),
                     }
                 } else {
-                    // Policy says copy - materialize to contiguous
-                    let contig = ViewBuffer {
+                    ViewBuffer {
                         data: BufferStorage::Rust(arc),
                         layout: self.layout,
                     }
-                    .to_contiguous();
-                    let contig_shape = contig.layout.shape.to_vec();
-                    let contig_strides = contig.layout.strides.to_vec();
-                    let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
-                    let slice =
-                        unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
-                    let buffer = polars_buffer::Buffer::from(slice.to_vec());
-                    (buffer, contig_shape, contig_strides, 0, dtype)
+                    .packed_polars_buffer()
                 }
             }
 
             // Arrow storage - not supported for zero-copy, materialize to contiguous
             #[cfg(feature = "arrow_interop")]
-            BufferStorage::Arrow(_) => {
-                let contig = ViewBuffer {
-                    data: self.data,
-                    layout: self.layout,
-                }
-                .to_contiguous();
-                let contig_shape = contig.layout.shape.to_vec();
-                let contig_strides = contig.layout.strides.to_vec();
-                let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
-                let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
-                let buffer = polars_buffer::Buffer::from(slice.to_vec());
-                (buffer, contig_shape, contig_strides, 0, dtype)
+            data @ BufferStorage::Arrow(_) => ViewBuffer {
+                data,
+                layout: self.layout,
             }
+            .packed_polars_buffer(),
         }
+    }
+
+    /// This view's elements packed row-major into a new buffer for Polars, as
+    /// `(buffer, shape, strides, offset, dtype)` with C-order strides and a
+    /// zero offset.
+    ///
+    /// **The one copy a handover makes** when it cannot transfer the storage:
+    /// each element goes straight from where the view's strides put it into
+    /// the buffer Polars receives. Packing with
+    /// [`to_contiguous`](Self::to_contiguous) and then copying the result
+    /// out was a second view-sized copy (`copy_counts.rs`).
+    #[cfg(feature = "polars_interop")]
+    fn packed_polars_buffer(
+        &self,
+    ) -> (
+        polars_buffer::Buffer<u8>,
+        Vec<usize>,
+        Vec<isize>,
+        usize,
+        DType,
+    ) {
+        let packed = self.packed();
+        let BufferStorage::Rust(arc) = packed.data else {
+            unreachable!("packed() allocates its own storage")
+        };
+        let bytes = Arc::try_unwrap(arc).expect("packed() storage has no other owner");
+        (
+            polars_buffer::Buffer::from_owner(bytes),
+            packed.layout.shape.to_vec(),
+            packed.layout.strides.to_vec(),
+            0,
+            packed.layout.dtype,
+        )
     }
 
     /// Check if this buffer can be zero-copy transferred with strided output.
@@ -1330,6 +1324,48 @@ impl ViewBuffer {
         if self.layout.is_contiguous() {
             return self.clone();
         }
+        self.packed()
+    }
+
+    /// This view with storage that holds exactly its elements, row-major,
+    /// from its first byte: nothing before them, after them or between them.
+    ///
+    /// Unlike [`to_contiguous`](Self::to_contiguous), which keeps a packed
+    /// view where it lies (a crop of whole rows still holds the rows around
+    /// it), this drops what the view does not read. It copies only when it
+    /// must: a view that already is its whole storage is returned as is, and
+    /// a packed run of a Polars buffer is sliced to that run, zero-copy.
+    pub fn compact(&self) -> Self {
+        if self.layout.is_contiguous() {
+            let bytes = self.logical_len_bytes();
+            match &self.data {
+                BufferStorage::Rust(arc) if self.layout.offset == 0 && arc.len() == bytes => {
+                    return self.clone();
+                }
+                #[cfg(feature = "polars_interop")]
+                BufferStorage::PolarsArrow { buffer, offset, .. } => {
+                    let start = offset + self.layout.offset;
+                    return Self {
+                        data: BufferStorage::PolarsArrow {
+                            buffer: buffer.clone().sliced(start..start + bytes),
+                            offset: 0,
+                            len: bytes,
+                        },
+                        layout: Layout::new_contiguous(self.layout.shape.clone(), self.dtype()),
+                    };
+                }
+                _ => {}
+            }
+        }
+        self.packed()
+    }
+
+    /// A packed, row-major copy of this view's elements in a new allocation
+    /// of exactly their size, copying each element once.
+    ///
+    /// # Panics
+    /// Panics if the total allocation size would overflow `usize`.
+    fn packed(&self) -> Self {
         let total_bytes = self.logical_len_bytes();
         let mut new_data: Vec<u8> = Vec::with_capacity(total_bytes);
         // SAFETY: `new_data` has room for `total_bytes`, which

@@ -140,6 +140,7 @@ _SINK_SAMPLES: dict[str, object] = {
     "quality": 50,
     "shape": [2, 2, 1],
     "dtype": "f16",
+    "compact": True,
 }
 
 
