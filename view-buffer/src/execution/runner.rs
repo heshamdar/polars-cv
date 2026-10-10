@@ -255,7 +255,8 @@ pub fn apply_channel_merge(buffers: &[&ViewBuffer]) -> ViewBuffer {
 /// This handles dtype promotion for image operations:
 /// - F32/F64 in [0.0, 1.0] range: scale to [0, 255]
 /// - F32/F64 outside range: clamp then scale
-/// - Other integer types: cast directly
+/// - U16: scale its range (`>> 8`)
+/// - Other integer types: saturate into `[0, 255]`
 /// - U8: pass through
 #[cfg(feature = "image_interop")]
 fn convert_to_u8_for_image(buf: ViewBuffer) -> ViewBuffer {
@@ -280,8 +281,9 @@ fn convert_to_u8_for_image(buf: ViewBuffer) -> ViewBuffer {
         DType::U32 => to_u8(&buf, |x: u32| x.min(255) as u8),
         DType::I32 => to_u8(&buf, |x: i32| x.clamp(0, 255) as u8),
         DType::I8 => to_u8(&buf, |x: i8| x.max(0) as u8),
-        // For other types, use the cast method (which reads a view in place)
-        _ => buf.cast(DType::U8),
+        DType::U64 => to_u8(&buf, |x: u64| x.min(255) as u8),
+        DType::I64 => to_u8(&buf, |x: i64| x.clamp(0, 255) as u8),
+        DType::U8 => unreachable!("a u8 buffer is returned as it is above"),
     }
 }
 
@@ -2194,6 +2196,35 @@ mod blur_radius_tests {
                 "blur σ={sigma}: declared neighborhood radius must equal the \
                  executed 1-D kernel's half-width"
             );
+        }
+    }
+}
+
+#[cfg(feature = "image_interop")]
+#[cfg(test)]
+mod image_u8_tests {
+    use super::convert_to_u8_for_image;
+    use crate::core::buffer::ViewBuffer;
+    use crate::core::dtype::DType;
+
+    /// Every integer dtype wider than u8 but u16 (which scales its range,
+    /// `>> 8`) saturates into u8, the 64-bit ones as the 32-bit ones do: a
+    /// 300 is 255 and a -5 is 0, not wrapped to 44 and 251.
+    #[test]
+    fn integers_saturate_into_u8_at_every_width() {
+        let values = [-5i64, 0, 100, 255, 256, 300, 70_000];
+        let want: Vec<u8> = values.iter().map(|&v| v.clamp(0, 255) as u8).collect();
+        for dtype in [DType::I16, DType::I32, DType::I64] {
+            let buf = ViewBuffer::from_vec_with_shape(values.to_vec(), vec![1, 7, 1]).cast(dtype);
+            let got = convert_to_u8_for_image(buf);
+            assert_eq!(got.as_slice::<u8>(), &want[..], "{dtype:?}");
+        }
+        let unsigned = [0u64, 100, 255, 256, 300, 70_000];
+        let want: Vec<u8> = unsigned.iter().map(|&v| v.min(255) as u8).collect();
+        for dtype in [DType::U32, DType::U64] {
+            let buf = ViewBuffer::from_vec_with_shape(unsigned.to_vec(), vec![1, 6, 1]).cast(dtype);
+            let got = convert_to_u8_for_image(buf);
+            assert_eq!(got.as_slice::<u8>(), &want[..], "{dtype:?}");
         }
     }
 }
