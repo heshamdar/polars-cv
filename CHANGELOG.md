@@ -36,6 +36,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   the ranged color spaces), which walks a view once. Packing first only copied
   the view before casting the copy. A u8 crop, flip or transpose now costs them
   no extra copy.
+- **Binary ops (`add`, `subtract`, `multiply`, `divide`, `blend`, `maximum`,
+  `minimum`, `bitwise_*`, `apply_mask`) read a crop or a vertical flip where it
+  lies.** `zip_with` packed both operands, whatever their layout: two
+  view-sized copies per call on any view. An operand whose rows are each
+  packed is now zipped row against row in place. Only a transpose or a
+  horizontal flip is packed, since walking one element by element measured
+  ~4x slower than packing it. 1024×1024×3 u8 `add`: crop 0.90 → 0.36 ms,
+  vertical flip 0.84 → 0.33 ms, others unchanged. An inverted `apply_mask`
+  writes its mask once from the view instead of packing it first.
 - **A tensor sink that has to copy a view copies it once.** When a numpy,
   ndarray or torch row could not hand its storage over (a slice below the 50%
   rule, a buffer another output shares), the view was packed with

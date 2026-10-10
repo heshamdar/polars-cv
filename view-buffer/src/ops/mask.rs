@@ -82,15 +82,18 @@ pub fn apply_mask(buffer: &ViewBuffer, mask: &ViewBuffer, invert: bool) -> ViewB
             ViewBuffer::from_vec_with_shape(expanded, vec![h, w, c])
         }
     } else if invert {
+        // Written once, straight from the mask where it lies (`append_to`
+        // walks a view), then inverted in place: packing the view first was
+        // a second mask-sized copy.
         if is_float {
-            let mask_f32 = mask.cast_to(DType::F32).to_contiguous();
-            let mask_data = mask_f32.as_slice::<f32>();
-            let inverted: Vec<f32> = mask_data.iter().map(|&v| 1.0 - v).collect();
+            let mut inverted: Vec<f32> = Vec::new();
+            mask.cast_to(DType::F32).append_to(&mut inverted);
+            inverted.iter_mut().for_each(|v| *v = 1.0 - *v);
             ViewBuffer::from_vec_with_shape(inverted, mask_shape.to_vec())
         } else {
-            let mask_contig = mask.cast_to(DType::U8).to_contiguous();
-            let mask_data = mask_contig.as_slice::<u8>();
-            let inverted: Vec<u8> = mask_data.iter().map(|&v| 255 - v).collect();
+            let mut inverted: Vec<u8> = Vec::new();
+            mask.cast_to(DType::U8).append_to(&mut inverted);
+            inverted.iter_mut().for_each(|v| *v = 255 - *v);
             ViewBuffer::from_vec_with_shape(inverted, mask_shape.to_vec())
         }
     } else {
