@@ -289,9 +289,7 @@ def match_detections(
     extra = _image_columns(images, weight, group, carry, carry_cols)
     if extra is not None:
         # `images` holds one row per image (the caller's contract).
-        grouped = grouped.join(
-            extra, on=COL_IMAGE_ID, how="left", maintain_order="left", nulls_equal=True
-        )
+        grouped = grouped.join(extra, on=COL_IMAGE_ID, how="left", nulls_equal=True)
     weight_col, group_col = weight, group
     common = {
         "pred_col": PRED,
