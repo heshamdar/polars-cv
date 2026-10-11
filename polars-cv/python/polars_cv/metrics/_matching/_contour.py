@@ -19,7 +19,7 @@ from .._types import (
     ensure_columns_exist,
     to_lazy,
 )
-from ._table import iou_thresholds, matched_table
+from ._table import Carry, carried, iou_thresholds, matched_table
 
 #: Field names read off the published schema rather than spelled again here.
 #: A private copy of this struct's layout is exactly what the correspondence
@@ -623,6 +623,7 @@ class ContourMatcher:
         image_id_col: str | None = None,
         weight_col: str | None = None,
         group_col: str | None = None,
+        carry: Carry | None = None,
     ) -> DetectionTable:
         """Produce a ``DetectionTable`` from heatmap (or contour) + mask data.
 
@@ -657,6 +658,13 @@ class ContourMatcher:
             image_id_col: Optional image identifier column (defaults to row index).
             weight_col: Optional sample weight column.
             group_col: Optional grouping column.
+            carry: Columns to copy into ``image_metadata``, one value per
+                row: names of ``data``'s columns, or expressions over them
+                (named by their output name). They are computed in the
+                matcher's own pass over ``data``, so a per-image measure (a
+                pixel Dice of the same heatmap) needs no second reader of the
+                image rows. Refused: a missing column, an unnamed or repeated
+                name, and a name ``image_metadata`` defines itself.
 
         Returns:
             Validated ``DetectionTable``.
@@ -850,5 +858,6 @@ class ContourMatcher:
             gt_col="_gt_contours",
             class_col=class_col,
             group_col=group_col,
+            carry=carried(carry, schema_names),
             ignore_duplicates=self._duplicates == "ignore",
         )

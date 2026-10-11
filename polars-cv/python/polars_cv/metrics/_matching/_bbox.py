@@ -14,7 +14,7 @@ from .._types import (
     to_lazy,
 )
 from ._contour import _confidence_order
-from ._table import iou_thresholds, matched_table
+from ._table import Carry, carried, iou_thresholds, matched_table
 
 
 class BBoxMatcher:
@@ -53,6 +53,7 @@ class BBoxMatcher:
         image_id_col: str | None = None,
         weight_col: str | None = None,
         group_col: str | None = None,
+        carry: Carry | None = None,
     ) -> DetectionTable:
         """Produce a ``DetectionTable`` from bbox prediction/GT lists.
 
@@ -66,6 +67,13 @@ class BBoxMatcher:
             image_id_col: Optional image identifier column.
             weight_col: Optional sample weight column.
             group_col: Optional grouping column.
+            carry: Columns to copy into ``image_metadata``, one value per
+                row: names of ``data``'s columns, or expressions over them
+                (named by their output name). They are computed in the
+                matcher's own pass over ``data``, so a per-image measure (a
+                pixel Dice of the same heatmap) needs no second reader of the
+                image rows. Refused: a missing column, an unnamed or repeated
+                name, and a name ``image_metadata`` defines itself.
 
         Returns:
             Validated ``DetectionTable``.
@@ -127,4 +135,5 @@ class BBoxMatcher:
             gt_col=gt_col,
             class_col=class_col,
             group_col=group_col,
+            carry=carried(carry, schema_names),
         )

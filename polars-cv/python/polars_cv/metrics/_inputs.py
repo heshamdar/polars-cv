@@ -22,6 +22,7 @@ import polars as pl
 
 from ..geometry.coords import BoxFormat, bbox_from_coords
 from ..geometry.schemas import BBOX_SCHEMA, CONTOUR_SCHEMA
+from ._matching._table import Carry, carried
 from ._types import COL_CLASS_ID, COL_IMAGE_ID, DEFAULT_CLASS, to_lazy
 
 if TYPE_CHECKING:
@@ -126,8 +127,8 @@ def group_objects(
     geo_g = gts.collect_schema()[geometry]
     return (
         population.join(classes, how="cross")
-        .join(pred_lists, on=keys, how="left")
-        .join(gt_lists, on=keys, how="left")
+        .join(pred_lists, on=keys, how="left", nulls_equal=True)
+        .join(gt_lists, on=keys, how="left", nulls_equal=True)
         .with_columns(
             pl.col(PRED).fill_null(pl.lit([], dtype=pl.List(geo_p))),
             pl.col(PRED_SCORE).fill_null(pl.lit([], dtype=pl.List(pl.Float64))),
@@ -187,6 +188,7 @@ def match_detections(
     images: Iterable[str] | pl.Series | pl.DataFrame | pl.LazyFrame | None = None,
     weight: str | None = None,
     group: str | None = None,
+    carry: Carry | None = None,
 ) -> DetectionTable:
     """Match object-level predictions to ground truth: the general entry point.
 
@@ -226,12 +228,16 @@ def match_detections(
         max_detections: Keep each (image, class)'s ``max_detections``
             highest-scoring predictions (COCO: 100).
         images: The image population: ids, or a frame with an ``image_id``
-            column (and the ``weight`` / ``group`` columns when named). With
-            ``weight`` or ``group``, the frame holds one row per image; a
+            column (and the ``weight`` / ``group`` / ``carry`` columns when
+            named). With any of those, the frame holds one row per image; a
             repeated ``image_id`` fails the query.
         weight: A per-image weight column of the ``images`` frame.
         group: A per-image subgroup column of the ``images`` frame (e.g. a
             scanner or site), for grouped and stratified evaluation.
+        carry: Further per-image columns of the ``images`` frame to copy into
+            ``image_metadata``: names, or expressions over it named by their
+            output name (see :meth:`BBoxMatcher.match`). Each is then a
+            grouping key like ``group``.
 
     Returns:
         The :class:`DetectionTable`. Its ``det_idx`` is the prediction's
@@ -274,12 +280,17 @@ def match_detections(
         images=images,
         max_detections=max_detections,
     )
-    extra = _image_columns(images, weight, group)
+    carry_cols = (
+        carried(carry, to_lazy(images).collect_schema().names())
+        if carry and isinstance(images, (pl.DataFrame, pl.LazyFrame))
+        else {}
+    )
+    extra = _image_columns(images, weight, group, carry, carry_cols)
     if extra is not None:
         # `extra` has one row per image (see `_image_columns`), so the join
         # cannot repeat an image's objects.
         grouped = grouped.join(
-            extra, on=COL_IMAGE_ID, how="left", maintain_order="left"
+            extra, on=COL_IMAGE_ID, how="left", maintain_order="left", nulls_equal=True
         )
     weight_col, group_col = weight, group
     common = {
@@ -290,6 +301,7 @@ def match_detections(
         "image_id_col": COL_IMAGE_ID,
         "weight_col": weight_col,
         "group_col": group_col,
+        "carry": list(carry_cols),
     }
     if kind == "bbox":
         return BBoxMatcher(iou_threshold=iou_thresholds).match(grouped, **common)
@@ -303,32 +315,47 @@ def match_detections(
 
 
 def _image_columns(
-    images: object, weight: str | None, group: str | None
+    images: object,
+    weight: str | None,
+    group: str | None,
+    carry: Carry | None,
+    carry_cols: dict[str, pl.Expr],
 ) -> pl.LazyFrame | None:
-    """The ``images`` frame's ``weight`` / ``group`` columns, by ``image_id``."""
-    if weight is None and group is None:
+    """The ``images`` frame's ``weight`` / ``group`` / carried columns, by ``image_id``."""
+    if weight is None and group is None and not carry:
         return None
     if not isinstance(images, (pl.DataFrame, pl.LazyFrame)):
-        raise ValueError("weight= / group= name columns of an images= frame")
+        raise ValueError("weight= / group= / carry= name columns of an images= frame")
     lf = to_lazy(images)
     named = [c for c in (weight, group) if c is not None]
     _require(lf, [COL_IMAGE_ID, *named], "images")
+    clash = set(named) & set(carry_cols)
+    if clash:
+        raise ValueError(f"carry: {sorted(clash)} is already weight= or group=")
+    named += list(carry_cols)
     # One row per image: a repeated image_id would repeat that image's objects
     # in the join, so it fails the query. A join's `validate="m:1"` would say
     # so too, but polars validates only in memory; a group-by streams. The
     # check rides on the join key, so no projection can prune it: a repeated
-    # (non-null) id becomes a string that strict integer parsing refuses, the
-    # message its value. Null ids match nothing, so their repeats are moot.
+    # id becomes a string that strict integer parsing refuses, the message its
+    # value. A null id is one image like any other (joins match nulls).
     ids = pl.col(COL_IMAGE_ID)
-    repeated = (pl.col("_n") > 1) & ids.is_not_null()
     refuse = (
-        pl.when(repeated)
-        .then(pl.format("images= repeats image_id {}: one row per image", ids))
+        pl.when(pl.col("_n") > 1)
+        .then(
+            pl.format(
+                "images= repeats image_id {}: one row per image", ids.fill_null("null")
+            )
+        )
         .str.to_integer(strict=True)
         .cast(pl.String)
     )
     return (
-        lf.select(ids.cast(pl.String), *named)
+        lf.select(
+            ids.cast(pl.String),
+            *(pl.col(c) for c in named if c not in carry_cols),
+            *(e.alias(c) for c, e in carry_cols.items()),
+        )
         .group_by(COL_IMAGE_ID)
         .agg(*(pl.col(c).first() for c in named), _n=pl.len())
         .select(pl.coalesce(refuse, ids).alias(COL_IMAGE_ID), *named)

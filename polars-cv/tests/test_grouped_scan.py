@@ -285,19 +285,12 @@ def _bracket_inputs(seed: int, keys: list[str]) -> tuple[pl.DataFrame, pl.DataFr
 @pytest.mark.parametrize("keys", [[], ["g"]], ids=str)
 @pytest.mark.parametrize("seed", [0, 1, 2, 3])
 def test_bracket_matches_join_asof(keys: list[str], seed: int) -> None:
-    """Exactly the backward and forward ``join_asof(by=keys)``, knot for knot."""
+    """Exactly the backward and forward ``join_asof(by=keys)``, knot for knot.
+
+    A null key is its own group in ``bracket``; ``join_asof`` matches it to
+    nothing, so the oracle runs with the null key named.
+    """
     knots, query = _bracket_inputs(seed, keys)
-    k = knots.select(*keys, "x", pl.struct("x", "y").alias("knot")).sort("x")
-    q = query.sort("x")
-    by = keys or None
-    want = (
-        q.join_asof(k, on="x", by=by, strategy="backward", check_sortedness=False)
-        .rename({"knot": "lo"})
-        .sort("x")
-        .join_asof(k, on="x", by=by, strategy="forward", check_sortedness=False)
-        .rename({"knot": "hi"})
-        .sort("q")
-    )
     got = (
         bracket(
             query.lazy(),
@@ -308,6 +301,19 @@ def test_bracket_matches_join_asof(keys: list[str], seed: int) -> None:
             above="hi",
         )
         .collect(engine="streaming")
+        .sort("q")
+        .with_columns(pl.col("g").fill_null("~"))
+    )
+    knots, query = (f.with_columns(pl.col("g").fill_null("~")) for f in (knots, query))
+    k = knots.select(*keys, "x", pl.struct("x", "y").alias("knot")).sort("x")
+    q = query.sort("x")
+    by = keys or None
+    want = (
+        q.join_asof(k, on="x", by=by, strategy="backward", check_sortedness=False)
+        .rename({"knot": "lo"})
+        .sort("x")
+        .join_asof(k, on="x", by=by, strategy="forward", check_sortedness=False)
+        .rename({"knot": "hi"})
         .sort("q")
     )
     assert_frame_equal(got.select(want.columns), want)

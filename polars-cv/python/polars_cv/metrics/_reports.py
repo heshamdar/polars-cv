@@ -187,12 +187,20 @@ class DetectionReport:
         grid = (
             meta.group_by(keys)
             .agg(pl.col(COL_N_GTS).sum().alias("n_gts"))
-            .join(weighted_gt_mass(meta, keys), on=keys, how="left")
+            .join(weighted_gt_mass(meta, keys), on=keys, how="left", nulls_equal=True)
             .join(
-                det.group_by(keys).agg(pl.len().alias("n_preds")), on=keys, how="left"
+                det.group_by(keys).agg(pl.len().alias("n_preds")),
+                on=keys,
+                how="left",
+                nulls_equal=True,
             )
-            .join(AP(self.interpolation).by_group(view, keys), on=keys, how="left")
-            .join(Recall().by_group(view, keys), on=keys, how="left")
+            .join(
+                AP(self.interpolation).by_group(view, keys),
+                on=keys,
+                how="left",
+                nulls_equal=True,
+            )
+            .join(Recall().by_group(view, keys), on=keys, how="left", nulls_equal=True)
         )
         defined = pl.col("gt_mass") > 0.0
         return grid.select(
@@ -351,7 +359,7 @@ class DetectionReport:
         if self._objects is None or self._predictions is None:
             return det.collect()
         keys = [COL_IMAGE_ID, COL_CLASS_ID]
-        located = det.join(self._objects, on=keys, how="left").select(
+        located = det.join(self._objects, on=keys, how="left", nulls_equal=True).select(
             pl.col(PRED_ROW).list.get(pl.col("det_idx")).alias("_row"),
             "is_tp",
             "iou",
@@ -361,7 +369,7 @@ class DetectionReport:
         )
         return (
             self._predictions.with_row_index("_row")
-            .join(located, on="_row", how="left")
+            .join(located, on="_row", how="left", nulls_equal=True)
             .drop("_row")
             .collect()
         )

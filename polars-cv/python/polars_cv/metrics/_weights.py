@@ -103,9 +103,9 @@ def attach_resolved_weight(
     """
     keys = image_weight_keys(meta)
     resolved = resolve_key_weights(meta, keys, weight_agg)
-    return detections.join(resolved, on=keys, how="left").with_columns(
-        pl.col(COL_WEIGHT).fill_null(1.0)
-    )
+    return detections.join(
+        resolved, on=keys, how="left", nulls_equal=True
+    ).with_columns(pl.col(COL_WEIGHT).fill_null(1.0))
 
 
 def weighted_gt_mass(

@@ -94,9 +94,14 @@ KNOWN_FALLBACKS: tuple[KnownFallback, ...] = (
         ),
         reason=(
             "group_objects: each (image, class)'s object lists. The matchers "
-            "are elementwise over one row per (image, class), so the lists "
-            "have to exist; polars cannot build a list inside a streaming "
-            "group-by. Users who already hold per-image lists skip this."
+            "are elementwise over one row per (image, class) (greedy matching "
+            "is sequential within an image), so the lists have to exist, and "
+            "polars 2.0 builds a list only in memory: aggregations, "
+            "`implode().over()` and `over(mapping_strategy='join')` all fall "
+            "back. What it holds is object geometry, never an image: an "
+            "instance mask is reduced to its outline elementwise before it. "
+            "Callers who hold one row per image (lists, heatmaps) call a "
+            "matcher directly and skip this step."
         ),
     ),
 )

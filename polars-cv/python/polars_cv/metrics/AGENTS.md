@@ -161,7 +161,18 @@ Known traps, each now written another way:
   which polars rewrites into a group-by plus a join.
 - **What still falls back** (the only `KNOWN_FALLBACKS` entry): `group_objects`'
   per-(image, class) object lists, which the elementwise matchers need. polars
-  cannot build a list inside a streaming group-by.
+  2.0 builds a list only in memory (an aggregation, `implode().over()` and
+  `over(mapping_strategy="join")` all fall back). It holds object geometry,
+  never an image: masks are outlined elementwise before it.
+- **A null group key is a group** (`tests/test_null_groups.py`). `group_by`
+  and `.over` already treat it so; every keyed join passes `nulls_equal=True`
+  (`tests/test_join_ratchet.py` refuses one that does not), and `bracket`
+  groups null keys.
+- **Per-image measures ride the match (`carry=`)**, resolved once by
+  `_matching._table.carried`: computed in the matcher's own projection over
+  the image rows (on the prepared frame before the cache in a sweep), under
+  `_carry_<i>` names renamed in the metadata select, so no caller name can
+  overwrite a column the match reads.
 - **Nearest knots go through `_grouped_scan.bracket`**: queries and knots
   sorted together, each knot filled forward and backward `.over(keys)` — a
   backward and a forward `join_asof(by=keys)`, linear in the rows. The knot's

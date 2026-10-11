@@ -111,7 +111,7 @@ def lroc_curve_lazy(
     resolved = resolve_key_weights(per_image, keys_w, weight_agg)
     per_image = (
         per_image.drop(COL_WEIGHT)
-        .join(resolved, on=keys_w, how="left")
+        .join(resolved, on=keys_w, how="left", nulls_equal=True)
         .with_columns(
             pl.col(COL_WEIGHT).fill_null(1.0),
             pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP),
@@ -152,7 +152,7 @@ def _build_lroc_curve_grouped(
             cum_weighted_pos_detected=CumSum("weighted_pos_detected"),
             cum_weighted_neg_detected=CumSum("weighted_neg_detected"),
         )
-        .join(group_stats, on=keys, how="left")
+        .join(group_stats, on=keys, how="left", nulls_equal=True)
         .with_columns(
             # Divide by the *unclamped* weighted mass, guarding the zero case. A
             # zero denominator (no positive / no negative weighted mass) leaves
@@ -180,7 +180,7 @@ def _build_lroc_curve_grouped(
     )
     max_sens = bucketed.group_by(keys).agg(_max_sens=pl.col("sensitivity").max())
     lower_right = (
-        group_ids.join(max_sens, on=keys, how="left")
+        group_ids.join(max_sens, on=keys, how="left", nulls_equal=True)
         .with_columns(pl.col("_max_sens").fill_null(0.0))
         .select(
             *keys,
@@ -275,6 +275,7 @@ def lroc_auc(
                         meta.select(COL_IMAGE_ID, *meta_only).unique(),
                         on=COL_IMAGE_ID,
                         how="left",
+                        nulls_equal=True,
                     )
             det = attach_resolved_weight(det, meta, weight_agg=weight_agg)
             keys = [_DUMMY_GROUP, *group_keys]
@@ -293,7 +294,7 @@ def lroc_auc(
             resolved = resolve_key_weights(per_image, keys_w, weight_agg)
             per_image = (
                 per_image.drop(COL_WEIGHT)
-                .join(resolved, on=keys_w, how="left")
+                .join(resolved, on=keys_w, how="left", nulls_equal=True)
                 .with_columns(
                     pl.col(COL_WEIGHT).fill_null(1.0),
                     pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP),

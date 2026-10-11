@@ -7,6 +7,32 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+
+- **`carry=` on every matcher and on `match_detections`.** Columns of the
+  frame that defines `image_metadata` (or expressions over it, named by their
+  output name) are copied into it, one value per (image, class) row, and are
+  then grouping keys like `group_id`. They are computed in the matcher's own
+  pass, so a per-image measure of the same images (e.g.
+  `segmentation_measures(...).struct.field("dice")`) needs no second reader of
+  the image rows, which a streaming cache would otherwise buffer whole. A
+  missing column, an unnamed literal, a repeated name and a name
+  `image_metadata` defines itself are refused.
+
+### Changed
+
+- **A null group key is a group of its own throughout the metrics.** Curves,
+  operating points, AUCs and the weighted bootstrap already grouped nulls in
+  their `group_by`s and windows, but about thirty joins on the keys did not
+  match nulls, so a null group's FROC/LROC curve came out empty (sensitivity
+  null, AUC 0 or null) while the same images under any name were evaluated.
+  Every keyed join in `polars_cv.metrics` now passes `nulls_equal=True`
+  (`tests/test_join_ratchet.py`), and `tests/test_null_groups.py` holds every
+  grouped entry point to "a null group equals the same group named". The
+  interpolation's null-key group, which `join_asof(by=)` matched to nothing,
+  is interpolated too. In `match_detections`, a null `image_id` is one image,
+  so `images=` may hold it once.
+
 ### Fixed
 
 - **The detection metrics stay on the streaming engine.** Under polars 2 three
@@ -25,6 +51,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     which polars validates only in memory. A repeated (non-null) `image_id` in
     `images` still fails the query, now from a streaming group-by, with
     `images= repeats image_id <id>` in the `ComputeError`.
+  `group_objects`' per-(image, class) object lists stay the one in-memory
+  step: polars 2.0 builds a list only in memory (aggregation, `implode().over`
+  and a joined window all fall back). It holds object geometry only (an
+  instance mask is outlined elementwise first); callers with one row per
+  image call a matcher directly and skip it.
   `evaluate_segmentation`'s default image ids are a row index for the same
   reason. Results are unchanged (bit-identical, or to the last bit of a
   weighted float sum, which varies run to run either way).

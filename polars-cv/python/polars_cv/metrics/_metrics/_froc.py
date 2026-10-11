@@ -126,7 +126,9 @@ def _froc_curve_grouped(
     # per-target denominator sums n_gts*weight over rows (a shared image owned by
     # two cases contributes each case's n_gts), and every row of a key now carries
     # the same resolved weight.
-    meta = meta.drop(COL_WEIGHT).join(resolved, on=weight_keys, how="left")
+    meta = meta.drop(COL_WEIGHT).join(
+        resolved, on=weight_keys, how="left", nulls_equal=True
+    )
 
     # Attach any group key that lives only on the metadata (e.g. group_id) to
     # each detection, keyed by image_id.
@@ -136,12 +138,13 @@ def _froc_curve_grouped(
             meta.select(COL_IMAGE_ID, *meta_only).unique(),
             on=COL_IMAGE_ID,
             how="left",
+            nulls_equal=True,
         )
 
     # Numerator: the resolved per-key weight attached to each detection.
-    det_w = det.join(resolved, on=weight_keys, how="left").with_columns(
-        pl.col(COL_WEIGHT).fill_null(1.0)
-    )
+    det_w = det.join(
+        resolved, on=weight_keys, how="left", nulls_equal=True
+    ).with_columns(pl.col(COL_WEIGHT).fill_null(1.0))
 
     # Per-group denominators, each scoped to the group's metadata subset so a
     # grouped curve equals the curve of that group's filtered sub-table.
@@ -158,7 +161,7 @@ def _froc_curve_grouped(
         .group_by(keys)
         .agg(_weight_sum=pl.col(COL_WEIGHT).sum())
     )
-    group_stats = gt_stats.join(weight_stats, on=keys, how="left")
+    group_stats = gt_stats.join(weight_stats, on=keys, how="left", nulls_equal=True)
 
     bucketed = (
         grouped_scan(
@@ -181,7 +184,7 @@ def _froc_curve_grouped(
             cum_weighted_fp=CumSum("weighted_fp"),
         )
         .rename({COL_SCORE: "threshold"})
-        .join(group_stats, on=keys, how="left")
+        .join(group_stats, on=keys, how="left", nulls_equal=True)
         .with_columns(
             total_gts=pl.col("total_targets"),
             fn=(pl.col("total_targets") - pl.col("tp")).clip(lower_bound=0),
@@ -315,6 +318,7 @@ def froc_auc(
                         meta.select(COL_IMAGE_ID, *meta_only).unique(),
                         on=COL_IMAGE_ID,
                         how="left",
+                        nulls_equal=True,
                     )
             det = attach_resolved_weight(det, meta, weight_agg=weight_agg)
             keys = [_DUMMY_GROUP, *group_keys]
@@ -342,12 +346,14 @@ def froc_auc(
             resolved = resolve_key_weights(meta, image_weight_keys(meta), weight_agg)
             joined = (
                 meta.drop(COL_WEIGHT)
-                .join(resolved, on=image_weight_keys(meta), how="left")
+                .join(
+                    resolved, on=image_weight_keys(meta), how="left", nulls_equal=True
+                )
                 .with_columns(
                     pl.col(COL_WEIGHT).fill_null(1.0),
                     pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP),
                 )
-                .join(per_img, on=image_keys, how="left")
+                .join(per_img, on=image_keys, how="left", nulls_equal=True)
             )
             score_expr = (
                 pl.when(pl.col(COL_GT_LABEL))
