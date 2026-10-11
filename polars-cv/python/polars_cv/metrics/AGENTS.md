@@ -144,8 +144,11 @@ Known traps, each now written another way:
   columnar function: use `with_row_index`. Inside `.over(keys)` it streams.
 - `join_asof(by=...)` is an in-memory join: use `_grouped_scan.bracket` (a
   plain `join_asof` without `by` streams).
-- a join's `validate=` is checked only in memory: check uniqueness with a
-  group-by (see `_inputs._image_columns`).
+- a join's `validate=` is checked only in memory. Do not validate data the
+  caller vouches for (one row per image in `images=`, one weight per key):
+  state the contract in the docstring and take it as given. A check that costs
+  a pass, a collect or streaming is not added; where duplicates are plausible,
+  resolve them by a caller-chosen rule instead (`weight_agg`).
 - an unwindowed reverse scan (`CumMax(reverse=True)` with no keys) must buffer
   the frame: `grouped_scan` refuses it; group by a constant column.
 

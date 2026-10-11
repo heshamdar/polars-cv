@@ -229,8 +229,9 @@ def match_detections(
             highest-scoring predictions (COCO: 100).
         images: The image population: ids, or a frame with an ``image_id``
             column (and the ``weight`` / ``group`` / ``carry`` columns when
-            named). With any of those, the frame holds one row per image; a
-            repeated ``image_id`` fails the query.
+            named). With any of those, the frame must hold one row per
+            image; this is not checked (a repeated ``image_id`` would repeat
+            that image's objects).
         weight: A per-image weight column of the ``images`` frame.
         group: A per-image subgroup column of the ``images`` frame (e.g. a
             scanner or site), for grouped and stratified evaluation.
@@ -287,8 +288,7 @@ def match_detections(
     )
     extra = _image_columns(images, weight, group, carry, carry_cols)
     if extra is not None:
-        # `extra` has one row per image (see `_image_columns`), so the join
-        # cannot repeat an image's objects.
+        # `images` holds one row per image (the caller's contract).
         grouped = grouped.join(
             extra, on=COL_IMAGE_ID, how="left", maintain_order="left", nulls_equal=True
         )
@@ -333,32 +333,12 @@ def _image_columns(
     if clash:
         raise ValueError(f"carry: {sorted(clash)} is already weight= or group=")
     named += list(carry_cols)
-    # One row per image: a repeated image_id would repeat that image's objects
-    # in the join, so it fails the query. A join's `validate="m:1"` would say
-    # so too, but polars validates only in memory; a group-by streams. The
-    # check rides on the join key, so no projection can prune it: a repeated
-    # id becomes a string that strict integer parsing refuses, the message its
-    # value. A null id is one image like any other (joins match nulls).
-    ids = pl.col(COL_IMAGE_ID)
-    refuse = (
-        pl.when(pl.col("_n") > 1)
-        .then(
-            pl.format(
-                "images= repeats image_id {}: one row per image", ids.fill_null("null")
-            )
-        )
-        .str.to_integer(strict=True)
-        .cast(pl.String)
-    )
-    return (
-        lf.select(
-            ids.cast(pl.String),
-            *(pl.col(c) for c in named if c not in carry_cols),
-            *(e.alias(c) for c, e in carry_cols.items()),
-        )
-        .group_by(COL_IMAGE_ID)
-        .agg(*(pl.col(c).first() for c in named), _n=pl.len())
-        .select(pl.coalesce(refuse, ids).alias(COL_IMAGE_ID), *named)
+    # One row per image is the caller's contract (see `match_detections`),
+    # taken as given: checking it would cost a pass over `images`.
+    return lf.select(
+        pl.col(COL_IMAGE_ID).cast(pl.String),
+        *(pl.col(c) for c in named if c not in carry_cols),
+        *(e.alias(c) for c, e in carry_cols.items()),
     )
 
 
