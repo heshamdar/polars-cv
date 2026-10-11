@@ -1,7 +1,8 @@
 """Every public metrics plan stays on polars' native streaming engine.
 
-A step the streaming engine cannot run natively becomes an ``in-memory-map``
-node, and that node collects its whole input first. Most of polars-cv is
+A step the streaming engine cannot run natively is handed to the in-memory
+engine (an ``in-memory-map``, ``in-memory-join`` or ``columnar-function``
+node), and that node collects its whole input first. Most of polars-cv is
 elementwise and streams. The metrics are the one place where an innocent
 ``.over()``, a sort inside an ``agg`` or a list aggregation quietly turned
 streaming into "collect everything".
@@ -43,12 +44,38 @@ _LF = pl.LazyFrame({"g": [1, 1, 2], "x": [1.0, 2.0, 3.0], "t": [3, 2, 1]})
         pytest.param(
             _LF.with_columns(pl.col("x").map_batches(lambda s: s)), id="column-udf"
         ),
+        # Polars' own columnar function: the whole frame, then a range over it.
+        pytest.param(
+            _LF.sort("x").with_columns(pl.int_range(pl.len()) == 0),
+            id="unwindowed-int_range",
+        ),
+        pytest.param(
+            _LF.sort("x").join_asof(_LF.sort("x"), on="x", by="g"),
+            id="join_asof-by",
+        ),
+        # A frame-wide rank (polars-cv ranks only inside `list.eval`).
+        pytest.param(_LF.with_columns(pl.col("x").rank()), id="rank"),
     ],
 )
 def test_guard_rejects_known_fallbacks(plan: pl.LazyFrame) -> None:
     nodes = in_memory_nodes(plan)
     assert nodes, "the scanner no longer sees in-memory fallbacks"
     assert unexplained(nodes) == [n.label for n in nodes]
+
+
+def test_guard_refuses_a_graph_without_the_fallback_legend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without the legend naming the class, nothing could match: raise."""
+    plan = _LF.group_by("g").agg(pl.col("x"))
+    dot = plan.show_graph(
+        engine="streaming", plan_stage="physical", raw_output=True, show=False
+    )
+    assert isinstance(dot, str)
+    renamed = dot.replace("in-memory engine fallback", "fallback")
+    monkeypatch.setattr(pl.LazyFrame, "show_graph", lambda *a, **k: renamed)
+    with pytest.raises(AssertionError, match="no longer names"):
+        in_memory_nodes(plan)
 
 
 @plugin_required
@@ -119,7 +146,17 @@ def test_guard_rejects_other_list_building(plan: pl.LazyFrame) -> None:
             _LF.with_columns(pl.col("x").map_batches(lambda s: s, is_elementwise=True)),
             id="elementwise-udf",
         ),
-        pytest.param(_LF.with_columns(pl.col("x").rank()), id="rank"),
+        pytest.param(_LF.sort("x").with_row_index("i"), id="row-index"),
+        pytest.param(
+            _LF.sort("x").join_asof(_LF.sort("x"), on="x"), id="join_asof-no-by"
+        ),
+        pytest.param(
+            _LF.sort("g", "x").with_columns(
+                pl.col("x").forward_fill().over("g"),
+                pl.col("t").backward_fill().over("g"),
+            ),
+            id="fill-over",
+        ),
         # Windows are native streaming nodes since polars 2.0.
         pytest.param(_LF.with_columns(pl.col("x").cum_sum().over("g")), id="over"),
         pytest.param(
@@ -267,6 +304,60 @@ PLANS: dict[str, Callable[[], pl.LazyFrame]] = {
         _table(), fp_range=(0.0, 2.0), **_BOOT
     ),
     "lroc_auc_ci_lazy": lambda: M.lroc_auc_ci_lazy(_table(), **_BOOT),
+    # Every public lazy entry point and the paths its options take: grouped
+    # (the bracketing joins), partial and extrapolated (interpolation), the
+    # weighted bootstrap's weight clusters, and an unweighted table.
+    "match_detections(unweighted)": lambda: (
+        M.match_detections(_PREDS, _GTS, box_format="xywh").detections
+    ),
+    "F1At": lambda: M.F1At(0.5).by_group(_table(), "class_id"),
+    "RecallAt": lambda: M.RecallAt(0.5).by_group(_table()),
+    "froc_auc": lambda: M.froc_auc(_table(), fp_range=(0.0, 2.0)),
+    "froc_auc(mann_whitney, grouped)": lambda: M.froc_auc(
+        _table(), method="mann_whitney", group_by="group_id"
+    ),
+    "froc_auc(partial, flat, image)": lambda: M.froc_auc(
+        _table(), fp_range=(0.0, 2.0), extrapolate="flat", level="image"
+    ),
+    "froc_auc(partial, grouped)": lambda: M.froc_auc(
+        _table(), fp_range=(0.0, 2.0), group_by="group_id"
+    ),
+    "lroc_auc": lambda: M.lroc_auc(_table()),
+    "lroc_auc(top_scoring, mann_whitney)": lambda: M.lroc_auc(
+        _table(), variant="top_scoring", method="mann_whitney"
+    ),
+    "lroc_auc(partial, grouped)": lambda: M.lroc_auc(
+        _table(), fpf_range=(0.0, 0.5), group_by="group_id", extrapolate="flat"
+    ),
+    "froc_summary_table(fp_rates, grouped)": lambda: M.froc_summary_table(
+        _table(), [0.5, 1.0, 2.0], group_by="group_id"
+    ),
+    "froc_sensitivity_at_fp(grouped)": lambda: M.froc_sensitivity_at_fp(
+        _table(), 1.0, group_by="group_id"
+    ),
+    "lroc_sensitivity_at_fpf(grouped)": lambda: M.lroc_sensitivity_at_fpf(
+        _table(), 0.5, group_by="group_id"
+    ),
+    "froc_auc_ci_lazy(fixed weights, grouped)": lambda: M.froc_auc_ci_lazy(
+        _table(),
+        fp_range=(0.0, 2.0),
+        group_by="group_id",
+        weight_scheme="fixed",
+        **_BOOT,
+    ),
+    "froc_auc_ci_lazy(strata, sample_col)": lambda: M.froc_auc_ci_lazy(
+        _table(),
+        method="mann_whitney",
+        strata="group_id",
+        sample_col="group_id",
+        **_BOOT,
+    ),
+    "lroc_auc_ci_lazy(partial, grouped)": lambda: M.lroc_auc_ci_lazy(
+        _table(), fpf_range=(0.0, 0.5), group_by="group_id", **_BOOT
+    ),
+    "average_precision_ci_lazy(fixed weights)": lambda: M.average_precision_ci_lazy(
+        _table(), weight_scheme="fixed", **_BOOT
+    ),
 }
 
 
@@ -288,3 +379,73 @@ def test_every_known_fallback_is_still_hit() -> None:
     nodes = [node for build in PLANS.values() for node in in_memory_nodes(build())]
     stale = [k.pattern for k in KNOWN_FALLBACKS if not any(map(k.matches, nodes))]
     assert stale == []
+
+
+# -- the eager entry points -------------------------------------------------
+#
+# These build a plan and collect it themselves, so no lazy frame reaches the
+# caller to scan. Every `collect` / `collect_all` they make is scanned instead.
+# (Polars runs eager DataFrame methods through a separate path, so only real
+# lazy collects are seen.)
+
+_HEAT = [[0.0] * 8 for _ in range(8)]
+_HEAT[2][2] = _HEAT[2][3] = _HEAT[3][2] = _HEAT[3][3] = 0.9
+_GT = [[1.0 if 2 <= y < 4 and 2 <= x < 4 else 0.0 for x in range(8)] for y in range(8)]
+_HEATMAPS = pl.DataFrame({"heat": [_HEAT, _GT], "gt": [_GT, _GT]})
+
+EAGER: dict[str, Callable[[], object]] = {
+    "average_precision": lambda: M.average_precision(_table()),
+    "average_precision(101_point)": lambda: M.average_precision(
+        _table(), interpolation="101_point"
+    ),
+    "mean_average_precision": lambda: M.mean_average_precision(_table()),
+    "precision_recall_curve": lambda: M.precision_recall_curve(_table()),
+    "confusion_at_threshold": lambda: M.confusion_at_threshold(_table(), 0.5),
+    "precision_at_threshold": lambda: M.precision_at_threshold(_table(), 0.5),
+    "recall_at_threshold": lambda: M.recall_at_threshold(_table(), 0.5),
+    "f1_at_threshold": lambda: M.f1_at_threshold(_table(), 0.5),
+    "evaluate_detections": lambda: M.evaluate_detections(
+        _PREDS,
+        _GTS,
+        box_format="xywh",
+        images=_IMAGES,
+        weight="weight",
+        group="site",
+        fp_rates=[0.5, 1.0],
+    ),
+    "evaluate_heatmaps": lambda: M.evaluate_heatmaps(
+        _HEATMAPS, heatmap="heat", gt="gt", fp_rates=[0.5, 1.0]
+    ),
+    "evaluate_segmentation": lambda: M.evaluate_segmentation(
+        _HEATMAPS, pred="heat", target="gt"
+    ),
+}
+
+
+@plugin_required
+@pytest.mark.parametrize("name", list(EAGER))
+def test_eager_collects_stay_streaming(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plans: list[pl.LazyFrame] = []
+    collect, collect_all = pl.LazyFrame.collect, pl.collect_all
+
+    def scanned_collect(self: pl.LazyFrame, *args: object, **kwargs: object):  # noqa: ANN202
+        plans.append(self)
+        return collect(self, *args, **kwargs)
+
+    def scanned_collect_all(frames, *args: object, **kwargs: object):  # noqa: ANN001, ANN202
+        frames = list(frames)
+        plans.extend(frames)
+        return collect_all(frames, *args, **kwargs)
+
+    monkeypatch.setattr(pl.LazyFrame, "collect", scanned_collect)
+    monkeypatch.setattr(pl, "collect_all", scanned_collect_all)
+    EAGER[name]()
+    monkeypatch.undo()
+    assert plans, f"{name} collected nothing the scan could see"
+    offenders = [label for lf in plans for label in unexplained(in_memory_nodes(lf))]
+    assert offenders == [], (
+        f"{name} collects a plan that falls back to the in-memory engine at:\n  "
+        + "\n  ".join(dict.fromkeys(offenders))
+    )

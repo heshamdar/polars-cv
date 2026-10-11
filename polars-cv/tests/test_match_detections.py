@@ -170,7 +170,9 @@ class TestBoxes:
             images=images.lazy() if lazy else images,
             weight="w",
         )
-        with pytest.raises(pl.exceptions.ComputeError, match="m:1"):
+        with pytest.raises(
+            pl.exceptions.ComputeError, match="images= repeats image_id img1"
+        ):
             table.collect()
 
     def test_det_idx_maps_back_to_the_input_row(self) -> None:

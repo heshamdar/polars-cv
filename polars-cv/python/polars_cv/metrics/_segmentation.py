@@ -264,11 +264,11 @@ def evaluate_segmentation(
         A :class:`SegmentationReport`.
     """
     lf = data.lazy()
-    ids = (
-        pl.col(image_id).cast(pl.String)
-        if image_id is not None
-        else pl.int_range(pl.len()).cast(pl.String)
-    )
+    if image_id is None:
+        # A row index streams; an unwindowed `int_range(pl.len())` does not.
+        lf = lf.with_row_index("_seg_row")
+        image_id = "_seg_row"
+    ids = pl.col(image_id).cast(pl.String)
     per_image = (
         lf.select(
             ids.alias("image_id"),

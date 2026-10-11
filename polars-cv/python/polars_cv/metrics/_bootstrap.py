@@ -920,7 +920,7 @@ def _with_weight_clusters(
     for k in part:
         starts = starts | pl.col(k).ne_missing(pl.col(k).shift(1))
     close = (
-        pl.when(starts | (pl.int_range(pl.len()) == 0))
+        pl.when(starts | (pl.col("_wc_pos") == 0))
         .then(w.eq_missing(pl.lit(None, dtype=pl.Float64)))
         .otherwise(close)
     )
@@ -932,14 +932,17 @@ def _with_weight_clusters(
     # (`min().over` of a column, not of an expression: only the former is
     # rewritten natively.)
     run = pl.col("_opens").cum_sum()
+    # The frame's first row by a row index: an unwindowed `int_range(pl.len())`
+    # is a columnar function the streaming engine runs in memory.
     counted = (
         meta.sort(*part, COL_WEIGHT, maintain_order=True)
+        .with_row_index("_wc_pos")
         .with_columns(_opens=opens)
         .with_columns(_run=run, _before=run - pl.col("_opens"))
     )
     restart = pl.col("_before").min().over(part) if part else pl.lit(0)
     return counted.with_columns((pl.col("_run") - restart).alias(_COL_WCLUSTER)).drop(
-        "_opens", "_run", "_before"
+        "_opens", "_run", "_before", "_wc_pos"
     )
 
 

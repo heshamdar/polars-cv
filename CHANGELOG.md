@@ -7,6 +7,42 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+
+- **The detection metrics stay on the streaming engine.** Under polars 2 three
+  steps ran on the in-memory engine, which collects its whole input, and the
+  guard meant to catch that did not see them:
+  - an unwindowed `pl.int_range(pl.len())` row position in every ungrouped
+    `grouped_scan` (FROC/LROC/partial AUC/sensitivity-at) and in the weighted
+    bootstrap's weight clusters, now a `with_row_index`;
+  - `join_asof(by=...)` in `interpolate_curve_lazy` (`froc_summary_table`,
+    `froc_sensitivity_at_fp`, `lroc_sensitivity_at_fpf`, partial AUCs) and in
+    11/101-point AP, now `_grouped_scan.bracket`: queries and knots sorted
+    together and each knot filled forward and backward per group. Linear in
+    the rows, and the bracketing knot's `y` is copied rather than matched back
+    by float equality;
+  - `match_detections(images=..., weight=/group=)`'s `validate="m:1"` join,
+    which polars validates only in memory. A repeated (non-null) `image_id` in
+    `images` still fails the query, now from a streaming group-by, with
+    `images= repeats image_id <id>` in the `ComputeError`.
+  `evaluate_segmentation`'s default image ids are a row index for the same
+  reason. Results are unchanged (bit-identical, or to the last bit of a
+  weighted float sum, which varies run to run either way).
+- **The streaming guard reads polars' own classification.**
+  `tests/_streaming_guard.py` matched `in-memory-map` and plugin/UDF
+  `columnar-function` labels, so `in-memory-join` and polars' own columnar
+  functions passed as streaming, and a fixture asserted a frame-wide `rank()`
+  streamed. It now flags every node the graph's legend marks as an in-memory
+  engine fallback, raises if the legend stops naming that class, scans every
+  plan the eager metrics collect, and covers every public lazy entry point's
+  grouped, partial, extrapolated and weighted paths.
+
+### Changed
+
+- **`grouped_scan` refuses an ungrouped reverse `CumMax`.** Over the whole
+  frame a reverse running max must buffer it in memory; no caller made one
+  (every caller passes a key). Group by a constant column instead.
+
 ## [0.36.0] — 2026-10-11
 
 Performance, and one new parameter. Ops that walk their input a row at a time

@@ -15,7 +15,15 @@ from typing import Literal
 
 import polars as pl
 
-from .._grouped_scan import CumMax, CumSum, Lag, exact_mean, exact_sums, grouped_scan
+from .._grouped_scan import (
+    CumMax,
+    CumSum,
+    Lag,
+    bracket,
+    exact_mean,
+    exact_sums,
+    grouped_scan,
+)
 from .._result import MetricResult
 from .._types import (
     COL_IS_TP,
@@ -527,18 +535,17 @@ def ap_from_points(
     grid = pl.LazyFrame(
         {"_t": pl.Series(_recall_grid(_GRID_SIZES[interpolation]), dtype=pl.Float64)}
     )
-    queries = ordered.select(keys).unique().join(grid, how="cross").sort("_t")
+    queries = ordered.select(keys).unique().join(grid, how="cross")
     # The envelope is non-increasing in recall, so its value at the first
     # point with recall >= t is the highest precision at any recall >= t.
     knots = ordered.group_by(*keys, "recall").agg(_p=pl.col("precision").max())
-    reached = queries.join_asof(
-        knots.select(*keys, pl.col("recall").alias("_t"), "_p").sort("_t"),
+    reached = bracket(
+        queries,
+        knots.select(*keys, pl.col("recall").alias("_t"), "_p"),
+        keys,
         on="_t",
-        by=keys,
-        strategy="forward",
-        # Both sides are sorted on `_t` globally, hence within every group.
-        check_sortedness=False,
-    )
+        above="_at",
+    ).with_columns(_p=pl.col("_at").struct.field("_p"))
     return exact_mean(
         reached.with_columns(pl.col("_p").fill_null(0.0)), keys, "_p", "ap"
     )

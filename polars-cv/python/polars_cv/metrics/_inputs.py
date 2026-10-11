@@ -276,9 +276,11 @@ def match_detections(
     )
     extra = _image_columns(images, weight, group)
     if extra is not None:
-        # One row per image: a repeated image_id would repeat that image's
-        # objects, so the join fails the query on one ("m:1").
-        grouped = grouped.join(extra, on=COL_IMAGE_ID, how="left", validate="m:1")
+        # `extra` has one row per image (see `_image_columns`), so the join
+        # cannot repeat an image's objects.
+        grouped = grouped.join(
+            extra, on=COL_IMAGE_ID, how="left", maintain_order="left"
+        )
     weight_col, group_col = weight, group
     common = {
         "pred_col": PRED,
@@ -311,7 +313,26 @@ def _image_columns(
     lf = to_lazy(images)
     named = [c for c in (weight, group) if c is not None]
     _require(lf, [COL_IMAGE_ID, *named], "images")
-    return lf.select(pl.col(COL_IMAGE_ID).cast(pl.String), *named)
+    # One row per image: a repeated image_id would repeat that image's objects
+    # in the join, so it fails the query. A join's `validate="m:1"` would say
+    # so too, but polars validates only in memory; a group-by streams. The
+    # check rides on the join key, so no projection can prune it: a repeated
+    # (non-null) id becomes a string that strict integer parsing refuses, the
+    # message its value. Null ids match nothing, so their repeats are moot.
+    ids = pl.col(COL_IMAGE_ID)
+    repeated = (pl.col("_n") > 1) & ids.is_not_null()
+    refuse = (
+        pl.when(repeated)
+        .then(pl.format("images= repeats image_id {}: one row per image", ids))
+        .str.to_integer(strict=True)
+        .cast(pl.String)
+    )
+    return (
+        lf.select(ids.cast(pl.String), *named)
+        .group_by(COL_IMAGE_ID)
+        .agg(*(pl.col(c).first() for c in named), _n=pl.len())
+        .select(pl.coalesce(refuse, ids).alias(COL_IMAGE_ID), *named)
+    )
 
 
 def _geometry_kind(
