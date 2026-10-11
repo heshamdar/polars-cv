@@ -17,6 +17,12 @@ seeds its draws). Measured on 2M rows over 1,000 groups, the ordered window
 was 15-35% faster than sort-then-window on the scan alone, which is not
 worth a second scan path that only some callers could take.
 
+**The bracket** (:func:`bracket`) finds, for each query row, the nearest
+knot at or below and at or above it within its group: what a backward and a
+forward ``join_asof(by=keys)`` give, which polars 2 runs as in-memory joins.
+It sorts queries and knots together and fills each knot forward and backward
+``.over(keys)``, so it is linear in the rows and every node streams.
+
 **Exact sums** (:func:`exact_sums`) convert each value to Int128 fixed point
 and sum those integers natively in a group-by. The scale is a power of two
 chosen from the frame's largest finite magnitude and its row count, and the
@@ -54,7 +60,12 @@ class CumSum:
 
 @dataclass(frozen=True)
 class CumMax:
-    """The group's running max of ``col``; ``reverse`` runs it from the end."""
+    """The group's running max of ``col``; ``reverse`` runs it from the end.
+
+    A ``reverse`` scan needs group keys: over the whole frame it starts from
+    the frame's end, which the streaming engine reaches only by running it in
+    memory, so :func:`grouped_scan` refuses it (pass a constant group).
+    """
 
     col: str
     reverse: bool = False
@@ -84,6 +95,9 @@ class IsLast:
 
 
 Scan = CumSum | CumMax | Lag | RowIndex | IsFirst | IsLast
+
+#: The row-index column of an ungrouped scan (see :func:`grouped_scan`).
+_POS = "_gs_pos"
 
 
 def grouped_scan(
@@ -116,6 +130,11 @@ def grouped_scan(
     keys, by = list(keys), list(by)
     if len(descending) != len(by):
         raise ValueError("`descending` needs one flag per `by` column")
+    if not keys and any(isinstance(s, CumMax) and s.reverse for s in out.values()):
+        raise ValueError(
+            "a reverse CumMax needs group keys: over the whole frame the streaming "
+            "engine runs it in memory; group by a constant column instead"
+        )
     ordered = lf.sort(
         *keys,
         *by,
@@ -127,7 +146,13 @@ def grouped_scan(
     def per_group(expr: pl.Expr) -> pl.Expr:
         return expr.over(keys) if keys else expr
 
-    position = pl.int_range(pl.len(), dtype=pl.Int64)
+    if keys:
+        position = pl.int_range(pl.len(), dtype=pl.Int64)
+    else:
+        # Unwindowed, `int_range(pl.len())` is a columnar function the
+        # streaming engine runs in memory; a row index is a streaming node.
+        ordered = ordered.with_row_index(_POS)
+        position = pl.col(_POS).cast(pl.Int64)
     exprs: list[pl.Expr] = []
     for name, scan in out.items():
         if isinstance(scan, CumSum):
@@ -145,7 +170,90 @@ def grouped_scan(
         else:  # pragma: no cover - Scan is closed
             raise TypeError(f"not a scan: {scan!r}")
         exprs.append(per_group(expr).alias(name))
-    return ordered.with_columns(exprs)
+    scanned = ordered.with_columns(exprs)
+    return scanned if keys else scanned.drop(_POS)
+
+
+def bracket(
+    query: pl.LazyFrame,
+    knots: pl.LazyFrame,
+    keys: Sequence[str],
+    *,
+    on: str,
+    below: str | None = None,
+    above: str | None = None,
+) -> pl.LazyFrame:
+    """``query`` with each row's nearest knot at or below / at or above it.
+
+    Within each ``keys`` group, ``below`` is the knot with the largest ``on``
+    ``<=`` the row's, ``above`` the one with the smallest ``on`` ``>=`` it:
+    a backward and a forward ``join_asof(on=on, by=keys)``, without the
+    in-memory join polars 2 runs those as. Each is a struct of the knot's
+    non-key columns (``on`` included), null where no knot qualifies. A knot is
+    copied, never matched back by value, so its floats are exactly the knot's.
+
+    As with ``join_asof(by=...)``, a null group key or ``on`` matches no knot. The knots'
+    ``on`` must be unique within a group (a collapsed curve, a per-group
+    ``group_by``); ``query`` may repeat values. Query row order is not kept.
+
+    Args:
+        query: The rows to bracket, carrying ``keys`` and ``on``.
+        knots: The knots, carrying ``keys``, ``on`` and the columns to copy.
+        keys: The group columns; empty brackets against all knots.
+        on: The ordered column both frames carry.
+        below: Output struct column for the knot at or below, if wanted.
+        above: Output struct column for the knot at or above, if wanted.
+
+    Returns:
+        ``query``'s rows and columns plus ``below`` and/or ``above``.
+    """
+    keys = list(keys)
+    if below is None and above is None:
+        raise ValueError("`bracket` needs `below`, `above` or both")
+    fields = [c for c in knots.collect_schema().names() if c not in keys]
+    if on not in fields:
+        raise ValueError(f"knots carry no `{on}` column")
+    knot_rows = knots.drop_nulls([*keys, on]).select(
+        *keys,
+        on,
+        pl.struct(fields).alias("_bk_knot"),
+        pl.lit(0, pl.Int8).alias("_bk_q"),
+    )
+    query_rows = query.with_columns(pl.lit(1, pl.Int8).alias("_bk_q"))
+    # A knot sorts before a query at its own `on`, so filling it forward
+    # reaches every query at or above it, and backward only those strictly
+    # below it: the knot at exactly `on` is the one filled forward.
+    merged = pl.concat([query_rows, knot_rows], how="diagonal").sort(
+        *keys, on, "_bk_q", maintain_order=True
+    )
+
+    def per_group(expr: pl.Expr) -> pl.Expr:
+        return expr.over(keys) if keys else expr
+
+    knot = pl.col("_bk_knot")
+    lo = per_group(knot.forward_fill())
+    out = [lo.alias("_bk_lo")]
+    if above is not None:
+        out.append(per_group(knot.backward_fill()).alias("_bk_hi"))
+    filled = merged.with_columns(out).filter(pl.col("_bk_q") == 1)
+    # A null `on` sorts first, so the backward fill would reach a knot.
+    known = pl.col(on).is_not_null()
+    exact = pl.col("_bk_lo").struct.field(on) == pl.col(on)
+    final = []
+    if below is not None:
+        final.append(pl.col("_bk_lo").alias(below))
+    if above is not None:
+        final.append(
+            pl.when(~known)
+            .then(None)
+            .when(exact)
+            .then(pl.col("_bk_lo"))
+            .otherwise(pl.col("_bk_hi"))
+            .alias(above)
+        )
+    return filled.with_columns(final).drop(
+        "_bk_knot", "_bk_q", "_bk_lo", *(["_bk_hi"] if above is not None else [])
+    )
 
 
 _SPECIAL = ("nan", "pinf", "ninf")
@@ -293,6 +401,7 @@ __all__ = [
     "IsLast",
     "Lag",
     "RowIndex",
+    "bracket",
     "exact_mean",
     "exact_sums",
     "grouped_scan",

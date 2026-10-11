@@ -129,10 +129,25 @@ keys on `_sweep_key()` as well as `(image_id, class_id)`.
 ## Streaming
 
 Every metrics plan runs on polars' streaming engine. A step it cannot run
-natively becomes an `in-memory-map` node that collects its whole input.
-`tests/test_streaming_plans.py` builds every public lazy entry point and fails
-on any such node (or a whole-column Python UDF) that `KNOWN_FALLBACKS` in
-`tests/_streaming_guard.py` does not name, with its reason.
+natively is handed to the in-memory engine (an `in-memory-map`,
+`in-memory-join` or `columnar-function` node), which collects its whole input.
+`tests/_streaming_guard.py` takes that classification from polars itself (the
+fill colour the physical graph's legend names "in-memory engine fallback"),
+not from a list of node names. `tests/test_streaming_plans.py` builds every
+public lazy entry point, and scans every plan the eager ones collect, and fails
+on any fallback that `KNOWN_FALLBACKS` does not name, with its reason. An entry
+there must be one polars cannot run natively at all.
+
+Known traps, each now written another way:
+
+- an unwindowed `pl.int_range(pl.len())` (a row position, "is first row") is a
+  columnar function: use `with_row_index`. Inside `.over(keys)` it streams.
+- `join_asof(by=...)` is an in-memory join: use `_grouped_scan.bracket` (a
+  plain `join_asof` without `by` streams).
+- a join's `validate=` is checked only in memory: check uniqueness with a
+  group-by (see `_inputs._image_columns`).
+- an unwindowed reverse scan (`CumMax(reverse=True)` with no keys) must buffer
+  the frame: `grouped_scan` refuses it; group by a constant column.
 
 - **Per-group scans go through `_grouped_scan.grouped_scan`**: one sort by
   `(*keys, *by)`, then running sums/maxima, lags, row indices and first/last
@@ -144,11 +159,13 @@ on any such node (or a whole-column Python UDF) that `KNOWN_FALLBACKS` in
 - Aggregations polars already runs natively stay as they are: `sum`, `max`,
   `len`, `count`, `any`, and `sum`/`min`/`len().over()` of a plain column,
   which polars rewrites into a group-by plus a join.
-- **What else falls back** (each on a per-object or per-image frame, never on
-  the replicate frame): `group_objects`' per-(image, class) object lists, which
-  the elementwise matchers need; a sampling unit's set of weight cells
-  (`_cell`); and an entity's image list (`sample_col=`). polars cannot build a
-  list inside a streaming group-by.
+- **What still falls back** (the only `KNOWN_FALLBACKS` entry): `group_objects`'
+  per-(image, class) object lists, which the elementwise matchers need. polars
+  cannot build a list inside a streaming group-by.
+- **Nearest knots go through `_grouped_scan.bracket`**: queries and knots
+  sorted together, each knot filled forward and backward `.over(keys)` — a
+  backward and a forward `join_asof(by=keys)`, linear in the rows. The knot's
+  values are copied, never matched back by float equality.
 - **No Python UDFs in the package** (`tests/test_no_python_udfs.py`). Per-row
   work belongs in the plugin, as `.contour.single` replaced the mask check.
 
@@ -424,7 +441,7 @@ metrics/
 - `froc_sensitivity_at_fp` / `lroc_sensitivity_at_fpf` / `froc_summary_table`
   return a **`LazyFrame`** (the caller collects — no method collects internally),
   built on the single lazy authority `_auc_expr.interpolate_curve_lazy`
-  (`collapse_curve` + backward/forward `join_asof`). `sensitivity` is `null` for
+  (`collapse_curve` + `_grouped_scan.bracket`, the streaming as-of join). `sensitivity` is `null` for
   x-values outside the observed range by default, and the summary's y column
   stays Float64 even when every point is null.
 - **One off-curve policy.** `partial_auc` and `interpolate_curve_lazy` are

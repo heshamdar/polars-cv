@@ -21,6 +21,7 @@ from polars_cv.metrics._grouped_scan import (
     IsLast,
     Lag,
     RowIndex,
+    bracket,
     exact_sums,
     grouped_scan,
 )
@@ -51,7 +52,7 @@ def _reference(df: pl.DataFrame, keys: list[str]) -> pl.DataFrame:
     ).with_columns(
         ck=over(pl.col("k").cum_sum()),
         cw=over(pl.col("w").cum_sum()),
-        mx=over(pl.col("p").reverse().cum_max().reverse()),
+        **({"mx": over(pl.col("p").reverse().cum_max().reverse())} if keys else {}),
         fmx=over(pl.col("p").cum_max()),
         lag=over(pl.col("p").shift(1)),
         idx=over(pl.int_range(pl.len(), dtype=pl.Int64)),
@@ -68,7 +69,7 @@ def _scan(df: pl.DataFrame, keys: list[str]) -> pl.LazyFrame:
         descending=[True, False],
         ck=CumSum("k"),
         cw=CumSum("w"),
-        mx=CumMax("p", reverse=True),
+        **({"mx": CumMax("p", reverse=True)} if keys else {}),
         fmx=CumMax("p"),
         lag=Lag("p"),
         idx=RowIndex(),
@@ -90,6 +91,21 @@ def test_grouped_scan_matches_over(keys: list[str], seed: int) -> None:
 def test_grouped_scan_stays_streaming(keys: list[str]) -> None:
     """The sort and its windows are native streaming nodes (polars >= 2.0)."""
     assert in_memory_nodes(_scan(_frame(0), keys)) == []
+
+
+def test_grouped_scan_refuses_an_ungrouped_reverse_scan() -> None:
+    """Over the whole frame a reverse scan runs in memory; a key streams it."""
+    lf = _frame(0).lazy()
+    with pytest.raises(ValueError, match="reverse CumMax needs group keys"):
+        grouped_scan(lf, [], by=["t"], descending=[False], mx=CumMax("p", reverse=True))
+    scan = grouped_scan(
+        lf.with_columns(_one=pl.lit(1)),
+        ["_one"],
+        by=["t"],
+        descending=[False],
+        mx=CumMax("p", reverse=True),
+    )
+    assert in_memory_nodes(scan) == []
 
 
 def test_grouped_scan_keeps_nulls_where_over_does() -> None:
@@ -230,3 +246,86 @@ def test_grouped_cum_sum_carries_nan_and_inf_within_the_group_only() -> None:
         c=pl.col("w").cum_sum().over("g")
     )
     assert_frame_equal(got, want)
+
+
+# -- bracket ----------------------------------------------------------------
+
+
+def _bracket_inputs(seed: int, keys: list[str]) -> tuple[pl.DataFrame, pl.DataFrame]:
+    rng = np.random.default_rng(seed)
+    n = 60
+
+    def key(size: int) -> list[str | None]:
+        return [None if v == "n" else v for v in rng.choice(["a", "b", "n"], size)]
+
+    knots = (
+        pl.DataFrame(
+            {
+                "g": pl.Series(key(n), dtype=pl.String),
+                "x": np.round(rng.uniform(0, 3, n), 1),
+                # Null and NaN values are copied like any other.
+                "y": [None if i % 9 == 0 else v for i, v in enumerate(rng.random(n))],
+            }
+        )
+        .with_columns(pl.when(pl.col("y") > 0.95).then(float("nan")).otherwise("y"))
+        # Unique `x` per group, as the contract requires.
+        .unique([*keys, "x"], keep="first", maintain_order=True)
+    )
+    query = pl.DataFrame(
+        {
+            "g": pl.Series(key(25), dtype=pl.String),
+            # Off both ends, on knots, between them, repeated, and null.
+            "x": [None, *np.round(rng.uniform(-0.5, 3.5, 24), 1).tolist()],
+            "q": np.arange(25),
+        }
+    )
+    return knots, query
+
+
+@pytest.mark.parametrize("keys", [[], ["g"]], ids=str)
+@pytest.mark.parametrize("seed", [0, 1, 2, 3])
+def test_bracket_matches_join_asof(keys: list[str], seed: int) -> None:
+    """Exactly the backward and forward ``join_asof(by=keys)``, knot for knot."""
+    knots, query = _bracket_inputs(seed, keys)
+    k = knots.select(*keys, "x", pl.struct("x", "y").alias("knot")).sort("x")
+    q = query.sort("x")
+    by = keys or None
+    want = (
+        q.join_asof(k, on="x", by=by, strategy="backward", check_sortedness=False)
+        .rename({"knot": "lo"})
+        .sort("x")
+        .join_asof(k, on="x", by=by, strategy="forward", check_sortedness=False)
+        .rename({"knot": "hi"})
+        .sort("q")
+    )
+    got = (
+        bracket(
+            query.lazy(),
+            knots.lazy().select(*keys, "x", "y"),
+            keys,
+            on="x",
+            below="lo",
+            above="hi",
+        )
+        .collect(engine="streaming")
+        .sort("q")
+    )
+    assert_frame_equal(got.select(want.columns), want)
+
+
+def test_bracket_streams() -> None:
+    knots, query = _bracket_inputs(0, ["g"])
+    plan = bracket(query.lazy(), knots.lazy(), ["g"], on="x", below="lo", above="hi")
+    assert in_memory_nodes(plan) == []
+    assert (
+        in_memory_nodes(
+            bracket(query.lazy(), knots.lazy().drop("g"), [], on="x", above="hi")
+        )
+        == []
+    )
+
+
+def test_bracket_needs_a_side() -> None:
+    knots, query = _bracket_inputs(0, ["g"])
+    with pytest.raises(ValueError, match="needs `below`, `above` or both"):
+        bracket(query.lazy(), knots.lazy(), ["g"], on="x")

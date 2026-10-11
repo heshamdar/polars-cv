@@ -45,7 +45,15 @@ from ._auc import (
     validate_correction,
     validate_extrapolate,
 )
-from ._grouped_scan import CumSum, IsFirst, IsLast, Lag, exact_sums, grouped_scan
+from ._grouped_scan import (
+    CumSum,
+    IsFirst,
+    IsLast,
+    Lag,
+    bracket,
+    exact_sums,
+    grouped_scan,
+)
 
 
 def _as_expr(value: str | pl.Expr) -> pl.Expr:
@@ -404,8 +412,9 @@ def interpolate_curve_lazy(
     The single lazy interpolation authority (the FROC/LROC sensitivity/summary
     helpers build on it): it
     collapses the curve to the strictly-increasing upper envelope
-    (:func:`collapse_curve`), then brackets each query point with a backward and a
-    forward as-of join and linearly interpolates. A point outside the observed
+    (:func:`collapse_curve`), then brackets each query point with its nearest
+    knots at or below and at or above it (:func:`~._grouped_scan.bracket`, a
+    streaming as-of join) and linearly interpolates. A point outside the observed
     ``[min x, max x]`` yields a null ``y`` with ``extrapolate="none"`` (default)
     or the nearest endpoint's ``y`` with ``"flat"`` — the policy
     :func:`partial_auc` integrates by. An exact knot (and the endpoints)
@@ -428,11 +437,6 @@ def interpolate_curve_lazy(
     validate_extrapolate(extrapolate)
     keys = list(group_keys or [])
     collapsed = collapse_curve(curve_lf, x_col=x_col, y_col=y_col, group_keys=keys)
-    # `sort` after `select` keeps the join key flagged sorted for `join_asof`.
-    ref = collapsed.select(
-        *keys, pl.col(x_col), _xk=pl.col(x_col), _yk=pl.col(y_col)
-    ).sort(x_col)
-
     points = (
         pl.LazyFrame({x_col: [float(a) for a in at]})
         .with_columns(pl.col(x_col).cast(pl.Float64))
@@ -440,17 +444,19 @@ def interpolate_curve_lazy(
     )
     query = (
         collapsed.select(keys).unique().join(points, how="cross") if keys else points
-    ).sort(x_col)
-    by = keys or None
-    # Both sides are sorted on `x_col` globally, so every `by` group is too;
-    # polars cannot verify that per group and would warn on every call.
-    bracketed = query.join_asof(
-        ref, on=x_col, by=by, strategy="backward", check_sortedness=False
-    ).rename({"_xk": "_x_lo", "_yk": "_y_lo"})
-    bracketed = (
-        bracketed.sort(x_col)
-        .join_asof(ref, on=x_col, by=by, strategy="forward", check_sortedness=False)
-        .rename({"_xk": "_x_hi", "_yk": "_y_hi"})
+    )
+    bracketed = bracket(
+        query,
+        collapsed.select(*keys, x_col, _yk=pl.col(y_col)),
+        keys,
+        on=x_col,
+        below="_lo",
+        above="_hi",
+    ).with_columns(
+        _x_lo=pl.col("_lo").struct.field(x_col),
+        _y_lo=pl.col("_lo").struct.field("_yk"),
+        _x_hi=pl.col("_hi").struct.field(x_col),
+        _y_hi=pl.col("_hi").struct.field("_yk"),
     )
 
     denom = pl.col("_x_hi") - pl.col("_x_lo")
