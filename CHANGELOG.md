@@ -7,6 +7,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.36.0] — 2026-10-11
+
+Performance, and one new parameter. Ops that walk their input a row at a time
+read a crop or a vertical flip where it lies, `convolve2d`, `convert_color`
+and the binary ops read any view without packing it first, and a tensor sink
+copies a view at most once. `sink(..., compact=True)` writes only each row's
+elements, for columns you persist. Nothing is removed. One result can change:
+`equalize_histogram` and `perceptual_hash` of a u64 or i64 image saturate into
+u8 instead of wrapping. Upgrading from 0.35: see the
+[migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.36/).
+
 ### Added
 
 - **`sink("numpy"|"ndarray"|"torch", compact=True)`** makes each row's
@@ -4891,7 +4902,8 @@ Each item is described in full under its section below.
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
-[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.35.0...HEAD
+[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.36.0...HEAD
+[0.36.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.36.0
 [0.35.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.35.0
 [0.34.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.34.0
 [0.33.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.33.0
