@@ -25,6 +25,7 @@ from .._types import (
     ensure_columns_exist,
     to_lazy,
 )
+from ._table import Carry, carried
 
 if TYPE_CHECKING:
     pass
@@ -67,6 +68,7 @@ class PreMatchedAdapter:
         iou_col: str | None = None,
         det_idx_col: str | None = None,
         image_meta: pl.LazyFrame | pl.DataFrame | None = None,
+        carry: Carry | None = None,
     ) -> DetectionTable:
         """Wrap pre-matched data into a ``DetectionTable``.
 
@@ -98,6 +100,12 @@ class PreMatchedAdapter:
                 retained — so it may not be combined with the per-image
                 column arguments below. When omitted, metadata is derived
                 from the detection rows and a ``UserWarning`` is emitted.
+            carry: Columns to copy into ``image_metadata``: names, or
+                expressions named by their output name, over the frame that
+                defines it — ``image_meta`` when given, else the detection
+                rows (each image's first value). Refused: a missing column,
+                an unnamed or repeated name, and a name ``image_metadata``
+                defines itself.
 
         Returns:
             Validated ``DetectionTable``.
@@ -159,7 +167,14 @@ class PreMatchedAdapter:
         # misspelled weight_col used to leave every weight at 1.0.
         ensure_columns_exist(schema_names, named)
 
-        meta_lf = None if image_meta is None else _canonicalize_image_meta(image_meta)
+        meta_lf = (
+            None
+            if image_meta is None
+            else _canonicalize_image_meta(
+                image_meta,
+                carried(carry, to_lazy(image_meta).collect_schema().names()),
+            )
+        )
         _check_class_keys(schema_names, class_col, image_meta)
 
         # Image ID
@@ -266,6 +281,10 @@ class PreMatchedAdapter:
             else:
                 meta_agg.append((pl.col(COL_IS_TP).any()).alias(COL_GT_LABEL))
 
+            meta_agg.extend(
+                expr.first().alias(name)
+                for name, expr in carried(carry, schema_names).items()
+            )
             meta_lf = enriched_lf.group_by(COL_IMAGE_ID, COL_CLASS_ID).agg(meta_agg)
 
             if group_col is not None:
@@ -275,7 +294,9 @@ class PreMatchedAdapter:
                     .alias(COL_IMAGE_ID),
                     pl.col(group_col).cast(pl.String).alias(COL_GROUP_ID),
                 ).unique()
-                meta_lf = meta_lf.join(group_map, on=COL_IMAGE_ID, how="left")
+                meta_lf = meta_lf.join(
+                    group_map, on=COL_IMAGE_ID, how="left", nulls_equal=True
+                )
 
         return DetectionTable.from_matched(
             detections_lf, meta_lf, has_iou=iou_col is not None
@@ -325,6 +346,7 @@ def _check_class_keys(
 
 def _canonicalize_image_meta(
     image_meta: pl.LazyFrame | pl.DataFrame,
+    carry: dict[str, pl.Expr],
 ) -> pl.LazyFrame:
     """Normalize a caller-supplied image population to canonical columns.
 
@@ -332,6 +354,7 @@ def _canonicalize_image_meta(
         image_meta: Per-image (or per-image-class) frame. Must contain
             ``image_id`` and ``n_gts``; ``class_id``, ``weight``, and
             ``gt_label`` are filled with defaults when absent.
+        carry: Further columns to keep, by name (see :func:`carried`).
 
     Returns:
         LazyFrame with the columns ``IMAGE_META_SCHEMA`` declares.
@@ -364,5 +387,5 @@ def _canonicalize_image_meta(
     ]
     if COL_GROUP_ID in schema_names:
         select_exprs.append(pl.col(COL_GROUP_ID).cast(pl.String).alias(COL_GROUP_ID))
-
+    select_exprs.extend(expr.alias(name) for name, expr in carry.items())
     return meta_lf.select(select_exprs)

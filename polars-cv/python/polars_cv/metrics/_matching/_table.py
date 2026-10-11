@@ -30,10 +30,60 @@ from .._types import (
     COL_SCORE,
     COL_WEIGHT,
     DEFAULT_CLASS,
+    IMAGE_META_SCHEMA,
     DetectionTable,
+    ensure_columns_exist,
 )
 
 _RIGHT_IDX, _OVERLAP, _DUPLICATE = (f.name for f in CORRESPONDENCE_SCHEMA.fields)
+
+#: What a matcher's ``carry=`` takes: columns of the frame that defines
+#: ``image_metadata``, or expressions over it, each named by its output name.
+Carry = Sequence[str | pl.Expr]
+
+#: The ``image_metadata`` columns a table defines itself.
+_RESERVED = (*IMAGE_META_SCHEMA, COL_GROUP_ID, COL_IOU_THRESHOLD)
+
+
+def carried(carry: Carry | None, schema_names: Sequence[str]) -> dict[str, pl.Expr]:
+    """``carry`` as ``{name: expression}``, checked against ``schema_names``.
+
+    The one reading of every matcher's ``carry=``: a string is that column, an
+    expression is named by its output name (so it must have one: a bare
+    literal is refused rather than called ``"literal"``).
+
+    Raises:
+        ValueError: A named column is missing, an expression has no name of
+            its own or several outputs, a name repeats, or a name is one
+            ``image_metadata`` defines itself.
+        TypeError: An entry is neither a string nor an expression.
+    """
+    out: dict[str, pl.Expr] = {}
+    for item in carry or ():
+        if isinstance(item, str):
+            name, expr = item, pl.col(item)
+        elif isinstance(item, pl.Expr):
+            if item.meta.has_multiple_outputs():
+                raise ValueError(f"carry: {item} has several outputs; carry each")
+            aliased = not item.meta.undo_aliases().meta.eq(item)
+            if not aliased and not item.meta.root_names():
+                raise ValueError(
+                    f"carry: {item} reads no column, so its name would be "
+                    "'literal'; name it with .alias()"
+                )
+            name, expr = item.meta.output_name(), item
+        else:
+            raise TypeError(f"carry takes column names or expressions, got {item!r}")
+        if name in _RESERVED:
+            raise ValueError(
+                f"carry: {name!r} is reserved: image_metadata defines it itself"
+            )
+        if name in out:
+            raise ValueError(f"carry: {name!r} is carried more than once")
+        if isinstance(item, str):
+            ensure_columns_exist(schema_names, [item])
+        out[name] = expr
+    return out
 
 
 def iou_thresholds(value: float | Sequence[float]) -> tuple[float, ...]:
@@ -70,6 +120,7 @@ def matched_table(
     gt_col: str,
     class_col: str | None,
     group_col: str | None,
+    carry: dict[str, pl.Expr] | None = None,
     ignore_duplicates: bool = False,
 ) -> DetectionTable:
     """Match ``prepared`` at every threshold and build the table.
@@ -86,6 +137,8 @@ def matched_table(
         gt_col: The ground-truth object list column (its length is ``n_gts``).
         class_col: The row's class column, or ``None`` for one class.
         group_col: An optional grouping column copied to the metadata.
+        carry: Columns computed on ``prepared`` and copied to the metadata
+            (see :func:`carried`).
         ignore_duplicates: Drop a repeated hit on a claimed target rather than
             count it as a false positive.
     """
@@ -97,12 +150,20 @@ def matched_table(
         ts, matching = thresholds, min(thresholds)
         sweep_ts = thresholds if len(thresholds) > 1 else ()
     sweep = bool(sweep_ts)
+    # Carried values are computed under names of ours, so a caller's name
+    # cannot overwrite a column the match reads, and renamed at the end.
+    tmp = {f"_carry_{i}": name for i, name in enumerate(carry or {})}
+    computed = [e.alias(t) for t, e in zip(tmp, (carry or {}).values(), strict=True)]
     # A sweep reads the prepared rows once per threshold; caching them keeps
-    # any extraction upstream to one run.
-    base = prepared.cache() if sweep else prepared
+    # any extraction upstream, and the carried values, to one run. Otherwise
+    # the carried values share the match's projection over the image rows.
+    if sweep:
+        base, alongside = prepared.with_columns(computed).cache(), []
+    else:
+        base, alongside = prepared, computed
     gt = pl.col(gt_col)
     levels = [
-        base.with_columns(_match=match(t)).select(
+        base.with_columns(*alongside, _match=match(t)).select(
             COL_IMAGE_ID,
             COL_WEIGHT,
             pl.col(scores_col).alias("_scores"),
@@ -122,15 +183,16 @@ def matched_table(
                 else []
             ),
             *([pl.lit(t, dtype=pl.Float64).alias(COL_IOU_THRESHOLD)] if sweep else []),
+            *tmp,
         )
         for t in ts
     ]
     # Cached so the detections and the metadata derived below run the
     # correspond graph once under the caller's single collect.
     image_level = (levels[0] if len(levels) == 1 else pl.concat(levels)).cache()
-    carry = [COL_CLASS_ID, *([COL_IOU_THRESHOLD] if sweep else [])]
+    per_detection = [COL_CLASS_ID, *([COL_IOU_THRESHOLD] if sweep else [])]
     detections = explode_matches(
-        image_level, carry=carry, ignore_duplicates=ignore_duplicates
+        image_level, carry=per_detection, ignore_duplicates=ignore_duplicates
     )
     meta = image_level.select(
         COL_IMAGE_ID,
@@ -140,6 +202,7 @@ def matched_table(
         COL_GT_LABEL,
         *([COL_GROUP_ID] if group_col is not None else []),
         *([COL_IOU_THRESHOLD] if sweep else []),
+        *(pl.col(t).alias(name) for t, name in tmp.items()),
     )
     table = DetectionTable.from_matched(
         detections, meta, matching_iou_threshold=matching

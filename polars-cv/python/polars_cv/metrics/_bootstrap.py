@@ -790,7 +790,7 @@ def _join_point_and_ci(
 ) -> pl.LazyFrame:
     """Join the point estimate and the CI bounds on the group keys."""
     if group_keys:
-        return point.join(ci, on=group_keys, how="left").select(
+        return point.join(ci, on=group_keys, how="left", nulls_equal=True).select(
             *group_keys, value_col, "ci_lower", "ci_upper"
         )
     # Both are single-row (or empty) frames; a cross join pairs them.

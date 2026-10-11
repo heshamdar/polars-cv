@@ -73,7 +73,10 @@ def _with_meta_keys(
     if not meta_only:
         return det
     return det.join(
-        meta.select(COL_IMAGE_ID, *meta_only).unique(), on=COL_IMAGE_ID, how="left"
+        meta.select(COL_IMAGE_ID, *meta_only).unique(),
+        on=COL_IMAGE_ID,
+        how="left",
+        nulls_equal=True,
     )
 
 

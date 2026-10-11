@@ -336,7 +336,9 @@ class DetectionTable:
         keys = meta.select(on).unique()
         return replace(
             self,
-            _detections=self._detections.join(keys, on=on, how="semi"),
+            _detections=self._detections.join(
+                keys, on=on, how="semi", nulls_equal=True
+            ),
             _image_meta=meta,
         )
 
@@ -392,8 +394,8 @@ class DetectionTable:
             .select(*keys, top_is_tp=pl.col(COL_IS_TP))
         )
         return (
-            self._image_meta.join(stats, on=keys, how="left")
-            .join(top, on=keys, how="left")
+            self._image_meta.join(stats, on=keys, how="left", nulls_equal=True)
+            .join(top, on=keys, how="left", nulls_equal=True)
             .with_columns(pl.col("top_is_tp").fill_null(False))
         )
 

@@ -188,11 +188,12 @@ def bracket(
     Within each ``keys`` group, ``below`` is the knot with the largest ``on``
     ``<=`` the row's, ``above`` the one with the smallest ``on`` ``>=`` it:
     a backward and a forward ``join_asof(on=on, by=keys)``, without the
-    in-memory join polars 2 runs those as. Each is a struct of the knot's
+    in-memory join polars 2 runs those as (and with null keys grouped). Each is a struct of the knot's
     non-key columns (``on`` included), null where no knot qualifies. A knot is
     copied, never matched back by value, so its floats are exactly the knot's.
 
-    As with ``join_asof(by=...)``, a null group key or ``on`` matches no knot. The knots'
+    A null group key is a group of its own, as in ``.over`` (``join_asof(by=)``
+    would match it to nothing); a null ``on`` matches no knot. The knots'
     ``on`` must be unique within a group (a collapsed curve, a per-group
     ``group_by``); ``query`` may repeat values. Query row order is not kept.
 
@@ -213,7 +214,7 @@ def bracket(
     fields = [c for c in knots.collect_schema().names() if c not in keys]
     if on not in fields:
         raise ValueError(f"knots carry no `{on}` column")
-    knot_rows = knots.drop_nulls([*keys, on]).select(
+    knot_rows = knots.drop_nulls(on).select(
         *keys,
         on,
         pl.struct(fields).alias("_bk_knot"),

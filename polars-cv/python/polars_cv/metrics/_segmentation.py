@@ -195,7 +195,7 @@ class SegmentationReport:
             n_bootstrap=n_bootstrap,
             seed=seed,
         )
-        replicates = draws.join(images, on="_unit", how="left")
+        replicates = draws.join(images, on="_unit", how="left", nulls_equal=True)
         alpha = (1.0 - confidence) / 2.0
         means = replicates.group_by(_COL_BOOT).agg(pl.col(n).mean() for n in names)
         q = means.select(
@@ -218,7 +218,7 @@ class SegmentationReport:
             },
         )
         return self.summary.select("metric", "value").join(
-            bounds, on="metric", how="inner", maintain_order="right"
+            bounds, on="metric", how="inner", maintain_order="right", nulls_equal=True
         )
 
     def __repr__(self) -> str:

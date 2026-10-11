@@ -239,6 +239,49 @@ matcher = ContourMatcher(
 A literal is checked when the matcher is built; an expression when its row
 runs.
 
+#### Per-image measures in the same pass (`carry=`)
+
+A detection evaluation often wants per-image measures (pixel Dice / IoU of
+the same heatmap) next to the FROC inputs. Computing them in a second query
+over the image rows gives those rows two readers. Under the streaming engine
+a cache with two readers that move at different speeds holds its rows until
+the slower one has read them, which for a matcher (sorts, joins) means every
+image at once. `carry=` puts the measure in the matcher's own pass over the
+image rows instead: each entry is a column of the frame, or an expression over
+it named by its output name. The result lands in `image_metadata`, one value
+per (image, class) row:
+
+```python
+from polars_cv.metrics import segmentation_measures
+
+seg = segmentation_measures("heatmap", "gt_mask")
+table = matcher.match(
+    data,
+    pred_col="heatmap",
+    gt_col="gt_mask",
+    carry=["scanner", seg.struct.field("dice"), seg.struct.field("iou")],
+)
+per_image = table.image_metadata.select("image_id", "scanner", "dice", "iou")
+```
+
+Every matcher takes `carry=`, and so does `match_detections` (columns of its
+`images=` frame). A carried column is a grouping key like any metadata
+column: `FROCSensitivity(1.0).by_group(table, "scanner")`. Names
+`image_metadata` defines itself (`image_id`, `weight`, `group_id`, …) are
+refused, as are missing columns, repeated names and unnamed literals.
+
+#### Reading the matcher's input elsewhere
+
+polars-cv registers its plugin functions as deterministic, so polars merges
+identical calls. It does not merge an upstream that sits under several
+*different* explicit caches, and the matcher caches internally. If you also
+read the frame you pass to `match()` in another branch of the same query
+(a case map, importance weights), the work upstream of it (decoding, a file
+scan) runs once per branch. Prefer `carry=`, which keeps one reader. If the
+other branch must stay, `.cache()` the frame yourself before passing it, so
+the work runs once; the cache then holds rows until both readers have read
+them.
+
 #### Contour predictions
 
 A model that emits polygons with its own per-object scores skips the heatmap:
@@ -587,6 +630,10 @@ for device in ["a", "b"]:
 
 small = table.filter_images(["img_001", "img_007"])
 ```
+
+A null group (an unrecorded site, an unknown scanner) is a group of its own
+everywhere: curves, operating points, AUCs and bootstrap intervals report it
+in a row whose key is null, exactly as they would under any other name.
 
 ## Class-Aware Metrics
 
