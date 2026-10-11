@@ -30,8 +30,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   (`tests/test_join_ratchet.py`), and `tests/test_null_groups.py` holds every
   grouped entry point to "a null group equals the same group named". The
   interpolation's null-key group, which `join_asof(by=)` matched to nothing,
-  is interpolated too. In `match_detections`, a null `image_id` is one image,
-  so `images=` may hold it once.
+  is interpolated too. In `match_detections`, a null `image_id` is one image.
 
 ### Fixed
 
@@ -48,9 +47,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     the rows, and the bracketing knot's `y` is copied rather than matched back
     by float equality;
   - `match_detections(images=..., weight=/group=)`'s `validate="m:1"` join,
-    which polars validates only in memory. A repeated (non-null) `image_id` in
-    `images` still fails the query, now from a streaming group-by, with
-    `images= repeats image_id <id>` in the `ComputeError`.
+    which polars validates only in memory. It is now a plain streaming join.
+    One row per image in `images` is the caller's contract and is no longer
+    checked: a repeated `image_id` repeats that image's objects instead of
+    failing the query. Checking it cost a pass over `images` (about 25% of a
+    `match_detections` call at 20k images).
   `group_objects`' per-(image, class) object lists stay the one in-memory
   step: polars 2.0 builds a list only in memory (aggregation, `implode().over`
   and a joined window all fall back). It holds object geometry only (an
