@@ -50,8 +50,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     which polars validates only in memory. It is now a plain streaming join.
     One row per image in `images` is the caller's contract and is no longer
     checked: a repeated `image_id` repeats that image's objects instead of
-    failing the query. Checking it cost a pass over `images` (about 25% of a
-    `match_detections` call at 20k images).
+    failing the query. Checking it cost a pass over `images`. The image
+    columns are now joined inside `group_objects` (new `image_columns=`),
+    before its final sort: a streaming join after the sort handed the matcher
+    one morsel and serialized it (1.5 s vs 0.9 s at 80k images); before the
+    sort, a call with `images=` costs what one without it does.
   `group_objects`' per-(image, class) object lists stay the one in-memory
   step: polars 2.0 builds a list only in memory (aggregation, `implode().over`
   and a joined window all fall back). It holds object geometry only (an

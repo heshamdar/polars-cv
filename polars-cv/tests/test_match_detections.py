@@ -234,3 +234,18 @@ def test_bbox_schema_constant_is_the_geometry_contract() -> None:
         "width": pl.Float64,
         "height": pl.Float64,
     }
+
+
+def test_group_objects_copies_image_columns_onto_each_image() -> None:
+    """``image_columns`` rides the population: one value per image, null for an
+    image the ``images`` frame does not list."""
+    images = pl.DataFrame({"image_id": ["img1", "img9"], "w": [2.0, 3.0]})
+    grouped = group_objects(
+        PREDS, GTS, geometry="box", images=images, image_columns=["w"]
+    ).collect()
+    by_image = dict(grouped.select("image_id", "w").unique().iter_rows())
+    assert by_image["img1"] == 2.0
+    assert by_image["img9"] == 3.0
+    assert all(v is None for k, v in by_image.items() if k not in {"img1", "img9"})
+    with pytest.raises(ValueError, match="image_columns"):
+        group_objects(PREDS, GTS, geometry="box", image_columns=["w"])
