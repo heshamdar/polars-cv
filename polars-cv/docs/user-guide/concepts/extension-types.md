@@ -100,3 +100,7 @@ extension of the same name (`pl.Extension("polars_cv.point", ...)`, Polars 2.0's
 default) — no data is lost, and `.ext.storage()` gives the plain struct. Setting
 `POLARS_UNKNOWN_EXTENSION_TYPE_BEHAVIOR=load_as_storage` reads the plain struct
 directly instead.
+
+Each row is written whole, `data` included. A row of `sink("ndarray")` that is
+a view (a crop, a flip) holds the storage it was cut from, so write
+`sink("ndarray", compact=True)` to persist only the elements each row reads.

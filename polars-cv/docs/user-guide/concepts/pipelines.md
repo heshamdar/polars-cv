@@ -69,9 +69,9 @@ If you use `sink("list")` or `sink("array")`, dtype must be known at planning ti
 
 | Format | Output Type | Description |
 |--------|------------|-------------|
-| `numpy` | Struct | NumPy-compatible zero-copy struct (`{data, dtype, shape, strides, offset}`); `dtype="f16"` downcasts |
-| `torch` | Struct | PyTorch-compatible zero-copy struct; `dtype="f16"` downcasts |
-| `ndarray` | `polars_cv.ndarray` | The `numpy` struct tagged with an [extension type](extension-types.md); `dtype="f16"` downcasts |
+| `numpy` | Struct | NumPy-compatible zero-copy struct (`{data, dtype, shape, strides, offset}`); `dtype="f16"` downcasts, `compact=True` packs each row |
+| `torch` | Struct | PyTorch-compatible zero-copy struct; `dtype="f16"` downcasts, `compact=True` packs each row |
+| `ndarray` | `polars_cv.ndarray` | The `numpy` struct tagged with an [extension type](extension-types.md); `dtype="f16"` downcasts, `compact=True` packs each row |
 | `png` | Binary | PNG bytes; preserves bit depth (`u8` → 8-bit, `u16` → 16-bit) |
 | `jpeg` | Binary | JPEG bytes; 8-bit only, requires `u8` |
 | `webp` | Binary | WebP bytes; 8-bit only, requires `u8` |
@@ -80,6 +80,14 @@ If you use `sink("list")` or `sink("array")`, dtype must be known at planning ti
 | `list` | List | Polars nested List |
 | `array` | Array | Polars fixed-size Array |
 | `native` | Varies | Native Python type (for scalars/vectors) |
+
+A tensor sink hands each row over without copying where it can, so a row
+that is a view (a crop, a flip, a transpose) carries the whole storage it reads
+from, with the `strides` and `offset` that select the view. That is free in
+memory but not on disk: Parquet and IPC write each row's `data` whole. Pass
+`compact=True` for a column you will persist, and each row's `data` is exactly
+its elements, row-major, at offset 0. Only a row that is not already compact is
+copied.
 
 Float buffers cannot be encoded to PNG/JPEG/WebP — `.cast("u8")`/`.cast("u16")`
 first, or sink to `tiff`, which stores floating point directly.
