@@ -52,6 +52,7 @@ def group_objects(
     score: str = "score",
     images: Iterable[str] | pl.Series | pl.DataFrame | pl.LazyFrame | None = None,
     max_detections: int | None = None,
+    image_columns: Sequence[str] = (),
 ) -> pl.LazyFrame:
     """Long object tables → one row per (image, class) with object lists.
 
@@ -70,6 +71,9 @@ def group_objects(
             images in either table.
         max_detections: Keep only each (image, class)'s highest-scoring
             predictions — COCO's ``maxDets`` (100).
+        image_columns: Columns of the ``images`` frame to copy onto each of
+            the image's rows (null for an image it does not list). The frame
+            must hold one row per image; this is not checked.
 
     Returns:
         A lazy frame with ``image_id`` (String), ``class_id`` (String),
@@ -122,6 +126,20 @@ def group_objects(
     population = pl.concat(
         [p.select(COL_IMAGE_ID), g.select(COL_IMAGE_ID), *_image_ids(images)]
     ).unique()
+    if image_columns:
+        if not isinstance(images, (pl.DataFrame, pl.LazyFrame)):
+            raise ValueError("image_columns names columns of an images= frame")
+        per_image = to_lazy(images)
+        _require(per_image, [COL_IMAGE_ID, *image_columns], "images")
+        # Joined here, before the final sort, rather than onto the result: the
+        # sort re-chunks its output into even morsels for the matcher's
+        # parallel pass, while a join after it hands the matcher one morsel.
+        population = population.join(
+            per_image.select(pl.col(COL_IMAGE_ID).cast(pl.String), *image_columns),
+            on=COL_IMAGE_ID,
+            how="left",
+            nulls_equal=True,
+        )
     classes = pl.concat([p.select(COL_CLASS_ID), g.select(COL_CLASS_ID)]).unique()
     geo_p = preds.collect_schema()[geometry]
     geo_g = gts.collect_schema()[geometry]
@@ -271,6 +289,12 @@ def match_detections(
         gts = _instance_outlines(gts, geometry, image_id)
         kind = "contour"
 
+    carry_cols = (
+        carried(carry, to_lazy(images).collect_schema().names())
+        if carry and isinstance(images, (pl.DataFrame, pl.LazyFrame))
+        else {}
+    )
+    extra = _image_columns(images, weight, group, carry, carry_cols)
     grouped = group_objects(
         preds,
         gts,
@@ -278,18 +302,10 @@ def match_detections(
         image_id=image_id,
         class_id=class_id,
         score=score,
-        images=images,
+        images=images if extra is None else extra,
         max_detections=max_detections,
+        image_columns=[] if extra is None else extra.collect_schema().names()[1:],
     )
-    carry_cols = (
-        carried(carry, to_lazy(images).collect_schema().names())
-        if carry and isinstance(images, (pl.DataFrame, pl.LazyFrame))
-        else {}
-    )
-    extra = _image_columns(images, weight, group, carry, carry_cols)
-    if extra is not None:
-        # `images` holds one row per image (the caller's contract).
-        grouped = grouped.join(extra, on=COL_IMAGE_ID, how="left", nulls_equal=True)
     weight_col, group_col = weight, group
     common = {
         "pred_col": PRED,
