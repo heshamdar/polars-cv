@@ -7,6 +7,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.37.0] — 2026-10-11
+
+Detection metrics: streaming, null groups, and `carry=`. Every detection
+metric now runs on polars' streaming engine except `group_objects`' object
+lists, a null group key is evaluated as a group of its own, and every matcher
+takes `carry=` to compute per-image measures in its own pass. Two results can
+change: a null group's FROC/LROC curve is no longer empty, and
+`match_detections(images=...)` no longer checks that `images` has one row per
+image. Upgrading from 0.36: see the
+[migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.37/).
+
 ### Added
 
 - **`carry=` on every matcher and on `match_detections`.** Columns of the
@@ -31,6 +42,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   grouped entry point to "a null group equals the same group named". The
   interpolation's null-key group, which `join_asof(by=)` matched to nothing,
   is interpolated too. In `match_detections`, a null `image_id` is one image.
+- **`grouped_scan` refuses an ungrouped reverse `CumMax`.** Over the whole
+  frame a reverse running max must buffer it in memory; no caller made one
+  (every caller passes a key). Group by a constant column instead.
 
 ### Fixed
 
@@ -71,12 +85,6 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   engine fallback, raises if the legend stops naming that class, scans every
   plan the eager metrics collect, and covers every public lazy entry point's
   grouped, partial, extrapolated and weighted paths.
-
-### Changed
-
-- **`grouped_scan` refuses an ungrouped reverse `CumMax`.** Over the whole
-  frame a reverse running max must buffer it in memory; no caller made one
-  (every caller passes a key). Group by a constant column instead.
 
 ## [0.36.0] — 2026-10-11
 
@@ -4973,7 +4981,8 @@ Each item is described in full under its section below.
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
-[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.36.0...HEAD
+[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.37.0...HEAD
+[0.37.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.37.0
 [0.36.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.36.0
 [0.35.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.35.0
 [0.34.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.34.0
