@@ -27,6 +27,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
+from typing import Self
 
 import psutil
 
@@ -96,7 +97,7 @@ class PeakSampler:
             self.peak = max(self.peak, tree_pss_bytes(self._proc))
             self._stop.wait(SAMPLE_S)
 
-    def __enter__(self) -> PeakSampler:
+    def __enter__(self) -> Self:
         self._thread.start()
         return self
 
@@ -217,7 +218,11 @@ def environment() -> dict:
     locked = _locked_versions()
     try:
         commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
         ).stdout.strip()
     except OSError:
         commit = ""

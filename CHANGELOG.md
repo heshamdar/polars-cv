@@ -60,6 +60,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   not to use polars-cv, and a project-status section with the test, CI,
   release and versioning facts. Its images use absolute URLs, so PyPI renders
   it as GitHub does.
+- **A cross-library benchmark suite in `benchmarks/`** (its own uv
+  project, run against the published wheel): PIL, OpenCV, torchvision, Daft
+  and Hugging Face `datasets` on COCO val2017 over four workloads, with parity
+  tests against PIL, a subprocess per cell with pinned thread counts, peak PSS
+  sampling and a memory cap. The README's Benchmarks section shows its results,
+  including the two workloads where polars-cv 0.37.0 is slower than OpenCV.
 - **`tests/test_readme.py` executes every Python block of the README**, each
   on its own in a scratch directory, in the per-push lane. The previous
   README's quick start referenced undefined names and could not run.

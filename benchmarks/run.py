@@ -16,6 +16,7 @@ import argparse
 import contextlib
 import itertools
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -28,6 +29,7 @@ from bench import harness
 from bench.workloads import LIBRARIES, WORKLOADS, cpu_count
 
 ROOT = Path(__file__).resolve().parent
+TMP = ROOT / "data" / "tmp"
 
 
 def _list(value: str, choices: tuple[str, ...]) -> list[str]:
@@ -100,7 +102,9 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--workload", default="all")
     p.add_argument("--library", default="all")
-    p.add_argument("--threads", default="max", help="comma list, e.g. 1,max; 'max' = all cores")
+    p.add_argument(
+        "--threads", default="max", help="comma list, e.g. 1,max; 'max' = all cores"
+    )
     p.add_argument("--source", default="bytes,path")
     p.add_argument("--dataset", default="coco-5k")
     p.add_argument("--runs", type=int, default=5)
@@ -144,6 +148,10 @@ def main() -> None:
     for i, cfg in enumerate(cells, 1):
         limit = args.mem_limit_gib * 2**30 if args.mem_limit_gib else None
         res = run_cell(cfg, args.timeout, limit)
+        # A cell killed at the memory limit or the timeout cannot clean up
+        # its own temporary files (the HF dataset copy is ~8 GB at 50k).
+        for leftover in TMP.glob("*"):
+            shutil.rmtree(leftover, ignore_errors=True)
         data["cells"].append(res)
         harness.dump(out, data)  # after every cell, so a long run is never lost
         tag = f"{cfg['workload']} {cfg['library']:<20} t={cfg['threads']} {cfg['source']:<5}"

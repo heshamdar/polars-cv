@@ -71,7 +71,15 @@ def _bars(ax, rows: dict[str, dict], value, label, order=LIBRARIES) -> None:
     for y, lib in zip(ys, libs, strict=True):
         c = rows[lib]
         if c["status"] != "ok":
-            ax.text(0, y, "  n/a", va="center", ha="left", color=MUTED, fontsize=8)
+            ax.text(
+                0,
+                y,
+                f"  {c['status']}",
+                va="center",
+                ha="left",
+                color=MUTED,
+                fontsize=8,
+            )
             continue
         v = value(c)
         color = HIGHLIGHT if lib.startswith("polars-cv") else OTHER
@@ -116,13 +124,14 @@ def _mib(c: dict) -> float:
 
 
 def throughput_grid(cells, dataset, source, threads_list, out: Path) -> None:
+    workloads = [w for w in WORKLOADS if any(c["workload"] == w for c in cells)]
     fig, axes = plt.subplots(
-        len(WORKLOADS),
+        len(workloads),
         len(threads_list),
-        figsize=(5.4 * len(threads_list), 2.6 * len(WORKLOADS)),
+        figsize=(5.4 * len(threads_list), 2.6 * len(workloads)),
         squeeze=False,
     )
-    for i, w in enumerate(WORKLOADS):
+    for i, w in enumerate(workloads):
         for j, t in enumerate(threads_list):
             ax = axes[i][j]
             rows = pick(cells, dataset=dataset, workload=w, source=source, threads=t)
@@ -140,7 +149,7 @@ def throughput_grid(cells, dataset, source, threads_list, out: Path) -> None:
                 fontsize=9,
                 color=INK,
             )
-            if i == len(WORKLOADS) - 1:
+            if i == len(workloads) - 1:
                 ax.set_xlabel("images / second (median of 5; line = IQR)")
     fig.suptitle(
         f"Throughput, {dataset}, {source} source",
@@ -155,10 +164,11 @@ def throughput_grid(cells, dataset, source, threads_list, out: Path) -> None:
 
 
 def memory_grid(cells, dataset, source, threads, out: Path) -> None:
+    workloads = [w for w in WORKLOADS if any(c["workload"] == w for c in cells)]
     fig, axes = plt.subplots(
-        1, len(WORKLOADS), figsize=(4.0 * len(WORKLOADS), 3.2), squeeze=False
+        1, len(workloads), figsize=(4.0 * len(workloads), 3.2), squeeze=False
     )
-    for ax, w in zip(axes[0], WORKLOADS, strict=True):
+    for ax, w in zip(axes[0], workloads, strict=True):
         rows = pick(cells, dataset=dataset, workload=w, source=source, threads=threads)
         rows = {
             k: v
@@ -182,9 +192,8 @@ def memory_grid(cells, dataset, source, threads, out: Path) -> None:
 
 def summary(cells, dataset, source, threads, out: Path) -> None:
     """The README chart: every workload at all cores, file-path source."""
-    fig, axes = plt.subplots(
-        1, len(WORKLOADS), figsize=(3.6 * len(WORKLOADS), 3.0), squeeze=False
-    )
+    fig, grid = plt.subplots(2, 2, figsize=(10.5, 6.2), squeeze=False)
+    axes = [list(grid.flat)]
     for ax, w in zip(axes[0], WORKLOADS, strict=True):
         rows = pick(cells, dataset=dataset, workload=w, source=source, threads=threads)
         rows = {k: v for k, v in rows.items() if k not in ("pil", "opencv")}
@@ -203,6 +212,15 @@ def summary(cells, dataset, source, threads, out: Path) -> None:
     plt.close(fig)
 
 
+def _loop_or_pool_only(c: dict | None) -> bool:
+    """An n/a that only says this thread count belongs to the sibling row."""
+    return (
+        c is not None
+        and c["status"] == "n/a"
+        and ("single-process" in c["reason"] or "one process" in c["reason"])
+    )
+
+
 def table(cells, dataset, workload, source) -> str:
     threads = sorted({c["threads"] for c in cells if c["dataset"] == dataset})
     head = (
@@ -210,35 +228,29 @@ def table(cells, dataset, workload, source) -> str:
         + " | ".join(f"{t} thr img/s (IQR) | {t} thr peak MiB" for t in threads)
         + " |"
     )
-    sep = "|---|" + "---:|---:|" * len(threads)
-    lines = [head, sep]
+    lines = [head, "|---|" + "---:|---:|" * len(threads)]
     for lib in LIBRARIES:
-        cols = []
-        seen = False
-        for t in threads:
-            c = pick(
+        found = [
+            pick(
                 cells, dataset=dataset, workload=workload, source=source, threads=t
             ).get(lib)
-            if c is None:
-                cols += ["", ""]
+            for t in threads
+        ]
+        if all(c is None or _loop_or_pool_only(c) for c in found):
+            continue
+        cols = []
+        for c in found:
+            if c is None or _loop_or_pool_only(c):
+                cols += ["—", "—"]
             elif c["status"] == "ok":
-                seen = True
                 lo, hi = c["n_images"] / c["q3_s"], c["n_images"] / c["q1_s"]
                 cols += [
                     f"{c['images_per_s']:,.0f} ({lo:,.0f}–{hi:,.0f})",
                     f"{_mib(c):,.0f}",
                 ]
-            elif c["status"] == "n/a" and (
-                "single-process" in c["reason"] or "one process" in c["reason"]
-            ):
-                cols += ["—", "—"]
             else:
-                seen = seen or c["status"] != "n/a"
-                cols += [c["status"], ""]
-        if seen or any(x not in ("—", "", "n/a") for x in cols):
-            lines.append(f"| {lib} | " + " | ".join(cols) + " |")
-        else:
-            lines.append(f"| {lib} | n/a | | n/a | |")
+                cols += [c["status"], "—"]
+        lines.append(f"| {lib} | " + " | ".join(cols) + " |")
     return "\n".join(lines)
 
 
@@ -247,6 +259,11 @@ def main() -> None:
     p.add_argument("results", nargs="+", type=Path)
     p.add_argument("--out", type=Path, default=Path(__file__).parent / "results")
     p.add_argument("--png", action="store_true", help="also write PNG previews")
+    p.add_argument(
+        "--all-threads",
+        action="store_true",
+        help="also chart the 1-thread cells (default: all cores only)",
+    )
     args = p.parse_args()
     if args.png:
         _orig = matplotlib.figure.Figure.savefig
@@ -257,6 +274,12 @@ def main() -> None:
 
         matplotlib.figure.Figure.savefig = _both
     cells, _ = load(args.results)
+    if not args.all_threads:
+        top = {
+            d: max(c["threads"] for c in cells if c["dataset"] == d)
+            for d in {c["dataset"] for c in cells}
+        }
+        cells = [c for c in cells if c["threads"] == top[c["dataset"]]]
     args.out.mkdir(parents=True, exist_ok=True)
     for dataset in sorted({c["dataset"] for c in cells}):
         dc = [c for c in cells if c["dataset"] == dataset]
