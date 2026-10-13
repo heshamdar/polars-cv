@@ -1,0 +1,378 @@
+{
+ "environment": {
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.80GHz",
+  "logical_cpus": 4,
+  "physical_cpus": 4,
+  "affinity_cpus": 4,
+  "memory_bytes": 16874930176,
+  "os": "Linux-6.18.44-fc-v114-x86_64-with-glibc2.39",
+  "python": "3.12.3",
+  "libraries": {
+   "polars-cv": "0.37.0",
+   "polars": "2.0.0",
+   "numpy": "2.5.4",
+   "pillow": "12.3.0",
+   "opencv-contrib-python-headless": "5.0.0.93",
+   "torch": "2.14.1",
+   "torchvision": "0.29.1",
+   "daft": "0.7.26",
+   "datasets": "5.1.0",
+   "imagehash": "4.3.2",
+   "pyarrow": "25.0.1",
+   "psutil": "7.2.2"
+  },
+  "uv_lock": {
+   "daft": "0.7.26",
+   "datasets": "5.1.0",
+   "imagehash": "4.3.2",
+   "numpy": "2.5.4",
+   "opencv-contrib-python-headless": "5.0.0.93",
+   "pillow": "12.3.0",
+   "polars": "2.0.0",
+   "polars-cv": "0.37.0",
+   "psutil": "7.2.2",
+   "pyarrow": "25.0.1",
+   "torch": "2.14.1",
+   "torchvision": "0.29.1"
+  },
+  "git_commit": "36ebeb77415c893e667c1644cb22144cdc54c761",
+  "timestamp": "2026-10-13T14:05:16+0000"
+ },
+ "args": {
+  "workload": "w1,w3",
+  "library": "polars-cv-eager,polars-cv-streaming,opencv-mp,pil-mp,torchvision",
+  "threads": "max",
+  "source": "path",
+  "dataset": "coco-50k",
+  "runs": 5,
+  "warmup": 1,
+  "timeout": 3600,
+  "mem_limit_gib": 12.0,
+  "out": "results/coco-50k.json"
+ },
+ "cells": [
+  {
+   "workload": "w1",
+   "library": "polars-cv-eager",
+   "threads": 4,
+   "source": "path",
+   "dataset": "coco-50k",
+   "runs": 5,
+   "warmup": 1,
+   "n_images": 50000,
+   "prepare_s": 0.21916054299981624,
+   "status": "ok",
+   "times_s": [
+    54.006277419999606,
+    54.76703479599928,
+    52.26981715900001,
+    53.332399509001334,
+    52.2321480949995
+   ],
+   "median_s": 53.332399509001334,
+   "q1_s": 52.26981715900001,
+   "q3_s": 54.006277419999606,
+   "iqr_s": 1.7364602609995927,
+   "min_s": 52.2321480949995,
+   "max_s": 54.76703479599928,
+   "images_per_s": 937.5164151682525,
+   "peak_pss_bytes": 5511208960,
+   "baseline_pss_bytes": 108853248,
+   "added_pss_bytes": 5402355712,
+   "output": {
+    "shape": [
+     50000,
+     224,
+     224,
+     1
+    ]
+   }
+  },
+  {
+   "workload": "w1",
+   "library": "polars-cv-streaming",
+   "threads": 4,
+   "source": "path",
+   "dataset": "coco-50k",
+   "runs": 5,
+   "warmup": 1,
+   "n_images": 50000,
+   "prepare_s": 0.22843372200077283,
+   "status": "ok",
+   "times_s": [
+    57.84743177600103,
+    58.810068265000154,
+    56.5473225780006,
+    57.80078189999949,
+    58.87257790699914
+   ],
+   "median_s": 57.84743177600103,
+   "q1_s": 57.80078189999949,
+   "q3_s": 58.810068265000154,
+   "iqr_s": 1.009286365000662,
+   "min_s": 56.5473225780006,
+   "max_s": 58.87257790699914,
+   "images_per_s": 864.342607181108,
+   "peak_pss_bytes": 5227402240,
+   "baseline_pss_bytes": 108522496,
+   "added_pss_bytes": 5118879744,
+   "output": {
+    "shape": [
+     50000,
+     224,
+     224,
+     1
+    ]
+   }
+  },
+  {
+   "workload": "w1",
+   "library": "opencv-mp",
+   "threads": 4,
+   "source": "path",
+   "dataset": "coco-50k",
+   "runs": 5,
+   "warmup": 1,
+   "n_images": 50000,
+   "prepare_s": 0.04635807799968461,
+   "status": "ok",
+   "times_s": [
+    84.74721600700104,
+    79.74710986900027,
+    77.23324079500162,
+    76.00037919299939,
+    73.57022498699916
+   ],
+   "median_s": 77.23324079500162,
+   "q1_s": 76.00037919299939,
+   "q3_s": 79.74710986900027,
+   "iqr_s": 3.7467306760008796,
+   "min_s": 73.57022498699916,
+   "max_s": 84.74721600700104,
+   "images_per_s": 647.3896405915923,
+   "peak_pss_bytes": 11546109952,
+   "baseline_pss_bytes": 103544832,
+   "added_pss_bytes": 11442565120,
+   "output": {
+    "shape": [
+     50000,
+     224,
+     224
+    ]
+   }
+  },
+  {
+   "workload": "w1",
+   "library": "pil-mp",
+   "threads": 4,
+   "source": "path",
+   "dataset": "coco-50k",
+   "runs": 5,
+   "warmup": 1,
+   "n_images": 50000,
+   "prepare_s": 0.0053973500016581966,
+   "status": "ok",
+   "times_s": [
+    104.32351128400114,
+    109.53328682999927,
+    103.06298450599934,
+    105.824322708002,
+    112.26852644899918
+   ],
+   "median_s": 105.824322708002,
+   "q1_s": 104.32351128400114,
+   "q3_s": 109.53328682999927,
+   "iqr_s": 5.209775545998127,
+   "min_s": 103.06298450599934,
+   "max_s": 112.26852644899918,
+   "images_per_s": 472.4811718187279,
+   "peak_pss_bytes": 7631212544,
+   "baseline_pss_bytes": 83414016,
+   "added_pss_bytes": 7547798528,
+   "output": {
+    "shape": [
+     50000,
+     224,
+     224
+    ]
+   }
+  },
+  {
+   "workload": "w1",
+   "library": "torchvision",
+   "threads": 4,
+   "source": "path",
+   "dataset": "coco-50k",
+   "runs": 5,
+   "warmup": 1,
+   "n_images": 50000,
+   "prepare_s": 3.457967842998187,
+   "status": "ok",
+   "times_s": [
+    67.81080888900033,
+    70.5079319739998,
+    73.50301268699695,
+    76.92290388499896,
+    75.88029036499938
+   ],
+   "median_s": 73.50301268699695,
+   "q1_s": 70.5079319739998,
+   "q3_s": 75.88029036499938,
+   "iqr_s": 5.37235839099958,
+   "min_s": 67.81080888900033,
+   "max_s": 76.92290388499896,
+   "images_per_s": 680.2442263546192,
+   "peak_pss_bytes": 5740111872,
+   "baseline_pss_bytes": 727029760,
+   "added_pss_bytes": 5013082112,
+   "output": {
+    "shape": [
+     50000,
+     1,
+     224,
+     224
+    ]
+   }
+  },
+  {
+   "workload": "w3",
+   "library": "polars-cv-eager",
+   "threads": 4,
+   "source": "path",
+   "dataset": "coco-50k",
+   "runs": 5,
+   "warmup": 1,
+   "n_images": 50000,
+   "prepare_s": 0.225138636000338,
+   "status": "ok",
+   "times_s": [
+    105.11108462500124,
+    103.57631025700175,
+    107.28489866100062,
+    110.07535909299986,
+    106.7824659700018
+   ],
+   "median_s": 106.7824659700018,
+   "q1_s": 105.11108462500124,
+   "q3_s": 107.28489866100062,
+   "iqr_s": 2.173814035999385,
+   "min_s": 103.57631025700175,
+   "max_s": 110.07535909299986,
+   "images_per_s": 468.24166819715896,
+   "peak_pss_bytes": 185157632,
+   "baseline_pss_bytes": 108380160,
+   "added_pss_bytes": 76777472,
+   "output": {
+    "duplicate_groups": 4828
+   }
+  },
+  {
+   "workload": "w3",
+   "library": "polars-cv-streaming",
+   "threads": 4,
+   "source": "path",
+   "dataset": "coco-50k",
+   "runs": 5,
+   "warmup": 1,
+   "n_images": 50000,
+   "prepare_s": 0.2328859100016416,
+   "status": "ok",
+   "times_s": [
+    107.16562872299983,
+    111.75442880500123,
+    111.35736149200238,
+    108.37133893100327,
+    107.85924897199948
+   ],
+   "median_s": 108.37133893100327,
+   "q1_s": 107.85924897199948,
+   "q3_s": 111.35736149200238,
+   "iqr_s": 3.4981125200029055,
+   "min_s": 107.16562872299983,
+   "max_s": 111.75442880500123,
+   "images_per_s": 461.3766009833419,
+   "peak_pss_bytes": 167655424,
+   "baseline_pss_bytes": 108510208,
+   "added_pss_bytes": 59145216,
+   "output": {
+    "duplicate_groups": 4828
+   }
+  },
+  {
+   "workload": "w3",
+   "library": "opencv-mp",
+   "threads": 4,
+   "source": "path",
+   "dataset": "coco-50k",
+   "runs": 5,
+   "warmup": 1,
+   "n_images": 50000,
+   "prepare_s": 0.05053923200102872,
+   "status": "ok",
+   "times_s": [
+    43.94062410300103,
+    44.84526376299982,
+    44.06688948699957,
+    42.753429532000155,
+    42.76861323299818
+   ],
+   "median_s": 43.94062410300103,
+   "q1_s": 42.76861323299818,
+   "q3_s": 44.06688948699957,
+   "iqr_s": 1.2982762540013937,
+   "min_s": 42.753429532000155,
+   "max_s": 44.84526376299982,
+   "images_per_s": 1137.8991769164502,
+   "peak_pss_bytes": 186018816,
+   "baseline_pss_bytes": 103529472,
+   "added_pss_bytes": 82489344,
+   "output": {
+    "duplicate_groups": 5000
+   }
+  },
+  {
+   "workload": "w3",
+   "library": "pil-mp",
+   "threads": 4,
+   "source": "path",
+   "dataset": "coco-50k",
+   "runs": 5,
+   "warmup": 1,
+   "n_images": 50000,
+   "prepare_s": 0.0051962799989269115,
+   "status": "ok",
+   "times_s": [
+    85.19079367000086,
+    80.43946522499755,
+    77.90758207399995,
+    83.44961422399865,
+    85.57743455600212
+   ],
+   "median_s": 83.44961422399865,
+   "q1_s": 80.43946522499755,
+   "q3_s": 85.19079367000086,
+   "iqr_s": 4.75132844500331,
+   "min_s": 77.90758207399995,
+   "max_s": 85.57743455600212,
+   "images_per_s": 599.1639441949735,
+   "peak_pss_bytes": 313512960,
+   "baseline_pss_bytes": 83265536,
+   "added_pss_bytes": 230247424,
+   "output": {
+    "duplicate_groups": 5000
+   }
+  },
+  {
+   "workload": "w3",
+   "library": "torchvision",
+   "threads": 4,
+   "source": "path",
+   "dataset": "coco-50k",
+   "runs": 5,
+   "warmup": 1,
+   "n_images": 50000,
+   "status": "n/a",
+   "reason": "torchvision has no perceptual hash; a torchvision user would call imagehash on PIL images, which is the PIL benchmark"
+  }
+ ]
+}

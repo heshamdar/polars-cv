@@ -1,0 +1,65 @@
+name: Library comparison (manual smoke)
+
+# A small, advisory run of the cross-library comparison in benchmarks/: the
+# parity tests on a 40-image COCO sample, then every cell on 200 images with
+# one timed run. It checks that the suite still runs and that every library
+# still matches the PIL reference; shared runners are too noisy for the
+# numbers to mean anything. The published results come from a full run on a
+# quiet machine (see benchmarks/README.md).
+
+on:
+  workflow_dispatch:
+    inputs:
+      images:
+        description: "Images in the timed smoke run"
+        default: "200"
+        type: string
+
+jobs:
+  smoke:
+    name: Parity + smoke run
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: benchmarks
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+          version-file: .tool-versions
+
+      - name: Install the benchmark environment
+        run: uv sync --locked --no-install-project
+
+      - name: Cache COCO val2017
+        uses: actions/cache@v4
+        with:
+          path: benchmarks/data/val2017.zip
+          key: coco-val2017-4f7e2ccb2866ec50
+
+      - name: Download and verify the data
+        run: uv run python -m bench.data
+
+      - name: Parity tests
+        run: uv run --group dev pytest -q -m "not slow"
+
+      - name: Smoke run
+        run: |
+          uv run python - <<'EOF'
+          import polars as pl
+          n = int("${{ inputs.images }}")
+          pl.read_parquet("data/coco-5k.parquet").head(n).write_parquet("data/smoke.parquet")
+          EOF
+          uv run python run.py --dataset smoke --runs 1 --warmup 0 --out results/smoke.json
+          uv run python plot.py results/smoke.json --out results/smoke
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: comparison-smoke
+          path: |
+            benchmarks/results/smoke.json
+            benchmarks/results/smoke/
+            benchmarks/results/parity.json
