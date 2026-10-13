@@ -77,7 +77,8 @@ way its users would write it and checked against PIL's output before timing:
 At 50,000 images the first workload runs at 938 img/s with the lowest peak
 memory of every library (5.1 GiB; OpenCV 10.8). polars-cv trails OpenCV on
 thumbnails, because its JPEG encoder is slower than libjpeg-turbo, and on
-perceptual hashing, which is slower in 0.37.0. Methodology, parity tolerances,
+perceptual hashing, which is slower in 0.37.0 (the release measured here;
+the hash's quality problem found by this benchmark is fixed on `main`). Methodology, parity tolerances,
 every table and the command to reproduce it are in
 [`benchmarks/`](https://github.com/heshamdar/polars-cv/tree/main/benchmarks).
 
