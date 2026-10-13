@@ -104,9 +104,7 @@ def compare(workload: str, ref, out) -> dict:
                 strict=True,
             )
         )
-        ham = [
-            bin(a ^ b).count("1") for a, b in zip(rf["hash"], of["hash"], strict=True)
-        ]
+        ham = [(a ^ b).bit_count() for a, b in zip(rf["hash"], of["hash"], strict=True)]
         return {
             "meta_mismatch": int(meta),
             "hash_mean_bits": float(np.mean(ham)),
