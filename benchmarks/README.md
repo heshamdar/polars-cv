@@ -52,7 +52,10 @@ full tables. Peak memory is the PSS of the process and its workers.
   bits (31 for imagehash, OpenCV and Daft), so it puts 236 of the 5,000
   distinct val2017 images into 64 false "duplicate" groups, and finds 4,828
   groups instead of 5,000 in the 50k set. Every other library finds 0 and
-  5,000.
+  5,000. Fixed on `main` after 0.37.0 (#137): `perceptual_hash()` is now
+  standard pHash, with 0 false groups on val2017, distinct images 31.4 bits
+  apart, and within 2 bits of imagehash. These results measure the 0.37.0
+  wheel, and its speed after the fix has not been measured here.
 
 Every result, with both sources and both thread counts (the 1-thread cells
 were measured for the 5k set), is in the tables below and in `results/*.json`.
