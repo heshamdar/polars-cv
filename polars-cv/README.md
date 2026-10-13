@@ -61,10 +61,26 @@ batch = out["x"].to_numpy()  # (n_images, 224, 224, 3) uint8
 
 ## Benchmarks
 
-A reproducible comparison with PIL, OpenCV, torchvision, Daft and Hugging Face
-`datasets` on COCO val2017 lives in
-[`benchmarks/`](https://github.com/heshamdar/polars-cv/tree/main/benchmarks):
-methodology, parity tests, raw results and the command to reproduce them.
+On 5,000 COCO val2017 images with 4 cores, against PIL, OpenCV (process pool),
+torchvision (DataLoader), Daft and Hugging Face `datasets`, each written the
+way its users would write it and checked against PIL's output before timing:
+
+![Images per second on four workloads at 4 threads: polars-cv leads ML preprocessing and per-row crop/resize, and OpenCV leads thumbnails and perceptual hashing.](https://raw.githubusercontent.com/heshamdar/polars-cv/main/benchmarks/results/summary.svg)
+
+| Workload | polars-cv | Fastest alternative | polars-cv speed-up | Peak memory, polars-cv vs that alternative |
+|---|---:|---:|---:|---:|
+| Decode → resize 224² → gray → NumPy | **1,068 img/s** | torchvision 684 | **1.6×** | **625 MiB** vs 1,156 |
+| Per-row crop box + per-row size | **1,047 img/s** | OpenCV 742 | **1.4×** | **679 MiB** vs 2,606 |
+| Thumbnail → JPEG | 681 img/s | OpenCV 903 | 0.75× | 243 MiB vs 199 |
+| Size + pHash → duplicate groups | 506 img/s | OpenCV 1,084 | 0.47× | 136 MiB vs 126 |
+
+At 50,000 images the first workload runs at 938 img/s with the lowest peak
+memory of every library (5.1 GiB; OpenCV 10.8). polars-cv trails OpenCV on
+thumbnails, because its JPEG encoder is slower than libjpeg-turbo, and on
+perceptual hashing, which is slower in 0.37.0 (the release measured here;
+the hash's quality problem found by this benchmark is fixed on `main`). Methodology, parity tolerances,
+every table and the command to reproduce it are in
+[`benchmarks/`](https://github.com/heshamdar/polars-cv/tree/main/benchmarks).
 
 ## Install
 
