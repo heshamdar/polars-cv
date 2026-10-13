@@ -300,4 +300,4 @@ If you use polars-cv in research, please cite the version you used:
 }
 ```
 
-Licensed under MIT or Apache-2.0, at your option.
+Licensed under either of [MIT](https://github.com/heshamdar/polars-cv/blob/main/LICENSE-MIT) or [Apache-2.0](https://github.com/heshamdar/polars-cv/blob/main/LICENSE-APACHE), at your option.
