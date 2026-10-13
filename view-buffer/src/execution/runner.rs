@@ -345,7 +345,7 @@ fn to_fir_algorithm(filter: &FilterType) -> fir::ResizeAlg {
 /// 32/64-bit integers and f64 are resampled in f64 by `execution::resample`.
 /// The output keeps the input's dtype and rank.
 #[cfg(feature = "image_interop")]
-fn resize_strided(
+pub(crate) fn resize_strided(
     buf: ViewBuffer,
     target_width: u32,
     target_height: u32,
@@ -467,7 +467,7 @@ thread_local! {
 /// where it lies. More than four channels are read as the first three (BT.601
 /// reads no others), through a view of them.
 #[cfg(feature = "image_interop")]
-fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
+pub(crate) fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
     use crate::ops::color::Luma;
     let shape = buf.shape();
     let channels = shape.get(2).copied().unwrap_or(1);
@@ -1103,8 +1103,13 @@ fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
 
 /// Builds a normalised 1-D Gaussian kernel of radius `ceil(3σ)`.
 /// The radius formula matches the halo declaration in `ops/image.rs`.
+/// σ = 0 is the one-tap identity kernel: the Gaussian formula would divide
+/// 0 by 0 there (`ImageOpKind::check` refuses a negative σ).
 #[cfg(feature = "image_interop")]
 fn gaussian_kernel_1d<F: BlurAcc>(sigma: f32) -> Vec<F> {
+    if sigma == 0.0 {
+        return vec![F::from_f32(1.0)];
+    }
     let radius = (sigma * 3.0).ceil() as usize;
     let size = 2 * radius + 1;
     let sigma = F::from_f32(sigma);
@@ -1453,6 +1458,18 @@ mod blur_dispatch_tests {
                 }
             }
         }
+    }
+
+    /// sigma 0 is the identity: one tap of weight 1, not exp(-0/0) = NaN,
+    /// which cast every u8 pixel to 0.
+    #[test]
+    fn zero_sigma_blur_is_the_identity() {
+        assert_eq!(gaussian_kernel_1d::<f32>(0.0), vec![1.0f32]);
+        assert_eq!(gaussian_kernel_1d::<f64>(0.0), vec![1.0f64]);
+        let data: Vec<u8> = (0..5 * 4 * 3).map(|i| (i * 37 % 256) as u8).collect();
+        let buf = ViewBuffer::from_vec_with_shape(data.clone(), vec![5, 4, 3]);
+        let out = separable_gaussian_blur_typed::<u8, f32>(&buf, 0.0);
+        assert_eq!(out.as_slice::<u8>(), data.as_slice());
     }
 
     /// The dispatched blur (AVX2 build when the CPU has it) and the portable

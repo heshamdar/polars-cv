@@ -30,6 +30,16 @@ result = df.with_columns(
 Pipeline().source("image_bytes").perceptual_hash(algorithm="average")
 ```
 
+`perceptual` is the standard pHash that `imagehash.phash` computes:
+grayscale, a Lanczos resize to 32×32, a 2-D DCT, and the 8×8 lowest
+frequencies compared with their median. The bits come row-major, most
+significant first, so `int.from_bytes(bytes(h), "big")` reads a 64-bit hash
+like the integer `int(str(imagehash.phash(img)), 16)`. The two are close but
+not identical: the grayscale and the resize are polars-cv's own ops, which
+round differently from Pillow's, so 64-bit hashes typically differ from
+imagehash's in 0 to 2 bits. `hash_size` is the number of bits:
+`hash_size=256` is the 16×16 block, as in `imagehash.phash(img, hash_size=16)`.
+
 ## Comparing Hashes
 
 Use `hamming_distance()` and `hash_similarity()` for batch comparison:

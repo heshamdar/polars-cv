@@ -261,6 +261,19 @@ impl<M: Mode> ImageOpKind<M> {
     /// Refuse a parameter combination no row can execute. Every image op's
     /// parameters are independent, so there is none.
     pub fn check(&self) -> Result<(), String> {
+        // A Gaussian's sigma is finite and non-negative; 0 is no blur. A
+        // negative sigma has no kernel (it used to round to no blur), and NaN
+        // or infinity none at all.
+        if let ImageOpKind::Blur { sigma } = self {
+            if let Some(s) = M::sym(sigma)
+                .known()
+                .filter(|s| !(s.is_finite() && *s >= 0.0))
+            {
+                return Err(format!(
+                    "blur: sigma {s} is not a finite non-negative value"
+                ));
+            }
+        }
         // A scale factor is finite and positive: NaN, infinity and a negative
         // factor have no output size (`shape_rule::scaled_by`).
         if let ImageOpKind::ResizeScale {
@@ -745,6 +758,17 @@ mod rule_tests {
             assert!(op(1.0, bad).check().is_err(), "scale_y {bad}");
         }
         assert!(op(0.5, 2.0).check().is_ok());
+    }
+
+    /// sigma 0 is no blur; a negative or non-finite sigma has no kernel.
+    #[test]
+    fn blur_refuses_a_sigma_that_is_not_finite_and_non_negative() {
+        let op = |sigma: f32| ImageOpKind::<crate::mode::Exec>::Blur { sigma };
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.5] {
+            assert!(op(bad).check().is_err(), "sigma {bad}");
+        }
+        assert!(op(0.0).check().is_ok());
+        assert!(op(1.5).check().is_ok());
     }
 
     /// A resampler needs at least one source pixel on each axis: an empty

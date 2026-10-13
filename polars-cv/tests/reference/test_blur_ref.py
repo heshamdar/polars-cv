@@ -85,3 +85,47 @@ class TestBlurOpenCVParity:
         expected = cv2.GaussianBlur(smooth_rgb, (0, 0), sigmaX=sigma)
         pipe = Pipeline().source("image_bytes").blur(sigma)
         _assert_close_to_opencv(_run_pipe(pipe, smooth_rgb), expected)
+
+
+@plugin_required
+class TestBlurSigmaDomain:
+    """sigma = 0 is no blur, as in PIL and SciPy; below 0 is refused.
+
+    sigma = 0 used to build the kernel exp(-0/0) = NaN, so every pixel came
+    back 0, and a negative sigma was silently treated as no blur.
+    """
+
+    def test_zero_sigma_is_the_identity(self, smooth_rgb: np.ndarray) -> None:
+        out = _run_pipe(Pipeline().source("image_bytes").blur(0.0), smooth_rgb)
+        np.testing.assert_array_equal(out, smooth_rgb)
+
+    def test_zero_sigma_is_the_identity_on_u16(self, smooth_gray: np.ndarray) -> None:
+        arr = smooth_gray.astype(np.uint16) * 257  # a 16-bit PNG decodes to u16
+        out = _run_pipe(Pipeline().source("image_bytes").blur(0.0), arr)
+        np.testing.assert_array_equal(out, arr)
+
+    def test_zero_sigma_per_row_is_the_identity(self, smooth_gray: np.ndarray) -> None:
+        df = pl.DataFrame({"img": [_encode_png(smooth_gray)] * 2, "s": [0.0, 1.0]})
+        pipe = Pipeline().source("image_bytes").blur(pl.col("s"))
+        rows = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))["out"]
+        np.testing.assert_array_equal(numpy_from_struct(rows[0]).squeeze(), smooth_gray)
+        assert not np.array_equal(numpy_from_struct(rows[1]).squeeze(), smooth_gray)
+
+    def test_literal_negative_sigma_is_refused(self) -> None:
+        with pytest.raises(Exception, match="blur: sigma -1"):
+            Pipeline().source("image_bytes").blur(-1.0)
+
+    @pytest.mark.parametrize("sigma", [float("nan"), float("inf")])
+    def test_literal_non_finite_sigma_is_refused(self, sigma: float) -> None:
+        """Refused before the op's check: the JSON wire has no NaN or inf."""
+        with pytest.raises(Exception):  # noqa: B017
+            Pipeline().source("image_bytes").blur(sigma)
+
+    @pytest.mark.parametrize("sigma", [-1.0, float("nan"), float("inf")])
+    def test_per_row_sigma_outside_the_domain_is_refused(
+        self, smooth_gray: np.ndarray, sigma: float
+    ) -> None:
+        df = pl.DataFrame({"img": [_encode_png(smooth_gray)], "s": [sigma]})
+        pipe = Pipeline().source("image_bytes").blur(pl.col("s"))
+        with pytest.raises(Exception, match="blur: sigma"):
+            df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
