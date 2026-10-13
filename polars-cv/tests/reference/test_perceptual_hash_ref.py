@@ -17,7 +17,10 @@ import time
 from typing import TYPE_CHECKING
 
 import numpy as np
+import polars as pl
 import pytest
+
+from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
     from PIL import Image as PILImage
@@ -409,3 +412,108 @@ class TestPerceptualHashReference:
         assert hash_result is not None
         # Should complete in reasonable time (< 1 second for 2K image)
         assert elapsed < 1.0, f"Large image hash took too long: {elapsed:.2f}s"
+
+
+def _smooth_images(n: int, size: tuple[int, int] = (240, 320)) -> list[np.ndarray]:
+    """Distinct natural-looking images: random low-frequency blobs in colour."""
+    from PIL import Image, ImageFilter
+
+    rng = np.random.default_rng(7)
+    out = []
+    for _ in range(n):
+        small = rng.integers(0, 256, (6, 8, 3), dtype=np.uint8)
+        img = Image.fromarray(small).resize(size[::-1], Image.Resampling.BICUBIC)
+        out.append(np.asarray(img.filter(ImageFilter.GaussianBlur(3))))
+    return out
+
+
+def _pcv_phash(arrays: list[np.ndarray], hash_size: int = 64) -> list[int]:
+    from polars_cv import Pipeline
+
+    df = pl.DataFrame({"img": [pil_to_png_bytes(numpy_to_pil(a)) for a in arrays]})
+    pipe = Pipeline().source("image_bytes").perceptual_hash(hash_size=hash_size)
+    rows = df.select(h=pl.col("img").cv.pipe(pipe).sink("list"))["h"].to_list()
+    return [int.from_bytes(bytes(r), "big") for r in rows]
+
+
+def pil_to_png_bytes(img: "PILImage.Image") -> bytes:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@imagehash_required
+@plugin_required
+class TestPhashMatchesImagehash:
+    """``perceptual_hash()`` (the default algorithm) is standard pHash.
+
+    The same steps as ``imagehash.phash``: grayscale, a 32x32 Lanczos resize,
+    a 2-D DCT-II, the 8x8 lowest frequencies thresholded at their median,
+    bits row-major and most significant first. The grayscale and the resize
+    are the engine's own ops, so the bits are within a few of imagehash's,
+    not identical. It used to threshold a
+    16x16-input DCT at its mean, which the DC term dominates: distinct images
+    averaged ~18 differing bits instead of ~32, and on COCO val2017 236 of
+    5,000 distinct images shared a hash with another.
+    """
+
+    def test_within_two_bits_at_32x32(self) -> None:
+        """At 32x32 both resizes are the identity; only the gray rounding
+        differs (the engine's BT.601 in 8-bit fixed point, Pillow's in 16).
+        """
+        import imagehash
+
+        for a in _smooth_images(12, size=(32, 32)):
+            expected = int(str(imagehash.phash(numpy_to_pil(a))), 16)
+            got = _pcv_phash([a])[0]
+            assert (got ^ expected).bit_count() <= 2
+
+    def test_exact_on_degenerate_gray_images(self) -> None:
+        """Gradients and flat images: most DCT coefficients are exactly 0.
+
+        Their bits must not fall on rounding noise (they compare as 0, not
+        above a median of 0), or two copies of one image differ widely. Gray
+        input (R = G = B) rounds the same in both, so the bits are identical.
+        """
+        import imagehash
+
+        x = np.linspace(0, 255, 32)
+        gray = [
+            np.tile(x, (32, 1)),  # horizontal gradient
+            np.tile(x[:, None], (1, 32)),  # vertical gradient
+            np.full((32, 32), 77.0),  # flat
+        ]
+        for g in gray:
+            a = np.repeat(g.astype(np.uint8)[..., None], 3, axis=2)
+            expected = int(str(imagehash.phash(numpy_to_pil(a))), 16)
+            assert _pcv_phash([a]) == [expected]
+
+    def test_close_to_imagehash_after_resizing(self) -> None:
+        """Larger images: the two Lanczos resizes round differently."""
+        import imagehash
+
+        images = _smooth_images(12)
+        ours = _pcv_phash(images)
+        theirs = [int(str(imagehash.phash(numpy_to_pil(a))), 16) for a in images]
+        dist = [(a ^ b).bit_count() for a, b in zip(ours, theirs, strict=True)]
+        assert max(dist) <= 4, dist
+
+    def test_distinct_images_are_far_apart(self) -> None:
+        """A useful hash spreads distinct images near 32 of 64 bits apart."""
+        hashes = _pcv_phash(_smooth_images(40))
+        dist = [
+            (a ^ b).bit_count() for i, a in enumerate(hashes) for b in hashes[i + 1 :]
+        ]
+        assert np.mean(dist) > 26, np.mean(dist)
+        assert min(dist) > 6, min(dist)
+
+    def test_hash_size_256_is_imagehash_16(self) -> None:
+        """256 bits is the 16x16 block. Its higher frequencies are small on a
+        smooth image, so gray rounding flips more of them: about 10%.
+        """
+        import imagehash
+
+        for a in _smooth_images(6, size=(64, 64)):
+            expected = int(str(imagehash.phash(numpy_to_pil(a), hash_size=16)), 16)
+            got = _pcv_phash([a], hash_size=256)[0]
+            assert (got ^ expected).bit_count() <= 40
