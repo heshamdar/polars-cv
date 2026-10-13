@@ -66,6 +66,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   tests against PIL, a subprocess per cell with pinned thread counts, peak PSS
   sampling and a memory cap. The README's Benchmarks section shows its results,
   including the two workloads where polars-cv 0.37.0 is slower than OpenCV.
+- **License files.** `LICENSE-MIT` and `LICENSE-APACHE` at the repository
+  root, linked into `polars-cv/` so the sdist and wheels carry them as
+  `License-File`. The project declared `MIT OR Apache-2.0` but shipped no
+  license text outside `view-buffer/LICENSE` (MIT only).
 - **`tests/test_readme.py` executes every Python block of the README**, each
   on its own in a scratch directory, in the per-push lane. The previous
   README's quick start referenced undefined names and could not run.
