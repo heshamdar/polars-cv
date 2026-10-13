@@ -16,6 +16,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   not to use polars-cv, and a project-status section with the test, CI,
   release and versioning facts. Its images use absolute URLs, so PyPI renders
   it as GitHub does.
+- **License files.** `LICENSE-MIT` and `LICENSE-APACHE` at the repository
+  root, linked into `polars-cv/` so the sdist and wheels carry them as
+  `License-File`. The project declared `MIT OR Apache-2.0` but shipped no
+  license text outside `view-buffer/LICENSE` (MIT only).
 - **`tests/test_readme.py` executes every Python block of the README**, each
   on its own in a scratch directory, in the per-push lane. The previous
   README's quick start referenced undefined names and could not run.
