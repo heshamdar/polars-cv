@@ -36,8 +36,9 @@
 //! than one phase (running the rows, then filling the output column).
 
 use std::ops::Range;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::time::Instant;
 
 use pyo3_polars::export::polars_core::runtime::THREAD_POOL;
 
@@ -194,6 +195,10 @@ impl Split {
             return vec![out];
         }
         let next = AtomicUsize::new(0);
+        // Time spent in, and count of, the ranges finished so far: what a
+        // range costs, so helpers are only invited for work worth a wake-up.
+        let spent = AtomicU64::new(0);
+        let ran = AtomicUsize::new(0);
         // A `Mutex` per range, so ranges can be filled from any thread with
         // results that are only `Send`; each is locked twice, uncontended.
         let outcomes: Vec<Mutex<Option<R>>> = ranges.iter().map(|_| Mutex::new(None)).collect();
@@ -203,7 +208,10 @@ impl Split {
             let Some(rows) = ranges.get(idx) else {
                 return false;
             };
+            let start = Instant::now();
             let out = run(idx, rows.clone());
+            spent.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            ran.fetch_add(1, Ordering::Relaxed);
             *outcomes[idx].lock().unwrap_or_else(|p| p.into_inner()) = Some(out);
             true
         };
@@ -214,7 +222,12 @@ impl Split {
             // Invite idle threads, no more than there are ranges left for
             // them beside this thread's next one.
             let left = ranges.len().saturating_sub(next.load(Ordering::SeqCst));
-            while helpers.load(Ordering::SeqCst) + 1 < left {
+            let wanted = helpers_worth(
+                left,
+                spent.load(Ordering::Relaxed),
+                ran.load(Ordering::Relaxed),
+            );
+            while helpers.load(Ordering::SeqCst) < wanted {
                 let Some(slot) = Slot::claim() else { break };
                 helpers.fetch_add(1, Ordering::SeqCst);
                 let (take, helpers, workers) = (&take, &helpers, &workers);
@@ -241,6 +254,29 @@ impl Split {
             })
             .collect()
     }
+}
+
+/// The least work, in nanoseconds of measured range time, worth waking one
+/// more helper for. A wake-up and the helper's search of the pool for work
+/// cost tens of microseconds of a core; an idle pool thread then keeps
+/// searching before it sleeps, so a call that invites the whole pool for
+/// microseconds of rows keeps every pool thread spinning (on 72 hyperthreads,
+/// 50x the wall time and 300x the CPU of 16).
+const HELPER_MIN_NS: u64 = 200_000;
+
+/// How many helpers a call with `left` ranges still to take should have,
+/// given `ran` finished ranges took `spent` ns: one before any range has
+/// finished (a single wake-up, so a call of expensive rows does not wait on
+/// its first range to share them), then one per [`HELPER_MIN_NS`] of the
+/// estimated remaining work, never more than the ranges beside the
+/// caller's next one.
+fn helpers_worth(left: usize, spent: u64, ran: usize) -> usize {
+    let most = left.saturating_sub(1);
+    if ran == 0 {
+        return most.min(1);
+    }
+    let remaining = spent / ran as u64 * left as u64;
+    most.min((remaining / HELPER_MIN_NS) as usize)
 }
 
 /// Contiguous row ranges covering `0..len`, for `threads` workers.
@@ -294,7 +330,28 @@ pub(crate) fn take_max_split_rows() -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::row_ranges;
+    use super::{helpers_worth, row_ranges, HELPER_MIN_NS};
+
+    /// Cheap rows wake at most one helper; the rest come only for measured
+    /// work worth a wake-up each, and never more than the ranges left.
+    #[test]
+    fn helpers_are_invited_for_measured_work_only() {
+        assert_eq!(
+            helpers_worth(288, 0, 0),
+            1,
+            "one helper before any range ran"
+        );
+        assert_eq!(
+            helpers_worth(1, 0, 0),
+            0,
+            "no helper for the caller's last range"
+        );
+        // 1 µs ranges: 287 left is 287 µs of work, worth one helper.
+        assert_eq!(helpers_worth(287, 1_000, 1), 1);
+        // 1 ms ranges: each is worth a helper, capped by the ranges left.
+        assert_eq!(helpers_worth(10, 1_000_000, 1), 9);
+        assert_eq!(helpers_worth(100, 10 * HELPER_MIN_NS, 10), 99);
+    }
 
     /// One worker has nothing to split across: the rows run on the caller.
     #[test]
