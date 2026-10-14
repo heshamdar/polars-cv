@@ -36,7 +36,7 @@
 //! than one phase (running the rows, then filling the output column).
 
 use std::ops::Range;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -46,6 +46,23 @@ use pyo3_polars::export::polars_core::runtime::THREAD_POOL;
 /// one count every call's split reads. Plugin-wide, because every call
 /// shares the one pool.
 static BUSY: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether calls split their rows at all (`polars_cv.set_row_parallelism`).
+/// Off, every call runs its rows on the thread polars called it on, as one
+/// range: the streaming engine's morsels are then the only parallelism, and
+/// the plugin's pool is never woken.
+static ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Turn row splitting on or off for every later call; returns the previous
+/// setting.
+pub(crate) fn set_enabled(enabled: bool) -> bool {
+    ENABLED.swap(enabled, Ordering::SeqCst)
+}
+
+/// See [`ENABLED`].
+pub(crate) fn enabled() -> bool {
+    ENABLED.load(Ordering::SeqCst)
+}
 
 /// Exclusive use of the plugin's split budget, for a test whose assertion
 /// depends on [`BUSY`]: how many threads a call runs on. `BUSY` is
@@ -188,7 +205,12 @@ impl Split {
         run: impl Fn(usize, Range<usize>) -> R + Sync,
     ) -> Vec<R> {
         MAX_SPLIT_ROWS.fetch_max(len, Ordering::SeqCst);
-        let ranges = row_ranges(len, THREAD_POOL.current_num_threads());
+        let threads = if enabled() {
+            THREAD_POOL.current_num_threads()
+        } else {
+            1
+        };
+        let ranges = row_ranges(len, threads);
         if let [only] = ranges.as_slice() {
             let out = run(0, only.clone());
             LAST_SPLIT_WORKERS.store(1, Ordering::SeqCst);
