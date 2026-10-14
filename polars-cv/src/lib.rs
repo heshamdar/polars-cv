@@ -80,9 +80,24 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<output::ArrowBytes>()?;
     m.add_function(wrap_pyfunction!(output::binary_rows, m)?)?;
     m.add_function(wrap_pyfunction!(_last_split_workers, m)?)?;
+    m.add_function(wrap_pyfunction!(set_row_parallelism, m)?)?;
+    m.add_function(wrap_pyfunction!(row_parallelism, m)?)?;
     m.add_function(wrap_pyfunction!(_take_max_split_rows, m)?)?;
     m.add_function(wrap_pyfunction!(_last_fetch_peak_resident, m)?)?;
     Ok(())
+}
+
+/// Turn the plugin's row splitting on or off process-wide; returns the
+/// previous setting (`row_split::ENABLED`).
+#[pyfunction]
+fn set_row_parallelism(enabled: bool) -> bool {
+    row_split::set_enabled(enabled)
+}
+
+/// Whether plugin calls split their rows over the plugin's pool.
+#[pyfunction]
+fn row_parallelism() -> bool {
+    row_split::enabled()
 }
 
 /// How many workers ran the rows of the most recent split call (the calling

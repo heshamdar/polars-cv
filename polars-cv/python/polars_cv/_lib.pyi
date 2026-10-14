@@ -108,6 +108,13 @@ def _take_max_split_rows() -> int:
     """The most rows one plugin call ran since this was last called (which
     resets it); meant for tests."""
 
+def set_row_parallelism(enabled: bool) -> bool:
+    """Turn row splitting over the plugin's pool on or off process-wide;
+    returns the previous setting."""
+
+def row_parallelism() -> bool:
+    """Whether plugin calls split their rows over the plugin's pool."""
+
 def _last_split_workers() -> int:
     """Workers (calling thread + pool helpers) that ran the most recent split
     call's rows; racy under concurrent calls, meant for tests."""

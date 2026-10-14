@@ -102,3 +102,40 @@ class TestParallelRows:
         eager = df.select(expr)
         assert lib._last_split_workers() > 1
         assert eager.equals(streamed)
+
+
+@plugin_required
+class TestRowParallelismSwitch:
+    """``set_row_parallelism(False)`` keeps every call's rows on the thread
+    polars called it on, so the streaming engine's morsels are the only
+    parallelism; the rows come back the same."""
+
+    def test_disabled_runs_each_call_on_its_own_thread(self) -> None:
+        import polars_cv
+        import polars_cv._lib as lib
+
+        if pl.thread_pool_size() < 2:
+            pytest.skip("the pool has a single thread")
+        images = [make_test_png(32, 32, (i % 256, 0, 0)) for i in range(64)]
+        df = pl.DataFrame({"image": images})
+        pipe = Pipeline().source("image_bytes").resize(height=16, width=16)
+        expr = pl.col("image").cv.pipe(pipe).sink("numpy").alias("o")
+        split = df.select(expr)
+        assert lib._last_split_workers() > 1
+        previous = polars_cv.set_row_parallelism(False)
+        try:
+            assert previous is True
+            assert polars_cv.row_parallelism() is False
+            alone = df.select(expr)
+            assert lib._last_split_workers() == 1
+        finally:
+            assert polars_cv.set_row_parallelism(previous) is False
+        assert polars_cv.row_parallelism() is True
+        assert alone.equals(split)
+
+    def test_a_non_bool_is_refused(self) -> None:
+        import polars_cv
+
+        with pytest.raises(TypeError):
+            polars_cv.set_row_parallelism(0)  # type: ignore[arg-type]
+        assert polars_cv.row_parallelism() is True

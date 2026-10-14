@@ -26,11 +26,31 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **Many-core hosts no longer spin the plugin's pool on cheap rows.** A
+  plugin call invited up to the whole pool to help before every row range,
+  however little work its rows were; on a 72-thread host the woken threads
+  spent their time searching for work, and a contour table took 19.5 s and
+  1,356 s of CPU against 0.4 s and 4.9 s at 16 threads (worst on hyperthread
+  siblings). A call now wakes one helper up front, then one more per 200 µs
+  of remaining work estimated from its finished ranges.
+
 - **`blur(sigma=0)` returned an all-zero image.** The kernel was
   `exp(-0/0)`, i.e. NaN, which casts to 0. `sigma=0` is now no blur, as in
   PIL and SciPy. A negative, NaN or infinite sigma is refused, when the
   pipeline is built for a literal and when the row runs for a column value.
   A negative sigma used to be silently treated as no blur.
+
+### Added
+
+- **`polars_cv.set_row_parallelism(enabled)` / `row_parallelism()`** turn
+  the plugin's own row parallelism off (or back on) for the process. Off,
+  every plugin call — pipelines and the `.contour`/`.point`/`.bbox`
+  accessors alike — runs its rows on the thread polars called it on, so the
+  streaming engine's morsels are the only parallelism and the plugin's pool
+  is never woken. A process setting, not a `sink()` argument: it does not
+  change what a graph computes, so it stays out of the wire form, CSE and
+  the compiled-graph cache.
+
 
 ## [0.37.0] — 2026-10-11
 

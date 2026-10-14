@@ -143,6 +143,41 @@ def _source_hash_from_tree() -> str | None:
     return f"{digest:016x}"
 
 
+def set_row_parallelism(enabled: bool) -> bool:
+    """
+    Turn polars-cv's own row parallelism on or off for this process.
+
+    On (the default), a plugin call spreads its rows over polars-cv's thread
+    pool when that pool has idle threads. Off, every call runs its rows on the
+    thread polars called it on, so the only parallelism is polars' own — the
+    streaming engine's morsels, or one thread per call on the in-memory engine.
+    Turn it off when the streaming engine already keeps every core busy, or on
+    hosts where waking the pool's threads costs more than the rows (many
+    hyperthreaded cores and cheap rows). Outputs are identical either way.
+
+    Args:
+        enabled: Whether calls may split their rows. Must be a ``bool``.
+
+    Returns:
+        The previous setting, so a caller can restore it.
+
+    Examples:
+        >>> previous = polars_cv.set_row_parallelism(False)
+        >>> lf.collect(engine="streaming")  # doctest: +SKIP
+        >>> polars_cv.set_row_parallelism(previous)
+    """
+    from . import _lib
+
+    return _lib.set_row_parallelism(enabled)
+
+
+def row_parallelism() -> bool:
+    """Whether polars-cv splits a call's rows over its own thread pool."""
+    from . import _lib
+
+    return _lib.row_parallelism()
+
+
 def build_info() -> dict[str, str | None]:
     """
     Report the versions of the things that can disagree.
@@ -700,4 +735,7 @@ __all__ = [
     # Build/version introspection
     "__version__",
     "build_info",
+    # Threading
+    "set_row_parallelism",
+    "row_parallelism",
 ]
