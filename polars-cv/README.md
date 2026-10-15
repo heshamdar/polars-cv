@@ -151,6 +151,11 @@ See the [Sources guide](https://heshamdar.github.io/polars-cv/user-guide/concept
   running polars-cv rows share one budget of `POLARS_MAX_THREADS`. Set it
   before importing Polars. If a query with many plugin expressions shows a
   load average well above the core count, lower it.
+- **`polars_cv.set_row_parallelism(False)` turns the plugin's pool off.** Each
+  call then runs its rows on the thread Polars called it on, so the streaming
+  engine's morsels are the only parallelism. Use it when morsels already keep
+  every core busy, or on many-core hyperthreaded hosts with cheap rows. It
+  returns the previous setting, and outputs are identical either way.
 - **Use the streaming engine for data larger than memory.** A lazy
   `.collect()` uses it by default since Polars 2.0. It hands polars-cv one
   morsel per call, and each call holds its output rows until it returns, so
@@ -273,14 +278,14 @@ What there is to check that against:
   Polars engines (streaming and in-memory), the oldest declared dependency
   versions, `clippy`, `rustfmt`, `ruff`, `ty`, `cargo-deny` and a strict docs
   build. Pushes to `main` add macOS.
-- **Releases**: 28 minor releases from 0.10.0 (2026-06-13) to 0.37.0
-  (2026-10-11), each in the [changelog](https://github.com/heshamdar/polars-cv/blob/main/CHANGELOG.md).
+- **Releases**: 29 minor releases from 0.10.0 (2026-06-13) to 0.38.0
+  (2026-10-15), each in the [changelog](https://github.com/heshamdar/polars-cv/blob/main/CHANGELOG.md).
 - **Versioning**: the project aims to follow
   [Semantic Versioning](https://semver.org/). While it is 0.x, a minor release
   may break the API. Breaking changes are listed under *Breaking changes* in
   the changelog, and every minor release since 0.29 has a
-  [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.37/).
-  Pin a minor version (`polars-cv~=0.37.0`) if you depend on it.
+  [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.38/).
+  Pin a minor version (`polars-cv~=0.38.0`) if you depend on it.
 
 ## Contributing
 

@@ -7,6 +7,26 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.38.0] — 2026-10-15
+
+Standard pHash, a pool switch, and a README with benchmarks.
+`perceptual_hash()` now computes standard pHash, so its hashes change and
+stored ones must be recomputed; `blur(sigma=0)` is no blur instead of an
+all-zero image, and a negative sigma is refused. On many-core hosts a call of
+cheap rows no longer wakes the whole plugin pool, and
+`polars_cv.set_row_parallelism(False)` turns the plugin's own row splitting
+off. The README is rewritten, with results from a new cross-library benchmark
+suite in `benchmarks/`, and the license texts now ship with the package.
+Upgrading from 0.37: see the
+[migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.38/).
+
+### Security
+
+- **`rustls` 0.23.45 → 0.23.46**, for RUSTSEC-2026-0346 to -0349 (TLS
+  secrets in `Debug` output, ECH, Brotli certificate decompression, a
+  ServerHello key-exchange downgrade). It is the TLS stack of remote
+  `file_path` reads (`http(s)://`, `s3://`, `gs://`, `az://`).
+
 ### Breaking changes
 
 - **`perceptual_hash()` (the default `algorithm="perceptual"`) computes
@@ -5048,7 +5068,8 @@ Each item is described in full under its section below.
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
-[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.37.0...HEAD
+[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.38.0...HEAD
+[0.38.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.38.0
 [0.37.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.37.0
 [0.36.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.36.0
 [0.35.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.35.0

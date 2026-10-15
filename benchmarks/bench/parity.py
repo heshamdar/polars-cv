@@ -22,15 +22,18 @@ Sources of difference, which are expected:
   before resizing.
 - **Perceptual hash.** imagehash, OpenCV's ``img_hash``, Daft and polars-cv
   each implement pHash (a DCT of a downscaled grayscale image), but they
-  differ in the downscaling and the median, so the bits differ. Exact
-  duplicates still collide in every implementation, so the duplicate groups
-  must match exactly.
+  differ in the downscaling and the median, so the bits differ. Daft and
+  polars-cv >= 0.38 follow imagehash's algorithm, so their bits are held to
+  it within a few bits; OpenCV's and polars-cv < 0.38's are other variants,
+  whose bits are not compared. Exact duplicates still collide in every
+  implementation, so the duplicate groups must match exactly.
 """
 
 from __future__ import annotations
 
 import io
 import json
+from importlib import metadata
 from pathlib import Path
 
 import numpy as np
@@ -179,6 +182,16 @@ _PHASH = (
     "exact duplicates must still form the same groups"
 )
 
+#: polars-cv 0.38.0 made ``perceptual_hash()`` standard pHash (imagehash's
+#: algorithm); before it, the hash was another variant whose bits are not
+#: comparable. The installed version decides which tolerance applies, so the
+#: suite holds both the pinned wheel and a newer one to the right bound.
+PCV_STANDARD_PHASH = tuple(
+    int(x) for x in metadata.version("polars-cv").split(".")[:2]
+) >= (0, 38)
+HASH_MEAN_BITS = 0.5
+HASH_MAX_BITS = 3
+
 TOLERANCES: dict[tuple[str, str], dict] = {}
 WHY: dict[tuple[str, str], str] = {}
 
@@ -206,7 +219,19 @@ _tol(
     mean_abs=3.0,
     worst_image_mean_abs=6.0,
 )
-_tol(_PCV, "w3", _PHASH, meta_mismatch=0, groups_equal=1)
+if PCV_STANDARD_PHASH:
+    _tol(
+        _PCV,
+        "w3",
+        "standard pHash as imagehash computes it; the engine's own grayscale "
+        "and Lanczos resize round differently from Pillow's",
+        meta_mismatch=0,
+        groups_equal=1,
+        hash_mean_bits=HASH_MEAN_BITS,
+        hash_max_bits=HASH_MAX_BITS,
+    )
+else:
+    _tol(_PCV, "w3", _PHASH, meta_mismatch=0, groups_equal=1)
 _tol(
     _PCV,
     "w4",

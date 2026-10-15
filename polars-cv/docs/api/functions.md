@@ -221,6 +221,21 @@ Pipeline().perceptual_hash(algorithm=HashAlgorithm.DIFFERENCE)
 Pipeline().perceptual_hash(algorithm=HashAlgorithm.BLOCKHASH)
 ```
 
+## Threading
+
+How the plugin's thread pool and Polars' share the cores is described in
+[Streaming & Scaling](../user-guide/concepts/streaming.md#two-pools-one-budget).
+
+::: polars_cv.set_row_parallelism
+    options:
+      show_root_heading: true
+      heading_level: 3
+
+::: polars_cv.row_parallelism
+    options:
+      show_root_heading: true
+      heading_level: 3
+
 ## Optimization
 
 ::: polars_cv.OptFlags

@@ -145,9 +145,10 @@ def _groups(library: str, manifest: pl.DataFrame, cache: dict) -> set:
         pytest.param(
             "polars-cv-eager",
             marks=pytest.mark.xfail(
+                not parity.PCV_STANDARD_PHASH,
                 strict=True,
                 reason=(
-                    "polars-cv 0.37.0 perceptual_hash() gives 236 distinct COCO "
+                    "polars-cv < 0.38 perceptual_hash() gives 236 distinct COCO "
                     "images identical hashes (64 groups); distinct images average "
                     "18 differing bits, against ~31 for imagehash, OpenCV and Daft"
                 ),

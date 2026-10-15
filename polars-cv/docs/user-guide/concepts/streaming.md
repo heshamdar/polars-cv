@@ -43,6 +43,48 @@ plugin expressions still shows a load average well above the core count —
 most likely on machines with mixed performance/efficiency cores — lower
 `POLARS_MAX_THREADS` (set it before importing Polars).
 
+A call does not invite the whole pool at once. It wakes one helper before any
+of its rows finish, then one more for every 200 µs of work it estimates is
+left, from the measured cost of the rows it has finished. A call of cheap rows
+(point or contour measures, header reads) so stays on a thread or two instead
+of keeping every idle pool thread searching for work.
+
+### Turning the plugin's pool off
+
+`polars_cv.set_row_parallelism(False)` stops every plugin call — pipelines
+and the `.contour`/`.point`/`.bbox` accessors alike — from splitting its rows:
+each call runs them on the thread Polars called it on, and the plugin's pool
+is never woken. The only parallelism left is Polars' own: one call per morsel
+on the streaming engine, or one thread per expression on the in-memory engine.
+
+```python
+import polars_cv
+
+previous = polars_cv.set_row_parallelism(False)  # returns the old setting
+try:
+    out = lf.collect(engine="streaming")
+finally:
+    polars_cv.set_row_parallelism(previous)
+
+polars_cv.row_parallelism()  # True: on, the default
+```
+
+Turn it off when the streaming engine already keeps every core busy with
+morsels, or on hosts where waking pool threads costs more than the rows do
+(many hyperthreaded cores, cheap rows). Leave it on for eager calls: a single
+`with_columns` over an image column then runs on one core.
+
+It is a process-wide setting, not a `sink()` argument, because it never
+changes what a pipeline computes: outputs, row order and `on_error` behave
+identically either way, so it stays out of the pipeline's wire form, its CSE
+and the compiled-graph cache. A non-`bool` is refused with `TypeError`.
+
+| Setting | What it controls | When it is read |
+|---------|------------------|-----------------|
+| `POLARS_MAX_THREADS` | Size of Polars' pool and the plugin's, and the budget of threads running polars-cv rows | Once, when Polars is imported |
+| `polars_cv.set_row_parallelism(bool)` | Whether a call may split its rows over the plugin's pool | At the start of every call |
+| `pl.Config.set_streaming_chunk_size(n)` | Rows per morsel, so rows per call on the streaming engine ([below](#how-big-a-call-is)) | When a query starts |
+
 ## Use the streaming engine for larger-than-memory data
 
 The streaming engine processes the column in *morsels* and spills
