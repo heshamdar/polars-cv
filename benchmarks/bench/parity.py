@@ -33,11 +33,12 @@ from __future__ import annotations
 
 import io
 import json
-from importlib import metadata
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+from bench import workloads
 
 RESULTS = Path(__file__).resolve().parents[1] / "results"
 
@@ -186,9 +187,7 @@ _PHASH = (
 #: algorithm); before it, the hash was another variant whose bits are not
 #: comparable. The installed version decides which tolerance applies, so the
 #: suite holds both the pinned wheel and a newer one to the right bound.
-PCV_STANDARD_PHASH = tuple(
-    int(x) for x in metadata.version("polars-cv").split(".")[:2]
-) >= (0, 38)
+PCV_STANDARD_PHASH = workloads.PCV_VERSION >= (0, 38)
 HASH_MEAN_BITS = 0.5
 HASH_MAX_BITS = 3
 
@@ -202,7 +201,11 @@ def _tol(libs: tuple[str, ...], workload: str, why: str, **limits) -> None:
         WHY[(lib, workload)] = why
 
 
-_PCV = ("polars-cv-eager", "polars-cv-streaming")
+_PCV = tuple(
+    lib
+    for lib in workloads.POLARS_CV_MODES
+    if (lib, "w1") not in workloads.NOT_APPLICABLE
+)
 _CV = ("opencv", "opencv-mp")
 _REF = ("pil", "pil-mp", "hf-datasets")
 for _w in ("w1", "w2", "w3", "w4"):

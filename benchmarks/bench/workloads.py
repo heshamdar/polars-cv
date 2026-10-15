@@ -30,6 +30,7 @@ import multiprocessing as mp
 import os
 import tempfile
 from collections.abc import Callable
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,7 @@ WORKLOADS = ("w1", "w2", "w3", "w4")
 LIBRARIES = (
     "polars-cv-eager",
     "polars-cv-streaming",
+    "polars-cv-streaming-nopool",
     "pil",
     "pil-mp",
     "opencv",
@@ -52,6 +54,23 @@ LIBRARIES = (
 SINGLE_THREAD_ONLY = frozenset({"pil", "opencv"})
 #: A process pool of one is the loop plus overhead.
 MULTI_THREAD_ONLY = frozenset({"pil-mp", "opencv-mp"})
+
+#: Each polars-cv library's engine, and whether the plugin splits a call's
+#: rows over its own pool. ``nopool`` turns that off
+#: (``polars_cv.set_row_parallelism(False)``), so the streaming engine's
+#: morsels are the only parallelism.
+POLARS_CV_MODES: dict[str, tuple[str, bool]] = {
+    "polars-cv-eager": ("in-memory", True),
+    "polars-cv-streaming": ("streaming", True),
+    "polars-cv-streaming-nopool": ("streaming", False),
+}
+
+
+#: The installed polars-cv's (major, minor): what it can do decides which
+#: variants run and which tolerances hold.
+PCV_VERSION = tuple(int(x) for x in metadata.version("polars-cv").split(".")[:2])
+#: ``set_row_parallelism`` arrived in polars-cv 0.38.0.
+PCV_HAS_ROW_PARALLELISM_SWITCH = PCV_VERSION >= (0, 38)
 
 SIZE = 224
 THUMB = 256
@@ -71,6 +90,14 @@ NOT_APPLICABLE: dict[tuple[str, str], str] = {
         "needs a Python UDF around PIL, which is the PIL benchmark"
     ),
 }
+
+
+if not PCV_HAS_ROW_PARALLELISM_SWITCH:
+    for _w in WORKLOADS:
+        NOT_APPLICABLE[("polars-cv-streaming-nopool", _w)] = (
+            "polars-cv < 0.38 has no set_row_parallelism, so its row "
+            "parallelism cannot be turned off"
+        )
 
 
 class NotApplicable(Exception):
@@ -114,8 +141,15 @@ def thumb_size(w: int, h: int, limit: int = THUMB) -> tuple[int, int]:
 # --- polars-cv ----------------------------------------------------------------
 
 
-def _polars_cv(workload: str, source: str, m: pl.DataFrame, streaming: bool) -> Job:
+def _polars_cv(workload: str, source: str, m: pl.DataFrame, library: str) -> Job:
     from polars_cv import Pipeline, numpy_from_column
+
+    engine, row_parallelism = POLARS_CV_MODES[library]
+    if not row_parallelism:
+        # Process-wide, and each cell is its own process.
+        import polars_cv
+
+        polars_cv.set_row_parallelism(False)
 
     items = load_items(m, source)
     df = pl.DataFrame({"id": m["id"], "src": items}).hstack(m.select(PARAMS))
@@ -123,9 +157,7 @@ def _polars_cv(workload: str, source: str, m: pl.DataFrame, streaming: bool) -> 
     src = pl.col("src")
 
     def run(build: Callable[[pl.LazyFrame], pl.LazyFrame]) -> pl.DataFrame:
-        if streaming:
-            return build(df.lazy()).collect(engine="streaming")
-        return build(df.lazy()).collect(engine="in-memory")
+        return build(df.lazy()).collect(engine=engine)
 
     if workload == "w1":
         pipe = (
@@ -166,7 +198,6 @@ def _polars_cv(workload: str, source: str, m: pl.DataFrame, streaming: bool) -> 
                 .agg(ids=pl.col("id").sort(), n=pl.len())
                 .filter(pl.col("n") > 1)
             )
-            engine = "streaming" if streaming else "in-memory"
             return tuple(pl.collect_all([meta, dupes], engine=engine))
 
         return job
@@ -644,7 +675,7 @@ def prepare(
     if library in MULTI_THREAD_ONLY and threads == 1:
         raise NotApplicable(f"{library} with one process is the {library[:-3]} loop")
     if library.startswith("polars-cv"):
-        return _polars_cv(workload, source, manifest, library.endswith("streaming"))
+        return _polars_cv(workload, source, manifest, library)
     if library in ("pil", "pil-mp"):
         return _per_image(library, PIL_FNS, workload, source, manifest, threads)
     if library in ("opencv", "opencv-mp"):
