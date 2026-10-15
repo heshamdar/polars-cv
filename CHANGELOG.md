@@ -51,8 +51,11 @@ Upgrading from 0.37: see the
   however little work its rows were; on a 72-thread host the woken threads
   spent their time searching for work, and a contour table took 19.5 s and
   1,356 s of CPU against 0.4 s and 4.9 s at 16 threads (worst on hyperthread
-  siblings). A call now wakes one helper up front, then one more per 200 µs
-  of remaining work estimated from its finished ranges.
+  siblings). A call now invites one helper per 200 µs of work it estimates
+  is left: from its finished ranges' measured cost, or, before one has
+  finished, from how long the first has been running, and helpers invite
+  too. So cheap rows stay on a thread or two, and expensive rows still reach
+  the whole pool within a few wake-ups.
 
 - **`blur(sigma=0)` returned an all-zero image.** The kernel was
   `exp(-0/0)`, i.e. NaN, which casts to 0. `sigma=0` is now no blur, as in
