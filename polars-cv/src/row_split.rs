@@ -216,58 +216,25 @@ impl Split {
             LAST_SPLIT_WORKERS.store(1, Ordering::SeqCst);
             return vec![out];
         }
-        let next = AtomicUsize::new(0);
-        // Time spent in, and count of, the ranges finished so far: what a
-        // range costs, so helpers are only invited for work worth a wake-up.
-        let spent = AtomicU64::new(0);
-        let ran = AtomicUsize::new(0);
-        // A `Mutex` per range, so ranges can be filled from any thread with
-        // results that are only `Send`; each is locked twice, uncontended.
-        let outcomes: Vec<Mutex<Option<R>>> = ranges.iter().map(|_| Mutex::new(None)).collect();
-        // Take the next range and run it; false once none is left.
-        let take = || -> bool {
-            let idx = next.fetch_add(1, Ordering::SeqCst);
-            let Some(rows) = ranges.get(idx) else {
-                return false;
-            };
-            let start = Instant::now();
-            let out = run(idx, rows.clone());
-            spent.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
-            ran.fetch_add(1, Ordering::Relaxed);
-            *outcomes[idx].lock().unwrap_or_else(|p| p.into_inner()) = Some(out);
-            true
+        let call = Call {
+            ranges: &ranges,
+            run: &run,
+            started: Instant::now(),
+            next: AtomicUsize::new(0),
+            spent: AtomicU64::new(0),
+            ran: AtomicUsize::new(0),
+            outcomes: ranges.iter().map(|_| Mutex::new(None)).collect(),
+            helpers: AtomicUsize::new(0),
+            workers: AtomicUsize::new(1),
         };
-        let helpers = AtomicUsize::new(0);
-        // This thread, and each helper that took a range.
-        let workers = AtomicUsize::new(1);
         THREAD_POOL.in_place_scope(|scope| loop {
-            // Invite idle threads, no more than there are ranges left for
-            // them beside this thread's next one.
-            let left = ranges.len().saturating_sub(next.load(Ordering::SeqCst));
-            let wanted = helpers_worth(
-                left,
-                spent.load(Ordering::Relaxed),
-                ran.load(Ordering::Relaxed),
-            );
-            while helpers.load(Ordering::SeqCst) < wanted {
-                let Some(slot) = Slot::claim() else { break };
-                helpers.fetch_add(1, Ordering::SeqCst);
-                let (take, helpers, workers) = (&take, &helpers, &workers);
-                scope.spawn(move |_| {
-                    let _slot = slot;
-                    if take() {
-                        workers.fetch_add(1, Ordering::SeqCst);
-                        while !Slot::over_budget() && take() {}
-                    }
-                    helpers.fetch_sub(1, Ordering::SeqCst);
-                });
-            }
-            if !take() {
+            call.invite(scope);
+            if !call.take() {
                 break;
             }
         });
-        LAST_SPLIT_WORKERS.store(workers.into_inner(), Ordering::SeqCst);
-        outcomes
+        LAST_SPLIT_WORKERS.store(call.workers.into_inner(), Ordering::SeqCst);
+        call.outcomes
             .into_iter()
             .map(|o| {
                 o.into_inner()
@@ -275,6 +242,78 @@ impl Split {
                     .expect("every range ran inside the scope")
             })
             .collect()
+    }
+}
+
+/// One call's ranges and the state its workers share.
+struct Call<'a, R, F> {
+    ranges: &'a [Range<usize>],
+    run: &'a F,
+    /// When the call started: before any range has finished, how long the
+    /// first one has been running so far, a lower bound on what a range costs.
+    started: Instant,
+    next: AtomicUsize,
+    /// Time spent in, and count of, the ranges finished so far: what a range
+    /// costs, so helpers are only invited for work worth a wake-up.
+    spent: AtomicU64,
+    ran: AtomicUsize,
+    /// A `Mutex` per range, so ranges can be filled from any thread with
+    /// results that are only `Send`; each is locked twice, uncontended.
+    outcomes: Vec<Mutex<Option<R>>>,
+    helpers: AtomicUsize,
+    /// This thread, and each helper that took a range.
+    workers: AtomicUsize,
+}
+
+impl<'a, R: Send, F: Fn(usize, Range<usize>) -> R + Sync> Call<'a, R, F> {
+    /// Take the next range and run it; false once none is left.
+    fn take(&self) -> bool {
+        let idx = self.next.fetch_add(1, Ordering::SeqCst);
+        let Some(rows) = self.ranges.get(idx) else {
+            return false;
+        };
+        let start = Instant::now();
+        let out = (self.run)(idx, rows.clone());
+        self.spent
+            .fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        self.ran.fetch_add(1, Ordering::Relaxed);
+        *self.outcomes[idx].lock().unwrap_or_else(|p| p.into_inner()) = Some(out);
+        true
+    }
+
+    /// Invite idle threads, as many as the work left is worth
+    /// ([`helpers_worth`]), no more than there are ranges left for them
+    /// beside the inviter's next one. The caller does this before each of its
+    /// ranges, and so does every helper: a helper woken before any range has
+    /// finished is itself evidence that a range outlasts a wake-up, so a call
+    /// of expensive rows reaches the whole pool within a few wake-ups instead
+    /// of waiting for its first range to be measured.
+    fn invite<'s>(&'s self, scope: &rayon::Scope<'s>) {
+        let left = self
+            .ranges
+            .len()
+            .saturating_sub(self.next.load(Ordering::SeqCst));
+        let ran = self.ran.load(Ordering::Relaxed);
+        let in_flight = self.started.elapsed().as_nanos() as u64;
+        let wanted = helpers_worth(left, self.spent.load(Ordering::Relaxed), ran, in_flight);
+        while self.helpers.load(Ordering::SeqCst) < wanted {
+            let Some(slot) = Slot::claim() else { break };
+            self.helpers.fetch_add(1, Ordering::SeqCst);
+            scope.spawn(move |scope| {
+                let _slot = slot;
+                self.invite(scope);
+                if self.take() {
+                    self.workers.fetch_add(1, Ordering::SeqCst);
+                    while !Slot::over_budget() {
+                        self.invite(scope);
+                        if !self.take() {
+                            break;
+                        }
+                    }
+                }
+                self.helpers.fetch_sub(1, Ordering::SeqCst);
+            });
+        }
     }
 }
 
@@ -287,18 +326,24 @@ impl Split {
 const HELPER_MIN_NS: u64 = 200_000;
 
 /// How many helpers a call with `left` ranges still to take should have,
-/// given `ran` finished ranges took `spent` ns: one before any range has
-/// finished (a single wake-up, so a call of expensive rows does not wait on
-/// its first range to share them), then one per [`HELPER_MIN_NS`] of the
-/// estimated remaining work, never more than the ranges beside the
-/// caller's next one.
-fn helpers_worth(left: usize, spent: u64, ran: usize) -> usize {
+/// given `ran` finished ranges took `spent` ns, and the call started
+/// `in_flight` ns ago: one per [`HELPER_MIN_NS`] of the estimated remaining
+/// work, never more than the ranges beside the caller's next one.
+///
+/// Once a range has finished, a range costs their measured average. Before
+/// that, the first range has been running for `in_flight` ns and is not
+/// done, so a range costs at least that, and at least one helper is invited
+/// (a single wake-up, so a call of expensive rows does not wait on its first
+/// range to share them). Cheap rows finish their first range before that
+/// helper wakes, so the measured average is all they are ever judged by.
+fn helpers_worth(left: usize, spent: u64, ran: usize, in_flight: u64) -> usize {
     let most = left.saturating_sub(1);
-    if ran == 0 {
-        return most.min(1);
-    }
-    let remaining = spent / ran as u64 * left as u64;
-    most.min((remaining / HELPER_MIN_NS) as usize)
+    let (per_range, floor) = match ran {
+        0 => (in_flight, 1),
+        _ => (spent / ran as u64, 0),
+    };
+    let remaining = per_range.saturating_mul(left as u64);
+    most.min(((remaining / HELPER_MIN_NS) as usize).max(floor))
 }
 
 /// Contiguous row ranges covering `0..len`, for `threads` workers.
@@ -359,20 +404,66 @@ mod tests {
     #[test]
     fn helpers_are_invited_for_measured_work_only() {
         assert_eq!(
-            helpers_worth(288, 0, 0),
+            helpers_worth(288, 0, 0, 0),
             1,
             "one helper before any range ran"
         );
         assert_eq!(
-            helpers_worth(1, 0, 0),
+            helpers_worth(1, 0, 0, 0),
             0,
             "no helper for the caller's last range"
         );
         // 1 µs ranges: 287 left is 287 µs of work, worth one helper.
-        assert_eq!(helpers_worth(287, 1_000, 1), 1);
+        assert_eq!(helpers_worth(287, 1_000, 1, 0), 1);
         // 1 ms ranges: each is worth a helper, capped by the ranges left.
-        assert_eq!(helpers_worth(10, 1_000_000, 1), 9);
-        assert_eq!(helpers_worth(100, 10 * HELPER_MIN_NS, 10), 99);
+        assert_eq!(helpers_worth(10, 1_000_000, 1, 0), 9);
+        assert_eq!(helpers_worth(100, 10 * HELPER_MIN_NS, 10, 0), 99);
+    }
+
+    /// Before any range has finished, the time the first has been running is
+    /// a lower bound on a range's cost; once one has, only the measurement
+    /// counts, so cheap rows are never judged by the time since the call
+    /// started.
+    #[test]
+    fn an_unfinished_first_range_bounds_the_cost_from_below() {
+        // 15 ranges left, 50 µs in: at least 750 µs of work, three helpers.
+        assert_eq!(helpers_worth(15, 0, 0, 50_000), 3);
+        // A first range running for a second is worth the whole pool.
+        assert_eq!(helpers_worth(15, 0, 0, 1_000_000_000), 14);
+        // Measured 1 µs ranges: one helper, however long the call has run.
+        assert_eq!(helpers_worth(287, 1_000, 1, 1_000_000_000), 1);
+    }
+
+    /// Expensive rows reach the whole pool before the first range finishes:
+    /// a call does not wait for its first range to be measured to share
+    /// them. With one helper until then, a call of 3 ms image rows ran on
+    /// two threads of four for its first ~second (w1 of `benchmarks/`:
+    /// 10-15% slower at 4 threads than when it invited the pool at once).
+    #[test]
+    fn expensive_rows_reach_the_pool_before_any_range_finishes() {
+        use std::collections::HashSet;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Mutex;
+        use std::time::Duration;
+
+        use pyo3_polars::export::polars_core::runtime::THREAD_POOL;
+
+        let _pool = super::exclusive_pool();
+        let threads = THREAD_POOL.current_num_threads();
+        let finished = AtomicUsize::new(0);
+        let early = Mutex::new(HashSet::new());
+        super::run_split(threads * 4, |_, _| {
+            if finished.load(Ordering::SeqCst) == 0 {
+                early.lock().unwrap().insert(std::thread::current().id());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            finished.fetch_add(1, Ordering::SeqCst);
+        });
+        assert_eq!(
+            early.into_inner().unwrap().len(),
+            threads,
+            "threads that started a range before any range finished"
+        );
     }
 
     /// One worker has nothing to split across: the rows run on the caller.

@@ -2816,6 +2816,7 @@ dependencies = [
  "polars-utils",
  "pyo3",
  "pyo3-polars",
+ "rayon",
  "reqwest",
  "serde",
  "serde_json",
