@@ -99,6 +99,7 @@ nav:
       - Chaining: user-guide/composition/chaining.md
       - Multi-Output: user-guide/composition/multi-output.md
       - Binary Operations: user-guide/composition/binary-ops.md
+    - Migrating from 0.37: user-guide/migration-0.38.md
     - Migrating from 0.36: user-guide/migration-0.37.md
     - Migrating from 0.35: user-guide/migration-0.36.md
     - Migrating from 0.34: user-guide/migration-0.35.md
