@@ -346,6 +346,58 @@
   "worst_image_mean_abs": 0.21066333574386956,
   "max_abs": 2
  },
+ "polars-cv-streaming-nopool/w1/bytes": {
+  "shape_mismatch": 0,
+  "mean_abs": 0.1692626953125,
+  "p99_abs": 1.0,
+  "max_abs": 2
+ },
+ "polars-cv-streaming-nopool/w1/path": {
+  "shape_mismatch": 0,
+  "mean_abs": 0.1692626953125,
+  "p99_abs": 1.0,
+  "max_abs": 2
+ },
+ "polars-cv-streaming-nopool/w2/bytes": {
+  "count_mismatch": 0,
+  "channel_mismatch": 0,
+  "dims_max": 0,
+  "mean_abs": 2.0016581335489696,
+  "worst_image_mean_abs": 4.319871690538195
+ },
+ "polars-cv-streaming-nopool/w2/path": {
+  "count_mismatch": 0,
+  "channel_mismatch": 0,
+  "dims_max": 0,
+  "mean_abs": 2.0016581335489696,
+  "worst_image_mean_abs": 4.319871690538195
+ },
+ "polars-cv-streaming-nopool/w3/bytes": {
+  "meta_mismatch": 0,
+  "hash_mean_bits": 0.15,
+  "hash_max_bits": 2,
+  "groups_equal": 1,
+  "groups": 4
+ },
+ "polars-cv-streaming-nopool/w3/path": {
+  "meta_mismatch": 0,
+  "hash_mean_bits": 0.15,
+  "hash_max_bits": 2,
+  "groups_equal": 1,
+  "groups": 4
+ },
+ "polars-cv-streaming-nopool/w4/bytes": {
+  "shape_mismatch": 0,
+  "mean_abs": 0.1637060939374934,
+  "worst_image_mean_abs": 0.21066333574386956,
+  "max_abs": 2
+ },
+ "polars-cv-streaming-nopool/w4/path": {
+  "shape_mismatch": 0,
+  "mean_abs": 0.1637060939374934,
+  "worst_image_mean_abs": 0.21066333574386956,
+  "max_abs": 2
+ },
  "polars-cv-streaming/w1/bytes": {
   "shape_mismatch": 0,
   "mean_abs": 0.1692626953125,
