@@ -59,6 +59,7 @@ polars_cv.set_row_parallelism(previous)
 - **Many-core hosts no longer spin the plugin's pool on cheap rows.** A call
   invites one helper thread per 200 µs of work it estimates is left, instead
   of inviting the whole pool before every row range, so cheap rows stay on a
-  thread or two while image rows still use every core. On a 72-thread host the old behaviour made a contour table take
-  19.5 s, against 0.4 s at 16 threads. Results are unchanged.
+  thread or two while image rows still use every core. On a 72-thread host
+  the old behaviour made a contour table take 19.5 s, against 0.4 s at 16
+  threads. Results are unchanged.
 - **The package ships its license texts** (`LICENSE-MIT`, `LICENSE-APACHE`).

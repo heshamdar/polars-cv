@@ -1,6 +1,6 @@
 # polars-cv vs PIL, OpenCV, torchvision, Daft and Hugging Face datasets
 
-A reproducible comparison on COCO val2017: four workloads, nine
+A reproducible comparison on COCO val2017: four workloads, ten
 implementations, two input sources, one thread and all cores. Every
 implementation is held to the PIL reference by parity tests before anything is
 timed, and every number below comes from `results/*.json`, which also records
@@ -11,51 +11,82 @@ This directory is its own uv project. It benchmarks the **published**
 not the local checkout. The regression suite that measures the checkout lives
 in [`polars-cv/benchmarks/`](../polars-cv/benchmarks/).
 
+The results below were measured before 0.38.0 reached PyPI, with a wheel built
+from the release commit by `maturin build --release`, the profile the
+published wheels use (its source hash, `51bf4cc9965f3148`, is the one
+`polars_cv.build_info()` reports for 0.38.0). Each results file records
+`polars-cv 0.38.0` as installed and `0.37.0` from `uv.lock`, since the lock can
+only name a version PyPI serves. The pin moves to 0.38.0 when it is published.
+
 ## Results
 
-4 threads (all cores), COCO val2017, files read from paths, polars-cv 0.37.0.
+4 threads (all cores), COCO val2017, files read from paths, polars-cv 0.38.0.
 Images per second is the median of 5 runs, with the interquartile range in the
 full tables. Peak memory is the PSS of the process and its workers.
 
 ![Throughput per workload at 4 threads](results/summary.svg)
 
-| Workload (5,000 images) | polars-cv | Best other | Next best | polars-cv peak memory |
+| Workload (5,000 images) | polars-cv eager / streaming | Best other | Next best | polars-cv peak memory |
 |---|---:|---:|---:|---:|
-| **w1** decode → 224² → gray → numpy | **1,068** | torchvision 684 | OpenCV 629 | **625 MiB** (OpenCV 1,240, torchvision 1,156) |
-| **w2** thumbnail → JPEG | 681 | **OpenCV 903** | torchvision 684 | 243 MiB (OpenCV 199) |
-| **w3** size + pHash → duplicate groups | 506 | **OpenCV 1,084** | PIL 520 | 136 MiB (OpenCV 126) |
-| **w4** per-row crop + resize | **1,047** | OpenCV 742 | torchvision 628 | **679 MiB** (OpenCV 2,606, torchvision 1,865) |
+| **w1** decode → 224² → gray → numpy | **988 / 1,025** | torchvision 701 | OpenCV 665 | **631–849 MiB** (OpenCV 992, torchvision 1,094) |
+| **w2** thumbnail → JPEG | 690 / 728 | **OpenCV 939** | torchvision 705 | 247–250 MiB (OpenCV 194) |
+| **w3** size + pHash → duplicate groups | 1,098 / 1,048 | **OpenCV 1,180** | PIL 650 | 138–143 MiB (OpenCV 120) |
+| **w4** per-row crop + resize | **1,119 / 1,132** | OpenCV 751 | torchvision 704 | **678–686 MiB** (OpenCV 2,238, torchvision 1,879) |
 
 **Where polars-cv wins**
 
-- **w1 and w4 run 1.4–1.6× faster than the best alternative, in half to a
-  quarter of the memory.** Decode, resize and grayscale run in Rust on one
+- **w1 and w4 run 1.4–1.5× faster than the best alternative, in less
+  memory**: w1 in up to 40% less than torchvision, w4 in under a third of
+  OpenCV's. Decode, resize and grayscale run in Rust on one
   pool with no per-image Python, and w4's per-row crop box and size are just
   column expressions. The process-pool libraries pickle every result back to
   the parent; polars-cv writes straight into one Arrow buffer.
-- **It holds up at 50,000 images.** w1 runs at 938 img/s (eager) and 864
-  (streaming), against 680 for torchvision and 647 for OpenCV, and peaks at
-  4.9–5.1 GiB, the lowest of all (torchvision and Daft 5.3, PIL 7.1, OpenCV 10.8). Most
-  of that is the 2.3 GiB output array itself. Hugging Face `datasets` passed the 12 GiB cap on w1 at 50k and was
-  stopped.
+- **It holds up at 50,000 images.** w1 runs at 1,035 img/s (eager) and 1,062
+  (streaming), against 757 for torchvision and 603 for OpenCV, and peaks at
+  4.9–5.1 GiB, the lowest of all (torchvision 5.3, Daft 5.4, PIL and OpenCV
+  11.0–11.2). Most of that is the 2.3 GiB output array itself. Hugging Face
+  `datasets` passed the 12 GiB cap on w1 at 50k and was stopped. On w3 at 50k
+  polars-cv and OpenCV are level (1,077–1,122 against 1,119 img/s), and every
+  library finds the same 5,000 duplicate groups.
 
 **Where polars-cv loses, and why**
 
 - **w2: OpenCV is 1.3× faster.** polars-cv decodes and resizes as fast as
-  OpenCV (3.2 ms against 3.9 ms per image, single thread), but its JPEG
-  encoder, the pure-Rust `image` crate's, takes 3.2 ms for a 256-px thumbnail
-  where libjpeg-turbo takes 0.27 ms. OpenCV's `INTER_LINEAR` is also cheaper
-  than an antialiased resize (see Caveats).
-- **w3: OpenCV is 2.1× faster.** polars-cv's `perceptual_hash()` costs 7.3 ms
-  per image single-threaded, against 2.7 ms for OpenCV's decode and hash
-  together. It is also a weak hash: distinct COCO images average 18 differing
-  bits (31 for imagehash, OpenCV and Daft), so it puts 236 of the 5,000
-  distinct val2017 images into 64 false "duplicate" groups, and finds 4,828
-  groups instead of 5,000 in the 50k set. Every other library finds 0 and
-  5,000. Fixed on `main` after 0.37.0 (#137): `perceptual_hash()` is now
-  standard pHash, with 0 false groups on val2017, distinct images 31.4 bits
-  apart, and within 2 bits of imagehash. These results measure the 0.37.0
-  wheel, and its speed after the fix has not been measured here.
+  OpenCV, but its JPEG encoder, the pure-Rust `image` crate's, takes 3.2 ms
+  for a 256-px thumbnail where libjpeg-turbo takes 0.27 ms (single thread,
+  measured separately). OpenCV's `INTER_LINEAR` is also cheaper than an
+  antialiased resize (see Caveats).
+- **w3: OpenCV is 1.1× faster at 5,000 images.** A single thread spends 3.4–3.6
+  ms per image in polars-cv, decode and hash together, against 3.1 ms in
+  OpenCV.
+
+**What changed since 0.37.0**
+
+- **w3 is 2.1× faster and correct.** `perceptual_hash()` is now standard
+  pHash (imagehash's algorithm, within 2 bits of it on each of the 40 parity
+  images). In
+  0.37.0 it ran at 491–506 img/s here, put 236 of the 5,000 distinct val2017
+  images into 64 false "duplicate" groups, and found 4,828 groups instead of
+  5,000 at 50k. It now finds 0 and 5,000, like every other library.
+- **Elsewhere the changes are within a run-to-run spread of a few percent**:
+  w4 +7% (eager and streaming), w2 +1% eager and +16% streaming, w1 -7% eager
+  and +6% streaming. The 0.37.0 numbers came from another run two days
+  earlier on the same hardware type, and re-measuring w1 hours apart in this
+  run moved torchvision by 5-15%, so the host accounts for part of each. A
+  same-session A/B of the two wheels, alternated over three rounds, put
+  0.38.0 at or above 0.37.0 on w1 and w4.
+
+**polars-cv's own pool, on and off**
+
+`polars-cv-streaming-nopool` is the streaming engine with
+`polars_cv.set_row_parallelism(False)`: each plugin call runs its rows on the
+thread polars called it on, so the engine's morsels are the only parallelism.
+At 4 threads it is within ±5% of `polars-cv-streaming` on every workload (w1
+963 against 1,025, w2 754 against 728, w3 1,134 against 1,048, w4 1,086
+against 1,132), and identical at 1 thread. While every core already runs a
+morsel the pool has no idle thread to lend, so it mostly helps at the end of
+a query, when the last morsels run with cores to spare. The switch is for
+hosts where waking the pool costs more than that, not a speed-up here.
 
 Every result, with both sources and both thread counts (the 1-thread cells
 were measured for the 5k set), is in the tables below and in `results/*.json`.
@@ -67,121 +98,133 @@ were measured for the 5k set), is in the tables below and in `results/*.json`.
 
 | library | 4 thr img/s (IQR) | 4 thr peak MiB |
 |---|---:|---:|
-| polars-cv-eager | 938 (926–957) | 5,256 |
-| polars-cv-streaming | 864 (850–865) | 4,985 |
-| pil-mp | 472 (456–479) | 7,278 |
-| opencv-mp | 647 (627–658) | 11,011 |
-| torchvision | 680 (659–709) | 5,474 |
-| daft | 276 (276–283) | 5,468 |
+| polars-cv-eager | 1,035 (1,032–1,051) | 5,258 |
+| polars-cv-streaming | 1,062 (1,040–1,068) | 4,975 |
+| polars-cv-streaming-nopool | 1,077 (1,072–1,089) | 5,090 |
+| pil-mp | 446 (441–448) | 11,424 |
+| opencv-mp | 603 (579–608) | 11,284 |
+| torchvision | 757 (753–763) | 5,470 |
+| daft | 277 (274–286) | 5,549 |
 | hf-datasets | memory-limit | — |
 
 #### coco-50k, w3, path source
 
 | library | 4 thr img/s (IQR) | 4 thr peak MiB |
 |---|---:|---:|
-| polars-cv-eager | 468 (466–476) | 177 |
-| polars-cv-streaming | 461 (449–464) | 160 |
-| pil-mp | 599 (587–622) | 299 |
-| opencv-mp | 1,138 (1,135–1,169) | 177 |
+| polars-cv-eager | 1,077 (1,069–1,110) | 168 |
+| polars-cv-streaming | 1,092 (1,092–1,095) | 158 |
+| polars-cv-streaming-nopool | 1,122 (1,112–1,127) | 160 |
+| pil-mp | 609 (604–616) | 297 |
+| opencv-mp | 1,119 (1,108–1,140) | 173 |
 | torchvision | n/a | — |
-| daft | 467 (453–470) | 2,819 |
-| hf-datasets | 595 (593–601) | 8,562 |
+| daft | 432 (426–442) | 2,813 |
+| hf-datasets | 569 (561–584) | 8,619 |
 
 #### coco-5k, w1, bytes source
 
 | library | 4 thr img/s (IQR) | 4 thr peak MiB |
 |---|---:|---:|
-| polars-cv-eager | 1,053 (991–1,061) | 2,174 |
-| polars-cv-streaming | 937 (934–958) | 2,405 |
-| pil-mp | 427 (368–428) | 1,697 |
-| opencv-mp | 661 (661–669) | 1,978 |
-| torchvision | 697 (690–708) | 1,932 |
-| daft | 92 (91–93) | 10,250 |
-| hf-datasets | 435 (407–437) | 4,988 |
+| polars-cv-eager | 934 (906–949) | 2,185 |
+| polars-cv-streaming | 992 (984–1,007) | 2,412 |
+| polars-cv-streaming-nopool | 953 (923–968) | 2,376 |
+| pil-mp | 466 (454–488) | 2,010 |
+| opencv-mp | 667 (666–675) | 1,971 |
+| torchvision | 678 (665–716) | 1,927 |
+| daft | 102 (100–102) | 10,257 |
+| hf-datasets | 394 (394–406) | 5,311 |
 
 #### coco-5k, w2, bytes source
 
 | library | 4 thr img/s (IQR) | 4 thr peak MiB |
 |---|---:|---:|
-| polars-cv-eager | 601 (594–631) | 1,792 |
-| polars-cv-streaming | 631 (614–653) | 1,798 |
-| pil-mp | 596 (595–614) | 1,012 |
-| opencv-mp | 848 (843–875) | 996 |
-| torchvision | 680 (665–687) | 1,632 |
+| polars-cv-eager | 665 (643–671) | 1,801 |
+| polars-cv-streaming | 714 (695–733) | 1,806 |
+| polars-cv-streaming-nopool | 677 (657–682) | 1,795 |
+| pil-mp | 510 (479–541) | 1,013 |
+| opencv-mp | 833 (819–855) | 990 |
+| torchvision | 719 (704–721) | 1,639 |
 | daft | n/a | — |
-| hf-datasets | 530 (526–540) | 3,039 |
+| hf-datasets | 519 (503–548) | 3,147 |
 
 #### coco-5k, w3, bytes source
 
 | library | 4 thr img/s (IQR) | 4 thr peak MiB |
 |---|---:|---:|
-| polars-cv-eager | 449 (445–462) | 1,692 |
-| polars-cv-streaming | 457 (448–470) | 1,696 |
-| pil-mp | 471 (454–498) | 1,032 |
-| opencv-mp | 1,001 (993–1,006) | 922 |
+| polars-cv-eager | 969 (923–978) | 1,689 |
+| polars-cv-streaming | 1,015 (996–1,065) | 1,695 |
+| polars-cv-streaming-nopool | 897 (847–928) | 1,684 |
+| pil-mp | 601 (592–608) | 1,027 |
+| opencv-mp | 1,132 (1,113–1,187) | 916 |
 | torchvision | n/a | — |
-| daft | 101 (100–103) | 9,339 |
-| hf-datasets | 524 (512–535) | 2,238 |
+| daft | 90 (90–91) | 9,341 |
+| hf-datasets | 565 (552–578) | 2,053 |
 
 #### coco-5k, w4, bytes source
 
 | library | 4 thr img/s (IQR) | 4 thr peak MiB |
 |---|---:|---:|
-| polars-cv-eager | 1,024 (983–1,057) | 2,235 |
-| polars-cv-streaming | 988 (972–1,005) | 2,241 |
-| pil-mp | 538 (519–554) | 3,263 |
-| opencv-mp | 775 (693–818) | 3,558 |
-| torchvision | 633 (606–663) | 2,648 |
+| polars-cv-eager | 1,094 (1,056–1,103) | 2,229 |
+| polars-cv-streaming | 1,132 (1,119–1,171) | 2,239 |
+| polars-cv-streaming-nopool | 1,052 (1,024–1,067) | 2,228 |
+| pil-mp | 560 (554–584) | 3,138 |
+| opencv-mp | 800 (734–837) | 3,503 |
+| torchvision | 720 (711–722) | 2,647 |
 | daft | n/a | — |
-| hf-datasets | 284 (279–301) | 8,396 |
+| hf-datasets | 309 (299–357) | 8,243 |
 
 #### coco-5k, w1, path source
 
 | library | 4 thr img/s (IQR) | 4 thr peak MiB |
 |---|---:|---:|
-| polars-cv-eager | 1,068 (1,050–1,070) | 625 |
-| polars-cv-streaming | 963 (954–1,003) | 852 |
-| pil-mp | 482 (454–514) | 885 |
-| opencv-mp | 629 (620–667) | 1,240 |
-| torchvision | 684 (640–689) | 1,156 |
-| daft | 301 (298–311) | 2,545 |
-| hf-datasets | 447 (435–463) | 2,947 |
+| polars-cv-eager | 988 (970–1,006) | 631 |
+| polars-cv-streaming | 1,025 (1,014–1,059) | 849 |
+| polars-cv-streaming-nopool | 963 (921–988) | 844 |
+| pil-mp | 501 (494–503) | 867 |
+| opencv-mp | 665 (661–688) | 992 |
+| torchvision | 701 (665–704) | 1,094 |
+| daft | 303 (300–308) | 2,461 |
+| hf-datasets | 492 (440–497) | 2,753 |
 
 #### coco-5k, w2, path source
 
 | library | 4 thr img/s (IQR) | 4 thr peak MiB |
 |---|---:|---:|
-| polars-cv-eager | 681 (636–686) | 243 |
-| polars-cv-streaming | 628 (626–634) | 247 |
-| pil-mp | 607 (600–633) | 222 |
-| opencv-mp | 903 (893–910) | 199 |
-| torchvision | 684 (660–705) | 837 |
+| polars-cv-eager | 690 (681–702) | 247 |
+| polars-cv-streaming | 728 (706–738) | 250 |
+| polars-cv-streaming-nopool | 754 (723–760) | 245 |
+| pil-mp | 587 (577–606) | 214 |
+| opencv-mp | 939 (882–968) | 194 |
+| torchvision | 705 (683–706) | 824 |
 | daft | n/a | — |
-| hf-datasets | 591 (548–595) | 1,890 |
+| hf-datasets | 538 (530–567) | 1,760 |
 
 #### coco-5k, w3, path source
 
 | library | 4 thr img/s (IQR) | 4 thr peak MiB |
 |---|---:|---:|
-| polars-cv-eager | 506 (501–524) | 136 |
-| polars-cv-streaming | 491 (469–493) | 143 |
-| pil-mp | 520 (519–528) | 237 |
-| opencv-mp | 1,084 (1,074–1,097) | 126 |
+| polars-cv-eager | 1,098 (1,080–1,100) | 138 |
+| polars-cv-streaming | 1,048 (972–1,058) | 143 |
+| polars-cv-streaming-nopool | 1,134 (1,067–1,164) | 121 |
+| pil-mp | 650 (625–652) | 232 |
+| opencv-mp | 1,180 (1,168–1,224) | 120 |
 | torchvision | n/a | — |
-| daft | 425 (422–436) | 2,431 |
-| hf-datasets | 513 (492–522) | 1,347 |
+| daft | 478 (468–481) | 2,496 |
+| hf-datasets | 577 (576–593) | 1,355 |
 
 #### coco-5k, w4, path source
 
 | library | 4 thr img/s (IQR) | 4 thr peak MiB |
 |---|---:|---:|
-| polars-cv-eager | 1,047 (1,038–1,075) | 679 |
-| polars-cv-streaming | 1,057 (1,044–1,076) | 688 |
-| pil-mp | 552 (550–578) | 2,255 |
-| opencv-mp | 742 (728–771) | 2,606 |
-| torchvision | 628 (616–683) | 1,865 |
+| polars-cv-eager | 1,119 (1,117–1,181) | 678 |
+| polars-cv-streaming | 1,132 (1,071–1,148) | 686 |
+| polars-cv-streaming-nopool | 1,086 (1,072–1,132) | 677 |
+| pil-mp | 593 (572–603) | 2,813 |
+| opencv-mp | 751 (749–841) | 2,238 |
+| torchvision | 704 (682–744) | 1,879 |
 | daft | n/a | — |
-| hf-datasets | 303 (282–320) | 6,980 |
+| hf-datasets | 332 (300–373) | 6,708 |
+
+wrote SVGs to /tmp/claude-0/-home-user-polars-cv/dd6d2399-d7a6-5794-b2e6-273873ba73d8/scratchpad/plotcheck
 
 </details>
 
@@ -246,6 +289,7 @@ code is in [`bench/workloads.py`](bench/workloads.py).
 |---|---|
 | `polars-cv-eager` | `Pipeline` → `.cv.pipe(...).sink(...)` in `df.lazy()...collect(engine="in-memory")`. w1 uses the fixed-shape `array` sink and `to_numpy()`. w3 reads width/height/channels from the header (`.cv.width()` etc.) and groups with `group_by`. w4's crop box and size are `pl.col(...)` parameters. |
 | `polars-cv-streaming` | The same queries, `collect(engine="streaming")`. |
+| `polars-cv-streaming-nopool` | The same streaming queries with `polars_cv.set_row_parallelism(False)`, so each plugin call runs its rows on the thread polars called it on and the morsels are the only parallelism. polars-cv 0.38 or newer (N/A before). |
 | `pil` / `pil-mp` | A loop over `Image.open`. `-mp` is a `fork` `multiprocessing.Pool` sent indices, with the inputs inherited through the fork, so only results are pickled. w2 uses `Image.thumbnail` (which calls `draft()`), and w3 uses `imagehash.phash`. |
 | `opencv` / `opencv-mp` | `cv2.imdecode`/`imread` (EXIF orientation off, as PIL), `cv2.resize(INTER_LINEAR)`, `cvtColor`, `imencode`. w3 uses `cv2.img_hash.pHash` (opencv-contrib). Workers call `cv2.setNumThreads(1)`. |
 | `torchvision` | A `Dataset` + `DataLoader(batch_size=64, num_workers=N)` (0 workers at 1 thread), `torchvision.io.decode_image`, transforms v2 `Resize(antialias=True)`/`Grayscale`, `encode_jpeg`. |
@@ -278,15 +322,17 @@ mean by tens of levels, far above any bound. The measured differences are in
 
 | Library | Measured against PIL (w1/w4: pixel levels, w2: decoded JPEG levels) | Why |
 |---|---|---|
-| polars-cv | w1 mean 0.17 (max 2); w2 mean 2.0, same sizes; w4 mean 0.16 (max 2); w3 same sizes, same duplicate groups | Another JPEG decoder and encoder; the same area-weighted bilinear and BT.601 gray |
+| polars-cv (all three) | w1 mean 0.17 (max 2); w2 mean 2.0, same sizes; w4 mean 0.16 (max 2); w3 within 0.15 bits of imagehash (max 2), same duplicate groups | Another JPEG decoder and encoder; the same area-weighted bilinear and BT.601 gray; the engine's own grayscale and Lanczos resize before the DCT |
 | torchvision | w1 mean 0.66 (max 2); w2 mean 0.03; w4 mean 0.00 (max 1) | Antialiased bilinear with other rounding; libjpeg-turbo on both sides |
 | OpenCV | w1 mean 4.2 (max 127); w2 mean 5.7; w4 mean 4.8 (max 136); w3 same sizes, same groups | `INTER_LINEAR` does not antialias when downscaling |
 | Daft | w1 mean 1.2 (max 23); w3 within 0.5 bits of imagehash, same groups | Its resize filter support differs |
 | PIL loop/pool, HF datasets | exact | They are the reference code |
 
-The pHash implementations of OpenCV and polars-cv 0.37.0 are not bit
-compatible with imagehash (about 32 differing bits, i.e. uncorrelated), so
-their bits are not compared. The duplicate groups are, and must match.
+OpenCV's pHash, and polars-cv's before 0.38, are not bit compatible with
+imagehash (about 32 differing bits, i.e. uncorrelated), so their bits are not
+compared. The duplicate groups are, and must match. From 0.38 polars-cv
+computes imagehash's algorithm, and its bits are held to it (mean at most 0.5,
+max 3); the installed version decides which bound applies.
 
 ### Measurement
 
@@ -315,9 +361,10 @@ their bits are not compared. The duplicate groups are, and must match.
 - **Environment.** The runs here: 4 vCPUs (Intel Xeon @ 2.80GHz), 15.7 GiB,
   Linux 6.18, Python 3.12.3, polars 2.0.0, Pillow 12.3.0, OpenCV 5.0.0
   (contrib), torch 2.14.1, torchvision 0.29.1, Daft 0.7.26, datasets 5.1.0,
-  imagehash 4.3.2. The 5k file records commit `c0839ff` because the suite was
-  committed (unchanged apart from formatting, as `2a34bf8`) after the run had
-  started.
+  imagehash 4.3.2, polars-cv 0.38.0 (see above), commit `49c4cec`. A
+  container restart stopped the 5k run after 91 of its 160 cells; the rest
+  ran on the same hardware, wheel and data, and `coco-5k.json` records each
+  part's environment under `resumed_environments`.
 - **Every results file** has an `environment` block with the CPU
   model and count, memory, OS, Python, the installed version of every library,
   the same from `uv.lock`, the git commit and a timestamp.
@@ -334,12 +381,13 @@ their bits are not compared. The duplicate groups are, and must match.
   be the like-for-like choice and is slower: 1.65 ms against 0.39 ms for a
   640→256 resize, single thread. The bilinear filter was pinned for
   everyone, so OpenCV runs its own bilinear.
-- **pHash differs by library.** imagehash and Daft agree to within a bit.
-  OpenCV's and polars-cv's hashes are other pHash variants, and their bits are
-  not comparable with imagehash's.
+- **pHash differs by library.** imagehash, Daft and polars-cv 0.38 agree to
+  within a bit or two. OpenCV's hash is another pHash variant, and its bits
+  are not comparable with imagehash's.
 - **w2 for polars-cv uses a full decode.** Pillow's `thumbnail()` keeps a full
   JPEG decode at these sizes (`reducing_gap=2`), so polars-cv runs without
   `.thumbnail()`, which would decode at half scale and do less work. That
   makes polars-cv's w2 numbers conservative.
-- **The published wheel, not the checkout.** A change on `main` after 0.37.0 is
-  not measured until it is released.
+- **A release, not the checkout.** These numbers measure 0.38.0 (see the
+  top of this page). A change on `main` after it is not measured until it is
+  released.
