@@ -87,8 +87,10 @@ Upgrading from 0.37: see the
   project, run against the published wheel): PIL, OpenCV, torchvision, Daft
   and Hugging Face `datasets` on COCO val2017 over four workloads, with parity
   tests against PIL, a subprocess per cell with pinned thread counts, peak PSS
-  sampling and a memory cap. The README's Benchmarks section shows its results,
-  including the two workloads where polars-cv 0.37.0 is slower than OpenCV.
+  sampling and a memory cap. polars-cv runs eager, streaming, and streaming
+  with its own pool off (`set_row_parallelism(False)`). The README's
+  Benchmarks section shows the 0.38.0 results, including the two workloads
+  where OpenCV is faster (thumbnails, and perceptual hashing at 5,000 images).
 - **License files.** `LICENSE-MIT` and `LICENSE-APACHE` at the repository
   root, linked into `polars-cv/` so the sdist and wheels carry them as
   `License-File`. The project declared `MIT OR Apache-2.0` but shipped no

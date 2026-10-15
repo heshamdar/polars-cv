@@ -65,21 +65,22 @@ On 5,000 COCO val2017 images with 4 cores, against PIL, OpenCV (process pool),
 torchvision (DataLoader), Daft and Hugging Face `datasets`, each written the
 way its users would write it and checked against PIL's output before timing:
 
-![Images per second on four workloads at 4 threads: polars-cv leads ML preprocessing and per-row crop/resize, and OpenCV leads thumbnails and perceptual hashing.](https://raw.githubusercontent.com/heshamdar/polars-cv/main/benchmarks/results/summary.svg)
+![Images per second on four workloads at 4 threads: polars-cv leads ML preprocessing and per-row crop/resize, OpenCV leads thumbnails, and the two are close on perceptual hashing.](https://raw.githubusercontent.com/heshamdar/polars-cv/main/benchmarks/results/summary.svg)
 
-| Workload | polars-cv | Fastest alternative | polars-cv speed-up | Peak memory, polars-cv vs that alternative |
+| Workload | polars-cv (streaming) | Fastest alternative | polars-cv speed-up | Peak memory, polars-cv vs that alternative |
 |---|---:|---:|---:|---:|
-| Decode → resize 224² → gray → NumPy | **1,068 img/s** | torchvision 684 | **1.6×** | **625 MiB** vs 1,156 |
-| Per-row crop box + per-row size | **1,047 img/s** | OpenCV 742 | **1.4×** | **679 MiB** vs 2,606 |
-| Thumbnail → JPEG | 681 img/s | OpenCV 903 | 0.75× | 243 MiB vs 199 |
-| Size + pHash → duplicate groups | 506 img/s | OpenCV 1,084 | 0.47× | 136 MiB vs 126 |
+| Decode → resize 224² → gray → NumPy | **1,025 img/s** | torchvision 701 | **1.5×** | **849 MiB** vs 1,094 |
+| Per-row crop box + per-row size | **1,132 img/s** | OpenCV 751 | **1.5×** | **686 MiB** vs 2,238 |
+| Size + pHash → duplicate groups | 1,048 img/s | OpenCV 1,180 | 0.89× | 143 MiB vs 120 |
+| Thumbnail → JPEG | 728 img/s | OpenCV 939 | 0.78× | 250 MiB vs 194 |
 
-At 50,000 images the first workload runs at 938 img/s with the lowest peak
-memory of every library (5.1 GiB; OpenCV 10.8). polars-cv trails OpenCV on
-thumbnails, because its JPEG encoder is slower than libjpeg-turbo, and on
-perceptual hashing, which is slower in 0.37.0 (the release measured here;
-the hash's quality problem found by this benchmark is fixed on `main`). Methodology, parity tolerances,
-every table and the command to reproduce it are in
+At 50,000 images the first workload runs at 1,062 img/s with the lowest peak
+memory of every library (4.9 GiB; OpenCV 11.0), and perceptual hashing is level
+with OpenCV (1,092 against 1,119 img/s). polars-cv trails OpenCV on
+thumbnails because its JPEG encoder is slower than libjpeg-turbo. Since 0.37.0,
+perceptual hashing is 2.1× faster and finds no false duplicates. Methodology,
+parity tolerances, every table (eager, streaming, and streaming with
+polars-cv's own pool off) and the command to reproduce it are in
 [`benchmarks/`](https://github.com/heshamdar/polars-cv/tree/main/benchmarks).
 
 ## Install
