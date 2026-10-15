@@ -319,18 +319,18 @@
  },
  "polars-cv-eager/w3/bytes": {
   "meta_mismatch": 0,
-  "hash_mean_bits": 31.775,
-  "hash_max_bits": 36,
+  "hash_mean_bits": 0.15,
+  "hash_max_bits": 2,
   "groups_equal": 1,
   "groups": 4
  },
  "polars-cv-eager/w3/full-set-false-duplicate-groups": {
-  "groups": 64
+  "groups": 0
  },
  "polars-cv-eager/w3/path": {
   "meta_mismatch": 0,
-  "hash_mean_bits": 31.775,
-  "hash_max_bits": 36,
+  "hash_mean_bits": 0.15,
+  "hash_max_bits": 2,
   "groups_equal": 1,
   "groups": 4
  },
@@ -374,15 +374,15 @@
  },
  "polars-cv-streaming/w3/bytes": {
   "meta_mismatch": 0,
-  "hash_mean_bits": 31.775,
-  "hash_max_bits": 36,
+  "hash_mean_bits": 0.15,
+  "hash_max_bits": 2,
   "groups_equal": 1,
   "groups": 4
  },
  "polars-cv-streaming/w3/path": {
   "meta_mismatch": 0,
-  "hash_mean_bits": 31.775,
-  "hash_max_bits": 36,
+  "hash_mean_bits": 0.15,
+  "hash_max_bits": 2,
   "groups_equal": 1,
   "groups": 4
  },
