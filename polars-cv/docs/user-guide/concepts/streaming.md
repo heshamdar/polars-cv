@@ -43,14 +43,14 @@ plugin expressions still shows a load average well above the core count —
 most likely on machines with mixed performance/efficiency cores — lower
 `POLARS_MAX_THREADS` (set it before importing Polars).
 
-A call invites one pool thread for every 200 µs of work it estimates is
-left, rather than the whole pool at once. The estimate comes from the
-measured cost of the rows it has finished or, before any have, from how long
-its first rows have been running, and every thread that joins invites more
-the same way. A call of image rows (milliseconds each) so reaches the whole
-pool within a few wake-ups, while a call of cheap rows (point or contour
-measures, header reads) stays on a thread or two instead of keeping every
-idle pool thread searching for work.
+A call invites one pool thread for every 200 µs of work it measures is
+left, rather than the whole pool at once. It first runs a few rows on its own
+thread, timing them (one row, then 1, 2, 4, … until about 50 µs of rows),
+and invites from that measurement; later ranges refine it. A call of image
+rows (milliseconds each) so reaches the whole pool after a row or two, while
+a call of cheap rows (point or contour measures, header reads) stays on a
+thread or two, or finishes before waking any, instead of keeping every idle
+pool thread searching for work.
 
 ### Turning the plugin's pool off
 
