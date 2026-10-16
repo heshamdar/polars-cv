@@ -1,133 +1,192 @@
 # polars-cv
-**ℹ️ Note:**
-This is a largely AI developed project and still in its early stages. Use at your own discretion.
 
-A Polars plugin for high-performance vision and array operations.
+**Image processing as Polars expressions: decode, transform and analyse images
+in a DataFrame column, in Rust, on every core, without a Python loop.**
 
-## Features
+[![PyPI](https://img.shields.io/pypi/v/polars-cv)](https://pypi.org/project/polars-cv/)
+[![Downloads](https://img.shields.io/pypi/dm/polars-cv)](https://pypistats.org/packages/polars-cv)
+[![CI](https://github.com/heshamdar/polars-cv/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/heshamdar/polars-cv/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-heshamdar.github.io%2Fpolars--cv-blue)](https://heshamdar.github.io/polars-cv/)
+[![License](https://img.shields.io/pypi/l/polars-cv)](https://pypi.org/project/polars-cv/)
+[![Python](https://img.shields.io/pypi/pyversions/polars-cv)](https://pypi.org/project/polars-cv/)
 
-- **Modular Pipelines**: Define image processing pipelines and apply them to DataFrame columns.
-- **Expression Arguments**: Any parameter that doesn't fix the output shape takes a Polars expression — numeric values, individual list elements, and non-structural enums/flags — on both the pipeline and the geometry namespaces. A null in one of those columns raises by default, or nulls only the rows that depend on it with `.on_null_param("null")`.
-- **Zero-Copy Performance**: Efficient memory management with stride-aware operations.
-- **Multi-Domain**: Seamlessly move between images, geometry (contours), and numeric results.
+![Top row: one decoded image feeding five pipelines (source, grayscale, blur, canny, histogram equalisation). Bottom row: one pipeline whose rotation angle and blur sigma come from per-row columns.](https://raw.githubusercontent.com/heshamdar/polars-cv/main/polars-cv/docs/assets/readme-figure.png)
 
-## Installation
+<sub>Every panel above is computed by polars-cv from a CC0 photo
+([`scripts/make_readme_figure.py`](https://github.com/heshamdar/polars-cv/blob/main/polars-cv/scripts/make_readme_figure.py)).</sub>
 
-```bash
-pip install polars-cv
-```
+## 30-second example
 
-## Quick Start
+A folder of photos to centre-cropped 224×224 training tensors plus JPEG
+thumbnails. The crop box is different for every image: it is computed from
+each file's own width and height, read from the header without decoding.
 
 ```python
+from pathlib import Path
+
 import polars as pl
 from polars_cv import Pipeline
 
-# Define a pipeline and apply it to a column
-pipe = Pipeline().source("image_bytes").resize(height=224, width=224).grayscale()
+df = pl.DataFrame({"path": sorted(str(p) for p in Path("photos").glob("*.jpg"))})
+df = df.with_columns(w=pl.col("path").cv.width(), h=pl.col("path").cv.height())
 
-df = pl.DataFrame({"image": [img1_bytes, img2_bytes]})
-result = df.with_columns(
-    processed=pl.col("image").cv.pipe(pipe).sink("numpy")
-)
-```
-
-## Scaling to Large Datasets
-
-Each `.cv.pipe(...)` call spreads its rows over the plugin's thread pool (sized
-by `POLARS_MAX_THREADS`), so a plain eager `DataFrame.with_columns(...)` uses
-every core. For data larger than memory, run through the lazy **streaming**
-engine (a lazy `.collect()`'s default since Polars 2.0), which processes the
-column in morsels and spills intermediate state to disk:
-
-```python
-result = (
-    df.lazy()
-    .with_columns(processed=pl.col("image").cv.pipe(pipe).sink("blob"))
-    .collect()
-)
-```
-
-The compiled graph is cached process-wide, so per-morsel overhead is just a
-hash lookup. (The detection-metrics APIs collect with polars' default engine,
-streaming since Polars 2.0, so they stream unless you set another engine
-affinity.)
-
-The plugin's pool and Polars' own are separate, and both are sized by
-`POLARS_MAX_THREADS`. Threads running polars-cv rows share one budget of
-`POLARS_MAX_THREADS`: a call running alone uses the whole pool, and concurrent
-calls (one per streaming morsel) keep their rows on their own threads once the
-budget is used. If a query with many plugin expressions still shows a load
-average far above the core count, lower `POLARS_MAX_THREADS` — see
-[Streaming & Scaling](https://heshamdar.github.io/polars-cv/user-guide/concepts/streaming/#two-pools-one-budget).
-
-## Source Behavior (Auto DType)
-
-`source()` defaults to `"auto"`, which infers the decode path from the input
-column's dtype: `String` → `file_path`, `List`/`Array` → `list`/`array`, and
-`Binary` → `blob` when it carries the VIEW protocol magic, `image_bytes`
-otherwise. Pass an explicit format to override it.
-
-`image_bytes` and `file_path` sources decode image format and dtype at runtime:
-
-- PNG/JPEG usually decode as `u8`
-- 16-bit PNG decodes as `u16`
-- TIFF may decode as `u8`, `u16`, `f32`, or `f64`
-
-This means the pipeline dtype starts as `auto` for these sources unless you pin it with `dtype=...` or an operation that determines dtype (such as `normalize`, `threshold`, or `cast`).
-
-```python
-# Runtime decode with automatic dtype
-auto_pipe = Pipeline().source("image_bytes").resize(height=224, width=224)
-
-# Pin expected dtype at source (runtime cast when needed)
-typed_pipe = Pipeline().source("image_bytes", dtype="f32").resize(height=224, width=224)
-```
-
-When using `sink("list")` or `sink("array")`, dtype must be known at planning time. For `image_bytes` / `file_path`, choose one of:
-
-- set `dtype` in `source(...)`
-- add `.cast("...")`
-- use a dtype-fixing operation before the sink
-
-```python
-pipe = Pipeline().source("file_path", dtype="f32").resize(height=224, width=224)
-
-result = df.with_columns(values=pl.col("path").cv.pipe(pipe).sink("list"))
-```
-
-## Dynamic Pipelines
-
-Use Polars expressions for per-row parameter values:
-
-```python
-pipe = (
+side = pl.min_horizontal("w", "h")  # a per-row value, used as an op parameter
+square = (
     Pipeline()
-    .source("image_bytes")
-    .resize(height=pl.col("target_h"), width=pl.col("target_w"))
-    .crop(top=pl.col("crop_y"), left=pl.col("crop_x"), height=100, width=100)
+    .source("file_path", dtype="u8")
+    .crop(top=(pl.col("h") - side) // 2, left=(pl.col("w") - side) // 2,
+          height=side, width=side)
+    .resize(height=224, width=224, filter="bilinear")
 )
+thumb = Pipeline().source("file_path").resize_max(128)
+
+out = df.with_columns(
+    x=pl.col("path").cv.pipe(square).sink("array", shape=[224, 224, 3]),
+    thumb=pl.col("path").cv.pipe(thumb).sink("jpeg", quality=85),
+)
+batch = out["x"].to_numpy()  # (n_images, 224, 224, 3) uint8
+```
+
+## Why polars-cv
+
+- **Images are a column.** Paths, bytes, labels, metadata and results sit in one
+  DataFrame, so filtering, joining and `group_by` on image properties is plain
+  Polars, not a second data structure kept in sync with a list of arrays.
+- **Polars runs it.** Pipelines are expressions: they run lazily, in the
+  streaming engine for larger-than-memory data, with the rows of each call
+  spread over every core by Rust code. There is no Python per image.
+- **Parameters can be expressions.** Any parameter that does not change the
+  output's rank, dtype or domain takes a Polars expression evaluated per row:
+  crop boxes from annotations, sizes from metadata, thresholds from a lookup.
+
+## Benchmarks
+
+On 5,000 COCO val2017 images with 4 cores, against PIL, OpenCV (process pool),
+torchvision (DataLoader), Daft and Hugging Face `datasets`, each written the
+way its users would write it and checked against PIL's output before timing:
+
+![Images per second on four workloads at 4 threads: polars-cv leads ML preprocessing and per-row crop/resize, OpenCV leads thumbnails, and the two are close on perceptual hashing.](https://raw.githubusercontent.com/heshamdar/polars-cv/main/benchmarks/results/summary.svg)
+
+| Workload | polars-cv (streaming) | Fastest alternative | polars-cv speed-up | Peak memory, polars-cv vs that alternative |
+|---|---:|---:|---:|---:|
+| Decode → resize 224² → gray → NumPy | **1,025 img/s** | torchvision 701 | **1.5×** | **849 MiB** vs 1,094 |
+| Per-row crop box + per-row size | **1,132 img/s** | OpenCV 751 | **1.5×** | **686 MiB** vs 2,238 |
+| Size + pHash → duplicate groups | 1,048 img/s | OpenCV 1,180 | 0.89× | 143 MiB vs 120 |
+| Thumbnail → JPEG | 728 img/s | OpenCV 939 | 0.78× | 250 MiB vs 194 |
+
+At 50,000 images the first workload runs at 1,062 img/s with the lowest peak
+memory of every library (4.9 GiB; OpenCV 11.0), and perceptual hashing is level
+with OpenCV (1,092 against 1,119 img/s). polars-cv trails OpenCV on
+thumbnails because its JPEG encoder is slower than libjpeg-turbo. Since 0.37.0,
+perceptual hashing is 2.1× faster and finds no false duplicates. Methodology,
+parity tolerances, every table (eager, streaming, and streaming with
+polars-cv's own pool off) and the command to reproduce it are in
+[`benchmarks/`](https://github.com/heshamdar/polars-cv/tree/main/benchmarks).
+
+## Install
+
+```bash
+pip install polars-cv      # or: uv add polars-cv
+```
+
+Wheels are published for Linux (x86_64, aarch64) and macOS (Apple silicon),
+for CPython 3.11+ (one `abi3` wheel), and need Polars 2.0 or newer. Other
+platforms build from the source distribution, which needs a Rust toolchain
+(1.96+).
+
+## Quickstart
+
+A `Pipeline` is a reusable, immutable description of the work. `.cv.pipe()`
+binds it to a column, and `.sink()` chooses the output: `"numpy"` (a struct of
+bytes, shape and dtype that `polars_cv.numpy_from_column` reads without
+copying), `"array"` (a fixed-shape Polars `Array`), `"list"`, `"png"`/`"jpeg"`
+bytes, or `"blob"` (polars-cv's own format, to resume a pipeline later).
+
+```python
+import io
+
+import numpy as np
+import polars as pl
+from PIL import Image
+from polars_cv import Pipeline, numpy_from_column
+
+
+def png(h: int, w: int) -> bytes:
+    buf = io.BytesIO()
+    Image.fromarray(np.random.default_rng(0).integers(0, 255, (h, w, 3), np.uint8)).save(buf, "PNG")
+    return buf.getvalue()
+
 
 df = pl.DataFrame({
-    "image": [img1_bytes, img2_bytes],
-    "target_h": [224, 256],
-    "target_w": [224, 256],
-    "crop_x": [10, 20],
-    "crop_y": [5, 15],
+    "image": [png(300, 400), png(480, 640)],
+    "target": [128, 256],  # one output size per row
 })
 
-result = df.with_columns(
-    processed=pl.col("image").cv.pipe(pipe).sink("numpy")
+pipe = (
+    Pipeline()
+    .source("image_bytes")  # "auto" (the default) infers this from the dtype
+    .resize(height=pl.col("target"), width=pl.col("target"))
+    .grayscale()
 )
+out = df.with_columns(gray=pl.col("image").cv.pipe(pipe).sink("numpy"))
+arrays = numpy_from_column(out["gray"])  # [(128, 128, 1), (256, 256, 1)] uint8 views
 ```
 
-A parameter column may contain nulls. By default that fails the query, naming
-the column and row; `.on_null_param("null")` yields null for the affected rows
-instead — only the outputs that actually depend on the parameter, leaving
-genuine decode and execution errors raising as before. For a fallback value,
-fill it in the expression: `pl.col("target_h").fill_null(224)`.
+A null in a parameter column fails the query by default, naming the column and
+row; `pipe.on_null_param("null")` nulls only the affected outputs instead. For
+a fallback value, fill it in the expression: `pl.col("target").fill_null(224)`.
+
+PNG and JPEG decode to `u8`, 16-bit PNG to `u16`, TIFF to whatever it stores,
+so an image source's dtype is only known at run time. The `"array"` and
+`"list"` sinks need it at planning time: give it with `source(..., dtype="u8")`,
+a `.cast(...)`, or an op that fixes it (`normalize`, `threshold`, …).
+See the [Sources guide](https://heshamdar.github.io/polars-cv/user-guide/concepts/sources/).
+
+## Scaling and threads
+
+- **Eager calls already use every core.** Each `.cv.pipe(...)` call splits its
+  rows over the plugin's own thread pool, so a plain
+  `DataFrame.with_columns(...)` is multi-threaded.
+- **Both pools are sized by `POLARS_MAX_THREADS`.** The plugin links its own
+  copy of Polars, so its pool is separate from the host's, but the threads
+  running polars-cv rows share one budget of `POLARS_MAX_THREADS`. Set it
+  before importing Polars. If a query with many plugin expressions shows a
+  load average well above the core count, lower it.
+- **`polars_cv.set_row_parallelism(False)` turns the plugin's pool off.** Each
+  call then runs its rows on the thread Polars called it on, so the streaming
+  engine's morsels are the only parallelism. Use it when morsels already keep
+  every core busy, or on many-core hyperthreaded hosts with cheap rows. It
+  returns the previous setting, and outputs are identical either way.
+- **Use the streaming engine for data larger than memory.** A lazy
+  `.collect()` uses it by default since Polars 2.0. It hands polars-cv one
+  morsel per call, and each call holds its output rows until it returns, so
+  peak memory is roughly rows per morsel × output bytes per row × concurrent
+  calls. For image tables, write Parquet with row groups sized by output bytes
+  or cap the morsel with `pl.Config.set_streaming_chunk_size(n)`.
+
+```python
+from pathlib import Path
+
+import polars as pl
+from polars_cv import Pipeline
+
+pipe = Pipeline().source("file_path", dtype="u8").resize(height=64, width=64)
+lf = pl.LazyFrame({"path": sorted(str(p) for p in Path("photos").glob("*.jpg"))})
+for batch in (
+    lf.select(x=pl.col("path").cv.pipe(pipe).sink("array", shape=[64, 64, 3]))
+    .collect_batches(chunk_size=2)  # streaming engine, one batch at a time
+):
+    x = batch["x"].to_numpy()  # (rows, 64, 64, 3) uint8, no copy
+```
+
+The full story (morsel sizing, spilling, cheap first passes with
+`thumbnail()` and header-only metadata) is in
+[Streaming & Scaling](https://heshamdar.github.io/polars-cv/user-guide/concepts/streaming/).
 
 ## Operations
+
+<details>
+<summary>All operations (click to expand)</summary>
 
 - **Image**: `resize`, `resize_scale`, `resize_to_height`, `resize_to_width`, `resize_max`, `resize_min`, `thumbnail`, `grayscale`, `blur`, `threshold`, `crop`, `rotate`, `pad`, `pad_to_size`, `letterbox`, `flip`, `flip_h`, `flip_v`.
 - **Color**: `convert_color`, `to_hsv`, `to_lab`, `to_bgr`, `to_ycbcr`.
@@ -143,77 +202,109 @@ fill it in the expression: `pl.col("target_h").fill_null(224)`.
 - **Layout**: `transpose`, `reshape`, `assert_shape`.
 - **Geometry**: `extract_contours`, `rasterize`, `simplify`, `convex_hull`, `scale_contour`, `largest`, `area`, `perimeter`, `centroid`, `bounding_box`; the `.contour` namespace adds `iou`, `dice`, `hausdorff_distance`, `contains_point`, `boundary_distances` and more.
 - **Points**: `normalize`, `translate`, `scale`, `rotate`, `distance`, `manhattan_distance`, `distance_to_contour`, `signed_distance_to_contour`, `nearest_point_on_contour`, `angle_to`, `midpoint`, `interpolate`, `within_bbox`.
-- **Bounding Boxes**: `pairwise_iou`, `correspond` (via `.bbox` namespace).
+- **Bounding Boxes**: `pairwise_iou`, `correspond` (via the `.bbox` namespace).
 - **Analysis**: `histogram`, `perceptual_hash`, `extract_shape`, `label_reduce`.
 - **Reductions**: `reduce_sum`, `reduce_mean`, `reduce_std`, `reduce_max`, `reduce_min`, `reduce_argmax`, `reduce_argmin`, `reduce_percentile`, `reduce_popcount`, and `statistics()` for several in one pass.
-- **Metadata**: `.cv.width()`, `.cv.height()`, `.cv.channels()`, `.cv.image_dtype()`.
-- **Byte access**: `.cv.read_bytes()` — read a path column's bytes (local or cloud) without decoding.
-- **Display**: `show_images()` for Jupyter notebook visualization.
-- **Detection Metrics**: Precision-Recall, AP, mAP, FROC, LROC, F1, confusion matrix, bootstrap confidence intervals — all weighted by `image_metadata.weight`.
+- **Metadata** (header only, no decode): `.cv.width()`, `.cv.height()`, `.cv.channels()`, `.cv.image_dtype()`.
+- **Byte access**: `.cv.read_bytes()` reads a path column's bytes (local or cloud) without decoding.
+- **Display**: `show_images()` for Jupyter notebooks.
 
-## Detection Metrics
+Sources: `image_bytes`, `file_path` (local paths, `http(s)://`, `s3://`,
+`gs://`, `az://`), `blob`, `list`/`array`, `contour`. See the
+[operations guide](https://heshamdar.github.io/polars-cv/user-guide/operations/image-ops/)
+and the [API reference](https://heshamdar.github.io/polars-cv/api/pipeline/).
 
-One call from predictions and ground truth (one row per object: boxes,
-polygons or instance masks) to a COCO-style report:
+</details>
+
+## Detection metrics
+
+`polars_cv.metrics` evaluates detections from one row per object (boxes,
+polygons or masks) to COCO-style AP/mAP, with bootstrap intervals that
+resample images:
 
 ```python
+import polars as pl
 from polars_cv.metrics import evaluate_detections
 
-report = evaluate_detections(
-    preds, gts, geometry=("x1", "y1", "x2", "y2"), box_format="xyxy"
-)
-report.summary       # map, map_50, map_75, mar
-report.per_class     # AP and recall per class
-report.ci("map")     # bootstrap interval, images resampled
+gts = pl.DataFrame({
+    "image_id": ["a", "a", "b"], "class_id": [0, 1, 0],
+    "x1": [10.0, 50.0, 0.0], "y1": [10.0, 50.0, 0.0],
+    "x2": [40.0, 90.0, 30.0], "y2": [40.0, 90.0, 30.0],
+})
+preds = pl.DataFrame({
+    "image_id": ["a", "a", "b", "b"], "class_id": [0, 1, 0, 0],
+    "score": [0.9, 0.8, 0.7, 0.3],
+    "x1": [12.0, 48.0, 1.0, 60.0], "y1": [11.0, 52.0, 2.0, 60.0],
+    "x2": [41.0, 88.0, 29.0, 80.0], "y2": [39.0, 91.0, 31.0, 80.0],
+})
+
+report = evaluate_detections(preds, gts, geometry=("x1", "y1", "x2", "y2"), box_format="xyxy")
+report.summary    # map, map_50, map_75, mar
+report.per_class  # AP and recall per class
+report.ci("map")  # bootstrap interval
 ```
 
-`evaluate_heatmaps` does the same for probability maps against masks (with a
-FROC summary), and `evaluate_segmentation` gives Dice, IoU and surface
-distances per image. Every number is a `Statistic`, so `bootstrap_ci` gives it
-an interval.
+It also covers precision-recall curves, FROC and LROC, confusion counts at a
+threshold, heatmap and segmentation evaluation, and per-image weights
+(scikit-learn `sample_weight` semantics). See the
+[metrics guide](https://heshamdar.github.io/polars-cv/user-guide/operations/metrics/).
 
-The lower layers stay one step away. Matchers build a `DetectionTable`, and
-every metric reads it:
+## When not to use polars-cv
 
-```python
-from polars_cv.metrics import PreMatchedAdapter, precision_recall_curve, average_precision
+- **Augmentation inside a training loop.** There are no random transforms and
+  no GPU execution. Use torchvision v2, Kornia or DALI there; polars-cv fits the
+  deterministic preprocessing before it.
+- **One image at a time, latency first.** Each call goes through Polars'
+  expression machinery. For a single image in an interactive tool, calling
+  OpenCV or PIL directly is simpler and has less overhead.
+- **Operations it does not have.** Video decoding, model inference and the
+  long tail of OpenCV are out of scope. Check the operations list first.
+- **Windows or Intel macOS without a Rust toolchain.** There are no wheels for
+  them yet.
+- **Production systems that cannot absorb breaking changes.** See below.
 
-# Wrap pre-matched detection data. `image_meta` (one row per evaluated slide,
-# with image_id + n_gts) defines the population, so slides with no detections
-# are not dropped from the denominators.
-adapter = PreMatchedAdapter()
-table = adapter.match(
-    df,
-    pred_col="confidence",
-    gt_col="is_tp",
-    image_id_col="slide_id",
-    image_meta=slides,
-)
+## Project status
 
-# Compute metrics
-pr = precision_recall_curve(table)
-ap = average_precision(table)
+> **ℹ️ Note:** This is a largely AI-developed project and still in its early
+> stages. Use at your own discretion.
 
-print(f"AP: {ap:.3f}")
-print(pr.curve)  # score, precision, recall, cum_tp, cum_fp, cum_weighted_tp, cum_weighted_fp
+What there is to check that against:
+
+- **Tests**: about 6,000 Python tests (5,800 in the per-push lane) and over
+  850 Rust unit tests, including reference tests against NumPy, SciPy,
+  OpenCV and `imagehash`, a golden corpus, and schema-parity tests that
+  check every op's planned output type against what it produces. CI fails
+  below 95% line coverage of the Python package.
+- **CI**: every pull request runs Linux on Python 3.11, 3.12 and 3.13, both
+  Polars engines (streaming and in-memory), the oldest declared dependency
+  versions, `clippy`, `rustfmt`, `ruff`, `ty`, `cargo-deny` and a strict docs
+  build. Pushes to `main` add macOS.
+- **Releases**: 29 minor releases from 0.10.0 (2026-06-13) to 0.38.0
+  (2026-10-15), each in the [changelog](https://github.com/heshamdar/polars-cv/blob/main/CHANGELOG.md).
+- **Versioning**: the project aims to follow
+  [Semantic Versioning](https://semver.org/). While it is 0.x, a minor release
+  may break the API. Breaking changes are listed under *Breaking changes* in
+  the changelog, and every minor release since 0.29 has a
+  [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.38/).
+  Pin a minor version (`polars-cv~=0.38.0`) if you depend on it.
+
+## Contributing
+
+Issues and pull requests are welcome. [`CONTRIBUTING.md`](https://github.com/heshamdar/polars-cv/blob/main/CONTRIBUTING.md)
+covers the build (`maturin develop` against a Rust 1.96+ toolchain), and
+`scripts/verify.sh` runs every check CI runs.
+
+## Citation
+
+If you use polars-cv in research, please cite the version you used:
+
+```bibtex
+@software{dar_polars_cv,
+  author = {Dar, Hesham},
+  title  = {polars-cv: Image processing as Polars expressions},
+  url    = {https://github.com/heshamdar/polars-cv},
+  year   = {2026}
+}
 ```
 
-Every metric is weighted by the table's `image_metadata.weight` (scikit-learn
-`sample_weight` semantics: a weight of `k` counts an image `k` times; unit
-weights give the plain counts). The bootstrap intervals re-estimate
-sample-derived weights in every replicate by stratifying the resample on
-weight cells, so reweighting a study to a target mix needs no extra step;
-`weight_scheme="fixed"` carries known (design or continuous) weights instead.
-
-Available matchers: `match_detections` (object tables of any geometry),
-`ContourMatcher` (heatmap/mask), `BBoxMatcher` (bounding boxes),
-`PreMatchedAdapter` (pre-computed TP/FP).
-
-Available metrics: `precision_recall_curve`, `average_precision`,
-`mean_average_precision`, `froc_auc`, `lroc_auc`, `froc_curve_lazy`,
-`lroc_curve_lazy`, `confusion_at_threshold`, `precision_at_threshold`,
-`recall_at_threshold`, `f1_at_threshold`, and the lazy, group-aware bootstrap
-intervals `bootstrap_ci` (any `Statistic`: `AP`, `mean_ap()`, `FROCAUC`, …),
-`froc_auc_ci_lazy`, `lroc_auc_ci_lazy`, `average_precision_ci_lazy`.
-
-For full details, see the [Documentation](https://heshamdar.github.io/polars-cv/)
+Licensed under either of [MIT](https://github.com/heshamdar/polars-cv/blob/main/LICENSE-MIT) or [Apache-2.0](https://github.com/heshamdar/polars-cv/blob/main/LICENSE-APACHE), at your option.

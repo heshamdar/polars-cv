@@ -1,0 +1,36 @@
+[project]
+name = "polars-cv-benchmarks"
+version = "0.1.0"
+description = "Reproducible comparison of polars-cv against PIL, OpenCV, torchvision, Daft and HF datasets"
+requires-python = ">=3.12,<3.13"
+# Exact pins come from uv.lock; the results JSON records them per run.
+# polars-cv is the published wheel (what users install, release-optimised),
+# not the local checkout.
+dependencies = [
+    "polars-cv==0.37.0",
+    "polars>=2.0",
+    "numpy>=2.0",
+    "pillow>=11",
+    "opencv-contrib-python-headless>=4.10",
+    "torch>=2.5",
+    "torchvision>=0.20",
+    "daft>=0.5",
+    "datasets>=3.0",
+    "imagehash>=4.3",
+    "psutil>=6.0",
+    "matplotlib>=3.9",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "smoke: the subset the manual CI workflow runs",
+    "slow: runs over the whole 5k set",
+]
