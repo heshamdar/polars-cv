@@ -77,6 +77,7 @@ pub(crate) fn execute_geometry_op(
         GeometryOp::Rasterize {
             fill_value,
             background,
+            supersample,
             ..
         } => {
             let (height, width) = op
@@ -94,6 +95,7 @@ pub(crate) fn execute_geometry_op(
                 height,
                 *fill_value,
                 *background,
+                *supersample,
             )))
         }
         GeometryOp::Area { signed } => {

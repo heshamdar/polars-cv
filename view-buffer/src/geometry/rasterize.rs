@@ -6,7 +6,7 @@ use crate::core::buffer::ViewBuffer;
 
 use super::contour::{Contour, Point};
 
-/// Rasterizes a set of contours to a binary mask.
+/// Rasterizes a set of contours to a mask.
 ///
 /// The painted region is the **union** of the contours' regions, each region
 /// being that contour's exterior minus its own holes. Union, not sequential
@@ -19,6 +19,13 @@ use super::contour::{Contour, Point};
 /// masks with `max`, which is what the graph executor used to do, quietly
 /// returned an all-background canvas for an inverted pair.
 ///
+/// Each pixel is sampled at its `supersample × supersample` sub-pixel centres,
+/// `(x + (i + 0.5) / n, y + (j + 0.5) / n)`, and painted
+/// `background + (fill_value − background) · k / n²` for its `k` covered
+/// samples, stored by the conversion rule (round half away from zero). At
+/// `n = 1` that is the pixel centre and a pixel is wholly one value or the
+/// other: the rule `contains_point` and the area measures follow.
+///
 /// A single contour is the one-element case, not a separate entry point: every
 /// caller holds a set (`parse_contour_set` for the contour source, the contour
 /// domain's own vector for the `rasterize` op), so there is nothing for a
@@ -30,6 +37,7 @@ use super::contour::{Contour, Point};
 /// * `height` - Output mask height in pixels
 /// * `fill_value` - Value for pixels inside any contour
 /// * `background` - Value for pixels outside every contour
+/// * `supersample` - Samples per pixel along each axis, at least 1
 ///
 /// # Returns
 /// A ViewBuffer with shape [height, width, 1] and dtype U8
@@ -39,112 +47,117 @@ pub fn rasterize(
     height: u32,
     fill_value: u8,
     background: u8,
+    supersample: u32,
 ) -> ViewBuffer {
-    let w = width as usize;
-    let h = height as usize;
-    let mut covered = vec![false; w * h];
-    // One contour's coverage at a time, so its holes subtract from itself only.
-    let mut scratch = vec![0u8; w * h];
+    assert!(
+        supersample >= 1,
+        "rasterize: supersample must be at least 1"
+    );
+    let (w, h, n) = (width as usize, height as usize, supersample as usize);
+    // Covered samples per pixel; n² is at most the op's 16² = 256.
+    let mut counts = vec![0u32; w * h];
+    // One row of samples at a time: the union, and one contour's coverage
+    // (so its holes subtract from itself only).
+    let mut covered = vec![false; w * n];
+    let mut scratch = vec![false; w * n];
+    let spans: Vec<Option<(f64, f64)>> = contours.iter().map(|c| y_extent(&c.exterior)).collect();
 
-    for contour in contours {
-        scratch.fill(0);
-
-        // Use scanline algorithm for efficiency
-        scanline_fill(&contour.exterior, w, h, &mut scratch, 1);
-
-        // Subtract holes
-        for hole in &contour.holes {
-            scanline_fill(hole, w, h, &mut scratch, 0);
-        }
-
-        for (slot, painted) in covered.iter_mut().zip(scratch.iter()) {
-            *slot |= *painted != 0;
+    for y in 0..h {
+        for j in 0..n {
+            let scan_y = y as f64 + (j as f64 + 0.5) / n as f64;
+            covered.fill(false);
+            for (contour, extent) in contours.iter().zip(&spans) {
+                if !extent.is_some_and(|(lo, hi)| scan_y >= lo && scan_y <= hi) {
+                    continue;
+                }
+                scratch.fill(false);
+                fill_scanline(&contour.exterior, scan_y, n, &mut scratch, true);
+                for hole in &contour.holes {
+                    fill_scanline(hole, scan_y, n, &mut scratch, false);
+                }
+                for (slot, &inside) in covered.iter_mut().zip(&scratch) {
+                    *slot |= inside;
+                }
+            }
+            let row = &mut counts[y * w..(y + 1) * w];
+            for (sx, &inside) in covered.iter().enumerate() {
+                if inside {
+                    row[sx / n] += 1;
+                }
+            }
         }
     }
 
-    let data = covered
+    let samples = (n * n) as f64;
+    let (fill, bg) = (f64::from(fill_value), f64::from(background));
+    let data = counts
         .into_iter()
-        .map(|inside| if inside { fill_value } else { background })
+        .map(|k| match k as usize {
+            0 => background,
+            k if k == n * n => fill_value,
+            k => crate::core::convert::CastFrom::cast_from(bg + (fill - bg) * k as f64 / samples),
+        })
         .collect();
 
     ViewBuffer::from_vec_with_shape(data, vec![h, w, 1])
 }
 
-/// Scanline polygon fill algorithm.
+/// The `[min, max]` y-extent of a ring, or `None` for a ring that fills
+/// nothing (fewer than three points).
+fn y_extent(polygon: &[Point]) -> Option<(f64, f64)> {
+    if polygon.len() < 3 {
+        return None;
+    }
+    let (lo, hi) = polygon
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+            (lo.min(p.y), hi.max(p.y))
+        });
+    Some((lo, hi))
+}
+
+/// Set `row`'s samples inside `polygon` on the horizontal line `scan_y` to
+/// `value`; `row` holds `n` samples per pixel, sample `s` at `(s + 0.5) / n`.
 ///
-/// More efficient than point-in-polygon testing for each pixel.
-///
-/// A pixel belongs to the polygon when its **centre** — `(x + 0.5, y + 0.5)` —
-/// lies inside it, boundary included. That is the rule `contains_point` and the
-/// area measures follow, so a mask's pixel count tracks the contour's area rather
-/// than exceeding it by a border. The test-only `rasterize_simple` asserts the
-/// two agree pixel for pixel.
-fn scanline_fill(polygon: &[Point], width: usize, height: usize, data: &mut [u8], value: u8) {
-    if polygon.len() < 3 || width == 0 || height == 0 {
+/// A sample belongs to the polygon when it lies inside it, boundary
+/// included: the crossings of the line with each edge (an edge that starts
+/// on the line counts, one that ends on it does not, so a vertex is crossed
+/// once) bound spans `[left, right]`, and the samples whose positions fall in
+/// a span are `ceil(left · n − 0.5)` to `floor(right · n − 0.5)`. At `n = 1`
+/// those are the pixel centres `x + 0.5` in `[left, right]`. Rounding the
+/// span itself outward instead — `ceil(left)`, `floor(right)` — took in a
+/// surplus column at every right edge, so a 100-wide box rasterized 101
+/// columns. The test-only `rasterize_simple` asserts the rule pixel for pixel.
+fn fill_scanline(polygon: &[Point], scan_y: f64, n: usize, row: &mut [bool], value: bool) {
+    if polygon.len() < 3 || row.is_empty() {
         return;
     }
-
-    // Find y-range of the polygon
-    let mut min_y = f64::INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-    for p in polygon {
-        min_y = min_y.min(p.y);
-        max_y = max_y.max(p.y);
-    }
-
-    // Clamp y coordinates to valid range [0, height)
-    let start_y = (min_y.floor() as i32).max(0).min((height - 1) as i32) as usize;
-    let end_y = ((max_y.ceil() as i32) + 1).min(height as i32) as usize;
-
-    // For each scanline
-    for y in start_y..end_y.min(height) {
-        let scan_y = y as f64 + 0.5; // Sample at pixel center
-
-        // Find all intersection points with edges
-        let mut intersections: Vec<f64> = Vec::new();
-        let n = polygon.len();
-
-        for i in 0..n {
-            let p1 = &polygon[i];
-            let p2 = &polygon[(i + 1) % n];
-
-            // Check if edge crosses this scanline
-            if (p1.y <= scan_y && p2.y > scan_y) || (p2.y <= scan_y && p1.y > scan_y) {
-                // Compute x intersection
-                let t = (scan_y - p1.y) / (p2.y - p1.y);
-                let x = p1.x + t * (p2.x - p1.x);
-                intersections.push(x);
-            }
+    let mut intersections: Vec<f64> = Vec::new();
+    let count = polygon.len();
+    for i in 0..count {
+        let p1 = &polygon[i];
+        let p2 = &polygon[(i + 1) % count];
+        if (p1.y <= scan_y && p2.y > scan_y) || (p2.y <= scan_y && p1.y > scan_y) {
+            let t = (scan_y - p1.y) / (p2.y - p1.y);
+            intersections.push(p1.x + t * (p2.x - p1.x));
         }
+    }
+    intersections.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Sort intersections
-        intersections.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
-        // Fill between pairs of intersections
-        for i in (0..intersections.len()).step_by(2) {
-            if i + 1 >= intersections.len() {
-                break;
-            }
-
-            // Centres inside the span, i.e. `x + 0.5` in [left, right]. Rounding
-            // the span itself outward instead — ceil(left), floor(right) — took in
-            // a surplus column at every right edge, so a 100-wide box rasterized
-            // 101 columns while the y loop, driven by `scan_y`, got it right.
-            let first = (intersections[i] - 0.5).ceil();
-            let last = (intersections[i + 1] - 0.5).floor();
-
-            if last < 0.0 || first >= width as f64 {
-                continue;
-            }
-
-            // Both ends are in range now, so the casts cannot saturate
-            // surprisingly: `last` is non-negative and `first` is below `width`.
-            let x_start = first.max(0.0) as usize;
-            let x_end = (last as usize + 1).min(width);
-
-            for x in x_start..x_end {
-                data[y * width + x] = value;
-            }
+    let samples = row.len() as f64;
+    let scale = n as f64;
+    for &[left, right] in intersections.as_chunks::<2>().0 {
+        let first = (left * scale - 0.5).ceil();
+        let last = (right * scale - 0.5).floor();
+        if last < 0.0 || first >= samples {
+            continue;
+        }
+        // Both ends are in range now, so the casts cannot saturate
+        // surprisingly: `last` is non-negative and `first` is below the row.
+        let start = first.max(0.0) as usize;
+        let end = (last as usize + 1).min(row.len());
+        if start < end {
+            row[start..end].fill(value);
         }
     }
 }
@@ -209,7 +222,7 @@ mod tests {
     #[test]
     fn test_rasterize_shape() {
         let contour = square_contour();
-        let mask = rasterize(&one(&contour), 100, 100, 255, 0);
+        let mask = rasterize(&one(&contour), 100, 100, 255, 0, 1);
 
         assert_eq!(mask.shape(), &[100, 100, 1]);
         assert_eq!(mask.dtype(), DType::U8);
@@ -218,7 +231,7 @@ mod tests {
     #[test]
     fn test_rasterize_content() {
         let contour = square_contour();
-        let mask = rasterize(&one(&contour), 100, 100, 255, 0);
+        let mask = rasterize(&one(&contour), 100, 100, 255, 0, 1);
 
         // Access the data
         let data = mask.to_contiguous();
@@ -248,7 +261,7 @@ mod tests {
         ];
         let contour = Contour::with_holes(exterior, vec![hole]);
 
-        let mask = rasterize(&one(&contour), 100, 100, 255, 0);
+        let mask = rasterize(&one(&contour), 100, 100, 255, 0, 1);
         let data = mask.to_contiguous();
         let ptr = unsafe { data.as_ptr::<u8>() };
         let slice = unsafe { std::slice::from_raw_parts(ptr, 100 * 100) };
@@ -286,7 +299,7 @@ mod tests {
             overlapping_set(),
             overlapping_set().into_iter().rev().collect(),
         ] {
-            let scanline = rasterize(&contours, 100, 100, 255, 0);
+            let scanline = rasterize(&contours, 100, 100, 255, 0, 1);
             let per_pixel = rasterize_simple(&contours, 100, 100, 255, 0);
 
             assert_eq!(
@@ -301,7 +314,7 @@ mod tests {
         // An axis-aligned box on integer coordinates puts no pixel centre on an
         // edge, so the count is the area exactly. Filling [10, 90] rasterized 81
         // columns before the span rounding was fixed.
-        let mask = rasterize(&one(&square_contour()), 100, 100, 1, 0);
+        let mask = rasterize(&one(&square_contour()), 100, 100, 1, 0, 1);
         let painted: u32 = mask_pixels(&mask, 100 * 100)
             .iter()
             .map(|&v| v as u32)
@@ -312,13 +325,13 @@ mod tests {
 
     #[test]
     fn test_rasterize_zero_sized_canvas_is_empty() {
-        let mask = rasterize(&one(&square_contour()), 0, 0, 255, 0);
+        let mask = rasterize(&one(&square_contour()), 0, 0, 255, 0, 1);
         assert_eq!(mask.shape(), &[0, 0, 1]);
     }
 
     #[test]
     fn test_rasterize_empty_set_is_all_background() {
-        let mask = rasterize(&[], 10, 10, 255, 7);
+        let mask = rasterize(&[], 10, 10, 255, 7, 1);
         assert_eq!(mask.shape(), &[10, 10, 1]);
         assert!(mask_pixels(&mask, 100).iter().all(|&v| v == 7));
     }
@@ -351,7 +364,7 @@ mod tests {
             Contour::from_tuples(&[(10.0, 10.0), (30.0, 10.0), (30.0, 30.0), (10.0, 30.0)]),
             Contour::from_tuples(&[(60.0, 60.0), (90.0, 60.0), (90.0, 90.0), (60.0, 90.0)]),
         ];
-        let painted: u32 = mask_pixels(&rasterize(&contours, 100, 100, 1, 0), 100 * 100)
+        let painted: u32 = mask_pixels(&rasterize(&contours, 100, 100, 1, 0, 1), 100 * 100)
             .iter()
             .map(|&v| v as u32)
             .sum();
@@ -367,9 +380,9 @@ mod tests {
         // asserted: with the holed contour first, sequential painting happens to
         // agree with the union, so a single order proves nothing.
         let mut contours = overlapping_set();
-        let forward = mask_pixels(&rasterize(&contours, 100, 100, 1, 0), 100 * 100);
+        let forward = mask_pixels(&rasterize(&contours, 100, 100, 1, 0, 1), 100 * 100);
         contours.reverse();
-        let reversed = mask_pixels(&rasterize(&contours, 100, 100, 1, 0), 100 * 100);
+        let reversed = mask_pixels(&rasterize(&contours, 100, 100, 1, 0, 1), 100 * 100);
 
         assert_eq!(forward, reversed, "the mask depends on the set's order");
         // Inside the hole but also inside the overlapping box: covered.
@@ -383,12 +396,109 @@ mod tests {
         // `fill_value < background` used to fold to an all-background canvas as
         // soon as the set held more than one contour.
         let contours = overlapping_set();
-        let upright = mask_pixels(&rasterize(&contours, 100, 100, 255, 0), 100 * 100);
-        let inverted = mask_pixels(&rasterize(&contours, 100, 100, 0, 255), 100 * 100);
+        let upright = mask_pixels(&rasterize(&contours, 100, 100, 255, 0, 1), 100 * 100);
+        let inverted = mask_pixels(&rasterize(&contours, 100, 100, 0, 255, 1), 100 * 100);
 
         for (up, inv) in upright.iter().zip(inverted.iter()) {
             assert_eq!(*up, 255 - *inv);
         }
         assert!(inverted.contains(&0), "nothing was filled");
+    }
+
+    /// The definition of supersampling, independently: geo's
+    /// point-in-polygon at every sub-pixel centre, counted and blended.
+    fn rasterize_sampled_simple(
+        contours: &[Contour],
+        w: usize,
+        h: usize,
+        fill: u8,
+        background: u8,
+        n: usize,
+    ) -> Vec<u8> {
+        let polygons: Vec<_> = contours.iter().map(|c| c.to_geo()).collect();
+        let mut out = Vec::with_capacity(w * h);
+        for y in 0..h {
+            for x in 0..w {
+                let mut k = 0usize;
+                for j in 0..n {
+                    for i in 0..n {
+                        let p = Point::new(
+                            x as f64 + (i as f64 + 0.5) / n as f64,
+                            y as f64 + (j as f64 + 0.5) / n as f64,
+                        );
+                        if polygons
+                            .iter()
+                            .any(|g| super::super::predicates::position_in_polygon(g, &p) >= 0)
+                        {
+                            k += 1;
+                        }
+                    }
+                }
+                let v = f64::from(background)
+                    + (f64::from(fill) - f64::from(background)) * k as f64 / (n * n) as f64;
+                out.push(<u8 as crate::core::convert::CastFrom<f64>>::cast_from(v));
+            }
+        }
+        out
+    }
+
+    /// Float vertices chosen so every sample, at every count the tests use,
+    /// lies at least 2.8e-5 from every edge and vertex row (checked in exact
+    /// rational arithmetic). On an edge, the two tests can legitimately
+    /// disagree through rounding alone: the first choice of fixture put a
+    /// sample exactly on one at n = 3.
+    fn float_shapes() -> Vec<Contour> {
+        vec![
+            Contour::with_holes(
+                vec![
+                    Point::new(3.317, 2.713),
+                    Point::new(27.131, 4.907),
+                    Point::new(22.643, 25.329),
+                    Point::new(6.211, 21.837),
+                ],
+                vec![vec![
+                    Point::new(10.419, 9.137),
+                    Point::new(17.713, 10.331),
+                    Point::new(14.227, 16.619),
+                ]],
+            ),
+            Contour::from_tuples(&[(20.233, 15.143), (31.709, 18.427), (24.917, 29.311)]),
+        ]
+    }
+
+    #[test]
+    fn supersampling_counts_every_sub_pixel_centre() {
+        let shapes = float_shapes();
+        for n in [1u32, 2, 3, 4, 7, 16] {
+            let got = rasterize(&shapes, 33, 31, 255, 0, n);
+            assert_eq!(
+                mask_pixels(&got, 33 * 31),
+                rasterize_sampled_simple(&shapes, 33, 31, 255, 0, n as usize),
+                "n = {n}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_axis_aligned_edge_covers_its_exact_fraction() {
+        let rect = Contour::from_tuples(&[(2.25, 1.0), (5.75, 1.0), (5.75, 3.0), (2.25, 3.0)]);
+        let got = mask_pixels(&rasterize(&one(&rect), 8, 4, 255, 0, 4), 32);
+        let row = [0, 0, 191, 255, 255, 191, 0, 0];
+        assert_eq!(&got[8..16], &row);
+        assert_eq!(&got[16..24], &row);
+        assert!(got[..8].iter().chain(&got[24..]).all(|&v| v == 0));
+    }
+
+    #[test]
+    fn supersampled_union_and_inversion_hold() {
+        let contours = overlapping_set();
+        let a = mask_pixels(&rasterize(&contours, 100, 100, 255, 0, 3), 100 * 100);
+        let rev: Vec<Contour> = contours.iter().rev().cloned().collect();
+        let b = mask_pixels(&rasterize(&rev, 100, 100, 255, 0, 3), 100 * 100);
+        let inverted = mask_pixels(&rasterize(&contours, 100, 100, 0, 255, 3), 100 * 100);
+        assert_eq!(a, b, "the mask depends on the set's order");
+        for (up, inv) in a.iter().zip(&inverted) {
+            assert_eq!(*up, 255 - *inv);
+        }
     }
 }

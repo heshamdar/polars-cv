@@ -108,7 +108,7 @@ pub enum GeometryOp<M: Mode = Exec> {
     /// ``shape`` arguments become ``size``; it also records the shape reference's
     /// graph dependency and its canvas assertion.
     #[op(name = "rasterize", visibility = Internal,
-         sample = {"size": [8, 6], "fill_value": 1, "background": 0})]
+         sample = {"size": [8, 6], "fill_value": 1, "background": 0, "supersample": 3})]
     Rasterize {
         /// ``[height, width]`` of the mask (each may be a Polars expression), or
         /// another node whose buffer's height and width the mask takes.
@@ -121,6 +121,13 @@ pub enum GeometryOp<M: Mode = Exec> {
         /// dynamic values.
         #[param(default = 0)]
         background: M::V<u8>,
+        /// Samples per pixel along each axis, 1 to 16: a pixel takes the
+        /// fraction of its ``n x n`` sub-pixel centres inside, blended between
+        /// ``background`` and ``fill_value`` (anti-aliasing). 1 (the default)
+        /// samples the pixel centre alone, so a pixel is one value or the
+        /// other. Accepts a Polars expression for per-row dynamic values.
+        #[param(default = 1)]
+        supersample: M::V<u32>,
     },
     /// Extract contours from binary mask.
     ///
@@ -219,6 +226,14 @@ impl<M: Mode> GeometryOp<M> {
     /// contour set never has). The checks on per-row values run with the row.
     pub fn check(&self) -> Result<(), String> {
         match self {
+            GeometryOp::Rasterize { supersample, .. }
+                if known::<M, u32>(supersample).is_some_and(|n| !(1..=16).contains(&n)) =>
+            {
+                Err(format!(
+                    "rasterize: supersample must be between 1 and 16, got {}",
+                    known::<M, u32>(supersample).unwrap_or_default()
+                ))
+            }
             GeometryOp::Largest { k } if known::<M, u32>(k) == Some(0) => {
                 Err("k must be >= 1".to_string())
             }
@@ -281,11 +296,13 @@ impl GeometryOp {
             GeometryOp::Rasterize {
                 fill_value,
                 background,
+                supersample,
                 ..
             } => GeometryOp::Rasterize {
                 size: RasterSize::Fixed([height, width]),
                 fill_value,
                 background,
+                supersample,
             },
             other => other,
         }
@@ -530,6 +547,7 @@ mod tests {
                 size: RasterSize::Fixed([100, 100]),
                 fill_value: 255,
                 background: 0,
+                supersample: 1,
             }
             .name(),
             "Rasterize"
@@ -542,6 +560,7 @@ mod tests {
             size: RasterSize::Fixed([100, 200]),
             fill_value: 255,
             background: 0,
+            supersample: 1,
         };
         let shape = op.shape().concrete(&[]);
         assert_eq!(shape, vec![100, 200, 1]);
@@ -553,6 +572,7 @@ mod tests {
             size: RasterSize::Fixed([100, 0]),
             fill_value: 255,
             background: 0,
+            supersample: 1,
         };
         assert!(op.validate(&[], &[]).is_err());
     }
@@ -574,6 +594,7 @@ mod tests {
             size: RasterSize::Fixed([100, 100]),
             fill_value: 255,
             background: 0,
+            supersample: 1,
         };
         assert_eq!(rasterize.input_domain(), Domain::Contour);
         assert_eq!(rasterize.output_domain(), Domain::Buffer);

@@ -1541,6 +1541,7 @@ def _rasterize_params(draw: st.DrawFn, x: Any) -> Params:
     return {
         "width": draw(st.integers(1, 32), label="width"),
         "height": draw(st.integers(1, 32), label="height"),
+        "supersample": draw(st.sampled_from([1, 1, 2, 3, 4]), label="supersample"),
     }
 
 

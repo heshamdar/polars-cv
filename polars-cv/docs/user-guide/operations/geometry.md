@@ -305,6 +305,19 @@ same mask as sinking the set and reading it back through `source("contour")`.
 `fill_value` and `background` may be inverted (`fill_value=0, background=255`);
 the same region is painted either way.
 
+By default a pixel is filled when its centre lies inside, so edges are hard.
+`supersample=n` anti-aliases them: each pixel samples its `n x n` sub-pixel
+centres and is painted `background + (fill_value - background) * k / n**2` for
+the `k` that fall inside (rounded half away from zero), from 1 (the default) up
+to 16.
+
+```python
+# Smooth edges: 4 x 4 samples per pixel
+mask = pl.col("contour").cv.pipe(
+    Pipeline().source("contour").rasterize(width=200, height=200, supersample=4)
+)
+```
+
 Infer dimensions from an existing image:
 
 ```python
