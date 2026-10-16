@@ -184,6 +184,73 @@ class TestMultiOutputFormats:
         assert png_bytes[:8] == b"\x89PNG\r\n\x1a\n"
 
 
+class TestPerOutputSinkParams:
+    """Each output of a dict sink takes its own sink parameters as
+    ``(format, {params})``, so one decode can feed sinks whose parameters do
+    not apply to each other (an ``array`` shape and a ``jpeg`` quality)."""
+
+    @staticmethod
+    def _branches() -> pl.Expr:
+        base = pl.col("image").cv.pipe(Pipeline().source("image_bytes", dtype="u8"))
+        x = base.pipe(Pipeline().resize(height=8, width=8)).alias("x")
+        thumb = base.pipe(Pipeline().resize(height=16, width=16)).alias("thumb")
+        return x.merge_pipe(thumb)
+
+    def test_each_output_gets_its_own_params(self, test_df: pl.DataFrame) -> None:
+        merged = self._branches()
+        out = test_df.select(
+            o=merged.sink(
+                {
+                    "x": ("array", {"shape": [8, 8, 3]}),
+                    "thumb": ("jpeg", {"quality": 5}),
+                }
+            )
+        ).unnest("o")
+        assert out.schema["x"] == pl.Array(pl.UInt8, (8, 8, 3))
+        low = out["thumb"][0]
+        high = test_df.select(
+            o=merged.sink({"x": "png", "thumb": ("jpeg", {"quality": 95})})
+        ).unnest("o")["thumb"][0]
+        assert low[:2] == b"\xff\xd8"
+        # The quality reached the encoder: a lower quality is a smaller file.
+        assert len(low) < len(high)
+
+    def test_params_reach_only_their_output(self) -> None:
+        graph = self._branches().sink(
+            {"x": ("array", {"shape": [8, 8, 3]}), "thumb": ("jpeg", {"quality": 85})},
+            return_expr=False,
+        )
+        outputs = graph._to_dict()["outputs"]
+        assert outputs["x"]["sink"] == {"format": "array", "shape": [8, 8, 3]}
+        assert outputs["thumb"]["sink"] == {"format": "jpeg", "quality": 85}
+
+    def test_shared_kwargs_still_apply_to_every_output(self) -> None:
+        graph = self._branches().sink(
+            {"x": "jpeg", "thumb": "jpeg"}, quality=70, return_expr=False
+        )
+        outputs = graph._to_dict()["outputs"]
+        assert outputs["x"]["sink"] == {"format": "jpeg", "quality": 70}
+        assert outputs["thumb"]["sink"] == {"format": "jpeg", "quality": 70}
+
+    def test_a_param_given_twice_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="'quality'.*both"):
+            self._branches().sink(
+                {"x": "jpeg", "thumb": ("jpeg", {"quality": 10})}, quality=70
+            )
+
+    def test_a_param_that_does_not_apply_is_still_refused(self) -> None:
+        with pytest.raises(ValueError, match="'quality' does not apply"):
+            self._branches().sink({"x": ("png", {"quality": 10}), "thumb": "png"})
+
+    @pytest.mark.parametrize(
+        "spec",
+        [("jpeg",), ("jpeg", {"quality": 1}, "extra"), ("jpeg", [("quality", 1)]), 3],
+    )
+    def test_a_malformed_output_spec_is_refused(self, spec: object) -> None:
+        with pytest.raises(TypeError, match="'thumb'"):
+            self._branches().sink({"x": "png", "thumb": spec})  # type: ignore[dict-item]
+
+
 class TestBranchingPipelines:
     """Tests for branching pipelines using .pipe() and merge_pipe()."""
 

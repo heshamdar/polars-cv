@@ -169,22 +169,49 @@ class PipelineGraph:
 
     def set_multi_output(
         self,
-        outputs: dict[str, str],
+        outputs: "dict[str, str | tuple[str, dict[str, Any]]]",
         **kwargs: Any,
     ) -> None:
         """
         Set multiple outputs for multi-output mode.
 
         Args:
-            outputs: Mapping from alias names to output formats.
-            **kwargs: Additional output parameters (e.g., quality for jpeg).
+            outputs: Mapping from alias names to an output format, or to
+                ``(format, params)`` for parameters of that output alone
+                (``("jpeg", {"quality": 85})``).
+            **kwargs: Output parameters applied to every output.
 
         Raises:
-            ValueError: If any alias is not found in the graph.
+            ValueError: If any alias is not found in the graph, or a parameter
+                is given both per output and shared.
+            TypeError: If an output is neither a format nor ``(format, params)``.
         """
         multi = MultiGraphOutput()
 
-        for alias, fmt in outputs.items():
+        for alias, spec in outputs.items():
+            if isinstance(spec, str):
+                fmt, own = spec, {}
+            elif (
+                isinstance(spec, tuple)
+                and len(spec) == 2
+                and isinstance(spec[0], str)
+                and isinstance(spec[1], dict)
+            ):
+                fmt, own = spec
+            else:
+                msg = (
+                    f"output '{alias}': expected a format string or "
+                    f"(format, {{params}}), got {spec!r}"
+                )
+                raise TypeError(msg)
+            both = sorted(own.keys() & kwargs.keys())
+            if both:
+                msg = (
+                    f"output '{alias}': {', '.join(repr(k) for k in both)} given "
+                    "both for this output and for every output; give it once"
+                )
+                raise ValueError(msg)
+
             # Find the node ID for this alias
             if alias not in self._alias_to_node:
                 # List available aliases for helpful error message
@@ -197,7 +224,7 @@ class PipelineGraph:
                 raise ValueError(msg)
 
             node_id = self._alias_to_node[alias]
-            multi.outputs[alias] = (node_id, fmt, kwargs.copy())
+            multi.outputs[alias] = (node_id, fmt, {**kwargs, **own})
 
         self._multi_output = multi
         self._output = None

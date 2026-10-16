@@ -185,7 +185,7 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
     @overload
     def sink(
         self,
-        format: str | dict[str, str] = ...,
+        format: str | dict[str, str | tuple[str, dict[str, Any]]] = ...,
         return_expr: Literal[True] = ...,
         opt_flags: OptFlags | bool | None = ...,
         **kwargs: Any,
@@ -194,7 +194,7 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
     @overload
     def sink(
         self,
-        format: str | dict[str, str] = ...,
+        format: str | dict[str, str | tuple[str, dict[str, Any]]] = ...,
         *,
         return_expr: Literal[False],
         opt_flags: OptFlags | bool | None = ...,
@@ -203,7 +203,7 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
 
     def sink(
         self,
-        format: str | dict[str, str] = "native",
+        format: str | dict[str, str | tuple[str, dict[str, Any]]] = "native",
         return_expr: bool = True,
         opt_flags: "OptFlags | bool | None" = None,
         **kwargs: Any,
@@ -213,7 +213,10 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
 
         Args:
             format: Output format string (e.g., "numpy", "png") or a dict
-                    mapping aliases to formats for multi-output. ``"ndarray"``
+                    mapping aliases to formats for multi-output. A dict value
+                    may be ``(format, {params})`` to give that output its own
+                    sink parameters, e.g. ``{"x": ("array", {"shape": [224,
+                    224, 3]}), "thumb": ("jpeg", {"quality": 85})}``. ``"ndarray"``
                     is the ``"numpy"`` struct tagged with the
                     ``polars_cv.ndarray`` extension type
                     (:class:`polars_cv.NdArrayType`).
@@ -237,7 +240,9 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
                     (zero-copy, but written whole by Parquet/IPC); it copies
                     only a row that is not already compact. A keyword that does not apply to the chosen format
                     is rejected rather than ignored, as is one that is not a
-                    sink parameter at all.
+                    sink parameter at all. With a dict ``format`` these
+                    apply to every output; naming one both here and in an
+                    output's own params is refused.
 
         Returns:
             A Polars expression (or PipelineGraph if return_expr=False).

@@ -7,6 +7,26 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+
+- **Each output of a multi-output sink takes its own sink parameters.** A
+  dict `sink()` value may be `(format, {params})`:
+  `merged.sink({"x": ("array", {"shape": [224, 224, 3]}), "thumb": ("jpeg",
+  {"quality": 85})})`. Keyword arguments to `sink()` still apply to every
+  output, so before this an `array` shape and a JPEG quality could not share
+  one graph (each was refused by the other's sink), and an image that fed
+  both had to be decoded twice. A parameter given both per output and shared
+  is refused, as is an output that is neither a format nor `(format, {params})`.
+
+### Changed
+
+- **The README is shorter and leads with one decode per image.** Its first
+  example now reads each file once and sinks both outputs from one graph; the
+  figure's top row is one multi-output graph, so its "one decode" label is
+  true (it was five separate plugin calls, each decoding the image). Thread
+  tuning, the 50k-image results and the test inventory moved out to the
+  linked guides and `benchmarks/`.
+
 ### Fixed
 
 - **How many threads a call uses is measured, not raced.** Before a call's
