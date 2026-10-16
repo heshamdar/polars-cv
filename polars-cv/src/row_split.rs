@@ -285,9 +285,10 @@ impl<'a, R: Send, F: Fn(usize, Range<usize>) -> R + Sync> Call<'a, R, F> {
     /// ([`helpers_worth`]), no more than there are ranges left for them
     /// beside the inviter's next one. The caller does this before each of its
     /// ranges, and so does every helper: a helper woken before any range has
-    /// finished is itself evidence that a range outlasts a wake-up, so a call
-    /// of expensive rows reaches the whole pool within a few wake-ups instead
-    /// of waiting for its first range to be measured.
+    /// finished is itself evidence that a range outlasts a wake-up, and
+    /// invites one more, so a call of expensive rows reaches the whole pool
+    /// within a few wake-ups instead of waiting for its first range to be
+    /// measured.
     fn invite<'s>(&'s self, scope: &rayon::Scope<'s>) {
         let left = self
             .ranges
@@ -295,7 +296,14 @@ impl<'a, R: Send, F: Fn(usize, Range<usize>) -> R + Sync> Call<'a, R, F> {
             .saturating_sub(self.next.load(Ordering::SeqCst));
         let ran = self.ran.load(Ordering::Relaxed);
         let in_flight = self.started.elapsed().as_nanos() as u64;
-        let wanted = helpers_worth(left, self.spent.load(Ordering::Relaxed), ran, in_flight);
+        let invited = self.helpers.load(Ordering::SeqCst);
+        let wanted = helpers_worth(
+            left,
+            self.spent.load(Ordering::Relaxed),
+            ran,
+            in_flight,
+            invited,
+        );
         while self.helpers.load(Ordering::SeqCst) < wanted {
             let Some(slot) = Slot::claim() else { break };
             self.helpers.fetch_add(1, Ordering::SeqCst);
@@ -326,20 +334,25 @@ impl<'a, R: Send, F: Fn(usize, Range<usize>) -> R + Sync> Call<'a, R, F> {
 const HELPER_MIN_NS: u64 = 200_000;
 
 /// How many helpers a call with `left` ranges still to take should have,
-/// given `ran` finished ranges took `spent` ns, and the call started
-/// `in_flight` ns ago: one per [`HELPER_MIN_NS`] of the estimated remaining
-/// work, never more than the ranges beside the caller's next one.
+/// given `ran` finished ranges took `spent` ns, the call started `in_flight`
+/// ns ago, and `invited` helpers have been invited so far: one per
+/// [`HELPER_MIN_NS`] of the estimated remaining work, never more than the
+/// ranges beside the inviter's next one.
 ///
 /// Once a range has finished, a range costs their measured average. Before
 /// that, the first range has been running for `in_flight` ns and is not
-/// done, so a range costs at least that, and at least one helper is invited
-/// (a single wake-up, so a call of expensive rows does not wait on its first
-/// range to share them). Cheap rows finish their first range before that
+/// done, so a range costs at least that, and each invite asks for one helper
+/// more than were invited: the caller's first wakes one, and every helper
+/// that wakes before any range has finished wakes one more, so a call of
+/// expensive rows reaches the pool one wake-up at a time instead of waiting
+/// on its first range. That chain does not depend on how fast the host wakes
+/// a thread (a few µs on macOS, where `in_flight` alone never justified a
+/// second helper). Cheap rows finish their first range before the first
 /// helper wakes, so the measured average is all they are ever judged by.
-fn helpers_worth(left: usize, spent: u64, ran: usize, in_flight: u64) -> usize {
+fn helpers_worth(left: usize, spent: u64, ran: usize, in_flight: u64, invited: usize) -> usize {
     let most = left.saturating_sub(1);
     let (per_range, floor) = match ran {
-        0 => (in_flight, 1),
+        0 => (in_flight, invited + 1),
         _ => (spent / ran as u64, 0),
     };
     let remaining = per_range.saturating_mul(left as u64);
@@ -404,20 +417,20 @@ mod tests {
     #[test]
     fn helpers_are_invited_for_measured_work_only() {
         assert_eq!(
-            helpers_worth(288, 0, 0, 0),
+            helpers_worth(288, 0, 0, 0, 0),
             1,
             "one helper before any range ran"
         );
         assert_eq!(
-            helpers_worth(1, 0, 0, 0),
+            helpers_worth(1, 0, 0, 0, 0),
             0,
             "no helper for the caller's last range"
         );
         // 1 µs ranges: 287 left is 287 µs of work, worth one helper.
-        assert_eq!(helpers_worth(287, 1_000, 1, 0), 1);
+        assert_eq!(helpers_worth(287, 1_000, 1, 0, 0), 1);
         // 1 ms ranges: each is worth a helper, capped by the ranges left.
-        assert_eq!(helpers_worth(10, 1_000_000, 1, 0), 9);
-        assert_eq!(helpers_worth(100, 10 * HELPER_MIN_NS, 10, 0), 99);
+        assert_eq!(helpers_worth(10, 1_000_000, 1, 0, 0), 9);
+        assert_eq!(helpers_worth(100, 10 * HELPER_MIN_NS, 10, 0, 0), 99);
     }
 
     /// Before any range has finished, the time the first has been running is
@@ -427,11 +440,29 @@ mod tests {
     #[test]
     fn an_unfinished_first_range_bounds_the_cost_from_below() {
         // 15 ranges left, 50 µs in: at least 750 µs of work, three helpers.
-        assert_eq!(helpers_worth(15, 0, 0, 50_000), 3);
+        assert_eq!(helpers_worth(15, 0, 0, 50_000, 0), 3);
         // A first range running for a second is worth the whole pool.
-        assert_eq!(helpers_worth(15, 0, 0, 1_000_000_000), 14);
+        assert_eq!(helpers_worth(15, 0, 0, 1_000_000_000, 0), 14);
         // Measured 1 µs ranges: one helper, however long the call has run.
-        assert_eq!(helpers_worth(287, 1_000, 1, 1_000_000_000), 1);
+        assert_eq!(helpers_worth(287, 1_000, 1, 1_000_000_000, 0), 1);
+    }
+
+    /// A helper woken before any range has finished is itself evidence that
+    /// a range outlasts a wake-up, so it invites one more, however short the
+    /// call has run: on a host that wakes threads in a few µs (the 3-core
+    /// macOS runner) the time since the call started never justified a
+    /// second helper, and the call ran on two threads until its first range
+    /// finished.
+    #[test]
+    fn a_helper_woken_before_any_range_finished_invites_one_more() {
+        // Woken 5 µs in: 11 ranges at >= 5 µs is not worth a second helper
+        // by itself, but the wake-up is.
+        assert_eq!(helpers_worth(11, 0, 0, 5_000, 1), 2);
+        assert_eq!(helpers_worth(11, 0, 0, 5_000, 2), 3);
+        // Never more than the ranges beside the inviter's next one.
+        assert_eq!(helpers_worth(3, 0, 0, 0, 2), 2);
+        // Once a range has finished, only the measurement counts.
+        assert_eq!(helpers_worth(287, 1_000, 1, 0, 5), 1);
     }
 
     /// Expensive rows reach the whole pool before the first range finishes:
