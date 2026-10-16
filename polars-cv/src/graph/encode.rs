@@ -7,7 +7,11 @@
 //! - Converting contours to Polars representations
 
 use polars::prelude::*;
-use view_buffer::geometry::{extract::extract_contours, rasterize::rasterize, Contour};
+use view_buffer::geometry::contour::Outline;
+use view_buffer::geometry::ops::ScaleOrigin;
+use view_buffer::geometry::{
+    extract::extract_contours, measures, rasterize::rasterize, transforms, Contour,
+};
 use view_buffer::ops::NodeOutput;
 use view_buffer::{DType, GeometryOp, Op, PlannedDType, ViewBuffer};
 
@@ -72,7 +76,9 @@ pub(crate) fn execute_geometry_op(
                 (a, b) => a.or(b),
             };
             let contours = extract_contours(buffer, *mode, *method, threshold);
-            Ok(NodeOutput::from_contours(contours))
+            Ok(NodeOutput::from_contours(
+                contours.into_iter().map(Outline::Closed).collect(),
+            ))
         }
         GeometryOp::Rasterize {
             fill_value,
@@ -83,14 +89,12 @@ pub(crate) fn execute_geometry_op(
             let (height, width) = op
                 .canvas()
                 .ok_or_else(|| "rasterize reached execution without its canvas".to_string())?;
-            let contours = input
-                .as_contours()
-                .ok_or_else(|| "Rasterize requires Contour input".to_string())?;
             // The whole set in one call: `rasterize` paints their union, which
             // is order-independent and honours an inverted fill/background pair.
             // Folding per-contour masks with `max` here did neither.
+            let regions = regions(op, outlines(&input, op)?)?;
             Ok(NodeOutput::from_buffer(rasterize(
-                contours,
+                &regions,
                 width,
                 height,
                 *fill_value,
@@ -99,105 +103,137 @@ pub(crate) fn execute_geometry_op(
             )))
         }
         GeometryOp::Area { signed } => {
-            let contours = input
-                .as_contours()
-                .ok_or_else(|| "Area requires Contour input".to_string())?;
-            let areas: Vec<f64> = contours
-                .iter()
-                .map(|c| view_buffer::geometry::measures::area(c, *signed))
-                .collect();
-            Ok(NodeOutput::from_vector(areas))
+            let regions = regions(op, outlines(&input, op)?)?;
+            Ok(NodeOutput::from_vector(
+                regions.iter().map(|c| measures::area(c, *signed)).collect(),
+            ))
         }
-        GeometryOp::Perimeter => {
-            let contours = input
-                .as_contours()
-                .ok_or_else(|| "Perimeter requires Contour input".to_string())?;
-            let perimeters: Vec<f64> = contours
+        // A line's length has no closing edge (`outline_length`), as the
+        // accessor measures it.
+        GeometryOp::Perimeter => Ok(NodeOutput::from_vector(
+            outlines(&input, op)?
                 .iter()
-                .map(view_buffer::geometry::measures::perimeter)
-                .collect();
-            Ok(NodeOutput::from_vector(perimeters))
-        }
+                .map(measures::outline_length)
+                .collect(),
+        )),
         GeometryOp::Centroid => {
-            let contours = input
-                .as_contours()
-                .ok_or_else(|| "Centroid requires Contour input".to_string())?;
             // Flat interleaved: [cx₀, cy₀, cx₁, cy₁, ...]
-            let mut coords = Vec::with_capacity(contours.len() * 2);
-            for c in contours.iter() {
-                let pt = view_buffer::geometry::measures::centroid(c);
+            let regions = regions(op, outlines(&input, op)?)?;
+            let mut coords = Vec::with_capacity(regions.len() * 2);
+            for c in &regions {
+                let pt = measures::centroid(c);
                 coords.push(pt.x);
                 coords.push(pt.y);
             }
             Ok(NodeOutput::from_vector(coords))
         }
         GeometryOp::BoundingBox => {
-            let contours = input
-                .as_contours()
-                .ok_or_else(|| "BoundingBox requires Contour input".to_string())?;
             // Flat interleaved: [x₀, y₀, w₀, h₀, x₁, y₁, w₁, h₁, ...]
-            let mut coords = Vec::with_capacity(contours.len() * 4);
-            for c in contours.iter() {
-                match c.bounding_box() {
+            let all = outlines(&input, op)?;
+            let mut coords = Vec::with_capacity(all.len() * 4);
+            for o in all.iter() {
+                match o.bounding_box() {
                     Some(bb) => coords.extend_from_slice(&[bb.x, bb.y, bb.width, bb.height]),
                     None => coords.extend_from_slice(&[0.0, 0.0, 0.0, 0.0]),
                 }
             }
             Ok(NodeOutput::from_vector(coords))
         }
-        GeometryOp::Translate { dx, dy } => {
-            let contours = input
-                .as_contours()
-                .ok_or_else(|| "Translate requires Contour input".to_string())?;
-            let translated: Vec<Contour> = contours
+        GeometryOp::Translate { dx, dy } => Ok(NodeOutput::from_contours(
+            outlines(&input, op)?
                 .iter()
-                .map(|c| view_buffer::geometry::transforms::translate(c, *dx, *dy))
-                .collect();
-            Ok(NodeOutput::from_contours(translated))
-        }
+                .map(|o| o.map_points(|c| transforms::translate(c, *dx, *dy)))
+                .collect(),
+        )),
         GeometryOp::Scale { sx, sy, origin } => {
-            let contours = input
-                .as_contours()
-                .ok_or_else(|| "Scale requires Contour input".to_string())?;
-            let scaled: Vec<Contour> = contours
-                .iter()
-                .map(|c| view_buffer::geometry::transforms::scale(c, *sx, *sy, *origin))
-                .collect();
-            Ok(NodeOutput::from_contours(scaled))
+            let all = outlines(&input, op)?;
+            if *origin == ScaleOrigin::Centroid && all.iter().any(|o| !o.is_closed()) {
+                return Err(
+                    "scale(origin=\"centroid\") needs a closed contour: an open polyline \
+                     (is_closed = false) bounds no region to take a centroid of. Scale \
+                     about \"bbox_center\" or \"origin\" instead"
+                        .to_string(),
+                );
+            }
+            Ok(NodeOutput::from_contours(
+                all.iter()
+                    .map(|o| o.map_points(|c| transforms::scale(c, *sx, *sy, *origin)))
+                    .collect(),
+            ))
         }
-        GeometryOp::Simplify { tolerance } => {
-            let contours = input
-                .as_contours()
-                .ok_or_else(|| "Simplify requires Contour input".to_string())?;
-            let simplified: Vec<Contour> = contours
+        GeometryOp::Simplify { tolerance } => Ok(NodeOutput::from_contours(
+            outlines(&input, op)?
                 .iter()
-                .map(|c| view_buffer::geometry::transforms::simplify(c, *tolerance))
-                .collect();
-            Ok(NodeOutput::from_contours(simplified))
-        }
+                .map(|o| transforms::simplify_outline(o, *tolerance))
+                .collect(),
+        )),
         GeometryOp::Largest { k } => {
-            let contours = input
-                .as_contours()
-                .ok_or_else(|| "Largest requires Contour input".to_string())?;
             if *k == 0 {
                 return Err("contour_largest: k must be >= 1, got 0".to_string());
             }
+            let regions = regions(op, outlines(&input, op)?)?;
             Ok(NodeOutput::from_contours(
-                view_buffer::geometry::transforms::largest(contours, *k as usize),
+                transforms::largest(&regions, *k as usize)
+                    .into_iter()
+                    .map(Outline::Closed)
+                    .collect(),
             ))
         }
-        GeometryOp::ConvexHull => {
-            let contours = input
-                .as_contours()
-                .ok_or_else(|| "ConvexHull requires Contour input".to_string())?;
-            let hulls: Vec<Contour> = contours
+        // The hull reads only the points, so a line has one too: a region.
+        GeometryOp::ConvexHull => Ok(NodeOutput::from_contours(
+            outlines(&input, op)?
                 .iter()
-                .map(view_buffer::geometry::transforms::convex_hull)
-                .collect();
-            Ok(NodeOutput::from_contours(hulls))
+                .map(|o| Outline::Closed(transforms::convex_hull_outline(o)))
+                .collect(),
+        )),
+        GeometryOp::Boundary => {
+            let mut lines = Vec::new();
+            for o in outlines(&input, op)?.iter() {
+                match o {
+                    Outline::Closed(c) => lines.extend(transforms::boundary(c)),
+                    Outline::Open(_) => {
+                        return Err(BOUNDARY_OF_A_LINE.to_string());
+                    }
+                }
+            }
+            Ok(NodeOutput::from_contours(lines))
         }
+        GeometryOp::Close => outlines(&input, op)?
+            .iter()
+            .map(|o| match o {
+                Outline::Open(line) => Ok(Outline::Closed(transforms::close(line))),
+                Outline::Closed(_) => Err(CLOSE_OF_A_REGION.to_string()),
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(NodeOutput::from_contours),
     }
 }
+
+/// `boundary()` of an open contour: it is already a line.
+pub(crate) const BOUNDARY_OF_A_LINE: &str = "boundary: an open contour (is_closed = false) \
+     is already a line; boundary() takes a region";
+
+/// `close()` of a closed contour: there is no end to join.
+pub(crate) const CLOSE_OF_A_REGION: &str = "close: the contour is already closed; close() \
+     takes an open line (is_closed = false)";
+
+/// The step's contour set, or the domain error naming the op.
+fn outlines<'a>(input: &'a NodeOutput, op: &GeometryOp) -> Result<&'a [Outline], String> {
+    input
+        .as_contours()
+        .map(|c| c.as_slice())
+        .ok_or_else(|| format!("{} requires Contour input", op.name()))
+}
+
+/// Every member's region, borrowed, or the one refusal an open contour gets
+/// from a region op (`Outline::region`), named for `op`.
+fn regions<'a>(op: &GeometryOp, outlines: &'a [Outline]) -> Result<Vec<&'a Contour>, String> {
+    outlines
+        .iter()
+        .map(|o| o.region().map_err(|e| format!("{}: {e}", op.name())))
+        .collect()
+}
+
 /// One row of a tensor sink: the row's buffer, in any layout. Its shape is
 /// the row's shape in the column.
 pub(crate) type TypedListRow = Option<ViewBuffer>;
@@ -662,12 +698,13 @@ pub(crate) fn encode_node_output(
 /// disagreed with the `.contour` transforms, which keep `[]`.
 pub(super) fn contour_set_series(
     name: PlSmallStr,
-    rows: &[Option<Vec<Contour>>],
+    rows: &[Option<Vec<Outline>>],
 ) -> PolarsResult<Series> {
     use polars_arrow::array::ListArray;
     use polars_arrow::offset::Offsets;
 
-    let all: Vec<&Contour> = rows.iter().flatten().flatten().collect();
+    // Each member written with its own `is_closed`: a line stays a line.
+    let all: Vec<&Outline> = rows.iter().flatten().flatten().collect();
     let values = crate::geom_schema::contour_array(all.iter().copied())?;
     let lengths = rows.iter().map(|r| r.as_ref().map_or(0, Vec::len));
     let offsets = Offsets::<i64>::try_from_lengths(lengths)?;
@@ -744,17 +781,18 @@ mod tests {
     fn every_graph_geometry_op_executes() {
         use crate::graph::step::GraphStep;
         use crate::params::ParamCtx;
+        use view_buffer::geometry::contour::Outline;
         use view_buffer::geometry::Contour;
         use view_buffer::ops::{Domain, NodeOutput};
         use view_buffer::ViewBuffer;
 
         let sample_contours = || {
-            NodeOutput::from_contours(vec![Contour::from_tuples(&[
+            NodeOutput::from_contours(vec![Outline::Closed(Contour::from_tuples(&[
                 (0.0, 0.0),
                 (10.0, 0.0),
                 (10.0, 10.0),
                 (0.0, 10.0),
-            ])])
+            ]))])
         };
         let sample_buffer = || {
             NodeOutput::from_buffer(ViewBuffer::from_vec_with_shape(
@@ -772,6 +810,13 @@ mod tests {
             if let GraphStep::Geometry(geo) = step {
                 let input = if geo.input_domain() == Domain::Buffer {
                     sample_buffer()
+                } else if matches!(geo, view_buffer::GeometryOp::Close) {
+                    // `close` takes a line: the region's boundary.
+                    NodeOutput::from_contours(vec![Outline::Open(vec![
+                        view_buffer::geometry::Point::new(0.0, 0.0),
+                        view_buffer::geometry::Point::new(10.0, 0.0),
+                        view_buffer::geometry::Point::new(10.0, 10.0),
+                    ])])
                 } else {
                     sample_contours()
                 };
@@ -1151,7 +1196,16 @@ mod contour_sink_tests {
     fn contour_sink_matches_the_anyvalue_construction() {
         let rows = rows();
         let expected = oracle(&rows);
-        let data: Vec<RowResult> = rows.into_iter().map(RowResult::Contours).collect();
+        let data: Vec<RowResult> = rows
+            .into_iter()
+            .map(|r| {
+                RowResult::Contours(r.map(|v| {
+                    v.into_iter()
+                        .map(view_buffer::geometry::contour::Outline::Closed)
+                        .collect()
+                }))
+            })
+            .collect();
         let got = build_series_from_spec("o".into(), &spec(), vec![data], None).unwrap();
         assert_eq!(got.dtype(), expected.dtype());
         assert!(

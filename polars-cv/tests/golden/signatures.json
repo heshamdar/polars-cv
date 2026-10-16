@@ -72,6 +72,13 @@
     "False"
    ]
   ],
+  "boundary": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "boundary_distances": [
    [
     "self",
@@ -102,6 +109,13 @@
    ]
   ],
   "centroid": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "close": [
    [
     "self",
     "POSITIONAL_OR_KEYWORD",
@@ -721,6 +735,13 @@
     ""
    ]
   ],
+  "boundary": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "bounding_box": [
    [
     "self",
@@ -854,6 +875,13 @@
    ],
    [
     "value",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "close": [
+   [
+    "self",
     "POSITIONAL_OR_KEYWORD",
     ""
    ]
@@ -2214,6 +2242,13 @@
     ""
    ]
   ],
+  "boundary": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "bounding_box": [
    [
     "self",
@@ -2335,6 +2370,13 @@
    ],
    [
     "value",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "close": [
+   [
+    "self",
     "POSITIONAL_OR_KEYWORD",
     ""
    ]

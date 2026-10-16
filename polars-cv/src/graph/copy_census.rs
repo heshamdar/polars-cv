@@ -146,6 +146,14 @@ const EXEMPT: &[(&str, &str)] = &[
         "it reads a contour, not a buffer: no view of one reaches it",
     ),
     (
+        "contour_boundary",
+        "it reads a contour, not a buffer: no view of one reaches it",
+    ),
+    (
+        "contour_close",
+        "it reads a contour, not a buffer: no view of one reaches it",
+    ),
+    (
         "contour_area",
         "it reads a contour, not a buffer: no view of one reaches it",
     ),

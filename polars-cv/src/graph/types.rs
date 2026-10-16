@@ -8,7 +8,7 @@ use polars::prelude::*;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use view_buffer::geometry::Contour;
+use view_buffer::geometry::contour::Outline;
 use view_buffer::ViewBuffer;
 
 use crate::formats::sink::Sink;
@@ -89,7 +89,7 @@ pub(crate) enum RowResult {
     /// Vector of f64 values
     Vector(Option<Vec<f64>>),
     /// Contour geometry data
-    Contours(Option<Vec<Contour>>),
+    Contours(Option<Vec<Outline>>),
     /// Typed list for "list" sink (variable length, preserves dtype).
     TypedList(Option<ViewBuffer>),
     /// Typed fixed-size array for "array" sink (fixed shape, preserves dtype).
@@ -438,7 +438,7 @@ impl UnifiedGraph {
 #[derive(Debug, Clone)]
 pub(crate) enum OutputValue {
     Binary(Vec<u8>),
-    Contours(Arc<Vec<Contour>>),
+    Contours(Arc<Vec<Outline>>),
     Scalar(f64),
     Vector(Arc<Vec<f64>>),
     /// A row of the "list" sink: its buffer, in any layout and shape. The

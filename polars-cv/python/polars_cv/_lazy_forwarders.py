@@ -107,6 +107,13 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().blur(sigma=sigma))
 
+    def boundary(self) -> LazyPipelineExpr:
+        """A region's rings as open lines: the exterior, then each hole, each
+
+        Lazy form of :meth:`Pipeline.boundary` on this expression's output.
+        """
+        return self.pipe(self._continuation().boundary())
+
     def bounding_box(self) -> LazyPipelineExpr:
         """Compute the axis-aligned bounding box of the contour.
 
@@ -195,6 +202,13 @@ class _LazyForwardersMixin:
         Lazy form of :meth:`Pipeline.clamp_min` on this expression's output.
         """
         return self.pipe(self._continuation().clamp_min(value=value))
+
+    def close(self) -> LazyPipelineExpr:
+        """Join an open line's ends into the region it bounds. A line that
+
+        Lazy form of :meth:`Pipeline.close` on this expression's output.
+        """
+        return self.pipe(self._continuation().close())
 
     def convert_color(self, *, from_space: str, to_space: str) -> LazyPipelineExpr:
         """Convert between color spaces.

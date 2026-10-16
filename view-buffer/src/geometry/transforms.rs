@@ -204,12 +204,39 @@ pub fn convex_hull_outline(outline: &Outline) -> Contour {
     }
 }
 
+/// A region's rings as open lines (`boundary()`): the exterior, then each
+/// hole, each line returning to its first point so it traces the whole ring.
+/// A ring of fewer than two points traces no edge and gives no line.
+pub fn boundary(contour: &Contour) -> Vec<Outline> {
+    std::iter::once(&contour.exterior)
+        .chain(&contour.holes)
+        .filter(|ring| ring.len() >= 2)
+        .map(|ring| {
+            let mut line = ring.clone();
+            line.push(ring[0]);
+            Outline::Open(line)
+        })
+        .collect()
+}
+
+/// An open line's ends joined (`close()`): the region it bounds. A line that
+/// already returns to its first point (as [`boundary`] draws one) drops the
+/// repeated point, since a ring never repeats it, so closing a boundary gives
+/// back the region's exterior.
+pub fn close(line: &[Point]) -> Contour {
+    let mut ring = line.to_vec();
+    if ring.len() > 1 && ring.first() == ring.last() {
+        ring.pop();
+    }
+    Contour::new(ring)
+}
+
 /// The `k` largest contours by area ([`super::measures::area`], holes
 /// removed): largest first, equal areas in their input order.
-pub fn largest(contours: &[Contour], k: usize) -> Vec<Contour> {
+pub fn largest<C: std::borrow::Borrow<Contour>>(contours: &[C], k: usize) -> Vec<Contour> {
     let mut ranked: Vec<(f64, &Contour)> = contours
         .iter()
-        .map(|c| (super::measures::area(c, false), c))
+        .map(|c| (super::measures::area(c.borrow(), false), c.borrow()))
         .collect();
     // Stable, so equal areas keep their input order.
     ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -343,7 +370,7 @@ mod tests {
         let xs = |cs: Vec<Contour>| cs.iter().map(|c| c.exterior[0].x).collect::<Vec<_>>();
         assert_eq!(xs(largest(&set, 3)), vec![10.0, 30.0, 20.0]);
         assert_eq!(xs(largest(&set, 10)).len(), 4);
-        assert!(largest(&[], 2).is_empty());
+        assert!(largest::<Contour>(&[], 2).is_empty());
     }
 
     #[test]
@@ -547,5 +574,53 @@ mod close_along_border_tests {
         let line = pts(&[(20.0, 0.0), (30.0, 100.0)]);
         let c = close_along_border(&line, 100.0, 100.0, BorderArc::Shortest, 2.0).unwrap();
         assert!((area(&c, false) - 2500.0).abs() < 1e-9, "{c:?}");
+    }
+}
+
+#[cfg(test)]
+mod boundary_close_tests {
+    use super::*;
+    use crate::geometry::measures::{area, outline_length};
+
+    fn pts(v: &[(f64, f64)]) -> Vec<Point> {
+        v.iter().map(|&(x, y)| Point::new(x, y)).collect()
+    }
+
+    #[test]
+    fn boundary_draws_each_ring_back_to_its_start() {
+        let square = pts(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]);
+        let hole = pts(&[(1.0, 1.0), (2.0, 1.0), (2.0, 2.0)]);
+        let lines = boundary(&Contour::with_holes(square.clone(), vec![hole.clone()]));
+        assert_eq!(lines.len(), 2);
+        for (line, ring) in lines.iter().zip([&square, &hole]) {
+            let Outline::Open(points) = line else {
+                panic!("boundary gave a region: {line:?}")
+            };
+            assert_eq!(points.len(), ring.len() + 1);
+            assert_eq!(points.first(), points.last());
+            assert_eq!(&points[..ring.len()], &ring[..]);
+        }
+        // Its lines are the region's perimeter, the closing edges included.
+        let total: f64 = lines.iter().map(outline_length).sum();
+        assert!((total - (16.0 + 2.0 + 2f64.sqrt())).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_ring_with_no_edge_draws_no_line() {
+        assert!(boundary(&Contour::new(pts(&[(1.0, 1.0)]))).is_empty());
+        assert!(boundary(&Contour::new(Vec::new())).is_empty());
+    }
+
+    #[test]
+    fn close_joins_the_ends_and_undoes_boundary() {
+        let zigzag = pts(&[(0.0, 0.0), (4.0, 0.0), (4.0, 3.0)]);
+        let region = close(&zigzag);
+        assert_eq!(region.exterior, zigzag);
+        assert!((area(&region, false) - 6.0).abs() < 1e-12);
+        let square = Contour::new(pts(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]));
+        let [Outline::Open(line)] = &boundary(&square)[..] else {
+            panic!("one ring, one line")
+        };
+        assert_eq!(close(line), square);
     }
 }

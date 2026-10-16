@@ -72,6 +72,14 @@
   },
   {
     "namespace": "contour",
+    "name": "contour_boundary",
+    "python": "boundary",
+    "visibility": "public",
+    "doc": "A region's rings as open lines: the exterior, then each hole, each\nreturning to its first point. The result is a set (holes add rings);\nan open contour, already a line, is refused.",
+    "fields": []
+  },
+  {
+    "namespace": "contour",
     "name": "contour_boundary_distances",
     "python": "boundary_distances",
     "visibility": "public",
@@ -122,6 +130,14 @@
     "python": "centroid",
     "visibility": "public",
     "doc": "Compute the centroid (center of mass) of the contour.\n\nMeasured on the same region as `area()` — the exterior minus the union\nof the hole rings — so overlapping or nested holes are not subtracted\ntwice.\n\nReturns ``[x, y]``.",
+    "fields": []
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_close",
+    "python": "close",
+    "visibility": "public",
+    "doc": "Join an open line's ends into the region it bounds. A line that\nreturns to its first point (as ``boundary()`` draws one) drops the\nrepeat, so ``close()`` undoes ``boundary()`` on a region without holes.\nA closed contour is refused.",
     "fields": []
   },
   {

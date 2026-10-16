@@ -380,8 +380,10 @@ TYPED_OPS: frozenset[str] = frozenset(
         "clamp_max",
         "clamp_min",
         "contour_area",
+        "contour_boundary",
         "contour_bounding_box",
         "contour_centroid",
+        "contour_close",
         "contour_convex_hull",
         "contour_largest",
         "contour_perimeter",
@@ -599,8 +601,10 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "clamp_max": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "clamp_min": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "contour_area": {"signed": {"kind": "scalar", "per_row": True, "py": "bool"}},
+    "contour_boundary": {},
     "contour_bounding_box": {},
     "contour_centroid": {},
+    "contour_close": {},
     "contour_convex_hull": {},
     "contour_largest": {"k": {"kind": "scalar", "per_row": True, "py": "int"}},
     "contour_perimeter": {},
@@ -1075,8 +1079,10 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "clamp_max": [{"input": "buffer", "output": "buffer"}],
     "clamp_min": [{"input": "buffer", "output": "buffer"}],
     "contour_area": [{"input": "contour", "output": "vector"}],
+    "contour_boundary": [{"input": "contour", "output": "contour"}],
     "contour_bounding_box": [{"input": "contour", "output": "vector"}],
     "contour_centroid": [{"input": "contour", "output": "vector"}],
+    "contour_close": [{"input": "contour", "output": "contour"}],
     "contour_convex_hull": [{"input": "contour", "output": "contour"}],
     "contour_largest": [{"input": "contour", "output": "contour"}],
     "contour_perimeter": [{"input": "contour", "output": "vector"}],
@@ -1571,6 +1577,15 @@ class _OpsMixin:
         """
         return self._append_typed("contour_area", {"signed": signed})
 
+    def boundary(self) -> Pipeline:
+        """A region's rings as open lines: the exterior, then each hole, each
+        returning to its first point. The result is a set (holes add rings);
+        an open contour, already a line, is refused.
+
+        Domain: contour → contour
+        """
+        return self._append_typed("contour_boundary", {})
+
     def bounding_box(self) -> Pipeline:
         """Compute the axis-aligned bounding box of the contour.
 
@@ -1592,6 +1607,16 @@ class _OpsMixin:
         Domain: contour → vector
         """
         return self._append_typed("contour_centroid", {})
+
+    def close(self) -> Pipeline:
+        """Join an open line's ends into the region it bounds. A line that
+        returns to its first point (as ``boundary()`` draws one) drops the
+        repeat, so ``close()`` undoes ``boundary()`` on a region without holes.
+        A closed contour is refused.
+
+        Domain: contour → contour
+        """
+        return self._append_typed("contour_close", {})
 
     def convex_hull(self) -> Pipeline:
         """Compute the convex hull of the contour.
@@ -2913,6 +2938,13 @@ class _ContourOpsMixin:
         """
         return self._call("contour_area", {"signed": signed})
 
+    def boundary(self) -> pl.Expr:
+        """A region's rings as open lines: the exterior, then each hole, each
+        returning to its first point. The result is a set (holes add rings);
+        an open contour, already a line, is refused.
+        """
+        return self._call("contour_boundary", {})
+
     def boundary_distances(
         self,
         other: pl.Expr,
@@ -2979,6 +3011,14 @@ class _ContourOpsMixin:
         Returns ``[x, y]``.
         """
         return self._call("contour_centroid", {})
+
+    def close(self) -> pl.Expr:
+        """Join an open line's ends into the region it bounds. A line that
+        returns to its first point (as ``boundary()`` draws one) drops the
+        repeat, so ``close()`` undoes ``boundary()`` on a region without holes.
+        A closed contour is refused.
+        """
+        return self._call("contour_close", {})
 
     def close_along_border(
         self,

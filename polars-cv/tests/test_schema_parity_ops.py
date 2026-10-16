@@ -35,6 +35,7 @@ from tests._op_cases import (
     EXTRA_CASES,
     HISTOGRAM_OUTPUTS,
     IMAGE_ENCODER_SINKS,
+    LINE,
     OP_CASES,
     SINGLE_CHANNEL_OPS,
     comparable_ops,
@@ -82,8 +83,9 @@ def _base(domain: str, *, single_channel: bool = False) -> Pipeline:
         .assert_shape(height=HEIGHT, width=WIDTH, channels=CHANNELS)
         .cast("u8")
     )
-    if domain == CONTOUR:
-        return pipe.grayscale().threshold(128).extract_contours()
+    if domain in (CONTOUR, LINE):
+        contours = pipe.grayscale().threshold(128).extract_contours()
+        return contours.boundary() if domain == LINE else contours
     if single_channel:
         return pipe.grayscale()
     return pipe
@@ -91,8 +93,8 @@ def _base(domain: str, *, single_channel: bool = False) -> Pipeline:
 
 def _images(domain: str) -> list[bytes]:
     """Three distinct sample images for the row patterns to arrange."""
-    factory = make_rect_png if domain == CONTOUR else make_image_png
-    if domain == CONTOUR:
+    factory = make_rect_png if domain in (CONTOUR, LINE) else make_image_png
+    if domain in (CONTOUR, LINE):
         return [make_rect_png(HEIGHT, WIDTH, CHANNELS) for _ in range(3)]
     return [
         factory(HEIGHT, WIDTH, CHANNELS, seed=seed)  # type: ignore[call-arg]

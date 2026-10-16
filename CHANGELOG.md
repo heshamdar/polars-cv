@@ -9,6 +9,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **Open contours in pipelines; `boundary()` and `close()`** (CR-97). The
+  contour domain carries lines (`is_closed = false`) as well as regions:
+  `source("contour")` reads open rows instead of refusing them, and each
+  contour op behaves as its `.contour` accessor does — `perimeter` measures a
+  line's length, `bounding_box`, `translate`, `scale` (not about a centroid)
+  and `simplify` keep it a line, `convex_hull` makes a region, and `area`,
+  `centroid`, `largest` and `rasterize` refuse it with the accessors' message.
+  `boundary()` gives a region's rings as lines (always a set); `close()` joins
+  a line's ends into a region. Both are also `.contour` accessors.
+
 - **`rasterize(..., supersample=n)`** (CR-96): anti-aliased masks. Each pixel
   samples its `n x n` sub-pixel centres and is painted between `background` and
   `fill_value` by the fraction inside (rounded half away from zero), for `n`

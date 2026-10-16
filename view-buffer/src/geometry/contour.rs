@@ -402,7 +402,30 @@ pub enum Outline {
     Open(Vec<Point>),
 }
 
+/// Why an open contour cannot answer a region question: it bounds none. The
+/// one wording, so every region op (a pipeline op or a `.contour` accessor)
+/// refuses a line the same way.
+pub const NO_REGION: &str = "an open contour (is_closed = false) has no region; \
+                             close() it first, or use a boundary measure";
+
 impl Outline {
+    /// The region this outline bounds: a closed outline's contour. An open
+    /// polyline bounds none, which is [`NO_REGION`].
+    pub fn region(&self) -> Result<&Contour, &'static str> {
+        match self {
+            Outline::Closed(c) => Ok(c),
+            Outline::Open(_) => Err(NO_REGION),
+        }
+    }
+
+    /// [`region`](Self::region), owning: the contour moved out, not copied.
+    pub fn into_region(self) -> Result<Contour, &'static str> {
+        match self {
+            Outline::Closed(c) => Ok(c),
+            Outline::Open(_) => Err(NO_REGION),
+        }
+    }
+
     /// Whether the outline closes back on its first vertex.
     pub fn is_closed(&self) -> bool {
         matches!(self, Outline::Closed(_))
