@@ -2,9 +2,9 @@
 
 The input is scikit-image's ``chelsea.png`` (CC0, photographer Stefan van der
 Walt), fetched from a pinned scikit-image tag and checked against its SHA-256.
-Every panel is computed by polars-cv: the top row is one ``select`` whose
-pipelines share a single decode, the bottom row is one pipeline whose blur
-sigma and rotation angle come from per-row columns.
+Every panel is computed by polars-cv: the top row is one multi-output graph
+whose five outputs share a single decode, the bottom row is one pipeline whose
+blur sigma and rotation angle come from per-row columns.
 
     cd polars-cv
     uv run --no-sync python scripts/make_readme_figure.py
@@ -55,20 +55,27 @@ def fetch_source(cache: Path) -> bytes:
 
 
 def gallery(image: bytes) -> list[tuple[str, np.ndarray]]:
-    """Top row: several pipelines over one image, in one ``select``."""
-    src = Pipeline().source("image_bytes")
-    pipes = {
-        "source": src,
-        "grayscale()": src.grayscale(),
-        "blur(sigma=3)": src.blur(3.0),
-        "blur(1).canny()": src.grayscale().blur(1.0).canny(),
-        "equalize_histogram()": src.grayscale().equalize_histogram(),
-    }
-    df = pl.DataFrame({"image": [image]})
-    out = df.select(
-        **{k: pl.col("image").cv.pipe(p).sink("numpy") for k, p in pipes.items()}
+    """Top row: one graph, one decode, five outputs (a multi-output sink)."""
+    src = pl.col("image").cv.pipe(Pipeline().source("image_bytes")).alias("source")
+    gray = src.pipe(Pipeline().grayscale()).alias("grayscale()")
+    branches = [
+        gray,
+        src.pipe(Pipeline().blur(3.0)).alias("blur(sigma=3)"),
+        gray.pipe(Pipeline().blur(1.0).canny()).alias("blur(1).canny()"),
+        gray.pipe(Pipeline().equalize_histogram()).alias("equalize_histogram()"),
+    ]
+    merged = src.merge_pipe(*branches)
+    titles = [
+        "source",
+        "grayscale()",
+        "blur(sigma=3)",
+        "blur(1).canny()",
+        "equalize_histogram()",
+    ]
+    out = pl.DataFrame({"image": [image]}).select(
+        o=merged.sink(dict.fromkeys(titles, "numpy"))
     )
-    return [(k, numpy_from_column(out[k])[0]) for k in pipes]
+    return [(k, numpy_from_column(out["o"].struct.field(k))[0]) for k in titles]
 
 
 def per_row(image: bytes) -> list[tuple[str, np.ndarray]]:

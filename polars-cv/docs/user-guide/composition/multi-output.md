@@ -159,6 +159,24 @@ result = df.with_columns(
 )
 ```
 
+### Per-output sink parameters
+
+Keyword arguments to `sink()` apply to every output, and a parameter that does
+not apply to an output's format is refused. To give one output its own
+parameters, write it as `(format, {params})`:
+
+```python
+result = df.with_columns(
+    outputs=merged.sink({
+        "x": ("array", {"shape": [224, 224, 3]}),  # array needs its shape
+        "thumb": ("jpeg", {"quality": 85}),        # jpeg takes a quality
+    })
+)
+```
+
+Naming a parameter both in an output's own params and as a shared keyword is
+refused rather than resolved by precedence.
+
 ## Multi-Source Multi-Output
 
 Combine multiple input columns with multiple outputs:
