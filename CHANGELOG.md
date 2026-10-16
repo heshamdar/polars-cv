@@ -9,6 +9,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **A logo, drawn by polars-cv itself** (`polars-cv/docs/assets/logo/`). A
+  polar bear is sketched from overlapping ellipses, fused with `blur` +
+  `threshold` and traced back to a low-poly outline with `extract_contours` +
+  `simplify`; `.point.signed_distance_to_contour` over a pixel-per-row
+  DataFrame then gives a distance field that thresholds into topographic
+  terraces and contour lines. The wordmark is built from contour primitives.
+  `make_logo.py` regenerates `polars-cv-logo.png` (`--stages` also writes the
+  bear's construction stages).
+
 - **Each output of a multi-output sink takes its own sink parameters.** A
   dict `sink()` value may be `(format, {params})`:
   `merged.sink({"x": ("array", {"shape": [224, 224, 3]}), "thumb": ("jpeg",
