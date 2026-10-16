@@ -42,6 +42,14 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-80 | Extension types | Feature | Opt-in tagged geometry output (`polars_cv.point` / `.contour` / `.bbox`) |
 | CR-81 | Extension types | Decision | Whether any output becomes tagged by default (a major version) |
 | CR-82 | Extension types | Decision | Whether `polars_cv.ndarray` carries `dtype`/`ndim` metadata |
+| CR-94 | Drawing | Feature | `erode`/`dilate`/`morphology_gradient(shape="disk")`, from the distance transform |
+| CR-95 | Drawing | Feature | `apply_lut(table, dtype=)`: per-value tables and 1→K palettes |
+| CR-96 | Drawing | Feature | `rasterize(supersample=)`: anti-aliased coverage |
+| CR-97 | Drawing | Feature | Open contours in the pipeline contour domain; `boundary()` / `close()` |
+| CR-98 | Drawing | Feature | Contour geometry (`offset`, `smooth`, `densify`, `union_all`) and line rendering in `rasterize` |
+| CR-99 | Drawing | Feature | Contour boolean ops (`union`, `intersection`, `difference`, `symmetric_difference`) |
+| CR-100 | Drawing | Feature | `coordinate_grid(normalized=)` |
+| CR-101 | Drawing | Feature | Acceptance: rebuild `docs/assets/logo` on CR-93–100, plus a "Drawing" guide |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
@@ -249,6 +257,107 @@ tagged inputs everywhere. How it works, and why tagging stays opt-in, is in
   concatenating, and the factory must parse and validate it.
   Recommendation: no metadata; adding it later is a dtype change, so decide
   before CR-81.
+
+## Drawing primitives
+
+Planned 2026-10-16 while generating the logo (`polars-cv/docs/assets/logo/`),
+which had to work around each gap below: a pixel-per-row DataFrame for a
+distance field, ten weighted layers per colour channel, a 4× render-and-shrink
+for anti-aliasing, and filled primitives for every stroke. Each item extends
+an existing family or rule where that is cleaner than a new op, reuses an
+engine primitive (`geo` 0.33's `Buffer`/`BooleanOps`/`ChaikinSmoothing`/
+`Densify`, `ops::elementwise`, `scanline_fill`), and is built test-first with
+an independent oracle. Order: CR-95, CR-96 and CR-100 are independent; CR-94
+builds on CR-93 (done); CR-97 → CR-98 → CR-99; CR-101 last.
+
+**Decisions (owner, 2026-10-16).**
+1. The pipeline contour domain carries open contours (lines) as well as
+   regions. Region ops refuse a line, with the error the `.contour` accessors
+   already give; `boundary()` and `close()` convert between the two.
+2. An op whose result can split one region into several (`offset`, the boolean
+   ops, `union_all`) always returns a contour set, whatever the input arity.
+3. An `apply_lut` index past the table is a row error; clamping is an explicit
+   `clamp_max(n - 1)` before it.
+4. Signed distance is negative inside, positive outside — as
+   `.point.signed_distance_to_contour` — measured to the pixel-edge boundary
+   `extract_contours` traces.
+5. No built-in colormaps for now: `apply_lut` takes explicit tables.
+6. Line width, cap and join are rendering attributes on `rasterize`; `offset`
+   is geometry on regions only and takes `join` alone.
+
+### CR-94 — Disk structuring element for morphology
+
+- `shape: "square" | "disk"` (`KernelShape`, `named_variants!`) on `erode`,
+  `dilate` and `morphology_gradient`; default `"square"` stays bit-identical.
+  A disk of radius `ksize // 2` is the distance transform thresholded, not a
+  second neighbourhood loop. Spatial dependency stays `Neighborhood(r)`.
+- Oracle: `scipy.ndimage` grey morphology with a disk footprint.
+
+### CR-95 — `apply_lut(table, *, dtype="u8")`
+
+- `ComputeOp` variant; `table` is nested rows (`[[r, g, b], ...]`), length
+  1–65536, rows of equal length K, values that fit `dtype` (refused at build
+  otherwise). Input u8/u16 only. K = 1 maps values in place on any channel
+  count; K > 1 takes one channel to K (a new `OpShape::ExpandChannels(k)`).
+  Pointwise. Runs through `ops::elementwise`'s table strategy per output
+  channel.
+- Oracles: numpy fancy indexing, `cv2.LUT`.
+
+### CR-96 — `rasterize(..., supersample=1)`
+
+- Field on `GeometryOp::Rasterize` (`with_canvas` carries it): n × n
+  `scanline_fill` samples per pixel, coverage blended between `background`
+  and `fill_value` by the `CastFrom` rule. `1` is today's output byte for
+  byte. (Distinct from the removed `anti_alias=`, which was accepted and
+  ignored.)
+- Oracles: byte equality at 1; total coverage against `area()` in the
+  `RECTILINEAR`/`CURVED` crosscheck tables.
+
+### CR-97 — Open contours in pipelines; `boundary()` / `close()`
+
+- `NodeOutput::Contours` carries `Outline`s; the `contour` source reads open
+  rows. Region ops (`area`, `centroid`, `largest`, `convex_hull` as now in the
+  accessor, `offset`, `union_all`, filled rasterization) refuse a line.
+- `boundary()`: a region's rings as lines (a set, decision 2). `close()`: a
+  line's ends joined into a region. Both `GeometryOp`s, shared with `.contour`
+  through `OP_ACCESSORS`.
+
+### CR-98 — Contour geometry and line rendering
+
+- `GeometryOp`s, both surfaces: `offset(distance, *, join="round")` (regions;
+  negative shrinks; set output), `smooth(*, iterations=1)` (Chaikin),
+  `densify(max_segment_length)`, `union_all()` (set output). `LineJoin` /
+  `LineCap` via `named_variants!`; the miter limit is a documented constant.
+- `rasterize(..., line_width=1.0, cap="round", join="round")` strokes the
+  set's lines: each becomes its `geo::Buffer` band and is filled by
+  `scanline_fill`, so `supersample` applies to it too.
+- Oracles: offset areas against closed forms; Chaikin against a pure-Python
+  reference; densify's segment bound and kept vertices; stroked area against
+  `length × width` plus cap terms.
+
+### CR-99 — Contour boolean ops
+
+- `union`, `intersection`, `difference`, `symmetric_difference`: `ContourFn`
+  (column operand) and lazy-only `GraphOp` (node operand) over one engine
+  function, as `label_reduce` does. Each side is the union of its set; the
+  result is a set.
+- Oracle: `rasterize(a ∪ b) == rasterize(a) | rasterize(b)` (likewise &, ^,
+  and-not), exact on integer rectilinear shapes; area identities with `iou`.
+
+### CR-100 — `coordinate_grid(*, normalized=False)`
+
+- `ImageOpKind` variant: f32 `[H, W, 2]` pixel-centre `(x, y)` (centres as in
+  `rasterize`), `normalized` divides by W/H. Extends `OpShape::Canvas` with a
+  channel count rather than a new variant. `Global` (position-dependent, so no
+  crop pushdown), `PacksOwnRows` (reads no element).
+- Oracle: `np.meshgrid`.
+
+### CR-101 — Acceptance
+
+- Rebuild `docs/assets/logo/make_logo.py` on CR-93–100 (terraces from
+  `distance_transform` → `scale` → `floor` → `apply_lut`, rings from disk
+  `dilate`, strokes from `rasterize(line_width=)`, `supersample`, `blend`
+  compositing) and add a "Drawing with polars-cv" guide page.
 
 ## Upstream (Polars)
 
@@ -506,3 +615,4 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 | CR-90 | The parity framework propagated a bound through a wrapping integer cast (gain 1) | Resolved: `gain_for(x, p)` sees the input; a cast that can wrap is discontinuous (0.35.0) |
 | CR-91 | A colour conversion's float bound scaled with its alpha (an infinite alpha made `to_hsv`'s unbuildable, `to_ycbcr`'s infinite) | Resolved: `color_magnitude` scales `to_hsv`, `to_ycbcr` and `grayscale` bounds by the colour channels (0.35.0) |
 | CR-92 | The `to_lab` reference was OpenCV's float Lab, 0.57 off in a* on dark pixels (the engine was exact) | Resolved: Lab by its definition in float64; bound 0.5 -> 0.01 (0.35.0) |
+| CR-93 | `distance_transform(signed=)`: exact Euclidean distance transform | Added (Unreleased): held to scipy exactly and OpenCV within one ulp, plus parity laws |

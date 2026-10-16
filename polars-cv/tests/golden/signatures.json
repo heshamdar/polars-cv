@@ -931,6 +931,18 @@
     "1"
    ]
   ],
+  "distance_transform": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "signed",
+    "KEYWORD_ONLY",
+    "False"
+   ]
+  ],
   "divide": [
    [
     "self",
@@ -2358,6 +2370,18 @@
     "iterations",
     "KEYWORD_ONLY",
     "1"
+   ]
+  ],
+  "distance_transform": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "signed",
+    "KEYWORD_ONLY",
+    "False"
    ]
   ],
   "equalize_histogram": [

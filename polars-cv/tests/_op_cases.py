@@ -55,6 +55,7 @@ OP_CASES: dict[str, tuple[str, dict] | None] = {
     "convolve2d": (BUFFER, {"kernel": [0.0] * 9}),
     "crop": (BUFFER, {"top": 0, "left": 0, "height": 50, "width": 50}),
     "dilate": (BUFFER, {"ksize": 3}),
+    "distance_transform": (BUFFER, {}),
     "equalize_histogram": (BUFFER, {}),
     "erode": (BUFFER, {"ksize": 3}),
     "flip": (BUFFER, {"axes": [0]}),
@@ -192,6 +193,7 @@ COLOR_SPACES: tuple[str, ...] = ("rgb", "bgr", "hsv", "lab", "ycbcr", "gray")
 SINGLE_CHANNEL_OPS: frozenset[str] = frozenset(
     {
         "threshold",
+        "distance_transform",
         "erode",
         "dilate",
         "morphology_open",

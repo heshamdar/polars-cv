@@ -1031,6 +1031,9 @@ fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
         ImageOpKind::Erode { ksize, iterations } => apply_erode(work_buf, ksize, iterations),
         ImageOpKind::Dilate { ksize, iterations } => apply_dilate(work_buf, ksize, iterations),
         ImageOpKind::MorphGradient { ksize } => apply_morph_gradient(work_buf, ksize),
+        ImageOpKind::DistanceTransform { signed } => {
+            super::distance::distance_transform(&work_buf, signed)
+        }
         ImageOpKind::Blur { sigma } => {
             let rows_buf = work_buf.to_dense_rows();
             // Every dtype in its own element type, accumulating in its

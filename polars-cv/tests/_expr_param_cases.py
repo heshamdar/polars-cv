@@ -364,6 +364,13 @@ CASES: list[ExprCase] = [
         (300.0, 500.0, 700.0),  # 90 / 75 / 17 edge pixels
     ),
     # --- morphology (single-channel kernels) -------------------------------
+    ExprCase(
+        "distance_transform",
+        "signed",
+        lambda v: mask().distance_transform(signed=v),
+        (True, False),
+        column=RECT,
+    ),
     ExprCase("erode", "ksize", lambda v: mask().erode(ksize=v), (3, 5), column=RECT),
     ExprCase(
         "erode",

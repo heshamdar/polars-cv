@@ -629,3 +629,47 @@ class TestBatchProxy:
         big = np.ones((4, 3, 1))
         proxy = Batch(specs=(None, None), images=(big, small)).proxy()
         assert proxy.shape == (2, 2, 1) and (proxy == 0).all()
+
+
+class TestRefContents:
+    """``OpSpec.ref_contents`` narrows the reference suites' pixel content as
+    ``ref_dtypes`` narrows their dtypes; the invariance suites keep the whole
+    space, and an unknown kind is refused rather than drawing nothing."""
+
+    @staticmethod
+    def _spec(contents: tuple[str, ...] | None):
+        from dataclasses import replace
+
+        from tests.parity.framework.oracle import OPS
+
+        return replace(OPS["erode"], ref_contents=contents)
+
+    def test_a_reference_draw_keeps_to_the_declared_kinds(self) -> None:
+        from hypothesis import given, settings
+
+        from tests.parity.framework.cases import batches_for
+
+        @settings(max_examples=25, database=None, derandomize=True)
+        @given(batches_for(self._spec(("mask",)), reference=True))
+        def run(batch: Batch) -> None:
+            assert {s.content for s in batch.specs if s is not None} == {"mask"}
+
+        run()
+
+    def test_an_invariance_draw_keeps_every_kind(self) -> None:
+        from hypothesis import find, settings
+
+        from tests.parity.framework.cases import batches_for
+
+        found = find(
+            batches_for(self._spec(("mask",)), reference=False),
+            lambda b: any(s is not None and s.content != "mask" for s in b.specs),
+            settings=settings(database=None, max_examples=200),
+        )
+        assert found is not None
+
+    def test_an_unknown_kind_is_refused(self) -> None:
+        from tests.parity.framework.images import image_specs
+
+        with pytest.raises(ValueError, match="unknown content"):
+            image_specs(contents=("speckle",))

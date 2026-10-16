@@ -380,6 +380,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "crop",
         "cvt_color",
         "dilate",
+        "distance_transform",
         "divide",
         "equalize_histogram",
         "erode",
@@ -625,6 +626,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         "ksize": {"kind": "scalar", "per_row": True, "py": "int"},
         "iterations": {"kind": "scalar", "per_row": True, "py": "int"},
     },
+    "distance_transform": {"signed": {"kind": "scalar", "per_row": True, "py": "bool"}},
     "divide": {"other": {"kind": "node"}},
     "equalize_histogram": {},
     "erode": {
@@ -1025,6 +1027,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "crop": [{"input": "buffer", "output": "buffer"}],
     "cvt_color": [{"input": "buffer", "output": "buffer"}],
     "dilate": [{"input": "buffer", "output": "buffer"}],
+    "distance_transform": [{"input": "buffer", "output": "buffer"}],
     "divide": [
         {"input": "buffer", "output": "buffer"},
         {"input": "vector", "output": "vector"},
@@ -1653,6 +1656,33 @@ class _OpsMixin:
             >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3)
         """
         return self._append_typed("dilate", {"ksize": ksize, "iterations": iterations})
+
+    def distance_transform(self, *, signed: BoolOrExpr = False) -> Pipeline:
+        """Exact Euclidean distance transform of a mask: an f32 image of the same
+        shape. Requires single-channel input.
+
+        A pixel is foreground when it is non-zero (NaN included). Unsigned, each
+        foreground pixel holds the distance from its centre to the nearest
+        background pixel's centre and the background holds 0, as
+        ``cv2.distanceTransform(DIST_L2, DIST_MASK_PRECISE)`` and
+        ``scipy.ndimage.distance_transform_edt`` compute. Signed, every pixel
+        holds its distance to the boundary between the two classes, the pixel
+        edges ``extract_contours`` traces: negative inside, positive outside
+        (as ``.point.signed_distance_to_contour``), ``±(d - 0.5)`` for the
+        centre distance ``d`` to the nearest pixel of the other class. When a
+        class has no pixel at all, the distance to it is infinite.
+
+        Domain: buffer → buffer
+
+        Args:
+            signed: Signed distance to the mask's boundary (negative inside) instead of
+                each foreground pixel's distance to the background. Accepts a Polars
+                expression for a per-row choice.
+
+        Example:
+            >>> sdf = Pipeline().source("image_bytes").grayscale().threshold(128).distance_transform(signed=True)
+        """
+        return self._append_typed("distance_transform", {"signed": signed})
 
     def equalize_histogram(self) -> Pipeline:
         """Apply histogram equalization for contrast enhancement: map each pixel
