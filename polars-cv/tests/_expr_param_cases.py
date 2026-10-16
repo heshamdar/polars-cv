@@ -700,6 +700,19 @@ CASES: list[ExprCase] = [
     ),
     ExprCase(
         "rasterize",
+        "supersample",
+        # A traced outline has integer edges, which every sample count paints
+        # alike: offset by a fraction of a pixel so the count shows.
+        lambda v: (
+            contour()
+            .translate(dx=0.5, dy=0.25)
+            .rasterize(width=12, height=12, supersample=v)
+        ),
+        (1, 2, 4),
+        column=RECT,
+    ),
+    ExprCase(
+        "rasterize",
         "fill_value",
         lambda v: contour().rasterize(width=12, height=12, fill_value=v),
         (255, 128, 64),

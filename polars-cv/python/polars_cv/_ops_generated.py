@@ -875,6 +875,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         },
         "fill_value": {"kind": "scalar", "per_row": True, "py": "int"},
         "background": {"kind": "scalar", "per_row": True, "py": "int"},
+        "supersample": {"kind": "scalar", "per_row": True, "py": "int"},
     },
     "reciprocal": {},
     "reduce_argmax": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
@@ -2178,6 +2179,7 @@ class _OpsMixin:
         *,
         fill_value: IntOrExpr = 255,
         background: IntOrExpr = 0,
+        supersample: IntOrExpr = 1,
     ) -> Pipeline:
         """Rasterize contours to a mask.
 
@@ -2194,10 +2196,20 @@ class _OpsMixin:
                 row dynamic values.
             background: Outside value (default 0). Accepts a Polars expression for per-
                 row dynamic values.
+            supersample: Samples per pixel along each axis, 1 to 16: a pixel takes the
+                fraction of its ``n x n`` sub-pixel centres inside, blended between
+                ``background`` and ``fill_value`` (anti-aliasing). 1 (the default)
+                samples the pixel centre alone, so a pixel is one value or the other.
+                Accepts a Polars expression for per-row dynamic values.
         """
         return self._append_typed(
             "rasterize",
-            {"size": size, "fill_value": fill_value, "background": background},
+            {
+                "size": size,
+                "fill_value": fill_value,
+                "background": background,
+                "supersample": supersample,
+            },
         )
 
     def reciprocal(self) -> Pipeline:

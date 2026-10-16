@@ -1080,9 +1080,10 @@ class Pipeline(_OpsMixin):
         shape: "LazyPipelineExpr | None" = None,
         fill_value: IntOrExpr = 255,
         background: IntOrExpr = 0,
+        supersample: IntOrExpr = 1,
     ) -> "Pipeline":
         """
-        Rasterize contours to a binary mask.
+        Rasterize contours to a mask.
 
         A pixel is filled when its centre — ``(x + 0.5, y + 0.5)`` — lies inside
         the contour, boundary included; holes are cut out by the same rule. This
@@ -1096,6 +1097,12 @@ class Pipeline(_OpsMixin):
         fill, and the result does not depend on the set's order. ``fill_value``
         and ``background`` may be inverted; the same region is painted either way.
 
+        ``supersample=n`` anti-aliases: each pixel samples its ``n x n``
+        sub-pixel centres ``(x + (i + 0.5) / n, y + (j + 0.5) / n)`` and is
+        painted ``background + (fill_value - background) * k / n**2`` for the
+        ``k`` inside, rounded half away from zero. ``n = 1`` (the default) is the
+        centre rule above.
+
         Args:
             width: Mask width.
             height: Mask height.
@@ -1104,6 +1111,8 @@ class Pipeline(_OpsMixin):
                 for per-row dynamic values.
             background: Outside value (default 0). Accepts a Polars expression
                 for per-row dynamic values.
+            supersample: Samples per pixel along each axis, 1 to 16 (default 1).
+                Accepts a Polars expression for per-row dynamic values.
 
         """
         has_explicit = width is not None or height is not None
@@ -1124,7 +1133,10 @@ class Pipeline(_OpsMixin):
             # single-channel output from the op's `fixed:1` channel rule; none
             # of it is re-derived here.
             return self._rasterize(
-                size=[height, width], fill_value=fill_value, background=background
+                size=[height, width],
+                fill_value=fill_value,
+                background=background,
+                supersample=supersample,
             )
 
         from polars_cv.lazy import LazyPipelineExpr
@@ -1134,7 +1146,12 @@ class Pipeline(_OpsMixin):
             raise TypeError(msg)
         # The canvas is the node's: `_encode_field` records it in `_node_refs`,
         # which plans the canvas from its state and makes it an upstream edge.
-        return self._rasterize(size=shape, fill_value=fill_value, background=background)
+        return self._rasterize(
+            size=shape,
+            fill_value=fill_value,
+            background=background,
+            supersample=supersample,
+        )
 
     # --- Validation ---
 

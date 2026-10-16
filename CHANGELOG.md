@@ -9,6 +9,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`rasterize(..., supersample=n)`** (CR-96): anti-aliased masks. Each pixel
+  samples its `n x n` sub-pixel centres and is painted between `background` and
+  `fill_value` by the fraction inside (rounded half away from zero), for `n`
+  from 1 to 16 (per-row capable). The default of 1 is the pixel-centre rule,
+  byte for byte. Not the `anti_alias=` removed earlier, which was accepted and
+  ignored: held to matplotlib's point-in-polygon on the same samples, and the
+  covered area to `area()` (exactly on integer edges, within a band that
+  shrinks as `1 / n` otherwise).
+
 - **`apply_lut(table, dtype="u8")`** (CR-95): each u8/u16 value read as a row
   index into `table`. Rows of one entry map every element in place on any
   channel count (`cv2.LUT`); rows of `K` entries take a single-channel image

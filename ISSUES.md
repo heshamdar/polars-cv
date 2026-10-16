@@ -43,7 +43,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-81 | Extension types | Decision | Whether any output becomes tagged by default (a major version) |
 | CR-82 | Extension types | Decision | Whether `polars_cv.ndarray` carries `dtype`/`ndim` metadata |
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
-| CR-96 | Drawing | Feature | `rasterize(supersample=)`: anti-aliased coverage |
 | CR-97 | Drawing | Feature | Open contours in the pipeline contour domain; `boundary()` / `close()` |
 | CR-98 | Drawing | Feature | Contour geometry (`offset`, `smooth`, `densify`, `union_all`) and line rendering in `rasterize` |
 | CR-99 | Drawing | Feature | Contour boolean ops (`union`, `intersection`, `difference`, `symmetric_difference`) |
@@ -279,8 +278,8 @@ for anti-aliasing, and filled primitives for every stroke. Each item extends
 an existing family or rule where that is cleaner than a new op, reuses an
 engine primitive (`geo` 0.33's `Buffer`/`BooleanOps`/`ChaikinSmoothing`/
 `Densify`, `ops::elementwise`, `scanline_fill`), and is built test-first with
-an independent oracle. Order: CR-96 and CR-100 are independent (CR-93, CR-94 and
-CR-95 are done); CR-97 → CR-98 → CR-99; CR-101 last.
+an independent oracle. Order: CR-100 is independent (CR-93 to CR-96 are
+done); CR-97 → CR-98 → CR-99; CR-101 last.
 
 **Decisions (owner, 2026-10-16).**
 1. The pipeline contour domain carries open contours (lines) as well as
@@ -297,16 +296,6 @@ CR-95 are done); CR-97 → CR-98 → CR-99; CR-101 last.
 5. No built-in colormaps for now: `apply_lut` takes explicit tables.
 6. Line width, cap and join are rendering attributes on `rasterize`; `offset`
    is geometry on regions only and takes `join` alone.
-
-### CR-96 — `rasterize(..., supersample=1)`
-
-- Field on `GeometryOp::Rasterize` (`with_canvas` carries it): n × n
-  `scanline_fill` samples per pixel, coverage blended between `background`
-  and `fill_value` by the `CastFrom` rule. `1` is today's output byte for
-  byte. (Distinct from the removed `anti_alias=`, which was accepted and
-  ignored.)
-- Oracles: byte equality at 1; total coverage against `area()` in the
-  `RECTILINEAR`/`CURVED` crosscheck tables.
 
 ### CR-97 — Open contours in pipelines; `boundary()` / `close()`
 
@@ -613,3 +602,4 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 | CR-93 | `distance_transform(signed=)`: exact Euclidean distance transform | Added (Unreleased): held to scipy exactly and OpenCV within one ulp, plus parity laws |
 | CR-94 | Disk structuring element for morphology | Added (Unreleased) as `footprint="disk"` (not `shape=`, which `rasterize` uses for a canvas); a min/max over row spans reusing the square's row pass, since greyscale input rules out thresholding the distance transform, which became the oracle instead |
 | CR-95 | `apply_lut(table, dtype=)`: per-value tables and 1→K palettes | Added (Unreleased) as its own `GraphStep` family (`LutOp`), not a `ComputeOp`: a value past the table is a row error, which only an `execute -> Result` can report; the read reuses the element-wise engine's `Lut` map |
+| CR-96 | `rasterize(supersample=)`: anti-aliased coverage | Added (Unreleased): the scanline filler now works per sample row (memory one sample row, not an n²-larger canvas), and `n = 1` reduces to the old formulas exactly |

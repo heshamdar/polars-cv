@@ -1469,6 +1469,11 @@
     "background",
     "KEYWORD_ONLY",
     "0"
+   ],
+   [
+    "supersample",
+    "KEYWORD_ONLY",
+    "1"
    ]
   ],
   "reciprocal": [
@@ -2911,6 +2916,11 @@
     "background",
     "KEYWORD_ONLY",
     "0"
+   ],
+   [
+    "supersample",
+    "KEYWORD_ONLY",
+    "1"
    ]
   ],
   "reciprocal": [

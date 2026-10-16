@@ -568,8 +568,9 @@ class _LazyForwardersMixin:
         shape: LazyPipelineExpr | None = None,
         fill_value: IntOrExpr = 255,
         background: IntOrExpr = 0,
+        supersample: IntOrExpr = 1,
     ) -> LazyPipelineExpr:
-        """Rasterize contours to a binary mask.
+        """Rasterize contours to a mask.
 
         Lazy form of :meth:`Pipeline.rasterize` on this expression's output.
         """
@@ -580,6 +581,7 @@ class _LazyForwardersMixin:
                 shape=shape,
                 fill_value=fill_value,
                 background=background,
+                supersample=supersample,
             )
         )
 

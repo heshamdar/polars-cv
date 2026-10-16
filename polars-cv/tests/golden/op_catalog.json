@@ -1882,6 +1882,16 @@
           "per_row": true,
           "py": "int"
         }
+      },
+      {
+        "name": "supersample",
+        "doc": "Samples per pixel along each axis, 1 to 16: a pixel takes the\nfraction of its ``n x n`` sub-pixel centres inside, blended between\n``background`` and ``fill_value`` (anti-aliasing). 1 (the default)\nsamples the pixel centre alone, so a pixel is one value or the\nother. Accepts a Polars expression for per-row dynamic values.",
+        "default": 1,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
       }
     ],
     "domains": [

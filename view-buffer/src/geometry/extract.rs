@@ -753,7 +753,7 @@ mod tests {
         for (name, mask) in solid_shapes() {
             let contours =
                 extract_contours(&mask, ExtractMode::External, ApproxMethod::Simple, None);
-            let back = rasterize(&contours, 40, 40, 255, 0);
+            let back = rasterize(&contours, 40, 40, 255, 0, 1);
             assert_eq!(pixels(&back), pixels(&mask), "{name}");
         }
     }
