@@ -43,7 +43,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-81 | Extension types | Decision | Whether any output becomes tagged by default (a major version) |
 | CR-82 | Extension types | Decision | Whether `polars_cv.ndarray` carries `dtype`/`ndim` metadata |
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
-| CR-97 | Drawing | Feature | Open contours in the pipeline contour domain; `boundary()` / `close()` |
 | CR-98 | Drawing | Feature | Contour geometry (`offset`, `smooth`, `densify`, `union_all`) and line rendering in `rasterize` |
 | CR-99 | Drawing | Feature | Contour boolean ops (`union`, `intersection`, `difference`, `symmetric_difference`) |
 | CR-100 | Drawing | Feature | `coordinate_grid(normalized=)` |
@@ -278,8 +277,8 @@ for anti-aliasing, and filled primitives for every stroke. Each item extends
 an existing family or rule where that is cleaner than a new op, reuses an
 engine primitive (`geo` 0.33's `Buffer`/`BooleanOps`/`ChaikinSmoothing`/
 `Densify`, `ops::elementwise`, `scanline_fill`), and is built test-first with
-an independent oracle. Order: CR-100 is independent (CR-93 to CR-96 are
-done); CR-97 → CR-98 → CR-99; CR-101 last.
+an independent oracle. Order: CR-100 is independent (CR-93 to CR-97 are
+done); CR-98 → CR-99; CR-101 last.
 
 **Decisions (owner, 2026-10-16).**
 1. The pipeline contour domain carries open contours (lines) as well as
@@ -296,15 +295,6 @@ done); CR-97 → CR-98 → CR-99; CR-101 last.
 5. No built-in colormaps for now: `apply_lut` takes explicit tables.
 6. Line width, cap and join are rendering attributes on `rasterize`; `offset`
    is geometry on regions only and takes `join` alone.
-
-### CR-97 — Open contours in pipelines; `boundary()` / `close()`
-
-- `NodeOutput::Contours` carries `Outline`s; the `contour` source reads open
-  rows. Region ops (`area`, `centroid`, `largest`, `convex_hull` as now in the
-  accessor, `offset`, `union_all`, filled rasterization) refuse a line.
-- `boundary()`: a region's rings as lines (a set, decision 2). `close()`: a
-  line's ends joined into a region. Both `GeometryOp`s, shared with `.contour`
-  through `OP_ACCESSORS`.
 
 ### CR-98 — Contour geometry and line rendering
 
@@ -603,3 +593,4 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 | CR-94 | Disk structuring element for morphology | Added (Unreleased) as `footprint="disk"` (not `shape=`, which `rasterize` uses for a canvas); a min/max over row spans reusing the square's row pass, since greyscale input rules out thresholding the distance transform, which became the oracle instead |
 | CR-95 | `apply_lut(table, dtype=)`: per-value tables and 1→K palettes | Added (Unreleased) as its own `GraphStep` family (`LutOp`), not a `ComputeOp`: a value past the table is a row error, which only an `execute -> Result` can report; the read reuses the element-wise engine's `Lut` map |
 | CR-96 | `rasterize(supersample=)`: anti-aliased coverage | Added (Unreleased): the scanline filler now works per sample row (memory one sample row, not an n²-larger canvas), and `n = 1` reduces to the old formulas exactly |
+| CR-97 | Open contours in the pipeline contour domain; `boundary()` / `close()` | Added (Unreleased): `NodeOutput::Contours` carries `Outline`; `Outline::region` is the one region rule, read by the pipeline ops and the `.contour` column reader alike |

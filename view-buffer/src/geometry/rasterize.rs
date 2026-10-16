@@ -41,8 +41,8 @@ use super::contour::{Contour, Point};
 ///
 /// # Returns
 /// A ViewBuffer with shape [height, width, 1] and dtype U8
-pub fn rasterize(
-    contours: &[Contour],
+pub fn rasterize<C: std::borrow::Borrow<Contour>>(
+    contours: &[C],
     width: u32,
     height: u32,
     fill_value: u8,
@@ -60,13 +60,17 @@ pub fn rasterize(
     // (so its holes subtract from itself only).
     let mut covered = vec![false; w * n];
     let mut scratch = vec![false; w * n];
-    let spans: Vec<Option<(f64, f64)>> = contours.iter().map(|c| y_extent(&c.exterior)).collect();
+    let spans: Vec<Option<(f64, f64)>> = contours
+        .iter()
+        .map(|c| y_extent(&c.borrow().exterior))
+        .collect();
 
     for y in 0..h {
         for j in 0..n {
             let scan_y = y as f64 + (j as f64 + 0.5) / n as f64;
             covered.fill(false);
             for (contour, extent) in contours.iter().zip(&spans) {
+                let contour = contour.borrow();
                 if !extent.is_some_and(|(lo, hi)| scan_y >= lo && scan_y <= hi) {
                     continue;
                 }
@@ -331,7 +335,7 @@ mod tests {
 
     #[test]
     fn test_rasterize_empty_set_is_all_background() {
-        let mask = rasterize(&[], 10, 10, 255, 7, 1);
+        let mask = rasterize::<Contour>(&[], 10, 10, 255, 7, 1);
         assert_eq!(mask.shape(), &[10, 10, 1]);
         assert!(mask_pixels(&mask, 100).iter().all(|&v| v == 7));
     }

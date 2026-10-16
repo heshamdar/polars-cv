@@ -94,6 +94,17 @@ pub enum GeometryOp<M: Mode = Exec> {
     /// Compute the convex hull of the contour.
     #[op(name = "contour_convex_hull", python = "convex_hull", sample = {})]
     ConvexHull,
+    /// A region's rings as open lines: the exterior, then each hole, each
+    /// returning to its first point. The result is a set (holes add rings);
+    /// an open contour, already a line, is refused.
+    #[op(name = "contour_boundary", python = "boundary", sample = {})]
+    Boundary,
+    /// Join an open line's ends into the region it bounds. A line that
+    /// returns to its first point (as ``boundary()`` draws one) drops the
+    /// repeat, so ``close()`` undoes ``boundary()`` on a region without holes.
+    /// A closed contour is refused.
+    #[op(name = "contour_close", python = "close", sample = {})]
+    Close,
     /// Keep the ``k`` largest contours of the set, by area: largest first,
     /// equal areas in their input order. A set of fewer keeps them all.
     #[op(name = "contour_largest", python = "largest", sample = {"k": 2})]
@@ -262,15 +273,17 @@ impl<M: Mode> GeometryOp<M> {
             | GeometryOp::Centroid
             | GeometryOp::BoundingBox => OpShape::Dynamic,
             // How many contours are kept is `min(k, set size)`: the set's
-            // size is known only with the data.
-            GeometryOp::Largest { .. } => OpShape::Dynamic,
+            // size is known only with the data, as is how many rings a
+            // boundary draws.
+            GeometryOp::Largest { .. } | GeometryOp::Boundary => OpShape::Dynamic,
             // Contour transforms preserve the point list; `Simplify` and
             // `ConvexHull` may shorten it, which is not knowable statically, so
             // the input shape stands in for both.
             GeometryOp::Translate { .. }
             | GeometryOp::Scale { .. }
             | GeometryOp::Simplify { .. }
-            | GeometryOp::ConvexHull => OpShape::Preserve,
+            | GeometryOp::ConvexHull
+            | GeometryOp::Close => OpShape::Preserve,
             GeometryOp::Rasterize { size, .. } => match size {
                 RasterSize::Fixed([h, w]) => OpShape::Fixed(vec![
                     crate::mode::size::<M>(h),
@@ -369,6 +382,8 @@ impl<M: Mode> Op for GeometryOp<M> {
             GeometryOp::Simplify { .. } => "Simplify",
             GeometryOp::ConvexHull => "ConvexHull",
             GeometryOp::Largest { .. } => "Largest",
+            GeometryOp::Boundary => "Boundary",
+            GeometryOp::Close => "Close",
             GeometryOp::Rasterize { .. } => "Rasterize",
             GeometryOp::ExtractContours { .. } => "ExtractContours",
         }
@@ -412,6 +427,8 @@ impl<M: Mode> Op for GeometryOp<M> {
             | GeometryOp::Simplify { .. }
             | GeometryOp::ConvexHull
             | GeometryOp::Largest { .. }
+            | GeometryOp::Boundary
+            | GeometryOp::Close
             | GeometryOp::Rasterize { .. }
             | GeometryOp::ExtractContours { .. } => SpatialDependency::Global,
         }
@@ -498,7 +515,9 @@ impl<M: Mode> GeometryOp<M> {
             | GeometryOp::Scale { .. }
             | GeometryOp::Simplify { .. }
             | GeometryOp::ConvexHull
-            | GeometryOp::Largest { .. } => Domain::Contour,
+            | GeometryOp::Largest { .. }
+            | GeometryOp::Boundary
+            | GeometryOp::Close => Domain::Contour,
         }
     }
 
@@ -526,7 +545,9 @@ impl<M: Mode> GeometryOp<M> {
             | GeometryOp::Scale { .. }
             | GeometryOp::Simplify { .. }
             | GeometryOp::ConvexHull
-            | GeometryOp::Largest { .. } => Domain::Contour,
+            | GeometryOp::Largest { .. }
+            | GeometryOp::Boundary
+            | GeometryOp::Close => Domain::Contour,
         }
     }
 }

@@ -505,6 +505,50 @@ fn contour_largest(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series
     )
 }
 
+/// Declared type of `contour_boundary`: always a set of lines.
+fn contour_boundary_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
+    let input = input_fields
+        .first()
+        .ok_or_else(|| polars_err!(ComputeError: "contour_boundary takes a contour column"))?;
+    Ok(Field::new(
+        input.name().clone(),
+        Arity::Set.wrap(Arity::elem_dtype(input.dtype())),
+    ))
+}
+
+/// Each row's regions' rings as open lines, as a set: one region with holes
+/// gives several lines, so the result is a set whichever arity came in (the
+/// pipeline op's definition, `GeometryOp::Boundary`).
+#[polars_expr(output_type_func=contour_boundary_output_type)]
+fn contour_boundary(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "contour_boundary";
+    let (op, params) = GeomParams::parse::<GeometryOp<Wire>>(inputs, kwargs, NAME)?;
+    let GeometryOp::Boundary = &op else {
+        return Err(parsed_as_another(NAME));
+    };
+    let contours = ContourColumn::new(&inputs[0]);
+    let rows = params.map_rows(inputs[0].len(), |_params, i| {
+        let Some(row) = contours.outlines(i)? else {
+            return Ok(None);
+        };
+        let mut lines = Vec::new();
+        for outline in &row {
+            match outline {
+                Outline::Closed(c) => lines.extend(transforms::boundary(c)),
+                Outline::Open(_) => polars_bail!(ComputeError:
+                    "{} (row {})", crate::graph::encode::BOUNDARY_OF_A_LINE, i),
+            }
+        }
+        Ok(Some(lines))
+    })?;
+    Outline::column(
+        inputs[0].name().clone(),
+        rows,
+        Arity::Set,
+        &Arity::elem_dtype(inputs[0].dtype()),
+    )
+}
+
 fn contour_single_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
     let input = input_fields
         .first()
@@ -942,6 +986,21 @@ contour_accessor! {
     reads Outline;
     parse GeometryOp::ConvexHull;
     |outline, _params, _row| Ok(transforms::convex_hull_outline(outline))
+}
+
+contour_accessor! {
+    /// Join an open line's ends into a region.
+    map fn contour_close / contour_close_output_type
+        -> |input| Arity::elem_dtype(input);
+    reads Outline;
+    parse GeometryOp::Close;
+    |outline, _params, row| {
+        match outline {
+            Outline::Open(line) => Ok(Outline::Closed(transforms::close(line))),
+            Outline::Closed(_) => polars_bail!(ComputeError:
+                "{} (row {})", crate::graph::encode::CLOSE_OF_A_REGION, row),
+        }
+    }
 }
 
 contour_accessor! {

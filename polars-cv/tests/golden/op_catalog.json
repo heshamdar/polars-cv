@@ -612,6 +612,19 @@
     ]
   },
   {
+    "name": "contour_boundary",
+    "python": "boundary",
+    "visibility": "public",
+    "doc": "A region's rings as open lines: the exterior, then each hole, each\nreturning to its first point. The result is a set (holes add rings);\nan open contour, already a line, is refused.",
+    "fields": [],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "contour"
+      }
+    ]
+  },
+  {
     "name": "contour_bounding_box",
     "python": "bounding_box",
     "visibility": "public",
@@ -634,6 +647,19 @@
       {
         "input": "contour",
         "output": "vector"
+      }
+    ]
+  },
+  {
+    "name": "contour_close",
+    "python": "close",
+    "visibility": "public",
+    "doc": "Join an open line's ends into the region it bounds. A line that\nreturns to its first point (as ``boundary()`` draws one) drops the\nrepeat, so ``close()`` undoes ``boundary()`` on a region without holes.\nA closed contour is refused.",
+    "fields": [],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "contour"
       }
     ]
   },

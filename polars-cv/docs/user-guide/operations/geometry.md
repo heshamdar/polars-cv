@@ -93,10 +93,28 @@ region, so the functions split by what they read:
   `normalize`, `to_absolute`), and `.point.distance_to_contour` /
   `nearest_point_on_contour`.
 - **Region** functions refuse it, naming the row: `area`, `centroid`,
-  `is_convex`, `winding`, `ensure_winding`, `contains_point`, `iou`, `dice`,
-  `pairwise_iou`, `correspond`, `label_reduce`,
-  `.point.signed_distance_to_contour` and the pipeline's `contour` source.
+  `largest`, `is_convex`, `winding`, `ensure_winding`, `contains_point`,
+  `iou`, `dice`, `pairwise_iou`, `correspond`, `label_reduce`, `boundary`,
+  `.point.signed_distance_to_contour` and `rasterize`.
   `scale(origin="centroid")` refuses one too.
+
+Pipelines carry lines the same way: `source("contour")` reads open rows, and
+each contour op behaves as its `.contour` accessor does (one definition serves
+both), so a pipeline region op refuses a line with the same message.
+
+`boundary()` turns a region's rings into lines (the exterior, then each hole,
+each returning to its first point), so the result is a set; `close()` joins a
+line's ends into the region it bounds, undoing `boundary()` for a region
+without holes:
+
+```python
+# A region's outline as lines, and their lengths
+lines = Pipeline().source("contour").boundary()
+lengths = Pipeline().source("contour").boundary().perimeter()
+
+# An annotated polyline as the region it encloses
+area = pl.col("polyline").contour.close().contour.area()
+```
 
 An open contour may not have holes. An unspecified `is_closed` (a null, or a
 struct without the field) reads as closed.

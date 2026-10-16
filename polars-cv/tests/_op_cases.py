@@ -24,6 +24,9 @@ if TYPE_CHECKING:
 
 BUFFER = "buffer"
 CONTOUR = "contour"
+#: The contour domain holding open lines (``boundary()`` of the traced regions),
+#: for an op that takes a line (``close``).
+LINE = "line"
 
 OP_CASES: dict[str, tuple[str, dict] | None] = {
     # --- buffer -> buffer -------------------------------------------------
@@ -125,6 +128,8 @@ OP_CASES: dict[str, tuple[str, dict] | None] = {
     "simplify": (CONTOUR, {"tolerance": 1.0}),
     "translate": (CONTOUR, {"dx": 1.0, "dy": 2.0}),
     # --- not comparable by this harness -----------------------------------
+    "boundary": (CONTOUR, {}),
+    "close": (LINE, {}),
     "assert_shape": None,  # sets hints directly; covered by its own test
     "label_reduce": None,  # takes a contour *column*, not a plain value
     "on_error": None,  # graph-level policy, appends no op
@@ -245,8 +250,9 @@ def base_pipeline(domain: str) -> "Pipeline":
     pipe = (
         Pipeline().source("image_bytes").assert_shape(height=100, width=200, channels=3)
     )
-    if domain == CONTOUR:
-        return pipe.grayscale().threshold(128).extract_contours()
+    if domain in (CONTOUR, LINE):
+        contours = pipe.grayscale().threshold(128).extract_contours()
+        return contours.boundary() if domain == LINE else contours
     return pipe
 
 

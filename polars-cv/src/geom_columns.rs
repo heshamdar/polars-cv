@@ -128,17 +128,13 @@ impl<'a> ContourColumn<'a> {
         let Some(outlines) = self.outlines(row)? else {
             return Ok(None);
         };
+        // The one region rule, shared with the pipeline's region ops.
         outlines
             .into_iter()
-            .map(|outline| match outline {
-                Outline::Closed(contour) => Ok(contour),
-                Outline::Open(_) => Err(polars_err!(ComputeError:
-                    "an open contour (is_closed = false) has no region, so this \
-                     function — an area, overlap, containment or rasterizing one — \
-                     cannot measure it (row {}). Close it first, or use a boundary \
-                     measure (perimeter, distance, nearest point, hausdorff)",
-                    row
-                )),
+            .map(|outline| {
+                outline
+                    .into_region()
+                    .map_err(|e| polars_err!(ComputeError: "{} (row {})", e, row))
             })
             .collect::<PolarsResult<_>>()
             .map(Some)

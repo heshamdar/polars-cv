@@ -21,7 +21,7 @@ use std::sync::Arc;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::geometry::Contour;
+use crate::geometry::contour::Outline;
 use crate::ViewBuffer;
 
 pub mod affine;
@@ -121,7 +121,7 @@ pub enum NodeOutput {
     /// Array/image data (reference-counted for cheap cloning).
     Buffer(Arc<ViewBuffer>),
     /// Extracted contours (geometry domain).
-    Contours(Arc<Vec<Contour>>),
+    Contours(Arc<Vec<Outline>>),
     /// Single scalar value.
     Scalar(f64),
     /// Multiple scalar values (bbox, centroid, etc.).
@@ -148,7 +148,7 @@ impl NodeOutput {
     }
 
     /// Try to extract contours from this output.
-    pub fn as_contours(&self) -> Option<&Arc<Vec<Contour>>> {
+    pub fn as_contours(&self) -> Option<&Arc<Vec<Outline>>> {
         match self {
             NodeOutput::Contours(contours) => Some(contours),
             _ => None,
@@ -161,7 +161,7 @@ impl NodeOutput {
     }
 
     /// Create a Contours output from a Vec of contours.
-    pub fn from_contours(contours: Vec<Contour>) -> Self {
+    pub fn from_contours(contours: Vec<Outline>) -> Self {
         NodeOutput::Contours(Arc::new(contours))
     }
 

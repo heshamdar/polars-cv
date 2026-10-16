@@ -2264,6 +2264,7 @@ OPS: dict[str, OpSpec] = {
                 ("centroid", _no_params, "vector"),
                 ("bounding_box", _no_params, "vector"),
                 ("convex_hull", _no_params, "contour"),
+                ("boundary", _no_params, "contour"),
                 (
                     "largest",
                     lambda draw, x: {"k": draw(st.integers(1, 3))},
@@ -2290,6 +2291,10 @@ EXEMPT: dict[str, str] = {
         "(test_expression_op_params.py covers it)"
     ),
     "on_error": "a graph policy, not an operation (test_on_error.py)",
+    "close": (
+        "takes an open line, and the suite's contours are traced regions "
+        "(extract_contours); test_open_contours_pipeline.py covers it"
+    ),
     "on_null_param": "a graph policy, not an operation (test_null_params.py)",
 }
 
