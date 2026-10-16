@@ -203,9 +203,13 @@ changes; they explain *why* the code is shaped the way it is.
   execution-time schema; guarded by `tests/test_sanitation.py`.
 - **Graph steps vs engine ops.** Graph-level steps (`GraphStep` in
   `polars-cv/src/graph/step.rs`: binary ops, masks, geometry, reductions,
-  histograms, perceptual hash) are separate from engine-executable buffer ops
-  (`ViewDto` in view-buffer). Anything that changes the data domain lives in
-  `GraphStep`.
+  histograms, perceptual hash, lookup tables) are separate from
+  engine-executable buffer ops (`ViewDto` in view-buffer). Anything that
+  changes the data domain lives in `GraphStep`, and so does a buffer op that
+  can fail on its *values* (`LutOp`: a value past the table): a `ViewDto` op
+  cannot report a data error (its `validate` sees shapes and dtypes only, and
+  a kernel panic is an engine bug), so such an op is its own family whose
+  `execute` returns `Result`, as `HistogramOp`'s does.
 - **Compiled-graph cache.** The `vb_graph` plugin compiles each graph once into a
   process-wide cache (`graph/compiled.rs`: parsed spec, topo order, slot-bound
   params, pre-resolved static ops). The streaming engine invokes the plugin per

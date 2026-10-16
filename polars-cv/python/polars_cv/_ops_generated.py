@@ -362,6 +362,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "add_constant",
         "adjust_contrast",
         "adjust_gamma",
+        "apply_lut",
         "apply_mask",
         "assert_shape",
         "bitwise_and",
@@ -514,6 +515,32 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "add_constant": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "adjust_contrast": {"factor": {"kind": "scalar", "per_row": True, "py": "float"}},
     "adjust_gamma": {"gamma": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "apply_lut": {
+        "table": {
+            "kind": "list",
+            "inner": {
+                "kind": "list",
+                "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+            },
+        },
+        "dtype": {
+            "kind": "scalar",
+            "per_row": False,
+            "py": "DType",
+            "variants": [
+                "u8",
+                "i8",
+                "u16",
+                "i16",
+                "u32",
+                "i32",
+                "u64",
+                "i64",
+                "f32",
+                "f64",
+            ],
+        },
+    },
     "apply_mask": {
         "mask": {"kind": "node"},
         "invert": {"kind": "scalar", "per_row": True, "py": "bool"},
@@ -1014,6 +1041,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "add_constant": [{"input": "buffer", "output": "buffer"}],
     "adjust_contrast": [{"input": "buffer", "output": "buffer"}],
     "adjust_gamma": [{"input": "buffer", "output": "buffer"}],
+    "apply_lut": [{"input": "buffer", "output": "buffer"}],
     "apply_mask": [{"input": "buffer", "output": "buffer"}],
     "assert_shape": [
         {"input": "buffer", "output": "buffer"},
@@ -1364,6 +1392,32 @@ class _OpsMixin:
             >>> pipe = Pipeline().source("image_bytes").adjust_gamma(gamma=0.5)
         """
         return self._append_typed("adjust_gamma", {"gamma": gamma})
+
+    def apply_lut(
+        self, table: Sequence[Sequence[FloatOrExpr]], *, dtype: str = "u8"
+    ) -> Pipeline:
+        """Map each value through a lookup table.
+
+        Each u8 or u16 value is a row index into ``table``. Rows of one entry map
+        every element in place, on any channel count (as ``cv2.LUT`` with one
+        table); rows of ``K > 1`` entries take a single-channel image to ``K``
+        channels (a palette). The entries are stored as ``dtype``. A value with no
+        row is an error for its row: clamp first, keeping the dtype
+        (``clamp(0, len(table) - 1, out_dtype="u8")``), to send the excess to the
+        last row.
+
+        Domain: buffer → buffer
+
+        Args:
+            table: The rows, indexed by value: 1 to 65536 of them, each of the same
+                length (1, or the palette's channel count). Each entry must fit
+                ``dtype``, and may be a Polars expression; the lengths are literal.
+            dtype: The output element dtype the entries are stored as.
+
+        Example:
+            >>> heat = Pipeline().source("image_bytes").grayscale().apply_lut([[v, 0, 255 - v] for v in range(256)])
+        """
+        return self._append_typed("apply_lut", {"table": table, "dtype": dtype})
 
     def _assert_shape(
         self, dims: Sequence[IntOrExpr | None], *, exact: bool = True

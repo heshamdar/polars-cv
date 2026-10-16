@@ -107,6 +107,57 @@
     ]
   },
   {
+    "name": "apply_lut",
+    "python": "apply_lut",
+    "visibility": "public",
+    "doc": "Map each value through a lookup table.\n\nEach u8 or u16 value is a row index into ``table``. Rows of one entry map\nevery element in place, on any channel count (as ``cv2.LUT`` with one\ntable); rows of ``K > 1`` entries take a single-channel image to ``K``\nchannels (a palette). The entries are stored as ``dtype``. A value with no\nrow is an error for its row: clamp first, keeping the dtype\n(``clamp(0, len(table) - 1, out_dtype=\"u8\")``), to send the excess to the\nlast row.\n\nExample:\n    >>> heat = Pipeline().source(\"image_bytes\").grayscale().apply_lut([[v, 0, 255 - v] for v in range(256)])",
+    "fields": [
+      {
+        "name": "table",
+        "doc": "The rows, indexed by value: 1 to 65536 of them, each of the same\nlength (1, or the palette's channel count). Each entry must fit\n``dtype``, and may be a Polars expression; the lengths are literal.",
+        "type": {
+          "kind": "list",
+          "inner": {
+            "kind": "list",
+            "inner": {
+              "kind": "scalar",
+              "per_row": true,
+              "py": "float"
+            }
+          }
+        }
+      },
+      {
+        "name": "dtype",
+        "doc": "The output element dtype the entries are stored as.",
+        "default": "u8",
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "DType",
+          "variants": [
+            "u8",
+            "i8",
+            "u16",
+            "i16",
+            "u32",
+            "i32",
+            "u64",
+            "i64",
+            "f32",
+            "f64"
+          ]
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
+  },
+  {
     "name": "apply_mask",
     "python": "apply_mask",
     "visibility": "lazy_only",

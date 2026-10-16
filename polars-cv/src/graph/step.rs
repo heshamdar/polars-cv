@@ -17,7 +17,7 @@ use view_buffer::core::dtype::OutputDTypeRule;
 use view_buffer::mode::{Exec, Mode, NodeRef};
 use view_buffer::ops::phash::PerceptualHashOp;
 use view_buffer::ops::{Domain, OpShape, SpatialDependency};
-use view_buffer::ops::{HistogramOp, ReductionOp};
+use view_buffer::ops::{HistogramOp, LutOp, ReductionOp};
 use view_buffer::{GeometryOp, IdentityRule, Op, ViewDto};
 
 use crate::ops::graph::GraphOp;
@@ -34,6 +34,9 @@ pub enum GraphStep<M: Mode = Exec> {
     Reduction(ReductionOp<M>),
     /// Histogram: quantized → buffer, other modes → vector.
     Histogram(HistogramOp<M>),
+    /// Lookup table: u8/u16 buffer → buffer, refusing a value past the table
+    /// per row (a data error, which a `Buffer` op cannot report).
+    Lut(LutOp<M>),
     /// Perceptual hash: image buffer → 1-D u8 fingerprint (vector domain).
     PerceptualHash(PerceptualHashOp<M>),
     /// A graph-level op: reads other nodes or an input column.
@@ -49,6 +52,7 @@ impl<M: Mode> GraphStep<M> {
             GraphStep::Geometry(op) => Rules::Engine(op),
             GraphStep::Reduction(op) => Rules::Engine(op),
             GraphStep::Histogram(op) => Rules::Engine(op),
+            GraphStep::Lut(op) => Rules::Engine(op),
             GraphStep::PerceptualHash(op) => Rules::Engine(op),
             GraphStep::Graph(op) => Rules::Graph(op),
         }
@@ -62,6 +66,7 @@ impl<M: Mode> GraphStep<M> {
             GraphStep::Geometry(op) => op.check(),
             GraphStep::Reduction(op) => op.check(),
             GraphStep::Histogram(op) => op.check(),
+            GraphStep::Lut(op) => op.check(),
             GraphStep::PerceptualHash(op) => op.check(),
             GraphStep::Graph(op) => op.check(),
         }
@@ -76,9 +81,10 @@ impl<M: Mode> GraphStep<M> {
             // reduce_popcount` is the library's own hamming distance.
             GraphStep::Reduction(_) => vec![Domain::Buffer, Domain::Vector],
             GraphStep::Graph(op) => op.input_domains(),
-            GraphStep::Buffer(_) | GraphStep::Histogram(_) | GraphStep::PerceptualHash(_) => {
-                vec![Domain::Buffer]
-            }
+            GraphStep::Buffer(_)
+            | GraphStep::Histogram(_)
+            | GraphStep::Lut(_)
+            | GraphStep::PerceptualHash(_) => vec![Domain::Buffer],
             GraphStep::Geometry(op) => vec![op.input_domain()],
         }
     }
@@ -90,6 +96,7 @@ impl<M: Mode> GraphStep<M> {
             GraphStep::Geometry(op) => op.output_domain(),
             GraphStep::Reduction(op) => op.output_domain(),
             GraphStep::Histogram(op) => op.output_domain(),
+            GraphStep::Lut(op) => op.output_domain(),
             // Perceptual hash produces a fixed-length 1-D fingerprint.
             GraphStep::PerceptualHash(_) => Domain::Vector,
             GraphStep::Graph(op) => op.output_domain(input),
@@ -178,6 +185,7 @@ impl<M: Mode> GraphStep<M> {
             | GraphStep::Geometry(_)
             | GraphStep::Reduction(_)
             | GraphStep::Histogram(_)
+            | GraphStep::Lut(_)
             | GraphStep::PerceptualHash(_) => Vec::new(),
         }
     }
@@ -194,6 +202,7 @@ impl<M: Mode> GraphStep<M> {
             | GraphStep::Geometry(_)
             | GraphStep::Reduction(_)
             | GraphStep::Histogram(_)
+            | GraphStep::Lut(_)
             | GraphStep::PerceptualHash(_) => Vec::new(),
         }
     }
@@ -210,6 +219,7 @@ impl<M: Mode> GraphStep<M> {
             GraphStep::Buffer(_)
             | GraphStep::Reduction(_)
             | GraphStep::Histogram(_)
+            | GraphStep::Lut(_)
             | GraphStep::PerceptualHash(_) => Vec::new(),
         }
     }

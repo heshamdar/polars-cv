@@ -821,3 +821,37 @@ fn apply_mask_reads_a_mask_with_packed_rows_in_place() {
         }
     }
 }
+
+/// `apply_lut`'s range check and table map read a view where it lies (its
+/// `StridePreserving` declaration, CR-95), which the plugin's copy census
+/// cannot measure: its catalogue sample is a two-row palette, and the census
+/// images hold values up to 250. One entry per row: the output is the only
+/// view-sized allocation. A K-entry palette builds its K planes and then
+/// merges them, K + 1 allocations: the price of reusing the channel merge
+/// rather than a dedicated interleaving traversal.
+#[test]
+fn a_lookup_table_on_a_view_allocates_only_its_output() {
+    use view_buffer::ops::LutOp;
+    let invert = LutOp {
+        table: (0..256).map(|v| vec![f64::from(255 - v)]).collect(),
+        dtype: DType::U8,
+    };
+    for (layout, view) in views_u8(3) {
+        let bytes = view.shape().iter().product();
+        let (out, count) = large_allocations(bytes, || invert.execute(&view).unwrap());
+        assert_eq!(out.shape(), view.shape(), "{layout}");
+        assert_eq!(count, 1, "{layout}: {count} view-sized allocations");
+    }
+    let palette = LutOp {
+        table: (0..256)
+            .map(|v| vec![f64::from(v), 0.0, f64::from(255 - v)])
+            .collect(),
+        dtype: DType::U8,
+    };
+    for (layout, view) in views_u8(1) {
+        let bytes = view.shape().iter().product();
+        let (out, count) = large_allocations(bytes, || palette.execute(&view).unwrap());
+        assert_eq!(out.shape()[2], 3, "{layout}");
+        assert_eq!(count, 4, "{layout}: {count} view-sized allocations");
+    }
+}

@@ -138,6 +138,9 @@ pub enum OpShape {
     /// `[H, W, C]` → `[H, W]`; `[H, W]` unchanged. No other rank has an
     /// output.
     DropChannelAxis,
+    /// A single-channel `[H, W]` or `[H, W, 1]` → `[H, W, k]` (a palette
+    /// lookup). No other shape has an output.
+    ExpandChannels(usize),
     /// H and W swap.
     SwapHw,
     /// H and W swap on some rows and not others (a per-row lattice rotation):
@@ -264,6 +267,11 @@ impl OpShape {
             OpShape::DropChannelAxis => match input {
                 [h, w, _] => vec![*h, *w],
                 [_, _] => input.to_vec(),
+                _ => return None,
+            },
+            OpShape::ExpandChannels(k) => match input {
+                [h, w] => vec![*h, *w, Dim::Known(*k)],
+                [h, w, c] if c.known().is_none_or(|c| c == 1) => vec![*h, *w, Dim::Known(*k)],
                 _ => return None,
             },
             OpShape::SwapHw => hw(in_w, in_h),
@@ -407,7 +415,9 @@ impl OpShape {
                 OpShape::Fixed(shape) => Some(shape.len()),
                 OpShape::Transpose(perm) => Some(perm.len()),
                 OpShape::Reduce { axis: None } => Some(1),
-                OpShape::StackChannels(_) | OpShape::Canvas { .. } => Some(3),
+                OpShape::StackChannels(_) | OpShape::Canvas { .. } | OpShape::ExpandChannels(_) => {
+                    Some(3)
+                }
                 OpShape::InputRank => Some(1),
                 _ => None,
             },
@@ -740,6 +750,7 @@ mod symbolic_tests {
     fn every_variant() -> Vec<OpShape> {
         let k = |n| Sym::Known(n);
         let samples = vec![
+            OpShape::ExpandChannels(3),
             OpShape::Preserve,
             OpShape::Fixed(vec![k(4), Sym::PerRow]),
             OpShape::Dynamic,
@@ -784,6 +795,7 @@ mod symbolic_tests {
             OpShape::StackChannels(2),
             OpShape::InputRank,
             OpShape::Canvas { of: 1 },
+            OpShape::ExpandChannels(3),
         ];
         for shape in &samples {
             match shape {
@@ -810,7 +822,8 @@ mod symbolic_tests {
                 | OpShape::Broadcast
                 | OpShape::StackChannels(_)
                 | OpShape::InputRank
-                | OpShape::Canvas { .. } => {}
+                | OpShape::Canvas { .. }
+                | OpShape::ExpandChannels(_) => {}
             }
         }
         samples

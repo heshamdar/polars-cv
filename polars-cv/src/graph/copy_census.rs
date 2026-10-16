@@ -137,6 +137,11 @@ const EXEMPT: &[(&str, &str)] = &[
         "it reads a second input column (the labels), which the census does not supply",
     ),
     (
+        "apply_lut",
+        "its sample is a two-row palette and the census images hold values up \
+         to 250; view-buffer's copy_counts.rs pins what a view costs it",
+    ),
+    (
         "rasterize",
         "it reads a contour, not a buffer: no view of one reaches it",
     ),

@@ -28,6 +28,7 @@ CONTOUR = "contour"
 OP_CASES: dict[str, tuple[str, dict] | None] = {
     # --- buffer -> buffer -------------------------------------------------
     "adjust_brightness": (BUFFER, {"factor": 1.2}),
+    "apply_lut": (BUFFER, {"table": [[255 - i] for i in range(256)]}),
     "adjust_contrast": (BUFFER, {"factor": 1.2}),
     "adjust_gamma": (BUFFER, {"gamma": 1.5}),
     "blur": (BUFFER, {"sigma": 1.0}),
