@@ -69,35 +69,51 @@ pub enum ImageOpKind<M: Mode = Exec> {
     ///     >>> eq = Pipeline().source("image_bytes").grayscale().equalize_histogram()
     #[op(name = "equalize_histogram", sample = {})]
     HistogramEqualize,
-    /// Morphological erosion (local minimum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).
+    /// Morphological erosion: the local minimum over a footprint (a
+    /// `ksize × ksize` square, or a disk), edges replicated. Requires
+    /// single-channel input (e.g. after `.grayscale()` or `.threshold()`).
     ///
     /// Example:
     ///     >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
     #[op(name = "erode", sample = {"ksize": 3, "iterations": 1})]
     Erode {
-        /// Size of the square structuring element. Must be odd and >= 1.
-        /// Accepts a Polars expression for per-row dynamic values.
+        /// Size of the structuring element (the square's side, the disk's
+        /// diameter). Must be odd and >= 1. Accepts a Polars expression for
+        /// per-row dynamic values.
         #[param(default = 3)]
         ksize: M::V<u32>,
         /// Number of times the operation is applied. Accepts a Polars
         /// expression for per-row dynamic values.
         #[param(default = 1)]
         iterations: M::V<u32>,
+        /// The structuring element: ``"square"`` (``ksize x ksize``) or
+        /// ``"disk"`` (the pixels within Euclidean distance ``ksize // 2`` of
+        /// the centre). Accepts a Polars expression for a per-row choice.
+        #[param(default = "square")]
+        footprint: M::V<Footprint>,
     },
-    /// Morphological dilation (local maximum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).
+    /// Morphological dilation: the local maximum over a footprint (a
+    /// `ksize × ksize` square, or a disk), edges replicated. Requires
+    /// single-channel input (e.g. after `.grayscale()` or `.threshold()`).
     ///
     /// Example:
     ///     >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3)
-    #[op(name = "dilate", sample = {"ksize": 3, "iterations": 1})]
+    #[op(name = "dilate", sample = {"ksize": 5, "iterations": 1, "footprint": "disk"})]
     Dilate {
-        /// Size of the square structuring element. Must be odd and >= 1.
-        /// Accepts a Polars expression for per-row dynamic values.
+        /// Size of the structuring element (the square's side, the disk's
+        /// diameter). Must be odd and >= 1. Accepts a Polars expression for
+        /// per-row dynamic values.
         #[param(default = 3)]
         ksize: M::V<u32>,
         /// Number of times the operation is applied. Accepts a Polars
         /// expression for per-row dynamic values.
         #[param(default = 1)]
         iterations: M::V<u32>,
+        /// The structuring element: ``"square"`` (``ksize x ksize``) or
+        /// ``"disk"`` (the pixels within Euclidean distance ``ksize // 2`` of
+        /// the centre). Accepts a Polars expression for a per-row choice.
+        #[param(default = "square")]
+        footprint: M::V<Footprint>,
     },
     /// Morphological gradient (dilate - erode): an edge outline. Requires
     /// single-channel input.
@@ -106,10 +122,15 @@ pub enum ImageOpKind<M: Mode = Exec> {
     ///     >>> edges = Pipeline().source("image_bytes").grayscale().threshold(128).morphology_gradient(ksize=3)
     #[op(name = "morphology_gradient", sample = {"ksize": 3})]
     MorphGradient {
-        /// Size of the square structuring element. Must be odd and >= 1. Accepts a
+        /// Size of the structuring element. Must be odd and >= 1. Accepts a
         /// Polars expression for per-row dynamic values.
         #[param(default = 3)]
         ksize: M::V<u32>,
+        /// The structuring element: ``"square"`` (``ksize x ksize``) or
+        /// ``"disk"`` (the pixels within Euclidean distance ``ksize // 2`` of
+        /// the centre). Accepts a Polars expression for a per-row choice.
+        #[param(default = "square")]
+        footprint: M::V<Footprint>,
     },
     /// Exact Euclidean distance transform of a mask: an f32 image of the same
     /// shape. Requires single-channel input.
@@ -398,6 +419,20 @@ crate::naming::named_variants!(FilterType: "Image resize filter types." {
     "lanczos3" => Lanczos3,
 });
 
+/// The structuring element of `erode`, `dilate` and `morphology_gradient`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Footprint {
+    /// The `ksize × ksize` square.
+    Square,
+    /// The pixels within Euclidean distance `ksize / 2` of the centre.
+    Disk,
+}
+
+crate::naming::named_variants!(Footprint: "Structuring element of ``erode``, ``dilate`` and the morphology composites.\n\n- SQUARE: The ``ksize x ksize`` square (default).\n- DISK: The pixels within Euclidean distance ``ksize // 2`` of the centre." {
+    "square" => Square,
+    "disk" => Disk,
+});
+
 /// An image op, as the engine's `ViewDto` carries it.
 #[derive(Debug, Clone, PartialEq, Resolve)]
 pub struct ImageOp<M: Mode = Exec> {
@@ -617,15 +652,18 @@ impl<M: Mode> Op for ImageOp<M> {
             ),
             // A ksize×ksize structuring element applied `iterations` times
             // reaches (ksize / 2) * iterations pixels out.
-            ImageOpKind::Erode { ksize, iterations }
-            | ImageOpKind::Dilate { ksize, iterations } => {
-                SpatialDependency::neighborhood_of(match (M::sym(ksize), M::sym(iterations)) {
-                    (Sym::Known(k), Sym::Known(n)) => Sym::Known((k as usize / 2) * n as usize),
-                    _ => Sym::PerRow,
-                })
+            // A disk of the same ksize reaches no further than the square.
+            ImageOpKind::Erode {
+                ksize, iterations, ..
             }
+            | ImageOpKind::Dilate {
+                ksize, iterations, ..
+            } => SpatialDependency::neighborhood_of(match (M::sym(ksize), M::sym(iterations)) {
+                (Sym::Known(k), Sym::Known(n)) => Sym::Known((k as usize / 2) * n as usize),
+                _ => Sym::PerRow,
+            }),
             // Gradient = one dilate − one erode, each of half-extent ksize / 2.
-            ImageOpKind::MorphGradient { ksize } => {
+            ImageOpKind::MorphGradient { ksize, .. } => {
                 SpatialDependency::neighborhood_of(M::sym(ksize).map(|k| k as usize / 2))
             }
             // Canny's hysteresis links edges via connectivity that can span the

@@ -9,6 +9,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`footprint="disk"` on `erode`, `dilate`, `morphology_gradient`,
+  `morphology_open` and `morphology_close`** (CR-94): the pixels within
+  Euclidean distance `ksize // 2` of the centre, edges replicated, for round
+  rather than square morphology on any dtype. The default stays `"square"`,
+  byte for byte. With a disk, `iterations` applies it that many times (two
+  disks do not compose into one). Held to scipy's `grey_erosion`/
+  `grey_dilation` with a disk footprint and, on masks, to the distance
+  transform. `footprint` accepts an expression.
+
 - **`distance_transform(signed=False)`** (CR-93): the exact Euclidean distance
   transform of a single-channel mask, as an f32 image of the same shape.
   Unsigned, each non-zero pixel holds its distance to the nearest zero pixel,

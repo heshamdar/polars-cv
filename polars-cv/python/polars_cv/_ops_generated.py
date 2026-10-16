@@ -140,6 +140,17 @@ class FilterType(str, Enum):
     LANCZOS3 = "lanczos3"
 
 
+class Footprint(str, Enum):
+    """Structuring element of ``erode``, ``dilate`` and the morphology composites.
+
+    - SQUARE: The ``ksize x ksize`` square (default).
+    - DISK: The pixels within Euclidean distance ``ksize // 2`` of the centre.
+    """
+
+    SQUARE = "square"
+    DISK = "disk"
+
+
 class HashAlgorithm(str, Enum):
     """Perceptual hash algorithm selection.
 
@@ -625,6 +636,12 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "dilate": {
         "ksize": {"kind": "scalar", "per_row": True, "py": "int"},
         "iterations": {"kind": "scalar", "per_row": True, "py": "int"},
+        "footprint": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "Footprint",
+            "variants": ["square", "disk"],
+        },
     },
     "distance_transform": {"signed": {"kind": "scalar", "per_row": True, "py": "bool"}},
     "divide": {"other": {"kind": "node"}},
@@ -632,6 +649,12 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "erode": {
         "ksize": {"kind": "scalar", "per_row": True, "py": "int"},
         "iterations": {"kind": "scalar", "per_row": True, "py": "int"},
+        "footprint": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "Footprint",
+            "variants": ["square", "disk"],
+        },
     },
     "extract_contours": {
         "mode": {
@@ -725,7 +748,15 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     },
     "maximum": {"other": {"kind": "node"}},
     "minimum": {"other": {"kind": "node"}},
-    "morphology_gradient": {"ksize": {"kind": "scalar", "per_row": True, "py": "int"}},
+    "morphology_gradient": {
+        "ksize": {"kind": "scalar", "per_row": True, "py": "int"},
+        "footprint": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "Footprint",
+            "variants": ["square", "disk"],
+        },
+    },
     "multiply": {"other": {"kind": "node"}},
     "neg": {},
     "normalize": {
@@ -1641,21 +1672,35 @@ class _OpsMixin:
             "cvt_color", {"from_space": from_space, "to_space": to_space}
         )
 
-    def dilate(self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1) -> Pipeline:
-        """Morphological dilation (local maximum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).
+    def dilate(
+        self,
+        *,
+        ksize: IntOrExpr = 3,
+        iterations: IntOrExpr = 1,
+        footprint: str | pl.Expr = "square",
+    ) -> Pipeline:
+        """Morphological dilation: the local maximum over a footprint (a
+        `ksize × ksize` square, or a disk), edges replicated. Requires
+        single-channel input (e.g. after `.grayscale()` or `.threshold()`).
 
         Domain: buffer → buffer
 
         Args:
-            ksize: Size of the square structuring element. Must be odd and >= 1. Accepts
-                a Polars expression for per-row dynamic values.
+            ksize: Size of the structuring element (the square's side, the disk's
+                diameter). Must be odd and >= 1. Accepts a Polars expression for per-row
+                dynamic values.
             iterations: Number of times the operation is applied. Accepts a Polars
                 expression for per-row dynamic values.
+            footprint: The structuring element: ``"square"`` (``ksize x ksize``) or
+                ``"disk"`` (the pixels within Euclidean distance ``ksize // 2`` of the
+                centre). Accepts a Polars expression for a per-row choice.
 
         Example:
             >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3)
         """
-        return self._append_typed("dilate", {"ksize": ksize, "iterations": iterations})
+        return self._append_typed(
+            "dilate", {"ksize": ksize, "iterations": iterations, "footprint": footprint}
+        )
 
     def distance_transform(self, *, signed: BoolOrExpr = False) -> Pipeline:
         """Exact Euclidean distance transform of a mask: an f32 image of the same
@@ -1696,21 +1741,35 @@ class _OpsMixin:
         """
         return self._append_typed("equalize_histogram", {})
 
-    def erode(self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1) -> Pipeline:
-        """Morphological erosion (local minimum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).
+    def erode(
+        self,
+        *,
+        ksize: IntOrExpr = 3,
+        iterations: IntOrExpr = 1,
+        footprint: str | pl.Expr = "square",
+    ) -> Pipeline:
+        """Morphological erosion: the local minimum over a footprint (a
+        `ksize × ksize` square, or a disk), edges replicated. Requires
+        single-channel input (e.g. after `.grayscale()` or `.threshold()`).
 
         Domain: buffer → buffer
 
         Args:
-            ksize: Size of the square structuring element. Must be odd and >= 1. Accepts
-                a Polars expression for per-row dynamic values.
+            ksize: Size of the structuring element (the square's side, the disk's
+                diameter). Must be odd and >= 1. Accepts a Polars expression for per-row
+                dynamic values.
             iterations: Number of times the operation is applied. Accepts a Polars
                 expression for per-row dynamic values.
+            footprint: The structuring element: ``"square"`` (``ksize x ksize``) or
+                ``"disk"`` (the pixels within Euclidean distance ``ksize // 2`` of the
+                centre). Accepts a Polars expression for a per-row choice.
 
         Example:
             >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
         """
-        return self._append_typed("erode", {"ksize": ksize, "iterations": iterations})
+        return self._append_typed(
+            "erode", {"ksize": ksize, "iterations": iterations, "footprint": footprint}
+        )
 
     def extract_contours(
         self,
@@ -1901,20 +1960,27 @@ class _OpsMixin:
             {"height": height, "width": width, "value": value, "filter": filter},
         )
 
-    def morphology_gradient(self, *, ksize: IntOrExpr = 3) -> Pipeline:
+    def morphology_gradient(
+        self, *, ksize: IntOrExpr = 3, footprint: str | pl.Expr = "square"
+    ) -> Pipeline:
         """Morphological gradient (dilate - erode): an edge outline. Requires
         single-channel input.
 
         Domain: buffer → buffer
 
         Args:
-            ksize: Size of the square structuring element. Must be odd and >= 1. Accepts
-                a Polars expression for per-row dynamic values.
+            ksize: Size of the structuring element. Must be odd and >= 1. Accepts a
+                Polars expression for per-row dynamic values.
+            footprint: The structuring element: ``"square"`` (``ksize x ksize``) or
+                ``"disk"`` (the pixels within Euclidean distance ``ksize // 2`` of the
+                centre). Accepts a Polars expression for a per-row choice.
 
         Example:
             >>> edges = Pipeline().source("image_bytes").grayscale().threshold(128).morphology_gradient(ksize=3)
         """
-        return self._append_typed("morphology_gradient", {"ksize": ksize})
+        return self._append_typed(
+            "morphology_gradient", {"ksize": ksize, "footprint": footprint}
+        )
 
     def neg(self) -> Pipeline:
         """Negate every value (`-x`).

@@ -149,6 +149,7 @@ registry!(
     crate::ops::Domain,
     crate::ops::color::ColorSpace,
     crate::ops::image::FilterType,
+    crate::ops::image::Footprint,
     crate::ops::filter::BorderMode,
     crate::ops::pad::PadMode,
     crate::ops::pad::PadPosition,

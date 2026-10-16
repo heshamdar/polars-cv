@@ -1133,21 +1133,41 @@ def _single_channel(x: np.ndarray) -> bool:
     return x.ndim == 3 and x.shape[2] == 1
 
 
+_FOOTPRINTS = ("square", "disk")
+
+
 def _morph_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     return {
-        "ksize": draw(st.sampled_from([1, 3, 5]), label="ksize"),
+        "ksize": draw(st.sampled_from([1, 3, 5, 7]), label="ksize"),
         "iterations": draw(st.integers(1, 3), label="iterations"),
+        "footprint": draw(st.sampled_from(_FOOTPRINTS), label="footprint"),
     }
 
 
 def _ksize_params(draw: st.DrawFn, x: np.ndarray) -> Params:
-    return {"ksize": draw(st.sampled_from([1, 3, 5]), label="ksize")}
+    return {
+        "ksize": draw(st.sampled_from([1, 3, 5, 7]), label="ksize"),
+        "footprint": draw(st.sampled_from(_FOOTPRINTS), label="footprint"),
+    }
+
+
+def _footprint(k: int, footprint: str) -> np.ndarray:
+    """The structuring element of side ``k``: the square, or the pixels within
+    Euclidean distance ``k // 2`` of the centre."""
+    r = k // 2
+    if footprint == "square":
+        return np.ones((k, k), dtype=bool)
+    yy, xx = np.mgrid[-r : r + 1, -r : r + 1]
+    return yy * yy + xx * xx <= r * r
 
 
 def _window_extreme(
-    plane: np.ndarray, k: int, reduce: Callable[..., np.ndarray]
+    plane: np.ndarray,
+    k: int,
+    reduce: Callable[..., np.ndarray],
+    footprint: str = "square",
 ) -> np.ndarray:
-    """Min or max over each ``k x k`` window, edges replicated.
+    """Min or max over each footprint of side ``k``, edges replicated.
 
     Written on NumPy windows rather than ``scipy.ndimage.grey_erosion``,
     which goes through float64 and so is wrong for 64-bit integers.
@@ -1155,20 +1175,20 @@ def _window_extreme(
     r = k // 2
     padded = np.pad(plane, r, mode="edge")
     windows = np.lib.stride_tricks.sliding_window_view(padded, (k, k))
-    return reduce(windows, axis=(-2, -1)).astype(plane.dtype)
+    return reduce(windows[..., _footprint(k, footprint)], axis=-1).astype(plane.dtype)
 
 
-def _erode(x: np.ndarray, k: int, n: int = 1) -> np.ndarray:
+def _erode(x: np.ndarray, k: int, n: int = 1, footprint: str = "square") -> np.ndarray:
     out = x[:, :, 0]
     for _ in range(n):
-        out = _window_extreme(out, k, np.min)
+        out = _window_extreme(out, k, np.min, footprint)
     return out[:, :, None]
 
 
-def _dilate(x: np.ndarray, k: int, n: int = 1) -> np.ndarray:
+def _dilate(x: np.ndarray, k: int, n: int = 1, footprint: str = "square") -> np.ndarray:
     out = x[:, :, 0]
     for _ in range(n):
-        out = _window_extreme(out, k, np.max)
+        out = _window_extreme(out, k, np.max, footprint)
     return out[:, :, None]
 
 
@@ -1907,28 +1927,36 @@ OPS: dict[str, OpSpec] = {
             "erode",
             _morph_params,
             accepts=_single_channel,
-            ref=lambda x, p: _erode(x, p["ksize"], p["iterations"]),
+            ref=lambda x, p: _erode(x, p["ksize"], p["iterations"], p["footprint"]),
             kind="spatial",
         ),
         _spec(
             "dilate",
             _morph_params,
             accepts=_single_channel,
-            ref=lambda x, p: _dilate(x, p["ksize"], p["iterations"]),
+            ref=lambda x, p: _dilate(x, p["ksize"], p["iterations"], p["footprint"]),
             kind="spatial",
         ),
         _spec(
             "morphology_open",
             _ksize_params,
             accepts=_single_channel,
-            ref=lambda x, p: _dilate(_erode(x, p["ksize"]), p["ksize"]),
+            ref=lambda x, p: _dilate(
+                _erode(x, p["ksize"], footprint=p["footprint"]),
+                p["ksize"],
+                footprint=p["footprint"],
+            ),
             kind="spatial",
         ),
         _spec(
             "morphology_close",
             _ksize_params,
             accepts=_single_channel,
-            ref=lambda x, p: _erode(_dilate(x, p["ksize"]), p["ksize"]),
+            ref=lambda x, p: _erode(
+                _dilate(x, p["ksize"], footprint=p["footprint"]),
+                p["ksize"],
+                footprint=p["footprint"],
+            ),
             kind="spatial",
         ),
         _spec(
@@ -1949,7 +1977,8 @@ OPS: dict[str, OpSpec] = {
             _ksize_params,
             accepts=_single_channel,
             ref=lambda x, p: _saturating_difference(
-                _dilate(x, p["ksize"]), _erode(x, p["ksize"])
+                _dilate(x, p["ksize"], footprint=p["footprint"]),
+                _erode(x, p["ksize"], footprint=p["footprint"]),
             ),
             note="dilate - erode, saturating (i8 127 - -25 -> 127)",
             kind="spatial",

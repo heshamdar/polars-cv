@@ -24,8 +24,8 @@ use view_buffer::execution::ExecutionPlan;
 use view_buffer::ops::filter::{BorderMode, ConvolveOp};
 use view_buffer::ops::scalar::{FusedKernel, ScalarOp};
 use view_buffer::{
-    BinaryOp, ComputeOp, DType, FilterType, ImageAdapter, InterpolationType, Normalization,
-    ViewBuffer, ViewDto, ViewExpr,
+    BinaryOp, ComputeOp, DType, FilterType, Footprint, ImageAdapter, InterpolationType,
+    Normalization, ViewBuffer, ViewDto, ViewExpr,
 };
 
 const SIZES: [usize; 3] = [256, 512, 1024];
@@ -310,11 +310,17 @@ fn spatial_kernels(c: &mut Criterion) {
     bench_sizes(c, "blur_sigma2_f32_rgb", rgb_f32, |b| {
         exec(b, |e| e.blur(2.0))
     });
-    bench_sizes(c, "erode_k3_x1_u8", gray, |b| exec(b, |e| e.erode(3, 1)));
-    bench_sizes(c, "erode_k3_x3_u8", gray, |b| exec(b, |e| e.erode(3, 3)));
-    bench_sizes(c, "dilate_k5_x4_u8", gray, |b| exec(b, |e| e.dilate(5, 4)));
+    bench_sizes(c, "erode_k3_x1_u8", gray, |b| {
+        exec(b, |e| e.erode(3, 1, Footprint::Square))
+    });
+    bench_sizes(c, "erode_k3_x3_u8", gray, |b| {
+        exec(b, |e| e.erode(3, 3, Footprint::Square))
+    });
+    bench_sizes(c, "dilate_k5_x4_u8", gray, |b| {
+        exec(b, |e| e.dilate(5, 4, Footprint::Square))
+    });
     bench_sizes(c, "erode_k3_x3_f32", gray_f32, |b| {
-        exec(b, |e| e.erode(3, 3))
+        exec(b, |e| e.erode(3, 3, Footprint::Square))
     });
     let rotate = |angle: f32, interpolation| {
         move |b| {

@@ -899,11 +899,11 @@
     "name": "dilate",
     "python": "dilate",
     "visibility": "public",
-    "doc": "Morphological dilation (local maximum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).\n\nExample:\n    >>> mask = Pipeline().source(\"image_bytes\").grayscale().threshold(128).dilate(ksize=3)",
+    "doc": "Morphological dilation: the local maximum over a footprint (a\n`ksize × ksize` square, or a disk), edges replicated. Requires\nsingle-channel input (e.g. after `.grayscale()` or `.threshold()`).\n\nExample:\n    >>> mask = Pipeline().source(\"image_bytes\").grayscale().threshold(128).dilate(ksize=3)",
     "fields": [
       {
         "name": "ksize",
-        "doc": "Size of the square structuring element. Must be odd and >= 1.\nAccepts a Polars expression for per-row dynamic values.",
+        "doc": "Size of the structuring element (the square's side, the disk's\ndiameter). Must be odd and >= 1. Accepts a Polars expression for\nper-row dynamic values.",
         "default": 3,
         "type": {
           "kind": "scalar",
@@ -919,6 +919,20 @@
           "kind": "scalar",
           "per_row": true,
           "py": "int"
+        }
+      },
+      {
+        "name": "footprint",
+        "doc": "The structuring element: ``\"square\"`` (``ksize x ksize``) or\n``\"disk\"`` (the pixels within Euclidean distance ``ksize // 2`` of\nthe centre). Accepts a Polars expression for a per-row choice.",
+        "default": "square",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "Footprint",
+          "variants": [
+            "square",
+            "disk"
+          ]
         }
       }
     ],
@@ -995,11 +1009,11 @@
     "name": "erode",
     "python": "erode",
     "visibility": "public",
-    "doc": "Morphological erosion (local minimum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).\n\nExample:\n    >>> mask = Pipeline().source(\"image_bytes\").grayscale().threshold(128).erode(ksize=3)",
+    "doc": "Morphological erosion: the local minimum over a footprint (a\n`ksize × ksize` square, or a disk), edges replicated. Requires\nsingle-channel input (e.g. after `.grayscale()` or `.threshold()`).\n\nExample:\n    >>> mask = Pipeline().source(\"image_bytes\").grayscale().threshold(128).erode(ksize=3)",
     "fields": [
       {
         "name": "ksize",
-        "doc": "Size of the square structuring element. Must be odd and >= 1.\nAccepts a Polars expression for per-row dynamic values.",
+        "doc": "Size of the structuring element (the square's side, the disk's\ndiameter). Must be odd and >= 1. Accepts a Polars expression for\nper-row dynamic values.",
         "default": 3,
         "type": {
           "kind": "scalar",
@@ -1015,6 +1029,20 @@
           "kind": "scalar",
           "per_row": true,
           "py": "int"
+        }
+      },
+      {
+        "name": "footprint",
+        "doc": "The structuring element: ``\"square\"`` (``ksize x ksize``) or\n``\"disk\"`` (the pixels within Euclidean distance ``ksize // 2`` of\nthe centre). Accepts a Polars expression for a per-row choice.",
+        "default": "square",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "Footprint",
+          "variants": [
+            "square",
+            "disk"
+          ]
         }
       }
     ],
@@ -1429,12 +1457,26 @@
     "fields": [
       {
         "name": "ksize",
-        "doc": "Size of the square structuring element. Must be odd and >= 1. Accepts a\nPolars expression for per-row dynamic values.",
+        "doc": "Size of the structuring element. Must be odd and >= 1. Accepts a\nPolars expression for per-row dynamic values.",
         "default": 3,
         "type": {
           "kind": "scalar",
           "per_row": true,
           "py": "int"
+        }
+      },
+      {
+        "name": "footprint",
+        "doc": "The structuring element: ``\"square\"`` (``ksize x ksize``) or\n``\"disk\"`` (the pixels within Euclidean distance ``ksize // 2`` of\nthe centre). Accepts a Polars expression for a per-row choice.",
+        "default": "square",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "Footprint",
+          "variants": [
+            "square",
+            "disk"
+          ]
         }
       }
     ],

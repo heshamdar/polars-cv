@@ -10,7 +10,9 @@
 
 use view_buffer::core::dtype::ViewType;
 use view_buffer::ops::color::{ColorConvertOp, ColorSpace};
-use view_buffer::{apply_channel_merge, ImageOp, ImageOpKind, ViewBuffer, ViewDto, ViewExpr};
+use view_buffer::{
+    apply_channel_merge, Footprint, ImageOp, ImageOpKind, ViewBuffer, ViewDto, ViewExpr,
+};
 
 fn run(buf: ViewBuffer, dto: ViewDto) -> ViewBuffer {
     ViewExpr::new_source(buf).apply_op(dto).plan().execute()
@@ -145,7 +147,10 @@ fn channel_merge_is_exact() {
 #[test]
 fn morph_gradient_is_exact() {
     let gradient = ViewDto::Image(ImageOp {
-        kind: ImageOpKind::MorphGradient { ksize: 3 },
+        kind: ImageOpKind::MorphGradient {
+            ksize: 3,
+            footprint: Footprint::Square,
+        },
     });
     let u = ViewBuffer::from_vec_with_shape(
         vec![9_007_199_254_740_993u64, 9_007_199_254_740_995],
