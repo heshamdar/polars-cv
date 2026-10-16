@@ -51,7 +51,7 @@ pub use compute::{ComputeOp, Normalization, NormalizeMethod};
 pub use dto::ViewDto;
 pub use filter::{BorderMode, ConvolveOp};
 pub use histogram::{HistogramOp, HistogramOutput};
-pub use image::{FilterType, ImageOp, ImageOpKind};
+pub use image::{FilterType, Footprint, ImageOp, ImageOpKind};
 pub use mask::{apply_mask, validate_mask};
 pub use pad::{PadMode, PadPosition};
 pub use phash::{HashAlgorithm, PerceptualHashOp};

@@ -902,16 +902,23 @@ class Pipeline(_OpsMixin):
     # --- Morphological Operations ---
 
     @_sugar("erode", "dilate")
-    def morphology_open(self, *, ksize: IntOrExpr = 3) -> "Pipeline":
+    def morphology_open(
+        self, *, ksize: IntOrExpr = 3, footprint: str | pl.Expr = "square"
+    ) -> "Pipeline":
         """
         Morphological opening (erode then dilate).
 
         Removes small bright spots while preserving larger structures.
-        Equivalent to ``.erode(ksize=ksize).dilate(ksize=ksize)``.
+        Equivalent to ``.erode(ksize=ksize, footprint=footprint)
+        .dilate(ksize=ksize, footprint=footprint)``.
 
         Args:
-            ksize: Size of the square structuring element. Must be odd and >= 1.
-                Accepts a Polars expression for per-row dynamic values.
+            ksize: Size of the structuring element (the square's side, the
+                disk's diameter). Must be odd and >= 1. Accepts a Polars
+                expression for per-row dynamic values.
+            footprint: The structuring element: ``"square"`` or ``"disk"``
+                (the pixels within Euclidean distance ``ksize // 2``). Accepts
+                a Polars expression for a per-row choice.
 
         Returns:
             New Pipeline with opening applied.
@@ -921,19 +928,28 @@ class Pipeline(_OpsMixin):
             >>> cleaned = Pipeline().source("image_bytes").grayscale().threshold(128).morphology_open(ksize=3)
             ```
         """
-        return self.erode(ksize=ksize).dilate(ksize=ksize)
+        return self.erode(ksize=ksize, footprint=footprint).dilate(
+            ksize=ksize, footprint=footprint
+        )
 
     @_sugar("dilate", "erode")
-    def morphology_close(self, *, ksize: IntOrExpr = 3) -> "Pipeline":
+    def morphology_close(
+        self, *, ksize: IntOrExpr = 3, footprint: str | pl.Expr = "square"
+    ) -> "Pipeline":
         """
         Morphological closing (dilate then erode).
 
         Fills small dark holes while preserving larger structures.
-        Equivalent to ``.dilate(ksize=ksize).erode(ksize=ksize)``.
+        Equivalent to ``.dilate(ksize=ksize, footprint=footprint)
+        .erode(ksize=ksize, footprint=footprint)``.
 
         Args:
-            ksize: Size of the square structuring element. Must be odd and >= 1.
-                Accepts a Polars expression for per-row dynamic values.
+            ksize: Size of the structuring element (the square's side, the
+                disk's diameter). Must be odd and >= 1. Accepts a Polars
+                expression for per-row dynamic values.
+            footprint: The structuring element: ``"square"`` or ``"disk"``
+                (the pixels within Euclidean distance ``ksize // 2``). Accepts
+                a Polars expression for a per-row choice.
 
         Returns:
             New Pipeline with closing applied.
@@ -943,7 +959,9 @@ class Pipeline(_OpsMixin):
             >>> filled = Pipeline().source("image_bytes").grayscale().threshold(128).morphology_close(ksize=3)
             ```
         """
-        return self.dilate(ksize=ksize).erode(ksize=ksize)
+        return self.dilate(ksize=ksize, footprint=footprint).erode(
+            ksize=ksize, footprint=footprint
+        )
 
     # --- Histogram Equalization ---
 

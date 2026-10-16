@@ -237,14 +237,20 @@ class _LazyForwardersMixin:
         )
 
     def dilate(
-        self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1
+        self,
+        *,
+        ksize: IntOrExpr = 3,
+        iterations: IntOrExpr = 1,
+        footprint: str | pl.Expr = "square",
     ) -> LazyPipelineExpr:
-        """Morphological dilation (local maximum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).
+        """Morphological dilation: the local maximum over a footprint (a
 
         Lazy form of :meth:`Pipeline.dilate` on this expression's output.
         """
         return self.pipe(
-            self._continuation().dilate(ksize=ksize, iterations=iterations)
+            self._continuation().dilate(
+                ksize=ksize, iterations=iterations, footprint=footprint
+            )
         )
 
     def distance_transform(self, *, signed: BoolOrExpr = False) -> LazyPipelineExpr:
@@ -262,13 +268,21 @@ class _LazyForwardersMixin:
         return self.pipe(self._continuation().equalize_histogram())
 
     def erode(
-        self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1
+        self,
+        *,
+        ksize: IntOrExpr = 3,
+        iterations: IntOrExpr = 1,
+        footprint: str | pl.Expr = "square",
     ) -> LazyPipelineExpr:
-        """Morphological erosion (local minimum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).
+        """Morphological erosion: the local minimum over a footprint (a
 
         Lazy form of :meth:`Pipeline.erode` on this expression's output.
         """
-        return self.pipe(self._continuation().erode(ksize=ksize, iterations=iterations))
+        return self.pipe(
+            self._continuation().erode(
+                ksize=ksize, iterations=iterations, footprint=footprint
+            )
+        )
 
     def extract_contours(
         self,
@@ -407,26 +421,38 @@ class _LazyForwardersMixin:
             )
         )
 
-    def morphology_close(self, *, ksize: IntOrExpr = 3) -> LazyPipelineExpr:
+    def morphology_close(
+        self, *, ksize: IntOrExpr = 3, footprint: str | pl.Expr = "square"
+    ) -> LazyPipelineExpr:
         """Morphological closing (dilate then erode).
 
         Lazy form of :meth:`Pipeline.morphology_close` on this expression's output.
         """
-        return self.pipe(self._continuation().morphology_close(ksize=ksize))
+        return self.pipe(
+            self._continuation().morphology_close(ksize=ksize, footprint=footprint)
+        )
 
-    def morphology_gradient(self, *, ksize: IntOrExpr = 3) -> LazyPipelineExpr:
+    def morphology_gradient(
+        self, *, ksize: IntOrExpr = 3, footprint: str | pl.Expr = "square"
+    ) -> LazyPipelineExpr:
         """Morphological gradient (dilate - erode): an edge outline. Requires
 
         Lazy form of :meth:`Pipeline.morphology_gradient` on this expression's output.
         """
-        return self.pipe(self._continuation().morphology_gradient(ksize=ksize))
+        return self.pipe(
+            self._continuation().morphology_gradient(ksize=ksize, footprint=footprint)
+        )
 
-    def morphology_open(self, *, ksize: IntOrExpr = 3) -> LazyPipelineExpr:
+    def morphology_open(
+        self, *, ksize: IntOrExpr = 3, footprint: str | pl.Expr = "square"
+    ) -> LazyPipelineExpr:
         """Morphological opening (erode then dilate).
 
         Lazy form of :meth:`Pipeline.morphology_open` on this expression's output.
         """
-        return self.pipe(self._continuation().morphology_open(ksize=ksize))
+        return self.pipe(
+            self._continuation().morphology_open(ksize=ksize, footprint=footprint)
+        )
 
     def neg(self) -> LazyPipelineExpr:
         """Negate every value (`-x`).

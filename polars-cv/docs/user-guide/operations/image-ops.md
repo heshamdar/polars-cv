@@ -370,6 +370,23 @@ Pipeline().source("image_bytes").grayscale().threshold(128).morphology_gradient(
 
 **Common workflow:** `threshold() → erode() → dilate() → extract_contours()`.
 
+### Footprint
+
+Every morphology op takes `footprint="square"` (the default, a `ksize × ksize`
+square) or `footprint="disk"`: the pixels within Euclidean distance
+`ksize // 2` of the centre, so shapes grow and shrink round rather than
+square.
+
+```python
+# Round dilation by 4 pixels
+Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=9, footprint="disk")
+```
+
+With a disk, `iterations=n` applies the disk `n` times; unlike squares, two
+disks do not add up to one larger disk, so for a single round offset of `r`
+use `ksize=2 * r + 1` with one iteration. On a mask, a disk dilation by `r`
+equals `distance_transform()` of the inverted mask thresholded at `r`.
+
 ## Distance Transform
 
 The exact Euclidean distance transform of a single-channel mask, as an `f32`

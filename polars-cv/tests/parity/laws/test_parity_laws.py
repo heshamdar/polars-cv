@@ -305,16 +305,22 @@ def test_smoothing_a_constant_image_leaves_it_constant(
 
 @property_lanes(spec=image_specs(channels=(1,), max_side=24), data=st.data())
 def test_morphology_orders_pointwise(spec, data: st.DataObject) -> None:
-    """erode <= x <= dilate and open <= x <= close, at every pixel.
+    """erode <= x <= dilate and open <= x <= close, at every pixel, for
+    either footprint (each holds its centre).
 
     A NaN in a window makes the extreme NaN (the one ordering rule), so a
     position where either side is NaN orders nothing and is skipped."""
     image = spec.render()
-    k = data.draw(st.sampled_from([1, 3, 5]), label="ksize")
-    eroded = _run(image, [Step("erode", {"ksize": k, "iterations": 1})])
-    dilated = _run(image, [Step("dilate", {"ksize": k, "iterations": 1})])
-    opened = _run(image, [Step("morphology_open", {"ksize": k})])
-    closed = _run(image, [Step("morphology_close", {"ksize": k})])
+    k = data.draw(st.sampled_from([1, 3, 5, 7]), label="ksize")
+    fp = data.draw(st.sampled_from(["square", "disk"]), label="footprint")
+    eroded = _run(
+        image, [Step("erode", {"ksize": k, "iterations": 1, "footprint": fp})]
+    )
+    dilated = _run(
+        image, [Step("dilate", {"ksize": k, "iterations": 1, "footprint": fp})]
+    )
+    opened = _run(image, [Step("morphology_open", {"ksize": k, "footprint": fp})])
+    closed = _run(image, [Step("morphology_close", {"ksize": k, "footprint": fp})])
     for label, low, high in (
         ("erode <= x", eroded, image),
         ("x <= dilate", image, dilated),
@@ -359,6 +365,29 @@ def test_distance_transform_commutes_with_the_grid_symmetries(
         _run(image, [symmetry, dt]),
         _run(image, [dt, symmetry]),
     )
+
+
+@property_lanes(
+    spec=image_specs(dtypes=("u8",), channels=(1,), max_side=24, contents=("mask",)),
+    data=st.data(),
+)
+def test_disk_morphology_is_the_distance_transform_thresholded(
+    spec, data: st.DataObject
+) -> None:
+    """On a mask, a disk dilation sets exactly the pixels within ``r`` of a set
+    pixel, and a disk erosion keeps exactly those more than ``r`` from an unset
+    one: the morphology and the distance transform, two kernels, agree."""
+    image = spec.render()
+    k = data.draw(st.sampled_from([1, 3, 5, 7, 9]), label="ksize")
+    r = k // 2
+    mask = [Step("threshold", {"value": 0.5})]
+    dilated = _run(image, [*mask, Step("dilate", {"ksize": k, "footprint": "disk"})])
+    eroded = _run(image, [*mask, Step("erode", {"ksize": k, "footprint": "disk"})])
+    # Distance to the nearest set pixel: the transform of the inverted mask.
+    to_set = _run(image, [*mask, Step("invert", {}), Step("distance_transform", {})])
+    to_unset = _run(image, [*mask, Step("distance_transform", {})])
+    _agree("dilate(disk) vs dt(inverted) <= r", dilated != 0, to_set <= r)
+    _agree("erode(disk) vs dt > r", eroded != 0, to_unset > r)
 
 
 @property_lanes(spec=_MASKS, data=st.data())

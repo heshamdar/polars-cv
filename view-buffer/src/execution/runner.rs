@@ -28,7 +28,7 @@ use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 
 #[cfg(feature = "image_interop")]
-use crate::ops::{FilterType, ImageOpKind};
+use crate::ops::{FilterType, Footprint, ImageOpKind};
 
 #[cfg(feature = "image_interop")]
 use fast_image_resize as fir;
@@ -1028,9 +1028,19 @@ fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
             high_threshold,
         } => apply_canny(work_buf, low_threshold, high_threshold),
         ImageOpKind::HistogramEqualize => apply_histogram_equalize(work_buf),
-        ImageOpKind::Erode { ksize, iterations } => apply_erode(work_buf, ksize, iterations),
-        ImageOpKind::Dilate { ksize, iterations } => apply_dilate(work_buf, ksize, iterations),
-        ImageOpKind::MorphGradient { ksize } => apply_morph_gradient(work_buf, ksize),
+        ImageOpKind::Erode {
+            ksize,
+            iterations,
+            footprint,
+        } => apply_erode(work_buf, ksize, iterations, footprint),
+        ImageOpKind::Dilate {
+            ksize,
+            iterations,
+            footprint,
+        } => apply_dilate(work_buf, ksize, iterations, footprint),
+        ImageOpKind::MorphGradient { ksize, footprint } => {
+            apply_morph_gradient(work_buf, ksize, footprint)
+        }
         ImageOpKind::DistanceTransform { signed } => {
             super::distance::distance_transform(&work_buf, signed)
         }
@@ -1628,7 +1638,7 @@ pub(crate) fn apply_image_inner(_buf: ViewBuffer, _op: ImageOp) -> ViewBuffer {
 /// Operates on single-channel data only; panics for multi-channel input.
 /// Dtype-generic: dispatches per element type.
 #[cfg(feature = "image_interop")]
-fn apply_erode(buf: ViewBuffer, ksize: u32, iterations: u32) -> ViewBuffer {
+fn apply_erode(buf: ViewBuffer, ksize: u32, iterations: u32, footprint: Footprint) -> ViewBuffer {
     let shape = buf.shape();
     if !is_single_channel(shape) {
         let channels = get_channel_count(shape);
@@ -1637,7 +1647,7 @@ fn apply_erode(buf: ViewBuffer, ksize: u32, iterations: u32) -> ViewBuffer {
              Consider using .grayscale() or .threshold() first."
         );
     }
-    morph_iterated(buf, ksize, iterations, MorphKind::Min)
+    morph_iterated(buf, ksize, iterations, MorphKind::Min, footprint)
 }
 
 /// Morphological dilation: output = local maximum over ksize×ksize neighborhood.
@@ -1646,7 +1656,7 @@ fn apply_erode(buf: ViewBuffer, ksize: u32, iterations: u32) -> ViewBuffer {
 /// Operates on single-channel data only; panics for multi-channel input.
 /// Dtype-generic: dispatches per element type.
 #[cfg(feature = "image_interop")]
-fn apply_dilate(buf: ViewBuffer, ksize: u32, iterations: u32) -> ViewBuffer {
+fn apply_dilate(buf: ViewBuffer, ksize: u32, iterations: u32, footprint: Footprint) -> ViewBuffer {
     let shape = buf.shape();
     if !is_single_channel(shape) {
         let channels = get_channel_count(shape);
@@ -1655,7 +1665,7 @@ fn apply_dilate(buf: ViewBuffer, ksize: u32, iterations: u32) -> ViewBuffer {
              Consider using .grayscale() or .threshold() first."
         );
     }
-    morph_iterated(buf, ksize, iterations, MorphKind::Max)
+    morph_iterated(buf, ksize, iterations, MorphKind::Max, footprint)
 }
 
 /// `iterations` min (or max) passes of a `ksize` window.
@@ -1673,17 +1683,28 @@ fn apply_dilate(buf: ViewBuffer, ksize: u32, iterations: u32) -> ViewBuffer {
 /// NaN candidate and keeps the incumbent of two equal signed zeros, so its
 /// result depends on the passes' structure, and one wide pass differs
 /// (`tests/morph_ref.rs`, NaN and signed-zero cases).
+///
+/// A disk keeps the passes for every dtype: two discrete disks do not compose
+/// into one larger disk (radius 1 twice reaches the diagonal `(1, 1)`, which
+/// the radius-2 disk also holds, but radius 2 twice misses nothing the radius-4
+/// disk holds only by luck), so `iterations` means that many disk passes.
 #[cfg(feature = "image_interop")]
-fn morph_iterated(buf: ViewBuffer, ksize: u32, iterations: u32, kind: MorphKind) -> ViewBuffer {
+fn morph_iterated(
+    buf: ViewBuffer,
+    ksize: u32,
+    iterations: u32,
+    kind: MorphKind,
+    footprint: Footprint,
+) -> ViewBuffer {
     let radius = (ksize / 2) as usize;
-    if matches!(buf.dtype(), DType::F32 | DType::F64) {
+    if footprint == Footprint::Disk || matches!(buf.dtype(), DType::F32 | DType::F64) {
         let mut result = buf;
         for _ in 0..iterations {
-            result = morph_minmax_pass(&result, radius, kind);
+            result = morph_pass(&result, radius, kind, footprint);
         }
         return result;
     }
-    morph_minmax_pass(&buf, radius * iterations as usize, kind)
+    morph_pass(&buf, radius * iterations as usize, kind, footprint)
 }
 
 /// Morphological gradient: dilate(input) − erode(input), clamped to valid range.
@@ -1691,7 +1712,7 @@ fn morph_iterated(buf: ViewBuffer, ksize: u32, iterations: u32, kind: MorphKind)
 /// Produces an edge outline by computing the difference between dilation and
 /// erosion. Output dtype matches input.
 #[cfg(feature = "image_interop")]
-fn apply_morph_gradient(buf: ViewBuffer, ksize: u32) -> ViewBuffer {
+fn apply_morph_gradient(buf: ViewBuffer, ksize: u32, footprint: Footprint) -> ViewBuffer {
     let shape = buf.shape();
     if !is_single_channel(shape) {
         let channels = get_channel_count(shape);
@@ -1701,8 +1722,8 @@ fn apply_morph_gradient(buf: ViewBuffer, ksize: u32) -> ViewBuffer {
         );
     }
     let radius = (ksize / 2) as usize;
-    let dilated = morph_minmax_pass(&buf, radius, MorphKind::Max);
-    let eroded = morph_minmax_pass(&buf, radius, MorphKind::Min);
+    let dilated = morph_pass(&buf, radius, MorphKind::Max, footprint);
+    let eroded = morph_pass(&buf, radius, MorphKind::Min, footprint);
 
     morph_subtract(&dilated, &eroded)
 }
@@ -1714,41 +1735,26 @@ enum MorphKind {
     Max,
 }
 
-/// Single-pass min or max filter over a `(2 * radius + 1)`-square
-/// rectangular structuring element.
+/// Single-pass min or max filter over a footprint of radius `radius`: the
+/// `(2 * radius + 1)`-square, or the disk of that radius.
 ///
-/// Uses a separable approach (row pass then column pass) for efficiency.
 /// Border handling: replicate edge pixels.
 #[cfg(feature = "image_interop")]
-fn morph_minmax_pass(buf: &ViewBuffer, radius: usize, kind: MorphKind) -> ViewBuffer {
+fn morph_pass(
+    buf: &ViewBuffer,
+    radius: usize,
+    kind: MorphKind,
+    footprint: Footprint,
+) -> ViewBuffer {
     if radius == 0 {
         return buf.clone();
     }
-    let dtype = buf.dtype();
-    match dtype {
-        DType::U8 => morph_dispatch::<u8>(buf, radius, kind),
-        DType::I8 => morph_dispatch::<i8>(buf, radius, kind),
-        DType::U16 => morph_dispatch::<u16>(buf, radius, kind),
-        DType::I16 => morph_dispatch::<i16>(buf, radius, kind),
-        DType::U32 => morph_dispatch::<u32>(buf, radius, kind),
-        DType::I32 => morph_dispatch::<i32>(buf, radius, kind),
-        DType::F32 => morph_dispatch::<f32>(buf, radius, kind),
-        DType::F64 => morph_dispatch::<f64>(buf, radius, kind),
-        DType::U64 => morph_dispatch::<u64>(buf, radius, kind),
-        DType::I64 => morph_dispatch::<i64>(buf, radius, kind),
-    }
-}
-
-/// Select the const-generic Min/Max instantiation for one element type.
-#[cfg(feature = "image_interop")]
-fn morph_dispatch<T>(buf: &ViewBuffer, radius: usize, kind: MorphKind) -> ViewBuffer
-where
-    T: crate::core::dtype::ViewType + Default + Copy + PartialOrd,
-{
-    match kind {
-        MorphKind::Min => morph_minmax_typed::<T, true>(buf, radius),
-        MorphKind::Max => morph_minmax_typed::<T, false>(buf, radius),
-    }
+    with_dtype!(buf.dtype(), T => match (kind, footprint) {
+        (MorphKind::Min, Footprint::Square) => morph_minmax_typed::<T, true>(buf, radius),
+        (MorphKind::Max, Footprint::Square) => morph_minmax_typed::<T, false>(buf, radius),
+        (MorphKind::Min, Footprint::Disk) => morph_disk_typed::<T, true>(buf, radius),
+        (MorphKind::Max, Footprint::Disk) => morph_disk_typed::<T, false>(buf, radius),
+    })
 }
 
 /// One Min/Max fold step with the comparison kind monomorphized out of the
@@ -1794,7 +1800,36 @@ where
         .dense_rows::<T>()
         .expect("a rank-2 or rank-3 buffer has packed rows after to_dense_rows");
 
-    // ── Row pass ─────────────────────────────────────────────────────────
+    let row_out = row_extreme::<T, IS_MIN>(&src_rows, w, radius);
+
+    // ── Column pass: whole-row folds with a per-row index clamp ──────────
+    // Seeded from the row-pass output (the original code's `val = center`),
+    // then folded in ascending ky order; src rows live in `row_out`, the
+    // destination in `col_out`, so the borrows are disjoint.
+    let mut col_out: Vec<T> = row_out.clone();
+    for y in 0..h {
+        let dst_row = &mut col_out[y * w..(y + 1) * w];
+        for ky in -(radius as i64)..=radius as i64 {
+            let sy = (y as i64 + ky).clamp(0, h as i64 - 1) as usize;
+            let src_row = &row_out[sy * w..(sy + 1) * w];
+            for (dst, &cand) in dst_row.iter_mut().zip(src_row) {
+                *dst = morph_select::<T, IS_MIN>(*dst, cand);
+            }
+        }
+    }
+
+    ViewBuffer::from_vec_with_shape(col_out, shape.to_vec())
+}
+
+/// The row pass of a min/max filter: each row's extreme over `x ± radius`,
+/// edges replicated, folded in ascending tap order from the centre pixel.
+/// The square's first pass and each of the disk's row widths.
+#[cfg(feature = "image_interop")]
+fn row_extreme<T, const IS_MIN: bool>(src_rows: &[&[T]], w: usize, radius: usize) -> Vec<T>
+where
+    T: crate::core::dtype::ViewType + Default + Copy + PartialOrd,
+{
+    let h = src_rows.len();
     let mut row_out: Vec<T> = vec![T::default(); h * w];
     for y in 0..h {
         let row_in = src_rows[y];
@@ -1834,24 +1869,56 @@ where
             }
         }
     }
+    row_out
+}
 
-    // ── Column pass: whole-row folds with a per-row index clamp ──────────
-    // Seeded from the row-pass output (the original code's `val = center`),
-    // then folded in ascending ky order; src rows live in `row_out`, the
-    // destination in `col_out`, so the borrows are disjoint.
-    let mut col_out: Vec<T> = row_out.clone();
+/// Typed min/max filter over the disk of radius `radius`: the pixels within
+/// Euclidean distance `radius` of the centre, edges replicated.
+///
+/// The disk is a stack of horizontal spans, row offset `dy` spanning
+/// `±floor(sqrt(radius² − dy²))`, so it reuses the square's row pass: one
+/// [`row_extreme`] image per distinct half-width, then a column fold over
+/// `dy`, each row read from the image of its own half-width. Clamping each
+/// coordinate replicates the edge exactly as the square does.
+#[cfg(feature = "image_interop")]
+fn morph_disk_typed<T, const IS_MIN: bool>(buf: &ViewBuffer, radius: usize) -> ViewBuffer
+where
+    T: crate::core::dtype::ViewType + Default + Copy + PartialOrd,
+{
+    let rows_buf = buf.to_dense_rows();
+    let shape = rows_buf.shape();
+    let (h, w) = (shape[0], shape[1]);
+    let src_rows: Vec<&[T]> = rows_buf
+        .dense_rows::<T>()
+        .expect("a rank-2 or rank-3 buffer has packed rows after to_dense_rows");
+    let half: Vec<usize> = (0..=radius)
+        .map(|dy| (radius * radius - dy * dy).isqrt())
+        .collect();
+    let mut by_width: Vec<Option<Vec<T>>> = vec![None; radius + 1];
+    for &hw in &half {
+        if by_width[hw].is_none() {
+            by_width[hw] = Some(row_extreme::<T, IS_MIN>(&src_rows, w, hw));
+        }
+    }
+    let rows_of = |dy: i64| -> &[T] {
+        by_width[half[dy.unsigned_abs() as usize]]
+            .as_deref()
+            .expect("every half-width was computed")
+    };
+    // Seeded from the centre row (dy = 0, the full width), then folded in
+    // ascending dy, as the square's column pass is.
+    let mut out: Vec<T> = rows_of(0).to_vec();
     for y in 0..h {
-        let dst_row = &mut col_out[y * w..(y + 1) * w];
-        for ky in -(radius as i64)..=radius as i64 {
-            let sy = (y as i64 + ky).clamp(0, h as i64 - 1) as usize;
-            let src_row = &row_out[sy * w..(sy + 1) * w];
+        let dst_row = &mut out[y * w..(y + 1) * w];
+        for dy in -(radius as i64)..=radius as i64 {
+            let sy = (y as i64 + dy).clamp(0, h as i64 - 1) as usize;
+            let src_row = &rows_of(dy)[sy * w..(sy + 1) * w];
             for (dst, &cand) in dst_row.iter_mut().zip(src_row) {
                 *dst = morph_select::<T, IS_MIN>(*dst, cand);
             }
         }
     }
-
-    ViewBuffer::from_vec_with_shape(col_out, shape.to_vec())
+    ViewBuffer::from_vec_with_shape(out, shape.to_vec())
 }
 
 /// Element-wise saturating subtraction: result = a − b, clamped to valid range.

@@ -284,11 +284,13 @@ mod tests {
             img(ImageOpKind::Blur { sigma: 2.0 }).spatial_dependency(),
             SpatialDependency::neighborhood(6)
         );
-        // Erode/Dilate: radius = (ksize / 2) * iterations.
+        // Erode/Dilate: radius = (ksize / 2) * iterations, whichever the
+        // footprint (a disk reaches as far as the square along an axis).
         assert_eq!(
             img(ImageOpKind::Erode {
                 ksize: 5,
-                iterations: 2
+                iterations: 2,
+                footprint: crate::ops::Footprint::Square,
             })
             .spatial_dependency(),
             SpatialDependency::neighborhood(4)
@@ -296,14 +298,19 @@ mod tests {
         assert_eq!(
             img(ImageOpKind::Dilate {
                 ksize: 3,
-                iterations: 1
+                iterations: 1,
+                footprint: crate::ops::Footprint::Disk,
             })
             .spatial_dependency(),
             SpatialDependency::neighborhood(1)
         );
         // MorphGradient = dilate − erode, each one iteration: radius = ksize / 2.
         assert_eq!(
-            img(ImageOpKind::MorphGradient { ksize: 7 }).spatial_dependency(),
+            img(ImageOpKind::MorphGradient {
+                ksize: 7,
+                footprint: crate::ops::Footprint::Disk,
+            })
+            .spatial_dependency(),
             SpatialDependency::neighborhood(3)
         );
     }

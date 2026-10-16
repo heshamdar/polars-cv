@@ -42,7 +42,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-80 | Extension types | Feature | Opt-in tagged geometry output (`polars_cv.point` / `.contour` / `.bbox`) |
 | CR-81 | Extension types | Decision | Whether any output becomes tagged by default (a major version) |
 | CR-82 | Extension types | Decision | Whether `polars_cv.ndarray` carries `dtype`/`ndim` metadata |
-| CR-94 | Drawing | Feature | `erode`/`dilate`/`morphology_gradient(shape="disk")`, from the distance transform |
 | CR-95 | Drawing | Feature | `apply_lut(table, dtype=)`: per-value tables and 1→K palettes |
 | CR-96 | Drawing | Feature | `rasterize(supersample=)`: anti-aliased coverage |
 | CR-97 | Drawing | Feature | Open contours in the pipeline contour domain; `boundary()` / `close()` |
@@ -267,8 +266,8 @@ for anti-aliasing, and filled primitives for every stroke. Each item extends
 an existing family or rule where that is cleaner than a new op, reuses an
 engine primitive (`geo` 0.33's `Buffer`/`BooleanOps`/`ChaikinSmoothing`/
 `Densify`, `ops::elementwise`, `scanline_fill`), and is built test-first with
-an independent oracle. Order: CR-95, CR-96 and CR-100 are independent; CR-94
-builds on CR-93 (done); CR-97 → CR-98 → CR-99; CR-101 last.
+an independent oracle. Order: CR-95, CR-96 and CR-100 are independent (CR-93 and
+CR-94 are done); CR-97 → CR-98 → CR-99; CR-101 last.
 
 **Decisions (owner, 2026-10-16).**
 1. The pipeline contour domain carries open contours (lines) as well as
@@ -284,14 +283,6 @@ builds on CR-93 (done); CR-97 → CR-98 → CR-99; CR-101 last.
 5. No built-in colormaps for now: `apply_lut` takes explicit tables.
 6. Line width, cap and join are rendering attributes on `rasterize`; `offset`
    is geometry on regions only and takes `join` alone.
-
-### CR-94 — Disk structuring element for morphology
-
-- `shape: "square" | "disk"` (`KernelShape`, `named_variants!`) on `erode`,
-  `dilate` and `morphology_gradient`; default `"square"` stays bit-identical.
-  A disk of radius `ksize // 2` is the distance transform thresholded, not a
-  second neighbourhood loop. Spatial dependency stays `Neighborhood(r)`.
-- Oracle: `scipy.ndimage` grey morphology with a disk footprint.
 
 ### CR-95 — `apply_lut(table, *, dtype="u8")`
 
@@ -616,3 +607,4 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 | CR-91 | A colour conversion's float bound scaled with its alpha (an infinite alpha made `to_hsv`'s unbuildable, `to_ycbcr`'s infinite) | Resolved: `color_magnitude` scales `to_hsv`, `to_ycbcr` and `grayscale` bounds by the colour channels (0.35.0) |
 | CR-92 | The `to_lab` reference was OpenCV's float Lab, 0.57 off in a* on dark pixels (the engine was exact) | Resolved: Lab by its definition in float64; bound 0.5 -> 0.01 (0.35.0) |
 | CR-93 | `distance_transform(signed=)`: exact Euclidean distance transform | Added (Unreleased): held to scipy exactly and OpenCV within one ulp, plus parity laws |
+| CR-94 | Disk structuring element for morphology | Added (Unreleased) as `footprint="disk"` (not `shape=`, which `rasterize` uses for a canvas); a min/max over row spans reusing the square's row pass, since greyscale input rules out thresholding the distance transform, which became the oracle instead |

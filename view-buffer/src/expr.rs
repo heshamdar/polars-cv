@@ -447,24 +447,46 @@ impl ViewExpr {
         }))
     }
 
-    /// Morphological erosion: local minimum over `ksize×ksize` neighborhood.
-    pub fn erode(self: &Arc<Self>, ksize: u32, iterations: u32) -> Arc<Self> {
+    /// Morphological erosion: local minimum over the footprint.
+    pub fn erode(
+        self: &Arc<Self>,
+        ksize: u32,
+        iterations: u32,
+        footprint: crate::ops::Footprint,
+    ) -> Arc<Self> {
         self.apply_op(ViewDto::Image(ImageOp {
-            kind: ImageOpKind::Erode { ksize, iterations },
+            kind: ImageOpKind::Erode {
+                ksize,
+                iterations,
+                footprint,
+            },
         }))
     }
 
-    /// Morphological dilation: local maximum over `ksize×ksize` neighborhood.
-    pub fn dilate(self: &Arc<Self>, ksize: u32, iterations: u32) -> Arc<Self> {
+    /// Morphological dilation: local maximum over the footprint.
+    pub fn dilate(
+        self: &Arc<Self>,
+        ksize: u32,
+        iterations: u32,
+        footprint: crate::ops::Footprint,
+    ) -> Arc<Self> {
         self.apply_op(ViewDto::Image(ImageOp {
-            kind: ImageOpKind::Dilate { ksize, iterations },
+            kind: ImageOpKind::Dilate {
+                ksize,
+                iterations,
+                footprint,
+            },
         }))
     }
 
     /// Morphological gradient: dilate − erode (edge outline).
-    pub fn morph_gradient(self: &Arc<Self>, ksize: u32) -> Arc<Self> {
+    pub fn morph_gradient(
+        self: &Arc<Self>,
+        ksize: u32,
+        footprint: crate::ops::Footprint,
+    ) -> Arc<Self> {
         self.apply_op(ViewDto::Image(ImageOp {
-            kind: ImageOpKind::MorphGradient { ksize },
+            kind: ImageOpKind::MorphGradient { ksize, footprint },
         }))
     }
 
@@ -771,10 +793,12 @@ mod dtype_contract_tests {
             ImageOpKind::Erode {
                 ksize: 3,
                 iterations: 1,
+                footprint: crate::ops::Footprint::Square,
             },
             ImageOpKind::Dilate {
                 ksize: 3,
                 iterations: 1,
+                footprint: crate::ops::Footprint::Disk,
             },
             ImageOpKind::ChannelSwap {
                 order: vec![2, 1, 0],

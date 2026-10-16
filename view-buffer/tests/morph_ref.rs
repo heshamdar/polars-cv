@@ -12,7 +12,7 @@
 
 #![cfg(feature = "image_interop")]
 
-use view_buffer::{DType, ViewBuffer, ViewExpr};
+use view_buffer::{DType, Footprint, ViewBuffer, ViewExpr};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
@@ -109,12 +109,104 @@ where
 // ---------------------------------------------------------------------------
 
 fn run_morph(buf: ViewBuffer, ksize: u32, iterations: u32, kind: Kind) -> ViewBuffer {
+    run_footprint(buf, ksize, iterations, kind, Footprint::Square)
+}
+
+fn run_footprint(
+    buf: ViewBuffer,
+    ksize: u32,
+    iterations: u32,
+    kind: Kind,
+    footprint: Footprint,
+) -> ViewBuffer {
     let expr = ViewExpr::new_source(buf);
     let expr = match kind {
-        Kind::Min => expr.erode(ksize, iterations),
-        Kind::Max => expr.dilate(ksize, iterations),
+        Kind::Min => expr.erode(ksize, iterations, footprint),
+        Kind::Max => expr.dilate(ksize, iterations, footprint),
     };
     expr.plan().execute()
+}
+
+// ---------------------------------------------------------------------------
+// The disk (CR-94)
+// ---------------------------------------------------------------------------
+
+/// The disk's half-width at row offset `dy`: `floor(sqrt(r² − dy²))`.
+fn half_width(r: i64, dy: i64) -> i64 {
+    ((r * r - dy * dy) as u64).isqrt() as i64
+}
+
+/// One disk pass, folded in the kernel's order (each row's span from its
+/// centre pixel, ascending `dx`; rows ascending `dy` from the centre row's
+/// value), so float ties and NaNs compare bit for bit.
+fn naive_disk_pass<T: Copy + PartialOrd>(
+    src: &[T],
+    h: usize,
+    w: usize,
+    r: i64,
+    kind: Kind,
+) -> Vec<T> {
+    let at = |y: i64, x: i64| {
+        src[y.clamp(0, h as i64 - 1) as usize * w + x.clamp(0, w as i64 - 1) as usize]
+    };
+    let span = |y: i64, x: i64, hw: i64| {
+        let mut v = at(y, x);
+        for dx in -hw..=hw {
+            v = pick(v, at(y, x + dx), kind);
+        }
+        v
+    };
+    let mut out = Vec::with_capacity(h * w);
+    for y in 0..h as i64 {
+        for x in 0..w as i64 {
+            let mut val = span(y, x, r);
+            for dy in -r..=r {
+                val = pick(val, span(y + dy, x, half_width(r, dy)), kind);
+            }
+            out.push(val);
+        }
+    }
+    out
+}
+
+fn naive_disk_reference<T: Copy + PartialOrd>(
+    src: &[T],
+    h: usize,
+    w: usize,
+    ksize: u32,
+    iterations: u32,
+    kind: Kind,
+) -> Vec<T> {
+    let r = i64::from(ksize / 2);
+    let mut cur = src.to_vec();
+    for _ in 0..iterations {
+        if r > 0 {
+            cur = naive_disk_pass(&cur, h, w, r, kind);
+        }
+    }
+    cur
+}
+
+/// The definition, order-free: the extreme over every in-image pixel whose
+/// unclamped offset lies within Euclidean distance `r` (integers only).
+fn brute_disk(src: &[u8], h: usize, w: usize, r: i64, kind: Kind) -> Vec<u8> {
+    let mut out = Vec::with_capacity(h * w);
+    for y in 0..h as i64 {
+        for x in 0..w as i64 {
+            let values = (-r..=r)
+                .flat_map(|dy| (-r..=r).map(move |dx| (dy, dx)))
+                .filter(|(dy, dx)| dy * dy + dx * dx <= r * r)
+                .map(|(dy, dx)| {
+                    src[(y + dy).clamp(0, h as i64 - 1) as usize * w
+                        + (x + dx).clamp(0, w as i64 - 1) as usize]
+                });
+            out.push(match kind {
+                Kind::Min => values.min().unwrap(),
+                Kind::Max => values.max().unwrap(),
+            });
+        }
+    }
+    out
 }
 
 /// Deterministic pseudo-random values in [0, 256) (LCG; no rand dep).
@@ -268,4 +360,114 @@ fn morph_matches_naive_reference_with_signed_zeros() {
             );
         }
     }
+}
+
+macro_rules! check_disk {
+    ($T:ty, $vals:expr, $h:expr, $w:expr, $ksize:expr, $iters:expr, $kind:expr) => {{
+        let data: Vec<$T> = $vals.iter().map(|&v| v as $T).collect();
+        let buf = ViewBuffer::from_vec_with_shape(data.clone(), vec![$h, $w]);
+        let got = run_footprint(buf, $ksize, $iters, $kind, Footprint::Disk);
+        let want = naive_disk_reference(&data, $h, $w, $ksize, $iters, $kind);
+        assert_eq!(
+            got.as_slice::<$T>(),
+            &want[..],
+            "disk: {} {}x{} ksize={} iters={}",
+            stringify!($T),
+            $h,
+            $w,
+            $ksize,
+            $iters
+        );
+    }};
+}
+
+#[test]
+fn disk_matches_naive_reference_all_dtypes() {
+    let sizes: &[(usize, usize)] = &[(1, 1), (2, 3), (5, 5), (7, 19), (33, 21)];
+    for &(h, w) in sizes {
+        let vals = seeded_values(h * w, (h * 31 + w) as u64);
+        for ksize in [1u32, 2, 3, 5, 7, 9, 15] {
+            for iters in [0u32, 1, 2, 3] {
+                for kind in [Kind::Min, Kind::Max] {
+                    check_disk!(u8, vals, h, w, ksize, iters, kind);
+                    check_disk!(u16, vals, h, w, ksize, iters, kind);
+                    check_disk!(i32, vals, h, w, ksize, iters, kind);
+                    check_disk!(f32, vals, h, w, ksize, iters, kind);
+                    check_disk!(f64, vals, h, w, ksize, iters, kind);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn disk_is_the_extreme_over_the_euclidean_set() {
+    for (h, w) in [(1, 9), (9, 1), (16, 23), (40, 40)] {
+        let data: Vec<u8> = seeded_values(h * w, 94).iter().map(|&v| v as u8).collect();
+        for ksize in [3u32, 5, 9, 13, 21] {
+            for kind in [Kind::Min, Kind::Max] {
+                let buf = ViewBuffer::from_vec_with_shape(data.clone(), vec![h, w]);
+                let got = run_footprint(buf, ksize, 1, kind, Footprint::Disk);
+                assert_eq!(
+                    got.as_slice::<u8>(),
+                    &brute_disk(&data, h, w, i64::from(ksize / 2), kind)[..],
+                    "{h}x{w} ksize={ksize}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn disk_keeps_nans_and_signed_zeros_bit_for_bit() {
+    let (h, w) = (14, 17);
+    let data: Vec<f64> = seeded_values(h * w, 12)
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| match (i % 29 == 0, v % 4) {
+            (true, _) => f64::NAN,
+            (_, 0) => 0.0,
+            (_, 1) => -0.0,
+            (_, 2) => v as f64,
+            _ => -(v as f64),
+        })
+        .collect();
+    for (ksize, iters) in [(3u32, 1u32), (5, 2), (7, 1), (9, 3)] {
+        for kind in [Kind::Min, Kind::Max] {
+            let buf = ViewBuffer::from_vec_with_shape(data.clone(), vec![h, w]);
+            let got = run_footprint(buf, ksize, iters, kind, Footprint::Disk);
+            let want = naive_disk_reference(&data, h, w, ksize, iters, kind);
+            let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(
+                bits(got.as_slice::<f64>()),
+                bits(&want),
+                "ksize={ksize} iters={iters}"
+            );
+        }
+    }
+}
+
+/// Iterations are disk passes: two radius-2 disks reach (3, 2), which one
+/// radius-4 disk also does, but not (4, 1)... whichever pixel differs, the
+/// two are not the same operation, and a single wide pass would be wrong.
+#[test]
+fn disk_iterations_are_passes_not_one_wider_disk() {
+    let (h, w) = (21, 21);
+    let mut data = vec![0u8; h * w];
+    data[10 * w + 10] = 255;
+    let twice = run_footprint(
+        ViewBuffer::from_vec_with_shape(data.clone(), vec![h, w]),
+        5,
+        2,
+        Kind::Max,
+        Footprint::Disk,
+    );
+    let once_wide = run_footprint(
+        ViewBuffer::from_vec_with_shape(data, vec![h, w]),
+        9,
+        1,
+        Kind::Max,
+        Footprint::Disk,
+    );
+    assert_ne!(twice.as_slice::<u8>(), once_wide.as_slice::<u8>());
 }
