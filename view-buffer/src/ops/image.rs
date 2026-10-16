@@ -111,6 +111,30 @@ pub enum ImageOpKind<M: Mode = Exec> {
         #[param(default = 3)]
         ksize: M::V<u32>,
     },
+    /// Exact Euclidean distance transform of a mask: an f32 image of the same
+    /// shape. Requires single-channel input.
+    ///
+    /// A pixel is foreground when it is non-zero (NaN included). Unsigned, each
+    /// foreground pixel holds the distance from its centre to the nearest
+    /// background pixel's centre and the background holds 0, as
+    /// ``cv2.distanceTransform(DIST_L2, DIST_MASK_PRECISE)`` and
+    /// ``scipy.ndimage.distance_transform_edt`` compute. Signed, every pixel
+    /// holds its distance to the boundary between the two classes, the pixel
+    /// edges ``extract_contours`` traces: negative inside, positive outside
+    /// (as ``.point.signed_distance_to_contour``), ``±(d - 0.5)`` for the
+    /// centre distance ``d`` to the nearest pixel of the other class. When a
+    /// class has no pixel at all, the distance to it is infinite.
+    ///
+    /// Example:
+    ///     >>> sdf = Pipeline().source("image_bytes").grayscale().threshold(128).distance_transform(signed=True)
+    #[op(name = "distance_transform", sample = {"signed": true})]
+    DistanceTransform {
+        /// Signed distance to the mask's boundary (negative inside) instead of
+        /// each foreground pixel's distance to the background. Accepts a
+        /// Polars expression for a per-row choice.
+        #[param(default = false)]
+        signed: M::V<bool>,
+    },
     /// Resize image by scale factor: `new_width = input_width * scale_x`,
     /// `new_height = input_height * scale_y`, computed at runtime.
     ///
@@ -303,7 +327,8 @@ impl<M: Mode> ImageOpKind<M> {
             | ImageOpKind::HistogramEqualize
             | ImageOpKind::Erode { .. }
             | ImageOpKind::Dilate { .. }
-            | ImageOpKind::MorphGradient { .. } => OpShape::Preserve,
+            | ImageOpKind::MorphGradient { .. }
+            | ImageOpKind::DistanceTransform { .. } => OpShape::Preserve,
             ImageOpKind::Resize { width, height, .. }
             | ImageOpKind::Letterbox { height, width, .. } => OpShape::SetHw {
                 h: size::<M>(height),
@@ -391,7 +416,8 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::Threshold { .. }
             | ImageOpKind::Erode { .. }
             | ImageOpKind::Dilate { .. }
-            | ImageOpKind::MorphGradient { .. } => require_single_channel(shape),
+            | ImageOpKind::MorphGradient { .. }
+            | ImageOpKind::DistanceTransform { .. } => require_single_channel(shape),
             // Image kernels read axes 0/1 as height/width and axis 2 as channels;
             // anything else would be passed through unchanged or read with an
             // axis silently dropped, so it is refused rather than degraded.
@@ -484,6 +510,7 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::Erode { .. } => "Erode",
             ImageOpKind::Dilate { .. } => "Dilate",
             ImageOpKind::MorphGradient { .. } => "MorphGradient",
+            ImageOpKind::DistanceTransform { .. } => "DistanceTransform",
             ImageOpKind::ResizeScale { .. } => "ResizeScale",
             ImageOpKind::ResizeToHeight { .. } => "ResizeToHeight",
             ImageOpKind::ResizeToWidth { .. } => "ResizeToWidth",
@@ -521,6 +548,7 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::Erode { .. }
             | ImageOpKind::Dilate { .. }
             | ImageOpKind::MorphGradient { .. }
+            | ImageOpKind::DistanceTransform { .. }
             | ImageOpKind::Pad { .. }
             | ImageOpKind::PadToSize { .. }
             | ImageOpKind::ChannelSwap { .. } => MemoryEffect::RequiresDenseRows,
@@ -563,6 +591,7 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::Erode { .. }
             | ImageOpKind::Dilate { .. }
             | ImageOpKind::MorphGradient { .. }
+            | ImageOpKind::DistanceTransform { .. }
             | ImageOpKind::Canny { .. }
             | ImageOpKind::HistogramEqualize => IdentityRule::Never,
         }
@@ -604,6 +633,9 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::Canny { .. } => SpatialDependency::Global,
             // Histogram equalization builds a global CDF over all pixels.
             ImageOpKind::HistogramEqualize => SpatialDependency::Global,
+            // The nearest pixel of the other class can be anywhere in the
+            // image, so no window bounds what a pixel reads.
+            ImageOpKind::DistanceTransform { .. } => SpatialDependency::Global,
             // Every resize variant resamples, and pad/letterbox offset the
             // content — all coordinate transforms.
             ImageOpKind::Resize { .. }
@@ -657,6 +689,8 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::Erode { .. } => None,
             ImageOpKind::Dilate { .. } => None,
             ImageOpKind::MorphGradient { .. } => None,
+            // Reads only whether each element is zero, in its own dtype.
+            ImageOpKind::DistanceTransform { .. } => None,
             // Deferred resizes route through the same resize kernel; padding
             // and channel reorder are dtype-generic.
             ImageOpKind::ResizeScale { .. }
@@ -689,6 +723,8 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::Erode { .. } => OutputDTypeRule::PreserveInput,
             ImageOpKind::Dilate { .. } => OutputDTypeRule::PreserveInput,
             ImageOpKind::MorphGradient { .. } => OutputDTypeRule::PreserveInput,
+            // A distance, whatever the mask's dtype.
+            ImageOpKind::DistanceTransform { .. } => OutputDTypeRule::Fixed(DType::F32),
             // Geometric transforms and channel reorder preserve element dtype
             // (padding is dtype-generic for all ten dtypes).
             ImageOpKind::ResizeScale { .. }

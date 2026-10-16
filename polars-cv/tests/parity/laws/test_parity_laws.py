@@ -333,6 +333,58 @@ def test_morphology_orders_pointwise(spec, data: st.DataObject) -> None:
             )
 
 
+#: The grid's symmetries that keep a square pixel lattice: the two flips and
+#: the transpose. A Euclidean distance commutes with each exactly.
+_GRID_SYMMETRIES = (
+    Step("flip", {"axes": [0]}),
+    Step("flip", {"axes": [1]}),
+    Step("transpose", {"axes": [1, 0, 2]}),
+)
+
+_MASKS = image_specs(channels=(1,), max_side=24, contents=("mask",))
+
+
+@property_lanes(spec=_MASKS, data=st.data())
+def test_distance_transform_commutes_with_the_grid_symmetries(
+    spec, data: st.DataObject
+) -> None:
+    """dt(g(x)) == g(dt(x)) for every flip and the transpose, exactly."""
+    image = spec.render()
+    symmetry = data.draw(st.sampled_from(_GRID_SYMMETRIES), label="symmetry")
+    dt = Step(
+        "distance_transform", {"signed": data.draw(st.booleans(), label="signed")}
+    )
+    _agree(
+        f"{symmetry.method}{symmetry.params} then dt vs dt then it",
+        _run(image, [symmetry, dt]),
+        _run(image, [dt, symmetry]),
+    )
+
+
+@property_lanes(spec=_MASKS, data=st.data())
+def test_distance_transform_is_one_lipschitz(spec, data: st.DataObject) -> None:
+    """Neighbouring pixels differ by at most their distance apart: 1 across
+    an edge, sqrt(2) across a corner. Holds for the signed form too, across
+    the boundary (-0.5 to 0.5). Infinite rows (one class only) skip."""
+    image = spec.render()
+    signed = data.draw(st.booleans(), label="signed")
+    out = _run(image, [Step("distance_transform", {"signed": signed})])
+    plane = out[:, :, 0].astype(np.float64)
+    if not np.isfinite(plane).all():
+        event("one class only: infinitely far")
+        return
+    for label, a, b, bound in (
+        ("vertical", plane[1:, :], plane[:-1, :], 1.0),
+        ("horizontal", plane[:, 1:], plane[:, :-1], 1.0),
+        ("diagonal", plane[1:, 1:], plane[:-1, :-1], np.sqrt(2)),
+        ("anti-diagonal", plane[1:, :-1], plane[:-1, 1:], np.sqrt(2)),
+    ):
+        jump = np.abs(a - b)
+        if jump.size and jump.max() > bound + 1e-5:
+            where = tuple(np.argwhere(jump > bound + 1e-5)[0])
+            raise ParityFailure(f"{label} step {jump[where]} > {bound} at {where}")
+
+
 @property_lanes(
     height=sides(1, 20),
     width=sides(1, 20),

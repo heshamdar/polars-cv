@@ -89,6 +89,7 @@ def batches(
     nulls: bool = True,
     heterogeneous: bool = True,
     max_side: int = 32,
+    contents: Sequence[str] | None = None,
 ) -> st.SearchStrategy[Batch]:
     """Draw a :class:`Batch`: 1..*max_rows* rows, optionally with nulls."""
 
@@ -96,7 +97,10 @@ def batches(
     def build(draw: st.DrawFn) -> Batch:
         first = draw(
             image_specs(
-                dtypes=tuple(dtypes), channels=tuple(channels), max_side=max_side
+                dtypes=tuple(dtypes),
+                channels=tuple(channels),
+                max_side=max_side,
+                contents=None if contents is None else tuple(contents),
             ),
             label="first image",
         )
@@ -132,9 +136,12 @@ def batches_for(
     """Batches of inputs *spec*'s contract admits.
 
     With *reference*, the dtypes are narrowed to those the reference models
-    (:attr:`OpSpec.ref_dtypes`) so examples are not spent on skipped rows.
+    (:attr:`OpSpec.ref_dtypes`) so examples are not spent on skipped rows, and
+    the content to the kinds it tests (:attr:`OpSpec.ref_contents`).
     """
     dtypes = list(spec.ref_dtypes or DTYPES) if reference else list(DTYPES)
+    if reference and spec.ref_contents is not None:
+        kwargs["contents"] = spec.ref_contents
     admitted = [
         (d, c)
         for d in dtypes

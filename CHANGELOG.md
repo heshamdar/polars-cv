@@ -9,6 +9,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`distance_transform(signed=False)`** (CR-93): the exact Euclidean distance
+  transform of a single-channel mask, as an f32 image of the same shape.
+  Unsigned, each non-zero pixel holds its distance to the nearest zero pixel,
+  centre to centre — what `cv2.distanceTransform(DIST_L2, DIST_MASK_PRECISE)`
+  and `scipy.ndimage.distance_transform_edt` compute: exactly scipy's
+  distances, correctly rounded to f32 (OpenCV's can be one ulp off). `signed=True` gives the distance to the mask's pixel-edge
+  boundary (the one `extract_contours` traces), negative inside, matching
+  `.point.signed_distance_to_contour`. A class with no pixel at all is
+  infinitely far (`±inf`), where scipy and OpenCV return arbitrary finite
+  values. `signed` accepts an expression.
+
 - **A logo, drawn by polars-cv itself** (`polars-cv/docs/assets/logo/`). A
   polar bear is sketched from overlapping ellipses, fused with `blur` +
   `threshold` and traced back to a low-poly outline with `extract_contours` +

@@ -370,6 +370,29 @@ Pipeline().source("image_bytes").grayscale().threshold(128).morphology_gradient(
 
 **Common workflow:** `threshold() → erode() → dilate() → extract_contours()`.
 
+## Distance Transform
+
+The exact Euclidean distance transform of a single-channel mask, as an `f32`
+image of the same shape. A pixel is foreground when it is non-zero.
+
+```python
+# Each foreground pixel's distance to the nearest background pixel (0 on the background)
+Pipeline().source("image_bytes").grayscale().threshold(128).distance_transform()
+
+# Signed distance to the mask's boundary: negative inside, positive outside
+Pipeline().source("image_bytes").grayscale().threshold(128).distance_transform(signed=True)
+```
+
+Unsigned distances are centre to centre, as `cv2.distanceTransform(DIST_L2,
+DIST_MASK_PRECISE)` and `scipy.ndimage.distance_transform_edt` compute them.
+Signed distances are measured to the pixel edges `extract_contours` traces
+(`±(d - 0.5)` for the centre distance `d` to the nearest pixel of the other
+class), the same convention as `.point.signed_distance_to_contour`. If a class
+has no pixel at all, the distance to it is infinite (`±inf`).
+
+Thresholding a distance gives offsets of any radius: `distance_transform()
+.threshold(r)` keeps the pixels more than `r` from the background.
+
 ## Affine Transforms
 
 Apply arbitrary 2x3 affine transformations. All methods in this family share the same Rust execution code path. Each one resamples the image, so consecutive affine ops run one after another (they are not composed into a single warp); build the combined matrix yourself and call `warp_affine` once when you want a single interpolation pass. The matrix uses the **forward-mapping** convention (same as OpenCV `warpAffine`): the kernel inverts it internally for interpolation.

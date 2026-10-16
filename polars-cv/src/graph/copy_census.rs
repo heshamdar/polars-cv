@@ -88,6 +88,7 @@ const KNOWN: &[(&str, [usize; 4], &str)] = &[
     ),
     ("channel_swap", [0, 0, 1, 1], PACKED_ROWS_ONLY),
     ("dilate", [0, 0, 1, 1], PACKED_ROWS_ONLY),
+    ("distance_transform", [0, 0, 1, 1], PACKED_ROWS_ONLY),
     ("equalize_histogram", [0, 0, 1, 1], PACKED_ROWS_ONLY),
     ("erode", [0, 0, 1, 1], PACKED_ROWS_ONLY),
     ("extract_contours", [1, 1, 1, 1], PACKED_FIRST),

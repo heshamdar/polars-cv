@@ -247,6 +247,13 @@ class _LazyForwardersMixin:
             self._continuation().dilate(ksize=ksize, iterations=iterations)
         )
 
+    def distance_transform(self, *, signed: BoolOrExpr = False) -> LazyPipelineExpr:
+        """Exact Euclidean distance transform of a mask: an f32 image of the same
+
+        Lazy form of :meth:`Pipeline.distance_transform` on this expression's output.
+        """
+        return self.pipe(self._continuation().distance_transform(signed=signed))
+
     def equalize_histogram(self) -> LazyPipelineExpr:
         """Apply histogram equalization for contrast enhancement: map each pixel
 

@@ -17,6 +17,11 @@ The content kinds are the inputs that break image kernels in practice:
 * ``extremes`` — only the dtype's min/max (and 0); saturation and overflow.
 * ``edges`` — two-valued blocks; step edges for gradients, morphology, canny.
 * ``gradient`` — a ramp; monotone content for histogram and resampling.
+* ``mask`` — exact-zero background in blobs, at a density drawn per image
+  (now and then none, or all), under any non-zero foreground of the range,
+  the same zero set on every channel: what a distance transform, contour
+  extraction and morphology on masks read, and the one kind that reliably
+  holds a 0 for signed and float ranges.
 * ``halves`` (floats) — values on ``k/2``; ties for every rounding rule.
 * ``nonfinite`` (floats) — smooth content with NaN, ``inf`` and ``-inf``
   sprinkled in; every op's NaN and infinity rule, and its panics.
@@ -52,7 +57,15 @@ DTYPES: dict[str, np.dtype] = {
 #: dtype spelling for a NumPy dtype (the inverse of :data:`DTYPES`).
 NAME_OF: dict[np.dtype, str] = {v: k for k, v in DTYPES.items()}
 
-INT_CONTENT = ("noise", "smooth", "constant", "extremes", "edges", "gradient")
+INT_CONTENT = (
+    "noise",
+    "smooth",
+    "constant",
+    "extremes",
+    "edges",
+    "gradient",
+    "mask",
+)
 FLOAT_CONTENT = (*INT_CONTENT, "halves", "nonfinite")
 
 #: The dtypes whose integers reach beyond f64's 53-bit mantissa.
@@ -120,12 +133,9 @@ def render(spec: ImageSpec) -> np.ndarray:
     if spec.content == "noise":
         unit = rng.random(shape)
     elif spec.content == "smooth":
-        coarse = rng.random(
-            (max(2, spec.height // 6 + 2), max(2, spec.width // 6 + 2), spec.channels)
-        )
-        rows = np.linspace(0, coarse.shape[0] - 1, spec.height)
-        cols = np.linspace(0, coarse.shape[1] - 1, spec.width)
-        unit = _bilinear(coarse, rows, cols)
+        unit = _smooth(rng, spec.height, spec.width, spec.channels)
+    elif spec.content == "mask":
+        return _mask(spec, rng, dtype, lo, hi)
     elif spec.content == "constant":
         unit = np.full(shape, rng.random())
     elif spec.content == "extremes":
@@ -164,6 +174,40 @@ def render(spec: ImageSpec) -> np.ndarray:
         return values.astype(dtype)
     ints = np.clip(np.rint(values), lo, hi).astype(dtype)
     return _widen(ints, rng) if spec.value_range == "wide" else ints
+
+
+def _smooth(
+    rng: np.random.Generator, height: int, width: int, channels: int
+) -> np.ndarray:
+    """Upsampled noise in ``[0, 1]``: ``[height, width, channels]``."""
+    coarse = rng.random((max(2, height // 6 + 2), max(2, width // 6 + 2), channels))
+    rows = np.linspace(0, coarse.shape[0] - 1, height)
+    cols = np.linspace(0, coarse.shape[1] - 1, width)
+    return _bilinear(coarse, rows, cols)
+
+
+def _mask(
+    spec: ImageSpec, rng: np.random.Generator, dtype: np.dtype, lo: float, hi: float
+) -> np.ndarray:
+    """The ``mask`` kind: blobs of exact zeros under a non-zero foreground.
+
+    The cut is drawn a little past both ends of ``[0, 1]`` so some images are
+    all foreground and some all background: the edge cases of every op that
+    reads a zero set."""
+    field = _smooth(rng, spec.height, spec.width, 1)
+    background = np.broadcast_to(
+        field < rng.uniform(-0.1, 1.1), (spec.height, spec.width, spec.channels)
+    )
+    values = lo + rng.random((spec.height, spec.width, spec.channels)) * (hi - lo)
+    if dtype.kind == "f":
+        foreground = values.astype(dtype)
+    else:
+        foreground = np.clip(np.rint(values), lo, hi).astype(dtype)
+        if spec.value_range == "wide":
+            foreground = _widen(foreground, rng)
+    # A foreground value that rounded to 0 would join the background.
+    foreground[foreground == 0] = dtype.type(hi)
+    return np.where(background, dtype.type(0), foreground)
 
 
 def _widen(ints: np.ndarray, rng: np.random.Generator) -> np.ndarray:
@@ -208,13 +252,26 @@ def image_specs(
     max_side: int = 48,
     contents: tuple[str, ...] | None = None,
 ) -> st.SearchStrategy[ImageSpec]:
-    """Draw an :class:`ImageSpec` from the given slice of the state space."""
+    """Draw an :class:`ImageSpec` from the given slice of the state space.
+
+    *contents* narrows the kinds; each dtype draws the named kinds it has
+    (``halves`` and ``nonfinite`` are float-only). A name no dtype has is
+    refused here, not left to draw nothing."""
+    if contents is not None:
+        unknown = sorted(set(contents) - set(FLOAT_CONTENT))
+        if unknown:
+            msg = f"unknown content kinds {unknown}; known: {FLOAT_CONTENT}"
+            raise ValueError(msg)
 
     @st.composite
     def build(draw: st.DrawFn) -> ImageSpec:
         dtype = draw(st.sampled_from(dtypes), label="dtype")
         is_float = DTYPES[dtype].kind == "f"
-        kinds = contents or (FLOAT_CONTENT if is_float else INT_CONTENT)
+        own = FLOAT_CONTENT if is_float else INT_CONTENT
+        kinds = own if contents is None else tuple(k for k in contents if k in own)
+        if not kinds:
+            msg = f"none of {contents} applies to {dtype}"
+            raise ValueError(msg)
         if is_float:
             value_range = draw(st.sampled_from(tuple(FLOAT_RANGES)), label="range")
         else:

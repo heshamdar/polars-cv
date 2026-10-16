@@ -14,7 +14,7 @@ While originally designed as an independent crate, it is currently **tightly cou
 - `ViewBuffer` — strided multi-dimensional array for images, masks, feature maps
 - Zero-copy view operations (transpose, flip, crop, reshape) via metadata changes only
 - Compute operations (scale, normalize, cast, clamp, relu, contrast, gamma, invert, affine warp, rotate-via-affine)
-- Image operations (resize, blur, grayscale, threshold, canny, histogram equalize, erode, dilate, morphological gradient)
+- Image operations (resize, blur, grayscale, threshold, canny, histogram equalize, erode, dilate, morphological gradient, distance transform)
 - Color space conversions (RGB, BGR, HSV, LAB, YCbCr, Gray)
 - Spatial filtering (2D convolution with configurable border modes)
 - Geometry operations (contour extraction, rasterization, measures, pairwise matching)
@@ -47,7 +47,7 @@ src/
 │   ├── mod.rs          # Module aggregator / re-exports for all op types
 │   ├── dto.rs          # ViewDto — serializable operation enum
 │   ├── traits.rs       # Op trait and core op types (MemoryEffect — the materialisation authority)
-│   ├── image.rs        # ImageOp, ImageOpKind (resize, blur, canny, erode, dilate, morph_gradient, etc.)
+│   ├── image.rs        # ImageOp, ImageOpKind (resize, blur, canny, erode, dilate, morph_gradient, distance_transform, etc.)
 │   ├── color.rs        # ColorConvertOp, ColorSpace
 │   ├── filter.rs       # ConvolveOp, BorderMode — 2D convolution
 │   ├── compute.rs      # ComputeOp (cast, scale, normalize, clamp, relu, contrast, gamma, invert, affine, rotate_affine)
@@ -289,6 +289,7 @@ Key implementation points:
 - **Affine** (`execution/warp.rs`): Forward-mapping 2×3 matrix with internal inversion for inverse-mapping interpolation. Supports Nearest and Bilinear interpolation with configurable `border_value`. Parameters in `ops/affine.rs` (`AffineParams`, `InterpolationType`). Two variants: `ComputeOp::Affine` (raw matrix, `apply_affine_warp()`) and `ComputeOp::RotateAffine` (deferred rotation, `warp::rotate()`: `AffineParams::from_rotation()` at execution time, and at exactly 0° — the identity lowering — the packed input itself). A `SimdKernel` per channel count; loads/stores through M5. Its tests keep the pre-Phase-7 kernel as a bit-parity oracle: any change must keep them byte-identical or say why. `MemoryEffect::RequiresContiguous`.
 - **Erode/Dilate** (`execution/runner.rs`): Separable row+column min/max filter. Single-channel only. `iterations=n` is one pass of radius `n * (k / 2)` for integer dtypes (`morph_iterated`; exact), and `n` passes for floats, whose NaN/signed-zero fold depends on the pass structure. `tests/morph_ref.rs` holds both to an iterated naive reference. `SpatialDependency::Neighborhood`.
 - **MorphGradient** (`execution/runner.rs`): Dilate − Erode (saturating subtract). Single-channel only. `SpatialDependency::Neighborhood`.
+- **DistanceTransform** (`execution/distance.rs`): exact Euclidean distance transform (Felzenszwalb–Huttenlocher lower envelopes, columns then rows), squared distances exact in f64, one `sqrt` and an f32 store. Foreground is non-zero in the input dtype (NaN included); a class with no pixel is `±inf`. Signed is `±(d − 0.5)` to the pixel-edge boundary, negative inside. Single-channel only, `RequiresDenseRows`, `SpatialDependency::Global`, f32 output. Held to scipy and OpenCV in `polars-cv/tests/reference/test_distance_transform_ref.py` and the parity suite.
 - **label_reduce path fallback** (`geometry/label.rs`): A contour with no area (the point or line a one-pixel-thick region traces to) or whose region catches no pixel centre (a sub-pixel contour) is scored on the pixels its outline passes through, in every region mode, so it never scores 0 for want of a region. Zero area means below `pairwise::EPSILON`, the same threshold at which IoU calls a region degenerate. `score_contours_on_buffer` is the single implementation behind both `Pipeline.label_reduce` and the `.contour.label_reduce()` accessor — the plugin must not carry its own scorer.
 
 ## Adding a New Operation

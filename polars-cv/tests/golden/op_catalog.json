@@ -930,6 +930,30 @@
     ]
   },
   {
+    "name": "distance_transform",
+    "python": "distance_transform",
+    "visibility": "public",
+    "doc": "Exact Euclidean distance transform of a mask: an f32 image of the same\nshape. Requires single-channel input.\n\nA pixel is foreground when it is non-zero (NaN included). Unsigned, each\nforeground pixel holds the distance from its centre to the nearest\nbackground pixel's centre and the background holds 0, as\n``cv2.distanceTransform(DIST_L2, DIST_MASK_PRECISE)`` and\n``scipy.ndimage.distance_transform_edt`` compute. Signed, every pixel\nholds its distance to the boundary between the two classes, the pixel\nedges ``extract_contours`` traces: negative inside, positive outside\n(as ``.point.signed_distance_to_contour``), ``±(d - 0.5)`` for the\ncentre distance ``d`` to the nearest pixel of the other class. When a\nclass has no pixel at all, the distance to it is infinite.\n\nExample:\n    >>> sdf = Pipeline().source(\"image_bytes\").grayscale().threshold(128).distance_transform(signed=True)",
+    "fields": [
+      {
+        "name": "signed",
+        "doc": "Signed distance to the mask's boundary (negative inside) instead of\neach foreground pixel's distance to the background. Accepts a\nPolars expression for a per-row choice.",
+        "default": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "bool"
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
+  },
+  {
     "name": "divide",
     "python": "divide",
     "visibility": "lazy_only",

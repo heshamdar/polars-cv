@@ -37,6 +37,7 @@ from typing import Any, Callable
 
 import cv2
 import numpy as np
+from hypothesis import event
 from hypothesis import strategies as st
 from PIL import Image
 from scipy import ndimage
@@ -80,6 +81,11 @@ class OpSpec:
     #: draw inputs from these so their examples are not spent on skips; the
     #: invariance suites ignore it and draw every dtype the op accepts.
     ref_dtypes: tuple[str, ...] | None = None
+    #: The pixel content kinds the reference suites draw (``None``: all), for
+    #: an op whose answer only varies on some (a distance transform needs a
+    #: zero set, which only ``mask`` reliably holds). Like ``ref_dtypes``, the
+    #: invariance suites ignore it.
+    ref_contents: tuple[str, ...] | None = None
     #: Whether the arguments restate a row's whole shape (``assert_shape``,
     #: ``reshape``), so one literal set cannot serve rows of different sizes.
     uniform_rows: bool = False
@@ -1166,6 +1172,37 @@ def _dilate(x: np.ndarray, k: int, n: int = 1) -> np.ndarray:
     return out[:, :, None]
 
 
+def _distance_params(draw: st.DrawFn, x: np.ndarray) -> Params:
+    return {"signed": draw(st.booleans(), label="signed")}
+
+
+def _distance_ref(x: np.ndarray, p: Params) -> np.ndarray:
+    """``scipy.ndimage.distance_transform_edt`` over the non-zero set (NaN is
+    non-zero), with the two conventions it does not model: a class with no
+    pixel is infinitely far, and the signed form measures to the pixel-edge
+    boundary (``d - 0.5``), negative inside."""
+    inside = x[:, :, 0] != 0
+    event(
+        "distance_transform: both classes"
+        if inside.any() and not inside.all()
+        else "distance_transform: one class only"
+    )
+    if p["signed"]:
+        if inside.all():
+            out = np.full(inside.shape, -np.inf)
+        elif not inside.any():
+            out = np.full(inside.shape, np.inf)
+        else:
+            d_in = ndimage.distance_transform_edt(inside)
+            d_out = ndimage.distance_transform_edt(~inside)
+            out = np.where(inside, -(d_in - 0.5), d_out - 0.5)
+    elif inside.all():
+        out = np.full(inside.shape, np.inf)
+    else:
+        out = ndimage.distance_transform_edt(inside)
+    return out.astype(np.float32)[:, :, None]
+
+
 #: convolve2d's border names in SciPy's spelling. Its "reflect" repeats the
 #: edge pixel (d c b a | a b c d, SciPy "reflect") — unlike pad(mode=
 #: "reflect"), which mirrors about it (NumPy "reflect", no repeat); pad calls
@@ -1893,6 +1930,19 @@ OPS: dict[str, OpSpec] = {
             accepts=_single_channel,
             ref=lambda x, p: _erode(_dilate(x, p["ksize"]), p["ksize"]),
             kind="spatial",
+        ),
+        _spec(
+            "distance_transform",
+            _distance_params,
+            accepts=_single_channel,
+            ref=_distance_ref,
+            gain=_INF,
+            kind="global",
+            defines_non_finite=True,
+            ref_contents=("mask",),
+            note="scipy distance_transform_edt over the non-zero set (NaN and "
+            "±inf are non-zero); no pixel of the other class reads ±inf; signed "
+            "is d - 0.5 to the pixel-edge boundary, negative inside",
         ),
         _spec(
             "morphology_gradient",
