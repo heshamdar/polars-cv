@@ -588,6 +588,23 @@
     "False"
    ]
   ],
+  "apply_lut": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "table",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "dtype",
+    "KEYWORD_ONLY",
+    "'u8'"
+   ]
+  ],
   "apply_mask": [
    [
     "self",
@@ -2122,6 +2139,23 @@
     "gamma",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ]
+  ],
+  "apply_lut": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "table",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "dtype",
+    "KEYWORD_ONLY",
+    "'u8'"
    ]
   ],
   "area": [

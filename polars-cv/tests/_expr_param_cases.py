@@ -363,6 +363,14 @@ CASES: list[ExprCase] = [
         lambda v: gray().canny(low_threshold=10.0, high_threshold=v),
         (300.0, 500.0, 700.0),  # 90 / 75 / 17 edge pixels
     ),
+    ExprCase(
+        "apply_lut",
+        "table",
+        # A mask holds only 0 and 255: entry 0 is what every 0 becomes.
+        lambda v: mask().apply_lut([[v], *([[0]] * 254), [255]]),
+        (10.0, 128.0),
+        column=RECT,
+    ),
     # --- morphology (single-channel kernels) -------------------------------
     ExprCase(
         "distance_transform",

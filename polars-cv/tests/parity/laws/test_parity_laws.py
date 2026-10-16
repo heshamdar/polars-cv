@@ -339,6 +339,61 @@ def test_morphology_orders_pointwise(spec, data: st.DataObject) -> None:
             )
 
 
+# ---------------------------------------------------------------------------
+# Lookup tables
+# ---------------------------------------------------------------------------
+
+
+@property_lanes(
+    spec=image_specs(dtypes=("u8",), max_side=16),
+    target=st.sampled_from(tuple(DTYPES)),
+)
+def test_the_identity_table_is_a_cast(spec, target: str) -> None:
+    """``apply_lut([[0], [1], ...], dtype=d)`` is ``cast(d)`` wherever the
+    value fits the target: every value is its own entry."""
+    image = spec.render()
+    info = np.iinfo(image.dtype)
+    target_dtype = DTYPES[target]
+    top = (
+        int(info.max)
+        if target_dtype.kind == "f"
+        else min(int(info.max), int(np.iinfo(target_dtype).max))
+    )
+    if int(image.max()) > top:
+        event("a value past the target's range")
+        return
+    table = [[i] for i in range(top + 1)]
+    _agree(
+        f"identity table to {target} vs cast",
+        _run(image, [Step("apply_lut", {"table": table, "dtype": target})]),
+        _run(image, [Step("cast", {"dtype": target})]),
+    )
+
+
+@property_lanes(
+    spec=image_specs(dtypes=("u8",), channels=(1, 3), max_side=16),
+    seed=st.integers(0, 2**32 - 1),
+)
+def test_two_tables_compose_into_one(spec, seed: int) -> None:
+    """``lut(lut(x, A), B) == lut(x, B[A])``: a table read is a function of
+    the value alone."""
+    image = spec.render()
+    rng = np.random.default_rng(seed)
+    a = rng.integers(0, 256, 256)
+    b = rng.integers(-1000, 1000, 256)
+    twice = _run(
+        image,
+        [
+            Step("apply_lut", {"table": [[int(v)] for v in a], "dtype": "u8"}),
+            Step("apply_lut", {"table": [[int(v)] for v in b], "dtype": "i16"}),
+        ],
+    )
+    once = _run(
+        image, [Step("apply_lut", {"table": [[int(v)] for v in b[a]], "dtype": "i16"})]
+    )
+    _agree("lut(lut(x, A), B) vs lut(x, B[A])", twice, once)
+
+
 #: The grid's symmetries that keep a square pixel lattice: the two flips and
 #: the transpose. A Euclidean distance commutes with each exactly.
 _GRID_SYMMETRIES = (

@@ -42,7 +42,7 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-80 | Extension types | Feature | Opt-in tagged geometry output (`polars_cv.point` / `.contour` / `.bbox`) |
 | CR-81 | Extension types | Decision | Whether any output becomes tagged by default (a major version) |
 | CR-82 | Extension types | Decision | Whether `polars_cv.ndarray` carries `dtype`/`ndim` metadata |
-| CR-95 | Drawing | Feature | `apply_lut(table, dtype=)`: per-value tables and 1→K palettes |
+| CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
 | CR-96 | Drawing | Feature | `rasterize(supersample=)`: anti-aliased coverage |
 | CR-97 | Drawing | Feature | Open contours in the pipeline contour domain; `boundary()` / `close()` |
 | CR-98 | Drawing | Feature | Contour geometry (`offset`, `smooth`, `densify`, `union_all`) and line rendering in `rasterize` |
@@ -135,6 +135,19 @@ against `main` at `e788d72` that day, and their full text is in git history).
   (portable and AVX2); the table strategy alone is 80 copies of about 2,600
   instructions. Nothing measured slower for it. A table lookup gains nothing
   from AVX2 (scalar loads), so it could skip dispatch if size ever matters.
+
+### CR-102 — Large list fields are slow to build and sink
+
+- **Evidence:** a 65536-row `apply_lut` table (debug build): 0.25 s to
+  append (`_encode_field` per element, then `Plan.push`), 0.9 s to build the
+  sink expression, of which `Plan.to_spec` is 0.36 s over **three** calls,
+  `check_graph` 0.13 s and the JSON round trip 0.1 s. Executing it takes
+  35 ms. A 256-row table is unaffected.
+- **Effect:** users building full u16 tables wait about a second; the parity
+  suite draws `apply_lut` on u8 only to keep the per-push lane's time.
+- **Next:** call `to_spec` once per sink, and give `_encode_field` a fast
+  path for a sequence that holds no expression (one pass, no per-element
+  dispatch). Benchmark both on a release build before and after.
 
 ## Fetch
 
@@ -266,8 +279,8 @@ for anti-aliasing, and filled primitives for every stroke. Each item extends
 an existing family or rule where that is cleaner than a new op, reuses an
 engine primitive (`geo` 0.33's `Buffer`/`BooleanOps`/`ChaikinSmoothing`/
 `Densify`, `ops::elementwise`, `scanline_fill`), and is built test-first with
-an independent oracle. Order: CR-95, CR-96 and CR-100 are independent (CR-93 and
-CR-94 are done); CR-97 → CR-98 → CR-99; CR-101 last.
+an independent oracle. Order: CR-96 and CR-100 are independent (CR-93, CR-94 and
+CR-95 are done); CR-97 → CR-98 → CR-99; CR-101 last.
 
 **Decisions (owner, 2026-10-16).**
 1. The pipeline contour domain carries open contours (lines) as well as
@@ -276,23 +289,14 @@ CR-94 are done); CR-97 → CR-98 → CR-99; CR-101 last.
 2. An op whose result can split one region into several (`offset`, the boolean
    ops, `union_all`) always returns a contour set, whatever the input arity.
 3. An `apply_lut` index past the table is a row error; clamping is an explicit
-   `clamp_max(n - 1)` before it.
+   `clamp(0, n - 1, out_dtype=...)` before it (`clamp_max` alone promotes to
+   f32, which `apply_lut` refuses).
 4. Signed distance is negative inside, positive outside — as
    `.point.signed_distance_to_contour` — measured to the pixel-edge boundary
    `extract_contours` traces.
 5. No built-in colormaps for now: `apply_lut` takes explicit tables.
 6. Line width, cap and join are rendering attributes on `rasterize`; `offset`
    is geometry on regions only and takes `join` alone.
-
-### CR-95 — `apply_lut(table, *, dtype="u8")`
-
-- `ComputeOp` variant; `table` is nested rows (`[[r, g, b], ...]`), length
-  1–65536, rows of equal length K, values that fit `dtype` (refused at build
-  otherwise). Input u8/u16 only. K = 1 maps values in place on any channel
-  count; K > 1 takes one channel to K (a new `OpShape::ExpandChannels(k)`).
-  Pointwise. Runs through `ops::elementwise`'s table strategy per output
-  channel.
-- Oracles: numpy fancy indexing, `cv2.LUT`.
 
 ### CR-96 — `rasterize(..., supersample=1)`
 
@@ -608,3 +612,4 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 | CR-92 | The `to_lab` reference was OpenCV's float Lab, 0.57 off in a* on dark pixels (the engine was exact) | Resolved: Lab by its definition in float64; bound 0.5 -> 0.01 (0.35.0) |
 | CR-93 | `distance_transform(signed=)`: exact Euclidean distance transform | Added (Unreleased): held to scipy exactly and OpenCV within one ulp, plus parity laws |
 | CR-94 | Disk structuring element for morphology | Added (Unreleased) as `footprint="disk"` (not `shape=`, which `rasterize` uses for a canvas); a min/max over row spans reusing the square's row pass, since greyscale input rules out thresholding the distance transform, which became the oracle instead |
+| CR-95 | `apply_lut(table, dtype=)`: per-value tables and 1→K palettes | Added (Unreleased) as its own `GraphStep` family (`LutOp`), not a `ComputeOp`: a value past the table is a row error, which only an `execute -> Result` can report; the read reuses the element-wise engine's `Lut` map |

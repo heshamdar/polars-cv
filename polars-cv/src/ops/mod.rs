@@ -133,6 +133,7 @@ typed_ops! {
     view_buffer::GeometryOp => |op| GraphStep::Geometry(op);
     view_buffer::ops::ReductionOp => |op| GraphStep::Reduction(op);
     view_buffer::ops::histogram::HistogramOp => |op| GraphStep::Histogram(op);
+    view_buffer::ops::lut::LutOp => |op| GraphStep::Lut(op);
     view_buffer::ops::phash::PerceptualHashOp => |op| GraphStep::PerceptualHash(op);
     graph::GraphOp => |op| GraphStep::Graph(op);
 }

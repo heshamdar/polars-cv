@@ -1192,6 +1192,41 @@ def _dilate(x: np.ndarray, k: int, n: int = 1, footprint: str = "square") -> np.
     return out[:, :, None]
 
 
+#: The palette width each output dtype's table has (one entry maps every
+#: channel in place).
+_LUT_K = dict(zip(DTYPES, (1, 3, 2, 4, 1, 2, 3, 4, 1, 3), strict=True))
+
+
+def _lut_params(draw: st.DrawFn, x: np.ndarray) -> Params:
+    """A table over the u8 domain (256 rows), so it
+    covers every row of a batch, not only the one the arguments are drawn
+    on; the out-of-range row error is a reference test's. Its entries are a
+    fixed function of the drawn ``dtype``: rows that draw the same dtype share
+    one literal table rather than 65536 per-row expressions, and rows that
+    differ differ in ``dtype``, which is structural, so they share one
+    literal set. A palette (``K > 1``) needs one channel."""
+    dtype = draw(st.sampled_from(tuple(DTYPES)), label="dtype")
+    k = _LUT_K[dtype] if x.shape[2] == 1 else 1
+    n = 256
+    rng = np.random.default_rng([n, k, list(DTYPES).index(dtype)])
+    np_dtype = DTYPES[dtype]
+    if np_dtype.kind == "f":
+        values = rng.random((n, k)) * 2e4 - 1e4
+    else:
+        info = np.iinfo(np_dtype)
+        # Within ±2**53, so each entry is exact through the f64 wire value.
+        lo, hi = max(int(info.min), -(2**53)), min(int(info.max), 2**53)
+        values = rng.integers(lo, hi, size=(n, k), endpoint=True)
+    return {"table": values.astype(np_dtype).tolist(), "dtype": dtype}
+
+
+def _lut_ref(x: np.ndarray, p: Params) -> np.ndarray:
+    table = np.asarray(p["table"], dtype=DTYPES[p["dtype"]])
+    if table.shape[1] == 1:
+        return table[x, 0]
+    return table[x[:, :, 0]]
+
+
 def _distance_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     return {"signed": draw(st.booleans(), label="signed")}
 
@@ -1595,6 +1630,18 @@ OPS: dict[str, OpSpec] = {
             "`as`, so narrowing wraps",
         ),
         _spec("invert", ref=_invert_ref, gain=1.0),
+        _spec(
+            "apply_lut",
+            _lut_params,
+            # u8 only here: a u16 table is 65536 rows, about a second to encode
+            # per example on the debug build (CR-102), so the reference tests
+            # hold u16 instead (the full domain, a strided view, by value).
+            accepts=lambda x: x.dtype == np.uint8,
+            ref=_lut_ref,
+            gain=_INF,
+            note="table[x] (NumPy fancy indexing); rows of one entry map every "
+            "channel, longer rows take one channel to K",
+        ),
         _spec(
             "threshold",
             _threshold_params,

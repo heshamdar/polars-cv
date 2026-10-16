@@ -9,6 +9,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`apply_lut(table, dtype="u8")`** (CR-95): each u8/u16 value read as a row
+  index into `table`. Rows of one entry map every element in place on any
+  channel count (`cv2.LUT`); rows of `K` entries take a single-channel image
+  to `K` channels, a palette. Entries are stored as `dtype` (any of the ten)
+  and must fit it, which is checked when the pipeline is built, as are ragged
+  rows and float input. A value with no row is an error for its row (so
+  `on_error("null")` nulls just that row); clamp with `clamp(0, n - 1,
+  out_dtype=...)` first to send larger values to the last row. Each entry
+  accepts an expression.
+
 - **`footprint="disk"` on `erode`, `dilate`, `morphology_gradient`,
   `morphology_open` and `morphology_close`** (CR-94): the pixels within
   Euclidean distance `ksize // 2` of the centre, edges replicated, for round

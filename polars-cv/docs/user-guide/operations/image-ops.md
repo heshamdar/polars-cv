@@ -410,6 +410,29 @@ has no pixel at all, the distance to it is infinite (`±inf`).
 Thresholding a distance gives offsets of any radius: `distance_transform()
 .threshold(r)` keeps the pixels more than `r` from the background.
 
+## Lookup Tables
+
+`apply_lut(table, dtype=)` reads each u8 or u16 value as a row index into
+`table`. Rows of one entry map every element in place, on any channel count;
+rows of `K` entries turn a single-channel image into `K` channels, a palette.
+
+```python
+# Invert through a table (one entry per value, every channel)
+Pipeline().source("image_bytes", dtype="u8").apply_lut([[255 - v] for v in range(256)])
+
+# A blue-to-red palette over a grayscale image: [H, W, 1] -> [H, W, 3]
+Pipeline().source("image_bytes").grayscale().apply_lut([[v, 0, 255 - v] for v in range(256)])
+
+# Six terraces as float32 values
+Pipeline().source("image_bytes").grayscale().apply_lut([[0.0], [0.2], [0.4], [0.6], [0.8], [1.0]], dtype="f32")
+```
+
+A value with no row is an error for its row. To send larger values to the
+last row, clamp first while keeping the dtype:
+`.clamp(0, len(table) - 1, out_dtype="u8")` (`clamp_max` alone promotes to
+`f32`, which `apply_lut` refuses). Float input must be scaled, rounded and cast
+to u8 or u16 first.
+
 ## Affine Transforms
 
 Apply arbitrary 2x3 affine transformations. All methods in this family share the same Rust execution code path. Each one resamples the image, so consecutive affine ops run one after another (they are not composed into a single warp); build the combined matrix yourself and call `warp_affine` once when you want a single interpolation pass. The matrix uses the **forward-mapping** convention (same as OpenCV `warpAffine`): the kernel inverts it internally for interpolation.
