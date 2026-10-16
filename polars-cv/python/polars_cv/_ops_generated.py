@@ -229,6 +229,32 @@ class LabelRegionMode(str, Enum):
     BBOX = "bbox"
 
 
+class LineCap(str, Enum):
+    """How ``rasterize`` ends a stroked line.
+
+    - ROUND: A half disc past each end (default).
+    - SQUARE: A half square past each end.
+    - BUTT: Flat at the end point itself.
+    """
+
+    ROUND = "round"
+    SQUARE = "square"
+    BUTT = "butt"
+
+
+class LineJoin(str, Enum):
+    """How ``rasterize`` strokes and ``offset`` turn a corner.
+
+    - ROUND: An arc about the corner (default).
+    - MITER: The edges extended to meet, cut off where the point would reach more than 4 half-widths out (SVG's default miter limit).
+    - BEVEL: The corner cut straight across.
+    """
+
+    ROUND = "round"
+    MITER = "miter"
+    BEVEL = "bevel"
+
+
 class LogicalPass(str, Enum):
     """A logical optimisation pass (``OptFlags`` field names)."""
 
@@ -385,11 +411,15 @@ TYPED_OPS: frozenset[str] = frozenset(
         "contour_centroid",
         "contour_close",
         "contour_convex_hull",
+        "contour_densify",
         "contour_largest",
+        "contour_offset",
         "contour_perimeter",
         "contour_scale",
         "contour_simplify",
+        "contour_smooth",
         "contour_translate",
+        "contour_union_all",
         "convolve2d",
         "crop",
         "cvt_color",
@@ -606,7 +636,19 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "contour_centroid": {},
     "contour_close": {},
     "contour_convex_hull": {},
+    "contour_densify": {
+        "max_segment_length": {"kind": "scalar", "per_row": True, "py": "float"}
+    },
     "contour_largest": {"k": {"kind": "scalar", "per_row": True, "py": "int"}},
+    "contour_offset": {
+        "distance": {"kind": "scalar", "per_row": True, "py": "float"},
+        "join": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "LineJoin",
+            "variants": ["round", "miter", "bevel"],
+        },
+    },
     "contour_perimeter": {},
     "contour_scale": {
         "sx": {"kind": "scalar", "per_row": True, "py": "float"},
@@ -621,10 +663,12 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "contour_simplify": {
         "tolerance": {"kind": "scalar", "per_row": True, "py": "float"}
     },
+    "contour_smooth": {"iterations": {"kind": "scalar", "per_row": True, "py": "int"}},
     "contour_translate": {
         "dx": {"kind": "scalar", "per_row": True, "py": "float"},
         "dy": {"kind": "scalar", "per_row": True, "py": "float"},
     },
+    "contour_union_all": {},
     "convolve2d": {
         "kernel": {
             "kind": "list",
@@ -880,6 +924,19 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         "fill_value": {"kind": "scalar", "per_row": True, "py": "int"},
         "background": {"kind": "scalar", "per_row": True, "py": "int"},
         "supersample": {"kind": "scalar", "per_row": True, "py": "int"},
+        "line_width": {"kind": "scalar", "per_row": True, "py": "float"},
+        "cap": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "LineCap",
+            "variants": ["round", "square", "butt"],
+        },
+        "join": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "LineJoin",
+            "variants": ["round", "miter", "bevel"],
+        },
     },
     "reciprocal": {},
     "reduce_argmax": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
@@ -1084,11 +1141,15 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "contour_centroid": [{"input": "contour", "output": "vector"}],
     "contour_close": [{"input": "contour", "output": "contour"}],
     "contour_convex_hull": [{"input": "contour", "output": "contour"}],
+    "contour_densify": [{"input": "contour", "output": "contour"}],
     "contour_largest": [{"input": "contour", "output": "contour"}],
+    "contour_offset": [{"input": "contour", "output": "contour"}],
     "contour_perimeter": [{"input": "contour", "output": "vector"}],
     "contour_scale": [{"input": "contour", "output": "contour"}],
     "contour_simplify": [{"input": "contour", "output": "contour"}],
+    "contour_smooth": [{"input": "contour", "output": "contour"}],
     "contour_translate": [{"input": "contour", "output": "contour"}],
+    "contour_union_all": [{"input": "contour", "output": "contour"}],
     "convolve2d": [{"input": "buffer", "output": "buffer"}],
     "crop": [{"input": "buffer", "output": "buffer"}],
     "cvt_color": [{"input": "buffer", "output": "buffer"}],
@@ -1625,6 +1686,21 @@ class _OpsMixin:
         """
         return self._append_typed("contour_convex_hull", {})
 
+    def densify(self, max_segment_length: FloatOrExpr) -> Pipeline:
+        """Add points so no edge is longer than *max_segment_length*: each edge is
+        split into ``ceil(length / max_segment_length)`` equal parts, and every
+        existing point is kept. A region's closing edges are split too.
+
+        Domain: contour → contour
+
+        Args:
+            max_segment_length: The longest edge allowed, a finite length > 0 (literal
+                or expression).
+        """
+        return self._append_typed(
+            "contour_densify", {"max_segment_length": max_segment_length}
+        )
+
     def largest(self, *, k: IntOrExpr = 1) -> Pipeline:
         """Keep the ``k`` largest contours of the set, by area: largest first,
         equal areas in their input order. A set of fewer keeps them all.
@@ -1635,6 +1711,31 @@ class _OpsMixin:
             k: How many contours to keep, >= 1 (literal or expression).
         """
         return self._append_typed("contour_largest", {"k": k})
+
+    def offset(
+        self, distance: FloatOrExpr, *, join: str | pl.Expr = "round"
+    ) -> Pipeline:
+        """Grow the set's regions by *distance* (negative: shrink them): every
+        point within *distance* of their union, or inside it and at least
+        ``-distance`` from its edge.
+
+        The set is read as one union, so growing can merge regions and
+        shrinking can split them or leave none: the result is always a set.
+        Convex corners turn by *join*; concave ones stay sharp. Round arcs are
+        polygons within 1/64 pixel of the true arc. An open contour is refused.
+
+        Domain: contour → contour
+
+        Args:
+            distance: How far to move the edge, in pixels: positive grows, negative
+                shrinks (literal or expression).
+            join: ``"round"`` (an arc about each corner), ``"miter"`` (the edges
+                extended to meet, cut off past 4 times *distance*) or ``"bevel"`` (cut
+                straight across). Accepts an expression.
+        """
+        return self._append_typed(
+            "contour_offset", {"distance": distance, "join": join}
+        )
 
     def perimeter(self) -> Pipeline:
         """Compute the perimeter (arc length) of the contour.
@@ -1672,6 +1773,21 @@ class _OpsMixin:
         """
         return self._append_typed("contour_simplify", {"tolerance": tolerance})
 
+    def smooth(self, *, iterations: IntOrExpr = 1) -> Pipeline:
+        """Round off corners by Chaikin's corner cutting: each pass replaces every
+        edge by its points a quarter and three quarters along, doubling the
+        point count. A region's rings are cut all the way round; an open line
+        keeps its two ends, unless it returns to its first point (as
+        ``boundary()`` draws one), when it is cut through it as a loop.
+
+        Domain: contour → contour
+
+        Args:
+            iterations: Passes to make; 0 returns the contour as it is (literal or
+                expression).
+        """
+        return self._append_typed("contour_smooth", {"iterations": iterations})
+
     def translate(self, *, dx: FloatOrExpr, dy: FloatOrExpr) -> Pipeline:
         """Translate the contour by an offset.
 
@@ -1682,6 +1798,15 @@ class _OpsMixin:
             dy: Y offset (vertical translation).
         """
         return self._append_typed("contour_translate", {"dx": dx, "dy": dy})
+
+    def union_all(self) -> Pipeline:
+        """The union of the set's regions, as disjoint regions: overlapping
+        members merge and a hole another member covers is filled. The result
+        is always a set. An open contour is refused.
+
+        Domain: contour → contour
+        """
+        return self._append_typed("contour_union_all", {})
 
     def convolve2d(
         self,
@@ -2205,8 +2330,11 @@ class _OpsMixin:
         fill_value: IntOrExpr = 255,
         background: IntOrExpr = 0,
         supersample: IntOrExpr = 1,
+        line_width: FloatOrExpr = 1.0,
+        cap: str | pl.Expr = "round",
+        join: str | pl.Expr = "round",
     ) -> Pipeline:
-        """Rasterize contours to a mask.
+        """Rasterize contours to a mask: regions filled, open lines stroked.
 
         The builder is ``Pipeline.rasterize``, whose ``width``/``height`` or
         ``shape`` arguments become ``size``; it also records the shape reference's
@@ -2226,6 +2354,13 @@ class _OpsMixin:
                 ``background`` and ``fill_value`` (anti-aliasing). 1 (the default)
                 samples the pixel centre alone, so a pixel is one value or the other.
                 Accepts a Polars expression for per-row dynamic values.
+            line_width: The width an open line is stroked at, a finite width > 0
+                (regions are filled whatever it is). Accepts a Polars expression.
+            cap: How a stroked line ends: ``"round"`` (a half disc), ``"square"`` (a
+                half square) or ``"butt"`` (flat at its end point). Accepts a Polars
+                expression.
+            join: How a stroked line turns a corner: ``"round"``, ``"miter"`` (cut off
+                past 4 half-widths) or ``"bevel"``. Accepts a Polars expression.
         """
         return self._append_typed(
             "rasterize",
@@ -2234,6 +2369,9 @@ class _OpsMixin:
                 "fill_value": fill_value,
                 "background": background,
                 "supersample": supersample,
+                "line_width": line_width,
+                "cap": cap,
+                "join": join,
             },
         )
 
@@ -3157,6 +3295,17 @@ class _ContourOpsMixin:
             },
         )
 
+    def densify(self, max_segment_length: FloatOrExpr) -> pl.Expr:
+        """Add points so no edge is longer than *max_segment_length*: each edge is
+        split into ``ceil(length / max_segment_length)`` equal parts, and every
+        existing point is kept. A region's closing edges are split too.
+
+        Args:
+            max_segment_length: The longest edge allowed, a finite length > 0 (literal
+                or expression).
+        """
+        return self._call("contour_densify", {"max_segment_length": max_segment_length})
+
     def dice(self, other: pl.Expr) -> pl.Expr:
         """Compute Dice coefficient with another contour.
 
@@ -3306,6 +3455,27 @@ class _ContourOpsMixin:
         """
         return self._call("contour_normalize", {"width": width, "height": height})
 
+    def offset(
+        self, distance: FloatOrExpr, *, join: str | pl.Expr = "round"
+    ) -> pl.Expr:
+        """Grow the set's regions by *distance* (negative: shrink them): every
+        point within *distance* of their union, or inside it and at least
+        ``-distance`` from its edge.
+
+        The set is read as one union, so growing can merge regions and
+        shrinking can split them or leave none: the result is always a set.
+        Convex corners turn by *join*; concave ones stay sharp. Round arcs are
+        polygons within 1/64 pixel of the true arc. An open contour is refused.
+
+        Args:
+            distance: How far to move the edge, in pixels: positive grows, negative
+                shrinks (literal or expression).
+            join: ``"round"`` (an arc about each corner), ``"miter"`` (the edges
+                extended to meet, cut off past 4 times *distance*) or ``"bevel"`` (cut
+                straight across). Accepts an expression.
+        """
+        return self._call("contour_offset", {"distance": distance, "join": join})
+
     def pairwise_iou(self, other: pl.Expr) -> pl.Expr:
         """Compute full pairwise IoU matrix between contour sets.
 
@@ -3399,6 +3569,19 @@ class _ContourOpsMixin:
         """
         return self._call("contour_single", {"label": label})
 
+    def smooth(self, *, iterations: IntOrExpr = 1) -> pl.Expr:
+        """Round off corners by Chaikin's corner cutting: each pass replaces every
+        edge by its points a quarter and three quarters along, doubling the
+        point count. A region's rings are cut all the way round; an open line
+        keeps its two ends, unless it returns to its first point (as
+        ``boundary()`` draws one), when it is cut through it as a loop.
+
+        Args:
+            iterations: Passes to make; 0 returns the contour as it is (literal or
+                expression).
+        """
+        return self._call("contour_smooth", {"iterations": iterations})
+
     def to_absolute(self, width: FloatOrExpr, height: FloatOrExpr) -> pl.Expr:
         """Convert normalized coordinates to pixel coordinates.
 
@@ -3434,6 +3617,13 @@ class _ContourOpsMixin:
             dy: Y offset (vertical translation).
         """
         return self._call("contour_translate", {"dx": dx, "dy": dy})
+
+    def union_all(self) -> pl.Expr:
+        """The union of the set's regions, as disjoint regions: overlapping
+        members merge and a hole another member covers is filled. The result
+        is always a set. An open contour is refused.
+        """
+        return self._call("contour_union_all", {})
 
     def winding(self) -> pl.Expr:
         """Compute the exterior ring's winding direction from point order.

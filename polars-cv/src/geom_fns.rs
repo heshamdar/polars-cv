@@ -624,6 +624,10 @@ pub const OP_ACCESSORS: &[(&str, &str)] = &[
     ("contour_largest", "largest"),
     ("contour_boundary", "boundary"),
     ("contour_close", "close"),
+    ("contour_offset", "offset"),
+    ("contour_union_all", "union_all"),
+    ("contour_smooth", "smooth"),
+    ("contour_densify", "densify"),
 ];
 
 /// One accessor method: its namespace and its function's description.

@@ -9,6 +9,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **Contour shaping and line rendering** (CR-98). Four contour ops, each a
+  pipeline op and a `.contour` accessor with one definition:
+  `offset(distance, join="round")` grows (negative: shrinks) a set's regions,
+  read as one union, so the result is always a set; `union_all()` merges them
+  into disjoint regions; `smooth(iterations=1)` is Chaikin corner cutting; and
+  `densify(max_segment_length)` splits each edge into equal parts no longer
+  than the bound. `rasterize` gains `line_width=1.0`, `cap="round"` and
+  `join="round"`: it now strokes a set's open lines (which it used to refuse)
+  and fills its regions, as one union, so `supersample` applies to both.
+  New enums `LineJoin` (`round`, `miter`, `bevel`; a miter limit of 4) and
+  `LineCap` (`round`, `square`, `butt`). Round arcs are polygons within 1/64
+  pixel. Held to distance-band oracles (a round offset or stroke is the set of
+  points within the distance, checked on the mask's own samples), closed-form
+  areas per join and cap, a pure-Python Chaikin, an exact densify
+  construction, and `rasterize(union_all(s)) == rasterize(s)`.
+
 - **Open contours in pipelines; `boundary()` and `close()`** (CR-97). The
   contour domain carries lines (`is_closed = false`) as well as regions:
   `source("contour")` reads open rows instead of refusing them, and each
@@ -86,6 +102,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   linked guides and `benchmarks/`.
 
 ### Fixed
+
+- The parity suite's per-row parameters now encode nested lists level by
+  level, so an `apply_lut` table varying by row passes one expression per
+  entry; it turned a whole table row (whose length is structural) into one
+  expression, which failed the deep lane.
 
 - **How many threads a call uses is measured, not raced.** Before a call's
   first row range (about 300 image rows) finished, the plugin read a row's

@@ -1081,9 +1081,12 @@ class Pipeline(_OpsMixin):
         fill_value: IntOrExpr = 255,
         background: IntOrExpr = 0,
         supersample: IntOrExpr = 1,
+        line_width: FloatOrExpr = 1.0,
+        cap: str | pl.Expr = "round",
+        join: str | pl.Expr = "round",
     ) -> "Pipeline":
         """
-        Rasterize contours to a mask.
+        Rasterize contours to a mask: regions filled, open lines stroked.
 
         A pixel is filled when its centre — ``(x + 0.5, y + 0.5)`` — lies inside
         the contour, boundary included; holes are cut out by the same rule. This
@@ -1103,6 +1106,12 @@ class Pipeline(_OpsMixin):
         ``k`` inside, rounded half away from zero. ``n = 1`` (the default) is the
         centre rule above.
 
+        An open contour (``is_closed = False``, a line) is drawn as its stroke:
+        every point within ``line_width / 2`` of it, its ends shaped by ``cap``
+        and its corners by ``join`` (round arcs are polygons within 1/64 pixel
+        of the true arc). The stroke joins the union, so ``supersample``
+        anti-aliases it too. To outline a region, rasterize its ``boundary()``.
+
         Args:
             width: Mask width.
             height: Mask height.
@@ -1113,6 +1122,15 @@ class Pipeline(_OpsMixin):
                 for per-row dynamic values.
             supersample: Samples per pixel along each axis, 1 to 16 (default 1).
                 Accepts a Polars expression for per-row dynamic values.
+            line_width: The width an open line is stroked at, a finite width > 0
+                (default 1.0); regions are filled whatever it is. Accepts a
+                Polars expression.
+            cap: How a stroked line ends: ``"round"`` (default, a half disc),
+                ``"square"`` (a half square) or ``"butt"`` (flat at its end
+                point). Accepts a Polars expression.
+            join: How a stroked line turns a corner: ``"round"`` (default),
+                ``"miter"`` (cut off past 4 half-widths) or ``"bevel"``.
+                Accepts a Polars expression.
 
         """
         has_explicit = width is not None or height is not None
@@ -1137,6 +1155,9 @@ class Pipeline(_OpsMixin):
                 fill_value=fill_value,
                 background=background,
                 supersample=supersample,
+                line_width=line_width,
+                cap=cap,
+                join=join,
             )
 
         from polars_cv.lazy import LazyPipelineExpr
@@ -1151,6 +1172,9 @@ class Pipeline(_OpsMixin):
             fill_value=fill_value,
             background=background,
             supersample=supersample,
+            line_width=line_width,
+            cap=cap,
+            join=join,
         )
 
     # --- Validation ---

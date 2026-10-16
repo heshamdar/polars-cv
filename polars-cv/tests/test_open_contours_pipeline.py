@@ -10,7 +10,8 @@ the lengths and areas against NumPy.
 * Boundary ops take lines: ``perimeter`` (a line's length, no closing edge),
   ``bounding_box``, ``translate``, ``scale`` (not about a centroid),
   ``simplify``, and ``convex_hull`` (whose hull is a region).
-* Region ops refuse them: ``area``, ``centroid``, ``largest``, ``rasterize``.
+* Region ops refuse them: ``area``, ``centroid``, ``largest``.
+* ``rasterize`` strokes them (CR-98, ``reference/test_contour_shaping_ref.py``).
 * ``boundary()`` turns a region's rings into lines (a set: holes add rings);
   ``close()`` joins a line's ends into a region.
 """
@@ -105,6 +106,8 @@ def test_perimeter_of_a_line_is_its_length() -> None:
         ("translate", {"dx": 1.5, "dy": -2.0}),
         ("simplify", {"tolerance": 1.0}),
         ("convex_hull", {}),
+        ("smooth", {"iterations": 2}),
+        ("densify", {"max_segment_length": 1.5}),
     ],
 )
 def test_each_boundary_op_agrees_with_its_accessor(op: str, kwargs: dict) -> None:
@@ -146,9 +149,8 @@ def test_the_convex_hull_of_a_line_is_a_region() -> None:
         (lambda p: p.area(), "native"),
         (lambda p: p.centroid(), "native"),
         (lambda p: p.largest(), "native"),
-        (lambda p: p.rasterize(width=16, height=16), "numpy"),
     ],
-    ids=["area", "centroid", "largest", "rasterize"],
+    ids=["area", "centroid", "largest"],
 )
 def test_a_region_op_refuses_a_line(build, sink: str) -> None:
     df = _frame([_region(SQUARE), _line(ZIGZAG)])

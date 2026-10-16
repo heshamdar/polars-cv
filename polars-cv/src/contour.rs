@@ -549,6 +549,66 @@ fn contour_boundary(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Serie
     )
 }
 
+/// Declared type of a set-level shaping function (`offset`, `union_all`):
+/// always a set of regions, since a region can split or merge.
+fn contour_region_set_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
+    let input = input_fields
+        .first()
+        .ok_or_else(|| polars_err!(ComputeError: "the function takes a contour column"))?;
+    Ok(Field::new(
+        input.name().clone(),
+        Arity::Set.wrap(Arity::elem_dtype(input.dtype())),
+    ))
+}
+
+/// Each row's regions, read as one union and grown (shrunk) by `distance`,
+/// as a set (the pipeline op's definition, `GeometryOp::Offset`).
+#[polars_expr(output_type_func=contour_region_set_output_type)]
+fn contour_offset(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "contour_offset";
+    let (op, params) = GeomParams::parse::<GeometryOp<Wire>>(inputs, kwargs, NAME)?;
+    let GeometryOp::Offset { distance, join } = &op else {
+        return Err(parsed_as_another(NAME));
+    };
+    let contours = ContourColumn::new(&inputs[0]);
+    let rows = params.map_rows(inputs[0].len(), |params, i| {
+        let Some(row) = contours.row(i)? else {
+            return Ok(None);
+        };
+        let (distance, join) = (params.value(distance, i)?, params.value(join, i)?);
+        transforms::offset(&row, distance, join)
+            .map(Some)
+            .map_err(|e| polars_err!(ComputeError: "{} (row {})", e, i))
+    })?;
+    Contour::column(
+        inputs[0].name().clone(),
+        rows,
+        Arity::Set,
+        &Arity::elem_dtype(inputs[0].dtype()),
+    )
+}
+
+/// Each row's regions as their union's disjoint regions, a set (the
+/// pipeline op's definition, `GeometryOp::UnionAll`).
+#[polars_expr(output_type_func=contour_region_set_output_type)]
+fn contour_union_all(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "contour_union_all";
+    let (op, params) = GeomParams::parse::<GeometryOp<Wire>>(inputs, kwargs, NAME)?;
+    let GeometryOp::UnionAll = &op else {
+        return Err(parsed_as_another(NAME));
+    };
+    let contours = ContourColumn::new(&inputs[0]);
+    let rows = params.map_rows(inputs[0].len(), |_params, i| {
+        Ok(contours.row(i)?.map(|row| transforms::union_all(&row)))
+    })?;
+    Contour::column(
+        inputs[0].name().clone(),
+        rows,
+        Arity::Set,
+        &Arity::elem_dtype(inputs[0].dtype()),
+    )
+}
+
 fn contour_single_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
     let input = input_fields
         .first()
@@ -968,6 +1028,27 @@ contour_accessor! {
     |outline, params, row| {
         let tolerance = params.value(tolerance, row)?;
         Ok(transforms::simplify_outline(outline, tolerance))
+    }
+}
+
+contour_accessor! {
+    /// Chaikin-smooth a contour.
+    map fn contour_smooth / contour_smooth_output_type
+        -> |input| Arity::elem_dtype(input);
+    reads Outline;
+    parse GeometryOp::Smooth { iterations };
+    |outline, params, row| Ok(transforms::smooth(outline, params.value(iterations, row)?))
+}
+
+contour_accessor! {
+    /// Densify a contour.
+    map fn contour_densify / contour_densify_output_type
+        -> |input| Arity::elem_dtype(input);
+    reads Outline;
+    parse GeometryOp::Densify { max_segment_length };
+    |outline, params, row| {
+        transforms::densify(outline, params.value(max_segment_length, row)?)
+            .map_err(|e| polars_err!(ComputeError: "{} (row {})", e, row))
     }
 }
 

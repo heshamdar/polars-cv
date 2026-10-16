@@ -160,6 +160,8 @@ registry!(
     crate::geometry::ops::ScaleOrigin,
     crate::geometry::ops::ExtractMode,
     crate::geometry::ops::ApproxMethod,
+    crate::geometry::ops::LineJoin,
+    crate::geometry::ops::LineCap,
     crate::geometry::label::LabelReduction,
     crate::geometry::label::LabelRegionMode,
     crate::ops::NormalizeMethod,

@@ -52,6 +52,10 @@ RING = "ring"
 #: ``label_reduce``'s operand.
 CONTOURS = "contours"
 
+#: An open L-shaped polyline (two ends and a corner), so ``rasterize``'s
+#: ``cap`` and ``join`` both show.
+LINES = "lines"
+
 #: A rotated square. Its bounding box is strictly larger than its interior,
 #: which is what makes ``label_reduce(region_mode=)`` observable.
 DIAMOND = "diamond"
@@ -187,6 +191,25 @@ DIAMOND_SET = [
         "is_closed": True,
     }
 ]
+
+
+#: The polyline behind the :data:`LINES` column.
+LINE_SET = [
+    {
+        "exterior": [
+            {"x": 3.0, "y": 4.0},
+            {"x": 12.0, "y": 4.0},
+            {"x": 12.0, "y": 13.0},
+        ],
+        "holes": [],
+        "is_closed": False,
+    }
+]
+
+
+def lines() -> Pipeline:
+    """The contour source over the :data:`LINES` column."""
+    return Pipeline().source("contour")
 
 
 # --- The table -------------------------------------------------------------
@@ -725,6 +748,33 @@ CASES: list[ExprCase] = [
         (0, 32, 96),
         column=RECT,
     ),
+    # Supersampled, so a cap or join's share of a pixel shows even where a
+    # pixel centre falls on the same side for two styles.
+    ExprCase(
+        "rasterize",
+        "line_width",
+        lambda v: lines().rasterize(width=16, height=16, line_width=v, supersample=4),
+        (1.0, 2.5, 4.0),
+        column=LINES,
+    ),
+    ExprCase(
+        "rasterize",
+        "cap",
+        lambda v: lines().rasterize(
+            width=16, height=16, line_width=3.0, cap=v, supersample=4
+        ),
+        ("butt", "square", "round"),
+        column=LINES,
+    ),
+    ExprCase(
+        "rasterize",
+        "join",
+        lambda v: lines().rasterize(
+            width=16, height=16, line_width=4.0, join=v, supersample=4
+        ),
+        ("miter", "bevel", "round"),
+        column=LINES,
+    ),
     ExprCase(
         "extract_contours",
         "mode",
@@ -817,6 +867,36 @@ CASES: list[ExprCase] = [
         # corners sit 8/sqrt(2) ~ 5.66 from the diagonal: 6.0 drops one, 0.01
         # keeps all four.
         (0.01, 6.0),
+        column=RECT,
+    ),
+    ExprCase(
+        "offset",
+        "distance",
+        lambda v: contour().offset(v),
+        (-1.0, 1.0, 2.0),
+        column=RECT,
+    ),
+    ExprCase(
+        "offset",
+        "join",
+        lambda v: contour().offset(2.0, join=v),
+        ("miter", "bevel", "round"),
+        column=RECT,
+    ),
+    ExprCase(
+        "smooth",
+        "iterations",
+        lambda v: contour().smooth(iterations=v),
+        (0, 1, 2),
+        column=RECT,
+    ),
+    ExprCase(
+        "densify",
+        "max_segment_length",
+        # The fixture traces to an 8x8 square: 100 keeps its four corners,
+        # 3.0 splits each edge in three, 1.0 in eight.
+        lambda v: contour().densify(v),
+        (1.0, 3.0, 100.0),
         column=RECT,
     ),
     # --- reductions and vectors -------------------------------------------

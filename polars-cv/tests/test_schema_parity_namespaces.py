@@ -166,6 +166,8 @@ CONTOUR_CASES: dict[str, object] = {
     "scale": lambda: pl.col("a").contour.scale(2.0, 2.0),
     "simplify": lambda: pl.col("a").contour.simplify(0.5),
     "convex_hull": lambda: pl.col("a").contour.convex_hull(),
+    "smooth": lambda: pl.col("a").contour.smooth(iterations=2),
+    "densify": lambda: pl.col("a").contour.densify(1.5),
     "normalize": lambda: pl.col("a").contour.normalize(100, 100),
     "to_absolute": lambda: pl.col("a").contour.to_absolute(100, 100),
     "flip": lambda: pl.col("a").contour.flip(),
@@ -177,6 +179,9 @@ CONTOUR_CASES: dict[str, object] = {
     # Set-level, like `largest`: always a set of lines.
     "boundary": lambda: pl.col("aset").contour.boundary(),
     "close": lambda: pl.col("o").contour.close(),
+    # Set-level: a region can split or merge, so always a set.
+    "offset": lambda: pl.col("aset").contour.offset(1.5),
+    "union_all": lambda: pl.col("aset").contour.union_all(),
     # A lone contour is a set of one, the only size `single` accepts.
     "single": lambda: pl.col("a").contour.single(label=pl.lit("row")),
     "correspond": lambda: pl.col("aset").contour.correspond(
@@ -289,6 +294,8 @@ SET_ARITY_EXEMPT = {
     "pairwise_iou": "already takes sets on both sides",
     "largest": "set-level: `aset` is its case, and a lone contour is a set of one",
     "boundary": "set-level: `aset` is its case, and its result is always a set",
+    "offset": "set-level: `aset` is its case, and its result is always a set",
+    "union_all": "set-level: `aset` is its case, and its result is always a set",
     "close": "its case reads the open-line column `o`; the set spelling is the "
     "pipeline's, in test_open_contours_pipeline.py",
     "single": "refuses every set size but one (the sweep's sets hold two); its set "

@@ -259,6 +259,15 @@ class _LazyForwardersMixin:
             self._continuation().crop(top=top, left=left, height=height, width=width)
         )
 
+    def densify(self, max_segment_length: FloatOrExpr) -> LazyPipelineExpr:
+        """Add points so no edge is longer than *max_segment_length*: each edge is
+
+        Lazy form of :meth:`Pipeline.densify` on this expression's output.
+        """
+        return self.pipe(
+            self._continuation().densify(max_segment_length=max_segment_length)
+        )
+
     def dilate(
         self,
         *,
@@ -502,6 +511,15 @@ class _LazyForwardersMixin:
             )
         )
 
+    def offset(
+        self, distance: FloatOrExpr, *, join: str | pl.Expr = "round"
+    ) -> LazyPipelineExpr:
+        """Grow the set's regions by *distance* (negative: shrink them): every
+
+        Lazy form of :meth:`Pipeline.offset` on this expression's output.
+        """
+        return self.pipe(self._continuation().offset(distance=distance, join=join))
+
     def on_error(self, policy: str) -> LazyPipelineExpr:
         """Set the per-row error policy for the executed pipeline graph.
 
@@ -583,8 +601,11 @@ class _LazyForwardersMixin:
         fill_value: IntOrExpr = 255,
         background: IntOrExpr = 0,
         supersample: IntOrExpr = 1,
+        line_width: FloatOrExpr = 1.0,
+        cap: str | pl.Expr = "round",
+        join: str | pl.Expr = "round",
     ) -> LazyPipelineExpr:
-        """Rasterize contours to a mask.
+        """Rasterize contours to a mask: regions filled, open lines stroked.
 
         Lazy form of :meth:`Pipeline.rasterize` on this expression's output.
         """
@@ -596,6 +617,9 @@ class _LazyForwardersMixin:
                 fill_value=fill_value,
                 background=background,
                 supersample=supersample,
+                line_width=line_width,
+                cap=cap,
+                join=join,
             )
         )
 
@@ -867,6 +891,13 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().simplify(tolerance=tolerance))
 
+    def smooth(self, *, iterations: IntOrExpr = 1) -> LazyPipelineExpr:
+        """Round off corners by Chaikin's corner cutting: each pass replaces every
+
+        Lazy form of :meth:`Pipeline.smooth` on this expression's output.
+        """
+        return self.pipe(self._continuation().smooth(iterations=iterations))
+
     def sobel(self, *, axis: str = "x") -> LazyPipelineExpr:
         """Sobel gradient operator.
 
@@ -950,6 +981,13 @@ class _LazyForwardersMixin:
         Lazy form of :meth:`Pipeline.trunc` on this expression's output.
         """
         return self.pipe(self._continuation().trunc())
+
+    def union_all(self) -> LazyPipelineExpr:
+        """The union of the set's regions, as disjoint regions: overlapping
+
+        Lazy form of :meth:`Pipeline.union_all` on this expression's output.
+        """
+        return self.pipe(self._continuation().union_all())
 
     def warp_affine(
         self,
