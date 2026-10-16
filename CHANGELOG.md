@@ -9,14 +9,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
-- **Expensive rows reach the whole pool on hosts that wake threads fast.**
-  Before a call's first range finished, a woken helper judged whether to
-  invite another only by how long the call had run. A helper woken in a few
-  µs (macOS) never saw enough to justify one, so a call of expensive rows ran
-  on two threads until its first range finished. That is the failing
-  `expensive_rows_reach_the_pool_before_any_range_finishes` on the macOS
-  runner. Each helper woken before any range has finished now invites one
-  more, as 0.38.0 described, however fast the host wakes it.
+- **How many threads a call uses is measured, not raced.** Before a call's
+  first row range (about 300 image rows) finished, the plugin read a row's
+  cost off how fast the host woke a helper thread compared with how fast
+  that range ran. On a host that wakes threads in a few µs (the macOS CI
+  runner) a call of expensive rows stayed on two threads for its whole first
+  range. A call now times its first rows on its own thread (one row, then
+  1, 2, 4, ... until about 50 µs of rows; a first row only counts by itself
+  when it takes over 1 ms, since it pays the call's one-off costs) and
+  invites one helper per 200 µs of the work that measurement says is left.
+  Expensive rows reach the whole pool after a row or two, and a call of
+  cheap rows that finishes within its probe wakes no thread at all. Results
+  are unchanged. The cost: a call's first row now runs alone, so a call of
+  only a few expensive rows is slower — 8 rows of ~18 ms on 4 threads took
+  ~58 ms against ~39 ms. From 16 rows up, and in the regression suite's
+  pipeline, sink, split and geometry cases at 4 and 32 threads, the two are
+  within noise.
 
 ## [0.38.0] — 2026-10-15
 
