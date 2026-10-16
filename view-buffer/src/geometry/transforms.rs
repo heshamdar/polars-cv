@@ -1,11 +1,14 @@
 //! Contour transformation operations.
 //!
-//! Implements translate, scale, flip, simplify, and convex hull.
+//! Implements translate, scale, flip, simplify, convex hull, and the shaping
+//! ops: offset, union, smoothing, densifying and stroking.
 
 use super::contour::{BorderArc, Contour, Outline, Point, Winding};
 use super::measures::{centroid, contour_winding};
-use super::ops::ScaleOrigin;
-use geo::{ConvexHull, Simplify};
+use super::ops::{LineCap, LineJoin, ScaleOrigin};
+use geo::algorithm::buffer::{BufferStyle, LineCap as GeoCap, LineJoin as GeoJoin};
+use geo::{unary_union, Buffer, ChaikinSmoothing, ConvexHull, Densify, Euclidean, Simplify};
+use std::borrow::Borrow;
 
 /// Translates a contour by the given offset.
 ///
@@ -622,5 +625,304 @@ mod boundary_close_tests {
             panic!("one ring, one line")
         };
         assert_eq!(close(line), square);
+    }
+}
+
+// ============================================================================
+// Shaping: offset, union, smoothing, densifying, stroking (CR-98)
+// ============================================================================
+
+/// The largest gap, in pixels, between a round join's or cap's arc and the
+/// polygon standing in for it: a 64th of a pixel, under the finest sample
+/// spacing `rasterize` takes (a 16th).
+pub const ARC_TOLERANCE: f64 = 1.0 / 64.0;
+
+/// A miter join is cut off where its point would reach more than this many
+/// half-widths (or offset distances) from the corner: SVG's default, which
+/// cuts corners sharper than about 29 degrees.
+pub const MITER_LIMIT: f64 = 4.0;
+
+/// The angle step a round arc of `radius` takes so it stays within
+/// [`ARC_TOLERANCE`] of the true arc. `i_overlay` rounds an arc's segment count
+/// down, so a step can reach twice this; a step `2θ` leaves a gap
+/// `r (1 − cos θ)`, which is the tolerance at `θ = acos(1 − tol / r)`.
+fn arc_step(radius: f64) -> f64 {
+    let r = radius.abs();
+    if r <= ARC_TOLERANCE {
+        return std::f64::consts::FRAC_PI_4;
+    }
+    (1.0 - ARC_TOLERANCE / r).acos()
+}
+
+fn geo_join(join: LineJoin, radius: f64) -> GeoJoin<f64> {
+    match join {
+        LineJoin::Round => GeoJoin::Round(arc_step(radius)),
+        // `i_overlay` takes the sharpest corner it still miters: a miter of
+        // limit `m` reaches `1 / sin(θ / 2)` half-widths at a corner of `θ`.
+        LineJoin::Miter => GeoJoin::Miter(2.0 * (1.0 / MITER_LIMIT).asin()),
+        LineJoin::Bevel => GeoJoin::Bevel,
+    }
+}
+
+fn regions_of(polygons: &geo::MultiPolygon<f64>) -> Vec<Contour> {
+    polygons.0.iter().map(Contour::from_geo).collect()
+}
+
+fn line_to_geo(points: &[Point]) -> geo::LineString<f64> {
+    points
+        .iter()
+        .map(|p| geo::coord! { x: p.x, y: p.y })
+        .collect()
+}
+
+fn line_from_geo(line: &geo::LineString<f64>) -> Vec<Point> {
+    line.0.iter().map(|c| Point::new(c.x, c.y)).collect()
+}
+
+fn union_polygons<C: Borrow<Contour>>(regions: &[C]) -> geo::MultiPolygon<f64> {
+    let parts: Vec<geo::MultiPolygon<f64>> =
+        regions.iter().map(|c| c.borrow().to_geo_region()).collect();
+    unary_union(parts.iter())
+}
+
+/// The union of a set's regions (`union_all()`), as disjoint regions: each
+/// member is its exterior minus its holes (`Contour::to_geo_region`), and a
+/// hole another member covers is filled.
+pub fn union_all<C: Borrow<Contour>>(regions: &[C]) -> Vec<Contour> {
+    regions_of(&union_polygons(regions))
+}
+
+/// `offset(distance, join)`'s one rule for the value it takes.
+pub fn check_offset_distance(distance: f64) -> Result<(), String> {
+    if distance.is_finite() {
+        Ok(())
+    } else {
+        Err(format!("offset: distance must be finite, got {distance}"))
+    }
+}
+
+/// The union of a set's regions grown by `distance` (shrunk, negative), as
+/// disjoint regions: every point within `distance` of the union, or inside
+/// it and at least `-distance` from its edge. Growing can merge regions and
+/// shrinking split or remove them. Convex corners turn by `join`; concave
+/// ones stay sharp.
+pub fn offset<C: Borrow<Contour>>(
+    regions: &[C],
+    distance: f64,
+    join: LineJoin,
+) -> Result<Vec<Contour>, String> {
+    check_offset_distance(distance)?;
+    let union = union_polygons(regions);
+    if distance == 0.0 {
+        return Ok(regions_of(&union));
+    }
+    let style = BufferStyle::new(distance).line_join(geo_join(join, distance));
+    Ok(regions_of(&union.buffer_with_style(style)))
+}
+
+/// Chaikin's corner cutting, `iterations` times (`smooth()`): each edge is
+/// replaced by its points a quarter and three quarters along. A region's
+/// rings cut their closing edge too; an open line keeps its two ends, unless
+/// it returns to its first point, when it has no ends and is cut through it.
+pub fn smooth(outline: &Outline, iterations: u32) -> Outline {
+    let n = iterations as usize;
+    match outline {
+        Outline::Closed(c) => Outline::Closed(Contour::from_geo(&c.to_geo().chaikin_smoothing(n))),
+        Outline::Open(points) => {
+            Outline::Open(line_from_geo(&line_to_geo(points).chaikin_smoothing(n)))
+        }
+    }
+}
+
+/// `densify(max_segment_length)`'s one rule for the value it takes.
+pub fn check_max_segment_length(max_segment_length: f64) -> Result<(), String> {
+    if max_segment_length.is_finite() && max_segment_length > 0.0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "densify: max_segment_length must be a finite length > 0, got {max_segment_length}"
+        ))
+    }
+}
+
+/// Each edge split into `ceil(L / max_segment_length)` equal parts
+/// (`densify()`), every vertex kept: a region's closing edges included, an
+/// open line's ends joined by nothing.
+pub fn densify(outline: &Outline, max_segment_length: f64) -> Result<Outline, String> {
+    check_max_segment_length(max_segment_length)?;
+    Ok(match outline {
+        Outline::Closed(c) => Outline::Closed(Contour::from_geo(
+            &Euclidean.densify(&c.to_geo(), max_segment_length),
+        )),
+        Outline::Open(points) => Outline::Open(line_from_geo(
+            &Euclidean.densify(&line_to_geo(points), max_segment_length),
+        )),
+    })
+}
+
+/// How `rasterize` draws a set's open lines.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Stroke {
+    /// The stroke's full width, in pixels.
+    pub width: f64,
+    /// How each end is drawn.
+    pub cap: LineCap,
+    /// How each corner is turned.
+    pub join: LineJoin,
+}
+
+impl Stroke {
+    /// The one rule for `line_width`.
+    pub fn check_width(width: f64) -> Result<(), String> {
+        if width.is_finite() && width > 0.0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "rasterize: line_width must be a finite width > 0, got {width}"
+            ))
+        }
+    }
+}
+
+/// The region a stroked line covers: every point within `width / 2` of it
+/// (round caps and joins), or that band with its ends and corners shaped by
+/// `cap` and `join`. A one-point line is a dot (none, for a butt cap).
+pub fn stroke(line: &[Point], style: &Stroke) -> Result<Vec<Contour>, String> {
+    Stroke::check_width(style.width)?;
+    let radius = style.width / 2.0;
+    let cap = match style.cap {
+        LineCap::Round => GeoCap::Round(arc_step(radius)),
+        LineCap::Square => GeoCap::Square,
+        LineCap::Butt => GeoCap::Butt,
+    };
+    let buffered = line_to_geo(line).buffer_with_style(
+        BufferStyle::new(radius)
+            .line_cap(cap)
+            .line_join(geo_join(style.join, radius)),
+    );
+    Ok(regions_of(&buffered))
+}
+
+#[cfg(test)]
+mod shaping_tests {
+    use super::*;
+    use crate::geometry::measures::area;
+
+    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Contour {
+        Contour::from_tuples(&[(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+    }
+
+    fn total_area(regions: &[Contour]) -> f64 {
+        regions.iter().map(|c| area(c, false)).sum()
+    }
+
+    #[test]
+    fn offset_closed_forms() {
+        let sq = [rect(5.0, 5.0, 15.0, 15.0)];
+        let miter = offset(&sq, 3.0, LineJoin::Miter).unwrap();
+        assert!((total_area(&miter) - 256.0).abs() < 1e-6);
+        let bevel = offset(&sq, 3.0, LineJoin::Bevel).unwrap();
+        assert!((total_area(&bevel) - 238.0).abs() < 1e-6);
+        let round = total_area(&offset(&sq, 3.0, LineJoin::Round).unwrap());
+        let exact = 100.0 + 120.0 + 9.0 * std::f64::consts::PI;
+        assert!(
+            round <= exact + 1e-6 && round > exact - 6.0 * std::f64::consts::PI * ARC_TOLERANCE
+        );
+        for join in [LineJoin::Round, LineJoin::Miter, LineJoin::Bevel] {
+            let shrunk = offset(&sq, -3.0, join).unwrap();
+            assert!((total_area(&shrunk) - 16.0).abs() < 1e-6, "{join:?}");
+        }
+        assert!(offset(&sq, -6.0, LineJoin::Round).unwrap().is_empty());
+        assert!(offset(&sq, f64::NAN, LineJoin::Round).is_err());
+    }
+
+    #[test]
+    fn offset_reads_the_set_as_its_union() {
+        let pair = [rect(0.0, 0.0, 6.0, 10.0), rect(4.0, 0.0, 10.0, 10.0)];
+        let shrunk = offset(&pair, -2.0, LineJoin::Miter).unwrap();
+        assert_eq!(shrunk.len(), 1);
+        assert!((total_area(&shrunk) - 36.0).abs() < 1e-6);
+        assert_eq!(
+            offset(&pair, 0.0, LineJoin::Round).unwrap(),
+            union_all(&pair)
+        );
+    }
+
+    #[test]
+    fn union_fills_a_covered_hole_and_keeps_an_island() {
+        let ring = Contour::with_holes(
+            rect(0.0, 0.0, 20.0, 20.0).exterior,
+            vec![rect(4.0, 4.0, 16.0, 16.0).exterior],
+        );
+        let island = union_all(&[ring.clone(), rect(8.0, 8.0, 12.0, 12.0)]);
+        assert_eq!(island.len(), 2);
+        let plugged = union_all(&[ring, rect(3.0, 3.0, 17.0, 17.0)]);
+        assert_eq!(plugged.len(), 1);
+        assert!(plugged[0].holes.is_empty());
+        assert!(union_all::<Contour>(&[]).is_empty());
+    }
+
+    #[test]
+    fn smooth_keeps_an_open_lines_ends() {
+        let line = Outline::Open(vec![
+            Point::new(0.0, 0.0),
+            Point::new(4.0, 0.0),
+            Point::new(4.0, 4.0),
+        ]);
+        let Outline::Open(out) = smooth(&line, 1) else {
+            panic!("stays open")
+        };
+        // Each edge gives its quarter and three-quarter points, in order.
+        let want = [
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (3.0, 0.0),
+            (4.0, 1.0),
+            (4.0, 3.0),
+            (4.0, 4.0),
+        ];
+        assert_eq!(out.iter().map(|p| (p.x, p.y)).collect::<Vec<_>>(), want);
+        assert_eq!(smooth(&line, 0), line);
+    }
+
+    #[test]
+    fn densify_splits_each_edge_equally() {
+        let sq = Outline::Closed(rect(0.0, 0.0, 4.0, 4.0));
+        let Outline::Closed(out) = densify(&sq, 1.5).unwrap() else {
+            panic!("stays closed")
+        };
+        // Each 4-long edge, the closing one too, in three parts.
+        assert_eq!(out.exterior.len(), 12);
+        assert!(densify(&sq, 0.0).is_err());
+        assert!(densify(&sq, f64::INFINITY).is_err());
+    }
+
+    #[test]
+    fn stroke_closed_forms() {
+        let line = [Point::new(3.0, 6.0), Point::new(13.0, 6.0)];
+        let style = |cap| Stroke {
+            width: 2.0,
+            cap,
+            join: LineJoin::Round,
+        };
+        let butt = total_area(&stroke(&line, &style(LineCap::Butt)).unwrap());
+        assert!((butt - 20.0).abs() < 1e-6);
+        let square = total_area(&stroke(&line, &style(LineCap::Square)).unwrap());
+        assert!((square - 24.0).abs() < 1e-6);
+        let round = total_area(&stroke(&line, &style(LineCap::Round)).unwrap());
+        let exact = 20.0 + std::f64::consts::PI;
+        assert!(
+            round <= exact + 1e-6 && round > exact - 2.0 * std::f64::consts::PI * ARC_TOLERANCE
+        );
+        assert!(stroke(
+            &line,
+            &Stroke {
+                width: 0.0,
+                ..style(LineCap::Round)
+            }
+        )
+        .is_err());
+        let dot = stroke(&line[..1], &style(LineCap::Butt)).unwrap();
+        assert!(dot.is_empty());
     }
 }

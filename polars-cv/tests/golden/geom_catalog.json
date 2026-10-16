@@ -311,6 +311,24 @@
   },
   {
     "namespace": "contour",
+    "name": "contour_densify",
+    "python": "densify",
+    "visibility": "public",
+    "doc": "Add points so no edge is longer than *max_segment_length*: each edge is\nsplit into ``ceil(length / max_segment_length)`` equal parts, and every\nexisting point is kept. A region's closing edges are split too.",
+    "fields": [
+      {
+        "name": "max_segment_length",
+        "doc": "The longest edge allowed, a finite length > 0 (literal or\nexpression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
     "name": "contour_dice",
     "python": "dice",
     "visibility": "public",
@@ -491,6 +509,39 @@
   },
   {
     "namespace": "contour",
+    "name": "contour_offset",
+    "python": "offset",
+    "visibility": "public",
+    "doc": "Grow the set's regions by *distance* (negative: shrink them): every\npoint within *distance* of their union, or inside it and at least\n``-distance`` from its edge.\n\nThe set is read as one union, so growing can merge regions and\nshrinking can split them or leave none: the result is always a set.\nConvex corners turn by *join*; concave ones stay sharp. Round arcs are\npolygons within 1/64 pixel of the true arc. An open contour is refused.",
+    "fields": [
+      {
+        "name": "distance",
+        "doc": "How far to move the edge, in pixels: positive grows, negative\nshrinks (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "join",
+        "doc": "``\"round\"`` (an arc about each corner), ``\"miter\"`` (the edges\nextended to meet, cut off past 4 times *distance*) or ``\"bevel\"``\n(cut straight across). Accepts an expression.",
+        "default": "round",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "LineJoin",
+          "variants": [
+            "round",
+            "miter",
+            "bevel"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
     "name": "contour_pairwise_iou",
     "python": "pairwise_iou",
     "visibility": "public",
@@ -629,6 +680,25 @@
   },
   {
     "namespace": "contour",
+    "name": "contour_smooth",
+    "python": "smooth",
+    "visibility": "public",
+    "doc": "Round off corners by Chaikin's corner cutting: each pass replaces every\nedge by its points a quarter and three quarters along, doubling the\npoint count. A region's rings are cut all the way round; an open line\nkeeps its two ends, unless it returns to its first point (as\n``boundary()`` draws one), when it is cut through it as a loop.",
+    "fields": [
+      {
+        "name": "iterations",
+        "doc": "Passes to make; 0 returns the contour as it is (literal or\nexpression).",
+        "default": 1,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
     "name": "contour_to_absolute",
     "python": "to_absolute",
     "visibility": "public",
@@ -703,6 +773,14 @@
         }
       }
     ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_union_all",
+    "python": "union_all",
+    "visibility": "public",
+    "doc": "The union of the set's regions, as disjoint regions: overlapping\nmembers merge and a hole another member covers is filled. The result\nis always a set. An open contour is refused.",
+    "fields": []
   },
   {
     "namespace": "contour",

@@ -121,12 +121,16 @@ OP_CASES: dict[str, tuple[str, dict] | None] = {
     "bounding_box": (CONTOUR, {}),
     "centroid": (CONTOUR, {}),
     "convex_hull": (CONTOUR, {}),
+    "densify": (CONTOUR, {"max_segment_length": 2.0}),
     "largest": (CONTOUR, {"k": 2}),
+    "offset": (CONTOUR, {"distance": 1.5}),
     "perimeter": (CONTOUR, {}),
     "rasterize": (CONTOUR, {"width": 32, "height": 32}),
     "scale_contour": (CONTOUR, {"sx": 2.0, "sy": 2.0}),
     "simplify": (CONTOUR, {"tolerance": 1.0}),
+    "smooth": (CONTOUR, {"iterations": 2}),
     "translate": (CONTOUR, {"dx": 1.0, "dy": 2.0}),
+    "union_all": (CONTOUR, {}),
     # --- not comparable by this harness -----------------------------------
     "boundary": (CONTOUR, {}),
     "close": (LINE, {}),
@@ -155,6 +159,12 @@ EXTRA_CASES: list[tuple[str, str, dict]] = [
     # crop with only an offset, and histogram's struct-encoded output.
     ("crop", BUFFER, {"top": 10, "left": 20}),
     ("histogram", BUFFER, {"bins": 8, "output": "buckets"}),
+    # rasterize strokes a set's lines (CR-98): the line base reaches it.
+    (
+        "rasterize",
+        LINE,
+        {"width": 32, "height": 32, "line_width": 3.0, "cap": "square"},
+    ),
     # The float-promoting scalar ops asked to land somewhere other than the
     # promoted float. `out_dtype` was silently discarded — accepted, serialized
     # into the op's identity, and read by no `resolve_op` arm and no dtype rule

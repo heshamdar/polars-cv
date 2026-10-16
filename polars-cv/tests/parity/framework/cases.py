@@ -168,6 +168,13 @@ def draw_params(draw: st.DrawFn, spec: OpSpec, x: np.ndarray) -> dict[str, Any]:
     return spec.params(draw, x)
 
 
+def _lengths(value: Any) -> Any:
+    """A value's list lengths at every level (``None`` for a scalar)."""
+    if isinstance(value, (list, tuple)):
+        return (len(value), tuple(_lengths(v) for v in value))
+    return None
+
+
 def _merge_per_row(method: str, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Fold per-row argument dicts into one step, or ``None`` if impossible.
 
@@ -181,9 +188,8 @@ def _merge_per_row(method: str, rows: list[dict[str, Any]]) -> dict[str, Any] | 
     merged: dict[str, Any] = {}
     for key in keys:
         values = [r[key] for r in rows]
-        lengths = {len(v) for v in values if isinstance(v, (list, tuple))}
-        if len(lengths) > 1:
-            return None  # a list's length is structural: it cannot vary
+        if len({_lengths(v) for v in values}) > 1:
+            return None  # a list's length (at every level) is structural
         if all(v == values[0] for v in values):
             merged[key] = values[0]
         elif admits_expression(expression_eligible(method, key), PerRow(tuple(values))):

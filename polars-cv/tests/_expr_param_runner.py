@@ -37,6 +37,8 @@ from tests._expr_param_cases import (
     DIAMOND,
     DIAMOND_SET,
     IMAGE,
+    LINE_SET,
+    LINES,
     RECT,
     RING,
 )
@@ -183,10 +185,12 @@ def input_frame(case: "ExprCase", values: "tuple | list") -> pl.DataFrame:
     data: dict[str, list] = {name: [blob] * rows for name, blob in images.items()}
     data[CONTOURS] = [CONTOUR_SET] * rows
     data[DIAMOND] = [DIAMOND_SET] * rows
+    data[LINES] = [LINE_SET] * rows
     data[PARAM] = list(values)
     overrides: dict[str, pl.DataType] = {
         CONTOURS: CONTOUR_SET_SCHEMA,
         DIAMOND: CONTOUR_SET_SCHEMA,
+        LINES: CONTOUR_SET_SCHEMA,
     }
     if case.dtype is not None:
         overrides[PARAM] = case.dtype

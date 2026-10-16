@@ -222,6 +222,18 @@
     "None"
    ]
   ],
+  "densify": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "max_segment_length",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "dice": [
    [
     "self",
@@ -335,6 +347,23 @@
     ""
    ]
   ],
+  "offset": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "distance",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "join",
+    "KEYWORD_ONLY",
+    "'round'"
+   ]
+  ],
   "on_error": [
    [
     "self",
@@ -446,6 +475,18 @@
     ""
    ]
   ],
+  "smooth": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "iterations",
+    "KEYWORD_ONLY",
+    "1"
+   ]
+  ],
   "to_absolute": [
    [
     "self",
@@ -488,6 +529,13 @@
    ],
    [
     "dy",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "union_all": [
+   [
+    "self",
     "POSITIONAL_OR_KEYWORD",
     ""
    ]
@@ -959,6 +1007,18 @@
     "None"
    ]
   ],
+  "densify": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "max_segment_length",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "dilate": [
    [
     "self",
@@ -1343,6 +1403,23 @@
     "None"
    ]
   ],
+  "offset": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "distance",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "join",
+    "KEYWORD_ONLY",
+    "'round'"
+   ]
+  ],
   "on_error": [
    [
     "self",
@@ -1502,6 +1579,21 @@
     "supersample",
     "KEYWORD_ONLY",
     "1"
+   ],
+   [
+    "line_width",
+    "KEYWORD_ONLY",
+    "1.0"
+   ],
+   [
+    "cap",
+    "KEYWORD_ONLY",
+    "'round'"
+   ],
+   [
+    "join",
+    "KEYWORD_ONLY",
+    "'round'"
    ]
   ],
   "reciprocal": [
@@ -1935,6 +2027,18 @@
     ""
    ]
   ],
+  "smooth": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "iterations",
+    "KEYWORD_ONLY",
+    "1"
+   ]
+  ],
   "sobel": [
    [
     "self",
@@ -2079,6 +2183,13 @@
    ]
   ],
   "trunc": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "union_all": [
    [
     "self",
     "POSITIONAL_OR_KEYWORD",
@@ -2461,6 +2572,18 @@
     ""
    ]
   ],
+  "densify": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "max_segment_length",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "dilate": [
    [
     "self",
@@ -2809,6 +2932,23 @@
     "None"
    ]
   ],
+  "offset": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "distance",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "join",
+    "KEYWORD_ONLY",
+    "'round'"
+   ]
+  ],
   "on_error": [
    [
     "self",
@@ -2963,6 +3103,21 @@
     "supersample",
     "KEYWORD_ONLY",
     "1"
+   ],
+   [
+    "line_width",
+    "KEYWORD_ONLY",
+    "1.0"
+   ],
+   [
+    "cap",
+    "KEYWORD_ONLY",
+    "'round'"
+   ],
+   [
+    "join",
+    "KEYWORD_ONLY",
+    "'round'"
    ]
   ],
   "reciprocal": [
@@ -3369,6 +3524,18 @@
     ""
    ]
   ],
+  "smooth": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "iterations",
+    "KEYWORD_ONLY",
+    "1"
+   ]
+  ],
   "sobel": [
    [
     "self",
@@ -3543,6 +3710,13 @@
    ]
   ],
   "trunc": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "union_all": [
    [
     "self",
     "POSITIONAL_OR_KEYWORD",

@@ -43,7 +43,7 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-81 | Extension types | Decision | Whether any output becomes tagged by default (a major version) |
 | CR-82 | Extension types | Decision | Whether `polars_cv.ndarray` carries `dtype`/`ndim` metadata |
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
-| CR-98 | Drawing | Feature | Contour geometry (`offset`, `smooth`, `densify`, `union_all`) and line rendering in `rasterize` |
+| CR-103 | Builder | Low | A non-finite float literal fails with the JSON wire's "expected value at line 1 column N", not the op's own check |
 | CR-99 | Drawing | Feature | Contour boolean ops (`union`, `intersection`, `difference`, `symmetric_difference`) |
 | CR-100 | Drawing | Feature | `coordinate_grid(normalized=)` |
 | CR-101 | Drawing | Feature | Acceptance: rebuild `docs/assets/logo` on CR-93–100, plus a "Drawing" guide |
@@ -146,6 +146,20 @@ against `main` at `e788d72` that day, and their full text is in git history).
 - **Next:** call `to_spec` once per sink, and give `_encode_field` a fast
   path for a sequence that holds no expression (one pass, no per-element
   dispatch). Benchmark both on a release build before and after.
+
+### CR-103 — A non-finite float literal fails at the JSON wire
+
+- **Evidence:** `Pipeline().source("contour").simplify(float("nan"))` (or
+  `scale(float("inf"))`, `offset(float("nan"))`) raises `ValueError:
+  expected value at line 1 column 41`: `json.dumps` writes `NaN`/`Infinity`,
+  which serde rejects before the op's `check()` runs. Found writing CR-98's
+  refusal tests.
+- **Effect:** the literal is refused (nothing runs with it), but the message
+  names neither the op nor the parameter. The same value from a column
+  reaches the op and gets its own message ("offset: distance must be finite").
+- **Next:** dump with `allow_nan=False` in `Pipeline._push` and name the op
+  and field when a float is not finite — one change at the one entry point,
+  not per op.
 
 ## Fetch
 
@@ -277,8 +291,8 @@ for anti-aliasing, and filled primitives for every stroke. Each item extends
 an existing family or rule where that is cleaner than a new op, reuses an
 engine primitive (`geo` 0.33's `Buffer`/`BooleanOps`/`ChaikinSmoothing`/
 `Densify`, `ops::elementwise`, `scanline_fill`), and is built test-first with
-an independent oracle. Order: CR-100 is independent (CR-93 to CR-97 are
-done); CR-98 → CR-99; CR-101 last.
+an independent oracle. Order: CR-100 is independent (CR-93 to CR-98 are
+done); CR-99; CR-101 last.
 
 **Decisions (owner, 2026-10-16).**
 1. The pipeline contour domain carries open contours (lines) as well as
@@ -295,19 +309,6 @@ done); CR-98 → CR-99; CR-101 last.
 5. No built-in colormaps for now: `apply_lut` takes explicit tables.
 6. Line width, cap and join are rendering attributes on `rasterize`; `offset`
    is geometry on regions only and takes `join` alone.
-
-### CR-98 — Contour geometry and line rendering
-
-- `GeometryOp`s, both surfaces: `offset(distance, *, join="round")` (regions;
-  negative shrinks; set output), `smooth(*, iterations=1)` (Chaikin),
-  `densify(max_segment_length)`, `union_all()` (set output). `LineJoin` /
-  `LineCap` via `named_variants!`; the miter limit is a documented constant.
-- `rasterize(..., line_width=1.0, cap="round", join="round")` strokes the
-  set's lines: each becomes its `geo::Buffer` band and is filled by
-  `scanline_fill`, so `supersample` applies to it too.
-- Oracles: offset areas against closed forms; Chaikin against a pure-Python
-  reference; densify's segment bound and kept vertices; stroked area against
-  `length × width` plus cap terms.
 
 ### CR-99 — Contour boolean ops
 
@@ -593,4 +594,5 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 | CR-94 | Disk structuring element for morphology | Added (Unreleased) as `footprint="disk"` (not `shape=`, which `rasterize` uses for a canvas); a min/max over row spans reusing the square's row pass, since greyscale input rules out thresholding the distance transform, which became the oracle instead |
 | CR-95 | `apply_lut(table, dtype=)`: per-value tables and 1→K palettes | Added (Unreleased) as its own `GraphStep` family (`LutOp`), not a `ComputeOp`: a value past the table is a row error, which only an `execute -> Result` can report; the read reuses the element-wise engine's `Lut` map |
 | CR-96 | `rasterize(supersample=)`: anti-aliased coverage | Added (Unreleased): the scanline filler now works per sample row (memory one sample row, not an n²-larger canvas), and `n = 1` reduces to the old formulas exactly |
+| CR-98 | Contour shaping (`offset`, `union_all`, `smooth`, `densify`) and line rendering in `rasterize` | Added (Unreleased): one engine function per op in `geometry::transforms` (on `geo`'s `Buffer`, `unary_union`, `ChaikinSmoothing`, `Densify`), read by the pipeline op and its accessor alike; `rasterize_outlines` fills regions and strokes lines into one union; arcs within `ARC_TOLERANCE` (1/64 px), miter limit 4 |
 | CR-97 | Open contours in the pipeline contour domain; `boundary()` / `close()` | Added (Unreleased): `NodeOutput::Contours` carries `Outline`; `Outline::region` is the one region rule, read by the pipeline ops and the `.contour` column reader alike |

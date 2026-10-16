@@ -117,8 +117,15 @@ def admits_expression(annotation: str | None, value: Any) -> bool:
     return any(p.endswith("OrExpr") or p == "pl.Expr" for p in scalars)
 
 
-def _is_sequence_param(annotation: str) -> bool:
-    return any(t in annotation for t in ("Sequence[", "tuple[", "list["))
+def _sequence_depth(annotation: str) -> int:
+    """How many list levels wrap the expression-eligible scalar:
+    ``Sequence[Sequence[FloatOrExpr]]`` (an ``apply_lut`` table) is 2,
+    ``Sequence[FloatOrExpr]`` 1, a scalar ``FloatOrExpr`` 0. Every level's
+    length is structural; only the scalars at the bottom may be per-row."""
+    for part in annotation.split("|"):
+        if "OrExpr]" in part:
+            return part[: part.index("OrExpr")].count("[")
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -240,25 +247,29 @@ class _Params:
             raise ValueError(msg)
         if not as_expr:
             return list(value) if isinstance(value, tuple) else value
-        key = f"p{step_index}_{name}"
-        if (
-            isinstance(value, PerRow)
-            and isinstance(value.values[0], (list, tuple))
-            and _is_sequence_param(annotation)
-        ):
-            # A per-row list: one expression per element, each varying by row.
+        return self._encode(f"p{step_index}_{name}", value, _sequence_depth(annotation))
+
+    def _encode(self, key: str, value: Any, depth: int) -> Any:
+        """*value* as expressions: a scalar (or a :class:`PerRow` of scalars)
+        becomes one; a list, ``depth`` levels deep, becomes a list of the same
+        length (a per-row list one per element, each varying by row)."""
+        if depth == 0:
+            return self._expr(key, value)
+        if isinstance(value, PerRow):
             first = value.values[0]
-            exprs = [
-                self._expr(f"{key}_{j}", PerRow(tuple(v[j] for v in value.values)))
+            items = [
+                self._encode(
+                    f"{key}_{j}", PerRow(tuple(v[j] for v in value.values)), depth - 1
+                )
                 for j in range(len(first))
             ]
-            return tuple(exprs) if isinstance(first, tuple) else exprs
-        if isinstance(value, (list, tuple)) and _is_sequence_param(annotation):
-            exprs = [
-                self._expr(f"{key}_{j}", element) for j, element in enumerate(value)
+        else:
+            first = value
+            items = [
+                self._encode(f"{key}_{j}", element, depth - 1)
+                for j, element in enumerate(value)
             ]
-            return tuple(exprs) if isinstance(value, tuple) else exprs
-        return self._expr(key, value)
+        return tuple(items) if isinstance(first, tuple) else items
 
     def _expr(self, key: str, value: Any) -> pl.Expr:
         if self.style == "lit":
