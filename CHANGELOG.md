@@ -7,6 +7,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+
+- **Expensive rows reach the whole pool on hosts that wake threads fast.**
+  Before a call's first range finished, a woken helper judged whether to
+  invite another only by how long the call had run. A helper woken in a few
+  µs (macOS) never saw enough to justify one, so a call of expensive rows ran
+  on two threads until its first range finished. That is the failing
+  `expensive_rows_reach_the_pool_before_any_range_finishes` on the macOS
+  runner. Each helper woken before any range has finished now invites one
+  more, as 0.38.0 described, however fast the host wakes it.
+
 ## [0.38.0] — 2026-10-15
 
 Standard pHash, a pool switch, and a README with benchmarks.
