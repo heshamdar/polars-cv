@@ -135,7 +135,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   2.2–2.4x faster (release, 256² to 1024²).
 
 - **`apply_lut` reads less and copies less per row.** A table of single
-  entries converts only its rows (not a 65536-entry f64 table for u16 input),
+  entries converts and holds only its rows, indexed directly (it padded a
+  table to all 65 536 u16 values on every row, 512 KiB for `dtype="f64"`),
   and a palette writes its `[H, W, K]` output in one pass instead of building
   `K` planes and merging them (one view-sized allocation instead of `K + 1`).
   Its row errors are prefixed `ApplyLut:`, as `Histogram:`'s are: the two

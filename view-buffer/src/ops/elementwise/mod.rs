@@ -593,10 +593,9 @@ fn as_f32_mut<S: ViewType>(data: &mut [S]) -> Option<&mut [f32]> {
 
 /// `entries[x]` for every element `x` of a u8 or u16 buffer, stored as
 /// `out` by the conversion rule: `apply_lut`'s read (CR-95), through the
-/// same table map the strategy above uses. Only the `entries` are
-/// converted; the caller has checked that every value present is below
-/// their count, so the slots padding the table to one per input value
-/// (256 or 65536) are never read.
+/// element-map traversal (any view read where it lies; a u8/u16 buffer only
+/// this read holds is written in place). Only the `entries` are converted
+/// and held: no table padded to every possible input value.
 pub(crate) fn lookup_column(buf: ViewBuffer, entries: &[f64], out: DType) -> ViewBuffer {
     match buf.dtype() {
         DType::U8 => lookup_typed::<u8>(buf, entries, out),
@@ -610,22 +609,50 @@ fn lookup_typed<S: LutIndex + CastFrom<f64>>(
     entries: &[f64],
     out: DType,
 ) -> ViewBuffer {
-    assert!(
-        (1..=S::DOMAIN).contains(&entries.len()),
-        "a table of 1 to {} entries",
-        S::DOMAIN
-    );
-    // The padding repeats the last entry: any value of `D`, never read.
-    fn padded<S: LutIndex, D: ViewType + CastFrom<f64>>(entries: &[f64]) -> Vec<D> {
-        let mut table: Vec<D> = convert_slice(entries);
-        let last = table[table.len() - 1];
-        table.resize(S::DOMAIN, last);
-        table
-    }
     if out == S::DTYPE {
-        return map_owned::<S, _>(buf, &Lut::<S, S>::from_table(padded::<S, S>(entries)));
+        return map_owned::<S, _>(buf, &Entries::<S, S>::new(convert_slice(entries)));
     }
-    with_dtype!(out, D => map_new(&buf, &Lut::<S, D>::from_table(padded::<S, D>(entries))))
+    with_dtype!(out, D => map_new(&buf, &Entries::<S, D>::new(convert_slice(entries))))
+}
+
+/// A lookup table of its own entries, indexed by value. Unlike [`Lut`] (a
+/// table over every possible value, for the fused kernels), it holds only
+/// what it was given and checks each index: `apply_lut` has range-checked
+/// its input, so the check never fails, and a caller that had not would
+/// panic rather than read past the table.
+struct Entries<S, D> {
+    table: Vec<D>,
+    _source: PhantomData<fn(S)>,
+}
+
+impl<S, D> Entries<S, D> {
+    fn new(table: Vec<D>) -> Self {
+        Entries {
+            table,
+            _source: PhantomData,
+        }
+    }
+}
+
+// SAFETY: `map_into` writes every element of `dst` (one per `src` element).
+unsafe impl<S: LutIndex, D: ViewType> ElementMap<S, D> for Entries<S, D> {
+    #[inline(always)]
+    fn map_into(&self, src: &[S], dst: &mut [MaybeUninit<D>], _at: usize) {
+        let table: &[D] = &self.table;
+        for (d, &x) in dst.iter_mut().zip(src) {
+            d.write(table[x.index()]);
+        }
+    }
+}
+
+impl<S: LutIndex> ElementMapInPlace<S> for Entries<S, S> {
+    #[inline(always)]
+    fn map_in_place(&self, data: &mut [S]) {
+        let table: &[S] = &self.table;
+        for x in data.iter_mut() {
+            *x = table[x.index()];
+        }
+    }
 }
 
 /// An element type small enough to enumerate: a table index per value.
@@ -675,18 +702,6 @@ struct Lut<S, D> {
     table: Vec<D>,
     channels: usize,
     _source: PhantomData<fn(S)>,
-}
-
-impl<S: LutIndex, D: ViewType> Lut<S, D> {
-    /// One table for every channel: `table[x.index()]`.
-    fn from_table(table: Vec<D>) -> Self {
-        debug_assert_eq!(table.len(), S::DOMAIN);
-        Lut {
-            table,
-            channels: 1,
-            _source: PhantomData,
-        }
-    }
 }
 
 impl<S: LutIndex, D: ViewType + CastFrom<f32>> Lut<S, D> {
