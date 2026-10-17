@@ -16,6 +16,7 @@ import polars as pl
 
 from polars_cv._domains import compose, domain_line, with_domain
 from polars_cv._ops_generated import (
+    OP_DEFAULTS,
     OP_DOMAINS,
     OP_FIELDS,
     SOURCE_FIELDS,
@@ -892,7 +893,10 @@ class Pipeline(_OpsMixin):
 
     @_sugar("erode", "dilate")
     def morphology_open(
-        self, *, ksize: IntOrExpr = 3, footprint: str | pl.Expr = "square"
+        self,
+        *,
+        ksize: IntOrExpr = OP_DEFAULTS["erode"]["ksize"],
+        footprint: str | pl.Expr = OP_DEFAULTS["erode"]["footprint"],
     ) -> "Pipeline":
         """
         Morphological opening (erode then dilate).
@@ -923,7 +927,10 @@ class Pipeline(_OpsMixin):
 
     @_sugar("dilate", "erode")
     def morphology_close(
-        self, *, ksize: IntOrExpr = 3, footprint: str | pl.Expr = "square"
+        self,
+        *,
+        ksize: IntOrExpr = OP_DEFAULTS["dilate"]["ksize"],
+        footprint: str | pl.Expr = OP_DEFAULTS["dilate"]["footprint"],
     ) -> "Pipeline":
         """
         Morphological closing (dilate then erode).
@@ -963,7 +970,7 @@ class Pipeline(_OpsMixin):
         scale: FloatOrExpr | None = None,
         scale_x: FloatOrExpr | None = None,
         scale_y: FloatOrExpr | None = None,
-        filter: str | pl.Expr = "lanczos3",
+        filter: str | pl.Expr = OP_DEFAULTS["resize_scale"]["filter"],
     ) -> "Pipeline":
         """
         Resize image by scale factor.
@@ -1067,9 +1074,9 @@ class Pipeline(_OpsMixin):
         width: IntOrExpr | None = None,
         height: IntOrExpr | None = None,
         shape: "LazyPipelineExpr | None" = None,
-        fill_value: IntOrExpr = 255,
-        background: IntOrExpr = 0,
-        supersample: IntOrExpr = 1,
+        fill_value: IntOrExpr = OP_DEFAULTS["rasterize"]["fill_value"],
+        background: IntOrExpr = OP_DEFAULTS["rasterize"]["background"],
+        supersample: IntOrExpr = OP_DEFAULTS["rasterize"]["supersample"],
     ) -> "Pipeline":
         """
         Rasterize contours to a mask: each region filled.

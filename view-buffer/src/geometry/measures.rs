@@ -80,17 +80,6 @@ pub fn area(contour: &Contour, signed: bool) -> f64 {
     }
 }
 
-/// Computes the perimeter (arc length) of a closed ring.
-///
-/// # Arguments
-/// * `points` - Slice of points forming a closed polygon
-///
-/// # Returns
-/// Total perimeter length
-pub fn perimeter_of_ring(points: &[Point]) -> f64 {
-    path_length(points, true)
-}
-
 /// The length of one path, closing it back to its first vertex if `closed`.
 fn path_length(points: &[Point], closed: bool) -> f64 {
     if points.len() < 2 {
@@ -107,22 +96,6 @@ pub fn outline_length(outline: &Outline) -> f64 {
         .paths()
         .map(|(points, closed)| path_length(points, closed))
         .sum()
-}
-
-/// Computes the perimeter of a contour including holes.
-///
-/// # Arguments
-/// * `contour` - The contour to measure
-///
-/// # Returns
-/// Total perimeter length
-pub fn perimeter(contour: &Contour) -> f64 {
-    perimeter_of_ring(&contour.exterior)
-        + contour
-            .holes
-            .iter()
-            .map(|hole| perimeter_of_ring(hole))
-            .sum::<f64>()
 }
 
 /// Mean of a set of points, used where a centroid is undefined.
@@ -491,8 +464,7 @@ mod tests {
 
     #[test]
     fn test_perimeter() {
-        let contour = square_contour();
-        let p = perimeter(&contour);
+        let p = outline_length(&Outline::Closed(square_contour()));
         assert!((p - 40.0).abs() < 0.01);
     }
 
@@ -617,6 +589,6 @@ mod outline_tests {
             distance_to_outline(&p, &outline),
             distance_to_contour(&p, &square)
         );
-        assert_eq!(outline_length(&outline), perimeter(&square));
+        assert_eq!(outline_length(&outline), 16.0);
     }
 }

@@ -27,7 +27,7 @@ const MAX_ROWS: usize = 1 << 16;
 /// Each u8 or u16 value is a row index into ``table``. Rows of one entry map
 /// every element in place, on any channel count (as ``cv2.LUT`` with one
 /// table); rows of ``K > 1`` entries take a single-channel image to ``K``
-/// channels (a palette). The entries are stored as ``dtype``. A value with no
+/// channels (a palette). The entries are stored as ``out_dtype``. A value with no
 /// row is an error for its row: clamp first, keeping the dtype
 /// (``clamp(0, len(table) - 1, out_dtype="u8")``), to send the excess to the
 /// last row.
@@ -35,15 +35,15 @@ const MAX_ROWS: usize = 1 << 16;
 /// Example:
 ///     >>> heat = Pipeline().source("image_bytes").grayscale().apply_lut([[v, 0, 255 - v] for v in range(256)])
 #[derive(Debug, Clone, PartialEq, Ops, Resolve)]
-#[op(name = "apply_lut", sample = {"table": [[0, 0, 0], [255, 128, 0]], "dtype": "u8"})]
+#[op(name = "apply_lut", sample = {"table": [[0, 0, 0], [255, 128, 0]], "out_dtype": "u8"})]
 pub struct LutOp<M: Mode = Exec> {
     /// The rows, indexed by value: 1 to 65536 of them, each of the same
     /// length (1, or the palette's channel count). Each entry must fit
-    /// ``dtype``, and may be a Polars expression; the lengths are literal.
+    /// ``out_dtype``, and may be a Polars expression; the lengths are literal.
     pub table: Vec<Vec<M::V<f64>>>,
     /// The output element dtype the entries are stored as.
     #[param(default = "u8")]
-    pub dtype: M::L<DType>,
+    pub out_dtype: M::L<DType>,
 }
 
 impl<M: Mode> LutOp<M> {
@@ -54,7 +54,7 @@ impl<M: Mode> LutOp<M> {
 
     /// Refuse a table no row can use: none or too many rows, rows of
     /// different (or no) lengths, or a known entry that does not fit
-    /// `dtype`. A per-row entry is checked when its row resolves.
+    /// `out_dtype`. A per-row entry is checked when its row resolves.
     pub fn check(&self) -> Result<(), String> {
         let n = self.table.len();
         if n == 0 || n > MAX_ROWS {
@@ -70,7 +70,7 @@ impl<M: Mode> LutOp<M> {
                     .to_string(),
             );
         }
-        let dtype = M::lit(&self.dtype);
+        let dtype = M::lit(&self.out_dtype);
         for (i, row) in self.table.iter().enumerate() {
             for value in row.iter().filter_map(|v| known::<M, f64>(v)) {
                 if !fits(value, dtype) {
@@ -119,7 +119,7 @@ fn fits(value: f64, dtype: DType) -> bool {
 }
 
 impl LutOp {
-    /// `table[x]` for every element, stored as `dtype`; an `Err` naming the
+    /// `table[x]` for every element, stored as `out_dtype`; an `Err` naming the
     /// first value with no row.
     pub fn execute(&self, buf: &ViewBuffer) -> Result<ViewBuffer, String> {
         if !matches!(buf.dtype(), DType::U8 | DType::U16) {
@@ -142,7 +142,7 @@ impl LutOp {
             return Ok(crate::ops::elementwise::lookup_column(
                 buf.clone(),
                 &entries,
-                self.dtype,
+                self.out_dtype,
             ));
         }
         Ok(self.palette(buf))
@@ -156,7 +156,7 @@ impl LutOp {
         let k = self.width();
         let shape = vec![buf.shape()[0], buf.shape()[1], k];
         let flat: Vec<f64> = self.table.iter().flatten().copied().collect();
-        with_dtype!(self.dtype, D => {
+        with_dtype!(self.out_dtype, D => {
             let rows: Vec<D> = crate::core::convert::convert_slice(&flat);
             let mut out: Vec<D> = Vec::with_capacity(shape.iter().product());
             let mut read = |v: usize| out.extend_from_slice(&rows[v * k..(v + 1) * k]);
@@ -262,7 +262,7 @@ impl<M: Mode> Op for LutOp<M> {
     }
 
     fn output_dtype_rule(&self) -> OutputDTypeRule {
-        OutputDTypeRule::Fixed(M::lit(&self.dtype))
+        OutputDTypeRule::Fixed(M::lit(&self.out_dtype))
     }
 }
 
@@ -273,7 +273,7 @@ mod tests {
     fn op(table: &[&[f64]], dtype: DType) -> LutOp {
         LutOp {
             table: table.iter().map(|row| row.to_vec()).collect(),
-            dtype,
+            out_dtype: dtype,
         }
     }
 
@@ -322,7 +322,7 @@ mod tests {
         let table: Vec<Vec<f64>> = (0..12).map(|v| vec![f64::from(v) * 2.0]).collect();
         let out = LutOp {
             table,
-            dtype: DType::U8,
+            out_dtype: DType::U8,
         }
         .execute(&flipped)
         .unwrap();
@@ -343,7 +343,7 @@ mod tests {
         let table: Vec<Vec<f64>> = (0..6).map(|v| vec![f64::from(v), -f64::from(v)]).collect();
         let out = LutOp {
             table,
-            dtype: DType::I16,
+            out_dtype: DType::I16,
         }
         .execute(&flipped)
         .unwrap();

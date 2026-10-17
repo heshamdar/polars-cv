@@ -495,7 +495,7 @@ fn contour_largest(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series
         };
         let k = params.value(k, i)?;
         if k == 0 {
-            polars_bail!(ComputeError: "contour_largest: k must be >= 1, got 0 (row {})", i);
+            polars_bail!(ComputeError: "largest: k must be >= 1, got 0 (row {})", i);
         }
         Ok(Some(transforms::largest(&row, k as usize)))
     })?;

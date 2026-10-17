@@ -159,7 +159,7 @@ pub(crate) fn execute_geometry_op(
         )),
         GeometryOp::Largest { k } => {
             if *k == 0 {
-                return Err("contour_largest: k must be >= 1, got 0".to_string());
+                return Err("largest: k must be >= 1, got 0".to_string());
             }
             let regions = regions(op.name(), outlines(&input, op)?)?;
             Ok(NodeOutput::from_contours(

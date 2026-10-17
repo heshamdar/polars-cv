@@ -433,7 +433,7 @@ dx2_dy2 = (
 
 ## Lookup Tables
 
-`apply_lut(table, dtype=)` reads each u8 or u16 value as a row index into
+`apply_lut(table, out_dtype=)` reads each u8 or u16 value as a row index into
 `table`. Rows of one entry map every element in place, on any channel count;
 rows of `K` entries turn a single-channel image into `K` channels, a palette.
 
@@ -445,7 +445,7 @@ Pipeline().source("image_bytes", dtype="u8").apply_lut([[255 - v] for v in range
 Pipeline().source("image_bytes").grayscale().apply_lut([[v, 0, 255 - v] for v in range(256)])
 
 # Six terraces as float32 values
-Pipeline().source("image_bytes").grayscale().apply_lut([[0.0], [0.2], [0.4], [0.6], [0.8], [1.0]], dtype="f32")
+Pipeline().source("image_bytes").grayscale().apply_lut([[0.0], [0.2], [0.4], [0.6], [0.8], [1.0]], out_dtype="f32")
 ```
 
 A value with no row is an error for its row. To send larger values to the

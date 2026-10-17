@@ -67,13 +67,15 @@ class _LazyForwardersMixin:
         return self.pipe(self._continuation().adjust_gamma(gamma=gamma))
 
     def apply_lut(
-        self, table: Sequence[Sequence[FloatOrExpr]], *, dtype: str = "u8"
+        self, table: Sequence[Sequence[FloatOrExpr]], *, out_dtype: str = "u8"
     ) -> LazyPipelineExpr:
         """Map each value through a lookup table.
 
         Lazy form of :meth:`Pipeline.apply_lut` on this expression's output.
         """
-        return self.pipe(self._continuation().apply_lut(table=table, dtype=dtype))
+        return self.pipe(
+            self._continuation().apply_lut(table=table, out_dtype=out_dtype)
+        )
 
     def area(self, *, signed: BoolOrExpr = False) -> LazyPipelineExpr:
         """Compute the area of the contour using the Shoelace formula.

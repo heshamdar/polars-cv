@@ -494,8 +494,15 @@ def render(
     )
     lazy_methods = "\n".join(lazy_method(op) for op in catalog if is_binary(op))
     geom_methods = geom_mixins(geom, catalog)
+    # Every enum this module defines: what `_types` re-exports (`import *`).
+    enum_names = sorted(
+        [e["name"] for e in enums if e["name"] not in NOT_GENERATED]
+        + ["SourceFormat", "SinkFormat"]
+    )
     text = (
         _HEADER.format(imports=_imports(methods + lazy_methods + geom_methods))
+        + "\n\n#: The generated enums, which ``_types`` re-exports.\n"
+        + f"__all__ = {enum_names!r}\n"
         + "\n\n"
         + "".join(
             named_enum(e) + "\n\n" for e in enums if e["name"] not in NOT_GENERATED
@@ -513,6 +520,17 @@ def render(
         + "\n\n"
         + "#: Each typed op's field types, as the catalogue describes them.\n"
         + f"OP_FIELDS: dict[str, dict[str, Any]] = {json.dumps(fields)}\n\n"
+        + "#: Each typed op's declared defaults (``#[param(default)]``), which the\n"
+        + "#: hand-written sugar reads rather than restating a literal.\n"
+        + "OP_DEFAULTS: dict[str, dict[str, Any]] = "
+        + json.dumps(
+            {
+                op["name"]: defaults
+                for op in catalog
+                if (defaults := {f["name"]: f["default"] for f in op["fields"] if "default" in f})
+            }
+        )
+        + "\n\n"
         + "#: Each typed op's domain contract (the catalogue's ``domains``).\n"
         + "OP_DOMAINS: dict[str, list[dict[str, Any]]] = "
         + json.dumps({op["name"]: op["domains"] for op in catalog})

@@ -493,16 +493,21 @@ impl<M: Mode> ComputeOp<M> {
         match M::lit(method) {
             NormalizeMethod::MinMax | NormalizeMethod::ZScore => {
                 if mean.is_some() || std.is_some() {
-                    return Err("mean/std parameters are only valid for method='preset'".into());
+                    return Err(
+                        "normalize: mean/std parameters are only valid for method='preset'".into(),
+                    );
                 }
             }
             NormalizeMethod::Preset => {
                 let (Some(mean), Some(std)) = (mean, std) else {
-                    return Err("method='preset' requires both 'mean' and 'std' parameters".into());
+                    return Err(
+                        "normalize: method='preset' requires both 'mean' and 'std' parameters"
+                            .into(),
+                    );
                 };
                 if mean.len() != std.len() {
                     return Err(format!(
-                        "mean length ({}) must match std length ({})",
+                        "normalize: mean length ({}) must match std length ({})",
                         mean.len(),
                         std.len()
                     ));

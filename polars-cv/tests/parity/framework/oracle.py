@@ -1201,9 +1201,9 @@ def _lut_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     """A table over the u8 domain (256 rows), so it
     covers every row of a batch, not only the one the arguments are drawn
     on; the out-of-range row error is a reference test's. Its entries are a
-    fixed function of the drawn ``dtype``: rows that draw the same dtype share
+    fixed function of the drawn ``out_dtype``: rows that draw the same dtype share
     one literal table rather than 65536 per-row expressions, and rows that
-    differ differ in ``dtype``, which is structural, so they share one
+    differ differ in ``out_dtype``, which is structural, so they share one
     literal set. A palette (``K > 1``) needs one channel: ``[H, W, 1]``, or
     ``[H, W]`` (a ``channel_select`` output)."""
     dtype = draw(st.sampled_from(tuple(DTYPES)), label="dtype")
@@ -1219,11 +1219,11 @@ def _lut_params(draw: st.DrawFn, x: np.ndarray) -> Params:
         # Within ±2**53, so each entry is exact through the f64 wire value.
         lo, hi = max(int(info.min), -(2**53)), min(int(info.max), 2**53)
         values = rng.integers(lo, hi, size=(n, k), endpoint=True)
-    return {"table": values.astype(np_dtype).tolist(), "dtype": dtype}
+    return {"table": values.astype(np_dtype).tolist(), "out_dtype": dtype}
 
 
 def _lut_ref(x: np.ndarray, p: Params) -> np.ndarray:
-    table = np.asarray(p["table"], dtype=DTYPES[p["dtype"]])
+    table = np.asarray(p["table"], dtype=DTYPES[p["out_dtype"]])
     if table.shape[1] == 1:
         return table[x, 0]
     # A palette takes the one channel to K: [H, W] and [H, W, 1] alike.

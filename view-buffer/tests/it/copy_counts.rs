@@ -834,7 +834,7 @@ fn a_lookup_table_on_a_view_allocates_only_its_output() {
     use view_buffer::ops::LutOp;
     let invert = LutOp {
         table: (0..256).map(|v| vec![f64::from(255 - v)]).collect(),
-        dtype: DType::U8,
+        out_dtype: DType::U8,
     };
     for (layout, view) in views_u8(3) {
         let bytes = view.shape().iter().product();
@@ -846,7 +846,7 @@ fn a_lookup_table_on_a_view_allocates_only_its_output() {
         table: (0..256)
             .map(|v| vec![f64::from(v), 0.0, f64::from(255 - v)])
             .collect(),
-        dtype: DType::U8,
+        out_dtype: DType::U8,
     };
     for (layout, view) in views_u8(1) {
         let bytes = view.shape().iter().product();
@@ -867,7 +867,7 @@ fn a_short_table_on_u16_allocates_no_domain_sized_table() {
     for dtype in [DType::U8, DType::F64] {
         let three = LutOp {
             table: vec![vec![10.0], vec![20.0], vec![30.0]],
-            dtype,
+            out_dtype: dtype,
         };
         // Anything of 4 KiB or more: the image and output are 32 to 128 bytes.
         let (out, count) = large_allocations(4096, || three.execute(&image).unwrap());

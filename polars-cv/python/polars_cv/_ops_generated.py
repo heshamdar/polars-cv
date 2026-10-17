@@ -20,6 +20,40 @@ if TYPE_CHECKING:
     from polars_cv.pipeline import Pipeline
 
 
+#: The generated enums, which ``_types`` re-exports.
+__all__ = [
+    "ApproxMethod",
+    "BorderArc",
+    "BorderMode",
+    "ColorSpace",
+    "CoordOrder",
+    "DType",
+    "Domain",
+    "ExtractMode",
+    "FetchErrorPolicy",
+    "FilterType",
+    "Footprint",
+    "HashAlgorithm",
+    "HistogramClosed",
+    "HistogramOutput",
+    "InterpolationType",
+    "LabelReduction",
+    "LabelRegionMode",
+    "LineCap",
+    "LineJoin",
+    "LogicalPass",
+    "NormalizeMethod",
+    "NullParamPolicy",
+    "PadMode",
+    "PadPosition",
+    "RowErrorPolicy",
+    "ScaleOrigin",
+    "SinkFormat",
+    "SourceFormat",
+    "Winding",
+]
+
+
 class ApproxMethod(str, Enum):
     """Contour point-approximation method for ``extract_contours``.
 
@@ -561,7 +595,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
                 "inner": {"kind": "scalar", "per_row": True, "py": "float"},
             },
         },
-        "dtype": {
+        "out_dtype": {
             "kind": "scalar",
             "per_row": False,
             "py": "DType",
@@ -1108,6 +1142,54 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     },
 }
 
+#: Each typed op's declared defaults (``#[param(default)]``), which the
+#: hand-written sugar reads rather than restating a literal.
+OP_DEFAULTS: dict[str, dict[str, Any]] = {
+    "apply_lut": {"out_dtype": "u8"},
+    "apply_mask": {"invert": False},
+    "assert_shape": {"exact": True},
+    "canny": {"low_threshold": 50.0, "high_threshold": 150.0},
+    "contour_area": {"signed": False},
+    "contour_largest": {"k": 1},
+    "contour_offset": {"join": "round"},
+    "contour_scale": {"origin": "centroid"},
+    "contour_smooth": {"iterations": 1},
+    "contour_stroke": {"width": 1.0, "cap": "round", "join": "round"},
+    "convolve2d": {"normalize": False, "border": "replicate"},
+    "coordinate_grid": {"normalized": False},
+    "crop": {"top": 0, "left": 0},
+    "dilate": {"ksize": 3, "iterations": 1, "footprint": "square"},
+    "distance_transform": {"signed": False},
+    "erode": {"ksize": 3, "iterations": 1, "footprint": "square"},
+    "extract_contours": {"mode": "external", "method": "simple"},
+    "histogram": {"bins": 256, "closed": "left", "output": "buckets"},
+    "label_reduce": {"reduction": "max", "region_mode": "interior"},
+    "letterbox": {"value": 0.0, "filter": "lanczos3"},
+    "morphology_gradient": {"ksize": 3, "footprint": "square"},
+    "normalize": {"method": "minmax"},
+    "pad": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0,
+        "value": 0.0,
+        "mode": "constant",
+    },
+    "pad_to_size": {"position": "center", "value": 0.0},
+    "perceptual_hash": {"algorithm": "perceptual", "hash_size": 64},
+    "rasterize": {"fill_value": 255, "background": 0, "supersample": 1},
+    "reduce_std": {"ddof": 0},
+    "resize": {"filter": "lanczos3"},
+    "resize_max": {"filter": "lanczos3"},
+    "resize_min": {"filter": "lanczos3"},
+    "resize_scale": {"filter": "lanczos3"},
+    "resize_to_height": {"filter": "lanczos3"},
+    "resize_to_width": {"filter": "lanczos3"},
+    "rotate": {"expand": False, "interpolation": "bilinear", "border_value": 0.0},
+    "rotate_and_scale": {"scale": 1.0},
+    "warp_affine": {"interpolation": "bilinear", "border_value": 0.0},
+}
+
 #: Each typed op's domain contract (the catalogue's ``domains``).
 OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "abs": [{"input": "buffer", "output": "buffer"}],
@@ -1483,14 +1565,14 @@ class _OpsMixin:
         return self._append_typed("adjust_gamma", {"gamma": gamma})
 
     def apply_lut(
-        self, table: Sequence[Sequence[FloatOrExpr]], *, dtype: str = "u8"
+        self, table: Sequence[Sequence[FloatOrExpr]], *, out_dtype: str = "u8"
     ) -> Pipeline:
         """Map each value through a lookup table.
 
         Each u8 or u16 value is a row index into ``table``. Rows of one entry map
         every element in place, on any channel count (as ``cv2.LUT`` with one
         table); rows of ``K > 1`` entries take a single-channel image to ``K``
-        channels (a palette). The entries are stored as ``dtype``. A value with no
+        channels (a palette). The entries are stored as ``out_dtype``. A value with no
         row is an error for its row: clamp first, keeping the dtype
         (``clamp(0, len(table) - 1, out_dtype="u8")``), to send the excess to the
         last row.
@@ -1500,13 +1582,13 @@ class _OpsMixin:
         Args:
             table: The rows, indexed by value: 1 to 65536 of them, each of the same
                 length (1, or the palette's channel count). Each entry must fit
-                ``dtype``, and may be a Polars expression; the lengths are literal.
-            dtype: The output element dtype the entries are stored as.
+                ``out_dtype``, and may be a Polars expression; the lengths are literal.
+            out_dtype: The output element dtype the entries are stored as.
 
         Example:
             >>> heat = Pipeline().source("image_bytes").grayscale().apply_lut([[v, 0, 255 - v] for v in range(256)])
         """
-        return self._append_typed("apply_lut", {"table": table, "dtype": dtype})
+        return self._append_typed("apply_lut", {"table": table, "out_dtype": out_dtype})
 
     def _assert_shape(
         self, dims: Sequence[IntOrExpr | None], *, exact: bool = True

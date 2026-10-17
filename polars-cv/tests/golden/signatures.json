@@ -732,7 +732,7 @@
     ""
    ],
    [
-    "dtype",
+    "out_dtype",
     "KEYWORD_ONLY",
     "'u8'"
    ]
@@ -2434,7 +2434,7 @@
     ""
    ],
    [
-    "dtype",
+    "out_dtype",
     "KEYWORD_ONLY",
     "'u8'"
    ]

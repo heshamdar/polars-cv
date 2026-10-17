@@ -1,6 +1,6 @@
 """Reference tests for ``apply_lut`` (CR-95).
 
-``apply_lut(table, dtype=)`` reads each u8/u16 value as an index into
+``apply_lut(table, out_dtype=)`` reads each u8/u16 value as an index into
 ``table``. A table of single-entry rows maps every element in place, on any
 channel count (``cv2.LUT`` with one table); rows of ``K > 1`` entries take a
 single-channel image to ``K`` channels (a palette). Oracles: NumPy fancy
@@ -83,7 +83,7 @@ def test_single_entry_rows_map_every_channel_in_place(
     rng = np.random.default_rng(channels)
     image = rng.integers(0, 40, (9, 13, channels), dtype=np.uint8)
     table = _table(40, 1, dtype)
-    got = _run(image, table.tolist(), dtype=dtype)
+    got = _run(image, table.tolist(), out_dtype=dtype)
     assert got.dtype == np.dtype(_OUT[dtype])
     np.testing.assert_array_equal(got, table[image, 0])
 
@@ -94,7 +94,7 @@ def test_single_entry_rows_map_every_channel_in_place(
 def test_a_palette_takes_one_channel_to_k(dtype: str, k: int, shape) -> None:
     image = np.random.default_rng(k).integers(0, 6, shape, dtype=np.uint8)
     table = _table(6, k, dtype)
-    got = _run(image, table.tolist(), dtype=dtype)
+    got = _run(image, table.tolist(), out_dtype=dtype)
     assert got.shape == (11, 7, k)
     np.testing.assert_array_equal(got, table[image.reshape(11, 7)])
 
@@ -104,7 +104,7 @@ def test_u16_input_indexes_by_value() -> None:
     image = rng.integers(0, 1000, (8, 9, 1), dtype=np.uint16)
     table = _table(1000, 3, "u16")
     np.testing.assert_array_equal(
-        _run(image, table.tolist(), dtype="u16"), table[image[:, :, 0]]
+        _run(image, table.tolist(), out_dtype="u16"), table[image[:, :, 0]]
     )
 
 
@@ -113,7 +113,7 @@ def test_the_full_u16_domain_with_a_strided_input() -> None:
     image = np.ascontiguousarray(values)
     table = (np.arange(65536, dtype=np.int64)[::-1] % 997).reshape(-1, 1)
     np.testing.assert_array_equal(
-        _run(image, table.tolist(), dtype="i32"), table[image, 0].astype(np.int32)
+        _run(image, table.tolist(), out_dtype="i32"), table[image, 0].astype(np.int32)
     )
 
 
@@ -152,7 +152,7 @@ def test_on_error_null_nulls_only_the_offending_row() -> None:
         ([[300]], {}, "300.*u8|fit"),
         ([[-1]], {}, "-1.*u8|fit"),
         ([[1.5]], {}, "1.5.*u8|fit|integer"),
-        ([[1e300]], {"dtype": "f32"}, "f32|fit"),
+        ([[1e300]], {"out_dtype": "f32"}, "f32|fit"),
     ],
 )
 def test_a_table_no_row_can_use_is_refused_at_build(table, kw, match) -> None:
@@ -177,12 +177,12 @@ def test_a_palette_needs_one_channel() -> None:
 
 def test_the_plan_publishes_the_table_dtype_and_k_channels() -> None:
     pipe = Pipeline().source("image_bytes", dtype="u8").grayscale()
-    palette = pipe.apply_lut([[0, 0, 0], [1, 2, 3]], dtype="f32")
+    palette = pipe.apply_lut([[0, 0, 0], [1, 2, 3]], out_dtype="f32")
     assert palette.output_dtype() == "f32"
     df = _frame([np.zeros((3, 4, 1), np.uint8)])
     out = df.select(
         pl.col("m")
-        .cv.pipe(Pipeline().source("array").apply_lut([[0, 0, 0]], dtype="i16"))
+        .cv.pipe(Pipeline().source("array").apply_lut([[0, 0, 0]], out_dtype="i16"))
         .sink("array", shape=[3, 4, 3])
     )
     assert out.schema["m"] == pl.Array(pl.Int16, (3, 4, 3))

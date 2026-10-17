@@ -417,7 +417,9 @@ pub(crate) fn step(op: &crate::ops::TypedOp, state: &State, refs: &Refs) -> Resu
 
     // The op is read as it is: every rule below is the step's own, over its
     // literal values, and a per-row value is unknown — never stood in for.
-    op.check().map_err(|e| format!("{}: {e}", op.name()))?;
+    // A check's message names its op (`blur: sigma -1 is ...`), as the
+    // per-row resolve reports it: no second prefix here.
+    op.check()?;
     let step = op;
 
     // Input domain, from the step's own contract.

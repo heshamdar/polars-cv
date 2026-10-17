@@ -575,15 +575,6 @@ impl CompiledGraph {
         Ok(())
     }
 
-    /// Look up another node's output for the current row.
-    ///
-    /// An absent entry means one of two different things, and conflating them
-    /// turns a legitimate null into a hard error. `Ok(None)` is the benign
-    /// case: the node belongs to the graph but produced nothing for this row,
-    /// because its input was null, its source failed under
-    /// `source(on_error="null")`, or a per-row parameter was null under
-    /// `on_null_param="null"`. The node reading it must then go null too.
-    /// A name that is not in the graph at all stays an error.
     /// A step that reads its input buffer and may fail on its data
     /// (`Histogram`, `Lut`): validated against the row's concrete shape and
     /// dtype, then run, each error prefixed with the op's name.
@@ -601,6 +592,15 @@ impl CompiledGraph {
             .map_err(|e| format!("{name}: {e}"))
     }
 
+    /// Look up another node's output for the current row.
+    ///
+    /// An absent entry means one of two different things, and conflating them
+    /// turns a legitimate null into a hard error. `Ok(None)` is the benign
+    /// case: the node belongs to the graph but produced nothing for this row,
+    /// because its input was null, its source failed under
+    /// `source(on_error="null")`, or a per-row parameter was null under
+    /// `on_null_param="null"`. The node reading it must then go null too.
+    /// A name that is not in the graph at all stays an error.
     fn operand<'o>(
         &self,
         node_outputs: &'o [Option<NodeOutput>],
@@ -2037,7 +2037,7 @@ mod tests {
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "apply_lut", "table": [[10, 20], [30, 40]],
-                                           "dtype": "u8"}]}},
+                                           "out_dtype": "u8"}]}},
                 "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
             }"#,

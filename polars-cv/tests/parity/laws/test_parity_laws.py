@@ -349,7 +349,7 @@ def test_morphology_orders_pointwise(spec, data: st.DataObject) -> None:
     target=st.sampled_from(tuple(DTYPES)),
 )
 def test_the_identity_table_is_a_cast(spec, target: str) -> None:
-    """``apply_lut([[0], [1], ...], dtype=d)`` is ``cast(d)`` wherever the
+    """``apply_lut([[0], [1], ...], out_dtype=d)`` is ``cast(d)`` wherever the
     value fits the target: every value is its own entry."""
     image = spec.render()
     info = np.iinfo(image.dtype)
@@ -365,7 +365,7 @@ def test_the_identity_table_is_a_cast(spec, target: str) -> None:
     table = [[i] for i in range(top + 1)]
     _agree(
         f"identity table to {target} vs cast",
-        _run(image, [Step("apply_lut", {"table": table, "dtype": target})]),
+        _run(image, [Step("apply_lut", {"table": table, "out_dtype": target})]),
         _run(image, [Step("cast", {"dtype": target})]),
     )
 
@@ -384,12 +384,13 @@ def test_two_tables_compose_into_one(spec, seed: int) -> None:
     twice = _run(
         image,
         [
-            Step("apply_lut", {"table": [[int(v)] for v in a], "dtype": "u8"}),
-            Step("apply_lut", {"table": [[int(v)] for v in b], "dtype": "i16"}),
+            Step("apply_lut", {"table": [[int(v)] for v in a], "out_dtype": "u8"}),
+            Step("apply_lut", {"table": [[int(v)] for v in b], "out_dtype": "i16"}),
         ],
     )
     once = _run(
-        image, [Step("apply_lut", {"table": [[int(v)] for v in b[a]], "dtype": "i16"})]
+        image,
+        [Step("apply_lut", {"table": [[int(v)] for v in b[a]], "out_dtype": "i16"})],
     )
     _agree("lut(lut(x, A), B) vs lut(x, B[A])", twice, once)
 
