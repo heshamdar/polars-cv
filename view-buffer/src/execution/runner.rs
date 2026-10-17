@@ -1848,7 +1848,7 @@ where
 
 /// The row pass of a min/max filter: each row's extreme over `x ± radius`,
 /// edges replicated, folded in ascending tap order from the centre pixel.
-/// The square's first pass and each of the disk's row widths.
+/// The square's first pass.
 #[cfg(feature = "image_interop")]
 fn row_extreme<T, const IS_MIN: bool>(src_rows: &[&[T]], w: usize, radius: usize) -> Vec<T>
 where
@@ -1901,10 +1901,22 @@ where
 /// Euclidean distance `radius` of the centre, edges replicated.
 ///
 /// The disk is a stack of horizontal spans, row offset `dy` spanning
-/// `±floor(sqrt(radius² − dy²))`, so it reuses the square's row pass: one
-/// [`row_extreme`] image per distinct half-width, then a column fold over
-/// `dy`, each row read from the image of its own half-width. Clamping each
-/// coordinate replicates the edge exactly as the square does.
+/// `±floor(sqrt(radius² − dy²))`. Its result is fixed by the fold order the
+/// square uses (`tests/it/morph_ref.rs` pins it bit for bit, which decides
+/// which of two equal signed zeros, or NaNs, survives): each span from its
+/// centre pixel then its taps ascending, the spans from the centre row's
+/// full span then ascending `dy`. `morph_select` keeps the first extreme met,
+/// which is associative though not commutative, so the fold may be
+/// regrouped as long as the order is kept. That buys O(r) work per pixel
+/// instead of O(r²), with five images live instead of one per width:
+///
+/// - a span of half-width `k` is `pick(pick(x − k, span_{k−1}), x + k)`, so
+///   the half-widths grow one step at a time ([`DiskSpans`]);
+/// - the column fold runs `dy` outermost: above the centre (`dy = −r..=0`)
+///   the half-widths only grow, in fold order; below it they shrink, so
+///   that half is folded from `dy = r` down to 1 by *prepending* each term,
+///   which keeps the order while the half-widths grow again;
+/// - the result is the seed, then the upper half, then the lower half.
 #[cfg(feature = "image_interop")]
 fn morph_disk_typed<T, const IS_MIN: bool>(buf: &ViewBuffer, radius: usize) -> ViewBuffer
 where
@@ -1916,34 +1928,123 @@ where
     let src_rows: Vec<&[T]> = rows_buf
         .dense_rows::<T>()
         .expect("a rank-2 or rank-3 buffer has packed rows after to_dense_rows");
-    let half: Vec<usize> = (0..=radius)
-        .map(|dy| (radius * radius - dy * dy).isqrt())
-        .collect();
-    let mut by_width: Vec<Option<Vec<T>>> = vec![None; radius + 1];
-    for &hw in &half {
-        if by_width[hw].is_none() {
-            by_width[hw] = Some(row_extreme::<T, IS_MIN>(&src_rows, w, hw));
-        }
-    }
-    let rows_of = |dy: i64| -> &[T] {
-        by_width[half[dy.unsigned_abs() as usize]]
-            .as_deref()
-            .expect("every half-width was computed")
-    };
-    // Seeded from the centre row (dy = 0, the full width), then folded in
-    // ascending dy, as the square's column pass is.
-    let mut out: Vec<T> = rows_of(0).to_vec();
-    for y in 0..h {
-        let dst_row = &mut out[y * w..(y + 1) * w];
-        for dy in -(radius as i64)..=radius as i64 {
-            let sy = (y as i64 + dy).clamp(0, h as i64 - 1) as usize;
-            let src_row = &rows_of(dy)[sy * w..(sy + 1) * w];
-            for (dst, &cand) in dst_row.iter_mut().zip(src_row) {
-                *dst = morph_select::<T, IS_MIN>(*dst, cand);
+    let half = |d: usize| (radius * radius - d * d).isqrt();
+    let select = morph_select::<T, IS_MIN>;
+
+    // Above the centre, in fold order: `upper[y] = fold(t(-r), …, t(0))`,
+    // `t(dy)` the span of half-width `half(|dy|)` on row `y + dy`.
+    let mut spans = DiskSpans::<T, IS_MIN>::new(&src_rows, w);
+    let mut upper: Vec<T> = vec![T::default(); h * w];
+    for d in (0..=radius).rev() {
+        spans.grow_to(half(d));
+        for (y, dst) in upper.chunks_exact_mut(w).enumerate() {
+            let sy = y.saturating_sub(d);
+            let terms = src_rows[sy].iter().zip(spans.window(sy));
+            for (u, (&c, &v)) in dst.iter_mut().zip(terms) {
+                let t = select(c, v);
+                *u = if d == radius { t } else { select(*u, t) };
             }
         }
     }
+    // The seed, the centre row's full span (what `spans` now holds), then
+    // the upper half.
+    let mut out: Vec<T> = Vec::with_capacity(h * w);
+    for (y, upper_row) in upper.chunks_exact(w).enumerate() {
+        let seeds = src_rows[y].iter().zip(spans.window(y));
+        out.extend(
+            seeds
+                .zip(upper_row)
+                .map(|((&c, &v), &u)| select(select(c, v), u)),
+        );
+    }
+
+    // Below the centre, folded from `dy = r` down to 1 by prepending: the
+    // lower half is `fold(t(1), …, t(r))`, built as `t(d) · (…)`.
+    let mut spans = DiskSpans::<T, IS_MIN>::new(&src_rows, w);
+    let mut lower = upper;
+    for d in (1..=radius).rev() {
+        spans.grow_to(half(d));
+        for (y, dst) in lower.chunks_exact_mut(w).enumerate() {
+            let sy = (y + d).min(h - 1);
+            let terms = src_rows[sy].iter().zip(spans.window(sy));
+            for (l, (&c, &v)) in dst.iter_mut().zip(terms) {
+                let t = select(c, v);
+                *l = if d == radius { t } else { select(t, *l) };
+            }
+        }
+    }
+    if radius > 0 {
+        for (o, &l) in out.iter_mut().zip(&lower) {
+            *o = select(*o, l);
+        }
+    }
     ViewBuffer::from_vec_with_shape(out, shape.to_vec())
+}
+
+/// Every row's spans of one half-width `k`, grown a step at a time:
+/// `window[x]` folds the clamped taps `x − k..=x + k` in ascending order,
+/// and a span is its centre pixel then that window (`row_extreme`'s order).
+#[cfg(feature = "image_interop")]
+struct DiskSpans<'a, T, const IS_MIN: bool> {
+    src_rows: &'a [&'a [T]],
+    w: usize,
+    k: usize,
+    window: Vec<T>,
+}
+
+#[cfg(feature = "image_interop")]
+impl<'a, T, const IS_MIN: bool> DiskSpans<'a, T, IS_MIN>
+where
+    T: crate::core::dtype::ViewType + Default + Copy + PartialOrd,
+{
+    /// Half-width 0: each window is its own pixel.
+    fn new(src_rows: &'a [&'a [T]], w: usize) -> Self {
+        DiskSpans {
+            src_rows,
+            w,
+            k: 0,
+            window: src_rows.concat(),
+        }
+    }
+
+    /// Widen every window to half-width `k`, one tap on each side per step:
+    /// `pick(pick(x − k, window), x + k)` keeps the ascending tap order.
+    fn grow_to(&mut self, k: usize) {
+        debug_assert!(k >= self.k, "the half-widths only grow");
+        let w = self.w;
+        while self.k < k {
+            self.k += 1;
+            let k = self.k;
+            let step = |left: T, v: &mut T, right: T| {
+                *v = morph_select::<T, IS_MIN>(morph_select::<T, IS_MIN>(left, *v), right);
+            };
+            for (src, win) in self.src_rows.iter().zip(self.window.chunks_exact_mut(w)) {
+                if w > 2 * k {
+                    // Interior: both taps in bounds, three aligned slices (so
+                    // the loop vectorizes, as the square's row pass does).
+                    let lefts = &src[..w - 2 * k];
+                    let rights = &src[2 * k..];
+                    for ((&l, v), &r) in lefts.iter().zip(&mut win[k..w - k]).zip(rights) {
+                        step(l, v, r);
+                    }
+                }
+                // Border lanes: a tap past an edge reads the edge pixel.
+                for x in (0..k.min(w)).chain(w.saturating_sub(k).max(k.min(w))..w) {
+                    step(
+                        src[x.saturating_sub(k)],
+                        &mut win[x],
+                        src[(x + k).min(w - 1)],
+                    );
+                }
+            }
+        }
+    }
+
+    /// Row `y`'s windows at the current half-width; a span is
+    /// `pick(centre, window)`.
+    fn window(&self, y: usize) -> &[T] {
+        &self.window[y * self.w..(y + 1) * self.w]
+    }
 }
 
 /// Element-wise saturating subtraction: result = a − b, clamped to valid range.

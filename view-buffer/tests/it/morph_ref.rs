@@ -447,6 +447,38 @@ fn disk_keeps_nans_and_signed_zeros_bit_for_bit() {
     }
 }
 
+/// The fold order decides which of two equal zeros survives, so it is pinned
+/// where it matters: zeros of both signs are the extreme (against a 1.0
+/// background for a min, -1.0 for a max) and the centre pixel, which seeds
+/// the fold and wins every tie, often is not one. The test above rarely
+/// makes a zero the extreme, so it let a reversed lower half pass.
+#[test]
+fn disk_fold_order_decides_which_zero_survives() {
+    let (h, w) = (19, 23);
+    for kind in [Kind::Min, Kind::Max] {
+        let away = if kind == Kind::Min { 1.0 } else { -1.0 };
+        let data: Vec<f64> = seeded_values(h * w, 31)
+            .iter()
+            .map(|&v| match v % 5 {
+                0 => 0.0,
+                1 => -0.0,
+                _ => away,
+            })
+            .collect();
+        for (ksize, iters) in [(3u32, 1u32), (5, 1), (7, 2), (11, 1), (15, 1)] {
+            let buf = ViewBuffer::from_vec_with_shape(data.clone(), vec![h, w]);
+            let got = run_footprint(buf, ksize, iters, kind, Footprint::Disk);
+            let want = naive_disk_reference(&data, h, w, ksize, iters, kind);
+            let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(
+                bits(got.as_slice::<f64>()),
+                bits(&want),
+                "ksize={ksize} iters={iters}"
+            );
+        }
+    }
+}
+
 /// Iterations are disk passes: two radius-2 disks reach (3, 2), which one
 /// radius-4 disk also does, but not (4, 1)... whichever pixel differs, the
 /// two are not the same operation, and a single wide pass would be wrong.
