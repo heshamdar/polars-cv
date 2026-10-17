@@ -219,3 +219,30 @@ final size:
    weight with butt caps, and the `v`'s polygon filled, as two layers.
 5. `maximum` stacks the layers, `apply_lut` colours them, and a lanczos
    `resize` to the final size anti-aliases the lot into a PNG.
+
+## Another take: a halftone bear
+
+[`halftone_logo.py`](https://github.com/heshamdar/polars-cv/blob/main/polars-cv/docs/assets/logo/halftone_logo.py)
+draws the bear with no hand-placed points and no outline at all:
+
+![A halftone polar bear beside the wordmark](../assets/logo/polars-cv-halftone.png)
+
+1. **A polar bear in polar coordinates.** Each part of the face is one row of
+   a DataFrame describing a curve `r(θ)`: the head is a circle widened by a
+   `cos 2θ` term with an ear grown out of each side of the crown, and the nose
+   is a `cos 3θ` rounded triangle. `int_ranges` + `explode` sample the curves,
+   expressions evaluate them, and `group_by` + `implode` gather the points
+   into contour sets: the geometry is a polars query.
+2. **The silhouette emerges from dot size.** The head's
+   `distance_transform(signed=True)` sets a dot radius per pixel, stepping up
+   at the edge, growing inward and fading outward. A `resize` down to the cell
+   grid and back up with `filter="nearest"` samples it once per cell;
+   `coordinate_grid` minus its own `floor` is each pixel's offset in its cell,
+   and a dot is wherever that offset is shorter than the radius.
+3. The muzzle's dots take a second index, the eyes and nose are voids cut
+   from the dots, and `apply_lut` colours the map as above.
+
+One trap the halftone avoids: `channel_select` returns `[H, W]`, while
+`rasterize` returns `[H, W, 1]`. Element-wise ops broadcast like NumPy, so
+combining the two broadcasts to `[H, W, W]` on a square canvas (the trailing
+`W` matches `1`), not an error. Bring every layer to the same rank first.
