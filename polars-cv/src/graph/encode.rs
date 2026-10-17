@@ -113,7 +113,7 @@ pub(crate) fn execute_geometry_op(
             .map(NodeOutput::from_buffer)
         }
         GeometryOp::Area { signed } => {
-            let regions = regions(op, outlines(&input, op)?)?;
+            let regions = regions(op.name(), outlines(&input, op)?)?;
             Ok(NodeOutput::from_vector(
                 regions.iter().map(|c| measures::area(c, *signed)).collect(),
             ))
@@ -128,7 +128,7 @@ pub(crate) fn execute_geometry_op(
         )),
         GeometryOp::Centroid => {
             // Flat interleaved: [cx₀, cy₀, cx₁, cy₁, ...]
-            let regions = regions(op, outlines(&input, op)?)?;
+            let regions = regions(op.name(), outlines(&input, op)?)?;
             let mut coords = Vec::with_capacity(regions.len() * 2);
             for c in &regions {
                 let pt = measures::centroid(c);
@@ -181,7 +181,7 @@ pub(crate) fn execute_geometry_op(
             if *k == 0 {
                 return Err("contour_largest: k must be >= 1, got 0".to_string());
             }
-            let regions = regions(op, outlines(&input, op)?)?;
+            let regions = regions(op.name(), outlines(&input, op)?)?;
             Ok(NodeOutput::from_contours(
                 transforms::largest(&regions, *k as usize)
                     .into_iter()
@@ -209,12 +209,12 @@ pub(crate) fn execute_geometry_op(
             Ok(NodeOutput::from_contours(lines))
         }
         GeometryOp::Offset { distance, join } => {
-            let regions = regions(op, outlines(&input, op)?)?;
+            let regions = regions(op.name(), outlines(&input, op)?)?;
             transforms::offset(&regions, *distance, *join)
                 .map(|c| NodeOutput::from_contours(c.into_iter().map(Outline::Closed).collect()))
         }
         GeometryOp::UnionAll => {
-            let regions = regions(op, outlines(&input, op)?)?;
+            let regions = regions(op.name(), outlines(&input, op)?)?;
             Ok(NodeOutput::from_contours(
                 transforms::union_all(&regions)
                     .into_iter()
@@ -252,6 +252,30 @@ pub(crate) const BOUNDARY_OF_A_LINE: &str = "boundary: an open contour (is_close
 pub(crate) const CLOSE_OF_A_REGION: &str = "close: the contour is already closed; close() \
      takes an open line (is_closed = false)";
 
+/// A boolean combination of two contour sets (`union`, `intersection`, …):
+/// the step's own and the operand node's, each read as its regions'
+/// union — the pipeline form of the `.contour` accessors, over the same
+/// engine function.
+pub(crate) fn execute_region_op(
+    op: transforms::RegionOp,
+    input: &NodeOutput,
+    other: &NodeOutput,
+) -> Result<NodeOutput, String> {
+    fn side(op: transforms::RegionOp, output: &NodeOutput) -> Result<Vec<&Contour>, String> {
+        let outlines = output
+            .as_contours()
+            .ok_or_else(|| format!("{} requires Contour input", op.name()))?;
+        regions(op.name(), outlines)
+    }
+    let (a, b) = (side(op, input)?, side(op, other)?);
+    Ok(NodeOutput::from_contours(
+        transforms::boolean(&a, &b, op)
+            .into_iter()
+            .map(Outline::Closed)
+            .collect(),
+    ))
+}
+
 /// The step's contour set, or the domain error naming the op.
 fn outlines<'a>(input: &'a NodeOutput, op: &GeometryOp) -> Result<&'a [Outline], String> {
     input
@@ -261,11 +285,11 @@ fn outlines<'a>(input: &'a NodeOutput, op: &GeometryOp) -> Result<&'a [Outline],
 }
 
 /// Every member's region, borrowed, or the one refusal an open contour gets
-/// from a region op (`Outline::region`), named for `op`.
-fn regions<'a>(op: &GeometryOp, outlines: &'a [Outline]) -> Result<Vec<&'a Contour>, String> {
+/// from a region op (`Outline::region`), named for the op.
+fn regions<'a>(name: &str, outlines: &'a [Outline]) -> Result<Vec<&'a Contour>, String> {
     outlines
         .iter()
-        .map(|o| o.region().map_err(|e| format!("{}: {e}", op.name())))
+        .map(|o| o.region().map_err(|e| format!("{name}: {e}")))
         .collect()
 }
 

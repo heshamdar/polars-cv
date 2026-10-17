@@ -5,9 +5,10 @@
 
 use view_buffer::core::dtype::OutputDTypeRule;
 use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
+use view_buffer::geometry::transforms::RegionOp;
 use view_buffer::mode::{ColumnRef, Exec, Mode, NodeRef};
 use view_buffer::ops::{Domain, OpShape, SpatialDependency};
-use view_buffer::{BinaryOp, IdentityRule, Op};
+use view_buffer::{BinaryOp, DType, IdentityRule, Op};
 
 use polars_cv_macros::{Ops, Resolve};
 
@@ -165,6 +166,78 @@ pub enum GraphOp<M: Mode = Exec> {
         /// The expression to combine with, element-wise.
         other: NodeRef,
     },
+    /// Inside either: the union of this contour set's regions and *other*'s.
+    ///
+    /// Each side is read as the union of its set, and the result is disjoint
+    /// regions — always a set, since combining shapes can split or merge
+    /// them. An open contour (a line) on either side is refused. As
+    /// ``.contour.union``, the other side is a contour column.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
+    ///     >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
+    ///     >>> result = a.union(b).sink("native")
+    ///     ```
+    #[op(name = "union", visibility = LazyOnly, sample = {"other": "n0"})]
+    Union {
+        /// The contour-domain expression to combine with.
+        other: NodeRef,
+    },
+    /// Inside both: where this contour set's regions overlap *other*'s.
+    ///
+    /// Each side is read as the union of its set, and the result is disjoint
+    /// regions — always a set, since combining shapes can split or merge
+    /// them. An open contour (a line) on either side is refused. As
+    /// ``.contour.intersection``, the other side is a contour column.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
+    ///     >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
+    ///     >>> result = a.intersection(b).sink("native")
+    ///     ```
+    #[op(name = "intersection", visibility = LazyOnly, sample = {"other": "n0"})]
+    Intersection {
+        /// The contour-domain expression to combine with.
+        other: NodeRef,
+    },
+    /// Inside this set and not *other*: this contour set's regions with *other*'s cut away.
+    ///
+    /// Each side is read as the union of its set, and the result is disjoint
+    /// regions — always a set, since combining shapes can split or merge
+    /// them. An open contour (a line) on either side is refused. As
+    /// ``.contour.difference``, the other side is a contour column.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
+    ///     >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
+    ///     >>> result = a.difference(b).sink("native")
+    ///     ```
+    #[op(name = "difference", visibility = LazyOnly, sample = {"other": "n0"})]
+    Difference {
+        /// The contour-domain expression to combine with.
+        other: NodeRef,
+    },
+    /// Inside exactly one: where this contour set's regions and *other*'s do not overlap.
+    ///
+    /// Each side is read as the union of its set, and the result is disjoint
+    /// regions — always a set, since combining shapes can split or merge
+    /// them. An open contour (a line) on either side is refused. As
+    /// ``.contour.symmetric_difference``, the other side is a contour column.
+    ///
+    /// Example:
+    ///     ```python
+    ///     >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
+    ///     >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
+    ///     >>> result = a.symmetric_difference(b).sink("native")
+    ///     ```
+    #[op(name = "symmetric_difference", visibility = LazyOnly, sample = {"other": "n0"})]
+    SymmetricDifference {
+        /// The contour-domain expression to combine with.
+        other: NodeRef,
+    },
     /// Apply a binary mask to this image.
     #[op(name = "apply_mask", visibility = LazyOnly, sample = {"mask": "n0", "invert": true})]
     ApplyMask {
@@ -259,6 +332,12 @@ impl<M: Mode> GraphOp<M> {
             GraphOp::BitwiseAnd { other } => Role::Binary(BinaryOp::BitwiseAnd, other),
             GraphOp::BitwiseOr { other } => Role::Binary(BinaryOp::BitwiseOr, other),
             GraphOp::BitwiseXor { other } => Role::Binary(BinaryOp::BitwiseXor, other),
+            GraphOp::Union { other } => Role::Regions(RegionOp::Union, other),
+            GraphOp::Intersection { other } => Role::Regions(RegionOp::Intersection, other),
+            GraphOp::Difference { other } => Role::Regions(RegionOp::Difference, other),
+            GraphOp::SymmetricDifference { other } => {
+                Role::Regions(RegionOp::SymmetricDifference, other)
+            }
             GraphOp::ApplyMask { mask, invert } => Role::ApplyMask { mask, invert },
             GraphOp::ChannelMerge { others } => Role::ChannelMerge { others },
             GraphOp::AssertShape { dims, exact } => Role::AssertShape { dims, exact },
@@ -287,6 +366,9 @@ impl<M: Mode> GraphOp<M> {
         match self.role() {
             // A declaration describes whatever numeric container it follows.
             Role::Binary(..) | Role::AssertShape { .. } => vec![Domain::Buffer, Domain::Vector],
+            // Both sides are contour sets: the planner holds the operand to
+            // this list too.
+            Role::Regions(..) => vec![Domain::Contour],
             Role::ApplyMask { .. }
             | Role::ChannelMerge { .. }
             | Role::ExtractShape
@@ -304,6 +386,7 @@ impl<M: Mode> GraphOp<M> {
             Role::Binary(..) | Role::AssertShape { .. } => input,
             Role::ApplyMask { .. } | Role::ChannelMerge { .. } => Domain::Buffer,
             Role::ExtractShape | Role::LabelReduce { .. } => Domain::Vector,
+            Role::Regions(..) => Domain::Contour,
         }
     }
 
@@ -316,6 +399,8 @@ impl<M: Mode> GraphOp<M> {
             }
             // Dimension reads and region scores are f64 values.
             Role::ExtractShape | Role::LabelReduce { .. } => OutputDTypeRule::ForceF64,
+            // Coordinates, as every contour op's.
+            Role::Regions(..) => OutputDTypeRule::Fixed(DType::F64),
         }
     }
 
@@ -329,9 +414,11 @@ impl<M: Mode> GraphOp<M> {
             // Dimension reads and region reductions aggregate over the whole
             // input, and a declaration is about the whole shape at this
             // point: a window moved across any of them changes what it reads.
-            Role::ExtractShape | Role::LabelReduce { .. } | Role::AssertShape { .. } => {
-                SpatialDependency::Global
-            }
+            // Combining regions reads every coordinate of both sets.
+            Role::ExtractShape
+            | Role::LabelReduce { .. }
+            | Role::AssertShape { .. }
+            | Role::Regions(..) => SpatialDependency::Global,
         }
     }
 
@@ -346,7 +433,8 @@ impl<M: Mode> GraphOp<M> {
             | Role::ChannelMerge { .. }
             | Role::ExtractShape
             | Role::LabelReduce { .. }
-            | Role::AssertShape { .. } => IdentityRule::Never,
+            | Role::AssertShape { .. }
+            | Role::Regions(..) => IdentityRule::Never,
         }
     }
 
@@ -368,7 +456,10 @@ impl<M: Mode> GraphOp<M> {
             Role::ChannelMerge { .. } => view_buffer::validate_channel_merge(inputs, dtypes),
             // A declaration is applied by the planner and checked per row;
             // the others read no size.
-            Role::AssertShape { .. } | Role::ExtractShape | Role::LabelReduce { .. } => Ok(()),
+            Role::AssertShape { .. }
+            | Role::ExtractShape
+            | Role::LabelReduce { .. }
+            | Role::Regions(..) => Ok(()),
         }
     }
 
@@ -376,7 +467,7 @@ impl<M: Mode> GraphOp<M> {
     /// own input (see [`GraphStep::operands`](crate::graph::step::GraphStep::operands)).
     pub fn operands(&self) -> Vec<&NodeRef> {
         match self.role() {
-            Role::Binary(_, other) => vec![other],
+            Role::Binary(_, other) | Role::Regions(_, other) => vec![other],
             Role::ApplyMask { mask, .. } => vec![mask],
             Role::ChannelMerge { others } => others.iter().collect(),
             Role::AssertShape { .. } | Role::ExtractShape | Role::LabelReduce { .. } => Vec::new(),
@@ -398,7 +489,11 @@ impl<M: Mode> GraphOp<M> {
             | GraphOp::Minimum { other }
             | GraphOp::BitwiseAnd { other }
             | GraphOp::BitwiseOr { other }
-            | GraphOp::BitwiseXor { other } => vec![other],
+            | GraphOp::BitwiseXor { other }
+            | GraphOp::Union { other }
+            | GraphOp::Intersection { other }
+            | GraphOp::Difference { other }
+            | GraphOp::SymmetricDifference { other } => vec![other],
             GraphOp::ApplyMask { mask, .. } => vec![mask],
             GraphOp::ChannelMerge { others } => others.iter_mut().collect(),
             GraphOp::AssertShape { .. } | GraphOp::ExtractShape | GraphOp::LabelReduce { .. } => {
@@ -418,6 +513,8 @@ impl<M: Mode> GraphOp<M> {
             Role::ExtractShape => OpShape::InputRank,
             // One score per contour: as many as the row holds.
             Role::LabelReduce { .. } => OpShape::Dynamic,
+            // As many regions as the combination leaves.
+            Role::Regions(..) => OpShape::Dynamic,
             // A declaration's sizes are applied by the planner (`plan::declare`).
             Role::AssertShape { .. } => OpShape::Preserve,
         }
@@ -456,6 +553,9 @@ impl<M: Mode> GraphOp<M> {
 pub enum Role<'a, M: Mode> {
     /// Element-wise arithmetic with another node's buffer.
     Binary(BinaryOp, &'a NodeRef),
+    /// A boolean combination of this contour set's regions with another
+    /// node's (`transforms::boolean`).
+    Regions(RegionOp, &'a NodeRef),
     ApplyMask {
         mask: &'a NodeRef,
         invert: &'a M::V<bool>,

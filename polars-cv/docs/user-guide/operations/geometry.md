@@ -95,7 +95,8 @@ region, so the functions split by what they read:
 - **Region** functions refuse it, naming the row: `area`, `centroid`,
   `largest`, `is_convex`, `winding`, `ensure_winding`, `contains_point`,
   `iou`, `dice`, `pairwise_iou`, `correspond`, `label_reduce`, `boundary`,
-  `offset`, `union_all` and `.point.signed_distance_to_contour`.
+  `offset`, `union_all`, the set operations (`union`, `intersection`,
+  `difference`, `symmetric_difference`) and `.point.signed_distance_to_contour`.
   `scale(origin="centroid")` refuses one too.
 - `rasterize` **strokes** it (see [Drawing lines](#drawing-lines)).
 
@@ -317,6 +318,28 @@ halo = (
 # Soften a traced outline's pixel staircase
 soft = pl.col("contours").contour.smooth(iterations=3)
 ```
+
+### Combining two sets
+
+`union`, `intersection`, `difference` and `symmetric_difference` combine two
+contour sets: each side is read as the union of its regions, and the result is
+disjoint regions — always a set, since combining shapes can split or merge
+them. As `.contour` accessors the other side is a contour column (a single
+contour is a set of one; a null side nulls the row); in a pipeline it is
+another contour-domain expression, and the result chains on:
+
+```python
+# Prediction regions outside the ground truth, per row
+false_positive = pl.col("pred").contour.difference(pl.col("truth"))
+
+# The same in a pipeline, measured
+pred = pl.col("pred").cv.pipe(Pipeline().source("contour"))
+truth = pl.col("truth").cv.pipe(Pipeline().source("contour"))
+missed_area = truth.difference(pred).area().sink("native")
+```
+
+Rasterizing a result paints exactly the pixelwise `|`, `&`, `& ~` or `^` of
+rasterizing the two sides.
 
 ### Rasterization
 

@@ -2434,6 +2434,22 @@ BINARY_EXEMPT: dict[str, str] = {
         "variadic over single-channel operands; its inverse law is checked in "
         "laws/test_parity_laws.py"
     ),
+    "union": (
+        "combines two contour sets, which the image-batch harness does not "
+        "build; reference/test_contour_boolean_ref.py holds it to the mask identity"
+    ),
+    "intersection": (
+        "combines two contour sets, which the image-batch harness does not "
+        "build; reference/test_contour_boolean_ref.py holds it to the mask identity"
+    ),
+    "difference": (
+        "combines two contour sets, which the image-batch harness does not "
+        "build; reference/test_contour_boolean_ref.py holds it to the mask identity"
+    ),
+    "symmetric_difference": (
+        "combines two contour sets, which the image-batch harness does not "
+        "build; reference/test_contour_boolean_ref.py holds it to the mask identity"
+    ),
 }
 
 

@@ -630,6 +630,7 @@ impl CompiledGraph {
             | GraphStep::PerceptualHash(_) => false,
             GraphStep::Graph(graph) => match graph.role() {
                 Role::Binary(..)
+                | Role::Regions(..)
                 | Role::ApplyMask { .. }
                 | Role::ChannelMerge { .. }
                 | Role::ExtractShape
@@ -968,6 +969,20 @@ impl CompiledGraph {
                                         .map_err(|e| format!("{}: {e}", op.name()))?;
                                     let result = op.execute(&current_buf, &other_buf);
                                     current_output = NodeOutput::from_buffer(result);
+                                }
+                                Role::Regions(region_op, other) => {
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let Some(other_output) =
+                                        self.operand(node_outputs, &other.0, region_op.name())?
+                                    else {
+                                        continue 'nodes;
+                                    };
+                                    current_output = super::encode::execute_region_op(
+                                        region_op,
+                                        &current_output,
+                                        other_output,
+                                    )?;
                                 }
                                 Role::ApplyMask { mask, invert } => {
                                     current_output =
@@ -1781,6 +1796,7 @@ mod tests {
             // A graph op is named by its role: each executes differently.
             GraphStep::Graph(graph) => match graph.role() {
                 Role::Binary(..) => "Binary",
+                Role::Regions(..) => "Regions",
                 Role::ApplyMask { .. } => "ApplyMask",
                 Role::ChannelMerge { .. } => "ChannelMerge",
                 Role::ExtractShape => "ExtractShape",
@@ -2082,9 +2098,25 @@ mod tests {
                 "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &[Series::new("b".into(), &[mask_blob()]), cont_col],
+            &[Series::new("b".into(), &[mask_blob()]), cont_col.clone()],
         );
         assert_eq!(out.null_count(), 0);
+
+        // Regions: a contour set intersected with itself is itself.
+        let out = exec(
+            r#"{
+                "nodes": {
+                    "n0": {"source": {"format": "contour"}},
+                    "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
+                           "ops": [{"op": "intersection", "other": "n0"}]}
+                },
+                "outputs": {"_output": {"node": "n1", "sink": {"format": "native"}}},
+                "column_bindings": {"n0": 0}
+            }"#,
+            &[cont_col],
+        );
+        assert_eq!(out.null_count(), 0);
+        assert_eq!(out.list().unwrap().get_as_series(0).unwrap().len(), 1);
 
         // AssertShape: a declaration that holds passes the data through; one
         // that does not fails the row naming what the user wrote.
