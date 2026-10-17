@@ -495,6 +495,24 @@ class TestStroke:
         s = _segment_distance(_samples(20, 20, 2), np.array(loop, float), False) - 1.5
         _assert_band(_mask([_line(loop)], 20, 20, line_width=3.0, supersample=2), s, 2)
 
+    @pytest.mark.parametrize("cap", ["butt", "round", "square"])
+    @pytest.mark.parametrize("join", ["miter", "bevel"])
+    def test_a_loop_line_is_joined_at_its_start(self, cap: str, join: str) -> None:
+        """A line that returns to its first point has no ends: its start is a
+        corner like the others, turned by ``join``, and ``cap`` draws nothing
+        (it was stroked as an open path, capping the start corner)."""
+        # The square loop starting at each of its corners: every stroke must
+        # be the same band, the one starting at a corner's midpoint (no corner
+        # at its ends) being the reference.
+        x0, y0, x1, y1 = 4, 4, 16, 16
+        corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        reference = [(10, y0), *corners[1:], corners[0], (10, y0)]
+        want = _mask([_line(reference)], 20, 20, line_width=4.0, cap="butt", join=join)
+        for k in range(4):
+            loop = [*corners[k:], *corners[:k], corners[k]]
+            got = _mask([_line(loop)], 20, 20, line_width=4.0, cap=cap, join=join)
+            np.testing.assert_array_equal(got, want, err_msg=f"starting at corner {k}")
+
     def test_a_single_point_with_round_caps_is_a_disc(self) -> None:
         s = np.hypot(*(_samples(12, 12, 2) - (6.2, 5.9)).T) - 2.5
         got = _mask([_line([(6.2, 5.9)])], 12, 12, line_width=5.0, supersample=2)

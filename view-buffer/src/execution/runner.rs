@@ -1015,6 +1015,7 @@ pub(super) fn clamp_for_dtype(v: f64, dtype: DType) -> f64 {
 /// height and width, divided by `W` and `H` when `normalized`; no value of
 /// `buf` is read. Each coordinate is computed in f64 and stored rounded to
 /// the nearest f32.
+#[cfg(feature = "image_interop")]
 fn coordinate_grid(buf: &ViewBuffer, normalized: bool) -> ViewBuffer {
     let shape = buf.shape();
     let (h, w) = (shape[0], shape[1]);

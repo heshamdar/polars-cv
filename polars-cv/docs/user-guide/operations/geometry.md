@@ -400,7 +400,9 @@ An open contour (a line) is drawn as its **stroke**: every point within
 (`"round"`, the default; `"square"`; `"butt"`, flat at the end point) and its
 corners by `join` (`"round"`, `"miter"`, `"bevel"`). Regions in the same set
 are filled, and everything is painted as one union, so `supersample`
-anti-aliases strokes too. `line_width`, `cap` and `join` each accept an
+anti-aliases strokes too. A line that returns exactly to its first point has
+no ends: its start is a corner like the others. See
+[Drawing with polars-cv](../drawing.md) for building pictures from these. `line_width`, `cap` and `join` each accept an
 expression. To outline a region, rasterize its `boundary()`:
 
 ```python

@@ -9,6 +9,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **"Drawing with polars-cv" guide, and the logo rebuilt on the drawing ops**
+  (CR-101). The guide (`docs/user-guide/drawing.md`) covers shapes as data,
+  filling and stroking, the shaping and set operations, fields over pixels,
+  and colouring an index map with one `apply_lut` palette; every example runs
+  in the test suite. `docs/assets/logo/make_logo.py` is now one graph:
+  terraces from `distance_transform`, contour lines as stroked `offset`
+  boundaries, the wordmark as stroked centrelines, stacked by `maximum` and
+  coloured by `apply_lut`. It replaces a per-pixel DataFrame for the distance
+  field and per-channel weighted sums of mask layers.
+
 - **`coordinate_grid(normalized=False)`** (CR-100): an f32 `[H, W, 2]` buffer
   of each pixel's centre `(x + 0.5, y + 0.5)` (divided by `W`/`H` when
   `normalized`, per-row capable), for fields over positions. Reads only the
@@ -120,6 +130,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   linked guides and `benchmarks/`.
 
 ### Fixed
+
+- **A line that returns to its first point is stroked as a loop.** `geo`
+  strokes every line string as an open path, so `rasterize(line_width=)`
+  capped a loop's start instead of turning it like its other corners: a
+  `butt` cap left the corner missing, a `round` one rounded it. Found
+  rebuilding the logo, where each bowl of the wordmark showed a nick; a loop
+  is now stroked as a closed path (`i_overlay`, under `geo`, which view-buffer
+  now names directly).
 
 - **A non-finite float literal is refused by name** (CR-103). JSON has no NaN
   or infinity, so `simplify(float("nan"))` — any op or geometry accessor —
