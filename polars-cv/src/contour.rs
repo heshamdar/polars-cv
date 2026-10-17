@@ -618,56 +618,6 @@ fn contour_union_all(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Seri
     )
 }
 
-/// Each row's regions combined with *other*'s by the function's boolean op,
-/// as a set: each side read as the union of its set (the engine function the
-/// pipeline ops run, `transforms::boolean`). A null side nulls the row.
-fn region_op_rows(inputs: &[Series], kwargs: GeomKwargs, name: &str) -> PolarsResult<Series> {
-    let (op, params) = GeomParams::parse::<ContourFn<Wire>>(inputs, kwargs, name)?;
-    let Some((region_op, other)) = op.region_op() else {
-        return Err(parsed_as_another(name));
-    };
-    let (left, right) = (
-        ContourColumn::new(&inputs[0]),
-        ContourColumn::new(params.column(other)),
-    );
-    let rows = params.map_rows(inputs[0].len(), |_params, i| {
-        let (Some(a), Some(b)) = (left.row(i)?, right.row(i)?) else {
-            return Ok(None);
-        };
-        Ok(Some(transforms::boolean(&a, &b, region_op)))
-    })?;
-    Contour::column(
-        inputs[0].name().clone(),
-        rows,
-        Arity::Set,
-        &contour_struct_dtype(),
-    )
-}
-
-/// `.contour.union`: [`region_op_rows`].
-#[polars_expr(output_type_func=contour_set_output_type)]
-fn contour_union(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
-    region_op_rows(inputs, kwargs, "contour_union")
-}
-
-/// `.contour.intersection`: [`region_op_rows`].
-#[polars_expr(output_type_func=contour_set_output_type)]
-fn contour_intersection(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
-    region_op_rows(inputs, kwargs, "contour_intersection")
-}
-
-/// `.contour.difference`: [`region_op_rows`].
-#[polars_expr(output_type_func=contour_set_output_type)]
-fn contour_difference(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
-    region_op_rows(inputs, kwargs, "contour_difference")
-}
-
-/// `.contour.symmetric_difference`: [`region_op_rows`].
-#[polars_expr(output_type_func=contour_set_output_type)]
-fn contour_symmetric_difference(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
-    region_op_rows(inputs, kwargs, "contour_symmetric_difference")
-}
-
 fn contour_single_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
     let input = input_fields
         .first()

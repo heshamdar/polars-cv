@@ -345,22 +345,6 @@
   },
   {
     "namespace": "contour",
-    "name": "contour_difference",
-    "python": "difference",
-    "visibility": "public",
-    "doc": "Inside this column's regions and not *other*'s: *other* cut away.\n\nEach side is read as the union of its row's set (a single contour is\na set of one), and the result is disjoint regions — always a set,\nsince combining shapes can split or merge them. A null on either\nside nulls the row; an open contour (a line) is refused. The\npipeline form is ``LazyPipelineExpr.difference``.\n\nReturns:\n    A contour set (``List[Contour]``) per row.",
-    "fields": [
-      {
-        "name": "other",
-        "doc": "The contour column to combine with.",
-        "type": {
-          "kind": "column"
-        }
-      }
-    ]
-  },
-  {
-    "namespace": "contour",
     "name": "contour_ensure_winding",
     "python": "ensure_winding",
     "visibility": "public",
@@ -401,22 +385,6 @@
       {
         "name": "other",
         "doc": "Another contour column to compare with.",
-        "type": {
-          "kind": "column"
-        }
-      }
-    ]
-  },
-  {
-    "namespace": "contour",
-    "name": "contour_intersection",
-    "python": "intersection",
-    "visibility": "public",
-    "doc": "Inside both: where each row's regions overlap *other*'s.\n\nEach side is read as the union of its row's set (a single contour is\na set of one), and the result is disjoint regions — always a set,\nsince combining shapes can split or merge them. A null on either\nside nulls the row; an open contour (a line) is refused. The\npipeline form is ``LazyPipelineExpr.intersection``.\n\nReturns:\n    A contour set (``List[Contour]``) per row.",
-    "fields": [
-      {
-        "name": "other",
-        "doc": "The contour column to combine with.",
         "type": {
           "kind": "column"
         }
@@ -780,22 +748,6 @@
   },
   {
     "namespace": "contour",
-    "name": "contour_symmetric_difference",
-    "python": "symmetric_difference",
-    "visibility": "public",
-    "doc": "Inside exactly one: where each row's regions and *other*'s do not overlap.\n\nEach side is read as the union of its row's set (a single contour is\na set of one), and the result is disjoint regions — always a set,\nsince combining shapes can split or merge them. A null on either\nside nulls the row; an open contour (a line) is refused. The\npipeline form is ``LazyPipelineExpr.symmetric_difference``.\n\nReturns:\n    A contour set (``List[Contour]``) per row.",
-    "fields": [
-      {
-        "name": "other",
-        "doc": "The contour column to combine with.",
-        "type": {
-          "kind": "column"
-        }
-      }
-    ]
-  },
-  {
-    "namespace": "contour",
     "name": "contour_to_absolute",
     "python": "to_absolute",
     "visibility": "public",
@@ -867,22 +819,6 @@
           "kind": "scalar",
           "per_row": true,
           "py": "float"
-        }
-      }
-    ]
-  },
-  {
-    "namespace": "contour",
-    "name": "contour_union",
-    "python": "union",
-    "visibility": "public",
-    "doc": "Inside either: the union of each row's regions and *other*'s.\n\nEach side is read as the union of its row's set (a single contour is\na set of one), and the result is disjoint regions — always a set,\nsince combining shapes can split or merge them. A null on either\nside nulls the row; an open contour (a line) is refused. The\npipeline form is ``LazyPipelineExpr.union``.\n\nReturns:\n    A contour set (``List[Contour]``) per row.",
-    "fields": [
-      {
-        "name": "other",
-        "doc": "The contour column to combine with.",
-        "type": {
-          "kind": "column"
         }
       }
     ]

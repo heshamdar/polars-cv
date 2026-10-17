@@ -287,19 +287,47 @@ def geom_method(fn: dict[str, Any]) -> str:
     )
 
 
-def geom_mixins(geom: list[dict[str, Any]]) -> str:
+def is_contour_operand_op(op: dict[str, Any]) -> bool:
+    """A binary op combining two contour sets (``union``, …): its
+    ``.contour`` method is the op itself, run through a pipeline."""
+    return is_binary(op) and [d["input"] for d in op["domains"]] == ["contour"]
+
+
+def contour_operand_method(op: dict[str, Any]) -> str:
+    """Render the ``.contour`` method of a contour-set op: the pipeline op's
+    own docstring (one declaration), over a contour column operand."""
+    (field,) = op["fields"]
+    name = field["name"]
+    doc = _indent(docstring(op), "        ").lstrip()
+    return (
+        f"    def {op['python']}(self, {name}: pl.Expr) -> pl.Expr:\n"
+        f'        """{doc}\n        """\n'
+        f'        return self._pipeline_op("{op["name"]}", {name})\n'
+    )
+
+
+def geom_mixins(geom: list[dict[str, Any]], catalog: list[dict[str, Any]]) -> str:
     """The geometry accessor mixins, one per namespace."""
     out = []
     for namespace, class_name in GEOM_NAMESPACES:
-        methods = "\n".join(
-            geom_method(fn) for fn in geom if fn["namespace"] == namespace
-        )
+        methods = [
+            (fn["python"], geom_method(fn))
+            for fn in geom
+            if fn["namespace"] == namespace
+        ]
+        if namespace == "contour":
+            methods += [
+                (op["python"], contour_operand_method(op))
+                for op in catalog
+                if is_contour_operand_op(op)
+            ]
         out.append(
             f"class {class_name}:\n"
             f'    """The generated ``.{namespace}`` accessor methods."""\n\n'
             "    if TYPE_CHECKING:\n\n"
-            "        def _call(self, function: str, values: dict[str, Any]) -> pl.Expr: ...\n\n"
-            + methods
+            "        def _call(self, function: str, values: dict[str, Any]) -> pl.Expr: ...\n"
+            "        def _pipeline_op(self, op: str, other: pl.Expr) -> pl.Expr: ...\n\n"
+            + "\n".join(text for _, text in sorted(methods))
         )
     return "\n\n".join(out)
 
@@ -465,7 +493,7 @@ def render(
         method(op) for op in catalog if op["visibility"] != "lazy_only"
     )
     lazy_methods = "\n".join(lazy_method(op) for op in catalog if is_binary(op))
-    geom_methods = geom_mixins(geom)
+    geom_methods = geom_mixins(geom, catalog)
     text = (
         _HEADER.format(imports=_imports(methods + lazy_methods + geom_methods))
         + "\n\n"
