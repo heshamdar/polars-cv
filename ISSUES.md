@@ -288,8 +288,11 @@ an independent oracle. All done (CR-93 to CR-101, closed below).
    `.point.signed_distance_to_contour` — measured to the pixel-edge boundary
    `extract_contours` traces.
 5. No built-in colormaps for now: `apply_lut` takes explicit tables.
-6. Line width, cap and join are rendering attributes on `rasterize`; `offset`
-   is geometry on regions only and takes `join` alone.
+6. Line width, cap and join belong to `stroke()`, a contour op (every member
+   read as its outline, the result disjoint regions), not to `rasterize`,
+   which fills regions only (2026-10-17, superseding "rendering attributes on
+   `rasterize`": they were ignored for a region-only set). `offset` is
+   geometry on regions only and takes `join` alone.
 
 ## Upstream (Polars)
 
@@ -555,7 +558,7 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 | CR-100 | `coordinate_grid(normalized=)` | Added (Unreleased): an `ImageOpKind` whose shape is `OpShape::Canvas { of: 0, channels: 2 }` (the canvas rule, given a channel count); declared `StridePreserving`, not the planned `PacksOwnRows`, which the copy census refuses (it reads no element, so packs nothing); `Global`, so no crop crosses it |
 | CR-105 | `footprint="disk"` morphology was O(r²·HW), holding r + 1 full-size images | Fixed (Unreleased): spans grow one half-width at a time and the column fold runs `dy` outermost (the lower half prepended), keeping the bit-exact fold order with five live images; 31-px disk 2.2–2.4x faster (1024²: 17.2 → 7.3 ms, release). `disk_fold_order_decides_which_zero_survives` now pins the order, which the old test did not (a reversed half passed it) |
 | CR-104 | `target/debug` grew until the disk filled | Fixed (Unreleased): per-package `split-debuginfo = "off"` for the workspace crates (stale incremental `.dwo` sidecars, ~12 GB); one view-buffer test binary (`tests/it/`, was 31, ~4 GB); the SessionStart hook cleans `target/` on a `rustc -vV` change (~5 GB per toolchain). The test build's second polars stack stays: pyo3 sits under every polars crate, and the extension build (no libpython) and test executables (libpython) must differ |
-| CR-103 | A non-finite float literal failed at the JSON wire with "expected value at line 1 column N" | Fixed (Unreleased): `_types._literal`, the one place literals reach the wire (ops, sources and geometry calls), refuses one naming the parameter; `bound` fields keep their infinities |
-| CR-99 | Contour boolean ops (`union`, `intersection`, `difference`, `symmetric_difference`) | Added (Unreleased): `transforms::boolean` behind a lazy-only `GraphOp` role (`Role::Regions`, node operand) and `ContourFn` accessors (column operand); each side read as its regions' union |
-| CR-98 | Contour shaping (`offset`, `union_all`, `smooth`, `densify`) and line rendering in `rasterize` | Added (Unreleased): one engine function per op in `geometry::transforms` (on `geo`'s `Buffer`, `unary_union`, `ChaikinSmoothing`, `Densify`), read by the pipeline op and its accessor alike; `rasterize_outlines` fills regions and strokes lines into one union; arcs within `ARC_TOLERANCE` (1/64 px), miter limit 4 |
+| CR-103 | A non-finite float literal failed at the JSON wire with "expected value at line 1 column N" | Fixed (Unreleased): every float field reads and writes `"nan"`/`"inf"`/`"-inf"` (`naming.rs`) and `_types._literal` spells them, so a literal meets its op's own check as a per-row value does; a `bound` refuses NaN. A first fix (refusing them in Python) never shipped |
+| CR-99 | Contour boolean ops (`union`, `intersection`, `difference`, `symmetric_difference`) | Added (Unreleased): `transforms::boolean` behind a lazy-only `GraphOp` role (`Role::Regions`, node operand); the `.contour` accessors are generated from those ops and run them (column operand); each side read as its regions' union |
+| CR-98 | Contour shaping (`offset`, `union_all`, `smooth`, `densify`, `stroke`) | Added (Unreleased): one engine function per op in `geometry::transforms` (on `geo`'s `Buffer`, `unary_union`, `ChaikinSmoothing`, `Densify`, and `i_overlay` for closed-path strokes), read by the pipeline op and its accessor alike; `rasterize` fills regions only; arcs within `transforms::arc_tolerance` (1/64 px to r ≈ 32, about r/2000 beyond), miter limit 4 |
 | CR-97 | Open contours in the pipeline contour domain; `boundary()` / `close()` | Added (Unreleased): `NodeOutput::Contours` carries `Outline`; `Outline::region` is the one region rule, read by the pipeline ops and the `.contour` column reader alike |

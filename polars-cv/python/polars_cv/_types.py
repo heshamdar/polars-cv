@@ -12,80 +12,10 @@ from typing import TYPE_CHECKING, Any, Callable, ClassVar, TypeAlias, Union
 
 import polars as pl
 
-# The enums are generated from the Rust registries (`scripts/gen_ops.py`);
-# re-exported here, where the rest of the package imports them from.
-from polars_cv._ops_generated import (
-    ApproxMethod as ApproxMethod,
-)
-from polars_cv._ops_generated import (
-    BorderMode as BorderMode,
-)
-from polars_cv._ops_generated import (
-    ColorSpace as ColorSpace,
-)
-from polars_cv._ops_generated import (
-    Domain as Domain,
-)
-from polars_cv._ops_generated import (
-    DType as DType,
-)
-from polars_cv._ops_generated import (
-    ExtractMode as ExtractMode,
-)
-from polars_cv._ops_generated import (
-    FetchErrorPolicy as FetchErrorPolicy,
-)
-from polars_cv._ops_generated import (
-    FilterType as FilterType,
-)
-from polars_cv._ops_generated import (
-    Footprint as Footprint,
-)
-from polars_cv._ops_generated import (
-    HashAlgorithm as HashAlgorithm,
-)
-from polars_cv._ops_generated import (
-    HistogramClosed as HistogramClosed,
-)
-from polars_cv._ops_generated import (
-    HistogramOutput as HistogramOutput,
-)
-from polars_cv._ops_generated import (
-    InterpolationType as InterpolationType,
-)
-from polars_cv._ops_generated import (
-    LabelReduction as LabelReduction,
-)
-from polars_cv._ops_generated import (
-    LabelRegionMode as LabelRegionMode,
-)
-from polars_cv._ops_generated import (
-    NormalizeMethod as NormalizeMethod,
-)
-from polars_cv._ops_generated import (
-    NullParamPolicy as NullParamPolicy,
-)
-from polars_cv._ops_generated import (
-    PadMode as PadMode,
-)
-from polars_cv._ops_generated import (
-    PadPosition as PadPosition,
-)
-from polars_cv._ops_generated import (
-    RowErrorPolicy as RowErrorPolicy,
-)
-from polars_cv._ops_generated import (
-    ScaleOrigin as ScaleOrigin,
-)
-from polars_cv._ops_generated import (
-    SinkFormat as SinkFormat,
-)
-from polars_cv._ops_generated import (
-    SourceFormat as SourceFormat,
-)
-from polars_cv._ops_generated import (
-    Winding as Winding,
-)
+# The enums are generated from the Rust registries (`scripts/gen_ops.py`),
+# which lists them in `_ops_generated.__all__`; every one is re-exported here,
+# where the rest of the package imports them from. No hand-kept subset.
+from polars_cv._ops_generated import *  # noqa: F403
 
 from ._dtype_names import NUMPY_TO_SHORT
 

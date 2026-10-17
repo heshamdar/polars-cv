@@ -276,12 +276,16 @@ impl HistogramOp {
         let (lo, hi) = match self.value_range() {
             Some((min, max)) if min.is_finite() && max.is_finite() => {
                 if min > max {
-                    return Err(format!("range min {min} must not exceed max {max}"));
+                    return Err(format!(
+                        "histogram: range min {min} must not exceed max {max}"
+                    ));
                 }
                 (min, max)
             }
             Some((min, max)) => {
-                return Err(format!("supplied range of [{min}, {max}] is not finite"));
+                return Err(format!(
+                    "histogram: supplied range of [{min}, {max}] is not finite"
+                ));
             }
             None => {
                 // The extremes as elements, so the edges can contain them

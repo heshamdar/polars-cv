@@ -5,7 +5,7 @@ every float field reads and writes them as ``"nan"``, ``"inf"`` and ``"-inf"``
 (``naming.rs``; ``_types._literal`` encodes them). A literal then meets the
 op's own check, exactly as the same value passed per row through an
 expression does. (CR-103 first refused such a literal in Python, which made
-``apply_lut([[nan]], dtype="f32")`` an error while ``pl.lit(nan)`` worked.)
+``apply_lut([[nan]], out_dtype="f32")`` an error while ``pl.lit(nan)`` worked.)
 
 The sweep below is registry-driven: every float field of every pipeline op
 (``OP_FIELDS``), at each non-finite value, must either be refused while the
@@ -124,7 +124,7 @@ def test_every_float_literal_is_checked_by_its_op(
 def test_a_nan_table_entry_is_a_nan() -> None:
     """The case CR-103 refused: a palette mapping a label to NaN."""
     table = [[0.5], [math.nan], [math.inf]]
-    pipe = Pipeline().source("raw", dtype="u8").apply_lut(table, dtype="f32")
+    pipe = Pipeline().source("raw", dtype="u8").apply_lut(table, out_dtype="f32")
     data = np.array([[0, 1, 2]], np.uint8)
     df = pl.DataFrame({"b": [data.tobytes()]})
     out = df.select(pl.col("b").cv.pipe(pipe).sink("numpy"))

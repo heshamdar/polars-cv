@@ -328,15 +328,15 @@ impl<M: Mode> GeometryOp<M> {
             GeometryOp::Densify { max_segment_length } => known::<M, f64>(max_segment_length)
                 .map_or(Ok(()), super::transforms::check_max_segment_length),
             GeometryOp::Largest { k } if known::<M, u32>(k) == Some(0) => {
-                Err("k must be >= 1".to_string())
+                Err("largest: k must be >= 1".to_string())
             }
             GeometryOp::ExtractContours {
                 min_area_fraction: Some(fraction),
                 ..
             } => match known::<M, f64>(fraction) {
-                Some(f) if !(f > 0.0 && f <= 1.0) => {
-                    Err(format!("min_area_fraction must be in (0, 1], got {f}"))
-                }
+                Some(f) if !(f > 0.0 && f <= 1.0) => Err(format!(
+                    "extract_contours: min_area_fraction must be in (0, 1], got {f}"
+                )),
                 _ => Ok(()),
             },
             _ => Ok(()),

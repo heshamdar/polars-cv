@@ -76,10 +76,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   covered area to `area()` (exactly on integer edges, within a band that
   shrinks as `1 / n` otherwise).
 
-- **`apply_lut(table, dtype="u8")`** (CR-95): each u8/u16 value read as a row
+- **`apply_lut(table, out_dtype="u8")`** (CR-95): each u8/u16 value read as a row
   index into `table`. Rows of one entry map every element in place on any
   channel count (`cv2.LUT`); rows of `K` entries take a single-channel image
-  to `K` channels, a palette. Entries are stored as `dtype` (any of the ten)
+  to `K` channels, a palette. Entries are stored as `out_dtype` (any of the ten)
   and must fit it, which is checked when the pipeline is built, as are ragged
   rows and float input. A value with no row is an error for its row (so
   `on_error("null")` nulls just that row); clamp with `clamp(0, n - 1,
@@ -136,7 +136,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 - **`apply_lut` reads less and copies less per row.** A table of single
   entries converts and holds only its rows, indexed directly (it padded a
-  table to all 65 536 u16 values on every row, 512 KiB for `dtype="f64"`),
+  table to all 65 536 u16 values on every row, 512 KiB for `out_dtype="f64"`),
   and a palette writes its `[H, W, K]` output in one pass instead of building
   `K` planes and merging them (one view-sized allocation instead of `K + 1`).
   Its row errors are prefixed `ApplyLut:`, as `Histogram:`'s are: the two
@@ -164,6 +164,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   linked guides and `benchmarks/`.
 
 ### Fixed
+
+- **A refused value names its op once, as the user spells it.** The planner
+  and the geometry accessors' build check prefixed every `check()` message
+  with the op's wire name, which most messages already began with their
+  own: `rasterize: rasterize: supersample ...`, `contour_densify: densify:
+  ...`, `blur: blur: sigma ...`. The prefix is gone, and the checks that did
+  not name their op (`normalize`, `histogram`'s range, `perceptual_hash`,
+  `largest`, `extract_contours`) now do.
 
 - **Contour results publish the canonical contour struct.** A `.contour`
   function that returns contours declared "the input's own layout" and cast

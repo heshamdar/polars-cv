@@ -69,7 +69,7 @@ impl<M: Mode> PerceptualHashOp<M> {
     /// A hash needs at least one bit.
     pub fn check(&self) -> Result<(), String> {
         if M::lit(&self.hash_size) == 0 {
-            return Err("hash_size must be a positive integer".into());
+            return Err("perceptual_hash: hash_size must be a positive integer".into());
         }
         Ok(())
     }

@@ -686,21 +686,20 @@ pub fn check_call(name: &str, args: serde_json::Value) -> Result<(), String> {
         r.map(|r| r.map(|_| ()))
     }
     let op_backed = OP_ACCESSORS.iter().any(|(op, _)| *op == name);
-    parsed(<ContourFn<Wire> as WireOps>::from_wire(name, args.clone()))
-        .or_else(|| parsed(<PointFn<Wire> as WireOps>::from_wire(name, args.clone())))
-        .or_else(|| parsed(<BBoxFn<Wire> as WireOps>::from_wire(name, args.clone())))
-        .or_else(|| {
+    // A parse error is named here; an op's check names its op itself.
+    let named = |e: String| format!("{name}: {e}");
+    if op_backed {
+        if let Some(op) = <GeometryOp<Wire> as WireOps>::from_wire(name, args.clone()) {
             // An op-backed accessor is the op: its own check refuses a value
             // no row can use, here as the pipeline op's builder does.
-            op_backed
-                .then(|| {
-                    <GeometryOp<Wire> as WireOps>::from_wire(name, args)
-                        .map(|op| op.and_then(|op| op.check()))
-                })
-                .flatten()
-        })
+            return op.map_err(named)?.check();
+        }
+    }
+    parsed(<ContourFn<Wire> as WireOps>::from_wire(name, args.clone()))
+        .or_else(|| parsed(<PointFn<Wire> as WireOps>::from_wire(name, args.clone())))
+        .or_else(|| parsed(<BBoxFn<Wire> as WireOps>::from_wire(name, args)))
         .unwrap_or_else(|| Err(format!("'{name}' is not a geometry accessor function")))
-        .map_err(|e| format!("{name}: {e}"))
+        .map_err(named)
 }
 
 /// The catalogue as committed in `tests/golden/geom_catalog.json`.
