@@ -9,8 +9,9 @@
 //! and the difference between the two runs is the copies the *view* cost. The
 //! op's own working buffers appear in both runs and cancel.
 //!
-//! **Registry-driven, both ways.** The ops are `TypedOp::samples()`, so a new
-//! op is measured the day it is added. An op the census cannot run is listed in
+//! **Registry-driven, both ways.** The ops are `TypedOp::samples()` that read a
+//! buffer (an op reading only contours is out by its `input_domains`), so a
+//! new op is measured the day it is added. An op the census cannot run is listed in
 //! [`EXEMPT`] with the reason, and an exemption for an op that does run, or that
 //! no longer exists, fails. A view-caused copy must be listed in [`KNOWN`] with
 //! the reason it is paid. An unlisted one fails, and so does a listed one that
@@ -22,7 +23,7 @@
 //! exercise is not seen through that parameter.
 
 use polars::prelude::*;
-use view_buffer::ops::MemoryEffect;
+use view_buffer::ops::{Domain, MemoryEffect};
 use view_buffer::{DType, ViewBuffer};
 
 use super::compiled::CompiledGraph;
@@ -141,86 +142,6 @@ const EXEMPT: &[(&str, &str)] = &[
         "its sample is a two-row palette and the census images hold values up \
          to 250; view-buffer's copy_counts.rs pins what a view costs it",
     ),
-    (
-        "rasterize",
-        "it reads a contour, not a buffer: no view of one reaches it",
-    ),
-    (
-        "contour_boundary",
-        "it reads a contour, not a buffer: no view of one reaches it",
-    ),
-    (
-        "contour_close",
-        "it reads a contour, not a buffer: no view of one reaches it",
-    ),
-    (
-        "contour_offset",
-        "it reads a contour, not a buffer: no view of one reaches it",
-    ),
-    (
-        "contour_union_all",
-        "it reads a contour, not a buffer: no view of one reaches it",
-    ),
-    (
-        "contour_smooth",
-        "it reads a contour, not a buffer: no view of one reaches it",
-    ),
-    (
-        "contour_densify",
-        "it reads a contour, not a buffer: no view of one reaches it",
-    ),
-    (
-        "union",
-        "it reads two contour sets, not a buffer: no view of one reaches it",
-    ),
-    (
-        "intersection",
-        "it reads two contour sets, not a buffer: no view of one reaches it",
-    ),
-    (
-        "difference",
-        "it reads two contour sets, not a buffer: no view of one reaches it",
-    ),
-    (
-        "symmetric_difference",
-        "it reads two contour sets, not a buffer: no view of one reaches it",
-    ),
-    (
-        "contour_area",
-        "it reads a contour, not a buffer: no view of one reaches it",
-    ),
-    (
-        "contour_bounding_box",
-        "it reads a contour, not a buffer: no view of one reaches it",
-    ),
-    (
-        "contour_centroid",
-        "it reads a contour, not a buffer: no view of one reaches it",
-    ),
-    (
-        "contour_convex_hull",
-        "it reads a contour, not a buffer: no view of one reaches it",
-    ),
-    (
-        "contour_largest",
-        "it reads a contour, not a buffer: no view of one reaches it",
-    ),
-    (
-        "contour_perimeter",
-        "it reads a contour, not a buffer: no view of one reaches it",
-    ),
-    (
-        "contour_scale",
-        "it reads a contour, not a buffer: no view of one reaches it",
-    ),
-    (
-        "contour_simplify",
-        "it reads a contour, not a buffer: no view of one reaches it",
-    ),
-    (
-        "contour_translate",
-        "it reads a contour, not a buffer: no view of one reaches it",
-    ),
 ];
 
 /// A `dtype` blob of `shape` with a recognisable pattern.
@@ -319,6 +240,17 @@ struct Census {
     panicked: Vec<(String, String)>,
 }
 
+/// The catalogue's samples a view can reach: those whose step consumes a
+/// buffer. An op reading only contours (or other non-buffer domains) is out
+/// of the census by its contract (`GraphStep::input_domains`), not by a
+/// hand-written exemption.
+fn buffer_samples() -> Vec<TypedOp> {
+    TypedOp::samples()
+        .into_iter()
+        .filter(|s| s.input_domains().contains(&Domain::Buffer))
+        .collect()
+}
+
 /// Every op's view-caused copies per layout on `dtype` input.
 fn census(dtype: DType) -> Census {
     let mut census = Census {
@@ -327,7 +259,7 @@ fn census(dtype: DType) -> Census {
         refused: Vec::new(),
         panicked: Vec::new(),
     };
-    for sample in TypedOp::samples() {
+    for sample in buffer_samples() {
         let name = sample.name().to_string();
         let op = serde_json::to_string(&sample).unwrap();
         let (c, sink) = match runnable(&op, dtype) {
@@ -395,7 +327,7 @@ fn a_view_costs_each_op_only_its_known_copies() {
             problems.push(format!("KNOWN lists {op}, which the census did not run"));
         }
     }
-    let names: Vec<String> = TypedOp::samples()
+    let names: Vec<String> = buffer_samples()
         .iter()
         .map(|s| s.name().to_string())
         .collect();
@@ -410,7 +342,9 @@ fn a_view_costs_each_op_only_its_known_copies() {
     for (name, why) in EXEMPT {
         assert!(why.len() > 20, "{name}: an exemption needs its reason");
         if !names.iter().any(|n| n == name) {
-            problems.push(format!("EXEMPT lists {name}, which is not a catalogue op"));
+            problems.push(format!(
+                "EXEMPT lists {name}, which is not a catalogue op that reads a buffer"
+            ));
         }
     }
     assert!(problems.is_empty(), "\n{}", problems.join("\n"));
@@ -458,7 +392,7 @@ fn bounds(effect: MemoryEffect, layout: &str) -> (bool, bool) {
 /// either way, so this cannot tell those two apart.
 #[test]
 fn each_op_pays_the_copies_its_memory_effect_declares() {
-    let samples = TypedOp::samples();
+    let samples = buffer_samples();
     let mut problems = Vec::new();
     let mut undeclared = Vec::new();
     let ran_u8 = census(DType::U8).ran;

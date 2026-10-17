@@ -98,7 +98,7 @@ region, so the functions split by what they read:
   `offset`, `union_all`, the set operations (`union`, `intersection`,
   `difference`, `symmetric_difference`) and `.point.signed_distance_to_contour`.
   `scale(origin="centroid")` refuses one too.
-- `rasterize` **strokes** it (see [Drawing lines](#drawing-lines)).
+- `rasterize` refuses it too; `stroke()` it first (see [Drawing lines](#drawing-lines)).
 
 Pipelines carry lines the same way: `source("contour")` reads open rows, and
 each contour op behaves as its `.contour` accessor does (one definition serves
@@ -288,8 +288,8 @@ with one definition, so they always agree.
 
 ### Shaping
 
-Four more ops, each both a pipeline op and a `.contour` accessor with one
-definition:
+Five more ops, each both a pipeline op and a `.contour` accessor with one
+definition (`stroke`, the fifth, is under [Drawing lines](#drawing-lines)):
 
 - `offset(distance, join="round")` grows a set's regions by `distance` pixels,
   or shrinks them for a negative one: every point within `distance` of their
@@ -395,21 +395,31 @@ mask = pl.col("contour").cv.pipe(
 
 ### Drawing lines
 
-An open contour (a line) is drawn as its **stroke**: every point within
-`line_width / 2` of it (default 1 pixel wide), its ends shaped by `cap`
+`rasterize` fills regions. A line has no region, so `stroke(width=1.0,
+cap="round", join="round")` first turns paths into the regions they cover:
+every point within `width / 2` of a path, its ends shaped by `cap`
 (`"round"`, the default; `"square"`; `"butt"`, flat at the end point) and its
-corners by `join` (`"round"`, `"miter"`, `"bevel"`). Regions in the same set
-are filled, and everything is painted as one union, so `supersample`
-anti-aliases strokes too. A line that returns exactly to its first point has
-no ends: its start is a corner like the others. See
-[Drawing with polars-cv](../drawing.md) for building pictures from these. `line_width`, `cap` and `join` each accept an
-expression. To outline a region, rasterize its `boundary()`:
+corners by `join` (`"round"`, `"miter"`, `"bevel"`). Every member of the set
+is read as its outline: an open line is capped at its ends, while a region's
+rings — and a line that returns exactly to its first point — are closed
+paths with no ends. The result is a set of disjoint regions, a pipeline op and
+a `.contour` accessor alike, and `width`, `cap` and `join` each accept an
+expression. See [Drawing with polars-cv](../drawing.md) for building pictures
+from these.
+
+A 1-pixel stroke on integer coordinates puts its edges exactly on pixel
+centres, so which side of each edge a pixel lands on is decided by the
+scanline's tie rule; use `supersample` (or a non-integer width) for an even
+line.
 
 ```python
+# A region's outline, and its fill
 outline = (
-    Pipeline().source("contour").boundary()
-    .rasterize(width=200, height=200, line_width=2.5, join="miter", supersample=4)
+    Pipeline().source("contour")
+    .stroke(width=2.5, join="miter")
+    .rasterize(width=200, height=200, supersample=4)
 )
+filled = Pipeline().source("contour").rasterize(width=200, height=200)
 ```
 
 Infer dimensions from an existing image:

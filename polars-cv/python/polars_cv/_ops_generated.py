@@ -230,7 +230,7 @@ class LabelRegionMode(str, Enum):
 
 
 class LineCap(str, Enum):
-    """How ``rasterize`` ends a stroked line.
+    """How ``stroke`` ends an open line.
 
     - ROUND: A half disc past each end (default).
     - SQUARE: A half square past each end.
@@ -243,7 +243,7 @@ class LineCap(str, Enum):
 
 
 class LineJoin(str, Enum):
-    """How ``rasterize`` strokes and ``offset`` turn a corner.
+    """How ``stroke`` and ``offset`` turn a corner.
 
     - ROUND: An arc about the corner (default).
     - MITER: The edges extended to meet, cut off where the point would reach more than 4 half-widths out (SVG's default miter limit).
@@ -418,6 +418,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "contour_scale",
         "contour_simplify",
         "contour_smooth",
+        "contour_stroke",
         "contour_translate",
         "contour_union_all",
         "convolve2d",
@@ -669,6 +670,21 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         "tolerance": {"kind": "scalar", "per_row": True, "py": "float"}
     },
     "contour_smooth": {"iterations": {"kind": "scalar", "per_row": True, "py": "int"}},
+    "contour_stroke": {
+        "width": {"kind": "scalar", "per_row": True, "py": "float"},
+        "cap": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "LineCap",
+            "variants": ["round", "square", "butt"],
+        },
+        "join": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "LineJoin",
+            "variants": ["round", "miter", "bevel"],
+        },
+    },
     "contour_translate": {
         "dx": {"kind": "scalar", "per_row": True, "py": "float"},
         "dy": {"kind": "scalar", "per_row": True, "py": "float"},
@@ -934,19 +950,6 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         "fill_value": {"kind": "scalar", "per_row": True, "py": "int"},
         "background": {"kind": "scalar", "per_row": True, "py": "int"},
         "supersample": {"kind": "scalar", "per_row": True, "py": "int"},
-        "line_width": {"kind": "scalar", "per_row": True, "py": "float"},
-        "cap": {
-            "kind": "scalar",
-            "per_row": True,
-            "py": "LineCap",
-            "variants": ["round", "square", "butt"],
-        },
-        "join": {
-            "kind": "scalar",
-            "per_row": True,
-            "py": "LineJoin",
-            "variants": ["round", "miter", "bevel"],
-        },
     },
     "reciprocal": {},
     "reduce_argmax": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
@@ -1160,6 +1163,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "contour_scale": [{"input": "contour", "output": "contour"}],
     "contour_simplify": [{"input": "contour", "output": "contour"}],
     "contour_smooth": [{"input": "contour", "output": "contour"}],
+    "contour_stroke": [{"input": "contour", "output": "contour"}],
     "contour_translate": [{"input": "contour", "output": "contour"}],
     "contour_union_all": [{"input": "contour", "output": "contour"}],
     "convolve2d": [{"input": "buffer", "output": "buffer"}],
@@ -1805,6 +1809,36 @@ class _OpsMixin:
         """
         return self._append_typed("contour_smooth", {"iterations": iterations})
 
+    def stroke(
+        self,
+        *,
+        width: FloatOrExpr = 1.0,
+        cap: str | pl.Expr = "round",
+        join: str | pl.Expr = "round",
+    ) -> Pipeline:
+        """The region the set's paths cover when stroked, as disjoint regions:
+        every point within ``width / 2`` of a path, its ends shaped by *cap*
+        and its corners by *join*. Every member is read as its outline: an
+        open line, capped at its ends (one returning to its first point, as
+        ``boundary()`` draws one, is a closed path), and a region's rings,
+        each a closed path with no ends. The result is always a set, filled
+        by ``rasterize()``: ``stroke(width=2).rasterize(...)`` draws lines and
+        outlines. Round arcs are polygons within 1/64 pixel of the true arc.
+
+        Domain: contour → contour
+
+        Args:
+            width: The stroke's full width in pixels, a finite width > 0 (literal or
+                expression).
+            cap: How an open line ends: ``"round"`` (a half disc), ``"square"`` (a half
+                square) or ``"butt"`` (flat at its end point). Accepts an expression.
+            join: How a path turns a corner: ``"round"``, ``"miter"`` (cut off past 4
+                half-widths) or ``"bevel"``. Accepts an expression.
+        """
+        return self._append_typed(
+            "contour_stroke", {"width": width, "cap": cap, "join": join}
+        )
+
     def translate(self, *, dx: FloatOrExpr, dy: FloatOrExpr) -> Pipeline:
         """Translate the contour by an offset.
 
@@ -2369,11 +2403,9 @@ class _OpsMixin:
         fill_value: IntOrExpr = 255,
         background: IntOrExpr = 0,
         supersample: IntOrExpr = 1,
-        line_width: FloatOrExpr = 1.0,
-        cap: str | pl.Expr = "round",
-        join: str | pl.Expr = "round",
     ) -> Pipeline:
-        """Rasterize contours to a mask: regions filled, open lines stroked.
+        """Rasterize contours to a mask: each region filled. An open line has no
+        region to fill and is refused; ``stroke()`` it first to draw it.
 
         The builder is ``Pipeline.rasterize``, whose ``width``/``height`` or
         ``shape`` arguments become ``size``; it also records the shape reference's
@@ -2393,13 +2425,6 @@ class _OpsMixin:
                 ``background`` and ``fill_value`` (anti-aliasing). 1 (the default)
                 samples the pixel centre alone, so a pixel is one value or the other.
                 Accepts a Polars expression for per-row dynamic values.
-            line_width: The width an open line is stroked at, a finite width > 0
-                (regions are filled whatever it is). Accepts a Polars expression.
-            cap: How a stroked line ends: ``"round"`` (a half disc), ``"square"`` (a
-                half square) or ``"butt"`` (flat at its end point). Accepts a Polars
-                expression.
-            join: How a stroked line turns a corner: ``"round"``, ``"miter"`` (cut off
-                past 4 half-widths) or ``"bevel"``. Accepts a Polars expression.
         """
         return self._append_typed(
             "rasterize",
@@ -2408,9 +2433,6 @@ class _OpsMixin:
                 "fill_value": fill_value,
                 "background": background,
                 "supersample": supersample,
-                "line_width": line_width,
-                "cap": cap,
-                "join": join,
             },
         )
 
@@ -3742,6 +3764,32 @@ class _ContourOpsMixin:
                 expression).
         """
         return self._call("contour_smooth", {"iterations": iterations})
+
+    def stroke(
+        self,
+        *,
+        width: FloatOrExpr = 1.0,
+        cap: str | pl.Expr = "round",
+        join: str | pl.Expr = "round",
+    ) -> pl.Expr:
+        """The region the set's paths cover when stroked, as disjoint regions:
+        every point within ``width / 2`` of a path, its ends shaped by *cap*
+        and its corners by *join*. Every member is read as its outline: an
+        open line, capped at its ends (one returning to its first point, as
+        ``boundary()`` draws one, is a closed path), and a region's rings,
+        each a closed path with no ends. The result is always a set, filled
+        by ``rasterize()``: ``stroke(width=2).rasterize(...)`` draws lines and
+        outlines. Round arcs are polygons within 1/64 pixel of the true arc.
+
+        Args:
+            width: The stroke's full width in pixels, a finite width > 0 (literal or
+                expression).
+            cap: How an open line ends: ``"round"`` (a half disc), ``"square"`` (a half
+                square) or ``"butt"`` (flat at its end point). Accepts an expression.
+            join: How a path turns a corner: ``"round"``, ``"miter"`` (cut off past 4
+                half-widths) or ``"bevel"``. Accepts an expression.
+        """
+        return self._call("contour_stroke", {"width": width, "cap": cap, "join": join})
 
     def symmetric_difference(self, other: pl.Expr) -> pl.Expr:
         """Inside exactly one: where each row's regions and *other*'s do not overlap.

@@ -47,14 +47,17 @@ drawing = pl.DataFrame({"c": [[ring, zigzag]]}, schema={"c": CONTOUR_SET_SCHEMA}
 
 ## Filling and stroking
 
-`rasterize` paints a set as one union: each region filled, each line
-**stroked** — every point within `line_width / 2` of it, its ends shaped by
-`cap` (`"round"`, `"square"`, `"butt"`) and its corners by `join`
-(`"round"`, `"miter"`, `"bevel"`). A line that returns to its first point has
-no ends. To outline a region, stroke its `boundary()`.
+`rasterize` fills a set's regions, as one union. A line has no region to
+fill, so it is drawn by **stroking** first: `stroke(width=, cap=, join=)` is
+the region every point within `width / 2` of a path covers, its ends shaped
+by `cap` (`"round"`, `"square"`, `"butt"`) and its corners by `join`
+(`"round"`, `"miter"`, `"bevel"`). Every member is read as its outline, so
+stroking a region draws its rings (a closed path has no ends, and neither has
+a line that returns to its first point). To draw lines and fill regions in
+one picture, rasterize the two sets as separate layers and stack them.
 
 `supersample=n` anti-aliases: each pixel samples `n x n` points and is painted
-in proportion to those inside, fills and strokes alike.
+in proportion to those inside.
 
 ```python
 import polars as pl
@@ -72,8 +75,8 @@ df = pl.DataFrame({"c": [[square]]}, schema={"c": CONTOUR_SET_SCHEMA})
 filled = Pipeline().source("contour").rasterize(width=32, height=32, supersample=4)
 outlined = (
     Pipeline().source("contour")
-    .boundary()
-    .rasterize(width=32, height=32, line_width=3.0, join="miter", supersample=4)
+    .stroke(width=3.0, join="miter")
+    .rasterize(width=32, height=32, supersample=4)
 )
 masks = df.select(
     filled=pl.col("c").cv.pipe(filled).sink("numpy"),
@@ -97,6 +100,7 @@ a `.contour` accessor (see [Geometry](operations/geometry.md#shaping)):
 | `densify(max_segment_length)` | Add points so no edge is longer than the bound |
 | `simplify(tolerance)` | Drop points (Douglas-Peucker): facets |
 | `boundary()` / `close()` | A region's rings as lines, and back |
+| `stroke(width=, cap=, join=)` | The region a set's paths cover when drawn |
 
 A halo is an offset; a crescent is a difference:
 
@@ -187,7 +191,7 @@ palette = [[10, 22, 40], [79, 143, 214], [247, 251, 255]]  # background, base, m
 canvas = {"width": 48, "height": 48}
 base = pl.col("base").cv.pipe(Pipeline().source("contour").rasterize(**canvas, fill_value=1))
 mark = pl.col("mark").cv.pipe(
-    Pipeline().source("contour").rasterize(**canvas, line_width=3.0, fill_value=2)
+    Pipeline().source("contour").stroke(width=3.0).rasterize(**canvas, fill_value=2)
 )
 png = df.select(base.maximum(mark).apply_lut(palette).sink("png")).item()
 assert png[:4] == b"\x89PNG"
@@ -201,7 +205,7 @@ indices.
 ## The logo
 
 [`make_logo.py`](https://github.com/heshamdar/polars-cv/blob/main/polars-cv/docs/assets/logo/make_logo.py)
-puts it together, as one graph over three contour columns at four times the
+puts it together, as one graph over five contour columns at four times the
 final size:
 
 1. **The bear** (`bear.py`): overlapping ellipses and capsules are rasterized,
@@ -209,9 +213,9 @@ final size:
    then traced with `extract_contours` and faceted with `simplify`.
 2. **Terraces**: the bear's mask through `distance_transform(signed=True)`,
    its depth over the terrace step `floor`ed into indices 1 to 5.
-3. **Contour lines**: the bear `offset` outward three times, each offset's
-   `boundary()` stroked with `rasterize(line_width=)` at its own index.
+3. **Contour lines**: the bear `offset` outward three times, each offset
+   `stroke`d and rasterized at its own index.
 4. **The wordmark** (`wordmark.py`): glyph centrelines stroked at the font's
-   weight with butt caps; the `v` is a filled polygon in the same set.
+   weight with butt caps, and the `v`'s polygon filled, as two layers.
 5. `maximum` stacks the layers, `apply_lut` colours them, and a lanczos
    `resize` to the final size anti-aliases the lot into a PNG.

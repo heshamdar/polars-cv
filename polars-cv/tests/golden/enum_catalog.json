@@ -180,7 +180,7 @@
   },
   {
     "name": "LineCap",
-    "doc": "How ``rasterize`` ends a stroked line.\n\n- ROUND: A half disc past each end (default).\n- SQUARE: A half square past each end.\n- BUTT: Flat at the end point itself.",
+    "doc": "How ``stroke`` ends an open line.\n\n- ROUND: A half disc past each end (default).\n- SQUARE: A half square past each end.\n- BUTT: Flat at the end point itself.",
     "variants": [
       "round",
       "square",
@@ -189,7 +189,7 @@
   },
   {
     "name": "LineJoin",
-    "doc": "How ``rasterize`` strokes and ``offset`` turn a corner.\n\n- ROUND: An arc about the corner (default).\n- MITER: The edges extended to meet, cut off where the point would reach more than 4 half-widths out (SVG's default miter limit).\n- BEVEL: The corner cut straight across.",
+    "doc": "How ``stroke`` and ``offset`` turn a corner.\n\n- ROUND: An arc about the corner (default).\n- MITER: The edges extended to meet, cut off where the point would reach more than 4 half-widths out (SVG's default miter limit).\n- BEVEL: The corner cut straight across.",
     "variants": [
       "round",
       "miter",

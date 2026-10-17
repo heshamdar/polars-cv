@@ -14,8 +14,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   filling and stroking, the shaping and set operations, fields over pixels,
   and colouring an index map with one `apply_lut` palette; every example runs
   in the test suite. `docs/assets/logo/make_logo.py` is now one graph:
-  terraces from `distance_transform`, contour lines as stroked `offset`
-  boundaries, the wordmark as stroked centrelines, stacked by `maximum` and
+  terraces from `distance_transform`, contour lines as stroked `offset`s,
+  the wordmark as stroked centrelines and a filled `v`, stacked by `maximum` and
   coloured by `apply_lut`. It replaces a per-pixel DataFrame for the distance
   field and per-channel weighted sums of mask layers.
 
@@ -37,15 +37,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   sides' masks, exactly on integer shapes — and to inclusion-exclusion and
   `iou` on float shapes.
 
-- **Contour shaping and line rendering** (CR-98). Four contour ops, each a
+- **Contour shaping and line rendering** (CR-98). Five contour ops, each a
   pipeline op and a `.contour` accessor with one definition:
   `offset(distance, join="round")` grows (negative: shrinks) a set's regions,
   read as one union, so the result is always a set; `union_all()` merges them
-  into disjoint regions; `smooth(iterations=1)` is Chaikin corner cutting; and
+  into disjoint regions; `smooth(iterations=1)` is Chaikin corner cutting;
   `densify(max_segment_length)` splits each edge into equal parts no longer
-  than the bound. `rasterize` gains `line_width=1.0`, `cap="round"` and
-  `join="round"`: it now strokes a set's open lines (which it used to refuse)
-  and fills its regions, as one union, so `supersample` applies to both.
+  than the bound; and `stroke(width=1.0, cap="round", join="round")` is the
+  region a set's paths cover when drawn — an open line capped at its ends, a
+  region's rings (and a line returning to its start) as closed paths — as
+  disjoint regions. `rasterize` stays fill-only and still refuses a line,
+  now naming `stroke()`: lines are drawn as `stroke(...).rasterize(...)`.
+  (Stroking was first added as `rasterize(line_width=, cap=, join=)`, three
+  parameters a region-only set silently ignored; they never shipped.)
   New enums `LineJoin` (`round`, `miter`, `bevel`; a miter limit of 4) and
   `LineCap` (`round`, `square`, `butt`). Round arcs are polygons within 1/64
   pixel. Held to distance-band oracles (a round offset or stroke is the set of
@@ -169,7 +173,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   the scale message in the accessor.
 
 - **A line that returns to its first point is stroked as a loop.** `geo`
-  strokes every line string as an open path, so `rasterize(line_width=)`
+  strokes every line string as an open path, so `stroke()`
   capped a loop's start instead of turning it like its other corners: a
   `butt` cap left the corner missing, a `round` one rounded it. Found
   rebuilding the logo, where each bowl of the wordmark showed a nick; a loop

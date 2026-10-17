@@ -608,11 +608,8 @@ class _LazyForwardersMixin:
         fill_value: IntOrExpr = 255,
         background: IntOrExpr = 0,
         supersample: IntOrExpr = 1,
-        line_width: FloatOrExpr = 1.0,
-        cap: str | pl.Expr = "round",
-        join: str | pl.Expr = "round",
     ) -> LazyPipelineExpr:
-        """Rasterize contours to a mask: regions filled, open lines stroked.
+        """Rasterize contours to a mask: each region filled.
 
         Lazy form of :meth:`Pipeline.rasterize` on this expression's output.
         """
@@ -624,9 +621,6 @@ class _LazyForwardersMixin:
                 fill_value=fill_value,
                 background=background,
                 supersample=supersample,
-                line_width=line_width,
-                cap=cap,
-                join=join,
             )
         )
 
@@ -925,6 +919,19 @@ class _LazyForwardersMixin:
         Lazy form of :meth:`Pipeline.square` on this expression's output.
         """
         return self.pipe(self._continuation().square())
+
+    def stroke(
+        self,
+        *,
+        width: FloatOrExpr = 1.0,
+        cap: str | pl.Expr = "round",
+        join: str | pl.Expr = "round",
+    ) -> LazyPipelineExpr:
+        """The region the set's paths cover when stroked, as disjoint regions:
+
+        Lazy form of :meth:`Pipeline.stroke` on this expression's output.
+        """
+        return self.pipe(self._continuation().stroke(width=width, cap=cap, join=join))
 
     def subtract_constant(self, value: FloatOrExpr) -> LazyPipelineExpr:
         """Subtract a constant from every value (`x - value`).

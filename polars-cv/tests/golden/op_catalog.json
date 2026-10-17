@@ -869,6 +869,60 @@
     ]
   },
   {
+    "name": "contour_stroke",
+    "python": "stroke",
+    "visibility": "public",
+    "doc": "The region the set's paths cover when stroked, as disjoint regions:\nevery point within ``width / 2`` of a path, its ends shaped by *cap*\nand its corners by *join*. Every member is read as its outline: an\nopen line, capped at its ends (one returning to its first point, as\n``boundary()`` draws one, is a closed path), and a region's rings,\neach a closed path with no ends. The result is always a set, filled\nby ``rasterize()``: ``stroke(width=2).rasterize(...)`` draws lines and\noutlines. Round arcs are polygons within 1/64 pixel of the true arc.",
+    "fields": [
+      {
+        "name": "width",
+        "doc": "The stroke's full width in pixels, a finite width > 0 (literal or\nexpression).",
+        "default": 1.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "cap",
+        "doc": "How an open line ends: ``\"round\"`` (a half disc), ``\"square\"`` (a\nhalf square) or ``\"butt\"`` (flat at its end point). Accepts an\nexpression.",
+        "default": "round",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "LineCap",
+          "variants": [
+            "round",
+            "square",
+            "butt"
+          ]
+        }
+      },
+      {
+        "name": "join",
+        "doc": "How a path turns a corner: ``\"round\"``, ``\"miter\"`` (cut off past 4\nhalf-widths) or ``\"bevel\"``. Accepts an expression.",
+        "default": "round",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "LineJoin",
+          "variants": [
+            "round",
+            "miter",
+            "bevel"
+          ]
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "contour"
+      }
+    ]
+  },
+  {
     "name": "contour_translate",
     "python": "translate",
     "visibility": "public",
@@ -2030,7 +2084,7 @@
     "name": "rasterize",
     "python": "rasterize",
     "visibility": "internal",
-    "doc": "Rasterize contours to a mask: regions filled, open lines stroked.\n\nThe builder is ``Pipeline.rasterize``, whose ``width``/``height`` or\n``shape`` arguments become ``size``; it also records the shape reference's\ngraph dependency and its canvas assertion.",
+    "doc": "Rasterize contours to a mask: each region filled. An open line has no\nregion to fill and is refused; ``stroke()`` it first to draw it.\n\nThe builder is ``Pipeline.rasterize``, whose ``width``/``height`` or\n``shape`` arguments become ``size``; it also records the shape reference's\ngraph dependency and its canvas assertion.",
     "fields": [
       {
         "name": "size",
@@ -2081,46 +2135,6 @@
           "kind": "scalar",
           "per_row": true,
           "py": "int"
-        }
-      },
-      {
-        "name": "line_width",
-        "doc": "The width an open line is stroked at, a finite width > 0 (regions\nare filled whatever it is). Accepts a Polars expression.",
-        "default": 1.0,
-        "type": {
-          "kind": "scalar",
-          "per_row": true,
-          "py": "float"
-        }
-      },
-      {
-        "name": "cap",
-        "doc": "How a stroked line ends: ``\"round\"`` (a half disc), ``\"square\"``\n(a half square) or ``\"butt\"`` (flat at its end point). Accepts a\nPolars expression.",
-        "default": "round",
-        "type": {
-          "kind": "scalar",
-          "per_row": true,
-          "py": "LineCap",
-          "variants": [
-            "round",
-            "square",
-            "butt"
-          ]
-        }
-      },
-      {
-        "name": "join",
-        "doc": "How a stroked line turns a corner: ``\"round\"``, ``\"miter\"`` (cut\noff past 4 half-widths) or ``\"bevel\"``. Accepts a Polars\nexpression.",
-        "default": "round",
-        "type": {
-          "kind": "scalar",
-          "per_row": true,
-          "py": "LineJoin",
-          "variants": [
-            "round",
-            "miter",
-            "bevel"
-          ]
         }
       }
     ],

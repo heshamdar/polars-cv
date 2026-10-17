@@ -4,39 +4,7 @@
 
 use crate::core::buffer::ViewBuffer;
 
-use super::contour::{Contour, Outline, Point};
-use super::transforms::{stroke, Stroke};
-use std::borrow::Cow;
-
-/// Rasterizes a set of outlines: each region filled, each open line stroked
-/// (`style`: its width, caps and joins), all painted as one union by
-/// [`rasterize`] — so `supersample` anti-aliases strokes and fills alike.
-pub fn rasterize_outlines(
-    outlines: &[Outline],
-    width: u32,
-    height: u32,
-    fill_value: u8,
-    background: u8,
-    supersample: u32,
-    style: &Stroke,
-) -> Result<ViewBuffer, String> {
-    Stroke::check_width(style.width)?;
-    let mut painted: Vec<Cow<'_, Contour>> = Vec::with_capacity(outlines.len());
-    for outline in outlines {
-        match outline {
-            Outline::Closed(region) => painted.push(Cow::Borrowed(region)),
-            Outline::Open(line) => painted.extend(stroke(line, style)?.into_iter().map(Cow::Owned)),
-        }
-    }
-    Ok(rasterize(
-        &painted,
-        width,
-        height,
-        fill_value,
-        background,
-        supersample,
-    ))
-}
+use super::contour::{Contour, Point};
 
 /// Rasterizes a set of contours to a mask.
 ///

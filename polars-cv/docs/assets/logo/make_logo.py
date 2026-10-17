@@ -7,16 +7,16 @@ the bear, and the cartographic kind shades it.
 The image is an index map coloured by one palette: each layer paints its
 palette index, the layers combine by ``maximum`` (a higher index is drawn
 over a lower one), and ``apply_lut`` turns indices into colours. All of it is
-one polars-cv graph over three contour columns:
+one polars-cv graph over five contour columns:
 
 1. ``bear.py`` sculpts the bear: primitives -> rasterize -> blur -> threshold
    (metaball fusion) -> extract_contours -> simplify (the facets).
 2. Terraces: rasterize the bear, ``distance_transform(signed=True)``, and
    ``floor`` its depth over the terrace step into indices 1 to 5.
-3. Contour lines: ``offset`` the bear outward, take each offset's
-   ``boundary()`` and stroke it with ``rasterize(line_width=)``.
-4. The wordmark: glyph centrelines stroked at the font's weight
-   (``wordmark.py``).
+3. Contour lines: ``offset`` the bear outward and ``stroke`` each offset's
+   outline.
+4. The wordmark: glyph centrelines stroked at the font's weight, and the
+   ``v``'s polygon filled (``wordmark.py``).
 5. ``apply_lut`` the palette, then a lanczos downsample from the working
    resolution anti-aliases every edge -> PNG.
 
@@ -97,12 +97,14 @@ def bear_contour() -> dict:
     }
 
 
-def render(outline: dict, main: list[dict], accent: list[dict]) -> bytes:
+def render(outline: dict, text: dict[str, tuple[list[dict], list[dict]]]) -> bytes:
+    """``text`` maps each palette index's name to its (lines, regions)."""
     w, h = WIDTH * WORK, HEIGHT * WORK
-    df = pl.DataFrame(
-        {"bear": [[outline]], "main": [main], "accent": [accent]},
-        schema={n: CONTOUR_SET_SCHEMA for n in ("bear", "main", "accent")},
-    )
+    columns = {"bear": [[outline]]}
+    for name, (lines, regions) in text.items():
+        columns[f"{name}_lines"] = [lines]
+        columns[f"{name}_regions"] = [regions]
+    df = pl.DataFrame(columns, schema={n: CONTOUR_SET_SCHEMA for n in columns})
     contours = Pipeline().source("contour")
 
     # Terrace index: 1 at the edge, one more every TERRACE_STEP inward, 0
@@ -119,20 +121,17 @@ def render(outline: dict, main: list[dict], accent: list[dict]) -> bytes:
     for j in range(len(RING_ALPHA)):
         ring = pl.col("bear").cv.pipe(
             contours.offset((j + 1) * RING_STEP * WORK)
-            .boundary()
-            .rasterize(
-                width=w,
-                height=h,
-                line_width=RING_WIDTH * WORK,
-                fill_value=FIRST_RING + j,
-            )
+            .stroke(width=RING_WIDTH * WORK)
+            .rasterize(width=w, height=h, fill_value=FIRST_RING + j)
         )
         image = image.maximum(ring)
-    for column, index in (("main", MAIN), ("accent", ACCENT)):
-        text = contours.rasterize(
-            width=w, height=h, line_width=STROKE * WORK, cap="butt", fill_value=index
+    for name, index in (("main", MAIN), ("accent", ACCENT)):
+        stroked = contours.stroke(width=STROKE * WORK, cap="butt").rasterize(
+            width=w, height=h, fill_value=index
         )
-        image = image.maximum(pl.col(column).cv.pipe(text))
+        filled = contours.rasterize(width=w, height=h, fill_value=index)
+        image = image.maximum(pl.col(f"{name}_lines").cv.pipe(stroked))
+        image = image.maximum(pl.col(f"{name}_regions").cv.pipe(filled))
 
     rgb = image.apply_lut(PALETTE).resize(height=HEIGHT, width=WIDTH)
     return df.select(rgb.sink("png")).item()
@@ -146,9 +145,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    main_text, pen = wordmark("polars", x=TEXT_X, baseline=BASELINE, scale=WORK)
-    accent_text, _ = wordmark("-cv", x=pen + SPACING, baseline=BASELINE, scale=WORK)
-    args.out.write_bytes(render(bear_contour(), main_text, accent_text))
+    *main, pen = wordmark("polars", x=TEXT_X, baseline=BASELINE, scale=WORK)
+    *accent, _ = wordmark("-cv", x=pen + SPACING, baseline=BASELINE, scale=WORK)
+    text = {"main": tuple(main), "accent": tuple(accent)}
+    args.out.write_bytes(render(bear_contour(), text))
     print(f"wrote {args.out}")
     if args.stages:
         for name, png in bear.stages().items():

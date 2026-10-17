@@ -40,10 +40,7 @@ def _image() -> Pipeline:
         (lambda v: _contour().simplify(v), r"simplify\(tolerance=\)"),
         (lambda v: _contour().offset(v), r"offset\(distance=\)"),
         (lambda v: _image().scale(v), r"scale\(factor=\)"),
-        (
-            lambda v: _contour().rasterize(width=4, height=4, line_width=v),
-            r"rasterize\(line_width=\)",
-        ),
+        (lambda v: _contour().stroke(width=v), r"stroke\(width=\)"),
         # An element of a list field names its position.
         (
             lambda v: _image().grayscale().apply_lut([[0.0], [v]], dtype="f32"),

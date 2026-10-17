@@ -511,6 +511,28 @@
     "1"
    ]
   ],
+  "stroke": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "width",
+    "KEYWORD_ONLY",
+    "1.0"
+   ],
+   [
+    "cap",
+    "KEYWORD_ONLY",
+    "'round'"
+   ],
+   [
+    "join",
+    "KEYWORD_ONLY",
+    "'round'"
+   ]
+  ],
   "symmetric_difference": [
    [
     "self",
@@ -1663,21 +1685,6 @@
     "supersample",
     "KEYWORD_ONLY",
     "1"
-   ],
-   [
-    "line_width",
-    "KEYWORD_ONLY",
-    "1.0"
-   ],
-   [
-    "cap",
-    "KEYWORD_ONLY",
-    "'round'"
-   ],
-   [
-    "join",
-    "KEYWORD_ONLY",
-    "'round'"
    ]
   ],
   "reciprocal": [
@@ -2171,6 +2178,28 @@
     "include",
     "POSITIONAL_OR_KEYWORD",
     "None"
+   ]
+  ],
+  "stroke": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "width",
+    "KEYWORD_ONLY",
+    "1.0"
+   ],
+   [
+    "cap",
+    "KEYWORD_ONLY",
+    "'round'"
+   ],
+   [
+    "join",
+    "KEYWORD_ONLY",
+    "'round'"
    ]
   ],
   "subtract": [
@@ -3223,21 +3252,6 @@
     "supersample",
     "KEYWORD_ONLY",
     "1"
-   ],
-   [
-    "line_width",
-    "KEYWORD_ONLY",
-    "1.0"
-   ],
-   [
-    "cap",
-    "KEYWORD_ONLY",
-    "'round'"
-   ],
-   [
-    "join",
-    "KEYWORD_ONLY",
-    "'round'"
    ]
   ],
   "reciprocal": [
@@ -3722,6 +3736,28 @@
     "self",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ]
+  ],
+  "stroke": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "width",
+    "KEYWORD_ONLY",
+    "1.0"
+   ],
+   [
+    "cap",
+    "KEYWORD_ONLY",
+    "'round'"
+   ],
+   [
+    "join",
+    "KEYWORD_ONLY",
+    "'round'"
    ]
   ],
   "subtract_constant": [

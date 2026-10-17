@@ -1,7 +1,7 @@
 """The "polars-cv" wordmark as contours: a small geometric font of strokes.
 
-Every glyph is a few centrelines, which ``rasterize(line_width=STROKE,
-cap="butt")`` strokes into letters:
+Every glyph is a few centrelines, which ``stroke(width=STROKE, cap="butt")``
+turns into letters:
 
 * stems and bars are two-point lines (a butt cap ends them flat);
 * bowls (``o``, ``p``, ``a``) are circles, drawn as lines that return to their
@@ -10,8 +10,8 @@ cap="butt")`` strokes into letters:
   them square to the stroke.
 
 ``v`` is the exception: a filled polygon, whose flat top and bottom no stroke
-gives. ``rasterize`` fills a set's regions and strokes its lines in one union,
-so a glyph may mix both.
+gives. A glyph may mix both, so the layout returns its lines (to stroke) and
+its regions (to fill) apart: ``stroke`` would outline a region, not fill it.
 
 Units are pixels at 1x with ``y`` growing downward; glyphs sit on ``baseline``.
 """
@@ -139,18 +139,20 @@ def _contour(path: Path, scale: float) -> dict:
 
 def wordmark(
     text: str, *, x: float, baseline: float, scale: float = 1.0
-) -> tuple[list[dict], float]:
+) -> tuple[list[dict], list[dict], float]:
     """Lay out ``text`` from pen position ``x``.
 
-    Returns the contour set (in ``CONTOUR_SCHEMA`` form, coordinates multiplied
-    by ``scale``: lines to stroke at ``STROKE * scale``, and regions) and the
-    pen position after the last glyph's advance.
+    Returns two contour sets (in ``CONTOUR_SCHEMA`` form, coordinates
+    multiplied by ``scale``) — the lines, to stroke at ``STROKE * scale``, and
+    the regions, to fill — and the pen position after the last glyph's
+    advance.
     """
-    contours = []
+    lines, regions = [], []
     for i, ch in enumerate(text):
         if i:
             x += SPACING
         paths, adv = GLYPHS[ch](x, baseline)
-        contours.extend(_contour(p, scale) for p in paths)
+        for path in paths:
+            (regions if path[1] else lines).append(_contour(path, scale))
         x += adv
-    return contours, x
+    return lines, regions, x
