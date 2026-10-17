@@ -855,3 +855,23 @@ fn a_lookup_table_on_a_view_allocates_only_its_output() {
         assert_eq!(count, 1, "{layout}: {count} view-sized allocations");
     }
 }
+
+/// A lookup table costs its own entries, not one per possible input value: a
+/// 3-entry table on a 4x4 u16 image allocates nothing near the u16 domain
+/// (65 536 entries), per row. It used to pad the table to the domain on every
+/// call (512 KiB of f64 for `dtype="f64"`).
+#[test]
+fn a_short_table_on_u16_allocates_no_domain_sized_table() {
+    use view_buffer::ops::LutOp;
+    let image = ViewBuffer::from_vec_with_shape([0u16, 1, 2, 1].repeat(4), vec![4, 4]);
+    for dtype in [DType::U8, DType::F64] {
+        let three = LutOp {
+            table: vec![vec![10.0], vec![20.0], vec![30.0]],
+            dtype,
+        };
+        // Anything of 4 KiB or more: the image and output are 32 to 128 bytes.
+        let (out, count) = large_allocations(4096, || three.execute(&image).unwrap());
+        assert_eq!(out.shape(), &[4, 4]);
+        assert_eq!(count, 0, "{dtype:?}: {count} table-sized allocations");
+    }
+}
