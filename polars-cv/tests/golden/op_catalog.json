@@ -965,6 +965,30 @@
     ]
   },
   {
+    "name": "coordinate_grid",
+    "python": "coordinate_grid",
+    "visibility": "public",
+    "doc": "The pixel coordinates of the image: an f32 ``[H, W, 2]`` buffer holding\neach pixel's centre ``(x + 0.5, y + 0.5)`` — the point ``rasterize``\nsamples — or ``((x + 0.5) / W, (y + 0.5) / H)`` when *normalized*.\n\nReads only the input's height and width, never its values, so it takes\nany dtype and channel count. The coordinates are in the frame of the\nbuffer it follows: after a crop they start at the crop's corner. Combine\nthem with ordinary ops for fields over positions (gradients, radial\nfalloffs, vignettes).\n\nExample:\n    >>> dx2 = Pipeline().source(\"image_bytes\").coordinate_grid().add_constant(-32.0).square()",
+    "fields": [
+      {
+        "name": "normalized",
+        "doc": "Divide x by the width and y by the height, so each lies in (0, 1).\nAccepts a Polars expression for a per-row choice.",
+        "default": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "bool"
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
+  },
+  {
     "name": "crop",
     "python": "crop",
     "visibility": "public",

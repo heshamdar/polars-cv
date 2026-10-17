@@ -396,6 +396,12 @@ CASES: list[ExprCase] = [
     ),
     # --- morphology (single-channel kernels) -------------------------------
     ExprCase(
+        "coordinate_grid",
+        "normalized",
+        lambda v: rgb().coordinate_grid(normalized=v),
+        (False, True),
+    ),
+    ExprCase(
         "distance_transform",
         "signed",
         lambda v: mask().distance_transform(signed=v),

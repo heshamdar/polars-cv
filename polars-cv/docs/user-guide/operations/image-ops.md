@@ -410,6 +410,27 @@ has no pixel at all, the distance to it is infinite (`±inf`).
 Thresholding a distance gives offsets of any radius: `distance_transform()
 .threshold(r)` keeps the pixels more than `r` from the background.
 
+## Coordinate Grid
+
+`coordinate_grid(normalized=False)` gives the image's pixel coordinates: an
+f32 `[H, W, 2]` buffer holding each pixel's centre `(x + 0.5, y + 0.5)` — the
+point `rasterize` samples — or `((x + 0.5) / W, (y + 0.5) / H)` when
+`normalized`. It reads only the height and width, never the values, so it
+takes any dtype and channel count. Coordinates are in the frame of the buffer
+it follows: after a crop they start at the crop's corner.
+
+With ordinary ops it builds fields over positions:
+
+```python
+# Squared distance from (32, 32), per axis
+dx2_dy2 = (
+    Pipeline().source("image_bytes")
+    .coordinate_grid()
+    .add_constant(-32.0)
+    .square()
+)
+```
+
 ## Lookup Tables
 
 `apply_lut(table, dtype=)` reads each u8 or u16 value as a row index into
