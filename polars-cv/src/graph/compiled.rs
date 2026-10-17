@@ -636,13 +636,13 @@ impl CompiledGraph {
     ///
     /// - `Reduction` qualifies: rank and domain fold from its single input, so
     ///   `extract_shape().reduce_sum()` plans and executes the same scalar.
-    /// - `Binary` does **not**. The planner publishes the *left* operand's rank
-    ///   while execution broadcasts against the other operand, so coercing a
-    ///   left-hand vector against a rank-3 image would execute at rank 3 after
-    ///   the plan promised rank 1 — `sink("list")` silently flattening twelve
-    ///   values into a three-element plan, and `sink("array", shape=[3])`
-    ///   failing at execution. Refusing keeps the failure loud; there is no
-    ///   coherent broadcast to publish at plan time.
+    /// - `Binary` does **not**. Its output shape is both operands' one shape,
+    ///   so it does not derive from this operand alone. (Coercing once let a
+    ///   vector broadcast against a rank-3 image, executing at rank 3 after
+    ///   the plan promised rank 1. Binary ops now broadcast nothing and the
+    ///   planner refuses that pair where it is written; this keeps the
+    ///   runtime representation from being read as what the plan did not
+    ///   check.)
     ///
     /// Exhaustive, so a new variant has to answer this question rather than
     /// inherit an answer.

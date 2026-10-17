@@ -48,6 +48,7 @@ from ._op_cases import (
     SINGLE_CHANNEL_OPS,
     base_pipeline,
     buffer_ops,
+    case_prefix,
 )
 from .conftest import make_image_png, plugin_required
 
@@ -199,7 +200,7 @@ def test_single_channel_ops_are_exactly_the_ops_that_refuse_three_channels() -> 
             # Built on the three-channel base itself, not `build_case`, which
             # puts a grayscale() in front of the ops this probe is looking for.
             domain, kwargs = OP_CASES[op]
-            pipe = getattr(base_pipeline(domain), op)(**kwargs)
+            pipe = getattr(case_prefix(op, base_pipeline(domain)), op)(**kwargs)
             run(df, "img", pipe, sink=_probe_sink(pipe))
         except Exception as e:  # noqa: BLE001 - the message is what is under test
             if _SINGLE_CHANNEL_REFUSAL in str(e):

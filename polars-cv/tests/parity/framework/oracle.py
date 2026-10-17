@@ -377,6 +377,17 @@ def _reshape_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     return {"shape": draw(st.sampled_from(options), label="shape")}
 
 
+def _squeeze_params(draw: st.DrawFn, x: np.ndarray) -> Params:
+    ones = [axis for axis, n in enumerate(x.shape) if n == 1]
+    axis = draw(st.sampled_from(ones), label="axis")
+    # The same axis spelled from the front or from the end.
+    return {"axis": draw(st.sampled_from([axis, axis - x.ndim]), label="sign")}
+
+
+def _expand_dims_params(draw: st.DrawFn, x: np.ndarray) -> Params:
+    return {"axis": draw(st.integers(-(x.ndim + 1), x.ndim), label="axis")}
+
+
 def _rot90_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     return {"angle": draw(st.sampled_from([90.0, 180.0, 270.0, -90.0]), label="angle")}
 
@@ -1647,6 +1658,20 @@ OPS: dict[str, OpSpec] = {
             **_movement,
         ),
         _spec(
+            "squeeze",
+            _squeeze_params,
+            uniform_rows=True,
+            accepts=lambda x: 1 in x.shape,
+            ref=lambda x, p: np.squeeze(x, axis=p["axis"]).copy(),
+            **_movement,
+        ),
+        _spec(
+            "expand_dims",
+            _expand_dims_params,
+            ref=lambda x, p: np.expand_dims(x, axis=p["axis"]).copy(),
+            **_movement,
+        ),
+        _spec(
             "assert_shape",
             _assert_shape_params,
             uniform_rows=True,
@@ -2429,7 +2454,7 @@ def _blend_ref(a: np.ndarray, b: np.ndarray) -> np.ndarray:
         return min(max(q if x * y >= 0 else -q, int(info.min)), peak)
 
     flat = [one(x, y) for x, y in zip(a.ravel().tolist(), b.ravel().tolist())]
-    return np.array(flat, dtype=a.dtype).reshape(np.broadcast_shapes(a.shape, b.shape))
+    return np.array(flat, dtype=a.dtype).reshape(a.shape)
 
 
 def _float_or_lsb(x: np.ndarray) -> Tol:

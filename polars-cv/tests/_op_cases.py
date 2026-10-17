@@ -78,6 +78,8 @@ OP_CASES: dict[str, tuple[str, dict] | None] = {
     "pad_to_size": (BUFFER, {"height": 150, "width": 250}),
     "relu": (BUFFER, {}),
     "reshape": (BUFFER, {"shape": [100, 200, 3]}),
+    "squeeze": (BUFFER, {"axis": 0}),
+    "expand_dims": (BUFFER, {"axis": 0}),
     "resize": (BUFFER, {"height": 64, "width": 32}),
     "resize_max": (BUFFER, {"max_size": 120}),
     "resize_min": (BUFFER, {"min_size": 40}),
@@ -158,6 +160,8 @@ EXTRA_CASES: list[tuple[str, str, dict]] = [
     # Non-square and rank-changing reshapes.
     ("reshape", BUFFER, {"shape": [200, 100, 3]}),
     ("reshape", BUFFER, {"shape": [60000]}),
+    # A new axis after the last, counted from the end.
+    ("expand_dims", BUFFER, {"axis": -1}),
     # crop with only an offset, and histogram's struct-encoded output.
     ("crop", BUFFER, {"top": 10, "left": 20}),
     ("histogram", BUFFER, {"bins": 8, "output": "buckets"}),
@@ -281,8 +285,21 @@ def build_case(op: str) -> "Pipeline":
     return getattr(case_base(op, domain), op)(**kwargs)
 
 
+#: Ops whose case needs an axis of size 1 to act on. Their case follows an
+#: ``expand_dims(0)``, which gives any base one without touching its channels
+#: (so it is no answer to whether the op refuses three of them).
+SIZE_ONE_AXIS_OPS: frozenset[str] = frozenset({"squeeze"})
+
+
+def case_prefix(op: str, base: "Pipeline") -> "Pipeline":
+    """*base* behind what *op*'s case needs that is not a channel count: an
+    ``expand_dims(0)`` for the :data:`SIZE_ONE_AXIS_OPS`."""
+    return base.expand_dims(0) if op in SIZE_ONE_AXIS_OPS else base
+
+
 def case_base(op: str, domain: str) -> "Pipeline":
-    """The pipeline *op*'s case is appended to: :func:`base_pipeline`, behind a
-    ``grayscale()`` for the :data:`SINGLE_CHANNEL_OPS`."""
-    base = base_pipeline(domain)
+    """The pipeline *op*'s case is appended to: :func:`base_pipeline` behind its
+    :func:`case_prefix`, and a ``grayscale()`` for the
+    :data:`SINGLE_CHANNEL_OPS`."""
+    base = case_prefix(op, base_pipeline(domain))
     return base.grayscale() if op in SINGLE_CHANNEL_OPS else base

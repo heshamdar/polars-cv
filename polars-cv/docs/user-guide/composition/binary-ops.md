@@ -24,6 +24,21 @@ result = expr_a.apply_mask(expr_b)
 | `maximum` / `minimum` | Element-wise extremes | Exact | IEEE comparison |
 | `bitwise_and` / `or` / `xor` | Bitwise | Exact | Integer-only |
 
+Both operands must have **the same shape**, and that is the output's shape.
+Unlike NumPy nothing broadcasts: `[H, W, 1]` against `[H, W]`, or
+`[H, W, 1]` against `[H, W, 3]`, is refused where it is written when the
+sizes are known, and fails only its own row when they are known per row.
+Change a rank explicitly with `squeeze(axis)` (removes an axis of size 1) or
+`expand_dims(axis)` (inserts one); both are zero-copy views and take a
+negative axis counted from the end. To spread a single-channel mask over an
+image's channels, use `apply_mask`, which does that by contract.
+
+```python
+gray = pl.col("image").cv.pipe(Pipeline().source("image_bytes").grayscale())
+# gray is [H, W, 1]; its channel_select(0) is [H, W]. Say which one you mean:
+doubled = gray.add(gray.channel_select(0).expand_dims(-1))
+```
+
 Operands of different dtypes meet in **NumPy's promoted dtype**
 (`np.result_type`): the smallest dtype that holds every value of both, so
 `u8` with `i8` is `i16` and `u32` with `f32` is `f64`; `u64` with a signed

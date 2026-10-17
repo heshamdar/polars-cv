@@ -423,30 +423,20 @@ def test_a_runtime_vector_reduces_to_the_right_value() -> None:
 @plugin_required
 @pytest.mark.parametrize("sink", ["list", "native"])
 def test_a_runtime_vector_is_refused_by_a_binary_op(sink: str) -> None:
-    """A binary op must refuse a runtime vector rather than broadcast it.
+    """A binary op must refuse a runtime vector against an image.
 
     `Binary` declares it accepts `vector`, and it must — `perceptual_hash`
-    plans as `vector`. But phash *executes* as a Buffer, so the only operands
-    that arrive as a runtime `Vector` are `extract_shape` / `label_reduce`, and
-    for those the coercion is unsound: the planner publishes the **left**
-    operand's rank while execution would broadcast against the other operand.
-    Coercing anyway made `extract_shape().add(image)` plan rank 1 and execute
-    rank 3 — `sink("list")` silently flattening twelve values into a
-    three-element plan, `sink("array", shape=[3])` dying at execution.
-
-    Refusing keeps the failure loud. There is no rank to publish at plan time,
-    so there is nothing better to do here.
+    plans as `vector`. Coercing an `extract_shape` vector made
+    `extract_shape().add(image)` plan rank 1 and execute rank 3 by
+    broadcasting — `sink("list")` silently flattening twelve values into a
+    three-element plan. Binary ops no longer broadcast, so the planner sees
+    a `[3]` operand against a `[H, W, 3]` one and refuses the pair where it is
+    written, before any sink.
     """
-    df = _df()
     left = pl.col("img").cv.pipe(_base().extract_shape())
     right = pl.col("img").cv.pipe(_base())
-
-    lf = df.lazy().with_columns(out=left.add(right).sink(sink))
-    with pytest.raises(pl.exceptions.ComputeError) as excinfo:
-        lf.collect()
-    assert "vector" in str(excinfo.value).lower(), (
-        f"the refusal should say why a vector cannot be read here; got {excinfo.value}"
-    )
+    with pytest.raises(ValueError, match=r"same shape"):
+        left.add(right).sink(sink)
 
 
 @plugin_required

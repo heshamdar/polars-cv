@@ -35,8 +35,10 @@ use serde::{Deserialize, Serialize};
 
 /// Binary operations between two arrays.
 ///
-/// All operations are element-wise and support broadcasting.
-/// The output shape is the broadcast result of both input shapes.
+/// All operations are element-wise over two operands of one shape, which
+/// is the output's. Nothing broadcasts: an operand of another shape is
+/// refused (`validate`), and a rank is changed explicitly (`squeeze`,
+/// `expand_dims`).
 ///
 /// Operations have type-dependent semantics:
 /// - For `u8`/`u16`: Image-processing semantics (saturating, normalized)
@@ -109,14 +111,18 @@ crate::naming::named_variants!(BinaryOp {
 impl BinaryOp {
     /// Execute the binary operation on two buffers.
     ///
-    /// Both buffers must have broadcastable shapes. The operands combine in
+    /// Both buffers have one shape (`validate`). The operands combine in
     /// their common dtype ([`DType::promote`], NumPy's promotion), with the
     /// per-dtype semantics of [`BinaryElem`]; true division computes in that
     /// dtype's [`DType::accumulator`]. Either way the result is
     /// [`output_dtype`](Self::output_dtype), the dtype planning reads.
     pub fn execute(&self, a: &ViewBuffer, b: &ViewBuffer) -> ViewBuffer {
-        let output_shape =
-            broadcast_shapes(a.shape(), b.shape()).expect("Shapes must be broadcastable");
+        assert_eq!(
+            a.shape(),
+            b.shape(),
+            "a binary op's operands have one shape (`validate`)"
+        );
+        let output_shape = a.shape();
         let out_dtype = self.output_dtype(a.dtype(), b.dtype());
         let common = a.dtype().promote(b.dtype());
         // Each operand is read in its own dtype and converted exactly to the
@@ -124,10 +130,10 @@ impl BinaryOp {
         // division its float (`out_dtype`, the promotion's accumulator).
         match self {
             BinaryOp::Divide => match out_dtype {
-                DType::F64 => divide::<f64>(a, b, &output_shape),
-                _ => divide::<f32>(a, b, &output_shape),
+                DType::F64 => divide::<f64>(a, b, output_shape),
+                _ => divide::<f32>(a, b, output_shape),
             },
-            _ => with_dtype!(common, T => self.execute_typed::<T>(a, b, &output_shape)),
+            _ => with_dtype!(common, T => self.execute_typed::<T>(a, b, output_shape)),
         }
     }
 
@@ -217,56 +223,37 @@ impl<T> FromAny for T where
 /// Elements per block of [`zip_with`]'s operand reads.
 const BLOCK: usize = 1024;
 
-/// `f(a, b)` element-wise in the dtype `T`, broadcast to `output_shape`.
+/// `f(a, b)` element-wise in the dtype `T`, over two operands of
+/// `output_shape`.
 ///
-/// Two contiguous operands of dtype `T` and of the output's shape are zipped
-/// slice against slice. Otherwise each operand, broadcast to the output's
-/// shape (`broadcast_to`: a stride of 0 along a repeated axis), is read a
-/// block at a time through its [`Walk`]'s cursor: a block inside one packed
-/// unit (a contiguous operand, a row of a crop or a vertical flip) where it
-/// lies, any other (a transpose, a horizontal flip, a broadcast) packed into
-/// a stack scratch by the walk's unit copies, then converted to `T` (which
-/// holds every value of both: [`DType::promote`]) unless already in it. No
-/// operand is copied whole.
-///
-/// An operand broadcast along its trailing axes (a `[h, w, 1]` mask over
-/// `[h, w, 3]`) is read without them, each element once and repeated in the
-/// block: its walk would otherwise be rows of a few repeats each, paying a
-/// row's bookkeeping every few elements (measured 1.3-1.6x slower). Blocks
-/// are then a whole number of both operands' repeats.
+/// Two contiguous operands of dtype `T` are zipped slice against slice.
+/// Otherwise each operand is read a block at a time through its [`Walk`]'s
+/// cursor: a block inside one packed unit (a contiguous operand, a row of a
+/// crop or a vertical flip) where it lies, any other (a transpose, a
+/// horizontal flip) packed into a stack scratch by the walk's unit copies,
+/// then converted to `T` (which holds every value of both:
+/// [`DType::promote`]) unless already in it. No operand is copied whole.
 fn zip_with<T: FromAny, Fun: Fn(T, T) -> T>(
     a: &ViewBuffer,
     b: &ViewBuffer,
     output_shape: &[usize],
     f: Fun,
 ) -> ViewBuffer {
-    let direct = |x: &ViewBuffer| {
-        x.dtype() == T::DTYPE && x.shape() == output_shape && x.layout.is_contiguous()
-    };
+    let direct = |x: &ViewBuffer| x.dtype() == T::DTYPE && x.layout.is_contiguous();
     let out: Vec<T> = if direct(a) && direct(b) {
         let (sa, sb) = (a.as_slice::<T>(), b.as_slice::<T>());
         sa.iter().zip(sb).map(|(&x, &y)| f(x, y)).collect()
     } else {
         let total: usize = output_shape.iter().product();
         let mut out = Vec::with_capacity(total);
-        let (mut va, mut ra) = repeated(a, output_shape);
-        let (mut vb, mut rb) = repeated(b, output_shape);
-        let mut block = BLOCK / lcm(ra, rb) * lcm(ra, rb);
-        if block == 0 {
-            // Repeats too long to share a block: read both fully broadcast.
-            (va, ra) = (a.broadcast_to(output_shape), 1);
-            (vb, rb) = (b.broadcast_to(output_shape), 1);
-            block = BLOCK;
-        }
-        let (wa, wb) = (Walk::of(&va), Walk::of(&vb));
+        let (wa, wb) = (Walk::of(a), Walk::of(b));
         let (mut ca, mut cb) = (wa.cursor(), wb.cursor());
         let (mut ba, mut bb) = (Block::<T>::new(), Block::<T>::new());
         let mut start = 0;
         while start < total {
-            // A whole number of repeats: `total` is one of each operand's.
-            let n = block.min(total - start);
-            let xa = ba.read(&mut ca, a.dtype(), n, ra);
-            let xb = bb.read(&mut cb, b.dtype(), n, rb);
+            let n = BLOCK.min(total - start);
+            let xa = ba.read(&mut ca, a.dtype(), n);
+            let xb = bb.read(&mut cb, b.dtype(), n);
             out.extend(xa.iter().zip(xb).map(|(&x, &y)| f(x, y)));
             start += n;
         }
@@ -290,60 +277,21 @@ impl<T: FromAny> Block<T> {
         }
     }
 
-    /// The operand's next `n` elements (of `dtype`, each repeated `repeat`
-    /// times, `n` a whole number of repeats) in `T`: as the cursor gives them
-    /// when already in `T` and not repeated, else converted and repeated.
-    fn read<'s>(
-        &'s mut self,
-        cursor: &'s mut Cursor<'_>,
-        dtype: DType,
-        n: usize,
-        repeat: usize,
-    ) -> &'s [T] {
-        if dtype == T::DTYPE && repeat == 1 {
+    /// The operand's next `n` elements (of `dtype`) in `T`: as the cursor
+    /// gives them when already in `T`, else converted.
+    fn read<'s>(&'s mut self, cursor: &'s mut Cursor<'_>, dtype: DType, n: usize) -> &'s [T] {
+        if dtype == T::DTYPE {
             cursor.next::<T>(n, &mut self.scratch)
         } else {
             with_dtype!(dtype, S => {
-                let src = cursor.next::<S>(n / repeat, &mut self.scratch);
-                if repeat == 1 {
-                    for (d, &x) in self.converted[..n].iter_mut().zip(src) {
-                        *d = T::cast_from(x);
-                    }
-                } else {
-                    for (d, &x) in self.converted[..n].chunks_exact_mut(repeat).zip(src) {
-                        d.fill(T::cast_from(x));
-                    }
+                let src = cursor.next::<S>(n, &mut self.scratch);
+                for (d, &x) in self.converted[..n].iter_mut().zip(src) {
+                    *d = T::cast_from(x);
                 }
             });
             &self.converted[..n]
         }
     }
-}
-
-/// `x` broadcast to `out` as [`zip_with`] reads it: without the trailing
-/// axes it is broadcast along (size 1 against more), and how many times each
-/// of its elements then repeats. `(x broadcast to out, 1)` when there are
-/// none, or when a repeat would not fit a block.
-fn repeated(x: &ViewBuffer, out: &[usize]) -> (ViewBuffer, usize) {
-    let lead = out.len() - x.shape().len();
-    let mut k = out.len();
-    while k > lead && x.shape()[k - 1 - lead] == 1 {
-        k -= 1;
-    }
-    let repeat: usize = out[k..].iter().product();
-    if repeat <= 1 || repeat > BLOCK {
-        return (x.broadcast_to(out), 1);
-    }
-    (x.leading_axes(k - lead).broadcast_to(&out[..k]), repeat)
-}
-
-/// The least common multiple of two positive counts.
-fn lcm(a: usize, b: usize) -> usize {
-    let (mut x, mut y) = (a, b);
-    while y != 0 {
-        (x, y) = (y, x % y);
-    }
-    a / x * b
 }
 
 /// The per-dtype semantics of the two-buffer ops, the one definition for
@@ -462,7 +410,7 @@ impl Op for BinaryOp {
     }
 
     fn shape(&self) -> OpShape {
-        OpShape::Broadcast
+        OpShape::Elementwise
     }
 
     fn memory_effect(&self) -> MemoryEffect {
@@ -537,11 +485,13 @@ impl Op for BinaryOp {
                 });
             }
         }
-        // Refused only where two known sizes cannot broadcast.
-        if broadcast_dims(a, b).is_none() {
+        // Refused where the ranks differ or two known sizes do; an unknown
+        // size is checked per row.
+        if elementwise_dims(a, b).is_none() {
             return Err(ValidationError::Generic {
                 message: format!(
-                    "shapes {} and {} cannot be broadcast together",
+                    "operands must have the same shape, got {} and {} (nothing \
+                     broadcasts: change a rank with squeeze() or expand_dims())",
                     show_dims(a),
                     show_dims(b)
                 ),
@@ -572,162 +522,94 @@ impl Op for BinaryOp {
     }
 }
 
-/// Two shapes broadcast together over what is known of them, aligned from the
-/// last axis; `None` when two known sizes cannot broadcast (neither is 1 and
-/// they differ).
+/// The one shape two operands share, over what is known of them; `None`
+/// when their ranks differ or two known sizes on an axis do.
 ///
-/// Each axis on its own: two known sizes give theirs; a known 1 gives the
-/// other side; a known size `n > 1` against an unknown one gives `n` (the
-/// unknown one must be 1 or `n` for the row to run at all); two unknown sizes
-/// stay unknown — each operand numbers its own `Input(k)`, so equal symbols
-/// on the two sides are not the same size.
-pub fn broadcast_dims(a: &[Dim], b: &[Dim]) -> Option<Vec<Dim>> {
-    let rank = a.len().max(b.len());
-    let at = |s: &[Dim], i: usize| {
-        (i + s.len())
-            .checked_sub(rank)
-            .map_or(Dim::Known(1), |j| s[j])
-    };
-    (0..rank)
-        .map(|i| match (at(a, i), at(b, i)) {
-            (Dim::Known(1), d) | (d, Dim::Known(1)) => Some(d),
-            (Dim::Known(x), Dim::Known(y)) => (x == y).then_some(Dim::Known(x)),
-            (Dim::Known(n), _) | (_, Dim::Known(n)) => Some(Dim::Known(n)),
+/// Each axis: a known size on either side gives it (an unknown one must be
+/// that size for the row to run); two unknown sizes stay unknown — each
+/// operand numbers its own `Input(k)`, so equal symbols on the two sides are
+/// not the same size.
+pub fn elementwise_dims(a: &[Dim], b: &[Dim]) -> Option<Vec<Dim>> {
+    if a.len() != b.len() {
+        return None;
+    }
+    a.iter()
+        .zip(b)
+        .map(|pair| match pair {
+            (Dim::Known(x), Dim::Known(y)) => (x == y).then_some(Dim::Known(*x)),
+            (Dim::Known(n), _) | (_, Dim::Known(n)) => Some(Dim::Known(*n)),
             _ => Some(Dim::Unknown),
         })
         .collect()
-}
-
-/// Compute the broadcast shape of two shapes.
-///
-/// Returns None if shapes are not broadcastable.
-pub fn broadcast_shapes(a: &[usize], b: &[usize]) -> Option<Vec<usize>> {
-    let max_ndim = a.len().max(b.len());
-    let mut result = Vec::with_capacity(max_ndim);
-
-    for i in 0..max_ndim {
-        let a_dim = if i < a.len() { a[a.len() - 1 - i] } else { 1 };
-        let b_dim = if i < b.len() { b[b.len() - 1 - i] } else { 1 };
-
-        if a_dim == b_dim {
-            result.push(a_dim);
-        } else if a_dim == 1 {
-            result.push(b_dim);
-        } else if b_dim == 1 {
-            result.push(a_dim);
-        } else {
-            return None; // Not broadcastable
-        }
-    }
-
-    result.reverse();
-    Some(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// An operand read through any layout gives the value at the same
+    /// position as its packed copy: across `zip_with`'s blocks (every case
+    /// spans several), in a dtype other than the one computed in.
     #[test]
-    fn test_broadcast_shapes_same() {
-        let result = broadcast_shapes(&[3, 4], &[3, 4]);
-        assert_eq!(result, Some(vec![3, 4]));
-    }
-
-    #[test]
-    fn test_broadcast_shapes_scalar() {
-        let result = broadcast_shapes(&[3, 4], &[1]);
-        assert_eq!(result, Some(vec![3, 4]));
-    }
-
-    #[test]
-    fn test_broadcast_shapes_different_ndim() {
-        let result = broadcast_shapes(&[3, 4], &[4]);
-        assert_eq!(result, Some(vec![3, 4]));
-    }
-
-    #[test]
-    fn test_broadcast_shapes_incompatible() {
-        let result = broadcast_shapes(&[3, 4], &[3, 5]);
-        assert_eq!(result, None);
-    }
-
-    /// A broadcast operand is read at the position NumPy's broadcasting
-    /// gives every output element, checked against a reference that decodes
-    /// each position independently: across `zip_with`'s blocks (every case
-    /// spans several), a carry over more than one axis, size-1 axes on both
-    /// sides and an operand of lower rank.
-    #[test]
-    fn broadcast_reads_every_position_numpy_gives() {
-        let cases: &[(&[usize], &[usize])] = &[
-            (&[37, 53, 3], &[37, 53, 1]),
-            (&[37, 53, 3], &[1, 53, 3]),
-            (&[37, 53, 3], &[37, 1, 3]),
-            (&[37, 53, 3], &[3]),
-            (&[37, 53, 3], &[53, 1]),
-            (&[37, 1, 3], &[1, 53, 1]),
-            (&[1], &[45, 29, 4]),
-            (&[45, 29, 4], &[1, 1, 1]),
-            (&[2, 3, 5, 7, 11], &[3, 1, 7, 1]),
-        ];
-        // The packed index of output position `pos` in an operand of `shape`.
-        let index = |pos: &[usize], shape: &[usize]| {
-            let offset = pos.len() - shape.len();
-            shape.iter().enumerate().fold(0, |acc, (i, &d)| {
-                acc * d + if d == 1 { 0 } else { pos[offset + i] }
-            })
-        };
-        for &(sa, sb) in cases {
-            let (na, nb): (usize, usize) = (sa.iter().product(), sb.iter().product());
-            let a = ViewBuffer::from_vec_with_shape((0..na as u64).collect(), sa.to_vec());
-            let b = ViewBuffer::from_vec_with_shape(
-                (0..nb as u64).map(|i| i * 1_000_000).collect(),
-                sb.to_vec(),
-            );
-            let out = BinaryOp::Add.execute(&a, &b);
-            let shape = out.shape().to_vec();
-            for (k, &got) in out.as_slice::<u64>().iter().enumerate() {
-                let mut pos = vec![0; shape.len()];
-                let mut rest = k;
-                for ax in (0..shape.len()).rev() {
-                    pos[ax] = rest % shape[ax];
-                    rest /= shape[ax];
-                }
-                let want = index(&pos, sa) as u64 + index(&pos, sb) as u64 * 1_000_000;
-                assert_eq!(got, want, "{sa:?} + {sb:?} at {pos:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn broadcast_dims_decides_each_axis_on_what_it_knows() {
-        use crate::ops::shape_rule::Dim::{Input, Known, Unknown};
-        // Two known equal sizes, and a known 1 against anything.
-        assert_eq!(
-            broadcast_dims(&[Known(8), Known(1)], &[Known(8), Input(1)]),
-            Some(vec![Known(8), Input(1)])
+    fn a_strided_operand_reads_as_its_packed_copy() {
+        let a = ViewBuffer::from_vec_with_shape(
+            (0..37 * 53 * 3).map(|i| i as u16).collect(),
+            vec![37, 53, 3],
         );
-        // A known size > 1 against an unknown one: the row runs only if the
-        // unknown one is 1 or that size.
+        let b = ViewBuffer::from_vec_with_shape(
+            (0..53 * 37 * 3).map(|i| (i % 251) as u8).collect(),
+            vec![53, 37, 3],
+        )
+        .permute(&[1, 0, 2])
+        .flip(&[1]);
+        let packed = b.to_contiguous();
+        let out = BinaryOp::Add.execute(&a, &b);
+        let want = BinaryOp::Add.execute(&a, &packed);
+        assert_eq!(out.shape(), &[37, 53, 3]);
+        assert_eq!(out.as_slice::<u16>(), want.as_slice::<u16>());
+    }
+
+    #[test]
+    fn elementwise_dims_decides_each_axis_on_what_it_knows() {
+        use crate::ops::shape_rule::Dim::{Input, Known, Unknown};
+        // A known size on either side gives the axis.
         assert_eq!(
-            broadcast_dims(&[Known(8), Input(1)], &[Input(0), Input(1)]),
-            Some(vec![Known(8), Unknown])
+            elementwise_dims(&[Known(8), Input(1)], &[Input(0), Known(3)]),
+            Some(vec![Known(8), Known(3)])
         );
         // Each operand numbers its own symbols: equal ones are not one size.
         assert_eq!(
-            broadcast_dims(&[Input(0)], &[Input(0)]),
+            elementwise_dims(&[Input(0)], &[Input(0)]),
             Some(vec![Unknown])
         );
-        // Missing leading axes broadcast as 1.
+        // A size of 1 stretches nothing.
         assert_eq!(
-            broadcast_dims(&[Known(4), Known(5), Known(3)], &[Known(3)]),
-            Some(vec![Known(4), Known(5), Known(3)])
-        );
-        // Two known sizes that cannot broadcast have no output.
-        assert_eq!(
-            broadcast_dims(&[Known(4), Input(1)], &[Known(2), Input(1)]),
+            elementwise_dims(&[Known(4), Known(1)], &[Known(4), Known(3)]),
             None
         );
+        // Different ranks have no shared shape, whatever they know: the
+        // `[H, W, 1]` against `[H, W]` that broadcast to `[H, W, W]`.
+        assert_eq!(
+            elementwise_dims(&[Known(4), Known(4), Known(1)], &[Known(4), Known(4)]),
+            None
+        );
+        assert_eq!(elementwise_dims(&[Input(0), Input(1)], &[Input(0)]), None);
+    }
+
+    #[test]
+    fn validate_refuses_operands_of_different_shapes() {
+        use crate::ops::shape_rule::Dim::{Input, Known};
+        let f32s = [PlannedDType::Known(DType::F32); 2];
+        let ok = |a: &[Dim], b: &[Dim]| BinaryOp::Add.validate(&[a, b], &f32s);
+        assert!(ok(&[Known(4), Known(5)], &[Known(4), Known(5)]).is_ok());
+        assert!(ok(&[Known(4), Input(1)], &[Input(0), Known(5)]).is_ok());
+        let err = ok(&[Known(4), Known(5), Known(1)], &[Known(4), Known(5)]).unwrap_err();
+        assert!(err.to_string().contains("same shape"), "{err}");
+        assert!(ok(
+            &[Known(4), Known(5), Known(1)],
+            &[Known(4), Known(5), Known(3)]
+        )
+        .is_err());
     }
 
     #[test]

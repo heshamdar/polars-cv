@@ -545,6 +545,21 @@ Reshape array to new dimensions.
 Pipeline().source("image_bytes").resize(height=224, width=224).reshape([1, 224, 224, 3])
 ```
 
+### Squeeze and Expand Dims
+
+Remove an axis of size 1, or insert one, without spelling out every size (so
+they work where `reshape` cannot: on images whose height and width are only
+known per row). Both are zero-copy views, and a negative axis counts from the
+end, as in NumPy.
+
+```python
+Pipeline().source("image_bytes").grayscale().squeeze(-1)  # [H, W, 1] -> [H, W]
+Pipeline().source("image_bytes").expand_dims(0)  # [H, W, C] -> [1, H, W, C]
+```
+
+`squeeze` refuses an axis of any other size. Binary ops never broadcast, so
+these are how two operands are brought to one rank.
+
 ## Resize Variants
 
 In addition to `resize(height=..., width=...)`, polars-cv provides aspect-ratio-preserving resize methods.

@@ -2,7 +2,7 @@
 
 use crate::core::dtype::OutputDTypeRule;
 use crate::mode::{known, size, Exec, Mode};
-use crate::ops::shape_rule::{OpShape, Sym};
+use crate::ops::shape_rule::{resolve_axis, OpShape, Sym};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use polars_cv_macros::{Ops, Resolve};
@@ -54,6 +54,28 @@ pub enum ViewOp<M: Mode = Exec> {
         /// Channel index to extract (0-based). Accepts a Polars expression for
         /// per-row dynamic selection.
         index: M::V<u32>,
+    },
+    /// Remove an axis of size 1: `[H, W, 1]` to `[H, W]` with `axis=-1`. The
+    /// same elements in the same order, with no copy. An axis of another size
+    /// is refused.
+    ///
+    /// Example:
+    ///     >>> pipe = Pipeline().source("array").squeeze(-1)
+    #[op(name = "squeeze", sample = {"axis": -1})]
+    Squeeze {
+        /// The axis to remove, counted from the end when negative.
+        axis: M::L<i32>,
+    },
+    /// Insert an axis of size 1: `[H, W]` to `[H, W, 1]` with `axis=-1`. The
+    /// same elements in the same order, with no copy.
+    ///
+    /// Example:
+    ///     >>> pipe = Pipeline().source("array").expand_dims(-1)
+    #[op(name = "expand_dims", sample = {"axis": -1})]
+    ExpandDims {
+        /// Where the new axis goes in the output, counted from the end when
+        /// negative.
+        axis: M::L<i32>,
     },
     // --- Engine-internal, never on the wire.
     /// A window on every axis, `start..end` (`usize::MAX`: to the end of
@@ -113,6 +135,18 @@ impl<M: Mode> ViewOp<M> {
             },
             ViewOp::Rotate90 | ViewOp::Rotate270 => OpShape::SwapHw,
             ViewOp::ChannelSelect { .. } => OpShape::DropChannelAxis,
+            ViewOp::Squeeze { axis } => OpShape::RemoveAxis(M::lit(axis) as isize),
+            ViewOp::ExpandDims { axis } => OpShape::InsertAxis(M::lit(axis) as isize),
+        }
+    }
+
+    /// The position of a squeeze's or expand_dims' axis in an input of
+    /// `rank`, its sign resolved (`None` outside the rank).
+    pub fn axis_position(&self, rank: usize) -> Option<usize> {
+        match self {
+            ViewOp::Squeeze { axis } => resolve_axis(M::lit(axis) as isize, rank),
+            ViewOp::ExpandDims { axis } => resolve_axis(M::lit(axis) as isize, rank + 1),
+            _ => None,
         }
     }
 }
@@ -285,6 +319,38 @@ impl<M: Mode> Op for ViewOp<M> {
                 }
                 Ok(())
             }
+            ViewOp::Squeeze { axis } | ViewOp::ExpandDims { axis } => {
+                let axis = M::lit(axis);
+                let Some(at) = self.axis_position(shape.len()) else {
+                    let (what, positions) = match self {
+                        ViewOp::Squeeze { .. } => ("an axis", shape.len()),
+                        _ => ("a position", shape.len() + 1),
+                    };
+                    return Err(ValidationError::InvalidParameter {
+                        param: "axis".to_string(),
+                        reason: format!(
+                            "axis {axis} is not {what} of a buffer of shape {} (valid: {}..{})",
+                            crate::ops::shape_rule::show_dims(shape),
+                            -(positions as i64),
+                            positions
+                        ),
+                    });
+                };
+                // An unknown size is checked per row.
+                match (self, shape.get(at).and_then(|d| d.known())) {
+                    (ViewOp::Squeeze { .. }, Some(n)) if n != 1 => {
+                        Err(ValidationError::InvalidParameter {
+                            param: "axis".to_string(),
+                            reason: format!(
+                                "only an axis of size 1 can be removed; axis {axis} of {} has \
+                                 size {n}",
+                                crate::ops::shape_rule::show_dims(shape)
+                            ),
+                        })
+                    }
+                    _ => Ok(()),
+                }
+            }
             // Image rotations: a [H, W] or [H, W, C] buffer. Anything else was
             // returned unchanged or rotated over the wrong axes.
             ViewOp::Rotate90 | ViewOp::Rotate180 | ViewOp::Rotate270 => {
@@ -322,6 +388,8 @@ impl<M: Mode> Op for ViewOp<M> {
             ViewOp::Rotate180 => "Rotate180",
             ViewOp::Rotate270 => "Rotate270",
             ViewOp::ChannelSelect { .. } => "ChannelSelect",
+            ViewOp::Squeeze { .. } => "Squeeze",
+            ViewOp::ExpandDims { .. } => "ExpandDims",
         }
     }
 
@@ -354,8 +422,11 @@ impl<M: Mode> Op for ViewOp<M> {
             }
             // Flip/transpose/rotate/channel-select move pixels or drop an axis
             // even when the shape is preserved (a square transpose, a 180°
-            // rotate), so none is ever a no-op.
-            ViewOp::Transpose { .. }
+            // rotate), so none is ever a no-op; a squeeze or expand_dims
+            // always changes the rank.
+            ViewOp::Squeeze { .. }
+            | ViewOp::ExpandDims { .. }
+            | ViewOp::Transpose { .. }
             | ViewOp::Flip { .. }
             | ViewOp::Rotate90
             | ViewOp::Rotate180
@@ -376,8 +447,11 @@ impl<M: Mode> Op for ViewOp<M> {
                 start.iter().skip(2).all(|&s| s == 0)
                     && end.iter().skip(2).all(|&e| e == usize::MAX)
             }
-            // Reshape/transpose/flip/rotate/channel-select are not H/W crops.
-            ViewOp::Transpose { .. }
+            // Reshape/transpose/flip/rotate/channel-select/squeeze/expand_dims
+            // are not H/W crops.
+            ViewOp::Squeeze { .. }
+            | ViewOp::ExpandDims { .. }
+            | ViewOp::Transpose { .. }
             | ViewOp::Reshape { .. }
             | ViewOp::Flip { .. }
             | ViewOp::Rotate90
@@ -392,8 +466,11 @@ impl<M: Mode> Op for ViewOp<M> {
             // Picks a channel at the same (y, x) — spatially the identity.
             ViewOp::ChannelSelect { .. } => SpatialDependency::Pointwise,
             // Permute/reshape/flip/crop/rotate all remap coordinates (crop
-            // offsets the origin; transpose/reshape/rotate move axes).
-            ViewOp::Transpose { .. }
+            // offsets the origin; transpose/reshape/rotate move axes), and
+            // a squeeze or expand_dims at the front moves H and W.
+            ViewOp::Squeeze { .. }
+            | ViewOp::ExpandDims { .. }
+            | ViewOp::Transpose { .. }
             | ViewOp::Reshape { .. }
             | ViewOp::Flip { .. }
             | ViewOp::Crop { .. }
@@ -404,7 +481,7 @@ impl<M: Mode> Op for ViewOp<M> {
         }
     }
 
-    fn infer_strides(&self, _input_shape: &[usize], input_strides: &[isize]) -> Option<Vec<isize>> {
+    fn infer_strides(&self, input_shape: &[usize], input_strides: &[isize]) -> Option<Vec<isize>> {
         match self {
             ViewOp::Transpose { .. } => {
                 Some(self.axes().iter().map(|&i| input_strides[i]).collect())
@@ -452,6 +529,26 @@ impl<M: Mode> Op for ViewOp<M> {
                 } else {
                     Some(input_strides.to_vec())
                 }
+            }
+            // As `ViewBuffer::remove_axis`/`insert_axis` lay them out.
+            ViewOp::Squeeze { .. } => {
+                let at = self.axis_position(input_strides.len())?;
+                let mut strides = input_strides.to_vec();
+                strides.remove(at);
+                Some(strides)
+            }
+            ViewOp::ExpandDims { .. } => {
+                let at = self.axis_position(input_strides.len())?;
+                // Past the last axis a packed layout steps one element, the
+                // last axis's stride when it is packed; with no axis there is
+                // no element size to read, and the output is packed anew.
+                let stride = match input_shape.get(at) {
+                    Some(&n) => input_strides[at] * n as isize,
+                    None => *input_strides.last()?,
+                };
+                let mut strides = input_strides.to_vec();
+                strides.insert(at, stride);
+                Some(strides)
             }
             ViewOp::ChannelSelect { .. } => {
                 // Drop the last stride dimension (channel axis)

@@ -96,6 +96,14 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
             let transposed = buf.permute(&perm);
             transposed.flip(&[0]) // Flip height axis
         }
+        ViewOp::Squeeze { .. } => {
+            let at = op.axis_position(buf.shape().len());
+            buf.remove_axis(at.expect("a validated squeeze names an axis"))
+        }
+        ViewOp::ExpandDims { .. } => {
+            let at = op.axis_position(buf.shape().len());
+            buf.insert_axis(at.expect("a validated expand_dims names a position"))
+        }
         ViewOp::ChannelSelect { index } => {
             let index = index as usize;
             let shape = buf.shape();

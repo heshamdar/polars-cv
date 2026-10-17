@@ -334,8 +334,9 @@ input size as `Dim::Input(k)`. So the tracked H/W cannot disagree with what
 the op produces, and no placeholder value stands in for a per-row one
 (`a_lowered_op_keeps_its_shape` holds it to the executed step's where an op lowers).
 
-Graph-level steps have an `OpShape` too (`GraphOp::shape`): a binary op
-broadcasts its operands axis by axis, `apply_mask` preserves its buffer,
+Graph-level steps have an `OpShape` too (`GraphOp::shape`): a binary op's
+two operands have one shape (`OpShape::Elementwise`: nothing broadcasts; a
+rank changes through `squeeze`/`expand_dims`), `apply_mask` preserves its buffer,
 `channel_merge` stacks one channel per operand, and the planner passes each
 operand's planned shape in (`GraphStep::operands()`). A step whose output
 size depends on the data (`label_reduce`, `OpShape::Dynamic`) plans that axis

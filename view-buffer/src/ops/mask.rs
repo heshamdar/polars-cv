@@ -17,14 +17,15 @@ use crate::ops::binary::BinaryOp;
 ///   it, intermediate values blend proportionally.
 /// - float buffers: mask values in `[0.0, 1.0]`.
 ///
-/// A 2-D `[H, W]` mask applied to a 3-D `[H, W, C]` buffer is expanded across
-/// the channel dimension. `invert` flips the mask (`255 - m` / `1.0 - m`).
+/// A single-channel mask (`[H, W]` or `[H, W, 1]`) applied to a 3-D
+/// `[H, W, C]` buffer is expanded across the channels; any other mask has the
+/// buffer's shape. `invert` flips the mask (`255 - m` / `1.0 - m`).
 /// Whether [`apply_mask`] can combine a buffer of `buffer_shape` with a mask of
 /// `mask_shape` (CR-34).
 ///
-/// Reads the same two facts `apply_mask` acts on: a 2-D mask over a 3-D buffer
-/// is first expanded to the buffer's channel count, and the result is then
-/// blended with the buffer, so it must broadcast against it. Stated through
+/// Reads the same two facts `apply_mask` acts on: a single-channel mask over a
+/// 3-D buffer is first expanded to the buffer's channel count, and the result
+/// is then blended with the buffer, so it must have the buffer's shape. Stated through
 /// `BinaryOp::Blend`'s own `validate` so the two cannot drift. Over what is
 /// known of the shapes (the planner's call; execution passes known ones), so
 /// an error is a verdict on a known size.
@@ -34,7 +35,7 @@ pub fn validate_mask(
 ) -> Result<(), crate::ops::validation::ValidationError> {
     use crate::ops::traits::Op as _;
     let effective: Vec<crate::ops::Dim> = match (mask_shape, buffer_shape) {
-        ([h, w], [_, _, c]) => vec![*h, *w, *c],
+        ([h, w], [_, _, c]) | ([h, w, crate::ops::Dim::Known(1)], [_, _, c]) => vec![*h, *w, *c],
         _ => mask_shape.to_vec(),
     };
     let f32 = crate::PlannedDType::Known(DType::F32);
@@ -43,6 +44,13 @@ pub fn validate_mask(
 
 pub fn apply_mask(buffer: &ViewBuffer, mask: &ViewBuffer, invert: bool) -> ViewBuffer {
     let buf_shape = buffer.shape();
+    // A `[H, W, 1]` mask over channels is read as the `[H, W]` one it holds.
+    let single = buf_shape.len() == 3 && mask.shape().len() == 3 && mask.shape()[2] == 1;
+    let mask = &if single {
+        mask.remove_axis(2)
+    } else {
+        mask.clone()
+    };
     let mask_shape = mask.shape();
 
     // Cast mask to match buffer dtype for proper blending
@@ -128,6 +136,33 @@ mod tests {
 
         let inverted = apply_mask(&buffer, &mask, true);
         assert_eq!(inverted.as_slice::<u8>(), &[0, 0, 30, 40]);
+    }
+
+    /// A `[H, W, 1]` mask (a rasterized one) spreads over the channels as
+    /// the `[H, W]` mask it holds; it is `apply_mask`'s to spread, as the
+    /// binary ops broadcast nothing.
+    #[test]
+    fn a_single_channel_mask_spreads_like_a_2d_one() {
+        let buffer = ViewBuffer::from_vec_with_shape(vec![10u8, 20, 30, 40, 50, 60], vec![2, 1, 3]);
+        let flat = ViewBuffer::from_vec_with_shape(vec![255u8, 0], vec![2, 1]);
+        let single = ViewBuffer::from_vec_with_shape(vec![255u8, 0], vec![2, 1, 1]);
+        let masked = |m: &ViewBuffer, invert| apply_mask(&buffer, m, invert);
+        for invert in [false, true] {
+            let got = masked(&single, invert);
+            assert_eq!(got.shape(), &[2, 1, 3]);
+            assert_eq!(got.as_slice::<u8>(), masked(&flat, invert).as_slice::<u8>());
+        }
+        assert_eq!(
+            masked(&single, false).as_slice::<u8>(),
+            &[10, 20, 30, 0, 0, 0]
+        );
+        let dims = |s: &[usize]| {
+            s.iter()
+                .map(|&n| crate::ops::Dim::Known(n))
+                .collect::<Vec<_>>()
+        };
+        assert!(validate_mask(&dims(&[2, 1, 3]), &dims(&[2, 1, 1])).is_ok());
+        assert!(validate_mask(&dims(&[2, 1, 3]), &dims(&[2, 1, 2])).is_err());
     }
 
     #[test]

@@ -1328,6 +1328,29 @@
     ]
   },
   {
+    "name": "expand_dims",
+    "python": "expand_dims",
+    "visibility": "public",
+    "doc": "Insert an axis of size 1: `[H, W]` to `[H, W, 1]` with `axis=-1`. The\nsame elements in the same order, with no copy.\n\nExample:\n    >>> pipe = Pipeline().source(\"array\").expand_dims(-1)",
+    "fields": [
+      {
+        "name": "axis",
+        "doc": "Where the new axis goes in the output, counted from the end when\nnegative.",
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "int"
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
+  },
+  {
     "name": "extract_contours",
     "python": "extract_contours",
     "visibility": "public",
@@ -2940,6 +2963,29 @@
     "visibility": "public",
     "doc": "Square (`x * x`).",
     "fields": [],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
+  },
+  {
+    "name": "squeeze",
+    "python": "squeeze",
+    "visibility": "public",
+    "doc": "Remove an axis of size 1: `[H, W, 1]` to `[H, W]` with `axis=-1`. The\nsame elements in the same order, with no copy. An axis of another size\nis refused.\n\nExample:\n    >>> pipe = Pipeline().source(\"array\").squeeze(-1)",
+    "fields": [
+      {
+        "name": "axis",
+        "doc": "The axis to remove, counted from the end when negative.",
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "int"
+        }
+      }
+    ],
     "domains": [
       {
         "input": "buffer",

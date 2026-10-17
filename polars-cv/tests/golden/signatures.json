@@ -1188,6 +1188,18 @@
     "'square'"
    ]
   ],
+  "expand_dims": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "axis",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "extract_contours": [
    [
     "self",
@@ -2156,6 +2168,18 @@
     ""
    ]
   ],
+  "squeeze": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "axis",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "statistics": [
    [
     "self",
@@ -2794,6 +2818,18 @@
     "footprint",
     "KEYWORD_ONLY",
     "'square'"
+   ]
+  ],
+  "expand_dims": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "axis",
+    "POSITIONAL_OR_KEYWORD",
+    ""
    ]
   ],
   "explain": [
@@ -3734,6 +3770,18 @@
   "square": [
    [
     "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "squeeze": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "axis",
     "POSITIONAL_OR_KEYWORD",
     ""
    ]
