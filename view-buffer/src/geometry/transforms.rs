@@ -968,7 +968,7 @@ fn stroke_path(points: &[Point], closed: bool, style: &Stroke) -> Vec<Contour> {
             StrokeStyle::new(style.width).line_join(geo_join(style.join, radius)),
             true,
         );
-        return shapes
+        let mut parts: Vec<Contour> = shapes
             .iter()
             .filter_map(|shape| {
                 let mut rings = shape
@@ -977,6 +977,17 @@ fn stroke_path(points: &[Point], closed: bool, style: &Stroke) -> Vec<Contour> {
                 Some(Contour::with_holes(rings.next()?, rings.collect()))
             })
             .collect();
+        // Where the stroke is wider than the ring's interior, `i_overlay`
+        // turns the ring's inward side inside out and leaves a hole the band
+        // covers. The band round a ring is also its region grown by the
+        // half-width less that region shrunk by it, which `offset` gives
+        // exactly; that misses only what has no area (a doubled segment, a
+        // spike), which the stroke above covers. Together they are the band.
+        let region = [Contour::new(points.to_vec())];
+        let grown = offset(&region, radius, style.join).expect("a checked width is finite");
+        let shrunk = offset(&region, -radius, style.join).expect("a checked width is finite");
+        parts.extend(boolean(&grown, &shrunk, RegionOp::Difference));
+        return parts;
     }
     let cap = match style.cap {
         LineCap::Round => GeoCap::Round(arc_step(radius)),
@@ -1205,5 +1216,30 @@ mod shaping_tests {
         assert_eq!(band.len(), 1);
         assert_eq!(band[0].holes.len(), 1);
         assert!((total_area(&band) - (144.0 - 64.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_stroke_wider_than_its_ring_is_solid() {
+        // Every point of a unit square is within 1/2 of its ring, so a band
+        // of half-width 2 covers it: one solid 5x5 square (miter) or the
+        // square grown by a disc (round). `i_overlay` alone left a hole
+        // where the ring's inward side turned inside out.
+        for join in [LineJoin::Miter, LineJoin::Round] {
+            let style = Stroke {
+                width: 4.0,
+                cap: LineCap::Butt,
+                join,
+            };
+            let band = stroke(&[Outline::Closed(rect(5.0, 5.0, 6.0, 6.0))], &style).unwrap();
+            assert_eq!(band.len(), 1, "{join:?}");
+            assert!(band[0].holes.is_empty(), "{join:?}: {:?}", band[0].holes);
+        }
+        let miter = Stroke {
+            width: 4.0,
+            cap: LineCap::Butt,
+            join: LineJoin::Miter,
+        };
+        let band = stroke(&[Outline::Closed(rect(5.0, 5.0, 6.0, 6.0))], &miter).unwrap();
+        assert!((total_area(&band) - 25.0).abs() < 1e-6);
     }
 }
