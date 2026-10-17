@@ -111,8 +111,7 @@ A parameter may be an expression whenever its value does not fix the output
 rank or dtype at planning time — the lazy schema has to match what executes. A
 size may be per-row; that axis is then unknown at planning time. The same rule governs the geometry namespaces
 ([`.contour` / `.point` / `.bbox`](../operations/geometry.md#expression-parameters)),
-and [Dynamic Parameters](../operations/image-ops.md#dynamic-parameters) lists
-every parameter on both sides of the line.
+and [Parameters & Errors](parameters.md) gives the rule in full.
 
 ## Best Practices
 
@@ -123,5 +122,6 @@ every parameter on both sides of the line.
 ## Next Steps
 
 - [Sources](sources.md) - Source formats and auto dtype behavior
+- [Parameters & Errors](parameters.md) - Per-row parameters, nulls and error policies
 - [Domains](domains.md) - Multi-domain pipelines
 - [Multi-Output](../composition/multi-output.md) - Extracting multiple results

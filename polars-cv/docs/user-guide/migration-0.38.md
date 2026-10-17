@@ -29,7 +29,7 @@ df = df.with_columns(phash=pl.col("image").cv.pipe(hash_pipe).sink("list"))
 NaN). It now returns the input unchanged, as PIL and SciPy do. A negative,
 NaN or infinite sigma is refused: a literal when the pipeline is built, a
 column value when its row runs (subject to
-[`on_error`](concepts/sources.md#error-handling) like any other row error). A negative
+[`on_error`](concepts/parameters.md#errors) like any other row error). A negative
 sigma used to be treated silently as no blur; clamp a column that may hold
 one:
 

@@ -94,12 +94,11 @@ result = df.with_columns(
 Structural parameters — the ones that fix the output rank or dtype, such
 as `cast(dtype=)` or a reduction `axis` — stay literal-only and raise
 `TypeError` at build time if given an expression. See
-[Dynamic Parameters](../user-guide/operations/image-ops.md#dynamic-parameters)
-for the full table of which parameters accept expressions.
+[Parameters & Errors](../user-guide/concepts/parameters.md) for the full rule.
 
 A null in a parameter column fails the query by default;
 `.on_null_param("null")` nulls just the rows that depend on it instead — see
-[Null parameter values](../user-guide/operations/image-ops.md#null-parameter-values).
+[Null parameter values](../user-guide/concepts/parameters.md#null-parameter-values).
 
 ## Output Formats (Sinks)
 
@@ -130,8 +129,8 @@ result = df.with_columns(
 ```
 
 !!! tip
-    A plain `with_columns`/`.select` on a single-chunk column runs the plugin on one thread. For large
-    workloads, run through the streaming engine — see
+    Every call already spreads its rows over every core. For data larger than
+    memory, use a `LazyFrame` and the streaming engine — see
     [Streaming & Scaling](../user-guide/concepts/streaming.md).
 
 ## Reading from Files
@@ -165,3 +164,9 @@ pipe = Pipeline().source("file_path").resize(height=224, width=224).cast("f32")
 
 result = df.with_columns(values=pl.col("image").cv.pipe(pipe).sink("list"))
 ```
+
+## Next Steps
+
+- [Pipelines](../user-guide/concepts/pipelines.md) and [Sources](../user-guide/concepts/sources.md): the model in full
+- [Multi-Output](../user-guide/composition/multi-output.md): several results from one decode
+- [Image Operations](../user-guide/operations/image-ops.md) and [Geometry](../user-guide/operations/geometry.md): what is available
