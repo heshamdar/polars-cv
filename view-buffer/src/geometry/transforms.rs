@@ -7,7 +7,9 @@ use super::contour::{BorderArc, Contour, Outline, Point, Winding};
 use super::measures::{centroid, contour_winding};
 use super::ops::{LineCap, LineJoin, ScaleOrigin};
 use geo::algorithm::buffer::{BufferStyle, LineCap as GeoCap, LineJoin as GeoJoin};
-use geo::{unary_union, Buffer, ChaikinSmoothing, ConvexHull, Densify, Euclidean, Simplify};
+use geo::{
+    unary_union, BooleanOps, Buffer, ChaikinSmoothing, ConvexHull, Densify, Euclidean, Simplify,
+};
 use std::borrow::Borrow;
 
 /// Translates a contour by the given offset.
@@ -692,6 +694,48 @@ pub fn union_all<C: Borrow<Contour>>(regions: &[C]) -> Vec<Contour> {
     regions_of(&union_polygons(regions))
 }
 
+/// How [`boolean`] combines two sets' regions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionOp {
+    /// Inside either.
+    Union,
+    /// Inside both.
+    Intersection,
+    /// Inside the first and not the second.
+    Difference,
+    /// Inside exactly one.
+    SymmetricDifference,
+}
+
+impl RegionOp {
+    /// The op's name, as both surfaces spell it.
+    pub fn name(self) -> &'static str {
+        match self {
+            RegionOp::Union => "union",
+            RegionOp::Intersection => "intersection",
+            RegionOp::Difference => "difference",
+            RegionOp::SymmetricDifference => "symmetric_difference",
+        }
+    }
+}
+
+/// Two sets combined by `op` (`union`, `intersection`, `difference`,
+/// `symmetric_difference`), each read as the union of its regions; the result
+/// is disjoint regions.
+pub fn boolean<A: Borrow<Contour>, B: Borrow<Contour>>(
+    a: &[A],
+    b: &[B],
+    op: RegionOp,
+) -> Vec<Contour> {
+    let (a, b) = (union_polygons(a), union_polygons(b));
+    regions_of(&match op {
+        RegionOp::Union => a.union(&b),
+        RegionOp::Intersection => a.intersection(&b),
+        RegionOp::Difference => a.difference(&b),
+        RegionOp::SymmetricDifference => a.xor(&b),
+    })
+}
+
 /// `offset(distance, join)`'s one rule for the value it takes.
 pub fn check_offset_distance(distance: f64) -> Result<(), String> {
     if distance.is_finite() {
@@ -814,6 +858,25 @@ mod shaping_tests {
 
     fn total_area(regions: &[Contour]) -> f64 {
         regions.iter().map(|c| area(c, false)).sum()
+    }
+
+    #[test]
+    fn boolean_reads_each_side_as_its_union() {
+        let a = [rect(0.0, 0.0, 6.0, 6.0), rect(3.0, 3.0, 9.0, 9.0)];
+        let b = [rect(5.0, 0.0, 12.0, 4.0)];
+        let whole_a = total_area(&union_all(&a));
+        let inter = total_area(&boolean(&a, &b, RegionOp::Intersection));
+        let union = total_area(&boolean(&a, &b, RegionOp::Union));
+        assert!((whole_a - 63.0).abs() < 1e-9);
+        // [5, 6] x [0, 4] and [5, 9] x [3, 4], overlapping in [5, 6] x [3, 4].
+        assert!((inter - 7.0).abs() < 1e-9);
+        assert!((union + inter - whole_a - 28.0).abs() < 1e-9);
+        let diff = total_area(&boolean(&a, &b, RegionOp::Difference));
+        assert!((diff - (whole_a - inter)).abs() < 1e-9);
+        let xor = total_area(&boolean(&a, &b, RegionOp::SymmetricDifference));
+        assert!((xor - (union - inter)).abs() < 1e-9);
+        assert!(boolean(&a, &a, RegionOp::Difference).is_empty());
+        assert!(boolean::<Contour, Contour>(&[], &b, RegionOp::Intersection).is_empty());
     }
 
     #[test]

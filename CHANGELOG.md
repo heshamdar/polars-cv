@@ -9,6 +9,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **Contour set operations** (CR-99): `union`, `intersection`, `difference`
+  and `symmetric_difference` combine two contour sets, each read as the union
+  of its regions, into disjoint regions (always a set). Each is a `.contour`
+  accessor (the other side a contour column) and a lazy pipeline op (the
+  other side another contour-domain expression), one engine function behind
+  both; a line on either side is refused. Held to the mask identity —
+  rasterizing `a op b` paints the pixelwise `|`, `&`, `& ~` or `^` of the two
+  sides' masks, exactly on integer shapes — and to inclusion-exclusion and
+  `iou` on float shapes.
+
 - **Contour shaping and line rendering** (CR-98). Four contour ops, each a
   pipeline op and a `.contour` accessor with one definition:
   `offset(distance, join="round")` grows (negative: shrinks) a set's regions,
@@ -102,6 +112,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   linked guides and `benchmarks/`.
 
 ### Fixed
+
+- **A non-finite float literal is refused by name** (CR-103). JSON has no NaN
+  or infinity, so `simplify(float("nan"))` — any op or geometry accessor —
+  failed as the decoder's "expected value at line 1 column 41". The literal is
+  now refused where it is encoded, as `simplify(tolerance=): nan is not a
+  finite number ...`, with the position of a list element. A `bound` field
+  (`histogram(bins=)` edges) still takes infinities, and a value passed per
+  row through an expression reaches the op's own check, as before.
 
 - The parity suite's per-row parameters now encode nested lists level by
   level, so an `apply_lut` table varying by row passes one expression per

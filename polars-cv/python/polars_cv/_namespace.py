@@ -18,7 +18,7 @@ from typing import Any, TypeVar
 import polars as pl
 
 from polars_cv import _plugin
-from polars_cv._types import NullParamPolicy, RowErrorPolicy, _to_python
+from polars_cv._types import NullParamPolicy, RowErrorPolicy, _literal
 
 #: Accepted ``on_null(...)`` values, read from ``NullParamPolicy`` — a class
 #: generated from the Rust enum (``PLUGIN_REGISTRY`` → ``enum_catalog.json``)
@@ -183,7 +183,7 @@ class _GeomNamespace(_PluginNamespace):
             elif isinstance(value, Enum):
                 fields[name] = value.value
             else:
-                fields[name] = _to_python(value)
+                fields[name] = _literal(value, f"{function}({name}=)")
         # Refused now, where it was written, by the definition itself — not
         # when the query runs.
         from polars_cv._lib import check_geom_call

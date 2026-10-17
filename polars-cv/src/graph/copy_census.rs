@@ -170,6 +170,22 @@ const EXEMPT: &[(&str, &str)] = &[
         "it reads a contour, not a buffer: no view of one reaches it",
     ),
     (
+        "union",
+        "it reads two contour sets, not a buffer: no view of one reaches it",
+    ),
+    (
+        "intersection",
+        "it reads two contour sets, not a buffer: no view of one reaches it",
+    ),
+    (
+        "difference",
+        "it reads two contour sets, not a buffer: no view of one reaches it",
+    ),
+    (
+        "symmetric_difference",
+        "it reads two contour sets, not a buffer: no view of one reaches it",
+    ),
+    (
         "contour_area",
         "it reads a contour, not a buffer: no view of one reaches it",
     ),

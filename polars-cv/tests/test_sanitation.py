@@ -483,7 +483,7 @@ def _emitted_op_names_from_source():
     names |= set(re.findall(r'_(?:binary_op|add_node_op)\("([a-z_]+)"', lazy))
     generated = (pkg / "_ops_generated.py").read_text()
     names |= set(re.findall(r'_append_typed\(\s*"([a-z_0-9]+)"', generated))
-    names |= _binary_op_names_from_source()
+    names |= _binary_op_calls_from_source()
     return names
 
 
@@ -621,8 +621,8 @@ def test_plugin_is_present_when_required() -> None:
     )
 
 
-def _binary_op_names_from_source() -> set[str]:
-    """Binary op names the lazy API emits via ``self._binary_op("<name>")``.
+def _binary_op_calls_from_source() -> set[str]:
+    """Every op name the lazy API emits via ``self._binary_op("<name>")``.
 
     The methods are generated into ``_LazyOpsMixin``; ``lazy.py`` is scanned
     too, so a hand-written binary method would be counted rather than missed.
@@ -637,6 +637,24 @@ def _binary_op_names_from_source() -> set[str]:
         for name in re.findall(
             r'self\._binary_op\("([a-z_]+)"', (pkg / module).read_text()
         )
+    }
+
+
+def _binary_op_names_from_source() -> set[str]:
+    """The element-wise binary ops among :func:`_binary_op_calls_from_source`.
+
+    ``_binary_op`` builds any node-plus-one-operand op, so the contour set ops
+    (``union``, ``intersection``, …, CR-99) go through it too; the element-wise
+    ones are those that read numbers (``buffer``/``vector``), as their
+    catalogued domains say.
+    """
+    from polars_cv._ops_generated import OP_DOMAINS
+
+    numeric = {"buffer", "vector"}
+    return {
+        n
+        for n in _binary_op_calls_from_source()
+        if {d["input"] for d in OP_DOMAINS[n]} <= numeric
     }
 
 

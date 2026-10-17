@@ -30,6 +30,7 @@ from polars_cv._types import (
     NullParamPolicy,
     RowErrorPolicy,
     SlotTable,
+    _literal,
     _to_python,
     normalize_cloud_options,
 )
@@ -98,22 +99,23 @@ def _encode_field(p: "Pipeline", value: Any, ty: "dict[str, Any]", where: str) -
             for i, v in enumerate(value)
         ]
     if kind == "scalar" and ty["py"] == "bound" and not isinstance(value, pl.Expr):
-        return _bound_wire(_to_python(value))
+        return _bound_wire(_to_python(value), where)
     if kind == "scalar" and ty["per_row"]:
-        return p._wire(value)
+        return p._wire(value, where)
     if isinstance(value, pl.Expr):
         msg = f"{where}: {_STRUCTURAL}"
         raise TypeError(msg)
-    return _to_python(value)
+    return _literal(value, where)
 
 
-def _bound_wire(value: Any) -> Any:
+def _bound_wire(value: Any, where: str) -> Any:
     """A ``bound`` (``naming::Bound``: a float that may be infinite) on the
     wire. JSON has no infinity, so an infinite bound is ``"inf"``/``"-inf"``;
-    anything else goes as given, for Rust to accept or refuse."""
+    anything else is a literal (:func:`_literal`: NaN is refused), for Rust
+    to accept or refuse."""
     if isinstance(value, (int, float)) and math.isinf(value):
         return "inf" if value > 0 else "-inf"
-    return value
+    return _literal(value, where)
 
 
 def _is_sequence(value: Any) -> bool:
@@ -234,9 +236,11 @@ class Pipeline(_OpsMixin):
         self._exprs.append(expr)
         return {"$slot": len(self._exprs) - 1}
 
-    def _wire(self, value: Any) -> Any:
+    def _wire(self, value: Any, where: str) -> Any:
         """A per-row argument's wire value: its slot, or the literal."""
-        return self._slot(value) if isinstance(value, pl.Expr) else _to_python(value)
+        return (
+            self._slot(value) if isinstance(value, pl.Expr) else _literal(value, where)
+        )
 
     def _read_node(self, node: "LazyPipelineExpr") -> None:
         """Record *node* as one this pipeline reads by id."""

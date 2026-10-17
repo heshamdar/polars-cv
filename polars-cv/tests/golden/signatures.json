@@ -246,6 +246,18 @@
     ""
    ]
   ],
+  "difference": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "ensure_winding": [
    [
     "self",
@@ -266,6 +278,18 @@
    ]
   ],
   "hausdorff_distance": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "intersection": [
    [
     "self",
     "POSITIONAL_OR_KEYWORD",
@@ -487,6 +511,18 @@
     "1"
    ]
   ],
+  "symmetric_difference": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "to_absolute": [
    [
     "self",
@@ -529,6 +565,18 @@
    ],
    [
     "dy",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "union": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
     "POSITIONAL_OR_KEYWORD",
     ""
    ]
@@ -1019,6 +1067,18 @@
     ""
    ]
   ],
+  "difference": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "dilate": [
    [
     "self",
@@ -1193,6 +1253,18 @@
     "output",
     "KEYWORD_ONLY",
     "'buckets'"
+   ]
+  ],
+  "intersection": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
    ]
   ],
   "invert": [
@@ -2113,6 +2185,18 @@
     ""
    ]
   ],
+  "symmetric_difference": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "threshold": [
    [
     "self",
@@ -2185,6 +2269,18 @@
   "trunc": [
    [
     "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "union": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
     "POSITIONAL_OR_KEYWORD",
     ""
    ]

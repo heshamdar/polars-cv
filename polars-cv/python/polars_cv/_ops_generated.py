@@ -423,6 +423,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "convolve2d",
         "crop",
         "cvt_color",
+        "difference",
         "dilate",
         "distance_transform",
         "divide",
@@ -434,6 +435,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "floor",
         "grayscale",
         "histogram",
+        "intersection",
         "invert",
         "label_reduce",
         "letterbox",
@@ -474,9 +476,11 @@ TYPED_OPS: frozenset[str] = frozenset(
         "square",
         "subtract",
         "subtract_constant",
+        "symmetric_difference",
         "threshold",
         "transpose",
         "trunc",
+        "union",
         "warp_affine",
     ]
 )
@@ -708,6 +712,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "variants": ["rgb", "bgr", "hsv", "lab", "ycbcr", "gray"],
         },
     },
+    "difference": {"other": {"kind": "node"}},
     "dilate": {
         "ksize": {"kind": "scalar", "per_row": True, "py": "int"},
         "iterations": {"kind": "scalar", "per_row": True, "py": "int"},
@@ -794,6 +799,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "variants": ["counts", "normalized", "quantized", "edges", "buckets"],
         },
     },
+    "intersection": {"other": {"kind": "node"}},
     "invert": {},
     "label_reduce": {
         "contours": {"kind": "column"},
@@ -1064,6 +1070,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "square": {},
     "subtract": {"other": {"kind": "node"}},
     "subtract_constant": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "symmetric_difference": {"other": {"kind": "node"}},
     "threshold": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "transpose": {
         "axes": {
@@ -1072,6 +1079,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         }
     },
     "trunc": {},
+    "union": {"other": {"kind": "node"}},
     "warp_affine": {
         "matrix": {
             "kind": "array",
@@ -1153,6 +1161,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "convolve2d": [{"input": "buffer", "output": "buffer"}],
     "crop": [{"input": "buffer", "output": "buffer"}],
     "cvt_color": [{"input": "buffer", "output": "buffer"}],
+    "difference": [{"input": "contour", "output": "contour"}],
     "dilate": [{"input": "buffer", "output": "buffer"}],
     "distance_transform": [{"input": "buffer", "output": "buffer"}],
     "divide": [
@@ -1170,6 +1179,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
         {"input": "buffer", "output": "vector"},
         {"with": ['``output="quantized"``'], "input": "buffer", "output": "buffer"},
     ],
+    "intersection": [{"input": "contour", "output": "contour"}],
     "invert": [{"input": "buffer", "output": "buffer"}],
     "label_reduce": [{"input": "buffer", "output": "vector"}],
     "letterbox": [{"input": "buffer", "output": "buffer"}],
@@ -1257,9 +1267,11 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
         {"input": "vector", "output": "vector"},
     ],
     "subtract_constant": [{"input": "buffer", "output": "buffer"}],
+    "symmetric_difference": [{"input": "contour", "output": "contour"}],
     "threshold": [{"input": "buffer", "output": "buffer"}],
     "transpose": [{"input": "buffer", "output": "buffer"}],
     "trunc": [{"input": "buffer", "output": "buffer"}],
+    "union": [{"input": "contour", "output": "contour"}],
     "warp_affine": [{"input": "buffer", "output": "buffer"}],
 }
 
@@ -2955,6 +2967,28 @@ class _LazyOpsMixin:
         """
         return self._binary_op("blend", other)
 
+    def difference(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Inside this set and not *other*: this contour set's regions with *other*'s cut away.
+
+        Each side is read as the union of its set, and the result is disjoint
+        regions — always a set, since combining shapes can split or merge
+        them. An open contour (a line) on either side is refused. As
+        ``.contour.difference``, the other side is a contour column.
+
+        Domain: contour → contour
+
+        Args:
+            other: The contour-domain expression to combine with.
+
+        Example:
+            ```python
+            >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
+            >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
+            >>> result = a.difference(b).sink("native")
+            ```
+        """
+        return self._binary_op("difference", other)
+
     def divide(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise true division, into a float.
 
@@ -2977,6 +3011,28 @@ class _LazyOpsMixin:
             ```
         """
         return self._binary_op("divide", other)
+
+    def intersection(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Inside both: where this contour set's regions overlap *other*'s.
+
+        Each side is read as the union of its set, and the result is disjoint
+        regions — always a set, since combining shapes can split or merge
+        them. An open contour (a line) on either side is refused. As
+        ``.contour.intersection``, the other side is a contour column.
+
+        Domain: contour → contour
+
+        Args:
+            other: The contour-domain expression to combine with.
+
+        Example:
+            ```python
+            >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
+            >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
+            >>> result = a.intersection(b).sink("native")
+            ```
+        """
+        return self._binary_op("intersection", other)
 
     def maximum(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise maximum of two arrays, for compositing, clamping and
@@ -3054,6 +3110,50 @@ class _LazyOpsMixin:
             ```
         """
         return self._binary_op("subtract", other)
+
+    def symmetric_difference(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Inside exactly one: where this contour set's regions and *other*'s do not overlap.
+
+        Each side is read as the union of its set, and the result is disjoint
+        regions — always a set, since combining shapes can split or merge
+        them. An open contour (a line) on either side is refused. As
+        ``.contour.symmetric_difference``, the other side is a contour column.
+
+        Domain: contour → contour
+
+        Args:
+            other: The contour-domain expression to combine with.
+
+        Example:
+            ```python
+            >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
+            >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
+            >>> result = a.symmetric_difference(b).sink("native")
+            ```
+        """
+        return self._binary_op("symmetric_difference", other)
+
+    def union(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Inside either: the union of this contour set's regions and *other*'s.
+
+        Each side is read as the union of its set, and the result is disjoint
+        regions — always a set, since combining shapes can split or merge
+        them. An open contour (a line) on either side is refused. As
+        ``.contour.union``, the other side is a contour column.
+
+        Domain: contour → contour
+
+        Args:
+            other: The contour-domain expression to combine with.
+
+        Example:
+            ```python
+            >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
+            >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
+            >>> result = a.union(b).sink("native")
+            ```
+        """
+        return self._binary_op("union", other)
 
 
 class _ContourOpsMixin:
@@ -3320,6 +3420,23 @@ class _ContourOpsMixin:
         """
         return self._call("contour_dice", {"other": other})
 
+    def difference(self, other: pl.Expr) -> pl.Expr:
+        """Inside this column's regions and not *other*'s: *other* cut away.
+
+        Each side is read as the union of its row's set (a single contour is
+        a set of one), and the result is disjoint regions — always a set,
+        since combining shapes can split or merge them. A null on either
+        side nulls the row; an open contour (a line) is refused. The
+        pipeline form is ``LazyPipelineExpr.difference``.
+
+        Args:
+            other: The contour column to combine with.
+
+        Returns:
+            A contour set (``List[Contour]``) per row.
+        """
+        return self._call("contour_difference", {"other": other})
+
     def ensure_winding(self, direction: str | pl.Expr) -> pl.Expr:
         """Ensure contour has specified winding direction.
 
@@ -3370,6 +3487,23 @@ class _ContourOpsMixin:
             contour set.
         """
         return self._call("contour_hausdorff", {"other": other})
+
+    def intersection(self, other: pl.Expr) -> pl.Expr:
+        """Inside both: where each row's regions overlap *other*'s.
+
+        Each side is read as the union of its row's set (a single contour is
+        a set of one), and the result is disjoint regions — always a set,
+        since combining shapes can split or merge them. A null on either
+        side nulls the row; an open contour (a line) is refused. The
+        pipeline form is ``LazyPipelineExpr.intersection``.
+
+        Args:
+            other: The contour column to combine with.
+
+        Returns:
+            A contour set (``List[Contour]``) per row.
+        """
+        return self._call("contour_intersection", {"other": other})
 
     def iou(self, other: pl.Expr) -> pl.Expr:
         """Compute Intersection over Union with another contour.
@@ -3582,6 +3716,23 @@ class _ContourOpsMixin:
         """
         return self._call("contour_smooth", {"iterations": iterations})
 
+    def symmetric_difference(self, other: pl.Expr) -> pl.Expr:
+        """Inside exactly one: where each row's regions and *other*'s do not overlap.
+
+        Each side is read as the union of its row's set (a single contour is
+        a set of one), and the result is disjoint regions — always a set,
+        since combining shapes can split or merge them. A null on either
+        side nulls the row; an open contour (a line) is refused. The
+        pipeline form is ``LazyPipelineExpr.symmetric_difference``.
+
+        Args:
+            other: The contour column to combine with.
+
+        Returns:
+            A contour set (``List[Contour]``) per row.
+        """
+        return self._call("contour_symmetric_difference", {"other": other})
+
     def to_absolute(self, width: FloatOrExpr, height: FloatOrExpr) -> pl.Expr:
         """Convert normalized coordinates to pixel coordinates.
 
@@ -3617,6 +3768,23 @@ class _ContourOpsMixin:
             dy: Y offset (vertical translation).
         """
         return self._call("contour_translate", {"dx": dx, "dy": dy})
+
+    def union(self, other: pl.Expr) -> pl.Expr:
+        """Inside either: the union of each row's regions and *other*'s.
+
+        Each side is read as the union of its row's set (a single contour is
+        a set of one), and the result is disjoint regions — always a set,
+        since combining shapes can split or merge them. A null on either
+        side nulls the row; an open contour (a line) is refused. The
+        pipeline form is ``LazyPipelineExpr.union``.
+
+        Args:
+            other: The contour column to combine with.
+
+        Returns:
+            A contour set (``List[Contour]``) per row.
+        """
+        return self._call("contour_union", {"other": other})
 
     def union_all(self) -> pl.Expr:
         """The union of the set's regions, as disjoint regions: overlapping

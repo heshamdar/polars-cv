@@ -182,6 +182,13 @@ CONTOUR_CASES: dict[str, object] = {
     # Set-level: a region can split or merge, so always a set.
     "offset": lambda: pl.col("aset").contour.offset(1.5),
     "union_all": lambda: pl.col("aset").contour.union_all(),
+    # Set-level on both sides, like `pairwise_iou`: always a set.
+    "union": lambda: pl.col("aset").contour.union(pl.col("bset")),
+    "intersection": lambda: pl.col("aset").contour.intersection(pl.col("bset")),
+    "difference": lambda: pl.col("aset").contour.difference(pl.col("bset")),
+    "symmetric_difference": lambda: pl.col("aset").contour.symmetric_difference(
+        pl.col("bset")
+    ),
     # A lone contour is a set of one, the only size `single` accepts.
     "single": lambda: pl.col("a").contour.single(label=pl.lit("row")),
     "correspond": lambda: pl.col("aset").contour.correspond(
@@ -296,6 +303,10 @@ SET_ARITY_EXEMPT = {
     "boundary": "set-level: `aset` is its case, and its result is always a set",
     "offset": "set-level: `aset` is its case, and its result is always a set",
     "union_all": "set-level: `aset` is its case, and its result is always a set",
+    "union": "already takes sets on both sides",
+    "intersection": "already takes sets on both sides",
+    "difference": "already takes sets on both sides",
+    "symmetric_difference": "already takes sets on both sides",
     "close": "its case reads the open-line column `o`; the set spelling is the "
     "pipeline's, in test_open_contours_pipeline.py",
     "single": "refuses every set size but one (the sweep's sets hold two); its set "
