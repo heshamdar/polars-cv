@@ -1300,10 +1300,11 @@ mod tests {
         );
         let out = run_with(add.clone(), &image(), &[("n0", image())]).unwrap();
         assert_eq!(out.dtype.as_str(), "f32");
-        // An operand of unknown rank leaves the broadcast shape unknown.
+        // The operands have one shape, so an operand of unknown rank takes
+        // the sizes the other one knows (it is checked against them per row).
         let unranked = state("buffer", "u8", None, [None; 3]);
         let out = run_with(add, &image(), &[("n0", unranked)]).unwrap();
-        assert_eq!(dims3(&out)[..2], [None, None]);
+        assert_eq!(dims3(&out)[..2], [Some(100), Some(50)]);
     }
 
     #[test]
