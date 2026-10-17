@@ -69,7 +69,7 @@ impl<M: Mode> ConvolveOp<M> {
         let side = self.side();
         if side * side != len || side.is_multiple_of(2) {
             return Err(format!(
-                "convolve2d kernel length {len} must be the square of an odd \
+                "convolve2d: kernel length {len} must be the square of an odd \
                  number (9 for 3x3, 25 for 5x5, ...)"
             ));
         }

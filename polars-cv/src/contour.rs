@@ -27,7 +27,7 @@ use crate::geom_columns::{BBoxColumn, ContourColumn, PointColumn};
 use crate::geom_fns::{BBoxFn, ContourFn};
 use crate::geom_params::{check_range, parsed_as_another, GeomKwargs, GeomParams};
 use crate::ops::{ColumnRef, Param};
-use view_buffer::mode::Wire;
+use view_buffer::mode::{Exec, Wire};
 use view_buffer::GeometryOp;
 
 // ============================================================================
@@ -494,9 +494,10 @@ fn contour_largest(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series
             return Ok(None);
         };
         let k = params.value(k, i)?;
-        if k == 0 {
-            polars_bail!(ComputeError: "largest: k must be >= 1, got 0 (row {})", i);
-        }
+        // The op's own rule, once: as the pipeline step resolves it.
+        GeometryOp::<Exec>::Largest { k }
+            .check()
+            .map_err(|e| polars_err!(ComputeError: "{} (row {})", e, i))?;
         Ok(Some(transforms::largest(&row, k as usize)))
     })?;
     Contour::column(

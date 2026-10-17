@@ -768,13 +768,14 @@ pub enum RegionOp {
 }
 
 impl RegionOp {
-    /// The op's name, as both surfaces spell it.
+    /// The op's engine name, as the executor names every step in a row
+    /// error (`Offset:`, `Histogram:`).
     pub fn name(self) -> &'static str {
         match self {
-            RegionOp::Union => "union",
-            RegionOp::Intersection => "intersection",
-            RegionOp::Difference => "difference",
-            RegionOp::SymmetricDifference => "symmetric_difference",
+            RegionOp::Union => "Union",
+            RegionOp::Intersection => "Intersection",
+            RegionOp::Difference => "Difference",
+            RegionOp::SymmetricDifference => "SymmetricDifference",
         }
     }
 }

@@ -12,7 +12,7 @@ use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
 use crate::ops::Domain;
 
-use crate::mode::{Exec, FieldType, Literal, Mode, Param, TypeDesc, Wire};
+use crate::mode::{known, Exec, FieldType, Literal, Mode, Param, TypeDesc, Wire};
 use crate::naming::Bound;
 use polars_cv_macros::{Ops, Resolve};
 
@@ -137,10 +137,27 @@ impl FieldType for Bins<Wire> {
     }
 }
 
+/// `range`'s one rule: finite ends, the first not past the second. The
+/// message names no op; `check` and the executor each name it once.
+fn check_range(min: f64, max: f64) -> Result<(), String> {
+    if !(min.is_finite() && max.is_finite()) {
+        return Err(format!("range [{min}, {max}] is not finite"));
+    }
+    if min > max {
+        return Err(format!("range min {min} must not exceed max {max}"));
+    }
+    Ok(())
+}
+
 impl<M: Mode> HistogramOp<M> {
-    /// Every histogram parameter is independent; the counts are checked by
-    /// `validate`.
+    /// A known `range` no row can bin into ([`check_range`]); the counts are
+    /// checked by `validate`. A per-row range is checked with its row.
     pub fn check(&self) -> Result<(), String> {
+        if let Some([min, max]) = &self.range {
+            if let (Some(min), Some(max)) = (known::<M, f64>(min), known::<M, f64>(max)) {
+                check_range(min, max).map_err(|e| format!("histogram: {e}"))?;
+            }
+        }
         Ok(())
     }
 
@@ -274,18 +291,11 @@ impl HistogramOp {
         }
         let to_f64 = |x: T| -> f64 { num_traits::NumCast::from(x).unwrap_or(f64::NAN) };
         let (lo, hi) = match self.value_range() {
-            Some((min, max)) if min.is_finite() && max.is_finite() => {
-                if min > max {
-                    return Err(format!(
-                        "histogram: range min {min} must not exceed max {max}"
-                    ));
-                }
-                (min, max)
-            }
+            // `check` refused a bad range already; an engine caller that
+            // skipped it meets the same rule here.
             Some((min, max)) => {
-                return Err(format!(
-                    "histogram: supplied range of [{min}, {max}] is not finite"
-                ));
+                check_range(min, max)?;
+                (min, max)
             }
             None => {
                 // The extremes as elements, so the edges can contain them

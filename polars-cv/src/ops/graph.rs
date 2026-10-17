@@ -550,14 +550,14 @@ impl<M: Mode> GraphOp<M> {
             GraphOp::AssertShape { dims, exact } => {
                 let exact = M::lit(exact);
                 if dims.iter().all(Option::is_none) && !(exact && !dims.is_empty()) {
-                    return Err("assert_shape() declares nothing: give dims=[...] or \
+                    return Err("assert_shape: declares nothing; give dims=[...] or \
                                 height=/width=/channels="
                         .into());
                 }
                 for (axis, d) in dims.iter().enumerate() {
                     if d.as_ref().and_then(view_buffer::mode::known::<M, u32>) == Some(0) {
                         return Err(format!(
-                            "assert_shape({}=0): each size must be a positive int or None",
+                            "assert_shape: {}=0, but each size must be a positive int or None",
                             crate::plan::declared_name(axis, exact)
                         ));
                     }

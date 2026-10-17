@@ -176,9 +176,9 @@ def _indent(text: str, prefix: str) -> str:
     return "\n".join(prefix + line if line.strip() else "" for line in text.split("\n"))
 
 
-def docstring(op: dict[str, Any]) -> str:
+def docstring(op: dict[str, Any], returns: str | None = None) -> str:
     """The op doc with its ``Domain:`` line and a Google ``Args:`` block from
-    the field docs."""
+    the field docs (and a ``Returns:`` block, when given)."""
     lines = op["doc"].split("\n")
     at = next((i for i, line in enumerate(lines) if _SECTION.match(line)), len(lines))
     args = []
@@ -192,6 +192,8 @@ def docstring(op: dict[str, Any]) -> str:
             subsequent_indent="        ",
         )
     block = ["Args:", *args] if args else []
+    if returns:
+        block += ["", "Returns:", f"    {returns}"]
     body = lines[:at]
     while body and not body[-1].strip():
         body.pop()
@@ -298,7 +300,11 @@ def contour_operand_method(op: dict[str, Any]) -> str:
     own docstring (one declaration), over a contour column operand."""
     (field,) = op["fields"]
     name = field["name"]
-    doc = _indent(docstring(op), "        ").lstrip()
+    # The op's own text and field docs; not its pipeline `Domain:` line, which
+    # describes a pipeline step, not this expression.
+    accessor = {key: value for key, value in op.items() if key != "domains"}
+    returns = "A contour set (``List[Contour]``) per row: disjoint regions."
+    doc = _indent(docstring(accessor, returns), "        ").lstrip()
     return (
         f"    def {op['python']}(self, {name}: pl.Expr) -> pl.Expr:\n"
         f'        """{doc}\n        """\n'
@@ -494,22 +500,21 @@ def render(
     )
     lazy_methods = "\n".join(lazy_method(op) for op in catalog if is_binary(op))
     geom_methods = geom_mixins(geom, catalog)
-    # Every enum this module defines: what `_types` re-exports (`import *`).
-    enum_names = sorted(
-        [e["name"] for e in enums if e["name"] not in NOT_GENERATED]
-        + ["SourceFormat", "SinkFormat"]
-    )
+    # Every enum this module defines, by name: `__all__` is read from the same
+    # list that writes the classes, which is what `_types` re-exports.
+    enum_classes = [
+        (e["name"], named_enum(e)) for e in enums if e["name"] not in NOT_GENERATED
+    ] + [
+        ("SourceFormat", format_enum("SourceFormat", "source", io["sources"])),
+        ("SinkFormat", format_enum("SinkFormat", "sink", io["sinks"])),
+    ]
+    enum_names = sorted(name for name, _ in enum_classes)
     text = (
         _HEADER.format(imports=_imports(methods + lazy_methods + geom_methods))
         + "\n\n#: The generated enums, which ``_types`` re-exports.\n"
         + f"__all__ = {enum_names!r}\n"
         + "\n\n"
-        + "".join(
-            named_enum(e) + "\n\n" for e in enums if e["name"] not in NOT_GENERATED
-        )
-        + format_enum("SourceFormat", "source", io["sources"])
-        + "\n\n"
-        + format_enum("SinkFormat", "sink", io["sinks"])
+        + "\n\n".join(text for _, text in enum_classes)
         + "\n\n#: Ops whose wire form is typed (bare values and slots).\n"
         + f"TYPED_OPS: frozenset[str] = frozenset({names!r})\n\n"
         + "#: Every optimisation pass, in the order they apply: (name, tier, summary).\n"
@@ -527,7 +532,11 @@ def render(
             {
                 op["name"]: defaults
                 for op in catalog
-                if (defaults := {f["name"]: f["default"] for f in op["fields"] if "default" in f})
+                if (
+                    defaults := {
+                        f["name"]: f["default"] for f in op["fields"] if "default" in f
+                    }
+                )
             }
         )
         + "\n\n"

@@ -172,6 +172,12 @@ class _GeomNamespace(_PluginNamespace):
         from polars_cv.expressions import CvNamespace
         from polars_cv.pipeline import Pipeline
 
+        if not isinstance(other, pl.Expr):
+            msg = (
+                f"{op}(other=): a contour column, as a pl.Expr, got "
+                f"{type(other).__name__}"
+            )
+            raise TypeError(msg)
         source = Pipeline().source("contour").on_error(self._on_error)
         left = CvNamespace(self._expr).pipe(source)
         right = CvNamespace(other).pipe(source)

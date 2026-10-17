@@ -53,6 +53,8 @@ REFUSALS = {
         "extract_contours",
         lambda: _image().grayscale().extract_contours(min_area_fraction=2.0),
     ),
+    "convolve2d": ("convolve2d", lambda: _image().convolve2d([1.0] * 4)),
+    "assert_shape": ("assert_shape", lambda: _image().assert_shape()),
     ".contour.densify": ("densify", lambda: pl.col("c").contour.densify(0.0)),
     ".contour.stroke": ("stroke", lambda: pl.col("c").contour.stroke(width=0.0)),
     ".contour.largest": ("largest", lambda: pl.col("c").contour.largest(k=0)),
@@ -124,3 +126,119 @@ def test_op_defaults_are_the_catalogues() -> None:
     assert getattr(_ops_generated, "OP_DEFAULTS", None) == {
         op: fields for op, fields in declared.items() if fields
     }
+
+
+def _png(height: int = 4, width: int = 4) -> bytes:
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.fromarray(np.zeros((height, width), np.uint8)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("lo", "hi", "reason"),
+    [(5.0, 1.0, "range min 5 must not exceed max 1"), (0.0, math.inf, "not finite")],
+)
+def test_a_histogram_range_no_row_can_use_is_refused_by_its_check(lo, hi, reason):
+    """Refused at build for a literal and with its row for an expression,
+    named once either way (it was refused only while running, as
+    ``Histogram: histogram: ...``)."""
+    with pytest.raises(ValueError, match=rf"^histogram: .*{reason}"):
+        _image().grayscale().histogram(range=(lo, hi))
+    df = pl.DataFrame({"i": [_png()], "lo": [lo], "hi": [hi]})
+    pipe = _image().grayscale().histogram(range=(pl.col("lo"), pl.col("hi")))
+    with pytest.raises(pl.exceptions.ComputeError, match=reason) as raised:
+        df.select(pl.col("i").cv.pipe(pipe).sink("native"))
+    assert not re.search(r"histogram: histogram:", str(raised.value), re.I)
+
+
+@pytest.mark.parametrize("supersample", [0, 17])
+def test_rasterize_onto_another_nodes_canvas_checks_its_row(supersample: int) -> None:
+    """``rasterize(shape=...)`` resolves its per-row values on its own path;
+    they meet the op's check there too (0 hit an engine assert, 17 ran past
+    the 1..16 bound)."""
+    from polars_cv.geometry.schemas import CONTOUR_SCHEMA
+
+    square = {
+        "exterior": [{"x": 0.0, "y": 0.0}, {"x": 2.0, "y": 0.0}, {"x": 2.0, "y": 2.0}],
+        "holes": [],
+        "is_closed": True,
+    }
+    df = pl.DataFrame(
+        {"c": [square], "i": [_png()], "s": [supersample]},
+        schema={"c": CONTOUR_SCHEMA, "i": pl.Binary, "s": pl.Int64},
+    )
+    canvas = pl.col("i").cv.pipe(_image())
+    mask = pl.col("c").cv.pipe(
+        _contour().rasterize(shape=canvas, supersample=pl.col("s"))
+    )
+    with pytest.raises(
+        pl.exceptions.ComputeError, match="supersample must be between 1 and 16"
+    ) as raised:
+        df.select(mask.sink("numpy"))
+    assert "panicked" not in str(raised.value)
+
+
+def _contour_frame(contours: list[dict], **columns) -> pl.DataFrame:
+    from polars_cv.geometry.schemas import CONTOUR_SET_SCHEMA
+
+    return pl.DataFrame(
+        {"c": [contours], **{k: [v] for k, v in columns.items()}},
+        schema={"c": CONTOUR_SET_SCHEMA, **{k: pl.Int64 for k in columns}},
+    )
+
+
+_SQUARE = {
+    "exterior": [{"x": 0.0, "y": 0.0}, {"x": 4.0, "y": 0.0}, {"x": 4.0, "y": 4.0}],
+    "holes": [],
+    "is_closed": True,
+}
+_LINE = {**_SQUARE, "is_closed": False}
+
+
+def test_a_per_row_value_is_refused_by_the_same_rule_as_a_literal() -> None:
+    """``largest(k=0)`` per row is the rule its build check states, once (its
+    accessor kept a second copy with other wording)."""
+    with pytest.raises(ValueError) as built:
+        pl.col("c").contour.largest(k=0)
+    rule = str(built.value)
+    with pytest.raises(pl.exceptions.ComputeError) as ran:
+        _contour_frame([_SQUARE], k=0).select(
+            pl.col("c").contour.largest(k=pl.col("k"))
+        )
+    assert f"{rule} (row 0)" in str(ran.value), (rule, str(ran.value))
+
+
+@pytest.mark.parametrize(
+    ("build", "engine_name"),
+    [
+        (lambda c: c.offset(1.0), "Offset"),
+        (lambda c: c.union_all(), "UnionAll"),
+        (lambda c: c.area(), "Area"),
+    ],
+)
+def test_an_execution_error_names_its_step_as_every_step_does(build, engine_name):
+    """A row refused while running is named by the engine's op name, the
+    executor's one convention (``Offset:``, ``Histogram:``)."""
+    pipe = build(_contour())
+    with pytest.raises(
+        pl.exceptions.ComputeError, match=rf"{engine_name}: an open contour"
+    ):
+        _contour_frame([_LINE]).select(pl.col("c").cv.pipe(pipe).sink("native"))
+
+
+@pytest.mark.parametrize(
+    ("op", "engine_name"),
+    [("union", "Union"), ("symmetric_difference", "SymmetricDifference")],
+)
+def test_a_set_operation_names_its_step_as_every_step_does(op, engine_name):
+    left = pl.col("c").cv.pipe(_contour())
+    right = pl.col("c").cv.pipe(_contour())
+    with pytest.raises(
+        pl.exceptions.ComputeError, match=rf"{engine_name}: an open contour"
+    ):
+        _contour_frame([_LINE]).select(getattr(left, op)(right).sink("native"))
