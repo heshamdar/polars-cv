@@ -230,27 +230,21 @@ def _to_python(value: Any) -> Any:
     return value
 
 
-def _literal(value: Any, where: str) -> Any:
-    """A literal argument as its wire value (:func:`_to_python`), refusing a
-    non-finite float, element by element through a sequence.
+def _literal(value: Any) -> Any:
+    """A literal argument as its wire value (:func:`_to_python`), a
+    non-finite float spelled ``"nan"``, ``"inf"`` or ``"-inf"``, element by
+    element through a sequence.
 
     JSON — the wire every op and geometry call crosses — has no NaN or
-    infinity, so such a literal could only fail later, as the decoder's
-    "expected value at line 1 column N", naming neither the op nor the
-    parameter. A value a row needs is passed through an expression, where
-    the op checks it with its own rule. (A ``bound`` spells its infinities
-    as strings before reaching here.)
+    infinity; every float field reads these spellings (``naming.rs``), so a
+    non-finite literal meets the op's own check, exactly as the same value
+    passed per row through an expression does.
     """
     if isinstance(value, (list, tuple)):
-        return [_literal(v, f"{where}[{i}]") for i, v in enumerate(value)]
+        return [_literal(v) for v in value]
     value = _to_python(value)
     if isinstance(value, float) and not math.isfinite(value):
-        msg = (
-            f"{where}: {value} is not a finite number, which no literal can carry "
-            "(the wire format, JSON, has no NaN or infinity); pass a value a row "
-            "needs through an expression"
-        )
-        raise ValueError(msg)
+        return "nan" if math.isnan(value) else ("inf" if value > 0 else "-inf")
     return value
 
 
