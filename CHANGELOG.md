@@ -9,6 +9,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **A second logo: a halftone polar bear**
+  (`docs/assets/logo/halftone_logo.py`). The bear's face is a table of polar
+  curves `r(θ)` evaluated by a polars query (`int_ranges`, expressions,
+  `group_by`), and it is printed as a halftone by one polars-cv graph: a
+  signed distance field sets each cell's dot radius (sampled per cell by a
+  `resize` down and a `nearest` resize up), and `coordinate_grid` minus its
+  `floor` places the dots. Writes a lockup with the existing wordmark and a
+  square mark; `tests/test_halftone_logo.py` holds both to the pixels that
+  make them a bear.
+
 - **"Drawing with polars-cv" guide, and the logo rebuilt on the drawing ops**
   (CR-101). The guide (`docs/user-guide/drawing.md`) covers shapes as data,
   filling and stroking, the shaping and set operations, fields over pixels,
