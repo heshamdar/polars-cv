@@ -2681,3 +2681,40 @@ def test_sugar_appends_exactly_the_ops_it_declares() -> None:
         assert tuple(head) == required and set(tail) <= set(optional), (
             f"{name} appends {appended}, declared {required} then any of {optional}"
         )
+
+
+@plugin_required
+def test_sugar_defaults_are_their_ops_defaults() -> None:
+    """A sugar method's parameter named for a field of an op it declares
+    defaults to that field's default, as the Rust definition states it.
+
+    Sugar re-declares its signature by hand (``rasterize(supersample=1)``,
+    ``morphology_open(footprint="square")``), so a default changed in the op
+    would otherwise leave the sugar quietly passing the old one. Read from the
+    catalogue (``op_catalog``), the one place defaults are declared.
+    """
+    import inspect
+
+    from polars_cv._lib import op_catalog
+    from polars_cv.pipeline import SUGAR_OPS
+
+    defaults = {
+        op["name"]: {f["name"]: f["default"] for f in op["fields"] if "default" in f}
+        for op in json.loads(op_catalog())
+    }
+    checked, mismatched = 0, []
+    for name, (required, optional) in SUGAR_OPS.items():
+        params = inspect.signature(getattr(Pipeline, name)).parameters
+        for op in (*required, *optional):
+            for field, default in defaults[op].items():
+                param = params.get(field)
+                if param is None or param.default is inspect.Parameter.empty:
+                    continue
+                checked += 1
+                if param.default != default:
+                    mismatched.append(
+                        f"{name}({field}={param.default!r}), but {op} defaults "
+                        f"{field} to {default!r}"
+                    )
+    assert checked >= 5, f"only {checked} defaults compared; the scan matches nothing"
+    assert not mismatched, "\n".join(mismatched)
