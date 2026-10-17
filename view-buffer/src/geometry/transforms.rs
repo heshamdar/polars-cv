@@ -681,10 +681,23 @@ mod boundary_close_tests {
 // Shaping: offset, union, smoothing, densifying, stroking (CR-98)
 // ============================================================================
 
-/// The largest gap, in pixels, between a round join's or cap's arc and the
-/// polygon standing in for it: a 64th of a pixel, under the finest sample
-/// spacing `rasterize` takes (a 16th).
+/// The gap, in pixels, a round join's or cap's polygon aims for against its
+/// true arc: a 64th of a pixel, under the finest sample spacing `rasterize`
+/// takes (a 16th). Held up to a radius of about 32 pixels; see
+/// [`arc_tolerance`] for larger ones.
 pub const ARC_TOLERANCE: f64 = 1.0 / 64.0;
+
+/// The finest angle step `i_overlay` takes along a round arc, whatever it is
+/// asked for (`LineJoin::normalize` / `LineCap::normalize` clamp to it).
+const FINEST_ARC_STEP: f64 = 0.01 * std::f64::consts::PI;
+
+/// The largest gap between an arc of `radius` and its polygon: [`ARC_TOLERANCE`],
+/// or, past a radius of about 32 pixels where `i_overlay`'s finest step
+/// ([`FINEST_ARC_STEP`]) is reached, `r (1 − cos 0.01π)`, about `r / 2000`
+/// (0.12 pixel at 1000). The documented bound of `offset` and `stroke`.
+pub fn arc_tolerance(radius: f64) -> f64 {
+    ARC_TOLERANCE.max(radius.abs() * (1.0 - FINEST_ARC_STEP.cos()))
+}
 
 /// A miter join is cut off where its point would reach more than this many
 /// half-widths (or offset distances) from the corner: SVG's default, which
@@ -811,11 +824,13 @@ pub fn offset<C: Borrow<Contour>>(
     Ok(regions_of(&union.buffer_with_style(style)))
 }
 
-/// The most points one outline a shaping op (`smooth`, `densify`) may make:
-/// 2^22, 64 MiB of coordinates. Both ops multiply points by a parameter (a
-/// pass doubles them; a short segment length splits every edge), so a value
-/// in a row could otherwise ask for more memory than exists, and an
-/// allocation that fails aborts the process instead of failing the row.
+/// The most points a shaping op (`smooth`, `densify`) may make for one row's
+/// contour set: 2^22, 64 MiB of coordinates. Both ops multiply points by a
+/// parameter (a pass doubles them; a short segment length splits every
+/// edge), so a value in a row could otherwise ask for more memory than
+/// exists, and an allocation that fails aborts the process instead of
+/// failing the row. Counted over the whole set: thousands of traced
+/// contours each within it could together exceed it.
 pub const MAX_POINTS: usize = 1 << 22;
 
 /// `Ok` when an op's `points` (counted in f64, which cannot overflow) are
@@ -826,7 +841,7 @@ fn within_point_budget(op: &str, points: f64, asked: String) -> Result<(), Strin
     }
     Err(format!(
         "{op}: {asked} would make about {points:.2e} points, past the {MAX_POINTS} \
-         one contour may hold"
+         one row's contours may hold"
     ))
 }
 
@@ -835,18 +850,28 @@ fn within_point_budget(op: &str, points: f64, asked: String) -> Result<(), Strin
 /// rings cut their closing edge too; an open line keeps its two ends, unless
 /// it returns to its first point, when it has no ends and is cut through it.
 ///
-/// Each pass at most doubles every path's points, so `points · 2^iterations`
-/// is held to [`MAX_POINTS`] before any pass runs.
-pub fn smooth(outline: &Outline, iterations: u32) -> Result<Outline, String> {
-    let points = outline.vertices().count().max(1) as f64 * 2f64.powf(f64::from(iterations));
+/// One result per member of the set (a row). Each pass at most doubles
+/// every path's points, so the set's `points · 2^iterations` is held to
+/// [`MAX_POINTS`] before any pass runs.
+pub fn smooth<O: Borrow<Outline>>(outlines: &[O], iterations: u32) -> Result<Vec<Outline>, String> {
+    let vertices: usize = outlines
+        .iter()
+        .map(|o| o.borrow().vertices().count().max(1))
+        .sum();
+    let points = vertices as f64 * 2f64.powf(f64::from(iterations));
     within_point_budget("smooth", points, format!("{iterations} passes"))?;
     let n = iterations as usize;
-    Ok(match outline {
-        Outline::Closed(c) => Outline::Closed(Contour::from_geo(&c.to_geo().chaikin_smoothing(n))),
-        Outline::Open(points) => {
-            Outline::Open(line_from_geo(&line_to_geo(points).chaikin_smoothing(n)))
-        }
-    })
+    Ok(outlines
+        .iter()
+        .map(|outline| match outline.borrow() {
+            Outline::Closed(c) => {
+                Outline::Closed(Contour::from_geo(&c.to_geo().chaikin_smoothing(n)))
+            }
+            Outline::Open(points) => {
+                Outline::Open(line_from_geo(&line_to_geo(points).chaikin_smoothing(n)))
+            }
+        })
+        .collect())
 }
 
 /// `densify(max_segment_length)`'s one rule for the value it takes.
@@ -862,13 +887,18 @@ pub fn check_max_segment_length(max_segment_length: f64) -> Result<(), String> {
 
 /// Each edge split into `ceil(L / max_segment_length)` equal parts
 /// (`densify()`), every vertex kept: a region's closing edges included, an
-/// open line's ends joined by nothing.
-pub fn densify(outline: &Outline, max_segment_length: f64) -> Result<Outline, String> {
+/// open line's ends joined by nothing. One result per member of the set (a
+/// row), whose points are held to [`MAX_POINTS`] before any is made.
+pub fn densify<O: Borrow<Outline>>(
+    outlines: &[O],
+    max_segment_length: f64,
+) -> Result<Vec<Outline>, String> {
     check_max_segment_length(max_segment_length)?;
     // Every vertex is kept and each edge adds `ceil(L / max) - 1`, counted
     // before any point is made.
-    let points: f64 = outline
-        .paths()
+    let points: f64 = outlines
+        .iter()
+        .flat_map(|o| o.borrow().paths())
         .map(|(points, closed)| {
             let closing = closed.then(|| points.last().zip(points.first())).flatten();
             let edges = points.windows(2).map(|e| (&e[0], &e[1])).chain(closing);
@@ -883,14 +913,17 @@ pub fn densify(outline: &Outline, max_segment_length: f64) -> Result<Outline, St
         points,
         format!("max_segment_length={max_segment_length}"),
     )?;
-    Ok(match outline {
-        Outline::Closed(c) => Outline::Closed(Contour::from_geo(
-            &Euclidean.densify(&c.to_geo(), max_segment_length),
-        )),
-        Outline::Open(points) => Outline::Open(line_from_geo(
-            &Euclidean.densify(&line_to_geo(points), max_segment_length),
-        )),
-    })
+    Ok(outlines
+        .iter()
+        .map(|outline| match outline.borrow() {
+            Outline::Closed(c) => Outline::Closed(Contour::from_geo(
+                &Euclidean.densify(&c.to_geo(), max_segment_length),
+            )),
+            Outline::Open(points) => Outline::Open(line_from_geo(
+                &Euclidean.densify(&line_to_geo(points), max_segment_length),
+            )),
+        })
+        .collect())
 }
 
 /// How `stroke()` draws a path: its width, ends and corners.
@@ -960,7 +993,8 @@ fn stroke_path(points: &[Point], closed: bool, style: &Stroke) -> Vec<Contour> {
 /// `stroke()`: the region a set's paths cover when stroked, as disjoint
 /// regions (always a set). Every member is read as its outline: an open line
 /// with `cap` at its ends (or, returning to its first point, as a closed
-/// path), a region's rings each as a closed path. A region is not filled:
+/// path), a region's rings each as a closed path. A ring of fewer than two
+/// points has no edge and covers nothing; a one-point line is a dot. A region is not filled:
 /// `stroke(...).rasterize()` draws outlines, and a filled region is
 /// rasterized as itself.
 pub fn stroke<O: Borrow<Outline>>(outlines: &[O], style: &Stroke) -> Result<Vec<Contour>, String> {
@@ -968,6 +1002,12 @@ pub fn stroke<O: Borrow<Outline>>(outlines: &[O], style: &Stroke) -> Result<Vec<
     let mut parts = Vec::new();
     for outline in outlines {
         for (points, closed) in outline.borrow().paths() {
+            // A closed path of fewer than two points has no edge, and no ends
+            // to cap: it covers nothing (`i_overlay` underflows on an empty
+            // one). A one-point *open* line is still a dot, its caps.
+            if closed && points.len() < 2 {
+                continue;
+            }
             let loop_line = !closed && points.len() > 2 && points.first() == points.last();
             parts.extend(if loop_line {
                 stroke_path(&points[..points.len() - 1], true, style)
@@ -1064,7 +1104,7 @@ mod shaping_tests {
             Point::new(4.0, 0.0),
             Point::new(4.0, 4.0),
         ]);
-        let Outline::Open(out) = smooth(&line, 1).unwrap() else {
+        let [Outline::Open(out)] = &smooth(&[&line], 1).unwrap()[..] else {
             panic!("stays open")
         };
         // Each edge gives its quarter and three-quarter points, in order.
@@ -1077,32 +1117,57 @@ mod shaping_tests {
             (4.0, 4.0),
         ];
         assert_eq!(out.iter().map(|p| (p.x, p.y)).collect::<Vec<_>>(), want);
-        assert_eq!(smooth(&line, 0).unwrap(), line);
+        assert_eq!(smooth(&[&line], 0).unwrap(), std::slice::from_ref(&line));
         // A pass doubles the points: the budget refuses before running.
-        let err = smooth(&line, 40).unwrap_err();
+        let err = smooth(&[&line], 40).unwrap_err();
         assert!(
             err.contains("smooth: 40 passes") && err.contains("4194304"),
             "{err}"
         );
-        assert!(smooth(&line, u32::MAX).is_err());
+        assert!(smooth(&[&line], u32::MAX).is_err());
     }
 
     #[test]
     fn densify_splits_each_edge_equally() {
         let sq = Outline::Closed(rect(0.0, 0.0, 4.0, 4.0));
-        let Outline::Closed(out) = densify(&sq, 1.5).unwrap() else {
+        let [Outline::Closed(out)] = &densify(&[&sq], 1.5).unwrap()[..] else {
             panic!("stays closed")
         };
         // Each 4-long edge, the closing one too, in three parts.
         assert_eq!(out.exterior.len(), 12);
-        assert!(densify(&sq, 0.0).is_err());
-        assert!(densify(&sq, f64::INFINITY).is_err());
+        assert!(densify(&[&sq], 0.0).is_err());
+        assert!(densify(&[&sq], f64::INFINITY).is_err());
         // 16 units of perimeter in 1e-9 steps: refused before splitting.
-        let err = densify(&sq, 1e-9).unwrap_err();
+        let err = densify(&[&sq], 1e-9).unwrap_err();
         assert!(
             err.contains("densify: max_segment_length=") && err.contains("4194304"),
             "{err}"
         );
+    }
+
+    /// `arc_tolerance` is the bound the geometry keeps, and is reached past
+    /// `i_overlay`'s finest step: each edge midpoint of a round offset of a
+    /// square lies within it of the true boundary.
+    #[test]
+    fn a_round_offset_keeps_arc_tolerance() {
+        for d in [3.0, 31.0, 200.0, 1000.0] {
+            let grown = offset(&[rect(0.0, 0.0, 10.0, 10.0)], d, LineJoin::Round).unwrap();
+            let ring = &grown[0].exterior;
+            let worst = ring
+                .iter()
+                .zip(ring.iter().cycle().skip(1))
+                .map(|(a, b)| {
+                    let (x, y) = ((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
+                    let dx = (-x).max(0.0).max(x - 10.0);
+                    let dy = (-y).max(0.0).max(y - 10.0);
+                    d - dx.hypot(dy)
+                })
+                .fold(0.0, f64::max);
+            assert!(worst <= arc_tolerance(d) + 1e-9, "gap {worst} at {d}");
+            if d >= 200.0 {
+                assert!(worst > ARC_TOLERANCE, "the cap is reached at {d}");
+            }
+        }
     }
 
     #[test]

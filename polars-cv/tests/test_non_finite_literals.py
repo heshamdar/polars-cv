@@ -140,17 +140,10 @@ def test_an_op_refuses_a_value_by_its_own_rule(value: float) -> None:
         Pipeline().source("contour").offset(value)
 
 
-def test_a_geometry_literal_reaches_the_functions_check() -> None:
-    from polars_cv.geometry.schemas import CONTOUR_SET_SCHEMA
-
-    square = {
-        "exterior": [{"x": 0.0, "y": 0.0}, {"x": 4.0, "y": 0.0}, {"x": 4.0, "y": 4.0}],
-        "holes": [],
-        "is_closed": True,
-    }
-    df = pl.DataFrame({"c": [[square]]}, schema={"c": CONTOUR_SET_SCHEMA})
-    with pytest.raises(pl.exceptions.ComputeError, match="distance must be finite"):
-        df.select(pl.col("c").contour.offset(math.inf))
+def test_a_geometry_literal_meets_the_functions_check_at_build() -> None:
+    """The accessor refuses it as the pipeline op does: when written."""
+    with pytest.raises(ValueError, match="distance must be finite"):
+        pl.col("c").contour.offset(math.inf)
 
 
 def test_a_bound_takes_an_infinity_and_refuses_a_nan() -> None:

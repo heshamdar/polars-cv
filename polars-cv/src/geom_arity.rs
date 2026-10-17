@@ -316,16 +316,30 @@ pub(crate) fn map_contours<T: ReadContour, R: ContourOutput + Send>(
     elem: DataType,
     compute: impl Fn(&T, &GeomParams, usize) -> PolarsResult<R> + Sync,
 ) -> PolarsResult<Series> {
+    map_contour_rows(series, params, elem, |contours: &[T], params, i| {
+        contours
+            .iter()
+            .map(|contour| compute(contour, params, i))
+            .collect()
+    })
+}
+
+/// [`map_contours`] a row at a time: `compute` sees the row's whole set and
+/// returns one result per member, for a rule that holds over the row (the
+/// shaping ops' point budget). A single-contour column passes a set of one,
+/// and a result count that differs is refused by the column builder.
+pub(crate) fn map_contour_rows<T: ReadContour, R: ContourOutput + Send>(
+    series: &Series,
+    params: &GeomParams,
+    elem: DataType,
+    compute: impl Fn(&[T], &GeomParams, usize) -> PolarsResult<Vec<R>> + Sync,
+) -> PolarsResult<Series> {
     let column = ContourColumn::new(series);
     let rows = params.map_rows(series.len(), |params, i| {
         let Some(contours) = T::read(&column, i)? else {
             return Ok(None);
         };
-        contours
-            .iter()
-            .map(|contour| compute(contour, params, i))
-            .collect::<PolarsResult<Vec<R>>>()
-            .map(Some)
+        compute(&contours, params, i).map(Some)
     })?;
     R::column(series.name().clone(), rows, column.arity(), &elem)
 }
@@ -414,6 +428,8 @@ pub(crate) fn zip_contours<T: ReadContour, R: ContourOutput + Send>(
 /// the `GeometryOp` a pipeline op shares — see `geom_fns`), and destructures
 /// it; the body reads a per-row field through `params.value(field, row)`:
 ///
+/// - `rows` — as `map`, the body seeing the row's whole set and returning a
+///   result per member (a rule over the row, such as a point budget);
 /// - `map` — one contour column, per-row values resolved under
 ///   [`GeomParams::row`];
 /// - `zip` — two contour columns (the second a `ColumnRef` operand of the
@@ -444,6 +460,34 @@ macro_rules! contour_accessor {
                 &geom_params,
                 $elem,
                 |$c, $params, $row| $body,
+            )
+        }
+    };
+
+    (
+        $(#[$meta:meta])*
+        rows fn $name:ident / $out_ty:ident -> $elem:expr;
+        reads $read:ty;
+        parse $fam:ident :: $var:ident $({ $($field:ident),* })?;
+        |$set:ident, $params:ident, $row:ident| $body:expr
+    ) => {
+        fn $out_ty(input_fields: &[Field]) -> PolarsResult<Field> {
+            $crate::geom_arity::elementwise_field(input_fields, stringify!($name), $elem)
+        }
+        $(#[$meta])*
+        #[polars_expr(output_type_func=$out_ty)]
+        fn $name(inputs: &[Series], kwargs: $crate::geom_params::GeomKwargs) -> PolarsResult<Series> {
+            let (op, geom_params) = $crate::geom_params::GeomParams::parse::<
+                $fam<::view_buffer::mode::Wire>,
+            >(inputs, kwargs, stringify!($name))?;
+            let $fam::$var $({ $($field),* })? = &op else {
+                return Err($crate::geom_params::parsed_as_another(stringify!($name)));
+            };
+            $crate::geom_arity::map_contour_rows::<$read, _>(
+                &inputs[0],
+                &geom_params,
+                $elem,
+                |$set, $params, $row| $body,
             )
         }
     };

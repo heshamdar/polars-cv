@@ -298,7 +298,9 @@ definition (`stroke`, the fifth, is under [Drawing lines](#drawing-lines)):
   leave none — the result is always a set. Convex corners turn by `join`
   (`"round"`, `"miter"` — cut off past 4 times the distance, SVG's default
   limit — or `"bevel"`); concave ones stay sharp. Round arcs are polygons
-  within 1/64 pixel of the true arc.
+  within 1/64 pixel of the true arc up to a radius of about 32 pixels, and
+  within about `r / 2000` beyond (0.12 pixel at 1000), the finest arc the
+  polygon engine draws.
 - `union_all()` merges a set's regions into disjoint ones (a hole another
   member covers is filled) — always a set.
 - `smooth(iterations=1)` rounds corners by Chaikin's corner cutting: each pass

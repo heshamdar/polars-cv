@@ -766,8 +766,13 @@ pub fn check_call(name: &str, args: serde_json::Value) -> Result<(), String> {
         .or_else(|| parsed(<PointFn<Wire> as WireOps>::from_wire(name, args.clone())))
         .or_else(|| parsed(<BBoxFn<Wire> as WireOps>::from_wire(name, args.clone())))
         .or_else(|| {
+            // An op-backed accessor is the op: its own check refuses a value
+            // no row can use, here as the pipeline op's builder does.
             op_backed
-                .then(|| parsed(<GeometryOp<Wire> as WireOps>::from_wire(name, args)))
+                .then(|| {
+                    <GeometryOp<Wire> as WireOps>::from_wire(name, args)
+                        .map(|op| op.and_then(|op| op.check()))
+                })
                 .flatten()
         })
         .unwrap_or_else(|| Err(format!("'{name}' is not a geometry accessor function")))

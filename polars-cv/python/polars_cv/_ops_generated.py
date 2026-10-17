@@ -1743,7 +1743,8 @@ class _OpsMixin:
         The set is read as one union, so growing can merge regions and
         shrinking can split them or leave none: the result is always a set.
         Convex corners turn by *join*; concave ones stay sharp. Round arcs are
-        polygons within 1/64 pixel of the true arc. An open contour is refused.
+        polygons within 1/64 pixel of the true arc, or about ``distance / 2000``
+        past a distance of 32 pixels. An open contour is refused.
 
         Domain: contour → contour
 
@@ -1821,9 +1822,11 @@ class _OpsMixin:
         and its corners by *join*. Every member is read as its outline: an
         open line, capped at its ends (one returning to its first point, as
         ``boundary()`` draws one, is a closed path), and a region's rings,
-        each a closed path with no ends. The result is always a set, filled
+        each a closed path with no ends. A ring of fewer than two points has
+        no edge and covers nothing; a one-point line is a dot (its caps). The result is always a set, filled
         by ``rasterize()``: ``stroke(width=2).rasterize(...)`` draws lines and
-        outlines. Round arcs are polygons within 1/64 pixel of the true arc.
+        outlines. Round arcs are polygons within 1/64 pixel of the true arc,
+        or about ``width / 4000`` past a width of 64 pixels.
 
         Domain: contour → contour
 
@@ -3648,7 +3651,8 @@ class _ContourOpsMixin:
         The set is read as one union, so growing can merge regions and
         shrinking can split them or leave none: the result is always a set.
         Convex corners turn by *join*; concave ones stay sharp. Round arcs are
-        polygons within 1/64 pixel of the true arc. An open contour is refused.
+        polygons within 1/64 pixel of the true arc, or about ``distance / 2000``
+        past a distance of 32 pixels. An open contour is refused.
 
         Args:
             distance: How far to move the edge, in pixels: positive grows, negative
@@ -3777,9 +3781,11 @@ class _ContourOpsMixin:
         and its corners by *join*. Every member is read as its outline: an
         open line, capped at its ends (one returning to its first point, as
         ``boundary()`` draws one, is a closed path), and a region's rings,
-        each a closed path with no ends. The result is always a set, filled
+        each a closed path with no ends. A ring of fewer than two points has
+        no edge and covers nothing; a one-point line is a dot (its caps). The result is always a set, filled
         by ``rasterize()``: ``stroke(width=2).rasterize(...)`` draws lines and
-        outlines. Round arcs are polygons within 1/64 pixel of the true arc.
+        outlines. Round arcs are polygons within 1/64 pixel of the true arc,
+        or about ``width / 4000`` past a width of 64 pixels.
 
         Args:
             width: The stroke's full width in pixels, a finite width > 0 (literal or
