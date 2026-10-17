@@ -1204,9 +1204,11 @@ def _lut_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     fixed function of the drawn ``dtype``: rows that draw the same dtype share
     one literal table rather than 65536 per-row expressions, and rows that
     differ differ in ``dtype``, which is structural, so they share one
-    literal set. A palette (``K > 1``) needs one channel."""
+    literal set. A palette (``K > 1``) needs one channel: ``[H, W, 1]``, or
+    ``[H, W]`` (a ``channel_select`` output)."""
     dtype = draw(st.sampled_from(tuple(DTYPES)), label="dtype")
-    k = _LUT_K[dtype] if x.shape[2] == 1 else 1
+    single = x.ndim == 2 or x.shape[2] == 1
+    k = _LUT_K[dtype] if single else 1
     n = 256
     rng = np.random.default_rng([n, k, list(DTYPES).index(dtype)])
     np_dtype = DTYPES[dtype]
@@ -1224,11 +1226,23 @@ def _lut_ref(x: np.ndarray, p: Params) -> np.ndarray:
     table = np.asarray(p["table"], dtype=DTYPES[p["dtype"]])
     if table.shape[1] == 1:
         return table[x, 0]
-    return table[x[:, :, 0]]
+    # A palette takes the one channel to K: [H, W] and [H, W, 1] alike.
+    return table[x if x.ndim == 2 else x[:, :, 0]]
 
 
 def _distance_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     return {"signed": draw(st.booleans(), label="signed")}
+
+
+def _coordinate_grid_ref(x: np.ndarray, p: Params) -> np.ndarray:
+    """``np.meshgrid`` of the pixel centres ``(x + 0.5, y + 0.5)``, divided by
+    the width and height when normalized; the values of *x* are never read."""
+    h, w = x.shape[:2]
+    xs, ys = np.arange(w) + 0.5, np.arange(h) + 0.5
+    if p["normalized"]:
+        xs, ys = xs / w, ys / h
+    gx, gy = np.meshgrid(xs, ys)
+    return np.stack([gx, gy], axis=-1).astype(np.float32)
 
 
 def _distance_ref(x: np.ndarray, p: Params) -> np.ndarray:
@@ -1340,9 +1354,15 @@ def _canny_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     return {"low_threshold": float(lo), "high_threshold": float(hi)}
 
 
-def _canny_ref(x: np.ndarray, p: Params) -> np.ndarray:
+def _canny_colour(x: np.ndarray) -> int:
+    """How many leading channels Canny reads: all but alpha, the last of a
+    2- (gray + alpha) or 4-channel (RGBA) image (``ops::color::color_channels``)."""
     c = x.shape[2]
-    planes = x[:, :, :1] if c in (1, 2) else x[:, :, :3]
+    return c - 1 if c in (2, 4) else c
+
+
+def _canny_ref(x: np.ndarray, p: Params) -> np.ndarray:
+    planes = x[:, :, : _canny_colour(x)]
     image = planes[:, :, 0] if planes.shape[2] == 1 else np.ascontiguousarray(planes)
     edges = cv2.Canny(image, p["low_threshold"], p["high_threshold"])
     return edges[:, :, None]
@@ -2033,6 +2053,17 @@ OPS: dict[str, OpSpec] = {
             "is d - 0.5 to the pixel-edge boundary, negative inside",
         ),
         _spec(
+            "coordinate_grid",
+            lambda draw, x: {"normalized": draw(st.booleans(), label="normalized")},
+            accepts=is_rank3,
+            ref=_coordinate_grid_ref,
+            # Reads the height and width only: no value reaches the output.
+            gain=0.0,
+            kind="global",
+            defines_non_finite=True,
+            note="np.meshgrid of the pixel centres; values never read",
+        ),
+        _spec(
             "morphology_gradient",
             _ksize_params,
             accepts=_single_channel,
@@ -2096,7 +2127,9 @@ OPS: dict[str, OpSpec] = {
             _canny_params,
             accepts=is_rank3,
             ref=_canny_ref,
-            ref_accepts=lambda x, p: is_u8(x),
+            # cv2.Canny takes one or three channels; the engine's strongest
+            # gradient over five or more colour channels has no cv2 to match.
+            ref_accepts=lambda x, p: is_u8(x) and _canny_colour(x) in (1, 3),
             ref_dtypes=("u8",),
             gain=_INF,
             kind="spatial",

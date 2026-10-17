@@ -1028,6 +1028,18 @@
     "'replicate'"
    ]
   ],
+  "coordinate_grid": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "normalized",
+    "KEYWORD_ONLY",
+    "False"
+   ]
+  ],
   "crop": [
    [
     "self",
@@ -2632,6 +2644,18 @@
     "border",
     "KEYWORD_ONLY",
     "'replicate'"
+   ]
+  ],
+  "coordinate_grid": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "normalized",
+    "KEYWORD_ONLY",
+    "False"
    ]
   ],
   "crop": [

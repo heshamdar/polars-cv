@@ -43,7 +43,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-81 | Extension types | Decision | Whether any output becomes tagged by default (a major version) |
 | CR-82 | Extension types | Decision | Whether `polars_cv.ndarray` carries `dtype`/`ndim` metadata |
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
-| CR-100 | Drawing | Feature | `coordinate_grid(normalized=)` |
 | CR-101 | Drawing | Feature | Acceptance: rebuild `docs/assets/logo` on CR-93–100, plus a "Drawing" guide |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
@@ -275,8 +274,7 @@ for anti-aliasing, and filled primitives for every stroke. Each item extends
 an existing family or rule where that is cleaner than a new op, reuses an
 engine primitive (`geo` 0.33's `Buffer`/`BooleanOps`/`ChaikinSmoothing`/
 `Densify`, `ops::elementwise`, `scanline_fill`), and is built test-first with
-an independent oracle. Order: CR-93 to CR-99 are done; CR-100, then CR-101
-last.
+an independent oracle. CR-93 to CR-100 are done; CR-101 remains.
 
 **Decisions (owner, 2026-10-16).**
 1. The pipeline contour domain carries open contours (lines) as well as
@@ -293,14 +291,6 @@ last.
 5. No built-in colormaps for now: `apply_lut` takes explicit tables.
 6. Line width, cap and join are rendering attributes on `rasterize`; `offset`
    is geometry on regions only and takes `join` alone.
-
-### CR-100 — `coordinate_grid(*, normalized=False)`
-
-- `ImageOpKind` variant: f32 `[H, W, 2]` pixel-centre `(x, y)` (centres as in
-  `rasterize`), `normalized` divides by W/H. Extends `OpShape::Canvas` with a
-  channel count rather than a new variant. `Global` (position-dependent, so no
-  crop pushdown), `PacksOwnRows` (reads no element).
-- Oracle: `np.meshgrid`.
 
 ### CR-101 — Acceptance
 
@@ -569,6 +559,7 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 | CR-94 | Disk structuring element for morphology | Added (Unreleased) as `footprint="disk"` (not `shape=`, which `rasterize` uses for a canvas); a min/max over row spans reusing the square's row pass, since greyscale input rules out thresholding the distance transform, which became the oracle instead |
 | CR-95 | `apply_lut(table, dtype=)`: per-value tables and 1→K palettes | Added (Unreleased) as its own `GraphStep` family (`LutOp`), not a `ComputeOp`: a value past the table is a row error, which only an `execute -> Result` can report; the read reuses the element-wise engine's `Lut` map |
 | CR-96 | `rasterize(supersample=)`: anti-aliased coverage | Added (Unreleased): the scanline filler now works per sample row (memory one sample row, not an n²-larger canvas), and `n = 1` reduces to the old formulas exactly |
+| CR-100 | `coordinate_grid(normalized=)` | Added (Unreleased): an `ImageOpKind` whose shape is `OpShape::Canvas { of: 0, channels: 2 }` (the canvas rule, given a channel count); declared `StridePreserving`, not the planned `PacksOwnRows`, which the copy census refuses (it reads no element, so packs nothing); `Global`, so no crop crosses it |
 | CR-103 | A non-finite float literal failed at the JSON wire with "expected value at line 1 column N" | Fixed (Unreleased): `_types._literal`, the one place literals reach the wire (ops, sources and geometry calls), refuses one naming the parameter; `bound` fields keep their infinities |
 | CR-99 | Contour boolean ops (`union`, `intersection`, `difference`, `symmetric_difference`) | Added (Unreleased): `transforms::boolean` behind a lazy-only `GraphOp` role (`Role::Regions`, node operand) and `ContourFn` accessors (column operand); each side read as its regions' union |
 | CR-98 | Contour shaping (`offset`, `union_all`, `smooth`, `densify`) and line rendering in `rasterize` | Added (Unreleased): one engine function per op in `geometry::transforms` (on `geo`'s `Buffer`, `unary_union`, `ChaikinSmoothing`, `Densify`), read by the pipeline op and its accessor alike; `rasterize_outlines` fills regions and strokes lines into one union; arcs within `ARC_TOLERANCE` (1/64 px), miter limit 4 |

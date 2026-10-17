@@ -421,6 +421,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "contour_translate",
         "contour_union_all",
         "convolve2d",
+        "coordinate_grid",
         "crop",
         "cvt_color",
         "difference",
@@ -685,6 +686,9 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "py": "BorderMode",
             "variants": ["replicate", "zero", "reflect"],
         },
+    },
+    "coordinate_grid": {
+        "normalized": {"kind": "scalar", "per_row": True, "py": "bool"}
     },
     "crop": {
         "top": {"kind": "scalar", "per_row": True, "py": "int"},
@@ -1159,6 +1163,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "contour_translate": [{"input": "contour", "output": "contour"}],
     "contour_union_all": [{"input": "contour", "output": "contour"}],
     "convolve2d": [{"input": "buffer", "output": "buffer"}],
+    "coordinate_grid": [{"input": "buffer", "output": "buffer"}],
     "crop": [{"input": "buffer", "output": "buffer"}],
     "cvt_color": [{"input": "buffer", "output": "buffer"}],
     "difference": [{"input": "contour", "output": "contour"}],
@@ -1850,6 +1855,28 @@ class _OpsMixin:
         return self._append_typed(
             "convolve2d", {"kernel": kernel, "normalize": normalize, "border": border}
         )
+
+    def coordinate_grid(self, *, normalized: BoolOrExpr = False) -> Pipeline:
+        """The pixel coordinates of the image: an f32 ``[H, W, 2]`` buffer holding
+        each pixel's centre ``(x + 0.5, y + 0.5)`` — the point ``rasterize``
+        samples — or ``((x + 0.5) / W, (y + 0.5) / H)`` when *normalized*.
+
+        Reads only the input's height and width, never its values, so it takes
+        any dtype and channel count. The coordinates are in the frame of the
+        buffer it follows: after a crop they start at the crop's corner. Combine
+        them with ordinary ops for fields over positions (gradients, radial
+        falloffs, vignettes).
+
+        Domain: buffer → buffer
+
+        Args:
+            normalized: Divide x by the width and y by the height, so each lies in (0,
+                1). Accepts a Polars expression for a per-row choice.
+
+        Example:
+            >>> dx2 = Pipeline().source("image_bytes").coordinate_grid().add_constant(-32.0).square()
+        """
+        return self._append_typed("coordinate_grid", {"normalized": normalized})
 
     def crop(
         self,

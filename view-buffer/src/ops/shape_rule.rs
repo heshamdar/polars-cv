@@ -187,9 +187,11 @@ pub enum OpShape {
     StackChannels(usize),
     /// The input's rank as a 1-D vector: `[rank]` (reading the dimensions).
     InputRank,
-    /// A single-channel canvas the size of input `of`'s H and W:
-    /// `[H, W, 1]`. No output when that input has fewer than two axes.
-    Canvas { of: usize },
+    /// A canvas of `channels` the size of input `of`'s H and W:
+    /// `[H, W, channels]` (a rasterized mask's single channel over another
+    /// node, a coordinate grid's `(x, y)` over its own input). No output when
+    /// that input has fewer than two axes.
+    Canvas { of: usize, channels: usize },
 }
 
 /// `n * t / d` rounded to the nearest integer, a tie up, and at least 1: the
@@ -384,8 +386,8 @@ impl OpShape {
                 vec![hw[0], hw[1], Dim::Known(*n)]
             }
             OpShape::InputRank => vec![Dim::Known(input.len())],
-            OpShape::Canvas { of } => match inputs.get(*of) {
-                Some([h, w, ..]) => vec![*h, *w, Dim::Known(1)],
+            OpShape::Canvas { of, channels } => match inputs.get(*of) {
+                Some([h, w, ..]) => vec![*h, *w, Dim::Known(*channels)],
                 _ => return None,
             },
             // Two known sizes that cannot broadcast have no output: `validate`
@@ -794,7 +796,8 @@ mod symbolic_tests {
             OpShape::Broadcast,
             OpShape::StackChannels(2),
             OpShape::InputRank,
-            OpShape::Canvas { of: 1 },
+            OpShape::Canvas { of: 1, channels: 1 },
+            OpShape::Canvas { of: 0, channels: 2 },
             OpShape::ExpandChannels(3),
         ];
         for shape in &samples {
@@ -912,7 +915,7 @@ mod symbolic_tests {
         let two_input = [
             OpShape::Broadcast,
             OpShape::StackChannels(2),
-            OpShape::Canvas { of: 1 },
+            OpShape::Canvas { of: 1, channels: 1 },
         ];
         let firsts: [&[Dim]; 3] = [
             &[Known(8), Known(9)],
@@ -953,7 +956,8 @@ mod symbolic_tests {
         }
         // A canvas of unknown rank still gives the H and W it declares.
         assert_eq!(
-            OpShape::Canvas { of: 1 }.dims_over(&[Ranked(&[]), Unranked(&[Some(4), Some(5)])]),
+            OpShape::Canvas { of: 1, channels: 1 }
+                .dims_over(&[Ranked(&[]), Unranked(&[Some(4), Some(5)])]),
             [Some(4), Some(5), Some(1)]
         );
     }
@@ -998,7 +1002,7 @@ mod symbolic_tests {
             OpShape::Reduce { axis: None },
             OpShape::StackChannels(2),
             OpShape::InputRank,
-            OpShape::Canvas { of: 1 },
+            OpShape::Canvas { of: 1, channels: 1 },
         ];
         for shape in shapes {
             let claimed = shape.rank(&[None]).expect("answers without the input");

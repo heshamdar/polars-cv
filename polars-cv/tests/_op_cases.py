@@ -59,6 +59,7 @@ OP_CASES: dict[str, tuple[str, dict] | None] = {
     "convolve2d": (BUFFER, {"kernel": [0.0] * 9}),
     "crop": (BUFFER, {"top": 0, "left": 0, "height": 50, "width": 50}),
     "dilate": (BUFFER, {"ksize": 3}),
+    "coordinate_grid": (BUFFER, {}),
     "distance_transform": (BUFFER, {}),
     "equalize_histogram": (BUFFER, {}),
     "erode": (BUFFER, {"ksize": 3}),

@@ -156,6 +156,25 @@ pub enum ImageOpKind<M: Mode = Exec> {
         #[param(default = false)]
         signed: M::V<bool>,
     },
+    /// The pixel coordinates of the image: an f32 ``[H, W, 2]`` buffer holding
+    /// each pixel's centre ``(x + 0.5, y + 0.5)`` — the point ``rasterize``
+    /// samples — or ``((x + 0.5) / W, (y + 0.5) / H)`` when *normalized*.
+    ///
+    /// Reads only the input's height and width, never its values, so it takes
+    /// any dtype and channel count. The coordinates are in the frame of the
+    /// buffer it follows: after a crop they start at the crop's corner. Combine
+    /// them with ordinary ops for fields over positions (gradients, radial
+    /// falloffs, vignettes).
+    ///
+    /// Example:
+    ///     >>> dx2 = Pipeline().source("image_bytes").coordinate_grid().add_constant(-32.0).square()
+    #[op(name = "coordinate_grid", sample = {"normalized": true})]
+    CoordinateGrid {
+        /// Divide x by the width and y by the height, so each lies in (0, 1).
+        /// Accepts a Polars expression for a per-row choice.
+        #[param(default = false)]
+        normalized: M::V<bool>,
+    },
     /// Resize image by scale factor: `new_width = input_width * scale_x`,
     /// `new_height = input_height * scale_y`, computed at runtime.
     ///
@@ -350,6 +369,8 @@ impl<M: Mode> ImageOpKind<M> {
             | ImageOpKind::Dilate { .. }
             | ImageOpKind::MorphGradient { .. }
             | ImageOpKind::DistanceTransform { .. } => OpShape::Preserve,
+            // The input's own H and W, with an (x, y) pair at each pixel.
+            ImageOpKind::CoordinateGrid { .. } => OpShape::Canvas { of: 0, channels: 2 },
             ImageOpKind::Resize { width, height, .. }
             | ImageOpKind::Letterbox { height, width, .. } => OpShape::SetHw {
                 h: size::<M>(height),
@@ -487,6 +508,7 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::HistogramEqualize
             | ImageOpKind::PadToSize { .. }
             | ImageOpKind::Canny { .. }
+            | ImageOpKind::CoordinateGrid { .. }
             | ImageOpKind::Grayscale => require_hw_or_hwc(shape),
             // The resampler handles one to four interleaved channels, and
             // needs a source pixel on each axis: an empty image has nothing
@@ -546,6 +568,7 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::Dilate { .. } => "Dilate",
             ImageOpKind::MorphGradient { .. } => "MorphGradient",
             ImageOpKind::DistanceTransform { .. } => "DistanceTransform",
+            ImageOpKind::CoordinateGrid { .. } => "CoordinateGrid",
             ImageOpKind::ResizeScale { .. } => "ResizeScale",
             ImageOpKind::ResizeToHeight { .. } => "ResizeToHeight",
             ImageOpKind::ResizeToWidth { .. } => "ResizeToWidth",
@@ -597,6 +620,8 @@ impl<M: Mode> Op for ImageOp<M> {
             // horizontal flip first.
             ImageOpKind::Grayscale => MemoryEffect::StridePreserving,
             ImageOpKind::Canny { .. } => MemoryEffect::RequiresContiguous,
+            // Reads only the shape: any layout, and nothing to pack.
+            ImageOpKind::CoordinateGrid { .. } => MemoryEffect::StridePreserving,
         }
     }
 
@@ -627,6 +652,7 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::Dilate { .. }
             | ImageOpKind::MorphGradient { .. }
             | ImageOpKind::DistanceTransform { .. }
+            | ImageOpKind::CoordinateGrid { .. }
             | ImageOpKind::Canny { .. }
             | ImageOpKind::HistogramEqualize => IdentityRule::Never,
         }
@@ -674,6 +700,9 @@ impl<M: Mode> Op for ImageOp<M> {
             // The nearest pixel of the other class can be anywhere in the
             // image, so no window bounds what a pixel reads.
             ImageOpKind::DistanceTransform { .. } => SpatialDependency::Global,
+            // A pixel's value is its position in the whole frame: a crop moved
+            // across it changes every value, so nothing commutes with it.
+            ImageOpKind::CoordinateGrid { .. } => SpatialDependency::Global,
             // Every resize variant resamples, and pad/letterbox offset the
             // content — all coordinate transforms.
             ImageOpKind::Resize { .. }
@@ -729,6 +758,8 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::MorphGradient { .. } => None,
             // Reads only whether each element is zero, in its own dtype.
             ImageOpKind::DistanceTransform { .. } => None,
+            // Reads no value at all.
+            ImageOpKind::CoordinateGrid { .. } => None,
             // Deferred resizes route through the same resize kernel; padding
             // and channel reorder are dtype-generic.
             ImageOpKind::ResizeScale { .. }
@@ -763,6 +794,8 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::MorphGradient { .. } => OutputDTypeRule::PreserveInput,
             // A distance, whatever the mask's dtype.
             ImageOpKind::DistanceTransform { .. } => OutputDTypeRule::Fixed(DType::F32),
+            // A position, whatever the image's dtype.
+            ImageOpKind::CoordinateGrid { .. } => OutputDTypeRule::Fixed(DType::F32),
             // Geometric transforms and channel reorder preserve element dtype
             // (padding is dtype-generic for all ten dtypes).
             ImageOpKind::ResizeScale { .. }

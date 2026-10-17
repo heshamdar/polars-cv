@@ -243,6 +243,13 @@ class _LazyForwardersMixin:
             )
         )
 
+    def coordinate_grid(self, *, normalized: BoolOrExpr = False) -> LazyPipelineExpr:
+        """The pixel coordinates of the image: an f32 ``[H, W, 2]`` buffer holding
+
+        Lazy form of :meth:`Pipeline.coordinate_grid` on this expression's output.
+        """
+        return self.pipe(self._continuation().coordinate_grid(normalized=normalized))
+
     def crop(
         self,
         *,

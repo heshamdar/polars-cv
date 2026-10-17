@@ -1011,6 +1011,29 @@ pub(super) fn clamp_for_dtype(v: f64, dtype: DType) -> f64 {
     }
 }
 
+/// The f32 `[H, W, 2]` grid of pixel centres `(x + 0.5, y + 0.5)` over `buf`'s
+/// height and width, divided by `W` and `H` when `normalized`; no value of
+/// `buf` is read. Each coordinate is computed in f64 and stored rounded to
+/// the nearest f32.
+fn coordinate_grid(buf: &ViewBuffer, normalized: bool) -> ViewBuffer {
+    let shape = buf.shape();
+    let (h, w) = (shape[0], shape[1]);
+    let (sx, sy) = if normalized {
+        (w as f64, h as f64)
+    } else {
+        (1.0, 1.0)
+    };
+    let mut data = Vec::with_capacity(h * w * 2);
+    for y in 0..h {
+        let cy = ((y as f64 + 0.5) / sy) as f32;
+        for x in 0..w {
+            data.push(((x as f64 + 0.5) / sx) as f32);
+            data.push(cy);
+        }
+    }
+    ViewBuffer::from_vec_with_shape(data, vec![h, w, 2])
+}
+
 /// Inner implementation of image operations (without tiling logic).
 #[cfg(feature = "image_interop")]
 #[inline]
@@ -1044,6 +1067,7 @@ fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
         ImageOpKind::DistanceTransform { signed } => {
             super::distance::distance_transform(&work_buf, signed)
         }
+        ImageOpKind::CoordinateGrid { normalized } => coordinate_grid(&work_buf, normalized),
         ImageOpKind::Blur { sigma } => {
             let rows_buf = work_buf.to_dense_rows();
             // Every dtype in its own element type, accumulating in its

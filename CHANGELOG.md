@@ -9,6 +9,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`coordinate_grid(normalized=False)`** (CR-100): an f32 `[H, W, 2]` buffer
+  of each pixel's centre `(x + 0.5, y + 0.5)` (divided by `W`/`H` when
+  `normalized`, per-row capable), for fields over positions. Reads only the
+  input's height and width, so it takes any dtype and channel count, and
+  makes no copy of a view. Its shape is `OpShape::Canvas`, which now carries
+  a channel count (a rasterized mask's 1, a grid's 2). Held to `np.meshgrid`,
+  in the frame of the buffer it follows (a crop before it moves the origin).
+
 - **Contour set operations** (CR-99): `union`, `intersection`, `difference`
   and `symmetric_difference` combine two contour sets, each read as the union
   of its regions, into disjoint regions (always a set). Each is a `.contour`
@@ -120,6 +128,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   finite number ...`, with the position of a list element. A `bound` field
   (`histogram(bins=)` edges) still takes infinities, and a value passed per
   row through an expression reaches the op's own check, as before.
+
+- Two parity references claimed inputs they do not model, failing the deep
+  lane: `apply_lut`'s strategy read a channel axis a rank-2 buffer (after
+  `channel_select`) lacks, and `canny`'s compared a 5-channel image against
+  `cv2.Canny` on its first three channels, while the engine (as documented)
+  takes the strongest gradient over every colour channel. The `canny`
+  reference now reads colour channels by the engine's one alpha rule and is
+  compared only where `cv2.Canny` applies (one or three colour channels).
 
 - The parity suite's per-row parameters now encode nested lists level by
   level, so an `apply_lut` table varying by row passes one expression per
