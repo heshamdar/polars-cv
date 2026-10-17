@@ -236,6 +236,53 @@ pub fn close(line: &[Point]) -> Contour {
     Contour::new(ring)
 }
 
+/// Why `boundary()` refuses a line: it already is one.
+pub const BOUNDARY_OF_A_LINE: &str =
+    "boundary: an open contour (is_closed = false) is already a line; boundary() takes a region";
+
+/// Why `close()` refuses a region: it has no ends to join.
+pub const CLOSE_OF_A_REGION: &str =
+    "close: the contour is already closed; close() takes an open line (is_closed = false)";
+
+/// Why `scale(origin="centroid")` refuses a line: it bounds no region.
+pub const SCALE_A_LINE_ABOUT_ITS_CENTROID: &str =
+    "scale(origin=\"centroid\") needs a closed contour: an open polyline \
+     (is_closed = false) bounds no region to take a centroid of. Scale about \
+     \"bbox_center\" or \"origin\" instead";
+
+/// `boundary()` of one outline, as both surfaces run it: a region's rings
+/// ([`boundary`]), or [`BOUNDARY_OF_A_LINE`].
+pub fn boundary_outline(outline: &Outline) -> Result<Vec<Outline>, &'static str> {
+    match outline {
+        Outline::Closed(region) => Ok(boundary(region)),
+        Outline::Open(_) => Err(BOUNDARY_OF_A_LINE),
+    }
+}
+
+/// `close()` of one outline, as both surfaces run it: a line's ends joined
+/// ([`close`]), or [`CLOSE_OF_A_REGION`].
+pub fn close_outline(outline: &Outline) -> Result<Outline, &'static str> {
+    match outline {
+        Outline::Open(line) => Ok(Outline::Closed(close(line))),
+        Outline::Closed(_) => Err(CLOSE_OF_A_REGION),
+    }
+}
+
+/// `scale()` of one outline, as both surfaces run it ([`scale`] on its
+/// points); a line has no centroid to scale about
+/// ([`SCALE_A_LINE_ABOUT_ITS_CENTROID`]).
+pub fn scale_outline(
+    outline: &Outline,
+    sx: f64,
+    sy: f64,
+    origin: ScaleOrigin,
+) -> Result<Outline, &'static str> {
+    if !outline.is_closed() && origin == ScaleOrigin::Centroid {
+        return Err(SCALE_A_LINE_ABOUT_ITS_CENTROID);
+    }
+    Ok(outline.map_points(|c| scale(c, sx, sy, origin)))
+}
+
 /// The `k` largest contours by area ([`super::measures::area`], holes
 /// removed): largest first, equal areas in their input order.
 pub fn largest<C: std::borrow::Borrow<Contour>>(contours: &[C], k: usize) -> Vec<Contour> {
@@ -764,18 +811,42 @@ pub fn offset<C: Borrow<Contour>>(
     Ok(regions_of(&union.buffer_with_style(style)))
 }
 
+/// The most points one outline a shaping op (`smooth`, `densify`) may make:
+/// 2^22, 64 MiB of coordinates. Both ops multiply points by a parameter (a
+/// pass doubles them; a short segment length splits every edge), so a value
+/// in a row could otherwise ask for more memory than exists, and an
+/// allocation that fails aborts the process instead of failing the row.
+pub const MAX_POINTS: usize = 1 << 22;
+
+/// `Ok` when an op's `points` (counted in f64, which cannot overflow) are
+/// within [`MAX_POINTS`]; the refusal names the op and the value that asked.
+fn within_point_budget(op: &str, points: f64, asked: String) -> Result<(), String> {
+    if points <= MAX_POINTS as f64 {
+        return Ok(());
+    }
+    Err(format!(
+        "{op}: {asked} would make about {points:.2e} points, past the {MAX_POINTS} \
+         one contour may hold"
+    ))
+}
+
 /// Chaikin's corner cutting, `iterations` times (`smooth()`): each edge is
 /// replaced by its points a quarter and three quarters along. A region's
 /// rings cut their closing edge too; an open line keeps its two ends, unless
 /// it returns to its first point, when it has no ends and is cut through it.
-pub fn smooth(outline: &Outline, iterations: u32) -> Outline {
+///
+/// Each pass at most doubles every path's points, so `points · 2^iterations`
+/// is held to [`MAX_POINTS`] before any pass runs.
+pub fn smooth(outline: &Outline, iterations: u32) -> Result<Outline, String> {
+    let points = outline.vertices().count().max(1) as f64 * 2f64.powf(f64::from(iterations));
+    within_point_budget("smooth", points, format!("{iterations} passes"))?;
     let n = iterations as usize;
-    match outline {
+    Ok(match outline {
         Outline::Closed(c) => Outline::Closed(Contour::from_geo(&c.to_geo().chaikin_smoothing(n))),
         Outline::Open(points) => {
             Outline::Open(line_from_geo(&line_to_geo(points).chaikin_smoothing(n)))
         }
-    }
+    })
 }
 
 /// `densify(max_segment_length)`'s one rule for the value it takes.
@@ -794,6 +865,24 @@ pub fn check_max_segment_length(max_segment_length: f64) -> Result<(), String> {
 /// open line's ends joined by nothing.
 pub fn densify(outline: &Outline, max_segment_length: f64) -> Result<Outline, String> {
     check_max_segment_length(max_segment_length)?;
+    // Every vertex is kept and each edge adds `ceil(L / max) - 1`, counted
+    // before any point is made.
+    let points: f64 = outline
+        .paths()
+        .map(|(points, closed)| {
+            let closing = closed.then(|| points.last().zip(points.first())).flatten();
+            let edges = points.windows(2).map(|e| (&e[0], &e[1])).chain(closing);
+            points.len() as f64
+                + edges
+                    .map(|(a, b)| ((a.distance_to(b) / max_segment_length).ceil() - 1.0).max(0.0))
+                    .sum::<f64>()
+        })
+        .sum();
+    within_point_budget(
+        "densify",
+        points,
+        format!("max_segment_length={max_segment_length}"),
+    )?;
     Ok(match outline {
         Outline::Closed(c) => Outline::Closed(Contour::from_geo(
             &Euclidean.densify(&c.to_geo(), max_segment_length),
@@ -954,7 +1043,7 @@ mod shaping_tests {
             Point::new(4.0, 0.0),
             Point::new(4.0, 4.0),
         ]);
-        let Outline::Open(out) = smooth(&line, 1) else {
+        let Outline::Open(out) = smooth(&line, 1).unwrap() else {
             panic!("stays open")
         };
         // Each edge gives its quarter and three-quarter points, in order.
@@ -967,7 +1056,14 @@ mod shaping_tests {
             (4.0, 4.0),
         ];
         assert_eq!(out.iter().map(|p| (p.x, p.y)).collect::<Vec<_>>(), want);
-        assert_eq!(smooth(&line, 0), line);
+        assert_eq!(smooth(&line, 0).unwrap(), line);
+        // A pass doubles the points: the budget refuses before running.
+        let err = smooth(&line, 40).unwrap_err();
+        assert!(
+            err.contains("smooth: 40 passes") && err.contains("4194304"),
+            "{err}"
+        );
+        assert!(smooth(&line, u32::MAX).is_err());
     }
 
     #[test]
@@ -980,6 +1076,12 @@ mod shaping_tests {
         assert_eq!(out.exterior.len(), 12);
         assert!(densify(&sq, 0.0).is_err());
         assert!(densify(&sq, f64::INFINITY).is_err());
+        // 16 units of perimeter in 1e-9 steps: refused before splitting.
+        let err = densify(&sq, 1e-9).unwrap_err();
+        assert!(
+            err.contains("densify: max_segment_length=") && err.contains("4194304"),
+            "{err}"
+        );
     }
 
     #[test]

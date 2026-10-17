@@ -636,7 +636,7 @@ mod tests {
 
     /// A column in the canonical schema, written by the contour writer.
     fn written(rows: Vec<Option<Vec<Contour>>>, arity: Arity) -> Series {
-        let elem = DataType::Struct(crate::geom_schema::contour_fields());
+        let elem = crate::geom_schema::contour_struct_dtype();
         Contour::column("c".into(), rows, arity, &elem).unwrap()
     }
 

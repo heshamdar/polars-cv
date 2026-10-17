@@ -145,6 +145,29 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **Contour results publish the canonical contour struct.** A `.contour`
+  function that returns contours declared "the input's own layout" and cast
+  its result to it. On a column polars inferred (`holes: List(Null)`, every
+  hole empty) the set-level functions (`largest`, `boundary`, `offset`,
+  `union_all`, the set operations) panicked, and on a struct without
+  `is_closed` or `holes` the cast dropped what that layout cannot hold:
+  `boundary()`'s lines read back as regions, a hole a union made vanished.
+  Every contour result is now `{exterior, holes, is_closed}` as
+  `geom_schema` declares it; a declaration that differs is an error, never a
+  cast, and `contour_accessor!` no longer hands the element type the input
+  dtype to echo. The three identical set-level output types are one.
+
+- **`smooth` and `densify` refuse a result past 2^22 points** before making
+  it. A pass doubles the points and a short `max_segment_length` splits every
+  edge, so `smooth(iterations=40)` or `densify(1e-9)` — literal or per row —
+  aborted the process on the allocation. Both now fail the row by name.
+
+- **`boundary`, `close` and `scale(origin="centroid")` refuse a contour the
+  same way on both surfaces**, through one engine function each
+  (`transforms::boundary_outline`, `close_outline`, `scale_outline`); their
+  rules no longer live in the plugin's graph encoder, with a second copy of
+  the scale message in the accessor.
+
 - **A line that returns to its first point is stroked as a loop.** `geo`
   strokes every line string as an open path, so `rasterize(line_width=)`
   capped a loop's start instead of turning it like its other corners: a

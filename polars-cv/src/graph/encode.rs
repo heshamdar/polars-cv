@@ -8,7 +8,6 @@
 
 use polars::prelude::*;
 use view_buffer::geometry::contour::Outline;
-use view_buffer::geometry::ops::ScaleOrigin;
 use view_buffer::geometry::{
     extract::extract_contours, measures, rasterize::rasterize_outlines, transforms, Contour,
 };
@@ -155,22 +154,12 @@ pub(crate) fn execute_geometry_op(
                 .map(|o| o.map_points(|c| transforms::translate(c, *dx, *dy)))
                 .collect(),
         )),
-        GeometryOp::Scale { sx, sy, origin } => {
-            let all = outlines(&input, op)?;
-            if *origin == ScaleOrigin::Centroid && all.iter().any(|o| !o.is_closed()) {
-                return Err(
-                    "scale(origin=\"centroid\") needs a closed contour: an open polyline \
-                     (is_closed = false) bounds no region to take a centroid of. Scale \
-                     about \"bbox_center\" or \"origin\" instead"
-                        .to_string(),
-                );
-            }
-            Ok(NodeOutput::from_contours(
-                all.iter()
-                    .map(|o| o.map_points(|c| transforms::scale(c, *sx, *sy, *origin)))
-                    .collect(),
-            ))
-        }
+        GeometryOp::Scale { sx, sy, origin } => outlines(&input, op)?
+            .iter()
+            .map(|o| transforms::scale_outline(o, *sx, *sy, *origin))
+            .collect::<Result<Vec<_>, _>>()
+            .map(NodeOutput::from_contours)
+            .map_err(str::to_string),
         GeometryOp::Simplify { tolerance } => Ok(NodeOutput::from_contours(
             outlines(&input, op)?
                 .iter()
@@ -199,12 +188,7 @@ pub(crate) fn execute_geometry_op(
         GeometryOp::Boundary => {
             let mut lines = Vec::new();
             for o in outlines(&input, op)?.iter() {
-                match o {
-                    Outline::Closed(c) => lines.extend(transforms::boundary(c)),
-                    Outline::Open(_) => {
-                        return Err(BOUNDARY_OF_A_LINE.to_string());
-                    }
-                }
+                lines.extend(transforms::boundary_outline(o)?);
             }
             Ok(NodeOutput::from_contours(lines))
         }
@@ -222,12 +206,11 @@ pub(crate) fn execute_geometry_op(
                     .collect(),
             ))
         }
-        GeometryOp::Smooth { iterations } => Ok(NodeOutput::from_contours(
-            outlines(&input, op)?
-                .iter()
-                .map(|o| transforms::smooth(o, *iterations))
-                .collect(),
-        )),
+        GeometryOp::Smooth { iterations } => outlines(&input, op)?
+            .iter()
+            .map(|o| transforms::smooth(o, *iterations))
+            .collect::<Result<Vec<_>, _>>()
+            .map(NodeOutput::from_contours),
         GeometryOp::Densify { max_segment_length } => outlines(&input, op)?
             .iter()
             .map(|o| transforms::densify(o, *max_segment_length))
@@ -235,22 +218,12 @@ pub(crate) fn execute_geometry_op(
             .map(NodeOutput::from_contours),
         GeometryOp::Close => outlines(&input, op)?
             .iter()
-            .map(|o| match o {
-                Outline::Open(line) => Ok(Outline::Closed(transforms::close(line))),
-                Outline::Closed(_) => Err(CLOSE_OF_A_REGION.to_string()),
-            })
+            .map(transforms::close_outline)
             .collect::<Result<Vec<_>, _>>()
-            .map(NodeOutput::from_contours),
+            .map(NodeOutput::from_contours)
+            .map_err(str::to_string),
     }
 }
-
-/// `boundary()` of an open contour: it is already a line.
-pub(crate) const BOUNDARY_OF_A_LINE: &str = "boundary: an open contour (is_closed = false) \
-     is already a line; boundary() takes a region";
-
-/// `close()` of a closed contour: there is no end to join.
-pub(crate) const CLOSE_OF_A_REGION: &str = "close: the contour is already closed; close() \
-     takes an open line (is_closed = false)";
 
 /// A boolean combination of two contour sets (`union`, `intersection`, …):
 /// the step's own and the operand node's, each read as its regions'
@@ -1220,7 +1193,7 @@ mod contour_sink_tests {
     /// The per-value construction, kept here as the oracle. An empty set is
     /// `[]` and only a null row is null.
     fn oracle(rows: &[Option<Vec<Contour>>]) -> Series {
-        let element = DataType::Struct(crate::geom_schema::contour_fields());
+        let element = crate::geom_schema::contour_struct_dtype();
         let values: Vec<AnyValue<'static>> = rows
             .iter()
             .map(|row| match row {

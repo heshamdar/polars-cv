@@ -292,6 +292,75 @@ def test_contour_accessors(name: str) -> None:
     assert_plan_equals_exec(_contour_df(), CONTOUR_CASES[name]())
 
 
+def _inferred_contour_df() -> pl.DataFrame:
+    """`_contour_df` with its contour columns' dtypes left to polars.
+
+    Every ``holes`` is empty, so polars infers ``holes: List(Null)``: a layout
+    the readers accept but the canonical contour struct is not.
+    """
+    df = _contour_df()
+    contour_columns = ("a", "b", "o", "aset", "bset")
+    return df.with_columns(
+        pl.Series(name, df[name].to_list()) for name in contour_columns
+    )
+
+
+def _contour_elem(dtype: pl.DataType) -> pl.DataType | None:
+    """The contour struct a result holds, or ``None`` for a non-contour one."""
+    elem = dtype.inner if isinstance(dtype, pl.List) else dtype
+    if isinstance(elem, pl.Struct) and "exterior" in {f.name for f in elem.fields}:
+        return elem
+    return None
+
+
+@plugin_required
+@pytest.mark.parametrize("name", sorted(CONTOUR_CASES))
+def test_contour_results_publish_the_canonical_struct(name: str) -> None:
+    """A contour result is the canonical contour struct, whatever came in.
+
+    A result held in the input's own layout cannot carry what the input
+    lacked: an inferred ``holes: List(Null)`` holds no hole a union makes,
+    and a struct without ``is_closed`` turns ``boundary()``'s lines back
+    into regions. Casting to it either loses data or fails, so the one
+    declaration (``geom_schema::contour_fields``) is the only output layout.
+    """
+    df = _inferred_contour_df()
+    assert df.schema["a"] != CONTOUR_SCHEMA, "the fixture must not be canonical"
+    series = assert_plan_equals_exec(df, CONTOUR_CASES[name]())
+    elem = _contour_elem(series.dtype)
+    assert elem is None or elem == CONTOUR_SCHEMA, f"{name} published {elem}"
+
+
+@plugin_required
+def test_a_line_stays_a_line_from_a_column_without_is_closed() -> None:
+    """``boundary()`` of a column with only ``exterior`` gives open lines."""
+    point = pl.Struct({"x": pl.Float64, "y": pl.Float64})
+    df = pl.DataFrame(
+        {"c": [{"exterior": _square(0, 0, 4)["exterior"]}]},
+        schema={"c": pl.Struct({"exterior": pl.List(point)})},
+    )
+    lines = df.select(pl.col("c").contour.boundary()).item()
+    assert [line["is_closed"] for line in lines] == [False]
+
+
+@plugin_required
+def test_a_hole_a_union_makes_survives_a_column_without_holes() -> None:
+    """A U and a bar across its mouth enclose a hole: the result keeps it."""
+    point = pl.Struct({"x": pl.Float64, "y": pl.Float64})
+
+    def ring(pts: list[tuple[float, float]]) -> dict:
+        return {"exterior": [{"x": x, "y": y} for x, y in pts]}
+
+    u = ring([(0, 0), (9, 0), (9, 9), (6, 9), (6, 3), (3, 3), (3, 9), (0, 9)])
+    bar = ring([(0, 6), (9, 6), (9, 9), (0, 9)])
+    df = pl.DataFrame(
+        {"c": [[u, bar]]},
+        schema={"c": pl.List(pl.Struct({"exterior": pl.List(point)}))},
+    )
+    (merged,) = df.select(pl.col("c").contour.union_all()).item()
+    assert len(merged["holes"]) == 1
+
+
 #: Accessors whose set-arity spelling is not "the same case over a set column",
 #: with the reason. Everything else is swept in both arities.
 SET_ARITY_EXEMPT = {
