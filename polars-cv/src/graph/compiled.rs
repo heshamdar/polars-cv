@@ -584,6 +584,23 @@ impl CompiledGraph {
     /// `source(on_error="null")`, or a per-row parameter was null under
     /// `on_null_param="null"`. The node reading it must then go null too.
     /// A name that is not in the graph at all stays an error.
+    /// A step that reads its input buffer and may fail on its data
+    /// (`Histogram`, `Lut`): validated against the row's concrete shape and
+    /// dtype, then run, each error prefixed with the op's name.
+    fn run_fallible_buffer_step(
+        input: NodeOutput,
+        step: &GraphStep,
+        name: &str,
+        execute: impl FnOnce(&ViewBuffer) -> Result<ViewBuffer, String>,
+    ) -> Result<NodeOutput, String> {
+        let buf = Self::step_buffer_operand(&input, step, name)?;
+        step.validate_concrete(&[buf.shape()], &[buf.dtype()])
+            .map_err(|e| format!("{name}: {e}"))?;
+        execute(&buf)
+            .map(NodeOutput::from_buffer)
+            .map_err(|e| format!("{name}: {e}"))
+    }
+
     fn operand<'o>(
         &self,
         node_outputs: &'o [Option<NodeOutput>],
@@ -878,43 +895,24 @@ impl CompiledGraph {
                                     NodeOutput::from_buffer(result)
                                 };
                             }
-                            GraphStep::Histogram(histogram_op) => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = Self::step_buffer_operand(
-                                    &current_output,
+                            // The fallible buffer steps: a data error (a value
+                            // past a histogram's range, past a lookup table) is
+                            // the row's `Err`, which an engine op cannot report.
+                            GraphStep::Histogram(op) => {
+                                current_output = Self::run_fallible_buffer_step(
+                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?,
                                     graph_step.as_ref(),
-                                    "Histogram",
+                                    op.name(),
+                                    |buf| op.execute(buf),
                                 )?;
-                                graph_step
-                                    .validate_concrete(
-                                        &[current_buf.shape()],
-                                        &[current_buf.dtype()],
-                                    )
-                                    .map_err(|e| format!("{}: {e}", histogram_op.name()))?;
-                                let result = histogram_op
-                                    .execute(&current_buf)
-                                    .map_err(|e| format!("{}: {e}", histogram_op.name()))?;
-                                current_output = NodeOutput::from_buffer(result);
                             }
-                            GraphStep::Lut(lut_op) => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = Self::step_buffer_operand(
-                                    &current_output,
+                            GraphStep::Lut(op) => {
+                                current_output = Self::run_fallible_buffer_step(
+                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?,
                                     graph_step.as_ref(),
-                                    "ApplyLut",
+                                    op.name(),
+                                    |buf| op.execute(buf),
                                 )?;
-                                graph_step
-                                    .validate_concrete(
-                                        &[current_buf.shape()],
-                                        &[current_buf.dtype()],
-                                    )
-                                    .map_err(|e| format!("apply_lut: {e}"))?;
-                                let result = lut_op
-                                    .execute(&current_buf)
-                                    .map_err(|e| format!("apply_lut: {e}"))?;
-                                current_output = NodeOutput::from_buffer(result);
                             }
                             GraphStep::PerceptualHash(phash_op) => {
                                 current_output =

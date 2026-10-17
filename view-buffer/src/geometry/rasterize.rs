@@ -60,6 +60,8 @@ pub fn rasterize<C: std::borrow::Borrow<Contour>>(
     // (so its holes subtract from itself only).
     let mut covered = vec![false; w * n];
     let mut scratch = vec![false; w * n];
+    // Each scanline's edge crossings, reused across lines and rings.
+    let mut crossings: Vec<f64> = Vec::new();
     let spans: Vec<Option<(f64, f64)>> = contours
         .iter()
         .map(|c| y_extent(&c.borrow().exterior))
@@ -75,9 +77,16 @@ pub fn rasterize<C: std::borrow::Borrow<Contour>>(
                     continue;
                 }
                 scratch.fill(false);
-                fill_scanline(&contour.exterior, scan_y, n, &mut scratch, true);
+                fill_scanline(
+                    &contour.exterior,
+                    scan_y,
+                    n,
+                    &mut scratch,
+                    true,
+                    &mut crossings,
+                );
                 for hole in &contour.holes {
-                    fill_scanline(hole, scan_y, n, &mut scratch, false);
+                    fill_scanline(hole, scan_y, n, &mut scratch, false, &mut crossings);
                 }
                 for (slot, &inside) in covered.iter_mut().zip(&scratch) {
                     *slot |= inside;
@@ -132,11 +141,18 @@ fn y_extent(polygon: &[Point]) -> Option<(f64, f64)> {
 /// span itself outward instead — `ceil(left)`, `floor(right)` — took in a
 /// surplus column at every right edge, so a 100-wide box rasterized 101
 /// columns. The test-only `rasterize_simple` asserts the rule pixel for pixel.
-fn fill_scanline(polygon: &[Point], scan_y: f64, n: usize, row: &mut [bool], value: bool) {
+fn fill_scanline(
+    polygon: &[Point],
+    scan_y: f64,
+    n: usize,
+    row: &mut [bool],
+    value: bool,
+    intersections: &mut Vec<f64>,
+) {
     if polygon.len() < 3 || row.is_empty() {
         return;
     }
-    let mut intersections: Vec<f64> = Vec::new();
+    intersections.clear();
     let count = polygon.len();
     for i in 0..count {
         let p1 = &polygon[i];

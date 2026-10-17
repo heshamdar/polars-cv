@@ -126,6 +126,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **`apply_lut` reads less and copies less per row.** A table of single
+  entries converts only its rows (not a 65536-entry f64 table for u16 input),
+  and a palette writes its `[H, W, K]` output in one pass instead of building
+  `K` planes and merging them (one view-sized allocation instead of `K + 1`).
+  Its row errors are prefixed `ApplyLut:`, as `Histogram:`'s are: the two
+  fallible buffer steps now share one executor path.
+
 - **`target/debug` no longer grows without bound** (CR-104, development only).
   The disk filled twice in one session; measured, three causes were
   avoidable. The workspace's own crates keep debuginfo inline
