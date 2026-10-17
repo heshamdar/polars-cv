@@ -1,13 +1,17 @@
-"""The "polars-cv" wordmark as contours: a small geometric font of primitives.
+"""The "polars-cv" wordmark as contours: a small geometric font of strokes.
 
-Every glyph is a union of closed contours, which ``rasterize`` paints as one
-shape, so overlapping primitives need no boolean geometry:
+Every glyph is a few centrelines, which ``rasterize(line_width=STROKE,
+cap="butt")`` strokes into letters:
 
-* stems and bars are 4-point rectangles;
-* bowls (``o``, ``p``, ``a``) are a circle exterior with a circle hole;
-* curves (``c``, ``s``, the shoulder of ``r``) are annular sectors, an outer
-  arc joined to the reversed inner arc;
-* ``v`` is a single non-convex polygon.
+* stems and bars are two-point lines (a butt cap ends them flat);
+* bowls (``o``, ``p``, ``a``) are circles, drawn as lines that return to their
+  first point (no ends to cap);
+* curves (``c``, ``s``, the shoulder of ``r``) are arcs, whose butt caps cut
+  them square to the stroke.
+
+``v`` is the exception: a filled polygon, whose flat top and bottom no stroke
+gives. ``rasterize`` fills a set's regions and strokes its lines in one union,
+so a glyph may mix both.
 
 Units are pixels at 1x with ``y`` growing downward; glyphs sit on ``baseline``.
 """
@@ -18,7 +22,9 @@ import math
 from collections.abc import Callable
 
 Point = tuple[float, float]
-Glyph = Callable[[float, float], tuple[list[list[list[Point]]], float]]
+#: A glyph's contours: a line (open) or a region (closed), as points.
+Path = tuple[list[Point], bool]
+Glyph = Callable[[float, float], tuple[list[Path], float]]
 
 STROKE = 14.0
 X_HEIGHT = 70.0
@@ -27,101 +33,89 @@ DESCENDER = 30.0
 SPACING = 14.0
 
 _R = X_HEIGHT / 2  # bowl outer radius
+_H = STROKE / 2  # a stroke's half-width: centrelines sit this far inside
 
 
-def _rect(x0: float, y0: float, x1: float, y1: float) -> list[list[Point]]:
-    return [[(x0, y0), (x1, y0), (x1, y1), (x0, y1)]]
+def _line(*points: Point) -> Path:
+    return list(points), False
 
 
-def _circle(cx: float, cy: float, r: float, n: int = 96) -> list[Point]:
-    return [
-        (cx + r * math.cos(2 * math.pi * i / n), cy - r * math.sin(2 * math.pi * i / n))
-        for i in range(n)
-    ]
-
-
-def _ring(cx: float, cy: float, r_out: float, r_in: float) -> list[list[Point]]:
-    return [_circle(cx, cy, r_out), _circle(cx, cy, r_in)]
-
-
-def _arc(
-    cx: float, cy: float, r_out: float, r_in: float, t0: float, t1: float, n: int = 64
-) -> list[list[Point]]:
-    """Annular sector from ``t0`` to ``t1`` degrees (counter-clockwise, y-up)."""
+def _arc(cx: float, cy: float, r: float, t0: float, t1: float, n: int = 64) -> Path:
+    """A centreline arc from ``t0`` to ``t1`` degrees (counter-clockwise, y-up)."""
     ts = [math.radians(t0 + (t1 - t0) * i / n) for i in range(n + 1)]
-    outer = [(cx + r_out * math.cos(t), cy - r_out * math.sin(t)) for t in ts]
-    inner = [(cx + r_in * math.cos(t), cy - r_in * math.sin(t)) for t in reversed(ts)]
-    return [outer + inner]
+    return [(cx + r * math.cos(t), cy - r * math.sin(t)) for t in ts], False
+
+
+def _circle(cx: float, cy: float, r: float) -> Path:
+    """A circular centreline that returns to its first point — exactly, so it
+    is a loop with no ends to cap (360 degrees lands a rounding error away)."""
+    points, _ = _arc(cx, cy, r, 0.0, 360.0, n=96)
+    return [*points[:-1], points[0]], False
+
+
+def _bowl(x: float, b: float) -> Path:
+    return _circle(x + _R, b - _R, _R - _H)
 
 
 # Each glyph takes the pen position and baseline and returns
-# (primitives, advance); a primitive is [exterior, *holes].
+# (contours, advance).
 def _o(x, b):
-    return [_ring(x + _R, b - _R, _R, _R - STROKE)], 2 * _R
+    return [_bowl(x, b)], 2 * _R
 
 
 def _p(x, b):
-    return [
-        _ring(x + _R, b - _R, _R, _R - STROKE),
-        _rect(x, b - X_HEIGHT, x + STROKE, b + DESCENDER),
-    ], 2 * _R
+    return [_bowl(x, b), _line((x + _H, b - X_HEIGHT), (x + _H, b + DESCENDER))], 2 * _R
 
 
 def _a(x, b):
-    return [
-        _ring(x + _R, b - _R, _R, _R - STROKE),
-        _rect(x + 2 * _R - STROKE, b - X_HEIGHT, x + 2 * _R, b),
-    ], 2 * _R
+    stem = x + 2 * _R - _H
+    return [_bowl(x, b), _line((stem, b - X_HEIGHT), (stem, b))], 2 * _R
 
 
 def _l(x, b):
-    return [_rect(x, b - ASCENDER, x + STROKE, b)], STROKE
+    return [_line((x + _H, b - ASCENDER), (x + _H, b))], STROKE
 
 
 def _r(x, b):
     rr = 0.8 * _R  # shoulder radius
     return [
-        _rect(x, b - X_HEIGHT, x + STROKE, b),
-        _arc(x + rr, b - X_HEIGHT + rr, rr, rr - STROKE, 180, 45),
+        _line((x + _H, b - X_HEIGHT), (x + _H, b)),
+        _arc(x + rr, b - X_HEIGHT + rr, rr - _H, 180, 45),
     ], 1.45 * rr
 
 
 def _s(x, b):
     rc = (X_HEIGHT - STROKE) / 4  # centreline radius of each stacked half
-    h = STROKE / 2
-    cx = x + rc + h
+    cx = x + rc + _H
     return [
-        _arc(cx, b - X_HEIGHT + h + rc, rc + h, rc - h, 20, 270),  # upper hook
-        _arc(cx, b - h - rc, rc + h, rc - h, 90, -160),  # lower hook
-    ], 2 * (rc + h)
+        _arc(cx, b - X_HEIGHT + _H + rc, rc, 20, 270),  # upper hook
+        _arc(cx, b - _H - rc, rc, 90, -160),  # lower hook
+    ], 2 * (rc + _H)
 
 
 def _hyphen(x, b):
     w = 0.45 * X_HEIGHT
-    return [_rect(x, b - _R - STROKE / 2, x + w, b - _R + STROKE / 2)], w
+    return [_line((x, b - _R), (x + w, b - _R))], w
 
 
 def _c(x, b):
-    return [_arc(x + _R, b - _R, _R, _R - STROKE, 45, 315)], 2 * _R - 4
+    return [_arc(x + _R, b - _R, _R - _H, 45, 315)], 2 * _R - 4
 
 
 def _v(x, b):
     w = 0.95 * X_HEIGHT
     top, mid = b - X_HEIGHT, x + w / 2
     sw = 1.15 * STROKE  # horizontal width at the top (diagonals read thinner)
-    return [
-        [
-            [
-                (x, top),
-                (x + sw, top),
-                (mid, b - 1.9 * STROKE),
-                (x + w - sw, top),
-                (x + w, top),
-                (mid + sw / 2, b),
-                (mid - sw / 2, b),
-            ]
-        ]
-    ], w
+    outline = [
+        (x, top),
+        (x + sw, top),
+        (mid, b - 1.9 * STROKE),
+        (x + w - sw, top),
+        (x + w, top),
+        (mid + sw / 2, b),
+        (mid - sw / 2, b),
+    ]
+    return [(outline, True)], w
 
 
 GLYPHS: dict[str, Glyph] = {
@@ -137,9 +131,10 @@ GLYPHS: dict[str, Glyph] = {
 }
 
 
-def _contour(rings: list[list[Point]], scale: float) -> dict:
-    pts = [[{"x": x * scale, "y": y * scale} for x, y in r] for r in rings]
-    return {"exterior": pts[0], "holes": pts[1:], "is_closed": True}
+def _contour(path: Path, scale: float) -> dict:
+    points, closed = path
+    ring = [{"x": x * scale, "y": y * scale} for x, y in points]
+    return {"exterior": ring, "holes": [], "is_closed": closed}
 
 
 def wordmark(
@@ -148,13 +143,14 @@ def wordmark(
     """Lay out ``text`` from pen position ``x``.
 
     Returns the contour set (in ``CONTOUR_SCHEMA`` form, coordinates multiplied
-    by ``scale``) and the pen position after the last glyph's advance.
+    by ``scale``: lines to stroke at ``STROKE * scale``, and regions) and the
+    pen position after the last glyph's advance.
     """
     contours = []
     for i, ch in enumerate(text):
         if i:
             x += SPACING
-        prims, adv = GLYPHS[ch](x, baseline)
-        contours.extend(_contour(p, scale) for p in prims)
+        paths, adv = GLYPHS[ch](x, baseline)
+        contours.extend(_contour(p, scale) for p in paths)
         x += adv
     return contours, x

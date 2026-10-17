@@ -43,7 +43,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-81 | Extension types | Decision | Whether any output becomes tagged by default (a major version) |
 | CR-82 | Extension types | Decision | Whether `polars_cv.ndarray` carries `dtype`/`ndim` metadata |
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
-| CR-101 | Drawing | Feature | Acceptance: rebuild `docs/assets/logo` on CR-93–100, plus a "Drawing" guide |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
@@ -274,7 +273,7 @@ for anti-aliasing, and filled primitives for every stroke. Each item extends
 an existing family or rule where that is cleaner than a new op, reuses an
 engine primitive (`geo` 0.33's `Buffer`/`BooleanOps`/`ChaikinSmoothing`/
 `Densify`, `ops::elementwise`, `scanline_fill`), and is built test-first with
-an independent oracle. CR-93 to CR-100 are done; CR-101 remains.
+an independent oracle. All done (CR-93 to CR-101, closed below).
 
 **Decisions (owner, 2026-10-16).**
 1. The pipeline contour domain carries open contours (lines) as well as
@@ -291,13 +290,6 @@ an independent oracle. CR-93 to CR-100 are done; CR-101 remains.
 5. No built-in colormaps for now: `apply_lut` takes explicit tables.
 6. Line width, cap and join are rendering attributes on `rasterize`; `offset`
    is geometry on regions only and takes `join` alone.
-
-### CR-101 — Acceptance
-
-- Rebuild `docs/assets/logo/make_logo.py` on CR-93–100 (terraces from
-  `distance_transform` → `scale` → `floor` → `apply_lut`, rings from disk
-  `dilate`, strokes from `rasterize(line_width=)`, `supersample`, `blend`
-  compositing) and add a "Drawing with polars-cv" guide page.
 
 ## Upstream (Polars)
 
@@ -559,6 +551,7 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 | CR-94 | Disk structuring element for morphology | Added (Unreleased) as `footprint="disk"` (not `shape=`, which `rasterize` uses for a canvas); a min/max over row spans reusing the square's row pass, since greyscale input rules out thresholding the distance transform, which became the oracle instead |
 | CR-95 | `apply_lut(table, dtype=)`: per-value tables and 1→K palettes | Added (Unreleased) as its own `GraphStep` family (`LutOp`), not a `ComputeOp`: a value past the table is a row error, which only an `execute -> Result` can report; the read reuses the element-wise engine's `Lut` map |
 | CR-96 | `rasterize(supersample=)`: anti-aliased coverage | Added (Unreleased): the scanline filler now works per sample row (memory one sample row, not an n²-larger canvas), and `n = 1` reduces to the old formulas exactly |
+| CR-101 | Acceptance: the logo on the drawing ops, and a drawing guide | Done (Unreleased): `make_logo.py` is one graph (index map + `apply_lut` palette; terraces from `distance_transform`, rings as stroked `offset` boundaries, stroked glyphs); `docs/user-guide/drawing.md`, its examples run by `test_drawing_guide.py`. Found and fixed: a loop line was stroked as an open path, capped at its start |
 | CR-100 | `coordinate_grid(normalized=)` | Added (Unreleased): an `ImageOpKind` whose shape is `OpShape::Canvas { of: 0, channels: 2 }` (the canvas rule, given a channel count); declared `StridePreserving`, not the planned `PacksOwnRows`, which the copy census refuses (it reads no element, so packs nothing); `Global`, so no crop crosses it |
 | CR-103 | A non-finite float literal failed at the JSON wire with "expected value at line 1 column N" | Fixed (Unreleased): `_types._literal`, the one place literals reach the wire (ops, sources and geometry calls), refuses one naming the parameter; `bound` fields keep their infinities |
 | CR-99 | Contour boolean ops (`union`, `intersection`, `difference`, `symmetric_difference`) | Added (Unreleased): `transforms::boolean` behind a lazy-only `GraphOp` role (`Role::Regions`, node operand) and `ContourFn` accessors (column operand); each side read as its regions' union |

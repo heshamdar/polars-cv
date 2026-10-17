@@ -4754,6 +4754,7 @@ dependencies = [
  "fast_image_resize",
  "geo",
  "half",
+ "i_overlay",
  "image",
  "image_hasher",
  "ndarray",

@@ -830,10 +830,32 @@ impl Stroke {
 
 /// The region a stroked line covers: every point within `width / 2` of it
 /// (round caps and joins), or that band with its ends and corners shaped by
-/// `cap` and `join`. A one-point line is a dot (none, for a butt cap).
+/// `cap` and `join`. A one-point line is a dot (none, for a butt cap). A line
+/// that returns to its first point has no ends: its start is a corner like
+/// the others, and `cap` draws nothing.
 pub fn stroke(line: &[Point], style: &Stroke) -> Result<Vec<Contour>, String> {
     Stroke::check_width(style.width)?;
     let radius = style.width / 2.0;
+    if line.len() > 2 && line.first() == line.last() {
+        // geo strokes every line string as an open path, capping where a loop
+        // starts; `i_overlay` (under it) strokes a closed path, joined there.
+        use i_overlay::mesh::stroke::offset::StrokeOffset;
+        use i_overlay::mesh::style::StrokeStyle;
+        let path: Vec<[f64; 2]> = line[..line.len() - 1].iter().map(|p| [p.x, p.y]).collect();
+        let shapes = path.stroke(
+            StrokeStyle::new(style.width).line_join(geo_join(style.join, radius)),
+            true,
+        );
+        return Ok(shapes
+            .iter()
+            .filter_map(|shape| {
+                let mut rings = shape
+                    .iter()
+                    .map(|ring| ring.iter().map(|&[x, y]| Point::new(x, y)).collect());
+                Some(Contour::with_holes(rings.next()?, rings.collect()))
+            })
+            .collect());
+    }
     let cap = match style.cap {
         LineCap::Round => GeoCap::Round(arc_step(radius)),
         LineCap::Square => GeoCap::Square,

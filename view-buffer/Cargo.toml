@@ -29,6 +29,10 @@ half = "2"
 # earcut/spade triangulators and `multithreading` — the latter matters because this
 # crate runs inside an already-parallel Polars plugin.
 geo = { version = "0.33", default-features = false }
+# geo's own polygon engine, named for the one stroke geo does not expose: a
+# closed path (`transforms::stroke` of a line that returns to its first
+# point). Pinned to geo 0.33's range so the tree holds one copy.
+i_overlay = { version = "4.5.1, < 4.6.0", default-features = false }
 
 # Optional dependencies
 ndarray = { version = "0.17", optional = true }
