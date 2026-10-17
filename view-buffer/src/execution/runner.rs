@@ -1710,9 +1710,9 @@ fn apply_dilate(buf: ViewBuffer, ksize: u32, iterations: u32, footprint: Footpri
 /// (`tests/it/morph_ref.rs`, NaN and signed-zero cases).
 ///
 /// A disk keeps the passes for every dtype: two discrete disks do not compose
-/// into one larger disk (radius 1 twice reaches the diagonal `(1, 1)`, which
-/// the radius-2 disk also holds, but radius 2 twice misses nothing the radius-4
-/// disk holds only by luck), so `iterations` means that many disk passes.
+/// into one larger disk (the radius-2 disk twice reaches `(4, 0)`, `(3, 1)`
+/// and `(2, 2)` but not the radius-4 disk's `(3, 2)`), so `iterations` means
+/// that many disk passes.
 #[cfg(feature = "image_interop")]
 fn morph_iterated(
     buf: ViewBuffer,

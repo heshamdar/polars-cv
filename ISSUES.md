@@ -43,6 +43,7 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-81 | Extension types | Decision | Whether any output becomes tagged by default (a major version) |
 | CR-82 | Extension types | Decision | Whether `polars_cv.ndarray` carries `dtype`/`ndim` metadata |
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
+| CR-105 | Performance | Low | `footprint="disk"` morphology costs O(r²·HW) time and keeps up to r + 1 full-size row images |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
@@ -142,6 +143,22 @@ against `main` at `e788d72` that day, and their full text is in git history).
 - **Next:** call `to_spec` once per sink, and give `_encode_field` a fast
   path for a sequence that holds no expression (one pass, no per-element
   dispatch). Benchmark both on a release build before and after.
+
+### CR-105 — Disk morphology is quadratic in the radius
+
+- **Found:** review of CR-94 (`morph_disk_typed`, `execution/runner.rs`).
+- **Cost:** one `row_extreme` image per distinct half-width (up to r + 1),
+  each O(HW·w) by the square's row pass, all held at once: O(r²·HW) time and
+  O(r·HW) memory, against the square's O(r·HW) and two images. A 31-px disk
+  on a 4K u8 image holds ~16 images (~130 MB).
+- **Why not now:** the widths nest, so width w could extend width w − 1 by
+  its two new taps (O(r·HW) total), but that changes the fold order from the
+  square's ascending taps, which decides which of two equal signed zeros
+  survives — the bit-exact contract `tests/morph_ref.rs` pins. A column
+  pass folded by width rather than by `dy` has the same problem.
+- **Next:** benchmark a 15-, 31- and 63-px disk (release build); if it
+  matters, either define the disk's fold order as the incremental one (and
+  re-derive the reference) or keep only the widths still needed.
 
 ## Fetch
 

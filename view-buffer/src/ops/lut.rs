@@ -2,14 +2,15 @@
 //!
 //! Its own family rather than an engine `ViewDto` op because a value past the
 //! table is a *data* error, which an engine op cannot report: it surfaces as
-//! the row's `Err` from [`LutOp::execute`], as the histogram's does. The read
-//! itself is the element-wise engine's table map
-//! (`ops::elementwise::lookup_column`), the one per-value table read.
+//! the row's `Err` from [`LutOp::execute`], as the histogram's does. A table
+//! of single entries reads through the element-wise engine's table map
+//! (`ops::elementwise::lookup_column`), the one per-value table read; a
+//! palette, one input to `K` outputs, writes its pixels in one pass.
 
 use polars_cv_macros::{Ops, Resolve};
 
 use crate::core::buffer::ViewBuffer;
-use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
+use crate::core::dtype::{with_dtype, DType, DTypeCategory, OutputDTypeRule};
 use crate::mode::{known, Exec, Mode};
 use crate::ops::shape_rule::OpShape;
 use crate::ops::spatial_rule::SpatialDependency;
@@ -121,16 +122,12 @@ impl LutOp {
     /// `table[x]` for every element, stored as `dtype`; an `Err` naming the
     /// first value with no row.
     pub fn execute(&self, buf: &ViewBuffer) -> Result<ViewBuffer, String> {
-        let domain = match buf.dtype() {
-            DType::U8 => 1usize << 8,
-            DType::U16 => 1 << 16,
-            other => {
-                return Err(format!(
-                    "needs a u8 or u16 input, got {}",
-                    other.short_name()
-                ))
-            }
-        };
+        if !matches!(buf.dtype(), DType::U8 | DType::U16) {
+            return Err(format!(
+                "needs a u8 or u16 input, got {}",
+                buf.dtype().short_name()
+            ));
+        }
         let n = self.table.len();
         if let Some(max) = largest(buf).filter(|&max| max >= n) {
             return Err(format!(
@@ -140,30 +137,39 @@ impl LutOp {
                 buf.dtype().short_name()
             ));
         }
-        // Every value present is below `n`; the padding is never read.
-        let column = |c: usize| -> Vec<f64> {
-            let mut column: Vec<f64> = self.table.iter().map(|row| row[c]).collect();
-            column.resize(domain, 0.0);
-            column
-        };
-        let k = self.width();
-        if k == 1 {
+        if self.width() == 1 {
+            let entries: Vec<f64> = self.table.iter().map(|row| row[0]).collect();
             return Ok(crate::ops::elementwise::lookup_column(
                 buf.clone(),
-                &column(0),
+                &entries,
                 self.dtype,
             ));
         }
-        let shape = buf.shape();
-        let (h, w) = (shape[0], shape[1]);
-        let planes: Vec<ViewBuffer> = (0..k)
-            .map(|c| {
-                crate::ops::elementwise::lookup_column(buf.clone(), &column(c), self.dtype)
-                    .reshape(vec![h, w])
-            })
-            .collect();
-        let refs: Vec<&ViewBuffer> = planes.iter().collect();
-        Ok(crate::execution::apply_channel_merge(&refs))
+        Ok(self.palette(buf))
+    }
+
+    /// A palette's read: each value's row of `K` entries, written as the
+    /// output pixel's `K` channels in one pass over the input (a `[H, W]` or
+    /// `[H, W, 1]` buffer, `validate` has checked), read where it lies. The
+    /// element-wise table map writes one output per input, so it cannot.
+    fn palette(&self, buf: &ViewBuffer) -> ViewBuffer {
+        let k = self.width();
+        let shape = vec![buf.shape()[0], buf.shape()[1], k];
+        let flat: Vec<f64> = self.table.iter().flatten().copied().collect();
+        with_dtype!(self.dtype, D => {
+            let rows: Vec<D> = crate::core::convert::convert_slice(&flat);
+            let mut out: Vec<D> = Vec::with_capacity(shape.iter().product());
+            let mut read = |v: usize| out.extend_from_slice(&rows[v * k..(v + 1) * k]);
+            match buf.dtype() {
+                DType::U8 => crate::core::map::for_each_run::<u8>(buf, |run| {
+                    run.iter().for_each(|&v| read(usize::from(v)))
+                }),
+                _ => crate::core::map::for_each_run::<u16>(buf, |run| {
+                    run.iter().for_each(|&v| read(usize::from(v)))
+                }),
+            }
+            ViewBuffer::from_vec_with_shape(out, shape)
+        })
     }
 }
 
@@ -327,6 +333,25 @@ mod tests {
         // The range check sees the flipped view's values too.
         let short = op(&[&[0.0][..]; 11], DType::U8);
         assert!(short.execute(&flipped).unwrap_err().contains("value 11"));
+    }
+
+    #[test]
+    fn a_palette_reads_a_strided_view_in_logical_order() {
+        // [2, 3, 1] flipped both ways: logical order 5, 4, 3, 2, 1, 0.
+        let full = ViewBuffer::from_vec_with_shape((0u16..6).collect::<Vec<_>>(), vec![2, 3, 1]);
+        let flipped = full.flip(&[0, 1]);
+        let table: Vec<Vec<f64>> = (0..6).map(|v| vec![f64::from(v), -f64::from(v)]).collect();
+        let out = LutOp {
+            table,
+            dtype: DType::I16,
+        }
+        .execute(&flipped)
+        .unwrap();
+        assert_eq!(out.shape(), &[2, 3, 2]);
+        assert_eq!(
+            out.to_contiguous().as_slice::<i16>(),
+            &[5, -5, 4, -4, 3, -3, 2, -2, 1, -1, 0, 0]
+        );
     }
 
     #[test]

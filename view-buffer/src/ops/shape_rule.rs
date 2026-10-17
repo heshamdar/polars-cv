@@ -752,7 +752,6 @@ mod symbolic_tests {
     fn every_variant() -> Vec<OpShape> {
         let k = |n| Sym::Known(n);
         let samples = vec![
-            OpShape::ExpandChannels(3),
             OpShape::Preserve,
             OpShape::Fixed(vec![k(4), Sym::PerRow]),
             OpShape::Dynamic,
