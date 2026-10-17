@@ -209,6 +209,16 @@ second, slow build into the loop, and both are now closed — keep them closed:
   `[profile.dev]` (`debug = 1`, `split-debuginfo = "unpacked"`), and linked with
   `lld` on x86_64-linux via `.cargo/config.toml` — the single biggest per-build
   speedup.
+- **`target/debug` used to grow without bound.** Three fixes keep it near its
+  working size (~6 GB for the plugin build, more once tests and clippy run),
+  each held by `test_build_efficiency.py`: the workspace's own crates keep
+  debuginfo inline (`split-debuginfo = "off"` per package — incremental
+  rebuilds left their `.dwo` sidecars behind under new names, ~12 GB in one
+  session); view-buffer's integration tests are one binary (`tests/it/`, a
+  module per file — 31 executables were ~4 GB, each relinked on every change);
+  and the SessionStart hook cleans `target/` when `rustc -vV` changes (a new
+  stable orphans every artifact). Add a view-buffer integration test as a
+  module of `tests/it/main.rs`, never as a new `tests/*.rs`.
 
 **Web sessions are provisioned by the SessionStart hook**
 (`.claude/hooks/session-start.sh`, async): it updates the Rust toolchain, syncs
@@ -462,7 +472,7 @@ documented alongside it.
 1. Implement in **view-buffer** (`view-buffer/src/ops/`) if it is a buffer→buffer
    engine op — add to the appropriate module, give it truthful `Op` contracts
    (shape/dtype/domain/channel rules), and register it in `ViewDto`
-   (`tests/apply_op_coverage.rs` requires a probe per variant). Graph-level
+   (`tests/it/apply_op_coverage.rs` requires a probe per variant). Graph-level
    steps (node references, input columns) become `GraphOp` variants in
    `polars-cv/src/ops/graph.rs` instead, each given a `Role`.
 2. Define it in the **typed catalogue**: a variant of its family enum —

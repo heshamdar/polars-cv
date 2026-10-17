@@ -505,6 +505,160 @@ fn contour_largest(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series
     )
 }
 
+/// Declared type of `contour_boundary`: always a set of lines.
+fn contour_boundary_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
+    let input = input_fields
+        .first()
+        .ok_or_else(|| polars_err!(ComputeError: "contour_boundary takes a contour column"))?;
+    Ok(Field::new(
+        input.name().clone(),
+        Arity::Set.wrap(Arity::elem_dtype(input.dtype())),
+    ))
+}
+
+/// Each row's regions' rings as open lines, as a set: one region with holes
+/// gives several lines, so the result is a set whichever arity came in (the
+/// pipeline op's definition, `GeometryOp::Boundary`).
+#[polars_expr(output_type_func=contour_boundary_output_type)]
+fn contour_boundary(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "contour_boundary";
+    let (op, params) = GeomParams::parse::<GeometryOp<Wire>>(inputs, kwargs, NAME)?;
+    let GeometryOp::Boundary = &op else {
+        return Err(parsed_as_another(NAME));
+    };
+    let contours = ContourColumn::new(&inputs[0]);
+    let rows = params.map_rows(inputs[0].len(), |_params, i| {
+        let Some(row) = contours.outlines(i)? else {
+            return Ok(None);
+        };
+        let mut lines = Vec::new();
+        for outline in &row {
+            match outline {
+                Outline::Closed(c) => lines.extend(transforms::boundary(c)),
+                Outline::Open(_) => polars_bail!(ComputeError:
+                    "{} (row {})", crate::graph::encode::BOUNDARY_OF_A_LINE, i),
+            }
+        }
+        Ok(Some(lines))
+    })?;
+    Outline::column(
+        inputs[0].name().clone(),
+        rows,
+        Arity::Set,
+        &Arity::elem_dtype(inputs[0].dtype()),
+    )
+}
+
+/// Declared type of a set-level shaping function (`offset`, `union_all`):
+/// always a set of regions, since a region can split or merge.
+fn contour_region_set_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
+    let input = input_fields
+        .first()
+        .ok_or_else(|| polars_err!(ComputeError: "the function takes a contour column"))?;
+    Ok(Field::new(
+        input.name().clone(),
+        Arity::Set.wrap(Arity::elem_dtype(input.dtype())),
+    ))
+}
+
+/// Each row's regions, read as one union and grown (shrunk) by `distance`,
+/// as a set (the pipeline op's definition, `GeometryOp::Offset`).
+#[polars_expr(output_type_func=contour_region_set_output_type)]
+fn contour_offset(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "contour_offset";
+    let (op, params) = GeomParams::parse::<GeometryOp<Wire>>(inputs, kwargs, NAME)?;
+    let GeometryOp::Offset { distance, join } = &op else {
+        return Err(parsed_as_another(NAME));
+    };
+    let contours = ContourColumn::new(&inputs[0]);
+    let rows = params.map_rows(inputs[0].len(), |params, i| {
+        let Some(row) = contours.row(i)? else {
+            return Ok(None);
+        };
+        let (distance, join) = (params.value(distance, i)?, params.value(join, i)?);
+        transforms::offset(&row, distance, join)
+            .map(Some)
+            .map_err(|e| polars_err!(ComputeError: "{} (row {})", e, i))
+    })?;
+    Contour::column(
+        inputs[0].name().clone(),
+        rows,
+        Arity::Set,
+        &Arity::elem_dtype(inputs[0].dtype()),
+    )
+}
+
+/// Each row's regions as their union's disjoint regions, a set (the
+/// pipeline op's definition, `GeometryOp::UnionAll`).
+#[polars_expr(output_type_func=contour_region_set_output_type)]
+fn contour_union_all(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "contour_union_all";
+    let (op, params) = GeomParams::parse::<GeometryOp<Wire>>(inputs, kwargs, NAME)?;
+    let GeometryOp::UnionAll = &op else {
+        return Err(parsed_as_another(NAME));
+    };
+    let contours = ContourColumn::new(&inputs[0]);
+    let rows = params.map_rows(inputs[0].len(), |_params, i| {
+        Ok(contours.row(i)?.map(|row| transforms::union_all(&row)))
+    })?;
+    Contour::column(
+        inputs[0].name().clone(),
+        rows,
+        Arity::Set,
+        &Arity::elem_dtype(inputs[0].dtype()),
+    )
+}
+
+/// Each row's regions combined with *other*'s by the function's boolean op,
+/// as a set: each side read as the union of its set (the engine function the
+/// pipeline ops run, `transforms::boolean`). A null side nulls the row.
+fn region_op_rows(inputs: &[Series], kwargs: GeomKwargs, name: &str) -> PolarsResult<Series> {
+    let (op, params) = GeomParams::parse::<ContourFn<Wire>>(inputs, kwargs, name)?;
+    let Some((region_op, other)) = op.region_op() else {
+        return Err(parsed_as_another(name));
+    };
+    let (left, right) = (
+        ContourColumn::new(&inputs[0]),
+        ContourColumn::new(params.column(other)),
+    );
+    let rows = params.map_rows(inputs[0].len(), |_params, i| {
+        let (Some(a), Some(b)) = (left.row(i)?, right.row(i)?) else {
+            return Ok(None);
+        };
+        Ok(Some(transforms::boolean(&a, &b, region_op)))
+    })?;
+    Contour::column(
+        inputs[0].name().clone(),
+        rows,
+        Arity::Set,
+        &Arity::elem_dtype(inputs[0].dtype()),
+    )
+}
+
+/// `.contour.union`: [`region_op_rows`].
+#[polars_expr(output_type_func=contour_region_set_output_type)]
+fn contour_union(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    region_op_rows(inputs, kwargs, "contour_union")
+}
+
+/// `.contour.intersection`: [`region_op_rows`].
+#[polars_expr(output_type_func=contour_region_set_output_type)]
+fn contour_intersection(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    region_op_rows(inputs, kwargs, "contour_intersection")
+}
+
+/// `.contour.difference`: [`region_op_rows`].
+#[polars_expr(output_type_func=contour_region_set_output_type)]
+fn contour_difference(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    region_op_rows(inputs, kwargs, "contour_difference")
+}
+
+/// `.contour.symmetric_difference`: [`region_op_rows`].
+#[polars_expr(output_type_func=contour_region_set_output_type)]
+fn contour_symmetric_difference(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    region_op_rows(inputs, kwargs, "contour_symmetric_difference")
+}
+
 fn contour_single_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
     let input = input_fields
         .first()
@@ -928,6 +1082,27 @@ contour_accessor! {
 }
 
 contour_accessor! {
+    /// Chaikin-smooth a contour.
+    map fn contour_smooth / contour_smooth_output_type
+        -> |input| Arity::elem_dtype(input);
+    reads Outline;
+    parse GeometryOp::Smooth { iterations };
+    |outline, params, row| Ok(transforms::smooth(outline, params.value(iterations, row)?))
+}
+
+contour_accessor! {
+    /// Densify a contour.
+    map fn contour_densify / contour_densify_output_type
+        -> |input| Arity::elem_dtype(input);
+    reads Outline;
+    parse GeometryOp::Densify { max_segment_length };
+    |outline, params, row| {
+        transforms::densify(outline, params.value(max_segment_length, row)?)
+            .map_err(|e| polars_err!(ComputeError: "{} (row {})", e, row))
+    }
+}
+
+contour_accessor! {
     /// Flip contour (reverse winding).
     map fn contour_flip / contour_flip_output_type -> |input| Arity::elem_dtype(input);
     reads Outline;
@@ -942,6 +1117,21 @@ contour_accessor! {
     reads Outline;
     parse GeometryOp::ConvexHull;
     |outline, _params, _row| Ok(transforms::convex_hull_outline(outline))
+}
+
+contour_accessor! {
+    /// Join an open line's ends into a region.
+    map fn contour_close / contour_close_output_type
+        -> |input| Arity::elem_dtype(input);
+    reads Outline;
+    parse GeometryOp::Close;
+    |outline, _params, row| {
+        match outline {
+            Outline::Open(line) => Ok(Outline::Closed(transforms::close(line))),
+            Outline::Closed(_) => polars_bail!(ComputeError:
+                "{} (row {})", crate::graph::encode::CLOSE_OF_A_REGION, row),
+        }
+    }
 }
 
 contour_accessor! {

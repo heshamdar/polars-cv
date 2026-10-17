@@ -25,7 +25,7 @@ guarantees. This suite searches around them.
 | Axis | Where | Values |
 |------|-------|--------|
 | dtype | `images.DTYPES` | all ten engine dtypes (ratcheted to `cast`'s enum) |
-| size, channels, content | `images.image_specs` | 1–48 px (biased to 1, 2, primes), 1–4 channels, noise / smooth / constant / extremes / edges / gradient / half-integer ties |
+| size, channels, content | `images.image_specs` | 1–48 px (biased to 1, 2, primes), 1–4 channels, noise / smooth / constant / extremes / edges / gradient / mask (zero-set blobs, sometimes one class only) / half-integer ties |
 | rows | `cases.batches` | 1–4 rows, optional nulls, optional mixed sizes |
 | source | `io.SOURCES` | PNG, PNG with no declared dtype, TIFF, WebP, JPEG (lossy), file path, `auto` over bytes and lists, `list`, `array`, `raw`, `blob` |
 | sink | `io.SINKS` | `numpy`, `ndarray`, `torch` (if installed), `list`, `array`, `blob`, PNG / TIFF / WebP / JPEG, `native` |
@@ -52,6 +52,10 @@ One `OpSpec` per chainable `Pipeline` method. It gives:
 - `params`: a strategy for valid arguments on a given input.
 - `ref`: the reference, which states its output dtype on its own authority.
 - `tol`, `gain` and `kind`: the error model.
+- `ref_dtypes` and `ref_contents`: the dtypes and content kinds the reference
+  suites draw for it (the invariance suites ignore both). `ref_contents`
+  narrows to the kinds where the op's answer varies — `distance_transform`
+  draws `mask`, the one kind that reliably holds a zero set.
 - `note`: every convention modelled.
 
 Lazy-only binary ops have a `BinarySpec`. An op without a trustworthy

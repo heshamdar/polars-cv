@@ -24,10 +24,14 @@ if TYPE_CHECKING:
 
 BUFFER = "buffer"
 CONTOUR = "contour"
+#: The contour domain holding open lines (``boundary()`` of the traced regions),
+#: for an op that takes a line (``close``).
+LINE = "line"
 
 OP_CASES: dict[str, tuple[str, dict] | None] = {
     # --- buffer -> buffer -------------------------------------------------
     "adjust_brightness": (BUFFER, {"factor": 1.2}),
+    "apply_lut": (BUFFER, {"table": [[255 - i] for i in range(256)]}),
     "adjust_contrast": (BUFFER, {"factor": 1.2}),
     "adjust_gamma": (BUFFER, {"gamma": 1.5}),
     "blur": (BUFFER, {"sigma": 1.0}),
@@ -55,6 +59,8 @@ OP_CASES: dict[str, tuple[str, dict] | None] = {
     "convolve2d": (BUFFER, {"kernel": [0.0] * 9}),
     "crop": (BUFFER, {"top": 0, "left": 0, "height": 50, "width": 50}),
     "dilate": (BUFFER, {"ksize": 3}),
+    "coordinate_grid": (BUFFER, {}),
+    "distance_transform": (BUFFER, {}),
     "equalize_histogram": (BUFFER, {}),
     "erode": (BUFFER, {"ksize": 3}),
     "flip": (BUFFER, {"axes": [0]}),
@@ -116,13 +122,19 @@ OP_CASES: dict[str, tuple[str, dict] | None] = {
     "bounding_box": (CONTOUR, {}),
     "centroid": (CONTOUR, {}),
     "convex_hull": (CONTOUR, {}),
+    "densify": (CONTOUR, {"max_segment_length": 2.0}),
     "largest": (CONTOUR, {"k": 2}),
+    "offset": (CONTOUR, {"distance": 1.5}),
     "perimeter": (CONTOUR, {}),
     "rasterize": (CONTOUR, {"width": 32, "height": 32}),
     "scale_contour": (CONTOUR, {"sx": 2.0, "sy": 2.0}),
     "simplify": (CONTOUR, {"tolerance": 1.0}),
+    "smooth": (CONTOUR, {"iterations": 2}),
     "translate": (CONTOUR, {"dx": 1.0, "dy": 2.0}),
+    "union_all": (CONTOUR, {}),
     # --- not comparable by this harness -----------------------------------
+    "boundary": (CONTOUR, {}),
+    "close": (LINE, {}),
     "assert_shape": None,  # sets hints directly; covered by its own test
     "label_reduce": None,  # takes a contour *column*, not a plain value
     "on_error": None,  # graph-level policy, appends no op
@@ -148,6 +160,12 @@ EXTRA_CASES: list[tuple[str, str, dict]] = [
     # crop with only an offset, and histogram's struct-encoded output.
     ("crop", BUFFER, {"top": 10, "left": 20}),
     ("histogram", BUFFER, {"bins": 8, "output": "buckets"}),
+    # rasterize strokes a set's lines (CR-98): the line base reaches it.
+    (
+        "rasterize",
+        LINE,
+        {"width": 32, "height": 32, "line_width": 3.0, "cap": "square"},
+    ),
     # The float-promoting scalar ops asked to land somewhere other than the
     # promoted float. `out_dtype` was silently discarded — accepted, serialized
     # into the op's identity, and read by no `resolve_op` arm and no dtype rule
@@ -192,6 +210,7 @@ COLOR_SPACES: tuple[str, ...] = ("rgb", "bgr", "hsv", "lab", "ycbcr", "gray")
 SINGLE_CHANNEL_OPS: frozenset[str] = frozenset(
     {
         "threshold",
+        "distance_transform",
         "erode",
         "dilate",
         "morphology_open",
@@ -242,8 +261,9 @@ def base_pipeline(domain: str) -> "Pipeline":
     pipe = (
         Pipeline().source("image_bytes").assert_shape(height=100, width=200, channels=3)
     )
-    if domain == CONTOUR:
-        return pipe.grayscale().threshold(128).extract_contours()
+    if domain in (CONTOUR, LINE):
+        contours = pipe.grayscale().threshold(128).extract_contours()
+        return contours.boundary() if domain == LINE else contours
     return pipe
 
 

@@ -66,6 +66,15 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().adjust_gamma(gamma=gamma))
 
+    def apply_lut(
+        self, table: Sequence[Sequence[FloatOrExpr]], *, dtype: str = "u8"
+    ) -> LazyPipelineExpr:
+        """Map each value through a lookup table.
+
+        Lazy form of :meth:`Pipeline.apply_lut` on this expression's output.
+        """
+        return self.pipe(self._continuation().apply_lut(table=table, dtype=dtype))
+
     def area(self, *, signed: BoolOrExpr = False) -> LazyPipelineExpr:
         """Compute the area of the contour using the Shoelace formula.
 
@@ -97,6 +106,13 @@ class _LazyForwardersMixin:
         Lazy form of :meth:`Pipeline.blur` on this expression's output.
         """
         return self.pipe(self._continuation().blur(sigma=sigma))
+
+    def boundary(self) -> LazyPipelineExpr:
+        """A region's rings as open lines: the exterior, then each hole, each
+
+        Lazy form of :meth:`Pipeline.boundary` on this expression's output.
+        """
+        return self.pipe(self._continuation().boundary())
 
     def bounding_box(self) -> LazyPipelineExpr:
         """Compute the axis-aligned bounding box of the contour.
@@ -187,6 +203,13 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().clamp_min(value=value))
 
+    def close(self) -> LazyPipelineExpr:
+        """Join an open line's ends into the region it bounds. A line that
+
+        Lazy form of :meth:`Pipeline.close` on this expression's output.
+        """
+        return self.pipe(self._continuation().close())
+
     def convert_color(self, *, from_space: str, to_space: str) -> LazyPipelineExpr:
         """Convert between color spaces.
 
@@ -220,6 +243,13 @@ class _LazyForwardersMixin:
             )
         )
 
+    def coordinate_grid(self, *, normalized: BoolOrExpr = False) -> LazyPipelineExpr:
+        """The pixel coordinates of the image: an f32 ``[H, W, 2]`` buffer holding
+
+        Lazy form of :meth:`Pipeline.coordinate_grid` on this expression's output.
+        """
+        return self.pipe(self._continuation().coordinate_grid(normalized=normalized))
+
     def crop(
         self,
         *,
@@ -236,16 +266,38 @@ class _LazyForwardersMixin:
             self._continuation().crop(top=top, left=left, height=height, width=width)
         )
 
+    def densify(self, max_segment_length: FloatOrExpr) -> LazyPipelineExpr:
+        """Add points so no edge is longer than *max_segment_length*: each edge is
+
+        Lazy form of :meth:`Pipeline.densify` on this expression's output.
+        """
+        return self.pipe(
+            self._continuation().densify(max_segment_length=max_segment_length)
+        )
+
     def dilate(
-        self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1
+        self,
+        *,
+        ksize: IntOrExpr = 3,
+        iterations: IntOrExpr = 1,
+        footprint: str | pl.Expr = "square",
     ) -> LazyPipelineExpr:
-        """Morphological dilation (local maximum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).
+        """Morphological dilation: the local maximum over a footprint (a
 
         Lazy form of :meth:`Pipeline.dilate` on this expression's output.
         """
         return self.pipe(
-            self._continuation().dilate(ksize=ksize, iterations=iterations)
+            self._continuation().dilate(
+                ksize=ksize, iterations=iterations, footprint=footprint
+            )
         )
+
+    def distance_transform(self, *, signed: BoolOrExpr = False) -> LazyPipelineExpr:
+        """Exact Euclidean distance transform of a mask: an f32 image of the same
+
+        Lazy form of :meth:`Pipeline.distance_transform` on this expression's output.
+        """
+        return self.pipe(self._continuation().distance_transform(signed=signed))
 
     def equalize_histogram(self) -> LazyPipelineExpr:
         """Apply histogram equalization for contrast enhancement: map each pixel
@@ -255,13 +307,21 @@ class _LazyForwardersMixin:
         return self.pipe(self._continuation().equalize_histogram())
 
     def erode(
-        self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1
+        self,
+        *,
+        ksize: IntOrExpr = 3,
+        iterations: IntOrExpr = 1,
+        footprint: str | pl.Expr = "square",
     ) -> LazyPipelineExpr:
-        """Morphological erosion (local minimum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).
+        """Morphological erosion: the local minimum over a footprint (a
 
         Lazy form of :meth:`Pipeline.erode` on this expression's output.
         """
-        return self.pipe(self._continuation().erode(ksize=ksize, iterations=iterations))
+        return self.pipe(
+            self._continuation().erode(
+                ksize=ksize, iterations=iterations, footprint=footprint
+            )
+        )
 
     def extract_contours(
         self,
@@ -400,26 +460,38 @@ class _LazyForwardersMixin:
             )
         )
 
-    def morphology_close(self, *, ksize: IntOrExpr = 3) -> LazyPipelineExpr:
+    def morphology_close(
+        self, *, ksize: IntOrExpr = 3, footprint: str | pl.Expr = "square"
+    ) -> LazyPipelineExpr:
         """Morphological closing (dilate then erode).
 
         Lazy form of :meth:`Pipeline.morphology_close` on this expression's output.
         """
-        return self.pipe(self._continuation().morphology_close(ksize=ksize))
+        return self.pipe(
+            self._continuation().morphology_close(ksize=ksize, footprint=footprint)
+        )
 
-    def morphology_gradient(self, *, ksize: IntOrExpr = 3) -> LazyPipelineExpr:
+    def morphology_gradient(
+        self, *, ksize: IntOrExpr = 3, footprint: str | pl.Expr = "square"
+    ) -> LazyPipelineExpr:
         """Morphological gradient (dilate - erode): an edge outline. Requires
 
         Lazy form of :meth:`Pipeline.morphology_gradient` on this expression's output.
         """
-        return self.pipe(self._continuation().morphology_gradient(ksize=ksize))
+        return self.pipe(
+            self._continuation().morphology_gradient(ksize=ksize, footprint=footprint)
+        )
 
-    def morphology_open(self, *, ksize: IntOrExpr = 3) -> LazyPipelineExpr:
+    def morphology_open(
+        self, *, ksize: IntOrExpr = 3, footprint: str | pl.Expr = "square"
+    ) -> LazyPipelineExpr:
         """Morphological opening (erode then dilate).
 
         Lazy form of :meth:`Pipeline.morphology_open` on this expression's output.
         """
-        return self.pipe(self._continuation().morphology_open(ksize=ksize))
+        return self.pipe(
+            self._continuation().morphology_open(ksize=ksize, footprint=footprint)
+        )
 
     def neg(self) -> LazyPipelineExpr:
         """Negate every value (`-x`).
@@ -445,6 +517,15 @@ class _LazyForwardersMixin:
                 method=method, mean=mean, std=std, out_dtype=out_dtype
             )
         )
+
+    def offset(
+        self, distance: FloatOrExpr, *, join: str | pl.Expr = "round"
+    ) -> LazyPipelineExpr:
+        """Grow the set's regions by *distance* (negative: shrink them): every
+
+        Lazy form of :meth:`Pipeline.offset` on this expression's output.
+        """
+        return self.pipe(self._continuation().offset(distance=distance, join=join))
 
     def on_error(self, policy: str) -> LazyPipelineExpr:
         """Set the per-row error policy for the executed pipeline graph.
@@ -526,8 +607,12 @@ class _LazyForwardersMixin:
         shape: LazyPipelineExpr | None = None,
         fill_value: IntOrExpr = 255,
         background: IntOrExpr = 0,
+        supersample: IntOrExpr = 1,
+        line_width: FloatOrExpr = 1.0,
+        cap: str | pl.Expr = "round",
+        join: str | pl.Expr = "round",
     ) -> LazyPipelineExpr:
-        """Rasterize contours to a binary mask.
+        """Rasterize contours to a mask: regions filled, open lines stroked.
 
         Lazy form of :meth:`Pipeline.rasterize` on this expression's output.
         """
@@ -538,6 +623,10 @@ class _LazyForwardersMixin:
                 shape=shape,
                 fill_value=fill_value,
                 background=background,
+                supersample=supersample,
+                line_width=line_width,
+                cap=cap,
+                join=join,
             )
         )
 
@@ -809,6 +898,13 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().simplify(tolerance=tolerance))
 
+    def smooth(self, *, iterations: IntOrExpr = 1) -> LazyPipelineExpr:
+        """Round off corners by Chaikin's corner cutting: each pass replaces every
+
+        Lazy form of :meth:`Pipeline.smooth` on this expression's output.
+        """
+        return self.pipe(self._continuation().smooth(iterations=iterations))
+
     def sobel(self, *, axis: str = "x") -> LazyPipelineExpr:
         """Sobel gradient operator.
 
@@ -892,6 +988,13 @@ class _LazyForwardersMixin:
         Lazy form of :meth:`Pipeline.trunc` on this expression's output.
         """
         return self.pipe(self._continuation().trunc())
+
+    def union_all(self) -> LazyPipelineExpr:
+        """The union of the set's regions, as disjoint regions: overlapping
+
+        Lazy form of :meth:`Pipeline.union_all` on this expression's output.
+        """
+        return self.pipe(self._continuation().union_all())
 
     def warp_affine(
         self,

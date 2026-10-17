@@ -15,6 +15,7 @@
 use serde::Serialize;
 use view_buffer::geometry::contour::{BorderArc, CoordOrder, Winding};
 use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
+use view_buffer::geometry::transforms::RegionOp;
 use view_buffer::mode::{ColumnRef, Exec, Mode, OpDesc, Wire, WireOps};
 use view_buffer::GeometryOp;
 
@@ -268,6 +269,66 @@ pub enum ContourFn<M: Mode = Exec> {
     ContainsPoint {
         /// Point column to test.
         point: ColumnRef,
+    },
+    /// Inside either: the union of each row's regions and *other*'s.
+    ///
+    /// Each side is read as the union of its row's set (a single contour is
+    /// a set of one), and the result is disjoint regions — always a set,
+    /// since combining shapes can split or merge them. A null on either
+    /// side nulls the row; an open contour (a line) is refused. The
+    /// pipeline form is ``LazyPipelineExpr.union``.
+    ///
+    /// Returns:
+    ///     A contour set (``List[Contour]``) per row.
+    #[op(name = "contour_union", python = "union", sample = {"other": {"$slot": 1}})]
+    Union {
+        /// The contour column to combine with.
+        other: ColumnRef,
+    },
+    /// Inside both: where each row's regions overlap *other*'s.
+    ///
+    /// Each side is read as the union of its row's set (a single contour is
+    /// a set of one), and the result is disjoint regions — always a set,
+    /// since combining shapes can split or merge them. A null on either
+    /// side nulls the row; an open contour (a line) is refused. The
+    /// pipeline form is ``LazyPipelineExpr.intersection``.
+    ///
+    /// Returns:
+    ///     A contour set (``List[Contour]``) per row.
+    #[op(name = "contour_intersection", python = "intersection", sample = {"other": {"$slot": 1}})]
+    Intersection {
+        /// The contour column to combine with.
+        other: ColumnRef,
+    },
+    /// Inside this column's regions and not *other*'s: *other* cut away.
+    ///
+    /// Each side is read as the union of its row's set (a single contour is
+    /// a set of one), and the result is disjoint regions — always a set,
+    /// since combining shapes can split or merge them. A null on either
+    /// side nulls the row; an open contour (a line) is refused. The
+    /// pipeline form is ``LazyPipelineExpr.difference``.
+    ///
+    /// Returns:
+    ///     A contour set (``List[Contour]``) per row.
+    #[op(name = "contour_difference", python = "difference", sample = {"other": {"$slot": 1}})]
+    Difference {
+        /// The contour column to combine with.
+        other: ColumnRef,
+    },
+    /// Inside exactly one: where each row's regions and *other*'s do not overlap.
+    ///
+    /// Each side is read as the union of its row's set (a single contour is
+    /// a set of one), and the result is disjoint regions — always a set,
+    /// since combining shapes can split or merge them. A null on either
+    /// side nulls the row; an open contour (a line) is refused. The
+    /// pipeline form is ``LazyPipelineExpr.symmetric_difference``.
+    ///
+    /// Returns:
+    ///     A contour set (``List[Contour]``) per row.
+    #[op(name = "contour_symmetric_difference", python = "symmetric_difference", sample = {"other": {"$slot": 1}})]
+    SymmetricDifference {
+        /// The contour column to combine with.
+        other: ColumnRef,
     },
     /// Compute full pairwise IoU matrix between contour sets.
     ///
@@ -603,6 +664,21 @@ pub enum BBoxFn<M: Mode = Exec> {
     },
 }
 
+impl<M: Mode> ContourFn<M> {
+    /// The boolean combination and its other operand, for a region op.
+    pub fn region_op(&self) -> Option<(RegionOp, &ColumnRef)> {
+        match self {
+            ContourFn::Union { other } => Some((RegionOp::Union, other)),
+            ContourFn::Intersection { other } => Some((RegionOp::Intersection, other)),
+            ContourFn::Difference { other } => Some((RegionOp::Difference, other)),
+            ContourFn::SymmetricDifference { other } => {
+                Some((RegionOp::SymmetricDifference, other))
+            }
+            _ => None,
+        }
+    }
+}
+
 // The families' per-row values are read field by field where each function
 // runs; a family with a per-row field reads it through `M::V`, so the mode
 // parameter is always used.
@@ -622,6 +698,12 @@ pub const OP_ACCESSORS: &[(&str, &str)] = &[
     ("contour_scale", "scale"),
     ("contour_simplify", "simplify"),
     ("contour_largest", "largest"),
+    ("contour_boundary", "boundary"),
+    ("contour_close", "close"),
+    ("contour_offset", "offset"),
+    ("contour_union_all", "union_all"),
+    ("contour_smooth", "smooth"),
+    ("contour_densify", "densify"),
 ];
 
 /// One accessor method: its namespace and its function's description.

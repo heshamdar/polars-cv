@@ -69,35 +69,51 @@ pub enum ImageOpKind<M: Mode = Exec> {
     ///     >>> eq = Pipeline().source("image_bytes").grayscale().equalize_histogram()
     #[op(name = "equalize_histogram", sample = {})]
     HistogramEqualize,
-    /// Morphological erosion (local minimum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).
+    /// Morphological erosion: the local minimum over a footprint (a
+    /// `ksize × ksize` square, or a disk), edges replicated. Requires
+    /// single-channel input (e.g. after `.grayscale()` or `.threshold()`).
     ///
     /// Example:
     ///     >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
     #[op(name = "erode", sample = {"ksize": 3, "iterations": 1})]
     Erode {
-        /// Size of the square structuring element. Must be odd and >= 1.
-        /// Accepts a Polars expression for per-row dynamic values.
+        /// Size of the structuring element (the square's side, the disk's
+        /// diameter). Must be odd and >= 1. Accepts a Polars expression for
+        /// per-row dynamic values.
         #[param(default = 3)]
         ksize: M::V<u32>,
         /// Number of times the operation is applied. Accepts a Polars
         /// expression for per-row dynamic values.
         #[param(default = 1)]
         iterations: M::V<u32>,
+        /// The structuring element: ``"square"`` (``ksize x ksize``) or
+        /// ``"disk"`` (the pixels within Euclidean distance ``ksize // 2`` of
+        /// the centre). Accepts a Polars expression for a per-row choice.
+        #[param(default = "square")]
+        footprint: M::V<Footprint>,
     },
-    /// Morphological dilation (local maximum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).
+    /// Morphological dilation: the local maximum over a footprint (a
+    /// `ksize × ksize` square, or a disk), edges replicated. Requires
+    /// single-channel input (e.g. after `.grayscale()` or `.threshold()`).
     ///
     /// Example:
     ///     >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3)
-    #[op(name = "dilate", sample = {"ksize": 3, "iterations": 1})]
+    #[op(name = "dilate", sample = {"ksize": 5, "iterations": 1, "footprint": "disk"})]
     Dilate {
-        /// Size of the square structuring element. Must be odd and >= 1.
-        /// Accepts a Polars expression for per-row dynamic values.
+        /// Size of the structuring element (the square's side, the disk's
+        /// diameter). Must be odd and >= 1. Accepts a Polars expression for
+        /// per-row dynamic values.
         #[param(default = 3)]
         ksize: M::V<u32>,
         /// Number of times the operation is applied. Accepts a Polars
         /// expression for per-row dynamic values.
         #[param(default = 1)]
         iterations: M::V<u32>,
+        /// The structuring element: ``"square"`` (``ksize x ksize``) or
+        /// ``"disk"`` (the pixels within Euclidean distance ``ksize // 2`` of
+        /// the centre). Accepts a Polars expression for a per-row choice.
+        #[param(default = "square")]
+        footprint: M::V<Footprint>,
     },
     /// Morphological gradient (dilate - erode): an edge outline. Requires
     /// single-channel input.
@@ -106,10 +122,58 @@ pub enum ImageOpKind<M: Mode = Exec> {
     ///     >>> edges = Pipeline().source("image_bytes").grayscale().threshold(128).morphology_gradient(ksize=3)
     #[op(name = "morphology_gradient", sample = {"ksize": 3})]
     MorphGradient {
-        /// Size of the square structuring element. Must be odd and >= 1. Accepts a
+        /// Size of the structuring element. Must be odd and >= 1. Accepts a
         /// Polars expression for per-row dynamic values.
         #[param(default = 3)]
         ksize: M::V<u32>,
+        /// The structuring element: ``"square"`` (``ksize x ksize``) or
+        /// ``"disk"`` (the pixels within Euclidean distance ``ksize // 2`` of
+        /// the centre). Accepts a Polars expression for a per-row choice.
+        #[param(default = "square")]
+        footprint: M::V<Footprint>,
+    },
+    /// Exact Euclidean distance transform of a mask: an f32 image of the same
+    /// shape. Requires single-channel input.
+    ///
+    /// A pixel is foreground when it is non-zero (NaN included). Unsigned, each
+    /// foreground pixel holds the distance from its centre to the nearest
+    /// background pixel's centre and the background holds 0, as
+    /// ``cv2.distanceTransform(DIST_L2, DIST_MASK_PRECISE)`` and
+    /// ``scipy.ndimage.distance_transform_edt`` compute. Signed, every pixel
+    /// holds its distance to the boundary between the two classes, the pixel
+    /// edges ``extract_contours`` traces: negative inside, positive outside
+    /// (as ``.point.signed_distance_to_contour``), ``±(d - 0.5)`` for the
+    /// centre distance ``d`` to the nearest pixel of the other class. When a
+    /// class has no pixel at all, the distance to it is infinite.
+    ///
+    /// Example:
+    ///     >>> sdf = Pipeline().source("image_bytes").grayscale().threshold(128).distance_transform(signed=True)
+    #[op(name = "distance_transform", sample = {"signed": true})]
+    DistanceTransform {
+        /// Signed distance to the mask's boundary (negative inside) instead of
+        /// each foreground pixel's distance to the background. Accepts a
+        /// Polars expression for a per-row choice.
+        #[param(default = false)]
+        signed: M::V<bool>,
+    },
+    /// The pixel coordinates of the image: an f32 ``[H, W, 2]`` buffer holding
+    /// each pixel's centre ``(x + 0.5, y + 0.5)`` — the point ``rasterize``
+    /// samples — or ``((x + 0.5) / W, (y + 0.5) / H)`` when *normalized*.
+    ///
+    /// Reads only the input's height and width, never its values, so it takes
+    /// any dtype and channel count. The coordinates are in the frame of the
+    /// buffer it follows: after a crop they start at the crop's corner. Combine
+    /// them with ordinary ops for fields over positions (gradients, radial
+    /// falloffs, vignettes).
+    ///
+    /// Example:
+    ///     >>> dx2 = Pipeline().source("image_bytes").coordinate_grid().add_constant(-32.0).square()
+    #[op(name = "coordinate_grid", sample = {"normalized": true})]
+    CoordinateGrid {
+        /// Divide x by the width and y by the height, so each lies in (0, 1).
+        /// Accepts a Polars expression for a per-row choice.
+        #[param(default = false)]
+        normalized: M::V<bool>,
     },
     /// Resize image by scale factor: `new_width = input_width * scale_x`,
     /// `new_height = input_height * scale_y`, computed at runtime.
@@ -303,7 +367,10 @@ impl<M: Mode> ImageOpKind<M> {
             | ImageOpKind::HistogramEqualize
             | ImageOpKind::Erode { .. }
             | ImageOpKind::Dilate { .. }
-            | ImageOpKind::MorphGradient { .. } => OpShape::Preserve,
+            | ImageOpKind::MorphGradient { .. }
+            | ImageOpKind::DistanceTransform { .. } => OpShape::Preserve,
+            // The input's own H and W, with an (x, y) pair at each pixel.
+            ImageOpKind::CoordinateGrid { .. } => OpShape::Canvas { of: 0, channels: 2 },
             ImageOpKind::Resize { width, height, .. }
             | ImageOpKind::Letterbox { height, width, .. } => OpShape::SetHw {
                 h: size::<M>(height),
@@ -373,6 +440,20 @@ crate::naming::named_variants!(FilterType: "Image resize filter types." {
     "lanczos3" => Lanczos3,
 });
 
+/// The structuring element of `erode`, `dilate` and `morphology_gradient`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Footprint {
+    /// The `ksize × ksize` square.
+    Square,
+    /// The pixels within Euclidean distance `ksize / 2` of the centre.
+    Disk,
+}
+
+crate::naming::named_variants!(Footprint: "Structuring element of ``erode``, ``dilate`` and the morphology composites.\n\n- SQUARE: The ``ksize x ksize`` square (default).\n- DISK: The pixels within Euclidean distance ``ksize // 2`` of the centre." {
+    "square" => Square,
+    "disk" => Disk,
+});
+
 /// An image op, as the engine's `ViewDto` carries it.
 #[derive(Debug, Clone, PartialEq, Resolve)]
 pub struct ImageOp<M: Mode = Exec> {
@@ -391,7 +472,8 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::Threshold { .. }
             | ImageOpKind::Erode { .. }
             | ImageOpKind::Dilate { .. }
-            | ImageOpKind::MorphGradient { .. } => require_single_channel(shape),
+            | ImageOpKind::MorphGradient { .. }
+            | ImageOpKind::DistanceTransform { .. } => require_single_channel(shape),
             // Image kernels read axes 0/1 as height/width and axis 2 as channels;
             // anything else would be passed through unchanged or read with an
             // axis silently dropped, so it is refused rather than degraded.
@@ -426,6 +508,7 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::HistogramEqualize
             | ImageOpKind::PadToSize { .. }
             | ImageOpKind::Canny { .. }
+            | ImageOpKind::CoordinateGrid { .. }
             | ImageOpKind::Grayscale => require_hw_or_hwc(shape),
             // The resampler handles one to four interleaved channels, and
             // needs a source pixel on each axis: an empty image has nothing
@@ -484,6 +567,8 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::Erode { .. } => "Erode",
             ImageOpKind::Dilate { .. } => "Dilate",
             ImageOpKind::MorphGradient { .. } => "MorphGradient",
+            ImageOpKind::DistanceTransform { .. } => "DistanceTransform",
+            ImageOpKind::CoordinateGrid { .. } => "CoordinateGrid",
             ImageOpKind::ResizeScale { .. } => "ResizeScale",
             ImageOpKind::ResizeToHeight { .. } => "ResizeToHeight",
             ImageOpKind::ResizeToWidth { .. } => "ResizeToWidth",
@@ -521,6 +606,7 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::Erode { .. }
             | ImageOpKind::Dilate { .. }
             | ImageOpKind::MorphGradient { .. }
+            | ImageOpKind::DistanceTransform { .. }
             | ImageOpKind::Pad { .. }
             | ImageOpKind::PadToSize { .. }
             | ImageOpKind::ChannelSwap { .. } => MemoryEffect::RequiresDenseRows,
@@ -534,6 +620,8 @@ impl<M: Mode> Op for ImageOp<M> {
             // horizontal flip first.
             ImageOpKind::Grayscale => MemoryEffect::StridePreserving,
             ImageOpKind::Canny { .. } => MemoryEffect::RequiresContiguous,
+            // Reads only the shape: any layout, and nothing to pack.
+            ImageOpKind::CoordinateGrid { .. } => MemoryEffect::StridePreserving,
         }
     }
 
@@ -563,6 +651,8 @@ impl<M: Mode> Op for ImageOp<M> {
             | ImageOpKind::Erode { .. }
             | ImageOpKind::Dilate { .. }
             | ImageOpKind::MorphGradient { .. }
+            | ImageOpKind::DistanceTransform { .. }
+            | ImageOpKind::CoordinateGrid { .. }
             | ImageOpKind::Canny { .. }
             | ImageOpKind::HistogramEqualize => IdentityRule::Never,
         }
@@ -588,15 +678,18 @@ impl<M: Mode> Op for ImageOp<M> {
             ),
             // A ksize×ksize structuring element applied `iterations` times
             // reaches (ksize / 2) * iterations pixels out.
-            ImageOpKind::Erode { ksize, iterations }
-            | ImageOpKind::Dilate { ksize, iterations } => {
-                SpatialDependency::neighborhood_of(match (M::sym(ksize), M::sym(iterations)) {
-                    (Sym::Known(k), Sym::Known(n)) => Sym::Known((k as usize / 2) * n as usize),
-                    _ => Sym::PerRow,
-                })
+            // A disk of the same ksize reaches no further than the square.
+            ImageOpKind::Erode {
+                ksize, iterations, ..
             }
+            | ImageOpKind::Dilate {
+                ksize, iterations, ..
+            } => SpatialDependency::neighborhood_of(match (M::sym(ksize), M::sym(iterations)) {
+                (Sym::Known(k), Sym::Known(n)) => Sym::Known((k as usize / 2) * n as usize),
+                _ => Sym::PerRow,
+            }),
             // Gradient = one dilate − one erode, each of half-extent ksize / 2.
-            ImageOpKind::MorphGradient { ksize } => {
+            ImageOpKind::MorphGradient { ksize, .. } => {
                 SpatialDependency::neighborhood_of(M::sym(ksize).map(|k| k as usize / 2))
             }
             // Canny's hysteresis links edges via connectivity that can span the
@@ -604,6 +697,12 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::Canny { .. } => SpatialDependency::Global,
             // Histogram equalization builds a global CDF over all pixels.
             ImageOpKind::HistogramEqualize => SpatialDependency::Global,
+            // The nearest pixel of the other class can be anywhere in the
+            // image, so no window bounds what a pixel reads.
+            ImageOpKind::DistanceTransform { .. } => SpatialDependency::Global,
+            // A pixel's value is its position in the whole frame: a crop moved
+            // across it changes every value, so nothing commutes with it.
+            ImageOpKind::CoordinateGrid { .. } => SpatialDependency::Global,
             // Every resize variant resamples, and pad/letterbox offset the
             // content — all coordinate transforms.
             ImageOpKind::Resize { .. }
@@ -657,6 +756,10 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::Erode { .. } => None,
             ImageOpKind::Dilate { .. } => None,
             ImageOpKind::MorphGradient { .. } => None,
+            // Reads only whether each element is zero, in its own dtype.
+            ImageOpKind::DistanceTransform { .. } => None,
+            // Reads no value at all.
+            ImageOpKind::CoordinateGrid { .. } => None,
             // Deferred resizes route through the same resize kernel; padding
             // and channel reorder are dtype-generic.
             ImageOpKind::ResizeScale { .. }
@@ -689,6 +792,10 @@ impl<M: Mode> Op for ImageOp<M> {
             ImageOpKind::Erode { .. } => OutputDTypeRule::PreserveInput,
             ImageOpKind::Dilate { .. } => OutputDTypeRule::PreserveInput,
             ImageOpKind::MorphGradient { .. } => OutputDTypeRule::PreserveInput,
+            // A distance, whatever the mask's dtype.
+            ImageOpKind::DistanceTransform { .. } => OutputDTypeRule::Fixed(DType::F32),
+            // A position, whatever the image's dtype.
+            ImageOpKind::CoordinateGrid { .. } => OutputDTypeRule::Fixed(DType::F32),
             // Geometric transforms and channel reorder preserve element dtype
             // (padding is dtype-generic for all ten dtypes).
             ImageOpKind::ResizeScale { .. }

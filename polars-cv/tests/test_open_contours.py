@@ -40,6 +40,13 @@ READS: dict[str, str] = {
     "dice": "region",
     "pairwise_iou": "region",
     "largest": "region",
+    "boundary": "region",
+    "offset": "region",
+    "union_all": "region",
+    "union": "region",
+    "intersection": "region",
+    "difference": "region",
+    "symmetric_difference": "region",
     "correspond": "region",
     "correspond_by_coverage": "outline",
     "perimeter": "outline",
@@ -50,12 +57,15 @@ READS: dict[str, str] = {
     "translate": "outline",
     "scale": "outline",
     "simplify": "outline",
+    "smooth": "outline",
+    "densify": "outline",
     "convex_hull": "outline",
     "normalize": "outline",
     "to_absolute": "outline",
     "flip": "outline",
     "to_coords": "outline",
     "close_along_border": "outline",
+    "close": "outline",
     "single": "outline",
     "point.distance_to_contour": "outline",
     "point.nearest_point_on_contour": "outline",
@@ -79,6 +89,7 @@ _OPEN_SPELLING = {
     "scale": lambda: pl.col("a").contour.scale(2.0, 2.0, origin="bbox_center"),
     # The case table reads its open-line column; here every column is open.
     "close_along_border": lambda: pl.col("a").contour.close_along_border(10, 10),
+    "close": lambda: pl.col("a").contour.close(),
 }
 
 
@@ -208,9 +219,10 @@ class TestOpenContourReading:
         df = pl.DataFrame({"c": [{"exterior": _L}]})
         assert df.select(pl.col("c").contour.area()).item() == pytest.approx(50.0)
 
-    def test_the_pipeline_contour_source_refuses_an_open_contour(self) -> None:
-        """The pipeline's contour domain holds regions: rasterizing a polyline
-        has no region to fill."""
+    def test_a_pipeline_region_op_refuses_an_open_contour(self) -> None:
+        """The pipeline's contour domain carries lines too (CR-97), and a
+        region op refuses one there exactly as its accessor does: a polyline
+        has no area."""
         from polars_cv import Pipeline
 
         df = pl.DataFrame(

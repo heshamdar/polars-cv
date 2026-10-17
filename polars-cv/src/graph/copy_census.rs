@@ -88,6 +88,7 @@ const KNOWN: &[(&str, [usize; 4], &str)] = &[
     ),
     ("channel_swap", [0, 0, 1, 1], PACKED_ROWS_ONLY),
     ("dilate", [0, 0, 1, 1], PACKED_ROWS_ONLY),
+    ("distance_transform", [0, 0, 1, 1], PACKED_ROWS_ONLY),
     ("equalize_histogram", [0, 0, 1, 1], PACKED_ROWS_ONLY),
     ("erode", [0, 0, 1, 1], PACKED_ROWS_ONLY),
     ("extract_contours", [1, 1, 1, 1], PACKED_FIRST),
@@ -136,8 +137,53 @@ const EXEMPT: &[(&str, &str)] = &[
         "it reads a second input column (the labels), which the census does not supply",
     ),
     (
+        "apply_lut",
+        "its sample is a two-row palette and the census images hold values up \
+         to 250; view-buffer's copy_counts.rs pins what a view costs it",
+    ),
+    (
         "rasterize",
         "it reads a contour, not a buffer: no view of one reaches it",
+    ),
+    (
+        "contour_boundary",
+        "it reads a contour, not a buffer: no view of one reaches it",
+    ),
+    (
+        "contour_close",
+        "it reads a contour, not a buffer: no view of one reaches it",
+    ),
+    (
+        "contour_offset",
+        "it reads a contour, not a buffer: no view of one reaches it",
+    ),
+    (
+        "contour_union_all",
+        "it reads a contour, not a buffer: no view of one reaches it",
+    ),
+    (
+        "contour_smooth",
+        "it reads a contour, not a buffer: no view of one reaches it",
+    ),
+    (
+        "contour_densify",
+        "it reads a contour, not a buffer: no view of one reaches it",
+    ),
+    (
+        "union",
+        "it reads two contour sets, not a buffer: no view of one reaches it",
+    ),
+    (
+        "intersection",
+        "it reads two contour sets, not a buffer: no view of one reaches it",
+    ),
+    (
+        "difference",
+        "it reads two contour sets, not a buffer: no view of one reaches it",
+    ),
+    (
+        "symmetric_difference",
+        "it reads two contour sets, not a buffer: no view of one reaches it",
     ),
     (
         "contour_area",

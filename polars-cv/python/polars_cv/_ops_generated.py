@@ -140,6 +140,17 @@ class FilterType(str, Enum):
     LANCZOS3 = "lanczos3"
 
 
+class Footprint(str, Enum):
+    """Structuring element of ``erode``, ``dilate`` and the morphology composites.
+
+    - SQUARE: The ``ksize x ksize`` square (default).
+    - DISK: The pixels within Euclidean distance ``ksize // 2`` of the centre.
+    """
+
+    SQUARE = "square"
+    DISK = "disk"
+
+
 class HashAlgorithm(str, Enum):
     """Perceptual hash algorithm selection.
 
@@ -216,6 +227,32 @@ class LabelRegionMode(str, Enum):
     INTERIOR = "interior"
     BOUNDARY = "boundary"
     BBOX = "bbox"
+
+
+class LineCap(str, Enum):
+    """How ``rasterize`` ends a stroked line.
+
+    - ROUND: A half disc past each end (default).
+    - SQUARE: A half square past each end.
+    - BUTT: Flat at the end point itself.
+    """
+
+    ROUND = "round"
+    SQUARE = "square"
+    BUTT = "butt"
+
+
+class LineJoin(str, Enum):
+    """How ``rasterize`` strokes and ``offset`` turn a corner.
+
+    - ROUND: An arc about the corner (default).
+    - MITER: The edges extended to meet, cut off where the point would reach more than 4 half-widths out (SVG's default miter limit).
+    - BEVEL: The corner cut straight across.
+    """
+
+    ROUND = "round"
+    MITER = "miter"
+    BEVEL = "bevel"
 
 
 class LogicalPass(str, Enum):
@@ -351,6 +388,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "add_constant",
         "adjust_contrast",
         "adjust_gamma",
+        "apply_lut",
         "apply_mask",
         "assert_shape",
         "bitwise_and",
@@ -368,18 +406,27 @@ TYPED_OPS: frozenset[str] = frozenset(
         "clamp_max",
         "clamp_min",
         "contour_area",
+        "contour_boundary",
         "contour_bounding_box",
         "contour_centroid",
+        "contour_close",
         "contour_convex_hull",
+        "contour_densify",
         "contour_largest",
+        "contour_offset",
         "contour_perimeter",
         "contour_scale",
         "contour_simplify",
+        "contour_smooth",
         "contour_translate",
+        "contour_union_all",
         "convolve2d",
+        "coordinate_grid",
         "crop",
         "cvt_color",
+        "difference",
         "dilate",
+        "distance_transform",
         "divide",
         "equalize_histogram",
         "erode",
@@ -389,6 +436,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "floor",
         "grayscale",
         "histogram",
+        "intersection",
         "invert",
         "label_reduce",
         "letterbox",
@@ -429,9 +477,11 @@ TYPED_OPS: frozenset[str] = frozenset(
         "square",
         "subtract",
         "subtract_constant",
+        "symmetric_difference",
         "threshold",
         "transpose",
         "trunc",
+        "union",
         "warp_affine",
     ]
 )
@@ -502,6 +552,32 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "add_constant": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "adjust_contrast": {"factor": {"kind": "scalar", "per_row": True, "py": "float"}},
     "adjust_gamma": {"gamma": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "apply_lut": {
+        "table": {
+            "kind": "list",
+            "inner": {
+                "kind": "list",
+                "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+            },
+        },
+        "dtype": {
+            "kind": "scalar",
+            "per_row": False,
+            "py": "DType",
+            "variants": [
+                "u8",
+                "i8",
+                "u16",
+                "i16",
+                "u32",
+                "i32",
+                "u64",
+                "i64",
+                "f32",
+                "f64",
+            ],
+        },
+    },
     "apply_mask": {
         "mask": {"kind": "node"},
         "invert": {"kind": "scalar", "per_row": True, "py": "bool"},
@@ -560,10 +636,24 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "clamp_max": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "clamp_min": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "contour_area": {"signed": {"kind": "scalar", "per_row": True, "py": "bool"}},
+    "contour_boundary": {},
     "contour_bounding_box": {},
     "contour_centroid": {},
+    "contour_close": {},
     "contour_convex_hull": {},
+    "contour_densify": {
+        "max_segment_length": {"kind": "scalar", "per_row": True, "py": "float"}
+    },
     "contour_largest": {"k": {"kind": "scalar", "per_row": True, "py": "int"}},
+    "contour_offset": {
+        "distance": {"kind": "scalar", "per_row": True, "py": "float"},
+        "join": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "LineJoin",
+            "variants": ["round", "miter", "bevel"],
+        },
+    },
     "contour_perimeter": {},
     "contour_scale": {
         "sx": {"kind": "scalar", "per_row": True, "py": "float"},
@@ -578,10 +668,12 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "contour_simplify": {
         "tolerance": {"kind": "scalar", "per_row": True, "py": "float"}
     },
+    "contour_smooth": {"iterations": {"kind": "scalar", "per_row": True, "py": "int"}},
     "contour_translate": {
         "dx": {"kind": "scalar", "per_row": True, "py": "float"},
         "dy": {"kind": "scalar", "per_row": True, "py": "float"},
     },
+    "contour_union_all": {},
     "convolve2d": {
         "kernel": {
             "kind": "list",
@@ -594,6 +686,9 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "py": "BorderMode",
             "variants": ["replicate", "zero", "reflect"],
         },
+    },
+    "coordinate_grid": {
+        "normalized": {"kind": "scalar", "per_row": True, "py": "bool"}
     },
     "crop": {
         "top": {"kind": "scalar", "per_row": True, "py": "int"},
@@ -621,15 +716,29 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "variants": ["rgb", "bgr", "hsv", "lab", "ycbcr", "gray"],
         },
     },
+    "difference": {"other": {"kind": "node"}},
     "dilate": {
         "ksize": {"kind": "scalar", "per_row": True, "py": "int"},
         "iterations": {"kind": "scalar", "per_row": True, "py": "int"},
+        "footprint": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "Footprint",
+            "variants": ["square", "disk"],
+        },
     },
+    "distance_transform": {"signed": {"kind": "scalar", "per_row": True, "py": "bool"}},
     "divide": {"other": {"kind": "node"}},
     "equalize_histogram": {},
     "erode": {
         "ksize": {"kind": "scalar", "per_row": True, "py": "int"},
         "iterations": {"kind": "scalar", "per_row": True, "py": "int"},
+        "footprint": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "Footprint",
+            "variants": ["square", "disk"],
+        },
     },
     "extract_contours": {
         "mode": {
@@ -694,6 +803,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "variants": ["counts", "normalized", "quantized", "edges", "buckets"],
         },
     },
+    "intersection": {"other": {"kind": "node"}},
     "invert": {},
     "label_reduce": {
         "contours": {"kind": "column"},
@@ -723,7 +833,15 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     },
     "maximum": {"other": {"kind": "node"}},
     "minimum": {"other": {"kind": "node"}},
-    "morphology_gradient": {"ksize": {"kind": "scalar", "per_row": True, "py": "int"}},
+    "morphology_gradient": {
+        "ksize": {"kind": "scalar", "per_row": True, "py": "int"},
+        "footprint": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "Footprint",
+            "variants": ["square", "disk"],
+        },
+    },
     "multiply": {"other": {"kind": "node"}},
     "neg": {},
     "normalize": {
@@ -815,6 +933,20 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         },
         "fill_value": {"kind": "scalar", "per_row": True, "py": "int"},
         "background": {"kind": "scalar", "per_row": True, "py": "int"},
+        "supersample": {"kind": "scalar", "per_row": True, "py": "int"},
+        "line_width": {"kind": "scalar", "per_row": True, "py": "float"},
+        "cap": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "LineCap",
+            "variants": ["round", "square", "butt"],
+        },
+        "join": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "LineJoin",
+            "variants": ["round", "miter", "bevel"],
+        },
     },
     "reciprocal": {},
     "reduce_argmax": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
@@ -942,6 +1074,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "square": {},
     "subtract": {"other": {"kind": "node"}},
     "subtract_constant": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "symmetric_difference": {"other": {"kind": "node"}},
     "threshold": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "transpose": {
         "axes": {
@@ -950,6 +1083,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         }
     },
     "trunc": {},
+    "union": {"other": {"kind": "node"}},
     "warp_affine": {
         "matrix": {
             "kind": "array",
@@ -981,6 +1115,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "add_constant": [{"input": "buffer", "output": "buffer"}],
     "adjust_contrast": [{"input": "buffer", "output": "buffer"}],
     "adjust_gamma": [{"input": "buffer", "output": "buffer"}],
+    "apply_lut": [{"input": "buffer", "output": "buffer"}],
     "apply_mask": [{"input": "buffer", "output": "buffer"}],
     "assert_shape": [
         {"input": "buffer", "output": "buffer"},
@@ -1013,18 +1148,27 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "clamp_max": [{"input": "buffer", "output": "buffer"}],
     "clamp_min": [{"input": "buffer", "output": "buffer"}],
     "contour_area": [{"input": "contour", "output": "vector"}],
+    "contour_boundary": [{"input": "contour", "output": "contour"}],
     "contour_bounding_box": [{"input": "contour", "output": "vector"}],
     "contour_centroid": [{"input": "contour", "output": "vector"}],
+    "contour_close": [{"input": "contour", "output": "contour"}],
     "contour_convex_hull": [{"input": "contour", "output": "contour"}],
+    "contour_densify": [{"input": "contour", "output": "contour"}],
     "contour_largest": [{"input": "contour", "output": "contour"}],
+    "contour_offset": [{"input": "contour", "output": "contour"}],
     "contour_perimeter": [{"input": "contour", "output": "vector"}],
     "contour_scale": [{"input": "contour", "output": "contour"}],
     "contour_simplify": [{"input": "contour", "output": "contour"}],
+    "contour_smooth": [{"input": "contour", "output": "contour"}],
     "contour_translate": [{"input": "contour", "output": "contour"}],
+    "contour_union_all": [{"input": "contour", "output": "contour"}],
     "convolve2d": [{"input": "buffer", "output": "buffer"}],
+    "coordinate_grid": [{"input": "buffer", "output": "buffer"}],
     "crop": [{"input": "buffer", "output": "buffer"}],
     "cvt_color": [{"input": "buffer", "output": "buffer"}],
+    "difference": [{"input": "contour", "output": "contour"}],
     "dilate": [{"input": "buffer", "output": "buffer"}],
+    "distance_transform": [{"input": "buffer", "output": "buffer"}],
     "divide": [
         {"input": "buffer", "output": "buffer"},
         {"input": "vector", "output": "vector"},
@@ -1040,6 +1184,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
         {"input": "buffer", "output": "vector"},
         {"with": ['``output="quantized"``'], "input": "buffer", "output": "buffer"},
     ],
+    "intersection": [{"input": "contour", "output": "contour"}],
     "invert": [{"input": "buffer", "output": "buffer"}],
     "label_reduce": [{"input": "buffer", "output": "vector"}],
     "letterbox": [{"input": "buffer", "output": "buffer"}],
@@ -1127,9 +1272,11 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
         {"input": "vector", "output": "vector"},
     ],
     "subtract_constant": [{"input": "buffer", "output": "buffer"}],
+    "symmetric_difference": [{"input": "contour", "output": "contour"}],
     "threshold": [{"input": "buffer", "output": "buffer"}],
     "transpose": [{"input": "buffer", "output": "buffer"}],
     "trunc": [{"input": "buffer", "output": "buffer"}],
+    "union": [{"input": "contour", "output": "contour"}],
     "warp_affine": [{"input": "buffer", "output": "buffer"}],
 }
 
@@ -1331,6 +1478,32 @@ class _OpsMixin:
         """
         return self._append_typed("adjust_gamma", {"gamma": gamma})
 
+    def apply_lut(
+        self, table: Sequence[Sequence[FloatOrExpr]], *, dtype: str = "u8"
+    ) -> Pipeline:
+        """Map each value through a lookup table.
+
+        Each u8 or u16 value is a row index into ``table``. Rows of one entry map
+        every element in place, on any channel count (as ``cv2.LUT`` with one
+        table); rows of ``K > 1`` entries take a single-channel image to ``K``
+        channels (a palette). The entries are stored as ``dtype``. A value with no
+        row is an error for its row: clamp first, keeping the dtype
+        (``clamp(0, len(table) - 1, out_dtype="u8")``), to send the excess to the
+        last row.
+
+        Domain: buffer → buffer
+
+        Args:
+            table: The rows, indexed by value: 1 to 65536 of them, each of the same
+                length (1, or the palette's channel count). Each entry must fit
+                ``dtype``, and may be a Polars expression; the lengths are literal.
+            dtype: The output element dtype the entries are stored as.
+
+        Example:
+            >>> heat = Pipeline().source("image_bytes").grayscale().apply_lut([[v, 0, 255 - v] for v in range(256)])
+        """
+        return self._append_typed("apply_lut", {"table": table, "dtype": dtype})
+
     def _assert_shape(
         self, dims: Sequence[IntOrExpr | None], *, exact: bool = True
     ) -> Pipeline:
@@ -1482,6 +1655,15 @@ class _OpsMixin:
         """
         return self._append_typed("contour_area", {"signed": signed})
 
+    def boundary(self) -> Pipeline:
+        """A region's rings as open lines: the exterior, then each hole, each
+        returning to its first point. The result is a set (holes add rings);
+        an open contour, already a line, is refused.
+
+        Domain: contour → contour
+        """
+        return self._append_typed("contour_boundary", {})
+
     def bounding_box(self) -> Pipeline:
         """Compute the axis-aligned bounding box of the contour.
 
@@ -1504,12 +1686,37 @@ class _OpsMixin:
         """
         return self._append_typed("contour_centroid", {})
 
+    def close(self) -> Pipeline:
+        """Join an open line's ends into the region it bounds. A line that
+        returns to its first point (as ``boundary()`` draws one) drops the
+        repeat, so ``close()`` undoes ``boundary()`` on a region without holes.
+        A closed contour is refused.
+
+        Domain: contour → contour
+        """
+        return self._append_typed("contour_close", {})
+
     def convex_hull(self) -> Pipeline:
         """Compute the convex hull of the contour.
 
         Domain: contour → contour
         """
         return self._append_typed("contour_convex_hull", {})
+
+    def densify(self, max_segment_length: FloatOrExpr) -> Pipeline:
+        """Add points so no edge is longer than *max_segment_length*: each edge is
+        split into ``ceil(length / max_segment_length)`` equal parts, and every
+        existing point is kept. A region's closing edges are split too.
+
+        Domain: contour → contour
+
+        Args:
+            max_segment_length: The longest edge allowed, a finite length > 0 (literal
+                or expression).
+        """
+        return self._append_typed(
+            "contour_densify", {"max_segment_length": max_segment_length}
+        )
 
     def largest(self, *, k: IntOrExpr = 1) -> Pipeline:
         """Keep the ``k`` largest contours of the set, by area: largest first,
@@ -1521,6 +1728,31 @@ class _OpsMixin:
             k: How many contours to keep, >= 1 (literal or expression).
         """
         return self._append_typed("contour_largest", {"k": k})
+
+    def offset(
+        self, distance: FloatOrExpr, *, join: str | pl.Expr = "round"
+    ) -> Pipeline:
+        """Grow the set's regions by *distance* (negative: shrink them): every
+        point within *distance* of their union, or inside it and at least
+        ``-distance`` from its edge.
+
+        The set is read as one union, so growing can merge regions and
+        shrinking can split them or leave none: the result is always a set.
+        Convex corners turn by *join*; concave ones stay sharp. Round arcs are
+        polygons within 1/64 pixel of the true arc. An open contour is refused.
+
+        Domain: contour → contour
+
+        Args:
+            distance: How far to move the edge, in pixels: positive grows, negative
+                shrinks (literal or expression).
+            join: ``"round"`` (an arc about each corner), ``"miter"`` (the edges
+                extended to meet, cut off past 4 times *distance*) or ``"bevel"`` (cut
+                straight across). Accepts an expression.
+        """
+        return self._append_typed(
+            "contour_offset", {"distance": distance, "join": join}
+        )
 
     def perimeter(self) -> Pipeline:
         """Compute the perimeter (arc length) of the contour.
@@ -1558,6 +1790,21 @@ class _OpsMixin:
         """
         return self._append_typed("contour_simplify", {"tolerance": tolerance})
 
+    def smooth(self, *, iterations: IntOrExpr = 1) -> Pipeline:
+        """Round off corners by Chaikin's corner cutting: each pass replaces every
+        edge by its points a quarter and three quarters along, doubling the
+        point count. A region's rings are cut all the way round; an open line
+        keeps its two ends, unless it returns to its first point (as
+        ``boundary()`` draws one), when it is cut through it as a loop.
+
+        Domain: contour → contour
+
+        Args:
+            iterations: Passes to make; 0 returns the contour as it is (literal or
+                expression).
+        """
+        return self._append_typed("contour_smooth", {"iterations": iterations})
+
     def translate(self, *, dx: FloatOrExpr, dy: FloatOrExpr) -> Pipeline:
         """Translate the contour by an offset.
 
@@ -1568,6 +1815,15 @@ class _OpsMixin:
             dy: Y offset (vertical translation).
         """
         return self._append_typed("contour_translate", {"dx": dx, "dy": dy})
+
+    def union_all(self) -> Pipeline:
+        """The union of the set's regions, as disjoint regions: overlapping
+        members merge and a hole another member covers is filled. The result
+        is always a set. An open contour is refused.
+
+        Domain: contour → contour
+        """
+        return self._append_typed("contour_union_all", {})
 
     def convolve2d(
         self,
@@ -1599,6 +1855,28 @@ class _OpsMixin:
         return self._append_typed(
             "convolve2d", {"kernel": kernel, "normalize": normalize, "border": border}
         )
+
+    def coordinate_grid(self, *, normalized: BoolOrExpr = False) -> Pipeline:
+        """The pixel coordinates of the image: an f32 ``[H, W, 2]`` buffer holding
+        each pixel's centre ``(x + 0.5, y + 0.5)`` — the point ``rasterize``
+        samples — or ``((x + 0.5) / W, (y + 0.5) / H)`` when *normalized*.
+
+        Reads only the input's height and width, never its values, so it takes
+        any dtype and channel count. The coordinates are in the frame of the
+        buffer it follows: after a crop they start at the crop's corner. Combine
+        them with ordinary ops for fields over positions (gradients, radial
+        falloffs, vignettes).
+
+        Domain: buffer → buffer
+
+        Args:
+            normalized: Divide x by the width and y by the height, so each lies in (0,
+                1). Accepts a Polars expression for a per-row choice.
+
+        Example:
+            >>> dx2 = Pipeline().source("image_bytes").coordinate_grid().add_constant(-32.0).square()
+        """
+        return self._append_typed("coordinate_grid", {"normalized": normalized})
 
     def crop(
         self,
@@ -1638,21 +1916,62 @@ class _OpsMixin:
             "cvt_color", {"from_space": from_space, "to_space": to_space}
         )
 
-    def dilate(self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1) -> Pipeline:
-        """Morphological dilation (local maximum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).
+    def dilate(
+        self,
+        *,
+        ksize: IntOrExpr = 3,
+        iterations: IntOrExpr = 1,
+        footprint: str | pl.Expr = "square",
+    ) -> Pipeline:
+        """Morphological dilation: the local maximum over a footprint (a
+        `ksize × ksize` square, or a disk), edges replicated. Requires
+        single-channel input (e.g. after `.grayscale()` or `.threshold()`).
 
         Domain: buffer → buffer
 
         Args:
-            ksize: Size of the square structuring element. Must be odd and >= 1. Accepts
-                a Polars expression for per-row dynamic values.
+            ksize: Size of the structuring element (the square's side, the disk's
+                diameter). Must be odd and >= 1. Accepts a Polars expression for per-row
+                dynamic values.
             iterations: Number of times the operation is applied. Accepts a Polars
                 expression for per-row dynamic values.
+            footprint: The structuring element: ``"square"`` (``ksize x ksize``) or
+                ``"disk"`` (the pixels within Euclidean distance ``ksize // 2`` of the
+                centre). Accepts a Polars expression for a per-row choice.
 
         Example:
             >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3)
         """
-        return self._append_typed("dilate", {"ksize": ksize, "iterations": iterations})
+        return self._append_typed(
+            "dilate", {"ksize": ksize, "iterations": iterations, "footprint": footprint}
+        )
+
+    def distance_transform(self, *, signed: BoolOrExpr = False) -> Pipeline:
+        """Exact Euclidean distance transform of a mask: an f32 image of the same
+        shape. Requires single-channel input.
+
+        A pixel is foreground when it is non-zero (NaN included). Unsigned, each
+        foreground pixel holds the distance from its centre to the nearest
+        background pixel's centre and the background holds 0, as
+        ``cv2.distanceTransform(DIST_L2, DIST_MASK_PRECISE)`` and
+        ``scipy.ndimage.distance_transform_edt`` compute. Signed, every pixel
+        holds its distance to the boundary between the two classes, the pixel
+        edges ``extract_contours`` traces: negative inside, positive outside
+        (as ``.point.signed_distance_to_contour``), ``±(d - 0.5)`` for the
+        centre distance ``d`` to the nearest pixel of the other class. When a
+        class has no pixel at all, the distance to it is infinite.
+
+        Domain: buffer → buffer
+
+        Args:
+            signed: Signed distance to the mask's boundary (negative inside) instead of
+                each foreground pixel's distance to the background. Accepts a Polars
+                expression for a per-row choice.
+
+        Example:
+            >>> sdf = Pipeline().source("image_bytes").grayscale().threshold(128).distance_transform(signed=True)
+        """
+        return self._append_typed("distance_transform", {"signed": signed})
 
     def equalize_histogram(self) -> Pipeline:
         """Apply histogram equalization for contrast enhancement: map each pixel
@@ -1666,21 +1985,35 @@ class _OpsMixin:
         """
         return self._append_typed("equalize_histogram", {})
 
-    def erode(self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1) -> Pipeline:
-        """Morphological erosion (local minimum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).
+    def erode(
+        self,
+        *,
+        ksize: IntOrExpr = 3,
+        iterations: IntOrExpr = 1,
+        footprint: str | pl.Expr = "square",
+    ) -> Pipeline:
+        """Morphological erosion: the local minimum over a footprint (a
+        `ksize × ksize` square, or a disk), edges replicated. Requires
+        single-channel input (e.g. after `.grayscale()` or `.threshold()`).
 
         Domain: buffer → buffer
 
         Args:
-            ksize: Size of the square structuring element. Must be odd and >= 1. Accepts
-                a Polars expression for per-row dynamic values.
+            ksize: Size of the structuring element (the square's side, the disk's
+                diameter). Must be odd and >= 1. Accepts a Polars expression for per-row
+                dynamic values.
             iterations: Number of times the operation is applied. Accepts a Polars
                 expression for per-row dynamic values.
+            footprint: The structuring element: ``"square"`` (``ksize x ksize``) or
+                ``"disk"`` (the pixels within Euclidean distance ``ksize // 2`` of the
+                centre). Accepts a Polars expression for a per-row choice.
 
         Example:
             >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
         """
-        return self._append_typed("erode", {"ksize": ksize, "iterations": iterations})
+        return self._append_typed(
+            "erode", {"ksize": ksize, "iterations": iterations, "footprint": footprint}
+        )
 
     def extract_contours(
         self,
@@ -1871,20 +2204,27 @@ class _OpsMixin:
             {"height": height, "width": width, "value": value, "filter": filter},
         )
 
-    def morphology_gradient(self, *, ksize: IntOrExpr = 3) -> Pipeline:
+    def morphology_gradient(
+        self, *, ksize: IntOrExpr = 3, footprint: str | pl.Expr = "square"
+    ) -> Pipeline:
         """Morphological gradient (dilate - erode): an edge outline. Requires
         single-channel input.
 
         Domain: buffer → buffer
 
         Args:
-            ksize: Size of the square structuring element. Must be odd and >= 1. Accepts
-                a Polars expression for per-row dynamic values.
+            ksize: Size of the structuring element. Must be odd and >= 1. Accepts a
+                Polars expression for per-row dynamic values.
+            footprint: The structuring element: ``"square"`` (``ksize x ksize``) or
+                ``"disk"`` (the pixels within Euclidean distance ``ksize // 2`` of the
+                centre). Accepts a Polars expression for a per-row choice.
 
         Example:
             >>> edges = Pipeline().source("image_bytes").grayscale().threshold(128).morphology_gradient(ksize=3)
         """
-        return self._append_typed("morphology_gradient", {"ksize": ksize})
+        return self._append_typed(
+            "morphology_gradient", {"ksize": ksize, "footprint": footprint}
+        )
 
     def neg(self) -> Pipeline:
         """Negate every value (`-x`).
@@ -2028,8 +2368,12 @@ class _OpsMixin:
         *,
         fill_value: IntOrExpr = 255,
         background: IntOrExpr = 0,
+        supersample: IntOrExpr = 1,
+        line_width: FloatOrExpr = 1.0,
+        cap: str | pl.Expr = "round",
+        join: str | pl.Expr = "round",
     ) -> Pipeline:
-        """Rasterize contours to a mask.
+        """Rasterize contours to a mask: regions filled, open lines stroked.
 
         The builder is ``Pipeline.rasterize``, whose ``width``/``height`` or
         ``shape`` arguments become ``size``; it also records the shape reference's
@@ -2044,10 +2388,30 @@ class _OpsMixin:
                 row dynamic values.
             background: Outside value (default 0). Accepts a Polars expression for per-
                 row dynamic values.
+            supersample: Samples per pixel along each axis, 1 to 16: a pixel takes the
+                fraction of its ``n x n`` sub-pixel centres inside, blended between
+                ``background`` and ``fill_value`` (anti-aliasing). 1 (the default)
+                samples the pixel centre alone, so a pixel is one value or the other.
+                Accepts a Polars expression for per-row dynamic values.
+            line_width: The width an open line is stroked at, a finite width > 0
+                (regions are filled whatever it is). Accepts a Polars expression.
+            cap: How a stroked line ends: ``"round"`` (a half disc), ``"square"`` (a
+                half square) or ``"butt"`` (flat at its end point). Accepts a Polars
+                expression.
+            join: How a stroked line turns a corner: ``"round"``, ``"miter"`` (cut off
+                past 4 half-widths) or ``"bevel"``. Accepts a Polars expression.
         """
         return self._append_typed(
             "rasterize",
-            {"size": size, "fill_value": fill_value, "background": background},
+            {
+                "size": size,
+                "fill_value": fill_value,
+                "background": background,
+                "supersample": supersample,
+                "line_width": line_width,
+                "cap": cap,
+                "join": join,
+            },
         )
 
     def reciprocal(self) -> Pipeline:
@@ -2630,6 +2994,28 @@ class _LazyOpsMixin:
         """
         return self._binary_op("blend", other)
 
+    def difference(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Inside this set and not *other*: this contour set's regions with *other*'s cut away.
+
+        Each side is read as the union of its set, and the result is disjoint
+        regions — always a set, since combining shapes can split or merge
+        them. An open contour (a line) on either side is refused. As
+        ``.contour.difference``, the other side is a contour column.
+
+        Domain: contour → contour
+
+        Args:
+            other: The contour-domain expression to combine with.
+
+        Example:
+            ```python
+            >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
+            >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
+            >>> result = a.difference(b).sink("native")
+            ```
+        """
+        return self._binary_op("difference", other)
+
     def divide(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise true division, into a float.
 
@@ -2652,6 +3038,28 @@ class _LazyOpsMixin:
             ```
         """
         return self._binary_op("divide", other)
+
+    def intersection(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Inside both: where this contour set's regions overlap *other*'s.
+
+        Each side is read as the union of its set, and the result is disjoint
+        regions — always a set, since combining shapes can split or merge
+        them. An open contour (a line) on either side is refused. As
+        ``.contour.intersection``, the other side is a contour column.
+
+        Domain: contour → contour
+
+        Args:
+            other: The contour-domain expression to combine with.
+
+        Example:
+            ```python
+            >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
+            >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
+            >>> result = a.intersection(b).sink("native")
+            ```
+        """
+        return self._binary_op("intersection", other)
 
     def maximum(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Element-wise maximum of two arrays, for compositing, clamping and
@@ -2730,6 +3138,50 @@ class _LazyOpsMixin:
         """
         return self._binary_op("subtract", other)
 
+    def symmetric_difference(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Inside exactly one: where this contour set's regions and *other*'s do not overlap.
+
+        Each side is read as the union of its set, and the result is disjoint
+        regions — always a set, since combining shapes can split or merge
+        them. An open contour (a line) on either side is refused. As
+        ``.contour.symmetric_difference``, the other side is a contour column.
+
+        Domain: contour → contour
+
+        Args:
+            other: The contour-domain expression to combine with.
+
+        Example:
+            ```python
+            >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
+            >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
+            >>> result = a.symmetric_difference(b).sink("native")
+            ```
+        """
+        return self._binary_op("symmetric_difference", other)
+
+    def union(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
+        """Inside either: the union of this contour set's regions and *other*'s.
+
+        Each side is read as the union of its set, and the result is disjoint
+        regions — always a set, since combining shapes can split or merge
+        them. An open contour (a line) on either side is refused. As
+        ``.contour.union``, the other side is a contour column.
+
+        Domain: contour → contour
+
+        Args:
+            other: The contour-domain expression to combine with.
+
+        Example:
+            ```python
+            >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
+            >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
+            >>> result = a.union(b).sink("native")
+            ```
+        """
+        return self._binary_op("union", other)
+
 
 class _ContourOpsMixin:
     """The generated ``.contour`` accessor methods."""
@@ -2750,6 +3202,13 @@ class _ContourOpsMixin:
             signed: If True, return signed area (negative for CW winding).
         """
         return self._call("contour_area", {"signed": signed})
+
+    def boundary(self) -> pl.Expr:
+        """A region's rings as open lines: the exterior, then each hole, each
+        returning to its first point. The result is a set (holes add rings);
+        an open contour, already a line, is refused.
+        """
+        return self._call("contour_boundary", {})
 
     def boundary_distances(
         self,
@@ -2817,6 +3276,14 @@ class _ContourOpsMixin:
         Returns ``[x, y]``.
         """
         return self._call("contour_centroid", {})
+
+    def close(self) -> pl.Expr:
+        """Join an open line's ends into the region it bounds. A line that
+        returns to its first point (as ``boundary()`` draws one) drops the
+        repeat, so ``close()`` undoes ``boundary()`` on a region without holes.
+        A closed contour is refused.
+        """
+        return self._call("contour_close", {})
 
     def close_along_border(
         self,
@@ -2955,6 +3422,17 @@ class _ContourOpsMixin:
             },
         )
 
+    def densify(self, max_segment_length: FloatOrExpr) -> pl.Expr:
+        """Add points so no edge is longer than *max_segment_length*: each edge is
+        split into ``ceil(length / max_segment_length)`` equal parts, and every
+        existing point is kept. A region's closing edges are split too.
+
+        Args:
+            max_segment_length: The longest edge allowed, a finite length > 0 (literal
+                or expression).
+        """
+        return self._call("contour_densify", {"max_segment_length": max_segment_length})
+
     def dice(self, other: pl.Expr) -> pl.Expr:
         """Compute Dice coefficient with another contour.
 
@@ -2968,6 +3446,23 @@ class _ContourOpsMixin:
             side is a contour set.
         """
         return self._call("contour_dice", {"other": other})
+
+    def difference(self, other: pl.Expr) -> pl.Expr:
+        """Inside this column's regions and not *other*'s: *other* cut away.
+
+        Each side is read as the union of its row's set (a single contour is
+        a set of one), and the result is disjoint regions — always a set,
+        since combining shapes can split or merge them. A null on either
+        side nulls the row; an open contour (a line) is refused. The
+        pipeline form is ``LazyPipelineExpr.difference``.
+
+        Args:
+            other: The contour column to combine with.
+
+        Returns:
+            A contour set (``List[Contour]``) per row.
+        """
+        return self._call("contour_difference", {"other": other})
 
     def ensure_winding(self, direction: str | pl.Expr) -> pl.Expr:
         """Ensure contour has specified winding direction.
@@ -3019,6 +3514,23 @@ class _ContourOpsMixin:
             contour set.
         """
         return self._call("contour_hausdorff", {"other": other})
+
+    def intersection(self, other: pl.Expr) -> pl.Expr:
+        """Inside both: where each row's regions overlap *other*'s.
+
+        Each side is read as the union of its row's set (a single contour is
+        a set of one), and the result is disjoint regions — always a set,
+        since combining shapes can split or merge them. A null on either
+        side nulls the row; an open contour (a line) is refused. The
+        pipeline form is ``LazyPipelineExpr.intersection``.
+
+        Args:
+            other: The contour column to combine with.
+
+        Returns:
+            A contour set (``List[Contour]``) per row.
+        """
+        return self._call("contour_intersection", {"other": other})
 
     def iou(self, other: pl.Expr) -> pl.Expr:
         """Compute Intersection over Union with another contour.
@@ -3103,6 +3615,27 @@ class _ContourOpsMixin:
             contour-set column.
         """
         return self._call("contour_normalize", {"width": width, "height": height})
+
+    def offset(
+        self, distance: FloatOrExpr, *, join: str | pl.Expr = "round"
+    ) -> pl.Expr:
+        """Grow the set's regions by *distance* (negative: shrink them): every
+        point within *distance* of their union, or inside it and at least
+        ``-distance`` from its edge.
+
+        The set is read as one union, so growing can merge regions and
+        shrinking can split them or leave none: the result is always a set.
+        Convex corners turn by *join*; concave ones stay sharp. Round arcs are
+        polygons within 1/64 pixel of the true arc. An open contour is refused.
+
+        Args:
+            distance: How far to move the edge, in pixels: positive grows, negative
+                shrinks (literal or expression).
+            join: ``"round"`` (an arc about each corner), ``"miter"`` (the edges
+                extended to meet, cut off past 4 times *distance*) or ``"bevel"`` (cut
+                straight across). Accepts an expression.
+        """
+        return self._call("contour_offset", {"distance": distance, "join": join})
 
     def pairwise_iou(self, other: pl.Expr) -> pl.Expr:
         """Compute full pairwise IoU matrix between contour sets.
@@ -3197,6 +3730,36 @@ class _ContourOpsMixin:
         """
         return self._call("contour_single", {"label": label})
 
+    def smooth(self, *, iterations: IntOrExpr = 1) -> pl.Expr:
+        """Round off corners by Chaikin's corner cutting: each pass replaces every
+        edge by its points a quarter and three quarters along, doubling the
+        point count. A region's rings are cut all the way round; an open line
+        keeps its two ends, unless it returns to its first point (as
+        ``boundary()`` draws one), when it is cut through it as a loop.
+
+        Args:
+            iterations: Passes to make; 0 returns the contour as it is (literal or
+                expression).
+        """
+        return self._call("contour_smooth", {"iterations": iterations})
+
+    def symmetric_difference(self, other: pl.Expr) -> pl.Expr:
+        """Inside exactly one: where each row's regions and *other*'s do not overlap.
+
+        Each side is read as the union of its row's set (a single contour is
+        a set of one), and the result is disjoint regions — always a set,
+        since combining shapes can split or merge them. A null on either
+        side nulls the row; an open contour (a line) is refused. The
+        pipeline form is ``LazyPipelineExpr.symmetric_difference``.
+
+        Args:
+            other: The contour column to combine with.
+
+        Returns:
+            A contour set (``List[Contour]``) per row.
+        """
+        return self._call("contour_symmetric_difference", {"other": other})
+
     def to_absolute(self, width: FloatOrExpr, height: FloatOrExpr) -> pl.Expr:
         """Convert normalized coordinates to pixel coordinates.
 
@@ -3232,6 +3795,30 @@ class _ContourOpsMixin:
             dy: Y offset (vertical translation).
         """
         return self._call("contour_translate", {"dx": dx, "dy": dy})
+
+    def union(self, other: pl.Expr) -> pl.Expr:
+        """Inside either: the union of each row's regions and *other*'s.
+
+        Each side is read as the union of its row's set (a single contour is
+        a set of one), and the result is disjoint regions — always a set,
+        since combining shapes can split or merge them. A null on either
+        side nulls the row; an open contour (a line) is refused. The
+        pipeline form is ``LazyPipelineExpr.union``.
+
+        Args:
+            other: The contour column to combine with.
+
+        Returns:
+            A contour set (``List[Contour]``) per row.
+        """
+        return self._call("contour_union", {"other": other})
+
+    def union_all(self) -> pl.Expr:
+        """The union of the set's regions, as disjoint regions: overlapping
+        members merge and a hole another member covers is filled. The result
+        is always a set. An open contour is refused.
+        """
+        return self._call("contour_union_all", {})
 
     def winding(self) -> pl.Expr:
         """Compute the exterior ring's winding direction from point order.

@@ -72,6 +72,14 @@
   },
   {
     "namespace": "contour",
+    "name": "contour_boundary",
+    "python": "boundary",
+    "visibility": "public",
+    "doc": "A region's rings as open lines: the exterior, then each hole, each\nreturning to its first point. The result is a set (holes add rings);\nan open contour, already a line, is refused.",
+    "fields": []
+  },
+  {
+    "namespace": "contour",
     "name": "contour_boundary_distances",
     "python": "boundary_distances",
     "visibility": "public",
@@ -122,6 +130,14 @@
     "python": "centroid",
     "visibility": "public",
     "doc": "Compute the centroid (center of mass) of the contour.\n\nMeasured on the same region as `area()` — the exterior minus the union\nof the hole rings — so overlapping or nested holes are not subtracted\ntwice.\n\nReturns ``[x, y]``.",
+    "fields": []
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_close",
+    "python": "close",
+    "visibility": "public",
+    "doc": "Join an open line's ends into the region it bounds. A line that\nreturns to its first point (as ``boundary()`` draws one) drops the\nrepeat, so ``close()`` undoes ``boundary()`` on a region without holes.\nA closed contour is refused.",
     "fields": []
   },
   {
@@ -295,6 +311,24 @@
   },
   {
     "namespace": "contour",
+    "name": "contour_densify",
+    "python": "densify",
+    "visibility": "public",
+    "doc": "Add points so no edge is longer than *max_segment_length*: each edge is\nsplit into ``ceil(length / max_segment_length)`` equal parts, and every\nexisting point is kept. A region's closing edges are split too.",
+    "fields": [
+      {
+        "name": "max_segment_length",
+        "doc": "The longest edge allowed, a finite length > 0 (literal or\nexpression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
     "name": "contour_dice",
     "python": "dice",
     "visibility": "public",
@@ -303,6 +337,22 @@
       {
         "name": "other",
         "doc": "Another contour column to compare with.",
+        "type": {
+          "kind": "column"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_difference",
+    "python": "difference",
+    "visibility": "public",
+    "doc": "Inside this column's regions and not *other*'s: *other* cut away.\n\nEach side is read as the union of its row's set (a single contour is\na set of one), and the result is disjoint regions — always a set,\nsince combining shapes can split or merge them. A null on either\nside nulls the row; an open contour (a line) is refused. The\npipeline form is ``LazyPipelineExpr.difference``.\n\nReturns:\n    A contour set (``List[Contour]``) per row.",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The contour column to combine with.",
         "type": {
           "kind": "column"
         }
@@ -351,6 +401,22 @@
       {
         "name": "other",
         "doc": "Another contour column to compare with.",
+        "type": {
+          "kind": "column"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_intersection",
+    "python": "intersection",
+    "visibility": "public",
+    "doc": "Inside both: where each row's regions overlap *other*'s.\n\nEach side is read as the union of its row's set (a single contour is\na set of one), and the result is disjoint regions — always a set,\nsince combining shapes can split or merge them. A null on either\nside nulls the row; an open contour (a line) is refused. The\npipeline form is ``LazyPipelineExpr.intersection``.\n\nReturns:\n    A contour set (``List[Contour]``) per row.",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The contour column to combine with.",
         "type": {
           "kind": "column"
         }
@@ -469,6 +535,39 @@
           "kind": "scalar",
           "per_row": true,
           "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_offset",
+    "python": "offset",
+    "visibility": "public",
+    "doc": "Grow the set's regions by *distance* (negative: shrink them): every\npoint within *distance* of their union, or inside it and at least\n``-distance`` from its edge.\n\nThe set is read as one union, so growing can merge regions and\nshrinking can split them or leave none: the result is always a set.\nConvex corners turn by *join*; concave ones stay sharp. Round arcs are\npolygons within 1/64 pixel of the true arc. An open contour is refused.",
+    "fields": [
+      {
+        "name": "distance",
+        "doc": "How far to move the edge, in pixels: positive grows, negative\nshrinks (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "join",
+        "doc": "``\"round\"`` (an arc about each corner), ``\"miter\"`` (the edges\nextended to meet, cut off past 4 times *distance*) or ``\"bevel\"``\n(cut straight across). Accepts an expression.",
+        "default": "round",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "LineJoin",
+          "variants": [
+            "round",
+            "miter",
+            "bevel"
+          ]
         }
       }
     ]
@@ -613,6 +712,41 @@
   },
   {
     "namespace": "contour",
+    "name": "contour_smooth",
+    "python": "smooth",
+    "visibility": "public",
+    "doc": "Round off corners by Chaikin's corner cutting: each pass replaces every\nedge by its points a quarter and three quarters along, doubling the\npoint count. A region's rings are cut all the way round; an open line\nkeeps its two ends, unless it returns to its first point (as\n``boundary()`` draws one), when it is cut through it as a loop.",
+    "fields": [
+      {
+        "name": "iterations",
+        "doc": "Passes to make; 0 returns the contour as it is (literal or\nexpression).",
+        "default": 1,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_symmetric_difference",
+    "python": "symmetric_difference",
+    "visibility": "public",
+    "doc": "Inside exactly one: where each row's regions and *other*'s do not overlap.\n\nEach side is read as the union of its row's set (a single contour is\na set of one), and the result is disjoint regions — always a set,\nsince combining shapes can split or merge them. A null on either\nside nulls the row; an open contour (a line) is refused. The\npipeline form is ``LazyPipelineExpr.symmetric_difference``.\n\nReturns:\n    A contour set (``List[Contour]``) per row.",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The contour column to combine with.",
+        "type": {
+          "kind": "column"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
     "name": "contour_to_absolute",
     "python": "to_absolute",
     "visibility": "public",
@@ -687,6 +821,30 @@
         }
       }
     ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_union",
+    "python": "union",
+    "visibility": "public",
+    "doc": "Inside either: the union of each row's regions and *other*'s.\n\nEach side is read as the union of its row's set (a single contour is\na set of one), and the result is disjoint regions — always a set,\nsince combining shapes can split or merge them. A null on either\nside nulls the row; an open contour (a line) is refused. The\npipeline form is ``LazyPipelineExpr.union``.\n\nReturns:\n    A contour set (``List[Contour]``) per row.",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The contour column to combine with.",
+        "type": {
+          "kind": "column"
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "contour",
+    "name": "contour_union_all",
+    "python": "union_all",
+    "visibility": "public",
+    "doc": "The union of the set's regions, as disjoint regions: overlapping\nmembers merge and a hole another member covers is filled. The result\nis always a set. An open contour is refused.",
+    "fields": []
   },
   {
     "namespace": "contour",

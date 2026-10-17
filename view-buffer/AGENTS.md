@@ -14,7 +14,7 @@ While originally designed as an independent crate, it is currently **tightly cou
 - `ViewBuffer` — strided multi-dimensional array for images, masks, feature maps
 - Zero-copy view operations (transpose, flip, crop, reshape) via metadata changes only
 - Compute operations (scale, normalize, cast, clamp, relu, contrast, gamma, invert, affine warp, rotate-via-affine)
-- Image operations (resize, blur, grayscale, threshold, canny, histogram equalize, erode, dilate, morphological gradient)
+- Image operations (resize, blur, grayscale, threshold, canny, histogram equalize, erode, dilate, morphological gradient, distance transform)
 - Color space conversions (RGB, BGR, HSV, LAB, YCbCr, Gray)
 - Spatial filtering (2D convolution with configurable border modes)
 - Geometry operations (contour extraction, rasterization, measures, pairwise matching)
@@ -47,7 +47,7 @@ src/
 │   ├── mod.rs          # Module aggregator / re-exports for all op types
 │   ├── dto.rs          # ViewDto — serializable operation enum
 │   ├── traits.rs       # Op trait and core op types (MemoryEffect — the materialisation authority)
-│   ├── image.rs        # ImageOp, ImageOpKind (resize, blur, canny, erode, dilate, morph_gradient, etc.)
+│   ├── image.rs        # ImageOp, ImageOpKind (resize, blur, canny, erode, dilate, morph_gradient, distance_transform, etc.)
 │   ├── color.rs        # ColorConvertOp, ColorSpace
 │   ├── filter.rs       # ConvolveOp, BorderMode — 2D convolution
 │   ├── compute.rs      # ComputeOp (cast, scale, normalize, clamp, relu, contrast, gamma, invert, affine, rotate_affine)
@@ -59,6 +59,7 @@ src/
 │   ├── binary.rs       # BinaryOp (add, subtract, multiply, blend, bitwise)
 │   ├── reduction.rs    # Reduction ops (sum, mean, std, min, max, argmin/argmax, percentile)
 │   ├── histogram.rs    # Histogram computation
+│   ├── lut.rs          # LutOp (apply_lut): a table read per u8/u16 value; its own GraphStep family so a value past the table is a row error
 │   ├── phash.rs        # Perceptual hashing (aHash/pHash/dHash) ops
 │   ├── view.rs         # ViewOp enum — zero-copy layout ops (transpose, reshape, flip, crop, channel_select)
 │   ├── mask.rs         # apply_mask — mask a buffer by another
@@ -121,7 +122,7 @@ pub enum ViewDto {
 }
 ```
 
-`tests/apply_op_coverage.rs` executes one probe per variant against its own
+`tests/it/apply_op_coverage.rs` executes one probe per variant against its own
 contract and fails to compile when a variant is added without a probe.
 
 ### Kernels and CPU dispatch
@@ -287,8 +288,11 @@ Key implementation points:
 - **Canny** (`execution/runner.rs`): `cv2.Canny(img, low, high)` exactly (3x3 Sobel with replicated border, L1 magnitude, no pre-blur → OpenCV's fixed-point NMS → 8-connected hysteresis; colour takes the strongest channel per pixel, alpha ignored). `polars-cv/tests/reference/test_canny_ref.py` holds it to OpenCV pixel for pixel. Outputs U8 binary mask (0/255). `SpatialDependency::Global`.
 - **HistogramEqualize** (`execution/runner.rs`): 256-bin histogram → CDF remap. U8 output. `SpatialDependency::Global`.
 - **Affine** (`execution/warp.rs`): Forward-mapping 2×3 matrix with internal inversion for inverse-mapping interpolation. Supports Nearest and Bilinear interpolation with configurable `border_value`. Parameters in `ops/affine.rs` (`AffineParams`, `InterpolationType`). Two variants: `ComputeOp::Affine` (raw matrix, `apply_affine_warp()`) and `ComputeOp::RotateAffine` (deferred rotation, `warp::rotate()`: `AffineParams::from_rotation()` at execution time, and at exactly 0° — the identity lowering — the packed input itself). A `SimdKernel` per channel count; loads/stores through M5. Its tests keep the pre-Phase-7 kernel as a bit-parity oracle: any change must keep them byte-identical or say why. `MemoryEffect::RequiresContiguous`.
-- **Erode/Dilate** (`execution/runner.rs`): Separable row+column min/max filter. Single-channel only. `iterations=n` is one pass of radius `n * (k / 2)` for integer dtypes (`morph_iterated`; exact), and `n` passes for floats, whose NaN/signed-zero fold depends on the pass structure. `tests/morph_ref.rs` holds both to an iterated naive reference. `SpatialDependency::Neighborhood`.
+- **Erode/Dilate** (`execution/runner.rs`): Separable row+column min/max filter. Single-channel only. `iterations=n` is one pass of radius `n * (k / 2)` for integer dtypes (`morph_iterated`; exact), and `n` passes for floats, whose NaN/signed-zero fold depends on the pass structure. `tests/it/morph_ref.rs` holds both to an iterated naive reference. `SpatialDependency::Neighborhood`.
 - **MorphGradient** (`execution/runner.rs`): Dilate − Erode (saturating subtract). Single-channel only. `SpatialDependency::Neighborhood`.
+- **LutOp** (`ops/lut.rs`, `apply_lut`): not a `ViewDto` op, because a value past the table is a data error only `execute -> Result` can report. The read is `ops::elementwise::lookup_column`, the element-wise engine's own `Lut` table map (any layout, in place when the dtype is kept); a K-entry palette maps each column and stacks the planes with `apply_channel_merge` (K + 1 view-sized allocations, pinned in `tests/it/copy_counts.rs`). Shape `Preserve` for one entry per row, else `OpShape::ExpandChannels(k)`.
+- **Footprint** (`ops/image.rs`, on Erode/Dilate/MorphGradient): `Square` or `Disk`. The disk (`morph_disk_typed`) is a stack of row spans, half-width `isqrt(r² − dy²)`, reusing the square's `row_extreme` once per distinct width, then a column fold in the square's order. Iterated disks are separate passes for every dtype (two disks are not one larger disk). `tests/it/morph_ref.rs` holds it to a structure-identical naive fold (bit for bit, NaN and signed zeros) and to the order-free Euclidean-set definition.
+- **DistanceTransform** (`execution/distance.rs`): exact Euclidean distance transform (Felzenszwalb–Huttenlocher lower envelopes, columns then rows), squared distances exact in f64, one `sqrt` and an f32 store. Foreground is non-zero in the input dtype (NaN included); a class with no pixel is `±inf`. Signed is `±(d − 0.5)` to the pixel-edge boundary, negative inside. Single-channel only, `RequiresDenseRows`, `SpatialDependency::Global`, f32 output. Held to scipy and OpenCV in `polars-cv/tests/reference/test_distance_transform_ref.py` and the parity suite.
 - **label_reduce path fallback** (`geometry/label.rs`): A contour with no area (the point or line a one-pixel-thick region traces to) or whose region catches no pixel centre (a sub-pixel contour) is scored on the pixels its outline passes through, in every region mode, so it never scores 0 for want of a region. Zero area means below `pairwise::EPSILON`, the same threshold at which IoU calls a region degenerate. `score_contours_on_buffer` is the single implementation behind both `Pipeline.label_reduce` and the `.contour.label_reduce()` accessor — the plugin must not carry its own scorer.
 
 ## Adding a New Operation
@@ -298,7 +302,7 @@ Key implementation points:
    `#[op(name = ..., sample = ...)]` attribute and documented fields
 2. Answer the `Op` contract: `shape` (an `OpShape`), `validate`, and the other
    required rules
-3. Add to `ViewDto` in `ops/dto.rs` (`tests/apply_op_coverage.rs` requires a probe per variant)
+3. Add to `ViewDto` in `ops/dto.rs` (`tests/it/apply_op_coverage.rs` requires a probe per variant)
 4. Add execution logic in `execution/runner.rs`
 5. Expose it to Python through the typed catalogue: re-bless, `gen_ops.py`,
    `maturin develop` — the full procedure is "Adding a New Operation" in the
@@ -359,7 +363,7 @@ A tiled execution strategy was implemented, benchmarked, and removed — it did 
   can never change the planned schema. Inputs whose `DType::accumulator` is
   f64 (f64 and the 32/64-bit integers) are excluded from the promote-family
   lowering: they compute and store in f64 unfused, and the f32 kernel would
-  round them. Equivalence is guarded by `tests/fused_ops.rs`, which
+  round them. Equivalence is guarded by `tests/it/fused_ops.rs`, which
   compares every fused chain bit-for-bit against per-op execution.
 - Zero-copy interop avoids unnecessary allocations between Arrow, ndarray, and image
 - Contiguous buffers enable SIMD-friendly iteration patterns

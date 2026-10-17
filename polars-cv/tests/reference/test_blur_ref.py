@@ -8,7 +8,7 @@ levels at edges). On smooth / natural images, however, they agree to within a
 pixel level or two, which is what these tests assert via a documented tolerance.
 
 Native-dtype behaviour (blur preserving u16/f32) is covered in the Rust suite
-(`view-buffer/tests/blur_dtype.rs`); here we pin the u8 path to OpenCV.
+(`view-buffer/tests/it/blur_dtype.rs`); here we pin the u8 path to OpenCV.
 """
 
 from __future__ import annotations

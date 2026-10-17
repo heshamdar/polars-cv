@@ -94,6 +94,62 @@ pub enum GeometryOp<M: Mode = Exec> {
     /// Compute the convex hull of the contour.
     #[op(name = "contour_convex_hull", python = "convex_hull", sample = {})]
     ConvexHull,
+    /// A region's rings as open lines: the exterior, then each hole, each
+    /// returning to its first point. The result is a set (holes add rings);
+    /// an open contour, already a line, is refused.
+    #[op(name = "contour_boundary", python = "boundary", sample = {})]
+    Boundary,
+    /// Join an open line's ends into the region it bounds. A line that
+    /// returns to its first point (as ``boundary()`` draws one) drops the
+    /// repeat, so ``close()`` undoes ``boundary()`` on a region without holes.
+    /// A closed contour is refused.
+    #[op(name = "contour_close", python = "close", sample = {})]
+    Close,
+    /// Grow the set's regions by *distance* (negative: shrink them): every
+    /// point within *distance* of their union, or inside it and at least
+    /// ``-distance`` from its edge.
+    ///
+    /// The set is read as one union, so growing can merge regions and
+    /// shrinking can split them or leave none: the result is always a set.
+    /// Convex corners turn by *join*; concave ones stay sharp. Round arcs are
+    /// polygons within 1/64 pixel of the true arc. An open contour is refused.
+    #[op(name = "contour_offset", python = "offset", sample = {"distance": -1.5, "join": "miter"})]
+    Offset {
+        /// How far to move the edge, in pixels: positive grows, negative
+        /// shrinks (literal or expression).
+        distance: M::V<f64>,
+        /// ``"round"`` (an arc about each corner), ``"miter"`` (the edges
+        /// extended to meet, cut off past 4 times *distance*) or ``"bevel"``
+        /// (cut straight across). Accepts an expression.
+        #[param(default = "round")]
+        join: M::V<LineJoin>,
+    },
+    /// The union of the set's regions, as disjoint regions: overlapping
+    /// members merge and a hole another member covers is filled. The result
+    /// is always a set. An open contour is refused.
+    #[op(name = "contour_union_all", python = "union_all", sample = {})]
+    UnionAll,
+    /// Round off corners by Chaikin's corner cutting: each pass replaces every
+    /// edge by its points a quarter and three quarters along, doubling the
+    /// point count. A region's rings are cut all the way round; an open line
+    /// keeps its two ends, unless it returns to its first point (as
+    /// ``boundary()`` draws one), when it is cut through it as a loop.
+    #[op(name = "contour_smooth", python = "smooth", sample = {"iterations": 2})]
+    Smooth {
+        /// Passes to make; 0 returns the contour as it is (literal or
+        /// expression).
+        #[param(default = 1)]
+        iterations: M::V<u32>,
+    },
+    /// Add points so no edge is longer than *max_segment_length*: each edge is
+    /// split into ``ceil(length / max_segment_length)`` equal parts, and every
+    /// existing point is kept. A region's closing edges are split too.
+    #[op(name = "contour_densify", python = "densify", sample = {"max_segment_length": 2.5})]
+    Densify {
+        /// The longest edge allowed, a finite length > 0 (literal or
+        /// expression).
+        max_segment_length: M::V<f64>,
+    },
     /// Keep the ``k`` largest contours of the set, by area: largest first,
     /// equal areas in their input order. A set of fewer keeps them all.
     #[op(name = "contour_largest", python = "largest", sample = {"k": 2})]
@@ -102,13 +158,14 @@ pub enum GeometryOp<M: Mode = Exec> {
         #[param(default = 1)]
         k: M::V<u32>,
     },
-    /// Rasterize contours to a mask.
+    /// Rasterize contours to a mask: regions filled, open lines stroked.
     ///
     /// The builder is ``Pipeline.rasterize``, whose ``width``/``height`` or
     /// ``shape`` arguments become ``size``; it also records the shape reference's
     /// graph dependency and its canvas assertion.
     #[op(name = "rasterize", visibility = Internal,
-         sample = {"size": [8, 6], "fill_value": 1, "background": 0})]
+         sample = {"size": [8, 6], "fill_value": 1, "background": 0, "supersample": 3,
+                   "line_width": 2.5, "cap": "square", "join": "bevel"})]
     Rasterize {
         /// ``[height, width]`` of the mask (each may be a Polars expression), or
         /// another node whose buffer's height and width the mask takes.
@@ -121,6 +178,27 @@ pub enum GeometryOp<M: Mode = Exec> {
         /// dynamic values.
         #[param(default = 0)]
         background: M::V<u8>,
+        /// Samples per pixel along each axis, 1 to 16: a pixel takes the
+        /// fraction of its ``n x n`` sub-pixel centres inside, blended between
+        /// ``background`` and ``fill_value`` (anti-aliasing). 1 (the default)
+        /// samples the pixel centre alone, so a pixel is one value or the
+        /// other. Accepts a Polars expression for per-row dynamic values.
+        #[param(default = 1)]
+        supersample: M::V<u32>,
+        /// The width an open line is stroked at, a finite width > 0 (regions
+        /// are filled whatever it is). Accepts a Polars expression.
+        #[param(default = 1.0)]
+        line_width: M::V<f64>,
+        /// How a stroked line ends: ``"round"`` (a half disc), ``"square"``
+        /// (a half square) or ``"butt"`` (flat at its end point). Accepts a
+        /// Polars expression.
+        #[param(default = "round")]
+        cap: M::V<LineCap>,
+        /// How a stroked line turns a corner: ``"round"``, ``"miter"`` (cut
+        /// off past 4 half-widths) or ``"bevel"``. Accepts a Polars
+        /// expression.
+        #[param(default = "round")]
+        join: M::V<LineJoin>,
     },
     /// Extract contours from binary mask.
     ///
@@ -219,6 +297,22 @@ impl<M: Mode> GeometryOp<M> {
     /// contour set never has). The checks on per-row values run with the row.
     pub fn check(&self) -> Result<(), String> {
         match self {
+            GeometryOp::Rasterize { supersample, .. }
+                if known::<M, u32>(supersample).is_some_and(|n| !(1..=16).contains(&n)) =>
+            {
+                Err(format!(
+                    "rasterize: supersample must be between 1 and 16, got {}",
+                    known::<M, u32>(supersample).unwrap_or_default()
+                ))
+            }
+            GeometryOp::Rasterize { line_width, .. } => {
+                known::<M, f64>(line_width).map_or(Ok(()), super::transforms::Stroke::check_width)
+            }
+            GeometryOp::Offset { distance, .. } => {
+                known::<M, f64>(distance).map_or(Ok(()), super::transforms::check_offset_distance)
+            }
+            GeometryOp::Densify { max_segment_length } => known::<M, f64>(max_segment_length)
+                .map_or(Ok(()), super::transforms::check_max_segment_length),
             GeometryOp::Largest { k } if known::<M, u32>(k) == Some(0) => {
                 Err("k must be >= 1".to_string())
             }
@@ -247,15 +341,23 @@ impl<M: Mode> GeometryOp<M> {
             | GeometryOp::Centroid
             | GeometryOp::BoundingBox => OpShape::Dynamic,
             // How many contours are kept is `min(k, set size)`: the set's
-            // size is known only with the data.
-            GeometryOp::Largest { .. } => OpShape::Dynamic,
+            // size is known only with the data, as is how many rings a
+            // boundary draws.
+            // So is how many regions an offset or a union leaves.
+            GeometryOp::Largest { .. }
+            | GeometryOp::Boundary
+            | GeometryOp::Offset { .. }
+            | GeometryOp::UnionAll => OpShape::Dynamic,
             // Contour transforms preserve the point list; `Simplify` and
             // `ConvexHull` may shorten it, which is not knowable statically, so
             // the input shape stands in for both.
             GeometryOp::Translate { .. }
             | GeometryOp::Scale { .. }
             | GeometryOp::Simplify { .. }
-            | GeometryOp::ConvexHull => OpShape::Preserve,
+            | GeometryOp::ConvexHull
+            | GeometryOp::Close
+            | GeometryOp::Smooth { .. }
+            | GeometryOp::Densify { .. } => OpShape::Preserve,
             GeometryOp::Rasterize { size, .. } => match size {
                 RasterSize::Fixed([h, w]) => OpShape::Fixed(vec![
                     crate::mode::size::<M>(h),
@@ -265,7 +367,7 @@ impl<M: Mode> GeometryOp<M> {
                 // Another node's canvas: its H and W, read from that node as
                 // the step's second input (the planner passes its planned
                 // shape; the executor sets the canvas before the op runs).
-                RasterSize::FromNode(_) => OpShape::Canvas { of: 1 },
+                RasterSize::FromNode(_) => OpShape::Canvas { of: 1, channels: 1 },
             },
             // ExtractContours output shape is data-dependent
             GeometryOp::ExtractContours { .. } => OpShape::Dynamic,
@@ -281,11 +383,19 @@ impl GeometryOp {
             GeometryOp::Rasterize {
                 fill_value,
                 background,
+                supersample,
+                line_width,
+                cap,
+                join,
                 ..
             } => GeometryOp::Rasterize {
                 size: RasterSize::Fixed([height, width]),
                 fill_value,
                 background,
+                supersample,
+                line_width,
+                cap,
+                join,
             },
             other => other,
         }
@@ -323,6 +433,41 @@ pub enum ApproxMethod {
     Approx,
 }
 
+/// How a stroke or an offset turns a corner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineJoin {
+    /// An arc about the corner.
+    Round,
+    /// The edges extended until they meet, cut off past the miter limit
+    /// ([`super::transforms::MITER_LIMIT`]).
+    Miter,
+    /// The corner cut straight across.
+    Bevel,
+}
+
+/// How a stroke ends a line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineCap {
+    /// A half disc past each end.
+    Round,
+    /// A half square past each end.
+    Square,
+    /// Flat at the end point itself.
+    Butt,
+}
+
+crate::naming::named_variants!(LineJoin: "How ``rasterize`` strokes and ``offset`` turn a corner.\n\n- ROUND: An arc about the corner (default).\n- MITER: The edges extended to meet, cut off where the point would reach more than 4 half-widths out (SVG's default miter limit).\n- BEVEL: The corner cut straight across." {
+    "round" => Round,
+    "miter" => Miter,
+    "bevel" => Bevel,
+});
+
+crate::naming::named_variants!(LineCap: "How ``rasterize`` ends a stroked line.\n\n- ROUND: A half disc past each end (default).\n- SQUARE: A half square past each end.\n- BUTT: Flat at the end point itself." {
+    "round" => Round,
+    "square" => Square,
+    "butt" => Butt,
+});
+
 crate::naming::named_variants!(ScaleOrigin: "Point a contour scale operation is measured from (``.contour.scale``)." {
     "centroid" => Centroid,
     "bbox_center" => BBoxCenter,
@@ -352,6 +497,12 @@ impl<M: Mode> Op for GeometryOp<M> {
             GeometryOp::Simplify { .. } => "Simplify",
             GeometryOp::ConvexHull => "ConvexHull",
             GeometryOp::Largest { .. } => "Largest",
+            GeometryOp::Boundary => "Boundary",
+            GeometryOp::Close => "Close",
+            GeometryOp::Offset { .. } => "Offset",
+            GeometryOp::UnionAll => "UnionAll",
+            GeometryOp::Smooth { .. } => "Smooth",
+            GeometryOp::Densify { .. } => "Densify",
             GeometryOp::Rasterize { .. } => "Rasterize",
             GeometryOp::ExtractContours { .. } => "ExtractContours",
         }
@@ -395,6 +546,12 @@ impl<M: Mode> Op for GeometryOp<M> {
             | GeometryOp::Simplify { .. }
             | GeometryOp::ConvexHull
             | GeometryOp::Largest { .. }
+            | GeometryOp::Boundary
+            | GeometryOp::Close
+            | GeometryOp::Offset { .. }
+            | GeometryOp::UnionAll
+            | GeometryOp::Smooth { .. }
+            | GeometryOp::Densify { .. }
             | GeometryOp::Rasterize { .. }
             | GeometryOp::ExtractContours { .. } => SpatialDependency::Global,
         }
@@ -481,7 +638,13 @@ impl<M: Mode> GeometryOp<M> {
             | GeometryOp::Scale { .. }
             | GeometryOp::Simplify { .. }
             | GeometryOp::ConvexHull
-            | GeometryOp::Largest { .. } => Domain::Contour,
+            | GeometryOp::Largest { .. }
+            | GeometryOp::Boundary
+            | GeometryOp::Close
+            | GeometryOp::Offset { .. }
+            | GeometryOp::UnionAll
+            | GeometryOp::Smooth { .. }
+            | GeometryOp::Densify { .. } => Domain::Contour,
         }
     }
 
@@ -509,7 +672,13 @@ impl<M: Mode> GeometryOp<M> {
             | GeometryOp::Scale { .. }
             | GeometryOp::Simplify { .. }
             | GeometryOp::ConvexHull
-            | GeometryOp::Largest { .. } => Domain::Contour,
+            | GeometryOp::Largest { .. }
+            | GeometryOp::Boundary
+            | GeometryOp::Close
+            | GeometryOp::Offset { .. }
+            | GeometryOp::UnionAll
+            | GeometryOp::Smooth { .. }
+            | GeometryOp::Densify { .. } => Domain::Contour,
         }
     }
 }
@@ -530,6 +699,10 @@ mod tests {
                 size: RasterSize::Fixed([100, 100]),
                 fill_value: 255,
                 background: 0,
+                supersample: 1,
+                line_width: 1.0,
+                cap: LineCap::Round,
+                join: LineJoin::Round,
             }
             .name(),
             "Rasterize"
@@ -542,6 +715,10 @@ mod tests {
             size: RasterSize::Fixed([100, 200]),
             fill_value: 255,
             background: 0,
+            supersample: 1,
+            line_width: 1.0,
+            cap: LineCap::Round,
+            join: LineJoin::Round,
         };
         let shape = op.shape().concrete(&[]);
         assert_eq!(shape, vec![100, 200, 1]);
@@ -553,6 +730,10 @@ mod tests {
             size: RasterSize::Fixed([100, 0]),
             fill_value: 255,
             background: 0,
+            supersample: 1,
+            line_width: 1.0,
+            cap: LineCap::Round,
+            join: LineJoin::Round,
         };
         assert!(op.validate(&[], &[]).is_err());
     }
@@ -574,6 +755,10 @@ mod tests {
             size: RasterSize::Fixed([100, 100]),
             fill_value: 255,
             background: 0,
+            supersample: 1,
+            line_width: 1.0,
+            cap: LineCap::Round,
+            join: LineJoin::Round,
         };
         assert_eq!(rasterize.input_domain(), Domain::Contour);
         assert_eq!(rasterize.output_domain(), Domain::Buffer);

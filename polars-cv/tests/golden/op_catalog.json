@@ -107,6 +107,57 @@
     ]
   },
   {
+    "name": "apply_lut",
+    "python": "apply_lut",
+    "visibility": "public",
+    "doc": "Map each value through a lookup table.\n\nEach u8 or u16 value is a row index into ``table``. Rows of one entry map\nevery element in place, on any channel count (as ``cv2.LUT`` with one\ntable); rows of ``K > 1`` entries take a single-channel image to ``K``\nchannels (a palette). The entries are stored as ``dtype``. A value with no\nrow is an error for its row: clamp first, keeping the dtype\n(``clamp(0, len(table) - 1, out_dtype=\"u8\")``), to send the excess to the\nlast row.\n\nExample:\n    >>> heat = Pipeline().source(\"image_bytes\").grayscale().apply_lut([[v, 0, 255 - v] for v in range(256)])",
+    "fields": [
+      {
+        "name": "table",
+        "doc": "The rows, indexed by value: 1 to 65536 of them, each of the same\nlength (1, or the palette's channel count). Each entry must fit\n``dtype``, and may be a Polars expression; the lengths are literal.",
+        "type": {
+          "kind": "list",
+          "inner": {
+            "kind": "list",
+            "inner": {
+              "kind": "scalar",
+              "per_row": true,
+              "py": "float"
+            }
+          }
+        }
+      },
+      {
+        "name": "dtype",
+        "doc": "The output element dtype the entries are stored as.",
+        "default": "u8",
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "DType",
+          "variants": [
+            "u8",
+            "i8",
+            "u16",
+            "i16",
+            "u32",
+            "i32",
+            "u64",
+            "i64",
+            "f32",
+            "f64"
+          ]
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
+  },
+  {
     "name": "apply_mask",
     "python": "apply_mask",
     "visibility": "lazy_only",
@@ -561,6 +612,19 @@
     ]
   },
   {
+    "name": "contour_boundary",
+    "python": "boundary",
+    "visibility": "public",
+    "doc": "A region's rings as open lines: the exterior, then each hole, each\nreturning to its first point. The result is a set (holes add rings);\nan open contour, already a line, is refused.",
+    "fields": [],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "contour"
+      }
+    ]
+  },
+  {
     "name": "contour_bounding_box",
     "python": "bounding_box",
     "visibility": "public",
@@ -587,11 +651,47 @@
     ]
   },
   {
+    "name": "contour_close",
+    "python": "close",
+    "visibility": "public",
+    "doc": "Join an open line's ends into the region it bounds. A line that\nreturns to its first point (as ``boundary()`` draws one) drops the\nrepeat, so ``close()`` undoes ``boundary()`` on a region without holes.\nA closed contour is refused.",
+    "fields": [],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "contour"
+      }
+    ]
+  },
+  {
     "name": "contour_convex_hull",
     "python": "convex_hull",
     "visibility": "public",
     "doc": "Compute the convex hull of the contour.",
     "fields": [],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "contour"
+      }
+    ]
+  },
+  {
+    "name": "contour_densify",
+    "python": "densify",
+    "visibility": "public",
+    "doc": "Add points so no edge is longer than *max_segment_length*: each edge is\nsplit into ``ceil(length / max_segment_length)`` equal parts, and every\nexisting point is kept. A region's closing edges are split too.",
+    "fields": [
+      {
+        "name": "max_segment_length",
+        "doc": "The longest edge allowed, a finite length > 0 (literal or\nexpression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ],
     "domains": [
       {
         "input": "contour",
@@ -613,6 +713,44 @@
           "kind": "scalar",
           "per_row": true,
           "py": "int"
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "contour"
+      }
+    ]
+  },
+  {
+    "name": "contour_offset",
+    "python": "offset",
+    "visibility": "public",
+    "doc": "Grow the set's regions by *distance* (negative: shrink them): every\npoint within *distance* of their union, or inside it and at least\n``-distance`` from its edge.\n\nThe set is read as one union, so growing can merge regions and\nshrinking can split them or leave none: the result is always a set.\nConvex corners turn by *join*; concave ones stay sharp. Round arcs are\npolygons within 1/64 pixel of the true arc. An open contour is refused.",
+    "fields": [
+      {
+        "name": "distance",
+        "doc": "How far to move the edge, in pixels: positive grows, negative\nshrinks (literal or expression).",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "join",
+        "doc": "``\"round\"`` (an arc about each corner), ``\"miter\"`` (the edges\nextended to meet, cut off past 4 times *distance*) or ``\"bevel\"``\n(cut straight across). Accepts an expression.",
+        "default": "round",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "LineJoin",
+          "variants": [
+            "round",
+            "miter",
+            "bevel"
+          ]
         }
       }
     ],
@@ -707,6 +845,30 @@
     ]
   },
   {
+    "name": "contour_smooth",
+    "python": "smooth",
+    "visibility": "public",
+    "doc": "Round off corners by Chaikin's corner cutting: each pass replaces every\nedge by its points a quarter and three quarters along, doubling the\npoint count. A region's rings are cut all the way round; an open line\nkeeps its two ends, unless it returns to its first point (as\n``boundary()`` draws one), when it is cut through it as a loop.",
+    "fields": [
+      {
+        "name": "iterations",
+        "doc": "Passes to make; 0 returns the contour as it is (literal or\nexpression).",
+        "default": 1,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "contour"
+      }
+    ]
+  },
+  {
     "name": "contour_translate",
     "python": "translate",
     "visibility": "public",
@@ -731,6 +893,19 @@
         }
       }
     ],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "contour"
+      }
+    ]
+  },
+  {
+    "name": "contour_union_all",
+    "python": "union_all",
+    "visibility": "public",
+    "doc": "The union of the set's regions, as disjoint regions: overlapping\nmembers merge and a hole another member covers is filled. The result\nis always a set. An open contour is refused.",
+    "fields": [],
     "domains": [
       {
         "input": "contour",
@@ -779,6 +954,30 @@
             "zero",
             "reflect"
           ]
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
+  },
+  {
+    "name": "coordinate_grid",
+    "python": "coordinate_grid",
+    "visibility": "public",
+    "doc": "The pixel coordinates of the image: an f32 ``[H, W, 2]`` buffer holding\neach pixel's centre ``(x + 0.5, y + 0.5)`` — the point ``rasterize``\nsamples — or ``((x + 0.5) / W, (y + 0.5) / H)`` when *normalized*.\n\nReads only the input's height and width, never its values, so it takes\nany dtype and channel count. The coordinates are in the frame of the\nbuffer it follows: after a crop they start at the crop's corner. Combine\nthem with ordinary ops for fields over positions (gradients, radial\nfalloffs, vignettes).\n\nExample:\n    >>> dx2 = Pipeline().source(\"image_bytes\").coordinate_grid().add_constant(-32.0).square()",
+    "fields": [
+      {
+        "name": "normalized",
+        "doc": "Divide x by the width and y by the height, so each lies in (0, 1).\nAccepts a Polars expression for a per-row choice.",
+        "default": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "bool"
         }
       }
     ],
@@ -896,14 +1095,35 @@
     ]
   },
   {
+    "name": "difference",
+    "python": "difference",
+    "visibility": "lazy_only",
+    "doc": "Inside this set and not *other*: this contour set's regions with *other*'s cut away.\n\nEach side is read as the union of its set, and the result is disjoint\nregions — always a set, since combining shapes can split or merge\nthem. An open contour (a line) on either side is refused. As\n``.contour.difference``, the other side is a contour column.\n\nExample:\n    ```python\n    >>> a = pl.col(\"pred\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> b = pl.col(\"truth\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> result = a.difference(b).sink(\"native\")\n    ```",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The contour-domain expression to combine with.",
+        "type": {
+          "kind": "node"
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "contour"
+      }
+    ]
+  },
+  {
     "name": "dilate",
     "python": "dilate",
     "visibility": "public",
-    "doc": "Morphological dilation (local maximum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).\n\nExample:\n    >>> mask = Pipeline().source(\"image_bytes\").grayscale().threshold(128).dilate(ksize=3)",
+    "doc": "Morphological dilation: the local maximum over a footprint (a\n`ksize × ksize` square, or a disk), edges replicated. Requires\nsingle-channel input (e.g. after `.grayscale()` or `.threshold()`).\n\nExample:\n    >>> mask = Pipeline().source(\"image_bytes\").grayscale().threshold(128).dilate(ksize=3)",
     "fields": [
       {
         "name": "ksize",
-        "doc": "Size of the square structuring element. Must be odd and >= 1.\nAccepts a Polars expression for per-row dynamic values.",
+        "doc": "Size of the structuring element (the square's side, the disk's\ndiameter). Must be odd and >= 1. Accepts a Polars expression for\nper-row dynamic values.",
         "default": 3,
         "type": {
           "kind": "scalar",
@@ -919,6 +1139,44 @@
           "kind": "scalar",
           "per_row": true,
           "py": "int"
+        }
+      },
+      {
+        "name": "footprint",
+        "doc": "The structuring element: ``\"square\"`` (``ksize x ksize``) or\n``\"disk\"`` (the pixels within Euclidean distance ``ksize // 2`` of\nthe centre). Accepts a Polars expression for a per-row choice.",
+        "default": "square",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "Footprint",
+          "variants": [
+            "square",
+            "disk"
+          ]
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "buffer",
+        "output": "buffer"
+      }
+    ]
+  },
+  {
+    "name": "distance_transform",
+    "python": "distance_transform",
+    "visibility": "public",
+    "doc": "Exact Euclidean distance transform of a mask: an f32 image of the same\nshape. Requires single-channel input.\n\nA pixel is foreground when it is non-zero (NaN included). Unsigned, each\nforeground pixel holds the distance from its centre to the nearest\nbackground pixel's centre and the background holds 0, as\n``cv2.distanceTransform(DIST_L2, DIST_MASK_PRECISE)`` and\n``scipy.ndimage.distance_transform_edt`` compute. Signed, every pixel\nholds its distance to the boundary between the two classes, the pixel\nedges ``extract_contours`` traces: negative inside, positive outside\n(as ``.point.signed_distance_to_contour``), ``±(d - 0.5)`` for the\ncentre distance ``d`` to the nearest pixel of the other class. When a\nclass has no pixel at all, the distance to it is infinite.\n\nExample:\n    >>> sdf = Pipeline().source(\"image_bytes\").grayscale().threshold(128).distance_transform(signed=True)",
+    "fields": [
+      {
+        "name": "signed",
+        "doc": "Signed distance to the mask's boundary (negative inside) instead of\neach foreground pixel's distance to the background. Accepts a\nPolars expression for a per-row choice.",
+        "default": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "bool"
         }
       }
     ],
@@ -971,11 +1229,11 @@
     "name": "erode",
     "python": "erode",
     "visibility": "public",
-    "doc": "Morphological erosion (local minimum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).\n\nExample:\n    >>> mask = Pipeline().source(\"image_bytes\").grayscale().threshold(128).erode(ksize=3)",
+    "doc": "Morphological erosion: the local minimum over a footprint (a\n`ksize × ksize` square, or a disk), edges replicated. Requires\nsingle-channel input (e.g. after `.grayscale()` or `.threshold()`).\n\nExample:\n    >>> mask = Pipeline().source(\"image_bytes\").grayscale().threshold(128).erode(ksize=3)",
     "fields": [
       {
         "name": "ksize",
-        "doc": "Size of the square structuring element. Must be odd and >= 1.\nAccepts a Polars expression for per-row dynamic values.",
+        "doc": "Size of the structuring element (the square's side, the disk's\ndiameter). Must be odd and >= 1. Accepts a Polars expression for\nper-row dynamic values.",
         "default": 3,
         "type": {
           "kind": "scalar",
@@ -991,6 +1249,20 @@
           "kind": "scalar",
           "per_row": true,
           "py": "int"
+        }
+      },
+      {
+        "name": "footprint",
+        "doc": "The structuring element: ``\"square\"`` (``ksize x ksize``) or\n``\"disk\"`` (the pixels within Euclidean distance ``ksize // 2`` of\nthe centre). Accepts a Polars expression for a per-row choice.",
+        "default": "square",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "Footprint",
+          "variants": [
+            "square",
+            "disk"
+          ]
         }
       }
     ],
@@ -1225,6 +1497,27 @@
     ]
   },
   {
+    "name": "intersection",
+    "python": "intersection",
+    "visibility": "lazy_only",
+    "doc": "Inside both: where this contour set's regions overlap *other*'s.\n\nEach side is read as the union of its set, and the result is disjoint\nregions — always a set, since combining shapes can split or merge\nthem. An open contour (a line) on either side is refused. As\n``.contour.intersection``, the other side is a contour column.\n\nExample:\n    ```python\n    >>> a = pl.col(\"pred\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> b = pl.col(\"truth\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> result = a.intersection(b).sink(\"native\")\n    ```",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The contour-domain expression to combine with.",
+        "type": {
+          "kind": "node"
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "contour"
+      }
+    ]
+  },
+  {
     "name": "invert",
     "python": "invert",
     "visibility": "public",
@@ -1405,12 +1698,26 @@
     "fields": [
       {
         "name": "ksize",
-        "doc": "Size of the square structuring element. Must be odd and >= 1. Accepts a\nPolars expression for per-row dynamic values.",
+        "doc": "Size of the structuring element. Must be odd and >= 1. Accepts a\nPolars expression for per-row dynamic values.",
         "default": 3,
         "type": {
           "kind": "scalar",
           "per_row": true,
           "py": "int"
+        }
+      },
+      {
+        "name": "footprint",
+        "doc": "The structuring element: ``\"square\"`` (``ksize x ksize``) or\n``\"disk\"`` (the pixels within Euclidean distance ``ksize // 2`` of\nthe centre). Accepts a Polars expression for a per-row choice.",
+        "default": "square",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "Footprint",
+          "variants": [
+            "square",
+            "disk"
+          ]
         }
       }
     ],
@@ -1723,7 +2030,7 @@
     "name": "rasterize",
     "python": "rasterize",
     "visibility": "internal",
-    "doc": "Rasterize contours to a mask.\n\nThe builder is ``Pipeline.rasterize``, whose ``width``/``height`` or\n``shape`` arguments become ``size``; it also records the shape reference's\ngraph dependency and its canvas assertion.",
+    "doc": "Rasterize contours to a mask: regions filled, open lines stroked.\n\nThe builder is ``Pipeline.rasterize``, whose ``width``/``height`` or\n``shape`` arguments become ``size``; it also records the shape reference's\ngraph dependency and its canvas assertion.",
     "fields": [
       {
         "name": "size",
@@ -1764,6 +2071,56 @@
           "kind": "scalar",
           "per_row": true,
           "py": "int"
+        }
+      },
+      {
+        "name": "supersample",
+        "doc": "Samples per pixel along each axis, 1 to 16: a pixel takes the\nfraction of its ``n x n`` sub-pixel centres inside, blended between\n``background`` and ``fill_value`` (anti-aliasing). 1 (the default)\nsamples the pixel centre alone, so a pixel is one value or the\nother. Accepts a Polars expression for per-row dynamic values.",
+        "default": 1,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "line_width",
+        "doc": "The width an open line is stroked at, a finite width > 0 (regions\nare filled whatever it is). Accepts a Polars expression.",
+        "default": 1.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "cap",
+        "doc": "How a stroked line ends: ``\"round\"`` (a half disc), ``\"square\"``\n(a half square) or ``\"butt\"`` (flat at its end point). Accepts a\nPolars expression.",
+        "default": "round",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "LineCap",
+          "variants": [
+            "round",
+            "square",
+            "butt"
+          ]
+        }
+      },
+      {
+        "name": "join",
+        "doc": "How a stroked line turns a corner: ``\"round\"``, ``\"miter\"`` (cut\noff past 4 half-widths) or ``\"bevel\"``. Accepts a Polars\nexpression.",
+        "default": "round",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "LineJoin",
+          "variants": [
+            "round",
+            "miter",
+            "bevel"
+          ]
         }
       }
     ],
@@ -2625,6 +2982,27 @@
     ]
   },
   {
+    "name": "symmetric_difference",
+    "python": "symmetric_difference",
+    "visibility": "lazy_only",
+    "doc": "Inside exactly one: where this contour set's regions and *other*'s do not overlap.\n\nEach side is read as the union of its set, and the result is disjoint\nregions — always a set, since combining shapes can split or merge\nthem. An open contour (a line) on either side is refused. As\n``.contour.symmetric_difference``, the other side is a contour column.\n\nExample:\n    ```python\n    >>> a = pl.col(\"pred\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> b = pl.col(\"truth\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> result = a.symmetric_difference(b).sink(\"native\")\n    ```",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The contour-domain expression to combine with.",
+        "type": {
+          "kind": "node"
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "contour"
+      }
+    ]
+  },
+  {
     "name": "threshold",
     "python": "threshold",
     "visibility": "public",
@@ -2683,6 +3061,27 @@
       {
         "input": "buffer",
         "output": "buffer"
+      }
+    ]
+  },
+  {
+    "name": "union",
+    "python": "union",
+    "visibility": "lazy_only",
+    "doc": "Inside either: the union of this contour set's regions and *other*'s.\n\nEach side is read as the union of its set, and the result is disjoint\nregions — always a set, since combining shapes can split or merge\nthem. An open contour (a line) on either side is refused. As\n``.contour.union``, the other side is a contour column.\n\nExample:\n    ```python\n    >>> a = pl.col(\"pred\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> b = pl.col(\"truth\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> result = a.union(b).sink(\"native\")\n    ```",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The contour-domain expression to combine with.",
+        "type": {
+          "kind": "node"
+        }
+      }
+    ],
+    "domains": [
+      {
+        "input": "contour",
+        "output": "contour"
       }
     ]
   },

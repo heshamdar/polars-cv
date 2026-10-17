@@ -89,14 +89,34 @@ region, so the functions split by what they read:
 
 - **Boundary** functions measure it as a line: `perimeter` (its arc length),
   `hausdorff_distance`, `boundary_distances`, `bounding_box`, `simplify`,
-  `convex_hull`, the point-wise transforms (`translate`, `scale`, `flip`,
+  `smooth`, `densify`, `convex_hull`, the point-wise transforms (`translate`, `scale`, `flip`,
   `normalize`, `to_absolute`), and `.point.distance_to_contour` /
   `nearest_point_on_contour`.
 - **Region** functions refuse it, naming the row: `area`, `centroid`,
-  `is_convex`, `winding`, `ensure_winding`, `contains_point`, `iou`, `dice`,
-  `pairwise_iou`, `correspond`, `label_reduce`,
-  `.point.signed_distance_to_contour` and the pipeline's `contour` source.
+  `largest`, `is_convex`, `winding`, `ensure_winding`, `contains_point`,
+  `iou`, `dice`, `pairwise_iou`, `correspond`, `label_reduce`, `boundary`,
+  `offset`, `union_all`, the set operations (`union`, `intersection`,
+  `difference`, `symmetric_difference`) and `.point.signed_distance_to_contour`.
   `scale(origin="centroid")` refuses one too.
+- `rasterize` **strokes** it (see [Drawing lines](#drawing-lines)).
+
+Pipelines carry lines the same way: `source("contour")` reads open rows, and
+each contour op behaves as its `.contour` accessor does (one definition serves
+both), so a pipeline region op refuses a line with the same message.
+
+`boundary()` turns a region's rings into lines (the exterior, then each hole,
+each returning to its first point), so the result is a set; `close()` joins a
+line's ends into the region it bounds, undoing `boundary()` for a region
+without holes:
+
+```python
+# A region's outline as lines, and their lengths
+lines = Pipeline().source("contour").boundary()
+lengths = Pipeline().source("contour").boundary().perimeter()
+
+# An annotated polyline as the region it encloses
+area = pl.col("polyline").contour.close().contour.area()
+```
 
 An open contour may not have holes. An unspecified `is_closed` (a null, or a
 struct without the field) reads as closed.
@@ -266,6 +286,61 @@ df.with_columns(
 `"origin"`. `.contour.scale` and `Pipeline.scale_contour` are one operation
 with one definition, so they always agree.
 
+### Shaping
+
+Four more ops, each both a pipeline op and a `.contour` accessor with one
+definition:
+
+- `offset(distance, join="round")` grows a set's regions by `distance` pixels,
+  or shrinks them for a negative one: every point within `distance` of their
+  union (or inside it and at least `-distance` from its edge). The set is read
+  as one union, so growing can merge regions and shrinking can split them or
+  leave none — the result is always a set. Convex corners turn by `join`
+  (`"round"`, `"miter"` — cut off past 4 times the distance, SVG's default
+  limit — or `"bevel"`); concave ones stay sharp. Round arcs are polygons
+  within 1/64 pixel of the true arc.
+- `union_all()` merges a set's regions into disjoint ones (a hole another
+  member covers is filled) — always a set.
+- `smooth(iterations=1)` rounds corners by Chaikin's corner cutting: each pass
+  replaces every edge by its points a quarter and three quarters along. A line
+  keeps its ends (one returning to its first point is smoothed through it).
+- `densify(max_segment_length)` splits every edge into
+  `ceil(length / max_segment_length)` equal parts, keeping every point.
+
+`offset` and `union_all` take regions; `smooth` and `densify` take lines too.
+
+```python
+# A 3 px halo round each blob, as one mask
+halo = (
+    Pipeline().source("image_bytes").grayscale().threshold(128)
+    .extract_contours().offset(3.0).rasterize(width=200, height=200)
+)
+# Soften a traced outline's pixel staircase
+soft = pl.col("contours").contour.smooth(iterations=3)
+```
+
+### Combining two sets
+
+`union`, `intersection`, `difference` and `symmetric_difference` combine two
+contour sets: each side is read as the union of its regions, and the result is
+disjoint regions — always a set, since combining shapes can split or merge
+them. As `.contour` accessors the other side is a contour column (a single
+contour is a set of one; a null side nulls the row); in a pipeline it is
+another contour-domain expression, and the result chains on:
+
+```python
+# Prediction regions outside the ground truth, per row
+false_positive = pl.col("pred").contour.difference(pl.col("truth"))
+
+# The same in a pipeline, measured
+pred = pl.col("pred").cv.pipe(Pipeline().source("contour"))
+truth = pl.col("truth").cv.pipe(Pipeline().source("contour"))
+missed_area = truth.difference(pred).area().sink("native")
+```
+
+Rasterizing a result paints exactly the pixelwise `|`, `&`, `& ~` or `^` of
+rasterizing the two sides.
+
 ### Rasterization
 
 Convert contours to binary masks:
@@ -304,6 +379,38 @@ same mask as sinking the set and reading it back through `source("contour")`.
 
 `fill_value` and `background` may be inverted (`fill_value=0, background=255`);
 the same region is painted either way.
+
+By default a pixel is filled when its centre lies inside, so edges are hard.
+`supersample=n` anti-aliases them: each pixel samples its `n x n` sub-pixel
+centres and is painted `background + (fill_value - background) * k / n**2` for
+the `k` that fall inside (rounded half away from zero), from 1 (the default) up
+to 16.
+
+```python
+# Smooth edges: 4 x 4 samples per pixel
+mask = pl.col("contour").cv.pipe(
+    Pipeline().source("contour").rasterize(width=200, height=200, supersample=4)
+)
+```
+
+### Drawing lines
+
+An open contour (a line) is drawn as its **stroke**: every point within
+`line_width / 2` of it (default 1 pixel wide), its ends shaped by `cap`
+(`"round"`, the default; `"square"`; `"butt"`, flat at the end point) and its
+corners by `join` (`"round"`, `"miter"`, `"bevel"`). Regions in the same set
+are filled, and everything is painted as one union, so `supersample`
+anti-aliases strokes too. A line that returns exactly to its first point has
+no ends: its start is a corner like the others. See
+[Drawing with polars-cv](../drawing.md) for building pictures from these. `line_width`, `cap` and `join` each accept an
+expression. To outline a region, rasterize its `boundary()`:
+
+```python
+outline = (
+    Pipeline().source("contour").boundary()
+    .rasterize(width=200, height=200, line_width=2.5, join="miter", supersample=4)
+)
+```
 
 Infer dimensions from an existing image:
 

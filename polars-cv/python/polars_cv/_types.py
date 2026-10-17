@@ -6,6 +6,7 @@ This module contains the core type definitions used throughout the package.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, TypeAlias, Union
 
@@ -36,6 +37,9 @@ from polars_cv._ops_generated import (
 )
 from polars_cv._ops_generated import (
     FilterType as FilterType,
+)
+from polars_cv._ops_generated import (
+    Footprint as Footprint,
 )
 from polars_cv._ops_generated import (
     HashAlgorithm as HashAlgorithm,
@@ -223,6 +227,30 @@ def _to_python(value: Any) -> Any:
     """
     if type(value).__module__ == "numpy" and callable(getattr(value, "item", None)):
         return value.item()
+    return value
+
+
+def _literal(value: Any, where: str) -> Any:
+    """A literal argument as its wire value (:func:`_to_python`), refusing a
+    non-finite float, element by element through a sequence.
+
+    JSON — the wire every op and geometry call crosses — has no NaN or
+    infinity, so such a literal could only fail later, as the decoder's
+    "expected value at line 1 column N", naming neither the op nor the
+    parameter. A value a row needs is passed through an expression, where
+    the op checks it with its own rule. (A ``bound`` spells its infinities
+    as strings before reaching here.)
+    """
+    if isinstance(value, (list, tuple)):
+        return [_literal(v, f"{where}[{i}]") for i, v in enumerate(value)]
+    value = _to_python(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        msg = (
+            f"{where}: {value} is not a finite number, which no literal can carry "
+            "(the wire format, JSON, has no NaN or infinity); pass a value a row "
+            "needs through an expression"
+        )
+        raise ValueError(msg)
     return value
 
 

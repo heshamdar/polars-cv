@@ -12,7 +12,7 @@ use view_buffer::ops::color::{ColorConvertOp, ColorSpace};
 use view_buffer::ops::filter::{BorderMode, ConvolveOp};
 use view_buffer::ops::pad::{PadMode, PadPosition};
 use view_buffer::ops::{InputLayout, Op};
-use view_buffer::{ImageOp, ImageOpKind, ViewBuffer, ViewDto, ViewExpr};
+use view_buffer::{Footprint, ImageOp, ImageOpKind, ViewBuffer, ViewDto, ViewExpr};
 
 /// A patterned `[h, w, c]` image of `T`.
 fn image<T: view_buffer::core::dtype::ViewType + num_traits::FromPrimitive>(
@@ -86,6 +86,7 @@ fn ops(c: usize) -> Vec<(&'static str, ViewDto)> {
                 image_op(ImageOpKind::Erode {
                     ksize: 3,
                     iterations: 2,
+                    footprint: Footprint::Square,
                 }),
             ),
             (
@@ -93,11 +94,30 @@ fn ops(c: usize) -> Vec<(&'static str, ViewDto)> {
                 image_op(ImageOpKind::Dilate {
                     ksize: 5,
                     iterations: 1,
+                    footprint: Footprint::Square,
                 }),
             ),
             (
                 "morph_gradient",
-                image_op(ImageOpKind::MorphGradient { ksize: 3 }),
+                image_op(ImageOpKind::MorphGradient {
+                    ksize: 3,
+                    footprint: Footprint::Square,
+                }),
+            ),
+            (
+                "erode_disk",
+                image_op(ImageOpKind::Erode {
+                    ksize: 5,
+                    iterations: 2,
+                    footprint: Footprint::Disk,
+                }),
+            ),
+            (
+                "morph_gradient_disk",
+                image_op(ImageOpKind::MorphGradient {
+                    ksize: 7,
+                    footprint: Footprint::Disk,
+                }),
             ),
         ]);
     }

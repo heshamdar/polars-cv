@@ -52,6 +52,10 @@ RING = "ring"
 #: ``label_reduce``'s operand.
 CONTOURS = "contours"
 
+#: An open L-shaped polyline (two ends and a corner), so ``rasterize``'s
+#: ``cap`` and ``join`` both show.
+LINES = "lines"
+
 #: A rotated square. Its bounding box is strictly larger than its interior,
 #: which is what makes ``label_reduce(region_mode=)`` observable.
 DIAMOND = "diamond"
@@ -187,6 +191,25 @@ DIAMOND_SET = [
         "is_closed": True,
     }
 ]
+
+
+#: The polyline behind the :data:`LINES` column.
+LINE_SET = [
+    {
+        "exterior": [
+            {"x": 3.0, "y": 4.0},
+            {"x": 12.0, "y": 4.0},
+            {"x": 12.0, "y": 13.0},
+        ],
+        "holes": [],
+        "is_closed": False,
+    }
+]
+
+
+def lines() -> Pipeline:
+    """The contour source over the :data:`LINES` column."""
+    return Pipeline().source("contour")
 
 
 # --- The table -------------------------------------------------------------
@@ -363,7 +386,28 @@ CASES: list[ExprCase] = [
         lambda v: gray().canny(low_threshold=10.0, high_threshold=v),
         (300.0, 500.0, 700.0),  # 90 / 75 / 17 edge pixels
     ),
+    ExprCase(
+        "apply_lut",
+        "table",
+        # A mask holds only 0 and 255: entry 0 is what every 0 becomes.
+        lambda v: mask().apply_lut([[v], *([[0]] * 254), [255]]),
+        (10.0, 128.0),
+        column=RECT,
+    ),
     # --- morphology (single-channel kernels) -------------------------------
+    ExprCase(
+        "coordinate_grid",
+        "normalized",
+        lambda v: rgb().coordinate_grid(normalized=v),
+        (False, True),
+    ),
+    ExprCase(
+        "distance_transform",
+        "signed",
+        lambda v: mask().distance_transform(signed=v),
+        (True, False),
+        column=RECT,
+    ),
     ExprCase("erode", "ksize", lambda v: mask().erode(ksize=v), (3, 5), column=RECT),
     ExprCase(
         "erode",
@@ -379,6 +423,41 @@ CASES: list[ExprCase] = [
         lambda v: mask().dilate(ksize=3, iterations=v),
         (1, 2, 3),
         column=RECT,
+    ),
+    ExprCase(
+        "erode",
+        "footprint",
+        lambda v: mask().erode(ksize=5, footprint=v),
+        ("square", "disk"),
+        column=RING,
+    ),
+    ExprCase(
+        "dilate",
+        "footprint",
+        lambda v: mask().dilate(ksize=5, footprint=v),
+        ("square", "disk"),
+        column=RECT,
+    ),
+    ExprCase(
+        "morphology_open",
+        "footprint",
+        lambda v: mask().morphology_open(ksize=5, footprint=v),
+        ("square", "disk"),
+        column=RING,
+    ),
+    ExprCase(
+        "morphology_close",
+        "footprint",
+        lambda v: mask().morphology_close(ksize=5, footprint=v),
+        ("square", "disk"),
+        column=RING,
+    ),
+    ExprCase(
+        "morphology_gradient",
+        "footprint",
+        lambda v: mask().morphology_gradient(ksize=5, footprint=v),
+        ("square", "disk"),
+        column=RING,
     ),
     ExprCase(
         "morphology_open",
@@ -650,6 +729,19 @@ CASES: list[ExprCase] = [
     ),
     ExprCase(
         "rasterize",
+        "supersample",
+        # A traced outline has integer edges, which every sample count paints
+        # alike: offset by a fraction of a pixel so the count shows.
+        lambda v: (
+            contour()
+            .translate(dx=0.5, dy=0.25)
+            .rasterize(width=12, height=12, supersample=v)
+        ),
+        (1, 2, 4),
+        column=RECT,
+    ),
+    ExprCase(
+        "rasterize",
         "fill_value",
         lambda v: contour().rasterize(width=12, height=12, fill_value=v),
         (255, 128, 64),
@@ -661,6 +753,33 @@ CASES: list[ExprCase] = [
         lambda v: contour().rasterize(width=12, height=12, background=v),
         (0, 32, 96),
         column=RECT,
+    ),
+    # Supersampled, so a cap or join's share of a pixel shows even where a
+    # pixel centre falls on the same side for two styles.
+    ExprCase(
+        "rasterize",
+        "line_width",
+        lambda v: lines().rasterize(width=16, height=16, line_width=v, supersample=4),
+        (1.0, 2.5, 4.0),
+        column=LINES,
+    ),
+    ExprCase(
+        "rasterize",
+        "cap",
+        lambda v: lines().rasterize(
+            width=16, height=16, line_width=3.0, cap=v, supersample=4
+        ),
+        ("butt", "square", "round"),
+        column=LINES,
+    ),
+    ExprCase(
+        "rasterize",
+        "join",
+        lambda v: lines().rasterize(
+            width=16, height=16, line_width=4.0, join=v, supersample=4
+        ),
+        ("miter", "bevel", "round"),
+        column=LINES,
     ),
     ExprCase(
         "extract_contours",
@@ -754,6 +873,36 @@ CASES: list[ExprCase] = [
         # corners sit 8/sqrt(2) ~ 5.66 from the diagonal: 6.0 drops one, 0.01
         # keeps all four.
         (0.01, 6.0),
+        column=RECT,
+    ),
+    ExprCase(
+        "offset",
+        "distance",
+        lambda v: contour().offset(v),
+        (-1.0, 1.0, 2.0),
+        column=RECT,
+    ),
+    ExprCase(
+        "offset",
+        "join",
+        lambda v: contour().offset(2.0, join=v),
+        ("miter", "bevel", "round"),
+        column=RECT,
+    ),
+    ExprCase(
+        "smooth",
+        "iterations",
+        lambda v: contour().smooth(iterations=v),
+        (0, 1, 2),
+        column=RECT,
+    ),
+    ExprCase(
+        "densify",
+        "max_segment_length",
+        # The fixture traces to an 8x8 square: 100 keeps its four corners,
+        # 3.0 splits each edge in three, 1.0 in eight.
+        lambda v: contour().densify(v),
+        (1.0, 3.0, 100.0),
         column=RECT,
     ),
     # --- reductions and vectors -------------------------------------------

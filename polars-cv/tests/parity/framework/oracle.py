@@ -37,6 +37,7 @@ from typing import Any, Callable
 
 import cv2
 import numpy as np
+from hypothesis import event
 from hypothesis import strategies as st
 from PIL import Image
 from scipy import ndimage
@@ -80,6 +81,11 @@ class OpSpec:
     #: draw inputs from these so their examples are not spent on skips; the
     #: invariance suites ignore it and draw every dtype the op accepts.
     ref_dtypes: tuple[str, ...] | None = None
+    #: The pixel content kinds the reference suites draw (``None``: all), for
+    #: an op whose answer only varies on some (a distance transform needs a
+    #: zero set, which only ``mask`` reliably holds). Like ``ref_dtypes``, the
+    #: invariance suites ignore it.
+    ref_contents: tuple[str, ...] | None = None
     #: Whether the arguments restate a row's whole shape (``assert_shape``,
     #: ``reshape``), so one literal set cannot serve rows of different sizes.
     uniform_rows: bool = False
@@ -1127,21 +1133,41 @@ def _single_channel(x: np.ndarray) -> bool:
     return x.ndim == 3 and x.shape[2] == 1
 
 
+_FOOTPRINTS = ("square", "disk")
+
+
 def _morph_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     return {
-        "ksize": draw(st.sampled_from([1, 3, 5]), label="ksize"),
+        "ksize": draw(st.sampled_from([1, 3, 5, 7]), label="ksize"),
         "iterations": draw(st.integers(1, 3), label="iterations"),
+        "footprint": draw(st.sampled_from(_FOOTPRINTS), label="footprint"),
     }
 
 
 def _ksize_params(draw: st.DrawFn, x: np.ndarray) -> Params:
-    return {"ksize": draw(st.sampled_from([1, 3, 5]), label="ksize")}
+    return {
+        "ksize": draw(st.sampled_from([1, 3, 5, 7]), label="ksize"),
+        "footprint": draw(st.sampled_from(_FOOTPRINTS), label="footprint"),
+    }
+
+
+def _footprint(k: int, footprint: str) -> np.ndarray:
+    """The structuring element of side ``k``: the square, or the pixels within
+    Euclidean distance ``k // 2`` of the centre."""
+    r = k // 2
+    if footprint == "square":
+        return np.ones((k, k), dtype=bool)
+    yy, xx = np.mgrid[-r : r + 1, -r : r + 1]
+    return yy * yy + xx * xx <= r * r
 
 
 def _window_extreme(
-    plane: np.ndarray, k: int, reduce: Callable[..., np.ndarray]
+    plane: np.ndarray,
+    k: int,
+    reduce: Callable[..., np.ndarray],
+    footprint: str = "square",
 ) -> np.ndarray:
-    """Min or max over each ``k x k`` window, edges replicated.
+    """Min or max over each footprint of side ``k``, edges replicated.
 
     Written on NumPy windows rather than ``scipy.ndimage.grey_erosion``,
     which goes through float64 and so is wrong for 64-bit integers.
@@ -1149,21 +1175,101 @@ def _window_extreme(
     r = k // 2
     padded = np.pad(plane, r, mode="edge")
     windows = np.lib.stride_tricks.sliding_window_view(padded, (k, k))
-    return reduce(windows, axis=(-2, -1)).astype(plane.dtype)
+    return reduce(windows[..., _footprint(k, footprint)], axis=-1).astype(plane.dtype)
 
 
-def _erode(x: np.ndarray, k: int, n: int = 1) -> np.ndarray:
+def _erode(x: np.ndarray, k: int, n: int = 1, footprint: str = "square") -> np.ndarray:
     out = x[:, :, 0]
     for _ in range(n):
-        out = _window_extreme(out, k, np.min)
+        out = _window_extreme(out, k, np.min, footprint)
     return out[:, :, None]
 
 
-def _dilate(x: np.ndarray, k: int, n: int = 1) -> np.ndarray:
+def _dilate(x: np.ndarray, k: int, n: int = 1, footprint: str = "square") -> np.ndarray:
     out = x[:, :, 0]
     for _ in range(n):
-        out = _window_extreme(out, k, np.max)
+        out = _window_extreme(out, k, np.max, footprint)
     return out[:, :, None]
+
+
+#: The palette width each output dtype's table has (one entry maps every
+#: channel in place).
+_LUT_K = dict(zip(DTYPES, (1, 3, 2, 4, 1, 2, 3, 4, 1, 3), strict=True))
+
+
+def _lut_params(draw: st.DrawFn, x: np.ndarray) -> Params:
+    """A table over the u8 domain (256 rows), so it
+    covers every row of a batch, not only the one the arguments are drawn
+    on; the out-of-range row error is a reference test's. Its entries are a
+    fixed function of the drawn ``dtype``: rows that draw the same dtype share
+    one literal table rather than 65536 per-row expressions, and rows that
+    differ differ in ``dtype``, which is structural, so they share one
+    literal set. A palette (``K > 1``) needs one channel: ``[H, W, 1]``, or
+    ``[H, W]`` (a ``channel_select`` output)."""
+    dtype = draw(st.sampled_from(tuple(DTYPES)), label="dtype")
+    single = x.ndim == 2 or x.shape[2] == 1
+    k = _LUT_K[dtype] if single else 1
+    n = 256
+    rng = np.random.default_rng([n, k, list(DTYPES).index(dtype)])
+    np_dtype = DTYPES[dtype]
+    if np_dtype.kind == "f":
+        values = rng.random((n, k)) * 2e4 - 1e4
+    else:
+        info = np.iinfo(np_dtype)
+        # Within ±2**53, so each entry is exact through the f64 wire value.
+        lo, hi = max(int(info.min), -(2**53)), min(int(info.max), 2**53)
+        values = rng.integers(lo, hi, size=(n, k), endpoint=True)
+    return {"table": values.astype(np_dtype).tolist(), "dtype": dtype}
+
+
+def _lut_ref(x: np.ndarray, p: Params) -> np.ndarray:
+    table = np.asarray(p["table"], dtype=DTYPES[p["dtype"]])
+    if table.shape[1] == 1:
+        return table[x, 0]
+    # A palette takes the one channel to K: [H, W] and [H, W, 1] alike.
+    return table[x if x.ndim == 2 else x[:, :, 0]]
+
+
+def _distance_params(draw: st.DrawFn, x: np.ndarray) -> Params:
+    return {"signed": draw(st.booleans(), label="signed")}
+
+
+def _coordinate_grid_ref(x: np.ndarray, p: Params) -> np.ndarray:
+    """``np.meshgrid`` of the pixel centres ``(x + 0.5, y + 0.5)``, divided by
+    the width and height when normalized; the values of *x* are never read."""
+    h, w = x.shape[:2]
+    xs, ys = np.arange(w) + 0.5, np.arange(h) + 0.5
+    if p["normalized"]:
+        xs, ys = xs / w, ys / h
+    gx, gy = np.meshgrid(xs, ys)
+    return np.stack([gx, gy], axis=-1).astype(np.float32)
+
+
+def _distance_ref(x: np.ndarray, p: Params) -> np.ndarray:
+    """``scipy.ndimage.distance_transform_edt`` over the non-zero set (NaN is
+    non-zero), with the two conventions it does not model: a class with no
+    pixel is infinitely far, and the signed form measures to the pixel-edge
+    boundary (``d - 0.5``), negative inside."""
+    inside = x[:, :, 0] != 0
+    event(
+        "distance_transform: both classes"
+        if inside.any() and not inside.all()
+        else "distance_transform: one class only"
+    )
+    if p["signed"]:
+        if inside.all():
+            out = np.full(inside.shape, -np.inf)
+        elif not inside.any():
+            out = np.full(inside.shape, np.inf)
+        else:
+            d_in = ndimage.distance_transform_edt(inside)
+            d_out = ndimage.distance_transform_edt(~inside)
+            out = np.where(inside, -(d_in - 0.5), d_out - 0.5)
+    elif inside.all():
+        out = np.full(inside.shape, np.inf)
+    else:
+        out = ndimage.distance_transform_edt(inside)
+    return out.astype(np.float32)[:, :, None]
 
 
 #: convolve2d's border names in SciPy's spelling. Its "reflect" repeats the
@@ -1248,9 +1354,15 @@ def _canny_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     return {"low_threshold": float(lo), "high_threshold": float(hi)}
 
 
-def _canny_ref(x: np.ndarray, p: Params) -> np.ndarray:
+def _canny_colour(x: np.ndarray) -> int:
+    """How many leading channels Canny reads: all but alpha, the last of a
+    2- (gray + alpha) or 4-channel (RGBA) image (``ops::color::color_channels``)."""
     c = x.shape[2]
-    planes = x[:, :, :1] if c in (1, 2) else x[:, :, :3]
+    return c - 1 if c in (2, 4) else c
+
+
+def _canny_ref(x: np.ndarray, p: Params) -> np.ndarray:
+    planes = x[:, :, : _canny_colour(x)]
     image = planes[:, :, 0] if planes.shape[2] == 1 else np.ascontiguousarray(planes)
     edges = cv2.Canny(image, p["low_threshold"], p["high_threshold"])
     return edges[:, :, None]
@@ -1449,6 +1561,19 @@ def _rasterize_params(draw: st.DrawFn, x: Any) -> Params:
     return {
         "width": draw(st.integers(1, 32), label="width"),
         "height": draw(st.integers(1, 32), label="height"),
+        "supersample": draw(st.sampled_from([1, 1, 2, 3, 4]), label="supersample"),
+        # A traced region ignores these (lines are stroked, regions filled);
+        # drawn so every spelling crosses the wire and the plan.
+        "line_width": draw(_nice(0.5, 6), label="line_width"),
+        "cap": draw(st.sampled_from(["round", "square", "butt"]), label="cap"),
+        "join": draw(st.sampled_from(["round", "miter", "bevel"]), label="join"),
+    }
+
+
+def _offset_params(draw: st.DrawFn, x: Any) -> Params:
+    return {
+        "distance": draw(_nice(-4, 4), label="distance"),
+        "join": draw(st.sampled_from(["round", "miter", "bevel"]), label="join"),
     }
 
 
@@ -1538,6 +1663,18 @@ OPS: dict[str, OpSpec] = {
             "`as`, so narrowing wraps",
         ),
         _spec("invert", ref=_invert_ref, gain=1.0),
+        _spec(
+            "apply_lut",
+            _lut_params,
+            # u8 only here: a u16 table is 65536 rows, about a second to encode
+            # per example on the debug build (CR-102), so the reference tests
+            # hold u16 instead (the full domain, a strided view, by value).
+            accepts=lambda x: x.dtype == np.uint8,
+            ref=_lut_ref,
+            gain=_INF,
+            note="table[x] (NumPy fancy indexing); rows of one entry map every "
+            "channel, longer rows take one channel to K",
+        ),
         _spec(
             "threshold",
             _threshold_params,
@@ -1870,36 +2007,69 @@ OPS: dict[str, OpSpec] = {
             "erode",
             _morph_params,
             accepts=_single_channel,
-            ref=lambda x, p: _erode(x, p["ksize"], p["iterations"]),
+            ref=lambda x, p: _erode(x, p["ksize"], p["iterations"], p["footprint"]),
             kind="spatial",
         ),
         _spec(
             "dilate",
             _morph_params,
             accepts=_single_channel,
-            ref=lambda x, p: _dilate(x, p["ksize"], p["iterations"]),
+            ref=lambda x, p: _dilate(x, p["ksize"], p["iterations"], p["footprint"]),
             kind="spatial",
         ),
         _spec(
             "morphology_open",
             _ksize_params,
             accepts=_single_channel,
-            ref=lambda x, p: _dilate(_erode(x, p["ksize"]), p["ksize"]),
+            ref=lambda x, p: _dilate(
+                _erode(x, p["ksize"], footprint=p["footprint"]),
+                p["ksize"],
+                footprint=p["footprint"],
+            ),
             kind="spatial",
         ),
         _spec(
             "morphology_close",
             _ksize_params,
             accepts=_single_channel,
-            ref=lambda x, p: _erode(_dilate(x, p["ksize"]), p["ksize"]),
+            ref=lambda x, p: _erode(
+                _dilate(x, p["ksize"], footprint=p["footprint"]),
+                p["ksize"],
+                footprint=p["footprint"],
+            ),
             kind="spatial",
+        ),
+        _spec(
+            "distance_transform",
+            _distance_params,
+            accepts=_single_channel,
+            ref=_distance_ref,
+            gain=_INF,
+            kind="global",
+            defines_non_finite=True,
+            ref_contents=("mask",),
+            note="scipy distance_transform_edt over the non-zero set (NaN and "
+            "±inf are non-zero); no pixel of the other class reads ±inf; signed "
+            "is d - 0.5 to the pixel-edge boundary, negative inside",
+        ),
+        _spec(
+            "coordinate_grid",
+            lambda draw, x: {"normalized": draw(st.booleans(), label="normalized")},
+            accepts=is_rank3,
+            ref=_coordinate_grid_ref,
+            # Reads the height and width only: no value reaches the output.
+            gain=0.0,
+            kind="global",
+            defines_non_finite=True,
+            note="np.meshgrid of the pixel centres; values never read",
         ),
         _spec(
             "morphology_gradient",
             _ksize_params,
             accepts=_single_channel,
             ref=lambda x, p: _saturating_difference(
-                _dilate(x, p["ksize"]), _erode(x, p["ksize"])
+                _dilate(x, p["ksize"], footprint=p["footprint"]),
+                _erode(x, p["ksize"], footprint=p["footprint"]),
             ),
             note="dilate - erode, saturating (i8 127 - -25 -> 127)",
             kind="spatial",
@@ -1957,7 +2127,9 @@ OPS: dict[str, OpSpec] = {
             _canny_params,
             accepts=is_rank3,
             ref=_canny_ref,
-            ref_accepts=lambda x, p: is_u8(x),
+            # cv2.Canny takes one or three channels; the engine's strongest
+            # gradient over five or more colour channels has no cv2 to match.
+            ref_accepts=lambda x, p: is_u8(x) and _canny_colour(x) in (1, 3),
             ref_dtypes=("u8",),
             gain=_INF,
             kind="spatial",
@@ -2137,6 +2309,19 @@ OPS: dict[str, OpSpec] = {
                 ("centroid", _no_params, "vector"),
                 ("bounding_box", _no_params, "vector"),
                 ("convex_hull", _no_params, "contour"),
+                ("boundary", _no_params, "contour"),
+                ("offset", _offset_params, "contour"),
+                ("union_all", _no_params, "contour"),
+                (
+                    "smooth",
+                    lambda draw, x: {"iterations": draw(st.integers(0, 3))},
+                    "contour",
+                ),
+                (
+                    "densify",
+                    lambda draw, x: {"max_segment_length": draw(_nice(0.5, 8))},
+                    "contour",
+                ),
                 (
                     "largest",
                     lambda draw, x: {"k": draw(st.integers(1, 3))},
@@ -2163,6 +2348,10 @@ EXEMPT: dict[str, str] = {
         "(test_expression_op_params.py covers it)"
     ),
     "on_error": "a graph policy, not an operation (test_on_error.py)",
+    "close": (
+        "takes an open line, and the suite's contours are traced regions "
+        "(extract_contours); test_open_contours_pipeline.py covers it"
+    ),
     "on_null_param": "a graph policy, not an operation (test_null_params.py)",
 }
 
@@ -2277,6 +2466,22 @@ BINARY_EXEMPT: dict[str, str] = {
     "channel_merge": (
         "variadic over single-channel operands; its inverse law is checked in "
         "laws/test_parity_laws.py"
+    ),
+    "union": (
+        "combines two contour sets, which the image-batch harness does not "
+        "build; reference/test_contour_boolean_ref.py holds it to the mask identity"
+    ),
+    "intersection": (
+        "combines two contour sets, which the image-batch harness does not "
+        "build; reference/test_contour_boolean_ref.py holds it to the mask identity"
+    ),
+    "difference": (
+        "combines two contour sets, which the image-batch harness does not "
+        "build; reference/test_contour_boolean_ref.py holds it to the mask identity"
+    ),
+    "symmetric_difference": (
+        "combines two contour sets, which the image-batch harness does not "
+        "build; reference/test_contour_boolean_ref.py holds it to the mask identity"
     ),
 }
 

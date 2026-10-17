@@ -9,6 +9,108 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **"Drawing with polars-cv" guide, and the logo rebuilt on the drawing ops**
+  (CR-101). The guide (`docs/user-guide/drawing.md`) covers shapes as data,
+  filling and stroking, the shaping and set operations, fields over pixels,
+  and colouring an index map with one `apply_lut` palette; every example runs
+  in the test suite. `docs/assets/logo/make_logo.py` is now one graph:
+  terraces from `distance_transform`, contour lines as stroked `offset`
+  boundaries, the wordmark as stroked centrelines, stacked by `maximum` and
+  coloured by `apply_lut`. It replaces a per-pixel DataFrame for the distance
+  field and per-channel weighted sums of mask layers.
+
+- **`coordinate_grid(normalized=False)`** (CR-100): an f32 `[H, W, 2]` buffer
+  of each pixel's centre `(x + 0.5, y + 0.5)` (divided by `W`/`H` when
+  `normalized`, per-row capable), for fields over positions. Reads only the
+  input's height and width, so it takes any dtype and channel count, and
+  makes no copy of a view. Its shape is `OpShape::Canvas`, which now carries
+  a channel count (a rasterized mask's 1, a grid's 2). Held to `np.meshgrid`,
+  in the frame of the buffer it follows (a crop before it moves the origin).
+
+- **Contour set operations** (CR-99): `union`, `intersection`, `difference`
+  and `symmetric_difference` combine two contour sets, each read as the union
+  of its regions, into disjoint regions (always a set). Each is a `.contour`
+  accessor (the other side a contour column) and a lazy pipeline op (the
+  other side another contour-domain expression), one engine function behind
+  both; a line on either side is refused. Held to the mask identity —
+  rasterizing `a op b` paints the pixelwise `|`, `&`, `& ~` or `^` of the two
+  sides' masks, exactly on integer shapes — and to inclusion-exclusion and
+  `iou` on float shapes.
+
+- **Contour shaping and line rendering** (CR-98). Four contour ops, each a
+  pipeline op and a `.contour` accessor with one definition:
+  `offset(distance, join="round")` grows (negative: shrinks) a set's regions,
+  read as one union, so the result is always a set; `union_all()` merges them
+  into disjoint regions; `smooth(iterations=1)` is Chaikin corner cutting; and
+  `densify(max_segment_length)` splits each edge into equal parts no longer
+  than the bound. `rasterize` gains `line_width=1.0`, `cap="round"` and
+  `join="round"`: it now strokes a set's open lines (which it used to refuse)
+  and fills its regions, as one union, so `supersample` applies to both.
+  New enums `LineJoin` (`round`, `miter`, `bevel`; a miter limit of 4) and
+  `LineCap` (`round`, `square`, `butt`). Round arcs are polygons within 1/64
+  pixel. Held to distance-band oracles (a round offset or stroke is the set of
+  points within the distance, checked on the mask's own samples), closed-form
+  areas per join and cap, a pure-Python Chaikin, an exact densify
+  construction, and `rasterize(union_all(s)) == rasterize(s)`.
+
+- **Open contours in pipelines; `boundary()` and `close()`** (CR-97). The
+  contour domain carries lines (`is_closed = false`) as well as regions:
+  `source("contour")` reads open rows instead of refusing them, and each
+  contour op behaves as its `.contour` accessor does — `perimeter` measures a
+  line's length, `bounding_box`, `translate`, `scale` (not about a centroid)
+  and `simplify` keep it a line, `convex_hull` makes a region, and `area`,
+  `centroid`, `largest` and `rasterize` refuse it with the accessors' message.
+  `boundary()` gives a region's rings as lines (always a set); `close()` joins
+  a line's ends into a region. Both are also `.contour` accessors.
+
+- **`rasterize(..., supersample=n)`** (CR-96): anti-aliased masks. Each pixel
+  samples its `n x n` sub-pixel centres and is painted between `background` and
+  `fill_value` by the fraction inside (rounded half away from zero), for `n`
+  from 1 to 16 (per-row capable). The default of 1 is the pixel-centre rule,
+  byte for byte. Not the `anti_alias=` removed earlier, which was accepted and
+  ignored: held to matplotlib's point-in-polygon on the same samples, and the
+  covered area to `area()` (exactly on integer edges, within a band that
+  shrinks as `1 / n` otherwise).
+
+- **`apply_lut(table, dtype="u8")`** (CR-95): each u8/u16 value read as a row
+  index into `table`. Rows of one entry map every element in place on any
+  channel count (`cv2.LUT`); rows of `K` entries take a single-channel image
+  to `K` channels, a palette. Entries are stored as `dtype` (any of the ten)
+  and must fit it, which is checked when the pipeline is built, as are ragged
+  rows and float input. A value with no row is an error for its row (so
+  `on_error("null")` nulls just that row); clamp with `clamp(0, n - 1,
+  out_dtype=...)` first to send larger values to the last row. Each entry
+  accepts an expression.
+
+- **`footprint="disk"` on `erode`, `dilate`, `morphology_gradient`,
+  `morphology_open` and `morphology_close`** (CR-94): the pixels within
+  Euclidean distance `ksize // 2` of the centre, edges replicated, for round
+  rather than square morphology on any dtype. The default stays `"square"`,
+  byte for byte. With a disk, `iterations` applies it that many times (two
+  disks do not compose into one). Held to scipy's `grey_erosion`/
+  `grey_dilation` with a disk footprint and, on masks, to the distance
+  transform. `footprint` accepts an expression.
+
+- **`distance_transform(signed=False)`** (CR-93): the exact Euclidean distance
+  transform of a single-channel mask, as an f32 image of the same shape.
+  Unsigned, each non-zero pixel holds its distance to the nearest zero pixel,
+  centre to centre — what `cv2.distanceTransform(DIST_L2, DIST_MASK_PRECISE)`
+  and `scipy.ndimage.distance_transform_edt` compute: exactly scipy's
+  distances, correctly rounded to f32 (OpenCV's can be one ulp off). `signed=True` gives the distance to the mask's pixel-edge
+  boundary (the one `extract_contours` traces), negative inside, matching
+  `.point.signed_distance_to_contour`. A class with no pixel at all is
+  infinitely far (`±inf`), where scipy and OpenCV return arbitrary finite
+  values. `signed` accepts an expression.
+
+- **A logo, drawn by polars-cv itself** (`polars-cv/docs/assets/logo/`). A
+  polar bear is sketched from overlapping ellipses, fused with `blur` +
+  `threshold` and traced back to a low-poly outline with `extract_contours` +
+  `simplify`; `.point.signed_distance_to_contour` over a pixel-per-row
+  DataFrame then gives a distance field that thresholds into topographic
+  terraces and contour lines. The wordmark is built from contour primitives.
+  `make_logo.py` regenerates `polars-cv-logo.png` (`--stages` also writes the
+  bear's construction stages).
+
 - **Each output of a multi-output sink takes its own sink parameters.** A
   dict `sink()` value may be `(format, {params})`:
   `merged.sink({"x": ("array", {"shape": [224, 224, 3]}), "thumb": ("jpeg",
@@ -20,6 +122,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **`target/debug` no longer grows without bound** (CR-104, development only).
+  The disk filled twice in one session; measured, three causes were
+  avoidable. The workspace's own crates keep debuginfo inline
+  (`split-debuginfo = "off"` per package, the polars stack keeping its
+  sidecars): each incremental rebuild had written its `.dwo` files under new
+  names and cargo never deletes the old (~79,000 files, ~12 GB). A rebuild after
+  a plugin edit is ~10 s, against ~11.5 s before (and ~21 s with debuginfo
+  inline for the whole stack, which the profile's comment records). view-buffer's
+  31 integration-test executables (~4 GB, each relinked on every change) are
+  one, `tests/it/`. The SessionStart hook cleans `target/` when `rustc -vV`
+  changes, since a new stable orphans every artifact (~5 GB here). polars-cv's
+  `polars` dev-dependency is gone, so its Rust tests run against the polars
+  features the plugin ships. `test_build_efficiency.py` guards each.
+
 - **The README is shorter and leads with one decode per image.** Its first
   example now reads each file once and sinks both outputs from one graph; the
   figure's top row is one multi-output graph, so its "one decode" label is
@@ -28,6 +144,35 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   linked guides and `benchmarks/`.
 
 ### Fixed
+
+- **A line that returns to its first point is stroked as a loop.** `geo`
+  strokes every line string as an open path, so `rasterize(line_width=)`
+  capped a loop's start instead of turning it like its other corners: a
+  `butt` cap left the corner missing, a `round` one rounded it. Found
+  rebuilding the logo, where each bowl of the wordmark showed a nick; a loop
+  is now stroked as a closed path (`i_overlay`, under `geo`, which view-buffer
+  now names directly).
+
+- **A non-finite float literal is refused by name** (CR-103). JSON has no NaN
+  or infinity, so `simplify(float("nan"))` — any op or geometry accessor —
+  failed as the decoder's "expected value at line 1 column 41". The literal is
+  now refused where it is encoded, as `simplify(tolerance=): nan is not a
+  finite number ...`, with the position of a list element. A `bound` field
+  (`histogram(bins=)` edges) still takes infinities, and a value passed per
+  row through an expression reaches the op's own check, as before.
+
+- Two parity references claimed inputs they do not model, failing the deep
+  lane: `apply_lut`'s strategy read a channel axis a rank-2 buffer (after
+  `channel_select`) lacks, and `canny`'s compared a 5-channel image against
+  `cv2.Canny` on its first three channels, while the engine (as documented)
+  takes the strongest gradient over every colour channel. The `canny`
+  reference now reads colour channels by the engine's one alpha rule and is
+  compared only where `cv2.Canny` applies (one or three colour channels).
+
+- The parity suite's per-row parameters now encode nested lists level by
+  level, so an `apply_lut` table varying by row passes one expression per
+  entry; it turned a whole table row (whose length is structural) into one
+  expression, which failed the deep lane.
 
 - **How many threads a call uses is measured, not raced.** Before a call's
   first row range (about 300 image rows) finished, the plugin read a row's

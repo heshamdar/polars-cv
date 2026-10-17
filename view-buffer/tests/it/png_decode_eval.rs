@@ -6,7 +6,7 @@
 //! at 256²/512²/1024², RGB8/RGBA8/Gray8.
 //!
 //! Run with:
-//!   cargo test -p view-buffer --release --test png_decode_eval -- --ignored --nocapture
+//!   cargo test -p view-buffer --release --test it png_decode_eval:: -- --ignored --nocapture
 //!
 //! Decision gate (from the approved plan): adopt zune-png behind a feature
 //! only if its geomean speedup on the 8-bit RGB/RGBA cells is ≥ 1.3×.

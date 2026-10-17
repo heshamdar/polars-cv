@@ -39,3 +39,21 @@ debug = 1
 # Keep debuginfo in sidecar files instead of the object/cdylib, so the final
 # link of the large plugin .so does not have to copy it every rebuild.
 split-debuginfo = "unpacked"
+
+# ...except for the workspace's own crates, which keep theirs inline. They are
+# the crates that rebuild incrementally, and each incremental rebuild writes
+# its sidecars under new names while cargo never deletes the old: a session of
+# edits left ~79,000 stale `.dwo` files (about 12 GB) in target/debug/deps.
+# The dependencies compile once per configuration and leak nothing. Inline,
+# our crates' line tables are a small copy at link time: measured, a rebuild
+# after a plugin edit took ~10 s against ~11.5 s all-unpacked (and ~21 s with
+# `off` for the whole stack), the .so 453 MB against 403 MB.
+# `test_build_efficiency.py` holds every workspace member to it.
+[profile.dev.package.view-buffer]
+split-debuginfo = "off"
+
+[profile.dev.package.polars-cv]
+split-debuginfo = "off"
+
+[profile.dev.package.polars-cv-macros]
+split-debuginfo = "off"

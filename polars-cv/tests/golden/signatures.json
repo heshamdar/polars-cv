@@ -72,6 +72,13 @@
     "False"
    ]
   ],
+  "boundary": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "boundary_distances": [
    [
     "self",
@@ -102,6 +109,13 @@
    ]
   ],
   "centroid": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "close": [
    [
     "self",
     "POSITIONAL_OR_KEYWORD",
@@ -208,7 +222,31 @@
     "None"
    ]
   ],
+  "densify": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "max_segment_length",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "dice": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "difference": [
    [
     "self",
     "POSITIONAL_OR_KEYWORD",
@@ -240,6 +278,18 @@
    ]
   ],
   "hausdorff_distance": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "intersection": [
    [
     "self",
     "POSITIONAL_OR_KEYWORD",
@@ -319,6 +369,23 @@
     "height",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ]
+  ],
+  "offset": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "distance",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "join",
+    "KEYWORD_ONLY",
+    "'round'"
    ]
   ],
   "on_error": [
@@ -432,6 +499,30 @@
     ""
    ]
   ],
+  "smooth": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "iterations",
+    "KEYWORD_ONLY",
+    "1"
+   ]
+  ],
+  "symmetric_difference": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "to_absolute": [
    [
     "self",
@@ -474,6 +565,25 @@
    ],
    [
     "dy",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "union": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "union_all": [
+   [
+    "self",
     "POSITIONAL_OR_KEYWORD",
     ""
    ]
@@ -588,6 +698,23 @@
     "False"
    ]
   ],
+  "apply_lut": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "table",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "dtype",
+    "KEYWORD_ONLY",
+    "'u8'"
+   ]
+  ],
   "apply_mask": [
    [
     "self",
@@ -700,6 +827,13 @@
    ],
    [
     "sigma",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "boundary": [
+   [
+    "self",
     "POSITIONAL_OR_KEYWORD",
     ""
    ]
@@ -841,6 +975,13 @@
     ""
    ]
   ],
+  "close": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "convert_color": [
    [
     "self",
@@ -887,6 +1028,18 @@
     "'replicate'"
    ]
   ],
+  "coordinate_grid": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "normalized",
+    "KEYWORD_ONLY",
+    "False"
+   ]
+  ],
   "crop": [
    [
     "self",
@@ -914,6 +1067,30 @@
     "None"
    ]
   ],
+  "densify": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "max_segment_length",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "difference": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "dilate": [
    [
     "self",
@@ -929,6 +1106,23 @@
     "iterations",
     "KEYWORD_ONLY",
     "1"
+   ],
+   [
+    "footprint",
+    "KEYWORD_ONLY",
+    "'square'"
+   ]
+  ],
+  "distance_transform": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "signed",
+    "KEYWORD_ONLY",
+    "False"
    ]
   ],
   "divide": [
@@ -965,6 +1159,11 @@
     "iterations",
     "KEYWORD_ONLY",
     "1"
+   ],
+   [
+    "footprint",
+    "KEYWORD_ONLY",
+    "'square'"
    ]
   ],
   "extract_contours": [
@@ -1066,6 +1265,18 @@
     "output",
     "KEYWORD_ONLY",
     "'buckets'"
+   ]
+  ],
+  "intersection": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
    ]
   ],
   "invert": [
@@ -1189,6 +1400,11 @@
     "ksize",
     "KEYWORD_ONLY",
     "3"
+   ],
+   [
+    "footprint",
+    "KEYWORD_ONLY",
+    "'square'"
    ]
   ],
   "morphology_gradient": [
@@ -1201,6 +1417,11 @@
     "ksize",
     "KEYWORD_ONLY",
     "3"
+   ],
+   [
+    "footprint",
+    "KEYWORD_ONLY",
+    "'square'"
    ]
   ],
   "morphology_open": [
@@ -1213,6 +1434,11 @@
     "ksize",
     "KEYWORD_ONLY",
     "3"
+   ],
+   [
+    "footprint",
+    "KEYWORD_ONLY",
+    "'square'"
    ]
   ],
   "multiply": [
@@ -1259,6 +1485,23 @@
     "out_dtype",
     "KEYWORD_ONLY",
     "None"
+   ]
+  ],
+  "offset": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "distance",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "join",
+    "KEYWORD_ONLY",
+    "'round'"
    ]
   ],
   "on_error": [
@@ -1415,6 +1658,26 @@
     "background",
     "KEYWORD_ONLY",
     "0"
+   ],
+   [
+    "supersample",
+    "KEYWORD_ONLY",
+    "1"
+   ],
+   [
+    "line_width",
+    "KEYWORD_ONLY",
+    "1.0"
+   ],
+   [
+    "cap",
+    "KEYWORD_ONLY",
+    "'round'"
+   ],
+   [
+    "join",
+    "KEYWORD_ONLY",
+    "'round'"
    ]
   ],
   "reciprocal": [
@@ -1848,6 +2111,18 @@
     ""
    ]
   ],
+  "smooth": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "iterations",
+    "KEYWORD_ONLY",
+    "1"
+   ]
+  ],
   "sobel": [
    [
     "self",
@@ -1922,6 +2197,18 @@
     ""
    ]
   ],
+  "symmetric_difference": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "threshold": [
    [
     "self",
@@ -1992,6 +2279,25 @@
    ]
   ],
   "trunc": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "union": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "other",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "union_all": [
    [
     "self",
     "POSITIONAL_OR_KEYWORD",
@@ -2087,6 +2393,23 @@
     ""
    ]
   ],
+  "apply_lut": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "table",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "dtype",
+    "KEYWORD_ONLY",
+    "'u8'"
+   ]
+  ],
   "area": [
    [
     "self",
@@ -2134,6 +2457,13 @@
    ],
    [
     "sigma",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "boundary": [
+   [
+    "self",
     "POSITIONAL_OR_KEYWORD",
     ""
    ]
@@ -2263,6 +2593,13 @@
     ""
    ]
   ],
+  "close": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "convert_color": [
    [
     "self",
@@ -2309,6 +2646,18 @@
     "'replicate'"
    ]
   ],
+  "coordinate_grid": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "normalized",
+    "KEYWORD_ONLY",
+    "False"
+   ]
+  ],
   "crop": [
    [
     "self",
@@ -2343,6 +2692,18 @@
     ""
    ]
   ],
+  "densify": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "max_segment_length",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
   "dilate": [
    [
     "self",
@@ -2358,6 +2719,23 @@
     "iterations",
     "KEYWORD_ONLY",
     "1"
+   ],
+   [
+    "footprint",
+    "KEYWORD_ONLY",
+    "'square'"
+   ]
+  ],
+  "distance_transform": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "signed",
+    "KEYWORD_ONLY",
+    "False"
    ]
   ],
   "equalize_histogram": [
@@ -2382,6 +2760,11 @@
     "iterations",
     "KEYWORD_ONLY",
     "1"
+   ],
+   [
+    "footprint",
+    "KEYWORD_ONLY",
+    "'square'"
    ]
   ],
   "explain": [
@@ -2594,6 +2977,11 @@
     "ksize",
     "KEYWORD_ONLY",
     "3"
+   ],
+   [
+    "footprint",
+    "KEYWORD_ONLY",
+    "'square'"
    ]
   ],
   "morphology_gradient": [
@@ -2606,6 +2994,11 @@
     "ksize",
     "KEYWORD_ONLY",
     "3"
+   ],
+   [
+    "footprint",
+    "KEYWORD_ONLY",
+    "'square'"
    ]
   ],
   "morphology_open": [
@@ -2618,6 +3011,11 @@
     "ksize",
     "KEYWORD_ONLY",
     "3"
+   ],
+   [
+    "footprint",
+    "KEYWORD_ONLY",
+    "'square'"
    ]
   ],
   "neg": [
@@ -2652,6 +3050,23 @@
     "out_dtype",
     "KEYWORD_ONLY",
     "None"
+   ]
+  ],
+  "offset": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "distance",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "join",
+    "KEYWORD_ONLY",
+    "'round'"
    ]
   ],
   "on_error": [
@@ -2803,6 +3218,26 @@
     "background",
     "KEYWORD_ONLY",
     "0"
+   ],
+   [
+    "supersample",
+    "KEYWORD_ONLY",
+    "1"
+   ],
+   [
+    "line_width",
+    "KEYWORD_ONLY",
+    "1.0"
+   ],
+   [
+    "cap",
+    "KEYWORD_ONLY",
+    "'round'"
+   ],
+   [
+    "join",
+    "KEYWORD_ONLY",
+    "'round'"
    ]
   ],
   "reciprocal": [
@@ -3209,6 +3644,18 @@
     ""
    ]
   ],
+  "smooth": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "iterations",
+    "KEYWORD_ONLY",
+    "1"
+   ]
+  ],
   "sobel": [
    [
     "self",
@@ -3383,6 +3830,13 @@
    ]
   ],
   "trunc": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ]
+  ],
+  "union_all": [
    [
     "self",
     "POSITIONAL_OR_KEYWORD",

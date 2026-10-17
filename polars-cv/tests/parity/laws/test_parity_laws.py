@@ -305,16 +305,22 @@ def test_smoothing_a_constant_image_leaves_it_constant(
 
 @property_lanes(spec=image_specs(channels=(1,), max_side=24), data=st.data())
 def test_morphology_orders_pointwise(spec, data: st.DataObject) -> None:
-    """erode <= x <= dilate and open <= x <= close, at every pixel.
+    """erode <= x <= dilate and open <= x <= close, at every pixel, for
+    either footprint (each holds its centre).
 
     A NaN in a window makes the extreme NaN (the one ordering rule), so a
     position where either side is NaN orders nothing and is skipped."""
     image = spec.render()
-    k = data.draw(st.sampled_from([1, 3, 5]), label="ksize")
-    eroded = _run(image, [Step("erode", {"ksize": k, "iterations": 1})])
-    dilated = _run(image, [Step("dilate", {"ksize": k, "iterations": 1})])
-    opened = _run(image, [Step("morphology_open", {"ksize": k})])
-    closed = _run(image, [Step("morphology_close", {"ksize": k})])
+    k = data.draw(st.sampled_from([1, 3, 5, 7]), label="ksize")
+    fp = data.draw(st.sampled_from(["square", "disk"]), label="footprint")
+    eroded = _run(
+        image, [Step("erode", {"ksize": k, "iterations": 1, "footprint": fp})]
+    )
+    dilated = _run(
+        image, [Step("dilate", {"ksize": k, "iterations": 1, "footprint": fp})]
+    )
+    opened = _run(image, [Step("morphology_open", {"ksize": k, "footprint": fp})])
+    closed = _run(image, [Step("morphology_close", {"ksize": k, "footprint": fp})])
     for label, low, high in (
         ("erode <= x", eroded, image),
         ("x <= dilate", image, dilated),
@@ -331,6 +337,136 @@ def test_morphology_orders_pointwise(spec, data: st.DataObject) -> None:
             raise ParityFailure(
                 f"{label} fails at {where}: {low[where]} > {high[where]}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Lookup tables
+# ---------------------------------------------------------------------------
+
+
+@property_lanes(
+    spec=image_specs(dtypes=("u8",), max_side=16),
+    target=st.sampled_from(tuple(DTYPES)),
+)
+def test_the_identity_table_is_a_cast(spec, target: str) -> None:
+    """``apply_lut([[0], [1], ...], dtype=d)`` is ``cast(d)`` wherever the
+    value fits the target: every value is its own entry."""
+    image = spec.render()
+    info = np.iinfo(image.dtype)
+    target_dtype = DTYPES[target]
+    top = (
+        int(info.max)
+        if target_dtype.kind == "f"
+        else min(int(info.max), int(np.iinfo(target_dtype).max))
+    )
+    if int(image.max()) > top:
+        event("a value past the target's range")
+        return
+    table = [[i] for i in range(top + 1)]
+    _agree(
+        f"identity table to {target} vs cast",
+        _run(image, [Step("apply_lut", {"table": table, "dtype": target})]),
+        _run(image, [Step("cast", {"dtype": target})]),
+    )
+
+
+@property_lanes(
+    spec=image_specs(dtypes=("u8",), channels=(1, 3), max_side=16),
+    seed=st.integers(0, 2**32 - 1),
+)
+def test_two_tables_compose_into_one(spec, seed: int) -> None:
+    """``lut(lut(x, A), B) == lut(x, B[A])``: a table read is a function of
+    the value alone."""
+    image = spec.render()
+    rng = np.random.default_rng(seed)
+    a = rng.integers(0, 256, 256)
+    b = rng.integers(-1000, 1000, 256)
+    twice = _run(
+        image,
+        [
+            Step("apply_lut", {"table": [[int(v)] for v in a], "dtype": "u8"}),
+            Step("apply_lut", {"table": [[int(v)] for v in b], "dtype": "i16"}),
+        ],
+    )
+    once = _run(
+        image, [Step("apply_lut", {"table": [[int(v)] for v in b[a]], "dtype": "i16"})]
+    )
+    _agree("lut(lut(x, A), B) vs lut(x, B[A])", twice, once)
+
+
+#: The grid's symmetries that keep a square pixel lattice: the two flips and
+#: the transpose. A Euclidean distance commutes with each exactly.
+_GRID_SYMMETRIES = (
+    Step("flip", {"axes": [0]}),
+    Step("flip", {"axes": [1]}),
+    Step("transpose", {"axes": [1, 0, 2]}),
+)
+
+_MASKS = image_specs(channels=(1,), max_side=24, contents=("mask",))
+
+
+@property_lanes(spec=_MASKS, data=st.data())
+def test_distance_transform_commutes_with_the_grid_symmetries(
+    spec, data: st.DataObject
+) -> None:
+    """dt(g(x)) == g(dt(x)) for every flip and the transpose, exactly."""
+    image = spec.render()
+    symmetry = data.draw(st.sampled_from(_GRID_SYMMETRIES), label="symmetry")
+    dt = Step(
+        "distance_transform", {"signed": data.draw(st.booleans(), label="signed")}
+    )
+    _agree(
+        f"{symmetry.method}{symmetry.params} then dt vs dt then it",
+        _run(image, [symmetry, dt]),
+        _run(image, [dt, symmetry]),
+    )
+
+
+@property_lanes(
+    spec=image_specs(dtypes=("u8",), channels=(1,), max_side=24, contents=("mask",)),
+    data=st.data(),
+)
+def test_disk_morphology_is_the_distance_transform_thresholded(
+    spec, data: st.DataObject
+) -> None:
+    """On a mask, a disk dilation sets exactly the pixels within ``r`` of a set
+    pixel, and a disk erosion keeps exactly those more than ``r`` from an unset
+    one: the morphology and the distance transform, two kernels, agree."""
+    image = spec.render()
+    k = data.draw(st.sampled_from([1, 3, 5, 7, 9]), label="ksize")
+    r = k // 2
+    mask = [Step("threshold", {"value": 0.5})]
+    dilated = _run(image, [*mask, Step("dilate", {"ksize": k, "footprint": "disk"})])
+    eroded = _run(image, [*mask, Step("erode", {"ksize": k, "footprint": "disk"})])
+    # Distance to the nearest set pixel: the transform of the inverted mask.
+    to_set = _run(image, [*mask, Step("invert", {}), Step("distance_transform", {})])
+    to_unset = _run(image, [*mask, Step("distance_transform", {})])
+    _agree("dilate(disk) vs dt(inverted) <= r", dilated != 0, to_set <= r)
+    _agree("erode(disk) vs dt > r", eroded != 0, to_unset > r)
+
+
+@property_lanes(spec=_MASKS, data=st.data())
+def test_distance_transform_is_one_lipschitz(spec, data: st.DataObject) -> None:
+    """Neighbouring pixels differ by at most their distance apart: 1 across
+    an edge, sqrt(2) across a corner. Holds for the signed form too, across
+    the boundary (-0.5 to 0.5). Infinite rows (one class only) skip."""
+    image = spec.render()
+    signed = data.draw(st.booleans(), label="signed")
+    out = _run(image, [Step("distance_transform", {"signed": signed})])
+    plane = out[:, :, 0].astype(np.float64)
+    if not np.isfinite(plane).all():
+        event("one class only: infinitely far")
+        return
+    for label, a, b, bound in (
+        ("vertical", plane[1:, :], plane[:-1, :], 1.0),
+        ("horizontal", plane[:, 1:], plane[:, :-1], 1.0),
+        ("diagonal", plane[1:, 1:], plane[:-1, :-1], np.sqrt(2)),
+        ("anti-diagonal", plane[1:, :-1], plane[:-1, 1:], np.sqrt(2)),
+    ):
+        jump = np.abs(a - b)
+        if jump.size and jump.max() > bound + 1e-5:
+            where = tuple(np.argwhere(jump > bound + 1e-5)[0])
+            raise ParityFailure(f"{label} step {jump[where]} > {bound} at {where}")
 
 
 @property_lanes(

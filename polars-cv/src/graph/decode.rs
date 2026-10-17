@@ -51,10 +51,10 @@ pub(crate) fn decode_source_row(
     };
     let buffer = |buf| Some(NodeOutput::from_buffer(buf));
     match source {
-        // The column's contour set; a mask is the `rasterize` op that
-        // follows, if any.
+        // The column's contour set, lines (`is_closed = false`) and regions
+        // alike; a mask is the `rasterize` op that follows, if any.
         Source::Contour { .. } => crate::geom_columns::ContourColumn::new(series)
-            .row(row)
+            .outlines(row)
             .map(|set| set.map(NodeOutput::from_contours))
             .map_err(|e| format!("Contour decode error: {e}")),
         // `file_path` is fetch + decode: `crate::fetch` reads the bytes the

@@ -30,6 +30,7 @@ from polars_cv._types import (
     NullParamPolicy,
     RowErrorPolicy,
     SlotTable,
+    _literal,
     _to_python,
     normalize_cloud_options,
 )
@@ -98,22 +99,23 @@ def _encode_field(p: "Pipeline", value: Any, ty: "dict[str, Any]", where: str) -
             for i, v in enumerate(value)
         ]
     if kind == "scalar" and ty["py"] == "bound" and not isinstance(value, pl.Expr):
-        return _bound_wire(_to_python(value))
+        return _bound_wire(_to_python(value), where)
     if kind == "scalar" and ty["per_row"]:
-        return p._wire(value)
+        return p._wire(value, where)
     if isinstance(value, pl.Expr):
         msg = f"{where}: {_STRUCTURAL}"
         raise TypeError(msg)
-    return _to_python(value)
+    return _literal(value, where)
 
 
-def _bound_wire(value: Any) -> Any:
+def _bound_wire(value: Any, where: str) -> Any:
     """A ``bound`` (``naming::Bound``: a float that may be infinite) on the
     wire. JSON has no infinity, so an infinite bound is ``"inf"``/``"-inf"``;
-    anything else goes as given, for Rust to accept or refuse."""
+    anything else is a literal (:func:`_literal`: NaN is refused), for Rust
+    to accept or refuse."""
     if isinstance(value, (int, float)) and math.isinf(value):
         return "inf" if value > 0 else "-inf"
-    return value
+    return _literal(value, where)
 
 
 def _is_sequence(value: Any) -> bool:
@@ -234,9 +236,11 @@ class Pipeline(_OpsMixin):
         self._exprs.append(expr)
         return {"$slot": len(self._exprs) - 1}
 
-    def _wire(self, value: Any) -> Any:
+    def _wire(self, value: Any, where: str) -> Any:
         """A per-row argument's wire value: its slot, or the literal."""
-        return self._slot(value) if isinstance(value, pl.Expr) else _to_python(value)
+        return (
+            self._slot(value) if isinstance(value, pl.Expr) else _literal(value, where)
+        )
 
     def _read_node(self, node: "LazyPipelineExpr") -> None:
         """Record *node* as one this pipeline reads by id."""
@@ -902,16 +906,23 @@ class Pipeline(_OpsMixin):
     # --- Morphological Operations ---
 
     @_sugar("erode", "dilate")
-    def morphology_open(self, *, ksize: IntOrExpr = 3) -> "Pipeline":
+    def morphology_open(
+        self, *, ksize: IntOrExpr = 3, footprint: str | pl.Expr = "square"
+    ) -> "Pipeline":
         """
         Morphological opening (erode then dilate).
 
         Removes small bright spots while preserving larger structures.
-        Equivalent to ``.erode(ksize=ksize).dilate(ksize=ksize)``.
+        Equivalent to ``.erode(ksize=ksize, footprint=footprint)
+        .dilate(ksize=ksize, footprint=footprint)``.
 
         Args:
-            ksize: Size of the square structuring element. Must be odd and >= 1.
-                Accepts a Polars expression for per-row dynamic values.
+            ksize: Size of the structuring element (the square's side, the
+                disk's diameter). Must be odd and >= 1. Accepts a Polars
+                expression for per-row dynamic values.
+            footprint: The structuring element: ``"square"`` or ``"disk"``
+                (the pixels within Euclidean distance ``ksize // 2``). Accepts
+                a Polars expression for a per-row choice.
 
         Returns:
             New Pipeline with opening applied.
@@ -921,19 +932,28 @@ class Pipeline(_OpsMixin):
             >>> cleaned = Pipeline().source("image_bytes").grayscale().threshold(128).morphology_open(ksize=3)
             ```
         """
-        return self.erode(ksize=ksize).dilate(ksize=ksize)
+        return self.erode(ksize=ksize, footprint=footprint).dilate(
+            ksize=ksize, footprint=footprint
+        )
 
     @_sugar("dilate", "erode")
-    def morphology_close(self, *, ksize: IntOrExpr = 3) -> "Pipeline":
+    def morphology_close(
+        self, *, ksize: IntOrExpr = 3, footprint: str | pl.Expr = "square"
+    ) -> "Pipeline":
         """
         Morphological closing (dilate then erode).
 
         Fills small dark holes while preserving larger structures.
-        Equivalent to ``.dilate(ksize=ksize).erode(ksize=ksize)``.
+        Equivalent to ``.dilate(ksize=ksize, footprint=footprint)
+        .erode(ksize=ksize, footprint=footprint)``.
 
         Args:
-            ksize: Size of the square structuring element. Must be odd and >= 1.
-                Accepts a Polars expression for per-row dynamic values.
+            ksize: Size of the structuring element (the square's side, the
+                disk's diameter). Must be odd and >= 1. Accepts a Polars
+                expression for per-row dynamic values.
+            footprint: The structuring element: ``"square"`` or ``"disk"``
+                (the pixels within Euclidean distance ``ksize // 2``). Accepts
+                a Polars expression for a per-row choice.
 
         Returns:
             New Pipeline with closing applied.
@@ -943,7 +963,9 @@ class Pipeline(_OpsMixin):
             >>> filled = Pipeline().source("image_bytes").grayscale().threshold(128).morphology_close(ksize=3)
             ```
         """
-        return self.dilate(ksize=ksize).erode(ksize=ksize)
+        return self.dilate(ksize=ksize, footprint=footprint).erode(
+            ksize=ksize, footprint=footprint
+        )
 
     # --- Histogram Equalization ---
 
@@ -1062,9 +1084,13 @@ class Pipeline(_OpsMixin):
         shape: "LazyPipelineExpr | None" = None,
         fill_value: IntOrExpr = 255,
         background: IntOrExpr = 0,
+        supersample: IntOrExpr = 1,
+        line_width: FloatOrExpr = 1.0,
+        cap: str | pl.Expr = "round",
+        join: str | pl.Expr = "round",
     ) -> "Pipeline":
         """
-        Rasterize contours to a binary mask.
+        Rasterize contours to a mask: regions filled, open lines stroked.
 
         A pixel is filled when its centre — ``(x + 0.5, y + 0.5)`` — lies inside
         the contour, boundary included; holes are cut out by the same rule. This
@@ -1078,6 +1104,18 @@ class Pipeline(_OpsMixin):
         fill, and the result does not depend on the set's order. ``fill_value``
         and ``background`` may be inverted; the same region is painted either way.
 
+        ``supersample=n`` anti-aliases: each pixel samples its ``n x n``
+        sub-pixel centres ``(x + (i + 0.5) / n, y + (j + 0.5) / n)`` and is
+        painted ``background + (fill_value - background) * k / n**2`` for the
+        ``k`` inside, rounded half away from zero. ``n = 1`` (the default) is the
+        centre rule above.
+
+        An open contour (``is_closed = False``, a line) is drawn as its stroke:
+        every point within ``line_width / 2`` of it, its ends shaped by ``cap``
+        and its corners by ``join`` (round arcs are polygons within 1/64 pixel
+        of the true arc). The stroke joins the union, so ``supersample``
+        anti-aliases it too. To outline a region, rasterize its ``boundary()``.
+
         Args:
             width: Mask width.
             height: Mask height.
@@ -1086,6 +1124,17 @@ class Pipeline(_OpsMixin):
                 for per-row dynamic values.
             background: Outside value (default 0). Accepts a Polars expression
                 for per-row dynamic values.
+            supersample: Samples per pixel along each axis, 1 to 16 (default 1).
+                Accepts a Polars expression for per-row dynamic values.
+            line_width: The width an open line is stroked at, a finite width > 0
+                (default 1.0); regions are filled whatever it is. Accepts a
+                Polars expression.
+            cap: How a stroked line ends: ``"round"`` (default, a half disc),
+                ``"square"`` (a half square) or ``"butt"`` (flat at its end
+                point). Accepts a Polars expression.
+            join: How a stroked line turns a corner: ``"round"`` (default),
+                ``"miter"`` (cut off past 4 half-widths) or ``"bevel"``.
+                Accepts a Polars expression.
 
         """
         has_explicit = width is not None or height is not None
@@ -1106,7 +1155,13 @@ class Pipeline(_OpsMixin):
             # single-channel output from the op's `fixed:1` channel rule; none
             # of it is re-derived here.
             return self._rasterize(
-                size=[height, width], fill_value=fill_value, background=background
+                size=[height, width],
+                fill_value=fill_value,
+                background=background,
+                supersample=supersample,
+                line_width=line_width,
+                cap=cap,
+                join=join,
             )
 
         from polars_cv.lazy import LazyPipelineExpr
@@ -1116,7 +1171,15 @@ class Pipeline(_OpsMixin):
             raise TypeError(msg)
         # The canvas is the node's: `_encode_field` records it in `_node_refs`,
         # which plans the canvas from its state and makes it an upstream edge.
-        return self._rasterize(size=shape, fill_value=fill_value, background=background)
+        return self._rasterize(
+            size=shape,
+            fill_value=fill_value,
+            background=background,
+            supersample=supersample,
+            line_width=line_width,
+            cap=cap,
+            join=join,
+        )
 
     # --- Validation ---
 

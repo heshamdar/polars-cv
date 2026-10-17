@@ -591,6 +591,31 @@ fn as_f32_mut<S: ViewType>(data: &mut [S]) -> Option<&mut [f32]> {
     })
 }
 
+/// `column[x]` for every element `x` of a u8 or u16 buffer, stored as
+/// `out` by the conversion rule: `apply_lut`'s read (CR-95), through the
+/// same table map the strategy above uses. `column` holds one value per
+/// possible input value (256 or 65536); the caller has checked that every
+/// value present indexes an entry it means.
+pub(crate) fn lookup_column(buf: ViewBuffer, column: &[f64], out: DType) -> ViewBuffer {
+    match buf.dtype() {
+        DType::U8 => lookup_typed::<u8>(buf, column, out),
+        DType::U16 => lookup_typed::<u16>(buf, column, out),
+        other => unreachable!("apply_lut refuses a {other:?} input in validate"),
+    }
+}
+
+fn lookup_typed<S: LutIndex + CastFrom<f64>>(
+    buf: ViewBuffer,
+    column: &[f64],
+    out: DType,
+) -> ViewBuffer {
+    assert_eq!(column.len(), S::DOMAIN, "a table entry per input value");
+    if out == S::DTYPE {
+        return map_owned::<S, _>(buf, &Lut::<S, S>::from_table(convert_slice(column)));
+    }
+    with_dtype!(out, D => map_new(&buf, &Lut::<S, D>::from_table(convert_slice(column))))
+}
+
 /// An element type small enough to enumerate: a table index per value.
 trait LutIndex: ViewType {
     /// How many values the type has.
@@ -638,6 +663,18 @@ struct Lut<S, D> {
     table: Vec<D>,
     channels: usize,
     _source: PhantomData<fn(S)>,
+}
+
+impl<S: LutIndex, D: ViewType> Lut<S, D> {
+    /// One table for every channel: `table[x.index()]`.
+    fn from_table(table: Vec<D>) -> Self {
+        debug_assert_eq!(table.len(), S::DOMAIN);
+        Lut {
+            table,
+            channels: 1,
+            _source: PhantomData,
+        }
+    }
 }
 
 impl<S: LutIndex, D: ViewType + CastFrom<f32>> Lut<S, D> {

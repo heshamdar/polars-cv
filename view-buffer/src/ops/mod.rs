@@ -21,7 +21,7 @@ use std::sync::Arc;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::geometry::Contour;
+use crate::geometry::contour::Outline;
 use crate::ViewBuffer;
 
 pub mod affine;
@@ -33,6 +33,7 @@ pub(crate) mod elementwise;
 pub mod filter;
 pub mod histogram;
 pub mod image;
+pub mod lut;
 pub mod mask;
 pub mod pad;
 pub mod phash;
@@ -51,7 +52,8 @@ pub use compute::{ComputeOp, Normalization, NormalizeMethod};
 pub use dto::ViewDto;
 pub use filter::{BorderMode, ConvolveOp};
 pub use histogram::{HistogramOp, HistogramOutput};
-pub use image::{FilterType, ImageOp, ImageOpKind};
+pub use image::{FilterType, Footprint, ImageOp, ImageOpKind};
+pub use lut::LutOp;
 pub use mask::{apply_mask, validate_mask};
 pub use pad::{PadMode, PadPosition};
 pub use phash::{HashAlgorithm, PerceptualHashOp};
@@ -119,7 +121,7 @@ pub enum NodeOutput {
     /// Array/image data (reference-counted for cheap cloning).
     Buffer(Arc<ViewBuffer>),
     /// Extracted contours (geometry domain).
-    Contours(Arc<Vec<Contour>>),
+    Contours(Arc<Vec<Outline>>),
     /// Single scalar value.
     Scalar(f64),
     /// Multiple scalar values (bbox, centroid, etc.).
@@ -146,7 +148,7 @@ impl NodeOutput {
     }
 
     /// Try to extract contours from this output.
-    pub fn as_contours(&self) -> Option<&Arc<Vec<Contour>>> {
+    pub fn as_contours(&self) -> Option<&Arc<Vec<Outline>>> {
         match self {
             NodeOutput::Contours(contours) => Some(contours),
             _ => None,
@@ -159,7 +161,7 @@ impl NodeOutput {
     }
 
     /// Create a Contours output from a Vec of contours.
-    pub fn from_contours(contours: Vec<Contour>) -> Self {
+    pub fn from_contours(contours: Vec<Outline>) -> Self {
         NodeOutput::Contours(Arc::new(contours))
     }
 

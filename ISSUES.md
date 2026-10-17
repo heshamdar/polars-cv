@@ -42,6 +42,7 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-80 | Extension types | Feature | Opt-in tagged geometry output (`polars_cv.point` / `.contour` / `.bbox`) |
 | CR-81 | Extension types | Decision | Whether any output becomes tagged by default (a major version) |
 | CR-82 | Extension types | Decision | Whether `polars_cv.ndarray` carries `dtype`/`ndim` metadata |
+| CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
@@ -128,6 +129,19 @@ against `main` at `e788d72` that day, and their full text is in git history).
   (portable and AVX2); the table strategy alone is 80 copies of about 2,600
   instructions. Nothing measured slower for it. A table lookup gains nothing
   from AVX2 (scalar loads), so it could skip dispatch if size ever matters.
+
+### CR-102 — Large list fields are slow to build and sink
+
+- **Evidence:** a 65536-row `apply_lut` table (debug build): 0.25 s to
+  append (`_encode_field` per element, then `Plan.push`), 0.9 s to build the
+  sink expression, of which `Plan.to_spec` is 0.36 s over **three** calls,
+  `check_graph` 0.13 s and the JSON round trip 0.1 s. Executing it takes
+  35 ms. A 256-row table is unaffected.
+- **Effect:** users building full u16 tables wait about a second; the parity
+  suite draws `apply_lut` on u8 only to keep the per-push lane's time.
+- **Next:** call `to_spec` once per sink, and give `_encode_field` a fast
+  path for a sequence that holds no expression (one pass, no per-element
+  dispatch). Benchmark both on a release build before and after.
 
 ## Fetch
 
@@ -249,6 +263,33 @@ tagged inputs everywhere. How it works, and why tagging stays opt-in, is in
   concatenating, and the factory must parse and validate it.
   Recommendation: no metadata; adding it later is a dtype change, so decide
   before CR-81.
+
+## Drawing primitives
+
+Planned 2026-10-16 while generating the logo (`polars-cv/docs/assets/logo/`),
+which had to work around each gap below: a pixel-per-row DataFrame for a
+distance field, ten weighted layers per colour channel, a 4× render-and-shrink
+for anti-aliasing, and filled primitives for every stroke. Each item extends
+an existing family or rule where that is cleaner than a new op, reuses an
+engine primitive (`geo` 0.33's `Buffer`/`BooleanOps`/`ChaikinSmoothing`/
+`Densify`, `ops::elementwise`, `scanline_fill`), and is built test-first with
+an independent oracle. All done (CR-93 to CR-101, closed below).
+
+**Decisions (owner, 2026-10-16).**
+1. The pipeline contour domain carries open contours (lines) as well as
+   regions. Region ops refuse a line, with the error the `.contour` accessors
+   already give; `boundary()` and `close()` convert between the two.
+2. An op whose result can split one region into several (`offset`, the boolean
+   ops, `union_all`) always returns a contour set, whatever the input arity.
+3. An `apply_lut` index past the table is a row error; clamping is an explicit
+   `clamp(0, n - 1, out_dtype=...)` before it (`clamp_max` alone promotes to
+   f32, which `apply_lut` refuses).
+4. Signed distance is negative inside, positive outside — as
+   `.point.signed_distance_to_contour` — measured to the pixel-edge boundary
+   `extract_contours` traces.
+5. No built-in colormaps for now: `apply_lut` takes explicit tables.
+6. Line width, cap and join are rendering attributes on `rasterize`; `offset`
+   is geometry on regions only and takes `join` alone.
 
 ## Upstream (Polars)
 
@@ -506,3 +547,14 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 | CR-90 | The parity framework propagated a bound through a wrapping integer cast (gain 1) | Resolved: `gain_for(x, p)` sees the input; a cast that can wrap is discontinuous (0.35.0) |
 | CR-91 | A colour conversion's float bound scaled with its alpha (an infinite alpha made `to_hsv`'s unbuildable, `to_ycbcr`'s infinite) | Resolved: `color_magnitude` scales `to_hsv`, `to_ycbcr` and `grayscale` bounds by the colour channels (0.35.0) |
 | CR-92 | The `to_lab` reference was OpenCV's float Lab, 0.57 off in a* on dark pixels (the engine was exact) | Resolved: Lab by its definition in float64; bound 0.5 -> 0.01 (0.35.0) |
+| CR-93 | `distance_transform(signed=)`: exact Euclidean distance transform | Added (Unreleased): held to scipy exactly and OpenCV within one ulp, plus parity laws |
+| CR-94 | Disk structuring element for morphology | Added (Unreleased) as `footprint="disk"` (not `shape=`, which `rasterize` uses for a canvas); a min/max over row spans reusing the square's row pass, since greyscale input rules out thresholding the distance transform, which became the oracle instead |
+| CR-95 | `apply_lut(table, dtype=)`: per-value tables and 1→K palettes | Added (Unreleased) as its own `GraphStep` family (`LutOp`), not a `ComputeOp`: a value past the table is a row error, which only an `execute -> Result` can report; the read reuses the element-wise engine's `Lut` map |
+| CR-96 | `rasterize(supersample=)`: anti-aliased coverage | Added (Unreleased): the scanline filler now works per sample row (memory one sample row, not an n²-larger canvas), and `n = 1` reduces to the old formulas exactly |
+| CR-101 | Acceptance: the logo on the drawing ops, and a drawing guide | Done (Unreleased): `make_logo.py` is one graph (index map + `apply_lut` palette; terraces from `distance_transform`, rings as stroked `offset` boundaries, stroked glyphs); `docs/user-guide/drawing.md`, its examples run by `test_drawing_guide.py`. Found and fixed: a loop line was stroked as an open path, capped at its start |
+| CR-100 | `coordinate_grid(normalized=)` | Added (Unreleased): an `ImageOpKind` whose shape is `OpShape::Canvas { of: 0, channels: 2 }` (the canvas rule, given a channel count); declared `StridePreserving`, not the planned `PacksOwnRows`, which the copy census refuses (it reads no element, so packs nothing); `Global`, so no crop crosses it |
+| CR-104 | `target/debug` grew until the disk filled | Fixed (Unreleased): per-package `split-debuginfo = "off"` for the workspace crates (stale incremental `.dwo` sidecars, ~12 GB); one view-buffer test binary (`tests/it/`, was 31, ~4 GB); the SessionStart hook cleans `target/` on a `rustc -vV` change (~5 GB per toolchain). The test build's second polars stack stays: pyo3 sits under every polars crate, and the extension build (no libpython) and test executables (libpython) must differ |
+| CR-103 | A non-finite float literal failed at the JSON wire with "expected value at line 1 column N" | Fixed (Unreleased): `_types._literal`, the one place literals reach the wire (ops, sources and geometry calls), refuses one naming the parameter; `bound` fields keep their infinities |
+| CR-99 | Contour boolean ops (`union`, `intersection`, `difference`, `symmetric_difference`) | Added (Unreleased): `transforms::boolean` behind a lazy-only `GraphOp` role (`Role::Regions`, node operand) and `ContourFn` accessors (column operand); each side read as its regions' union |
+| CR-98 | Contour shaping (`offset`, `union_all`, `smooth`, `densify`) and line rendering in `rasterize` | Added (Unreleased): one engine function per op in `geometry::transforms` (on `geo`'s `Buffer`, `unary_union`, `ChaikinSmoothing`, `Densify`), read by the pipeline op and its accessor alike; `rasterize_outlines` fills regions and strokes lines into one union; arcs within `ARC_TOLERANCE` (1/64 px), miter limit 4 |
+| CR-97 | Open contours in the pipeline contour domain; `boundary()` / `close()` | Added (Unreleased): `NodeOutput::Contours` carries `Outline`; `Outline::region` is the one region rule, read by the pipeline ops and the `.contour` column reader alike |

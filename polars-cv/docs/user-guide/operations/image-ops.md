@@ -370,6 +370,90 @@ Pipeline().source("image_bytes").grayscale().threshold(128).morphology_gradient(
 
 **Common workflow:** `threshold() → erode() → dilate() → extract_contours()`.
 
+### Footprint
+
+Every morphology op takes `footprint="square"` (the default, a `ksize × ksize`
+square) or `footprint="disk"`: the pixels within Euclidean distance
+`ksize // 2` of the centre, so shapes grow and shrink round rather than
+square.
+
+```python
+# Round dilation by 4 pixels
+Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=9, footprint="disk")
+```
+
+With a disk, `iterations=n` applies the disk `n` times; unlike squares, two
+disks do not add up to one larger disk, so for a single round offset of `r`
+use `ksize=2 * r + 1` with one iteration. On a mask, a disk dilation by `r`
+equals `distance_transform()` of the inverted mask thresholded at `r`.
+
+## Distance Transform
+
+The exact Euclidean distance transform of a single-channel mask, as an `f32`
+image of the same shape. A pixel is foreground when it is non-zero.
+
+```python
+# Each foreground pixel's distance to the nearest background pixel (0 on the background)
+Pipeline().source("image_bytes").grayscale().threshold(128).distance_transform()
+
+# Signed distance to the mask's boundary: negative inside, positive outside
+Pipeline().source("image_bytes").grayscale().threshold(128).distance_transform(signed=True)
+```
+
+Unsigned distances are centre to centre, as `cv2.distanceTransform(DIST_L2,
+DIST_MASK_PRECISE)` and `scipy.ndimage.distance_transform_edt` compute them.
+Signed distances are measured to the pixel edges `extract_contours` traces
+(`±(d - 0.5)` for the centre distance `d` to the nearest pixel of the other
+class), the same convention as `.point.signed_distance_to_contour`. If a class
+has no pixel at all, the distance to it is infinite (`±inf`).
+
+Thresholding a distance gives offsets of any radius: `distance_transform()
+.threshold(r)` keeps the pixels more than `r` from the background.
+
+## Coordinate Grid
+
+`coordinate_grid(normalized=False)` gives the image's pixel coordinates: an
+f32 `[H, W, 2]` buffer holding each pixel's centre `(x + 0.5, y + 0.5)` — the
+point `rasterize` samples — or `((x + 0.5) / W, (y + 0.5) / H)` when
+`normalized`. It reads only the height and width, never the values, so it
+takes any dtype and channel count. Coordinates are in the frame of the buffer
+it follows: after a crop they start at the crop's corner.
+
+With ordinary ops it builds fields over positions:
+
+```python
+# Squared distance from (32, 32), per axis
+dx2_dy2 = (
+    Pipeline().source("image_bytes")
+    .coordinate_grid()
+    .add_constant(-32.0)
+    .square()
+)
+```
+
+## Lookup Tables
+
+`apply_lut(table, dtype=)` reads each u8 or u16 value as a row index into
+`table`. Rows of one entry map every element in place, on any channel count;
+rows of `K` entries turn a single-channel image into `K` channels, a palette.
+
+```python
+# Invert through a table (one entry per value, every channel)
+Pipeline().source("image_bytes", dtype="u8").apply_lut([[255 - v] for v in range(256)])
+
+# A blue-to-red palette over a grayscale image: [H, W, 1] -> [H, W, 3]
+Pipeline().source("image_bytes").grayscale().apply_lut([[v, 0, 255 - v] for v in range(256)])
+
+# Six terraces as float32 values
+Pipeline().source("image_bytes").grayscale().apply_lut([[0.0], [0.2], [0.4], [0.6], [0.8], [1.0]], dtype="f32")
+```
+
+A value with no row is an error for its row. To send larger values to the
+last row, clamp first while keeping the dtype:
+`.clamp(0, len(table) - 1, out_dtype="u8")` (`clamp_max` alone promotes to
+`f32`, which `apply_lut` refuses). Float input must be scaled, rounded and cast
+to u8 or u16 first.
+
 ## Affine Transforms
 
 Apply arbitrary 2x3 affine transformations. All methods in this family share the same Rust execution code path. Each one resamples the image, so consecutive affine ops run one after another (they are not composed into a single warp); build the combined matrix yourself and call `warp_affine` once when you want a single interpolation pass. The matrix uses the **forward-mapping** convention (same as OpenCV `warpAffine`): the kernel inverts it internally for interpolation.

@@ -626,9 +626,11 @@ impl CompiledGraph {
             GraphStep::Buffer(_)
             | GraphStep::Geometry(_)
             | GraphStep::Histogram(_)
+            | GraphStep::Lut(_)
             | GraphStep::PerceptualHash(_) => false,
             GraphStep::Graph(graph) => match graph.role() {
                 Role::Binary(..)
+                | Role::Regions(..)
                 | Role::ApplyMask { .. }
                 | Role::ChannelMerge { .. }
                 | Role::ExtractShape
@@ -895,6 +897,25 @@ impl CompiledGraph {
                                     .map_err(|e| format!("{}: {e}", histogram_op.name()))?;
                                 current_output = NodeOutput::from_buffer(result);
                             }
+                            GraphStep::Lut(lut_op) => {
+                                current_output =
+                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                let current_buf = Self::step_buffer_operand(
+                                    &current_output,
+                                    graph_step.as_ref(),
+                                    "ApplyLut",
+                                )?;
+                                graph_step
+                                    .validate_concrete(
+                                        &[current_buf.shape()],
+                                        &[current_buf.dtype()],
+                                    )
+                                    .map_err(|e| format!("apply_lut: {e}"))?;
+                                let result = lut_op
+                                    .execute(&current_buf)
+                                    .map_err(|e| format!("apply_lut: {e}"))?;
+                                current_output = NodeOutput::from_buffer(result);
+                            }
                             GraphStep::PerceptualHash(phash_op) => {
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
@@ -948,6 +969,20 @@ impl CompiledGraph {
                                         .map_err(|e| format!("{}: {e}", op.name()))?;
                                     let result = op.execute(&current_buf, &other_buf);
                                     current_output = NodeOutput::from_buffer(result);
+                                }
+                                Role::Regions(region_op, other) => {
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let Some(other_output) =
+                                        self.operand(node_outputs, &other.0, region_op.name())?
+                                    else {
+                                        continue 'nodes;
+                                    };
+                                    current_output = super::encode::execute_region_op(
+                                        region_op,
+                                        &current_output,
+                                        other_output,
+                                    )?;
                                 }
                                 Role::ApplyMask { mask, invert } => {
                                     current_output =
@@ -1756,10 +1791,12 @@ mod tests {
             GraphStep::Geometry(_) => "Geometry",
             GraphStep::Reduction(_) => "Reduction",
             GraphStep::Histogram(_) => "Histogram",
+            GraphStep::Lut(_) => "Lut",
             GraphStep::PerceptualHash(_) => "PerceptualHash",
             // A graph op is named by its role: each executes differently.
             GraphStep::Graph(graph) => match graph.role() {
                 Role::Binary(..) => "Binary",
+                Role::Regions(..) => "Regions",
                 Role::ApplyMask { .. } => "ApplyMask",
                 Role::ChannelMerge { .. } => "ChannelMerge",
                 Role::ExtractShape => "ExtractShape",
@@ -1996,6 +2033,22 @@ mod tests {
         assert_eq!(counts.dtype(), &DataType::UInt64);
         assert_eq!(counts.sum::<u64>().unwrap(), 4);
 
+        // Lut: a 2-entry palette over a [2, 2] u8 buffer -> [2, 2, 2].
+        let indices = ViewBuffer::from_vec_with_shape(vec![0u8, 1, 1, 0], vec![2, 2]).to_blob();
+        let out = exec(
+            r#"{
+                "nodes": {"n0": {"source": {"format": "blob"},
+                                  "ops": [{"op": "apply_lut", "table": [[10, 20], [30, 40]],
+                                           "dtype": "u8"}]}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
+                "column_bindings": {"n0": 0}
+            }"#,
+            &[Series::new("b".into(), std::slice::from_ref(&indices))],
+        );
+        let mapped = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
+        assert_eq!(mapped.shape(), &[2, 2, 2]);
+        assert_eq!(mapped.as_slice::<u8>(), &[10, 20, 30, 40, 30, 40, 10, 20]);
+
         // PerceptualHash: image buffer -> 1-D u8 fingerprint (vector domain;
         // u8, so the typed list/array sinks preserve UInt8).
         let out = exec(
@@ -2045,9 +2098,25 @@ mod tests {
                 "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}},
                 "column_bindings": {"n0": 0}
             }"#,
-            &[Series::new("b".into(), &[mask_blob()]), cont_col],
+            &[Series::new("b".into(), &[mask_blob()]), cont_col.clone()],
         );
         assert_eq!(out.null_count(), 0);
+
+        // Regions: a contour set intersected with itself is itself.
+        let out = exec(
+            r#"{
+                "nodes": {
+                    "n0": {"source": {"format": "contour"}},
+                    "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
+                           "ops": [{"op": "intersection", "other": "n0"}]}
+                },
+                "outputs": {"_output": {"node": "n1", "sink": {"format": "native"}}},
+                "column_bindings": {"n0": 0}
+            }"#,
+            &[cont_col],
+        );
+        assert_eq!(out.null_count(), 0);
+        assert_eq!(out.list().unwrap().get_as_series(0).unwrap().len(), 1);
 
         // AssertShape: a declaration that holds passes the data through; one
         // that does not fails the row naming what the user wrote.

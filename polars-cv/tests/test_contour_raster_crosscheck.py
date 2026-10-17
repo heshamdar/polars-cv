@@ -302,6 +302,44 @@ class TestAreaMatchesRasterizedPixelCount:
         )
 
 
+def _coverage(contour: dict, n: int) -> float:
+    """Covered area by ``rasterize(supersample=n)``: the mask's sum over 255."""
+    frame = pl.DataFrame({"c": [contour]}, schema={"c": CONTOUR_SCHEMA})
+    pipe = (
+        Pipeline()
+        .source("contour")
+        .rasterize(width=CANVAS, height=CANVAS, supersample=n)
+    )
+    out = frame.with_columns(m=pl.col("c").cv.pipe(pipe).sink("numpy"))
+    return float(numpy_from_struct(out["m"][0]).astype(np.float64).sum()) / 255.0
+
+
+@plugin_required
+class TestSupersampledCoverageTracksArea:
+    """``supersample=n`` paints each pixel by the fraction of its ``n x n``
+    sub-pixel centres inside, so the coverage summed over the mask estimates
+    ``area()`` with a boundary error that shrinks as ``1 / n`` (CR-96)."""
+
+    @pytest.mark.parametrize("n", [2, 4])
+    @pytest.mark.parametrize("name", sorted(RECTILINEAR))
+    def test_rectilinear_coverage_is_exact(self, name: str, n: int) -> None:
+        """Integer edges leave every pixel wholly in or out: exactly the area."""
+        contour = RECTILINEAR[name]
+        assert _coverage(contour, n) == pytest.approx(_analytic_area(contour), abs=1e-9)
+
+    @pytest.mark.parametrize("n", [2, 4, 8])
+    @pytest.mark.parametrize("name", sorted(CURVED))
+    def test_curved_coverage_error_shrinks_with_the_sample_count(
+        self, name: str, n: int
+    ) -> None:
+        contour = CURVED[name]
+        analytic = _analytic_area(contour)
+        # The boundary band over n, plus each boundary pixel's rounding to a
+        # level of 255 (half a level, at most one boundary pixel per unit).
+        bound = _boundary_tolerance(contour) / n + _perimeter(contour) * 2 * 0.5 / 255
+        assert abs(_coverage(contour, n) - analytic) < bound, name
+
+
 # ---------------------------------------------------------------------------
 # Centroid
 # ---------------------------------------------------------------------------

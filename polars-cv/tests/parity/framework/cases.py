@@ -89,6 +89,7 @@ def batches(
     nulls: bool = True,
     heterogeneous: bool = True,
     max_side: int = 32,
+    contents: Sequence[str] | None = None,
 ) -> st.SearchStrategy[Batch]:
     """Draw a :class:`Batch`: 1..*max_rows* rows, optionally with nulls."""
 
@@ -96,7 +97,10 @@ def batches(
     def build(draw: st.DrawFn) -> Batch:
         first = draw(
             image_specs(
-                dtypes=tuple(dtypes), channels=tuple(channels), max_side=max_side
+                dtypes=tuple(dtypes),
+                channels=tuple(channels),
+                max_side=max_side,
+                contents=None if contents is None else tuple(contents),
             ),
             label="first image",
         )
@@ -132,9 +136,12 @@ def batches_for(
     """Batches of inputs *spec*'s contract admits.
 
     With *reference*, the dtypes are narrowed to those the reference models
-    (:attr:`OpSpec.ref_dtypes`) so examples are not spent on skipped rows.
+    (:attr:`OpSpec.ref_dtypes`) so examples are not spent on skipped rows, and
+    the content to the kinds it tests (:attr:`OpSpec.ref_contents`).
     """
     dtypes = list(spec.ref_dtypes or DTYPES) if reference else list(DTYPES)
+    if reference and spec.ref_contents is not None:
+        kwargs["contents"] = spec.ref_contents
     admitted = [
         (d, c)
         for d in dtypes
@@ -161,6 +168,13 @@ def draw_params(draw: st.DrawFn, spec: OpSpec, x: np.ndarray) -> dict[str, Any]:
     return spec.params(draw, x)
 
 
+def _lengths(value: Any) -> Any:
+    """A value's list lengths at every level (``None`` for a scalar)."""
+    if isinstance(value, (list, tuple)):
+        return (len(value), tuple(_lengths(v) for v in value))
+    return None
+
+
 def _merge_per_row(method: str, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Fold per-row argument dicts into one step, or ``None`` if impossible.
 
@@ -174,9 +188,8 @@ def _merge_per_row(method: str, rows: list[dict[str, Any]]) -> dict[str, Any] | 
     merged: dict[str, Any] = {}
     for key in keys:
         values = [r[key] for r in rows]
-        lengths = {len(v) for v in values if isinstance(v, (list, tuple))}
-        if len(lengths) > 1:
-            return None  # a list's length is structural: it cannot vary
+        if len({_lengths(v) for v in values}) > 1:
+            return None  # a list's length (at every level) is structural
         if all(v == values[0] for v in values):
             merged[key] = values[0]
         elif admits_expression(expression_eligible(method, key), PerRow(tuple(values))):

@@ -66,6 +66,23 @@ if command -v rustup >/dev/null 2>&1; then
   echo "session-start: rust toolchain -> $(rustc --version 2>/dev/null || echo 'unknown')"
 fi
 
+# 1b. A new toolchain orphans everything in target/: every artifact's hash
+#     includes the compiler, so the next build recompiles the whole polars stack
+#     under new names and the old build (~5 GB in debug alone) is never read or
+#     deleted again. `rustup update stable` above moves to each new stable, so
+#     remember the compiler target/ was built with and clean it when that
+#     changes. (No stamp yet, as on the first run with this step: keep target/.)
+RUSTC_STAMP="target/.rustc-vV"
+rustc_now="$(rustc -vV 2>/dev/null || true)"
+if [ -n "$rustc_now" ]; then
+  if [ -f "$RUSTC_STAMP" ] && [ "$(cat "$RUSTC_STAMP")" != "$rustc_now" ]; then
+    echo "session-start: toolchain changed; reclaiming target/ ($(du -sh target 2>/dev/null | cut -f1))"
+    cargo clean
+  fi
+  mkdir -p target
+  printf '%s' "$rustc_now" > "$RUSTC_STAMP"
+fi
+
 # 2. Python dependencies: the dev group (includes pre-commit and maturin) and
 #    the docs group (mkdocs, for verify.sh's `mkdocs build --strict` lane). The
 #    uv project lives under polars-cv/.

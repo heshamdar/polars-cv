@@ -13,8 +13,8 @@
 #![cfg(feature = "image_interop")]
 
 use view_buffer::{
-    BinaryOp, ColorConvertOp, ColorSpace, ComputeOp, ImageOp, ImageOpKind, NormalizeMethod,
-    ViewBuffer, ViewDto, ViewExpr,
+    BinaryOp, ColorConvertOp, ColorSpace, ComputeOp, Footprint, ImageOp, ImageOpKind,
+    NormalizeMethod, ViewBuffer, ViewDto, ViewExpr,
 };
 
 fn run(buf: ViewBuffer, dto: ViewDto) -> ViewBuffer {
@@ -60,17 +60,28 @@ fn morphology_propagates_a_nan_anywhere_in_the_window() {
     for at in 0..3 {
         let mut row = vec![1.0f32, 2.0, 3.0];
         row[at] = f32::NAN;
-        for kind in [
-            ImageOpKind::Dilate {
-                ksize: 3,
-                iterations: 1,
-            },
-            ImageOpKind::Erode {
-                ksize: 3,
-                iterations: 1,
-            },
-            ImageOpKind::MorphGradient { ksize: 3 },
-        ] {
+        // A 1-row window is the same span for either footprint.
+        let kinds = [Footprint::Square, Footprint::Disk]
+            .into_iter()
+            .flat_map(|footprint| {
+                [
+                    ImageOpKind::Dilate {
+                        ksize: 3,
+                        iterations: 1,
+                        footprint,
+                    },
+                    ImageOpKind::Erode {
+                        ksize: 3,
+                        iterations: 1,
+                        footprint,
+                    },
+                    ImageOpKind::MorphGradient {
+                        ksize: 3,
+                        footprint,
+                    },
+                ]
+            });
+        for kind in kinds {
             let buf = ViewBuffer::from_vec_with_shape(row.clone(), vec![1, 3, 1]);
             let out = f32s(&run(buf, ViewDto::Image(ImageOp { kind: kind.clone() })));
             for (x, v) in out.iter().enumerate() {
