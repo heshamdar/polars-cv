@@ -416,7 +416,7 @@ def test_namespace_plugin_symbols_match_registrations():
         # `contour_accessor! { ... <arm> fn <name> / <out_ty> ... }`, which
         # expands to exactly that pair. The arm names are matched explicitly so
         # a new arm has to be added here rather than quietly going unscanned.
-        r"(?:^|\n)\s*(?:map|zip)\s+fn\s+([a-z_0-9]+)\s*/",
+        r"(?:^|\n)\s*(?:map|rows|zip)\s+fn\s+([a-z_0-9]+)\s*/",
     )
     for rs in ("contour.rs", "point.rs", "image_metadata.rs", "read_bytes.rs"):
         text = (src / rs).read_text()

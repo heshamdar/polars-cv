@@ -206,16 +206,13 @@ pub(crate) fn execute_geometry_op(
                     .collect(),
             ))
         }
-        GeometryOp::Smooth { iterations } => outlines(&input, op)?
-            .iter()
-            .map(|o| transforms::smooth(o, *iterations))
-            .collect::<Result<Vec<_>, _>>()
-            .map(NodeOutput::from_contours),
-        GeometryOp::Densify { max_segment_length } => outlines(&input, op)?
-            .iter()
-            .map(|o| transforms::densify(o, *max_segment_length))
-            .collect::<Result<Vec<_>, _>>()
-            .map(NodeOutput::from_contours),
+        GeometryOp::Smooth { iterations } => {
+            transforms::smooth(outlines(&input, op)?, *iterations).map(NodeOutput::from_contours)
+        }
+        GeometryOp::Densify { max_segment_length } => {
+            transforms::densify(outlines(&input, op)?, *max_segment_length)
+                .map(NodeOutput::from_contours)
+        }
         GeometryOp::Close => outlines(&input, op)?
             .iter()
             .map(transforms::close_outline)

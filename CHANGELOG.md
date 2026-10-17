@@ -52,7 +52,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   parameters a region-only set silently ignored; they never shipped.)
   New enums `LineJoin` (`round`, `miter`, `bevel`; a miter limit of 4) and
   `LineCap` (`round`, `square`, `butt`). Round arcs are polygons within 1/64
-  pixel. Held to distance-band oracles (a round offset or stroke is the set of
+  pixel up to a radius of about 32, about `r / 2000` beyond. Held to distance-band oracles (a round offset or stroke is the set of
   points within the distance, checked on the mask's own samples), closed-form
   areas per join and cap, a pure-Python Chaikin, an exact densify
   construction, and `rasterize(union_all(s)) == rasterize(s)`.
@@ -176,10 +176,29 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   cast, and `contour_accessor!` no longer hands the element type the input
   dtype to echo. The three identical set-level output types are one.
 
-- **`smooth` and `densify` refuse a result past 2^22 points** before making
+- **`smooth` and `densify` refuse a row past 2^22 points** before making
   it. A pass doubles the points and a short `max_segment_length` splits every
   edge, so `smooth(iterations=40)` or `densify(1e-9)` — literal or per row —
-  aborted the process on the allocation. Both now fail the row by name.
+  aborted the process on the allocation. Both now fail the row by name. The
+  budget is the row's whole set, not each contour's: thousands of traced
+  contours each within it could together still abort.
+
+- **`stroke()` of a ring with no points no longer panics.** An empty exterior
+  or hole underflowed inside `i_overlay`; a ring of fewer than two points has
+  no edge and strokes to nothing (a one-point *line* is still a dot, its
+  caps). Every shaping op is now swept over degenerate rings on both surfaces.
+
+- **An op-backed `.contour` accessor applies its op's check as it is
+  written.** `.contour.offset(inf)`, `densify(0)`, `stroke(width=0)` and
+  `largest(k=0)` were accepted at build and failed only at collect, where the
+  pipeline forms refuse at build; the accessor's build-time check now runs
+  the op's own `check()`.
+
+- **The round-arc tolerance is stated as it holds.** Arcs are within 1/64
+  pixel up to a radius of about 32 pixels; past it `i_overlay`'s finest arc
+  step (0.01π) bounds them by `r (1 − cos 0.01π)`, about `r / 2000`
+  (`transforms::arc_tolerance`). The docs promised 1/64 at every radius;
+  0.12 pixel was measured at `offset(1000)`.
 
 - **`boundary`, `close` and `scale(origin="centroid")` refuse a contour the
   same way on both surfaces**, through one engine function each

@@ -700,3 +700,124 @@ def test_each_accessor_is_its_pipeline_op(op: str, kwargs: dict) -> None:
     )
     accessor = df.select(getattr(pl.col("c").contour, op)(**kwargs)).item()
     assert pipeline == accessor.to_list()
+
+
+# ---------------------------------------------------------------------------
+# Degenerate rings: every shaping op either answers or refuses, never panics
+# ---------------------------------------------------------------------------
+
+#: Rings with too few points to bound anything, as an exterior or as a hole.
+DEGENERATE = {
+    "empty-exterior": _region([]),
+    "empty-hole": _region(_rect(0, 0, 8, 8), [[]]),
+    "one-point-exterior": _region([(3, 3)]),
+    "two-point-hole": _region(_rect(0, 0, 8, 8), [[(2, 2), (4, 4)]]),
+    "empty-line": _line([]),
+}
+
+#: Every shaping op, with arguments, as both surfaces spell it.
+SHAPING = {
+    "offset": {"distance": 1.5},
+    "union_all": {},
+    "smooth": {"iterations": 2},
+    "densify": {"max_segment_length": 1.5},
+    "stroke": {"width": 2.0},
+}
+
+
+@pytest.mark.parametrize("shape", sorted(DEGENERATE))
+@pytest.mark.parametrize("op", sorted(SHAPING))
+def test_a_degenerate_ring_never_panics(op: str, shape: str) -> None:
+    """A ring of fewer than three points is accepted by every reader; a
+    shaping op on it gives a contour set or the op's own refusal, on both
+    surfaces. (``stroke`` panicked inside ``i_overlay`` on an empty ring.)"""
+    contour = DEGENERATE[shape]
+    if contour["is_closed"] is False and op in ("offset", "union_all"):
+        pytest.skip("a line is refused by every region op, tested elsewhere")
+    kwargs = SHAPING[op]
+    df = _frame([contour])
+    pipe = getattr(Pipeline().source("contour"), op)(**kwargs)
+    for expr in (
+        pl.col("c").cv.pipe(pipe).sink("native"),
+        getattr(pl.col("c").contour, op)(**kwargs),
+    ):
+        try:
+            df.select(expr)
+        except pl.exceptions.ComputeError as e:
+            assert "panicked" not in str(e), e
+
+
+def test_a_ring_without_an_edge_strokes_to_nothing_a_point_line_to_a_dot() -> None:
+    """A closed path has no ends to cap, so with no edge it covers nothing;
+    a one-point open line is its round caps, a dot."""
+    for ring in ([], [(3, 3)]):
+        assert _shaped([_region(ring)], "stroke", width=2.0) == []
+    (dot,) = _shaped([_line([(3, 3)])], "stroke", width=2.0)
+    assert dot["is_closed"] and len(dot["exterior"]) > 8
+
+
+def _arc_bound(radius: float) -> float:
+    """The documented gap between a round arc and its polygon: 1/64 pixel,
+    or ``r * (1 - cos(0.01 pi))`` past ~31.7 px, where ``i_overlay`` caps an
+    arc at its finest step (``transforms::arc_tolerance``)."""
+    return max(1.0 / 64.0, radius * (1.0 - math.cos(0.01 * math.pi))) + 1e-9
+
+
+def _square_distance(x: float, y: float, x0: float, x1: float) -> float:
+    dx = max(x0 - x, 0.0, x - x1)
+    dy = max(x0 - y, 0.0, y - x1)
+    return math.hypot(dx, dy)
+
+
+@pytest.mark.parametrize("distance", [3.0, 20.0, 31.0, 50.0, 200.0, 1000.0])
+def test_a_round_offset_keeps_its_documented_arc_bound(distance: float) -> None:
+    """Every edge of a round offset of the square [0, 10]^2 lies between the
+    true boundary (distance ``d``) and ``d`` less the documented bound: its
+    ends sit on the arc, its midpoint is the farthest point inside."""
+    (grown,) = _shaped([_region(_rect(0, 0, 10, 10))], "offset", distance=distance)
+    ring = [(p["x"], p["y"]) for p in grown["exterior"]]
+    worst = 0.0
+    for (ax, ay), (bx, by) in zip(ring, ring[1:] + ring[:1], strict=True):
+        mid = _square_distance((ax + bx) / 2, (ay + by) / 2, 0.0, 10.0)
+        worst = max(worst, distance - mid)
+    assert worst <= _arc_bound(distance), f"gap {worst} at r = {distance}"
+    # The bound is tight enough to mean something: past the cap it is reached.
+    if distance >= 200:
+        assert worst > 1.0 / 64.0
+
+
+@pytest.mark.parametrize("width", [2.0, 64.0, 400.0])
+def test_a_round_cap_keeps_its_documented_arc_bound(width: float) -> None:
+    (band,) = _shaped([_line([(0, 0), (10, 0)])], "stroke", width=width)
+    r = width / 2
+    worst = 0.0
+    ring = [(p["x"], p["y"]) for p in band["exterior"]]
+    for (ax, ay), (bx, by) in zip(ring, ring[1:] + ring[:1], strict=True):
+        mx, my = (ax + bx) / 2, (ay + by) / 2
+        d = math.hypot(max(-mx, 0.0, mx - 10.0), my)
+        worst = max(worst, r - d)
+    assert worst <= _arc_bound(r), f"gap {worst} at r = {r}"
+
+
+#: Many small members, each under the 2^22-point budget, over it together.
+_MANY = [_region(_rect(x, 0, x + 10, 10)) for x in range(0, 128 * 12, 12)]
+
+
+@pytest.mark.parametrize(
+    ("op", "kwargs", "asked"),
+    [
+        ("smooth", {"iterations": 15}, "15 passes"),
+        ("densify", {"max_segment_length": 0.001}, "max_segment_length=0.001"),
+    ],
+)
+def test_the_point_budget_holds_over_the_whole_row(op, kwargs, asked) -> None:
+    """The budget is the row's: 128 squares at 2^17 or 40 000 points each are
+    within it one by one, and over it together (a row of thousands of traced
+    contours would otherwise abort on its allocation)."""
+    match = rf"{op}: {asked} would make about .* points"
+    with pytest.raises(pl.exceptions.ComputeError, match=match):
+        _shaped(_MANY, op, **kwargs)
+    with pytest.raises(pl.exceptions.ComputeError, match=match):
+        _frame(_MANY).select(getattr(pl.col("c").contour, op)(**kwargs))
+    # One member alone is within it.
+    assert _shaped(_MANY[:1], op, **kwargs)

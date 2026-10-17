@@ -732,3 +732,38 @@ def test_a_tagged_contour_is_a_pipeline_source() -> None:
     tagged = assert_plan_equals_exec(_tagged_contour_df(), expr)
     plain = assert_plan_equals_exec(_contour_df(), expr)
     assert tagged.to_list() == plain.to_list()
+
+
+#: Arguments a pipeline op's own check refuses, for each op-backed accessor
+#: with such a rule (``GeometryOp::check``).
+_REFUSED_ARGS = {
+    "offset": {"distance": float("inf")},
+    "densify": {"max_segment_length": 0.0},
+    "stroke": {"width": 0.0},
+    "largest": {"k": 0},
+}
+
+
+def test_every_checked_op_backed_accessor_has_a_refused_case() -> None:
+    """Guard the guard: every listed argument really is one the pipeline op
+    refuses at build, so the comparison below compares two refusals."""
+    from polars_cv import Pipeline
+
+    for method, kwargs in _REFUSED_ARGS.items():
+        with pytest.raises(ValueError):
+            getattr(Pipeline().source("contour"), method)(**kwargs)
+
+
+@plugin_required
+@pytest.mark.parametrize("method", sorted(_REFUSED_ARGS))
+def test_an_op_backed_accessor_refuses_at_build_as_its_op_does(method: str) -> None:
+    """``.contour.<op>`` is the pipeline op's definition: a literal its check
+    refuses is refused as the expression is written, not when it runs."""
+    from polars_cv import Pipeline
+
+    kwargs = _REFUSED_ARGS[method]
+    with pytest.raises(ValueError) as pipeline:
+        getattr(Pipeline().source("contour"), method)(**kwargs)
+    reason = str(pipeline.value).split(": ")[-1]
+    with pytest.raises(ValueError, match=reason[:30].replace("(", r"\(")):
+        getattr(pl.col("c").contour, method)(**kwargs)

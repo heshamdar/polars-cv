@@ -112,7 +112,8 @@ pub enum GeometryOp<M: Mode = Exec> {
     /// The set is read as one union, so growing can merge regions and
     /// shrinking can split them or leave none: the result is always a set.
     /// Convex corners turn by *join*; concave ones stay sharp. Round arcs are
-    /// polygons within 1/64 pixel of the true arc. An open contour is refused.
+    /// polygons within 1/64 pixel of the true arc, or about ``distance / 2000``
+    /// past a distance of 32 pixels. An open contour is refused.
     #[op(name = "contour_offset", python = "offset", sample = {"distance": -1.5, "join": "miter"})]
     Offset {
         /// How far to move the edge, in pixels: positive grows, negative
@@ -155,9 +156,11 @@ pub enum GeometryOp<M: Mode = Exec> {
     /// and its corners by *join*. Every member is read as its outline: an
     /// open line, capped at its ends (one returning to its first point, as
     /// ``boundary()`` draws one, is a closed path), and a region's rings,
-    /// each a closed path with no ends. The result is always a set, filled
+    /// each a closed path with no ends. A ring of fewer than two points has
+    /// no edge and covers nothing; a one-point line is a dot (its caps). The result is always a set, filled
     /// by ``rasterize()``: ``stroke(width=2).rasterize(...)`` draws lines and
-    /// outlines. Round arcs are polygons within 1/64 pixel of the true arc.
+    /// outlines. Round arcs are polygons within 1/64 pixel of the true arc,
+    /// or about ``width / 4000`` past a width of 64 pixels.
     #[op(name = "contour_stroke", python = "stroke",
          sample = {"width": 2.5, "cap": "square", "join": "bevel"})]
     Stroke {

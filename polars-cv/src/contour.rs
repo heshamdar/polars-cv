@@ -1080,25 +1080,26 @@ contour_accessor! {
 }
 
 contour_accessor! {
-    /// Chaikin-smooth a contour.
-    map fn contour_smooth / contour_smooth_output_type
+    /// Chaikin-smooth each contour (a row at a time: the point budget is the
+    /// row's).
+    rows fn contour_smooth / contour_smooth_output_type
         -> contour_struct_dtype();
     reads Outline;
     parse GeometryOp::Smooth { iterations };
-    |outline, params, row| {
-        transforms::smooth(outline, params.value(iterations, row)?)
+    |set, params, row| {
+        transforms::smooth(set, params.value(iterations, row)?)
             .map_err(|e| polars_err!(ComputeError: "{} (row {})", e, row))
     }
 }
 
 contour_accessor! {
-    /// Densify a contour.
-    map fn contour_densify / contour_densify_output_type
+    /// Densify each contour (a row at a time: the point budget is the row's).
+    rows fn contour_densify / contour_densify_output_type
         -> contour_struct_dtype();
     reads Outline;
     parse GeometryOp::Densify { max_segment_length };
-    |outline, params, row| {
-        transforms::densify(outline, params.value(max_segment_length, row)?)
+    |set, params, row| {
+        transforms::densify(set, params.value(max_segment_length, row)?)
             .map_err(|e| polars_err!(ComputeError: "{} (row {})", e, row))
     }
 }
