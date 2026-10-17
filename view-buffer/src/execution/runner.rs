@@ -1928,6 +1928,10 @@ where
     let src_rows: Vec<&[T]> = rows_buf
         .dense_rows::<T>()
         .expect("a rank-2 or rank-3 buffer has packed rows after to_dense_rows");
+    if h == 0 || w == 0 {
+        // No pixel to fold; and a zero-width row has no chunks to walk.
+        return rows_buf.to_contiguous();
+    }
     let half = |d: usize| (radius * radius - d * d).isqrt();
     let select = morph_select::<T, IS_MIN>;
 
