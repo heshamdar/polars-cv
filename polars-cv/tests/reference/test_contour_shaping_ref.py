@@ -80,8 +80,8 @@ def _pipe(contours: list[dict], pipe: Pipeline, sink: str = "native"):
 def _per_row_error(
     contours: list[dict], build, value: float, match: str, sink: str = "native"
 ) -> None:
-    """``build(pl.col("v"))`` refuses ``value`` with its row: a non-finite
-    literal cannot cross the JSON wire at all, so a column carries it."""
+    """``build(pl.col("v"))`` refuses ``value`` with its row: the check a
+    literal meets at build, reached per row."""
     df = pl.DataFrame(
         {"c": [contours], "v": [value]},
         schema={"c": CONTOUR_SET_SCHEMA, "v": pl.Float64},

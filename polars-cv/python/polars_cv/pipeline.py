@@ -8,7 +8,6 @@ processing pipelines that can be applied to Polars DataFrame columns.
 from __future__ import annotations
 
 import json
-import math
 from collections.abc import Callable
 from types import FunctionType
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -98,24 +97,12 @@ def _encode_field(p: "Pipeline", value: Any, ty: "dict[str, Any]", where: str) -
             _encode_field(p, v, ty["inner"], f"{where}[{i}]")
             for i, v in enumerate(value)
         ]
-    if kind == "scalar" and ty["py"] == "bound" and not isinstance(value, pl.Expr):
-        return _bound_wire(_to_python(value), where)
     if kind == "scalar" and ty["per_row"]:
-        return p._wire(value, where)
+        return p._wire(value)
     if isinstance(value, pl.Expr):
         msg = f"{where}: {_STRUCTURAL}"
         raise TypeError(msg)
-    return _literal(value, where)
-
-
-def _bound_wire(value: Any, where: str) -> Any:
-    """A ``bound`` (``naming::Bound``: a float that may be infinite) on the
-    wire. JSON has no infinity, so an infinite bound is ``"inf"``/``"-inf"``;
-    anything else is a literal (:func:`_literal`: NaN is refused), for Rust
-    to accept or refuse."""
-    if isinstance(value, (int, float)) and math.isinf(value):
-        return "inf" if value > 0 else "-inf"
-    return _literal(value, where)
+    return _literal(value)
 
 
 def _is_sequence(value: Any) -> bool:
@@ -236,11 +223,9 @@ class Pipeline(_OpsMixin):
         self._exprs.append(expr)
         return {"$slot": len(self._exprs) - 1}
 
-    def _wire(self, value: Any, where: str) -> Any:
+    def _wire(self, value: Any) -> Any:
         """A per-row argument's wire value: its slot, or the literal."""
-        return (
-            self._slot(value) if isinstance(value, pl.Expr) else _literal(value, where)
-        )
+        return self._slot(value) if isinstance(value, pl.Expr) else _literal(value)
 
     def _read_node(self, node: "LazyPipelineExpr") -> None:
         """Record *node* as one this pipeline reads by id."""

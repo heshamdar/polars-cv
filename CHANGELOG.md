@@ -180,13 +180,21 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   is now stroked as a closed path (`i_overlay`, under `geo`, which view-buffer
   now names directly).
 
-- **A non-finite float literal is refused by name** (CR-103). JSON has no NaN
+- **A non-finite float literal crosses the wire** (CR-103). JSON has no NaN
   or infinity, so `simplify(float("nan"))` — any op or geometry accessor —
-  failed as the decoder's "expected value at line 1 column 41". The literal is
-  now refused where it is encoded, as `simplify(tolerance=): nan is not a
-  finite number ...`, with the position of a list element. A `bound` field
-  (`histogram(bins=)` edges) still takes infinities, and a value passed per
-  row through an expression reaches the op's own check, as before.
+  failed as the decoder's "expected value at line 1 column 41". Every float
+  field now reads and writes `"nan"`, `"inf"` and `"-inf"` (as `bound`
+  fields already spelled their infinities), and `_types._literal` encodes
+  them, so a literal meets the op's own check exactly as the same value
+  passed per row does: `apply_lut([[nan]], dtype="f32")` maps to NaN, and
+  `offset(inf)` is refused by `offset`'s rule. (A first fix refused every
+  non-finite literal in Python, which made a NaN table entry an error while
+  `pl.lit(nan)` worked; it never shipped.) A `bound` still refuses NaN. A
+  sweep of every float field of every pipeline op at NaN and ±inf holds each
+  to "refused at build naming the op, or runs without a panic"; it found
+  `clamp` panicking on a NaN or crossed bound (`f32::clamp`), which a
+  per-row pair already reached. `clamp`'s check now refuses both, at build
+  for literals and with the row for expressions.
 
 - Two parity references claimed inputs they do not model, failing the deep
   lane: `apply_lut`'s strategy read a channel axis a rank-2 buffer (after

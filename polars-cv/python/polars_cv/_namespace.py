@@ -183,7 +183,7 @@ class _GeomNamespace(_PluginNamespace):
             elif isinstance(value, Enum):
                 fields[name] = value.value
             else:
-                fields[name] = _literal(value, f"{function}({name}=)")
+                fields[name] = _literal(value)
         # Refused now, where it was written, by the definition itself — not
         # when the query runs.
         from polars_cv._lib import check_geom_call

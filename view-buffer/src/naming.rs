@@ -272,13 +272,37 @@ impl WireScalar for core::num::NonZeroU32 {
     }
 }
 
-/// A boundary on the number line: any `f64` but NaN, so `±infinity` too.
-///
-/// JSON has no infinity, so on the wire an infinite bound is the string
-/// `"inf"` or `"-inf"` (Python's encoder writes it from the catalogue's
-/// `bound` type), a finite one a number. Only a field whose infinity means
-/// something has this type (a histogram's open outer edges); every other
-/// float stays `f64`, where the wire cannot carry one.
+/// The spellings of the floats JSON cannot carry: every float field reads
+/// and writes them (as Python's encoder, `_types._literal`, does), so a
+/// non-finite literal crosses the wire like any other and meets the op's own
+/// check rather than the decoder's "expected value".
+fn non_finite_from_wire(value: WireValue<'_>) -> Option<f64> {
+    match value {
+        WireValue::Str("nan") => Some(f64::NAN),
+        WireValue::Str("inf") => Some(f64::INFINITY),
+        WireValue::Str("-inf") => Some(f64::NEG_INFINITY),
+        _ => None,
+    }
+}
+
+/// A float as the wire carries it: [`non_finite_from_wire`]'s spellings, or
+/// a number.
+fn float_to_wire(f: f64) -> WireValue<'static> {
+    if f.is_nan() {
+        WireValue::Str("nan")
+    } else if f == f64::INFINITY {
+        WireValue::Str("inf")
+    } else if f == f64::NEG_INFINITY {
+        WireValue::Str("-inf")
+    } else {
+        WireValue::Float(f)
+    }
+}
+
+/// A boundary on the number line: any `f64` but NaN, so `±infinity` too
+/// (spelled on the wire as every float is). Only a field whose infinity means
+/// something has this type (a histogram's open outer edges), which refuses a
+/// NaN by its type.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Bound(pub f64);
 
@@ -286,23 +310,13 @@ impl WireScalar for Bound {
     const KIND: WireKind = WireKind::Float;
     const PY_TYPE: &'static str = "bound";
     fn from_wire(value: WireValue<'_>) -> Result<Self, String> {
-        match value {
-            WireValue::Str("inf") => Ok(Bound(f64::INFINITY)),
-            WireValue::Str("-inf") => Ok(Bound(f64::NEG_INFINITY)),
-            WireValue::Float(f) if f.is_nan() => Err("a bound cannot be NaN".to_string()),
-            WireValue::Int(_) | WireValue::Float(_) => f64::from_wire(value).map(Bound),
-            other => Err(format!(
-                "expected a number, \"inf\" or \"-inf\", got {}",
-                describe_wire(other)
-            )),
+        match f64::from_wire(value)? {
+            f if f.is_nan() => Err("a bound cannot be NaN".to_string()),
+            f => Ok(Bound(f)),
         }
     }
     fn to_wire(self) -> WireValue<'static> {
-        match self.0 {
-            f64::INFINITY => WireValue::Str("inf"),
-            f64::NEG_INFINITY => WireValue::Str("-inf"),
-            f => WireValue::Float(f),
-        }
+        float_to_wire(self.0)
     }
     fn spellings() -> Vec<&'static str> {
         Vec::new()
@@ -319,11 +333,16 @@ macro_rules! wire_float {
                     // An integer is a float the caller did not write a `.0` on.
                     WireValue::Int(i) => Ok(i as $t),
                     WireValue::Float(f) => Ok(f as $t),
-                    other => Err(format!("expected a number, got {}", describe_wire(other))),
+                    other => non_finite_from_wire(other).map(|f| f as $t).ok_or_else(|| {
+                        format!(
+                            "expected a number, \"nan\", \"inf\" or \"-inf\", got {}",
+                            describe_wire(other)
+                        )
+                    }),
                 }
             }
             fn to_wire(self) -> WireValue<'static> {
-                WireValue::Float(f64::from(self))
+                float_to_wire(f64::from(self))
             }
             fn spellings() -> Vec<&'static str> {
                 Vec::new()
@@ -379,6 +398,34 @@ pub fn named_to_wire<T: Copy + PartialEq>(table: &[(&'static str, T)], v: T) -> 
         .map(|(name, _)| *name)
         .expect("named_variants! lists every variant");
     WireValue::Str(name)
+}
+
+#[cfg(test)]
+mod float_wire_tests {
+    use super::{Bound, WireScalar, WireValue};
+
+    /// Every float reads and writes the non-finite spellings JSON lacks, and
+    /// a bound refuses only NaN.
+    #[test]
+    fn non_finite_floats_round_trip_and_a_bound_refuses_nan() {
+        for f in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.5, 3.0] {
+            let wire = f.to_wire();
+            assert_eq!(f.is_finite(), matches!(wire, WireValue::Float(_)), "{f}");
+            let back = f64::from_wire(wire).unwrap();
+            assert!(
+                back.total_cmp(&f).is_eq() || (back.is_nan() && f.is_nan()),
+                "{f}"
+            );
+            assert_eq!(f32::from_wire(f.to_wire()).unwrap().is_nan(), f.is_nan());
+        }
+        assert!(f64::from_wire(WireValue::Str("Infinity")).is_err());
+        assert_eq!(
+            Bound::from_wire(WireValue::Str("-inf")).unwrap(),
+            Bound(f64::NEG_INFINITY)
+        );
+        assert!(Bound::from_wire(WireValue::Str("nan")).is_err());
+        assert!(Bound::from_wire(WireValue::Float(f64::NAN)).is_err());
+    }
 }
 
 #[cfg(test)]

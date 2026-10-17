@@ -458,6 +458,24 @@ impl<M: Mode> ComputeOp<M> {
             }
             return Ok(());
         }
+        // The kernel is `f32::clamp`, which panics on a NaN bound or on
+        // `min > max`: refused where the values are known (a literal at plan
+        // time, a per-row one with its row). An infinite bound is an open end.
+        if let ComputeOp::Clamp { min, max } = self {
+            let (lo, hi) = (M::sym(min).known(), M::sym(max).known());
+            if let Some(nan) = [("min", lo), ("max", hi)]
+                .into_iter()
+                .find(|(_, v)| v.is_some_and(f32::is_nan))
+            {
+                return Err(format!("clamp: {} is NaN, which bounds nothing", nan.0));
+            }
+            if let (Some(lo), Some(hi)) = (lo, hi) {
+                if lo > hi {
+                    return Err(format!("clamp: min {lo} is greater than max {hi}"));
+                }
+            }
+            return Ok(());
+        }
         // A rotation by a non-finite angle has no matrix (and no expanded
         // canvas: `AffineParams::expanded_size` of NaN is 0).
         if let ComputeOp::Rotate { angle, .. } = self {
