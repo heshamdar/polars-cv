@@ -238,15 +238,15 @@ pub fn close(line: &[Point]) -> Contour {
 
 /// Why `boundary()` refuses a line: it already is one.
 pub const BOUNDARY_OF_A_LINE: &str =
-    "boundary: an open contour (is_closed = false) is already a line; boundary() takes a region";
+    "an open contour (is_closed = false) is already a line; boundary() takes a region";
 
 /// Why `close()` refuses a region: it has no ends to join.
 pub const CLOSE_OF_A_REGION: &str =
-    "close: the contour is already closed; close() takes an open line (is_closed = false)";
+    "the contour is already closed; close() takes an open line (is_closed = false)";
 
 /// Why `scale(origin="centroid")` refuses a line: it bounds no region.
 pub const SCALE_A_LINE_ABOUT_ITS_CENTROID: &str =
-    "scale(origin=\"centroid\") needs a closed contour: an open polyline \
+    "origin=\"centroid\" needs a closed contour: an open polyline \
      (is_closed = false) bounds no region to take a centroid of. Scale about \
      \"bbox_center\" or \"origin\" instead";
 
@@ -835,13 +835,14 @@ pub fn offset<C: Borrow<Contour>>(
 pub const MAX_POINTS: usize = 1 << 22;
 
 /// `Ok` when an op's `points` (counted in f64, which cannot overflow) are
-/// within [`MAX_POINTS`]; the refusal names the op and the value that asked.
-fn within_point_budget(op: &str, points: f64, asked: String) -> Result<(), String> {
+/// within [`MAX_POINTS`]; the refusal names the value that asked (the step
+/// running it names the op, as it names every refusal).
+fn within_point_budget(points: f64, asked: String) -> Result<(), String> {
     if points <= MAX_POINTS as f64 {
         return Ok(());
     }
     Err(format!(
-        "{op}: {asked} would make about {points:.2e} points, past the {MAX_POINTS} \
+        "{asked} would make about {points:.2e} points, past the {MAX_POINTS} \
          one row's contours may hold"
     ))
 }
@@ -860,7 +861,7 @@ pub fn smooth<O: Borrow<Outline>>(outlines: &[O], iterations: u32) -> Result<Vec
         .map(|o| o.borrow().vertices().count().max(1))
         .sum();
     let points = vertices as f64 * 2f64.powf(f64::from(iterations));
-    within_point_budget("smooth", points, format!("{iterations} passes"))?;
+    within_point_budget(points, format!("{iterations} passes"))?;
     let n = iterations as usize;
     Ok(outlines
         .iter()
@@ -909,11 +910,7 @@ pub fn densify<O: Borrow<Outline>>(
                     .sum::<f64>()
         })
         .sum();
-    within_point_budget(
-        "densify",
-        points,
-        format!("max_segment_length={max_segment_length}"),
-    )?;
+    within_point_budget(points, format!("max_segment_length={max_segment_length}"))?;
     Ok(outlines
         .iter()
         .map(|outline| match outline.borrow() {
@@ -1133,7 +1130,7 @@ mod shaping_tests {
         // A pass doubles the points: the budget refuses before running.
         let err = smooth(&[&line], 40).unwrap_err();
         assert!(
-            err.contains("smooth: 40 passes") && err.contains("4194304"),
+            err.starts_with("40 passes") && err.contains("4194304"),
             "{err}"
         );
         assert!(smooth(&[&line], u32::MAX).is_err());
@@ -1152,7 +1149,7 @@ mod shaping_tests {
         // 16 units of perimeter in 1e-9 steps: refused before splitting.
         let err = densify(&[&sq], 1e-9).unwrap_err();
         assert!(
-            err.contains("densify: max_segment_length=") && err.contains("4194304"),
+            err.starts_with("max_segment_length=") && err.contains("4194304"),
             "{err}"
         );
     }

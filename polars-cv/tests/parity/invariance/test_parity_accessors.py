@@ -6,7 +6,7 @@ same engine function, but through its own plugin function rather than the
 pipeline's executor. So for drawn contour sets — traced regions, their
 ``boundary()`` lines, a mix, null rows — and the op's drawn arguments, the
 accessor and ``Pipeline().source("contour").<op>(...)`` must return the same
-rows, refuse the same rows (under ``on_error("raise")``) and null the same
+rows, refuse the same rows in the same words (under ``on_error("raise")``) and null the same
 rows (under ``on_error("null")``).
 
 The pipeline returns a measure (``area``, ``centroid``, ``bounding_box``,
@@ -17,6 +17,7 @@ member; both are compared flattened, in field order.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import numpy as np
@@ -126,13 +127,23 @@ def _flat_list(value: Any) -> list[float]:
     return [float(value)]
 
 
+def _refusal(error: Exception) -> str:
+    """A refusal in the step's own words: without the pipeline's wrapping
+    (``Pipeline execution failed:``, ``Op resolution error:``), the
+    accessor's `` (row n)`` and polars' expression trace."""
+    message = str(error).split("\n\nThis error occurred")[0]
+    message = message.replace("the plugin failed with message: ", "")
+    for wrapper in ("Pipeline execution failed: ", "Op resolution error: "):
+        message = message.replace(wrapper, "")
+    message = re.sub(r" \(row \d+\)$", "", message)
+    return f"{type(error).__name__}: {message}"
+
+
 def _outcome(run) -> tuple[str, Any]:
     try:
         return "rows", run().to_series().to_list()
-    except pl.exceptions.ComputeError as e:
-        return "refused", type(e).__name__
-    except pl.exceptions.SchemaError as e:
-        return "refused", type(e).__name__
+    except (pl.exceptions.ComputeError, pl.exceptions.SchemaError) as e:
+        return "refused", _refusal(e)
 
 
 @property_lanes(weight=3, rows=_contour_rows(), data=st.data())

@@ -107,8 +107,12 @@ mode-generic family in `polars-cv/src/geom_fns.rs` (`ContourFn`, `PointFn`,
 `ColumnRef` / `Option<ColumnRef>` for a data operand — its doc comment as the
 Python docstring, and its defaults declared once with `#[param(default = ...)]`.
 A function that is also a pipeline op (`.contour.area`, `translate`, `scale`,
-…) *is* that `GeometryOp` variant (`geom_fns::OP_ACCESSORS`), so the two
-surfaces cannot drift in fields, defaults or docs.
+…) *is* that `GeometryOp` variant, and *runs* as that pipeline step
+(`src/geom_accessor.rs`): resolved and checked as the pipeline resolves its
+step, executed by the executor's own `execute_geometry_op`, and only its
+presentation (`Form`: a value per member, or a set) is its own. So the two
+surfaces cannot drift in fields, defaults, docs, answers or refusals —
+`tests/parity/invariance/test_parity_accessors.py` holds them to it.
 
 Every accessor method is generated (`scripts/gen_ops.py`, from
 `tests/golden/geom_catalog.json`) as one `self._call("<fn>", {...})`.
@@ -141,7 +145,9 @@ names the offending row — see the `threshold` range check in
    `src/geom_fns.rs` — `#[op(name = "<fn>", python = "<method>", sample =
    {...})]`, a doc comment (the docstring, with its `Returns:`), a doc comment
    per field, and `#[param(default = ...)]` where the method has a default.
-   (If the method is a pipeline op, add it to `OP_ACCESSORS` instead.)
+   (If the method is a pipeline op, add one `op fn` line to `op_accessors!`
+   in `src/contour.rs` instead — it declares the plugin function and its
+   `OP_ACCESSORS` entry together — and skip step 2.)
 2. **Function:** add the `#[polars_expr]` function in `src/contour.rs` or
    `src/point.rs` (a `contour_accessor!` arm for a contour one), parsing its
    definition with `GeomParams::parse` and reading each field per row.

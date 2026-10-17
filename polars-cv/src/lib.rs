@@ -11,6 +11,7 @@ mod execute;
 mod ext_types;
 mod fetch;
 mod formats;
+mod geom_accessor;
 mod geom_arity;
 mod geom_columns;
 mod geom_construct;

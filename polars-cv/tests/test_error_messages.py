@@ -242,3 +242,85 @@ def test_a_set_operation_names_its_step_as_every_step_does(op, engine_name):
         pl.exceptions.ComputeError, match=rf"{engine_name}: an open contour"
     ):
         _contour_frame([_LINE]).select(getattr(left, op)(right).sink("native"))
+
+
+def _row_error(run) -> str:
+    """The refusal *run* raises, without either surface's wrapping: the
+    pipeline's ``Pipeline execution failed:`` / ``Op resolution error:``, the
+    accessor's `` (row n)``, and polars' trailing expression trace."""
+    with pytest.raises(pl.exceptions.ComputeError) as raised:
+        run()
+    message = str(raised.value).split("\n\nThis error occurred")[0]
+    message = message.replace("the plugin failed with message: ", "")
+    for wrapper in ("Pipeline execution failed: ", "Op resolution error: "):
+        message = message.replace(wrapper, "")
+    return re.sub(r" \(row \d+\)$", "", message)
+
+
+#: (pipeline method, accessor method, arguments, the row, its step's name)
+_REFUSED_ROWS = [
+    ("area", "area", {}, _LINE, "Area"),
+    ("centroid", "centroid", {}, _LINE, "Centroid"),
+    ("offset", "offset", {"distance": 1.0}, _LINE, "Offset"),
+    ("union_all", "union_all", {}, _LINE, "UnionAll"),
+    ("largest", "largest", {"k": 1}, _LINE, "Largest"),
+    ("boundary", "boundary", {}, _LINE, "Boundary"),
+    ("close", "close", {}, _SQUARE, "Close"),
+    ("scale_contour", "scale", {"sx": 2.0, "sy": 2.0}, _LINE, "Scale"),
+    ("smooth", "smooth", {"iterations": pl.col("p").cast(pl.Int64)}, _SQUARE, "Smooth"),
+    (
+        "densify",
+        "densify",
+        {"max_segment_length": pl.col("p")},
+        _SQUARE,
+        "Densify",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("method", "accessor", "kwargs", "row", "step"),
+    _REFUSED_ROWS,
+    ids=[case[0] for case in _REFUSED_ROWS],
+)
+def test_a_refused_row_reads_the_same_on_both_surfaces(
+    method, accessor, kwargs, row, step
+) -> None:
+    """A ``.contour`` accessor runs the pipeline step it is, so a row it
+    refuses is refused in the step's words, named by the step once — as the
+    executor names every step (``Offset:``, ``Histogram:``). The accessors
+    named none of these, and the engine functions that named their own
+    refusal did so in lower case on both surfaces."""
+    from polars_cv.geometry.schemas import CONTOUR_SET_SCHEMA
+
+    p = {"smooth": 40.0, "densify": 1e-9}.get(method, 0.0)
+    frame = pl.DataFrame(
+        {"c": [[row]], "p": [p]}, schema={"c": CONTOUR_SET_SCHEMA, "p": pl.Float64}
+    )
+    pipe = getattr(_contour(), method)(**kwargs)
+    by_pipeline = _row_error(
+        lambda: frame.select(pl.col("c").cv.pipe(pipe).sink("native"))
+    )
+    by_accessor = _row_error(
+        lambda: frame.select(getattr(pl.col("c").contour, accessor)(**kwargs))
+    )
+    assert by_pipeline == by_accessor
+    assert by_pipeline.startswith(f"{step}: "), by_pipeline
+    assert not re.match(rf"{step}: {step}:", by_pipeline, re.I), by_pipeline
+
+
+def test_an_empty_contour_has_no_bounding_box_on_either_surface() -> None:
+    """A contour with no points has no extent: the step gave a 0x0 box at the
+    origin, the accessor a null. Both now read NaN (a measure vector has no
+    null), never a box that is not there."""
+    from polars_cv.geometry.schemas import CONTOUR_SET_SCHEMA
+
+    empty = {"exterior": [], "holes": [], "is_closed": True}
+    frame = pl.DataFrame({"c": [[empty]]}, schema={"c": CONTOUR_SET_SCHEMA})
+    by_pipeline = frame.select(
+        pl.col("c").cv.pipe(_contour().bounding_box()).sink("native")
+    ).item()
+    by_accessor = frame.select(pl.col("c").contour.bounding_box()).item().to_list()
+    assert len(by_pipeline) == 4 and all(math.isnan(v) for v in by_pipeline)
+    (box,) = by_accessor
+    assert box is not None and all(math.isnan(v) for v in box.values()), box

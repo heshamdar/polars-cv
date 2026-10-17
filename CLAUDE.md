@@ -380,6 +380,7 @@ Rust: view-buffer (the engine)
 - `geom_columns.rs` — `ContourColumn`/`PointColumn`/`BBoxColumn`, the one reader per geometry type (straight from Arrow, fields by name, a null field an error) every geometry consumer uses
 - `row_split.rs` — `run_split`, the one row splitter over the plugin's thread pool, shared by `vb_graph` and every geometry function (through `GeomParams::map_rows`)
 - `geom_fns.rs` — the geometry accessors' typed definitions (`ContourFn`/`PointFn`/`BBoxFn`, or the `GeometryOp` a pipeline op shares — `OP_ACCESSORS`), each a mode-generic family like the ops; `geom_catalog.json` generates the `.contour`/`.point`/`.bbox` methods
+- `geom_accessor.rs` — the op-backed `.contour` accessors (`op_accessors!` in `contour.rs`, which also declares `OP_ACCESSORS`): each runs its pipeline step through `execute_geometry_op`, resolved once or per row as the pipeline resolves it, presented per member (`Form`)
 - `geom_params.rs` — `GeomParams::parse`: a geometry call's arguments parsed strictly as its function's definition, and their per-row resolution (`{"$slot": n}` on the wire as for ops), reading the extra inputs the generated `_GeomNamespace._call` appends
 
 **view-buffer/src/** (see `view-buffer/AGENTS.md` for the full module tree)

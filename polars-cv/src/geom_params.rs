@@ -21,8 +21,9 @@
 use crate::ops::ParamExt as _;
 use polars::prelude::*;
 use serde::Deserialize;
-use view_buffer::mode::WireOps;
+use view_buffer::mode::{Wire, WireOps};
 use view_buffer::naming::WireScalar;
+use view_buffer::GeometryOp;
 
 use crate::graph::RowErrorPolicy;
 use crate::ops::{ColumnRef, Literal, Param};
@@ -202,6 +203,23 @@ impl<'a> GeomParams<'a> {
     /// A parameter's value at `row`.
     pub fn value<T: WireScalar>(&self, param: &Param<T>, row: usize) -> PolarsResult<T> {
         param.resolve(row, &self.ctx)
+    }
+
+    /// The pipeline step an op-backed accessor runs, resolved as the
+    /// pipeline resolves its step (`TypedOp::resolve`): every per-row field
+    /// read for `row`, then the op's own check with every value known.
+    /// `None` resolves an op with no per-row field, once for the call.
+    pub fn step(&self, op: &GeometryOp<Wire>, row: Option<usize>) -> PolarsResult<GeometryOp> {
+        let values = crate::ops::param::RowValues {
+            row: row.unwrap_or(0),
+            ctx: &self.ctx,
+        };
+        let step: GeometryOp = view_buffer::mode::Resolve::resolve(op, &values)?;
+        step.check().map_err(|e| match row {
+            Some(row) => polars_err!(ComputeError: "{} (row {})", e, row),
+            None => polars_err!(ComputeError: "{}", e),
+        })?;
+        Ok(step)
     }
 
     /// A data operand's input series.

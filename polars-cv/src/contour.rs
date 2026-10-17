@@ -6,9 +6,7 @@
 
 use polars::prelude::*;
 
-use crate::geom_schema::{
-    bbox_anyvalue, bbox_struct_dtype, contour_struct_dtype, point_anyvalue, point_struct_dtype,
-};
+use crate::geom_schema::contour_struct_dtype;
 use pyo3_polars::derive::polars_expr;
 
 // Import geometry operations from view-buffer
@@ -22,13 +20,13 @@ use view_buffer::geometry::{
 // regardless of module order; importing it by name avoids depending on
 // `geom_arity` being declared before `contour` in lib.rs.
 use crate::contour_accessor;
+use crate::geom_accessor::Form;
 use crate::geom_arity::{elementwise_field, Arity, ContourOutput};
 use crate::geom_columns::{BBoxColumn, ContourColumn, PointColumn};
 use crate::geom_fns::{BBoxFn, ContourFn};
 use crate::geom_params::{check_range, parsed_as_another, GeomKwargs, GeomParams};
 use crate::ops::{ColumnRef, Param};
-use view_buffer::mode::{Exec, Wire};
-use view_buffer::GeometryOp;
+use view_buffer::mode::Wire;
 
 // ============================================================================
 // Contour Serialization Helpers
@@ -48,6 +46,7 @@ use view_buffer::GeometryOp;
 /// the independent oracle the equivalence tests compare that builder against.
 #[cfg(test)]
 pub fn contour_to_anyvalue(contour: &view_buffer::geometry::contour::Contour) -> AnyValue<'static> {
+    use crate::geom_schema::{point_anyvalue, point_struct_dtype};
     // Build exterior points as list of structs
     let exterior_points: Vec<AnyValue> = contour
         .exterior
@@ -327,27 +326,33 @@ fn label_reduce_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
 }
 
 // ============================================================================
-// Contour Plugin Functions - Measures
+// Contour Plugin Functions - Pipeline ops
 // ============================================================================
 
-contour_accessor! {
-    /// Compute contour area.
-    map fn contour_area / contour_area_output_type -> DataType::Float64;
-    reads Contour;
-    parse GeometryOp::Area { signed };
-    |contour, params, row| {
-        let signed = params.value(signed, row)?;
-        Ok(AnyValue::Float64(measures::area(contour, signed)))
-    }
+// Each runs the pipeline step it is (`geom_accessor`): resolved and checked
+// per row, executed by the executor's own dispatch, presented per member.
+crate::op_accessors! {
+    op fn contour_area / contour_area_output_type => "area", Form::Number;
+    op fn contour_perimeter / contour_perimeter_output_type => "perimeter", Form::Number;
+    op fn contour_centroid / contour_centroid_output_type => "centroid", Form::Point;
+    op fn contour_bounding_box / contour_bounding_box_output_type => "bounding_box", Form::BBox;
+    op fn contour_convex_hull / contour_convex_hull_output_type => "convex_hull", Form::Contour;
+    op fn contour_translate / contour_translate_output_type => "translate", Form::Contour;
+    op fn contour_scale / contour_scale_output_type => "scale", Form::Contour;
+    op fn contour_simplify / contour_simplify_output_type => "simplify", Form::Contour;
+    op fn contour_largest / contour_largest_output_type => "largest", Form::Set;
+    op fn contour_boundary / contour_boundary_output_type => "boundary", Form::Set;
+    op fn contour_close / contour_close_output_type => "close", Form::Contour;
+    op fn contour_offset / contour_offset_output_type => "offset", Form::Set;
+    op fn contour_union_all / contour_union_all_output_type => "union_all", Form::Set;
+    op fn contour_smooth / contour_smooth_output_type => "smooth", Form::Contour;
+    op fn contour_densify / contour_densify_output_type => "densify", Form::Contour;
+    op fn contour_stroke / contour_stroke_output_type => "stroke", Form::Set;
 }
 
-contour_accessor! {
-    /// Compute contour perimeter.
-    map fn contour_perimeter / contour_perimeter_output_type -> DataType::Float64;
-    reads Outline;
-    parse GeometryOp::Perimeter;
-    |outline, _params, _row| Ok(AnyValue::Float64(measures::outline_length(outline)))
-}
+// ============================================================================
+// Contour Plugin Functions - Measures
+// ============================================================================
 
 contour_accessor! {
     /// Compute winding direction.
@@ -361,25 +366,6 @@ contour_accessor! {
         }
         .into(),
     ))
-}
-
-contour_accessor! {
-    /// Compute contour centroid — a `{x, y}` struct per contour.
-    map fn contour_centroid / contour_centroid_output_type -> point_struct_dtype();
-    reads Contour;
-    parse GeometryOp::Centroid;
-    |contour, _params, _row| {
-        let center = measures::centroid(contour);
-        Ok(point_anyvalue(center.x, center.y))
-    }
-}
-
-contour_accessor! {
-    /// Compute contour bounding box — an `{x, y, width, height}` struct per contour.
-    map fn contour_bounding_box / contour_bounding_box_output_type -> bbox_struct_dtype();
-    reads Outline;
-    parse GeometryOp::BoundingBox;
-    |outline, _params, _row| Ok(bbox_anyvalue(outline.bounding_box()))
 }
 
 // ============================================================================
@@ -461,161 +447,6 @@ fn contour_pairwise_iou(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<S
         &params,
         |i| Ok((preds.row(i)?, gts.row(i)?)),
         pairwise::iou_matrix,
-    )
-}
-
-/// Declared type of a set-level contour function (`largest`, `boundary`,
-/// `offset`, `union_all`, the set operations): always a set of contours,
-/// whichever arity came in, since the count is the data's.
-fn contour_set_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
-    let input = input_fields
-        .first()
-        .ok_or_else(|| polars_err!(ComputeError: "the function takes a contour column"))?;
-    Ok(Field::new(
-        input.name().clone(),
-        Arity::Set.wrap(contour_struct_dtype()),
-    ))
-}
-
-/// The `k` largest contours of each row's set, as a set.
-///
-/// Set-level, like `pairwise_iou`: a single-contour column is read as a set
-/// of one, so the result is a set whichever arity came in.
-#[polars_expr(output_type_func=contour_set_output_type)]
-fn contour_largest(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
-    const NAME: &str = "contour_largest";
-    let (op, params) = GeomParams::parse::<GeometryOp<Wire>>(inputs, kwargs, NAME)?;
-    let GeometryOp::Largest { k } = &op else {
-        return Err(parsed_as_another(NAME));
-    };
-    let contours = ContourColumn::new(&inputs[0]);
-    let rows = params.map_rows(inputs[0].len(), |params, i| {
-        let Some(row) = contours.row(i)? else {
-            return Ok(None);
-        };
-        let k = params.value(k, i)?;
-        // The op's own rule, once: as the pipeline step resolves it.
-        GeometryOp::<Exec>::Largest { k }
-            .check()
-            .map_err(|e| polars_err!(ComputeError: "{} (row {})", e, i))?;
-        Ok(Some(transforms::largest(&row, k as usize)))
-    })?;
-    Contour::column(
-        inputs[0].name().clone(),
-        rows,
-        Arity::Set,
-        &contour_struct_dtype(),
-    )
-}
-
-/// Each row's regions' rings as open lines, as a set: one region with holes
-/// gives several lines, so the result is a set whichever arity came in (the
-/// pipeline op's definition, `GeometryOp::Boundary`).
-#[polars_expr(output_type_func=contour_set_output_type)]
-fn contour_boundary(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
-    const NAME: &str = "contour_boundary";
-    let (op, params) = GeomParams::parse::<GeometryOp<Wire>>(inputs, kwargs, NAME)?;
-    let GeometryOp::Boundary = &op else {
-        return Err(parsed_as_another(NAME));
-    };
-    let contours = ContourColumn::new(&inputs[0]);
-    let rows = params.map_rows(inputs[0].len(), |_params, i| {
-        let Some(row) = contours.outlines(i)? else {
-            return Ok(None);
-        };
-        let mut lines = Vec::new();
-        for outline in &row {
-            lines.extend(
-                transforms::boundary_outline(outline)
-                    .map_err(|e| polars_err!(ComputeError: "{} (row {})", e, i))?,
-            );
-        }
-        Ok(Some(lines))
-    })?;
-    Outline::column(
-        inputs[0].name().clone(),
-        rows,
-        Arity::Set,
-        &contour_struct_dtype(),
-    )
-}
-
-/// Each row's regions, read as one union and grown (shrunk) by `distance`,
-/// as a set (the pipeline op's definition, `GeometryOp::Offset`).
-#[polars_expr(output_type_func=contour_set_output_type)]
-fn contour_offset(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
-    const NAME: &str = "contour_offset";
-    let (op, params) = GeomParams::parse::<GeometryOp<Wire>>(inputs, kwargs, NAME)?;
-    let GeometryOp::Offset { distance, join } = &op else {
-        return Err(parsed_as_another(NAME));
-    };
-    let contours = ContourColumn::new(&inputs[0]);
-    let rows = params.map_rows(inputs[0].len(), |params, i| {
-        let Some(row) = contours.row(i)? else {
-            return Ok(None);
-        };
-        let (distance, join) = (params.value(distance, i)?, params.value(join, i)?);
-        transforms::offset(&row, distance, join)
-            .map(Some)
-            .map_err(|e| polars_err!(ComputeError: "{} (row {})", e, i))
-    })?;
-    Contour::column(
-        inputs[0].name().clone(),
-        rows,
-        Arity::Set,
-        &contour_struct_dtype(),
-    )
-}
-
-/// Each row's paths stroked, as disjoint regions in a set (the pipeline op's
-/// definition, `GeometryOp::Stroke`): lines and regions' rings alike.
-#[polars_expr(output_type_func=contour_set_output_type)]
-fn contour_stroke(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
-    const NAME: &str = "contour_stroke";
-    let (op, params) = GeomParams::parse::<GeometryOp<Wire>>(inputs, kwargs, NAME)?;
-    let GeometryOp::Stroke { width, cap, join } = &op else {
-        return Err(parsed_as_another(NAME));
-    };
-    let contours = ContourColumn::new(&inputs[0]);
-    let rows = params.map_rows(inputs[0].len(), |params, i| {
-        let Some(row) = contours.outlines(i)? else {
-            return Ok(None);
-        };
-        let style = transforms::Stroke {
-            width: params.value(width, i)?,
-            cap: params.value(cap, i)?,
-            join: params.value(join, i)?,
-        };
-        transforms::stroke(&row, &style)
-            .map(Some)
-            .map_err(|e| polars_err!(ComputeError: "{} (row {})", e, i))
-    })?;
-    Contour::column(
-        inputs[0].name().clone(),
-        rows,
-        Arity::Set,
-        &contour_struct_dtype(),
-    )
-}
-
-/// Each row's regions as their union's disjoint regions, a set (the
-/// pipeline op's definition, `GeometryOp::UnionAll`).
-#[polars_expr(output_type_func=contour_set_output_type)]
-fn contour_union_all(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
-    const NAME: &str = "contour_union_all";
-    let (op, params) = GeomParams::parse::<GeometryOp<Wire>>(inputs, kwargs, NAME)?;
-    let GeometryOp::UnionAll = &op else {
-        return Err(parsed_as_another(NAME));
-    };
-    let contours = ContourColumn::new(&inputs[0]);
-    let rows = params.map_rows(inputs[0].len(), |_params, i| {
-        Ok(contours.row(i)?.map(|row| transforms::union_all(&row)))
-    })?;
-    Contour::column(
-        inputs[0].name().clone(),
-        rows,
-        Arity::Set,
-        &contour_struct_dtype(),
     )
 }
 
@@ -988,100 +819,11 @@ fn contour_set_boundary_distances(inputs: &[Series], kwargs: GeomKwargs) -> Pola
 // union makes, a line's `is_closed = false`), and casting to it lost them.
 
 contour_accessor! {
-    /// Translate contour by offset.
-    map fn contour_translate / contour_translate_output_type
-        -> contour_struct_dtype();
-    reads Outline;
-    parse GeometryOp::Translate { dx, dy };
-    |outline, params, row| {
-        let dx = params.value(dx, row)?;
-        let dy = params.value(dy, row)?;
-        Ok(outline.map_points(|c| transforms::translate(c, dx, dy)))
-    }
-}
-
-contour_accessor! {
-    /// Scale contour.
-    map fn contour_scale / contour_scale_output_type
-        -> contour_struct_dtype();
-    reads Outline;
-    parse GeometryOp::Scale { sx, sy, origin };
-    |outline, params, row| {
-        let sx = params.value(sx, row)?;
-        let sy = params.value(sy, row)?;
-        // Per-row capable, like `sx`/`sy` beside it: which point the scale
-        // is measured from does not change the output's shape, rank or
-        // dtype. This is the pipeline op's own definition, default and all.
-        let scale_origin = params.value(origin, row)?;
-        transforms::scale_outline(outline, sx, sy, scale_origin)
-            .map_err(|e| polars_err!(ComputeError: "{} (row {})", e, row))
-    }
-}
-
-contour_accessor! {
-    /// Simplify contour.
-    map fn contour_simplify / contour_simplify_output_type
-        -> contour_struct_dtype();
-    reads Outline;
-    parse GeometryOp::Simplify { tolerance };
-    |outline, params, row| {
-        let tolerance = params.value(tolerance, row)?;
-        Ok(transforms::simplify_outline(outline, tolerance))
-    }
-}
-
-contour_accessor! {
-    /// Chaikin-smooth each contour (a row at a time: the point budget is the
-    /// row's).
-    rows fn contour_smooth / contour_smooth_output_type
-        -> contour_struct_dtype();
-    reads Outline;
-    parse GeometryOp::Smooth { iterations };
-    |set, params, row| {
-        transforms::smooth(set, params.value(iterations, row)?)
-            .map_err(|e| polars_err!(ComputeError: "{} (row {})", e, row))
-    }
-}
-
-contour_accessor! {
-    /// Densify each contour (a row at a time: the point budget is the row's).
-    rows fn contour_densify / contour_densify_output_type
-        -> contour_struct_dtype();
-    reads Outline;
-    parse GeometryOp::Densify { max_segment_length };
-    |set, params, row| {
-        transforms::densify(set, params.value(max_segment_length, row)?)
-            .map_err(|e| polars_err!(ComputeError: "{} (row {})", e, row))
-    }
-}
-
-contour_accessor! {
     /// Flip contour (reverse winding).
     map fn contour_flip / contour_flip_output_type -> contour_struct_dtype();
     reads Outline;
     parse ContourFn::Flip;
     |outline, _params, _row| Ok(outline.map_points(transforms::flip))
-}
-
-contour_accessor! {
-    /// Compute convex hull.
-    map fn contour_convex_hull / contour_convex_hull_output_type
-        -> contour_struct_dtype();
-    reads Outline;
-    parse GeometryOp::ConvexHull;
-    |outline, _params, _row| Ok(transforms::convex_hull_outline(outline))
-}
-
-contour_accessor! {
-    /// Join an open line's ends into a region.
-    map fn contour_close / contour_close_output_type
-        -> contour_struct_dtype();
-    reads Outline;
-    parse GeometryOp::Close;
-    |outline, _params, row| {
-        transforms::close_outline(outline)
-            .map_err(|e| polars_err!(ComputeError: "{} (row {})", e, row))
-    }
 }
 
 contour_accessor! {
@@ -1221,6 +963,7 @@ mod named_param_tests {
     use super::*;
     use view_buffer::geometry::ops::ScaleOrigin;
     use view_buffer::mode::WireOps;
+    use view_buffer::GeometryOp;
 
     fn parse<'a, F: WireOps>(
         inputs: &'a [Series],
