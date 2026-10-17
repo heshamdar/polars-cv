@@ -1152,11 +1152,11 @@
     "name": "difference",
     "python": "difference",
     "visibility": "lazy_only",
-    "doc": "Inside this set and not *other*: this contour set's regions with *other*'s cut away.\n\nEach side is read as the union of its set, and the result is disjoint\nregions — always a set, since combining shapes can split or merge\nthem. An open contour (a line) on either side is refused. As\n``.contour.difference``, the other side is a contour column.\n\nExample:\n    ```python\n    >>> a = pl.col(\"pred\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> b = pl.col(\"truth\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> result = a.difference(b).sink(\"native\")\n    ```",
+    "doc": "Inside this set and not *other*: this contour set's regions with *other*'s cut away.\n\nEach side is read as the union of its set (a single contour is a set\nof one), and the result is disjoint regions — always a set, since\ncombining shapes can split or merge them. An open contour (a line) on\neither side is refused, and a null on either side nulls the row. One\ndefinition for both surfaces: in a pipeline *other* is another\ncontour-domain expression; ``.contour.difference`` takes a contour column\nand runs this op.\n\nExample:\n    ```python\n    >>> a = pl.col(\"pred\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> b = pl.col(\"truth\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> result = a.difference(b).sink(\"native\")\n    >>> same = pl.col(\"pred\").contour.difference(pl.col(\"truth\"))\n    ```",
     "fields": [
       {
         "name": "other",
-        "doc": "The contour-domain expression to combine with.",
+        "doc": "The other contour set: a contour-domain expression (a contour\ncolumn, through ``.contour``).",
         "type": {
           "kind": "node"
         }
@@ -1554,11 +1554,11 @@
     "name": "intersection",
     "python": "intersection",
     "visibility": "lazy_only",
-    "doc": "Inside both: where this contour set's regions overlap *other*'s.\n\nEach side is read as the union of its set, and the result is disjoint\nregions — always a set, since combining shapes can split or merge\nthem. An open contour (a line) on either side is refused. As\n``.contour.intersection``, the other side is a contour column.\n\nExample:\n    ```python\n    >>> a = pl.col(\"pred\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> b = pl.col(\"truth\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> result = a.intersection(b).sink(\"native\")\n    ```",
+    "doc": "Inside both: where this contour set's regions overlap *other*'s.\n\nEach side is read as the union of its set (a single contour is a set\nof one), and the result is disjoint regions — always a set, since\ncombining shapes can split or merge them. An open contour (a line) on\neither side is refused, and a null on either side nulls the row. One\ndefinition for both surfaces: in a pipeline *other* is another\ncontour-domain expression; ``.contour.intersection`` takes a contour column\nand runs this op.\n\nExample:\n    ```python\n    >>> a = pl.col(\"pred\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> b = pl.col(\"truth\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> result = a.intersection(b).sink(\"native\")\n    >>> same = pl.col(\"pred\").contour.intersection(pl.col(\"truth\"))\n    ```",
     "fields": [
       {
         "name": "other",
-        "doc": "The contour-domain expression to combine with.",
+        "doc": "The other contour set: a contour-domain expression (a contour\ncolumn, through ``.contour``).",
         "type": {
           "kind": "node"
         }
@@ -2999,11 +2999,11 @@
     "name": "symmetric_difference",
     "python": "symmetric_difference",
     "visibility": "lazy_only",
-    "doc": "Inside exactly one: where this contour set's regions and *other*'s do not overlap.\n\nEach side is read as the union of its set, and the result is disjoint\nregions — always a set, since combining shapes can split or merge\nthem. An open contour (a line) on either side is refused. As\n``.contour.symmetric_difference``, the other side is a contour column.\n\nExample:\n    ```python\n    >>> a = pl.col(\"pred\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> b = pl.col(\"truth\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> result = a.symmetric_difference(b).sink(\"native\")\n    ```",
+    "doc": "Inside exactly one: where this contour set's regions and *other*'s do not overlap.\n\nEach side is read as the union of its set (a single contour is a set\nof one), and the result is disjoint regions — always a set, since\ncombining shapes can split or merge them. An open contour (a line) on\neither side is refused, and a null on either side nulls the row. One\ndefinition for both surfaces: in a pipeline *other* is another\ncontour-domain expression; ``.contour.symmetric_difference`` takes a contour column\nand runs this op.\n\nExample:\n    ```python\n    >>> a = pl.col(\"pred\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> b = pl.col(\"truth\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> result = a.symmetric_difference(b).sink(\"native\")\n    >>> same = pl.col(\"pred\").contour.symmetric_difference(pl.col(\"truth\"))\n    ```",
     "fields": [
       {
         "name": "other",
-        "doc": "The contour-domain expression to combine with.",
+        "doc": "The other contour set: a contour-domain expression (a contour\ncolumn, through ``.contour``).",
         "type": {
           "kind": "node"
         }
@@ -3082,11 +3082,11 @@
     "name": "union",
     "python": "union",
     "visibility": "lazy_only",
-    "doc": "Inside either: the union of this contour set's regions and *other*'s.\n\nEach side is read as the union of its set, and the result is disjoint\nregions — always a set, since combining shapes can split or merge\nthem. An open contour (a line) on either side is refused. As\n``.contour.union``, the other side is a contour column.\n\nExample:\n    ```python\n    >>> a = pl.col(\"pred\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> b = pl.col(\"truth\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> result = a.union(b).sink(\"native\")\n    ```",
+    "doc": "Inside either: the union of this contour set's regions and *other*'s.\n\nEach side is read as the union of its set (a single contour is a set\nof one), and the result is disjoint regions — always a set, since\ncombining shapes can split or merge them. An open contour (a line) on\neither side is refused, and a null on either side nulls the row. One\ndefinition for both surfaces: in a pipeline *other* is another\ncontour-domain expression; ``.contour.union`` takes a contour column\nand runs this op.\n\nExample:\n    ```python\n    >>> a = pl.col(\"pred\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> b = pl.col(\"truth\").cv.pipe(Pipeline().source(\"contour\"))\n    >>> result = a.union(b).sink(\"native\")\n    >>> same = pl.col(\"pred\").contour.union(pl.col(\"truth\"))\n    ```",
     "fields": [
       {
         "name": "other",
-        "doc": "The contour-domain expression to combine with.",
+        "doc": "The other contour set: a contour-domain expression (a contour\ncolumn, through ``.contour``).",
         "type": {
           "kind": "node"
         }

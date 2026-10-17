@@ -159,6 +159,24 @@ class _GeomNamespace(_PluginNamespace):
         new._on_error = policy
         return new
 
+    def _pipeline_op(self, op: str, other: pl.Expr) -> pl.Expr:
+        """Combine this contour column with ``other`` by the pipeline op
+        ``op`` (``union``, …): the op itself, not a second declaration of it.
+
+        Both columns are read by ``source("contour")`` and the lazy op runs
+        over them, so each side is a set (a lone contour, a set of one), a
+        null on either side nulls the row, and the result is the op's contour
+        set. ``on_error`` carries over as the pipeline's error policy; there
+        is no per-row parameter for ``on_null`` to govern.
+        """
+        from polars_cv.expressions import CvNamespace
+        from polars_cv.pipeline import Pipeline
+
+        source = Pipeline().source("contour").on_error(self._on_error)
+        left = CvNamespace(self._expr).pipe(source)
+        right = CvNamespace(other).pipe(source)
+        return getattr(left, op)(right).sink("native")
+
     def _call(self, function: str, values: dict[str, Any]) -> pl.Expr:
         """Call the plugin function ``function`` with its arguments ``values``.
 

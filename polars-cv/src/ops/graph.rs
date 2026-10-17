@@ -168,74 +168,94 @@ pub enum GraphOp<M: Mode = Exec> {
     },
     /// Inside either: the union of this contour set's regions and *other*'s.
     ///
-    /// Each side is read as the union of its set, and the result is disjoint
-    /// regions — always a set, since combining shapes can split or merge
-    /// them. An open contour (a line) on either side is refused. As
-    /// ``.contour.union``, the other side is a contour column.
+    /// Each side is read as the union of its set (a single contour is a set
+    /// of one), and the result is disjoint regions — always a set, since
+    /// combining shapes can split or merge them. An open contour (a line) on
+    /// either side is refused, and a null on either side nulls the row. One
+    /// definition for both surfaces: in a pipeline *other* is another
+    /// contour-domain expression; ``.contour.union`` takes a contour column
+    /// and runs this op.
     ///
     /// Example:
     ///     ```python
     ///     >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
     ///     >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
     ///     >>> result = a.union(b).sink("native")
+    ///     >>> same = pl.col("pred").contour.union(pl.col("truth"))
     ///     ```
     #[op(name = "union", visibility = LazyOnly, sample = {"other": "n0"})]
     Union {
-        /// The contour-domain expression to combine with.
+        /// The other contour set: a contour-domain expression (a contour
+        /// column, through ``.contour``).
         other: NodeRef,
     },
     /// Inside both: where this contour set's regions overlap *other*'s.
     ///
-    /// Each side is read as the union of its set, and the result is disjoint
-    /// regions — always a set, since combining shapes can split or merge
-    /// them. An open contour (a line) on either side is refused. As
-    /// ``.contour.intersection``, the other side is a contour column.
+    /// Each side is read as the union of its set (a single contour is a set
+    /// of one), and the result is disjoint regions — always a set, since
+    /// combining shapes can split or merge them. An open contour (a line) on
+    /// either side is refused, and a null on either side nulls the row. One
+    /// definition for both surfaces: in a pipeline *other* is another
+    /// contour-domain expression; ``.contour.intersection`` takes a contour column
+    /// and runs this op.
     ///
     /// Example:
     ///     ```python
     ///     >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
     ///     >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
     ///     >>> result = a.intersection(b).sink("native")
+    ///     >>> same = pl.col("pred").contour.intersection(pl.col("truth"))
     ///     ```
     #[op(name = "intersection", visibility = LazyOnly, sample = {"other": "n0"})]
     Intersection {
-        /// The contour-domain expression to combine with.
+        /// The other contour set: a contour-domain expression (a contour
+        /// column, through ``.contour``).
         other: NodeRef,
     },
     /// Inside this set and not *other*: this contour set's regions with *other*'s cut away.
     ///
-    /// Each side is read as the union of its set, and the result is disjoint
-    /// regions — always a set, since combining shapes can split or merge
-    /// them. An open contour (a line) on either side is refused. As
-    /// ``.contour.difference``, the other side is a contour column.
+    /// Each side is read as the union of its set (a single contour is a set
+    /// of one), and the result is disjoint regions — always a set, since
+    /// combining shapes can split or merge them. An open contour (a line) on
+    /// either side is refused, and a null on either side nulls the row. One
+    /// definition for both surfaces: in a pipeline *other* is another
+    /// contour-domain expression; ``.contour.difference`` takes a contour column
+    /// and runs this op.
     ///
     /// Example:
     ///     ```python
     ///     >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
     ///     >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
     ///     >>> result = a.difference(b).sink("native")
+    ///     >>> same = pl.col("pred").contour.difference(pl.col("truth"))
     ///     ```
     #[op(name = "difference", visibility = LazyOnly, sample = {"other": "n0"})]
     Difference {
-        /// The contour-domain expression to combine with.
+        /// The other contour set: a contour-domain expression (a contour
+        /// column, through ``.contour``).
         other: NodeRef,
     },
     /// Inside exactly one: where this contour set's regions and *other*'s do not overlap.
     ///
-    /// Each side is read as the union of its set, and the result is disjoint
-    /// regions — always a set, since combining shapes can split or merge
-    /// them. An open contour (a line) on either side is refused. As
-    /// ``.contour.symmetric_difference``, the other side is a contour column.
+    /// Each side is read as the union of its set (a single contour is a set
+    /// of one), and the result is disjoint regions — always a set, since
+    /// combining shapes can split or merge them. An open contour (a line) on
+    /// either side is refused, and a null on either side nulls the row. One
+    /// definition for both surfaces: in a pipeline *other* is another
+    /// contour-domain expression; ``.contour.symmetric_difference`` takes a contour column
+    /// and runs this op.
     ///
     /// Example:
     ///     ```python
     ///     >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
     ///     >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
     ///     >>> result = a.symmetric_difference(b).sink("native")
+    ///     >>> same = pl.col("pred").contour.symmetric_difference(pl.col("truth"))
     ///     ```
     #[op(name = "symmetric_difference", visibility = LazyOnly, sample = {"other": "n0"})]
     SymmetricDifference {
-        /// The contour-domain expression to combine with.
+        /// The other contour set: a contour-domain expression (a contour
+        /// column, through ``.contour``).
         other: NodeRef,
     },
     /// Apply a binary mask to this image.

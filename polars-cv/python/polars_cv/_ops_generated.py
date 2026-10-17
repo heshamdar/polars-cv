@@ -3022,21 +3022,26 @@ class _LazyOpsMixin:
     def difference(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Inside this set and not *other*: this contour set's regions with *other*'s cut away.
 
-        Each side is read as the union of its set, and the result is disjoint
-        regions — always a set, since combining shapes can split or merge
-        them. An open contour (a line) on either side is refused. As
-        ``.contour.difference``, the other side is a contour column.
+        Each side is read as the union of its set (a single contour is a set
+        of one), and the result is disjoint regions — always a set, since
+        combining shapes can split or merge them. An open contour (a line) on
+        either side is refused, and a null on either side nulls the row. One
+        definition for both surfaces: in a pipeline *other* is another
+        contour-domain expression; ``.contour.difference`` takes a contour column
+        and runs this op.
 
         Domain: contour → contour
 
         Args:
-            other: The contour-domain expression to combine with.
+            other: The other contour set: a contour-domain expression (a contour column,
+                through ``.contour``).
 
         Example:
             ```python
             >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
             >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
             >>> result = a.difference(b).sink("native")
+            >>> same = pl.col("pred").contour.difference(pl.col("truth"))
             ```
         """
         return self._binary_op("difference", other)
@@ -3067,21 +3072,26 @@ class _LazyOpsMixin:
     def intersection(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Inside both: where this contour set's regions overlap *other*'s.
 
-        Each side is read as the union of its set, and the result is disjoint
-        regions — always a set, since combining shapes can split or merge
-        them. An open contour (a line) on either side is refused. As
-        ``.contour.intersection``, the other side is a contour column.
+        Each side is read as the union of its set (a single contour is a set
+        of one), and the result is disjoint regions — always a set, since
+        combining shapes can split or merge them. An open contour (a line) on
+        either side is refused, and a null on either side nulls the row. One
+        definition for both surfaces: in a pipeline *other* is another
+        contour-domain expression; ``.contour.intersection`` takes a contour column
+        and runs this op.
 
         Domain: contour → contour
 
         Args:
-            other: The contour-domain expression to combine with.
+            other: The other contour set: a contour-domain expression (a contour column,
+                through ``.contour``).
 
         Example:
             ```python
             >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
             >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
             >>> result = a.intersection(b).sink("native")
+            >>> same = pl.col("pred").contour.intersection(pl.col("truth"))
             ```
         """
         return self._binary_op("intersection", other)
@@ -3166,21 +3176,26 @@ class _LazyOpsMixin:
     def symmetric_difference(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Inside exactly one: where this contour set's regions and *other*'s do not overlap.
 
-        Each side is read as the union of its set, and the result is disjoint
-        regions — always a set, since combining shapes can split or merge
-        them. An open contour (a line) on either side is refused. As
-        ``.contour.symmetric_difference``, the other side is a contour column.
+        Each side is read as the union of its set (a single contour is a set
+        of one), and the result is disjoint regions — always a set, since
+        combining shapes can split or merge them. An open contour (a line) on
+        either side is refused, and a null on either side nulls the row. One
+        definition for both surfaces: in a pipeline *other* is another
+        contour-domain expression; ``.contour.symmetric_difference`` takes a contour column
+        and runs this op.
 
         Domain: contour → contour
 
         Args:
-            other: The contour-domain expression to combine with.
+            other: The other contour set: a contour-domain expression (a contour column,
+                through ``.contour``).
 
         Example:
             ```python
             >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
             >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
             >>> result = a.symmetric_difference(b).sink("native")
+            >>> same = pl.col("pred").contour.symmetric_difference(pl.col("truth"))
             ```
         """
         return self._binary_op("symmetric_difference", other)
@@ -3188,21 +3203,26 @@ class _LazyOpsMixin:
     def union(self, other: LazyPipelineExpr) -> LazyPipelineExpr:
         """Inside either: the union of this contour set's regions and *other*'s.
 
-        Each side is read as the union of its set, and the result is disjoint
-        regions — always a set, since combining shapes can split or merge
-        them. An open contour (a line) on either side is refused. As
-        ``.contour.union``, the other side is a contour column.
+        Each side is read as the union of its set (a single contour is a set
+        of one), and the result is disjoint regions — always a set, since
+        combining shapes can split or merge them. An open contour (a line) on
+        either side is refused, and a null on either side nulls the row. One
+        definition for both surfaces: in a pipeline *other* is another
+        contour-domain expression; ``.contour.union`` takes a contour column
+        and runs this op.
 
         Domain: contour → contour
 
         Args:
-            other: The contour-domain expression to combine with.
+            other: The other contour set: a contour-domain expression (a contour column,
+                through ``.contour``).
 
         Example:
             ```python
             >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
             >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
             >>> result = a.union(b).sink("native")
+            >>> same = pl.col("pred").contour.union(pl.col("truth"))
             ```
         """
         return self._binary_op("union", other)
@@ -3214,6 +3234,7 @@ class _ContourOpsMixin:
     if TYPE_CHECKING:
 
         def _call(self, function: str, values: dict[str, Any]) -> pl.Expr: ...
+        def _pipeline_op(self, op: str, other: pl.Expr) -> pl.Expr: ...
 
     def area(self, *, signed: BoolOrExpr = False) -> pl.Expr:
         """Compute the area of the contour using the Shoelace formula.
@@ -3473,21 +3494,31 @@ class _ContourOpsMixin:
         return self._call("contour_dice", {"other": other})
 
     def difference(self, other: pl.Expr) -> pl.Expr:
-        """Inside this column's regions and not *other*'s: *other* cut away.
+        """Inside this set and not *other*: this contour set's regions with *other*'s cut away.
 
-        Each side is read as the union of its row's set (a single contour is
-        a set of one), and the result is disjoint regions — always a set,
-        since combining shapes can split or merge them. A null on either
-        side nulls the row; an open contour (a line) is refused. The
-        pipeline form is ``LazyPipelineExpr.difference``.
+        Each side is read as the union of its set (a single contour is a set
+        of one), and the result is disjoint regions — always a set, since
+        combining shapes can split or merge them. An open contour (a line) on
+        either side is refused, and a null on either side nulls the row. One
+        definition for both surfaces: in a pipeline *other* is another
+        contour-domain expression; ``.contour.difference`` takes a contour column
+        and runs this op.
+
+        Domain: contour → contour
 
         Args:
-            other: The contour column to combine with.
+            other: The other contour set: a contour-domain expression (a contour column,
+                through ``.contour``).
 
-        Returns:
-            A contour set (``List[Contour]``) per row.
+        Example:
+            ```python
+            >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
+            >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
+            >>> result = a.difference(b).sink("native")
+            >>> same = pl.col("pred").contour.difference(pl.col("truth"))
+            ```
         """
-        return self._call("contour_difference", {"other": other})
+        return self._pipeline_op("difference", other)
 
     def ensure_winding(self, direction: str | pl.Expr) -> pl.Expr:
         """Ensure contour has specified winding direction.
@@ -3541,21 +3572,31 @@ class _ContourOpsMixin:
         return self._call("contour_hausdorff", {"other": other})
 
     def intersection(self, other: pl.Expr) -> pl.Expr:
-        """Inside both: where each row's regions overlap *other*'s.
+        """Inside both: where this contour set's regions overlap *other*'s.
 
-        Each side is read as the union of its row's set (a single contour is
-        a set of one), and the result is disjoint regions — always a set,
-        since combining shapes can split or merge them. A null on either
-        side nulls the row; an open contour (a line) is refused. The
-        pipeline form is ``LazyPipelineExpr.intersection``.
+        Each side is read as the union of its set (a single contour is a set
+        of one), and the result is disjoint regions — always a set, since
+        combining shapes can split or merge them. An open contour (a line) on
+        either side is refused, and a null on either side nulls the row. One
+        definition for both surfaces: in a pipeline *other* is another
+        contour-domain expression; ``.contour.intersection`` takes a contour column
+        and runs this op.
+
+        Domain: contour → contour
 
         Args:
-            other: The contour column to combine with.
+            other: The other contour set: a contour-domain expression (a contour column,
+                through ``.contour``).
 
-        Returns:
-            A contour set (``List[Contour]``) per row.
+        Example:
+            ```python
+            >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
+            >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
+            >>> result = a.intersection(b).sink("native")
+            >>> same = pl.col("pred").contour.intersection(pl.col("truth"))
+            ```
         """
-        return self._call("contour_intersection", {"other": other})
+        return self._pipeline_op("intersection", other)
 
     def iou(self, other: pl.Expr) -> pl.Expr:
         """Compute Intersection over Union with another contour.
@@ -3798,21 +3839,31 @@ class _ContourOpsMixin:
         return self._call("contour_stroke", {"width": width, "cap": cap, "join": join})
 
     def symmetric_difference(self, other: pl.Expr) -> pl.Expr:
-        """Inside exactly one: where each row's regions and *other*'s do not overlap.
+        """Inside exactly one: where this contour set's regions and *other*'s do not overlap.
 
-        Each side is read as the union of its row's set (a single contour is
-        a set of one), and the result is disjoint regions — always a set,
-        since combining shapes can split or merge them. A null on either
-        side nulls the row; an open contour (a line) is refused. The
-        pipeline form is ``LazyPipelineExpr.symmetric_difference``.
+        Each side is read as the union of its set (a single contour is a set
+        of one), and the result is disjoint regions — always a set, since
+        combining shapes can split or merge them. An open contour (a line) on
+        either side is refused, and a null on either side nulls the row. One
+        definition for both surfaces: in a pipeline *other* is another
+        contour-domain expression; ``.contour.symmetric_difference`` takes a contour column
+        and runs this op.
+
+        Domain: contour → contour
 
         Args:
-            other: The contour column to combine with.
+            other: The other contour set: a contour-domain expression (a contour column,
+                through ``.contour``).
 
-        Returns:
-            A contour set (``List[Contour]``) per row.
+        Example:
+            ```python
+            >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
+            >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
+            >>> result = a.symmetric_difference(b).sink("native")
+            >>> same = pl.col("pred").contour.symmetric_difference(pl.col("truth"))
+            ```
         """
-        return self._call("contour_symmetric_difference", {"other": other})
+        return self._pipeline_op("symmetric_difference", other)
 
     def to_absolute(self, width: FloatOrExpr, height: FloatOrExpr) -> pl.Expr:
         """Convert normalized coordinates to pixel coordinates.
@@ -3851,21 +3902,31 @@ class _ContourOpsMixin:
         return self._call("contour_translate", {"dx": dx, "dy": dy})
 
     def union(self, other: pl.Expr) -> pl.Expr:
-        """Inside either: the union of each row's regions and *other*'s.
+        """Inside either: the union of this contour set's regions and *other*'s.
 
-        Each side is read as the union of its row's set (a single contour is
-        a set of one), and the result is disjoint regions — always a set,
-        since combining shapes can split or merge them. A null on either
-        side nulls the row; an open contour (a line) is refused. The
-        pipeline form is ``LazyPipelineExpr.union``.
+        Each side is read as the union of its set (a single contour is a set
+        of one), and the result is disjoint regions — always a set, since
+        combining shapes can split or merge them. An open contour (a line) on
+        either side is refused, and a null on either side nulls the row. One
+        definition for both surfaces: in a pipeline *other* is another
+        contour-domain expression; ``.contour.union`` takes a contour column
+        and runs this op.
+
+        Domain: contour → contour
 
         Args:
-            other: The contour column to combine with.
+            other: The other contour set: a contour-domain expression (a contour column,
+                through ``.contour``).
 
-        Returns:
-            A contour set (``List[Contour]``) per row.
+        Example:
+            ```python
+            >>> a = pl.col("pred").cv.pipe(Pipeline().source("contour"))
+            >>> b = pl.col("truth").cv.pipe(Pipeline().source("contour"))
+            >>> result = a.union(b).sink("native")
+            >>> same = pl.col("pred").contour.union(pl.col("truth"))
+            ```
         """
-        return self._call("contour_union", {"other": other})
+        return self._pipeline_op("union", other)
 
     def union_all(self) -> pl.Expr:
         """The union of the set's regions, as disjoint regions: overlapping
@@ -3899,6 +3960,7 @@ class _PointOpsMixin:
     if TYPE_CHECKING:
 
         def _call(self, function: str, values: dict[str, Any]) -> pl.Expr: ...
+        def _pipeline_op(self, op: str, other: pl.Expr) -> pl.Expr: ...
 
     def angle_to(self, other: pl.Expr) -> pl.Expr:
         """Compute the angle from this point to another, in radians.
@@ -4102,6 +4164,7 @@ class _BBoxOpsMixin:
     if TYPE_CHECKING:
 
         def _call(self, function: str, values: dict[str, Any]) -> pl.Expr: ...
+        def _pipeline_op(self, op: str, other: pl.Expr) -> pl.Expr: ...
 
     def correspond(
         self,

@@ -29,10 +29,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 - **Contour set operations** (CR-99): `union`, `intersection`, `difference`
   and `symmetric_difference` combine two contour sets, each read as the union
-  of its regions, into disjoint regions (always a set). Each is a `.contour`
-  accessor (the other side a contour column) and a lazy pipeline op (the
-  other side another contour-domain expression), one engine function behind
-  both; a line on either side is refused. Held to the mask identity —
+  of its regions, into disjoint regions (always a set). Each is one lazy
+  pipeline op (the other side another contour-domain expression), and its
+  `.contour` accessor (the other side a contour column) is generated from
+  that op's catalogue entry and runs it; a line on either side is refused. Held to the mask identity —
   rasterizing `a op b` paints the pixelwise `|`, `&`, `& ~` or `^` of the two
   sides' masks, exactly on integer shapes — and to inclusion-exclusion and
   `iou` on float shapes.

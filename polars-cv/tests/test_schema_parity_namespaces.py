@@ -767,3 +767,55 @@ def test_an_op_backed_accessor_refuses_at_build_as_its_op_does(method: str) -> N
     reason = str(pipeline.value).split(": ")[-1]
     with pytest.raises(ValueError, match=reason[:30].replace("(", r"\(")):
         getattr(pl.col("c").contour, method)(**kwargs)
+
+
+def _contour_operand_ops() -> list[dict]:
+    """The lazy-only ops combining two contour sets, from the catalogue."""
+    import json
+
+    from polars_cv._lib import op_catalog
+
+    return [
+        op
+        for op in json.loads(op_catalog())
+        if op["visibility"] == "lazy_only"
+        and [d["input"] for d in op["domains"]] == ["contour"]
+    ]
+
+
+def test_each_contour_set_operation_is_its_pipeline_op() -> None:
+    """``.contour.union`` and the other set operations are the pipeline ops,
+    not a second declaration of them: generated from the same catalogue entry
+    (one docstring), with no geometry function of their own."""
+    import json
+
+    from polars_cv._lib import geom_catalog
+    from polars_cv.lazy import LazyPipelineExpr
+
+    ops = _contour_operand_ops()
+    assert {op["python"] for op in ops} == {
+        "union",
+        "intersection",
+        "difference",
+        "symmetric_difference",
+    }
+    functions = {f["name"] for f in json.loads(geom_catalog())}
+    for op in ops:
+        name = op["python"]
+        assert f"contour_{name}" not in functions, f"{name} is declared twice"
+        accessor = getattr(ContourNamespace, name).__doc__
+        assert accessor == getattr(LazyPipelineExpr, name).__doc__, name
+
+
+@plugin_required
+def test_a_contour_set_operation_keeps_the_accessors_error_policy() -> None:
+    """``on_error("null")`` nulls a row the op refuses (a line), as for every
+    accessor; by default the row fails the expression."""
+    df = pl.DataFrame(
+        {"a": [_square(0, 0, 4), _open_line(6.0)], "b": [_square(2, 2, 4)] * 2},
+        schema={"a": CONTOUR_SCHEMA, "b": CONTOUR_SCHEMA},
+    )
+    out = df.select(pl.col("a").contour.on_error("null").union(pl.col("b"))).to_series()
+    assert out.null_count() == 1 and out[0] is not None
+    with pytest.raises(pl.exceptions.ComputeError, match="open contour"):
+        df.select(pl.col("a").contour.union(pl.col("b")))
