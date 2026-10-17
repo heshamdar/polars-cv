@@ -608,28 +608,7 @@ pub enum BBoxFn<M: Mode = Exec> {
 // parameter is always used.
 const _: fn(&ContourFn<Wire>, &PointFn<Wire>, &BBoxFn<Wire>) = |_, _, _| ();
 
-/// The `.contour` accessor methods that are pipeline ops: `(op, method)`.
-///
-/// Each is that [`GeometryOp`] variant — its fields, defaults and doc — and
-/// its plugin function has the op's wire name.
-pub const OP_ACCESSORS: &[(&str, &str)] = &[
-    ("contour_area", "area"),
-    ("contour_perimeter", "perimeter"),
-    ("contour_centroid", "centroid"),
-    ("contour_bounding_box", "bounding_box"),
-    ("contour_convex_hull", "convex_hull"),
-    ("contour_translate", "translate"),
-    ("contour_scale", "scale"),
-    ("contour_simplify", "simplify"),
-    ("contour_largest", "largest"),
-    ("contour_boundary", "boundary"),
-    ("contour_close", "close"),
-    ("contour_offset", "offset"),
-    ("contour_union_all", "union_all"),
-    ("contour_smooth", "smooth"),
-    ("contour_densify", "densify"),
-    ("contour_stroke", "stroke"),
-];
+pub use crate::contour::OP_ACCESSORS;
 
 /// One accessor method: its namespace and its function's description.
 #[derive(Debug, Serialize)]
@@ -643,7 +622,7 @@ pub struct GeomDesc {
 /// generated `.contour`/`.point`/`.bbox` methods are rendered from.
 pub fn geom_catalog() -> Vec<GeomDesc> {
     let ops = GeometryOp::<Wire>::catalog();
-    let op_backed = OP_ACCESSORS.iter().map(|(name, method)| {
+    let op_backed = OP_ACCESSORS.iter().map(|(name, method, _)| {
         let mut desc = ops
             .iter()
             .find(|d| d.name == *name)
@@ -685,7 +664,7 @@ pub fn check_call(name: &str, args: serde_json::Value) -> Result<(), String> {
     fn parsed<F>(r: Option<Result<F, String>>) -> Option<Result<(), String>> {
         r.map(|r| r.map(|_| ()))
     }
-    let op_backed = OP_ACCESSORS.iter().any(|(op, _)| *op == name);
+    let op_backed = OP_ACCESSORS.iter().any(|(op, _, _)| *op == name);
     // A parse error is named here; an op's check names its op itself.
     let named = |e: String| format!("{name}: {e}");
     if op_backed {

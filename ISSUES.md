@@ -43,7 +43,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-81 | Extension types | Decision | Whether any output becomes tagged by default (a major version) |
 | CR-82 | Extension types | Decision | Whether `polars_cv.ndarray` carries `dtype`/`ndim` metadata |
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
-| CR-106 | Consistency | Medium | The op-backed `.contour` accessors re-dispatch the ops the pipeline executes, so their row errors read differently |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
@@ -294,28 +293,6 @@ an independent oracle. All done (CR-93 to CR-101, closed below).
    which fills regions only (2026-10-17, superseding "rendering attributes on
    `rasterize`": they were ignored for a region-only set). `offset` is
    geometry on regions only and takes `join` alone.
-
-### CR-106 — The `.contour` accessors re-dispatch the ops they share
-
-- **Evidence:** each op-backed accessor (`geom_fns::OP_ACCESSORS`) is the
-  op's definition and calls the op's engine function, but through its own
-  body in `src/contour.rs`, not the step the pipeline resolves and runs
-  (`graph/encode.rs::execute_geometry_op`). Every divergence the reviews of
-  CR-93..CR-103 found between the two surfaces came from that second
-  dispatch: a refusal one surface skipped, `largest`'s rule restated, a check
-  only one ran. Values, refusals and nulls now agree
-  (`tests/parity/invariance/test_parity_accessors.py`), but the row error
-  text does not: the pipeline names a step by its engine name (`Area: an
-  open contour ...`), the accessor names none (`an open contour ... (row
-  0)`), and the engine functions that name their own refusal (`boundary`,
-  `close`, `smooth`, `densify`, `scale`) read in lower case on both.
-- **Next (needs a decision):** run an op-backed accessor as the pipeline
-  step it is: resolve its `GeometryOp<Wire>` per row (the op's `check()`),
-  execute it with `execute_geometry_op` on the row's outlines, and convert
-  the step's output to the accessor's per-member form in one place. The
-  engine functions then return unprefixed messages and every surface names
-  a row error once, by the step. Deletes most of `contour.rs`'s per-op
-  bodies; the parity property above becomes exact on messages too.
 
 ## Upstream (Polars)
 
@@ -579,6 +556,7 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 | CR-96 | `rasterize(supersample=)`: anti-aliased coverage | Added (Unreleased): the scanline filler now works per sample row (memory one sample row, not an n²-larger canvas), and `n = 1` reduces to the old formulas exactly |
 | CR-101 | Acceptance: the logo on the drawing ops, and a drawing guide | Done (Unreleased): `make_logo.py` is one graph (index map + `apply_lut` palette; terraces from `distance_transform`, rings as stroked `offset` boundaries, stroked glyphs); `docs/user-guide/drawing.md`, its examples run by `test_drawing_guide.py`. Found and fixed: a loop line was stroked as an open path, capped at its start |
 | CR-100 | `coordinate_grid(normalized=)` | Added (Unreleased): an `ImageOpKind` whose shape is `OpShape::Canvas { of: 0, channels: 2 }` (the canvas rule, given a channel count); declared `StridePreserving`, not the planned `PacksOwnRows`, which the copy census refuses (it reads no element, so packs nothing); `Global`, so no crop crosses it |
+| CR-106 | The op-backed `.contour` accessors re-dispatched the ops the pipeline executes, so they could answer, refuse and name refusals differently | Fixed (Unreleased): each runs its pipeline step (`geom_accessor.rs`: resolved once, or per row when a field is per-row, as the pipeline resolves it; executed by `execute_geometry_op`, which names every refusal once by the step), presented by its `Form`; `op_accessors!` declares the functions and `OP_ACCESSORS` together. Sixteen hand-written bodies and the `contour_accessor!` `rows` arm deleted. An empty contour's `bounding_box` is NaN on both surfaces (the step gave a 0x0 box at the origin, the accessor null). Throughput within noise on the `geom_contour_area`/`translate` benchmarks |
 | CR-105 | `footprint="disk"` morphology was O(r²·HW), holding r + 1 full-size images | Fixed (Unreleased): spans grow one half-width at a time and the column fold runs `dy` outermost (the lower half prepended), keeping the bit-exact fold order with five live images; 31-px disk 2.2–2.4x faster (1024²: 17.2 → 7.3 ms, release). `disk_fold_order_decides_which_zero_survives` now pins the order, which the old test did not (a reversed half passed it) |
 | CR-104 | `target/debug` grew until the disk filled | Fixed (Unreleased): per-package `split-debuginfo = "off"` for the workspace crates (stale incremental `.dwo` sidecars, ~12 GB); one view-buffer test binary (`tests/it/`, was 31, ~4 GB); the SessionStart hook cleans `target/` on a `rustc -vV` change (~5 GB per toolchain). The test build's second polars stack stays: pyo3 sits under every polars crate, and the extension build (no libpython) and test executables (libpython) must differ |
 | CR-103 | A non-finite float literal failed at the JSON wire with "expected value at line 1 column N" | Fixed (Unreleased): every float field reads and writes `"nan"`/`"inf"`/`"-inf"` (`naming.rs`) and `_types._literal` spells them, so a literal meets its op's own check as a per-row value does; a `bound` refuses NaN. A first fix (refusing them in Python) never shipped |

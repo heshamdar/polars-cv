@@ -408,7 +408,7 @@ class TestSmooth:
     ) -> None:
         """A pass doubles the points: 40 would need ~10^13, so the row fails
         by name rather than the process aborting on the allocation."""
-        match = rf"smooth: {iterations} passes would make about .* points"
+        match = rf"Smooth: {iterations} passes would make about .* points"
         with pytest.raises(pl.exceptions.ComputeError, match=match):
             _shaped([_line(ZIGZAG)], "smooth", iterations=iterations)
         with pytest.raises(pl.exceptions.ComputeError, match=match):
@@ -478,7 +478,7 @@ class TestDensify:
 
     def test_a_length_past_the_point_budget_is_refused_before_running(self) -> None:
         """1e-9 splits a 40-unit outline into ~4e10 points: refused by name."""
-        match = r"densify: max_segment_length=0\.000000001 would make about .* points"
+        match = r"Densify: max_segment_length=0\.000000001 would make about .* points"
         with pytest.raises(pl.exceptions.ComputeError, match=match):
             _shaped([_region(_rect(0, 0, 10, 10))], "densify", max_segment_length=1e-9)
         with pytest.raises(pl.exceptions.ComputeError, match=match):
@@ -814,7 +814,7 @@ def test_the_point_budget_holds_over_the_whole_row(op, kwargs, asked) -> None:
     """The budget is the row's: 128 squares at 2^17 or 40 000 points each are
     within it one by one, and over it together (a row of thousands of traced
     contours would otherwise abort on its allocation)."""
-    match = rf"{op}: {asked} would make about .* points"
+    match = rf"{op.capitalize()}: {asked} would make about .* points"
     with pytest.raises(pl.exceptions.ComputeError, match=match):
         _shaped(_MANY, op, **kwargs)
     with pytest.raises(pl.exceptions.ComputeError, match=match):

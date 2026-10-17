@@ -200,7 +200,9 @@ def test_close_undoes_boundary() -> None:
 
 
 def test_close_refuses_a_region() -> None:
-    with pytest.raises(pl.exceptions.ComputeError, match="close.*already closed"):
+    with pytest.raises(
+        pl.exceptions.ComputeError, match="Close: the contour is already closed"
+    ):
         _pipe(_frame([_region(SQUARE)]), Pipeline().source("contour").close())
 
 

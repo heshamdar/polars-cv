@@ -21,25 +21,32 @@ use crate::row_split::Split;
 use std::mem::MaybeUninit;
 use std::ops::Range;
 
-/// Execute a geometry operation with typed domain dispatch.
+/// Execute a geometry step: the pipeline's, and every op-backed `.contour`
+/// accessor's (`crate::geom_accessor`), so the two cannot answer or refuse
+/// differently.
 ///
-/// This handles domain transitions like Buffer → Contour (extract_contours)
-/// and Contour → Buffer (rasterize).
+/// Every refusal is named here, once, by the step (`Offset: ...`), as the
+/// executor names every step; the engine functions it calls do not name
+/// themselves.
 pub(crate) fn execute_geometry_op(
     input: NodeOutput,
     op: &GeometryOp,
 ) -> Result<NodeOutput, String> {
+    run_geometry_op(input, op).map_err(|e| format!("{}: {e}", op.name()))
+}
+
+/// [`execute_geometry_op`]'s dispatch, its refusals unnamed.
+fn run_geometry_op(input: NodeOutput, op: &GeometryOp) -> Result<NodeOutput, String> {
     let shapes: Vec<&[usize]> = input.as_buffer().map(|b| b.shape()).into_iter().collect();
     let dtypes: Vec<view_buffer::DType> =
         input.as_buffer().map(|b| b.dtype()).into_iter().collect();
     view_buffer::ops::validation::validate_concrete(op, &shapes, &dtypes)
-        .map_err(|e| format!("{}: {e}", op.name()))?;
+        .map_err(|e| e.to_string())?;
     let expected_domain = op.input_domain();
     let actual_domain = input.domain();
     if expected_domain != actual_domain {
         return Err(format!(
-            "{}() expects {} input but received {}. Add a domain-converting operation.",
-            op.name(),
+            "expects {} input but received {}. Add a domain-converting operation.",
             expected_domain.name(),
             actual_domain.name()
         ));
@@ -53,23 +60,16 @@ pub(crate) fn execute_geometry_op(
         } => {
             let buffer = input
                 .as_buffer()
-                .ok_or_else(|| "ExtractContours requires Buffer input".to_string())?;
+                .ok_or_else(|| "requires Buffer input".to_string())?;
             // The fraction is of this image's own H x W; a contour must pass
-            // both thresholds, so the larger absolute one is the filter.
-            let relative = match *min_area_fraction {
-                None => None,
-                Some(f) if f > 0.0 && f <= 1.0 => {
-                    let shape = buffer.shape();
-                    let pixels =
-                        shape.first().copied().unwrap_or(0) * shape.get(1).copied().unwrap_or(0);
-                    Some(f * pixels as f64)
-                }
-                Some(f) => {
-                    return Err(format!(
-                        "extract_contours: min_area_fraction must be in (0, 1], got {f}"
-                    ))
-                }
-            };
+            // both thresholds, so the larger absolute one is the filter. Its
+            // range, (0, 1], is `GeometryOp::check`'s, run as the step resolves.
+            let relative = min_area_fraction.map(|f| {
+                let shape = buffer.shape();
+                let pixels =
+                    shape.first().copied().unwrap_or(0) * shape.get(1).copied().unwrap_or(0);
+                f * pixels as f64
+            });
             let threshold = match (*min_area, relative) {
                 (Some(a), Some(b)) => Some(a.max(b)),
                 (a, b) => a.or(b),
@@ -92,7 +92,7 @@ pub(crate) fn execute_geometry_op(
             // union, which is order-independent and honours an inverted
             // fill/background pair. Folding per-contour masks with `max`
             // here did neither.
-            let regions = regions(op.name(), outlines(&input, op)?)?;
+            let regions = regions(outlines(&input)?)?;
             Ok(NodeOutput::from_buffer(rasterize(
                 &regions,
                 width,
@@ -103,7 +103,7 @@ pub(crate) fn execute_geometry_op(
             )))
         }
         GeometryOp::Area { signed } => {
-            let regions = regions(op.name(), outlines(&input, op)?)?;
+            let regions = regions(outlines(&input)?)?;
             Ok(NodeOutput::from_vector(
                 regions.iter().map(|c| measures::area(c, *signed)).collect(),
             ))
@@ -111,14 +111,14 @@ pub(crate) fn execute_geometry_op(
         // A line's length has no closing edge (`outline_length`), as the
         // accessor measures it.
         GeometryOp::Perimeter => Ok(NodeOutput::from_vector(
-            outlines(&input, op)?
+            outlines(&input)?
                 .iter()
                 .map(measures::outline_length)
                 .collect(),
         )),
         GeometryOp::Centroid => {
             // Flat interleaved: [cx₀, cy₀, cx₁, cy₁, ...]
-            let regions = regions(op.name(), outlines(&input, op)?)?;
+            let regions = regions(outlines(&input)?)?;
             let mut coords = Vec::with_capacity(regions.len() * 2);
             for c in &regions {
                 let pt = measures::centroid(c);
@@ -128,38 +128,41 @@ pub(crate) fn execute_geometry_op(
             Ok(NodeOutput::from_vector(coords))
         }
         GeometryOp::BoundingBox => {
-            // Flat interleaved: [x₀, y₀, w₀, h₀, x₁, y₁, w₁, h₁, ...]
-            let all = outlines(&input, op)?;
+            // Flat interleaved: [x₀, y₀, w₀, h₀, x₁, y₁, w₁, h₁, ...]. A
+            // contour with no points has no extent: NaN, which a measure
+            // vector can hold where it cannot hold a null (never a 0x0 box
+            // at the origin, which is not there).
+            let all = outlines(&input)?;
             let mut coords = Vec::with_capacity(all.len() * 4);
             for o in all.iter() {
-                match o.bounding_box() {
-                    Some(bb) => coords.extend_from_slice(&[bb.x, bb.y, bb.width, bb.height]),
-                    None => coords.extend_from_slice(&[0.0, 0.0, 0.0, 0.0]),
-                }
+                coords.extend_from_slice(&match o.bounding_box() {
+                    Some(bb) => [bb.x, bb.y, bb.width, bb.height],
+                    None => [f64::NAN; 4],
+                });
             }
             Ok(NodeOutput::from_vector(coords))
         }
         GeometryOp::Translate { dx, dy } => Ok(NodeOutput::from_contours(
-            outlines(&input, op)?
+            outlines(&input)?
                 .iter()
                 .map(|o| o.map_points(|c| transforms::translate(c, *dx, *dy)))
                 .collect(),
         )),
-        GeometryOp::Scale { sx, sy, origin } => outlines(&input, op)?
+        GeometryOp::Scale { sx, sy, origin } => outlines(&input)?
             .iter()
             .map(|o| transforms::scale_outline(o, *sx, *sy, *origin))
             .collect::<Result<Vec<_>, _>>()
             .map(NodeOutput::from_contours)
             .map_err(str::to_string),
         GeometryOp::Simplify { tolerance } => Ok(NodeOutput::from_contours(
-            outlines(&input, op)?
+            outlines(&input)?
                 .iter()
                 .map(|o| transforms::simplify_outline(o, *tolerance))
                 .collect(),
         )),
         // `k >= 1` is `GeometryOp::check`'s, run as every step resolves.
         GeometryOp::Largest { k } => {
-            let regions = regions(op.name(), outlines(&input, op)?)?;
+            let regions = regions(outlines(&input)?)?;
             Ok(NodeOutput::from_contours(
                 transforms::largest(&regions, *k as usize)
                     .into_iter()
@@ -169,20 +172,20 @@ pub(crate) fn execute_geometry_op(
         }
         // The hull reads only the points, so a line has one too: a region.
         GeometryOp::ConvexHull => Ok(NodeOutput::from_contours(
-            outlines(&input, op)?
+            outlines(&input)?
                 .iter()
                 .map(|o| Outline::Closed(transforms::convex_hull_outline(o)))
                 .collect(),
         )),
         GeometryOp::Boundary => {
             let mut lines = Vec::new();
-            for o in outlines(&input, op)?.iter() {
+            for o in outlines(&input)?.iter() {
                 lines.extend(transforms::boundary_outline(o)?);
             }
             Ok(NodeOutput::from_contours(lines))
         }
         GeometryOp::Offset { distance, join } => {
-            let regions = regions(op.name(), outlines(&input, op)?)?;
+            let regions = regions(outlines(&input)?)?;
             transforms::offset(&regions, *distance, *join)
                 .map(|c| NodeOutput::from_contours(c.into_iter().map(Outline::Closed).collect()))
         }
@@ -192,11 +195,11 @@ pub(crate) fn execute_geometry_op(
                 cap: *cap,
                 join: *join,
             };
-            transforms::stroke(outlines(&input, op)?, &style)
+            transforms::stroke(outlines(&input)?, &style)
                 .map(|c| NodeOutput::from_contours(c.into_iter().map(Outline::Closed).collect()))
         }
         GeometryOp::UnionAll => {
-            let regions = regions(op.name(), outlines(&input, op)?)?;
+            let regions = regions(outlines(&input)?)?;
             Ok(NodeOutput::from_contours(
                 transforms::union_all(&regions)
                     .into_iter()
@@ -205,13 +208,13 @@ pub(crate) fn execute_geometry_op(
             ))
         }
         GeometryOp::Smooth { iterations } => {
-            transforms::smooth(outlines(&input, op)?, *iterations).map(NodeOutput::from_contours)
+            transforms::smooth(outlines(&input)?, *iterations).map(NodeOutput::from_contours)
         }
         GeometryOp::Densify { max_segment_length } => {
-            transforms::densify(outlines(&input, op)?, *max_segment_length)
+            transforms::densify(outlines(&input)?, *max_segment_length)
                 .map(NodeOutput::from_contours)
         }
-        GeometryOp::Close => outlines(&input, op)?
+        GeometryOp::Close => outlines(&input)?
             .iter()
             .map(transforms::close_outline)
             .collect::<Result<Vec<_>, _>>()
@@ -229,13 +232,14 @@ pub(crate) fn execute_region_op(
     input: &NodeOutput,
     other: &NodeOutput,
 ) -> Result<NodeOutput, String> {
-    fn side(op: transforms::RegionOp, output: &NodeOutput) -> Result<Vec<&Contour>, String> {
+    fn side(output: &NodeOutput) -> Result<Vec<&Contour>, String> {
         let outlines = output
             .as_contours()
-            .ok_or_else(|| format!("{} requires Contour input", op.name()))?;
-        regions(op.name(), outlines)
+            .ok_or_else(|| "requires Contour input".to_string())?;
+        regions(outlines)
     }
-    let (a, b) = (side(op, input)?, side(op, other)?);
+    let named = |e: String| format!("{}: {e}", op.name());
+    let (a, b) = (side(input).map_err(named)?, side(other).map_err(named)?);
     Ok(NodeOutput::from_contours(
         transforms::boolean(&a, &b, op)
             .into_iter()
@@ -244,20 +248,20 @@ pub(crate) fn execute_region_op(
     ))
 }
 
-/// The step's contour set, or the domain error naming the op.
-fn outlines<'a>(input: &'a NodeOutput, op: &GeometryOp) -> Result<&'a [Outline], String> {
+/// The step's contour set, or the domain error.
+fn outlines(input: &NodeOutput) -> Result<&[Outline], String> {
     input
         .as_contours()
         .map(|c| c.as_slice())
-        .ok_or_else(|| format!("{} requires Contour input", op.name()))
+        .ok_or_else(|| "requires Contour input".to_string())
 }
 
 /// Every member's region, borrowed, or the one refusal an open contour gets
-/// from a region op (`Outline::region`), named for the op.
-fn regions<'a>(name: &str, outlines: &'a [Outline]) -> Result<Vec<&'a Contour>, String> {
+/// from a region op (`Outline::region`); the step names it.
+fn regions(outlines: &[Outline]) -> Result<Vec<&Contour>, String> {
     outlines
         .iter()
-        .map(|o| o.region().map_err(|e| format!("{name}: {e}")))
+        .map(|o| o.region().map_err(str::to_string))
         .collect()
 }
 

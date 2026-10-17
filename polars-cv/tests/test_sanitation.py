@@ -413,10 +413,11 @@ def test_namespace_plugin_symbols_match_registrations():
     declarations = (
         # `#[polars_expr(...)]` immediately preceding `pub fn <name>` / `fn <name>`.
         r"#\[polars_expr[^\]]*\]\s*(?:pub\s+)?fn\s+([a-z_0-9]+)",
-        # `contour_accessor! { ... <arm> fn <name> / <out_ty> ... }`, which
-        # expands to exactly that pair. The arm names are matched explicitly so
-        # a new arm has to be added here rather than quietly going unscanned.
-        r"(?:^|\n)\s*(?:map|rows|zip)\s+fn\s+([a-z_0-9]+)\s*/",
+        # `contour_accessor! { ... <arm> fn <name> / <out_ty> ... }` and
+        # `op_accessors! { op fn <name> / <out_ty> => ...; }`, each expanding
+        # to exactly that pair. The arm names are matched explicitly so a new
+        # arm has to be added here rather than quietly going unscanned.
+        r"(?:^|\n)\s*(?:map|zip|op)\s+fn\s+([a-z_0-9]+)\s*/",
     )
     for rs in ("contour.rs", "point.rs", "image_metadata.rs", "read_bytes.rs"):
         text = (src / rs).read_text()
