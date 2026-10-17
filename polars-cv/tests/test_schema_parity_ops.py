@@ -38,6 +38,7 @@ from tests._op_cases import (
     LINE,
     OP_CASES,
     SINGLE_CHANNEL_OPS,
+    case_prefix,
     comparable_ops,
 )
 from tests._schema_parity import (
@@ -137,7 +138,7 @@ def test_every_op_plans_what_it_executes(op: str) -> None:
     raising here is a real failure — only the *sink* is allowed to reject.
     """
     domain, kwargs = OP_CASES[op]
-    base = _base(domain, single_channel=op in SINGLE_CHANNEL_OPS)
+    base = case_prefix(op, _base(domain, single_channel=op in SINGLE_CHANNEL_OPS))
     pipe = getattr(base, op)(**kwargs)
     _sweep_sinks(pipe, domain, op)
 
@@ -151,7 +152,7 @@ def test_every_op_plans_what_it_executes(op: str) -> None:
 def test_op_branches_plan_what_they_execute(op: str, domain: str, kwargs: dict) -> None:
     """The branches a single case misses: rotate's fast path, axis reductions,
     rank-changing reshapes, offset-only crop, struct-encoded histogram."""
-    base = _base(domain, single_channel=op in SINGLE_CHANNEL_OPS)
+    base = case_prefix(op, _base(domain, single_channel=op in SINGLE_CHANNEL_OPS))
     pipe = getattr(base, op)(**kwargs)
     _sweep_sinks(pipe, domain, f"{op}-{'-'.join(sorted(kwargs))}")
 

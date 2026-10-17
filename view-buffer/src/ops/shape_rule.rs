@@ -179,8 +179,18 @@ pub enum OpShape {
     },
     /// Axis `axis` removed (a global reduction when `None`); never below rank 1.
     Reduce { axis: Option<usize> },
-    /// The two inputs broadcast together, axis by axis from the last.
-    Broadcast,
+    /// The two inputs' one shape: equal ranks, each axis the size whichever
+    /// input knows. Different ranks, or two different known sizes, have no
+    /// output (nothing broadcasts).
+    Elementwise,
+    /// Axis `0` removed (counted from the end when negative, as NumPy's
+    /// `squeeze(axis=)`): it must be of size 1. No output for an axis outside
+    /// the input's rank, or of a known size other than 1.
+    RemoveAxis(isize),
+    /// A new axis of size 1 at position `0` of the output (counted from the
+    /// end when negative, as NumPy's `expand_dims`). No output for a position
+    /// outside `-(rank + 1)..=rank`.
+    InsertAxis(isize),
     /// `[H, W]` inputs stacked along a new channel axis: `[H, W, n]`, H and W
     /// being whichever input knows them. No other rank, and no two inputs of
     /// different known H or W, has an output.
@@ -214,6 +224,17 @@ pub fn scaled_size(n: usize, t: usize, d: usize) -> usize {
 /// has 24 significant bits).
 pub fn scaled_by(n: usize, s: f32) -> usize {
     ((n as f64 * f64::from(s) + 0.5).floor() as usize).max(1)
+}
+
+/// `axis` as a position among `len`, counted from the end when negative
+/// (NumPy's axis convention); `None` outside `-len..len`.
+pub fn resolve_axis(axis: isize, len: usize) -> Option<usize> {
+    let at = if axis < 0 {
+        len.checked_sub(axis.unsigned_abs())?
+    } else {
+        axis as usize
+    };
+    (at < len).then_some(at)
 }
 
 impl OpShape {
@@ -390,12 +411,26 @@ impl OpShape {
                 Some([h, w, ..]) => vec![*h, *w, Dim::Known(*channels)],
                 _ => return None,
             },
-            // Two known sizes that cannot broadcast have no output: `validate`
-            // refuses them, and no shape is invented for them.
-            OpShape::Broadcast => match inputs {
-                [a, b] => return crate::ops::binary::broadcast_dims(a, b),
+            // Operands of different shapes have no output: `validate` refuses
+            // them, and no shape is invented for them.
+            OpShape::Elementwise => match inputs {
+                [a, b] => return crate::ops::binary::elementwise_dims(a, b),
                 _ => input.to_vec(),
             },
+            OpShape::RemoveAxis(axis) => {
+                let at = resolve_axis(*axis, input.len())?;
+                if input[at].known().is_some_and(|n| n != 1) {
+                    return None;
+                }
+                let mut out = input.to_vec();
+                out.remove(at);
+                out
+            }
+            OpShape::InsertAxis(axis) => {
+                let mut out = input.to_vec();
+                out.insert(resolve_axis(*axis, input.len() + 1)?, Dim::Known(1));
+                out
+            }
         })
     }
 
@@ -421,6 +456,8 @@ impl OpShape {
                     Some(3)
                 }
                 OpShape::InputRank => Some(1),
+                // Both operands have the one rank, so either tells it.
+                OpShape::Elementwise => inputs.iter().flatten().next().copied(),
                 _ => None,
             },
         }
@@ -441,14 +478,19 @@ impl OpShape {
     /// trimmed.
     ///
     /// Positions are counted from the first axis. With one input that is
-    /// sound whatever its rank (every single-input variant reads its input
-    /// from the front: `a_shape_is_rank_stable_past_its_patterns`). With
-    /// several, a shape may align them from the *last* axis (`Broadcast`), so
-    /// an unranked operand's rank would shift every position; sizes are then
+    /// sound whatever its rank for every single-input variant that reads its
+    /// input from the front (`a_shape_is_rank_stable_past_its_patterns`); one
+    /// that places an axis from the end (a negative `RemoveAxis` or
+    /// `InsertAxis`) moves every position after it with the rank, so over an
+    /// unranked input it claims nothing. With several inputs, sizes are
     /// claimed only when the output rank does not depend on the unranked
     /// inputs' ranks.
     pub fn dims_over(&self, inputs: &[PlannedInput<'_>]) -> Vec<Option<usize>> {
         let unranked = |i: &PlannedInput<'_>| matches!(i, PlannedInput::Unranked(_));
+        let from_end = matches!(self, OpShape::RemoveAxis(a) | OpShape::InsertAxis(a) if *a < 0);
+        if from_end && inputs.iter().any(unranked) {
+            return Vec::new();
+        }
         if inputs.len() > 1 && inputs.iter().any(unranked) {
             let ranks: Vec<Option<usize>> = inputs.iter().map(PlannedInput::rank).collect();
             if self.rank(&ranks).is_none() {
@@ -792,7 +834,11 @@ mod symbolic_tests {
             OpShape::Reduce { axis: None },
             OpShape::Reduce { axis: Some(0) },
             OpShape::Reduce { axis: Some(3) },
-            OpShape::Broadcast,
+            OpShape::Elementwise,
+            OpShape::RemoveAxis(-1),
+            OpShape::RemoveAxis(0),
+            OpShape::InsertAxis(-1),
+            OpShape::InsertAxis(1),
             OpShape::StackChannels(2),
             OpShape::InputRank,
             OpShape::Canvas { of: 1, channels: 1 },
@@ -821,7 +867,9 @@ mod symbolic_tests {
                 | OpShape::Transpose(_)
                 | OpShape::Crop { .. }
                 | OpShape::Reduce { .. }
-                | OpShape::Broadcast
+                | OpShape::Elementwise
+                | OpShape::RemoveAxis(_)
+                | OpShape::InsertAxis(_)
                 | OpShape::StackChannels(_)
                 | OpShape::InputRank
                 | OpShape::Canvas { .. }
@@ -912,7 +960,7 @@ mod symbolic_tests {
     fn an_unranked_operand_claims_only_what_every_rank_keeps() {
         use PlannedInput::{Ranked, Unranked};
         let two_input = [
-            OpShape::Broadcast,
+            OpShape::Elementwise,
             OpShape::StackChannels(2),
             OpShape::Canvas { of: 1, channels: 1 },
         ];

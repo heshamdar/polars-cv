@@ -9,6 +9,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`squeeze(axis)` and `expand_dims(axis)`**: remove an axis of size 1, or
+  insert one, as zero-copy views (`ViewOp::Squeeze`/`ExpandDims`, shapes
+  `OpShape::RemoveAxis`/`InsertAxis`). A negative axis counts from the end,
+  as NumPy's. Unlike `reshape` they need no sizes, so they change the rank of
+  an image whose height and width are known only per row; `squeeze` refuses
+  an axis of a known size other than 1, and either refuses an axis outside
+  the rank, at build. Planned over an input of unknown rank, a negative axis
+  claims no sizes (every position after it moves with the rank). The array
+  sink's shape-mismatch error had long told users to call these two; now
+  they exist.
+
 - **A second logo: a halftone polar bear**
   (`docs/assets/logo/halftone_logo.py`). The bear's face is a table of polar
   curves `r(θ)` evaluated by a polars query (`int_ranges`, expressions,
@@ -135,6 +146,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   is refused, as is an output that is neither a format nor `(format, {params})`.
 
 ### Changed
+
+- **Binary ops no longer broadcast: both operands must have the same shape**
+  (breaking). `add`, `subtract`, `multiply`, `divide`, `blend`, `maximum`,
+  `minimum` and the bitwise ops used NumPy broadcasting, aligned from the last
+  axis. `[H, W, 1]` against `[H, W]` therefore became `[H, W, W]` on a square
+  canvas (4 GB of f32 at 1024 px) and an error on any other, and a
+  `[H, W, 1]` operand stretched silently over `[H, W, 3]`. Operands of
+  different shapes are now refused (`OpShape::Elementwise`,
+  `elementwise_dims`): at build where the sizes are known, per row where they
+  are not. Change a rank with the new `squeeze`/`expand_dims`. `apply_mask`
+  keeps spreading a single-channel mask over the channels, as its contract,
+  and now does so for a `[H, W, 1]` mask itself rather than through
+  broadcasting. The broadcast half of the binary kernel (per-operand repeat
+  blocks, `broadcast_shapes`, `ViewBuffer::leading_axes`) is deleted with
+  it. An `extract_shape()` vector added to an image is now refused at build
+  rather than at execution.
 
 - **`footprint="disk"` erode/dilate/morphology are linear in the radius**
   (CR-105). Each half-width's spans were a separate full-size image, built

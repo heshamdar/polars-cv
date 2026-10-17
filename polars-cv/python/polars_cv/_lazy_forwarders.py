@@ -325,6 +325,13 @@ class _LazyForwardersMixin:
             )
         )
 
+    def expand_dims(self, axis: int) -> LazyPipelineExpr:
+        """Insert an axis of size 1: `[H, W]` to `[H, W, 1]` with `axis=-1`. The
+
+        Lazy form of :meth:`Pipeline.expand_dims` on this expression's output.
+        """
+        return self.pipe(self._continuation().expand_dims(axis=axis))
+
     def extract_contours(
         self,
         *,
@@ -921,6 +928,13 @@ class _LazyForwardersMixin:
         Lazy form of :meth:`Pipeline.square` on this expression's output.
         """
         return self.pipe(self._continuation().square())
+
+    def squeeze(self, axis: int) -> LazyPipelineExpr:
+        """Remove an axis of size 1: `[H, W, 1]` to `[H, W]` with `axis=-1`. The
+
+        Lazy form of :meth:`Pipeline.squeeze` on this expression's output.
+        """
+        return self.pipe(self._continuation().squeeze(axis=axis))
 
     def stroke(
         self,

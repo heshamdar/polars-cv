@@ -41,8 +41,7 @@ from tests._op_cases import (
     BUFFER,
     EXTRA_CASES,
     OP_CASES,
-    SINGLE_CHANNEL_OPS,
-    base_pipeline,
+    case_base,
 )
 from tests._plan_view import planned
 from tests.conftest import make_image_png
@@ -174,10 +173,7 @@ def _sink(pipe: Pipeline) -> str:
 def _op_case(method: str, domain: str, kwargs: dict) -> Callable[[], Outcome]:
     def run() -> Outcome:
         try:
-            base = base_pipeline(domain)
-            if method in SINGLE_CHANNEL_OPS:
-                base = base.grayscale()
-            pipe = getattr(base, method)(**kwargs)
+            pipe = getattr(case_base(method, domain), method)(**kwargs)
         except Exception as exc:  # noqa: BLE001
             return {"error": type(exc).__name__}
         return _execute(_image_frame(), _IMAGE, pipe, _sink(pipe))

@@ -166,6 +166,7 @@ impl ViewExpr {
                     self.transpose(perm).flip(vec![0])
                 }
                 ViewOp::ChannelSelect { index } => self.channel_select(index as usize),
+                ViewOp::Squeeze { .. } | ViewOp::ExpandDims { .. } => self.view_node(view),
             },
             ViewDto::Compute(compute) => match compute.lowered() {
                 // A cast's strides depend on its source dtype; every other

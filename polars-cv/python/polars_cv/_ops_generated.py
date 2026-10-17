@@ -465,6 +465,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "divide",
         "equalize_histogram",
         "erode",
+        "expand_dims",
         "extract_contours",
         "extract_shape",
         "flip",
@@ -510,6 +511,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "sign",
         "sqrt",
         "square",
+        "squeeze",
         "subtract",
         "subtract_constant",
         "symmetric_difference",
@@ -790,6 +792,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "variants": ["square", "disk"],
         },
     },
+    "expand_dims": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
     "extract_contours": {
         "mode": {
             "kind": "scalar",
@@ -1109,6 +1112,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "sign": {},
     "sqrt": {},
     "square": {},
+    "squeeze": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
     "subtract": {"other": {"kind": "node"}},
     "subtract_constant": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "symmetric_difference": {"other": {"kind": "node"}},
@@ -1261,6 +1265,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     ],
     "equalize_histogram": [{"input": "buffer", "output": "buffer"}],
     "erode": [{"input": "buffer", "output": "buffer"}],
+    "expand_dims": [{"input": "buffer", "output": "buffer"}],
     "extract_contours": [{"input": "buffer", "output": "contour"}],
     "extract_shape": [{"input": "buffer", "output": "vector"}],
     "flip": [{"input": "buffer", "output": "buffer"}],
@@ -1353,6 +1358,7 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "sign": [{"input": "buffer", "output": "buffer"}],
     "sqrt": [{"input": "buffer", "output": "buffer"}],
     "square": [{"input": "buffer", "output": "buffer"}],
+    "squeeze": [{"input": "buffer", "output": "buffer"}],
     "subtract": [
         {"input": "buffer", "output": "buffer"},
         {"input": "vector", "output": "vector"},
@@ -2134,6 +2140,21 @@ class _OpsMixin:
             "erode", {"ksize": ksize, "iterations": iterations, "footprint": footprint}
         )
 
+    def expand_dims(self, axis: int) -> Pipeline:
+        """Insert an axis of size 1: `[H, W]` to `[H, W, 1]` with `axis=-1`. The
+        same elements in the same order, with no copy.
+
+        Domain: buffer → buffer
+
+        Args:
+            axis: Where the new axis goes in the output, counted from the end when
+                negative.
+
+        Example:
+            >>> pipe = Pipeline().source("array").expand_dims(-1)
+        """
+        return self._append_typed("expand_dims", {"axis": axis})
+
     def extract_contours(
         self,
         *,
@@ -2902,6 +2923,21 @@ class _OpsMixin:
         Domain: buffer → buffer
         """
         return self._append_typed("square", {})
+
+    def squeeze(self, axis: int) -> Pipeline:
+        """Remove an axis of size 1: `[H, W, 1]` to `[H, W]` with `axis=-1`. The
+        same elements in the same order, with no copy. An axis of another size
+        is refused.
+
+        Domain: buffer → buffer
+
+        Args:
+            axis: The axis to remove, counted from the end when negative.
+
+        Example:
+            >>> pipe = Pipeline().source("array").squeeze(-1)
+        """
+        return self._append_typed("squeeze", {"axis": axis})
 
     def subtract_constant(self, value: FloatOrExpr) -> Pipeline:
         """Subtract a constant from every value (`x - value`).

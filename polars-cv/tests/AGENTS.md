@@ -167,7 +167,7 @@ Three claims are checked per case, and **none implies the others**:
    parameter the kernel ignores — a comparison against the literal path
    cannot, since it would be ignored there too);
 3. a row's result is the same alone as inside a batch (morsel boundaries,
-   broadcasting, the compiled-graph cache).
+   a length-1 parameter column, the compiled-graph cache).
 
 `test_every_expression_parameter_has_a_case` reads the eligible parameters
 off `Pipeline`'s live signatures — an annotation admitting `pl.Expr` — so a

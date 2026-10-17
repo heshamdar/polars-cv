@@ -242,7 +242,8 @@ draws the bear with no hand-placed points and no outline at all:
 3. The muzzle's dots take a second index, the eyes and nose are voids cut
    from the dots, and `apply_lut` colours the map as above.
 
-One trap the halftone avoids: `channel_select` returns `[H, W]`, while
-`rasterize` returns `[H, W, 1]`. Element-wise ops broadcast like NumPy, so
-combining the two broadcasts to `[H, W, W]` on a square canvas (the trailing
-`W` matches `1`), not an error. Bring every layer to the same rank first.
+`channel_select` returns `[H, W]`, while `rasterize` returns `[H, W, 1]`.
+The binary ops need operands of one shape (NumPy would broadcast the pair to
+`[H, W, W]` on a square canvas), so the halftone brings every layer to rank 2
+with `channel_select(0)`; `squeeze(-1)` and `expand_dims(-1)` do the same
+where a layer's channel axis is all that differs.

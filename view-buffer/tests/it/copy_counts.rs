@@ -718,24 +718,19 @@ fn all_allocations<R>(f: impl FnOnce() -> R) -> usize {
     large_allocations(1, f).1
 }
 
-/// The binary op cases at height `h`: every pair of operand layouts, for two
-/// dtype pairs (one zipped directly, one converted a block at a time), and a
-/// `[h, w, 1]` operand broadcast across the channels.
+/// The binary op cases at height `h`: every pair of operand layouts, for
+/// three dtype pairs (one zipped directly, two converted a block at a time).
 fn binary_cases(h: usize) -> Vec<(String, ViewBuffer, ViewBuffer)> {
     let w = 24;
     let mut cases = Vec::new();
-    for (da, db, tb) in [
-        (DType::U8, DType::U8, 3),
-        (DType::U8, DType::U16, 3),
-        (DType::F32, DType::F32, 1),
+    for (da, db) in [
+        (DType::U8, DType::U8),
+        (DType::U8, DType::U16),
+        (DType::F32, DType::F64),
     ] {
         for (la, a) in operand_layouts(h, w, &[3], da) {
-            for (lb, b) in operand_layouts(h, w, &[tb], db) {
-                cases.push((
-                    format!("{da:?} {la} with {db:?} [h, w, {tb}] {lb}"),
-                    a.clone(),
-                    b,
-                ));
+            for (lb, b) in operand_layouts(h, w, &[3], db) {
+                cases.push((format!("{da:?} {la} with {db:?} {lb}"), a.clone(), b));
             }
         }
     }
@@ -743,7 +738,7 @@ fn binary_cases(h: usize) -> Vec<(String, ViewBuffer, ViewBuffer)> {
 }
 
 /// How many allocations a binary op makes does not depend on the size of its
-/// operands, for every layout, dtype pair and broadcast: a row table or a
+/// operands, for every layout and dtype pair: a row table or a
 /// scratch buffer rebuilt per row or per block grows with the input, and is
 /// work no output shows. (Building every row's slice for each block made a
 /// tall view 58x slower than packing it.)

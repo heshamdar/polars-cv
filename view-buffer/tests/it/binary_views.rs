@@ -3,8 +3,8 @@
 //!
 //! `zip_with` has three ways in (contiguous slices, packed rows, a strided
 //! walk), so the operand pairs here reach each one: both contiguous, both
-//! crops or flips, mixed layouts, a transpose, a broadcast from a view, and
-//! operands of two dtypes.
+//! crops or flips, mixed layouts, a transpose, and operands of two dtypes.
+//! The operands of a binary op have one shape: nothing broadcasts.
 
 use view_buffer::core::dtype::ViewType;
 use view_buffer::{apply_mask, BinaryOp, ViewBuffer};
@@ -65,20 +65,6 @@ fn a_binary_op_reads_any_pair_of_views_as_their_packed_copies() {
         for (lb, b) in layouts(&base_b, h, w, c) {
             for op in &OPS {
                 assert_same(op, &a, &b, &format!("{la} with {lb}"));
-            }
-        }
-    }
-}
-
-#[test]
-fn a_binary_op_broadcasts_from_a_view() {
-    let (h, w, c) = (13, 9, 3);
-    let base = image::<f32>(&[24, 24, c], 3);
-    let mask_base = image::<f32>(&[24, 24, 1], 4);
-    for (la, a) in layouts(&base, h, w, c) {
-        for (lm, m) in layouts(&mask_base, h, w, 1) {
-            for op in &OPS {
-                assert_same(op, &a, &m, &format!("{la} with a {lm} [h, w, 1] operand"));
             }
         }
     }
@@ -153,22 +139,19 @@ fn views_of(shape: &[usize], seed: usize, dtype: view_buffer::DType) -> Vec<(Str
     out
 }
 
-/// Every shape pairing the reader walks differently, beyond rank 3: rank 1,
-/// 2 and 4, an operand of lower rank broadcast against a higher one (a row,
-/// a channel vector, a scalar-like `[1]`), and empty axes. Each operand in
-/// every layout, in two dtype pairs, against the packed copies.
+/// Every shape the reader walks differently, beyond rank 3: rank 1, 2 and
+/// 4, size-1 axes, and empty axes. Each operand in every layout, in two
+/// dtype pairs, against the packed copies.
 #[test]
-fn a_binary_op_reads_views_of_any_rank_and_broadcast_as_their_packed_copies() {
-    let pairs: [(&[usize], &[usize]); 9] = [
+fn a_binary_op_reads_views_of_any_rank_as_their_packed_copies() {
+    let pairs: [(&[usize], &[usize]); 7] = [
         (&[37], &[37]),
         (&[11, 7], &[11, 7]),
-        (&[11, 7], &[7]),
         (&[3, 5, 4, 2], &[3, 5, 4, 2]),
-        (&[9, 6, 3], &[6, 3]),
-        (&[9, 6, 3], &[3]),
-        (&[9, 6, 3], &[1]),
+        (&[9, 6, 3], &[9, 6, 3]),
+        (&[9, 1, 3], &[9, 1, 3]),
         (&[0, 5, 3], &[0, 5, 3]),
-        (&[4, 0, 3], &[0, 3]),
+        (&[4, 0, 3], &[4, 0, 3]),
     ];
     use view_buffer::DType::{F32, F64, I16, U8};
     let mut strided = 0;

@@ -1326,23 +1326,59 @@ impl ViewBuffer {
         }
     }
 
-    /// This view's first `n` axes, the rest (each of size 1) dropped: the
-    /// same elements, in the same order.
+    /// This view without axis `axis`, which is of size 1: the same elements,
+    /// in the same order, with no copy.
     ///
     /// # Panics
-    /// Panics if a dropped axis is not of size 1.
-    pub(crate) fn leading_axes(&self, n: usize) -> Self {
+    /// Panics if `axis` is not an axis of size 1.
+    pub fn remove_axis(&self, axis: usize) -> Self {
         let layout = &self.layout;
         assert!(
-            layout.shape[n..].iter().all(|&d| d == 1),
-            "leading_axes: {:?} has an axis beyond {n} not of size 1",
+            layout.shape.get(axis) == Some(&1),
+            "remove_axis: axis {axis} of {:?} is not of size 1",
             layout.shape
         );
+        let mut shape = layout.shape.clone();
+        let mut strides = layout.strides.clone();
+        shape.remove(axis);
+        strides.remove(axis);
         Self {
             data: self.data.clone(),
             layout: Layout {
-                shape: Dims::from_slice(&layout.shape[..n]),
-                strides: Strides::from_slice(&layout.strides[..n]),
+                shape,
+                strides,
+                offset: layout.offset,
+                dtype: layout.dtype,
+            },
+        }
+    }
+
+    /// This view with a new axis of size 1 at position `axis` (`0..=rank`):
+    /// the same elements, in the same order, with no copy. The new axis takes
+    /// the stride a packed layout gives it, so a contiguous view stays one.
+    ///
+    /// # Panics
+    /// Panics if `axis` is past the rank.
+    pub fn insert_axis(&self, axis: usize) -> Self {
+        let layout = &self.layout;
+        assert!(
+            axis <= layout.shape.len(),
+            "insert_axis: position {axis} is past the rank of {:?}",
+            layout.shape
+        );
+        let stride = match layout.shape.get(axis) {
+            Some(&n) => layout.strides[axis] * n as isize,
+            None => layout.dtype.size_of() as isize,
+        };
+        let mut shape = layout.shape.clone();
+        let mut strides = layout.strides.clone();
+        shape.insert(axis, 1);
+        strides.insert(axis, stride);
+        Self {
+            data: self.data.clone(),
+            layout: Layout {
+                shape,
+                strides,
                 offset: layout.offset,
                 dtype: layout.dtype,
             },
