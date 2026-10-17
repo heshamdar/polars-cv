@@ -406,7 +406,7 @@ pub enum Outline {
 /// one wording, so every region op (a pipeline op or a `.contour` accessor)
 /// refuses a line the same way.
 pub const NO_REGION: &str = "an open contour (is_closed = false) has no region; \
-                             close() it first, or use a boundary measure";
+                             close() or stroke() it first, or use a boundary measure";
 
 impl Outline {
     /// The region this outline bounds: a closed outline's contour. An open

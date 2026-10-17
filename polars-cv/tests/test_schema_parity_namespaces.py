@@ -182,6 +182,8 @@ CONTOUR_CASES: dict[str, object] = {
     # Set-level: a region can split or merge, so always a set.
     "offset": lambda: pl.col("aset").contour.offset(1.5),
     "union_all": lambda: pl.col("aset").contour.union_all(),
+    # Set-level: the strokes' union, regions and lines alike.
+    "stroke": lambda: pl.col("o").contour.stroke(width=2.0),
     # Set-level on both sides, like `pairwise_iou`: always a set.
     "union": lambda: pl.col("aset").contour.union(pl.col("bset")),
     "intersection": lambda: pl.col("aset").contour.intersection(pl.col("bset")),

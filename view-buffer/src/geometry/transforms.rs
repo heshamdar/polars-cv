@@ -893,49 +893,48 @@ pub fn densify(outline: &Outline, max_segment_length: f64) -> Result<Outline, St
     })
 }
 
-/// How `rasterize` draws a set's open lines.
+/// How `stroke()` draws a path: its width, ends and corners.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Stroke {
     /// The stroke's full width, in pixels.
     pub width: f64,
-    /// How each end is drawn.
+    /// How each end of an open path is drawn.
     pub cap: LineCap,
     /// How each corner is turned.
     pub join: LineJoin,
 }
 
 impl Stroke {
-    /// The one rule for `line_width`.
+    /// The one rule for `width`.
     pub fn check_width(width: f64) -> Result<(), String> {
         if width.is_finite() && width > 0.0 {
             Ok(())
         } else {
             Err(format!(
-                "rasterize: line_width must be a finite width > 0, got {width}"
+                "stroke: width must be a finite width > 0, got {width}"
             ))
         }
     }
 }
 
-/// The region a stroked line covers: every point within `width / 2` of it
-/// (round caps and joins), or that band with its ends and corners shaped by
-/// `cap` and `join`. A one-point line is a dot (none, for a butt cap). A line
-/// that returns to its first point has no ends: its start is a corner like
-/// the others, and `cap` draws nothing.
-pub fn stroke(line: &[Point], style: &Stroke) -> Result<Vec<Contour>, String> {
-    Stroke::check_width(style.width)?;
+/// The region one path covers when stroked: every point within `width / 2`
+/// of it (round caps and joins), or that band with its ends and corners
+/// shaped by `cap` and `join`. A closed path has no ends, so `cap` draws
+/// nothing: its start is a corner like the others. A one-point open path is
+/// a dot (none, for a butt cap).
+fn stroke_path(points: &[Point], closed: bool, style: &Stroke) -> Vec<Contour> {
     let radius = style.width / 2.0;
-    if line.len() > 2 && line.first() == line.last() {
+    if closed {
         // geo strokes every line string as an open path, capping where a loop
         // starts; `i_overlay` (under it) strokes a closed path, joined there.
         use i_overlay::mesh::stroke::offset::StrokeOffset;
         use i_overlay::mesh::style::StrokeStyle;
-        let path: Vec<[f64; 2]> = line[..line.len() - 1].iter().map(|p| [p.x, p.y]).collect();
+        let path: Vec<[f64; 2]> = points.iter().map(|p| [p.x, p.y]).collect();
         let shapes = path.stroke(
             StrokeStyle::new(style.width).line_join(geo_join(style.join, radius)),
             true,
         );
-        return Ok(shapes
+        return shapes
             .iter()
             .filter_map(|shape| {
                 let mut rings = shape
@@ -943,19 +942,41 @@ pub fn stroke(line: &[Point], style: &Stroke) -> Result<Vec<Contour>, String> {
                     .map(|ring| ring.iter().map(|&[x, y]| Point::new(x, y)).collect());
                 Some(Contour::with_holes(rings.next()?, rings.collect()))
             })
-            .collect());
+            .collect();
     }
     let cap = match style.cap {
         LineCap::Round => GeoCap::Round(arc_step(radius)),
         LineCap::Square => GeoCap::Square,
         LineCap::Butt => GeoCap::Butt,
     };
-    let buffered = line_to_geo(line).buffer_with_style(
+    let buffered = line_to_geo(points).buffer_with_style(
         BufferStyle::new(radius)
             .line_cap(cap)
             .line_join(geo_join(style.join, radius)),
     );
-    Ok(regions_of(&buffered))
+    regions_of(&buffered)
+}
+
+/// `stroke()`: the region a set's paths cover when stroked, as disjoint
+/// regions (always a set). Every member is read as its outline: an open line
+/// with `cap` at its ends (or, returning to its first point, as a closed
+/// path), a region's rings each as a closed path. A region is not filled:
+/// `stroke(...).rasterize()` draws outlines, and a filled region is
+/// rasterized as itself.
+pub fn stroke<O: Borrow<Outline>>(outlines: &[O], style: &Stroke) -> Result<Vec<Contour>, String> {
+    Stroke::check_width(style.width)?;
+    let mut parts = Vec::new();
+    for outline in outlines {
+        for (points, closed) in outline.borrow().paths() {
+            let loop_line = !closed && points.len() > 2 && points.first() == points.last();
+            parts.extend(if loop_line {
+                stroke_path(&points[..points.len() - 1], true, style)
+            } else {
+                stroke_path(points, closed, style)
+            });
+        }
+    }
+    Ok(union_all(&parts))
 }
 
 #[cfg(test)]
@@ -1086,30 +1107,37 @@ mod shaping_tests {
 
     #[test]
     fn stroke_closed_forms() {
-        let line = [Point::new(3.0, 6.0), Point::new(13.0, 6.0)];
+        let line = Outline::Open(vec![Point::new(3.0, 6.0), Point::new(13.0, 6.0)]);
         let style = |cap| Stroke {
             width: 2.0,
             cap,
             join: LineJoin::Round,
         };
-        let butt = total_area(&stroke(&line, &style(LineCap::Butt)).unwrap());
-        assert!((butt - 20.0).abs() < 1e-6);
-        let square = total_area(&stroke(&line, &style(LineCap::Square)).unwrap());
-        assert!((square - 24.0).abs() < 1e-6);
-        let round = total_area(&stroke(&line, &style(LineCap::Round)).unwrap());
+        let area_of = |o: &Outline, cap| total_area(&stroke(&[o], &style(cap)).unwrap());
+        assert!((area_of(&line, LineCap::Butt) - 20.0).abs() < 1e-6);
+        assert!((area_of(&line, LineCap::Square) - 24.0).abs() < 1e-6);
+        let round = area_of(&line, LineCap::Round);
         let exact = 20.0 + std::f64::consts::PI;
         assert!(
             round <= exact + 1e-6 && round > exact - 2.0 * std::f64::consts::PI * ARC_TOLERANCE
         );
-        assert!(stroke(
-            &line,
-            &Stroke {
-                width: 0.0,
-                ..style(LineCap::Round)
-            }
-        )
-        .is_err());
-        let dot = stroke(&line[..1], &style(LineCap::Butt)).unwrap();
-        assert!(dot.is_empty());
+        let zero = Stroke {
+            width: 0.0,
+            ..style(LineCap::Round)
+        };
+        assert!(stroke(&[&line], &zero).is_err());
+        let dot = Outline::Open(vec![Point::new(3.0, 6.0)]);
+        assert!(stroke(&[dot], &style(LineCap::Butt)).unwrap().is_empty());
+        // A region's ring is a closed path: a 10x10 square's band of width 2
+        // is 12x12 minus 8x8 with miter corners, and no cap applies.
+        let square = Outline::Closed(rect(0.0, 0.0, 10.0, 10.0));
+        let ring = Stroke {
+            join: LineJoin::Miter,
+            ..style(LineCap::Round)
+        };
+        let band = stroke(&[square], &ring).unwrap();
+        assert_eq!(band.len(), 1);
+        assert_eq!(band[0].holes.len(), 1);
+        assert!((total_area(&band) - (144.0 - 64.0)).abs() < 1e-6);
     }
 }

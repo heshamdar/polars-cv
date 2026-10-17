@@ -130,11 +130,12 @@ OP_CASES: dict[str, tuple[str, dict] | None] = {
     "scale_contour": (CONTOUR, {"sx": 2.0, "sy": 2.0}),
     "simplify": (CONTOUR, {"tolerance": 1.0}),
     "smooth": (CONTOUR, {"iterations": 2}),
+    "stroke": (LINE, {"width": 3.0, "cap": "square"}),
     "translate": (CONTOUR, {"dx": 1.0, "dy": 2.0}),
     "union_all": (CONTOUR, {}),
-    # --- not comparable by this harness -----------------------------------
     "boundary": (CONTOUR, {}),
     "close": (LINE, {}),
+    # --- not comparable by this harness -----------------------------------
     "assert_shape": None,  # sets hints directly; covered by its own test
     "label_reduce": None,  # takes a contour *column*, not a plain value
     "on_error": None,  # graph-level policy, appends no op
@@ -160,12 +161,8 @@ EXTRA_CASES: list[tuple[str, str, dict]] = [
     # crop with only an offset, and histogram's struct-encoded output.
     ("crop", BUFFER, {"top": 10, "left": 20}),
     ("histogram", BUFFER, {"bins": 8, "output": "buckets"}),
-    # rasterize strokes a set's lines (CR-98): the line base reaches it.
-    (
-        "rasterize",
-        LINE,
-        {"width": 32, "height": 32, "line_width": 3.0, "cap": "square"},
-    ),
+    # stroke reads a region's rings too: the traced base reaches that path.
+    ("stroke", CONTOUR, {"width": 2.0, "join": "miter"}),
     # The float-promoting scalar ops asked to land somewhere other than the
     # promoted float. `out_dtype` was silently discarded — accepted, serialized
     # into the op's identity, and read by no `resolve_op` arm and no dtype rule

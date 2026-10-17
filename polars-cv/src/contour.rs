@@ -566,6 +566,37 @@ fn contour_offset(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series>
     )
 }
 
+/// Each row's paths stroked, as disjoint regions in a set (the pipeline op's
+/// definition, `GeometryOp::Stroke`): lines and regions' rings alike.
+#[polars_expr(output_type_func=contour_set_output_type)]
+fn contour_stroke(inputs: &[Series], kwargs: GeomKwargs) -> PolarsResult<Series> {
+    const NAME: &str = "contour_stroke";
+    let (op, params) = GeomParams::parse::<GeometryOp<Wire>>(inputs, kwargs, NAME)?;
+    let GeometryOp::Stroke { width, cap, join } = &op else {
+        return Err(parsed_as_another(NAME));
+    };
+    let contours = ContourColumn::new(&inputs[0]);
+    let rows = params.map_rows(inputs[0].len(), |params, i| {
+        let Some(row) = contours.outlines(i)? else {
+            return Ok(None);
+        };
+        let style = transforms::Stroke {
+            width: params.value(width, i)?,
+            cap: params.value(cap, i)?,
+            join: params.value(join, i)?,
+        };
+        transforms::stroke(&row, &style)
+            .map(Some)
+            .map_err(|e| polars_err!(ComputeError: "{} (row {})", e, i))
+    })?;
+    Contour::column(
+        inputs[0].name().clone(),
+        rows,
+        Arity::Set,
+        &contour_struct_dtype(),
+    )
+}
+
 /// Each row's regions as their union's disjoint regions, a set (the
 /// pipeline op's definition, `GeometryOp::UnionAll`).
 #[polars_expr(output_type_func=contour_set_output_type)]

@@ -1562,9 +1562,12 @@ def _rasterize_params(draw: st.DrawFn, x: Any) -> Params:
         "width": draw(st.integers(1, 32), label="width"),
         "height": draw(st.integers(1, 32), label="height"),
         "supersample": draw(st.sampled_from([1, 1, 2, 3, 4]), label="supersample"),
-        # A traced region ignores these (lines are stroked, regions filled);
-        # drawn so every spelling crosses the wire and the plan.
-        "line_width": draw(_nice(0.5, 6), label="line_width"),
+    }
+
+
+def _stroke_params(draw: st.DrawFn, x: Any) -> Params:
+    return {
+        "width": draw(_nice(0.5, 6), label="width"),
         "cap": draw(st.sampled_from(["round", "square", "butt"]), label="cap"),
         "join": draw(st.sampled_from(["round", "miter", "bevel"]), label="join"),
     }
@@ -2312,6 +2315,7 @@ OPS: dict[str, OpSpec] = {
                 ("boundary", _no_params, "contour"),
                 ("offset", _offset_params, "contour"),
                 ("union_all", _no_params, "contour"),
+                ("stroke", _stroke_params, "contour"),
                 (
                     "smooth",
                     lambda draw, x: {"iterations": draw(st.integers(0, 3))},

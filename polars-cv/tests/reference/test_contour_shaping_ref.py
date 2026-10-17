@@ -5,8 +5,9 @@
 * ``union_all()`` is that union as disjoint regions, a set.
 * ``smooth(iterations=)`` is Chaikin's corner cutting; ``densify(max_segment_length=)``
   splits each edge into ``ceil(L / max)`` equal parts.
-* ``rasterize(line_width=, cap=, join=)`` strokes the set's open lines
-  (regions are filled, as before), with ``supersample`` applying to both.
+* ``stroke(width=, cap=, join=)`` is the region each member's path covers
+  (a line with caps, a region's rings as closed paths), as disjoint regions;
+  ``rasterize`` fills it, with ``supersample``.
 
 Oracles, each independent of the engine:
 
@@ -500,6 +501,22 @@ class TestDensify:
 # ---------------------------------------------------------------------------
 
 
+def _stroked(
+    contours: list[dict], w: int, h: int, *, supersample: int = 1, **stroke
+) -> np.ndarray:
+    """``stroke(**stroke)`` of the set, filled by ``rasterize``."""
+    pipe = (
+        Pipeline()
+        .source("contour")
+        .stroke(**stroke)
+        .rasterize(width=w, height=h, supersample=supersample)
+    )
+    out = _frame(contours).select(pl.col("c").cv.pipe(pipe).sink("numpy"))
+    (mask,) = numpy_from_column(out.to_series(), copy=True)
+    assert mask is not None and mask.shape == (h, w, 1)
+    return mask[:, :, 0]
+
+
 class TestStroke:
     @pytest.mark.parametrize("width", [1.0, 2.5, 4.0])
     @pytest.mark.parametrize("n", [1, 3])
@@ -511,13 +528,13 @@ class TestStroke:
         path = rng.uniform(4, 36, (6, 2))
         w, h = 40, 40
         s = _segment_distance(_samples(w, h, n), path, closed=False) - width / 2
-        got = _mask([_line(path)], w, h, line_width=width, supersample=n)
+        got = _stroked([_line(path)], w, h, width=width, supersample=n)
         _assert_band(got, s, n)
 
     def test_a_loop_line_is_a_band_round_its_ring(self) -> None:
         loop = [*SQUARE, SQUARE[0]]
         s = _segment_distance(_samples(20, 20, 2), np.array(loop, float), False) - 1.5
-        _assert_band(_mask([_line(loop)], 20, 20, line_width=3.0, supersample=2), s, 2)
+        _assert_band(_stroked([_line(loop)], 20, 20, width=3.0, supersample=2), s, 2)
 
     @pytest.mark.parametrize("cap", ["butt", "round", "square"])
     @pytest.mark.parametrize("join", ["miter", "bevel"])
@@ -531,20 +548,20 @@ class TestStroke:
         x0, y0, x1, y1 = 4, 4, 16, 16
         corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
         reference = [(10, y0), *corners[1:], corners[0], (10, y0)]
-        want = _mask([_line(reference)], 20, 20, line_width=4.0, cap="butt", join=join)
+        want = _stroked([_line(reference)], 20, 20, width=4.0, cap="butt", join=join)
         for k in range(4):
             loop = [*corners[k:], *corners[:k], corners[k]]
-            got = _mask([_line(loop)], 20, 20, line_width=4.0, cap=cap, join=join)
+            got = _stroked([_line(loop)], 20, 20, width=4.0, cap=cap, join=join)
             np.testing.assert_array_equal(got, want, err_msg=f"starting at corner {k}")
 
     def test_a_single_point_with_round_caps_is_a_disc(self) -> None:
         s = np.hypot(*(_samples(12, 12, 2) - (6.2, 5.9)).T) - 2.5
-        got = _mask([_line([(6.2, 5.9)])], 12, 12, line_width=5.0, supersample=2)
+        got = _stroked([_line([(6.2, 5.9)])], 12, 12, width=5.0, supersample=2)
         _assert_band(got, s, 2)
 
     @pytest.mark.parametrize(("cap", "x0", "x1"), [("butt", 3, 13), ("square", 2, 14)])
     def test_flat_caps_on_the_grid_are_exact(self, cap: str, x0: int, x1: int) -> None:
-        got = _mask([_line([(3, 6), (13, 6)])], 16, 10, line_width=2.0, cap=cap)
+        got = _stroked([_line([(3, 6), (13, 6)])], 16, 10, width=2.0, cap=cap)
         want = np.zeros((10, 16), np.uint8)
         want[5:7, x0:x1] = 255
         np.testing.assert_array_equal(got, want)
@@ -559,66 +576,95 @@ class TestStroke:
         [("miter", 80.0), ("round", 76.0 + math.pi), ("bevel", 78.0)],
     )
     def test_joins_fill_their_closed_form(self, join: str, area: float) -> None:
-        got = _mask(
+        got = _stroked(
             [_line(self.L_PATH)], 20, 20,
-            line_width=4.0, cap="butt", join=join, supersample=16,
+            width=4.0, cap="butt", join=join, supersample=16,
         )  # fmt: skip
         assert got.sum() / 255 == pytest.approx(area, abs=0.25)
 
     def test_a_miter_join_on_the_grid_is_exact(self) -> None:
-        got = _mask(
-            [_line(self.L_PATH)], 20, 20, line_width=4.0, cap="butt", join="miter"
+        got = _stroked(
+            [_line(self.L_PATH)], 20, 20, width=4.0, cap="butt", join="miter"
         )
         want = np.zeros((20, 20), np.uint8)
         want[4:8, 4:16] = 255
         want[4:16, 12:16] = 255
         np.testing.assert_array_equal(got, want)
 
-    def test_regions_are_filled_and_lines_stroked_as_one_union(self) -> None:
+    def test_a_regions_rings_are_stroked_as_closed_paths(self) -> None:
+        """A region is read as its outline: a band about each ring, exterior
+        and hole alike, with no cap anywhere (a ring has no ends)."""
+        outer, hole = _rect(3, 3, 17, 17), _rect(7, 7, 12, 12)
+        region = _region(outer, [hole])
+        n = 2
+        samples = _samples(20, 20, n)
+        s = (
+            np.minimum(
+                _segment_distance(samples, np.array(outer, float), closed=True),
+                _segment_distance(samples, np.array(hole, float), closed=True),
+            )
+            - 1.0
+        )
+        _assert_band(_stroked([region], 20, 20, width=2.0, supersample=n), s, n)
+
+    @pytest.mark.parametrize("join", ["round", "miter", "bevel"])
+    def test_a_region_strokes_as_its_boundary(self, join: str) -> None:
+        """``boundary()`` draws each ring as a line back to its start, which
+        strokes as a closed path: the region's own stroke."""
+        region = _region(_star(np.random.default_rng(4), 10.2, 9.8, 7.0))
+        via_lines = (
+            Pipeline()
+            .source("contour")
+            .boundary()
+            .stroke(width=1.5, join=join)
+            .rasterize(width=20, height=20, supersample=4)
+        )
+        out = _frame([region]).select(pl.col("c").cv.pipe(via_lines).sink("numpy"))
+        (want,) = numpy_from_column(out.to_series(), copy=True)
+        got = _stroked([region], 20, 20, width=1.5, join=join, supersample=4)
+        np.testing.assert_array_equal(got, want[:, :, 0])
+
+    def test_a_mixed_set_strokes_every_member_as_one_union(self) -> None:
         region = _region(_rect(2, 2, 9, 9))
         line = _line([(5, 12), (17, 3)])
-        both = _mask([region, line], 20, 16, line_width=2.0)
+        both = _stroked([region, line], 20, 16, width=2.0)
         np.testing.assert_array_equal(
             both,
-            np.maximum(_mask([region], 20, 16), _mask([line], 20, 16, line_width=2.0)),
+            np.maximum(
+                _stroked([region], 20, 16, width=2.0),
+                _stroked([line], 20, 16, width=2.0),
+            ),
         )
 
-    def test_a_region_ignores_the_line_width(self) -> None:
-        region = _region(_star(np.random.default_rng(4), 10.2, 9.8, 7.0))
-        np.testing.assert_array_equal(
-            _mask([region], 20, 20, line_width=6.0, supersample=2),
-            _mask([region], 20, 20, supersample=2),
-        )
+    def test_the_result_is_disjoint_regions(self) -> None:
+        """Two crossing lines stroke to one region: the strokes' union."""
+        cross = [_line([(2, 2), (18, 18)]), _line([(2, 18), (18, 2)])]
+        regions = _shaped(cross, "stroke", width=2.0)
+        assert len(regions) == 1
+        assert all(r["is_closed"] for r in regions)
 
     def test_the_default_draws_a_one_pixel_round_line(self) -> None:
         path = np.array([(2.3, 3.1), (17.6, 11.4)])
         s = _segment_distance(_samples(20, 16, 1), path, closed=False) - 0.5
-        _assert_band(_mask([_line(path)], 20, 16), s, 1)
+        _assert_band(_stroked([_line(path)], 20, 16), s, 1)
+
+    def test_rasterize_refuses_a_line_naming_stroke(self) -> None:
+        """A line has no region to fill: ``rasterize`` does not guess a width."""
+        with pytest.raises(pl.exceptions.ComputeError, match=r"stroke\(\)"):
+            _mask([_line(ZIGZAG)], 10, 10)
 
     @pytest.mark.parametrize("width", [0.0, -1.0])
     def test_a_width_no_row_can_use_is_refused_at_build(self, width: float) -> None:
-        with pytest.raises(ValueError, match="line_width must be a finite"):
-            Pipeline().source("contour").rasterize(width=4, height=4, line_width=width)
+        with pytest.raises(ValueError, match="width must be a finite"):
+            Pipeline().source("contour").stroke(width=width)
 
     @pytest.mark.parametrize("width", [-2.0, math.nan, math.inf])
     def test_a_per_row_width_is_checked_with_its_row(self, width: float) -> None:
         _per_row_error(
             [_line(ZIGZAG)],
-            lambda p, v: p.rasterize(width=10, height=10, line_width=v),
+            lambda p, v: p.stroke(width=v),
             width,
-            "line_width must be a finite",
-            sink="numpy",
-        )
-
-    def test_a_region_only_set_still_checks_the_width(self) -> None:
-        """The width is the op's, not a line's: a bad one is refused even
-        when no line is there to draw (no silent acceptance)."""
-        _per_row_error(
-            [_region(SQUARE)],
-            lambda p, v: p.rasterize(width=10, height=10, line_width=v),
-            0.0,
-            "line_width must be a finite",
-            sink="numpy",
+            "width must be a finite",
         )
 
 
@@ -634,6 +680,7 @@ class TestStroke:
         ("union_all", {}),
         ("smooth", {"iterations": 2}),
         ("densify", {"max_segment_length": 1.5}),
+        ("stroke", {"width": 2.0, "cap": "square", "join": "bevel"}),
     ],
 )
 def test_each_accessor_is_its_pipeline_op(op: str, kwargs: dict) -> None:

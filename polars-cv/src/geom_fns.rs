@@ -704,6 +704,7 @@ pub const OP_ACCESSORS: &[(&str, &str)] = &[
     ("contour_union_all", "union_all"),
     ("contour_smooth", "smooth"),
     ("contour_densify", "densify"),
+    ("contour_stroke", "stroke"),
 ];
 
 /// One accessor method: its namespace and its function's description.

@@ -9,7 +9,7 @@
 use polars::prelude::*;
 use view_buffer::geometry::contour::Outline;
 use view_buffer::geometry::{
-    extract::extract_contours, measures, rasterize::rasterize_outlines, transforms, Contour,
+    extract::extract_contours, measures, rasterize::rasterize, transforms, Contour,
 };
 use view_buffer::ops::NodeOutput;
 use view_buffer::{DType, GeometryOp, Op, PlannedDType, ViewBuffer};
@@ -83,33 +83,24 @@ pub(crate) fn execute_geometry_op(
             fill_value,
             background,
             supersample,
-            line_width,
-            cap,
-            join,
             ..
         } => {
             let (height, width) = op
                 .canvas()
                 .ok_or_else(|| "rasterize reached execution without its canvas".to_string())?;
-            // The whole set in one call: regions filled and lines stroked,
-            // painted as one union, which is order-independent and honours an
-            // inverted fill/background pair. Folding per-contour masks with
-            // `max` here did neither.
-            let stroke = transforms::Stroke {
-                width: *line_width,
-                cap: *cap,
-                join: *join,
-            };
-            rasterize_outlines(
-                outlines(&input, op)?,
+            // The whole set in one call: `rasterize` paints the regions'
+            // union, which is order-independent and honours an inverted
+            // fill/background pair. Folding per-contour masks with `max`
+            // here did neither.
+            let regions = regions(op.name(), outlines(&input, op)?)?;
+            Ok(NodeOutput::from_buffer(rasterize(
+                &regions,
                 width,
                 height,
                 *fill_value,
                 *background,
                 *supersample,
-                &stroke,
-            )
-            .map(NodeOutput::from_buffer)
+            )))
         }
         GeometryOp::Area { signed } => {
             let regions = regions(op.name(), outlines(&input, op)?)?;
@@ -195,6 +186,15 @@ pub(crate) fn execute_geometry_op(
         GeometryOp::Offset { distance, join } => {
             let regions = regions(op.name(), outlines(&input, op)?)?;
             transforms::offset(&regions, *distance, *join)
+                .map(|c| NodeOutput::from_contours(c.into_iter().map(Outline::Closed).collect()))
+        }
+        GeometryOp::Stroke { width, cap, join } => {
+            let style = transforms::Stroke {
+                width: *width,
+                cap: *cap,
+                join: *join,
+            };
+            transforms::stroke(outlines(&input, op)?, &style)
                 .map(|c| NodeOutput::from_contours(c.into_iter().map(Outline::Closed).collect()))
         }
         GeometryOp::UnionAll => {

@@ -754,30 +754,24 @@ CASES: list[ExprCase] = [
         (0, 32, 96),
         column=RECT,
     ),
-    # Supersampled, so a cap or join's share of a pixel shows even where a
-    # pixel centre falls on the same side for two styles.
     ExprCase(
-        "rasterize",
-        "line_width",
-        lambda v: lines().rasterize(width=16, height=16, line_width=v, supersample=4),
+        "stroke",
+        "width",
+        lambda v: lines().stroke(width=v),
         (1.0, 2.5, 4.0),
         column=LINES,
     ),
     ExprCase(
-        "rasterize",
+        "stroke",
         "cap",
-        lambda v: lines().rasterize(
-            width=16, height=16, line_width=3.0, cap=v, supersample=4
-        ),
+        lambda v: lines().stroke(width=3.0, cap=v),
         ("butt", "square", "round"),
         column=LINES,
     ),
     ExprCase(
-        "rasterize",
+        "stroke",
         "join",
-        lambda v: lines().rasterize(
-            width=16, height=16, line_width=4.0, join=v, supersample=4
-        ),
+        lambda v: lines().stroke(width=4.0, join=v),
         ("miter", "bevel", "round"),
         column=LINES,
     ),

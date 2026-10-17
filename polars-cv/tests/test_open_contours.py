@@ -59,6 +59,7 @@ READS: dict[str, str] = {
     "simplify": "outline",
     "smooth": "outline",
     "densify": "outline",
+    "stroke": "outline",
     "convex_hull": "outline",
     "normalize": "outline",
     "to_absolute": "outline",
@@ -90,6 +91,7 @@ _OPEN_SPELLING = {
     # The case table reads its open-line column; here every column is open.
     "close_along_border": lambda: pl.col("a").contour.close_along_border(10, 10),
     "close": lambda: pl.col("a").contour.close(),
+    "stroke": lambda: pl.col("a").contour.stroke(width=2.0),
 }
 
 
