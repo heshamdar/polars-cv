@@ -447,6 +447,19 @@ fn disk_keeps_nans_and_signed_zeros_bit_for_bit() {
     }
 }
 
+/// An image with no rows or no columns keeps its shape (the parity suite
+/// found the incremental spans panicking on a zero width).
+#[test]
+fn disk_on_an_empty_image_keeps_its_shape() {
+    for (h, w) in [(5, 0), (0, 4), (0, 0)] {
+        for kind in [Kind::Min, Kind::Max] {
+            let buf = ViewBuffer::from_vec_with_shape(Vec::<u8>::new(), vec![h, w]);
+            let got = run_footprint(buf, 5, 2, kind, Footprint::Disk);
+            assert_eq!(got.shape(), &[h, w]);
+        }
+    }
+}
+
 /// The fold order decides which of two equal zeros survives, so it is pinned
 /// where it matters: zeros of both signs are the extreme (against a 1.0
 /// background for a min, -1.0 for a max) and the centre pixel, which seeds
