@@ -43,6 +43,7 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-81 | Extension types | Decision | Whether any output becomes tagged by default (a major version) |
 | CR-82 | Extension types | Decision | Whether `polars_cv.ndarray` carries `dtype`/`ndim` metadata |
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
+| CR-106 | Consistency | Medium | The op-backed `.contour` accessors re-dispatch the ops the pipeline executes, so their row errors read differently |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
@@ -293,6 +294,28 @@ an independent oracle. All done (CR-93 to CR-101, closed below).
    which fills regions only (2026-10-17, superseding "rendering attributes on
    `rasterize`": they were ignored for a region-only set). `offset` is
    geometry on regions only and takes `join` alone.
+
+### CR-106 — The `.contour` accessors re-dispatch the ops they share
+
+- **Evidence:** each op-backed accessor (`geom_fns::OP_ACCESSORS`) is the
+  op's definition and calls the op's engine function, but through its own
+  body in `src/contour.rs`, not the step the pipeline resolves and runs
+  (`graph/encode.rs::execute_geometry_op`). Every divergence the reviews of
+  CR-93..CR-103 found between the two surfaces came from that second
+  dispatch: a refusal one surface skipped, `largest`'s rule restated, a check
+  only one ran. Values, refusals and nulls now agree
+  (`tests/parity/invariance/test_parity_accessors.py`), but the row error
+  text does not: the pipeline names a step by its engine name (`Area: an
+  open contour ...`), the accessor names none (`an open contour ... (row
+  0)`), and the engine functions that name their own refusal (`boundary`,
+  `close`, `smooth`, `densify`, `scale`) read in lower case on both.
+- **Next (needs a decision):** run an op-backed accessor as the pipeline
+  step it is: resolve its `GeometryOp<Wire>` per row (the op's `check()`),
+  execute it with `execute_geometry_op` on the row's outlines, and convert
+  the step's output to the accessor's per-member form in one place. The
+  engine functions then return unprefixed messages and every surface names
+  a row error once, by the step. Deletes most of `contour.rs`'s per-op
+  bodies; the parity property above becomes exact on messages too.
 
 ## Upstream (Polars)
 

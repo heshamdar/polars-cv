@@ -165,6 +165,25 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **`stroke()` of a ring narrower than the stroke is solid.** Stroking a
+  region's ring wider than the region left a hole where the band should
+  cover it: a single pixel stroked with `width=4` came back as a 5x5 square
+  with a diamond cut from its middle, so the drawn outline had a gap. Every
+  point of the region is within the half-width of its ring, but `i_overlay`
+  (4.5) turns the ring's inward side inside out once it passes the middle.
+  The band round a closed path is now also taken as its region grown by the
+  half-width less that region shrunk by it (`offset`, exact), joined to
+  `i_overlay`'s stroke, which still covers what has no area (a doubled
+  segment). Found by a new law of the parity suite: on contours traced from
+  random masks, `stroke(width=2k)` paints exactly the pixels within `k` of
+  the rings, by L∞ for a miter join and Euclidean for a round one. The same
+  laws now hold `offset` to Minkowski growth and shrinking, the four set
+  operations to `|`, `&`, `& ~` and `^` of their masks, `close(boundary())`
+  to the identity, `largest`, `union_all`, `densify`, `smooth(0)` and
+  `supersample` to the mask they read, and an open line's stroke to its
+  distance band; and an invariance property holds each op-backed
+  `.contour` accessor to its pipeline op (rows, refusals, nulls).
+
 - **A refused value names its op once, as the user spells it.** The planner
   and the geometry accessors' build check prefixed every `check()` message
   with the op's wire name, which most messages already began with their
@@ -175,7 +194,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   convention throughout: a build-time refusal begins with the op's Python
   name (`histogram: range ...`), a row error with its engine step's name
   (`Histogram: range ...`, `Offset:`, `Union:`); the set operations had
-  named their row errors in lower case. `assert_shape()`'s empty
+  named their row errors in lower case. Not yet the geometry steps whose
+  engine function names its own refusal (`boundary`, `close`, `smooth`,
+  `densify`, `scale`), nor the `.contour` accessors' row errors (CR-106). `assert_shape()`'s empty
   declaration is refused by the op's own check, no longer by a copy in its
   Python sugar.
 

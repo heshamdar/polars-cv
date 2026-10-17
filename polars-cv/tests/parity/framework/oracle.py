@@ -2354,7 +2354,8 @@ EXEMPT: dict[str, str] = {
     "on_error": "a graph policy, not an operation (test_on_error.py)",
     "close": (
         "takes an open line, and the suite's contours are traced regions "
-        "(extract_contours); test_open_contours_pipeline.py covers it"
+        "(extract_contours); test_open_contours_pipeline.py covers it, and "
+        "laws/test_parity_laws.py holds close(boundary()) to the identity"
     ),
     "on_null_param": "a graph policy, not an operation (test_null_params.py)",
 }
@@ -2473,19 +2474,23 @@ BINARY_EXEMPT: dict[str, str] = {
     ),
     "union": (
         "combines two contour sets, which the image-batch harness does not "
-        "build; reference/test_contour_boolean_ref.py holds it to the mask identity"
+        "build; reference/test_contour_boolean_ref.py and laws/test_parity_laws.py "
+        "hold it to the mask identity, on fixed and on traced sets"
     ),
     "intersection": (
         "combines two contour sets, which the image-batch harness does not "
-        "build; reference/test_contour_boolean_ref.py holds it to the mask identity"
+        "build; reference/test_contour_boolean_ref.py and laws/test_parity_laws.py "
+        "hold it to the mask identity, on fixed and on traced sets"
     ),
     "difference": (
         "combines two contour sets, which the image-batch harness does not "
-        "build; reference/test_contour_boolean_ref.py holds it to the mask identity"
+        "build; reference/test_contour_boolean_ref.py and laws/test_parity_laws.py "
+        "hold it to the mask identity, on fixed and on traced sets"
     ),
     "symmetric_difference": (
         "combines two contour sets, which the image-batch harness does not "
-        "build; reference/test_contour_boolean_ref.py holds it to the mask identity"
+        "build; reference/test_contour_boolean_ref.py and laws/test_parity_laws.py "
+        "hold it to the mask identity, on fixed and on traced sets"
     ),
 }
 
