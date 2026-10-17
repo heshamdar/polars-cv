@@ -322,6 +322,14 @@ fn spatial_kernels(c: &mut Criterion) {
     bench_sizes(c, "erode_k3_x3_f32", gray_f32, |b| {
         exec(b, |e| e.erode(3, 3, Footprint::Square))
     });
+    // The disk's cost in its radius (CR-105): linear since the spans grow
+    // incrementally, where one image per half-width made it quadratic.
+    bench_sizes(c, "dilate_disk_k15_u8", gray, |b| {
+        exec(b, |e| e.dilate(15, 1, Footprint::Disk))
+    });
+    bench_sizes(c, "dilate_disk_k31_u8", gray, |b| {
+        exec(b, |e| e.dilate(31, 1, Footprint::Disk))
+    });
     let rotate = |angle: f32, interpolation| {
         move |b| {
             exec(b, |e| {

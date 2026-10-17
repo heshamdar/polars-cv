@@ -126,6 +126,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **`footprint="disk"` erode/dilate/morphology are linear in the radius**
+  (CR-105). Each half-width's spans were a separate full-size image, built
+  from scratch: O(r²) work per pixel and r + 1 images held at once. The spans
+  now grow a step at a time and the column fold runs row offset outermost,
+  regrouped (the min/max fold is associative) without changing its order, so
+  results are bit-identical, signed zeros and NaNs included. A 31-px disk is
+  2.2–2.4x faster (release, 256² to 1024²).
+
 - **`apply_lut` reads less and copies less per row.** A table of single
   entries converts only its rows (not a 65536-entry f64 table for u16 input),
   and a palette writes its `[H, W, K]` output in one pass instead of building
