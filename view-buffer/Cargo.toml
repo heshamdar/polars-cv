@@ -8,6 +8,8 @@ authors = ["Hesham Dar <heshamdar@gmail.com>"]
 description = "A zero-copy, stride-aware tensor orchestration framework for Rust."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/heshamdar/polars-cv"
+# Developed and versioned with polars-cv; not published to crates.io.
+publish = false
 keywords = ["tensor", "zero-copy", "arrow", "ndarray", "image"]
 categories = ["science", "data-structures", "computer-vision"]
 
