@@ -264,36 +264,6 @@ tagged inputs everywhere. How it works, and why tagging stays opt-in, is in
   Recommendation: no metadata; adding it later is a dtype change, so decide
   before CR-81.
 
-## Drawing primitives
-
-Planned 2026-10-16 while generating the logo (`polars-cv/docs/assets/logo/`),
-which had to work around each gap below: a pixel-per-row DataFrame for a
-distance field, ten weighted layers per colour channel, a 4× render-and-shrink
-for anti-aliasing, and filled primitives for every stroke. Each item extends
-an existing family or rule where that is cleaner than a new op, reuses an
-engine primitive (`geo` 0.33's `Buffer`/`BooleanOps`/`ChaikinSmoothing`/
-`Densify`, `ops::elementwise`, `scanline_fill`), and is built test-first with
-an independent oracle. All done (CR-93 to CR-101, closed below).
-
-**Decisions (owner, 2026-10-16).**
-1. The pipeline contour domain carries open contours (lines) as well as
-   regions. Region ops refuse a line, with the error the `.contour` accessors
-   already give; `boundary()` and `close()` convert between the two.
-2. An op whose result can split one region into several (`offset`, the boolean
-   ops, `union_all`) always returns a contour set, whatever the input arity.
-3. An `apply_lut` index past the table is a row error; clamping is an explicit
-   `clamp(0, n - 1, out_dtype=...)` before it (`clamp_max` alone promotes to
-   f32, which `apply_lut` refuses).
-4. Signed distance is negative inside, positive outside — as
-   `.point.signed_distance_to_contour` — measured to the pixel-edge boundary
-   `extract_contours` traces.
-5. No built-in colormaps for now: `apply_lut` takes explicit tables.
-6. Line width, cap and join belong to `stroke()`, a contour op (every member
-   read as its outline, the result disjoint regions), not to `rasterize`,
-   which fills regions only (2026-10-17, superseding "rendering attributes on
-   `rasterize`": they were ignored for a region-only set). `offset` is
-   geometry on regions only and takes `join` alone.
-
 ## Upstream (Polars)
 
 Ready-to-file drafts for `pola-rs/polars`. CR-83 to CR-86 reproduce with
@@ -467,6 +437,16 @@ Made by the owner; listed so they are not reopened by accident.
 - **Metrics collect with `engine="auto"`** (2026-10-08): streaming by default
   in Polars 2.0, following `pl.Config.set_engine_affinity`;
   `tests/test_engine_choice.py` refuses a literal `engine=`.
+- **Drawing primitives** (2026-10-16/17, CR-93 to CR-101). The pipeline
+  contour domain carries open lines as well as regions; region ops refuse a
+  line with the accessors' error, and `boundary()`/`close()` convert. An op
+  whose result can split a region (`offset`, the set operations,
+  `union_all`) always returns a set. An `apply_lut` index past the table is a
+  row error; clamping is an explicit `clamp(0, n - 1, out_dtype=...)` first.
+  Signed distance is negative inside, measured to the pixel-edge boundary
+  `extract_contours` traces. No built-in colormaps: `apply_lut` takes
+  explicit tables. Line width, cap and join belong to `stroke()`, never to
+  `rasterize`, which fills regions only; `offset` takes `join` alone.
 - **Ordered windows (`over(order_by=)`) are not used in `_grouped_scan.py`**
   (measured 15–35% faster on the scan alone): `over` takes one `descending`
   flag for all keys, callers mix directions, and negating a key misplaces

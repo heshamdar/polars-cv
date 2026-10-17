@@ -662,112 +662,12 @@ plan-time schema facts. The `height`/`width`/`channels` keywords do accept
 expressions and resolve them per row, but a per-row size is not a plan-time
 fact, so it publishes no shape.
 
-## Dynamic Parameters
+## Per-Row Parameters
 
-Most numeric parameters across polars-cv operations accept **Polars expressions** in addition to literal values. When a parameter is an expression, its value is resolved per-row at execution time from the DataFrame.
-
-```python
-# Static value (same for all rows)
-pipe = Pipeline().source("image_bytes").resize(height=224, width=224)
-
-# Dynamic value (per-row from another column)
-pipe = Pipeline().source("image_bytes").resize(
-    height=pl.col("target_h"), width=pl.col("target_w")
-)
-
-# Expression with aggregation (same value for all rows)
-pipe = Pipeline().source("image_bytes").crop(
-    top=0, left=0,
-    height=pl.col("crop_h").min(),
-    width=pl.col("crop_w").min(),
-)
-```
-
-**Parameters that accept expressions:**
-
-| Category | Parameters |
-|----------|-----------|
-| Resize | `height`, `width`, `scale`, `scale_x`, `scale_y`, `max_size`, `min_size`, `filter` |
-| Crop | `top`, `left`, `height`, `width` |
-| Pad | `top`, `bottom`, `left`, `right`, `value`, `mode` |
-| Pad to size | `height`, `width`, `value`, `position` |
-| Letterbox | `height`, `width`, `value`, `filter` |
-| Rotate | `angle`, `border_value`, `interpolation` |
-| Warp affine | `matrix` (each of the 6 elements, per-row), `output_size` (height and width), `border_value`, `interpolation` |
-| Shear | `sx`, `sy` |
-| Rotate and scale | `angle`, `scale`, `center`, `output_size` |
-| Scale / Clamp | `factor`, `min_val`, `max_val` |
-| Normalize | `mean`, `std` (each element, per-row) |
-| Threshold | `value` |
-| Blur | `sigma` |
-| Canny | `low_threshold`, `high_threshold` |
-| Contrast / Gamma / Brightness | `factor`, `gamma` |
-| Sharpen | `strength` |
-| Morphology | `ksize`, `iterations` |
-| Channel select / swap | `index`, `order` (each element, per-row) |
-| Convolution | `kernel` (each coefficient, per-row), `normalize`, `border` |
-| Flags | `apply_mask(invert)`, `convolve2d(normalize)`, `area(signed)` |
-| Reductions | `q` (percentile), `ddof` (std) |
-| Histogram | `bins` (integer form), `range` |
-| Extract contours | `min_area`, `mode`, `method` |
-| Label reduce | `reduction`, `region_mode` |
-| Rasterize | `width`, `height`, `fill_value`, `background` |
-| Contour source | `width`, `height`, `fill_value`, `background` |
-
-**Planning-time implications:** When a shape-affecting parameter is an expression (e.g., `resize(height=pl.col("h"))`), the pipeline planner cannot determine the output dimensions at planning time. Shape hints will be `None` for those dimensions.
-
-`histogram(bins=...)` is a special case: it is accepted as an expression, but it
-fixes the output vector length. Pairing a per-row `bins` with an `array` sink
-therefore fails at planning time, since that sink needs a known shape — use the
-`list` sink, or pass a literal `bins`.
-
-**Structural parameters remain literal-only**, because they fix the output
-rank or dtype (or, like `rotate(expand)` and a kernel's length, the planned
-dimensions themselves) at planning time and the lazy schema must match what
-executes: reduction `axis`, `perceptual_hash(hash_size)`, the `axes` lists of
-`transpose`/`flip`, `reshape`'s element count, `rotate(expand)` (it changes the
-output dimensions), `cast(dtype)`, `normalize(method`/`out_dtype)` and
-`histogram(closed`/`output)`. Passing an expression to one of these raises
-`TypeError` at build time.
-
-Note the distinction for list-valued parameters: the *length* is structural
-while the *values* are not. A convolution `kernel`, a `normalize` mean/std pair,
-a `channel_swap` order and the affine `matrix` all keep a literal element count
-but accept a per-row expression for any individual element.
-
-### Null parameter values
-
-A parameter column can contain nulls. By default a null parameter fails the
-whole expression, naming the column and the row:
-
-```
-Parameter column 'target_h' has a null value at row 7
-```
-
-`.on_null_param("null")` opts into null-in/null-out instead — the rows whose
-parameter is null yield null, exactly as a null *input image* already does, and
-every other row proceeds:
-
-```python
-pipe = (
-    Pipeline()
-    .source("image_bytes")
-    .resize(height=pl.col("h"), width=pl.col("w"))
-    .on_null_param("null")
-)
-```
-
-Only the outputs that depend on the affected operation go null, and unrelated
-failures still raise — see
-[Error Handling](../concepts/sources.md#error-handling) for how this differs
-from `.on_error("null")`.
-
-For a **fallback value** instead of a null, fill it in the expression:
-`pl.col("h").fill_null(224)`. There is no policy for this because Polars
-already expresses it.
-
-An aggregation broadcasts, so a null in a length-1 parameter column (e.g.
-`pl.col("h").max()` over an all-null column) applies to — and nulls — every row.
+Most parameters above accept a Polars expression, resolved per row; the
+structural ones (`cast(dtype=)`, a reduction `axis`, ...) do not. The rule,
+null parameter values and error handling are in
+[Parameters & Errors](../concepts/parameters.md).
 
 ## Next Steps
 

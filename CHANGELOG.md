@@ -193,6 +193,25 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `polars` dev-dependency is gone, so its Rust tests run against the polars
   features the plugin ships. `test_build_efficiency.py` guards each.
 
+- **Documentation restructured.** The README and the docs site open with the
+  halftone logo (also the site's logo and favicon). A new
+  [Parameters & Errors](https://heshamdar.github.io/polars-cv/user-guide/concepts/parameters/)
+  page is the one place for per-row parameters, null parameter values and
+  error policies, which had been split between the image-operations and
+  sources pages; the image-operations page's hand-kept table of which
+  parameters accept expressions is gone (it had missed every parameter added
+  since 0.36), and the method signatures in the API reference say it instead.
+  The migration guides have their own section with an overview page at
+  `user-guide/migration/` (the 0.28 → 0.29 guide, which had that address, is
+  now `migration-0.29`). The domains page covers open lines and the
+  contour-to-contour ops; the quickstart no longer says an eager call runs on
+  one thread; installation no longer repeats the cloud-credentials guide.
+  view-buffer's README described an unpublished crate as on crates.io at
+  version 0.3, with a `python` feature that does not exist and an example
+  that did not compile; it now matches the crate. Leftover planning text in
+  `ISSUES.md` (the finished drawing-primitives plan) is gone; its owner
+  decisions moved to the decisions list.
+
 - **The README is shorter and leads with one decode per image.** Its first
   example now reads each file once and sinks both outputs from one graph; the
   figure's top row is one multi-output graph, so its "one decode" label is
@@ -2252,7 +2271,7 @@ definition from which its Python method, docstring and wire form are
 generated, and the planner that computes a pipeline's schema runs in Rust
 over the same definitions execution uses. Plan-time optimizations are one
 explicit, toggleable phase. Many silent wrong results are now errors. Upgrading
-from 0.28: see the [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration/).
+from 0.28: see the [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.29/).
 
 ### Breaking changes
 

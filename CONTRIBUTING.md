@@ -115,7 +115,13 @@ production publishing (consider adding required reviewers).
 2. Run `scripts/verify.sh --slow`: the release gate includes the slow lane,
    which per-change runs skip.
 3. Roll the `CHANGELOG.md` `[Unreleased]` section into a dated entry for the new
-   version, and leave a fresh empty `[Unreleased]` heading above it
+   version, and leave a fresh empty `[Unreleased]` heading above it. If the
+   release changes anything a user must check (a breaking change, a result
+   that differs), write `polars-cv/docs/user-guide/migration-<version>.md`
+   (link it from the changelog entry), add a row to the table in
+   `docs/user-guide/migration.md` (moving its "Unreleased" notes into the new
+   page), and add the page to the "Migration Guides" nav in `mkdocs.yml`.
+   Bump the pinned minor in the README's "Project status" (`polars-cv~=0.NN.0`).
 4. Commit and push to main
 5. Create a GitHub release with a version tag matching the bumped version,
    prefixed with `v` (e.g. `v0.1.0`). `.github/workflows/publish.yml` checks the

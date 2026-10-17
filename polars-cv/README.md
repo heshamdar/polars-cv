@@ -1,14 +1,20 @@
-# polars-cv
+<p align="center">
+  <img alt="polars-cv" src="https://raw.githubusercontent.com/heshamdar/polars-cv/main/polars-cv/docs/assets/logo/polars-cv-halftone.png" width="600">
+</p>
 
-**Image processing as Polars expressions: decode, transform and analyse images
-in a DataFrame column, in Rust, on every core, without a Python loop.**
+<p align="center">
+  <strong>Image processing as Polars expressions: decode, transform and analyse
+  images in a DataFrame column, in Rust, on every core, without a Python loop.</strong>
+</p>
 
-[![PyPI](https://img.shields.io/pypi/v/polars-cv)](https://pypi.org/project/polars-cv/)
-[![Downloads](https://img.shields.io/pypi/dm/polars-cv)](https://pypistats.org/packages/polars-cv)
-[![CI](https://github.com/heshamdar/polars-cv/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/heshamdar/polars-cv/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-heshamdar.github.io%2Fpolars--cv-blue)](https://heshamdar.github.io/polars-cv/)
-[![License](https://img.shields.io/pypi/l/polars-cv)](https://pypi.org/project/polars-cv/)
-[![Python](https://img.shields.io/pypi/pyversions/polars-cv)](https://pypi.org/project/polars-cv/)
+<p align="center">
+  <a href="https://pypi.org/project/polars-cv/"><img alt="PyPI" src="https://img.shields.io/pypi/v/polars-cv"></a>
+  <a href="https://pypistats.org/packages/polars-cv"><img alt="Downloads" src="https://img.shields.io/pypi/dm/polars-cv"></a>
+  <a href="https://github.com/heshamdar/polars-cv/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/heshamdar/polars-cv/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://heshamdar.github.io/polars-cv/"><img alt="Docs" src="https://img.shields.io/badge/docs-heshamdar.github.io%2Fpolars--cv-blue"></a>
+  <a href="https://pypi.org/project/polars-cv/"><img alt="License" src="https://img.shields.io/pypi/l/polars-cv"></a>
+  <a href="https://pypi.org/project/polars-cv/"><img alt="Python" src="https://img.shields.io/pypi/pyversions/polars-cv"></a>
+</p>
 
 ![Top row: one graph that decodes the image once and produces five outputs (source, grayscale, blur, canny edges, histogram equalisation). Bottom row: one pipeline whose rotation angle and blur sigma come from per-row columns.](https://raw.githubusercontent.com/heshamdar/polars-cv/main/polars-cv/docs/assets/readme-figure.png)
 
@@ -122,16 +128,19 @@ in [`benchmarks/`](https://github.com/heshamdar/polars-cv/tree/main/benchmarks).
 |---|---|
 | Resize & geometry | `resize`, `resize_max`, `crop`, `pad`, `letterbox`, `rotate`, `flip`, `warp_affine` |
 | Colour & intensity | `grayscale`, `to_hsv`, `to_lab`, `adjust_contrast`, `adjust_gamma`, `equalize_histogram` |
-| Filters & morphology | `blur`, `sharpen`, `sobel`, `canny`, `convolve2d`, `erode`, `dilate` |
+| Filters & morphology | `blur`, `sharpen`, `sobel`, `canny`, `convolve2d`, `erode`/`dilate` (square or disk), `distance_transform` |
 | Arithmetic | `normalize`, `cast`, `clamp`, element-wise math, and `add`/`blend`/`apply_mask` between pipelines |
 | Analysis | `histogram`, `perceptual_hash`, `reduce_mean`/`max`/`percentile`/…, `statistics()` |
 | Contours, points, boxes | `extract_contours`, `area`, `iou`, `hausdorff_distance`, `pairwise_iou` via `.contour`/`.point`/`.bbox` |
+| Drawing | `rasterize` (anti-aliased), `stroke`, `offset`, `smooth`, `union`/`intersection`/`difference`, `coordinate_grid`, `apply_lut` palettes |
 | Header metadata | `.cv.image_info()`, `.cv.width()`, `.cv.height()` without decoding |
 | Detection metrics | COCO-style AP/mAP, PR curves, FROC/LROC, bootstrap intervals in `polars_cv.metrics` |
 
 The full list is in the
 [operations guide](https://heshamdar.github.io/polars-cv/user-guide/operations/image-ops/)
-and the [API reference](https://heshamdar.github.io/polars-cv/api/pipeline/).
+and the [API reference](https://heshamdar.github.io/polars-cv/api/pipeline/);
+the [drawing guide](https://heshamdar.github.io/polars-cv/user-guide/drawing/)
+builds the logo above from these ops.
 
 ```python
 import polars as pl

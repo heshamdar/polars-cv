@@ -67,87 +67,10 @@ to a full decode + the same resize, this is an opt-in.
 
 ### Error Handling
 
-By default, a failure while producing a row raises and aborts the whole query.
-There are three complementary controls for tolerating per-row failures, from
-narrowest to broadest.
-
-**Source-level: `source(..., on_error="null")`** — scoped to decode failures.
-A row that fails to *decode* yields null for the outputs that depend on that
-source; the rest of the DataFrame still processes.
-
-```python
-# Skip undecodable images instead of aborting
-pipe = Pipeline().source("image_bytes", on_error="null").resize(height=224, width=224)
-```
-
-**Graph-level: `.on_error(policy)`** — a pipeline-wide policy covering **any**
-error that produces a row (source decode, operation execution, or output
-encoding). It takes one of three values:
-
-```python
-# "raise" (default): the first failing row fails the expression with its error.
-pipe = Pipeline().source("image_bytes").resize(height=224, width=224)
-
-# "null": failing rows yield null for ALL of the graph's outputs; good rows are unaffected.
-pipe = Pipeline().source("image_bytes").resize(height=224, width=224).on_error("null")
-
-# "null_with_message": like "null", but the output becomes a struct with a
-# reserved `_error` field carrying the failure message (null for good rows).
-# A single-output pipeline becomes a two-field struct (`_output` + `_error`).
-pipe = Pipeline().source("image_bytes").resize(height=224, width=224).on_error("null_with_message")
-```
-
-`.on_error()` is a graph-level setting: when pipelines are composed (via
-`merge_pipe` or binary ops) they must all agree on the policy. It is also
-mirrored on `LazyPipelineExpr`, so you can set it after `.pipe(...)`.
-
-**Null parameters: `.on_null_param(policy)`** — scoped to nulls in the columns
-backing [dynamic parameters](../operations/image-ops.md#dynamic-parameters).
-A parameter given as a `pl.Expr` is read from an ordinary column, which may
-contain nulls:
-
-```python
-# "raise" (default): a null parameter fails the whole expression.
-pipe = Pipeline().source("image_bytes").resize(height=pl.col("h"), width=pl.col("h"))
-
-# "null": rows whose parameter is null yield null; other rows are unaffected.
-pipe = (
-    Pipeline()
-    .source("image_bytes")
-    .resize(height=pl.col("h"), width=pl.col("h"))
-    .on_null_param("null")
-)
-```
-
-This is deliberately separate from `.on_error()`. Under `"null"` a null
-parameter is not treated as an error at all, which means two things:
-
-- Only the outputs that actually depend on the affected operation go null,
-  rather than every output of the row.
-- Decode, encode and genuine operation failures still raise. You do not have to
-  go blind to real bugs in order to tolerate missing parameter values.
-
-For a **fallback value** rather than a null, fill the null in the expression
-itself — there is no policy for this because Polars already expresses it:
-
-```python
-pipe = Pipeline().source("image_bytes").resize(
-    height=pl.col("h").fill_null(224), width=pl.col("w").fill_null(224)
-)
-```
-
-Like `.on_error()`, this is a graph-level setting, and it is mirrored on
-`LazyPipelineExpr` so you can set it after `.pipe(...)`. Composition is more
-forgiving than `.on_error()`, though: only a non-default policy is collected
-from the composed pipelines, so composing a `"null"` pipeline with a `"raise"`
-one gives the whole graph `"null"` rather than being rejected — with two values
-and one of them the default, no combination can conflict.
-
-The `.contour` / `.point` / `.bbox` namespaces bypass the graph engine, so they
-carry the same policy on the accessor instead:
-`pl.col("c").contour.on_null("null").normalize(pl.col("w"), 100)`. There is no
-`.cv.on_null()` — a `.cv` pipeline's parameters belong to its `Pipeline`, so
-`Pipeline.on_null_param()` is the control there.
+`source(..., on_error="null")` turns a row that fails to decode into a null
+instead of failing the query. That, the pipeline-wide `.on_error(...)` and
+`.on_null_param(...)` for null parameter columns are covered in
+[Parameters & Errors](parameters.md#errors).
 
 ## Auto DType Behavior
 

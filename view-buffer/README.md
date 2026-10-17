@@ -1,199 +1,118 @@
 # view-buffer
 
-A zero-copy, stride-aware tensor orchestration framework for Rust.
+The zero-copy, stride-aware tensor engine behind
+[polars-cv](https://github.com/heshamdar/polars-cv).
 
-[![Crates.io](https://img.shields.io/crates/v/view-buffer.svg)](https://crates.io/crates/view-buffer)
-[![Documentation](https://docs.rs/view-buffer/badge.svg)](https://docs.rs/view-buffer)
-[![License](https://img.shields.io/crates/l/view-buffer.svg)](LICENSE)
+view-buffer is developed and versioned with polars-cv (same version number) and
+is not published to crates.io; depend on it by path or git. Most users want
+polars-cv itself, which exposes everything here as Polars expressions.
 
-## Overview
+## What it provides
 
-`view-buffer` provides a unified interface for working with multi-dimensional arrays (tensors) with:
-
-- **Zero-copy view operations**: Transpose, reshape, flip, and crop without allocating new memory
-- **Lazy expression graphs**: Build computation pipelines that are optimized before execution
-- **Automatic kernel fusion**: Consecutive scalar operations are fused into single passes
-- **Multiple backend interop**: Seamless integration with ndarray, Arrow, and image crates
+- **`ViewBuffer`**: an N-dimensional, strided array over shared storage (a Rust
+  `Vec` or an Arrow buffer). Transpose, reshape, flip, crop, squeeze and
+  expand-dims change only the layout and copy nothing.
+- **`ViewExpr`**: a lazy expression graph. `.plan()` optimises it (fusing runs
+  of element-wise scalar ops into one pass, reading views in place) and
+  `.execute()` runs it.
+- **Operations with declared contracts**: every op states its output shape,
+  dtype, memory effect and spatial dependency (`ops::Op`), and the planner
+  reads those rules rather than restating them. Image ops cover resize,
+  colour conversion, filters, morphology, distance transforms, lookup tables,
+  affine warps, histograms and perceptual hashes.
+- **Geometry**: contour extraction, rasterisation (with supersampling),
+  measures, shaping (`offset`, `stroke`, `smooth`, set operations) and
+  pairwise matching (`geometry/`).
+- **Interop**: zero-copy views to and from `ndarray`, Arrow and polars-arrow,
+  plus `image`-crate decoding and encoding.
+- **The VIEW binary protocol** (`protocol.rs`): a 64-byte header plus shape,
+  strides and contiguous data, for moving buffers between processes or
+  pipelines.
 
 ## Features
 
-| Feature | Description |
-|---------|-------------|
-| `ndarray_interop` | Zero-copy views to/from `ndarray::ArrayViewD` |
-| `image_interop` | Integration with the `image` crate for image processing |
-| `arrow_interop` | Zero-copy interop with Apache Arrow buffers |
-| `serde` | Serialization support for operations and plans |
-| `python` | Python bindings via PyO3 |
+| Feature | Enables |
+|---------|---------|
+| `ndarray_interop` (default) | Zero-copy `ndarray::ArrayViewD` views (`AsNdarray`, `FromNdarray`) |
+| `image_interop` | Image decoding/encoding (`ImageAdapter`) and the resize kernels |
+| `arrow_interop` | Zero-copy Arrow buffers (`FromArrow`, `ToArrow`) |
+| `polars_interop` | polars-arrow buffers, as the polars-cv plugin uses |
+| `perceptual_hash` | Perceptual hashing (implies `image_interop`) |
+| `serde` | `Serialize`/`Deserialize` for the op types |
+| `all_interops` | Every interop above, plus `perceptual_hash` |
 
-## Quick Start
-
-Add to your `Cargo.toml`:
+## Examples
 
 ```toml
 [dependencies]
-view-buffer = "0.3"
-
-# Enable features as needed
-view-buffer = { version = "0.3", features = ["image_interop", "ndarray_interop"] }
+view-buffer = { git = "https://github.com/heshamdar/polars-cv", features = ["image_interop"] }
 ```
 
-### Basic Usage
+A lazy graph over a buffer:
 
 ```rust
-use view_buffer::{ViewBuffer, ViewExpr, DType};
+use view_buffer::{DType, ViewBuffer, ViewExpr};
 
-// Create a buffer from a vector
 let data: Vec<f32> = (0..100).map(|i| i as f32).collect();
 let buffer = ViewBuffer::from_vec(data);
 
-// Build a lazy expression graph
-let expr = ViewExpr::new_source(buffer)
-    .reshape(vec![10, 10])       // Zero-copy reshape
-    .transpose(vec![1, 0])       // Zero-copy transpose
-    .scale(2.0)                  // Scalar multiply
-    .relu()                      // ReLU activation
-    .cast(DType::U8);            // Type cast
+let result = ViewExpr::new_source(buffer)
+    .reshape(vec![10, 10])  // zero-copy
+    .transpose(vec![1, 0])  // zero-copy
+    .scale(2.0)             // fused element-wise pass
+    .relu()
+    .cast(DType::U8)
+    .plan()
+    .execute();
 
-// Execute the pipeline
-let result = expr.plan().execute();
-
-println!("Result shape: {:?}", result.shape());
-println!("Result dtype: {:?}", result.dtype());
+assert_eq!(result.shape(), &[10, 10]);
 ```
 
-### Image Processing Pipeline
+An image pipeline (`image_interop`):
 
 ```rust
-use view_buffer::{ViewBuffer, ViewExpr, FilterType};
-use view_buffer::interop::image::ImageAdapter;
+use view_buffer::{FilterType, ImageAdapter, ViewExpr};
 
-// Load an image
 let buffer = ImageAdapter::open("input.png")?;
-
-// Build processing pipeline
-let processed = ViewExpr::new_source(buffer)
-    .resize(400, 300, FilterType::Lanczos3)  // Resize
-    .crop(vec![50, 50, 0], vec![250, 250, 3]) // Crop region
-    .flip(vec![1])                            // Horizontal flip
-    .grayscale()                              // Convert to grayscale
-    .threshold(128);                          // Binary threshold
-
-// Execute and save
-let result = processed.plan().execute();
+let result = ViewExpr::new_source(buffer)
+    .resize(400, 300, FilterType::Lanczos3) // width, height
+    .crop(vec![50, 50, 0], vec![250, 250, 3]) // start, end
+    .flip(vec![1])
+    .grayscale()
+    .threshold(128.0)
+    .plan()
+    .execute();
 ImageAdapter::save(&result, "output.png")?;
 ```
 
-### Zero-Copy Interop with ndarray
+To and from `ndarray`, and the binary protocol:
 
 ```rust
-use view_buffer::{ViewBuffer, ViewExpr};
-use view_buffer::interop::ndarray::{AsNdarray, FromNdarray};
+use view_buffer::{AsNdarray, FromNdarray, ViewBuffer};
 
-// Create from ndarray
-let array = ndarray::Array2::<f32>::zeros((100, 100));
-let buffer = ViewBuffer::from_array(array.into_dyn());
+let buffer = ViewBuffer::from_array(ndarray::Array2::<f32>::ones((100, 100)).into_dyn());
+let view = buffer.as_array_view::<f32>()?; // no copy
+assert_eq!(view.sum(), 10_000.0);
 
-// Get a zero-copy view back
-let view = buffer.as_array_view::<f32>()?;
-println!("Sum: {}", view.sum());
-```
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      ViewExpr (Lazy Graph)                  │
-│  ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐     │
-│  │ Source  │ → │  View   │ → │ Compute │ → │  Image  │     │
-│  └─────────┘   └─────────┘   └─────────┘   └─────────┘     │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼ plan()
-┌─────────────────────────────────────────────────────────────┐
-│                    ExecutionPlan                            │
-│  ┌─────────┐   ┌─────────┐   ┌─────────┐                   │
-│  │ Step 1  │ → │ Step 2  │ → │ Step 3  │                   │
-│  └─────────┘   └─────────┘   └─────────┘                   │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼ execute()
-┌─────────────────────────────────────────────────────────────┐
-│                      ViewBuffer                             │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │ BufferStorage (Rust Vec / Arrow Buffer)              │   │
-│  └─────────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │ Layout (shape, strides, offset, dtype)              │   │
-│  └─────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## Module Structure
-
-```
-src/
-├── core/           # Fundamental types (DType, Layout, ViewBuffer)
-├── ops/            # Operations (View, Compute, Image, I/O)
-├── expr.rs         # Lazy expression graph
-├── execution/      # Planning and execution
-├── protocol.rs     # Binary serialization format
-└── interop/        # External library integrations
-    ├── ndarray.rs  # ndarray interop
-    ├── arrow.rs    # Arrow interop
-    └── image.rs    # image crate interop
-```
-
-## Operation Types
-
-### View Operations (Zero-Copy)
-- `Transpose` - Permute dimensions
-- `Reshape` - Change shape (requires contiguous input)
-- `Flip` - Reverse along axes
-- `Crop` - Extract a sub-region
-
-### Compute Operations (Allocating)
-- `Cast` - Change data type
-- `Scale` - Multiply by constant
-- `Relu` - ReLU activation
-- `Normalize` - MinMax or ZScore normalization
-- `Clamp` - Clamp to range
-- `Fused` - Fused sequence of scalar ops
-
-### Image Operations
-- `Resize` - Resize with various filters
-- `Blur` - Gaussian blur
-- `Grayscale` - Convert to grayscale
-- `Threshold` - Binary thresholding
-
-## Binary Protocol
-
-`view-buffer` includes a binary serialization format for efficient data transport:
-
-```rust
-// Serialize
 let blob = buffer.to_blob();
-
-// Deserialize
-let recovered = ViewBuffer::from_blob(&blob)?;
+let back = ViewBuffer::from_blob(&blob)?;
+assert_eq!(back.shape(), buffer.shape());
 ```
 
-The format consists of a 64-byte header followed by shape, strides, and contiguous data.
+## Development
 
-## Performance
+Run the tests through the PyO3 environment wrapper so they do not invalidate
+the polars-cv build (see the repository's `CLAUDE.md`):
 
-- View operations are O(1) - they only modify metadata
-- Contiguous buffers enable SIMD-friendly iteration
-- Kernel fusion reduces memory traffic for scalar operations
-- Zero-copy interop avoids unnecessary allocations
+```bash
+scripts/with-pyo3-env.sh cargo test -p view-buffer --all-features
+```
+
+Integration tests are one binary: add a module to `tests/it/main.rs` rather
+than a new `tests/*.rs`. The module tree, the op-contract rules and the
+guards that hold them are in [`AGENTS.md`](AGENTS.md).
 
 ## License
 
-Licensed under either of:
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- MIT License ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
+Licensed under either of [MIT](../LICENSE-MIT) or [Apache-2.0](../LICENSE-APACHE),
 at your option.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
