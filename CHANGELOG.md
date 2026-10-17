@@ -122,6 +122,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **`target/debug` no longer grows without bound** (CR-104, development only).
+  The disk filled twice in one session; measured, three causes were
+  avoidable. The workspace's own crates keep debuginfo inline
+  (`split-debuginfo = "off"` per package, the polars stack keeping its
+  sidecars): each incremental rebuild had written its `.dwo` files under new
+  names and cargo never deletes the old (~79,000 files, ~12 GB). A rebuild after
+  a plugin edit is ~10 s, against ~11.5 s before (and ~21 s with debuginfo
+  inline for the whole stack, which the profile's comment records). view-buffer's
+  31 integration-test executables (~4 GB, each relinked on every change) are
+  one, `tests/it/`. The SessionStart hook cleans `target/` when `rustc -vV`
+  changes, since a new stable orphans every artifact (~5 GB here). polars-cv's
+  `polars` dev-dependency is gone, so its Rust tests run against the polars
+  features the plugin ships. `test_build_efficiency.py` guards each.
+
 - **The README is shorter and leads with one decode per image.** Its first
   example now reads each file once and sinks both outputs from one graph; the
   figure's top row is one multi-output graph, so its "one decode" label is

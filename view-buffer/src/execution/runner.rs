@@ -1707,7 +1707,7 @@ fn apply_dilate(buf: ViewBuffer, ksize: u32, iterations: u32, footprint: Footpri
 /// A float dtype keeps the passes: its fold keeps a NaN incumbent, ignores a
 /// NaN candidate and keeps the incumbent of two equal signed zeros, so its
 /// result depends on the passes' structure, and one wide pass differs
-/// (`tests/morph_ref.rs`, NaN and signed-zero cases).
+/// (`tests/it/morph_ref.rs`, NaN and signed-zero cases).
 ///
 /// A disk keeps the passes for every dtype: two discrete disks do not compose
 /// into one larger disk (radius 1 twice reaches the diagonal `(1, 1)`, which
@@ -1810,7 +1810,7 @@ fn morph_select<T: PartialOrd + Copy, const IS_MIN: bool>(val: T, candidate: T) 
 /// - column pass: whole-row elementwise min/max against the clamped source
 ///   row per tap (the index clamp happens once per row, not per element).
 ///
-/// Bit-exact vs the pre-split implementation (see tests/morph_ref.rs).
+/// Bit-exact vs the pre-split implementation (see tests/it/morph_ref.rs).
 #[cfg(feature = "image_interop")]
 fn morph_minmax_typed<T, const IS_MIN: bool>(buf: &ViewBuffer, radius: usize) -> ViewBuffer
 where

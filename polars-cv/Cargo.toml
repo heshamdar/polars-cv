@@ -137,6 +137,11 @@ jpeg-decoder = "0.3"
 [features]
 pyo3-extension = ["pyo3/extension-module", "pyo3/abi3-py311"]
 
-[dev-dependencies]
-# For testing
-polars = { version = "0.55", features = ["dtype-array", "dtype-struct", "lazy", "object", "strings", "dtype-datetime"] }
+# No `polars` dev-dependency: the Rust tests use the plugin's own polars, so
+# they test the feature set that ships. One restating `polars` with its default
+# features plus `lazy` let tests lean on features the plugin lacks, and made the
+# test build's polars stack larger (66 features on polars-core, not 56). That
+# stack stays separate from the extension's either way: pyo3 sits under every
+# polars crate (polars-utils -> numpy), and the extension build links no
+# libpython while a test executable must. `test_build_efficiency.py` keeps the
+# dev-dependency out.

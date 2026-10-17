@@ -6,7 +6,7 @@
 //! over a `Vec<f32>`/`Vec<f64>` allocation and dropping it is undefined
 //! behavior per the allocator contract. These tests are ordinary
 //! roundtrips in a normal build, but under Miri
-//! (`cargo +nightly miri test --test alignment_soundness`) they fail on
+//! (`cargo +nightly miri test --test it alignment_soundness::`) they fail on
 //! the mismatched dealloc.
 
 use view_buffer::{DType, ViewBuffer};
