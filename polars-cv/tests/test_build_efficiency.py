@@ -19,12 +19,13 @@ fixture-backed parser in ``test_sanitation`` rather than a second regex.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
 import pytest
 
-from tests._discovery import workflow_files
+from tests._discovery import discovered, workflow_files
 from tests.test_sanitation import _ci_run_commands
 
 pytestmark = pytest.mark.structural
@@ -265,3 +266,128 @@ def test_benchmark_artifacts_are_reclaimed_like_release() -> None:
         assert "cargo clean --profile benchmark" in text, (
             f"{script.relative_to(_ROOT)} must reclaim target/benchmark"
         )
+
+
+# ---------------------------------------------------------------------------
+# What keeps target/debug from growing without bound
+# ---------------------------------------------------------------------------
+
+
+def _workspace() -> dict[str, dict]:
+    """Each workspace member's package name -> its parsed Cargo.toml."""
+    root = tomllib.loads((_ROOT / "Cargo.toml").read_text())
+    members = {}
+    for member in root["workspace"]["members"]:
+        manifest = tomllib.loads((_ROOT / member / "Cargo.toml").read_text())
+        members[manifest["package"]["name"]] = manifest
+    return members
+
+
+def _sidecar_leaking_members(cargo: dict, members: list[str]) -> list[str]:
+    """The workspace members whose dev build writes split-debuginfo sidecars.
+
+    With ``split-debuginfo = "unpacked"``, each incremental rebuild of a crate
+    writes its ``.dwo`` files under new names, and cargo never deletes the old
+    ones; only the workspace's own crates rebuild incrementally, so each must
+    override it to ``"off"``. A dev profile that is not ``unpacked`` leaks
+    nothing.
+    """
+    dev = cargo.get("profile", {}).get("dev", {})
+    if dev.get("split-debuginfo") != "unpacked":
+        return []
+    overrides = dev.get("package", {})
+    return [
+        m
+        for m in members
+        if overrides.get(m, {}).get("split-debuginfo", "unpacked") != "off"
+    ]
+
+
+def test_sidecar_rule_fixtures() -> None:
+    """The rule itself, on known-bad and known-good profiles."""
+    unpacked = {"profile": {"dev": {"split-debuginfo": "unpacked"}}}
+    assert _sidecar_leaking_members(unpacked, ["a", "b"]) == ["a", "b"]
+    half = {
+        "profile": {
+            "dev": {
+                "split-debuginfo": "unpacked",
+                "package": {"a": {"split-debuginfo": "off"}},
+            }
+        }
+    }
+    assert _sidecar_leaking_members(half, ["a", "b"]) == ["b"]
+    assert _sidecar_leaking_members({"profile": {"dev": {}}}, ["a"]) == []
+
+
+def test_workspace_crates_write_no_debuginfo_sidecars() -> None:
+    """Every workspace crate keeps its debuginfo inline in the dev build.
+
+    A session of edits left ~79,000 stale ``.dwo`` files (about 12 GB) in
+    ``target/debug/deps``, all from this workspace's crates: the dependencies
+    keep their sidecars, which they write once.
+    """
+    cargo = tomllib.loads((_ROOT / "Cargo.toml").read_text())
+    leaking = _sidecar_leaking_members(cargo, sorted(_workspace()))
+    assert not leaking, (
+        f"workspace members {leaking} write split-debuginfo sidecars that pile up "
+        'with every rebuild: add `[profile.dev.package.<name>] split-debuginfo = "off"`'
+    )
+
+
+def test_rust_tests_use_the_plugins_polars() -> None:
+    """``polars-cv`` restates no ``polars`` for its tests.
+
+    The tests then exercise the polars features the plugin ships with, not a
+    superset (the dev-dependency enabled polars' defaults and ``lazy``).
+    """
+    dev = _workspace()["polars-cv"].get("dev-dependencies", {})
+    assert "polars" not in dev, (
+        "polars-cv's Rust tests must use the plugin's own `polars` dependency, "
+        "not a dev-dependency with a different feature set"
+    )
+
+
+def test_view_buffer_integration_tests_are_one_binary() -> None:
+    """``view-buffer/tests`` is one test crate, and compiles every file in it.
+
+    Each top-level ``tests/*.rs`` is its own executable linking all of
+    view-buffer: 31 of them were ~4 GB of ``target/debug``, each relinked on
+    every change. In the one crate (``tests/it``), a file ``main.rs`` does not
+    declare is compiled by nothing, so it is checked too.
+    """
+    tests = _ROOT / "view-buffer" / "tests"
+    entries = discovered(sorted(tests.iterdir()), "view-buffer/tests entries")
+    loose = [p.name for p in entries if p.suffix == ".rs"]
+    assert not loose, (
+        f"view-buffer/tests/{loose} would each be a separate test binary: add "
+        "them as modules of tests/it/main.rs instead"
+    )
+    main = (tests / "it" / "main.rs").read_text()
+    declared = set(re.findall(r"^mod (\w+);", main, re.M))
+    modules = discovered(
+        sorted(p for p in (tests / "it").iterdir() if p.suffix == ".rs"),
+        "tests/it modules",
+    )
+    files = {p.stem for p in modules} - {"main"}
+    assert files == declared, (
+        f"undeclared in tests/it/main.rs (never compiled): {sorted(files - declared)}; "
+        f"declared without a file: {sorted(declared - files)}"
+    )
+
+
+def test_session_start_hook_cleans_target_when_the_toolchain_changes() -> None:
+    """A new rustc orphans every artifact in ``target/``; the hook reclaims it.
+
+    The check must follow ``rustup update`` (which is what changes the
+    toolchain) and precede the build that would refill ``target/``.
+    """
+    hook = _hook()
+    assert "rustc -vV" in hook, (
+        "the hook must compare the compiler target/ was built with"
+    )
+    stamp = hook.index("RUSTC_STAMP=")
+    assert (
+        hook.index("rustup update stable") < stamp < hook.index("maturin develop\n")
+    ), "the toolchain check must run after `rustup update` and before the build"
+    check = hook[stamp : hook.index("maturin develop\n")]
+    assert "cargo clean" in check, "a changed toolchain must clean target/"

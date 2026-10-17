@@ -175,7 +175,7 @@ impl Acc for f64 {}
 /// Taps are visited in the same `ky`-outer/`kx`-inner order as the original
 /// per-pixel loop and `norm_factor` is applied as a final multiply, so every
 /// element accumulates in the identical floating-point order: the f32 result
-/// is bit-exact with the pre-split implementation (see tests/convolve_ref.rs).
+/// is bit-exact with the pre-split implementation (see tests/it/convolve_ref.rs).
 pub fn apply_convolve2d(buf: &ViewBuffer, op: &ConvolveOp) -> ViewBuffer {
     let out_dtype = op.output_dtype_rule().resolve(buf.dtype());
     let out = match buf.dtype().accumulator() {

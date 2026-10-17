@@ -243,7 +243,7 @@ mod tests {
     /// list, and a second list is exactly what this replaces. The parse asserts
     /// it found a plausible match rather than silently matching nothing — the
     /// failure mode a source scan has to be protected from. Same shape as
-    /// `acknowledged_variants` in `view-buffer/tests/apply_op_coverage.rs`.
+    /// `acknowledged_variants` in `view-buffer/tests/it/apply_op_coverage.rs`.
     fn acknowledged_kinds() -> Vec<String> {
         let src = include_str!("sink_kind.rs");
         let body = src
