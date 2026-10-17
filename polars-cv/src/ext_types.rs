@@ -79,7 +79,7 @@ impl ExtType {
         match self {
             ExtType::NdArray => crate::output::numpy_output_dtype(),
             ExtType::Point => crate::geom_schema::point_struct_dtype(),
-            ExtType::Contour => DataType::Struct(crate::geom_schema::contour_fields()),
+            ExtType::Contour => crate::geom_schema::contour_struct_dtype(),
             ExtType::BBox => crate::geom_schema::bbox_struct_dtype(),
         }
     }

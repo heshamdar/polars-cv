@@ -84,24 +84,6 @@ impl Arity {
         }
     }
 
-    /// The dtype of a single contour within a column of this arity.
-    ///
-    /// What a transform has to build its elements as: for a set that is the
-    /// *inner* struct, not the column's own `List(...)`. Passing the outer dtype
-    /// is what `build_contour_series(…, series.dtype())` did, and it is why the
-    /// transforms could not have been made list-aware by relaxing the parser
-    /// alone.
-    pub(crate) fn elem_dtype(dtype: &DataType) -> DataType {
-        match Arity::of(dtype) {
-            Arity::Set => match dtype {
-                DataType::List(inner) => (**inner).clone(),
-                // `Arity::of` only answers `Set` for a `List`.
-                other => other.clone(),
-            },
-            Arity::Single => dtype.clone(),
-        }
-    }
-
     /// Wrap a per-contour result type for a column of this arity.
     pub(crate) fn wrap(self, elem: DataType) -> DataType {
         match self {
@@ -299,16 +281,19 @@ fn contour_column<C: crate::geom_schema::ContourParts>(
             ListArray::<i64>::try_new(dtype, offsets.into(), values, validity)?.boxed()
         }
     };
-    // The declared type governs; a column whose element layout differs
-    // from the canonical contour (e.g. one without holes) is cast exactly as
-    // the `AnyValue` path's strict construction would have been.
-    let declared = arity.wrap(elem.clone());
+    // A contour result is the canonical struct and nothing else: casting it
+    // to another declared layout dropped what that layout cannot hold (a
+    // hole, a line's `is_closed`), so a declaration that differs is refused.
     let series = Series::from_arrow(name, array)?;
-    if series.dtype() == &declared {
-        Ok(series)
-    } else {
-        series.strict_cast(&declared)
+    let declared = arity.wrap(elem.clone());
+    if series.dtype() != &declared {
+        polars_bail!(ComputeError:
+            "internal: a contour result is declared {declared:?}, but contours \
+             are published as {:?} (geom_schema::contour_struct_dtype)",
+            series.dtype()
+        );
     }
+    Ok(series)
 }
 
 /// Run `compute` for every contour in every row, in the column's own arity,
@@ -415,10 +400,11 @@ pub(crate) fn zip_contours<T: ReadContour, R: ContourOutput + Send>(
 /// which fifteen hand-written `#[polars_expr(output_type=...)]` attributes were
 /// fifteen chances to introduce.
 ///
-/// The element expression may read `input`, the primary input column's
-/// `&DataType`. That is what lets the transforms say
-/// `Arity::elem_dtype(input)` — "a contour of whatever shape came in" — in the
-/// same breath as the measures say `DataType::Float64`.
+/// The element type never reads the input column's dtype, so `map` takes it
+/// in the same form as `zip`: a transform says `contour_struct_dtype()` in
+/// the same breath as the measures say `DataType::Float64`. An element type
+/// echoing the input's contour layout could not hold what that layout lacks
+/// (a hole a union makes, a line's `is_closed`).
 ///
 /// Both function names are spelled by the caller because Rust cannot build an
 /// identifier from another without a proc-macro dependency; the binding this
@@ -436,17 +422,12 @@ pub(crate) fn zip_contours<T: ReadContour, R: ContourOutput + Send>(
 macro_rules! contour_accessor {
     (
         $(#[$meta:meta])*
-        map fn $name:ident / $out_ty:ident -> |$ity:ident| $elem:expr;
+        map fn $name:ident / $out_ty:ident -> $elem:expr;
         reads $read:ty;
         parse $fam:ident :: $var:ident $({ $($field:ident),* })?;
         |$c:ident, $params:ident, $row:ident| $body:expr
     ) => {
         fn $out_ty(input_fields: &[Field]) -> PolarsResult<Field> {
-            let $ity = input_fields
-                .first()
-                .map(|f| f.dtype().clone())
-                .unwrap_or(DataType::Null);
-            let $ity = &$ity;
             $crate::geom_arity::elementwise_field(input_fields, stringify!($name), $elem)
         }
         $(#[$meta])*
@@ -458,7 +439,6 @@ macro_rules! contour_accessor {
             let $fam::$var $({ $($field),* })? = &op else {
                 return Err($crate::geom_params::parsed_as_another(stringify!($name)));
             };
-            let $ity = inputs[0].dtype();
             $crate::geom_arity::map_contours::<$read, _>(
                 &inputs[0],
                 &geom_params,
@@ -519,7 +499,7 @@ mod contour_output_tests {
     }
 
     fn elem() -> DataType {
-        DataType::Struct(crate::geom_schema::contour_fields())
+        crate::geom_schema::contour_struct_dtype()
     }
 
     fn both(rows: Vec<Option<Vec<Contour>>>, arity: Arity) -> (Series, Series) {
@@ -619,7 +599,7 @@ mod split_tests {
     }
 
     fn column(rows: usize) -> Series {
-        let elem = DataType::Struct(crate::geom_schema::contour_fields());
+        let elem = crate::geom_schema::contour_struct_dtype();
         let rows = (0..rows)
             .map(|i| {
                 let x = i as f64;

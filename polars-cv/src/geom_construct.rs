@@ -15,7 +15,7 @@ use serde::Deserialize;
 use view_buffer::geometry::contour::{Contour, CoordOrder, Outline, Point};
 
 use crate::geom_arity::{Arity, ContourOutput};
-use crate::geom_schema::{contour_fields, point_struct_dtype};
+use crate::geom_schema::{contour_struct_dtype, point_struct_dtype};
 
 /// Static kwargs of the constructors. Closed: an argument Python sends and
 /// Rust does not read is drift.
@@ -95,14 +95,14 @@ fn point_dtype(_: &[Field]) -> PolarsResult<Field> {
 fn contour_dtype(_: &[Field]) -> PolarsResult<Field> {
     Ok(Field::new(
         PlSmallStr::from_static("contour"),
-        DataType::Struct(contour_fields()),
+        contour_struct_dtype(),
     ))
 }
 
 fn contour_set_dtype(_: &[Field]) -> PolarsResult<Field> {
     Ok(Field::new(
         PlSmallStr::from_static("contours"),
-        DataType::List(Box::new(DataType::Struct(contour_fields()))),
+        DataType::List(Box::new(contour_struct_dtype())),
     ))
 }
 
@@ -139,7 +139,7 @@ fn geom_contour_from_coords(inputs: &[Series], kwargs: CoordKwargs) -> PolarsRes
         inputs[0].name().clone(),
         rows,
         Arity::Single,
-        &DataType::Struct(contour_fields()),
+        &contour_struct_dtype(),
     )
 }
 
@@ -168,6 +168,6 @@ fn geom_contour_set_from_coords(inputs: &[Series], kwargs: CoordKwargs) -> Polar
         inputs[0].name().clone(),
         rows,
         Arity::Set,
-        &DataType::Struct(contour_fields()),
+        &contour_struct_dtype(),
     )
 }

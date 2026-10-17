@@ -401,6 +401,20 @@ class TestSmooth:
         (got,) = _shaped([_line(ZIGZAG)], "smooth")
         _assert_same_contour(got, _chaikin(_line(ZIGZAG), 1))
 
+    @pytest.mark.parametrize("iterations", [40, 2**32 - 1])
+    def test_passes_past_the_point_budget_are_refused_before_running(
+        self, iterations: int
+    ) -> None:
+        """A pass doubles the points: 40 would need ~10^13, so the row fails
+        by name rather than the process aborting on the allocation."""
+        match = rf"smooth: {iterations} passes would make about .* points"
+        with pytest.raises(pl.exceptions.ComputeError, match=match):
+            _shaped([_line(ZIGZAG)], "smooth", iterations=iterations)
+        with pytest.raises(pl.exceptions.ComputeError, match=match):
+            _frame([_line(ZIGZAG)]).select(
+                pl.col("c").contour.smooth(iterations=iterations)
+            )
+
 
 # ---------------------------------------------------------------------------
 # densify
@@ -460,6 +474,16 @@ class TestDensify:
     def test_a_length_no_row_can_use_is_refused_at_build(self, max_len: float) -> None:
         with pytest.raises(ValueError, match="max_segment_length must be a finite"):
             Pipeline().source("contour").densify(max_len)
+
+    def test_a_length_past_the_point_budget_is_refused_before_running(self) -> None:
+        """1e-9 splits a 40-unit outline into ~4e10 points: refused by name."""
+        match = r"densify: max_segment_length=0\.000000001 would make about .* points"
+        with pytest.raises(pl.exceptions.ComputeError, match=match):
+            _shaped([_region(_rect(0, 0, 10, 10))], "densify", max_segment_length=1e-9)
+        with pytest.raises(pl.exceptions.ComputeError, match=match):
+            _frame([_region(_rect(0, 0, 10, 10))]).select(
+                pl.col("c").contour.densify(1e-9)
+            )
 
     @pytest.mark.parametrize("max_len", [0.0, math.nan, math.inf])
     def test_a_per_row_length_is_checked_with_its_row(self, max_len: float) -> None:

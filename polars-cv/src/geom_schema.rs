@@ -94,6 +94,12 @@ pub(crate) fn contour_fields() -> Vec<Field> {
     ]
 }
 
+/// The `{exterior, holes, is_closed}` struct dtype every contour-valued
+/// result publishes, whatever layout its input had.
+pub(crate) fn contour_struct_dtype() -> DataType {
+    DataType::Struct(contour_fields())
+}
+
 /// A column of contours, built straight into Arrow from the [`contour_fields`]
 /// declaration: one flat `x`/`y` buffer for every point, with offsets for the
 /// exterior rings, the holes and each hole's ring.
