@@ -551,7 +551,7 @@ class Pipeline(_OpsMixin):
                 if v is not None
             ]
             msg = (
-                f"assert_shape() takes either dims=[...] or the per-dimension "
+                f"assert_shape: takes either dims=[...] or the per-dimension "
                 f"keywords {given}, not both — dims= already gives every "
                 f"dimension a position."
             )
@@ -562,9 +562,6 @@ class Pipeline(_OpsMixin):
         leading = [height, width, channels]
         while leading and leading[-1] is None:
             leading.pop()
-        if not leading:
-            msg = "assert_shape() needs a declaration: dims=[...] or height=/width=/channels=."
-            raise ValueError(msg)
         return self._assert_shape(leading, exact=False)
 
     # --- View Operations (zero-copy where possible) ---

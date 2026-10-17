@@ -157,10 +157,8 @@ pub(crate) fn execute_geometry_op(
                 .map(|o| transforms::simplify_outline(o, *tolerance))
                 .collect(),
         )),
+        // `k >= 1` is `GeometryOp::check`'s, run as every step resolves.
         GeometryOp::Largest { k } => {
-            if *k == 0 {
-                return Err("largest: k must be >= 1, got 0".to_string());
-            }
             let regions = regions(op.name(), outlines(&input, op)?)?;
             Ok(NodeOutput::from_contours(
                 transforms::largest(&regions, *k as usize)

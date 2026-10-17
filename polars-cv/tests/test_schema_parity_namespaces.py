@@ -786,7 +786,7 @@ def _contour_operand_ops() -> list[dict]:
 def test_each_contour_set_operation_is_its_pipeline_op() -> None:
     """``.contour.union`` and the other set operations are the pipeline ops,
     not a second declaration of them: generated from the same catalogue entry
-    (one docstring), with no geometry function of their own."""
+    (one doc text), with no geometry function of their own."""
     import json
 
     from polars_cv._lib import geom_catalog
@@ -803,8 +803,10 @@ def test_each_contour_set_operation_is_its_pipeline_op() -> None:
     for op in ops:
         name = op["python"]
         assert f"contour_{name}" not in functions, f"{name} is declared twice"
-        accessor = getattr(ContourNamespace, name).__doc__
-        assert accessor == getattr(LazyPipelineExpr, name).__doc__, name
+        # Both docstrings are rendered from the op's one catalogue text.
+        summary = " ".join(op["doc"].split("\n\n")[1].split())
+        for surface in (ContourNamespace, LazyPipelineExpr):
+            assert summary in " ".join(getattr(surface, name).__doc__.split()), name
 
 
 @plugin_required
@@ -819,3 +821,39 @@ def test_a_contour_set_operation_keeps_the_accessors_error_policy() -> None:
     assert out.null_count() == 1 and out[0] is not None
     with pytest.raises(pl.exceptions.ComputeError, match="open contour"):
         df.select(pl.col("a").contour.union(pl.col("b")))
+
+
+@plugin_required
+@pytest.mark.parametrize("operand", ["pa", "ba"])
+def test_a_wrong_column_type_raises_under_every_error_policy(operand: str) -> None:
+    """A column no row can be read as contours is the column's error: it
+    raises under ``on_error("null")`` too, as every accessor's does, rather
+    than nulling every row (the set ops run through a pipeline, whose contour
+    source used to treat it as a row's error)."""
+    from polars_cv import Pipeline
+
+    df = _contour_df()
+    for build in (
+        lambda: pl.col("a").contour.on_error("null").union(pl.col(operand)),
+        lambda: pl.col(operand).contour.on_error("null").union(pl.col("a")),
+        lambda: (
+            pl.col(operand)
+            .cv.pipe(Pipeline().source("contour").on_error("null").offset(1.0))
+            .sink("native")
+        ),
+    ):
+        with pytest.raises(pl.exceptions.PolarsError, match="exterior"):
+            df.select(build())
+
+
+def test_a_set_operation_names_an_operand_that_is_not_an_expression() -> None:
+    """``other`` is a column expression; anything else is refused by name."""
+    with pytest.raises(TypeError, match=r"union\(other=\).*pl\.Expr"):
+        pl.col("a").contour.union("b")
+
+
+def test_a_set_operation_documents_the_accessor_it_is() -> None:
+    """The generated accessor's docstring describes its own call: a contour
+    column operand and an expression result, with no pipeline ``Domain:``."""
+    doc = ContourNamespace.union.__doc__
+    assert "Returns:" in doc and "Domain:" not in doc

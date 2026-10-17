@@ -321,6 +321,15 @@ impl CompiledGraph {
                 self.min_inputs, inputs.len()
             ));
         }
+        // A contour column no row can be read as is the column's error, under
+        // every policy: `on_error("null")` would otherwise null each row.
+        for np in &self.plan {
+            if let (Source::Contour { .. }, Some(col)) = (&np.source, np.column) {
+                if inputs[col].dtype() != &DataType::Null {
+                    crate::geom_columns::ContourColumn::new(&inputs[col]).check_layout()?;
+                }
+            }
+        }
         let resolved_outputs = resolved_output_specs(
             &self.graph,
             &inputs.iter().map(|s| s.dtype().clone()).collect::<Vec<_>>(),
@@ -852,6 +861,10 @@ impl CompiledGraph {
                                     Err(_) if ctx.took_null() => continue 'nodes,
                                     Err(e) => return Err(e.to_string()),
                                 };
+                                // Resolved on its own path (the canvas is
+                                // another node's), so it meets the check
+                                // `TypedOp::resolve` gives every other step.
+                                geo_op.check()?;
                                 current_output = execute_geometry_op(current_output, &geo_op)?;
                                 continue;
                             }

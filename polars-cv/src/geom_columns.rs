@@ -140,6 +140,23 @@ impl<'a> ContourColumn<'a> {
             .map(Some)
     }
 
+    /// The column's own error, found without reading a row: a chunk whose
+    /// layout no row can be read through (no `exterior` field, a ring that
+    /// is not points) and that holds a non-null row. It is the column's
+    /// ([`column_error`]), raised under every `on_error` policy; a reader
+    /// that turns row errors into nulls checks this first, so a wrong column
+    /// is never a column of nulls.
+    pub(crate) fn check_layout(&self) -> PolarsResult<()> {
+        for (array, rows) in &self.chunks.chunks {
+            if let Err(msg) = rows {
+                if array.null_count() < array.len() {
+                    return Err(column_error(msg));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Row `i`'s contours as outlines — closed regions and open polylines
     /// alike — or `None` for a null row.
     pub(crate) fn outlines(&self, row: usize) -> PolarsResult<Option<Vec<Outline>>> {

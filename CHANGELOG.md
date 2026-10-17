@@ -171,7 +171,32 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   own: `rasterize: rasterize: supersample ...`, `contour_densify: densify:
   ...`, `blur: blur: sigma ...`. The prefix is gone, and the checks that did
   not name their op (`normalize`, `histogram`'s range, `perceptual_hash`,
-  `largest`, `extract_contours`) now do.
+  `largest`, `extract_contours`, `convolve2d`, `assert_shape`) now do. One
+  convention throughout: a build-time refusal begins with the op's Python
+  name (`histogram: range ...`), a row error with its engine step's name
+  (`Histogram: range ...`, `Offset:`, `Union:`); the set operations had
+  named their row errors in lower case. `assert_shape()`'s empty
+  declaration is refused by the op's own check, no longer by a copy in its
+  Python sugar.
+
+- **A `histogram` range no row can use is refused when written.** A
+  non-finite or inverted literal `range=` passed the op's check and failed
+  every row; the check now refuses it at build, through the one range rule
+  the executor also applies per row (named once, not `Histogram: histogram:`).
+
+- **A contour column of the wrong layout fails the query under every
+  error policy.** A `source("contour")` pipeline, and the set operations
+  (`.contour.union(other)`, ...) built on one, read a non-contour column
+  per row, so `on_error("null")` turned it into a column of nulls; the
+  column's layout is now checked once per call and refused like any other
+  wrong input type. A set operation's `other=` that is not an expression is
+  a `TypeError` naming it, and its docstring states what it returns.
+
+- **`rasterize(shape=)` onto another node's canvas checks its row.** The
+  shape-reference form skipped the op's check, so a per-row `supersample`
+  of 0 panicked in the engine and one past 16 ran; both are now refused
+  with the row, like the other forms. `.contour.largest(k=)` per row likewise applies the op's own rule
+  rather than a second copy of it.
 
 - **Contour results publish the canonical contour struct.** A `.contour`
   function that returns contours declared "the input's own layout" and cast
@@ -229,7 +254,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   field now reads and writes `"nan"`, `"inf"` and `"-inf"` (as `bound`
   fields already spelled their infinities), and `_types._literal` encodes
   them, so a literal meets the op's own check exactly as the same value
-  passed per row does: `apply_lut([[nan]], dtype="f32")` maps to NaN, and
+  passed per row does: `apply_lut([[nan]], out_dtype="f32")` maps to NaN, and
   `offset(inf)` is refused by `offset`'s rule. (A first fix refused every
   non-finite literal in Python, which made a NaN table entry an error while
   `pl.lit(nan)` worked; it never shipped.) A `bound` still refuses NaN. A

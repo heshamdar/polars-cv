@@ -3586,11 +3586,12 @@ class _ContourOpsMixin:
         contour-domain expression; ``.contour.difference`` takes a contour column
         and runs this op.
 
-        Domain: contour → contour
-
         Args:
             other: The other contour set: a contour-domain expression (a contour column,
                 through ``.contour``).
+
+        Returns:
+            A contour set (``List[Contour]``) per row: disjoint regions.
 
         Example:
             ```python
@@ -3664,11 +3665,12 @@ class _ContourOpsMixin:
         contour-domain expression; ``.contour.intersection`` takes a contour column
         and runs this op.
 
-        Domain: contour → contour
-
         Args:
             other: The other contour set: a contour-domain expression (a contour column,
                 through ``.contour``).
+
+        Returns:
+            A contour set (``List[Contour]``) per row: disjoint regions.
 
         Example:
             ```python
@@ -3931,11 +3933,12 @@ class _ContourOpsMixin:
         contour-domain expression; ``.contour.symmetric_difference`` takes a contour column
         and runs this op.
 
-        Domain: contour → contour
-
         Args:
             other: The other contour set: a contour-domain expression (a contour column,
                 through ``.contour``).
+
+        Returns:
+            A contour set (``List[Contour]``) per row: disjoint regions.
 
         Example:
             ```python
@@ -3994,11 +3997,12 @@ class _ContourOpsMixin:
         contour-domain expression; ``.contour.union`` takes a contour column
         and runs this op.
 
-        Domain: contour → contour
-
         Args:
             other: The other contour set: a contour-domain expression (a contour column,
                 through ``.contour``).
+
+        Returns:
+            A contour set (``List[Contour]``) per row: disjoint regions.
 
         Example:
             ```python
