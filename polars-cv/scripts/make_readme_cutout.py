@@ -76,9 +76,8 @@ def cutout() -> LazyPipelineExpr:
     )
 
     photo = img.pipe(base)
-    alpha = outline.rasterize(shape=photo, supersample=4).channel_select(0)
-    r, g, b = (photo.channel_select(i) for i in range(3))
-    cutout = r.channel_merge(g, b, alpha).alias("cutout")
+    alpha = outline.rasterize(shape=photo, supersample=4)
+    cutout = photo.channel_merge(alpha).alias("cutout")
 
     return cutout.merge_pipe(outline.area().alias("area"))
 

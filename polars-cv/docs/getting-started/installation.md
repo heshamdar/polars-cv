@@ -63,10 +63,12 @@ for every option, including federated Google credentials and token commands.
 
 ### Graph Visualization
 
-`show_graph()` needs the `viz` extra:
+`show_graph()` needs the `viz` extra and Graphviz's `dot` program, which
+pip cannot install:
 
 ```bash
 pip install 'polars-cv[viz]'
+sudo apt-get install graphviz   # or: brew install graphviz, conda install graphviz
 ```
 
 ### PyTorch
