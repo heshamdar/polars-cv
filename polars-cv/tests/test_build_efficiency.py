@@ -144,19 +144,18 @@ def test_session_start_hook_emits_async_line_before_building() -> None:
     )
 
 
-def test_session_start_hook_builds_debug_only() -> None:
+def test_session_start_hook_builds_nothing() -> None:
+    """The session builds the extension itself (``maturin develop``, debug);
+    a build in the hook raced it. Nor may the sync build the project."""
     hook = _hook()
     assert "--no-install-project" in hook, (
         "the hook must skip the release-LTO project build (`--no-install-project`)"
     )
-    assert "maturin develop" in hook, "the hook must build the debug extension"
-    assert "maturin develop --release" not in hook, (
-        "the SessionStart hook must build the canonical debug extension, never a "
-        "`maturin develop --release`"
-    )
-    assert "maturin build --release" not in hook, (
-        "the SessionStart hook must not produce release wheels"
-    )
+    commands = [
+        ln for ln in hook.splitlines() if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+    builds = [ln for ln in commands if "maturin" in ln and "echo" not in ln]
+    assert builds == [], f"the hook must not build the extension: {builds}"
 
 
 def test_session_start_hook_provisions_every_verify_lane() -> None:
@@ -379,15 +378,16 @@ def test_session_start_hook_cleans_target_when_the_toolchain_changes() -> None:
     """A new rustc orphans every artifact in ``target/``; the hook reclaims it.
 
     The check must follow ``rustup update`` (which is what changes the
-    toolchain) and precede the build that would refill ``target/``.
+    toolchain) and precede the dependency sync.
     """
     hook = _hook()
     assert "rustc -vV" in hook, (
         "the hook must compare the compiler target/ was built with"
     )
     stamp = hook.index("RUSTC_STAMP=")
-    assert (
-        hook.index("rustup update stable") < stamp < hook.index("maturin develop\n")
-    ), "the toolchain check must run after `rustup update` and before the build"
-    check = hook[stamp : hook.index("maturin develop\n")]
+    sync = hook.index("uv sync --group")
+    assert hook.index("rustup update stable") < stamp < sync, (
+        "the toolchain check must run after `rustup update` and before the sync"
+    )
+    check = hook[stamp:sync]
     assert "cargo clean" in check, "a changed toolchain must clean target/"
