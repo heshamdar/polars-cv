@@ -472,19 +472,24 @@ class TestSpatialWindowPushdown:
         graph.optimize(OptFlags.all())
         assert _node_ops(graph) == ["grayscale", "assert_shape", "crop"]
 
-    def test_crop_does_not_cross_node_boundary(self) -> None:
-        # .pipe() makes a new node; phase 1's barrier is the node boundary, so a
-        # crop in the downstream node is not hoisted into the pointwise upstream.
-        # This pins the boundary: enabling cross-node hoisting must update it.
-        graph = (
+    def test_a_crop_crosses_a_node_boundary_once_cse_fuses_the_chain(self) -> None:
+        # .pipe() makes a new node, and the pushdown works within a node. CSE
+        # runs first and fuses a run no one else reads into one node, so the
+        # crop then moves ahead of the pointwise op it followed; with CSE off
+        # the boundary stays a barrier.
+        expr = (
             pl.col("img")
             .cv.pipe(Pipeline().source("image_bytes").grayscale())
             .pipe(Pipeline().crop(top=0, left=0, height=8, width=8))
-            .sink("numpy", return_expr=False, opt_flags=OptFlags.all())
         )
-        op_lists = [op_names(n.pipeline) for n in graph._nodes.values()]
-        assert ["crop"] in op_lists
-        assert ["grayscale"] in op_lists
+
+        def op_lists(flags: OptFlags) -> list[list[str]]:
+            graph = expr.sink("numpy", return_expr=False, opt_flags=flags)
+            return [op_names(n.pipeline) for n in graph._nodes.values()]
+
+        assert op_lists(OptFlags.all()) == [["crop", "grayscale"]]
+        no_cse = OptFlags.parse("all,-common_subexpression_elimination")
+        assert sorted(op_lists(no_cse)) == [["crop"], ["grayscale"]]
 
 
 class TestShapeSubpipelineStaging:

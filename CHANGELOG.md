@@ -147,6 +147,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **CSE computes each distinct value once, and fuses linear runs.** It used
+  to share only a leading op run common to every root node on a column, so a
+  bare decode, two branches with different first ops, or one unrelated
+  pipeline on the same column left each decode separate, and nothing below a
+  root was shared. Every op is now numbered by what it computes (its input
+  and its wire form, operands included), so equal work is shared wherever it
+  was written, duplicates merge all the way down, and a node that only passes
+  its input on vanishes. Each linear run of ops that nothing else reads then
+  runs as one node, so a chain of lazy method calls is one node, and the
+  spatial-window pushdown can move a crop across what were node boundaries.
+  Outputs are byte-identical; `opt_flags=False` shows the graph as written.
 - **README**: a branch-and-rejoin example (a cup and saucer cut out to a
   transparent PNG, with the optimised graph it runs, from
   `scripts/make_readme_cutout.py`); the detection-metrics snippet and the

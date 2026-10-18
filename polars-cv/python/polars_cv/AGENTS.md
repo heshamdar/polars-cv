@@ -91,7 +91,12 @@ When `.sink()` is called, a `PipelineGraph` is built:
 1. All `LazyPipelineExpr` nodes are traversed
 2. Each becomes a `GraphNode` with its pipeline spec, upstream dependencies, and optional alias
 3. Output specs are attached to terminal nodes
-4. Common subexpression elimination (CSE) shares common prefixes
+4. Nodes no output reads are dropped; then CSE (`_optimize_common_subexpressions`)
+   numbers every op by what it computes (its input atom and its wire form, slots
+   as graph inputs, operands as atoms), so equal work anywhere is one atom, and
+   rebuilds one node per linear run of atoms (a run ends at an output, an operand
+   read by id, or a fork). Build-time ids of replaced nodes resolve through
+   `_renamed`; a node computing what one written node did keeps its id
 5. The graph is serialized to JSON. Nodes are named by position (`n0`, `n1`,
    ...), never by their build-time `uuid4` ids: `Plan.to_spec` renames every
    node an op reads and refuses one the graph does not name. The same pipeline

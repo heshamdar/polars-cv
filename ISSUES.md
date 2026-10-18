@@ -460,6 +460,7 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 
 | ID | Finding | Outcome |
 |----|---------|---------|
+| CR-109 | CSE shared only a leading op run common to *every* root node on a column: a bare decode, two branches with different first ops, or one unrelated pipeline on the column left every decode unshared; nothing below a root was shared; duplicates did not cascade; each lazy method call stayed its own node | Fixed (Unreleased): `_optimize_common_subexpressions` numbers every op by what it computes (input atom, wire form, operands as atoms) and rebuilds one node per linear run (ends: outputs, operands, forks); the README cutout runs 8 nodes, not 13 (`tests/test_cse_optimization.py::TestFullCSE`) |
 | CR-108 | Nodes no output reads were serialized (`merge_pipe`'s own node, unselected branches), and `show_graph` hid them by deleting childless nodes | Fixed (Unreleased): `PipelineGraph.optimize` keeps only what the outputs reach (`_drop_unread_nodes`); the visualizer's workaround is gone (`tests/test_graph_construction.py`) |
 | CR-107 | Aliases: one alias on two nodes resolved silently to the last; a node with two aliases kept one (`Alias 'q' not found`) | Fixed (Unreleased): aliases are collected per expression object and checked in one place, `PipelineGraph.add_alias`, which refuses an alias naming two nodes (`tests/test_graph_construction.py`) |
 | CR-01 | `ViewExpr::grayscale()` hardcodes `DType::U8`, producing silent wrong values | Resolved |

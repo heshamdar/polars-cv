@@ -8,7 +8,6 @@ pipeline operations and handles serialization for the Rust backend.
 from __future__ import annotations
 
 import json
-import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -23,6 +22,10 @@ if TYPE_CHECKING:
 
     from polars_cv._optimize import OptFlags
     from polars_cv.pipeline import Pipeline
+
+
+#: The graph-level per-row policies, by ``Pipeline`` attribute: wire key.
+_POLICIES = {"_on_error": "on_error", "_on_null_param": "on_null_param"}
 
 
 @dataclass
@@ -116,6 +119,9 @@ class PipelineGraph:
         # ``OptFlags`` and serialized in the graph's ``opt`` object for Rust.
         # Empty until optimized; an empty/absent object means all-on in Rust.
         self._opt_config: dict[str, bool] = {}
+        # Build-time ids of nodes CSE replaced, by the node now computing
+        # their value: plans name the nodes they read by build-time id.
+        self._renamed: dict[str, str] = {}
 
     def add_node(
         self,
@@ -279,6 +285,7 @@ class PipelineGraph:
         """
         from polars_cv._optimize import OPTIMIZATION_PASSES
 
+        self._check_roots()
         self._drop_unread_nodes()
         for node in self._nodes.values():
             node.pipeline = node.pipeline._clone()
@@ -299,6 +306,36 @@ class PipelineGraph:
         self._opt_config = flags.engine_opt()
         self._optimized = True
         return self
+
+    def _check_roots(self) -> None:
+        """Refuse a node that reads neither a column nor another node."""
+        for node in self._nodes.values():
+            if not node.upstream and node.column is None:
+                msg = (
+                    f"Root node '{node.node_id}' has no column set. "
+                    "Pass the column when adding the node."
+                )
+                raise ValueError(msg)
+
+    def _graph_policy(self, attr: str) -> str:
+        """A graph-level per-row policy (``_on_error``/``_on_null_param``):
+        the one non-default value the composed pipelines set, or ``"raise"``.
+
+        Raises:
+            ValueError: If they set different non-default values.
+        """
+        policies = {
+            getattr(node.pipeline, attr)
+            for node in self._nodes.values()
+            if getattr(node.pipeline, attr) != "raise"
+        }
+        if len(policies) > 1:
+            msg = (
+                f"Conflicting {_POLICIES[attr]} policies in composed pipelines: "
+                f"{sorted(policies)}. All pipelines in a graph must agree."
+            )
+            raise ValueError(msg)
+        return policies.pop() if policies else "raise"
 
     def _output_node_ids(self) -> list[str]:
         """The nodes the outputs read, in output order. Before an output is
@@ -327,181 +364,235 @@ class PipelineGraph:
 
     # --- CSE Optimization ---
 
+    def _topological_ids(self) -> list[str]:
+        """Every node, each after the nodes it reads."""
+        order: list[str] = []
+        seen: set[str] = set()
+
+        def visit(node_id: str) -> None:
+            if node_id in seen:
+                return
+            seen.add(node_id)
+            for upstream_id in self._nodes[node_id].upstream:
+                visit(upstream_id)
+            order.append(node_id)
+
+        for node_id in self._nodes:
+            visit(node_id)
+        return order
+
     def _optimize_common_subexpressions(self) -> None:
+        """Compute every distinct value once, and give each linear run one node.
+
+        **Value numbering.** Every op of every node is an *atom*, named by
+        what it computes: the atom before it (the node's source, or the atom
+        its upstream node ends on) and the op as the wire spells it, with its
+        expression parameters as graph inputs and the nodes it reads as their
+        atoms. A source atom is its column and source spec. Two atoms with one
+        name are one atom, so equal work is shared wherever it was written:
+        two decodes of a column, a prefix two of five pipelines have, ops
+        below a shared node, an op whose operands were built twice, and a node
+        with no ops (its upstream's atom).
+
+        **Chain fusion.** The atoms the outputs need form a DAG. An atom ends a
+        node where it must be addressable — an output, an operand some op
+        reads by id — or where it is not read by exactly one atom; each run
+        between such ends becomes one node, its ops replanned in order from
+        the state entering the run. So a linear chain written as several
+        nodes runs as one, and only a fork keeps a value apart.
+
+        Build-time ids of replaced nodes keep resolving (``_renamed``): a
+        plan's operands name nodes by build-time id, and the wire names each
+        by the node that now computes it.
         """
-        Extract common operation prefixes into shared nodes.
+        from polars_cv._lib import Plan
+        from polars_cv.lazy import _BLOB_SOURCE
 
-        This optimization detects when multiple pipelines share the same
-        sequence of operations (starting from the source) and creates a
-        single shared node for that prefix. The original nodes are then
-        updated to use the shared node as their upstream.
-
-        Example:
-            Before:
-                gray_pipe: source → resize → grayscale
-                mask_pipe: source → resize → grayscale → threshold → extract
-
-            After:
-                _shared:   source → resize → grayscale
-                gray_pipe: (empty) ← upstream: _shared
-                mask_pipe: threshold → extract ← upstream: _shared
-        """
-        # Group root nodes by (source column, source spec)
-        groups = self._group_nodes_for_cse()
-
-        for group_key, nodes in groups.items():
-            if len(nodes) < 2:
-                continue
-
-            # Find common prefix among all nodes in this group. Ops compare as
-            # their wire form over the graph's one slot table, so two
-            # expression parameters are the same iff they bind the same input.
-            table = self._slot_table()
-            same = {node_id: node_id for node_id in self._nodes}
-            ops_lists = [
-                [
-                    json.dumps(op, sort_keys=True)
-                    for op in node.pipeline._to_spec_dict(table.index, same)["ops"]
-                ]
-                for node in nodes
-            ]
-            prefix_len = len(self._find_common_prefix(ops_lists))
-
-            if prefix_len == 0:
-                continue
-
-            # Create shared node for the common prefix
-            shared_id = self._create_shared_node(nodes[0], prefix_len)
-
-            # Update original nodes to use shared node as upstream
-            for node in nodes:
-                self._update_node_to_use_shared(node, shared_id, prefix_len)
-
-    def _group_nodes_for_cse(self) -> dict[str, list[GraphNode]]:
-        """
-        Group nodes that could potentially share a common prefix.
-
-        Nodes are grouped by:
-        1. Same source column (or both have no column)
-        2. Same source spec (format, dtype, etc.)
-
-        Returns:
-            Dict mapping group keys to lists of nodes in that group.
-        """
-        groups: dict[str, list[GraphNode]] = {}
         table = self._slot_table()
-        same = {node_id: node_id for node_id in self._nodes}
+        mark = "\x00atom:"  # an operand's atom on the wire; no field holds NUL
 
-        for node in self._nodes.values():
-            # Only consider root nodes (those with column bindings)
-            if node.column is None:
-                continue
+        index: dict[str, int] = {}
+        prev: list[int | None] = []  # the atom each atom follows
+        origin: list[tuple[str, int]] = []  # (node, op position); -1 for a source
+        reads: list[list[int]] = []  # the atoms each op reads by id
+        final: dict[str, int] = {}  # each node's last atom
 
-            # Create a group key from column + source spec. Key on the source's
-            # canonical serialization, not ``hash(source)``: a hash collision
-            # would bucket two *different* sources together and fuse a shared
-            # prefix node with the wrong source. String equality cannot collide.
-            col_key = table.index(node.column)
-            source = node.pipeline._to_spec_dict(table.index, same)["source"]
-            source_key = json.dumps(source, sort_keys=True)
-            group_key = f"{col_key}:{source_key}"
+        def intern(
+            key: Any, after: int | None, at: tuple[str, int], read: list[int]
+        ) -> int:
+            name = json.dumps(key, sort_keys=True)
+            if name not in index:
+                index[name] = len(prev)
+                prev.append(after)
+                origin.append(at)
+                reads.append(read)
+            return index[name]
 
-            if group_key not in groups:
-                groups[group_key] = []
-            groups[group_key].append(node)
-
-        return groups
-
-    def _find_common_prefix(self, ops_lists: list[list[str]]) -> list[str]:
-        """
-        Find the longest common prefix across all operation lists.
-
-        Args:
-            ops_lists: List of operation lists to compare.
-
-        Returns:
-            The common prefix (may be empty if no common ops).
-        """
-        if not ops_lists:
+        def operands(value: Any) -> list[int]:
+            if isinstance(value, str) and value.startswith(mark):
+                return [int(value[len(mark) :])]
+            if isinstance(value, dict):
+                return [a for v in value.values() for a in operands(v)]
+            if isinstance(value, list):
+                return [a for v in value for a in operands(v)]
             return []
 
-        # Find minimum length
-        min_len = min(len(ops) for ops in ops_lists)
-        if min_len == 0:
-            return []
-
-        prefix: list[str] = []
-        for i in range(min_len):
-            first = ops_lists[0][i]
-            # Check if all lists have the same op at position i
-            if all(ops[i] == first for ops in ops_lists[1:]):
-                prefix.append(first)
+        old_order = list(self._nodes)
+        source_atom: dict[str, int] = {}  # each root node's source atom
+        for node_id in self._topological_ids():
+            node = self._nodes[node_id]
+            named = {n: f"{mark}{a}" for n, a in final.items()}
+            spec = node.pipeline._to_spec_dict(table.index, named)
+            if node.column is not None:
+                key = ["source", table.index(node.column), spec["source"]]
+                atom = intern(key, None, (node_id, -1), [])
+                source_atom[node_id] = atom
             else:
-                break
+                atom = final[node.upstream[0]]
+            for position, op in enumerate(spec["ops"]):
+                atom = intern([atom, op], atom, (node_id, position), operands(op))
+            final[node_id] = atom
 
-        return prefix
+        # The atoms the outputs need, and which of them must end a node.
+        outputs = {final[n] for n in self._output_node_ids()}
+        needed: set[int] = set()
+        stack = list(outputs)
+        while stack:
+            atom = stack.pop()
+            if atom not in needed:
+                needed.add(atom)
+                stack.extend(reads[atom])
+                before = prev[atom]
+                if before is not None:
+                    stack.append(before)
+        readers: dict[int, list[int]] = {}
+        for atom in sorted(needed):
+            before = prev[atom]
+            if before is not None:
+                readers.setdefault(before, []).append(atom)
+        operand_atoms = {r for atom in needed for r in reads[atom]}
 
-    def _create_shared_node(self, template_node: GraphNode, prefix_len: int) -> str:
-        """
-        Create a shared node containing the common prefix operations.
+        def ends_a_node(atom: int) -> bool:
+            return (
+                atom in outputs
+                or atom in operand_atoms
+                or len(readers.get(atom, [])) != 1
+            )
 
-        Args:
-            template_node: A node to use as template for source/column.
-            prefix_len: How many of the template's leading ops are shared.
+        # Each run, after the runs it reads (its input, its ops' operands).
+        run_of: dict[int, list[int]] = {}  # last atom -> run
+        for atom in sorted(needed):
+            before = prev[atom]
+            if before is None or ends_a_node(before):
+                run = [atom]
+                while not ends_a_node(run[-1]):
+                    run.append(readers[run[-1]][0])
+                run_of[run[-1]] = run
+        runs: list[list[int]] = []
+        placed: set[int] = set()
 
-        Returns:
-            The node_id of the newly created shared node.
-        """
-        shared_id = f"_cse_{uuid.uuid4().hex[:8]}"
+        def place(last: int) -> None:
+            if last in placed or last not in run_of:
+                return
+            placed.add(last)
+            run = run_of[last]
+            before = prev[run[0]]
+            for dep in ([] if before is None else [before]) + [
+                r for atom in run for r in reads[atom]
+            ]:
+                place(dep)
+            runs.append(run)
 
-        # The template's leading ops *are* the prefix (CSE matched them), so
-        # the shared node is the template's plan cut to them. It inherits the
-        # rest of the template (expressions, node reads, per-row policies)
-        # through the one copy, `_clone`.
-        template = template_node.pipeline
-        shared_pipeline = template._clone()
-        shared_pipeline._plan = template._plan.select(list(range(prefix_len)), start=0)
+        for last in run_of:
+            place(last)
 
-        # Create the shared node
-        shared_node = GraphNode(
-            node_id=shared_id,
-            pipeline=shared_pipeline,
-            column=template_node.column,
-            upstream=[],
-            alias=None,  # Shared nodes don't have user aliases
+        old = self._nodes
+        policies = {attr: self._graph_policy(attr) for attr in _POLICIES}
+        node_of: dict[int, str] = {}  # a run's last atom -> its node
+        nodes: dict[str, GraphNode] = {}
+        for i, run in enumerate(runs):
+            first_node, _ = origin[run[0]]
+            # Derived through `_clone` (the one copy, so every setting carries
+            # over), then given its own plan, expressions and node reads.
+            pipeline = old[first_node].pipeline._clone()
+            pipeline._exprs, pipeline._node_refs = [], []
+            for attr, policy in policies.items():
+                setattr(pipeline, attr, policy)
+            template = old[first_node].pipeline
+            before = prev[run[0]]
+            source_json = template._plan.source_json()
+            if before is None and source_json is not None:
+                source = _rewired(json.loads(source_json), template, pipeline)
+                pipeline._plan = Plan().with_source(json.dumps(source))
+                ops, column = run[1:], old[first_node].column
+                upstream = []
+            elif before is not None:
+                entering = self._state_after(old, origin, before)
+                pipeline._plan = Plan().rebased(_BLOB_SOURCE, entering)
+                ops, column = run, None
+                upstream = [node_of[before]]
+            else:
+                msg = f"root node {first_node!r} has no source"
+                raise ValueError(msg)
+            for atom in ops:
+                node_id, position = origin[atom]
+                src = old[node_id].pipeline
+                op = _rewired(json.loads(src._plan.ops_json()[position]), src, pipeline)
+                pipeline._plan = pipeline._plan.push(json.dumps(op), src._refs())
+                for ref in src._node_refs:
+                    pipeline._read_node(ref)
+                for r in reads[atom]:
+                    if node_of[r] not in upstream:
+                        upstream.append(node_of[r])
+            # A node computing what one written node did keeps its id.
+            same = [n for n in old_order if final[n] == run[-1]]
+            node_id = same[0] if same else f"_cse_{i}"
+            aliases = [old[n].alias for n in same if old[n].alias]
+            nodes[node_id] = GraphNode(
+                node_id=node_id,
+                pipeline=pipeline,
+                column=column,
+                upstream=upstream,
+                alias=aliases[0] if aliases else None,
+            )
+            node_of[run[-1]] = node_id
+
+        # Root nodes first, in their columns' original order: the first column
+        # is the plugin's first input, which names the output. (The wire is
+        # not read in order; Rust orders nodes by `upstream`.)
+        root_rank = {a: i for i, a in enumerate(dict.fromkeys(source_atom.values()))}
+        first_atom = {node_of[run[-1]]: run[0] for run in runs}
+        nodes = dict(
+            sorted(
+                nodes.items(),
+                key=lambda item: root_rank.get(first_atom[item[0]], len(root_rank)),
+            )
         )
+        renamed = {n: node_of[a] for n, a in final.items() if a in node_of}
+        self._renamed = {
+            k: renamed.get(v, v) for k, v in self._renamed.items()
+        } | renamed
+        self._nodes = nodes
+        self._alias_to_node = {
+            alias: renamed[n]
+            for alias, n in self._alias_to_node.items()
+            if n in renamed
+        }
+        if self._output is not None:
+            self._output.node_id = renamed[self._output.node_id]
+        if self._multi_output is not None:
+            self._multi_output.outputs = {
+                alias: (renamed[n], fmt, params)
+                for alias, (n, fmt, params) in self._multi_output.outputs.items()
+            }
 
-        self._nodes[shared_id] = shared_node
-
-        return shared_id
-
-    def _update_node_to_use_shared(
-        self, node: GraphNode, shared_id: str, prefix_len: int
-    ) -> None:
-        """
-        Update a node to use a shared node as its upstream.
-
-        Args:
-            node: The node to update.
-            shared_id: The ID of the shared node to use as upstream.
-            prefix_len: Number of operations that are now in the shared node.
-        """
-        # Keep only the suffix, replayed from the state entering it (the
-        # shared node's output state).
-        pipeline = node.pipeline
-        pipeline._plan = pipeline._plan.select(
-            list(range(prefix_len, len(pipeline._plan))), start=prefix_len
-        )
-
-        # Set the shared node as upstream
-        if not node.upstream:
-            node.upstream = [shared_id]
-        else:
-            # Prepend shared node to existing upstream
-            node.upstream = [shared_id] + node.upstream
-
-        # The node now reads the shared node; the shared node holds the binding.
-        node.column = None
+    @staticmethod
+    def _state_after(
+        nodes: dict[str, GraphNode], origin: list[tuple[str, int]], atom: int
+    ) -> Any:
+        """The planned state an atom produces."""
+        node_id, position = origin[atom]
+        return nodes[node_id].pipeline._plan.state_at(position + 1)
 
     def to_expr(self) -> pl.Expr:
         """
@@ -539,14 +630,7 @@ class PipelineGraph:
                 "`graph.optimize(flags).to_expr()` for the low-level path."
             )
 
-        # Validate that root nodes have columns
-        for node in self._nodes.values():
-            if not node.upstream and node.column is None:
-                msg = (
-                    f"Root node '{node.node_id}' has no column set. "
-                    "Pass the column when adding the node."
-                )
-                raise ValueError(msg)
+        self._check_roots()
 
         # One positional table for the plugin's inputs: root columns first,
         # then every expression parameter. Serialization reads the same table,
@@ -601,7 +685,10 @@ class PipelineGraph:
         (it compares their kwargs) and the compiled-graph cache reuse one
         entry.
         """
-        return {node_id: f"n{i}" for i, node_id in enumerate(self._nodes)}
+        wire = {node_id: f"n{i}" for i, node_id in enumerate(self._nodes)}
+        for old, now in self._renamed.items():
+            wire.setdefault(old, wire[now])
+        return wire
 
     def _to_dict(self) -> dict[str, Any]:
         if self._output is None and self._multi_output is None:
@@ -655,23 +742,10 @@ class PipelineGraph:
         # composed pipelines; distinct non-default policies are ambiguous.
         # Emitted only when non-default, so unaffected graphs serialize
         # byte-identically to before.
-        for attr, key in (
-            ("_on_error", "on_error"),
-            ("_on_null_param", "on_null_param"),
-        ):
-            policies = {
-                getattr(node.pipeline, attr)
-                for node in self._nodes.values()
-                if getattr(node.pipeline, attr) != "raise"
-            }
-            if len(policies) > 1:
-                msg = (
-                    f"Conflicting {key} policies in composed pipelines: "
-                    f"{sorted(policies)}. All pipelines in a graph must agree."
-                )
-                raise ValueError(msg)
-            if policies:
-                graph_spec[key] = policies.pop()
+        for attr, key in _POLICIES.items():
+            policy = self._graph_policy(attr)
+            if policy != "raise":
+                graph_spec[key] = policy
 
         return graph_spec
 
@@ -729,3 +803,15 @@ class PipelineGraph:
     def show_graph(self) -> pydot.Dot:
         """Build dot representation of graph."""
         return get_graphviz_out(self)  # ty: ignore[invalid-return-type]
+
+
+def _rewired(value: Any, src: "Pipeline", dst: "Pipeline") -> Any:
+    """A wire value of ``src``'s with each ``{"$slot": i}`` renumbered into
+    ``dst``'s expression table (adding the expression there)."""
+    if isinstance(value, dict):
+        if value.keys() == {"$slot"}:
+            return dst._slot(src._exprs[value["$slot"]])
+        return {k: _rewired(v, src, dst) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_rewired(v, src, dst) for v in value]
+    return value

@@ -17,8 +17,9 @@ use crate::plan::State;
 /// Every logical optimisation pass, by the name `OptFlags` knows it by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogicalPass {
-    /// Share a common leading op run across sibling pipelines (graph scope;
-    /// applied by the Python graph, which holds the expression identities).
+    /// Compute every distinct value once and give each linear run one node
+    /// (graph scope; applied by the Python graph, which holds the expression
+    /// identities).
     CommonSubexpressionElimination,
     /// Delete ops that provably change nothing.
     IdentityElimination,
@@ -37,7 +38,7 @@ impl LogicalPass {
     pub fn summary(self) -> &'static str {
         match self {
             LogicalPass::CommonSubexpressionElimination => {
-                "Share a common leading op run across sibling pipelines that read the same source column into one upstream node."
+                "Compute each distinct value once — the same op on the same inputs, however the pipelines were written — and fuse each linear run of ops no other node reads into one node."
             }
             LogicalPass::IdentityElimination => {
                 "Delete no-op operations — a zero pad, a same-dtype cast, a full-frame crop — that preserve their input byte for byte."
