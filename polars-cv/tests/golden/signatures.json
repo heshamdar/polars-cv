@@ -932,6 +932,11 @@
     "index",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ],
+   [
+    "keepdims",
+    "KEYWORD_ONLY",
+    "True"
    ]
   ],
   "channel_swap": [
@@ -2581,6 +2586,11 @@
     "index",
     "POSITIONAL_OR_KEYWORD",
     ""
+   ],
+   [
+    "keepdims",
+    "KEYWORD_ONLY",
+    "True"
    ]
   ],
   "channel_swap": [

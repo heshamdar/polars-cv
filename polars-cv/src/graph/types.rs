@@ -187,7 +187,7 @@ mod row_error_policy_tests {
         // Rank 2 with every size known: the shape is published at any rank.
         let rank2 = output(
             r#"[{"op": "assert_shape", "dims": [4, 5, 3], "exact": false},
-                {"op": "channel_select", "index": 0}]"#,
+                {"op": "channel_select", "index": 0, "keepdims": false}]"#,
         )
         .unwrap();
         assert_eq!(

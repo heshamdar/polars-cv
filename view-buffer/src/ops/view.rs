@@ -44,16 +44,21 @@ pub enum ViewOp<M: Mode = Exec> {
         /// Axes to flip.
         axes: Vec<M::L<u32>>,
     },
-    /// Extract a single channel from a multi-channel image: a 2D [H, W] buffer
-    /// from a [H, W, C] input.
+    /// Extract one channel of a multi-channel image: ``[H, W, 1]`` from a
+    /// ``[H, W, C]`` input (the shape ``grayscale`` and ``rasterize`` give),
+    /// or ``[H, W]`` with ``keepdims=False``. A ``[H, W]`` input is returned
+    /// as it is.
     ///
     /// Example:
     ///     >>> pipe = Pipeline().source("image_bytes").channel_select(index=0)  # Red channel
-    #[op(name = "channel_select", sample = {"index": 0})]
+    #[op(name = "channel_select", sample = {"index": 0, "keepdims": false})]
     ChannelSelect {
         /// Channel index to extract (0-based). Accepts a Polars expression for
         /// per-row dynamic selection.
         index: M::V<u32>,
+        /// Keep the channel axis, as size 1 (default), or drop it.
+        #[param(default = true)]
+        keepdims: M::L<bool>,
     },
     /// Remove an axis of size 1: `[H, W, 1]` to `[H, W]` with `axis=-1`. The
     /// same elements in the same order, with no copy. An axis of another size
@@ -134,7 +139,10 @@ impl<M: Mode> ViewOp<M> {
                     .collect(),
             },
             ViewOp::Rotate90 | ViewOp::Rotate270 => OpShape::SwapHw,
-            ViewOp::ChannelSelect { .. } => OpShape::DropChannelAxis,
+            ViewOp::ChannelSelect { keepdims, .. } => match M::lit(keepdims) {
+                true => OpShape::SingleChannel,
+                false => OpShape::DropChannelAxis,
+            },
             ViewOp::Squeeze { axis } => OpShape::RemoveAxis(M::lit(axis) as isize),
             ViewOp::ExpandDims { axis } => OpShape::InsertAxis(M::lit(axis) as isize),
         }
@@ -359,7 +367,7 @@ impl<M: Mode> Op for ViewOp<M> {
             // A per-row index is checked per row; the rank is checked now.
             // A per-row index or an unknown channel count is checked per row;
             // the rank is checked now.
-            ViewOp::ChannelSelect { index } => match (known::<M, u32>(index), shape) {
+            ViewOp::ChannelSelect { index, .. } => match (known::<M, u32>(index), shape) {
                 (Some(index), [_, _, c]) if c.known().is_none_or(|c| (index as usize) < c) => {
                     Ok(())
                 }
@@ -550,9 +558,9 @@ impl<M: Mode> Op for ViewOp<M> {
                 strides.insert(at, stride);
                 Some(strides)
             }
-            ViewOp::ChannelSelect { .. } => {
-                // Drop the last stride dimension (channel axis)
-                if input_strides.len() >= 3 {
+            ViewOp::ChannelSelect { keepdims, .. } => {
+                // The channel axis kept (size 1, any stride) or dropped.
+                if input_strides.len() >= 3 && !M::lit(keepdims) {
                     Some(input_strides[..2].to_vec())
                 } else {
                     Some(input_strides.to_vec())

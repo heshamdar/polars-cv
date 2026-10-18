@@ -165,7 +165,9 @@ impl ViewExpr {
                     };
                     self.transpose(perm).flip(vec![0])
                 }
-                ViewOp::ChannelSelect { index } => self.channel_select(index as usize),
+                ViewOp::ChannelSelect { index, keepdims } => {
+                    self.channel_select(index as usize, keepdims)
+                }
                 ViewOp::Squeeze { .. } | ViewOp::ExpandDims { .. } => self.view_node(view),
             },
             ViewDto::Compute(compute) => match compute.lowered() {
@@ -406,9 +408,10 @@ impl ViewExpr {
     }
 
     /// Select a single channel from a [H, W, C] buffer, producing [H, W].
-    pub fn channel_select(self: &Arc<Self>, index: usize) -> Arc<Self> {
+    pub fn channel_select(self: &Arc<Self>, index: usize, keepdims: bool) -> Arc<Self> {
         self.view_node(ViewOp::ChannelSelect {
             index: index as u32,
+            keepdims,
         })
     }
 

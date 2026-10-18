@@ -7,6 +7,7 @@ releases, read each page from your version up.
 
 | Upgrading from | To | What to check |
 |---|---|---|
+| 0.38 | [0.39](migration-0.39.md) | `channel_select` keeps the channel axis; `apply_mask`'s mask scale |
 | 0.37 | [0.38](migration-0.38.md) | Two corrected results; a switch for the plugin's thread pool |
 | 0.36 | [0.37](migration-0.37.md) | Two metrics results |
 | 0.35 | [0.36](migration-0.36.md) | One new parameter, one edge-case result |

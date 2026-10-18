@@ -40,6 +40,9 @@ pub fn validate_mask(
     }
     let effective: Vec<crate::ops::Dim> = match (mask_shape, buffer_shape) {
         ([h, w], [_, _, c]) | ([h, w, crate::ops::Dim::Known(1)], [_, _, c]) => vec![*h, *w, *c],
+        // Over a 2-D buffer a mask of one channel, or of a count only rows
+        // know, is read as `[H, W]` (each row then checked on its own).
+        ([h, w, c], [_, _]) if c.known().is_none_or(|c| c == 1) => vec![*h, *w],
         _ => mask_shape.to_vec(),
     };
     let f32 = crate::PlannedDType::Known(DType::F32);
@@ -55,13 +58,16 @@ pub fn validate_mask(
 /// in integers, as `BinaryOp::Blend` computes it.
 ///
 /// A single-channel mask (`[H, W]` or `[H, W, 1]`) applied to a 3-D
-/// `[H, W, C]` buffer is expanded across the channels; any other mask has the
-/// buffer's shape. `invert` flips the mask (`255 - m` / `1.0 - m`). Masks of
+/// `[H, W, C]` buffer is expanded across the channels, a `[H, W, 1]` one over
+/// a `[H, W]` buffer is read as `[H, W]`; any other mask has the buffer's
+/// shape. `invert` flips the mask (`255 - m` / `1.0 - m`). Masks of
 /// other dtypes are refused by [`validate_mask`] before this runs.
 pub fn apply_mask(buffer: &ViewBuffer, mask: &ViewBuffer, invert: bool) -> ViewBuffer {
     let buf_shape = buffer.shape();
-    // A `[H, W, 1]` mask over channels is read as the `[H, W]` one it holds.
-    let single = buf_shape.len() == 3 && mask.shape().len() == 3 && mask.shape()[2] == 1;
+    // A `[H, W, 1]` mask over channels, or over a `[H, W]` buffer, is read as
+    // the `[H, W]` one it holds.
+    let single =
+        matches!(buf_shape.len(), 2 | 3) && mask.shape().len() == 3 && mask.shape()[2] == 1;
     let mask = &if single {
         mask.remove_axis(2)
     } else {
@@ -190,6 +196,14 @@ mod tests {
         let u8 = PlannedDType::Known(DType::U8);
         assert!(validate_mask(&dims(&[2, 1, 3]), &dims(&[2, 1, 1]), u8).is_ok());
         assert!(validate_mask(&dims(&[2, 1, 3]), &dims(&[2, 1, 2]), u8).is_err());
+        // Over a [H, W] buffer a [H, W, 1] mask is read as [H, W].
+        assert!(validate_mask(&dims(&[2, 1]), &dims(&[2, 1, 1]), u8).is_ok());
+        let flat = ViewBuffer::from_vec_with_shape(vec![10u8, 20], vec![2, 1]);
+        let got = apply_mask(&flat, &single, false);
+        assert_eq!(
+            (got.shape(), got.as_slice::<u8>()),
+            (&[2, 1][..], &[10, 0][..])
+        );
     }
 
     #[test]

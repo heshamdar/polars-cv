@@ -927,7 +927,7 @@ class TestCompositionAppliesTheOperandOnce:
     @staticmethod
     def _gray() -> LazyPipelineExpr:
         img = pl.col("image").cv.pipe(Pipeline().source("image_bytes", dtype="u8"))
-        return img.pipe(Pipeline().grayscale().channel_select(0))
+        return img.pipe(Pipeline().grayscale().channel_select(0, keepdims=False))
 
     @staticmethod
     def _run(df: pl.DataFrame, expr: LazyPipelineExpr) -> np.ndarray:

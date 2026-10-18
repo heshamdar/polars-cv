@@ -245,8 +245,9 @@ draws the bear with no hand-placed points and no outline at all:
    grown by `offset(..., join="miter")`), so the logo reads on a light page as
    well as a dark one.
 
-`channel_select` returns `[H, W]`, while `rasterize` returns `[H, W, 1]`.
-The binary ops need operands of one shape (NumPy would broadcast the pair to
-`[H, W, W]` on a square canvas), so the halftone brings every layer to rank 2
-with `channel_select(0)`; `squeeze(-1)` and `expand_dims(-1)` do the same
-where a layer's channel axis is all that differs.
+`rasterize`, `channel_select` and `grayscale` all return `[H, W, 1]`, so the
+halftone's layers combine as they are. The binary ops need operands of one
+shape (NumPy would broadcast `[H, W, 1]` against `[H, W]` to `[H, W, W]` on a
+square canvas): where a layer is `[H, W]`, `expand_dims(-1)` or
+`squeeze(-1)` says which rank you mean, and `channel_select(i,
+keepdims=False)` gives a channel as `[H, W]`.

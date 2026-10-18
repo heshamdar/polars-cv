@@ -157,12 +157,16 @@ class _LazyForwardersMixin:
         """
         return self.pipe(self._continuation().centroid())
 
-    def channel_select(self, index: IntOrExpr) -> LazyPipelineExpr:
-        """Extract a single channel from a multi-channel image: a 2D [H, W] buffer
+    def channel_select(
+        self, index: IntOrExpr, *, keepdims: bool = True
+    ) -> LazyPipelineExpr:
+        """Extract one channel of a multi-channel image: ``[H, W, 1]`` from a
 
         Lazy form of :meth:`Pipeline.channel_select` on this expression's output.
         """
-        return self.pipe(self._continuation().channel_select(index=index))
+        return self.pipe(
+            self._continuation().channel_select(index=index, keepdims=keepdims)
+        )
 
     def channel_swap(self, order: Sequence[IntOrExpr]) -> LazyPipelineExpr:
         """Reorder channels in a multi-channel image.

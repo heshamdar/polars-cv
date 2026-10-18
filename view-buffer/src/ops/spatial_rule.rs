@@ -211,7 +211,14 @@ mod tests {
         assert_eq!(BinaryOp::Add.spatial_dependency(), pw);
         assert_eq!(BinaryOp::Multiply.spatial_dependency(), pw);
         // Spatially pointwise: picks a channel at the same (y, x).
-        assert_eq!(ViewOp::ChannelSelect { index: 0 }.spatial_dependency(), pw);
+        assert_eq!(
+            ViewOp::ChannelSelect {
+                index: 0,
+                keepdims: true
+            }
+            .spatial_dependency(),
+            pw
+        );
         // Image-domain pointwise.
         assert_eq!(
             img(ImageOpKind::Threshold { value: 128.0 }).spatial_dependency(),

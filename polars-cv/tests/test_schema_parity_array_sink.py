@@ -87,7 +87,10 @@ _KNOWN_SHAPE = {
     # Rank 1 and 2: the planner knows these sizes and, since rank-N planned
     # shapes (0.29.0), publishes them (they used to be refused as
     # "known but unexpressible", the state holding only [H, W, C]).
-    "rank2-channel_select": (lambda: _base().channel_select(index=0), [H, W]),
+    "rank2-channel_select": (
+        lambda: _base().channel_select(index=0, keepdims=False),
+        [H, W],
+    ),
     "rank1-reshape": (lambda: _base().reshape([H * W * C]), [H * W * C]),
     "rank2-reshape": (lambda: _base().reshape([H, W * C]), [H, W * C]),
 }

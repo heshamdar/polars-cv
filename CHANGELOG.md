@@ -7,6 +7,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **`channel_select(i)` keeps the channel axis: `[H, W, 1]`, not `[H, W]`.**
+  That is the shape `grayscale` and `rasterize` give, so a selected channel
+  now combines with them as it is (the binary ops broadcast nothing, so a
+  `[H, W]` channel against a `[H, W, 1]` mask was refused). The new
+  `keepdims=False` gives `[H, W]`; it is a literal, since it fixes the rank.
+  A `[H, W]` input is returned as it is either way. Code that relied on the
+  2-D result passes `keepdims=False` (see the
+  [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.39/)).
+
 ### Added
 
 - **`squeeze(axis)` and `expand_dims(axis)`**: remove an axis of size 1, or
@@ -244,6 +255,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **`apply_mask` refused a `[H, W, 1]` mask over a `[H, W]` image** (a
+  rasterized mask over a heatmap, as `examples/05` does, failed since the
+  binary ops stopped broadcasting). Such a mask is read as the `[H, W]` one
+  it holds, as it already was over a `[H, W, C]` image.
 - **`apply_mask` read the mask on the image's scale.** A u8 mask (a
   `rasterize` or `threshold` result, 0 or 255) multiplied a float image by
   255 and darkened a u16 one 257-fold, and a float mask truncated to 0 or 1 on

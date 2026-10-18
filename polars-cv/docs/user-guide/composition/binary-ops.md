@@ -35,8 +35,9 @@ image's channels, use `apply_mask`, which does that by contract.
 
 ```python
 gray = pl.col("image").cv.pipe(Pipeline().source("image_bytes").grayscale())
-# gray is [H, W, 1]; its channel_select(0) is [H, W]. Say which one you mean:
-doubled = gray.add(gray.channel_select(0).expand_dims(-1))
+# gray is [H, W, 1]; channel_select(0, keepdims=False) is [H, W].
+# Say which rank you mean:
+doubled = gray.add(gray.channel_select(0, keepdims=False).expand_dims(-1))
 ```
 
 Operands of different dtypes meet in **NumPy's promoted dtype**

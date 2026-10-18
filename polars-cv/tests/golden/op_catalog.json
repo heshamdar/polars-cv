@@ -464,7 +464,7 @@
     "name": "channel_select",
     "python": "channel_select",
     "visibility": "public",
-    "doc": "Extract a single channel from a multi-channel image: a 2D [H, W] buffer\nfrom a [H, W, C] input.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").channel_select(index=0)  # Red channel",
+    "doc": "Extract one channel of a multi-channel image: ``[H, W, 1]`` from a\n``[H, W, C]`` input (the shape ``grayscale`` and ``rasterize`` give),\nor ``[H, W]`` with ``keepdims=False``. A ``[H, W]`` input is returned\nas it is.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").channel_select(index=0)  # Red channel",
     "fields": [
       {
         "name": "index",
@@ -473,6 +473,16 @@
           "kind": "scalar",
           "per_row": true,
           "py": "int"
+        }
+      },
+      {
+        "name": "keepdims",
+        "doc": "Keep the channel axis, as size 1 (default), or drop it.",
+        "default": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "bool"
         }
       }
     ],

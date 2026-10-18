@@ -1737,7 +1737,10 @@ mod reshape_offset_tests {
             height: Some(2),
             width: Some(2),
         });
-        let select = ViewDto::View(ViewOp::ChannelSelect { index: 0 });
+        let select = ViewDto::View(ViewOp::ChannelSelect {
+            index: 0,
+            keepdims: false,
+        });
         let out = ViewExpr::new_source(buf)
             .apply_op(crop)
             .apply_op(select)

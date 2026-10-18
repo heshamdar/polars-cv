@@ -343,7 +343,7 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         Example:
             ```python
             >>> photo = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
-            >>> alpha = photo.pipe(Pipeline().grayscale().channel_select(0))
+            >>> alpha = photo.pipe(Pipeline().grayscale())
             >>> rgba = photo.channel_merge(alpha)
             >>> sel = lambda i: photo.channel_select(i)
             >>> bgr = sel(2).channel_merge(sel(1), sel(0))
