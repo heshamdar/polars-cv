@@ -228,6 +228,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **Aliases.** An alias given to two different nodes is now refused (it
+  resolved silently to whichever was found last), and a node may carry
+  several aliases, each an output (all but one used to be lost: "Alias 'q'
+  not found in graph").
+- **Only the nodes an output reads are serialized.** `merge_pipe`'s own node
+  and branches no alias selects used to ride along on the wire and into the
+  compiled-graph cache key (Rust never ran them); `show_graph` hid them by
+  deleting childless nodes.
 - **`channel_merge`, `apply_mask` and `merge_pipe` applied the left
   operand's ops twice.** They cloned its pipeline into the composed node,
   which receives that operand's output, so a node fed by another node ran

@@ -111,15 +111,6 @@ def build_dag(graph: LogicalGraph) -> nx.DiGraph:
     for alias, out in output_node.outputs.items():
         g.add_edge(out["node"], output_node.node_id, alias=alias)
 
-    # remove terminal node that isn't output
-    # this occurs when we use a merge_pipe
-    spurious_sink_nodes = [
-        node
-        for node, out_degree in g.out_degree()
-        if (out_degree == 0) and (node != OUTPUT_NODE_ID)
-    ]
-    g.remove_nodes_from(spurious_sink_nodes)
-
     return g
 
 

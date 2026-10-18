@@ -143,9 +143,24 @@ class PipelineGraph:
             upstream=upstream or [],
             alias=alias,
         )
-        # Track alias -> node_id mapping
         if alias is not None:
-            self._alias_to_node[alias] = node_id
+            self.add_alias(alias, node_id)
+
+    def add_alias(self, alias: str, node_id: str) -> None:
+        """Name ``node_id``'s output ``alias``. A node may carry several
+        aliases; an alias names one node.
+
+        Raises:
+            ValueError: If ``alias`` already names a different node.
+        """
+        known = self._alias_to_node.get(alias)
+        if known is not None and known != node_id:
+            msg = (
+                f"Alias {alias!r} names two different nodes; an alias names "
+                "one output. Give each branch its own alias."
+            )
+            raise ValueError(msg)
+        self._alias_to_node[alias] = node_id
 
     def set_output(self, node_id_or_alias: str, format: str, **kwargs: Any) -> None:
         """
@@ -264,6 +279,7 @@ class PipelineGraph:
         """
         from polars_cv._optimize import OPTIMIZATION_PASSES
 
+        self._drop_unread_nodes()
         for node in self._nodes.values():
             node.pipeline = node.pipeline._clone()
         for spec in OPTIMIZATION_PASSES:
@@ -283,6 +299,31 @@ class PipelineGraph:
         self._opt_config = flags.engine_opt()
         self._optimized = True
         return self
+
+    def _output_node_ids(self) -> list[str]:
+        """The nodes the outputs read, in output order. Before an output is
+        set, nothing says which nodes matter, so every node counts as one."""
+        if self._multi_output is not None:
+            return [node_id for node_id, _, _ in self._multi_output.outputs.values()]
+        if self._output is not None:
+            return [self._output.node_id]
+        return list(self._nodes)
+
+    def _drop_unread_nodes(self) -> None:
+        """Keep only the nodes some output reads, directly or through others.
+
+        Not an optimization: Rust executes only what the outputs reach, so an
+        unread node (``merge_pipe``'s own node, a branch no alias selects)
+        changes no output, only the wire, the cache key and ``show_graph``.
+        """
+        reached: set[str] = set()
+        stack = self._output_node_ids()
+        while stack:
+            node_id = stack.pop()
+            if node_id not in reached:
+                reached.add(node_id)
+                stack.extend(self._nodes[node_id].upstream)
+        self._nodes = {k: v for k, v in self._nodes.items() if k in reached}
 
     # --- CSE Optimization ---
 

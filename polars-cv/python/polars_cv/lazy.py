@@ -262,6 +262,8 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
                 upstream=[u._node_id for u in node._upstream],
                 alias=node._alias,
             )
+        for alias, node_id in self._aliases():
+            graph.add_alias(alias, node_id)
 
         if isinstance(format, dict):
             # Multi-output: the shared kwargs apply to every alias's sink.
@@ -683,6 +685,26 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
 
         dfs(self)
         return order
+
+    def _aliases(self) -> list[tuple[str, str]]:
+        """Every ``(alias, node id)`` this expression reaches.
+
+        ``alias()`` returns a copy under the same node id, so one node may be
+        reached under several aliases: walked per object, not per node id,
+        or all but one alias of a node would be lost.
+        """
+        seen: set[int] = set()
+        found: list[tuple[str, str]] = []
+        stack: list[LazyPipelineExpr] = [self]
+        while stack:
+            node = stack.pop()
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            if node._alias is not None:
+                found.append((node._alias, node._node_id))
+            stack.extend(node._upstream)
+        return found
 
     # --- Prevent accidental use as pl.Expr ---
 
