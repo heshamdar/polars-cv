@@ -191,10 +191,12 @@ pub enum OpShape {
     /// end when negative, as NumPy's `expand_dims`). No output for a position
     /// outside `-(rank + 1)..=rank`.
     InsertAxis(isize),
-    /// `[H, W]` inputs stacked along a new channel axis: `[H, W, n]`, H and W
-    /// being whichever input knows them. No other rank, and no two inputs of
+    /// The inputs' channel axes joined: each `[H, W]` input brings one
+    /// channel and each `[H, W, C]` input its `C`, so the output is
+    /// `[H, W, total]` (unknown when any input's count is), H and W being
+    /// whichever input knows them. No other rank, and no two inputs of
     /// different known H or W, has an output.
-    StackChannels(usize),
+    JoinChannels,
     /// The input's rank as a 1-D vector: `[rank]` (reading the dimensions).
     InputRank,
     /// A canvas of `channels` the size of input `of`'s H and W:
@@ -387,24 +389,31 @@ impl OpShape {
                 }
                 out
             }
-            // Every input is `[H, W]` of one H and W, so each axis is the one
-            // any input knows (two that differ have no output).
-            OpShape::StackChannels(n) => {
+            // Every input is `[H, W]` or `[H, W, C]` of one H and W, so each
+            // axis is the one any input knows (two that differ have no
+            // output), and the channels are the inputs' counts summed.
+            OpShape::JoinChannels => {
                 let mut hw = match input {
-                    [h, w] => [*h, *w],
+                    [h, w] | [h, w, _] => [*h, *w],
                     _ => return None,
                 };
-                for other in inputs.iter().skip(1) {
-                    let [oh, ow] = other else { return None };
-                    for (d, o) in hw.iter_mut().zip([*oh, *ow]) {
+                let mut channels = Some(0);
+                for shape in inputs {
+                    let (oh, ow, count) = match shape {
+                        [h, w] => (*h, *w, Some(1)),
+                        [h, w, c] => (*h, *w, c.known()),
+                        _ => return None,
+                    };
+                    for (d, o) in hw.iter_mut().zip([oh, ow]) {
                         match (d.known(), o.known()) {
                             (Some(a), Some(b)) if a != b => return None,
                             (None, Some(_)) => *d = o,
                             _ => {}
                         }
                     }
+                    channels = channels.zip(count).map(|(t, c)| t + c);
                 }
-                vec![hw[0], hw[1], Dim::Known(*n)]
+                vec![hw[0], hw[1], channels.map_or(Dim::Unknown, Dim::Known)]
             }
             OpShape::InputRank => vec![Dim::Known(input.len())],
             OpShape::Canvas { of, channels } => match inputs.get(*of) {
@@ -452,7 +461,7 @@ impl OpShape {
                 OpShape::Fixed(shape) => Some(shape.len()),
                 OpShape::Transpose(perm) => Some(perm.len()),
                 OpShape::Reduce { axis: None } => Some(1),
-                OpShape::StackChannels(_) | OpShape::Canvas { .. } | OpShape::ExpandChannels(_) => {
+                OpShape::JoinChannels | OpShape::Canvas { .. } | OpShape::ExpandChannels(_) => {
                     Some(3)
                 }
                 OpShape::InputRank => Some(1),
@@ -777,7 +786,7 @@ mod symbolic_tests {
             (OpShape::Reduce { axis: None }, Some(3), Some(1)),
             (OpShape::Fixed(vec![k(4), k(2)]), Some(3), Some(2)),
             (OpShape::Transpose(vec![1, 0, 2]), Some(3), Some(3)),
-            (OpShape::StackChannels(3), Some(2), Some(3)),
+            (OpShape::JoinChannels, Some(2), Some(3)),
             (OpShape::InputRank, Some(3), Some(1)),
             (OpShape::Dynamic, Some(3), None),
             // An unknown input rank leaves every input-following shape unknown.
@@ -839,7 +848,7 @@ mod symbolic_tests {
             OpShape::RemoveAxis(0),
             OpShape::InsertAxis(-1),
             OpShape::InsertAxis(1),
-            OpShape::StackChannels(2),
+            OpShape::JoinChannels,
             OpShape::InputRank,
             OpShape::Canvas { of: 1, channels: 1 },
             OpShape::Canvas { of: 0, channels: 2 },
@@ -870,7 +879,7 @@ mod symbolic_tests {
                 | OpShape::Elementwise
                 | OpShape::RemoveAxis(_)
                 | OpShape::InsertAxis(_)
-                | OpShape::StackChannels(_)
+                | OpShape::JoinChannels
                 | OpShape::InputRank
                 | OpShape::Canvas { .. }
                 | OpShape::ExpandChannels(_) => {}
@@ -961,7 +970,7 @@ mod symbolic_tests {
         use PlannedInput::{Ranked, Unranked};
         let two_input = [
             OpShape::Elementwise,
-            OpShape::StackChannels(2),
+            OpShape::JoinChannels,
             OpShape::Canvas { of: 1, channels: 1 },
         ];
         let firsts: [&[Dim]; 3] = [
@@ -1047,7 +1056,7 @@ mod symbolic_tests {
             OpShape::Fixed(vec![Sym::Known(4), Sym::PerRow]),
             OpShape::Transpose(vec![2, 0, 1]),
             OpShape::Reduce { axis: None },
-            OpShape::StackChannels(2),
+            OpShape::JoinChannels,
             OpShape::InputRank,
             OpShape::Canvas { of: 1, channels: 1 },
         ];

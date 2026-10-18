@@ -166,8 +166,9 @@ pub fn apply_channel_swap(buf: &ViewBuffer, order: &[usize]) -> ViewBuffer {
 }
 
 /// Whether [`apply_channel_merge`] can merge buffers of these shapes and dtypes
-/// (CR-34): at least one input, every input `[H, W]` with the same H and W,
-/// and all of one dtype (each is read as the first input's element type).
+/// (CR-34, CR-111): at least one input, every input `[H, W]` or `[H, W, C]`
+/// with the same H and W, and all of one dtype (each is read as the first
+/// input's element type).
 ///
 /// Over what is known of them (the planner's call; execution passes known
 /// ones): two H (or W) sizes differ only when both are known, and two dtypes
@@ -184,12 +185,12 @@ pub fn validate_channel_merge(
             got: 0,
         });
     }
-    // The first input that is not [H, W], or whose known H or W differs from
-    // one known earlier.
+    // The first input that is not [H, W] or [H, W, C], or whose known H or W
+    // differs from one known earlier.
     let mut hw: [Option<usize>; 2] = [None, None];
     for shape in shapes {
-        let clash = shape.len() != 2
-            || shape
+        let clash = !matches!(shape.len(), 2 | 3)
+            || shape[..2]
                 .iter()
                 .zip(&mut hw)
                 .any(|(d, seen)| match (d.known(), *seen) {
@@ -202,7 +203,7 @@ pub fn validate_channel_merge(
                 });
         if clash {
             return Err(ValidationError::ShapeRequirement {
-                requirement: "every channel_merge input [H, W] with the same H and W",
+                requirement: "every channel_merge input [H, W] or [H, W, C] with the same H and W",
                 got: shape.to_vec(),
             });
         }
@@ -222,7 +223,8 @@ pub fn validate_channel_merge(
     Ok(())
 }
 
-/// Merge multiple single-channel [H, W] buffers into a [H, W, C] buffer.
+/// Join the inputs' channel axes: each `[H, W]` input brings one channel,
+/// each `[H, W, C]` input its `C`, in order, into one `[H, W, total]` buffer.
 pub fn apply_channel_merge(buffers: &[&ViewBuffer]) -> ViewBuffer {
     assert!(
         !buffers.is_empty(),
@@ -230,20 +232,17 @@ pub fn apply_channel_merge(buffers: &[&ViewBuffer]) -> ViewBuffer {
     );
     let h = buffers[0].shape()[0];
     let w = buffers[0].shape()[1];
-    let c = buffers.len();
-
-    // All buffers must be 2D [H, W] with matching dimensions
-    for (i, buf) in buffers.iter().enumerate() {
-        let s = buf.shape();
-        assert!(
-            s.len() == 2 && s[0] == h && s[1] == w,
-            "ChannelMerge input {} has shape {:?}, expected [{}, {}]",
-            i,
-            s,
-            h,
-            w
-        );
-    }
+    // Every input [H, W] or [H, W, C] of one H and W (`validate_channel_merge`).
+    let counts: Vec<usize> = buffers
+        .iter()
+        .enumerate()
+        .map(|(i, buf)| match buf.shape() {
+            [bh, bw] if *bh == h && *bw == w => 1,
+            [bh, bw, c] if *bh == h && *bw == w => *c,
+            s => panic!("ChannelMerge input {i} has shape {s:?}, expected [{h}, {w}(, C)]"),
+        })
+        .collect();
+    let c: usize = counts.iter().sum();
 
     let contigs: Vec<ViewBuffer> = buffers.iter().map(|b| b.to_contiguous()).collect();
     // Pure data movement, in the inputs' own dtype (they share one:
@@ -252,7 +251,9 @@ pub fn apply_channel_merge(buffers: &[&ViewBuffer]) -> ViewBuffer {
         let planes: Vec<&[T]> = contigs.iter().map(|b| b.as_slice::<T>()).collect();
         let mut out: Vec<T> = Vec::with_capacity(h * w * c);
         for pixel in 0..h * w {
-            out.extend(planes.iter().map(|plane| plane[pixel]));
+            for (plane, &n) in planes.iter().zip(&counts) {
+                out.extend_from_slice(&plane[pixel * n..(pixel + 1) * n]);
+            }
         }
         ViewBuffer::from_vec_with_shape(out, vec![h, w, c])
     })

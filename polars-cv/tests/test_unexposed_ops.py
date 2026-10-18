@@ -687,3 +687,28 @@ class TestChannelMergePolarsCV:
         actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_array_equal(actual, img[:, :, ::-1])
+
+    def test_channel_merge_joins_channel_axes(
+        self,
+        sample_images: tuple[np.ndarray, np.ndarray],
+        encode_png: Callable[[np.ndarray], bytes],
+    ) -> None:
+        """Each operand brings its own channels: ``[H, W, 3]`` and ``[H, W]``
+        give ``[H, W, 4]`` (an alpha channel), and ``[H, W, 1]`` counts one."""
+        from polars_cv import Pipeline, numpy_from_struct
+
+        img, _ = sample_images
+        df = pl.DataFrame({"img": [encode_png(img)]})
+        photo = pl.col("img").cv.pipe(Pipeline().source("image_bytes", dtype="u8"))
+        alpha = photo.pipe(Pipeline().channel_select(1))
+        gray = photo.pipe(Pipeline().grayscale())  # [H, W, 1]
+
+        rgba = numpy_from_struct(
+            df.select(o=photo.channel_merge(alpha).sink("numpy")).item()
+        )
+        np.testing.assert_array_equal(rgba, np.dstack([img, img[:, :, 1]]))
+        both = alpha.channel_merge(gray, photo).sink("numpy")
+        out = numpy_from_struct(df.select(o=both).item())
+        assert out.shape == (*img.shape[:2], 5)
+        np.testing.assert_array_equal(out[..., 0], img[:, :, 1])
+        np.testing.assert_array_equal(out[..., 2:], img)
