@@ -239,8 +239,11 @@ draws the bear with no hand-placed points and no outline at all:
    grid and back up with `filter="nearest"` samples it once per cell;
    `coordinate_grid` minus its own `floor` is each pixel's offset in its cell,
    and a dot is wherever that offset is shorter than the radius.
-3. The muzzle's dots take a second index, the eyes and nose are voids cut
-   from the dots, and `apply_lut` colours the map as above.
+3. The muzzle's dots take a second index, the eyes and nose are inked over
+   them, and `apply_lut` colours the map as above, with an RGBA palette whose
+   background is transparent. Each letter sits on an ink outline (the letter
+   grown by `offset(..., join="miter")`), so the logo reads on a light page as
+   well as a dark one.
 
 `channel_select` returns `[H, W]`, while `rasterize` returns `[H, W, 1]`.
 The binary ops need operands of one shape (NumPy would broadcast the pair to

@@ -92,6 +92,64 @@ Any parameter that does not change the output's rank, dtype or domain accepts
 a Polars expression. See
 [Multi-output pipelines](https://heshamdar.github.io/polars-cv/user-guide/composition/multi-output/).
 
+## Branch, rejoin, optimise: cutting out the foreground
+
+Pipelines compose into a graph. This one cuts a cup and saucer out of a photo
+with a transparent background: two cues find the china (bright pixels, and the
+saturated red that the brown table lacks), their union is traced to an outline,
+and the outline is rasterized back into an alpha channel for the photo.
+
+![A photo of an espresso cup on a saucer on a wooden table, and the same photo with the table made transparent.](https://raw.githubusercontent.com/heshamdar/polars-cv/main/polars-cv/docs/assets/readme-cutout.png)
+
+```python
+from pathlib import Path
+
+import polars as pl
+from polars_cv import Pipeline
+
+base = Pipeline().source("file_path").resize_max(512)
+img = pl.col("path").cv
+
+# Two cues, each written as if it stood alone. The threshold is a column.
+bright = img.pipe(base.grayscale().channel_select(0).threshold(190))
+saturated = img.pipe(
+    base.to_hsv().channel_select(1).threshold(pl.col("min_saturation"))
+)
+
+# Rejoin: either cue, cleaned up and traced; keep the largest outline's hull.
+outline = bright.maximum(saturated).pipe(
+    Pipeline().morphology_open(ksize=5).extract_contours().largest().convex_hull()
+)
+
+# The outline as an anti-aliased alpha channel under the photo's colours.
+photo = img.pipe(base)
+alpha = outline.rasterize(shape=photo, supersample=4).channel_select(0)
+r, g, b = (photo.channel_select(i) for i in range(3))
+cutout = r.channel_merge(g, b, alpha).alias("cutout")
+
+expr = cutout.merge_pipe(outline.area().alias("area"))
+paths = sorted(str(p) for p in Path("photos").glob("*.jpg"))
+out = (
+    pl.LazyFrame({"path": paths, "min_saturation": 210})
+    .with_columns(o=expr.sink({"cutout": "png", "area": "native"}))
+    .unnest("o")
+    .collect()
+)
+```
+
+`expr.sink(..., return_expr=False).show_graph()` draws the graph that runs
+(it needs `polars-cv[viz]`):
+
+![The optimised graph: one source node decodes and resizes; it feeds a grayscale threshold branch and an HSV saturation threshold branch, which a maximum node joins; morphology, contour extraction, largest and convex hull follow; the hull feeds both a rasterize node, whose alpha is merged with the photo's three colour channels into the cutout, and an area node.](https://raw.githubusercontent.com/heshamdar/polars-cv/main/polars-cv/docs/assets/readme-cutout-graph.svg)
+
+The three pipelines built from `base` each start with their own decode and
+resize. Common-subexpression elimination finds that shared prefix and hoists
+it into one source node (`SOURCE` at the top), so each image is decoded and
+resized once and feeds every branch. Pass `opt_flags=False` to `sink` to see
+the graph as written. The whole graph is one Polars expression: it runs in
+the lazy and streaming engines, per row, with `min_saturation` read from each
+row's column, and returns the PNG and the outline's area together.
+
 ## Why polars-cv
 
 - **Images are a column.** Paths, bytes, labels, metadata and results sit in one
@@ -142,21 +200,6 @@ and the [API reference](https://heshamdar.github.io/polars-cv/api/pipeline/);
 the [drawing guide](https://heshamdar.github.io/polars-cv/user-guide/drawing/)
 builds the logo above from these ops.
 
-```python
-import polars as pl
-from polars_cv.metrics import evaluate_detections
-
-gts = pl.DataFrame({
-    "image_id": ["a", "a", "b"], "class_id": [0, 1, 0],
-    "x1": [10.0, 50.0, 0.0], "y1": [10.0, 50.0, 0.0],
-    "x2": [40.0, 90.0, 30.0], "y2": [40.0, 90.0, 30.0],
-})
-preds = gts.with_columns(score=pl.Series([0.9, 0.8, 0.7]), x1=pl.col("x1") + 2)
-
-report = evaluate_detections(preds, gts, geometry=("x1", "y1", "x2", "y2"), box_format="xyxy")
-report.summary    # map, map_50, map_75, mar
-```
-
 ## Larger-than-memory data
 
 Eager calls already use every core. For data that does not fit in memory, use
@@ -180,16 +223,6 @@ for batch in (
 
 Thread counts, morsel sizing and memory budgets are covered in
 [Streaming & Scaling](https://heshamdar.github.io/polars-cv/user-guide/concepts/streaming/).
-
-## When not to use polars-cv
-
-- **Random augmentation in a training loop, or GPU execution.** Use
-  torchvision v2, Kornia or DALI there; polars-cv fits the deterministic
-  preprocessing before it.
-- **One image at a time, latency first.** Calling OpenCV or PIL directly has
-  less overhead.
-- **Video, model inference, or the long tail of OpenCV.** Out of scope.
-- **Windows or Intel macOS without a Rust toolchain.** No wheels yet.
 
 ## Project status
 

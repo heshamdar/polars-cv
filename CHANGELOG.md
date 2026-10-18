@@ -147,6 +147,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **README**: a branch-and-rejoin example (a cup and saucer cut out to a
+  transparent PNG, with the optimised graph it runs, from
+  `scripts/make_readme_cutout.py`); the detection-metrics snippet and the
+  "When not to use polars-cv" section are gone. The halftone logo has a
+  transparent background, a tinted face, inked eyes and nose, and outlined
+  letters, so it reads on light pages too.
+
 - **Binary ops no longer broadcast: both operands must have the same shape**
   (breaking). `add`, `subtract`, `multiply`, `divide`, `blend`, `maximum`,
   `minimum` and the bitwise ops used NumPy broadcasting, aligned from the last
@@ -220,6 +227,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   linked guides and `benchmarks/`.
 
 ### Fixed
+
+- **`channel_merge`, `apply_mask` and `merge_pipe` applied the left
+  operand's ops twice.** They cloned its pipeline into the composed node,
+  which receives that operand's output, so a node fed by another node ran
+  its ops again on its own output (`x.pipe(Pipeline().add_constant(50))
+  .channel_merge(y)` added 100), and one on a column decoded it a second
+  time. They now start from the operand's output, as the binary ops did
+  (`LazyPipelineExpr._receiving`).
+- **`show_graph()` hid a root node's ops and named nodes `None`.** A source
+  node now lists the ops after its decode (where CSE puts a shared prefix),
+  every node leads with the wire id its operands are named by (`maximum(
+  other=n5)`), ops render as calls, and the DOT text no longer carries each
+  node's Python repr.
 
 - **An op-backed `.contour` accessor runs the pipeline step it is**
   (CR-106). `.contour.area`, `offset`, `smooth`, `scale` and the twelve

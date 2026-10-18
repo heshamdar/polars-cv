@@ -126,51 +126,45 @@ def build_dag(graph: LogicalGraph) -> nx.DiGraph:
 ## Visualization
 
 
-def _wire_label(value: Any) -> Any:
+def _wire_label(value: Any) -> str:
     """A field's display value: ``Expr`` for a slot, the literal otherwise.
 
     A field is its bare value (a list element by element); a per-row one is
-    ``{"$slot": n}``.
+    ``{"$slot": n}``. A node operand is its wire id, the name its node's label
+    leads with.
     """
     if isinstance(value, dict):
         if value.keys() == {"$slot"}:
             return "Expr"
-        return {k: _wire_label(v) for k, v in value.items()}
+        return "{" + ", ".join(f"{k}: {_wire_label(v)}" for k, v in value.items()) + "}"
     if isinstance(value, list):
-        return [_wire_label(v) for v in value]
-    return value
+        return "[" + ", ".join(_wire_label(v) for v in value) + "]"
+    return str(value)
+
+
+def _op_line(op: Dict[str, Any]) -> str:
+    """One op as it is called: ``name(field=value, ...)``."""
+    fields = ", ".join(f"{k}={_wire_label(v)}" for k, v in op.items() if k != "op")
+    return f"{op['op']}({fields})"
 
 
 def style_node(payload: BaseNode) -> Dict[str, Any]:
-    if payload.kind == NodeKind.SOURCE:
-        assert isinstance(payload, ComputeNode)
-        return {
-            "shape": "box",
-            "style": "bold",
-            "label": (
-                "SOURCE\n"
-                f"{payload.alias}\n"
-                f"source: {payload.source_format}\n"
-                f"output_type: {payload.dtype}"
-            ),
-        }
+    """The DOT attributes a node renders with. A compute node's label leads
+    with its wire id (what an operand names it by), then its alias if it has
+    one, its ops and its planned dtype; a root also names its source format."""
+    if isinstance(payload, ComputeNode):
+        lines = [payload.node_id]
+        if payload.kind == NodeKind.SOURCE:
+            lines[0] = f"SOURCE {payload.node_id}"
+            lines.append(f"source: {payload.source_format}")
+        if payload.alias is not None:
+            lines.append(f"alias: {payload.alias}")
+        lines.extend(_op_line(op) for op in payload.ops)
+        lines.append(f"output_type: {payload.dtype}")
+        style = {"style": "bold"} if payload.kind == NodeKind.SOURCE else {}
+        return {"shape": "box", **style, "label": "\n".join(lines)}
 
-    if payload.kind == NodeKind.COMPUTE:
-        assert isinstance(payload, ComputeNode)
-
-        ops = ""
-        for op in payload.ops:
-            op_dict = {k: _wire_label(v) for k, v in op.items() if k != "op"}
-            ops_string = op["op"] + str(op_dict)
-            ops += ops_string + "\n"
-
-        return {
-            "shape": "box",
-            "label": (f"{payload.alias}\n{ops}output_type: {payload.dtype}"),
-        }
-
-    if payload.kind == NodeKind.OUTPUT:
-        assert isinstance(payload, OutputNode)
+    if isinstance(payload, OutputNode):
         lines = ["SINK"]
         for alias, spec in payload.outputs.items():
             lines.append(f"• {alias} ({spec['sink']['format']})")
@@ -184,9 +178,10 @@ def style_node(payload: BaseNode) -> Dict[str, Any]:
 
 
 def visualize_dag(g: nx.DiGraph):
-    for node_id, data in g.nodes(data=True):
-        payload = data["payload"]
-        data.update(style_node(payload))
+    """The DAG as DOT: each node carries only its display attributes, not the
+    payload it was styled from."""
+    for _, data in g.nodes(data=True):
+        data.update(style_node(data.pop("payload")))
 
     return to_pydot(g)
 
