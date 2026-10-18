@@ -60,10 +60,8 @@ def parse_logical_graph(pipeline_graph: PipelineGraph) -> LogicalGraph:
     spec = pipeline_graph._to_dict()
     graph = LogicalGraph()
     # The spec names nodes by their wire ids; the Python nodes go by build ids.
-    by_wire = {
-        wire: pipeline_graph._nodes[node_id]
-        for node_id, wire in pipeline_graph._wire_ids().items()
-    }
+    wire = pipeline_graph._wire_ids()
+    by_wire = {wire[node_id]: node for node_id, node in pipeline_graph._nodes.items()}
 
     # Parse compute + source nodes
     for node_id, payload in spec["nodes"].items():

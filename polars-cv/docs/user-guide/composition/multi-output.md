@@ -63,41 +63,50 @@ extracted = result.select(
 
 ## Common Subexpression Elimination (CSE)
 
-polars-cv automatically detects and shares common operations:
+Within one `.sink()`, each distinct value is computed once: the same op on the
+same inputs is one step, however the pipelines were written. Branches built
+from separate `Pipeline`s share their decode and whatever leading ops they
+have in common, branches below a shared node share theirs, and duplicates
+built twice merge all the way down, operands included. Then each linear run
+of ops that nothing else reads becomes one node, so a chain written as several
+`.pipe()` calls runs as one.
 
 ```mermaid
 flowchart LR
-    subgraph Before["Before CSE"]
-        A1[resize] --> B1[grayscale] --> C1[blur]
-        A2[resize] --> B2[grayscale] --> D1[threshold]
+    subgraph Before["As written"]
+        S1[decode] --> A1[resize] --> B1[grayscale] --> C1[blur]
+        S2[decode] --> A2[resize] --> B2[grayscale] --> D1[threshold]
+        S3[decode] --> F1[flip_h]
     end
 
     subgraph After["After CSE"]
-        A[resize] --> B[grayscale]
-        B --> C[blur]
-        B --> D[threshold]
+        S[decode] --> A[resize · grayscale]
+        A --> C[blur]
+        A --> D[threshold]
+        S --> F[flip_h]
     end
 ```
 
 ```python
-# Both branches share: resize → grayscale
-base = pl.col("image").cv.pipe(
-    Pipeline().source("image_bytes").resize(height=100, width=100)
-)
-gray = base.pipe(Pipeline().grayscale()).alias("gray")
+base = Pipeline().source("image_bytes").resize(height=100, width=100)
+img = pl.col("image").cv
 
-# Branch 1: blur
-blur = gray.pipe(Pipeline().blur(2.0)).alias("blur")
+# Three pipelines, each written as if it stood alone.
+blur = img.pipe(base.grayscale().blur(2.0)).alias("blur")
+thresh = img.pipe(base.grayscale().threshold(128)).alias("thresh")
+flipped = img.pipe(Pipeline().source("image_bytes").flip_h()).alias("flipped")
 
-# Branch 2: threshold
-thresh = gray.pipe(Pipeline().threshold(128)).alias("thresh")
-
-# CSE automatically shares the gray computation
-merged = blur.merge_pipe(thresh)
+# One decode, one resize and one grayscale per row feed all three.
 result = df.with_columns(
-    outputs=merged.sink({"gray": "png", "blur": "png", "thresh": "png"})
+    outputs=blur.merge_pipe(thresh, flipped).sink(
+        {"blur": "png", "thresh": "png", "flipped": "png"}
+    )
 )
 ```
+
+`expr.sink(..., return_expr=False).show_graph()` draws the graph that runs;
+pass `opt_flags=False` to `sink` to see it as written. Every output is byte
+for byte the same either way.
 
 ### Across expressions
 
