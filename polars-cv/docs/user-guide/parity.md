@@ -5,7 +5,7 @@
 polars-cv's outputs are checked against independent implementations: OpenCV,
 SciPy, NumPy, PIL, imagehash and pycocotools, or a written definition where
 no library computes the same thing. 788 tests over 114 ops ran and
-passed at commit `80bcb10` on 2026-10-18, with
+passed at commit `698fd4b` on 2026-10-18, with
 polars-cv 0.39.0, polars 2.0.0, numpy 2.5.3, opencv-python 4.11.0.86, scipy 1.16.3, pillow 12.0.0, imagehash 4.3.2, pycocotools 2.0.11.
 
 Every test declares what it compares and the tolerance it asserts

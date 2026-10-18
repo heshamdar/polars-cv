@@ -1,6 +1,6 @@
 {
  "generated": "2026-10-18",
- "commit": "80bcb10",
+ "commit": "698fd4b",
  "versions": {
   "polars-cv": "0.39.0",
   "polars": "2.0.0",
