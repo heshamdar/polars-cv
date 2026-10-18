@@ -258,6 +258,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **The sdist PyPI refused.** The 0.38.0 publish uploaded its wheels and then
+  had its sdist rejected ("License-File LICENSE-APACHE does not exist in
+  distribution"): maturin auto-discovered `LICENSE-MIT`/`LICENSE-APACHE`,
+  named them at the top of `PKG-INFO`, but packed them under `polars-cv/`.
+  `pyproject.toml` now declares them (`license-files`, with the PEP 639
+  `license = "MIT OR Apache-2.0"` expression), which puts them at the top;
+  the build floor rises to `maturin>=1.9.3`, the first that does. The
+  `publish.yml` sdist job runs `scripts/check_sdist.py` before anything is
+  uploaded, so a release can no longer go up half-published this way
+  (`tests/test_sdist_metadata.py`, `tests/test_sdist_build.py`).
+
 - **`apply_mask` refused a `[H, W, 1]` mask over a `[H, W]` image** (a
   rasterized mask over a heatmap, as `examples/05` does, failed since the
   binary ops stopped broadcasting). Such a mask is read as the `[H, W]` one
