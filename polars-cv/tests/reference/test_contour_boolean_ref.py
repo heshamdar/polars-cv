@@ -124,6 +124,18 @@ def _star(rng, cx, cy, r, k=9) -> list[tuple[float, float]]:
 
 @pytest.mark.parametrize("op", sorted(OPS))
 @pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parity(
+    ops=[
+        "union",
+        "intersection",
+        "difference",
+        "symmetric_difference",
+        "rasterize",
+        "area",
+    ],
+    against="NumPy pixelwise `|`, `&`, `& ~`, `^` of the rasterized operand masks",
+    tolerance="masks exact; areas pytest.approx default (rel 1e-6)",
+)
 def test_each_op_paints_the_pixelwise_op(op: str, seed: int) -> None:
     rng = np.random.default_rng(seed)
     a, b = _random_rects(rng, 4), _random_rects(rng, 4)
@@ -146,6 +158,11 @@ REL = 1e-7
 
 
 @pytest.mark.parametrize("seed", range(4))
+@pytest.mark.parity(
+    ops=["union", "intersection", "difference", "symmetric_difference", "area"],
+    against="Definition: inclusion-exclusion of the areas of the boolean results",
+    tolerance=f"rel {REL}",
+)
 def test_inclusion_exclusion(seed: int) -> None:
     rng = np.random.default_rng(seed + 10)
     a = [_region(_star(rng, 15.2, 16.1, 10.3)), _region(_star(rng, 22.7, 14.9, 8.1))]
@@ -163,6 +180,11 @@ def test_inclusion_exclusion(seed: int) -> None:
 
 
 @pytest.mark.parametrize("seed", range(4))
+@pytest.mark.parity(
+    ops=["intersection", "union", "area", "contour.iou"],
+    against="Definition: `.contour.iou` equals area(a and b) / area(a or b)",
+    tolerance=f"rel {REL}",
+)
 def test_intersection_over_union_is_iou(seed: int) -> None:
     rng = np.random.default_rng(seed + 20)
     a, b = _region(_star(rng, 15.0, 15.0, 10.0)), _region(_star(rng, 18.0, 17.0, 10.0))
@@ -184,17 +206,32 @@ ISLAND = _region(_rect(8, 8, 12, 12))
 SQUARE = _region(_rect(0, 0, 10, 10))
 
 
+@pytest.mark.parity(
+    ops=["intersection", "union", "area"],
+    against="Hand-computed expected values: island in a ring's hole (areas 16, 300)",
+    tolerance="exact",
+)
 def test_a_shape_in_a_hole_does_not_intersect() -> None:
     assert _lazy([RING], [ISLAND], "intersection") == []
     assert sorted(_area([c]) for c in _lazy([RING], [ISLAND], "union")) == [16.0, 300.0]
 
 
+@pytest.mark.parity(
+    ops=["difference", "area"],
+    against="Hand-computed expected values: 20x20 square minus 4x4 island is 384",
+    tolerance="pytest.approx default (rel 1e-6)",
+)
 def test_difference_cuts_a_hole() -> None:
     (holed,) = _lazy([_region(_rect(0, 0, 20, 20))], [ISLAND], "difference")
     assert len(holed["holes"]) == 1
     assert _area([holed]) == pytest.approx(400.0 - 16.0)
 
 
+@pytest.mark.parity(
+    ops=["difference", "intersection", "area"],
+    against="Hand-computed expected values: a-a empty, overlapping squares area 63",
+    tolerance="pytest.approx default (rel 1e-6)",
+)
 def test_each_side_is_the_union_of_its_set() -> None:
     """Overlapping members on one side count once: ``a - a`` is empty."""
     overlapping = [_region(_rect(0, 0, 6, 6)), _region(_rect(3, 3, 9, 9))]
@@ -211,6 +248,11 @@ def test_each_side_is_the_union_of_its_set() -> None:
         ("symmetric_difference", 100.0, 100.0),
     ],
 )
+@pytest.mark.parity(
+    ops=["union", "intersection", "difference", "symmetric_difference", "area"],
+    against="Hand-computed expected values: areas of s op empty and empty op s",
+    tolerance="pytest.approx default (rel 1e-6)",
+)
 def test_an_empty_side(op: str, left: float, right: float) -> None:
     """``s op ∅`` (left) and ``∅ op s`` (right), for a 10 x 10 ``s``."""
     assert _area(_lazy([SQUARE], [], op)) == pytest.approx(left)
@@ -219,6 +261,20 @@ def test_an_empty_side(op: str, left: float, right: float) -> None:
 
 @pytest.mark.parametrize("op", sorted(OPS))
 @pytest.mark.parametrize("side", ["left", "right"])
+@pytest.mark.parity(
+    ops=[
+        "union",
+        "intersection",
+        "difference",
+        "symmetric_difference",
+        "contour.union",
+        "contour.intersection",
+        "contour.difference",
+        "contour.symmetric_difference",
+    ],
+    against="Definition: an open contour operand is refused (no region)",
+    tolerance="exact (raises ComputeError)",
+)
 def test_a_line_on_either_side_is_refused(op: str, side: str) -> None:
     line = {"exterior": _pts([(0, 0), (5, 5)]), "holes": [], "is_closed": False}
     a, b = ([line], [SQUARE]) if side == "left" else ([SQUARE], [line])
@@ -233,12 +289,31 @@ def test_a_line_on_either_side_is_refused(op: str, side: str) -> None:
 
 
 @pytest.mark.parametrize("op", sorted(OPS))
+@pytest.mark.parity(
+    ops=[
+        "union",
+        "intersection",
+        "difference",
+        "symmetric_difference",
+        "contour.union",
+        "contour.intersection",
+        "contour.difference",
+        "contour.symmetric_difference",
+    ],
+    against="Definition: the `.contour` accessor equals the pipeline op",
+    tolerance="exact",
+)
 def test_the_accessor_is_the_pipeline_op(op: str) -> None:
     rng = np.random.default_rng(3)
     a, b = _random_rects(rng, 3), _random_rects(rng, 3)
     assert _accessor(a, b, op) == _lazy(a, b, op)
 
 
+@pytest.mark.parity(
+    ops=["contour.union"],
+    against="Definition: single-contour columns yield a contour-set column",
+    tolerance="exact",
+)
 def test_single_contour_columns_give_a_set() -> None:
     df = pl.DataFrame(
         {"a": [SQUARE], "b": [_region(_rect(20, 0, 30, 10))]},
@@ -249,6 +324,11 @@ def test_single_contour_columns_give_a_set() -> None:
     assert len(out.item()) == 2
 
 
+@pytest.mark.parity(
+    ops=["contour.intersection"],
+    against="Definition: a null operand nulls the row",
+    tolerance="exact",
+)
 def test_a_null_side_nulls_the_row() -> None:
     df = pl.DataFrame(
         {"a": [[SQUARE], None, [SQUARE]], "b": [[SQUARE], [SQUARE], None]},
@@ -258,12 +338,22 @@ def test_a_null_side_nulls_the_row() -> None:
     assert out.null_count() == 2 and out[0] is not None
 
 
+@pytest.mark.parity(
+    ops=["difference", "area"],
+    against="Hand-computed expected values: 10x10 minus an overlapping rectangle is 50",
+    tolerance="pytest.approx default (rel 1e-6)",
+)
 def test_the_result_chains_into_contour_ops() -> None:
     expr = _src("a").difference(_src("b")).area().sink("native")
     a, b = [_region(_rect(0, 0, 10, 10))], [_region(_rect(5, 0, 15, 10))]
     assert _frame(a, b).select(expr).item().to_list() == pytest.approx([50.0])
 
 
+@pytest.mark.parity(
+    ops=["union"],
+    against="Definition: a buffer-domain operand is refused at build time",
+    tolerance="exact (raises ValueError)",
+)
 def test_a_buffer_operand_is_refused_at_build() -> None:
     image = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
     with pytest.raises(ValueError, match="contour"):

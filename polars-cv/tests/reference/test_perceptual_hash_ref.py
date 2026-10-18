@@ -88,8 +88,51 @@ def jpeg_bytes_to_pil(data: bytes) -> "PILImage.Image":
 
 
 @imagehash_required
+@plugin_required
+@pytest.mark.parity(
+    ops=["perceptual_hash"],
+    against="imagehash `phash` (64-bit, hash_size=16 for 256 bits), `average_hash` and `dhash` on the same images",
+    tolerance=(
+        "Hamming bits: phash <= 4 (<= 12 on a colour gradient), 256-bit <= 40, "
+        "average/difference <= 10 on smooth images (bytes read LSB-first)"
+    ),
+)
 class TestPerceptualHashReference:
-    """Establish expected behavior for perceptual hashing using imagehash library."""
+    """``perceptual_hash()`` against ``imagehash`` on the same images.
+
+    Each test keeps the property it documents for imagehash and holds
+    polars-cv to it too: both the property (distance between a pair of images)
+    and the hash itself, within the Hamming tolerances ``TestPhashMatchesImagehash``
+    establishes (the grayscale and the resize are the engine's own ops, so
+    bits differ from imagehash's by a few, not zero).
+    """
+
+    @staticmethod
+    def _pcv(
+        images: "list[PILImage.Image]",
+        algorithm: str = "perceptual",
+        hash_size: int = 64,
+    ) -> list[bytes]:
+        """polars-cv hash bytes of each image."""
+        from polars_cv import Pipeline
+
+        df = pl.DataFrame({"img": [pil_to_png_bytes(i) for i in images]})
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .perceptual_hash(algorithm=algorithm, hash_size=hash_size)
+        )
+        rows = df.select(h=pl.col("img").cv.pipe(pipe).sink("list"))["h"].to_list()
+        return [bytes(r) for r in rows]
+
+    @staticmethod
+    def _int(h: bytes) -> int:
+        """Bits row-major, most significant first, as ``int(str(imagehash), 16)``."""
+        return int.from_bytes(h, "big")
+
+    @staticmethod
+    def _ih(h: object) -> int:
+        return int(str(h), 16)
 
     def test_phash_same_image_distance_zero(self, sample_rgb_image: np.ndarray) -> None:
         """Same image should have zero Hamming distance."""
@@ -101,6 +144,10 @@ class TestPerceptualHashReference:
 
         distance = hash1 - hash2
         assert distance == 0, f"Same image should have distance 0, got {distance}"
+
+        ours1, ours2 = self._pcv([pil_img, pil_img])
+        assert ours1 == ours2, "polars-cv: same image should have distance 0"
+        assert (self._int(ours1) ^ self._ih(hash1)).bit_count() <= 4
 
     def test_phash_resized_image_low_distance(
         self, sample_rgb_image: np.ndarray
@@ -119,6 +166,14 @@ class TestPerceptualHashReference:
         distance = hash_original - hash_resized
         # pHash should be robust to resizing - distance should be low
         assert distance <= 10, f"pHash should be resize-robust, got distance {distance}"
+
+        ours_original, ours_resized = (
+            self._int(h) for h in self._pcv([pil_img, resized])
+        )
+        ours_distance = (ours_original ^ ours_resized).bit_count()
+        assert ours_distance <= 10, f"polars-cv pHash resize distance {ours_distance}"
+        assert (ours_original ^ self._ih(hash_original)).bit_count() <= 4
+        assert (ours_resized ^ self._ih(hash_resized)).bit_count() <= 4
 
     def test_phash_jpeg_recompression_low_distance(
         self, sample_rgb_image: np.ndarray
@@ -139,6 +194,14 @@ class TestPerceptualHashReference:
         assert distance <= 5, (
             f"pHash should handle JPEG compression, got distance {distance}"
         )
+
+        ours_original, ours_recompressed = (
+            self._int(h) for h in self._pcv([pil_img, recompressed])
+        )
+        ours_distance = (ours_original ^ ours_recompressed).bit_count()
+        assert ours_distance <= 5, f"polars-cv pHash JPEG distance {ours_distance}"
+        assert (ours_original ^ self._ih(hash_original)).bit_count() <= 4
+        assert (ours_recompressed ^ self._ih(hash_recompressed)).bit_count() <= 4
 
     def test_phash_different_images_high_distance(self) -> None:
         """Different images should have high Hamming distance."""
@@ -162,6 +225,12 @@ class TestPerceptualHashReference:
             f"Different images should have high distance, got {distance}"
         )
 
+        ours1, ours2 = (self._int(h) for h in self._pcv([pil_img1, pil_img2]))
+        ours_distance = (ours1 ^ ours2).bit_count()
+        assert ours_distance >= 20, f"polars-cv distance {ours_distance}"
+        assert (ours1 ^ self._ih(hash1)).bit_count() <= 4
+        assert (ours2 ^ self._ih(hash2)).bit_count() <= 4
+
     def test_ahash_basic(self, sample_rgb_image: np.ndarray) -> None:
         """Test that aHash produces consistent results."""
         import imagehash
@@ -172,6 +241,23 @@ class TestPerceptualHashReference:
 
         assert hash1 == hash2, "aHash should be deterministic"
 
+        # polars-cv's average hash: deterministic, and close to imagehash's on
+        # natural-looking (smooth) images. It is image_hasher's, which packs
+        # bits LSB-first (pHash is MSB-first) and resizes with its own filter;
+        # measured 2-8 differing bits of 64 on smooth images. (On white noise
+        # the 8x8 means all sit near 128 and the bits are rounding-sensitive:
+        # 18 bits, so noise is not compared.)
+        assert (
+            self._pcv([pil_img] * 2, "average")[0] == self._pcv([pil_img], "average")[0]
+        )
+        for a in _smooth_images(6):
+            ours = np.unpackbits(
+                np.frombuffer(self._pcv([numpy_to_pil(a)], "average")[0], np.uint8),
+                bitorder="little",
+            )
+            theirs = imagehash.average_hash(numpy_to_pil(a)).hash.ravel()
+            assert int((ours != theirs).sum()) <= 10
+
     def test_dhash_basic(self, sample_rgb_image: np.ndarray) -> None:
         """Test that dHash produces consistent results."""
         import imagehash
@@ -181,6 +267,20 @@ class TestPerceptualHashReference:
         hash2 = imagehash.dhash(pil_img)
 
         assert hash1 == hash2, "dHash should be deterministic"
+
+        # As aHash: LSB-first image_hasher bytes; measured 1-8 differing bits
+        # of 64 on smooth images.
+        assert (
+            self._pcv([pil_img] * 2, "difference")[0]
+            == self._pcv([pil_img], "difference")[0]
+        )
+        for a in _smooth_images(6):
+            ours = np.unpackbits(
+                np.frombuffer(self._pcv([numpy_to_pil(a)], "difference")[0], np.uint8),
+                bitorder="little",
+            )
+            theirs = imagehash.dhash(numpy_to_pil(a)).hash.ravel()
+            assert int((ours != theirs).sum()) <= 10
 
     def test_hash_size_64_produces_8_bytes(self, sample_rgb_image: np.ndarray) -> None:
         """64-bit hash should produce 8-byte output (64 bits = 8 bytes)."""
@@ -203,6 +303,10 @@ class TestPerceptualHashReference:
             f"Expected 16 hex chars for 64-bit hash, got {len(hex_str)}"
         )
 
+        (ours,) = self._pcv([pil_img], hash_size=64)
+        assert len(ours) == 8, f"polars-cv: 64 bits should be 8 bytes, got {len(ours)}"
+        assert (self._int(ours) ^ int(hex_str, 16)).bit_count() <= 4
+
     def test_hash_size_128_produces_16_bytes(
         self, sample_rgb_image: np.ndarray
     ) -> None:
@@ -219,6 +323,11 @@ class TestPerceptualHashReference:
         # For larger hash, use hash_size=16 which gives 16*16=256 bits
         hash_large = imagehash.phash(pil_img, hash_size=16)
         assert len(hash_large.hash.flatten()) == 256
+
+        # polars-cv's `hash_size` is the number of bits: 256 is imagehash's 16.
+        (ours,) = self._pcv([pil_img], hash_size=256)
+        assert len(ours) == 32
+        assert (self._int(ours) ^ self._ih(hash_large)).bit_count() <= 40
 
     def test_ahash_faster_than_phash(self, sample_rgb_image: np.ndarray) -> None:
         """aHash should generally be faster than pHash (DCT is expensive)."""
@@ -249,6 +358,11 @@ class TestPerceptualHashReference:
             f"aHash ({ahash_time:.3f}s) should be faster than pHash ({phash_time:.3f}s)"
         )
 
+        # The timing above documents imagehash only (polars-cv's speed is a
+        # benchmark question, not a parity one). The hashes timed are compared:
+        (ours,) = self._pcv([pil_img])
+        assert (self._int(ours) ^ self._ih(imagehash.phash(pil_img))).bit_count() <= 4
+
     def test_blockhash_crop_resistance(self, gradient_image: np.ndarray) -> None:
         """Blockhash should be somewhat robust to small crops."""
         import imagehash
@@ -275,6 +389,16 @@ class TestPerceptualHashReference:
             f"Hash should handle small crops, got distance {distance}"
         )
 
+        ours_original, ours_cropped = (
+            self._int(x) for x in self._pcv([pil_img, cropped_resized])
+        )
+        assert (ours_original ^ ours_cropped).bit_count() <= 15
+        # A colour gradient has many near-zero DCT coefficients whose bits sit
+        # on gray-rounding noise: measured 10 bits from imagehash's on the
+        # original (0-2 on natural images), hence 12 here rather than 4.
+        assert (ours_original ^ self._ih(bhash_original)).bit_count() <= 12
+        assert (ours_cropped ^ self._ih(bhash_cropped)).bit_count() <= 12
+
     def test_hash_to_hex_string(self, sample_rgb_image: np.ndarray) -> None:
         """Hash should be convertible to hex string."""
         import imagehash
@@ -288,6 +412,14 @@ class TestPerceptualHashReference:
             f"Hash should be hex string, got: {hex_str}"
         )
 
+        # polars-cv's bytes are that hex string's bytes: same length, and the
+        # hex of the bytes is within a few bits of imagehash's.
+        (ours,) = self._pcv([pil_img])
+        ours_hex = ours.hex()
+        assert len(ours_hex) == len(hex_str) == 16
+        assert all(c in "0123456789abcdef" for c in ours_hex)
+        assert (int(ours_hex, 16) ^ int(hex_str, 16)).bit_count() <= 4
+
     def test_hash_from_hex_string(self, sample_rgb_image: np.ndarray) -> None:
         """Hash should be reconstructible from hex string."""
         import imagehash
@@ -299,6 +431,11 @@ class TestPerceptualHashReference:
         reconstructed = imagehash.hex_to_hash(hex_str)
 
         assert hash_result == reconstructed, "Hash should roundtrip through hex string"
+
+        # polars-cv's bytes load as an imagehash through their hex.
+        (ours,) = self._pcv([pil_img])
+        from_ours = imagehash.hex_to_hash(ours.hex())
+        assert from_ours - hash_result <= 4
 
     def test_hash_bytes_representation(self, sample_rgb_image: np.ndarray) -> None:
         """Test that hash can be converted to raw bytes for storage."""
@@ -322,6 +459,12 @@ class TestPerceptualHashReference:
             "Should roundtrip through byte packing",
         )
 
+        # polars-cv's bytes are that packing (row-major, MSB first).
+        (ours,) = self._pcv([pil_img], hash_size=64)
+        ours_bits = np.unpackbits(np.frombuffer(ours, dtype=np.uint8))
+        assert ours_bits.shape == unpacked.shape
+        assert int((ours_bits != unpacked).sum()) <= 4
+
     def test_grayscale_vs_rgb_hash_similar(self, sample_rgb_image: np.ndarray) -> None:
         """Hash of grayscale conversion should be similar to RGB hash."""
         import imagehash
@@ -338,6 +481,11 @@ class TestPerceptualHashReference:
         assert distance <= 2, (
             f"RGB and grayscale hash should be similar, got distance {distance}"
         )
+
+        ours_rgb, ours_gray = (self._int(h) for h in self._pcv([pil_rgb, pil_gray]))
+        assert (ours_rgb ^ ours_gray).bit_count() <= 2
+        assert (ours_rgb ^ self._ih(hash_rgb)).bit_count() <= 4
+        assert (ours_gray ^ self._ih(hash_gray)).bit_count() <= 4
 
     def test_algorithm_comparison(self, gradient_image: np.ndarray) -> None:
         """Compare all four hash algorithms on the same image."""
@@ -360,6 +508,24 @@ class TestPerceptualHashReference:
             "Different algorithms should generally produce different hashes"
         )
 
+        # polars-cv's three algorithms: 64-bit hashes that differ from one
+        # another as imagehash's do, and each is within a few bits of its
+        # imagehash counterpart (a/d: LSB-first bytes, measured 1-2 bits here;
+        # p: MSB-first, 10 bits on this colour gradient, see the crop test).
+        ours = {
+            a: self._pcv([pil_img], a)[0]
+            for a in ("average", "difference", "perceptual")
+        }
+        assert all(len(h) == 8 for h in ours.values())
+        assert len(set(ours.values())) > 1
+
+        def lsb(h: bytes) -> np.ndarray:
+            return np.unpackbits(np.frombuffer(h, np.uint8), bitorder="little")
+
+        assert int((lsb(ours["average"]) != ahash.hash.ravel()).sum()) <= 4
+        assert int((lsb(ours["difference"]) != dhash.hash.ravel()).sum()) <= 4
+        assert (self._int(ours["perceptual"]) ^ self._ih(phash)).bit_count() <= 12
+
     def test_batch_hashing_consistency(self) -> None:
         """Verify hashing is consistent across batch of images."""
         import imagehash
@@ -381,6 +547,13 @@ class TestPerceptualHashReference:
         for h1, h2 in zip(hashes_run1, hashes_run2):
             assert h1 == h2, "Hashing should be deterministic"
 
+        # polars-cv: the same batch, hashed twice, is identical, and row i is
+        # within a few bits of imagehash's hash of image i (not of a neighbour).
+        ours1, ours2 = self._pcv(images), self._pcv(images)
+        assert ours1 == ours2
+        for o, h in zip(ours1, hashes_run1, strict=True):
+            assert (self._int(o) ^ self._ih(h)).bit_count() <= 4
+
     def test_small_image_hashing(self) -> None:
         """Test hashing works on small images."""
         import imagehash
@@ -394,6 +567,10 @@ class TestPerceptualHashReference:
         # Should not raise, even for tiny images
         hash_result = imagehash.phash(small_img)
         assert hash_result is not None
+
+        (ours,) = self._pcv([small_img])
+        assert len(ours) == 8
+        assert (self._int(ours) ^ self._ih(hash_result)).bit_count() <= 4
 
     def test_large_image_hashing(self) -> None:
         """Test hashing works efficiently on large images."""
@@ -412,6 +589,11 @@ class TestPerceptualHashReference:
         assert hash_result is not None
         # Should complete in reasonable time (< 1 second for 2K image)
         assert elapsed < 1.0, f"Large image hash took too long: {elapsed:.2f}s"
+
+        # The time bound documents imagehash; polars-cv's hash of the same
+        # image is compared (measured 2 bits).
+        (ours,) = self._pcv([large_img])
+        assert (self._int(ours) ^ self._ih(hash_result)).bit_count() <= 4
 
 
 def _smooth_images(n: int, size: tuple[int, int] = (240, 320)) -> list[np.ndarray]:
@@ -444,6 +626,11 @@ def pil_to_png_bytes(img: "PILImage.Image") -> bytes:
 
 @imagehash_required
 @plugin_required
+@pytest.mark.parity(
+    ops=["perceptual_hash"],
+    against="imagehash `phash` (default 64-bit, and hash_size=16 for 256 bits)",
+    tolerance="Hamming bits: <= 2 at 32x32, exact on flat/gradient, <= 4 resized, <= 40 of 256",
+)
 class TestPhashMatchesImagehash:
     """``perceptual_hash()`` (the default algorithm) is standard pHash.
 
@@ -498,6 +685,11 @@ class TestPhashMatchesImagehash:
         dist = [(a ^ b).bit_count() for a, b in zip(ours, theirs, strict=True)]
         assert max(dist) <= 4, dist
 
+    @pytest.mark.parity(
+        ops=["perceptual_hash"],
+        against="Definition: distinct images spread near 32 of 64 bits apart",
+        tolerance="Hamming bits: mean > 26, min > 6",
+    )
     def test_distinct_images_are_far_apart(self) -> None:
         """A useful hash spreads distinct images near 32 of 64 bits apart."""
         hashes = _pcv_phash(_smooth_images(40))

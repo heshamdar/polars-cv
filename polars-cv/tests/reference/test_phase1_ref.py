@@ -49,6 +49,11 @@ def rgb_png(rgb_image: np.ndarray) -> bytes:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["channel_select"],
+    against="NumPy indexing `img[:, :, i:i+1]`",
+    tolerance="exact",
+)
 class TestChannelSelect:
     """Reference tests for channel_select vs NumPy indexing."""
 
@@ -84,6 +89,11 @@ class TestChannelSelect:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["channel_swap"],
+    against="NumPy channel reversal `img[:, :, ::-1]`",
+    tolerance="exact",
+)
 class TestChannelSwap:
     """Reference tests for channel_swap vs NumPy indexing."""
 
@@ -97,6 +107,11 @@ class TestChannelSwap:
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_array_equal(actual, expected)
 
+    @pytest.mark.parity(
+        ops=["channel_swap"],
+        against="Definition: swap order [0, 1, 2] is the identity",
+        tolerance="exact",
+    )
     def test_identity_swap(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify channel_swap([0,1,2]) is a no-op."""
         pipe = Pipeline().source("image_bytes").channel_swap(order=[0, 1, 2])
@@ -115,6 +130,11 @@ class TestChannelSwap:
 class TestReflectPadding:
     """Reference tests for reflect and symmetric padding vs NumPy."""
 
+    @pytest.mark.parity(
+        ops=["pad", "grayscale"],
+        against='NumPy `np.pad(mode="reflect")`',
+        tolerance="exact",
+    )
     def test_reflect_pad_small(self) -> None:
         """Verify reflect padding matches np.pad(mode='reflect')."""
         arr = np.arange(12, dtype=np.uint8).reshape(3, 4)
@@ -135,6 +155,11 @@ class TestReflectPadding:
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_array_equal(actual, expected)
 
+    @pytest.mark.parity(
+        ops=["pad", "grayscale"],
+        against='NumPy `np.pad(mode="symmetric")`',
+        tolerance="exact",
+    )
     def test_symmetric_pad_small(self) -> None:
         """Verify symmetric padding matches np.pad(mode='symmetric')."""
         arr = np.arange(12, dtype=np.uint8).reshape(3, 4)
@@ -153,6 +178,11 @@ class TestReflectPadding:
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_array_equal(actual, expected)
 
+    @pytest.mark.parity(
+        ops=["pad"],
+        against='NumPy `np.pad(mode="reflect")`, three channels',
+        tolerance="exact",
+    )
     def test_reflect_pad_rgb(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify reflect padding works for multi-channel images."""
         pad_width = ((2, 3), (4, 5), (0, 0))
@@ -178,6 +208,11 @@ class TestReflectPadding:
 class TestAdjustContrast:
     """Reference tests for adjust_contrast."""
 
+    @pytest.mark.parity(
+        ops=["adjust_contrast"],
+        against="Definition: contrast factor 1.0 is the identity (u8 -> f32)",
+        tolerance="atol 1e-4",
+    )
     def test_contrast_factor_1_is_noop(
         self, rgb_image: np.ndarray, rgb_png: bytes
     ) -> None:
@@ -188,6 +223,11 @@ class TestAdjustContrast:
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_allclose(actual, rgb_image.astype(np.float32), atol=1e-4)
 
+    @pytest.mark.parity(
+        ops=["adjust_contrast"],
+        against="NumPy `(img - mean) * factor + mean` in f32",
+        tolerance="atol 1e-2",
+    )
     def test_contrast_vs_numpy(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify contrast adjustment matches (pixel - mean) * factor + mean."""
         factor = 1.5
@@ -206,6 +246,11 @@ class TestAdjustContrast:
 class TestAdjustGamma:
     """Reference tests for adjust_gamma (power-law)."""
 
+    @pytest.mark.parity(
+        ops=["adjust_gamma"],
+        against="Definition: gamma 1.0 is the identity (u8 -> f32)",
+        tolerance="atol 1.0 level",
+    )
     def test_gamma_1_is_noop(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Gamma=1.0 should preserve pixel values."""
         pipe = Pipeline().source("image_bytes").adjust_gamma(gamma=1.0)
@@ -214,6 +259,11 @@ class TestAdjustGamma:
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_allclose(actual, rgb_image.astype(np.float32), atol=1.0)
 
+    @pytest.mark.parity(
+        ops=["adjust_gamma"],
+        against="NumPy `np.power(img / 255, gamma) * 255` in f32",
+        tolerance="atol 1.0 level",
+    )
     def test_gamma_vs_numpy(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify gamma correction matches (pixel/255)^gamma * 255."""
         gamma = 0.5
@@ -228,6 +278,11 @@ class TestAdjustGamma:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["invert"],
+    against="NumPy `255 - img` on u8",
+    tolerance="exact",
+)
 class TestInvert:
     """Reference tests for invert vs NumPy."""
 
@@ -241,6 +296,11 @@ class TestInvert:
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_array_equal(actual, expected)
 
+    @pytest.mark.parity(
+        ops=["invert"],
+        against="Definition: inverting twice recovers the input",
+        tolerance="exact",
+    )
     def test_invert_roundtrip(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Double invert should recover the original image."""
         pipe = Pipeline().source("image_bytes").invert().invert()
@@ -251,6 +311,11 @@ class TestInvert:
 
     @pytest.mark.parametrize(
         "dtype", ["u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64"]
+    )
+    @pytest.mark.parity(
+        ops=["invert"],
+        against="NumPy bitwise not `~x` for every integer dtype (u8-i64)",
+        tolerance="exact",
     )
     def test_invert_integer_keeps_dtype(self, dtype: str) -> None:
         """Integer invert is ``MAX + MIN - x`` (NumPy's ``~x``) in the input dtype."""
@@ -272,6 +337,11 @@ class TestInvert:
 class TestAdjustBrightness:
     """Reference tests for adjust_brightness (convenience method)."""
 
+    @pytest.mark.parity(
+        ops=["adjust_brightness"],
+        against="Definition: brightness factor 1.0 preserves values (u8 -> f32)",
+        tolerance="atol 1e-4",
+    )
     def test_brightness_factor_1_preserves(
         self, rgb_image: np.ndarray, rgb_png: bytes
     ) -> None:
@@ -282,6 +352,11 @@ class TestAdjustBrightness:
         actual = numpy_from_struct(result.row(0)[0])
         np.testing.assert_allclose(actual, rgb_image.astype(np.float32), atol=1e-4)
 
+    @pytest.mark.parity(
+        ops=["adjust_brightness"],
+        against="Hand-computed expected values: 200 * 2.0 saturates at 255",
+        tolerance="atol 1e-4",
+    )
     def test_brightness_saturates(self) -> None:
         """High brightness factor should saturate at 255."""
         arr = np.full((8, 8, 3), 200, dtype=np.uint8)
@@ -302,31 +377,61 @@ class TestAdjustBrightness:
 class TestPhase1Contracts:
     """Test that pipeline builder correctly tracks dtype/ndim for Phase 1 ops."""
 
+    @pytest.mark.parity(
+        ops=["channel_select"],
+        against="Hand-computed expected values: the domain stays `buffer`",
+        tolerance="exact",
+    )
     def test_channel_select_stays_a_buffer(self) -> None:
         """channel_select stays in the buffer domain."""
         pipe = Pipeline().source("image_bytes").channel_select(index=0)
         assert pipe.current_domain() == "buffer"
 
+    @pytest.mark.parity(
+        ops=["channel_swap"],
+        against="Hand-computed expected values: the domain stays `buffer`",
+        tolerance="exact",
+    )
     def test_channel_swap_preserves_ndim(self) -> None:
         """channel_swap should preserve ndim."""
         pipe = Pipeline().source("image_bytes").channel_swap(order=[2, 1, 0])
         assert pipe.current_domain() == "buffer"
 
+    @pytest.mark.parity(
+        ops=["invert"],
+        against="Hand-computed expected values: planned dtype is not promoted",
+        tolerance="exact",
+    )
     def test_invert_preserves_dtype(self) -> None:
         """invert should preserve the input dtype (not promote to float)."""
         pipe = Pipeline().source("image_bytes").invert()
         assert planned(pipe).dtype == "auto"
 
+    @pytest.mark.parity(
+        ops=["adjust_contrast"],
+        against="Hand-computed expected values: planned dtype u8 -> f32",
+        tolerance="exact",
+    )
     def test_adjust_contrast_promotes_dtype(self) -> None:
         """adjust_contrast should promote integer dtypes to float."""
         pipe = Pipeline().source("image_bytes", dtype="u8").adjust_contrast(factor=1.5)
         assert planned(pipe).dtype == "f32"
 
+    @pytest.mark.parity(
+        ops=["adjust_gamma"],
+        against="Hand-computed expected values: planned dtype u8 -> f32",
+        tolerance="exact",
+    )
     def test_adjust_gamma_promotes_dtype(self) -> None:
         """adjust_gamma should promote integer dtypes to float."""
         pipe = Pipeline().source("image_bytes", dtype="u8").adjust_gamma(gamma=0.5)
         assert planned(pipe).dtype == "f32"
 
+    @pytest.mark.parity(
+        ops=["adjust_brightness"],
+        against="Hand-computed expected values: lowers to `scale` then `clamp`",
+        tolerance="exact",
+    )
     def test_brightness_chains_scale_clamp(self) -> None:
         """adjust_brightness should produce scale + clamp ops."""
         pipe = Pipeline().source("image_bytes").adjust_brightness(factor=1.5)

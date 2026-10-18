@@ -21,236 +21,312 @@ if TYPE_CHECKING:
     pass
 
 
-# Check if plugin is available
-# Mark tests with plugin_required marker
+def _img_df(encode_png: Callable[[np.ndarray], bytes], **images: np.ndarray):
+    """One-row frame with a PNG-encoded image per keyword."""
+    return pl.DataFrame({k: [encode_png(v)] for k, v in images.items()})
+
+
+def _col(name: str) -> "pl.Expr":
+    """An image column wrapped as a polars-cv lazy pipeline (``image_bytes``)."""
+    return pl.col(name).cv.pipe(Pipeline().source("image_bytes"))
+
+
+def _numpy(df: pl.DataFrame, lazy) -> np.ndarray:
+    """Evaluate a lazy pipeline expression with the numpy sink."""
+    return numpy_from_struct(df.select(output=lazy.sink("numpy")).row(0)[0])
+
+
+@plugin_required
+@pytest.mark.parity(
+    ops=[
+        "add",
+        "subtract",
+        "multiply",
+        "divide",
+        "apply_mask",
+        "maximum",
+        "minimum",
+        "bitwise_and",
+        "bitwise_or",
+        "blend",
+        "scale",
+        "channel_select",
+        "channel_merge",
+    ],
+    against="NumPy int16-clipped add/subtract, float32 normalized product, float32 division, "
+    "0/1 mask product, np.maximum/minimum/bitwise_and/bitwise_or, scalar and per-channel scaling",
+    tolerance="exact except the normalized product (atol 1: polars-cv rounds, the reference "
+    "truncates) and per-channel weights (rtol 1e-6, f32 vs f64 weights)",
+)
 class TestBinaryOpsReference:
-    """Establish expected behavior for binary operations using NumPy as reference."""
+    """polars-cv binary operations must reproduce the NumPy reference semantics."""
 
-    def test_add_reference(self, sample_images: tuple[np.ndarray, np.ndarray]) -> None:
-        """
-        Element-wise addition with saturation for uint8.
-
-        Expected behavior: Add values with clamping to [0, 255].
-        """
+    def test_add_reference(
+        self,
+        sample_images: tuple[np.ndarray, np.ndarray],
+        encode_png: Callable[[np.ndarray], bytes],
+    ) -> None:
+        """Element-wise addition with saturation for uint8, clamped to [0, 255]."""
         img1, img2 = sample_images
 
-        # NumPy reference behavior - saturating addition
         result = np.clip(img1.astype(np.int16) + img2.astype(np.int16), 0, 255).astype(
             np.uint8
         )
-
         assert result.shape == img1.shape
         assert result.dtype == np.uint8
 
-        # Verify no overflow occurred
-        assert result.max() <= 255
-        assert result.min() >= 0
+        df = _img_df(encode_png, a=img1, b=img2)
+        actual = _numpy(df, _col("a").add(_col("b")))
+        assert actual.dtype == np.uint8
+        np.testing.assert_array_equal(actual, result)
 
     def test_subtract_reference(
-        self, sample_images: tuple[np.ndarray, np.ndarray]
+        self,
+        sample_images: tuple[np.ndarray, np.ndarray],
+        encode_png: Callable[[np.ndarray], bytes],
     ) -> None:
-        """
-        Element-wise subtraction with saturation for uint8.
-
-        Expected behavior: Subtract values with clamping to [0, 255].
-        """
+        """Element-wise subtraction with saturation for uint8, clamped to [0, 255]."""
         img1, img2 = sample_images
 
-        # NumPy reference behavior - saturating subtraction
         result = np.clip(img1.astype(np.int16) - img2.astype(np.int16), 0, 255).astype(
             np.uint8
         )
-
         assert result.shape == img1.shape
         assert result.dtype == np.uint8
-        assert result.min() >= 0
+
+        df = _img_df(encode_png, a=img1, b=img2)
+        actual = _numpy(df, _col("a").subtract(_col("b")))
+        assert actual.dtype == np.uint8
+        np.testing.assert_array_equal(actual, result)
 
     def test_multiply_reference(
-        self, sample_images: tuple[np.ndarray, np.ndarray]
+        self,
+        sample_images: tuple[np.ndarray, np.ndarray],
+        encode_png: Callable[[np.ndarray], bytes],
     ) -> None:
         """
-        Element-wise multiplication (scaled for images).
-
-        For images, normalize to [0,1] range, multiply, scale back.
+        Element-wise multiplication scaled for images: normalize to [0,1],
+        multiply, scale back. That is polars-cv's ``blend``.
         """
         img1, img2 = sample_images
 
-        # For images, typically normalize then multiply
         result = (
             (img1.astype(np.float32) / 255) * (img2.astype(np.float32) / 255) * 255
         ).astype(np.uint8)
-
         assert result.shape == img1.shape
         assert result.dtype == np.uint8
 
+        df = _img_df(encode_png, a=img1, b=img2)
+        actual = _numpy(df, _col("a").blend(_col("b")))
+        assert actual.dtype == np.uint8
+        # atol 1: polars-cv rounds (a*b + 127) // 255, the reference truncates the f32 product.
+        np.testing.assert_allclose(actual, result, atol=1)
+
     def test_divide_reference(
-        self, sample_images: tuple[np.ndarray, np.ndarray]
+        self,
+        sample_images: tuple[np.ndarray, np.ndarray],
+        encode_png: Callable[[np.ndarray], bytes],
     ) -> None:
         """
-        Element-wise division with zero handling.
+        Element-wise division, then scaled to [0, 255] and clipped.
 
-        Expected behavior: Divide with inf/nan handling.
+        The reference substitutes 1 for a zero divisor; polars-cv divides IEEE-style
+        (inf / NaN at zero), so the comparison is over the non-zero divisors and the
+        zero-divisor pixels are asserted non-finite.
         """
         img1, img2 = sample_images
 
-        # Use float for division to handle zeros properly
         img2_safe = img2.astype(np.float32)
         img2_safe[img2_safe == 0] = 1  # Avoid division by zero
-
         result = np.clip(img1.astype(np.float32) / img2_safe * 255, 0, 255).astype(
             np.uint8
         )
-
         assert result.shape == img1.shape
         assert result.dtype == np.uint8
+
+        df = _img_df(encode_png, a=img1, b=img2)
+        quotient = _numpy(df, _col("a").divide(_col("b")))
+        assert quotient.dtype == np.float32
+        nonzero = img2 != 0
+        assert not nonzero.all()  # the fixture does contain zero divisors
+        actual = np.clip(quotient[nonzero] * np.float32(255), 0, 255).astype(np.uint8)
+        np.testing.assert_array_equal(actual, result[nonzero])
+        assert not np.isfinite(quotient[~nonzero]).any()
 
     def test_apply_mask_reference(
         self,
         sample_images: tuple[np.ndarray, np.ndarray],
         binary_mask: np.ndarray,
+        encode_png: Callable[[np.ndarray], bytes],
     ) -> None:
-        """
-        Apply binary mask to image.
-
-        Expected behavior: Multiply image by 0/1 mask, broadcasting channels.
-        """
+        """Apply binary mask to image: multiply by 0/1 mask, broadcasting channels."""
         img, _ = sample_images
 
-        # Broadcast mask to image channels
         mask_3d = np.expand_dims(binary_mask, axis=-1)
         result = img * mask_3d
-
-        # Verify masked regions
         assert np.all(result[0, 0] == 0)  # Outside mask (corner)
         assert np.all(result[50, 50] == img[50, 50])  # Inside mask (center)
-
-        # Verify shape preserved
         assert result.shape == img.shape
         assert result.dtype == img.dtype
+
+        # polars-cv reads a u8 mask as m / 255, so the 0/1 mask becomes 0/255.
+        df = _img_df(encode_png, image=img, mask=binary_mask * 255)
+        mask = pl.col("mask").cv.pipe(Pipeline().source("image_bytes").grayscale())
+        actual = _numpy(df, _col("image").apply_mask(mask))
+        np.testing.assert_array_equal(actual, result)
 
     def test_apply_mask_inverted_reference(
         self,
         sample_images: tuple[np.ndarray, np.ndarray],
         binary_mask: np.ndarray,
+        encode_png: Callable[[np.ndarray], bytes],
     ) -> None:
-        """
-        Apply inverted binary mask to image.
-
-        Expected behavior: Keep exterior, zero interior.
-        """
+        """Apply inverted binary mask: keep exterior, zero interior."""
         img, _ = sample_images
 
-        # Invert mask
         inverted_mask = 1 - binary_mask
         mask_3d = np.expand_dims(inverted_mask, axis=-1)
         result = img * mask_3d
-
-        # Verify inverted masked regions
         assert np.all(result[50, 50] == 0)  # Inside original mask = zeroed
         assert np.all(result[0, 0] == img[0, 0])  # Outside mask = preserved
 
-    def test_maximum_reference(
-        self, sample_images: tuple[np.ndarray, np.ndarray]
-    ) -> None:
-        """
-        Element-wise maximum.
+        df = _img_df(encode_png, image=img, mask=binary_mask * 255)
+        mask = pl.col("mask").cv.pipe(Pipeline().source("image_bytes").grayscale())
+        actual = _numpy(df, _col("image").apply_mask(mask, invert=True))
+        np.testing.assert_array_equal(actual, result)
 
-        Expected behavior: Max of corresponding elements.
-        """
+    def test_maximum_reference(
+        self,
+        sample_images: tuple[np.ndarray, np.ndarray],
+        encode_png: Callable[[np.ndarray], bytes],
+    ) -> None:
+        """Element-wise maximum."""
         img1, img2 = sample_images
 
         result = np.maximum(img1, img2)
-
         assert result.shape == img1.shape
         assert result.dtype == img1.dtype
-        # Result should be >= both inputs at every position
         assert np.all(result >= img1)
         assert np.all(result >= img2)
 
-    def test_minimum_reference(
-        self, sample_images: tuple[np.ndarray, np.ndarray]
-    ) -> None:
-        """
-        Element-wise minimum.
+        df = _img_df(encode_png, a=img1, b=img2)
+        actual = _numpy(df, _col("a").maximum(_col("b")))
+        assert actual.dtype == result.dtype
+        np.testing.assert_array_equal(actual, result)
 
-        Expected behavior: Min of corresponding elements.
-        """
+    def test_minimum_reference(
+        self,
+        sample_images: tuple[np.ndarray, np.ndarray],
+        encode_png: Callable[[np.ndarray], bytes],
+    ) -> None:
+        """Element-wise minimum."""
         img1, img2 = sample_images
 
         result = np.minimum(img1, img2)
-
         assert result.shape == img1.shape
         assert result.dtype == img1.dtype
-        # Result should be <= both inputs at every position
         assert np.all(result <= img1)
         assert np.all(result <= img2)
+
+        df = _img_df(encode_png, a=img1, b=img2)
+        actual = _numpy(df, _col("a").minimum(_col("b")))
+        assert actual.dtype == result.dtype
+        np.testing.assert_array_equal(actual, result)
 
     def test_bitwise_and_reference(
         self,
         sample_images: tuple[np.ndarray, np.ndarray],
+        encode_png: Callable[[np.ndarray], bytes],
     ) -> None:
-        """
-        Bitwise AND operation.
-
-        Useful for combining binary masks.
-        """
+        """Bitwise AND operation (useful for combining binary masks)."""
         img1, img2 = sample_images
 
         result = np.bitwise_and(img1, img2)
-
         assert result.shape == img1.shape
         assert result.dtype == img1.dtype
+
+        df = _img_df(encode_png, a=img1, b=img2)
+        actual = _numpy(df, _col("a").bitwise_and(_col("b")))
+        assert actual.dtype == result.dtype
+        np.testing.assert_array_equal(actual, result)
 
     def test_bitwise_or_reference(
         self,
         sample_images: tuple[np.ndarray, np.ndarray],
+        encode_png: Callable[[np.ndarray], bytes],
     ) -> None:
-        """
-        Bitwise OR operation.
-
-        Useful for combining binary masks.
-        """
+        """Bitwise OR operation (useful for combining binary masks)."""
         img1, img2 = sample_images
 
         result = np.bitwise_or(img1, img2)
-
         assert result.shape == img1.shape
         assert result.dtype == img1.dtype
 
-    def test_broadcasting_scalar_reference(self) -> None:
-        """
-        Verify scalar broadcasting matches NumPy behavior.
-        """
+        df = _img_df(encode_png, a=img1, b=img2)
+        actual = _numpy(df, _col("a").bitwise_or(_col("b")))
+        assert actual.dtype == result.dtype
+        np.testing.assert_array_equal(actual, result)
+
+    def test_broadcasting_scalar_reference(
+        self, encode_png: Callable[[np.ndarray], bytes]
+    ) -> None:
+        """Scalar broadcasting: scale by 1.5, saturate at 255, truncate to uint8."""
         img = np.random.default_rng(42).integers(0, 256, (100, 100, 3), dtype=np.uint8)
         scalar = np.array([1.5])
 
         result = np.clip(img.astype(np.float32) * scalar, 0, 255).astype(np.uint8)
-
         assert result.shape == img.shape
 
-    def test_broadcasting_per_channel_reference(self) -> None:
-        """
-        Verify per-channel broadcasting matches NumPy behavior.
+        # `cast` rounds, so floor first to reproduce the reference's truncation.
+        pipe = Pipeline().source("image_bytes").scale(1.5).clamp_max(255.0).floor()
+        df = _img_df(encode_png, a=img)
+        actual = _numpy(df, pl.col("a").cv.pipe(pipe.cast("u8")))
+        assert actual.dtype == np.uint8
+        np.testing.assert_array_equal(actual, result)
 
-        Common use case: RGB to grayscale weights.
+    def test_broadcasting_per_channel_reference(
+        self, encode_png: Callable[[np.ndarray], bytes]
+    ) -> None:
+        """
+        Per-channel broadcasting (RGB to grayscale weights), as one scaled
+        ``channel_select`` per channel merged back with ``channel_merge``.
         """
         img = np.random.default_rng(42).integers(0, 256, (100, 100, 3), dtype=np.uint8)
         channel_weights = np.array([0.299, 0.587, 0.114])  # Grayscale weights
 
         result = (img.astype(np.float32) * channel_weights).astype(np.float32)
-
         assert result.shape == img.shape
 
-    def test_shape_mismatch_raises(self) -> None:
-        """
-        Verify incompatible shapes raise an error.
-        """
+        df = _img_df(encode_png, a=img)
+        scaled = [
+            pl.col("a").cv.pipe(
+                Pipeline()
+                .source("image_bytes")
+                .channel_select(c)
+                .scale(float(channel_weights[c]))
+            )
+            for c in range(3)
+        ]
+        actual = _numpy(df, scaled[0].channel_merge(scaled[1], scaled[2]))
+        assert actual.shape == result.shape
+        assert actual.dtype == np.float32
+        # rtol 1e-6: polars-cv multiplies in f32, the reference in f64 then rounds to f32.
+        np.testing.assert_allclose(actual, result, rtol=1e-6)
+
+    def test_shape_mismatch_raises(
+        self, encode_png: Callable[[np.ndarray], bytes]
+    ) -> None:
+        """Incompatible shapes raise an error (nothing broadcasts in polars-cv)."""
         img1 = np.zeros((100, 100, 3), dtype=np.uint8)
         img2 = np.zeros((50, 50, 3), dtype=np.uint8)
 
         # NumPy raises ValueError for shape mismatch that can't broadcast
         with pytest.raises(ValueError):
             _ = img1 + img2
+
+        df = _img_df(encode_png, a=img1, b=img2)
+        with pytest.raises(pl.exceptions.ComputeError, match="same shape"):
+            _numpy(df, _col("a").add(_col("b")))
 
 
 @plugin_required
@@ -262,6 +338,11 @@ class TestBinaryOpsPolarsCV:
     This is the expected behavior - we're testing that polars-cv matches NumPy.
     """
 
+    @pytest.mark.parity(
+        ops=["add"],
+        against="NumPy saturating uint8 add (`np.clip` of int16 sum)",
+        tolerance="atol 1",
+    )
     def test_add_matches_reference(
         self,
         sample_images: tuple[np.ndarray, np.ndarray],
@@ -295,6 +376,11 @@ class TestBinaryOpsPolarsCV:
 
         np.testing.assert_allclose(actual, expected, atol=1)
 
+    @pytest.mark.parity(
+        ops=["subtract"],
+        against="NumPy saturating uint8 subtract (`np.clip` of int16 difference)",
+        tolerance="atol 1",
+    )
     def test_subtract_matches_reference(
         self,
         sample_images: tuple[np.ndarray, np.ndarray],
@@ -328,6 +414,11 @@ class TestBinaryOpsPolarsCV:
 
         np.testing.assert_allclose(actual, expected, atol=1)
 
+    @pytest.mark.parity(
+        ops=["multiply"],
+        against="NumPy saturating uint8 multiply (`np.clip` of uint16 product)",
+        tolerance="atol 1",
+    )
     def test_multiply_matches_reference(
         self,
         sample_images: tuple[np.ndarray, np.ndarray],
@@ -360,6 +451,11 @@ class TestBinaryOpsPolarsCV:
 
         np.testing.assert_allclose(actual, expected, atol=1)
 
+    @pytest.mark.parity(
+        ops=["blend"],
+        against="NumPy rounded normalized product `(a*b + 127) // 255`, u8",
+        tolerance="atol 1",
+    )
     def test_blend_matches_reference(
         self,
         sample_images: tuple[np.ndarray, np.ndarray],
@@ -393,6 +489,11 @@ class TestBinaryOpsPolarsCV:
 
         np.testing.assert_allclose(actual, expected, atol=1)
 
+    @pytest.mark.parity(
+        ops=["divide"],
+        against="NumPy true division into f32, IEEE inf/NaN at zero",
+        tolerance="rtol 1e-6, NaN equal; dtype f32",
+    )
     def test_divide_matches_reference(
         self,
         sample_images: tuple[np.ndarray, np.ndarray],
@@ -427,6 +528,11 @@ class TestBinaryOpsPolarsCV:
         assert actual.dtype == np.float32
         np.testing.assert_allclose(actual, expected, rtol=1e-6, equal_nan=True)
 
+    @pytest.mark.parity(
+        ops=["apply_mask", "grayscale"],
+        against="NumPy image times 0/1 mask, u8",
+        tolerance="atol 1",
+    )
     def test_apply_mask_matches_reference(
         self,
         sample_images: tuple[np.ndarray, np.ndarray],

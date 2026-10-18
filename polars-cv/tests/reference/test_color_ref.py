@@ -65,6 +65,11 @@ def _run_pipe(pipe: Pipeline, png_bytes: bytes) -> np.ndarray:
 class TestRgbBgr:
     """Reference tests for RGB ↔ BGR conversion."""
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="NumPy channel flip `rgb[:, :, ::-1]`",
+        tolerance="exact",
+    )
     def test_rgb_to_bgr(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify RGB to BGR matches NumPy channel flip."""
         expected = rgb_image[:, :, ::-1].copy()
@@ -76,6 +81,11 @@ class TestRgbBgr:
         actual = _run_pipe(pipe, rgb_png)
         np.testing.assert_array_equal(actual, expected)
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="Definition: RGB -> BGR -> RGB recovers the input",
+        tolerance="exact",
+    )
     def test_bgr_to_rgb_roundtrip(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify RGB → BGR → RGB round-trip recovers original."""
         pipe = (
@@ -87,6 +97,11 @@ class TestRgbBgr:
         actual = _run_pipe(pipe, rgb_png)
         np.testing.assert_array_equal(actual, rgb_image)
 
+    @pytest.mark.parity(
+        ops=["to_bgr"],
+        against="NumPy channel flip `rgb[:, :, ::-1]`",
+        tolerance="exact",
+    )
     def test_to_bgr_convenience(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify to_bgr() convenience method matches cvt_color."""
         pipe = Pipeline().source("image_bytes").to_bgr()
@@ -104,6 +119,11 @@ class TestRgbBgr:
 class TestRgbHsv:
     """Reference tests for RGB ↔ HSV conversion against OpenCV."""
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="OpenCV `cv2.cvtColor` BGR2HSV (u8, hue 0-180)",
+        tolerance="S, V atol 2; wrapped hue p99.9 diff <= 2",
+    )
     def test_rgb_to_hsv_vs_opencv(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify RGB to HSV matches OpenCV cv2.cvtColor.
 
@@ -130,6 +150,11 @@ class TestRgbHsv:
         h_diff_wrapped = np.minimum(h_diff, 180 - h_diff)
         assert np.percentile(h_diff_wrapped, 99.9) <= 2
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="Definition: RGB -> HSV -> RGB round-trip recovers the input",
+        tolerance="atol 8 levels",
+    )
     def test_hsv_roundtrip(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify RGB → HSV → RGB round-trip within tolerance.
 
@@ -146,6 +171,11 @@ class TestRgbHsv:
         actual = _run_pipe(pipe, rgb_png)
         np.testing.assert_allclose(actual, rgb_image, atol=8)
 
+    @pytest.mark.parity(
+        ops=["to_hsv", "convert_color"],
+        against="Definition: `to_hsv()` equals `convert_color(rgb, hsv)`",
+        tolerance="exact",
+    )
     def test_to_hsv_convenience(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify to_hsv() matches cvt_color("rgb", "hsv")."""
         pipe_a = Pipeline().source("image_bytes").to_hsv()
@@ -158,6 +188,11 @@ class TestRgbHsv:
         actual_b = _run_pipe(pipe_b, rgb_png)
         np.testing.assert_array_equal(actual_a, actual_b)
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="Hand-computed expected values: pure red is H=0, S=255, V=255",
+        tolerance="exact",
+    )
     def test_pure_red_hsv(self) -> None:
         """Verify pure red pixel converts to H=0, S=255, V=255."""
         img = np.array([[[255, 0, 0]]], dtype=np.uint8)
@@ -183,6 +218,11 @@ class TestRgbHsv:
 class TestRgbYcbcr:
     """Reference tests for RGB ↔ YCbCr conversion."""
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="Definition: RGB -> YCbCr -> RGB round-trip recovers the input",
+        tolerance="atol 3 levels",
+    )
     def test_ycbcr_roundtrip(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify RGB → YCbCr → RGB round-trip within ±3.
 
@@ -198,6 +238,11 @@ class TestRgbYcbcr:
         actual = _run_pipe(pipe, rgb_png)
         np.testing.assert_allclose(actual, rgb_image, atol=3)
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="Definition: BT.601 luma Y = 0.299 R + 0.587 G + 0.114 B",
+        tolerance="abs diff <= 1 level",
+    )
     def test_ycbcr_luma_formula(self) -> None:
         """Verify Y channel follows BT.601 luma formula."""
         img = np.array([[[100, 150, 200]]], dtype=np.uint8)
@@ -212,6 +257,11 @@ class TestRgbYcbcr:
         y_expected = 0.299 * 100 + 0.587 * 150 + 0.114 * 200
         assert abs(actual[0, 0, 0] - y_expected) <= 1
 
+    @pytest.mark.parity(
+        ops=["to_ycbcr", "convert_color"],
+        against="Definition: `to_ycbcr()` equals `convert_color(rgb, ycbcr)`",
+        tolerance="exact",
+    )
     def test_to_ycbcr_convenience(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify to_ycbcr() matches cvt_color("rgb", "ycbcr")."""
         pipe_a = Pipeline().source("image_bytes").to_ycbcr()
@@ -234,6 +284,11 @@ class TestRgbYcbcr:
 class TestRgbLab:
     """Reference tests for RGB ↔ CIE LAB conversion."""
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="Definition: RGB -> LAB -> RGB round-trip recovers the input (f32, 0-1 scale)",
+        tolerance="atol 2/255",
+    )
     def test_lab_roundtrip(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify RGB → LAB → RGB round-trip within ±2."""
         pipe = (
@@ -249,6 +304,11 @@ class TestRgbLab:
             actual, rgb_image.astype(np.float32) / 255.0, atol=2.0 / 255.0
         )
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="Definition: LAB output is f32",
+        tolerance="exact",
+    )
     def test_lab_output_is_float(self, rgb_png: bytes) -> None:
         """Verify LAB conversion produces f32 output."""
         pipe = (
@@ -262,6 +322,11 @@ class TestRgbLab:
         actual = numpy_from_struct(out_struct)
         assert actual.dtype == np.float32
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="Definition: LAB range, L in [0, 100], a and b within +-130",
+        tolerance="bounds L -1..101, a and b +-130",
+    )
     def test_lab_range(self, rgb_png: bytes) -> None:
         """Verify L is in [0, 100] and a/b are in reasonable range."""
         pipe = (
@@ -277,6 +342,11 @@ class TestRgbLab:
         assert actual[:, :, 2].min() >= -130.0  # b
         assert actual[:, :, 2].max() <= 130.0
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="Hand-computed expected values: pure white is L=100, a=0, b=0",
+        tolerance="abs diff < 1",
+    )
     def test_pure_white_lab(self) -> None:
         """Verify pure white = L=100, a=0, b=0."""
         img = np.array([[[255, 255, 255]]], dtype=np.uint8)
@@ -291,6 +361,11 @@ class TestRgbLab:
         assert abs(actual[0, 0, 1]) < 1.0
         assert abs(actual[0, 0, 2]) < 1.0
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="Hand-computed expected values: pure black is L=0, a=0, b=0",
+        tolerance="abs diff < 1",
+    )
     def test_pure_black_lab(self) -> None:
         """Verify pure black = L=0, a=0, b=0."""
         img = np.array([[[0, 0, 0]]], dtype=np.uint8)
@@ -305,6 +380,11 @@ class TestRgbLab:
         assert abs(actual[0, 0, 1]) < 1.0
         assert abs(actual[0, 0, 2]) < 1.0
 
+    @pytest.mark.parity(
+        ops=["to_lab", "convert_color"],
+        against="Definition: `to_lab()` equals `convert_color(rgb, lab)`",
+        tolerance="exact",
+    )
     def test_to_lab_convenience(self, rgb_png: bytes) -> None:
         """Verify to_lab() matches cvt_color("rgb", "lab")."""
         pipe_a = Pipeline().source("image_bytes").to_lab()
@@ -327,6 +407,11 @@ class TestRgbLab:
 class TestRgbGray:
     """Reference tests for RGB ↔ Grayscale via cvt_color."""
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="NumPy BT.601 gray `round(0.299 R + 0.587 G + 0.114 B)`",
+        tolerance="atol 1 level (fixed-point rounding)",
+    )
     def test_rgb_to_gray(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify RGB to grayscale matches BT.601 formula."""
         # BT.601: Y = 0.299*R + 0.587*G + 0.114*B
@@ -355,6 +440,11 @@ class TestRgbGray:
 class TestEdgeCases:
     """Edge cases for color conversion operations."""
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="Definition: RGB -> RGB is the identity",
+        tolerance="exact",
+    )
     def test_noop_conversion(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify RGB → RGB is identity."""
         pipe = (
@@ -365,6 +455,11 @@ class TestEdgeCases:
         actual = _run_pipe(pipe, rgb_png)
         np.testing.assert_array_equal(actual, rgb_image)
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="Hand-computed expected values: pure R, G, B give H=0, 60, 120 (S=V=255)",
+        tolerance="exact",
+    )
     def test_saturated_primaries_hsv(self) -> None:
         """Verify saturated primary colors convert correctly to HSV."""
         primaries = np.array([[[255, 0, 0], [0, 255, 0], [0, 0, 255]]], dtype=np.uint8)
@@ -391,6 +486,11 @@ class TestEdgeCases:
         assert actual[0, 2, 1] == 255
         assert actual[0, 2, 2] == 255
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="Hand-computed expected values: gray (128, 128, 128) has S=0",
+        tolerance="exact",
+    )
     def test_pure_gray_hsv(self) -> None:
         """Verify pure gray (128,128,128) has S=0 in HSV."""
         img = np.array([[[128, 128, 128]]], dtype=np.uint8)
@@ -403,6 +503,11 @@ class TestEdgeCases:
         actual = _run_pipe(pipe, png)
         assert actual[0, 0, 1] == 0  # Saturation = 0 for gray
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="Definition: an unknown colour space name raises `ValueError`",
+        tolerance="exact (raises)",
+    )
     def test_invalid_color_space(self) -> None:
         """Verify invalid color space name raises ValueError."""
         with pytest.raises(ValueError, match="unknown ColorSpace"):
@@ -410,6 +515,11 @@ class TestEdgeCases:
                 from_space="rgb", to_space="xyz"
             )
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="Hand-computed expected values: planned dtype after LAB is f32",
+        tolerance="exact",
+    )
     def test_pipeline_dtype_tracking_lab(self) -> None:
         """Verify pipeline tracks f32 dtype after LAB conversion."""
         pipe = (
@@ -419,6 +529,11 @@ class TestEdgeCases:
         )
         assert planned(pipe).dtype == "f32"
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="Hand-computed expected values: planned dtype after HSV is unchanged (auto)",
+        tolerance="exact",
+    )
     def test_pipeline_dtype_tracking_hsv(self) -> None:
         """Verify pipeline preserves u8 dtype for HSV conversion."""
         pipe = (
@@ -439,6 +554,11 @@ class TestEdgeCases:
 class TestCrossConversions:
     """Test conversions that route through intermediate color spaces."""
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="Definition: RGB -> BGR -> HSV equals RGB -> HSV",
+        tolerance="atol 2 levels",
+    )
     def test_bgr_to_hsv(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify BGR → HSV via intermediate RGB."""
         pipe_direct = (
@@ -456,6 +576,11 @@ class TestCrossConversions:
         actual_via_rgb = _run_pipe(pipe_via_rgb, rgb_png)
         np.testing.assert_allclose(actual_direct, actual_via_rgb, atol=2)
 
+    @pytest.mark.parity(
+        ops=["convert_color"],
+        against="Definition: RGB -> HSV -> YCbCr -> RGB recovers the input",
+        tolerance="atol 10 levels",
+    )
     def test_hsv_to_ycbcr(self, rgb_png: bytes) -> None:
         """Verify HSV → YCbCr round-trip through RGB.
 

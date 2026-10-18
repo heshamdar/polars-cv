@@ -103,6 +103,7 @@ nav:
       - Multi-Output: user-guide/composition/multi-output.md
       - Binary Operations: user-guide/composition/binary-ops.md
     - Drawing: user-guide/drawing.md
+    - Parity Report: user-guide/parity.md
   - API Reference:
     - Pipeline: api/pipeline.md
     - LazyPipelineExpr: api/lazy.md

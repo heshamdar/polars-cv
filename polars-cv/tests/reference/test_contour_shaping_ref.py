@@ -199,11 +199,21 @@ class TestOffset:
         ("join", "area"),
         [("miter", 16.0**2), ("bevel", 16.0**2 - 2 * 3.0**2)],
     )
+    @pytest.mark.parity(
+        ops=["offset", "area"],
+        against="Hand-computed expected values: area of a 10x10 square grown by 3, miter and bevel",
+        tolerance="pytest.approx rel 1e-6",
+    )
     def test_a_square_grows_by_its_closed_form(self, join: str, area: float) -> None:
         (grown,) = _shaped([_region(SQUARE)], "offset", distance=3.0, join=join)
         assert grown["is_closed"] is True
         assert _areas([grown]) == pytest.approx([area], rel=1e-6)
 
+    @pytest.mark.parity(
+        ops=["offset", "area"],
+        against="Definition: round-join area = square + 4 edge strips + pi r^2 (arcs inscribed)",
+        tolerance=f"exact - 2 pi r {ARC_TOLERANCE:.4f} <= area <= exact + 1e-6",
+    )
     def test_a_round_join_adds_quarter_discs(self) -> None:
         (grown,) = _shaped([_region(SQUARE)], "offset", distance=3.0)
         exact = 10.0**2 + 4 * 10.0 * 3.0 + math.pi * 3.0**2
@@ -213,16 +223,31 @@ class TestOffset:
         assert exact - 2 * math.pi * 3.0 * ARC_TOLERANCE <= area <= exact + 1e-6
 
     @pytest.mark.parametrize("join", ["round", "miter", "bevel"])
+    @pytest.mark.parity(
+        ops=["offset", "area"],
+        against="Hand-computed expected values: 10x10 square shrunk by 3 is a 4x4 square (area 16)",
+        tolerance="pytest.approx rel 1e-6",
+    )
     def test_a_square_shrinks_to_a_square_whatever_the_join(self, join: str) -> None:
         (shrunk,) = _shaped([_region(SQUARE)], "offset", distance=-3.0, join=join)
         assert _areas([shrunk]) == pytest.approx([4.0**2], rel=1e-6)
 
+    @pytest.mark.parity(
+        ops=["offset", "area"],
+        against="Hand-computed expected values: holed square grown by 2 (area 24^2 - 6^2, one hole)",
+        tolerance="pytest.approx rel 1e-6",
+    )
     def test_holes_shrink_as_the_exterior_grows(self) -> None:
         holed = _region(_rect(0, 0, 20, 20), [_rect(5, 5, 15, 15)])
         (grown,) = _shaped([holed], "offset", distance=2.0, join="miter")
         assert len(grown["holes"]) == 1
         assert _areas([grown]) == pytest.approx([24.0**2 - 6.0**2], rel=1e-6)
 
+    @pytest.mark.parity(
+        ops=["offset", "area"],
+        against="Hand-computed expected values: dumbbell shrunk by 1.5 splits into two 5x5 squares",
+        tolerance="pytest.approx rel 1e-6",
+    )
     def test_shrinking_splits_a_dumbbell(self) -> None:
         # Two 8x8 squares joined by a bar 2 high: shrinking by 1.5 cuts it.
         dumbbell = [
@@ -232,14 +257,29 @@ class TestOffset:
         parts = _shaped([_region(dumbbell)], "offset", distance=-1.5, join="miter")
         assert sorted(_areas(parts)) == pytest.approx([25.0, 25.0], rel=1e-6)
 
+    @pytest.mark.parity(
+        ops=["offset", "area"],
+        against="Hand-computed expected values: two squares grown by 1.5 merge into one 21x11 rectangle",
+        tolerance="pytest.approx rel 1e-6",
+    )
     def test_growing_merges_a_set_into_one_region(self) -> None:
         pair = [_region(_rect(0, 0, 8, 8)), _region(_rect(10, 0, 18, 8))]
         (merged,) = _shaped(pair, "offset", distance=1.5, join="miter")
         assert _areas([merged]) == pytest.approx([21.0 * 11.0], rel=1e-6)
 
+    @pytest.mark.parity(
+        ops=["offset"],
+        against="Hand-computed expected values: a square shrunk past its middle is empty",
+        tolerance="exact",
+    )
     def test_shrinking_past_the_middle_leaves_nothing(self) -> None:
         assert _shaped([_region(_rect(0, 0, 4, 4))], "offset", distance=-3.0) == []
 
+    @pytest.mark.parity(
+        ops=["offset", "union_all"],
+        against="Definition: offset by 0 equals `union_all`",
+        tolerance="exact",
+    )
     def test_zero_is_the_union(self) -> None:
         pair = [_region(_rect(0, 0, 8, 8)), _region(_rect(4, 4, 12, 12))]
         same = _shaped(pair, "offset", distance=0.0)
@@ -247,6 +287,11 @@ class TestOffset:
 
     @pytest.mark.parametrize("distance", [2.5, -1.5])
     @pytest.mark.parametrize("seed", range(3))
+    @pytest.mark.parity(
+        ops=["offset", "rasterize"],
+        against="Definition: round offset is {p: signed_distance(p, region) <= d}, NumPy/matplotlib oracle",
+        tolerance=f"per-pixel band, +-{ARC_TOLERANCE:.4f} px at the boundary",
+    )
     def test_a_round_offset_is_a_distance_band(
         self, distance: float, seed: int
     ) -> None:
@@ -257,17 +302,32 @@ class TestOffset:
         s = _signed_distance(_samples(w, h, n), region) - distance
         _assert_band(_mask(grown, w, h, supersample=n), s, n)
 
+    @pytest.mark.parity(
+        ops=["offset", "area"],
+        against="Hand-computed expected values: overlapping members shrink as one region (area 36)",
+        tolerance="pytest.approx rel 1e-6",
+    )
     def test_offset_reads_the_set_as_its_union(self) -> None:
         """Overlapping members shrink as one region, not each on its own."""
         pair = [_region(_rect(0, 0, 6, 10)), _region(_rect(4, 0, 10, 10))]
         (shrunk,) = _shaped(pair, "offset", distance=-2.0, join="miter")
         assert _areas([shrunk]) == pytest.approx([6.0 * 6.0], rel=1e-6)
 
+    @pytest.mark.parity(
+        ops=["offset"],
+        against="Definition: an open contour has no region and is refused",
+        tolerance="exact (raises)",
+    )
     def test_a_line_is_refused(self) -> None:
         with pytest.raises(pl.exceptions.ComputeError, match="open contour.*no region"):
             _shaped([_line([(0, 0), (5, 5)])], "offset", distance=1.0)
 
     @pytest.mark.parametrize("distance", [math.nan, math.inf, -math.inf])
+    @pytest.mark.parity(
+        ops=["offset"],
+        against="Definition: a non-finite per-row distance is refused with its row",
+        tolerance="exact (raises)",
+    )
     def test_a_non_finite_distance_is_refused(self, distance: float) -> None:
         _per_row_error(
             [_region(SQUARE)],
@@ -276,6 +336,11 @@ class TestOffset:
             "distance must be finite",
         )
 
+    @pytest.mark.parity(
+        ops=["offset", "area"],
+        against="Hand-computed expected values: per-row distance +1 / -1 on a 10x10 square (areas 144, 64)",
+        tolerance="pytest.approx rel 1e-6",
+    )
     def test_a_per_row_distance(self) -> None:
         df = pl.DataFrame(
             {"c": [[_region(SQUARE)], [_region(SQUARE)]], "d": [1.0, -1.0]},
@@ -293,6 +358,11 @@ class TestOffset:
 
 class TestUnionAll:
     @pytest.mark.parametrize("seed", range(5))
+    @pytest.mark.parity(
+        ops=["union_all", "rasterize", "area"],
+        against="Definition: rasterizing `union_all` equals rasterizing the set",
+        tolerance="masks exact; areas pytest.approx default (rel 1e-6)",
+    )
     def test_the_union_paints_what_the_set_paints(self, seed: int) -> None:
         rng = np.random.default_rng(seed)
         rects = []
@@ -307,12 +377,22 @@ class TestUnionAll:
         # Disjoint members: their areas add up to the painted pixels.
         assert sum(_areas(union)) == pytest.approx(int((expected > 0).sum()))
 
+    @pytest.mark.parity(
+        ops=["union_all", "area"],
+        against="Hand-computed expected values: ring plus island stays two regions (areas 16, 256)",
+        tolerance="pytest.approx default (rel 1e-6)",
+    )
     def test_a_ring_with_an_island_stays_two_regions(self) -> None:
         ring = _region(_rect(0, 0, 20, 20), [_rect(4, 4, 16, 16)])
         island = _region(_rect(8, 8, 12, 12))
         union = _shaped([ring, island], "union_all")
         assert sorted(_areas(union)) == pytest.approx([16.0, 400.0 - 144.0])
 
+    @pytest.mark.parity(
+        ops=["union_all", "area"],
+        against="Hand-computed expected values: ring plus plug is one hole-free region (area 400)",
+        tolerance="pytest.approx default (rel 1e-6)",
+    )
     def test_a_member_filling_a_hole_closes_it(self) -> None:
         ring = _region(_rect(0, 0, 20, 20), [_rect(4, 4, 16, 16)])
         plug = _region(_rect(3, 3, 17, 17))
@@ -320,9 +400,19 @@ class TestUnionAll:
         assert whole["holes"] == []
         assert _areas([whole]) == pytest.approx([400.0])
 
+    @pytest.mark.parity(
+        ops=["union_all"],
+        against="Definition: the union of an empty set is empty",
+        tolerance="exact",
+    )
     def test_an_empty_set_is_empty(self) -> None:
         assert _shaped([], "union_all") == []
 
+    @pytest.mark.parity(
+        ops=["union_all"],
+        against="Definition: an open contour has no region and is refused",
+        tolerance="exact (raises)",
+    )
     def test_a_line_is_refused(self) -> None:
         with pytest.raises(pl.exceptions.ComputeError, match="open contour.*no region"):
             _shaped([_region(SQUARE), _line([(0, 0), (5, 5)])], "union_all")
@@ -394,15 +484,30 @@ class TestSmooth:
         ],
         ids=["line", "loop-line", "holed-region", "triangle"],
     )
+    @pytest.mark.parity(
+        ops=["smooth"],
+        against="Python: Chaikin corner cutting (reference in the test)",
+        tolerance="atol 1e-9",
+    )
     def test_matches_chaikin(self, contour: dict, iterations: int) -> None:
         (got,) = _shaped([contour], "smooth", iterations=iterations)
         _assert_same_contour(got, _chaikin(contour, iterations))
 
+    @pytest.mark.parity(
+        ops=["smooth"],
+        against="Python: Chaikin corner cutting (reference in the test), one pass",
+        tolerance="atol 1e-9",
+    )
     def test_the_default_is_one_pass(self) -> None:
         (got,) = _shaped([_line(ZIGZAG)], "smooth")
         _assert_same_contour(got, _chaikin(_line(ZIGZAG), 1))
 
     @pytest.mark.parametrize("iterations", [40, 2**32 - 1])
+    @pytest.mark.parity(
+        ops=["smooth", "contour.smooth"],
+        against="Definition: passes past the point budget are refused before running",
+        tolerance="exact (raises)",
+    )
     def test_passes_past_the_point_budget_are_refused_before_running(
         self, iterations: int
     ) -> None:
@@ -460,6 +565,11 @@ class TestDensify:
         ],
         ids=["line", "holed-region", "triangle"],
     )
+    @pytest.mark.parity(
+        ops=["densify"],
+        against="Python: split of each edge into ceil(L / max) equal parts",
+        tolerance="atol 1e-9; every edge <= max + 1e-9",
+    )
     def test_matches_the_equal_split(self, contour: dict, max_len: float) -> None:
         (got,) = _shaped([contour], "densify", max_segment_length=max_len)
         want = _densified(contour, max_len)
@@ -472,10 +582,20 @@ class TestDensify:
             assert np.hypot(*np.diff(p, axis=0).T).max() <= max_len + 1e-9
 
     @pytest.mark.parametrize("max_len", [0.0, -1.0])
+    @pytest.mark.parity(
+        ops=["densify"],
+        against="Definition: a non-positive or non-finite max length is refused at build",
+        tolerance="exact (raises)",
+    )
     def test_a_length_no_row_can_use_is_refused_at_build(self, max_len: float) -> None:
         with pytest.raises(ValueError, match="max_segment_length must be a finite"):
             Pipeline().source("contour").densify(max_len)
 
+    @pytest.mark.parity(
+        ops=["densify", "contour.densify"],
+        against="Definition: a length past the point budget is refused before running",
+        tolerance="exact (raises)",
+    )
     def test_a_length_past_the_point_budget_is_refused_before_running(self) -> None:
         """1e-9 splits a 40-unit outline into ~4e10 points: refused by name."""
         match = r"Densify: max_segment_length=0\.000000001 would make about .* points"
@@ -487,6 +607,11 @@ class TestDensify:
             )
 
     @pytest.mark.parametrize("max_len", [0.0, math.nan, math.inf])
+    @pytest.mark.parity(
+        ops=["densify"],
+        against="Definition: a bad per-row length is refused with its row",
+        tolerance="exact (raises)",
+    )
     def test_a_per_row_length_is_checked_with_its_row(self, max_len: float) -> None:
         _per_row_error(
             [_line(ZIGZAG)],
@@ -521,6 +646,11 @@ class TestStroke:
     @pytest.mark.parametrize("width", [1.0, 2.5, 4.0])
     @pytest.mark.parametrize("n", [1, 3])
     @pytest.mark.parametrize("seed", range(3))
+    @pytest.mark.parity(
+        ops=["stroke", "rasterize"],
+        against="Definition: round stroke is {p: distance(p, path) <= width/2}, NumPy distance oracle",
+        tolerance=f"per-pixel band, +-{ARC_TOLERANCE:.4f} px at the boundary",
+    )
     def test_a_round_stroke_is_a_distance_band(
         self, width: float, n: int, seed: int
     ) -> None:
@@ -531,6 +661,11 @@ class TestStroke:
         got = _stroked([_line(path)], w, h, width=width, supersample=n)
         _assert_band(got, s, n)
 
+    @pytest.mark.parity(
+        ops=["stroke", "rasterize"],
+        against="Definition: round stroke is {p: distance(p, path) <= width/2}, NumPy distance oracle",
+        tolerance=f"per-pixel band, +-{ARC_TOLERANCE:.4f} px at the boundary",
+    )
     def test_a_loop_line_is_a_band_round_its_ring(self) -> None:
         loop = [*SQUARE, SQUARE[0]]
         s = _segment_distance(_samples(20, 20, 2), np.array(loop, float), False) - 1.5
@@ -538,6 +673,11 @@ class TestStroke:
 
     @pytest.mark.parametrize("cap", ["butt", "round", "square"])
     @pytest.mark.parametrize("join", ["miter", "bevel"])
+    @pytest.mark.parity(
+        ops=["stroke", "rasterize"],
+        against="Definition: a closed loop line strokes alike from any start point and any cap",
+        tolerance="exact",
+    )
     def test_a_loop_line_is_joined_at_its_start(self, cap: str, join: str) -> None:
         """A line that returns to its first point has no ends: its start is a
         corner like the others, turned by ``join``, and ``cap`` draws nothing
@@ -554,12 +694,22 @@ class TestStroke:
             got = _stroked([_line(loop)], 20, 20, width=4.0, cap=cap, join=join)
             np.testing.assert_array_equal(got, want, err_msg=f"starting at corner {k}")
 
+    @pytest.mark.parity(
+        ops=["stroke", "rasterize"],
+        against="Definition: a one-point line with round caps is a disc of radius width/2",
+        tolerance=f"per-pixel band, +-{ARC_TOLERANCE:.4f} px at the boundary",
+    )
     def test_a_single_point_with_round_caps_is_a_disc(self) -> None:
         s = np.hypot(*(_samples(12, 12, 2) - (6.2, 5.9)).T) - 2.5
         got = _stroked([_line([(6.2, 5.9)])], 12, 12, width=5.0, supersample=2)
         _assert_band(got, s, 2)
 
     @pytest.mark.parametrize(("cap", "x0", "x1"), [("butt", 3, 13), ("square", 2, 14)])
+    @pytest.mark.parity(
+        ops=["stroke", "rasterize"],
+        against="Hand-computed expected values: butt and square caps on a grid-aligned segment (mask)",
+        tolerance="exact",
+    )
     def test_flat_caps_on_the_grid_are_exact(self, cap: str, x0: int, x1: int) -> None:
         got = _stroked([_line([(3, 6), (13, 6)])], 16, 10, width=2.0, cap=cap)
         want = np.zeros((10, 16), np.uint8)
@@ -575,6 +725,11 @@ class TestStroke:
         ("join", "area"),
         [("miter", 80.0), ("round", 76.0 + math.pi), ("bevel", 78.0)],
     )
+    @pytest.mark.parity(
+        ops=["stroke", "rasterize"],
+        against="Hand-computed expected values: area of an L stroke per join (miter 80, round 76+pi, bevel 78)",
+        tolerance="abs 0.25 px area, supersample 16",
+    )
     def test_joins_fill_their_closed_form(self, join: str, area: float) -> None:
         got = _stroked(
             [_line(self.L_PATH)], 20, 20,
@@ -582,6 +737,11 @@ class TestStroke:
         )  # fmt: skip
         assert got.sum() / 255 == pytest.approx(area, abs=0.25)
 
+    @pytest.mark.parity(
+        ops=["stroke", "rasterize"],
+        against="Hand-computed expected values: mask of a grid-aligned mitered L stroke",
+        tolerance="exact",
+    )
     def test_a_miter_join_on_the_grid_is_exact(self) -> None:
         got = _stroked(
             [_line(self.L_PATH)], 20, 20, width=4.0, cap="butt", join="miter"
@@ -591,6 +751,11 @@ class TestStroke:
         want[4:16, 12:16] = 255
         np.testing.assert_array_equal(got, want)
 
+    @pytest.mark.parity(
+        ops=["stroke", "rasterize"],
+        against="Definition: a region strokes as a band about each ring, no caps",
+        tolerance=f"per-pixel band, +-{ARC_TOLERANCE:.4f} px at the boundary",
+    )
     def test_a_regions_rings_are_stroked_as_closed_paths(self) -> None:
         """A region is read as its outline: a band about each ring, exterior
         and hole alike, with no cap anywhere (a ring has no ends)."""
@@ -608,6 +773,11 @@ class TestStroke:
         _assert_band(_stroked([region], 20, 20, width=2.0, supersample=n), s, n)
 
     @pytest.mark.parametrize("join", ["round", "miter", "bevel"])
+    @pytest.mark.parity(
+        ops=["stroke", "boundary", "rasterize"],
+        against="Definition: stroking a region equals stroking its `boundary()` lines",
+        tolerance="exact",
+    )
     def test_a_region_strokes_as_its_boundary(self, join: str) -> None:
         """``boundary()`` draws each ring as a line back to its start, which
         strokes as a closed path: the region's own stroke."""
@@ -624,6 +794,11 @@ class TestStroke:
         got = _stroked([region], 20, 20, width=1.5, join=join, supersample=4)
         np.testing.assert_array_equal(got, want[:, :, 0])
 
+    @pytest.mark.parity(
+        ops=["stroke", "rasterize"],
+        against="Definition: a mixed set strokes as the union (max) of its members' strokes",
+        tolerance="exact",
+    )
     def test_a_mixed_set_strokes_every_member_as_one_union(self) -> None:
         region = _region(_rect(2, 2, 9, 9))
         line = _line([(5, 12), (17, 3)])
@@ -636,6 +811,11 @@ class TestStroke:
             ),
         )
 
+    @pytest.mark.parity(
+        ops=["stroke"],
+        against="Definition: crossing lines stroke to one closed region",
+        tolerance="exact",
+    )
     def test_the_result_is_disjoint_regions(self) -> None:
         """Two crossing lines stroke to one region: the strokes' union."""
         cross = [_line([(2, 2), (18, 18)]), _line([(2, 18), (18, 2)])]
@@ -643,22 +823,42 @@ class TestStroke:
         assert len(regions) == 1
         assert all(r["is_closed"] for r in regions)
 
+    @pytest.mark.parity(
+        ops=["stroke", "rasterize"],
+        against="Definition: default stroke is a 1 px round line (distance <= 0.5)",
+        tolerance=f"per-pixel band, +-{ARC_TOLERANCE:.4f} px at the boundary",
+    )
     def test_the_default_draws_a_one_pixel_round_line(self) -> None:
         path = np.array([(2.3, 3.1), (17.6, 11.4)])
         s = _segment_distance(_samples(20, 16, 1), path, closed=False) - 0.5
         _assert_band(_stroked([_line(path)], 20, 16), s, 1)
 
+    @pytest.mark.parity(
+        ops=["rasterize"],
+        against="Definition: rasterize refuses a line and names `stroke()`",
+        tolerance="exact (raises)",
+    )
     def test_rasterize_refuses_a_line_naming_stroke(self) -> None:
         """A line has no region to fill: ``rasterize`` does not guess a width."""
         with pytest.raises(pl.exceptions.ComputeError, match=r"stroke\(\)"):
             _mask([_line(ZIGZAG)], 10, 10)
 
     @pytest.mark.parametrize("width", [0.0, -1.0])
+    @pytest.mark.parity(
+        ops=["stroke"],
+        against="Definition: a non-positive or non-finite width is refused at build",
+        tolerance="exact (raises)",
+    )
     def test_a_width_no_row_can_use_is_refused_at_build(self, width: float) -> None:
         with pytest.raises(ValueError, match="width must be a finite"):
             Pipeline().source("contour").stroke(width=width)
 
     @pytest.mark.parametrize("width", [-2.0, math.nan, math.inf])
+    @pytest.mark.parity(
+        ops=["stroke"],
+        against="Definition: a bad per-row width is refused with its row",
+        tolerance="exact (raises)",
+    )
     def test_a_per_row_width_is_checked_with_its_row(self, width: float) -> None:
         _per_row_error(
             [_line(ZIGZAG)],
@@ -682,6 +882,22 @@ class TestStroke:
         ("densify", {"max_segment_length": 1.5}),
         ("stroke", {"width": 2.0, "cap": "square", "join": "bevel"}),
     ],
+)
+@pytest.mark.parity(
+    ops=[
+        "offset",
+        "union_all",
+        "smooth",
+        "densify",
+        "stroke",
+        "contour.offset",
+        "contour.union_all",
+        "contour.smooth",
+        "contour.densify",
+        "contour.stroke",
+    ],
+    against="Definition: each `.contour` accessor equals its pipeline op",
+    tolerance="exact",
 )
 def test_each_accessor_is_its_pipeline_op(op: str, kwargs: dict) -> None:
     regions = [
@@ -725,15 +941,39 @@ SHAPING = {
 }
 
 
-@pytest.mark.parametrize("shape", sorted(DEGENERATE))
-@pytest.mark.parametrize("op", sorted(SHAPING))
+@pytest.mark.parametrize(
+    ("op", "shape"),
+    [
+        (op, shape)
+        for shape in sorted(DEGENERATE)
+        for op in sorted(SHAPING)
+        # A line is refused by every region op, which is tested elsewhere.
+        if not (
+            DEGENERATE[shape]["is_closed"] is False and op in ("offset", "union_all")
+        )
+    ],
+)
+@pytest.mark.parity(
+    ops=[
+        "offset",
+        "union_all",
+        "smooth",
+        "densify",
+        "stroke",
+        "contour.offset",
+        "contour.union_all",
+        "contour.smooth",
+        "contour.densify",
+        "contour.stroke",
+    ],
+    against="Definition: a degenerate ring gives a contour set or a named refusal, never a panic",
+    tolerance="no panic (any other ComputeError allowed)",
+)
 def test_a_degenerate_ring_never_panics(op: str, shape: str) -> None:
     """A ring of fewer than three points is accepted by every reader; a
     shaping op on it gives a contour set or the op's own refusal, on both
     surfaces. (``stroke`` panicked inside ``i_overlay`` on an empty ring.)"""
     contour = DEGENERATE[shape]
-    if contour["is_closed"] is False and op in ("offset", "union_all"):
-        pytest.skip("a line is refused by every region op, tested elsewhere")
     kwargs = SHAPING[op]
     df = _frame([contour])
     pipe = getattr(Pipeline().source("contour"), op)(**kwargs)
@@ -747,6 +987,11 @@ def test_a_degenerate_ring_never_panics(op: str, shape: str) -> None:
             assert "panicked" not in str(e), e
 
 
+@pytest.mark.parity(
+    ops=["stroke"],
+    against="Hand-computed expected values: an edge-less ring strokes to nothing; a one-point line to a dot",
+    tolerance="exact",
+)
 def test_a_ring_without_an_edge_strokes_to_nothing_a_point_line_to_a_dot() -> None:
     """A closed path has no ends to cap, so with no edge it covers nothing;
     a one-point open line is its round caps, a dot."""
@@ -770,6 +1015,11 @@ def _square_distance(x: float, y: float, x0: float, x1: float) -> float:
 
 
 @pytest.mark.parametrize("distance", [3.0, 20.0, 31.0, 50.0, 200.0, 1000.0])
+@pytest.mark.parity(
+    ops=["offset"],
+    against="Definition: round-offset edges stay within the documented arc bound of distance d",
+    tolerance="max gap <= max(1/64, r (1 - cos(0.01 pi))) + 1e-9",
+)
 def test_a_round_offset_keeps_its_documented_arc_bound(distance: float) -> None:
     """Every edge of a round offset of the square [0, 10]^2 lies between the
     true boundary (distance ``d``) and ``d`` less the documented bound: its
@@ -787,6 +1037,11 @@ def test_a_round_offset_keeps_its_documented_arc_bound(distance: float) -> None:
 
 
 @pytest.mark.parametrize("width", [2.0, 64.0, 400.0])
+@pytest.mark.parity(
+    ops=["stroke"],
+    against="Definition: round-cap edges stay within the documented arc bound of radius r",
+    tolerance="max gap <= max(1/64, r (1 - cos(0.01 pi))) + 1e-9",
+)
 def test_a_round_cap_keeps_its_documented_arc_bound(width: float) -> None:
     (band,) = _shaped([_line([(0, 0), (10, 0)])], "stroke", width=width)
     r = width / 2
@@ -809,6 +1064,11 @@ _MANY = [_region(_rect(x, 0, x + 10, 10)) for x in range(0, 128 * 12, 12)]
         ("smooth", {"iterations": 15}, "15 passes"),
         ("densify", {"max_segment_length": 0.001}, "max_segment_length=0.001"),
     ],
+)
+@pytest.mark.parity(
+    ops=["smooth", "densify", "contour.smooth", "contour.densify"],
+    against="Definition: the point budget applies to the whole row, not per member",
+    tolerance="exact (raises)",
 )
 def test_the_point_budget_holds_over_the_whole_row(op, kwargs, asked) -> None:
     """The budget is the row's: 128 squares at 2^17 or 40 000 points each are

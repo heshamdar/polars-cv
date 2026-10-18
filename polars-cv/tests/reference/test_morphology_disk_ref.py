@@ -91,6 +91,11 @@ def _image(dtype, shape=(23, 31), seed=94) -> np.ndarray:
 @pytest.mark.parametrize(
     ("ksize", "iterations"), [(1, 1), (3, 1), (5, 1), (7, 2), (9, 1)]
 )
+@pytest.mark.parity(
+    ops=["erode", "dilate"],
+    against="NumPy sliding window `np.min`/`np.max` over the disk, edges replicated",
+    tolerance="exact",
+)
 def test_disk_matches_the_masked_window(dtype, op, ksize, iterations) -> None:
     image = _image(dtype)
     got = _run(
@@ -101,6 +106,11 @@ def test_disk_matches_the_masked_window(dtype, op, ksize, iterations) -> None:
 
 
 @pytest.mark.parametrize("ksize", [3, 5, 7, 11])
+@pytest.mark.parity(
+    ops=["erode", "dilate"],
+    against="SciPy `scipy.ndimage.grey_erosion`/`grey_dilation`, disk footprint, nearest",
+    tolerance="exact",
+)
 def test_disk_matches_scipy(ksize: int) -> None:
     image = _image(np.uint8, (40, 37), seed=ksize)
     foot = _disk(ksize // 2)
@@ -118,6 +128,11 @@ def test_disk_matches_scipy(ksize: int) -> None:
 
 @pytest.mark.parametrize("density", [0.02, 0.2, 0.6, 0.97])
 @pytest.mark.parametrize("ksize", [3, 5, 9, 15])
+@pytest.mark.parity(
+    ops=["erode", "dilate"],
+    against="SciPy `scipy.ndimage.distance_transform_edt` thresholded at the disk radius",
+    tolerance="exact",
+)
 def test_disk_on_a_mask_is_the_distance_transform_thresholded(density, ksize) -> None:
     rng = np.random.default_rng(int(density * 100) + ksize)
     mask = (rng.random((29, 34)) < density).astype(np.uint8) * 255
@@ -132,6 +147,11 @@ def test_disk_on_a_mask_is_the_distance_transform_thresholded(density, ksize) ->
         np.testing.assert_array_equal(eroded != 0, to_unset > r)
 
 
+@pytest.mark.parity(
+    ops=["erode"],
+    against="NumPy sliding window `np.min` over the disk (NaN propagates)",
+    tolerance="exact (NaN mask)",
+)
 def test_disk_nan_is_the_window_result() -> None:
     image = _image(np.float32, (9, 9))
     image[4, 4] = np.nan
@@ -143,6 +163,11 @@ def test_disk_nan_is_the_window_result() -> None:
 
 @pytest.mark.parametrize(
     "dtype", [np.uint8, np.int16, np.float64], ids=lambda d: np.dtype(d).name
+)
+@pytest.mark.parity(
+    ops=["morphology_gradient", "morphology_open", "morphology_close"],
+    against="NumPy disk window erode/dilate, composed per the definition of each op",
+    tolerance="exact",
 )
 def test_gradient_open_and_close_take_the_disk(dtype) -> None:
     image = _image(dtype)
@@ -169,6 +194,11 @@ def test_gradient_open_and_close_take_the_disk(dtype) -> None:
     )
 
 
+@pytest.mark.parity(
+    ops=["erode", "dilate", "morphology_gradient"],
+    against='Definition: `footprint="square"` is the default footprint',
+    tolerance="exact",
+)
 def test_square_is_the_default_and_unchanged() -> None:
     image = _image(np.uint8)
     for op in ("erode", "dilate", "morphology_gradient"):
@@ -179,6 +209,11 @@ def test_square_is_the_default_and_unchanged() -> None:
         np.testing.assert_array_equal(default, square, err_msg=op)
 
 
+@pytest.mark.parity(
+    ops=["erode"],
+    against="Definition: a footprint other than disk or square is refused",
+    tolerance="exact (raises)",
+)
 def test_an_unknown_footprint_is_refused() -> None:
     with pytest.raises(Exception, match="footprint|disk|square"):
         Pipeline().source("image_bytes").grayscale().erode(ksize=3, footprint="cross")

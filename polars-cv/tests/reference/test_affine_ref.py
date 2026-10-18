@@ -45,6 +45,11 @@ def _run_affine_pipeline(
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["warp_affine"],
+    against="Definition: identity matrix returns the input image unchanged",
+    tolerance="exact",
+)
 class TestAffineIdentity:
     """Tests that identity affine transform preserves the image."""
 
@@ -68,6 +73,11 @@ class TestAffineIdentity:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["warp_affine"],
+    against="OpenCV `cv2.warpAffine`, bilinear, u8 RGB, translation (50, 30)",
+    tolerance="atol 2 levels",
+)
 class TestAffineTranslation:
     """Tests for pure translation via affine transform."""
 
@@ -107,6 +117,11 @@ class TestAffineTranslation:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["warp_affine"],
+    against="OpenCV `cv2.getRotationMatrix2D` + `cv2.warpAffine`, 90 degrees, bilinear",
+    tolerance="atol 2 levels",
+)
 class TestAffineRotation:
     """Tests for rotation via affine transform."""
 
@@ -147,6 +162,11 @@ class TestAffineRotation:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["warp_affine"],
+    against="OpenCV `cv2.warpAffine`, bilinear, u8 RGB, 2x scale, random 50x50",
+    tolerance="atol 2 levels",
+)
 class TestAffineScale:
     """Tests for scaling via affine transform."""
 
@@ -184,6 +204,11 @@ class TestAffineScale:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["shear"],
+    against="OpenCV `cv2.warpAffine`, bilinear, u8 RGB, x-shear 0.3, random 100x100",
+    tolerance="atol 5 levels",
+)
 class TestAffineShear:
     """Tests for shear via affine transform."""
 
@@ -216,6 +241,11 @@ class TestAffineShear:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["warp_affine"],
+    against="Definition: nearest and bilinear interpolation give different output under rotation",
+    tolerance="not equal (outputs must differ)",
+)
 class TestAffineInterpolation:
     """Tests for interpolation modes."""
 
@@ -257,6 +287,11 @@ class TestAffineInterpolation:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["warp_affine"],
+    against="Definition: out-of-frame pixels take `border_value`",
+    tolerance="exact (corner pixel == 128)",
+)
 class TestAffineBorderValue:
     """Tests for border value handling."""
 
@@ -287,6 +322,11 @@ class TestAffineBorderValue:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["warp_affine"],
+    against="Definition: identity warp leaves each channel of a mixed-value RGB image intact",
+    tolerance="exact",
+)
 class TestAffineMultiChannel:
     """Tests for multi-channel handling."""
 
@@ -317,6 +357,11 @@ class TestAffineMultiChannel:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["rotate_and_scale"],
+    against="OpenCV `cv2.getRotationMatrix2D` + `cv2.warpAffine`, 30 degrees, 1.5x, bilinear",
+    tolerance="atol 7 levels",
+)
 class TestRotateAndScaleConvenience:
     """Tests for the rotate_and_scale convenience method."""
 

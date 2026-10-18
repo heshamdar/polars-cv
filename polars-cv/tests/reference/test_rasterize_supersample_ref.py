@@ -101,6 +101,11 @@ def _clearance(contours, h, n) -> float:
 
 @pytest.mark.parametrize("n", [1, 2, 3, 4, 8])
 @pytest.mark.parametrize("seed", range(4))
+@pytest.mark.parity(
+    ops=["rasterize"],
+    against="matplotlib `Path.contains_points` at each n x n sub-pixel centre, holes subtracted",
+    tolerance="exact (u8 mask, n = 1..8)",
+)
 def test_coverage_matches_matplotlib_sampling(n: int, seed: int) -> None:
     rng = np.random.default_rng(seed)
     w, h = 37, 29
@@ -117,6 +122,11 @@ def test_coverage_matches_matplotlib_sampling(n: int, seed: int) -> None:
     )
 
 
+@pytest.mark.parity(
+    ops=["rasterize"],
+    against="Definition: supersample=1 equals the default centre rule",
+    tolerance="exact",
+)
 def test_one_sample_is_the_centre_rule_byte_for_byte() -> None:
     rng = np.random.default_rng(7)
     contours = [_contour(_random_polygon(rng, 15.5, 15.5, 12.0))]
@@ -125,6 +135,11 @@ def test_one_sample_is_the_centre_rule_byte_for_byte() -> None:
     )
 
 
+@pytest.mark.parity(
+    ops=["rasterize"],
+    against="Hand-computed expected values: edge at x = 2.25 / 5.75 covers 3/4 of a pixel (191)",
+    tolerance="exact",
+)
 def test_an_axis_aligned_edge_covers_its_exact_fraction() -> None:
     # Left edge at x = 2.25, right at 5.75, rows 1 to 3 whole.
     rect = _contour([(2.25, 1.0), (5.75, 1.0), (5.75, 3.0), (2.25, 3.0)])
@@ -134,6 +149,11 @@ def test_an_axis_aligned_edge_covers_its_exact_fraction() -> None:
     np.testing.assert_array_equal(got, np.array([[0] * 8, row, row, [0] * 8], np.uint8))
 
 
+@pytest.mark.parity(
+    ops=["rasterize"],
+    against="Hand-computed expected values: fill 0 on background 200 with half-covered pixels (100)",
+    tolerance="exact",
+)
 def test_inverted_values_paint_the_same_coverage() -> None:
     rect = _contour([(1.5, 0.0), (3.0, 0.0), (3.0, 1.0), (1.5, 1.0)])
     got = _run([rect], 4, 1, supersample=2, fill_value=0, background=200)
@@ -141,11 +161,21 @@ def test_inverted_values_paint_the_same_coverage() -> None:
 
 
 @pytest.mark.parametrize("n", [0, 17])
+@pytest.mark.parity(
+    ops=["rasterize"],
+    against="Definition: supersample outside 1..16 is refused at build",
+    tolerance="exact (raises ValueError)",
+)
 def test_a_sample_count_no_row_can_use_is_refused(n: int) -> None:
     with pytest.raises(ValueError, match=r"supersample.*between 1 and 16"):
         Pipeline().source("contour").rasterize(width=4, height=4, supersample=n)
 
 
+@pytest.mark.parity(
+    ops=["rasterize"],
+    against="Hand-computed expected values: per-row supersample 1 and 2 give 255 and 128 for a half-covered pixel",
+    tolerance="exact",
+)
 def test_a_per_row_sample_count() -> None:
     rect = _contour([(0.5, 0.0), (2.0, 0.0), (2.0, 1.0), (0.5, 1.0)])
     df = pl.DataFrame(

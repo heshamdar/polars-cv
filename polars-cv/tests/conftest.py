@@ -45,6 +45,72 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 
+# --- Parity declarations (tests/_parity.py) ---------------------------------
+
+#: Set when ``--parity-report`` is given, on the process that receives every
+#: report: the plain session, or the xdist controller (workers only tag items).
+_parity_recorder = None
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    from tests import _parity
+
+    _parity.addoption(parser)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    global _parity_recorder
+    from tests import _parity
+
+    path = config.getoption("--parity-report")
+    if path and not hasattr(config, "workerinput"):
+        _parity_recorder = _parity.Recorder(Path(path).resolve())
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
+    from tests import _parity
+
+    _parity.tag(items)
+    if _parity_recorder is not None:
+        _parity_recorder.collection(items)
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_setup(item: pytest.Item):  # noqa: ANN201
+    from tests import _parity
+
+    if _parity.is_declared(item):
+        item.stash[_REACH] = reach = _parity.Reach()
+        reach.start()
+    return (yield)
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item: pytest.Item):  # noqa: ANN201
+    from tests import _parity
+
+    result = yield
+    reach = item.stash.get(_REACH, None)
+    if reach is not None:
+        reach.stop()
+        if not reach.reached:
+            raise AssertionError(_parity.unreached(item))
+    return result
+
+
+_REACH = pytest.StashKey["object"]()
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    if _parity_recorder is not None:
+        _parity_recorder.report(report)
+
+
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    if _parity_recorder is not None:
+        _parity_recorder.write()
+
+
 def _plugin_available() -> bool:
     """Check if the compiled plugin is available."""
     lib_path = Path(__file__).parent.parent / "python" / "polars_cv"

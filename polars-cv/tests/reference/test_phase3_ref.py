@@ -93,6 +93,11 @@ def low_contrast_png(low_contrast_image: np.ndarray) -> bytes:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["grayscale", "convolve2d"],
+    against="Definition: a 3x3 identity kernel reproduces the input (as f32)",
+    tolerance="atol 0.5",
+)
 class TestConvolveIdentity:
     """Identity kernel should return input unchanged."""
 
@@ -119,6 +124,11 @@ class TestConvolveIdentity:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["grayscale", "convolve2d"],
+    against="NumPy mean of the 3x3 neighbourhood at one interior pixel, f32 output",
+    tolerance="atol 0.5 (one pixel)",
+)
 class TestConvolveBoxBlur:
     """Box blur kernel should produce uniform averaging."""
 
@@ -150,6 +160,11 @@ class TestConvolveBoxBlur:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["grayscale", "sobel"],
+    against="OpenCV `cv2.Sobel`, CV_32F, x and y, interior only (2 px margin)",
+    tolerance="atol 1.0",
+)
 class TestSobelRef:
     """Compare Sobel operator against OpenCV reference."""
 
@@ -197,6 +212,11 @@ class TestSobelRef:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["grayscale", "laplacian"],
+    against="OpenCV `cv2.Laplacian`, ksize=1, CV_32F, interior only (1 px margin)",
+    tolerance="atol 1.0",
+)
 class TestLaplacianRef:
     """Compare Laplacian operator against OpenCV reference."""
 
@@ -230,6 +250,11 @@ class TestLaplacianRef:
 class TestCannyRef:
     """Canny edge detection reference tests."""
 
+    @pytest.mark.parity(
+        ops=["canny"],
+        against="Definition: Canny output is u8 containing only 0 and 255",
+        tolerance="exact (values in {0, 255})",
+    )
     def test_canny_produces_binary_output(self, gray_png: bytes) -> None:
         """Canny should output a U8 image with only 0 and 255 values."""
         pipe = (
@@ -244,6 +269,11 @@ class TestCannyRef:
         for v in unique_vals:
             assert v in (0, 255), f"Unexpected value {v} in Canny output"
 
+    @pytest.mark.parity(
+        ops=["canny"],
+        against="Definition: edges appear around a bright rectangle, none inside it",
+        tolerance="edge max == 255; interior sum 0 or mean < 10",
+    )
     def test_canny_detects_rectangle_edges(self, gray_png: bytes) -> None:
         """Canny should detect edges around the bright rectangle in the test image."""
         pipe = (
@@ -275,6 +305,11 @@ class TestCannyRef:
 class TestSharpenRef:
     """Sharpen operation reference tests."""
 
+    @pytest.mark.parity(
+        ops=["grayscale", "sharpen"],
+        against="Definition: sharpening raises the mean absolute horizontal gradient",
+        tolerance="strict inequality (sharpened > original)",
+    )
     def test_sharpen_increases_edge_contrast(
         self, gray_png: bytes, gray_image: np.ndarray
     ) -> None:
@@ -302,6 +337,11 @@ class TestSharpenRef:
         )
 
     @pytest.mark.parametrize("strength", [0.5, 1.0, 2.0])
+    @pytest.mark.parity(
+        ops=["grayscale", "sharpen"],
+        against="OpenCV `cv2.filter2D`, 3x3 sharpen kernel, BORDER_REPLICATE, f32 gray",
+        tolerance="atol 1e-3 (full image)",
+    )
     def test_sharpen_vs_opencv_filter2d(
         self, gray_png: bytes, gray_image: np.ndarray, strength: float
     ) -> None:
@@ -333,6 +373,11 @@ class TestSharpenRef:
 
         np.testing.assert_allclose(result, expected, atol=1e-3)
 
+    @pytest.mark.parity(
+        ops=["sharpen"],
+        against="OpenCV `cv2.filter2D`, 3x3 sharpen kernel, BORDER_REPLICATE, f32 RGB",
+        tolerance="atol 1e-3 (full image)",
+    )
     def test_sharpen_rgb_vs_opencv_filter2d(
         self, rgb_png: bytes, rgb_image: np.ndarray
     ) -> None:
@@ -365,6 +410,11 @@ class TestSharpenRef:
 class TestHistogramEqualizeRef:
     """Histogram equalization reference tests."""
 
+    @pytest.mark.parity(
+        ops=["grayscale", "equalize_histogram"],
+        against="Definition: equalizing a low-contrast image widens its value range",
+        tolerance="strict inequality (output range > input range)",
+    )
     def test_equalize_expands_dynamic_range(
         self, low_contrast_png: bytes, low_contrast_image: np.ndarray
     ) -> None:
@@ -383,6 +433,11 @@ class TestHistogramEqualizeRef:
             f"Output range ({output_range}) should exceed input range ({input_range})"
         )
 
+    @pytest.mark.parity(
+        ops=["grayscale", "equalize_histogram"],
+        against="Definition: the equalized 16-bin histogram is near uniform",
+        tolerance="chi-squared-like measure < 2.0",
+    )
     def test_equalize_produces_near_uniform_histogram(
         self, low_contrast_png: bytes
     ) -> None:
@@ -402,6 +457,11 @@ class TestHistogramEqualizeRef:
             f"Equalized histogram is not approximately uniform (χ²={chi_sq:.2f})"
         )
 
+    @pytest.mark.parity(
+        ops=["grayscale", "equalize_histogram"],
+        against="OpenCV `cv2.equalizeHist`, u8 gray",
+        tolerance="exact",
+    )
     def test_equalize_vs_opencv(self, gray_png: bytes, gray_image: np.ndarray) -> None:
         """Equalization should match OpenCV cv2.equalizeHist."""
         cv2 = pytest.importorskip("cv2")
@@ -425,6 +485,11 @@ class TestHistogramEqualizeRef:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["grayscale", "convolve2d"],
+    against="Definition: zero and reflect border modes run and return a result (values not compared)",
+    tolerance="none (result is not None)",
+)
 class TestConvolveBorderModes:
     """Test different border handling modes for convolution."""
 
@@ -458,6 +523,11 @@ class TestConvolveBorderModes:
 # ===========================================================================
 
 
+@pytest.mark.parity(
+    ops=["convolve2d", "sobel"],
+    against="Definition: even or non-square kernels, unknown border and unknown sobel axis are refused",
+    tolerance="exact (raises ValueError)",
+)
 class TestConvolveValidation:
     """Test Python-side validation for convolve2d parameters."""
 
@@ -492,6 +562,11 @@ class TestConvolveValidation:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["convolve2d"],
+    against="Definition: an identity kernel keeps all 3 channels of an RGB image (as f32)",
+    tolerance="atol 0.5",
+)
 class TestConvolveMultiChannel:
     """Test convolution on multi-channel images."""
 

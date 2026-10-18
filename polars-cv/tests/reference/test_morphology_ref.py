@@ -106,6 +106,11 @@ def _run_pipeline(
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["grayscale", "erode"],
+    against="OpenCV `cv2.erode`, 3x3 rect kernel, u8 gray (1 and 2 iterations)",
+    tolerance="exact",
+)
 class TestErode:
     """Reference tests for morphological erosion."""
 
@@ -141,6 +146,11 @@ class TestErode:
 
         np.testing.assert_array_equal(actual, expected)
 
+    @pytest.mark.parity(
+        ops=["grayscale", "erode"],
+        against="Definition: erode with ksize=1 returns the input unchanged",
+        tolerance="exact",
+    )
     def test_erode_ksize_1_identity(
         self,
         binary_mask_image: np.ndarray,
@@ -152,6 +162,11 @@ class TestErode:
 
         np.testing.assert_array_equal(actual, binary_mask_image)
 
+    @pytest.mark.parity(
+        ops=["grayscale", "erode"],
+        against="Definition: erosion of an all-zero mask is all zero",
+        tolerance="exact",
+    )
     def test_erode_all_zero(
         self,
         encode_gray_png: Callable[[np.ndarray], bytes],
@@ -181,6 +196,11 @@ class TestErode:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["grayscale", "dilate"],
+    against="OpenCV `cv2.dilate`, 3x3 rect kernel, u8 gray (1 and 2 iterations)",
+    tolerance="exact",
+)
 class TestDilate:
     """Reference tests for morphological dilation."""
 
@@ -218,6 +238,11 @@ class TestDilate:
 
         np.testing.assert_array_equal(actual, expected)
 
+    @pytest.mark.parity(
+        ops=["grayscale", "dilate"],
+        against="Definition: dilate with ksize=1 returns the input unchanged",
+        tolerance="exact",
+    )
     def test_dilate_ksize_1_identity(
         self,
         binary_mask_image: np.ndarray,
@@ -247,6 +272,11 @@ class TestDilate:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["grayscale", "morphology_open"],
+    against="OpenCV `cv2.morphologyEx` MORPH_OPEN, 3x3 rect kernel, u8 gray",
+    tolerance="exact",
+)
 class TestMorphologyOpen:
     """Reference tests for morphological opening (erode then dilate)."""
 
@@ -268,6 +298,11 @@ class TestMorphologyOpen:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["grayscale", "morphology_close"],
+    against="OpenCV `cv2.morphologyEx` MORPH_CLOSE, 3x3 rect kernel, u8 gray",
+    tolerance="exact",
+)
 class TestMorphologyClose:
     """Reference tests for morphological closing (dilate then erode)."""
 
@@ -289,6 +324,11 @@ class TestMorphologyClose:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["grayscale", "morphology_gradient"],
+    against="OpenCV `cv2.morphologyEx` MORPH_GRADIENT, 3x3 rect kernel, u8 gray",
+    tolerance="exact",
+)
 class TestMorphologyGradient:
     """Reference tests for morphological gradient (dilate - erode)."""
 
@@ -309,6 +349,18 @@ class TestMorphologyGradient:
         np.testing.assert_array_equal(actual, expected)
 
 
+@pytest.mark.parity(
+    ops=[
+        "erode",
+        "dilate",
+        "morphology_open",
+        "morphology_close",
+        "morphology_gradient",
+        "grayscale",
+    ],
+    against="Definition: builder lowers open to erode+dilate, close to dilate+erode; domain and dtype kept; no execution",
+    tolerance="exact",
+)
 class TestPipelineBuilder:
     """Tests for morphological pipeline construction (no plugin required)."""
 

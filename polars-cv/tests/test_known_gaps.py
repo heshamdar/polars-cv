@@ -100,3 +100,37 @@ def test_a_negative_size_box_is_refused() -> None:
     except (pl.exceptions.ComputeError, ValueError):
         raised = True
     assert raised, "a box of negative size was accepted"
+
+
+@plugin_required
+@_gap("CR-115: average/difference hashes pack bits LSB-first, perceptual MSB-first")
+def test_every_hash_algorithm_packs_bits_msb_first() -> None:
+    """The three algorithms share one output column type, so one bit order.
+    pHash is MSB-first (as documented), aHash and dHash LSB-first, so each is
+    0 bits from imagehash read one way and tens of bits off read the other.
+    Fixed when every algorithm is MSB-first: then each matches imagehash's
+    hash read MSB-first."""
+    import io
+
+    imagehash = pytest.importorskip("imagehash")
+    from PIL import Image
+
+    from polars_cv import Pipeline
+
+    yy, xx = np.mgrid[0:128, 0:128]
+    img = ((xx * 2 + yy) % 256).astype(np.uint8)
+    img[40:90, 30:70] = 30
+    buf = io.BytesIO()
+    Image.fromarray(img).save(buf, "PNG")
+    df = pl.DataFrame({"i": [buf.getvalue()]})
+    refs = {
+        "perceptual": imagehash.phash,
+        "average": imagehash.average_hash,
+        "difference": imagehash.dhash,
+    }
+    for algorithm, ref in refs.items():
+        pipe = Pipeline().source("image_bytes").perceptual_hash(algorithm=algorithm)
+        h = df.select(pl.col("i").cv.pipe(pipe).sink("list")).item().to_list()
+        bits = np.unpackbits(np.array(h, dtype=np.uint8))
+        expected = ref(Image.open(io.BytesIO(buf.getvalue()))).hash.flatten()
+        assert int((bits != expected).sum()) <= 2, algorithm

@@ -7,7 +7,17 @@ build-backend = "maturin"
 [project]
 name = "polars-cv"
 version = "0.39.0"
-description = "A Polars plugin for vision/array operations"
+description = "Image processing as Polars expressions: decode, transform and analyse images in a DataFrame column, in Rust, on every core."
+keywords = [
+    "polars",
+    "polars-plugin",
+    "image-processing",
+    "computer-vision",
+    "dataframe",
+    "rust",
+    "machine-learning",
+    "preprocessing",
+]
 authors = [{ name = "Hesham Dar", email = "heshamdar@gmail.com" }]
 readme = "README.md"
 license = "MIT OR Apache-2.0"
@@ -28,12 +38,27 @@ dependencies = [
     "polars>=2.0.0,<3.0",
 ]
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Typing :: Typed",
 ]
+
+[project.urls]
+Homepage = "https://github.com/heshamdar/polars-cv"
+Documentation = "https://heshamdar.github.io/polars-cv/"
+Repository = "https://github.com/heshamdar/polars-cv"
+Changelog = "https://github.com/heshamdar/polars-cv/blob/main/CHANGELOG.md"
+Issues = "https://github.com/heshamdar/polars-cv/issues"
 
 [project.optional-dependencies]
 # `PipelineGraph.show_graph()` only; imported lazily, and a clear ImportError
@@ -112,6 +137,7 @@ features = ["pyo3-extension"]
 markers = [
     "network: mark a test that requires network access",
     "slow: mark a test as slow (excluded from default CI run)",
+    "parity(ops, against, tolerance): what a tests/reference test compares polars-cv with (tests/_parity.py)",
     "structural: mark a guard that checks codebase shape rather than runtime behaviour (needs no compiled extension, so pre-commit can run it)",
 ]
 
