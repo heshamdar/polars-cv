@@ -47,7 +47,7 @@ def test_the_head_curve_has_two_ears():
 @pytest.fixture
 def image():
     pil = pytest.importorskip("PIL.Image")
-    return lambda png: pil.open(io.BytesIO(png)).convert("RGB")
+    return lambda png: pil.open(io.BytesIO(png)).convert("RGBA")
 
 
 def _near(pixel, colour, tol=24):
@@ -56,13 +56,13 @@ def _near(pixel, colour, tol=24):
 
 @plugin_required
 def test_mark_renders_a_bear(image):
-    """At the user-facing entry point: dots on the face, voids for the eyes.
-    The PNG is anti-aliased, so colours are compared with a tolerance."""
+    """At the user-facing entry point: a transparent background, dots on the
+    face, inked eyes. The PNG is anti-aliased, so colours are compared with a
+    tolerance."""
     size = 256
     img = image(logo.render_mark(size))
     assert img.size == (size, size)
-    background = logo.PALETTE[0]
-    assert _near(img.getpixel((2, 2)), background)
+    assert img.getpixel((2, 2))[3] == 0  # the background is transparent
     m = logo.MARGIN
 
     def at(cx, cy):
@@ -70,20 +70,23 @@ def test_mark_renders_a_bear(image):
             (m + (1 - 2 * m) * cy) * size
         )
 
-    # An eye is a void in the dots: the background shows through.
+    # An eye is inked over the dots.
     eye = logo.PARTS.filter(logo.PARTS["layer"] == "feature").row(1, named=True)
-    assert _near(img.getpixel(at(eye["cx"], eye["cy"])), background)
+    assert _near(img.getpixel(at(eye["cx"], eye["cy"])), logo.PALETTE[logo.INK])
     # The forehead, between the eyes and the crown, is mostly dots.
     head = logo.PARTS.row(0, named=True)
     y = at(0.5, (eye["cy"] + head["cy"] - head["sy"] * head["r"]) / 2)[1]
     (x0, _), (x1, _) = at(0.4, 0.0), at(0.6, 0.0)
-    row = [img.getpixel((x, y))[0] for x in range(x0, x1)]
-    mid = (background[0] + logo.PALETTE[logo.FACE][0]) / 2
-    assert sum(row) / len(row) > mid
+    alpha = [img.getpixel((x, y))[3] for x in range(x0, x1)]
+    assert sum(alpha) / len(alpha) > 255 / 2
 
 
 @plugin_required
 def test_lockup_renders_at_its_size(image):
+    """The letters are filled and outlined in ink, on a transparent ground."""
     img = image(logo.render_lockup())
     assert img.size == (logo.LOCKUP_WIDTH, logo.LOCKUP_HEIGHT)
-    assert tuple(logo.PALETTE[logo.TEXT]) in set(img.getdata())
+    colours = set(img.getdata())
+    assert tuple(logo.PALETTE[logo.TEXT]) in colours
+    assert tuple(logo.PALETTE[logo.INK]) in colours
+    assert img.getpixel((logo.LOCKUP_WIDTH - 2, 2))[3] == 0

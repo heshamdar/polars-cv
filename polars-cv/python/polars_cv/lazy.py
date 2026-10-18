@@ -308,12 +308,11 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             New LazyPipelineExpr with the mask operation composed.
         """
 
-        # Create a new pipeline that references the mask
-        new_pipeline = self._pipeline._clone()
+        new_pipeline = self._receiving()
         new_pipeline._add_node_op("apply_mask", {"mask": mask, "invert": invert})
 
         return LazyPipelineExpr(
-            column=self._column,
+            column=None,
             pipeline=new_pipeline,
             node_id=_generate_node_id(),
             upstream=[self, mask],
@@ -345,11 +344,11 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             ```
         """
         # The op's Rust definition rejects an empty `others`.
-        new_pipeline = self._pipeline._clone()
+        new_pipeline = self._receiving()
         new_pipeline._add_node_op("channel_merge", {"others": list(others)})
 
         return LazyPipelineExpr(
-            column=self._column,
+            column=None,
             pipeline=new_pipeline,
             node_id=_generate_node_id(),
             upstream=[self, *others],
@@ -458,12 +457,10 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             - The merged node's output is the same as self (first argument)
         """
 
-        # Clone the pipeline - the merge node acts as a passthrough
-        new_pipeline = self._pipeline._clone()
-
+        # The merge node is a passthrough of self's output.
         return LazyPipelineExpr(
-            column=self._column,
-            pipeline=new_pipeline,
+            column=None,
+            pipeline=self._receiving(),
             node_id=_generate_node_id(),
             upstream=[self, *others],
         )
@@ -634,17 +631,27 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         inner._plan = Plan.continuing(self._pipeline._state)
         return inner
 
+    def _receiving(self) -> "Pipeline":
+        """The pipeline of a node that receives this expression's output (a
+        "blob" source), planned from its state.
+
+        Every node that composes this expression with others starts here, so
+        this expression's ops run once, in its own node. Cloning its pipeline
+        instead replayed them on their own output (``add_constant(50)`` added
+        100) or, from a root, decoded the column a second time.
+        """
+        from polars_cv._lib import Plan
+        from polars_cv.pipeline import Pipeline
+
+        new_pipeline = Pipeline()
+        new_pipeline._plan = Plan().rebased(_BLOB_SOURCE, self._pipeline._state)
+        return new_pipeline
+
     def _binary_op(self, op: str, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
         """Create a binary operation between this and another LazyPipelineExpr."""
-        from polars_cv._lib import Plan
-        from polars_cv.pipeline import Pipeline as PipelineClass
-
-        # A node that receives the left operand's output (a "blob" source) and
-        # applies only the binary op, planned from that state; its rules read
-        # both operands (true division of two u8 is f32, the shapes
-        # broadcast), so the other operand's state goes with it.
-        new_pipeline = PipelineClass()
-        new_pipeline._plan = Plan().rebased(_BLOB_SOURCE, self._pipeline._state)
+        # The op's rules read both operands (true division of two u8 is f32,
+        # the shapes broadcast), so the other operand's state goes with it.
+        new_pipeline = self._receiving()
         new_pipeline._add_node_op(op, {"other": other})
 
         return LazyPipelineExpr(

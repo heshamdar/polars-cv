@@ -17,8 +17,11 @@ An alternative polars-cv logo, made from polars and polars-cv alone:
    offset is shorter than the cell's radius. The silhouette is never
    drawn: it emerges from dot size alone.
 3. **Colour is an index map.** The muzzle's dots take a second tint, the
-   eyes and nose are voids cut from the dots, and ``apply_lut`` colours the
-   indices; a lanczos ``resize`` from the working resolution anti-aliases.
+   eyes and nose are inked over the dots, and ``apply_lut`` colours the
+   indices with an RGBA palette whose background is transparent; a lanczos
+   ``resize`` from the working resolution anti-aliases. The face is tinted,
+   not white, and every letter sits on an ink outline, so the logo reads on
+   a light page as well as a dark one.
 
     cd polars-cv
     uv run --no-sync python docs/assets/logo/halftone_logo.py
@@ -64,16 +67,20 @@ PARTS = pl.DataFrame(
     orient="row",
 )
 
-# Palette indices: 0 background, then the dots by region, then the wordmark.
-HALO, FACE, MUZZLE, TEXT, ACCENT = 1, 2, 3, 4, 5
-PALETTE = [
-    [10, 22, 40],  # background
-    [61, 115, 184],  # dots outside the head
-    [241, 248, 255],  # dots on the face
-    [169, 205, 242],  # dots on the muzzle
-    [241, 248, 255],  # "polars"
-    [127, 182, 236],  # "-cv"
+# Palette indices: 0 background, then the dots by region, then the ink (eyes,
+# nose and the letters' outline), then the wordmark over it.
+HALO, FACE, MUZZLE, INK, TEXT, ACCENT = 1, 2, 3, 4, 5, 6
+INK_RGB = [10, 22, 40]
+PALETTE = [  # RGBA
+    [*INK_RGB, 0],  # background: transparent (ink-coloured, so edges fringe dark)
+    [61, 115, 184, 255],  # dots outside the head
+    [205, 226, 248, 255],  # dots on the face: tinted, to show on white
+    [140, 186, 235, 255],  # dots on the muzzle
+    [*INK_RGB, 255],  # eyes, nose and the letters' outline
+    [241, 248, 255, 255],  # "polars"
+    [127, 182, 236, 255],  # "-cv"
 ]
+OUTLINE = 3.0  # the ink around each letter, in pixels at 1x
 
 LOCKUP_WIDTH, LOCKUP_HEIGHT = 990, 220  # the width a whole number of cells
 TEXT_X, BASELINE = 245.0, 160.0
@@ -153,7 +160,7 @@ def halftone_index(width: int, height: int, cell: float):
     distance = offset.channel_select(0).add(offset.channel_select(1)).sqrt()
     dot = radius.subtract(distance).threshold(0.0).scale(1 / 255)  # 0 or 1
 
-    # Which tint each dot takes, and the voids no dot enters.
+    # Which tint each dot takes; the eyes and nose are inked over the dots.
     region = (
         pl.col("muzzle")
         .cv.pipe(contours)
@@ -163,8 +170,8 @@ def halftone_index(width: int, height: int, cell: float):
         .channel_select(0)
         .clamp(HALO, MUZZLE)  # outside the head: the halo
     )
-    keep = features.rasterize(**canvas, fill_value=1).channel_select(0).neg()
-    return dot.multiply(region).multiply(keep.add_constant(1))
+    ink = features.rasterize(**canvas, fill_value=INK).channel_select(0)
+    return dot.multiply(region).maximum(ink)
 
 
 def _render(df: pl.DataFrame, index, width: int, height: int) -> bytes:
@@ -186,23 +193,29 @@ def render_lockup() -> bytes:
     *main, pen = wordmark("polars", x=TEXT_X, baseline=BASELINE, scale=WORK)
     *accent, _ = wordmark("-cv", x=pen + SPACING, baseline=BASELINE, scale=WORK)
     canvas = {"width": w, "height": h}
-    stroke = Pipeline().source("contour").stroke(width=STROKE * WORK, cap="butt")
-    fill = Pipeline().source("contour")
+    contours = Pipeline().source("contour")
+    letter = {
+        "l": contours.stroke(width=STROKE * WORK, cap="butt"),  # lines: stroked
+        "r": contours,  # regions: filled
+    }
+    # The outline is the letter grown by OUTLINE, in ink; `maximum` keeps the
+    # letter (a higher index) over it.
+    paints = [
+        (pipe.offset(OUTLINE * WORK, join="miter"), kind, INK)
+        for kind, pipe in letter.items()
+    ] + [(pipe, kind, None) for kind, pipe in letter.items()]
     index = halftone_index(w, h, h / CELLS)
     for (lines, regions), value in ((main, TEXT), (accent, ACCENT)):
         df = df.with_columns(
             pl.Series(f"l{value}", [lines], dtype=CONTOUR_SET_SCHEMA),
             pl.Series(f"r{value}", [regions], dtype=CONTOUR_SET_SCHEMA),
         )
-        index = index.maximum(
-            pl.col(f"l{value}")
-            .cv.pipe(stroke.rasterize(**canvas, fill_value=value))
-            .channel_select(0)
-        ).maximum(
-            pl.col(f"r{value}")
-            .cv.pipe(fill.rasterize(**canvas, fill_value=value))
-            .channel_select(0)
-        )
+        for pipe, kind, ink in paints:
+            index = index.maximum(
+                pl.col(f"{kind}{value}")
+                .cv.pipe(pipe.rasterize(**canvas, fill_value=ink or value))
+                .channel_select(0)
+            )
     return _render(df, index, LOCKUP_WIDTH, LOCKUP_HEIGHT)
 
 

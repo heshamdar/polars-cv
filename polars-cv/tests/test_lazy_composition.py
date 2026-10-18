@@ -911,3 +911,45 @@ def test_a_lazy_expr_displays_its_guidance(capsys: pytest.CaptureFixture[str]) -
     expr._ipython_display_()
     out = capsys.readouterr().out
     assert "alias='img'" in out and ".sink(format)" in out
+
+
+@plugin_required
+class TestCompositionAppliesTheOperandOnce:
+    """``apply_mask``, ``channel_merge`` and ``merge_pipe`` take the left
+    operand's *output*: its ops run once, in its own node. They used to clone
+    its pipeline into the composed node, so a node fed by another node ran its
+    ops a second time on its own output (``add_constant(50)`` added 100)."""
+
+    @pytest.fixture
+    def df(self, create_test_png: Callable[..., bytes]) -> pl.DataFrame:
+        return pl.DataFrame({"image": [create_test_png(8, 8, (40, 80, 120))]})
+
+    @staticmethod
+    def _gray() -> LazyPipelineExpr:
+        img = pl.col("image").cv.pipe(Pipeline().source("image_bytes", dtype="u8"))
+        return img.pipe(Pipeline().grayscale().channel_select(0))
+
+    @staticmethod
+    def _run(df: pl.DataFrame, expr: LazyPipelineExpr) -> np.ndarray:
+        return numpy_from_struct(df.select(o=expr.sink("numpy")).item())
+
+    def test_channel_merge(self, df: pl.DataFrame) -> None:
+        gray = self._gray()
+        brighter = gray.pipe(Pipeline().add_constant(50))
+        same_dtype = gray.pipe(Pipeline().add_constant(0))
+        merged = self._run(df, brighter.channel_merge(same_dtype))
+        np.testing.assert_array_equal(merged[..., 0], self._run(df, brighter))
+
+    def test_apply_mask(self, df: pl.DataFrame) -> None:
+        gray = self._gray()
+        brighter = gray.pipe(Pipeline().add_constant(50))
+        # 1.0 everywhere: a float buffer takes its mask in [0, 1].
+        keep_all = gray.pipe(Pipeline().threshold(0).scale(1 / 255))
+        masked = self._run(df, brighter.apply_mask(keep_all))
+        np.testing.assert_array_equal(masked, self._run(df, brighter))
+
+    def test_merge_pipe(self, df: pl.DataFrame) -> None:
+        gray = self._gray()
+        brighter = gray.pipe(Pipeline().add_constant(50))
+        merged = self._run(df, brighter.merge_pipe(gray))
+        np.testing.assert_array_equal(merged, self._run(df, brighter))
