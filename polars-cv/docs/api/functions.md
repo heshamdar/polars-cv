@@ -99,7 +99,9 @@ result = df.with_columns(
 
 ### hamming_distance
 
-Compute Hamming distance between two perceptual hashes.
+Count the bits two perceptual hashes differ in (`UInt32`). Each side is a hash
+pipeline or a stored hash column (`sink("list")`/`sink("array")`), as an
+expression or a column name.
 
 ```python
 from polars_cv import hamming_distance, Pipeline
@@ -117,7 +119,9 @@ result = df.with_columns(
 
 ### hash_similarity
 
-Compute similarity percentage between two perceptual hashes.
+Compute the percentage of bits two perceptual hashes share, out of the
+hashes' own length (a 256-bit hash is scored out of 256). Takes the same
+hashes as `hamming_distance`.
 
 ```python
 from polars_cv import hash_similarity
@@ -126,7 +130,6 @@ result = df.with_columns(
     similarity=hash_similarity(
         pl.col("image_a").cv.pipe(hash_pipe),
         pl.col("image_b").cv.pipe(hash_pipe),
-        hash_bits=64,  # Match your hash size
     )
 )
 ```

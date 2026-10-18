@@ -580,8 +580,8 @@ def mask_iou(
 HashLike = LazyPipelineExpr | pl.Expr | str
 
 
-def _hash_popcount(hash1: HashLike, hash2: HashLike) -> pl.Expr:
-    """Differing bits of two hashes: XOR, then popcount, in the plugin.
+def _hash_xor(hash1: HashLike, hash2: HashLike) -> LazyPipelineExpr:
+    """The XOR of two hashes, in the plugin: a set bit is a differing one.
 
     A stored hash runs through ``source()``, which reads a ``list[u8]`` or
     ``Array[u8]`` column as the 1-D buffer ``perceptual_hash()`` produced, so
@@ -600,12 +600,7 @@ def _hash_popcount(hash1: HashLike, hash2: HashLike) -> pl.Expr:
             f"a hash is a LazyPipelineExpr, a pl.Expr or a column name, got {type(h).__name__}"
         )
 
-    return (
-        lift(hash1)
-        .bitwise_xor(lift(hash2))
-        .pipe(Pipeline().reduce_popcount())
-        .sink("native")
-    )
+    return lift(hash1).bitwise_xor(lift(hash2))
 
 
 def hamming_distance(hash1: HashLike, hash2: HashLike) -> pl.Expr:
@@ -626,28 +621,33 @@ def hamming_distance(hash1: HashLike, hash2: HashLike) -> pl.Expr:
         hash2: Second hash, the same length as the first.
 
     Returns:
-        The number of differing bits (Float64).
+        The number of differing bits (UInt32).
     """
-    return _hash_popcount(hash1, hash2)
+    # A scalar sinks as Float64, which holds any bit count exactly.
+    differing = _hash_xor(hash1, hash2).pipe(Pipeline().reduce_popcount())
+    return differing.sink("native").cast(pl.UInt32)
 
 
-def hash_similarity(
-    hash1: HashLike,
-    hash2: HashLike,
-    *,
-    hash_bits: int = 64,
-) -> pl.Expr:
+def hash_similarity(hash1: HashLike, hash2: HashLike) -> pl.Expr:
     """
     Compute similarity percentage [0, 100] between two hashes.
 
-    Takes the same hashes as :func:`hamming_distance`.
+    Takes the same hashes as :func:`hamming_distance`. The share of bits that
+    agree, out of the hashes' own length: a 256-bit hash is scored out of 256
+    with nothing to say so.
 
     Args:
         hash1: First hash.
-        hash2: Second hash.
-        hash_bits: Total bits in hash (default 64).
+        hash2: Second hash, the same length as the first.
     """
-    return (1.0 - _hash_popcount(hash1, hash2) / hash_bits) * 100.0
+    xor = _hash_xor(hash1, hash2)
+    # The XOR is as long as either hash, so its byte count is the hash length:
+    # one graph sinks it beside its popcount, and the length is never assumed.
+    differing = xor.pipe(Pipeline().reduce_popcount()).alias("differing")
+    counts = xor.alias("xor").merge_pipe(differing)
+    out = counts.sink({"xor": "list", "differing": "native"})
+    bits = out.struct.field("xor").list.len() * 8
+    return 100.0 * (1.0 - out.struct.field("differing") / bits)
 
 
 def mask_dice(

@@ -100,3 +100,33 @@ def test_a_negative_size_box_is_refused() -> None:
     except (pl.exceptions.ComputeError, ValueError):
         raised = True
     assert raised, "a box of negative size was accepted"
+
+
+@plugin_required
+@_gap("CR-116: a vector is an f64 list, not a rank-1 buffer: buffer ops refuse it")
+def test_a_buffer_op_applies_to_a_hash_vector() -> None:
+    """A perceptual hash is a 1-D array of u8 bytes, so a rank-1 buffer op
+    such as ``invert`` should apply to it and give each byte's bitwise NOT
+    (``255 - x`` on u8). Today the planner refuses it (``invert`` declares
+    ``buffer`` input, the hash is ``vector``), and the hash is f64 inside the
+    engine, so even an accepted ``invert`` would compute ``1 - x``. Fixed when
+    ``vector`` is a rank-1 buffer that keeps its dtype."""
+    import io
+
+    from PIL import Image
+
+    from polars_cv import Pipeline
+
+    yy, xx = np.mgrid[0:64, 0:64]
+    buf = io.BytesIO()
+    Image.fromarray(((xx * 3 + yy) % 256).astype(np.uint8)).save(buf, "PNG")
+    df = pl.DataFrame({"i": [buf.getvalue()]})
+    hashed = Pipeline().source("image_bytes").perceptual_hash()
+    try:
+        inverted = hashed.invert()
+    except ValueError as e:
+        raise AssertionError(f"invert() refused a hash vector: {e}") from e
+    h = df.select(pl.col("i").cv.pipe(hashed).sink("list")).to_series()
+    out = df.select(pl.col("i").cv.pipe(inverted).sink("list")).to_series()
+    assert out.dtype == pl.List(pl.UInt8), out.dtype
+    assert out.to_list() == [[255 - b for b in h.to_list()[0]]]

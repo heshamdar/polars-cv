@@ -305,25 +305,30 @@ class TestHashSimilarity:
         sim = result["similarity"][0]
         assert 0 <= sim <= 100
 
-    def test_custom_hash_bits(self) -> None:
-        """Test similarity calculation with custom hash_bits parameter."""
-        image1 = create_gradient_image(64, 64, "horizontal")
-        image2 = create_gradient_image(64, 64, "vertical")
+    def test_similarity_reads_the_hash_length_from_the_hashes(self) -> None:
+        """A 256-bit hash is scored out of 256 bits, with nothing to pass: the
+        length is the hashes' own. (A ``hash_bits=64`` default scored two
+        unrelated 256-bit hashes, ~128 bits apart, at about -100%.)"""
+        import numpy as np
 
-        df = pl.DataFrame({"image1": [image1], "image2": [image2]})
-
-        # Use 256-bit hash
-        hash_pipe = Pipeline().source("image_bytes").perceptual_hash(hash_size=256)
-        hash1 = pl.col("image1").cv.pipe(hash_pipe)
-        hash2 = pl.col("image2").cv.pipe(hash_pipe)
-
-        result = df.with_columns(
-            similarity=hash_similarity(hash1, hash2, hash_bits=256)
-        )
-
-        # Similarity should be between 0 and 100
-        sim = result["similarity"][0]
-        assert 0 <= sim <= 100
+        rng = np.random.default_rng(3)
+        images = []
+        for _ in range(2):
+            buf = BytesIO()
+            Image.fromarray(rng.integers(0, 256, (64, 64, 3), dtype=np.uint8)).save(
+                buf, format="PNG"
+            )
+            images.append(buf.getvalue())
+        df = pl.DataFrame({"image1": [images[0]], "image2": [images[1]]})
+        for bits in (64, 256):
+            pipe = Pipeline().source("image_bytes").perceptual_hash(hash_size=bits)
+            hash1 = pl.col("image1").cv.pipe(pipe)
+            hash2 = pl.col("image2").cv.pipe(pipe)
+            out = df.select(
+                d=hamming_distance(hash1, hash2), s=hash_similarity(hash1, hash2)
+            ).row(0, named=True)
+            assert out["d"] > 0
+            assert out["s"] == pytest.approx(100.0 * (1 - out["d"] / bits))
 
 
 class TestHashComparisonBatch:
@@ -527,3 +532,14 @@ class TestHashColumns:
         )
         with pytest.raises(pl.exceptions.ComputeError, match="same shape"):
             df.select(hamming_distance("a", "b"))
+
+
+def test_hamming_distance_is_a_count() -> None:
+    """A number of differing bits is an unsigned integer, not a float."""
+    df = pl.DataFrame(
+        {"a": [[0b1011_0000, 1]], "b": [[0b0011_0000, 1]]},
+        schema={"a": pl.List(pl.UInt8), "b": pl.List(pl.UInt8)},
+    )
+    out = df.select(d=hamming_distance("a", "b"))
+    assert out.schema["d"] == pl.UInt32
+    assert out["d"].to_list() == [1]

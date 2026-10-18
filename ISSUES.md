@@ -43,6 +43,7 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-81 | Extension types | Decision | Whether any output becomes tagged by default (a major version) |
 | CR-82 | Extension types | Decision | Whether `polars_cv.ndarray` carries `dtype`/`ndim` metadata |
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
+| CR-116 | Domains | Design | The `vector` domain is an f64 list, not a rank-1 buffer: buffer ops refuse it and a u8 hash loses its dtype |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
@@ -142,6 +143,46 @@ against `main` at `e788d72` that day, and their full text is in git history).
 - **Next:** call `to_spec` once per sink, and give `_encode_field` a fast
   path for a sequence that holds no expression (one pass, no per-element
   dispatch). Benchmark both on a release build before and after.
+
+## Domains
+
+### CR-116 — The `vector` domain is an f64 list, not a rank-1 buffer
+
+**design**
+
+- **Found:** making `hash_similarity()` read the hash length from the hashes
+  (2026-10-18). The first attempt counted agreeing bits as
+  `popcount(invert(a ^ b))`, which the planner refused: `invert` declares
+  `Buffer` input only.
+- **Evidence:** a vector at run time is `NodeOutput::Vector(Arc<Vec<f64>>)`
+  (`view-buffer/src/ops/mod.rs`), not `NodeOutput::Buffer`: no dtype, no
+  strides. So:
+  - only the steps that list `Domain::Vector` in `GraphStep::input_domains`
+    (`polars-cv/src/graph/step.rs`) take one: binary ops, `assert_shape` and
+    the reductions. Every engine op (`invert`, `scale`, `clamp`, the scalar
+    math) refuses a hash, a histogram or a bounding box, though each is a
+    1-D array;
+  - reductions get one only by copying it into a fresh buffer
+    (`vector_reads_as_buffer`, `graph/compiled.rs`), a second path beside the
+    buffer one;
+  - the dtype is lost: `perceptual_hash()` computes u8 bytes and emits f64,
+    so even an op that accepted a vector would read 176.0, not a u8 176.
+    `invert` would give `1 - x` (the float rule) instead of `255 - x`, and
+    `popcount(invert(x))` would be silently wrong rather than refused.
+- **Proposal:** make `vector` a rank-1 `Buffer` carrying its op's dtype (u8
+  for a hash, f64 for a measure), so every op whose `OpShape` accepts rank 1
+  applies with no special case, and `vector_reads_as_buffer` and the f64
+  widening go. What has to move with it: the planner's domain rules (rank,
+  not a separate domain, may be the fact), the vector sinks
+  (`graph/sink_kind.rs`: `VectorList`/`VectorArray`), every geometry op and
+  reduction that emits `NodeOutput::Vector`, and the `vector` row of the
+  domain table in the docs and `CLAUDE.md`. Whether `vector` survives as a
+  user-facing domain name (a rank-1 buffer) or disappears is the decision.
+- **Pinned by** `test_known_gaps.py::test_a_buffer_op_applies_to_a_hash_vector`
+  (strict xfail: `invert()` on a hash gives each byte's u8 NOT).
+- **Payoff:** `hash_similarity()` could count agreeing bits in the plugin
+  instead of sinking the XOR beside its popcount; hashes, histograms and
+  boxes take the scalar ops like any array.
 
 ## Fetch
 

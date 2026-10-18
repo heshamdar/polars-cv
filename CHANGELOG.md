@@ -17,6 +17,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   42 and 16 bits away from imagehash's on a test gradient (now 0). Stored
   aHash/dHash/blockhash values change: recompute them, or reverse the bits
   of each byte. Hamming distances between two hashes are unchanged.
+- **`hash_similarity()` has no `hash_bits=`: the length is the hashes' own.**
+  It defaulted to 64, so two 256-bit hashes were scored out of 64 bits (two
+  unrelated ones, ~128 bits apart, came out near -100%) unless the caller
+  restated the size. The XOR of the two hashes is now sunk beside its
+  popcount, and its length is the denominator. Drop the argument; passing it
+  raises `TypeError`.
+- **`hamming_distance()` returns `UInt32`,** a count of bits, not `Float64`.
 
 ### Added
 
