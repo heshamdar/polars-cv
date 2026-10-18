@@ -117,7 +117,7 @@ impl PerceptualHashOp {
     #[cfg(feature = "perceptual_hash")]
     pub fn execute(&self, buffer: &ViewBuffer) -> ViewBuffer {
         use crate::interop::image::ImageAdapter;
-        use image_hasher::{HashAlg, HasherConfig};
+        use image_hasher::{BitOrder, HashAlg, HasherConfig};
 
         // The hash grid's side: 64 bits is an 8x8 grid.
         let hash_width = (self.hash_size as f64).sqrt() as u32;
@@ -135,8 +135,12 @@ impl PerceptualHashOp {
                     HashAlgorithm::Blockhash => HashAlg::Blockhash,
                     HashAlgorithm::Perceptual => unreachable!(),
                 };
+                // Most significant bit first, row-major, as `phash` packs
+                // its bits: one column type, one bit order (image_hasher's
+                // default is least significant first).
                 HasherConfig::new()
                     .hash_alg(hash_alg)
+                    .bit_order(BitOrder::MsbFirst)
                     .hash_size(hash_width, hash_width)
                     .to_hasher()
                     .hash_image(&dynamic_image)
@@ -364,6 +368,22 @@ mod tests {
         let mut expected = vec![0u8; 8];
         expected[0] = 0x80;
         assert_eq!(out.as_slice::<u8>(), expected.as_slice());
+    }
+
+    /// Every algorithm packs its bits row-major, most significant first, as
+    /// pHash does: a left-bright, right-dark image sets the left half of each
+    /// row, which is the high nibble of each byte (0xF0), never the low one.
+    #[test]
+    fn every_algorithm_packs_bits_msb_first() {
+        let (h, w) = (64usize, 64usize);
+        let data: Vec<u8> = (0..h * w * 3)
+            .map(|i| if (i / 3) % w < w / 2 { 220 } else { 20 })
+            .collect();
+        let buf = ViewBuffer::from_vec(data).reshape(vec![h, w, 3]);
+        for alg in [HashAlgorithm::Average, HashAlgorithm::Blockhash] {
+            let out = PerceptualHashOp::new(alg).execute(&buf);
+            assert_eq!(out.as_slice::<u8>(), &[0xF0u8; 8], "{alg:?}");
+        }
     }
 
     /// Two unrelated patterns differ in about half their bits, the property

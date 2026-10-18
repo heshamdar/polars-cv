@@ -7,7 +7,24 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **`perceptual_hash(algorithm="average" | "difference" | "blockhash")`
+  packs its bits most significant first,** as `"perceptual"` always has and
+  as imagehash's hex does (CR-115). They came out least significant first,
+  so one `list[u8]` hash column held two bit orders depending on
+  `algorithm=`, and `int.from_bytes(bytes(h), "big")` read aHash and dHash
+  42 and 16 bits away from imagehash's on a test gradient (now 0). Stored
+  aHash/dHash/blockhash values change: recompute them, or reverse the bits
+  of each byte. Hamming distances between two hashes are unchanged.
+
 ### Added
+
+- **`hamming_distance()` and `hash_similarity()` take stored hashes.** Each
+  side may be a hash pipeline, as before, or a `sink("list")`/`sink("array")`
+  hash column given as an expression or a name, so near-duplicate search over
+  stored hashes is a cross join: `hamming_distance("hash", "hash_b")`. Both
+  run the same XOR and popcount, and hashes of different lengths are refused.
 
 - **A parity report: every reference comparison, its tolerance and its
   outcome.** Each test in `tests/reference/` now declares what it compares
