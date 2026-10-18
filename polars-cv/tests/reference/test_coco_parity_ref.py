@@ -81,6 +81,11 @@ def _dataset(seed: int, jitter: float) -> tuple[dict, list[dict]]:
 
 @plugin_required
 @pytest.mark.parametrize(("seed", "jitter"), [(1, 4.0), (2, 4.0), (11, 1.0), (12, 1.0)])
+@pytest.mark.parity(
+    ops=["metrics.evaluate_detections"],
+    against="pycocotools `COCOeval` bbox summary (mAP, mAP50, mAP75, mAR100), random data",
+    tolerance="abs 1e-12",
+)
 def test_coco_summary_matches_cocoeval(seed: int, jitter: float) -> None:
     coco_mod = pytest.importorskip("pycocotools.coco")
     cocoeval_mod = pytest.importorskip("pycocotools.cocoeval")

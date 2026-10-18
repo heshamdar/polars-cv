@@ -5,7 +5,7 @@ edition = "2021"
 # Set by the polars 0.54 upgrade (still sufficient for 0.55): polars-ooc needs cold_path/atomic_try_update,
 # stabilized in Rust 1.96. cargo errors clearly on older toolchains instead of E0658.
 rust-version = "1.96"
-description = "A Polars plugin for vision/array operations powered by view-buffer"
+description = "Image processing as Polars expressions, powered by view-buffer"
 license = "MIT OR Apache-2.0"
 
 [lib]

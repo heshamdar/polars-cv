@@ -43,6 +43,7 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-81 | Extension types | Decision | Whether any output becomes tagged by default (a major version) |
 | CR-82 | Extension types | Decision | Whether `polars_cv.ndarray` carries `dtype`/`ndim` metadata |
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
+| CR-115 | Hashing | Medium | `average`/`difference` hashes pack bits LSB-first, `perceptual` MSB-first |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
@@ -142,6 +143,27 @@ against `main` at `e788d72` that day, and their full text is in git history).
 - **Next:** call `to_spec` once per sink, and give `_encode_field` a fast
   path for a sequence that holds no expression (one pass, no per-element
   dispatch). Benchmark both on a release build before and after.
+
+## Hashing
+
+### CR-115 — `average`/`difference` hashes pack bits LSB-first, `perceptual` MSB-first
+
+- **Found:** making `TestPerceptualHashReference` compare polars-cv with
+  imagehash (parity report work, 2026-10-18).
+- **Evidence:** on a 128×128 gradient, unpacked most-significant-bit first,
+  `perceptual_hash()` is 2 bits from `imagehash.phash` while `average` is 42
+  from `imagehash.average_hash` and `difference` 16 from `imagehash.dhash`;
+  unpacked least-significant-bit first, `average` and `difference` are 0 bits
+  away and `perceptual` 42. The aHash/dHash bytes come from the
+  `image_hasher` crate's packing; pHash is packed by polars-cv
+  (`docs/user-guide/operations/hashing.md` documents MSB-first for pHash
+  only). So one `list[u8]` column means two bit orders depending on
+  `algorithm=`, and `int.from_bytes(bytes(h), "big")` reads aHash/dHash
+  wrong. The reference tests read those two LSB-first for now.
+- **Fix:** pack every algorithm MSB-first, row-major (a breaking change to
+  aHash/dHash bytes), say so in the hashing guide, and read MSB-first in
+  `test_perceptual_hash_ref.py`. Pinned by
+  `test_known_gaps.py::test_every_hash_algorithm_packs_bits_msb_first`.
 
 ## Fetch
 

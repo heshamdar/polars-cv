@@ -80,6 +80,28 @@ _CASES: list[
 
 @plugin_required
 @pytest.mark.parametrize("name, op, ref", _CASES, ids=[c[0] for c in _CASES])
+@pytest.mark.parity(
+    ops=[
+        "neg",
+        "abs",
+        "sqrt",
+        "square",
+        "reciprocal",
+        "sign",
+        "floor",
+        "ceil",
+        "round",
+        "trunc",
+        "clamp_min",
+        "clamp_max",
+        "add_constant",
+        "subtract_constant",
+        "cast",
+        "scale",
+    ],
+    against="NumPy elementwise ufuncs (`np.abs`, `np.sqrt`, `np.round`, ...) on a signed f32 base",
+    tolerance="rtol 1e-5, atol 1e-5, NaN equal",
+)
 def test_scalar_op_matches_numpy(
     name: str,
     op: Callable[[Pipeline], Pipeline],
@@ -104,6 +126,11 @@ def test_scalar_op_matches_numpy(
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["sqrt"],
+    against="Definition: a scalar op on a u8 image promotes to f32",
+    tolerance="exact (dtype)",
+)
 def test_scalar_ops_promote_integer_input_to_f32(rgb_png: bytes) -> None:
     """A scalar op on a u8 image promotes to f32 (like ``scale``)."""
     out = _run(Pipeline().source("image_bytes").sqrt(), rgb_png)

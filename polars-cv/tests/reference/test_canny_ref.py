@@ -23,7 +23,14 @@ from tests.conftest import plugin_required
 
 cv2 = pytest.importorskip("cv2")
 
-pytestmark = plugin_required
+pytestmark = [
+    plugin_required,
+    pytest.mark.parity(
+        ops=["canny"],
+        against="OpenCV `cv2.Canny`, aperture 3, L1 gradient (gray, colour, alpha, tiny images)",
+        tolerance="exact (identical edge maps)",
+    ),
+]
 
 
 def _png(arr: np.ndarray) -> bytes:

@@ -67,6 +67,11 @@ def smooth_rgb() -> np.ndarray:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["blur"],
+    against="OpenCV `cv2.GaussianBlur`, u8 gray and RGB, sigma 1 and 2",
+    tolerance=f"mean diff < {MEAN_TOL}, max diff <= {MAX_TOL} levels (smooth images)",
+)
 class TestBlurOpenCVParity:
     @pytest.mark.parametrize("sigma", [1.0, 2.0])
     def test_blur_gray_matches_opencv(
@@ -88,6 +93,11 @@ class TestBlurOpenCVParity:
 
 
 @plugin_required
+@pytest.mark.parity(
+    ops=["blur"],
+    against="Definition: sigma 0 is the identity (as in PIL, SciPy); sigma < 0, NaN, inf refused",
+    tolerance="exact",
+)
 class TestBlurSigmaDomain:
     """sigma = 0 is no blur, as in PIL and SciPy; below 0 is refused.
 

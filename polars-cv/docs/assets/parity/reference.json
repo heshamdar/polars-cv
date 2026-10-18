@@ -1,0 +1,2516 @@
+{
+ "generated": "2026-10-18",
+ "commit": "80bcb10",
+ "versions": {
+  "polars-cv": "0.39.0",
+  "polars": "2.0.0",
+  "numpy": "2.5.3",
+  "opencv-python": "4.11.0.86",
+  "scipy": "1.16.3",
+  "pillow": "12.0.0",
+  "imagehash": "4.3.2",
+  "pycocotools": "2.0.11"
+ },
+ "groups": [
+  {
+   "against": "OpenCV `cv2.getRotationMatrix2D` + `cv2.warpAffine`, 30 degrees, 1.5x, bilinear",
+   "file": "tests/reference/test_affine_ref.py",
+   "ops": [
+    "rotate_and_scale"
+   ],
+   "tolerance": "atol 7 levels",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.warpAffine`, bilinear, u8 RGB, x-shear 0.3, random 100x100",
+   "file": "tests/reference/test_affine_ref.py",
+   "ops": [
+    "shear"
+   ],
+   "tolerance": "atol 5 levels",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: identity matrix returns the input image unchanged",
+   "file": "tests/reference/test_affine_ref.py",
+   "ops": [
+    "warp_affine"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: identity warp leaves each channel of a mixed-value RGB image intact",
+   "file": "tests/reference/test_affine_ref.py",
+   "ops": [
+    "warp_affine"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: nearest and bilinear interpolation give different output under rotation",
+   "file": "tests/reference/test_affine_ref.py",
+   "ops": [
+    "warp_affine"
+   ],
+   "tolerance": "not equal (outputs must differ)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: out-of-frame pixels take `border_value`",
+   "file": "tests/reference/test_affine_ref.py",
+   "ops": [
+    "warp_affine"
+   ],
+   "tolerance": "exact (corner pixel == 128)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.getRotationMatrix2D` + `cv2.warpAffine`, 90 degrees, bilinear",
+   "file": "tests/reference/test_affine_ref.py",
+   "ops": [
+    "warp_affine"
+   ],
+   "tolerance": "atol 2 levels",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.warpAffine`, bilinear, u8 RGB, 2x scale, random 50x50",
+   "file": "tests/reference/test_affine_ref.py",
+   "ops": [
+    "warp_affine"
+   ],
+   "tolerance": "atol 2 levels",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.warpAffine`, bilinear, u8 RGB, translation (50, 30)",
+   "file": "tests/reference/test_affine_ref.py",
+   "ops": [
+    "warp_affine"
+   ],
+   "tolerance": "atol 2 levels",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: a table no row can use (empty, ragged, out of range) is refused at build",
+   "file": "tests/reference/test_apply_lut_ref.py",
+   "ops": [
+    "apply_lut"
+   ],
+   "tolerance": "exact (raises)",
+   "tests": 6,
+   "passed": 6,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy fancy indexing `table[image]`",
+   "file": "tests/reference/test_apply_lut_ref.py",
+   "ops": [
+    "apply_lut"
+   ],
+   "tolerance": "exact",
+   "tests": 56,
+   "passed": 56,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.LUT` (u8 -> u8, one table for all channels)",
+   "file": "tests/reference/test_apply_lut_ref.py",
+   "ops": [
+    "apply_lut"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: a palette (K > 1 entries per row) needs a single-channel input",
+   "file": "tests/reference/test_apply_lut_ref.py",
+   "ops": [
+    "apply_lut",
+    "assert_shape"
+   ],
+   "tolerance": "exact (raises)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: only u8/u16 inputs index a table; float input is refused",
+   "file": "tests/reference/test_apply_lut_ref.py",
+   "ops": [
+    "apply_lut",
+    "cast"
+   ],
+   "tolerance": "exact (raises)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: an index past the table is a row error; explicit `clamp` maps every value",
+   "file": "tests/reference/test_apply_lut_ref.py",
+   "ops": [
+    "apply_lut",
+    "clamp"
+   ],
+   "tolerance": "exact (raises, then hand-computed values)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: output dtype and K-channel shape in the plan",
+   "file": "tests/reference/test_apply_lut_ref.py",
+   "ops": [
+    "apply_lut",
+    "grayscale"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: only the out-of-range row becomes null",
+   "file": "tests/reference/test_apply_lut_ref.py",
+   "ops": [
+    "apply_lut",
+    "on_error"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy saturating uint8 add (`np.clip` of int16 sum)",
+   "file": "tests/reference/test_binary_ops_ref.py",
+   "ops": [
+    "add"
+   ],
+   "tolerance": "atol 1",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy int16-clipped add/subtract, float32 normalized product, float32 division, 0/1 mask product, np.maximum/minimum/bitwise_and/bitwise_or, scalar and per-channel scaling",
+   "file": "tests/reference/test_binary_ops_ref.py",
+   "ops": [
+    "add",
+    "subtract",
+    "multiply",
+    "divide",
+    "apply_mask",
+    "maximum",
+    "minimum",
+    "bitwise_and",
+    "bitwise_or",
+    "blend",
+    "scale",
+    "channel_select",
+    "channel_merge"
+   ],
+   "tolerance": "exact except the normalized product (atol 1: polars-cv rounds, the reference truncates) and per-channel weights (rtol 1e-6, f32 vs f64 weights)",
+   "tests": 13,
+   "passed": 13,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy image times 0/1 mask, u8",
+   "file": "tests/reference/test_binary_ops_ref.py",
+   "ops": [
+    "apply_mask",
+    "grayscale"
+   ],
+   "tolerance": "atol 1",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy rounded normalized product `(a*b + 127) // 255`, u8",
+   "file": "tests/reference/test_binary_ops_ref.py",
+   "ops": [
+    "blend"
+   ],
+   "tolerance": "atol 1",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy true division into f32, IEEE inf/NaN at zero",
+   "file": "tests/reference/test_binary_ops_ref.py",
+   "ops": [
+    "divide"
+   ],
+   "tolerance": "rtol 1e-6, NaN equal; dtype f32",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy saturating uint8 multiply (`np.clip` of uint16 product)",
+   "file": "tests/reference/test_binary_ops_ref.py",
+   "ops": [
+    "multiply"
+   ],
+   "tolerance": "atol 1",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy saturating uint8 subtract (`np.clip` of int16 difference)",
+   "file": "tests/reference/test_binary_ops_ref.py",
+   "ops": [
+    "subtract"
+   ],
+   "tolerance": "atol 1",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: sigma 0 is the identity (as in PIL, SciPy); sigma < 0, NaN, inf refused",
+   "file": "tests/reference/test_blur_ref.py",
+   "ops": [
+    "blur"
+   ],
+   "tolerance": "exact",
+   "tests": 9,
+   "passed": 9,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.GaussianBlur`, u8 gray and RGB, sigma 1 and 2",
+   "file": "tests/reference/test_blur_ref.py",
+   "ops": [
+    "blur"
+   ],
+   "tolerance": "mean diff < 0.5, max diff <= 3 levels (smooth images)",
+   "tests": 4,
+   "passed": 4,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.Canny`, aperture 3, L1 gradient (gray, colour, alpha, tiny images)",
+   "file": "tests/reference/test_canny_ref.py",
+   "ops": [
+    "canny"
+   ],
+   "tolerance": "exact (identical edge maps)",
+   "tests": 44,
+   "passed": 44,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "pycocotools `COCOeval` bbox summary (mAP, mAP50, mAP75, mAR100), random data",
+   "file": "tests/reference/test_coco_parity_ref.py",
+   "ops": [
+    "metrics.evaluate_detections"
+   ],
+   "tolerance": "abs 1e-12",
+   "tests": 4,
+   "passed": 4,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: BT.601 luma Y = 0.299 R + 0.587 G + 0.114 B",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "abs diff <= 1 level",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: LAB output is f32",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: LAB range, L in [0, 100], a and b within +-130",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "bounds L -1..101, a and b +-130",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: RGB -> BGR -> HSV equals RGB -> HSV",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "atol 2 levels",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: RGB -> BGR -> RGB recovers the input",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: RGB -> HSV -> RGB round-trip recovers the input",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "atol 8 levels",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: RGB -> HSV -> YCbCr -> RGB recovers the input",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "atol 10 levels",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: RGB -> LAB -> RGB round-trip recovers the input (f32, 0-1 scale)",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "atol 2/255",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: RGB -> RGB is the identity",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: RGB -> YCbCr -> RGB round-trip recovers the input",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "atol 3 levels",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: an unknown colour space name raises `ValueError`",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "exact (raises)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: gray (128, 128, 128) has S=0",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: planned dtype after HSV is unchanged (auto)",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: planned dtype after LAB is f32",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: pure R, G, B give H=0, 60, 120 (S=V=255)",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: pure black is L=0, a=0, b=0",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "abs diff < 1",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: pure red is H=0, S=255, V=255",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: pure white is L=100, a=0, b=0",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "abs diff < 1",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy BT.601 gray `round(0.299 R + 0.587 G + 0.114 B)`",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "atol 1 level (fixed-point rounding)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy channel flip `rgb[:, :, ::-1]`",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.cvtColor` BGR2HSV (u8, hue 0-180)",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "convert_color"
+   ],
+   "tolerance": "S, V atol 2; wrapped hue p99.9 diff <= 2",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy channel flip `rgb[:, :, ::-1]`",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "to_bgr"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: `to_hsv()` equals `convert_color(rgb, hsv)`",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "to_hsv",
+    "convert_color"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: `to_lab()` equals `convert_color(rgb, lab)`",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "to_lab",
+    "convert_color"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: `to_ycbcr()` equals `convert_color(rgb, ycbcr)`",
+   "file": "tests/reference/test_color_ref.py",
+   "ops": [
+    "to_ycbcr",
+    "convert_color"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: a null operand nulls the row",
+   "file": "tests/reference/test_contour_boolean_ref.py",
+   "ops": [
+    "contour.intersection"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: single-contour columns yield a contour-set column",
+   "file": "tests/reference/test_contour_boolean_ref.py",
+   "ops": [
+    "contour.union"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: 10x10 minus an overlapping rectangle is 50",
+   "file": "tests/reference/test_contour_boolean_ref.py",
+   "ops": [
+    "difference",
+    "area"
+   ],
+   "tolerance": "pytest.approx default (rel 1e-6)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: 20x20 square minus 4x4 island is 384",
+   "file": "tests/reference/test_contour_boolean_ref.py",
+   "ops": [
+    "difference",
+    "area"
+   ],
+   "tolerance": "pytest.approx default (rel 1e-6)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: a-a empty, overlapping squares area 63",
+   "file": "tests/reference/test_contour_boolean_ref.py",
+   "ops": [
+    "difference",
+    "intersection",
+    "area"
+   ],
+   "tolerance": "pytest.approx default (rel 1e-6)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: island in a ring's hole (areas 16, 300)",
+   "file": "tests/reference/test_contour_boolean_ref.py",
+   "ops": [
+    "intersection",
+    "union",
+    "area"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: `.contour.iou` equals area(a and b) / area(a or b)",
+   "file": "tests/reference/test_contour_boolean_ref.py",
+   "ops": [
+    "intersection",
+    "union",
+    "area",
+    "contour.iou"
+   ],
+   "tolerance": "rel 1e-07",
+   "tests": 4,
+   "passed": 4,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: a buffer-domain operand is refused at build time",
+   "file": "tests/reference/test_contour_boolean_ref.py",
+   "ops": [
+    "union"
+   ],
+   "tolerance": "exact (raises ValueError)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: inclusion-exclusion of the areas of the boolean results",
+   "file": "tests/reference/test_contour_boolean_ref.py",
+   "ops": [
+    "union",
+    "intersection",
+    "difference",
+    "symmetric_difference",
+    "area"
+   ],
+   "tolerance": "rel 1e-07",
+   "tests": 4,
+   "passed": 4,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: areas of s op empty and empty op s",
+   "file": "tests/reference/test_contour_boolean_ref.py",
+   "ops": [
+    "union",
+    "intersection",
+    "difference",
+    "symmetric_difference",
+    "area"
+   ],
+   "tolerance": "pytest.approx default (rel 1e-6)",
+   "tests": 4,
+   "passed": 4,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: an open contour operand is refused (no region)",
+   "file": "tests/reference/test_contour_boolean_ref.py",
+   "ops": [
+    "union",
+    "intersection",
+    "difference",
+    "symmetric_difference",
+    "contour.union",
+    "contour.intersection",
+    "contour.difference",
+    "contour.symmetric_difference"
+   ],
+   "tolerance": "exact (raises ComputeError)",
+   "tests": 8,
+   "passed": 8,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: the `.contour` accessor equals the pipeline op",
+   "file": "tests/reference/test_contour_boolean_ref.py",
+   "ops": [
+    "union",
+    "intersection",
+    "difference",
+    "symmetric_difference",
+    "contour.union",
+    "contour.intersection",
+    "contour.difference",
+    "contour.symmetric_difference"
+   ],
+   "tolerance": "exact",
+   "tests": 4,
+   "passed": 4,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy pixelwise `|`, `&`, `& ~`, `^` of the rasterized operand masks",
+   "file": "tests/reference/test_contour_boolean_ref.py",
+   "ops": [
+    "union",
+    "intersection",
+    "difference",
+    "symmetric_difference",
+    "rasterize",
+    "area"
+   ],
+   "tolerance": "masks exact; areas pytest.approx default (rel 1e-6)",
+   "tests": 24,
+   "passed": 24,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.contourArea`/`arcLength`/`moments`/`boundingRect`/`convexHull`/`approxPolyDP`/`pointPolygonTest` and NumPy",
+   "file": "tests/reference/test_contour_ops_ref.py",
+   "ops": [
+    "contour.area",
+    "contour.perimeter",
+    "contour.winding",
+    "contour.flip",
+    "contour.normalize",
+    "contour.to_absolute",
+    "contour.centroid",
+    "contour.bounding_box",
+    "contour.convex_hull",
+    "contour.is_convex",
+    "contour.translate",
+    "contour.scale",
+    "contour.simplify",
+    "contour.contains_point"
+   ],
+   "tolerance": "rel 1e-09 on analytic polygon measures (area, perimeter, centroid, transforms); exact for bbox, hull vertices, winding, convexity and containment",
+   "tests": 21,
+   "passed": 21,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: a bad per-row length is refused with its row",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "densify"
+   ],
+   "tolerance": "exact (raises)",
+   "tests": 3,
+   "passed": 3,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: a non-positive or non-finite max length is refused at build",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "densify"
+   ],
+   "tolerance": "exact (raises)",
+   "tests": 2,
+   "passed": 2,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Python: split of each edge into ceil(L / max) equal parts",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "densify"
+   ],
+   "tolerance": "atol 1e-9; every edge <= max + 1e-9",
+   "tests": 9,
+   "passed": 9,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: a length past the point budget is refused before running",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "densify",
+    "contour.densify"
+   ],
+   "tolerance": "exact (raises)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: a non-finite per-row distance is refused with its row",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "offset"
+   ],
+   "tolerance": "exact (raises)",
+   "tests": 3,
+   "passed": 3,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: an open contour has no region and is refused",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "offset"
+   ],
+   "tolerance": "exact (raises)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: round-offset edges stay within the documented arc bound of distance d",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "offset"
+   ],
+   "tolerance": "max gap <= max(1/64, r (1 - cos(0.01 pi))) + 1e-9",
+   "tests": 6,
+   "passed": 6,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: a square shrunk past its middle is empty",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "offset"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: round-join area = square + 4 edge strips + pi r^2 (arcs inscribed)",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "offset",
+    "area"
+   ],
+   "tolerance": "exact - 2 pi r 0.0156 <= area <= exact + 1e-6",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: 10x10 square shrunk by 3 is a 4x4 square (area 16)",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "offset",
+    "area"
+   ],
+   "tolerance": "pytest.approx rel 1e-6",
+   "tests": 3,
+   "passed": 3,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: area of a 10x10 square grown by 3, miter and bevel",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "offset",
+    "area"
+   ],
+   "tolerance": "pytest.approx rel 1e-6",
+   "tests": 2,
+   "passed": 2,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: dumbbell shrunk by 1.5 splits into two 5x5 squares",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "offset",
+    "area"
+   ],
+   "tolerance": "pytest.approx rel 1e-6",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: holed square grown by 2 (area 24^2 - 6^2, one hole)",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "offset",
+    "area"
+   ],
+   "tolerance": "pytest.approx rel 1e-6",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: overlapping members shrink as one region (area 36)",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "offset",
+    "area"
+   ],
+   "tolerance": "pytest.approx rel 1e-6",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: per-row distance +1 / -1 on a 10x10 square (areas 144, 64)",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "offset",
+    "area"
+   ],
+   "tolerance": "pytest.approx rel 1e-6",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: two squares grown by 1.5 merge into one 21x11 rectangle",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "offset",
+    "area"
+   ],
+   "tolerance": "pytest.approx rel 1e-6",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: round offset is {p: signed_distance(p, region) <= d}, NumPy/matplotlib oracle",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "offset",
+    "rasterize"
+   ],
+   "tolerance": "per-pixel band, +-0.0156 px at the boundary",
+   "tests": 6,
+   "passed": 6,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: offset by 0 equals `union_all`",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "offset",
+    "union_all"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: a degenerate ring gives a contour set or a named refusal, never a panic",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "offset",
+    "union_all",
+    "smooth",
+    "densify",
+    "stroke",
+    "contour.offset",
+    "contour.union_all",
+    "contour.smooth",
+    "contour.densify",
+    "contour.stroke"
+   ],
+   "tolerance": "no panic (any other ComputeError allowed)",
+   "tests": 23,
+   "passed": 23,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: each `.contour` accessor equals its pipeline op",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "offset",
+    "union_all",
+    "smooth",
+    "densify",
+    "stroke",
+    "contour.offset",
+    "contour.union_all",
+    "contour.smooth",
+    "contour.densify",
+    "contour.stroke"
+   ],
+   "tolerance": "exact",
+   "tests": 5,
+   "passed": 5,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: rasterize refuses a line and names `stroke()`",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "rasterize"
+   ],
+   "tolerance": "exact (raises)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Python: Chaikin corner cutting (reference in the test)",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "smooth"
+   ],
+   "tolerance": "atol 1e-9",
+   "tests": 12,
+   "passed": 12,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Python: Chaikin corner cutting (reference in the test), one pass",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "smooth"
+   ],
+   "tolerance": "atol 1e-9",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: passes past the point budget are refused before running",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "smooth",
+    "contour.smooth"
+   ],
+   "tolerance": "exact (raises)",
+   "tests": 2,
+   "passed": 2,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: the point budget applies to the whole row, not per member",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "smooth",
+    "densify",
+    "contour.smooth",
+    "contour.densify"
+   ],
+   "tolerance": "exact (raises)",
+   "tests": 2,
+   "passed": 2,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: a bad per-row width is refused with its row",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "stroke"
+   ],
+   "tolerance": "exact (raises)",
+   "tests": 3,
+   "passed": 3,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: a non-positive or non-finite width is refused at build",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "stroke"
+   ],
+   "tolerance": "exact (raises)",
+   "tests": 2,
+   "passed": 2,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: crossing lines stroke to one closed region",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "stroke"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: round-cap edges stay within the documented arc bound of radius r",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "stroke"
+   ],
+   "tolerance": "max gap <= max(1/64, r (1 - cos(0.01 pi))) + 1e-9",
+   "tests": 3,
+   "passed": 3,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: an edge-less ring strokes to nothing; a one-point line to a dot",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "stroke"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: stroking a region equals stroking its `boundary()` lines",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "stroke",
+    "boundary",
+    "rasterize"
+   ],
+   "tolerance": "exact",
+   "tests": 3,
+   "passed": 3,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: a closed loop line strokes alike from any start point and any cap",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "stroke",
+    "rasterize"
+   ],
+   "tolerance": "exact",
+   "tests": 6,
+   "passed": 6,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: a mixed set strokes as the union (max) of its members' strokes",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "stroke",
+    "rasterize"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: a one-point line with round caps is a disc of radius width/2",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "stroke",
+    "rasterize"
+   ],
+   "tolerance": "per-pixel band, +-0.0156 px at the boundary",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: a region strokes as a band about each ring, no caps",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "stroke",
+    "rasterize"
+   ],
+   "tolerance": "per-pixel band, +-0.0156 px at the boundary",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: default stroke is a 1 px round line (distance <= 0.5)",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "stroke",
+    "rasterize"
+   ],
+   "tolerance": "per-pixel band, +-0.0156 px at the boundary",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: round stroke is {p: distance(p, path) <= width/2}, NumPy distance oracle",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "stroke",
+    "rasterize"
+   ],
+   "tolerance": "per-pixel band, +-0.0156 px at the boundary",
+   "tests": 19,
+   "passed": 19,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: area of an L stroke per join (miter 80, round 76+pi, bevel 78)",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "stroke",
+    "rasterize"
+   ],
+   "tolerance": "abs 0.25 px area, supersample 16",
+   "tests": 3,
+   "passed": 3,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: butt and square caps on a grid-aligned segment (mask)",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "stroke",
+    "rasterize"
+   ],
+   "tolerance": "exact",
+   "tests": 2,
+   "passed": 2,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: mask of a grid-aligned mitered L stroke",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "stroke",
+    "rasterize"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: an open contour has no region and is refused",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "union_all"
+   ],
+   "tolerance": "exact (raises)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: the union of an empty set is empty",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "union_all"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: ring plus island stays two regions (areas 16, 256)",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "union_all",
+    "area"
+   ],
+   "tolerance": "pytest.approx default (rel 1e-6)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: ring plus plug is one hole-free region (area 400)",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "union_all",
+    "area"
+   ],
+   "tolerance": "pytest.approx default (rel 1e-6)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: rasterizing `union_all` equals rasterizing the set",
+   "file": "tests/reference/test_contour_shaping_ref.py",
+   "ops": [
+    "union_all",
+    "rasterize",
+    "area"
+   ],
+   "tolerance": "masks exact; areas pytest.approx default (rel 1e-6)",
+   "tests": 5,
+   "passed": 5,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy `np.meshgrid` of pixel centres (x + 0.5, y + 0.5), optionally / (W, H)",
+   "file": "tests/reference/test_coordinate_grid_ref.py",
+   "ops": [
+    "coordinate_grid"
+   ],
+   "tolerance": "exact",
+   "tests": 22,
+   "passed": 22,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy `(np.meshgrid centres - 4.5) ** 2`",
+   "file": "tests/reference/test_coordinate_grid_ref.py",
+   "ops": [
+    "coordinate_grid",
+    "add_constant",
+    "square"
+   ],
+   "tolerance": "rtol 1e-6",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy `np.meshgrid` of pixel centres (x + 0.5, y + 0.5), cropped before or sliced after",
+   "file": "tests/reference/test_coordinate_grid_ref.py",
+   "ops": [
+    "coordinate_grid",
+    "crop"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy `np.meshgrid` of pixel centres (x + 0.5, y + 0.5)",
+   "file": "tests/reference/test_coordinate_grid_ref.py",
+   "ops": [
+    "coordinate_grid",
+    "flip_h"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: planned shape (5, 7, 2) and dtype f32",
+   "file": "tests/reference/test_coordinate_grid_ref.py",
+   "ops": [
+    "coordinate_grid",
+    "resize"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: all-zero image is 0 unsigned and +inf signed",
+   "file": "tests/reference/test_distance_transform_ref.py",
+   "ops": [
+    "distance_transform"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: with no zero pixel the distance is +inf (-inf signed)",
+   "file": "tests/reference/test_distance_transform_ref.py",
+   "ops": [
+    "distance_transform"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "SciPy `scipy.ndimage.distance_transform_edt` composition (d_out - 0.5 outside, -(d_in - 0.5) inside)",
+   "file": "tests/reference/test_distance_transform_ref.py",
+   "ops": [
+    "distance_transform"
+   ],
+   "tolerance": "exact (f32)",
+   "tests": 8,
+   "passed": 8,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "SciPy `scipy.ndimage.distance_transform_edt`, [H, W, 1] input",
+   "file": "tests/reference/test_distance_transform_ref.py",
+   "ops": [
+    "distance_transform"
+   ],
+   "tolerance": "exact (f32)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "SciPy `scipy.ndimage.distance_transform_edt`, all 10 numeric dtypes, unsigned and signed",
+   "file": "tests/reference/test_distance_transform_ref.py",
+   "ops": [
+    "distance_transform"
+   ],
+   "tolerance": "exact (f32)",
+   "tests": 10,
+   "passed": 10,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "SciPy `scipy.ndimage.distance_transform_edt`; OpenCV `cv2.distanceTransform` (DIST_L2, precise)",
+   "file": "tests/reference/test_distance_transform_ref.py",
+   "ops": [
+    "distance_transform"
+   ],
+   "tolerance": "SciPy: exact (f32); OpenCV: within 1 ulp",
+   "tests": 8,
+   "passed": 8,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Cross-check: vector `.point.signed_distance_to_contour` on the `extract_contours` outline",
+   "file": "tests/reference/test_distance_transform_ref.py",
+   "ops": [
+    "distance_transform",
+    "extract_contours",
+    "point.signed_distance_to_contour"
+   ],
+   "tolerance": "\"atol 1e-5 on edges; corner overshoot <= (sqrt 2 - 1)/2\"",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: the plan publishes f32 output of the input rank",
+   "file": "tests/reference/test_distance_transform_ref.py",
+   "ops": [
+    "distance_transform",
+    "grayscale"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.findContours` (RETR_EXTERNAL/LIST/TREE, CHAIN_APPROX_NONE/SIMPLE/TC89) on the same mask",
+   "file": "tests/reference/test_extract_ref.py",
+   "ops": [
+    "extract_contours"
+   ],
+   "tolerance": "exact: contour count, bounding box under the pixel-edge vs pixel-centre mapping, area == mask pixel count, vertex count where the conventions coincide",
+   "tests": 13,
+   "passed": 13,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy `np.histogram` (counts, edges, density) and `np.digitize` (quantized)",
+   "file": "tests/reference/test_histogram_ref.py",
+   "ops": [
+    "histogram"
+   ],
+   "tolerance": "exact for counts and quantized indices; rtol 1e-12 for edges and normalized",
+   "tests": 11,
+   "passed": 11,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: a footprint other than disk or square is refused",
+   "file": "tests/reference/test_morphology_disk_ref.py",
+   "ops": [
+    "erode"
+   ],
+   "tolerance": "exact (raises)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy sliding window `np.min` over the disk (NaN propagates)",
+   "file": "tests/reference/test_morphology_disk_ref.py",
+   "ops": [
+    "erode"
+   ],
+   "tolerance": "exact (NaN mask)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy sliding window `np.min`/`np.max` over the disk, edges replicated",
+   "file": "tests/reference/test_morphology_disk_ref.py",
+   "ops": [
+    "erode",
+    "dilate"
+   ],
+   "tolerance": "exact",
+   "tests": 100,
+   "passed": 100,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "SciPy `scipy.ndimage.distance_transform_edt` thresholded at the disk radius",
+   "file": "tests/reference/test_morphology_disk_ref.py",
+   "ops": [
+    "erode",
+    "dilate"
+   ],
+   "tolerance": "exact",
+   "tests": 16,
+   "passed": 16,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "SciPy `scipy.ndimage.grey_erosion`/`grey_dilation`, disk footprint, nearest",
+   "file": "tests/reference/test_morphology_disk_ref.py",
+   "ops": [
+    "erode",
+    "dilate"
+   ],
+   "tolerance": "exact",
+   "tests": 4,
+   "passed": 4,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: `footprint=\"square\"` is the default footprint",
+   "file": "tests/reference/test_morphology_disk_ref.py",
+   "ops": [
+    "erode",
+    "dilate",
+    "morphology_gradient"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy disk window erode/dilate, composed per the definition of each op",
+   "file": "tests/reference/test_morphology_disk_ref.py",
+   "ops": [
+    "morphology_gradient",
+    "morphology_open",
+    "morphology_close"
+   ],
+   "tolerance": "exact",
+   "tests": 3,
+   "passed": 3,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: builder lowers open to erode+dilate, close to dilate+erode; domain and dtype kept; no execution",
+   "file": "tests/reference/test_morphology_ref.py",
+   "ops": [
+    "erode",
+    "dilate",
+    "morphology_open",
+    "morphology_close",
+    "morphology_gradient",
+    "grayscale"
+   ],
+   "tolerance": "exact",
+   "tests": 7,
+   "passed": 7,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: dilate with ksize=1 returns the input unchanged",
+   "file": "tests/reference/test_morphology_ref.py",
+   "ops": [
+    "grayscale",
+    "dilate"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.dilate`, 3x3 rect kernel, u8 gray (1 and 2 iterations)",
+   "file": "tests/reference/test_morphology_ref.py",
+   "ops": [
+    "grayscale",
+    "dilate"
+   ],
+   "tolerance": "exact",
+   "tests": 3,
+   "passed": 3,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: erode with ksize=1 returns the input unchanged",
+   "file": "tests/reference/test_morphology_ref.py",
+   "ops": [
+    "grayscale",
+    "erode"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: erosion of an all-zero mask is all zero",
+   "file": "tests/reference/test_morphology_ref.py",
+   "ops": [
+    "grayscale",
+    "erode"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.erode`, 3x3 rect kernel, u8 gray (1 and 2 iterations)",
+   "file": "tests/reference/test_morphology_ref.py",
+   "ops": [
+    "grayscale",
+    "erode"
+   ],
+   "tolerance": "exact",
+   "tests": 3,
+   "passed": 3,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.morphologyEx` MORPH_CLOSE, 3x3 rect kernel, u8 gray",
+   "file": "tests/reference/test_morphology_ref.py",
+   "ops": [
+    "grayscale",
+    "morphology_close"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.morphologyEx` MORPH_GRADIENT, 3x3 rect kernel, u8 gray",
+   "file": "tests/reference/test_morphology_ref.py",
+   "ops": [
+    "grayscale",
+    "morphology_gradient"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.morphologyEx` MORPH_OPEN, 3x3 rect kernel, u8 gray",
+   "file": "tests/reference/test_morphology_ref.py",
+   "ops": [
+    "grayscale",
+    "morphology_open"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `drawContours` masks / `cv2.pointPolygonTest`, SciPy `directed_hausdorff`",
+   "file": "tests/reference/test_pairwise_ref.py",
+   "ops": [
+    "contour.iou",
+    "contour.dice",
+    "contour.hausdorff_distance",
+    "contour.contains_point"
+   ],
+   "tolerance": "IoU/Dice abs 0.01 vs edge-inclusive OpenCV masks and rel 1e-09 vs the analytic value; Hausdorff rel 1e-9 vs SciPy; containment exact",
+   "tests": 14,
+   "passed": 14,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: distinct images spread near 32 of 64 bits apart",
+   "file": "tests/reference/test_perceptual_hash_ref.py",
+   "ops": [
+    "perceptual_hash"
+   ],
+   "tolerance": "Hamming bits: mean > 26, min > 6",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "imagehash `phash` (64-bit, hash_size=16 for 256 bits), `average_hash` and `dhash` on the same images",
+   "file": "tests/reference/test_perceptual_hash_ref.py",
+   "ops": [
+    "perceptual_hash"
+   ],
+   "tolerance": "Hamming bits: phash <= 4 (<= 12 on a colour gradient), 256-bit <= 40, average/difference <= 10 on smooth images (bytes read LSB-first)",
+   "tests": 18,
+   "passed": 18,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "imagehash `phash` (default 64-bit, and hash_size=16 for 256 bits)",
+   "file": "tests/reference/test_perceptual_hash_ref.py",
+   "ops": [
+    "perceptual_hash"
+   ],
+   "tolerance": "Hamming bits: <= 2 at 32x32, exact on flat/gradient, <= 4 resized, <= 40 of 256",
+   "tests": 4,
+   "passed": 4,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: brightness factor 1.0 preserves values (u8 -> f32)",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "adjust_brightness"
+   ],
+   "tolerance": "atol 1e-4",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: 200 * 2.0 saturates at 255",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "adjust_brightness"
+   ],
+   "tolerance": "atol 1e-4",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: lowers to `scale` then `clamp`",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "adjust_brightness"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: contrast factor 1.0 is the identity (u8 -> f32)",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "adjust_contrast"
+   ],
+   "tolerance": "atol 1e-4",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: planned dtype u8 -> f32",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "adjust_contrast"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy `(img - mean) * factor + mean` in f32",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "adjust_contrast"
+   ],
+   "tolerance": "atol 1e-2",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: gamma 1.0 is the identity (u8 -> f32)",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "adjust_gamma"
+   ],
+   "tolerance": "atol 1.0 level",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: planned dtype u8 -> f32",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "adjust_gamma"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy `np.power(img / 255, gamma) * 255` in f32",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "adjust_gamma"
+   ],
+   "tolerance": "atol 1.0 level",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: the domain stays `buffer`",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "channel_select"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy indexing `img[:, :, i:i+1]`",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "channel_select"
+   ],
+   "tolerance": "exact",
+   "tests": 3,
+   "passed": 3,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: swap order [0, 1, 2] is the identity",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "channel_swap"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: the domain stays `buffer`",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "channel_swap"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy channel reversal `img[:, :, ::-1]`",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "channel_swap"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: inverting twice recovers the input",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "invert"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: planned dtype is not promoted",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "invert"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy `255 - img` on u8",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "invert"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy bitwise not `~x` for every integer dtype (u8-i64)",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "invert"
+   ],
+   "tolerance": "exact",
+   "tests": 8,
+   "passed": 8,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy `np.pad(mode=\"reflect\")`, three channels",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "pad"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy `np.pad(mode=\"reflect\")`",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "pad",
+    "grayscale"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy `np.pad(mode=\"symmetric\")`",
+   "file": "tests/reference/test_phase1_ref.py",
+   "ops": [
+    "pad",
+    "grayscale"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: Canny output is u8 containing only 0 and 255",
+   "file": "tests/reference/test_phase3_ref.py",
+   "ops": [
+    "canny"
+   ],
+   "tolerance": "exact (values in {0, 255})",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: edges appear around a bright rectangle, none inside it",
+   "file": "tests/reference/test_phase3_ref.py",
+   "ops": [
+    "canny"
+   ],
+   "tolerance": "edge max == 255; interior sum 0 or mean < 10",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: an identity kernel keeps all 3 channels of an RGB image (as f32)",
+   "file": "tests/reference/test_phase3_ref.py",
+   "ops": [
+    "convolve2d"
+   ],
+   "tolerance": "atol 0.5",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: even or non-square kernels, unknown border and unknown sobel axis are refused",
+   "file": "tests/reference/test_phase3_ref.py",
+   "ops": [
+    "convolve2d",
+    "sobel"
+   ],
+   "tolerance": "exact (raises ValueError)",
+   "tests": 4,
+   "passed": 4,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: a 3x3 identity kernel reproduces the input (as f32)",
+   "file": "tests/reference/test_phase3_ref.py",
+   "ops": [
+    "grayscale",
+    "convolve2d"
+   ],
+   "tolerance": "atol 0.5",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: zero and reflect border modes run and return a result (values not compared)",
+   "file": "tests/reference/test_phase3_ref.py",
+   "ops": [
+    "grayscale",
+    "convolve2d"
+   ],
+   "tolerance": "none (result is not None)",
+   "tests": 2,
+   "passed": 2,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy mean of the 3x3 neighbourhood at one interior pixel, f32 output",
+   "file": "tests/reference/test_phase3_ref.py",
+   "ops": [
+    "grayscale",
+    "convolve2d"
+   ],
+   "tolerance": "atol 0.5 (one pixel)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: equalizing a low-contrast image widens its value range",
+   "file": "tests/reference/test_phase3_ref.py",
+   "ops": [
+    "grayscale",
+    "equalize_histogram"
+   ],
+   "tolerance": "strict inequality (output range > input range)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: the equalized 16-bin histogram is near uniform",
+   "file": "tests/reference/test_phase3_ref.py",
+   "ops": [
+    "grayscale",
+    "equalize_histogram"
+   ],
+   "tolerance": "chi-squared-like measure < 2.0",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.equalizeHist`, u8 gray",
+   "file": "tests/reference/test_phase3_ref.py",
+   "ops": [
+    "grayscale",
+    "equalize_histogram"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.Laplacian`, ksize=1, CV_32F, interior only (1 px margin)",
+   "file": "tests/reference/test_phase3_ref.py",
+   "ops": [
+    "grayscale",
+    "laplacian"
+   ],
+   "tolerance": "atol 1.0",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: sharpening raises the mean absolute horizontal gradient",
+   "file": "tests/reference/test_phase3_ref.py",
+   "ops": [
+    "grayscale",
+    "sharpen"
+   ],
+   "tolerance": "strict inequality (sharpened > original)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.filter2D`, 3x3 sharpen kernel, BORDER_REPLICATE, f32 gray",
+   "file": "tests/reference/test_phase3_ref.py",
+   "ops": [
+    "grayscale",
+    "sharpen"
+   ],
+   "tolerance": "atol 1e-3 (full image)",
+   "tests": 3,
+   "passed": 3,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.Sobel`, CV_32F, x and y, interior only (2 px margin)",
+   "file": "tests/reference/test_phase3_ref.py",
+   "ops": [
+    "grayscale",
+    "sobel"
+   ],
+   "tolerance": "atol 1.0",
+   "tests": 2,
+   "passed": 2,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.filter2D`, 3x3 sharpen kernel, BORDER_REPLICATE, f32 RGB",
+   "file": "tests/reference/test_phase3_ref.py",
+   "ops": [
+    "sharpen"
+   ],
+   "tolerance": "atol 1e-3 (full image)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "OpenCV `cv2.drawContours` (filled, thickness=1 outline, holes punched with value 0) on the same contours",
+   "file": "tests/reference/test_rasterize_ref.py",
+   "ops": [
+    "rasterize",
+    "stroke"
+   ],
+   "tolerance": "exact for axis-aligned shapes (far edges at b + 1 for OpenCV's inclusive pixels) and for the 1px outline; diagonal/curved edges differ on boundary pixels only, <= the perimeter (measured ~0.48x)",
+   "tests": 10,
+   "passed": 10,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: supersample outside 1..16 is refused at build",
+   "file": "tests/reference/test_rasterize_supersample_ref.py",
+   "ops": [
+    "rasterize"
+   ],
+   "tolerance": "exact (raises ValueError)",
+   "tests": 2,
+   "passed": 2,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: supersample=1 equals the default centre rule",
+   "file": "tests/reference/test_rasterize_supersample_ref.py",
+   "ops": [
+    "rasterize"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: edge at x = 2.25 / 5.75 covers 3/4 of a pixel (191)",
+   "file": "tests/reference/test_rasterize_supersample_ref.py",
+   "ops": [
+    "rasterize"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: fill 0 on background 200 with half-covered pixels (100)",
+   "file": "tests/reference/test_rasterize_supersample_ref.py",
+   "ops": [
+    "rasterize"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Hand-computed expected values: per-row supersample 1 and 2 give 255 and 128 for a half-covered pixel",
+   "file": "tests/reference/test_rasterize_supersample_ref.py",
+   "ops": [
+    "rasterize"
+   ],
+   "tolerance": "exact",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "matplotlib `Path.contains_points` at each n x n sub-pixel centre, holes subtracted",
+   "file": "tests/reference/test_rasterize_supersample_ref.py",
+   "ops": [
+    "rasterize"
+   ],
+   "tolerance": "exact (u8 mask, n = 1..8)",
+   "tests": 20,
+   "passed": 20,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy `np.max/min/mean/std/sum/argmax/argmin` on a random u8 RGB image",
+   "file": "tests/reference/test_reductions_ref.py",
+   "ops": [
+    "reduce_max",
+    "reduce_min",
+    "reduce_mean",
+    "reduce_std",
+    "reduce_sum",
+    "reduce_argmax",
+    "reduce_argmin"
+   ],
+   "tolerance": "exact for max/min/argmax/argmin/sum; rtol 1e-9 for mean/std",
+   "tests": 17,
+   "passed": 17,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "NumPy elementwise ufuncs (`np.abs`, `np.sqrt`, `np.round`, ...) on a signed f32 base",
+   "file": "tests/reference/test_scalar_math_ref.py",
+   "ops": [
+    "neg",
+    "abs",
+    "sqrt",
+    "square",
+    "reciprocal",
+    "sign",
+    "floor",
+    "ceil",
+    "round",
+    "trunc",
+    "clamp_min",
+    "clamp_max",
+    "add_constant",
+    "subtract_constant",
+    "cast",
+    "scale"
+   ],
+   "tolerance": "rtol 1e-5, atol 1e-5, NaN equal",
+   "tests": 14,
+   "passed": 14,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "Definition: a scalar op on a u8 image promotes to f32",
+   "file": "tests/reference/test_scalar_math_ref.py",
+   "ops": [
+    "sqrt"
+   ],
+   "tolerance": "exact (dtype)",
+   "tests": 1,
+   "passed": 1,
+   "failed": 0,
+   "skipped": 0
+  }
+ ]
+}

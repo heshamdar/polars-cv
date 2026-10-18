@@ -18,7 +18,14 @@ from polars_cv import Pipeline, numpy_from_column
 from tests._plan_view import planned
 from tests.conftest import plugin_required
 
-pytestmark = plugin_required
+pytestmark = [
+    plugin_required,
+    pytest.mark.parity(
+        ops=["coordinate_grid"],
+        against="NumPy `np.meshgrid` of pixel centres (x + 0.5, y + 0.5), optionally / (W, H)",
+        tolerance="exact",
+    ),
+]
 
 _POLARS = {np.dtype(np.uint8): pl.UInt8, np.dtype(np.float32): pl.Float32}
 
@@ -62,12 +69,22 @@ def test_the_default_is_pixel_units() -> None:
     )
 
 
+@pytest.mark.parity(
+    ops=["coordinate_grid", "flip_h"],
+    against="NumPy `np.meshgrid` of pixel centres (x + 0.5, y + 0.5)",
+    tolerance="exact",
+)
 def test_values_do_not_matter_and_a_view_is_read_where_it_lies() -> None:
     image = np.random.default_rng(1).integers(0, 255, (6, 5, 3)).astype(np.uint8)
     flipped = _run(image, lambda p: p.flip_h().coordinate_grid())
     np.testing.assert_array_equal(flipped, _oracle(6, 5))
 
 
+@pytest.mark.parity(
+    ops=["coordinate_grid", "crop"],
+    against="NumPy `np.meshgrid` of pixel centres (x + 0.5, y + 0.5), cropped before or sliced after",
+    tolerance="exact",
+)
 def test_coordinates_are_in_the_frame_of_the_buffer_they_follow() -> None:
     image = np.zeros((10, 12), np.uint8)
     # A crop first: the grid is the crop's own, origin at its corner.
@@ -82,6 +99,11 @@ def test_coordinates_are_in_the_frame_of_the_buffer_they_follow() -> None:
     np.testing.assert_array_equal(after, _oracle(10, 12)[2:6, 3:8])
 
 
+@pytest.mark.parity(
+    ops=["coordinate_grid", "resize"],
+    against="Hand-computed expected values: planned shape (5, 7, 2) and dtype f32",
+    tolerance="exact",
+)
 def test_the_plan_knows_the_shape_and_dtype() -> None:
     pipe = Pipeline().source("image_bytes").resize(height=5, width=7).coordinate_grid()
     assert planned(pipe).dims == (5, 7, 2)
@@ -102,6 +124,11 @@ def test_a_per_row_normalized_flag() -> None:
     np.testing.assert_array_equal(out[1], _oracle(2, 4, normalized=True))
 
 
+@pytest.mark.parity(
+    ops=["coordinate_grid", "add_constant", "square"],
+    against="NumPy `(np.meshgrid centres - 4.5) ** 2`",
+    tolerance="rtol 1e-6",
+)
 def test_a_field_over_positions_composes_from_it() -> None:
     """What it is for: a field over pixel positions, from ordinary ops."""
     image = np.zeros((9, 9), np.uint8)

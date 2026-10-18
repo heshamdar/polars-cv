@@ -66,6 +66,11 @@ def _table(n: int, k: int, dtype: str, seed: int = 95) -> np.ndarray:
     return rng.integers(lo, hi, size=(n, k), endpoint=True).astype(np_dtype)
 
 
+@pytest.mark.parity(
+    ops=["apply_lut"],
+    against="OpenCV `cv2.LUT` (u8 -> u8, one table for all channels)",
+    tolerance="exact",
+)
 def test_u8_to_u8_matches_cv2_lut() -> None:
     rng = np.random.default_rng(1)
     image = rng.integers(0, 256, (31, 17, 3), dtype=np.uint8)
@@ -77,6 +82,11 @@ def test_u8_to_u8_matches_cv2_lut() -> None:
 
 @pytest.mark.parametrize("dtype", list(_OUT))
 @pytest.mark.parametrize("channels", [1, 2, 4])
+@pytest.mark.parity(
+    ops=["apply_lut"],
+    against="NumPy fancy indexing `table[image]`",
+    tolerance="exact",
+)
 def test_single_entry_rows_map_every_channel_in_place(
     dtype: str, channels: int
 ) -> None:
@@ -91,6 +101,11 @@ def test_single_entry_rows_map_every_channel_in_place(
 @pytest.mark.parametrize("dtype", ["u8", "i16", "f32"])
 @pytest.mark.parametrize("k", [2, 3, 4, 5])
 @pytest.mark.parametrize("shape", [(11, 7), (11, 7, 1)])
+@pytest.mark.parity(
+    ops=["apply_lut"],
+    against="NumPy fancy indexing `table[image]`",
+    tolerance="exact",
+)
 def test_a_palette_takes_one_channel_to_k(dtype: str, k: int, shape) -> None:
     image = np.random.default_rng(k).integers(0, 6, shape, dtype=np.uint8)
     table = _table(6, k, dtype)
@@ -99,6 +114,11 @@ def test_a_palette_takes_one_channel_to_k(dtype: str, k: int, shape) -> None:
     np.testing.assert_array_equal(got, table[image.reshape(11, 7)])
 
 
+@pytest.mark.parity(
+    ops=["apply_lut"],
+    against="NumPy fancy indexing `table[image]`",
+    tolerance="exact",
+)
 def test_u16_input_indexes_by_value() -> None:
     rng = np.random.default_rng(3)
     image = rng.integers(0, 1000, (8, 9, 1), dtype=np.uint16)
@@ -108,6 +128,11 @@ def test_u16_input_indexes_by_value() -> None:
     )
 
 
+@pytest.mark.parity(
+    ops=["apply_lut"],
+    against="NumPy fancy indexing `table[image]`",
+    tolerance="exact",
+)
 def test_the_full_u16_domain_with_a_strided_input() -> None:
     values = np.arange(65536, dtype=np.uint16).reshape(256, 256)[:, ::-1]
     image = np.ascontiguousarray(values)
@@ -117,6 +142,11 @@ def test_the_full_u16_domain_with_a_strided_input() -> None:
     )
 
 
+@pytest.mark.parity(
+    ops=["apply_lut", "clamp"],
+    against="Definition: an index past the table is a row error; explicit `clamp` maps every value",
+    tolerance="exact (raises, then hand-computed values)",
+)
 def test_an_index_past_the_table_is_a_row_error() -> None:
     image = np.array([[0, 1, 2, 3]], np.uint8)
     df = _frame([image])
@@ -137,6 +167,11 @@ def test_an_index_past_the_table_is_a_row_error() -> None:
     assert out.item().to_list() == [[10, 20, 30, 30]]
 
 
+@pytest.mark.parity(
+    ops=["apply_lut", "on_error"],
+    against="Hand-computed expected values: only the out-of-range row becomes null",
+    tolerance="exact",
+)
 def test_on_error_null_nulls_only_the_offending_row() -> None:
     df = _frame([np.array([[0, 1]], np.uint8), np.array([[0, 9]], np.uint8)])
     pipe = Pipeline().source("array").apply_lut([[5], [6]]).on_error("null")
@@ -155,16 +190,31 @@ def test_on_error_null_nulls_only_the_offending_row() -> None:
         ([[1e300]], {"out_dtype": "f32"}, "f32|fit"),
     ],
 )
+@pytest.mark.parity(
+    ops=["apply_lut"],
+    against="Definition: a table no row can use (empty, ragged, out of range) is refused at build",
+    tolerance="exact (raises)",
+)
 def test_a_table_no_row_can_use_is_refused_at_build(table, kw, match) -> None:
     with pytest.raises(Exception, match=match):
         Pipeline().source("image_bytes", dtype="u8").apply_lut(table, **kw)
 
 
+@pytest.mark.parity(
+    ops=["apply_lut", "cast"],
+    against="Definition: only u8/u16 inputs index a table; float input is refused",
+    tolerance="exact (raises)",
+)
 def test_float_input_is_refused() -> None:
     with pytest.raises(Exception, match="(?i)u8.*u16"):
         Pipeline().source("image_bytes", dtype="u8").cast("f32").apply_lut([[0]])
 
 
+@pytest.mark.parity(
+    ops=["apply_lut", "assert_shape"],
+    against="Definition: a palette (K > 1 entries per row) needs a single-channel input",
+    tolerance="exact (raises)",
+)
 def test_a_palette_needs_one_channel() -> None:
     with pytest.raises(Exception, match="single-channel|one channel"):
         (
@@ -175,6 +225,11 @@ def test_a_palette_needs_one_channel() -> None:
         )
 
 
+@pytest.mark.parity(
+    ops=["apply_lut", "grayscale"],
+    against="Hand-computed expected values: output dtype and K-channel shape in the plan",
+    tolerance="exact",
+)
 def test_the_plan_publishes_the_table_dtype_and_k_channels() -> None:
     pipe = Pipeline().source("image_bytes", dtype="u8").grayscale()
     palette = pipe.apply_lut([[0, 0, 0], [1, 2, 3]], out_dtype="f32")

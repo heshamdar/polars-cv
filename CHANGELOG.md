@@ -7,6 +7,31 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+
+- **A parity report: every reference comparison, its tolerance and its
+  outcome.** Each test in `tests/reference/` now declares what it compares
+  polars-cv with and how close the outputs must be
+  (`@pytest.mark.parity(ops=, against=, tolerance=)`).
+  `scripts/parity_report.py` runs the suite and renders
+  [docs/user-guide/parity.md](https://heshamdar.github.io/polars-cv/user-guide/parity/)
+  and a README summary from the declarations and the benchmark's end-to-end
+  diffs against PIL. A reference test without a declaration fails
+  collection, and `tests/test_parity_report.py` fails when the committed
+  report no longer matches what the suite collects.
+- **PyPI metadata:** project URLs (docs, changelog, issues), keywords and
+  topic classifiers, and a description that says what the package does.
+
+### Fixed
+
+- **115 reference tests compared nothing.** The reductions, histogram,
+  rasterize, extract-contours, contour-measure and pairwise suites, and the
+  NumPy and imagehash halves of the binary-op and pHash suites, computed an
+  OpenCV, NumPy or imagehash result and asserted on it without ever running
+  polars-cv, yet were cited as evidence that outputs are checked. Each now
+  compares polars-cv's output with that reference, and a reference test
+  that never enters the `polars_cv` package fails, whatever it asserts.
+
 ## [0.39.0] — 2026-10-18
 
 Shapes made explicit, contours made drawable, and CSE that settles. Binary

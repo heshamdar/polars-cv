@@ -109,6 +109,11 @@ def _masks() -> list[tuple[str, np.ndarray]]:
 @pytest.mark.parametrize(
     ("name", "mask"), _masks(), ids=lambda v: v if isinstance(v, str) else ""
 )
+@pytest.mark.parity(
+    ops=["distance_transform"],
+    against="SciPy `scipy.ndimage.distance_transform_edt`; OpenCV `cv2.distanceTransform` (DIST_L2, precise)",
+    tolerance="SciPy: exact (f32); OpenCV: within 1 ulp",
+)
 def test_unsigned_matches_scipy_and_opencv(name: str, mask: np.ndarray) -> None:
     got = _run(mask)
     assert got.dtype == np.float32
@@ -123,6 +128,11 @@ def test_unsigned_matches_scipy_and_opencv(name: str, mask: np.ndarray) -> None:
 @pytest.mark.parametrize(
     ("name", "mask"), _masks(), ids=lambda v: v if isinstance(v, str) else ""
 )
+@pytest.mark.parity(
+    ops=["distance_transform"],
+    against="SciPy `scipy.ndimage.distance_transform_edt` composition (d_out - 0.5 outside, -(d_in - 0.5) inside)",
+    tolerance="exact (f32)",
+)
 def test_signed_matches_the_scipy_composition(name: str, mask: np.ndarray) -> None:
     if (mask != 0).all() or (mask == 0).all():
         pytest.skip("one class only: covered by the infinity tests")
@@ -130,6 +140,11 @@ def test_signed_matches_the_scipy_composition(name: str, mask: np.ndarray) -> No
 
 
 @pytest.mark.parametrize("dtype", _DTYPES, ids=lambda d: np.dtype(d).name)
+@pytest.mark.parity(
+    ops=["distance_transform"],
+    against="SciPy `scipy.ndimage.distance_transform_edt`, all 10 numeric dtypes, unsigned and signed",
+    tolerance="exact (f32)",
+)
 def test_foreground_is_every_non_zero_value_in_every_dtype(dtype) -> None:
     """Negative values are foreground too, and NaN (non-zero) is."""
     values = np.array([[0, 1, 2, 0], [3, 0, 4, 5], [6, 7, 0, 8]], dtype=np.float64)
@@ -142,6 +157,11 @@ def test_foreground_is_every_non_zero_value_in_every_dtype(dtype) -> None:
     np.testing.assert_array_equal(_run(image, signed=True), _scipy_signed(image))
 
 
+@pytest.mark.parity(
+    ops=["distance_transform"],
+    against="SciPy `scipy.ndimage.distance_transform_edt`, [H, W, 1] input",
+    tolerance="exact (f32)",
+)
 def test_a_channel_axis_of_one_is_kept() -> None:
     mask = (np.random.default_rng(1).random((12, 9, 1)) < 0.6).astype(np.uint8)
     got = _run(mask)
@@ -149,6 +169,11 @@ def test_a_channel_axis_of_one_is_kept() -> None:
     np.testing.assert_array_equal(got[:, :, 0], _scipy_unsigned(mask[:, :, 0]))
 
 
+@pytest.mark.parity(
+    ops=["distance_transform"],
+    against="Definition: with no zero pixel the distance is +inf (-inf signed)",
+    tolerance="exact",
+)
 def test_no_background_pixel_is_infinitely_far() -> None:
     """scipy measures to a phantom corner and OpenCV returns 2**64 here;
     the distance to a zero pixel that does not exist is +inf."""
@@ -157,6 +182,11 @@ def test_no_background_pixel_is_infinitely_far() -> None:
     assert np.isneginf(_run(ones, signed=True)).all()
 
 
+@pytest.mark.parity(
+    ops=["distance_transform"],
+    against="Definition: all-zero image is 0 unsigned and +inf signed",
+    tolerance="exact",
+)
 def test_an_all_background_image_is_zero_unsigned_and_inf_signed() -> None:
     zeros = np.zeros((3, 6), np.uint8)
     np.testing.assert_array_equal(_run(zeros), np.zeros((3, 6), np.float32))
@@ -176,6 +206,11 @@ def _traced_rectangle() -> tuple[np.ndarray, dict]:
     return mask, traced[0]
 
 
+@pytest.mark.parity(
+    ops=["distance_transform", "extract_contours", "point.signed_distance_to_contour"],
+    against="Cross-check: vector `.point.signed_distance_to_contour` on the `extract_contours` outline",
+    tolerance='"atol 1e-5 on edges; corner overshoot <= (sqrt 2 - 1)/2"',
+)
 def test_signed_agrees_with_the_vector_distance_to_the_traced_outline() -> None:
     mask, contour = _traced_rectangle()
     got = _run(mask, signed=True)
@@ -208,6 +243,11 @@ def test_signed_agrees_with_the_vector_distance_to_the_traced_outline() -> None:
     assert excess.max() <= (math.sqrt(2) - 1) / 2 + 1e-5
 
 
+@pytest.mark.parity(
+    ops=["distance_transform", "grayscale"],
+    against="Definition: the plan publishes f32 output of the input rank",
+    tolerance="exact",
+)
 def test_the_plan_publishes_f32_and_the_input_rank() -> None:
     pipe = Pipeline().source("image_bytes").grayscale().distance_transform()
     assert pipe.output_dtype() == "f32"
