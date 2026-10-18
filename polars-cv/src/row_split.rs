@@ -151,6 +151,76 @@ pub(crate) mod exclusive {
     }
 }
 
+/// Test instrumentation for "a call spreads its rows": the threads that ran
+/// a call's rows, and, when armed, a wait that a spreading call always meets
+/// and a sequential one never does, so the assertion does not depend on how
+/// fast the host wakes a thread.
+///
+/// The call's first row runs inside the probe, on the caller, before any
+/// helper exists, so it cannot meet another thread. It only takes long
+/// enough for the probe to measure it alone ([`FIRST_ROW_DECIDES_NS`]),
+/// which invites helpers for the rest. The second row runs after that
+/// invitation and waits (bounded) for a second thread. Waiting in the first
+/// row instead always timed out, and the remaining rows, each microseconds,
+/// then raced the helpers' wake-up: on a slow-waking host the caller ran
+/// them all.
+#[cfg(test)]
+pub(crate) struct Rendezvous {
+    seen: Mutex<std::collections::HashSet<std::thread::ThreadId>>,
+    arrived: std::sync::Condvar,
+    armed: AtomicBool,
+    visits: AtomicUsize,
+}
+
+#[cfg(test)]
+impl Rendezvous {
+    /// See [`Rendezvous::reset`].
+    pub(crate) fn new(armed: bool) -> Self {
+        Rendezvous {
+            seen: Mutex::default(),
+            arrived: std::sync::Condvar::new(),
+            armed: AtomicBool::new(armed),
+            visits: AtomicUsize::new(0),
+        }
+    }
+
+    /// Forget the threads seen; the next call waits for a second thread iff
+    /// `armed`.
+    pub(crate) fn reset(&self, armed: bool) {
+        self.seen.lock().unwrap().clear();
+        self.visits.store(0, Ordering::SeqCst);
+        self.armed.store(armed, Ordering::SeqCst);
+    }
+
+    /// Record a row run on this thread; see the type's docs.
+    pub(crate) fn visit(&self) {
+        let mut seen = self.seen.lock().unwrap();
+        seen.insert(std::thread::current().id());
+        self.arrived.notify_all();
+        if !self.armed.load(Ordering::SeqCst) {
+            return;
+        }
+        match self.visits.fetch_add(1, Ordering::SeqCst) {
+            0 => {
+                drop(seen);
+                std::thread::sleep(std::time::Duration::from_nanos(2 * FIRST_ROW_DECIDES_NS));
+            }
+            1 => {
+                self.armed.store(false, Ordering::SeqCst);
+                let _ = self
+                    .arrived
+                    .wait_timeout_while(seen, std::time::Duration::from_secs(5), |s| s.len() < 2)
+                    .unwrap();
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn threads(&self) -> usize {
+        self.seen.lock().unwrap().len()
+    }
+}
+
 /// Run `run(range_idx, rows)` over `0..len` in contiguous row ranges and
 /// return each range's result in row order: [`split`] then [`Split::run`].
 pub(crate) fn run_split<R: Send>(

@@ -543,61 +543,15 @@ mod contour_output_tests {
 /// accessor used one core however many rows it held.
 #[cfg(test)]
 mod split_tests {
-    use std::collections::HashSet;
-    use std::sync::{Condvar, Mutex};
-    use std::thread::ThreadId;
-    use std::time::Duration;
-
     use pyo3_polars::export::polars_core::runtime::THREAD_POOL;
     use view_buffer::geometry::contour::Point;
     use view_buffer::mode::Wire;
     use view_buffer::GeometryOp;
 
     use crate::geom_fns::PointFn;
+    use crate::row_split::Rendezvous;
 
     use super::*;
-
-    /// Threads seen, and a first-executed row that waits (bounded) for a
-    /// second thread: a call that runs on one thread waits out the timeout
-    /// and reports one.
-    ///
-    /// The *first row to run* waits, not row 0: rayon may run range 0 last,
-    /// and with rows this cheap one thread can drain every other range before
-    /// another wakes, leaving row 0 waiting with no work left for anyone else.
-    /// (The executor's own rendezvous, `CompiledGraph::rendezvous`, is the
-    /// same.)
-    struct Rendezvous {
-        seen: Mutex<HashSet<ThreadId>>,
-        arrived: Condvar,
-        /// Whether the first row waits for a second thread; cleared by it.
-        wait: std::sync::atomic::AtomicBool,
-    }
-
-    impl Rendezvous {
-        fn new(wait: bool) -> Self {
-            Rendezvous {
-                seen: Mutex::new(HashSet::new()),
-                arrived: Condvar::new(),
-                wait: std::sync::atomic::AtomicBool::new(wait),
-            }
-        }
-
-        fn visit(&self, _row: usize) {
-            let mut seen = self.seen.lock().unwrap();
-            seen.insert(std::thread::current().id());
-            self.arrived.notify_all();
-            if self.wait.swap(false, std::sync::atomic::Ordering::Relaxed) {
-                let _ = self
-                    .arrived
-                    .wait_timeout_while(seen, Duration::from_secs(5), |s| s.len() < 2)
-                    .unwrap();
-            }
-        }
-
-        fn threads(&self) -> usize {
-            self.seen.lock().unwrap().len()
-        }
-    }
 
     fn column(rows: usize) -> Series {
         let elem = crate::geom_schema::contour_struct_dtype();
@@ -636,12 +590,11 @@ mod split_tests {
         let inputs = [column(256)];
         let params = params(&inputs);
         let rendezvous = Rendezvous::new(true);
-        let out =
-            map_contours::<Contour, _>(&inputs[0], &params, DataType::Float64, |c, _, row| {
-                rendezvous.visit(row);
-                Ok(AnyValue::Float64(c.exterior[0].x))
-            })
-            .unwrap();
+        let out = map_contours::<Contour, _>(&inputs[0], &params, DataType::Float64, |c, _, _| {
+            rendezvous.visit();
+            Ok(AnyValue::Float64(c.exterior[0].x))
+        })
+        .unwrap();
         // Rows come back in order.
         let xs: Vec<f64> = out.f64().unwrap().into_no_null_iter().collect();
         assert_eq!(xs, (0..256).map(f64::from).collect::<Vec<_>>());
@@ -666,8 +619,8 @@ mod split_tests {
             &params,
             "test",
             DataType::Float64,
-            |l, r, _params, row| {
-                rendezvous.visit(row);
+            |l, r, _params, _| {
+                rendezvous.visit();
                 Ok(AnyValue::Float64(l.exterior[0].x + r.exterior[0].x))
             },
         )
@@ -693,12 +646,11 @@ mod split_tests {
         let inputs = [column(256)];
         let params = params(&inputs);
         let rendezvous = Rendezvous::new(false);
-        let out =
-            map_contours::<Contour, _>(&inputs[0], &params, DataType::Float64, |c, _, row| {
-                rendezvous.visit(row);
-                Ok(AnyValue::Float64(c.exterior[0].x))
-            })
-            .unwrap();
+        let out = map_contours::<Contour, _>(&inputs[0], &params, DataType::Float64, |c, _, _| {
+            rendezvous.visit();
+            Ok(AnyValue::Float64(c.exterior[0].x))
+        })
+        .unwrap();
         assert_eq!(out.len(), 256);
         assert_eq!(rendezvous.threads(), 1);
     }
@@ -735,7 +687,7 @@ mod split_tests {
         let rendezvous = Rendezvous::new(true);
         let rows = params
             .map_rows(256, |params, i| {
-                rendezvous.visit(i);
+                rendezvous.visit();
                 params.value(dx, i).map(Some)
             })
             .unwrap();
