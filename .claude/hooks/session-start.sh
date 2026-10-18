@@ -2,24 +2,19 @@
 # SessionStart hook: prepare the environment so tests, linters, and the
 # pre-commit hook all work in Claude Code on the web.
 #
-# Why the build, not just `pre-commit install`: the committed
-# `.pre-commit-config.yaml` runs `cargo fmt`/`clippy` and a `pytest -m structural`
-# lane that needs the compiled `_lib.abi3.so`. Installing the git hook without a
-# built, MSRV-correct toolchain would make every commit fail the hook rather than
-# pass it. So this brings the whole environment up, then wires the hook in.
+# It does NOT build the extension. The session runs `maturin develop` itself
+# (from polars-cv/, debug) when it needs the plugin: a build started here raced
+# the session's own, and until one finishes @plugin_required tests self-skip and
+# the pre-commit hook's `pytest -m structural` lane cannot import `_lib.abi3.so`.
+# Build before testing or committing.
 #
 # ASYNC: the first stdout line hands the work to the harness's background runner
-# so a cold full compile of the polars stack never blocks the session prompt.
-# The trade-off is a race window: for the first few minutes the extension may not
-# be importable and @plugin_required tests will skip. Progress streams to
-# `.claude/hooks/.session-start.log`, and `.claude/hooks/.session-start.done`
-# is written once the environment is ready — check it before relying on the
-# build. If you need to run tests immediately, run `uv run --directory polars-cv
-# maturin develop` yourself and wait for it.
+# so the toolchain update and dependency sync never block the session prompt.
+# Progress streams to `.claude/hooks/.session-start.log`, and
+# `.claude/hooks/.session-start.done` is written once the environment is ready.
 echo '{"async": true, "asyncTimeout": 900000}'
 
-# Idempotent and safe to re-run: `uv sync` and `maturin develop` are no-ops when
-# already current, and `pre-commit install` just rewrites `.git/hooks/pre-commit`.
+# Idempotent and safe to re-run: `uv sync` is a no-op when already current, and `pre-commit install` just rewrites `.git/hooks/pre-commit`.
 set -euo pipefail
 
 # Only run in Claude Code on the web / remote containers. Local checkouts are set
@@ -37,7 +32,7 @@ rm -f "$DONE"
 exec > >(tee "$LOG") 2>&1
 
 # 0. Reclaim disk from any stale `--release` (or `--profile benchmark`) tree. The dev loop builds *only*
-#    debug (`maturin develop`, below) — release artifacts come from benchmarks
+#    debug (`maturin develop`, run by the session) — release artifacts come from benchmarks
 #    or an accidental project-install build, are never used by tests or the
 #    prompt-facing loop, and a full release build of this stack is ~2 GB. In an
 #    ephemeral remote container that is pure storage pressure, so clear it. (Run
@@ -59,7 +54,7 @@ fi
 #    stable that the pin resolves to (and self-updates rustup itself), so the
 #    pinned channel becomes >= 1.96. Best-effort — never hard-block the session
 #    on a missing rustup or a transient network failure; a still-too-old
-#    toolchain then surfaces as a clear MSRV error at `maturin develop` below.
+#    toolchain then surfaces as a clear MSRV error at the session's `maturin develop`.
 if command -v rustup >/dev/null 2>&1; then
   rustup update stable \
     || echo "session-start: 'rustup update stable' failed; using the installed toolchain" >&2
@@ -92,10 +87,10 @@ fi
 #    installs the project itself* as an editable wheel — and that build runs
 #    under the workspace `[profile.release]` (lto = "fat", codegen-units = 1,
 #    opt-level = 3), the slowest possible full-LTO compile of the whole polars
-#    stack. Step 3's debug `maturin develop` then overwrites its `_lib.abi3.so`,
-#    so the release build is pure waste. Sync only the dependency groups here
-#    and let step 3 own the single (debug) build — the one way this repo builds
-#    for development.
+#    stack, which the session's debug `maturin develop` then overwrites, so the
+#    release build is pure waste. Sync only the dependency groups here and leave
+#    the single (debug) build to the session — the one way this repo builds for
+#    development. (This sync also uninstalls the editable project: build after.)
 uv sync --group dev --group docs --no-install-project --directory polars-cv
 
 # 2b. Give every later shell in this session the PyO3 build environment
@@ -103,7 +98,6 @@ uv sync --group dev --group docs --no-install-project --directory polars-cv
 #     invalidate the extension build (the next `maturin develop` would rebuild
 #     the polars stack, ~80s). Values come from scripts/with-pyo3-env.sh, the
 #     single authority; it needs the venv interpreter, hence after the sync.
-#     Written early so it is in place well before the slow build below finishes.
 if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
   (
     source scripts/with-pyo3-env.sh
@@ -112,17 +106,12 @@ if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
   ) >> "$CLAUDE_ENV_FILE"
 fi
 
-# 3. Build the plugin (debug — the one canonical dev build, what CI and
-#    scripts/verify.sh use). Needed for @plugin_required tests and the
-#    structural pre-commit hook.
-uv run --no-sync --directory polars-cv maturin develop
-
-# 4. Install the pre-commit git hook so commits are gated by ruff / cargo fmt /
+# 3. Install the pre-commit git hook so commits are gated by ruff / cargo fmt /
 #    clippy / the structural guards before they land. Hook installation lives in
 #    `.git/hooks` (not tracked), so it must be re-done in every fresh container.
 uv run --no-sync --directory polars-cv pre-commit install
 
-# 5. cargo-deny, for verify.sh's supply-chain lane (CI installs it with an
+# 4. cargo-deny, for verify.sh's supply-chain lane (CI installs it with an
 #    action; there is no crate dependency on it). Prebuilt release binaries live
 #    on GitHub, which the web container's network policy may block, so build it
 #    from crates.io (~2.5 min, cached with the container afterwards). Last,

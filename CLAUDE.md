@@ -223,12 +223,15 @@ second, slow build into the loop, and both are now closed — keep them closed:
 **Web sessions are provisioned by the SessionStart hook**
 (`.claude/hooks/session-start.sh`, async): it updates the Rust toolchain, syncs
 the `dev` and `docs` groups (`--no-install-project`), exports the PyO3 env to the
-session, runs `maturin develop`, installs the pre-commit hook and, if missing,
-`cargo install`s `cargo-deny` — everything `scripts/verify.sh` needs.
-`.claude/hooks/.session-start.done` appears once it has finished; until then
-plugin tests self-skip. `test_build_efficiency.py` pins what the hook must do.
-Note that any `uv sync --no-install-project` uninstalls the editable project, so
-re-run `maturin develop` after one.
+session, installs the pre-commit hook and, if missing, `cargo install`s
+`cargo-deny` — everything `scripts/verify.sh` needs except the extension.
+**The hook does not build: run `maturin develop` yourself** (from `polars-cv/`)
+before testing or committing; until then plugin tests self-skip and the
+pre-commit structural lane cannot import the plugin.
+`.claude/hooks/.session-start.done` appears once the hook has finished.
+`test_build_efficiency.py` pins what the hook must do. Note that any `uv sync
+--no-install-project` uninstalls the editable project, so re-run `maturin
+develop` after one.
 
 **Check the Rust toolchain first — it is the common reason a build fails.** Both
 crates set `rust-version = "1.96"` (MSRV) in their `Cargo.toml`, so cargo
