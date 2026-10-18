@@ -173,6 +173,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   its input on vanishes. Each linear run of ops that nothing else reads then
   runs as one node, so a chain of lazy method calls is one node, and the
   spatial-window pushdown can move a crop across what were node boundaries.
+  The logical passes then repeat until the graph stops changing, so two
+  pipelines that differ only by a no-op the identity pass removes, or by an
+  order the pushdown normalises, are shared too.
   Outputs are byte-identical; `opt_flags=False` shows the graph as written.
 - **README**: a branch-and-rejoin example (a cup and saucer cut out to a
   transparent PNG, with the optimised graph it runs, from
