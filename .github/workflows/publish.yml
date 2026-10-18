@@ -181,6 +181,12 @@ jobs:
         working-directory: polars-cv
         run: maturin sdist --out ../dist
 
+      # PyPI refuses an sdist whose PKG-INFO names a License-File the archive
+      # does not hold, and the wheels upload first: 0.38.0's wheels went up
+      # and its sdist was refused. Checked here, before anything is uploaded.
+      - name: Check the sdist's license files
+        run: python polars-cv/scripts/check_sdist.py dist/*.tar.gz
+
       - name: Upload sdist
         uses: actions/upload-artifact@v4
         with:
