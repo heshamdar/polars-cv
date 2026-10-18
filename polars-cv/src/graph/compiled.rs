@@ -127,16 +127,10 @@ pub struct CompiledGraph {
     /// The exact kwargs this graph was compiled from, kept for exact-match
     /// cache validation.
     key: GraphKwargsKey,
-    /// Which threads executed rows of this graph (test instrumentation).
+    /// Which threads executed rows of this graph and, when armed, a wait
+    /// for a second one (test instrumentation).
     #[cfg(test)]
-    row_threads: Mutex<std::collections::HashSet<std::thread::ThreadId>>,
-    /// Signalled when a thread first executes a row (test instrumentation).
-    #[cfg(test)]
-    row_threads_seen: std::sync::Condvar,
-    /// When set, a row waits (bounded) until a second thread has run a row,
-    /// so a test of parallelism does not depend on scheduling luck.
-    #[cfg(test)]
-    rendezvous: std::sync::atomic::AtomicBool,
+    rendezvous: crate::row_split::Rendezvous,
     /// Threads whose rows wait until they are released, so a test can keep
     /// calls running while another starts (test instrumentation).
     #[cfg(test)]
@@ -275,11 +269,7 @@ impl CompiledGraph {
                 graph_json: graph_json.to_string(),
             },
             #[cfg(test)]
-            row_threads: Mutex::default(),
-            #[cfg(test)]
-            row_threads_seen: std::sync::Condvar::new(),
-            #[cfg(test)]
-            rendezvous: std::sync::atomic::AtomicBool::new(false),
+            rendezvous: crate::row_split::Rendezvous::new(false),
             #[cfg(test)]
             held: Mutex::default(),
             #[cfg(test)]
@@ -533,17 +523,7 @@ impl CompiledGraph {
             } else {
                 drop(held);
             }
-            let mut seen = self.row_threads.lock().unwrap();
-            seen.insert(std::thread::current().id());
-            self.row_threads_seen.notify_all();
-            // One wait per call: once a second thread has arrived (or the
-            // wait timed out, as it does for a sequential run) rows proceed.
-            if self.rendezvous.swap(false, Ordering::Relaxed) {
-                let _ = self
-                    .row_threads_seen
-                    .wait_timeout_while(seen, std::time::Duration::from_secs(5), |s| s.len() < 2)
-                    .unwrap();
-            }
+            self.rendezvous.visit();
         }
         self.run_row_nodes(state, ctx, row_idx, node_outputs, dto_scratch, plan_cache)?;
         for (((alias, spec), node), rows) in state
@@ -2513,11 +2493,12 @@ mod tests {
         }
         let rows: Vec<Vec<u8>> = (0..256u32).map(|i| vec![i as u8; 64]).collect();
         let compiled = CompiledGraph::compile(RAW_CHAIN_GRAPH).unwrap();
-        // The first row waits (up to 5 s) for a second thread to run a row:
-        // a parallel call gets one at once, a sequential call times out.
-        compiled.rendezvous.store(true, Ordering::Relaxed);
+        // The call's second row waits (up to 5 s) for a second thread to
+        // run a row: a parallel call gets one at once, a sequential call
+        // times out.
+        compiled.rendezvous.reset(true);
         let out = compiled.execute(&[Series::new("r".into(), &rows)]).unwrap();
-        let threads = compiled.row_threads.lock().unwrap().len();
+        let threads = compiled.rendezvous.threads();
         assert!(threads > 1, "256 rows ran on {threads} thread(s)");
         for (i, row) in rows.iter().enumerate() {
             // Each row must equal the same row executed alone.
@@ -2619,14 +2600,13 @@ mod tests {
     }
 
     /// How many threads ran rows of one 256-row call; with `rendezvous`, a
-    /// spreading call's first row waits for a second thread.
+    /// spreading call's second row waits for a second thread.
     fn threads_of_a_call(compiled: &CompiledGraph, rendezvous: bool) -> usize {
         let rows: Vec<Vec<u8>> = (0..256u32).map(|i| vec![i as u8; 64]).collect();
-        compiled.row_threads.lock().unwrap().clear();
-        compiled.rendezvous.store(rendezvous, Ordering::Relaxed);
+        compiled.rendezvous.reset(rendezvous);
         let out = compiled.execute(&[Series::new("r".into(), &rows)]).unwrap();
         assert_eq!(out.len(), rows.len());
-        compiled.row_threads.lock().unwrap().len()
+        compiled.rendezvous.threads()
     }
 
     /// A segment with a per-row parameter is planned every row.
