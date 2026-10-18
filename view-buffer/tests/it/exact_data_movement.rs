@@ -142,6 +142,17 @@ fn channel_merge_is_exact() {
     });
 }
 
+/// Inputs bring their own channels (CR-111): `[H, W, 2]` then `[H, W]`
+/// interleave per pixel as two channels then one.
+#[test]
+fn channel_merge_joins_channel_axes() {
+    let pair = ViewBuffer::from_vec_with_shape(vec![1u8, 2, 3, 4], vec![1, 2, 2]);
+    let one = ViewBuffer::from_vec_with_shape(vec![9u8, 8], vec![1, 2]);
+    let out = apply_channel_merge(&[&pair, &one]);
+    assert_eq!(out.shape(), &[1, 2, 3]);
+    assert_eq!(out.as_slice::<u8>(), &[1, 2, 9, 3, 4, 8]);
+}
+
 /// Two values a step apart that f32 rounds to one: their gradient is the
 /// step, not zero.
 #[test]

@@ -269,13 +269,15 @@ pub enum GraphOp<M: Mode = Exec> {
         #[param(default = false)]
         invert: M::V<bool>,
     },
-    /// Merge single-channel buffers into one multi-channel image.
+    /// Join this buffer's channels with the operands', in order.
     ///
-    /// Shape: ``[H, W]`` → ``[H, W, C]``.
+    /// Each ``[H, W]`` input brings one channel and each ``[H, W, C]`` input
+    /// its ``C``: an RGB image and an ``[H, W]`` mask give RGBA. Every input
+    /// has the same height, width and dtype.
     #[op(name = "channel_merge", visibility = LazyOnly, sample = {"others": ["n0", "n1"]})]
     ChannelMerge {
-        /// The other single-channel operands' nodes, in channel order after this
-        /// one.
+        /// The other operands' nodes (``[H, W]`` or ``[H, W, C]``), in channel
+        /// order after this one.
         others: Vec<NodeRef>,
     },
     /// Declare the shape of the data at this point: sizes of its dimensions,
@@ -538,7 +540,7 @@ impl<M: Mode> GraphOp<M> {
             // The mask is blended into this buffer in place.
             Role::ApplyMask { .. } => OpShape::Preserve,
             // This `[H, W]` buffer and one per merged operand.
-            Role::ChannelMerge { others } => OpShape::StackChannels(others.len() + 1),
+            Role::ChannelMerge { .. } => OpShape::JoinChannels,
             Role::ExtractShape => OpShape::InputRank,
             // One score per contour: as many as the row holds.
             Role::LabelReduce { .. } => OpShape::Dynamic,

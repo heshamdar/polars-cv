@@ -147,6 +147,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **`channel_merge` joins channel axes.** Each operand may be `[H, W]` (one
+  channel) or `[H, W, C]` (its `C`), joined in order, so
+  `photo.channel_merge(alpha)` is an RGBA image; it used to take only
+  single-channel operands, so adding an alpha channel meant splitting the
+  photo into its channels first. Stacking single channels is unchanged.
 - **CSE computes each distinct value once, and fuses linear runs.** It used
   to share only a leading op run common to every root node on a column, so a
   bare decode, two branches with different first ops, or one unrelated

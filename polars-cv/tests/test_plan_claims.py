@@ -316,6 +316,12 @@ class TestPlannedSizes:
         assert err is not None and "channel_merge()" in err, err
         # An input of unknown size takes H and W from the operands that know.
         assert planned(select(None, None).channel_merge(select(8, 6))).dims == (8, 6, 2)
+        # Each operand brings its channels; an unknown count leaves the sum unknown.
+        image = pl.col("i").cv.pipe(_sized_image(8, 8))
+        assert planned(image.channel_merge(select(8, 8))).dims == (8, 8, 4)
+        unknown = pl.col("i").cv.pipe(Pipeline().source("image_bytes", dtype="u8"))
+        assert planned(unknown.channel_merge(select(8, 8))).dims[:2] == (8, 8)
+        assert planned(unknown.channel_merge(select(8, 8))).dims[2] is None
         # A mask that cannot broadcast against the buffer it masks.
         image = pl.col("i").cv.pipe(_sized_image(8, 8))
         err = _build_error(lambda: image.apply_mask(select(4, 4)))

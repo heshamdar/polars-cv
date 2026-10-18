@@ -326,27 +326,27 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
 
     def channel_merge(self, *others: "LazyPipelineExpr") -> "LazyPipelineExpr":
         """
-        Merge single-channel buffers into one multi-channel image.
+        Join this buffer's channels with the operands', in order.
 
-        Stacks this expression's ``[H, W]`` buffer with each ``others`` buffer
-        along a new channel axis, producing ``[H, W, C]`` where
-        ``C = len(others) + 1``. Each operand must be a single-channel ``[H, W]``
-        buffer (e.g. produced by :meth:`Pipeline.channel_select`) with matching
-        height and width. This is the inverse of ``channel_select``.
+        Each ``[H, W]`` operand brings one channel and each ``[H, W, C]``
+        operand its ``C``: an RGB image and an ``[H, W]`` mask give RGBA, and
+        single channels stack into a multi-channel image (the inverse of
+        :meth:`Pipeline.channel_select`). Every operand has this buffer's
+        height, width and dtype.
 
         Args:
-            others: One or more single-channel LazyPipelineExpr operands, in
-                channel order after this one.
+            others: One or more operands, in channel order after this one.
 
         Returns:
-            New LazyPipelineExpr producing the merged multi-channel image.
+            New LazyPipelineExpr producing the ``[H, W, total]`` image.
 
         Example:
             ```python
-            >>> sel = lambda i: pl.col("img").cv.pipe(
-            ...     Pipeline().source("image_bytes").channel_select(index=i)
-            ... )
-            >>> merged = sel(2).channel_merge(sel(1), sel(0))  # RGB -> BGR
+            >>> photo = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
+            >>> alpha = photo.pipe(Pipeline().grayscale().channel_select(0))
+            >>> rgba = photo.channel_merge(alpha)
+            >>> sel = lambda i: photo.channel_select(i)
+            >>> bgr = sel(2).channel_merge(sel(1), sel(0))
             ```
         """
         # The op's Rust definition rejects an empty `others`.

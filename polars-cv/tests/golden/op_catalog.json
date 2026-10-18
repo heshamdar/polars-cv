@@ -440,11 +440,11 @@
     "name": "channel_merge",
     "python": "channel_merge",
     "visibility": "lazy_only",
-    "doc": "Merge single-channel buffers into one multi-channel image.\n\nShape: ``[H, W]`` → ``[H, W, C]``.",
+    "doc": "Join this buffer's channels with the operands', in order.\n\nEach ``[H, W]`` input brings one channel and each ``[H, W, C]`` input\nits ``C``: an RGB image and an ``[H, W]`` mask give RGBA. Every input\nhas the same height, width and dtype.",
     "fields": [
       {
         "name": "others",
-        "doc": "The other single-channel operands' nodes, in channel order after this\none.",
+        "doc": "The other operands' nodes (``[H, W]`` or ``[H, W, C]``), in channel\norder after this one.",
         "type": {
           "kind": "list",
           "inner": {
