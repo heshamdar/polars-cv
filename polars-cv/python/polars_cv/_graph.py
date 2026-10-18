@@ -24,6 +24,11 @@ if TYPE_CHECKING:
     from polars_cv.pipeline import Pipeline
 
 
+#: Rounds of the logical passes before ``PipelineGraph.optimize`` gives up on
+#: them settling (each round that changes the graph removes, moves or merges
+#: something, so real graphs settle in two or three).
+_MAX_ROUNDS = 16
+
 #: The graph-level per-row policies, by ``Pipeline`` attribute: wire key.
 _POLICIES = {"_on_error": "on_error", "_on_null_param": "on_null_param"}
 
@@ -289,23 +294,57 @@ class PipelineGraph:
         self._drop_unread_nodes()
         for node in self._nodes.values():
             node.pipeline = node.pipeline._clone()
-        for spec in OPTIMIZATION_PASSES:
-            if spec.tier != "logical" or not flags.enabled(spec.name):
-                continue
-            if spec.name == LogicalPass.COMMON_SUBEXPRESSION_ELIMINATION:
-                # Graph scope: it needs the expressions' identities, which
-                # only Python holds.
-                self._optimize_common_subexpressions()
-            else:
-                # Node scope: Rust (`Plan.run_pass`) decides, and refuses a name
-                # that is not a `LogicalPass`.
-                for node in self._nodes.values():
-                    node.pipeline._run_node_pass(spec.name)
+        logical = [
+            spec.name
+            for spec in OPTIMIZATION_PASSES
+            if spec.tier == "logical" and flags.enabled(spec.name)
+        ]
+        # The passes feed each other: a node pass can make two nodes equal
+        # (a no-op removed, a crop moved) that CSE then shares, and CSE's
+        # fusion gives the node passes longer runs to work on. So they repeat
+        # until a round changes nothing. Each pass only removes or moves ops,
+        # or merges nodes, so that is a few rounds; a graph still changing
+        # after `_MAX_ROUNDS` is a pass that does not settle, and is refused.
+        for _ in range(_MAX_ROUNDS):
+            before = self._fingerprint()
+            for name in logical:
+                if name == LogicalPass.COMMON_SUBEXPRESSION_ELIMINATION:
+                    # Graph scope: it needs the expressions' identities, which
+                    # only Python holds.
+                    self._optimize_common_subexpressions()
+                else:
+                    # Node scope: Rust (`Plan.run_pass`) decides, and refuses a
+                    # name that is not a `LogicalPass`.
+                    for node in self._nodes.values():
+                        node.pipeline._run_node_pass(name)
+            if self._fingerprint() == before:
+                break
+        else:
+            msg = f"the logical passes did not settle in {_MAX_ROUNDS} rounds"
+            raise RuntimeError(msg)
         # Engine-tier flags do not rewrite the Python graph; they ride to Rust in
         # the serialized `opt` object, keyed by the Rust `OptConfig` field names.
         self._opt_config = flags.engine_opt()
         self._optimized = True
         return self
+
+    def _fingerprint(self) -> str:
+        """The graph's nodes as the wire would spell them: what a round of
+        the logical passes is checked against to see whether it changed
+        anything."""
+        table = self._slot_table()
+        wire = self._wire_ids()
+        return json.dumps(
+            [
+                [
+                    wire[node_id],
+                    [wire[u] for u in node.upstream],
+                    node.pipeline._to_spec_dict(table.index, wire),
+                ]
+                for node_id, node in self._nodes.items()
+            ],
+            sort_keys=True,
+        )
 
     def _check_roots(self) -> None:
         """Refuse a node that reads neither a column nor another node."""
@@ -442,6 +481,9 @@ class PipelineGraph:
         for node_id in self._topological_ids():
             node = self._nodes[node_id]
             named = {n: f"{mark}{a}" for n, a in final.items()}
+            # Plans name the nodes they read by build-time id, including ids
+            # an earlier round replaced.
+            named |= {o: named[n] for o, n in self._renamed.items() if n in named}
             spec = node.pipeline._to_spec_dict(table.index, named)
             if node.column is not None:
                 key = ["source", table.index(node.column), spec["source"]]
@@ -560,7 +602,8 @@ class PipelineGraph:
         # Root nodes first, in their columns' original order: the first column
         # is the plugin's first input, which names the output. (The wire is
         # not read in order; Rust orders nodes by `upstream`.)
-        root_rank = {a: i for i, a in enumerate(dict.fromkeys(source_atom.values()))}
+        roots_in_order = [source_atom[n] for n in old_order if n in source_atom]
+        root_rank = {a: i for i, a in enumerate(dict.fromkeys(roots_in_order))}
         first_atom = {node_of[run[-1]]: run[0] for run in runs}
         nodes = dict(
             sorted(
