@@ -53,8 +53,8 @@ class TestChannelSelect:
     """Reference tests for channel_select vs NumPy indexing."""
 
     def test_select_red_channel(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
-        """Verify channel_select(0) matches NumPy img[:, :, 0]."""
-        expected = rgb_image[:, :, 0]
+        """Verify channel_select(0) matches NumPy img[:, :, 0:1]."""
+        expected = rgb_image[:, :, 0:1]
 
         pipe = Pipeline().source("image_bytes").channel_select(index=0)
         df = pl.DataFrame({"img": [rgb_png]})
@@ -63,8 +63,8 @@ class TestChannelSelect:
         np.testing.assert_array_equal(actual, expected)
 
     def test_select_green_channel(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
-        """Verify channel_select(1) matches NumPy img[:, :, 1]."""
-        expected = rgb_image[:, :, 1]
+        """Verify channel_select(1) matches NumPy img[:, :, 1:2]."""
+        expected = rgb_image[:, :, 1:2]
 
         pipe = Pipeline().source("image_bytes").channel_select(index=1)
         df = pl.DataFrame({"img": [rgb_png]})
@@ -73,8 +73,8 @@ class TestChannelSelect:
         np.testing.assert_array_equal(actual, expected)
 
     def test_select_blue_channel(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
-        """Verify channel_select(2) matches NumPy img[:, :, 2]."""
-        expected = rgb_image[:, :, 2]
+        """Verify channel_select(2) matches NumPy img[:, :, 2:3]."""
+        expected = rgb_image[:, :, 2:3]
 
         pipe = Pipeline().source("image_bytes").channel_select(index=2)
         df = pl.DataFrame({"img": [rgb_png]})
@@ -302,8 +302,8 @@ class TestAdjustBrightness:
 class TestPhase1Contracts:
     """Test that pipeline builder correctly tracks dtype/ndim for Phase 1 ops."""
 
-    def test_channel_select_reduces_ndim(self) -> None:
-        """channel_select should reduce ndim from 3 to 2."""
+    def test_channel_select_stays_a_buffer(self) -> None:
+        """channel_select stays in the buffer domain."""
         pipe = Pipeline().source("image_bytes").channel_select(index=0)
         assert pipe.current_domain() == "buffer"
 

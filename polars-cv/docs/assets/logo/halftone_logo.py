@@ -136,7 +136,7 @@ def halftone_index(width: int, height: int, cell: float):
     features = pl.col("feature").cv.pipe(contours)
 
     # The field: the head's signed distance, in cells (negative inside).
-    inside = head.rasterize(**canvas, fill_value=1).channel_select(0)
+    inside = head.rasterize(**canvas, fill_value=1)
     sdf = inside.distance_transform(signed=True).scale(1 / cell)
     # Dot radius in cells: a step at the silhouette, so it reads without being
     # drawn; growing inward (up to just past touching), fading outward.
@@ -167,10 +167,9 @@ def halftone_index(width: int, height: int, cell: float):
         .difference(features)
         .rasterize(**canvas, fill_value=MUZZLE)
         .maximum(head.difference(features).rasterize(**canvas, fill_value=FACE))
-        .channel_select(0)
         .clamp(HALO, MUZZLE)  # outside the head: the halo
     )
-    ink = features.rasterize(**canvas, fill_value=INK).channel_select(0)
+    ink = features.rasterize(**canvas, fill_value=INK)
     return dot.multiply(region).maximum(ink)
 
 
@@ -212,9 +211,9 @@ def render_lockup() -> bytes:
         )
         for pipe, kind, ink in paints:
             index = index.maximum(
-                pl.col(f"{kind}{value}")
-                .cv.pipe(pipe.rasterize(**canvas, fill_value=ink or value))
-                .channel_select(0)
+                pl.col(f"{kind}{value}").cv.pipe(
+                    pipe.rasterize(**canvas, fill_value=ink or value)
+                )
             )
     return _render(df, index, LOCKUP_WIDTH, LOCKUP_HEIGHT)
 

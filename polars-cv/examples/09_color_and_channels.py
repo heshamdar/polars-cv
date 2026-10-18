@@ -113,9 +113,9 @@ def demo_channel_operations() -> None:
     png = to_png_bytes(img)
     df = pl.DataFrame({"image": [png]})
 
-    red_ch = Pipeline().source("image_bytes").channel_select(index=0)
-    green_ch = Pipeline().source("image_bytes").channel_select(index=1)
-    blue_ch = Pipeline().source("image_bytes").channel_select(index=2)
+    red_ch = Pipeline().source("image_bytes").channel_select(index=0, keepdims=False)
+    green_ch = Pipeline().source("image_bytes").channel_select(index=1, keepdims=False)
+    blue_ch = Pipeline().source("image_bytes").channel_select(index=2, keepdims=False)
     bgr_swap = Pipeline().source("image_bytes").channel_swap(order=[2, 1, 0])
 
     result = df.with_columns(

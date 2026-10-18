@@ -66,7 +66,7 @@ def cutout() -> LazyPipelineExpr:
     base = Pipeline().source("file_path").resize_max(512)
     img = pl.col("path").cv
 
-    bright = img.pipe(base.grayscale().channel_select(0).threshold(190))
+    bright = img.pipe(base.grayscale().threshold(190))
     saturated = img.pipe(
         base.to_hsv().channel_select(1).threshold(pl.col("min_saturation"))
     )

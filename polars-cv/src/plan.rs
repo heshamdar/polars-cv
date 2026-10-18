@@ -1278,7 +1278,11 @@ mod tests {
 
     #[test]
     fn hints_beyond_the_output_rank_are_cleared() {
-        let out = run(json!({"op": "channel_select", "index": 0}), &image()).unwrap();
+        let out = run(
+            json!({"op": "channel_select", "index": 0, "keepdims": false}),
+            &image(),
+        )
+        .unwrap();
         assert_eq!(out.shape.rank(), Some(2));
         assert_eq!(out.shape.sizes().len(), 2);
     }

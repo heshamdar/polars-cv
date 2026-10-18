@@ -659,7 +659,10 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     },
     "ceil": {},
     "channel_merge": {"others": {"kind": "list", "inner": {"kind": "node"}}},
-    "channel_select": {"index": {"kind": "scalar", "per_row": True, "py": "int"}},
+    "channel_select": {
+        "index": {"kind": "scalar", "per_row": True, "py": "int"},
+        "keepdims": {"kind": "scalar", "per_row": False, "py": "bool"},
+    },
     "channel_swap": {
         "order": {
             "kind": "list",
@@ -1153,6 +1156,7 @@ OP_DEFAULTS: dict[str, dict[str, Any]] = {
     "apply_mask": {"invert": False},
     "assert_shape": {"exact": True},
     "canny": {"low_threshold": 50.0, "high_threshold": 150.0},
+    "channel_select": {"keepdims": True},
     "contour_area": {"signed": False},
     "contour_largest": {"k": 1},
     "contour_offset": {"join": "round"},
@@ -1668,20 +1672,25 @@ class _OpsMixin:
         """
         return self._append_typed("ceil", {})
 
-    def channel_select(self, index: IntOrExpr) -> Pipeline:
-        """Extract a single channel from a multi-channel image: a 2D [H, W] buffer
-        from a [H, W, C] input.
+    def channel_select(self, index: IntOrExpr, *, keepdims: bool = True) -> Pipeline:
+        """Extract one channel of a multi-channel image: ``[H, W, 1]`` from a
+        ``[H, W, C]`` input (the shape ``grayscale`` and ``rasterize`` give),
+        or ``[H, W]`` with ``keepdims=False``. A ``[H, W]`` input is returned
+        as it is.
 
         Domain: buffer → buffer
 
         Args:
             index: Channel index to extract (0-based). Accepts a Polars expression for
                 per-row dynamic selection.
+            keepdims: Keep the channel axis, as size 1 (default), or drop it.
 
         Example:
             >>> pipe = Pipeline().source("image_bytes").channel_select(index=0)  # Red channel
         """
-        return self._append_typed("channel_select", {"index": index})
+        return self._append_typed(
+            "channel_select", {"index": index, "keepdims": keepdims}
+        )
 
     def channel_swap(self, order: Sequence[IntOrExpr]) -> Pipeline:
         """Reorder channels in a multi-channel image.

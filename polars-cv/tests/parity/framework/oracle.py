@@ -362,7 +362,10 @@ def _pad_to_size_ref(x: np.ndarray, p: Params) -> np.ndarray:
 
 
 def _channel_select_params(draw: st.DrawFn, x: np.ndarray) -> Params:
-    return {"index": draw(st.integers(0, x.shape[2] - 1), label="index")}
+    return {
+        "index": draw(st.integers(0, x.shape[2] - 1), label="index"),
+        "keepdims": draw(st.booleans(), label="keepdims"),
+    }
 
 
 def _channel_swap_params(draw: st.DrawFn, x: np.ndarray) -> Params:
@@ -1639,7 +1642,11 @@ OPS: dict[str, OpSpec] = {
             "channel_select",
             _channel_select_params,
             accepts=is_rank3,
-            ref=lambda x, p: x[:, :, p["index"]].copy(),
+            ref=lambda x, p: (
+                x[:, :, p["index"] : p["index"] + 1]
+                if p["keepdims"]
+                else x[:, :, p["index"]]
+            ).copy(),
             **_movement,
         ),
         _spec(

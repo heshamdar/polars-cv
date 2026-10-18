@@ -348,3 +348,14 @@ class TestApplyMaskScale:
         mask = pl.col("mask").cv.pipe(src.channel_select(0).cast("u16"))
         with pytest.raises(ValueError, match=r"apply_mask.*u8.*float.*u16"):
             img.apply_mask(mask)
+
+    def test_a_single_channel_mask_over_a_2d_image(self, df, arrays) -> None:
+        """A ``[H, W, 1]`` mask (a ``rasterize``, ``grayscale`` or
+        ``channel_select`` result) weighs a ``[H, W]`` image pixel for pixel."""
+        img, mask = arrays
+        src = Pipeline().source("image_bytes", dtype="u8")
+        flat = pl.col("image").cv.pipe(src.channel_select(0, keepdims=False))
+        m = pl.col("mask").cv.pipe(src.channel_select(0))  # [H, W, 1]
+        out = numpy_from_struct(df.select(o=flat.apply_mask(m).sink("numpy")).item())
+        expected = _round_half_away(img[..., 0] * (mask / 255.0)).astype(np.uint8)
+        np.testing.assert_array_equal(out, expected)

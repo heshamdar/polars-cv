@@ -147,11 +147,14 @@ in [0, 1]. Signed integer images have no colour range: `hsv`, `lab` and
 
 ### Channel Select
 
-Extract a single channel from a multi-channel image, producing a 2D `[H, W]` buffer.
+Extract a single channel from a multi-channel image as `[H, W, 1]` (the shape
+`grayscale` and `rasterize` give), or as `[H, W]` with `keepdims=False`.
 
 ```python
-# Extract the red channel (index 0 of RGB)
+# Extract the red channel (index 0 of RGB): [H, W, 1]
 Pipeline().source("image_bytes").channel_select(index=0)
+# ... or as a 2-D [H, W] buffer
+Pipeline().source("image_bytes").channel_select(index=0, keepdims=False)
 ```
 
 ### Channel Swap

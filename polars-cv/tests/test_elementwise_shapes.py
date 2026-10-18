@@ -106,7 +106,9 @@ class TestSqueezeAndExpandDims:
         """The trap the refusal replaces: say which axis to add."""
         a = np.arange(16, dtype=np.float32).reshape(4, 4, 1)
         x = _x()
-        (out,) = _run(_array(a), x.add(x.channel_select(0).expand_dims(-1)))
+        (out,) = _run(
+            _array(a), x.add(x.channel_select(0, keepdims=False).expand_dims(-1))
+        )
         np.testing.assert_array_equal(out, a * 2)
 
     def test_squeeze_refuses_an_axis_of_known_size_other_than_one(self) -> None:

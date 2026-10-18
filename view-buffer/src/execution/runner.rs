@@ -104,7 +104,7 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
             let at = op.axis_position(buf.shape().len());
             buf.insert_axis(at.expect("a validated expand_dims names a position"))
         }
-        ViewOp::ChannelSelect { index } => {
+        ViewOp::ChannelSelect { index, keepdims } => {
             let index = index as usize;
             let shape = buf.shape();
             if shape.len() != 3 {
@@ -114,7 +114,8 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
             let w = shape[1];
             // Slice to [H, W, 1] then materialize (slice is non-contiguous in HWC)
             let sliced = buf.slice(&[0, 0, index], &[h, w, index + 1]);
-            sliced.to_contiguous().reshape(vec![h, w])
+            let shape = if keepdims { vec![h, w, 1] } else { vec![h, w] };
+            sliced.to_contiguous().reshape(shape)
         }
     }
 }

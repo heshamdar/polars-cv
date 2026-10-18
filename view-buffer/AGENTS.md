@@ -280,7 +280,7 @@ Key implementation points:
 
 - **resize**: Preserves input rank. 2D `[H, W]` → 2D `[H_new, W_new]`; 3D stays 3D.
 - **grayscale**: Preserves input rank. 2D passes through; 3D sets channel dim to 1.
-- **channel_select**: Reduces rank from 3D `[H, W, C]` to 2D `[H, W]`. Requires `to_contiguous()` + reshape (non-contiguous in HWC layout).
+- **channel_select**: `[H, W, C]` → `[H, W, 1]` (`keepdims`, the default; `OpShape::SingleChannel`) or `[H, W]` (`keepdims=False`; `OpShape::DropChannelAxis`). Requires `to_contiguous()` + reshape (non-contiguous in HWC layout).
 
 ## Implementation Notes
 
