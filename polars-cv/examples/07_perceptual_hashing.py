@@ -70,7 +70,7 @@ def algorithm_demo(df: pl.DataFrame) -> None:
         )
         out = df.select(
             distance=hamming_distance(left, right),
-            similarity=hash_similarity(left, right, hash_bits=64),
+            similarity=hash_similarity(left, right),
             popcount=left.pipe(Pipeline().reduce_popcount()).sink("native"),
         )
         print(
@@ -101,7 +101,7 @@ def near_duplicate_table(df: pl.DataFrame) -> None:
         score_df = df.select(
             pair=pl.lit(f"{left_col} vs {right_col}"),
             hamming=hamming_distance(left, right),
-            similarity=hash_similarity(left, right, hash_bits=64),
+            similarity=hash_similarity(left, right),
         )
         rows.append(score_df.to_dicts()[0])
 
