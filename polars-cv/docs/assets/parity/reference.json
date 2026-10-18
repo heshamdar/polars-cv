@@ -1,6 +1,6 @@
 {
  "generated": "2026-10-18",
- "commit": "698fd4b",
+ "commit": "27f8c3f",
  "versions": {
   "polars-cv": "0.39.0",
   "polars": "2.0.0",
@@ -1907,7 +1907,7 @@
    "ops": [
     "perceptual_hash"
    ],
-   "tolerance": "Hamming bits: phash <= 4 (<= 12 on a colour gradient), 256-bit <= 40, average/difference <= 10 on smooth images (bytes read LSB-first)",
+   "tolerance": "Hamming bits: phash <= 4 (<= 12 on a colour gradient), 256-bit <= 40, average/difference <= 10 on smooth images",
    "tests": 18,
    "passed": 18,
    "failed": 0,
@@ -1922,6 +1922,18 @@
    "tolerance": "Hamming bits: <= 2 at 32x32, exact on flat/gradient, <= 4 resized, <= 40 of 256",
    "tests": 4,
    "passed": 4,
+   "failed": 0,
+   "skipped": 0
+  },
+  {
+   "against": "imagehash `phash`, `average_hash` and `dhash`, bits read most significant first",
+   "file": "tests/reference/test_perceptual_hash_ref.py",
+   "ops": [
+    "perceptual_hash"
+   ],
+   "tolerance": "<= 2 Hamming bits for every algorithm",
+   "tests": 1,
+   "passed": 1,
    "failed": 0,
    "skipped": 0
   },

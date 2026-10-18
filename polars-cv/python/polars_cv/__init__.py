@@ -574,46 +574,80 @@ def mask_iou(
     return intersection_sum / (union_sum + epsilon)
 
 
-def hamming_distance(
-    hash1: LazyPipelineExpr,
-    hash2: LazyPipelineExpr,
-) -> pl.Expr:
+#: A perceptual hash, as either function below takes it: a pipeline that ends
+#: in ``perceptual_hash()``, or a stored hash (``sink("list")`` or
+#: ``sink("array", ...)``) as an expression or a column name.
+HashLike = LazyPipelineExpr | pl.Expr | str
+
+
+def _hash_popcount(hash1: HashLike, hash2: HashLike) -> pl.Expr:
+    """Differing bits of two hashes: XOR, then popcount, in the plugin.
+
+    A stored hash runs through ``source()``, which reads a ``list[u8]`` or
+    ``Array[u8]`` column as the 1-D buffer ``perceptual_hash()`` produced, so
+    pipelines and columns meet in the same op; hashes of different lengths are
+    refused by the XOR's shape check.
+    """
+
+    def lift(h: HashLike) -> LazyPipelineExpr:
+        if isinstance(h, LazyPipelineExpr):
+            return h
+        if isinstance(h, str):
+            h = pl.col(h)
+        if isinstance(h, pl.Expr):
+            return CvNamespace(h).pipe(Pipeline().source())
+        raise TypeError(
+            f"a hash is a LazyPipelineExpr, a pl.Expr or a column name, got {type(h).__name__}"
+        )
+
+    return (
+        lift(hash1)
+        .bitwise_xor(lift(hash2))
+        .pipe(Pipeline().reduce_popcount())
+        .sink("native")
+    )
+
+
+def hamming_distance(hash1: HashLike, hash2: HashLike) -> pl.Expr:
     """
     Compute Hamming distance between two perceptual hashes.
 
-    Args:
-        hash1: First hash expression.
-        hash2: Second hash expression.
-    """
-    # XOR the hashes and count set bits
-    xor_result = hash1.bitwise_xor(hash2).pipe(Pipeline().reduce_popcount())
+    Either side may be a hash pipeline (``pl.col("img").cv.pipe(hash_pipe)``)
+    or a stored hash: a ``list[u8]``/``Array[u8]`` column from
+    ``sink("list")``/``sink("array")``, given as an expression or a name. So
+    near-duplicate search over stored hashes is a cross join:
 
-    # Sink as native scalar (Float64)
-    return xor_result.sink("native")
+        >>> pairs = h.join(h, how="cross", suffix="_b").with_columns(
+        ...     bits=hamming_distance("hash", "hash_b")
+        ... )
+
+    Args:
+        hash1: First hash.
+        hash2: Second hash, the same length as the first.
+
+    Returns:
+        The number of differing bits (Float64).
+    """
+    return _hash_popcount(hash1, hash2)
 
 
 def hash_similarity(
-    hash1: LazyPipelineExpr,
-    hash2: LazyPipelineExpr,
+    hash1: HashLike,
+    hash2: HashLike,
     *,
     hash_bits: int = 64,
 ) -> pl.Expr:
     """
     Compute similarity percentage [0, 100] between two hashes.
 
+    Takes the same hashes as :func:`hamming_distance`.
+
     Args:
-        hash1: First hash expression.
-        hash2: Second hash expression.
+        hash1: First hash.
+        hash2: Second hash.
         hash_bits: Total bits in hash (default 64).
     """
-    # XOR the hashes and count set bits
-    xor_popcount = hash1.bitwise_xor(hash2).pipe(Pipeline().reduce_popcount())
-
-    # Sink as native scalar (Float64)
-    distance = xor_popcount.sink("native")
-
-    # Compute similarity: (1 - distance / total_bits) * 100
-    return (1.0 - distance / hash_bits) * 100.0
+    return (1.0 - _hash_popcount(hash1, hash2) / hash_bits) * 100.0
 
 
 def mask_dice(

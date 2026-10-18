@@ -10,6 +10,7 @@ from __future__ import annotations
 from io import BytesIO
 
 import polars as pl
+import pytest
 from PIL import Image
 
 from polars_cv import Pipeline, hamming_distance, hash_similarity
@@ -452,3 +453,77 @@ class TestIntegrationWithPerceptualHash:
         # All similarities should be valid percentages
         for sim in result["similarity"]:
             assert 0 <= sim <= 100
+
+
+class TestHashColumns:
+    """``hamming_distance``/``hash_similarity`` on stored hashes, not only pipelines.
+
+    A hash is usually computed once and kept as a column (``sink("list")``), and
+    near-duplicate search compares those columns pairwise: a cross join of the
+    hashes against themselves. Each side may be a pipeline, an expression or a
+    column name, and a hash column runs through the same XOR and popcount.
+    """
+
+    @staticmethod
+    def _hashes() -> pl.DataFrame:
+        import numpy as np
+
+        rng = np.random.default_rng(7)
+        images = []
+        for _ in range(2):
+            buf = BytesIO()
+            Image.fromarray(rng.integers(0, 256, (64, 64, 3), dtype=np.uint8)).save(
+                buf, format="PNG"
+            )
+            images.append(buf.getvalue())
+        pipe = Pipeline().source("image_bytes").perceptual_hash()
+        return pl.DataFrame({"name": ["h", "v"], "image": images}).with_columns(
+            hash=pl.col("image").cv.pipe(pipe).sink("list")
+        )
+
+    def test_hash_columns_match_the_pipeline_form(self) -> None:
+        df = self._hashes().with_columns(other=pl.col("hash").reverse())
+        pipe = Pipeline().source("image_bytes").perceptual_hash()
+        expected = df.select(
+            hamming_distance(
+                pl.col("image").cv.pipe(pipe), pl.col("image").reverse().cv.pipe(pipe)
+            )
+        ).to_series()
+        assert expected.to_list()[0] > 0
+        for a, b in [("hash", "other"), (pl.col("hash"), pl.col("other"))]:
+            got = df.select(hamming_distance(a, b)).to_series()
+            assert got.to_list() == expected.to_list()
+
+    def test_a_pipeline_and_a_column_mix(self) -> None:
+        df = self._hashes()
+        pipe = Pipeline().source("image_bytes").perceptual_hash()
+        out = df.select(hamming_distance(pl.col("image").cv.pipe(pipe), "hash"))
+        assert out.to_series().to_list() == [0.0, 0.0]
+
+    def test_array_hash_columns(self) -> None:
+        df = self._hashes().with_columns(pl.col("hash").list.to_array(8))
+        out = df.select(hamming_distance("hash", pl.col("hash").reverse()))
+        assert out.to_series().to_list()[0] > 0
+
+    def test_near_duplicate_pairs_by_cross_join(self) -> None:
+        h = self._hashes().select("name", "hash")
+        pairs = (
+            h.join(h, how="cross", suffix="_b")
+            .filter(pl.col("name") <= pl.col("name_b"))
+            .with_columns(
+                bits=hamming_distance("hash", "hash_b"),
+                similarity=hash_similarity("hash", "hash_b"),
+            )
+            .sort("name", "name_b")
+        )
+        assert pairs["bits"].to_list()[0] == 0.0  # h with itself
+        assert pairs["bits"].to_list()[1] > 0  # h with v
+        assert pairs["similarity"].to_list()[0] == 100.0
+
+    def test_hashes_of_different_lengths_are_refused(self) -> None:
+        df = pl.DataFrame(
+            {"a": [[1, 2]], "b": [[1, 2, 3]]},
+            schema={"a": pl.List(pl.UInt8), "b": pl.List(pl.UInt8)},
+        )
+        with pytest.raises(pl.exceptions.ComputeError, match="same shape"):
+            df.select(hamming_distance("a", "b"))

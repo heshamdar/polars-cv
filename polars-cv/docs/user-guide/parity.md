@@ -4,8 +4,8 @@
 
 polars-cv's outputs are checked against independent implementations: OpenCV,
 SciPy, NumPy, PIL, imagehash and pycocotools, or a written definition where
-no library computes the same thing. 788 tests over 114 ops ran and
-passed at commit `698fd4b` on 2026-10-18, with
+no library computes the same thing. 789 tests over 114 ops ran and
+passed at commit `27f8c3f` on 2026-10-18, with
 polars-cv 0.39.0, polars 2.0.0, numpy 2.5.3, opencv-python 4.11.0.86, scipy 1.16.3, pillow 12.0.0, imagehash 4.3.2, pycocotools 2.0.11.
 
 Every test declares what it compares and the tolerance it asserts
@@ -26,8 +26,8 @@ this page is regenerated with it installed.
 | OpenCV | 130 | `apply_lut`, `blur`, `canny`, `contour.area`, `contour.bounding_box`, `contour.centroid`, `contour.contains_point`, `contour.convex_hull`, `contour.dice`, `contour.flip`, `contour.hausdorff_distance`, `contour.iou`, `contour.is_convex`, `contour.normalize`, `contour.perimeter`, `contour.scale`, `contour.simplify`, `contour.to_absolute`, `contour.translate`, `contour.winding`, `convert_color`, `dilate`, `equalize_histogram`, `erode`, `extract_contours`, `grayscale`, `laplacian`, `morphology_close`, `morphology_gradient`, `morphology_open`, `rasterize`, `rotate_and_scale`, `sharpen`, `shear`, `sobel`, `stroke`, `warp_affine` |
 | Hand-computed | 48 | `adjust_brightness`, `adjust_contrast`, `adjust_gamma`, `apply_lut`, `area`, `channel_select`, `channel_swap`, `convert_color`, `coordinate_grid`, `difference`, `grayscale`, `intersection`, `invert`, `offset`, `on_error`, `rasterize`, `resize`, `stroke`, `symmetric_difference`, `union`, `union_all` |
 | SciPy | 47 | `dilate`, `distance_transform`, `erode` |
+| imagehash | 23 | `perceptual_hash` |
 | Python | 22 | `densify`, `smooth` |
-| imagehash | 22 | `perceptual_hash` |
 | matplotlib | 20 | `rasterize` |
 | pycocotools | 4 | `metrics.evaluate_detections` |
 | Cross-check | 1 | `distance_transform`, `extract_contours`, `point.signed_distance_to_contour` |
@@ -208,8 +208,9 @@ Where the differences come from (from `benchmarks/bench/parity.py`):
 | `grayscale`, `morphology_open` | OpenCV `cv2.morphologyEx` MORPH_OPEN, 3x3 rect kernel, u8 gray | exact | 1 | [test_morphology_ref.py](https://github.com/heshamdar/polars-cv/blob/main/polars-cv/tests/reference/test_morphology_ref.py) |
 | `contour.iou`, `contour.dice`, `contour.hausdorff_distance`, `contour.contains_point` | OpenCV `drawContours` masks / `cv2.pointPolygonTest`, SciPy `directed_hausdorff` | IoU/Dice abs 0.01 vs edge-inclusive OpenCV masks and rel 1e-09 vs the analytic value; Hausdorff rel 1e-9 vs SciPy; containment exact | 14 | [test_pairwise_ref.py](https://github.com/heshamdar/polars-cv/blob/main/polars-cv/tests/reference/test_pairwise_ref.py) |
 | `perceptual_hash` | Definition: distinct images spread near 32 of 64 bits apart | Hamming bits: mean > 26, min > 6 | 1 | [test_perceptual_hash_ref.py](https://github.com/heshamdar/polars-cv/blob/main/polars-cv/tests/reference/test_perceptual_hash_ref.py) |
-| `perceptual_hash` | imagehash `phash` (64-bit, hash_size=16 for 256 bits), `average_hash` and `dhash` on the same images | Hamming bits: phash <= 4 (<= 12 on a colour gradient), 256-bit <= 40, average/difference <= 10 on smooth images (bytes read LSB-first) | 18 | [test_perceptual_hash_ref.py](https://github.com/heshamdar/polars-cv/blob/main/polars-cv/tests/reference/test_perceptual_hash_ref.py) |
+| `perceptual_hash` | imagehash `phash` (64-bit, hash_size=16 for 256 bits), `average_hash` and `dhash` on the same images | Hamming bits: phash <= 4 (<= 12 on a colour gradient), 256-bit <= 40, average/difference <= 10 on smooth images | 18 | [test_perceptual_hash_ref.py](https://github.com/heshamdar/polars-cv/blob/main/polars-cv/tests/reference/test_perceptual_hash_ref.py) |
 | `perceptual_hash` | imagehash `phash` (default 64-bit, and hash_size=16 for 256 bits) | Hamming bits: <= 2 at 32x32, exact on flat/gradient, <= 4 resized, <= 40 of 256 | 4 | [test_perceptual_hash_ref.py](https://github.com/heshamdar/polars-cv/blob/main/polars-cv/tests/reference/test_perceptual_hash_ref.py) |
+| `perceptual_hash` | imagehash `phash`, `average_hash` and `dhash`, bits read most significant first | <= 2 Hamming bits for every algorithm | 1 | [test_perceptual_hash_ref.py](https://github.com/heshamdar/polars-cv/blob/main/polars-cv/tests/reference/test_perceptual_hash_ref.py) |
 | `adjust_brightness` | Definition: brightness factor 1.0 preserves values (u8 -> f32) | atol 1e-4 | 1 | [test_phase1_ref.py](https://github.com/heshamdar/polars-cv/blob/main/polars-cv/tests/reference/test_phase1_ref.py) |
 | `adjust_brightness` | Hand-computed expected values: 200 * 2.0 saturates at 255 | atol 1e-4 | 1 | [test_phase1_ref.py](https://github.com/heshamdar/polars-cv/blob/main/polars-cv/tests/reference/test_phase1_ref.py) |
 | `adjust_brightness` | Hand-computed expected values: lowers to `scale` then `clamp` | exact | 1 | [test_phase1_ref.py](https://github.com/heshamdar/polars-cv/blob/main/polars-cv/tests/reference/test_phase1_ref.py) |

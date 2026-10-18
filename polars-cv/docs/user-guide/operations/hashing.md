@@ -40,9 +40,15 @@ round differently from Pillow's, so 64-bit hashes typically differ from
 imagehash's in 0 to 2 bits. `hash_size` is the number of bits:
 `hash_size=256` is the 16×16 block, as in `imagehash.phash(img, hash_size=16)`.
 
+Every algorithm packs its bits the same way: row-major, most significant bit
+first, as imagehash's hex does. So `average` and `difference` read like
+`imagehash.average_hash` and `imagehash.dhash` too.
+
 ## Comparing Hashes
 
-Use `hamming_distance()` and `hash_similarity()` for batch comparison:
+Use `hamming_distance()` and `hash_similarity()` for batch comparison. Each
+side is either a hash pipeline or a stored hash: a column from `sink("list")`
+or `sink("array", ...)`, as an expression or a column name.
 
 ```python
 from polars_cv import hamming_distance, hash_similarity
@@ -55,6 +61,21 @@ result = df.with_columns(
     )
 )
 ```
+
+Hashes are usually computed once and kept. Near-duplicate search over them is
+a cross join of the hash column with itself:
+
+```python
+hashes = df.select("path", hash=pl.col("image").cv.pipe(hash_pipe).sink("list"))
+pairs = (
+    hashes.join(hashes, how="cross", suffix="_b")
+    .filter(pl.col("path") < pl.col("path_b"))
+    .with_columns(bits=hamming_distance("hash", "hash_b"))
+    .filter(pl.col("bits") <= 10)
+)
+```
+
+Two hashes of different lengths are refused rather than compared.
 
 ## Next Steps
 

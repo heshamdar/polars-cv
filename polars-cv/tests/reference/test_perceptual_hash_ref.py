@@ -20,6 +20,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from polars_cv import Pipeline
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
@@ -94,7 +95,7 @@ def jpeg_bytes_to_pil(data: bytes) -> "PILImage.Image":
     against="imagehash `phash` (64-bit, hash_size=16 for 256 bits), `average_hash` and `dhash` on the same images",
     tolerance=(
         "Hamming bits: phash <= 4 (<= 12 on a colour gradient), 256-bit <= 40, "
-        "average/difference <= 10 on smooth images (bytes read LSB-first)"
+        "average/difference <= 10 on smooth images"
     ),
 )
 class TestPerceptualHashReference:
@@ -242,9 +243,9 @@ class TestPerceptualHashReference:
         assert hash1 == hash2, "aHash should be deterministic"
 
         # polars-cv's average hash: deterministic, and close to imagehash's on
-        # natural-looking (smooth) images. It is image_hasher's, which packs
-        # bits LSB-first (pHash is MSB-first) and resizes with its own filter;
-        # measured 2-8 differing bits of 64 on smooth images. (On white noise
+        # natural-looking (smooth) images. It is image_hasher's, which resizes
+        # with its own filter; measured 2-8 differing bits of 64 on smooth
+        # images. (On white noise
         # the 8x8 means all sit near 128 and the bits are rounding-sensitive:
         # 18 bits, so noise is not compared.)
         assert (
@@ -253,7 +254,6 @@ class TestPerceptualHashReference:
         for a in _smooth_images(6):
             ours = np.unpackbits(
                 np.frombuffer(self._pcv([numpy_to_pil(a)], "average")[0], np.uint8),
-                bitorder="little",
             )
             theirs = imagehash.average_hash(numpy_to_pil(a)).hash.ravel()
             assert int((ours != theirs).sum()) <= 10
@@ -268,8 +268,8 @@ class TestPerceptualHashReference:
 
         assert hash1 == hash2, "dHash should be deterministic"
 
-        # As aHash: LSB-first image_hasher bytes; measured 1-8 differing bits
-        # of 64 on smooth images.
+        # As aHash: image_hasher's own resize; measured 1-8 differing bits of
+        # 64 on smooth images.
         assert (
             self._pcv([pil_img] * 2, "difference")[0]
             == self._pcv([pil_img], "difference")[0]
@@ -277,7 +277,6 @@ class TestPerceptualHashReference:
         for a in _smooth_images(6):
             ours = np.unpackbits(
                 np.frombuffer(self._pcv([numpy_to_pil(a)], "difference")[0], np.uint8),
-                bitorder="little",
             )
             theirs = imagehash.dhash(numpy_to_pil(a)).hash.ravel()
             assert int((ours != theirs).sum()) <= 10
@@ -510,8 +509,8 @@ class TestPerceptualHashReference:
 
         # polars-cv's three algorithms: 64-bit hashes that differ from one
         # another as imagehash's do, and each is within a few bits of its
-        # imagehash counterpart (a/d: LSB-first bytes, measured 1-2 bits here;
-        # p: MSB-first, 10 bits on this colour gradient, see the crop test).
+        # imagehash counterpart (a/d: measured 1-2 bits here; p: 10 bits on
+        # this colour gradient, see the crop test).
         ours = {
             a: self._pcv([pil_img], a)[0]
             for a in ("average", "difference", "perceptual")
@@ -519,11 +518,11 @@ class TestPerceptualHashReference:
         assert all(len(h) == 8 for h in ours.values())
         assert len(set(ours.values())) > 1
 
-        def lsb(h: bytes) -> np.ndarray:
-            return np.unpackbits(np.frombuffer(h, np.uint8), bitorder="little")
+        def bits(h: bytes) -> np.ndarray:
+            return np.unpackbits(np.frombuffer(h, np.uint8))
 
-        assert int((lsb(ours["average"]) != ahash.hash.ravel()).sum()) <= 4
-        assert int((lsb(ours["difference"]) != dhash.hash.ravel()).sum()) <= 4
+        assert int((bits(ours["average"]) != ahash.hash.ravel()).sum()) <= 4
+        assert int((bits(ours["difference"]) != dhash.hash.ravel()).sum()) <= 4
         assert (self._int(ours["perceptual"]) ^ self._ih(phash)).bit_count() <= 12
 
     def test_batch_hashing_consistency(self) -> None:
@@ -709,3 +708,37 @@ class TestPhashMatchesImagehash:
             expected = int(str(imagehash.phash(numpy_to_pil(a), hash_size=16)), 16)
             got = _pcv_phash([a], hash_size=256)[0]
             assert (got ^ expected).bit_count() <= 40
+
+
+@imagehash_required
+@plugin_required
+@pytest.mark.parity(
+    ops=["perceptual_hash"],
+    against="imagehash `phash`, `average_hash` and `dhash`, bits read most significant first",
+    tolerance="<= 2 Hamming bits for every algorithm",
+)
+def test_every_algorithm_packs_bits_msb_first() -> None:
+    """The algorithms share one output column type, so one bit order: row-major,
+    most significant bit first, as imagehash's hex. aHash and dHash used to
+    come out least significant first (CR-115), 0 bits from imagehash read one
+    way and tens of bits off read the documented way."""
+    import imagehash
+    from PIL import Image
+
+    yy, xx = np.mgrid[0:128, 0:128]
+    img = ((xx * 2 + yy) % 256).astype(np.uint8)
+    img[40:90, 30:70] = 30
+    buf = io.BytesIO()
+    Image.fromarray(img).save(buf, "PNG")
+    df = pl.DataFrame({"i": [buf.getvalue()]})
+    refs = {
+        "perceptual": imagehash.phash,
+        "average": imagehash.average_hash,
+        "difference": imagehash.dhash,
+    }
+    for algorithm, ref in refs.items():
+        pipe = Pipeline().source("image_bytes").perceptual_hash(algorithm=algorithm)
+        h = df.select(pl.col("i").cv.pipe(pipe).sink("list")).item().to_list()
+        bits = np.unpackbits(np.array(h, dtype=np.uint8))
+        expected = ref(Image.open(io.BytesIO(buf.getvalue()))).hash.flatten()
+        assert int((bits != expected).sum()) <= 2, algorithm
