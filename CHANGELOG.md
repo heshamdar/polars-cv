@@ -239,6 +239,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **`apply_mask` read the mask on the image's scale.** A u8 mask (a
+  `rasterize` or `threshold` result, 0 or 255) multiplied a float image by
+  255 and darkened a u16 one 257-fold, and a float mask truncated to 0 or 1 on
+  a u8 image. The mask's own dtype now says its scale — a u8 mask weighs
+  `m / 255`, a float mask `m` in `[0, 1]` — whatever the image's dtype, and
+  the result keeps the image's dtype. A mask of any other dtype is refused
+  (cast or scale it first). A u8 image under a u8 mask is unchanged.
 - **Aliases.** An alias given to two different nodes is now refused (it
   resolved silently to whichever was found last), and a node may carry
   several aliases, each an output (all but one used to be lost: "Alias 'q'

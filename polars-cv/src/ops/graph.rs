@@ -258,7 +258,9 @@ pub enum GraphOp<M: Mode = Exec> {
         /// column, through ``.contour``).
         other: NodeRef,
     },
-    /// Apply a binary mask to this image.
+    /// Weigh this image by a mask: a u8 mask by ``m / 255``, a float one by
+    /// ``m`` in ``[0, 1]``, keeping the image's dtype; other mask dtypes are
+    /// refused.
     #[op(name = "apply_mask", visibility = LazyOnly, sample = {"mask": "n0", "invert": true})]
     ApplyMask {
         /// The mask's node.
@@ -470,7 +472,14 @@ impl<M: Mode> GraphOp<M> {
         match self.role() {
             Role::Binary(op, _) => op.validate(inputs, dtypes),
             Role::ApplyMask { .. } => match inputs {
-                [buffer, mask, ..] => view_buffer::validate_mask(buffer, mask),
+                [buffer, mask, ..] => view_buffer::validate_mask(
+                    buffer,
+                    mask,
+                    dtypes
+                        .get(1)
+                        .copied()
+                        .unwrap_or(view_buffer::PlannedDType::Unknown),
+                ),
                 _ => Ok(()),
             },
             Role::ChannelMerge { .. } => view_buffer::validate_channel_merge(inputs, dtypes),

@@ -297,10 +297,14 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         invert: bool | pl.Expr = False,
     ) -> "LazyPipelineExpr":
         """
-        Apply a binary mask to this image.
+        Weigh this image by a mask.
 
-        The mask can be from another image pipeline or a contour pipeline
-        (which will be auto-rasterized to match dimensions).
+        The mask's own dtype says its scale, whatever the image's: a u8 mask
+        weighs each pixel by ``m / 255`` (a ``rasterize`` or ``threshold``
+        mask: 255 keeps, 0 hides), a float mask by ``m`` in ``[0, 1]``. The
+        result keeps the image's dtype. A mask of any other dtype is refused;
+        cast or scale it first. A single-channel mask spreads over the
+        image's channels.
 
         Args:
             mask: LazyPipelineExpr producing the mask.

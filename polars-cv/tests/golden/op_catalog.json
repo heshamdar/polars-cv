@@ -161,7 +161,7 @@
     "name": "apply_mask",
     "python": "apply_mask",
     "visibility": "lazy_only",
-    "doc": "Apply a binary mask to this image.",
+    "doc": "Weigh this image by a mask: a u8 mask by ``m / 255``, a float one by\n``m`` in ``[0, 1]``, keeping the image's dtype; other mask dtypes are\nrefused.",
     "fields": [
       {
         "name": "mask",

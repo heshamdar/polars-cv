@@ -233,7 +233,7 @@ const BLOCK: usize = 1024;
 /// horizontal flip) packed into a stack scratch by the walk's unit copies,
 /// then converted to `T` (which holds every value of both:
 /// [`DType::promote`]) unless already in it. No operand is copied whole.
-fn zip_with<T: FromAny, Fun: Fn(T, T) -> T>(
+pub(crate) fn zip_with<T: FromAny, Fun: Fn(T, T) -> T>(
     a: &ViewBuffer,
     b: &ViewBuffer,
     output_shape: &[usize],

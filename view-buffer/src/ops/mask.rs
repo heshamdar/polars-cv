@@ -6,34 +6,38 @@
 use std::mem::MaybeUninit;
 
 use crate::core::buffer::ViewBuffer;
-use crate::core::dtype::{DType, ViewType};
+use crate::core::dtype::{DType, PlannedDType, ViewType};
 use crate::core::map::{map_new, ElementMap};
 use crate::ops::binary::BinaryOp;
 
-/// Apply a mask to a buffer via normalized blending (`pixel * mask`).
-///
-/// Mask semantics depend on the buffer dtype:
-/// - integer buffers: mask values in `[0, 255]`; 255 keeps the pixel, 0 hides
-///   it, intermediate values blend proportionally.
-/// - float buffers: mask values in `[0.0, 1.0]`.
-///
-/// A single-channel mask (`[H, W]` or `[H, W, 1]`) applied to a 3-D
-/// `[H, W, C]` buffer is expanded across the channels; any other mask has the
-/// buffer's shape. `invert` flips the mask (`255 - m` / `1.0 - m`).
 /// Whether [`apply_mask`] can combine a buffer of `buffer_shape` with a mask of
-/// `mask_shape` (CR-34).
+/// `mask_shape` and `mask_dtype` (CR-34, CR-110).
 ///
-/// Reads the same two facts `apply_mask` acts on: a single-channel mask over a
-/// 3-D buffer is first expanded to the buffer's channel count, and the result
-/// is then blended with the buffer, so it must have the buffer's shape. Stated through
+/// The mask's dtype says its scale, so only a u8 mask (`[0, 255]`) or a float
+/// one (`[0, 1]`) has one; any other is refused, never read on a guessed
+/// scale. Its shape: a single-channel mask over a 3-D buffer is first
+/// expanded to the buffer's channel count, and the result is then weighed
+/// against the buffer, so it must have the buffer's shape. Stated through
 /// `BinaryOp::Blend`'s own `validate` so the two cannot drift. Over what is
-/// known of the shapes (the planner's call; execution passes known ones), so
-/// an error is a verdict on a known size.
+/// known (the planner's call; execution passes known facts), so an error is a
+/// verdict on a known size or dtype.
 pub fn validate_mask(
     buffer_shape: &[crate::ops::Dim],
     mask_shape: &[crate::ops::Dim],
+    mask_dtype: PlannedDType,
 ) -> Result<(), crate::ops::validation::ValidationError> {
     use crate::ops::traits::Op as _;
+    if let PlannedDType::Known(dtype) = mask_dtype {
+        if !matches!(dtype, DType::U8 | DType::F32 | DType::F64) {
+            return Err(crate::ops::validation::ValidationError::Generic {
+                message: format!(
+                    "apply_mask: a mask is u8 (0 to 255) or float (0 to 1), got {}; \
+                     cast or scale it first",
+                    dtype.short_name()
+                ),
+            });
+        }
+    }
     let effective: Vec<crate::ops::Dim> = match (mask_shape, buffer_shape) {
         ([h, w], [_, _, c]) | ([h, w, crate::ops::Dim::Known(1)], [_, _, c]) => vec![*h, *w, *c],
         _ => mask_shape.to_vec(),
@@ -42,6 +46,18 @@ pub fn validate_mask(
     BinaryOp::Blend.validate(&[buffer_shape, &effective], &[f32, f32])
 }
 
+/// Weigh each pixel by its mask value; the result keeps the buffer's dtype.
+///
+/// The mask's own dtype says its scale, whatever the buffer's: a u8 mask
+/// weighs `m / 255` (255 keeps the pixel, 0 hides it), a float mask `m` (in
+/// `[0, 1]`). An integer result is rounded half away from zero and saturated
+/// (the conversion rule); a u8 buffer under a u8 mask is `round(a·m / 255)`
+/// in integers, as `BinaryOp::Blend` computes it.
+///
+/// A single-channel mask (`[H, W]` or `[H, W, 1]`) applied to a 3-D
+/// `[H, W, C]` buffer is expanded across the channels; any other mask has the
+/// buffer's shape. `invert` flips the mask (`255 - m` / `1.0 - m`). Masks of
+/// other dtypes are refused by [`validate_mask`] before this runs.
 pub fn apply_mask(buffer: &ViewBuffer, mask: &ViewBuffer, invert: bool) -> ViewBuffer {
     let buf_shape = buffer.shape();
     // A `[H, W, 1]` mask over channels is read as the `[H, W]` one it holds.
@@ -53,9 +69,8 @@ pub fn apply_mask(buffer: &ViewBuffer, mask: &ViewBuffer, invert: bool) -> ViewB
     };
     let mask_shape = mask.shape();
 
-    // Cast mask to match buffer dtype for proper blending
-    let mask_dtype = buffer.dtype();
-    let is_float = matches!(mask_dtype, DType::F32 | DType::F64);
+    // The mask stays on its own scale: u8, or float as f32.
+    let is_float = matches!(mask.dtype(), DType::F32 | DType::F64);
 
     let effective_mask = if mask_shape.len() == 2 && buf_shape.len() == 3 {
         let h = mask_shape[0];
@@ -78,7 +93,18 @@ pub fn apply_mask(buffer: &ViewBuffer, mask: &ViewBuffer, invert: bool) -> ViewB
     } else {
         mask.clone()
     };
-    BinaryOp::Blend.execute(buffer, &effective_mask)
+    if buffer.dtype() == DType::U8 && !is_float {
+        return BinaryOp::Blend.execute(buffer, &effective_mask);
+    }
+    let shape = buffer.shape().to_vec();
+    let weighed = if is_float {
+        crate::ops::binary::zip_with::<f64, _>(buffer, &effective_mask, &shape, |a, m| a * m)
+    } else {
+        crate::ops::binary::zip_with::<f64, _>(buffer, &effective_mask, &shape, |a, m| {
+            a * m / 255.0
+        })
+    };
+    weighed.cast_to(buffer.dtype())
 }
 
 /// A `[h, w]` mask broadcast to `[h, w, c]` and packed (inverted on the way
@@ -161,8 +187,9 @@ mod tests {
                 .map(|&n| crate::ops::Dim::Known(n))
                 .collect::<Vec<_>>()
         };
-        assert!(validate_mask(&dims(&[2, 1, 3]), &dims(&[2, 1, 1])).is_ok());
-        assert!(validate_mask(&dims(&[2, 1, 3]), &dims(&[2, 1, 2])).is_err());
+        let u8 = PlannedDType::Known(DType::U8);
+        assert!(validate_mask(&dims(&[2, 1, 3]), &dims(&[2, 1, 1]), u8).is_ok());
+        assert!(validate_mask(&dims(&[2, 1, 3]), &dims(&[2, 1, 2]), u8).is_err());
     }
 
     #[test]
@@ -176,5 +203,24 @@ mod tests {
 
         let inverted = apply_mask(&buffer, &mask, true);
         assert_eq!(inverted.as_slice::<f32>(), &[0.0, 0.0, 1.5, 2.0]);
+    }
+
+    /// The mask's dtype says its scale, whatever the buffer's (CR-110): a
+    /// u8 255 keeps a float pixel, a u8 mask weighs a u16 one by `m / 255`,
+    /// a float mask weighs a u8 one by `m`, and no other mask dtype passes.
+    #[test]
+    fn the_mask_dtype_sets_its_scale() {
+        let mask = ViewBuffer::from_vec_with_shape(vec![255u8, 51], vec![2, 1]);
+        let f = ViewBuffer::from_vec_with_shape(vec![2.0f32, 10.0], vec![2, 1]);
+        assert_eq!(apply_mask(&f, &mask, false).as_slice::<f32>(), &[2.0, 2.0]);
+        let w = ViewBuffer::from_vec_with_shape(vec![1000u16, 1000], vec![2, 1]);
+        assert_eq!(apply_mask(&w, &mask, false).as_slice::<u16>(), &[1000, 200]);
+        let half = ViewBuffer::from_vec_with_shape(vec![0.5f32, 0.25], vec![2, 1]);
+        let b = ViewBuffer::from_vec_with_shape(vec![101u8, 100], vec![2, 1]);
+        assert_eq!(apply_mask(&b, &half, false).as_slice::<u8>(), &[51, 25]);
+        let dims = [crate::ops::Dim::Known(2), crate::ops::Dim::Known(1)];
+        let refused = validate_mask(&dims, &dims, PlannedDType::Known(DType::U16));
+        assert!(refused.unwrap_err().to_string().contains("got u16"));
+        assert!(validate_mask(&dims, &dims, PlannedDType::Unknown).is_ok());
     }
 }
