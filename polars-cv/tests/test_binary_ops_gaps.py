@@ -264,3 +264,87 @@ class TestMixedDtypePromotion:
             (ValueError, pl.exceptions.ComputeError), match="no common integer"
         ):
             df.select(expr)
+
+
+# ---------------------------------------------------------------------------
+# apply_mask: the mask's own dtype says its scale
+# ---------------------------------------------------------------------------
+
+
+def _round_half_away(x: np.ndarray) -> np.ndarray:
+    return np.sign(x) * np.floor(np.abs(x) + 0.5)
+
+
+@plugin_required
+class TestApplyMaskScale:
+    """A u8 mask weighs ``m / 255``, a float mask ``m``, whatever the image's
+    dtype; the result keeps the image's dtype (an integer one rounded half
+    away from zero). The mask used to be read on the *image's* scale: a u8
+    255-mask multiplied a float image by 255 and darkened a u16 one 257-fold,
+    and a float mask truncated to 0 or 1 on a u8 image."""
+
+    @pytest.fixture
+    def arrays(self) -> tuple[np.ndarray, np.ndarray]:
+        rng = np.random.default_rng(7)
+        img = rng.integers(0, 256, (12, 10, 3), dtype=np.uint8)
+        mask = rng.integers(0, 256, (12, 10), dtype=np.uint8)
+        mask[0, 0], mask[0, 1] = 0, 255
+        return img, mask
+
+    @pytest.fixture
+    def df(self, arrays, encode_png: Callable) -> pl.DataFrame:
+        img, mask = arrays
+        return pl.DataFrame({"image": [encode_png(img)], "mask": [encode_png(mask)]})
+
+    @staticmethod
+    def _run(df, image: Pipeline, mask: Pipeline, invert: bool = False) -> np.ndarray:
+        src = Pipeline().source("image_bytes", dtype="u8")
+        img = pl.col("image").cv.pipe(src).pipe(image)
+        m = pl.col("mask").cv.pipe(src).pipe(mask.channel_select(0))
+        out = df.select(o=img.apply_mask(m, invert=invert).sink("numpy")).item()
+        return numpy_from_struct(out)
+
+    def test_u8_image_u8_mask_is_unchanged(self, df, arrays) -> None:
+        img, mask = arrays
+        out = self._run(df, Pipeline(), Pipeline())
+        expected = _round_half_away(img * (mask[..., None] / 255.0)).astype(np.uint8)
+        np.testing.assert_array_equal(out, expected)
+
+    def test_u8_mask_on_a_float_image(self, df, arrays) -> None:
+        img, mask = arrays
+        out = self._run(df, Pipeline().cast("f32"), Pipeline())
+        assert out.dtype == np.float32
+        expected = (img * (mask[..., None].astype(np.float64) / 255.0)).astype(
+            np.float32
+        )
+        np.testing.assert_allclose(out, expected, rtol=1e-6)
+
+    def test_inverted_u8_mask_on_a_float_image(self, df, arrays) -> None:
+        img, mask = arrays
+        out = self._run(df, Pipeline().cast("f32"), Pipeline(), invert=True)
+        weight = (255 - mask[..., None]).astype(np.float64) / 255.0
+        np.testing.assert_allclose(out, (img * weight).astype(np.float32), rtol=1e-6)
+
+    def test_u8_mask_on_a_u16_image(self, df, arrays) -> None:
+        img, mask = arrays
+        out = self._run(df, Pipeline().cast("u16"), Pipeline())
+        assert out.dtype == np.uint16
+        expected = _round_half_away(img * (mask[..., None] / 255.0)).astype(np.uint16)
+        np.testing.assert_array_equal(out, expected)
+
+    def test_float_mask_on_a_u8_image(self, df, arrays) -> None:
+        img, mask = arrays
+        out = self._run(df, Pipeline(), Pipeline().cast("f32").scale(1 / 255))
+        assert out.dtype == np.uint8
+        weight = (mask[..., None].astype(np.float32) * np.float32(1 / 255)).astype(
+            np.float64
+        )
+        expected = _round_half_away(img * weight).astype(np.uint8)
+        np.testing.assert_array_equal(out, expected)
+
+    def test_a_mask_of_another_dtype_is_refused(self) -> None:
+        src = Pipeline().source("image_bytes", dtype="u8")
+        img = pl.col("image").cv.pipe(src)
+        mask = pl.col("mask").cv.pipe(src.channel_select(0).cast("u16"))
+        with pytest.raises(ValueError, match=r"apply_mask.*u8.*float.*u16"):
+            img.apply_mask(mask)
