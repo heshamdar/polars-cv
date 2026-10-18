@@ -121,11 +121,10 @@ outline = bright.maximum(saturated).pipe(
     Pipeline().morphology_open(ksize=5).extract_contours().largest().convex_hull()
 )
 
-# The outline as an anti-aliased alpha channel under the photo's colours.
+# The outline as an anti-aliased alpha channel joined to the photo's colours.
 photo = img.pipe(base)
-alpha = outline.rasterize(shape=photo, supersample=4).channel_select(0)
-r, g, b = (photo.channel_select(i) for i in range(3))
-cutout = r.channel_merge(g, b, alpha).alias("cutout")
+alpha = outline.rasterize(shape=photo, supersample=4)
+cutout = photo.channel_merge(alpha).alias("cutout")
 
 expr = cutout.merge_pipe(outline.area().alias("area"))
 paths = sorted(str(p) for p in Path("photos").glob("*.jpg"))
@@ -138,17 +137,19 @@ out = (
 ```
 
 `expr.sink(..., return_expr=False).show_graph()` draws the graph that runs
-(it needs `polars-cv[viz]`):
+(it needs `polars-cv[viz]` and Graphviz's `dot`):
 
-![The optimised graph: one source node decodes and resizes; it feeds a grayscale threshold branch and an HSV saturation threshold branch, which a maximum node joins; morphology, contour extraction, largest and convex hull follow; the hull feeds both a rasterize node, whose alpha is merged with the photo's three colour channels into the cutout, and an area node.](https://raw.githubusercontent.com/heshamdar/polars-cv/main/polars-cv/docs/assets/readme-cutout-graph.svg)
+![The optimised graph: one source node reads and resizes the image; one branch converts it to HSV and thresholds the saturation; a second node thresholds the brightness, takes the maximum with the saturation branch, cleans it up and traces the outline's hull; the hull feeds an area node and a rasterize node, whose alpha the photo's channels are merged with into the cutout.](https://raw.githubusercontent.com/heshamdar/polars-cv/main/polars-cv/docs/assets/readme-cutout-graph.svg)
 
-The three pipelines built from `base` each start with their own decode and
-resize. Common-subexpression elimination finds that shared prefix and hoists
-it into one source node (`SOURCE` at the top), so each image is decoded and
-resized once and feeds every branch. Pass `opt_flags=False` to `sink` to see
-the graph as written. The whole graph is one Polars expression: it runs in
-the lazy and streaming engines, per row, with `min_saturation` read from each
-row's column, and returns the PNG and the outline's area together.
+Written out, this is eight nodes with three decodes; it runs as six with one.
+The optimiser computes each distinct value once: the three pipelines built from `base` share one read
+and resize (the `SOURCE` node), and each linear run of steps that nothing else
+reads becomes a single node, so the brightness threshold runs straight through
+`maximum` to the hull in one. Pass `opt_flags=False` to `sink` to see the
+graph as written; the outputs are byte for byte the same. The whole graph is
+one Polars expression: it runs in the lazy and streaming engines, per row,
+with `min_saturation` read from each row's column, and returns the PNG and the
+outline's area together.
 
 ## Why polars-cv
 
