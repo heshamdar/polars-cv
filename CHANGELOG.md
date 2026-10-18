@@ -7,6 +7,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.39.0] — 2026-10-18
+
+Shapes made explicit, contours made drawable, and CSE that settles. Binary
+ops no longer broadcast: operands of different shapes are refused, and the
+new `squeeze`/`expand_dims` change a rank. `channel_select` keeps the
+channel axis by default, and `apply_mask` reads a mask on its own dtype's
+scale. Contours gain set operations, shaping, stroking and open lines in
+pipelines; `rasterize` can supersample; `distance_transform`,
+`coordinate_grid`, `apply_lut` and disk footprints are new. CSE now computes
+each distinct value once, fuses linear runs and repeats until the graph
+settles. The sdist ships its license files where PyPI looks for them.
+Install 0.39.0 rather than 0.38.0 from PyPI: the 0.38.0 wheels there were
+built from this release's code, not 0.38.0's, and its sdist was refused (see
+Fixed). Upgrading from 0.38: see the
+[migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.39/).
+
 ### Breaking changes
 
 - **`channel_select(i)` keeps the channel axis: `[H, W, 1]`, not `[H, W]`.**
@@ -17,6 +33,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   A `[H, W]` input is returned as it is either way. Code that relied on the
   2-D result passes `keepdims=False` (see the
   [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.39/)).
+
+- **Binary ops no longer broadcast: both operands must have the same shape**
+  (breaking). `add`, `subtract`, `multiply`, `divide`, `blend`, `maximum`,
+  `minimum` and the bitwise ops used NumPy broadcasting, aligned from the last
+  axis. `[H, W, 1]` against `[H, W]` therefore became `[H, W, W]` on a square
+  canvas (4 GB of f32 at 1024 px) and an error on any other, and a
+  `[H, W, 1]` operand stretched silently over `[H, W, 3]`. Operands of
+  different shapes are now refused (`OpShape::Elementwise`,
+  `elementwise_dims`): at build where the sizes are known, per row where they
+  are not. Change a rank with the new `squeeze`/`expand_dims`. `apply_mask`
+  keeps spreading a single-channel mask over the channels, as its contract,
+  and now does so for a `[H, W, 1]` mask itself rather than through
+  broadcasting. The broadcast half of the binary kernel (per-operand repeat
+  blocks, `broadcast_shapes`, `ViewBuffer::leading_axes`) is deleted with
+  it. An `extract_shape()` vector added to an image is now refused at build
+  rather than at execution.
 
 ### Added
 
@@ -183,22 +215,6 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   "When not to use polars-cv" section are gone. The halftone logo has a
   transparent background, a tinted face, inked eyes and nose, and outlined
   letters, so it reads on light pages too.
-
-- **Binary ops no longer broadcast: both operands must have the same shape**
-  (breaking). `add`, `subtract`, `multiply`, `divide`, `blend`, `maximum`,
-  `minimum` and the bitwise ops used NumPy broadcasting, aligned from the last
-  axis. `[H, W, 1]` against `[H, W]` therefore became `[H, W, W]` on a square
-  canvas (4 GB of f32 at 1024 px) and an error on any other, and a
-  `[H, W, 1]` operand stretched silently over `[H, W, 3]`. Operands of
-  different shapes are now refused (`OpShape::Elementwise`,
-  `elementwise_dims`): at build where the sizes are known, per row where they
-  are not. Change a rank with the new `squeeze`/`expand_dims`. `apply_mask`
-  keeps spreading a single-channel mask over the channels, as its contract,
-  and now does so for a `[H, W, 1]` mask itself rather than through
-  broadcasting. The broadcast half of the binary kernel (per-operand repeat
-  blocks, `broadcast_shapes`, `ViewBuffer::leading_axes`) is deleted with
-  it. An `extract_shape()` vector added to an image is now refused at build
-  rather than at execution.
 
 - **`footprint="disk"` erode/dilate/morphology are linear in the radius**
   (CR-105). Each half-width's spans were a separate full-size image, built
@@ -5534,7 +5550,8 @@ Each item is described in full under its section below.
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
-[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.38.0...HEAD
+[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.39.0...HEAD
+[0.39.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.39.0
 [0.38.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.38.0
 [0.37.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.37.0
 [0.36.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.36.0

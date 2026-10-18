@@ -1,10 +1,28 @@
 # Migrating from 0.38 to 0.39
 
-0.39 changes one default shape and corrects how `apply_mask` scales a mask.
+0.39 stops binary operations broadcasting, changes one default shape and
+corrects how `apply_mask` scales a mask.
 This page lists what to check coming from 0.38; the
 [changelog](../changelog.md) has the full list.
 
 ## Shapes that change
+
+**Binary operations no longer broadcast.** `add`, `subtract`, `multiply`,
+`divide`, `blend`, `maximum`, `minimum` and the bitwise ops need operands of
+the same shape, and refuse any other pair where it is written (or per row,
+where a size is known only then). 0.38 broadcast NumPy-style from the last
+axis, so a `[H, W, 1]` operand stretched silently over `[H, W, 3]`, and
+`[H, W, 1]` against `[H, W]` became `[H, W, W]`. Change a rank with the new
+`squeeze(axis)` / `expand_dims(axis)`:
+
+```python
+gray = img.pipe(Pipeline().grayscale())        # [H, W, 1]
+plane = img.channel_select(0, keepdims=False)  # [H, W]
+plane.multiply(gray.squeeze(2))                # both [H, W]; refused unsqueezed
+```
+
+`apply_mask` still spreads a single-channel mask over an image's channels.
+See [Binary Operations](composition/binary-ops.md).
 
 **`channel_select(i)` keeps the channel axis.** It returns `[H, W, 1]`, the
 shape `grayscale` and `rasterize` return, instead of `[H, W]`. A selected

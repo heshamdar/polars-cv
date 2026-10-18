@@ -7,7 +7,7 @@ releases, read each page from your version up.
 
 | Upgrading from | To | What to check |
 |---|---|---|
-| 0.38 | [0.39](migration-0.39.md) | `channel_select` keeps the channel axis; `apply_mask`'s mask scale |
+| 0.38 | [0.39](migration-0.39.md) | Binary ops no longer broadcast; `channel_select` keeps the channel axis; `apply_mask`'s mask scale |
 | 0.37 | [0.38](migration-0.38.md) | Two corrected results; a switch for the plugin's thread pool |
 | 0.36 | [0.37](migration-0.37.md) | Two metrics results |
 | 0.35 | [0.36](migration-0.36.md) | One new parameter, one edge-case result |
@@ -18,13 +18,3 @@ releases, read each page from your version up.
 | 0.30 | [0.31](migration-0.31.md) | A removed spelling; inputs now read as written |
 | 0.29 | [0.30](migration-0.30.md) | Every op computes in the dtype it declares |
 | 0.28 | [0.29](migration-0.29.md) | Generated builder methods: keyword-only parameters |
-
-## Unreleased
-
-The next release has one breaking change: **binary operations no longer
-broadcast.** `add`, `multiply`, `blend`, `maximum` and the other two-operand
-ops need operands of the same shape, and refuse any other pair where it is
-written (or per row, where a size is known only then). Change a rank with the
-new `squeeze(axis)` / `expand_dims(axis)`; `apply_mask` still spreads a
-single-channel mask over an image's channels. See
-[Binary Operations](composition/binary-ops.md).
