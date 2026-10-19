@@ -85,8 +85,8 @@ class TestLazyComposition:
         assert result.node_id != img.node_id
         assert result.node_id != mask.node_id
 
-    def test_apply_mask_tracks_upstream(self) -> None:
-        """apply_mask should track both inputs as upstream."""
+    def test_apply_mask_depends_on_both_inputs(self) -> None:
+        """apply_mask depends on the image it reads and on its mask."""
         img_pipe = Pipeline().source("image_bytes")
         mask_pipe = Pipeline().source("image_bytes")
 
@@ -95,9 +95,7 @@ class TestLazyComposition:
 
         result = img.apply_mask(mask)
 
-        assert len(result._upstream) == 2
-        assert img in result._upstream
-        assert mask in result._upstream
+        assert result._dependencies() == [img, mask]
 
     def test_add_composition(self) -> None:
         """add should compose two LazyPipelineExpr instances."""
@@ -110,7 +108,7 @@ class TestLazyComposition:
         result = expr1.add(expr2)
 
         assert isinstance(result, LazyPipelineExpr)
-        assert len(result._upstream) == 2
+        assert result._dependencies() == [expr1, expr2]
 
     def test_subtract_composition(self) -> None:
         """subtract should compose two LazyPipelineExpr instances."""
@@ -123,7 +121,7 @@ class TestLazyComposition:
         result = expr1.subtract(expr2)
 
         assert isinstance(result, LazyPipelineExpr)
-        assert len(result._upstream) == 2
+        assert result._dependencies() == [expr1, expr2]
 
     def test_multiply_composition(self) -> None:
         """multiply should compose two LazyPipelineExpr instances."""
@@ -163,8 +161,9 @@ class TestLazyComposition:
         result = expr1.add(expr2).multiply(expr3)
 
         assert isinstance(result, LazyPipelineExpr)
-        # Should have expr1+expr2 intermediate and expr3 as upstream
-        assert len(result._upstream) == 2
+        # Depends on the expr1+expr2 intermediate and on expr3
+        assert len(result._dependencies()) == 2
+        assert result._dependencies()[1] is expr3
 
     def test_apply_contour_mask(self) -> None:
         """apply_contour_mask creates rasterize node automatically."""
@@ -256,19 +255,16 @@ class TestPipelineGraphSerialization:
         pipe = Pipeline().source("image_bytes")
 
         graph = PipelineGraph()
+        graph.add_node("c", Pipeline().blur(1.0), input="b")
+        graph.add_node("b", Pipeline().grayscale(), input="a")
         graph.add_node("a", pipe, pl.col("a"))
-        graph.add_node("b", pipe, pl.col("b"))
-        graph.add_node("c", pipe, pl.col("c"), upstream=["a", "b"])
         graph.set_output("c", "numpy")
 
-        order = graph.topological_order()
+        # Each node after the node it reads.
+        assert graph.topological_order() == ["a", "b", "c"]
 
-        # 'c' must come after 'a' and 'b'
-        assert order.index("c") > order.index("a")
-        assert order.index("c") > order.index("b")
-
-    def test_graph_column_bindings(self) -> None:
-        """Graph should correctly bind columns."""
+    def test_graph_roots_decode_their_columns(self) -> None:
+        """Each root decodes its own plugin input."""
         from polars_cv._graph import PipelineGraph
 
         pipe = Pipeline().source("image_bytes")
@@ -278,8 +274,11 @@ class TestPipelineGraphSerialization:
         graph.add_node("node2", pipe, pl.col("col_b"))
         graph.set_output("node2", "numpy")
 
-        bindings = graph._to_dict()["column_bindings"]
-        assert bindings == {"n0": 0, "n1": 1}
+        nodes = graph._to_dict()["nodes"]
+        assert {k: n["input"]["decode"]["column"] for k, n in nodes.items()} == {
+            "n0": 0,
+            "n1": 1,
+        }
 
     def test_graph_deduplicates_same_column(self) -> None:
         """Same column used by multiple nodes should be deduplicated."""
@@ -294,9 +293,9 @@ class TestPipelineGraphSerialization:
 
         # Only one unique input column
         assert len(graph._slot_table()) == 1
-        # Both nodes should point to same index
-        bindings = graph._to_dict()["column_bindings"]
-        assert bindings["n0"] == bindings["n1"]
+        # Both nodes decode the same input
+        nodes = graph._to_dict()["nodes"]
+        assert nodes["n0"]["input"] == nodes["n1"]["input"]
 
 
 @plugin_required
@@ -896,14 +895,14 @@ class TestPipelineGraphRefusals:
         with pytest.raises(RuntimeError, match="optimization phase"):
             graph.to_expr()
 
-    def test_a_root_without_a_column_is_refused(self) -> None:
+    def test_a_node_reading_nothing_is_refused_where_it_is_added(self) -> None:
         from polars_cv._graph import PipelineGraph
 
         graph = PipelineGraph()
-        graph.add_node("n0", Pipeline().source("image_bytes"))
-        graph.set_output("n0", "numpy")
-        with pytest.raises(ValueError, match="Root node 'n0' has no column"):
-            graph.optimize(OptFlags.all()).to_expr()
+        with pytest.raises(ValueError, match="node 'n0' must read a column or another"):
+            graph.add_node("n0", Pipeline().source("image_bytes"))
+        with pytest.raises(ValueError, match="node 'n1' must read a column or another"):
+            graph.add_node("n1", Pipeline(), pl.col("x"), input="n0")
 
 
 def test_a_lazy_expr_displays_its_guidance(capsys: pytest.CaptureFixture[str]) -> None:

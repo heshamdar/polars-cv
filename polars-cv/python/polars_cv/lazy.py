@@ -40,8 +40,6 @@ def _generate_node_id() -> str:
 #: ``test_stat_reducers_are_all_pipeline_methods`` rejects a value that is not
 #: a real reduction, which is what stops this becoming a list of names nothing
 #: resolves.
-#: The source of a node that receives its input from an upstream node.
-_BLOB_SOURCE = json.dumps({"format": "blob"})
 
 _STAT_REDUCERS: "dict[str, str]" = {
     "mean": "reduce_mean",
@@ -72,12 +70,17 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
 
     # The private instance state, declared once here (other modules read a
     # node's `_node_id` / `_pipeline` / ... across the package boundary).
-    #: The input column; ``None`` for a continuation node, which reads its
-    #: upstream node instead.
+    #: The input column; ``None`` for a continuation node, which reads
+    #: ``_input`` instead.
     _column: pl.Expr | None
     _pipeline: Pipeline
     _node_id: str
-    _upstream: list[LazyPipelineExpr]
+    #: The node a continuation reads; ``None`` for a root, which reads
+    #: ``_column``.
+    _input: LazyPipelineExpr | None
+    #: ``merge_pipe``'s other branches: kept reachable (so their aliases can
+    #: be sunk) though no op reads them.
+    _merged: tuple[LazyPipelineExpr, ...]
     _alias: str | None
 
     def __init__(
@@ -85,24 +88,56 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         column: pl.Expr | None,
         pipeline: "Pipeline",
         node_id: str | None = None,
-        upstream: list["LazyPipelineExpr"] | None = None,
+        input: "LazyPipelineExpr | None" = None,  # noqa: A002
+        merged: "tuple[LazyPipelineExpr, ...]" = (),
         alias: str | None = None,
     ) -> None:
         """
         Initialize a LazyPipelineExpr.
 
+        A node reads exactly one of ``column`` (a root) and ``input`` (a
+        continuation). The other nodes it depends on are not passed: they are
+        the nodes its pipeline's ops read (``Pipeline._node_refs``), so an
+        operand cannot be declared twice or forgotten.
+
         Args:
-            column: The Polars column expression this pipeline reads from.
+            column: The Polars column expression a root reads.
             pipeline: The Pipeline instance defining operations.
             node_id: Unique identifier for this node in the graph.
-            upstream: List of upstream LazyPipelineExpr dependencies.
+            input: The node a continuation reads.
+            merged: ``merge_pipe``'s other branches.
             alias: Optional user-defined name for this node (for multi-output).
+
+        Raises:
+            ValueError: If the node reads both a column and a node, or neither.
         """
+        if (column is None) == (input is None):
+            msg = (
+                "a pipeline node reads a column or another node: exactly one of the two"
+            )
+            raise ValueError(msg)
         self._column = column
         self._pipeline = pipeline
         self._node_id = node_id or _generate_node_id()
-        self._upstream = upstream or []
+        self._input = input
+        self._merged = tuple(merged)
         self._alias = alias
+
+    def _dependencies(self) -> "list[LazyPipelineExpr]":
+        """The nodes this one depends on, each once: its input, the nodes its
+        ops read (``Plan.operands``, Rust's ``operands()``), then
+        ``merge_pipe``'s branches."""
+        refs = {ref._node_id: ref for ref in self._pipeline._node_refs}
+        read = [refs[node_id] for node_id in self._pipeline._plan.operands()]
+        found: list[LazyPipelineExpr] = []
+        for node in (
+            *([self._input] if self._input is not None else []),
+            *read,
+            *self._merged,
+        ):
+            if all(node is not seen for seen in found):
+                found.append(node)
+        return found
 
     @property
     def node_id(self) -> str:
@@ -141,7 +176,8 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             column=self._column,
             pipeline=self._pipeline,
             node_id=self._node_id,  # Keep the same node_id
-            upstream=self._upstream,
+            input=self._input,
+            merged=self._merged,
             alias=name,
         )
 
@@ -155,29 +191,33 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             pipeline: Operations to apply. If no source(), it continues from here.
         """
         if not pipeline._plan.has_source:
-            # Continuation: a new node that receives this node's output (a
-            # "blob" source) and applies only the new ops, each planned again
-            # by Rust from this node's output state. The clone carries the
-            # expressions the ops' slots name, the graph-level policies and
-            # the nodes the ops read.
+            # Continuation: a new node that reads this node's output and
+            # applies only the new ops, each planned again by Rust from this
+            # node's output state. The clone carries the expressions the ops'
+            # slots name, the graph-level policies and the nodes the ops read.
             new_pipeline = pipeline._clone()
-            new_pipeline._plan = pipeline._plan.rebased(
-                _BLOB_SOURCE, self._pipeline._state
-            )
+            new_pipeline._plan = pipeline._plan.rebased(self._pipeline._state)
             return LazyPipelineExpr(
-                column=None,  # No column - receives from upstream, not from DataFrame
+                column=None,
                 pipeline=new_pipeline,
                 node_id=_generate_node_id(),
-                upstream=[self, *new_pipeline._node_refs],
+                input=self,
             )
         else:
             # Has source: create new root node
             # This is like calling pl.col(...).cv.pipe(...) again
+            if self._column is None:
+                msg = (
+                    "pipe() with a pipeline that has a source decodes a column, "
+                    "and this expression continues another node, so it has no "
+                    "column of its own. Pipe a pipeline without source() to "
+                    "continue it, or start again from pl.col(...).cv.pipe(...)."
+                )
+                raise ValueError(msg)
             return LazyPipelineExpr(
                 column=self._column,
                 pipeline=pipeline,
                 node_id=_generate_node_id(),
-                upstream=list(pipeline._node_refs),
             )
 
     # --- Sink (materializes to pl.Expr) ---
@@ -259,7 +299,7 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
                 node_id=node._node_id,
                 pipeline=node._pipeline,
                 column=node._column,
-                upstream=[u._node_id for u in node._upstream],
+                input=None if node._input is None else node._input._node_id,
                 alias=node._alias,
             )
         for alias, node_id in self._aliases():
@@ -321,7 +361,7 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             column=None,
             pipeline=new_pipeline,
             node_id=_generate_node_id(),
-            upstream=[self, mask],
+            input=self,
         )
 
     def channel_merge(self, *others: "LazyPipelineExpr") -> "LazyPipelineExpr":
@@ -357,7 +397,7 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             column=None,
             pipeline=new_pipeline,
             node_id=_generate_node_id(),
-            upstream=[self, *others],
+            input=self,
         )
 
     # NOTE: `label_reduce` is intentionally NOT hand-defined here. Its
@@ -416,12 +456,14 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             raise ValueError(msg)
         raster_pipeline = base.rasterize(shape=self, **paint)
 
+        # The contour node's own input; this image is the canvas, an operand
+        # of the rasterize.
         rasterized = LazyPipelineExpr(
             column=contour._column,
             pipeline=raster_pipeline,
             node_id=_generate_node_id(),
-            # The contour node's own inputs, then this image for the canvas.
-            upstream=[*contour._upstream, self],
+            input=contour._input,
+            merged=contour._merged,
         )
 
         return self.apply_mask(rasterized, invert=invert)
@@ -468,7 +510,8 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             column=None,
             pipeline=self._receiving(),
             node_id=_generate_node_id(),
-            upstream=[self, *others],
+            input=self,
+            merged=others,
         )
 
     def statistics(
@@ -638,8 +681,8 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         return inner
 
     def _receiving(self) -> "Pipeline":
-        """The pipeline of a node that receives this expression's output (a
-        "blob" source), planned from its state.
+        """The pipeline of a node that reads this expression's output, planned
+        from its state.
 
         Every node that composes this expression with others starts here, so
         this expression's ops run once, in its own node. Cloning its pipeline
@@ -650,7 +693,7 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         from polars_cv.pipeline import Pipeline
 
         new_pipeline = Pipeline()
-        new_pipeline._plan = Plan().rebased(_BLOB_SOURCE, self._pipeline._state)
+        new_pipeline._plan = Plan.continuing(self._pipeline._state)
         return new_pipeline
 
     def _binary_op(self, op: str, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
@@ -661,10 +704,10 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         new_pipeline._add_node_op(op, {"other": other})
 
         return LazyPipelineExpr(
-            column=None,  # No direct column - receives from upstream
+            column=None,
             pipeline=new_pipeline,
             node_id=_generate_node_id(),
-            upstream=[self, other],
+            input=self,
         )
 
     def _collect_dependency_graph(self) -> list["LazyPipelineExpr"]:
@@ -682,8 +725,8 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
                 return
             visited.add(node._node_id)
 
-            for upstream in node._upstream:
-                dfs(upstream)
+            for dependency in node._dependencies():
+                dfs(dependency)
 
             order.append(node)
 
@@ -707,18 +750,18 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             seen.add(id(node))
             if node._alias is not None:
                 found.append((node._alias, node._node_id))
-            stack.extend(node._upstream)
+            stack.extend(node._dependencies())
         return found
 
     # --- Prevent accidental use as pl.Expr ---
 
     def __repr__(self) -> str:
         """Return string representation with guidance."""
-        upstream_ids = [u._node_id for u in self._upstream]
+        dependency_ids = [d._node_id for d in self._dependencies()]
         alias_str = f", alias={self._alias!r}" if self._alias else ""
         return (
             f"LazyPipelineExpr(node={self._node_id!r}{alias_str}, "
-            f"upstream={upstream_ids}) - call .sink(format) to execute"
+            f"depends_on={dependency_ids}) - call .sink(format) to execute"
         )
 
     def __str__(self) -> str:

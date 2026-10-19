@@ -864,16 +864,16 @@ mod tests {
     #[test]
     fn test_parse_unified_single_output() {
         let json = r#"{
+            "version": 2,
             "nodes": {
                 "_node_0": {
-                    "source": {"format": "image_bytes"},
+                    "input": {"decode": {"column": 0, "source": {"format": "image_bytes"}}},
                     "ops": []
                 }
             },
             "outputs": {
                 "_output": {"node": "_node_0", "sink": {"format": "numpy"}}
-            },
-            "column_bindings": {"_node_0": 0}
+            }
         }"#;
         let graph = UnifiedGraph::from_json(json).unwrap();
         assert_eq!(graph.nodes.len(), 1);
@@ -883,22 +883,21 @@ mod tests {
     #[test]
     fn test_parse_unified_multi_output() {
         let json = r#"{
+            "version": 2,
             "nodes": {
                 "_node_0": {
-                    "source": {"format": "image_bytes"},
+                    "input": {"decode": {"column": 0, "source": {"format": "image_bytes"}}},
                     "ops": []
                 },
                 "_node_1": {
-                    "source": {"format": "blob"},
                     "ops": [],
-                    "upstream": ["_node_0"]
+                    "input": {"node": "_node_0"}
                 }
             },
             "outputs": {
                 "original": {"node": "_node_0", "sink": {"format": "png"}},
                 "processed": {"node": "_node_1", "sink": {"format": "numpy"}}
-            },
-            "column_bindings": {"_node_0": 0}
+            }
         }"#;
         let graph = UnifiedGraph::from_json(json).unwrap();
         assert_eq!(graph.nodes.len(), 2);
@@ -909,15 +908,15 @@ mod tests {
     #[test]
     fn test_unified_topological_order() {
         let json = r#"{
+            "version": 2,
             "nodes": {
-                "a": {"source": {"format": "image_bytes"}, "ops": []},
-                "b": {"source": {"format": "blob"}, "ops": [], "upstream": ["a"]}
+                "a": {"input": {"decode": {"column": 0, "source": {"format": "image_bytes"}}}, "ops": []},
+                "b": {"ops": [], "input": {"node": "a"}}
             },
             "outputs": {
                 "out_a": {"node": "a", "sink": {"format": "numpy"}},
                 "out_b": {"node": "b", "sink": {"format": "png"}}
-            },
-            "column_bindings": {"a": 0}
+            }
         }"#;
         let graph = UnifiedGraph::from_json(json).unwrap();
         let order = graph.topological_order();

@@ -56,13 +56,9 @@ class CvNamespace(_PluginNamespace):
         """
         from polars_cv.lazy import LazyPipelineExpr
 
-        return LazyPipelineExpr(
-            column=self._expr,
-            pipeline=pipe,
-            # Ops referencing other nodes (rasterize(shape=...)) make those
-            # nodes upstream dependencies so they execute first.
-            upstream=list(pipe._node_refs),
-        )
+        # Ops reading other nodes (rasterize(shape=...)) depend on them through
+        # the pipeline's own node references.
+        return LazyPipelineExpr(column=self._expr, pipeline=pipe)
 
     # ------------------------------------------------------------------
     # Byte access (no decode)

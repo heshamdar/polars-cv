@@ -249,9 +249,6 @@ def test_the_quality_declaration_matches_what_the_encoders_do() -> None:
     def encoded(fmt: str, quality: int) -> bytes:
         graph = pipe.sink(fmt, return_expr=False)
         spec = json.loads(graph._to_json())
-        # `_to_json()` alone carries no column bindings — `to_expr()` builds
-        # them — so bind the single root here to make the graph runnable.
-        spec["column_bindings"] = {node: 0 for node in spec["nodes"]}
         for output in spec["outputs"].values():
             output["sink"]["quality"] = quality
         expr = pl.col("i").cv._plugin(  # type: ignore[attr-defined]

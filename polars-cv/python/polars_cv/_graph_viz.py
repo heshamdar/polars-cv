@@ -35,7 +35,7 @@ class ComputeNode(BaseNode):
     ops: List[Dict[str, Any]]
     domain: str
     dtype: str
-    upstream: List[str]
+    dependencies: List[str]
     source_format: Optional[str] = None  # only set for sources
 
 
@@ -61,13 +61,15 @@ def parse_logical_graph(pipeline_graph: PipelineGraph) -> LogicalGraph:
     graph = LogicalGraph()
     # The spec names nodes by their wire ids; the Python nodes go by build ids.
     wire = pipeline_graph._wire_ids()
-    by_wire = {wire[node_id]: node for node_id, node in pipeline_graph._nodes.items()}
+    by_wire = {wire[node_id]: node_id for node_id in pipeline_graph._nodes}
 
     # Parse compute + source nodes
     for node_id, payload in spec["nodes"].items():
-        upstream = payload.get("upstream", [])
-        is_source = len(upstream) == 0
-        node = by_wire[node_id]
+        decode = payload["input"].get("decode")
+        is_source = decode is not None
+        build_id = by_wire[node_id]
+        node = pipeline_graph._nodes[build_id]
+        dependencies = [wire[d] for d in pipeline_graph._dependencies(build_id)]
 
         graph.nodes[node_id] = ComputeNode(
             node_id=node_id,
@@ -76,8 +78,8 @@ def parse_logical_graph(pipeline_graph: PipelineGraph) -> LogicalGraph:
             ops=payload.get("ops", []),
             domain=node.pipeline.current_domain(),
             dtype=node.pipeline.output_dtype(),
-            upstream=upstream,
-            source_format=payload["source"]["format"] if is_source else None,
+            dependencies=dependencies,
+            source_format=decode["source"]["format"] if is_source else None,
         )
 
     # Parse outputs as a single container
@@ -97,8 +99,8 @@ def build_dag(graph: LogicalGraph) -> nx.DiGraph:
     for node in graph.nodes.values():
         g.add_node(node.node_id, payload=node)
 
-        for upstream in node.upstream:
-            g.add_edge(upstream, node.node_id)
+        for dependency in node.dependencies:
+            g.add_edge(dependency, node.node_id)
 
     # Add output container
     output_node = graph.output

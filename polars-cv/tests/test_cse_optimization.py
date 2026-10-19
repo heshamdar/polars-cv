@@ -57,16 +57,16 @@ def _shared_prefix(a: Pipeline, b: Pipeline) -> int:
     from polars_cv._graph import PipelineGraph
 
     graph = PipelineGraph()
-    graph.add_node("a", a, pl.col("image"), [], alias="a")
-    graph.add_node("b", b, pl.col("image"), [], alias="b")
+    graph.add_node("a", a, pl.col("image"), alias="a")
+    graph.add_node("b", b, pl.col("image"), alias="b")
     graph.set_multi_output({"a": "numpy", "b": "numpy"})
     graph.optimize(OptFlags.parse("common_subexpression_elimination"))
 
     def chain(alias: str) -> list[str]:
         node_id = graph._alias_to_node[alias]
         ids = [node_id]
-        while graph._nodes[ids[-1]].upstream:
-            ids.append(graph._nodes[ids[-1]].upstream[0])
+        while (before := graph._nodes[ids[-1]].input) is not None:
+            ids.append(before)
         return ids[::-1]
 
     shared = 0
@@ -387,7 +387,7 @@ def _ops(graph: dict) -> list[str]:
 
 
 def _roots(graph: dict) -> list[dict]:
-    return [n for n in graph["nodes"].values() if not n["upstream"]]
+    return [n for n in graph["nodes"].values() if "decode" in n["input"]]
 
 
 def _decode(column: str = "image") -> object:
@@ -417,7 +417,7 @@ class TestFullCSE:
         gray = _decode().pipe(Pipeline().grayscale())
         passthrough = gray.pipe(Pipeline()).alias("same")
         graph = _physical(passthrough, {"same": "numpy"})
-        assert all(n["ops"] or not n["upstream"] for n in graph["nodes"].values())
+        assert all(n["ops"] or "decode" in n["input"] for n in graph["nodes"].values())
         assert len(graph["nodes"]) == 1
 
     def test_a_prefix_is_shared_by_the_pipelines_that_have_it(self) -> None:

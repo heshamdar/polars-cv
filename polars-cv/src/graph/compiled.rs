@@ -44,7 +44,7 @@ use super::decode::{
     RowFetch, RowParts,
 };
 use super::encode::encode_node_output;
-use super::types::{OutputSpec, OutputValue, RowErrorPolicy, RowResult, UnifiedGraph};
+use super::types::{NodeInput, OutputSpec, OutputValue, RowErrorPolicy, RowResult, UnifiedGraph};
 use crate::plan::State;
 
 /// The exact graph JSON a graph was compiled from. Stored on the compiled
@@ -76,13 +76,28 @@ struct CompiledStep {
 /// One executed node, prepared at compile time.
 struct NodePlan {
     id: String,
-    /// The node's source (its ops are compiled into `resolvers`); an `auto`
-    /// one is routed to a concrete source once per batch.
+    /// What the node reads.
+    input: PlannedInput,
+    /// The node's ops, compiled.
+    steps: Vec<CompiledStep>,
+}
+
+/// A node's input ([`NodeInput`]), prepared for the row loop.
+enum PlannedInput {
+    /// A root, decoding a plugin input (boxed: a source's settings are large
+    /// beside a node reference).
+    Decode(Box<PlannedDecode>),
+    /// Reads the node at `plan` position `upstream`. `take`: this node is its
+    /// only reader ([`node_readers`]), so it moves the output out instead of
+    /// sharing it.
+    Node { upstream: usize, take: bool },
+}
+
+/// A root's decode: plugin input `column` through `source`; an `auto` source
+/// is routed to a concrete one once per batch.
+struct PlannedDecode {
+    column: usize,
     source: Source,
-    /// Input column, for a root node.
-    column: Option<usize>,
-    /// Position in `plan` of the node this one reads, for a non-root node.
-    upstream: Option<usize>,
     /// The source declared `on_error: "null"`: a decode error becomes a null
     /// node output instead of failing the row.
     source_null: bool,
@@ -92,12 +107,16 @@ struct NodePlan {
     /// Path allowlist; the unrestricted default when the source declared no
     /// `allowed_roots`, which is every existing pipeline.
     path_policy: crate::fetch::PathPolicy,
-    /// The node's ops, compiled.
-    steps: Vec<CompiledStep>,
-    /// This node is its upstream's only reader ([`node_readers`]), so it
-    /// moves the upstream output out of the row's outputs instead of sharing
-    /// it.
-    takes_upstream: bool,
+}
+
+impl PlannedInput {
+    /// A root's decode.
+    fn decode(&self) -> Option<&PlannedDecode> {
+        match self {
+            PlannedInput::Decode(decode) => Some(decode),
+            PlannedInput::Node { .. } => None,
+        }
+    }
 }
 
 /// A pipeline graph compiled for repeated execution.
@@ -165,7 +184,6 @@ impl CompiledGraph {
     /// Compile a graph from the plugin kwargs.
     pub fn compile(graph_json: &str) -> PolarsResult<Self> {
         let mut graph = UnifiedGraph::from_json(graph_json)?;
-        validate_graph_structure(&graph)?;
         let min_inputs = prepare_graph_params(&mut graph)?;
         // A graph that does not plan is refused whole, before any row runs.
         resolved_output_specs(&graph, &[])?;
@@ -198,9 +216,9 @@ impl CompiledGraph {
                 } else {
                     OpResolver::Dynamic(spec.clone())
                 };
-                // `validate_graph_structure` refused a reference to a node
-                // the graph does not have, and every node an executed node
-                // reads is executed before it.
+                // Parsing refused a reference to a node the graph does not
+                // have, and every node an executed node reads is executed
+                // before it.
                 let operands = spec
                     .operands()
                     .iter()
@@ -212,34 +230,35 @@ impl CompiledGraph {
                     operands,
                 });
             }
-            let column = graph.column_bindings.get(node_id).copied();
-            // A non-root node reads its first upstream; `validate_graph_structure`
-            // has already refused a node with neither a binding nor an upstream,
-            // and an upstream of an executed node is executed before it.
-            let upstream = match column {
-                Some(_) => None,
-                None => Some(node_index[&node.upstream[0]]),
+            let input = match &node.input {
+                NodeInput::Decode { column, source } => {
+                    PlannedInput::Decode(Box::new(PlannedDecode {
+                        column: *column,
+                        source: source.clone(),
+                        source_null: source.nulls_on_error(),
+                        cloud_options: source
+                            .path_settings()
+                            .0
+                            .map(crate::cloud::CloudOptions::from_map),
+                        path_policy: source
+                            .path_settings()
+                            .1
+                            .map(crate::fetch::PathPolicy::new)
+                            .unwrap_or_default(),
+                    }))
+                }
+                NodeInput::Node(up) => {
+                    let upstream = node_index[up];
+                    PlannedInput::Node {
+                        upstream,
+                        take: readers[upstream] == 1,
+                    }
+                }
             };
-            let takes_upstream = upstream.is_some_and(|u| readers[u] == 1);
             plan.push(NodePlan {
                 id: node_id.clone(),
-                column,
-                upstream,
-                source_null: node.source.nulls_on_error(),
-                cloud_options: node
-                    .source
-                    .path_settings()
-                    .0
-                    .map(crate::cloud::CloudOptions::from_map),
-                path_policy: node
-                    .source
-                    .path_settings()
-                    .1
-                    .map(crate::fetch::PathPolicy::new)
-                    .unwrap_or_default(),
+                input,
                 steps,
-                source: node.source.clone(),
-                takes_upstream,
             });
         }
 
@@ -297,9 +316,14 @@ impl CompiledGraph {
         // A contour column no row can be read as is the column's error, under
         // every policy: `on_error("null")` would otherwise null each row.
         for np in &self.plan {
-            if let (Source::Contour { .. }, Some(col)) = (&np.source, np.column) {
-                if inputs[col].dtype() != &DataType::Null {
-                    crate::geom_columns::ContourColumn::new(&inputs[col]).check_layout()?;
+            if let Some(PlannedDecode {
+                source: Source::Contour { .. },
+                column: col,
+                ..
+            }) = np.input.decode()
+            {
+                if inputs[*col].dtype() != &DataType::Null {
+                    crate::geom_columns::ContourColumn::new(&inputs[*col]).check_layout()?;
                 }
             }
         }
@@ -563,34 +587,40 @@ impl CompiledGraph {
         // straight to the next node: leaving this node without an output is
         // exactly how a null *input* already propagates.
         'nodes: for (idx, np) in self.plan.iter().enumerate() {
-            let node_input: Option<NodeOutput> = if let Some(col_idx) = np.column {
-                // An `"auto"` source reads as the concrete source it was
-                // routed to once per batch (`route_auto_sources`).
-                let decode_result = match state.routed_sources[idx].as_ref() {
-                    Some(Ok(routed)) => Ok(routed),
-                    Some(Err(e)) => Err(e.clone()),
-                    None => Ok(&np.source),
-                }
-                .and_then(|source| {
-                    // Bounds are validated once per call in `execute()`.
-                    decode_source_row(
-                        &np.id,
+            let node_input: Option<NodeOutput> = match &np.input {
+                PlannedInput::Decode(decode) => {
+                    let PlannedDecode {
+                        column,
                         source,
-                        &inputs[col_idx],
-                        row_idx,
-                        RowFetch {
-                            fetcher: state.fetchers[idx].as_ref(),
-                        },
-                    )
-                });
-                match decode_result {
-                    Ok(output) => output,
-                    Err(_e) if np.source_null => None,
-                    Err(e) => return Err(e),
+                        source_null,
+                        ..
+                    } = decode.as_ref();
+                    // An `"auto"` source reads as the concrete source it was
+                    // routed to once per batch (`route_auto_sources`).
+                    let decode_result = match state.routed_sources[idx].as_ref() {
+                        Some(Ok(routed)) => Ok(routed),
+                        Some(Err(e)) => Err(e.clone()),
+                        None => Ok(source),
+                    }
+                    .and_then(|source| {
+                        // Bounds are validated once per call in `execute()`.
+                        decode_source_row(
+                            &np.id,
+                            source,
+                            &inputs[*column],
+                            row_idx,
+                            RowFetch {
+                                fetcher: state.fetchers[idx].as_ref(),
+                            },
+                        )
+                    });
+                    match decode_result {
+                        Ok(output) => output,
+                        Err(_e) if *source_null => None,
+                        Err(e) => return Err(e),
+                    }
                 }
-            } else {
-                np.upstream
-                    .and_then(|u| node_outputs.input(u, np.takes_upstream))
+                PlannedInput::Node { upstream, take } => node_outputs.input(*upstream, *take),
             };
             let Some(input) = node_input else {
                 continue;
@@ -674,7 +704,10 @@ impl CompiledGraph {
     fn route_auto_sources(&self, inputs: &[Series]) -> Vec<Option<Result<Source, String>>> {
         self.plan
             .iter()
-            .map(|np| np.source.route(inputs.get(np.column?)?))
+            .map(|np| {
+                let decode = np.input.decode()?;
+                decode.source.route(inputs.get(decode.column)?)
+            })
             .collect()
     }
 
@@ -692,14 +725,21 @@ impl CompiledGraph {
         self.plan
             .iter()
             .map(|np| {
-                if !matches!(np.source, Source::FilePath { .. } | Source::Auto { .. }) {
+                let Some(PlannedDecode {
+                    column,
+                    source: Source::FilePath { .. } | Source::Auto { .. },
+                    cloud_options,
+                    path_policy,
+                    ..
+                }) = np.input.decode()
+                else {
                     return None;
-                }
-                let ca = inputs.get(np.column?)?.str().ok()?;
+                };
+                let ca = inputs.get(*column)?.str().ok()?;
                 Some(crate::fetch::Fetcher::new(
                     ca,
-                    np.cloud_options.as_ref(),
-                    &np.path_policy,
+                    cloud_options.as_ref(),
+                    path_policy,
                 ))
             })
             .collect()
@@ -900,16 +940,8 @@ fn node_readers(
         }
     };
     for node_id in order {
-        let node = &graph.nodes[node_id];
-        if !graph.column_bindings.contains_key(node_id) {
-            if let Some(input) = node.upstream.first() {
-                read(input);
-            }
-        }
-        for op in &node.ops {
-            for operand in op.operands() {
-                read(&operand.0);
-            }
+        for dependency in graph.nodes[node_id].dependencies() {
+            read(dependency);
         }
     }
     for spec in graph.outputs.values() {
@@ -918,69 +950,18 @@ fn node_readers(
     readers
 }
 
-/// Validate the structural invariants the executor relies on, at compile time.
-///
-/// Each of these used to fail late and badly: a typo'd output node silently
-/// produced all-null rows, a non-root node without upstream panicked at
-/// `upstream[0]`, and unknown source formats surfaced as per-row decode
-/// errors. Compile-time rejection gives one clear error instead.
-fn validate_graph_structure(graph: &UnifiedGraph) -> PolarsResult<()> {
-    for (node_id, node) in &graph.nodes {
-        if !graph.column_bindings.contains_key(node_id) && node.upstream.is_empty() {
-            polars_bail!(ComputeError:
-                "Node '{}' has neither an input column binding nor an upstream node",
-                node_id
-            );
-        }
-        for upstream_id in &node.upstream {
-            if !graph.nodes.contains_key(upstream_id) {
-                polars_bail!(ComputeError:
-                    "Node '{}' references unknown upstream node '{}'",
-                    node_id, upstream_id
-                );
-            }
-        }
-    }
-    // Every node an op reads, whatever kind of operand it is, by the one list
-    // a step's other-node reads come from.
-    for (node_id, node) in &graph.nodes {
-        for op in &node.ops {
-            for operand in op.operands() {
-                if !graph.nodes.contains_key(&operand.0) {
-                    polars_bail!(ComputeError:
-                        "node '{}': {}() reads node '{}', which is not in the graph",
-                        node_id, op.name(), operand.0
-                    );
-                }
-            }
-        }
-    }
-    for (alias, spec) in &graph.outputs {
-        if !graph.nodes.contains_key(&spec.node) {
-            polars_bail!(ComputeError:
-                "Output '{}' references unknown node '{}'",
-                alias, spec.node
-            );
-        }
-    }
-    Ok(())
-}
-
 /// Prepare every parameter in the graph for execution, returning how many
 /// plugin inputs the graph reads (one past the highest slot or column binding).
 ///
 /// Slots arrive already positional, so nothing is bound by name; this only
 /// finds the highest one.
 fn prepare_graph_params(graph: &mut UnifiedGraph) -> PolarsResult<usize> {
-    let mut inputs = graph
-        .column_bindings
-        .values()
-        .map(|&idx| idx + 1)
-        .max()
-        .unwrap_or(1);
+    let mut inputs = 1;
     for node in graph.nodes.values_mut() {
-        node.source
-            .visit_slots(&mut |_, slot| inputs = inputs.max(slot + 1));
+        if let NodeInput::Decode { column, source } = &node.input {
+            inputs = inputs.max(column + 1);
+            source.visit_slots(&mut |_, slot| inputs = inputs.max(slot + 1));
+        }
         for op in &node.ops {
             inputs = inputs.max(op.min_inputs());
         }
@@ -1007,15 +988,15 @@ pub(crate) fn resolved_output_specs(
     let mut states = crate::plan::Refs::new();
     for node_id in graph.topological_order() {
         let node = &graph.nodes[node_id];
-        let mut state = match graph.column_bindings.get(node_id) {
-            Some(&column) => {
-                let state = crate::plan::source_state(&node.source);
-                match input_dtypes.get(column) {
-                    Some(dt) if node.source.resolves_from_column() => refine_by_column(state, dt),
+        let mut state = match &node.input {
+            NodeInput::Decode { column, source } => {
+                let state = crate::plan::source_state(source);
+                match input_dtypes.get(*column) {
+                    Some(dt) if source.resolves_from_column() => refine_by_column(state, dt),
                     _ => state,
                 }
             }
-            None => states[&node.upstream[0]].clone(),
+            NodeInput::Node(up) => states[up].clone(),
         };
         for op in &node.ops {
             state = crate::plan::step(op, &state, &states)
@@ -1027,16 +1008,19 @@ pub(crate) fn resolved_output_specs(
     let mut specs: Vec<(String, OutputSpec)> = graph
         .outputs
         .iter()
+        // Every output's node was planned: parsing refused an unknown one,
+        // and the topological order starts from the outputs.
         .map(|(alias, out)| {
-            let planned = states.get(&out.node).ok_or_else(|| {
-                polars_err!(ComputeError: "output '{}' names unknown node '{}'", alias, out.node)
-            })?;
-            Ok((
+            (
                 alias.clone(),
-                OutputSpec::planned(out, planned, graph.ends_in_histogram_buckets(&out.node)),
-            ))
+                OutputSpec::planned(
+                    out,
+                    &states[&out.node],
+                    graph.ends_in_histogram_buckets(&out.node),
+                ),
+            )
         })
-        .collect::<PolarsResult<_>>()?;
+        .collect();
     specs.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(specs)
 }
@@ -1211,29 +1195,29 @@ mod tests {
     use super::*;
 
     const SIMPLE_GRAPH: &str = r#"{
+        "version": 2,
         "nodes": {
             "n0": {
-                "source": {"format": "blob"},
+                "input": {"decode": {"column": 0, "source": {"format": "blob"}}},
                 "ops": [{"op": "relu"}]
             }
         },
         "outputs": {
             "_output": {"node": "n0", "sink": {"format": "blob"}}
-        },
-        "column_bindings": {"n0": 0}
+        }
     }"#;
 
     const DYNAMIC_GRAPH: &str = r#"{
+        "version": 2,
         "nodes": {
             "n0": {
-                "source": {"format": "blob"},
+                "input": {"decode": {"column": 0, "source": {"format": "blob"}}},
                 "ops": [{"op": "scale", "factor": {"$slot": 1}}]
             }
         },
         "outputs": {
             "_output": {"node": "n0", "sink": {"format": "blob"}}
-        },
-        "column_bindings": {"n0": 0}
+        }
     }"#;
 
     /// Pin the live decode path for `blob` and `raw` sources: both are decoded
@@ -1256,16 +1240,16 @@ mod tests {
         // raw: u8 bytes with an explicit dtype decode as a 1-D u8 buffer
         // (relu then promotes to f32 per the scalar-op dtype contract).
         const RAW_GRAPH: &str = r#"{
+            "version": 2,
             "nodes": {
                 "n0": {
-                    "source": {"format": "raw", "dtype": "u8"},
+                    "input": {"decode": {"column": 0, "source": {"format": "raw", "dtype": "u8"}}},
                     "ops": [{"op": "relu"}]
                 }
             },
             "outputs": {
                 "_output": {"node": "n0", "sink": {"format": "blob"}}
-            },
-            "column_bindings": {"n0": 0}
+            }
         }"#;
         let input = Series::new("r".into(), &[vec![1u8, 2, 3]]);
         let compiled = CompiledGraph::compile(RAW_GRAPH).unwrap();
@@ -1444,13 +1428,13 @@ mod tests {
         // Binary: n1 = n0 + n0.
         let out = exec(
             r#"{
+                "version": 2,
                 "nodes": {
-                    "n0": {"source": {"format": "blob"}},
-                    "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
+                    "n0": {"input": {"decode": {"column": 0, "source": {"format": "blob"}}}},
+                    "n1": {"input": {"node": "n0"},
                            "ops": [{"op": "add", "other": "n0"}]}
                 },
-                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
-                "column_bindings": {"n0": 0}
+                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}}
             }"#,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
@@ -1460,13 +1444,13 @@ mod tests {
         // ApplyMask: mask a buffer with itself (u8 mask semantics).
         let out = exec(
             r#"{
+                "version": 2,
                 "nodes": {
-                    "n0": {"source": {"format": "blob"}},
-                    "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
+                    "n0": {"input": {"decode": {"column": 0, "source": {"format": "blob"}}}},
+                    "n1": {"input": {"node": "n0"},
                            "ops": [{"op": "apply_mask", "mask": "n0", "invert": false}]}
                 },
-                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
-                "column_bindings": {"n0": 0}
+                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}}
             }"#,
             &[Series::new("b".into(), &[mask_blob()])],
         );
@@ -1476,13 +1460,13 @@ mod tests {
         let single = ViewBuffer::from_vec_with_shape(vec![1u8, 2, 3, 4], vec![2, 2]).to_blob();
         let out = exec(
             r#"{
+                "version": 2,
                 "nodes": {
-                    "n0": {"source": {"format": "blob"}},
-                    "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
+                    "n0": {"input": {"decode": {"column": 0, "source": {"format": "blob"}}}},
+                    "n1": {"input": {"node": "n0"},
                            "ops": [{"op": "channel_merge", "others": ["n0"]}]}
                 },
-                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
-                "column_bindings": {"n0": 0}
+                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}}
             }"#,
             &[Series::new("b".into(), &[single])],
         );
@@ -1492,10 +1476,10 @@ mod tests {
         // Geometry: extract_contours from a binary mask (buffer -> contour).
         let out = exec(
             r#"{
-                "nodes": {"n0": {"source": {"format": "blob"},
+                "version": 2,
+                "nodes": {"n0": {"input": {"decode": {"column": 0, "source": {"format": "blob"}}},
                                   "ops": [{"op": "extract_contours", "mode": "external", "method": "simple"}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}},
-                "column_bindings": {"n0": 0}
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}}
             }"#,
             &[Series::new("b".into(), &[mask_blob()])],
         );
@@ -1504,10 +1488,10 @@ mod tests {
         // Reduction: global sum -> scalar.
         let out = exec(
             r#"{
-                "nodes": {"n0": {"source": {"format": "blob"},
+                "version": 2,
+                "nodes": {"n0": {"input": {"decode": {"column": 0, "source": {"format": "blob"}}},
                                   "ops": [{"op": "reduce_sum"}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}},
-                "column_bindings": {"n0": 0}
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}}
             }"#,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
@@ -1516,11 +1500,11 @@ mod tests {
         // Histogram: a counts vector (u64).
         let out = exec(
             r#"{
-                "nodes": {"n0": {"source": {"format": "blob"},
+                "version": 2,
+                "nodes": {"n0": {"input": {"decode": {"column": 0, "source": {"format": "blob"}}},
                                   "ops": [{"op": "histogram", "bins": 4, "range": null,
                                            "closed": "left", "output": "counts"}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "list"}}},
-                "column_bindings": {"n0": 0}
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "list"}}}
             }"#,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
@@ -1532,11 +1516,11 @@ mod tests {
         let indices = ViewBuffer::from_vec_with_shape(vec![0u8, 1, 1, 0], vec![2, 2]).to_blob();
         let out = exec(
             r#"{
-                "nodes": {"n0": {"source": {"format": "blob"},
+                "version": 2,
+                "nodes": {"n0": {"input": {"decode": {"column": 0, "source": {"format": "blob"}}},
                                   "ops": [{"op": "apply_lut", "table": [[10, 20], [30, 40]],
                                            "out_dtype": "u8"}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
-                "column_bindings": {"n0": 0}
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}}
             }"#,
             &[Series::new("b".into(), std::slice::from_ref(&indices))],
         );
@@ -1548,11 +1532,11 @@ mod tests {
         // u8, so the typed list/array sinks preserve UInt8).
         let out = exec(
             r#"{
-                "nodes": {"n0": {"source": {"format": "blob"},
+                "version": 2,
+                "nodes": {"n0": {"input": {"decode": {"column": 0, "source": {"format": "blob"}}},
                                   "ops": [{"op": "perceptual_hash",
                                            "algorithm": "average", "hash_size": 64}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "list"}}},
-                "column_bindings": {"n0": 0}
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "list"}}}
             }"#,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
@@ -1563,10 +1547,10 @@ mod tests {
         // ExtractShape: dimension vector.
         let out = exec(
             r#"{
-                "nodes": {"n0": {"source": {"format": "blob"},
+                "version": 2,
+                "nodes": {"n0": {"input": {"decode": {"column": 0, "source": {"format": "blob"}}},
                                   "ops": [{"op": "extract_shape"}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}},
-                "column_bindings": {"n0": 0}
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}}
             }"#,
             &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
         );
@@ -1585,13 +1569,13 @@ mod tests {
         let cont_col = Series::from_any_values("cont".into(), &[row], false).unwrap();
         let out = exec(
             r#"{
-                "nodes": {"n0": {"source": {"format": "blob"},
+                "version": 2,
+                "nodes": {"n0": {"input": {"decode": {"column": 0, "source": {"format": "blob"}}},
                                   "ops": [{"op": "label_reduce",
                                            "contours": {"$slot": 1},
                                            "reduction": "max",
                                            "region_mode": "interior"}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}},
-                "column_bindings": {"n0": 0}
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}}
             }"#,
             &[Series::new("b".into(), &[mask_blob()]), cont_col.clone()],
         );
@@ -1600,13 +1584,13 @@ mod tests {
         // Regions: a contour set intersected with itself is itself.
         let out = exec(
             r#"{
+                "version": 2,
                 "nodes": {
-                    "n0": {"source": {"format": "contour"}},
-                    "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
+                    "n0": {"input": {"decode": {"column": 0, "source": {"format": "contour"}}}},
+                    "n1": {"input": {"node": "n0"},
                            "ops": [{"op": "intersection", "other": "n0"}]}
                 },
-                "outputs": {"_output": {"node": "n1", "sink": {"format": "native"}}},
-                "column_bindings": {"n0": 0}
+                "outputs": {"_output": {"node": "n1", "sink": {"format": "native"}}}
             }"#,
             &[cont_col],
         );
@@ -1618,10 +1602,10 @@ mod tests {
         let declared = |dims: &str| {
             format!(
                 r#"{{
-                    "nodes": {{"n0": {{"source": {{"format": "blob"}},
+                    "version": 2,
+                    "nodes": {{"n0": {{"input": {{"decode": {{"column": 0, "source": {{"format": "blob"}}}}}},
                                       "ops": [{{"op": "assert_shape", "dims": {dims}}}]}}}},
-                    "outputs": {{"_output": {{"node": "n0", "sink": {{"format": "blob"}}}}}},
-                    "column_bindings": {{"n0": 0}}
+                    "outputs": {{"_output": {{"node": "n0", "sink": {{"format": "blob"}}}}}}
                 }}"#
             )
         };
@@ -1659,11 +1643,11 @@ mod tests {
         let blob = ViewBuffer::from_vec_with_shape(vec![1.0f32, 5.0, 3.0], vec![3]).to_blob();
         let out = exec(
             r#"{
-                "nodes": {"n0": {"source": {"format": "blob"},
+                "version": 2,
+                "nodes": {"n0": {"input": {"decode": {"column": 0, "source": {"format": "blob"}}},
                                   "ops": [{"op": "reduce_max",
                                            "axis": 0}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
-                "column_bindings": {"n0": 0}
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}}
             }"#,
             &[Series::new("b".into(), &[blob])],
         );
@@ -1679,11 +1663,11 @@ mod tests {
         let blob = ViewBuffer::from_vec_with_shape(vec![1.0f32, 2.0, 3.0, 4.0], vec![4]).to_blob();
         let out = exec(
             r#"{
-                "nodes": {"n0": {"source": {"format": "blob"},
+                "version": 2,
+                "nodes": {"n0": {"input": {"decode": {"column": 0, "source": {"format": "blob"}}},
                                   "ops": [{"op": "reduce_percentile",
                                            "q": 50.0}]}},
-                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}},
-                "column_bindings": {"n0": 0}
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}}}
             }"#,
             &[Series::new("b".into(), &[blob])],
         );
@@ -1702,16 +1686,16 @@ mod tests {
     }
 
     const RAW_CHAIN_GRAPH: &str = r#"{
+        "version": 2,
         "nodes": {
             "n0": {
-                "source": {"format": "raw", "dtype": "u8"},
+                "input": {"decode": {"column": 0, "source": {"format": "raw", "dtype": "u8"}}},
                 "ops": [{"op": "invert"}, {"op": "scale", "factor": 2.0}]
             }
         },
         "outputs": {
             "_output": {"node": "n0", "sink": {"format": "blob"}}
-        },
-        "column_bindings": {"n0": 0}
+        }
     }"#;
 
     fn plans_during(compiled: &CompiledGraph, f: impl FnOnce()) -> usize {
@@ -1803,9 +1787,8 @@ mod tests {
             .map(|i| ViewBuffer::from_vec_with_shape(vec![i; 64 * 64], vec![64, 64, 1]).to_blob())
             .collect();
         let input = Series::new("b".into(), &blobs);
-        let graph = r#"{"nodes": {"n0": {"source": {"format": "blob", "dtype": "u8"}}},
-            "outputs": {"_output": {"node": "n0", "sink": {"format": "numpy"}}},
-            "column_bindings": {"n0": 0}}"#;
+        let graph = r#"{"version": 2, "nodes": {"n0": {"input": {"decode": {"column": 0, "source": {"format": "blob", "dtype": "u8"}}}}},
+            "outputs": {"_output": {"node": "n0", "sink": {"format": "numpy"}}}}"#;
         let out = CompiledGraph::compile(graph)
             .unwrap()
             .execute(&[input])
@@ -1836,10 +1819,9 @@ mod tests {
         let input = Series::new("b".into(), std::slice::from_ref(&blob));
         let graph = |ops: &str, sink: &str| {
             format!(
-                r#"{{"nodes": {{"n0": {{"source": {{"format": "blob", "dtype": "f64"}},
+                r#"{{"version": 2, "nodes": {{"n0": {{"input": {{"decode": {{"column": 0, "source": {{"format": "blob", "dtype": "f64"}}}}}},
                                      "ops": [{ops}]}}}},
-                    "outputs": {{"_output": {{"node": "n0", "sink": {sink}}}}},
-                    "column_bindings": {{"n0": 0}}}}"#
+                    "outputs": {{"_output": {{"node": "n0", "sink": {sink}}}}}}}"#
             )
         };
         for (layout, ops, shape) in [
@@ -1913,14 +1895,14 @@ mod tests {
         // n0 casts (one f32 allocation); n1 scales n0's buffer, which only n1
         // reads, so it writes in place.
         let chain = r#"{
+            "version": 2,
             "nodes": {
-                "n0": {"source": {"format": "blob", "dtype": "u8"},
+                "n0": {"input": {"decode": {"column": 0, "source": {"format": "blob", "dtype": "u8"}}},
                        "ops": [{"op": "cast", "dtype": "f32"}]},
-                "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
+                "n1": {"input": {"node": "n0"},
                        "ops": [{"op": "scale", "factor": 2.0}]}
             },
-            "outputs": {"_output": {"node": "n1", "sink": {"format": "numpy"}}},
-            "column_bindings": {"n0": 0}
+            "outputs": {"_output": {"node": "n1", "sink": {"format": "numpy"}}}
         }"#;
         let (out, copies) = f32_copies_in_call(chain, &input, elems);
         assert_eq!(f32_values(&out, None), doubled);
@@ -1928,15 +1910,15 @@ mod tests {
 
         // n0 is an output too: n1 must not write into it.
         let shared = r#"{
+            "version": 2,
             "nodes": {
-                "n0": {"source": {"format": "blob", "dtype": "u8"},
+                "n0": {"input": {"decode": {"column": 0, "source": {"format": "blob", "dtype": "u8"}}},
                        "ops": [{"op": "cast", "dtype": "f32"}]},
-                "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
+                "n1": {"input": {"node": "n0"},
                        "ops": [{"op": "scale", "factor": 2.0}]}
             },
             "outputs": {"a": {"node": "n0", "sink": {"format": "numpy"}},
-                        "b": {"node": "n1", "sink": {"format": "numpy"}}},
-            "column_bindings": {"n0": 0}
+                        "b": {"node": "n1", "sink": {"format": "numpy"}}}
         }"#;
         let (out, copies) = f32_copies_in_call(shared, &input, elems);
         assert_eq!(
@@ -1950,14 +1932,14 @@ mod tests {
         // n1 reads n0 twice (as its input and as the other operand): n0's
         // buffer is not n1's to consume.
         let operand = r#"{
+            "version": 2,
             "nodes": {
-                "n0": {"source": {"format": "blob", "dtype": "u8"},
+                "n0": {"input": {"decode": {"column": 0, "source": {"format": "blob", "dtype": "u8"}}},
                        "ops": [{"op": "cast", "dtype": "f32"}]},
-                "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
+                "n1": {"input": {"node": "n0"},
                        "ops": [{"op": "scale", "factor": 2.0}, {"op": "add", "other": "n0"}]}
             },
-            "outputs": {"_output": {"node": "n1", "sink": {"format": "numpy"}}},
-            "column_bindings": {"n0": 0}
+            "outputs": {"_output": {"node": "n1", "sink": {"format": "numpy"}}}
         }"#;
         let (out, _) = f32_copies_in_call(operand, &input, elems);
         let tripled: Vec<f32> = values.iter().map(|&v| v as f32 * 3.0).collect();
@@ -1969,12 +1951,12 @@ mod tests {
 
         // One node: the cast's fresh buffer is the scale's to write.
         let single = r#"{
-            "nodes": {"n0": {"source": {"format": "blob", "dtype": "u8"},
+            "version": 2,
+            "nodes": {"n0": {"input": {"decode": {"column": 0, "source": {"format": "blob", "dtype": "u8"}}},
                              "ops": [{"op": "cast", "dtype": "f32"},
                                      {"op": "assert_shape", "dims": [32, 24, 3]},
                                      {"op": "scale", "factor": 2.0}]}},
-            "outputs": {"_output": {"node": "n0", "sink": {"format": "numpy"}}},
-            "column_bindings": {"n0": 0}
+            "outputs": {"_output": {"node": "n0", "sink": {"format": "numpy"}}}
         }"#;
         let (out, copies) = f32_copies_in_call(single, &input, elems);
         assert_eq!(f32_values(&out, None), doubled);
@@ -2183,55 +2165,39 @@ mod tests {
         // Previously: silent all-null output column.
         let err = compile_err(
             r#"{
-            "nodes": {"n0": {"source": {"format": "blob"}}},
-            "outputs": {"_output": {"node": "nope", "sink": {"format": "blob"}}},
-            "column_bindings": {"n0": 0}
+            "version": 2,
+            "nodes": {"n0": {"input": {"decode": {"column": 0, "source": {"format": "blob"}}}}},
+            "outputs": {"_output": {"node": "nope", "sink": {"format": "blob"}}}
         }"#,
         );
         assert!(err.contains("unknown node 'nope'"), "{err}");
     }
 
     #[test]
-    fn node_without_binding_or_upstream_is_a_compile_error() {
-        // Previously: panic at `upstream[0]` in the row loop.
+    fn unknown_input_node_is_a_compile_error() {
         let err = compile_err(
             r#"{
+            "version": 2,
             "nodes": {
-                "n0": {"source": {"format": "blob"}},
-                "orphan": {"source": {"format": "blob"}}
+                "n0": {"input": {"decode": {"column": 0, "source": {"format": "blob"}}}},
+                "n1": {"input": {"node": "ghost"}}
             },
-            "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
-            "column_bindings": {"n0": 0}
+            "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}}
         }"#,
         );
         assert!(
-            err.contains("neither an input column binding nor an upstream"),
+            err.contains("node 'n1' reads node 'ghost', which is not in the graph"),
             "{err}"
         );
-    }
-
-    #[test]
-    fn unknown_upstream_reference_is_a_compile_error() {
-        let err = compile_err(
-            r#"{
-            "nodes": {
-                "n0": {"source": {"format": "blob"}},
-                "n1": {"source": {"format": "blob"}, "upstream": ["ghost"]}
-            },
-            "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
-            "column_bindings": {"n0": 0}
-        }"#,
-        );
-        assert!(err.contains("unknown upstream node 'ghost'"), "{err}");
     }
 
     #[test]
     fn unknown_source_format_is_a_compile_error() {
         let err = compile_err(
             r#"{
-            "nodes": {"n0": {"source": {"format": "carrier_pigeon"}}},
-            "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
-            "column_bindings": {"n0": 0}
+            "version": 2,
+            "nodes": {"n0": {"input": {"decode": {"column": 0, "source": {"format": "carrier_pigeon"}}}}},
+            "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}}
         }"#,
         );
         assert!(
@@ -2276,10 +2242,9 @@ mod tests {
         for (op, _, _) in operand_reading_samples("ghost") {
             let name = op.name();
             let graph = format!(
-                r#"{{"nodes": {{"n0": {{"source": {{"format": "blob"}}}},
-                      "n1": {{"source": {{"format": "blob"}}, "upstream": ["n0"], "ops": [{op}]}}}},
-                    "outputs": {{"_output": {{"node": "n1", "sink": {{"format": "blob"}}}}}},
-                    "column_bindings": {{"n0": 0}}}}"#,
+                r#"{{"version": 2, "nodes": {{"n0": {{"input": {{"decode": {{"column": 0, "source": {{"format": "blob"}}}}}}}},
+                      "n1": {{"input": {{"node": "n0"}}, "ops": [{op}]}}}},
+                    "outputs": {{"_output": {{"node": "n1", "sink": {{"format": "blob"}}}}}}}}"#,
                 op = serde_json::to_string(&op).unwrap()
             );
             let err = compile_err(&graph);
@@ -2329,12 +2294,12 @@ mod tests {
             let (input_col, input_source) = column(input, false);
             let (operand_col, operand_source) = column(operand, true);
             let graph = format!(
-                r#"{{"nodes": {{"n0": {{"source": {{"format": "{input_source}"}}}},
-                      "n2": {{"source": {{"format": "{operand_source}"}}}},
-                      "n1": {{"source": {{"format": "blob"}}, "upstream": ["n0", "n2"], "ops": [{op}]}}}},
+                r#"{{"version": 2,
+                    "nodes": {{"n0": {{"input": {{"decode": {{"column": 0, "source": {{"format": "{input_source}"}}}}}}}},
+                      "n2": {{"input": {{"decode": {{"column": 1, "source": {{"format": "{operand_source}"}}}}}}}},
+                      "n1": {{"input": {{"node": "n0"}}, "ops": [{op}]}}}},
                     "outputs": {{"read": {{"node": "n1", "sink": {{"format": "{sink}"}}}},
-                                 "input": {{"node": "n0", "sink": {{"format": "{input_sink}"}}}}}},
-                    "column_bindings": {{"n0": 0, "n2": 1}}}}"#,
+                                 "input": {{"node": "n0", "sink": {{"format": "{input_sink}"}}}}}}}}"#,
                 op = serde_json::to_string(&op).unwrap(),
                 sink = if op.output_domain(input) == Domain::Contour {
                     "native"

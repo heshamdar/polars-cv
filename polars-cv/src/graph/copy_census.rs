@@ -160,10 +160,9 @@ fn graph(op: &str, prefix: &str, sink: &str, dtype: DType) -> String {
     let source = format!(r#"{{"format": "blob", "dtype": "{}"}}"#, dtype.short_name());
     if op.contains(r#""n0""#) {
         format!(
-            r#"{{"nodes": {{"n0": {{"source": {source}, "ops": [{prefix}]}},
-                 "n1": {{"source": {{"format": "blob"}}, "upstream": ["n0"], "ops": [{op}]}}}},
-               "outputs": {{"_output": {{"node": "n1", "sink": {sink}}}}},
-               "column_bindings": {{"n0": 0}}}}"#
+            r#"{{"version": 2, "nodes": {{"n0": {{"input": {{"decode": {{"column": 0, "source": {source}}}}}, "ops": [{prefix}]}},
+                 "n1": {{"input": {{"node": "n0"}}, "ops": [{op}]}}}},
+               "outputs": {{"_output": {{"node": "n1", "sink": {sink}}}}}}}"#
         )
     } else {
         let ops = if prefix.is_empty() {
@@ -172,9 +171,8 @@ fn graph(op: &str, prefix: &str, sink: &str, dtype: DType) -> String {
             format!("{prefix}, {op}")
         };
         format!(
-            r#"{{"nodes": {{"n0": {{"source": {source}, "ops": [{ops}]}}}},
-               "outputs": {{"_output": {{"node": "n0", "sink": {sink}}}}},
-               "column_bindings": {{"n0": 0}}}}"#
+            r#"{{"version": 2, "nodes": {{"n0": {{"input": {{"decode": {{"column": 0, "source": {source}}}}}, "ops": [{ops}]}}}},
+               "outputs": {{"_output": {{"node": "n0", "sink": {sink}}}}}}}"#
         )
     }
 }

@@ -24,6 +24,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   popcount, and its length is the denominator. Drop the argument; passing it
   raises `TypeError`.
 - **`hamming_distance()` returns `UInt32`,** a count of bits, not `Float64`.
+- **The graph wire format is version 2: each node names its input once**
+  (CR-117). A node is `{"input": {"decode": {"column", "source"}} |
+  {"node": id}, "ops": [...]}`; the top-level `column_bindings`, the
+  per-node `upstream` list and the `source` every continuation node carried
+  (a `{"format": "blob"}` nothing read) are gone, and a node's dependencies
+  are its input plus the nodes its ops read. A version-1 graph (persisted
+  `graph_json`, or one built by hand) is refused by its version, with a
+  message to rebuild it. Low-level graph building changes with it:
+  `PipelineGraph.add_node(..., input=)` replaces `upstream=` (keyword-only,
+  with `alias=`), and a node that reads both a column and a node, or neither,
+  is refused where it is added rather than at serialization.
 
 ### Added
 
@@ -46,6 +57,21 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **PyPI metadata:** project URLs (docs, changelog, issues), keywords and
   topic classifiers, and a description that says what the package does.
 
+
+### Changed
+
+- **One executor path for every step that reads another node** (CR-117).
+  The executor gathers a step's operands once, by node positions compiled
+  from the step's own `operands()`, and a null operand nulls the reader for
+  every step alike; `rasterize(shape=<node>)` no longer has a resolver of its
+  own. Each buffer-reading step meets its own validation against the row's
+  shapes and dtypes in one place, which `extract_shape` and `label_reduce`
+  had skipped. A reference to a node the graph does not have is one error,
+  `node 'x': op() reads node 'y', which is not in the graph`, for every kind
+  of operand, raised when the graph is parsed.
+- **`LazyPipelineExpr.pipe()` with a sourced pipeline on a continuation is
+  refused where it is written.** A sourced pipeline decodes a column, and a
+  continuation has none of its own; this failed later, at sink.
 ### Fixed
 
 - **115 reference tests compared nothing.** The reductions, histogram,
