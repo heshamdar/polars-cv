@@ -44,7 +44,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-82 | Extension types | Decision | Whether `polars_cv.ndarray` carries `dtype`/`ndim` metadata |
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
 | CR-116 | Domains | Design | The `vector` domain is a planner gate over an f64 list: buffer ops refuse a hash or a box, histogram buckets ignore the sink format |
-| CR-117 | Graph | Design | A graph node's input is spread over a dummy `source`, a `column_bindings` map and a positional `upstream`; every executor step re-reads its operands by hand |
 | CR-118 | Graph | Decision | Common-subexpression elimination re-derives a per-op graph in Python from the per-node wire |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
@@ -244,83 +243,6 @@ against `main` at `e788d72` that day, and their full text is in git history).
 
 ## Graph
 
-### CR-117 — Node input and operand reads have several declarations each
-
-**design** (in progress)
-
-- **Found:** the CR-116 investigation (2026-10-19), reading `graph/types.rs`,
-  `graph/compiled.rs`, `_graph.py` and `lazy.py`.
-- **Evidence:**
-  1. *A node's input is declared three ways.* A root is a node named in the
-     top-level `column_bindings` map, and its `source` decodes that column; a
-     continuation reads `upstream[0]` (position is meaning), yet still must
-     send a `source`, which Python fills with a dummy `{"format": "blob"}`
-     (`lazy._BLOB_SOURCE`, through `Plan.rebased(source, start)`) that
-     nothing reads. `upstream[1..]` restates the node ids the ops already
-     name (`GraphStep::operands`). Three checks exist only to reconcile them:
-     "neither an input column binding nor an upstream node", "references
-     unknown upstream node", and the planner's "reads node 'x', which has no
-     planned state" (an operand left out of `upstream`).
-  2. *Every step reads other nodes by hand.* Each arm of `run_row_nodes`
-     repeats flush → `step_buffer_operand` → `self.operand(id)` →
-     `validate_concrete` → execute → wrap, with its own error strings
-     (`"Binary op other operand"`, `"ApplyMask mask"`, ...), and
-     `ExtractShape`/`LabelReduce` skip `validate_concrete`. Operand ids are
-     hashed per row (`node_index`), against CR-37.
-  3. *`rasterize(shape=<node>)` has its own path.* `OpResolver::RasterizeShapeRef`
-     and `ResolvedStep::RasterizeShapeRef` re-resolve the op, read the canvas
-     with `as_buffer()` (not the step's `operand_domains`), and carry their
-     own compile-time "is not a node in the graph" check, though
-     `GraphStep::operands` already lists the canvas node.
-  4. *Python mirrors (1).* `GraphNode.upstream` / `LazyPipelineExpr._upstream`
-     hold input and operands in one positional list (CSE reads
-     `upstream[0]` as the input); a binary op lists its operand there and in
-     its op.
-- **Plan** (TDD: each guard is written first and watched failing for the
-  reason it states):
-  - **A. One operand path in the executor (no wire change).**
-    - *Guards first.* (a) A dangling node reference is one compile-time error
-      for every op that reads a node (driven by `TypedOp::samples()`'s
-      operands, not a list), naming the op and the node — red today: only
-      rasterize has that check. (b) A null operand nulls the node, for every
-      operand-reading step variant (characterisation, kept green across the
-      refactor). (c) *Mechanism, not a scan:* other nodes' outputs live in a
-      `RowOutputs` whose fields are private to its module; its only read for
-      a step is `operands(&positions)`, positions computed once at compile
-      from `operands()`. A step body receives `&[&NodeOutput]` and cannot
-      reach another node, so a second read path does not compile.
-    - *Implement.* `run_step(step, input, operands, ...)` with one buffer
-      gather (`input_domains` for the input, `operand_domains` for operands)
-      and one `validate_concrete` call for every buffer-reading step;
-      rasterize takes its canvas from its operand. Delete
-      `OpResolver::RasterizeShapeRef`, `ResolvedStep`, the per-arm operand
-      reads and error strings, and `operand()`'s "in the graph but not
-      executed" arm (unreachable once every operand is a dependency).
-  - **B. One declaration of a node's input on the wire (version 2).**
-    - *Guards first.* (a) A version-1 graph and each removed field
-      (`upstream`, `column_bindings`, a node-level `source`) are refused by
-      name (`deny_unknown_fields`, version check). (b) A node that reads a
-      column *and* a node, or neither, cannot be written: `input` is an enum,
-      `{"decode": {"column", "source"}}` or `{"node": id}`. (c) Dependencies
-      come from `input` plus `operands()` only: a graph whose operand node is
-      named nowhere else executes, in topological order. (d) `Plan` builds a
-      node's wire form itself (`Plan.to_node`), refusing a root without a
-      source and a continuation with one, so Python cannot emit a dummy.
-    - *Implement.* `GraphNode { input: NodeInput, ops }`; `NodePlan` holds
-      the input as an enum; `min_inputs`, `column_facts_pending`,
-      `ends_in_histogram_buckets`, the planner and the copy census read
-      `input`. `Plan.rebased(start)` loses its source argument; delete
-      `_BLOB_SOURCE` and the three reconciling checks.
-  - **C. Python graph model.** `LazyPipelineExpr` holds `_input` (the node it
-    reads, or none for a root) and `_merged` (`merge_pipe`'s extra branches,
-    reachable but read by no op); its dependencies are computed: input, the
-    pipeline's node references, the merged branches. `GraphNode` holds
-    `input`; CSE and the visualiser read it. Guard: a binary op's operand is
-    a dependency exactly once and the wire node is `{"input", "ops"}` only.
-  - Python tests that pin `_upstream`, `upstream=` or the version-1 JSON are
-    updated in the same change, since the structure they pin is deliberately
-    removed.
-
 ### CR-118 — CSE re-derives a per-op graph from the per-node wire
 
 **decision**
@@ -334,8 +256,8 @@ against `main` at `e788d72` that day, and their full text is in git history).
 - **Option:** send a flat list of op values (`{op, input, operands}`) and do
   value numbering and run fusion in Rust beside the planner, leaving the
   Python builder an appender. Large: it moves the optimiser across the FFI
-  and changes the wire again. Worth deciding after CR-117, which leaves the
-  node form with one input declaration.
+  and changes the wire again. CR-117 (closed) left the node form with one
+  input declaration, so this is the next step if the per-op form is wanted.
 
 ## Fetch
 
@@ -746,3 +668,4 @@ before 2026-10-08). CR-26 and CR-29 were never assigned.
 | CR-99 | Contour boolean ops (`union`, `intersection`, `difference`, `symmetric_difference`) | Added (Unreleased): `transforms::boolean` behind a lazy-only `GraphOp` role (`Role::Regions`, node operand); the `.contour` accessors are generated from those ops and run them (column operand); each side read as its regions' union |
 | CR-98 | Contour shaping (`offset`, `union_all`, `smooth`, `densify`, `stroke`) | Added (Unreleased): one engine function per op in `geometry::transforms` (on `geo`'s `Buffer`, `unary_union`, `ChaikinSmoothing`, `Densify`, and `i_overlay` for closed-path strokes), read by the pipeline op and its accessor alike; `rasterize` fills regions only; arcs within `transforms::arc_tolerance` (1/64 px to r ≈ 32, about r/2000 beyond), miter limit 4 |
 | CR-97 | Open contours in the pipeline contour domain; `boundary()` / `close()` | Added (Unreleased): `NodeOutput::Contours` carries `Outline`; `Outline::region` is the one region rule, read by the pipeline ops and the `.contour` column reader alike |
+| CR-117 | A graph node's input was spread over a dummy `source`, `column_bindings` and a positional `upstream`; every executor step re-read its operands by hand | Fixed (Unreleased): wire version 2, one `NodeInput` per node written only by `Plan::node_spec`, dependencies derived from input plus `operands()` (Rust `GraphNode::dependencies`, Python `_dependencies`); one operand path (`graph/row.rs`: `RowOutputs::operands` over compiled positions, private storage, `run_step` with one buffer gather and validation). Deleted `column_bindings`, `upstream`, `_BLOB_SOURCE`, `OpResolver::RasterizeShapeRef`, `ResolvedStep`, `validate_graph_structure` and its reconciling checks. Guards: the version-1 form refused by name, a dangling reference one parse error for every operand-reading op, a null operand nulls every reader, `RowOutputs` privacy (watched failing to compile) |

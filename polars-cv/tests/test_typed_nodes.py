@@ -633,7 +633,6 @@ class TestRasterizeShapeReference:
         graph.add_node("n0", pipe, column=pl.col("image"))
         graph.set_output("n0", "numpy")
         spec = json.loads(graph._to_json())
-        spec["column_bindings"] = {"n0": 0}
         # Doctor the rasterize op into a dangling shape reference.
         for op in spec["nodes"]["n0"]["ops"]:
             if op["op"] == "rasterize":

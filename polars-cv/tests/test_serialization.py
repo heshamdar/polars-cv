@@ -143,6 +143,6 @@ class TestTheWireIsClosed:
             ._to_json()
         )
         for node in spec["nodes"].values():
-            node["source"][field] = value
+            node["input"]["decode"]["source"][field] = value
         with pytest.raises(pl.exceptions.ComputeError, match=field):
             self._run(json.dumps(spec))

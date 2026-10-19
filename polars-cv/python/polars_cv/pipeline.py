@@ -1210,7 +1210,6 @@ class Pipeline(_OpsMixin):
             node_id=node_id,
             pipeline=self._clone(),
             column=column,
-            upstream=[],
             alias="_output",  # Implicit terminal alias
         )
         graph._alias_to_node["_output"] = node_id
@@ -1277,6 +1276,25 @@ class Pipeline(_OpsMixin):
         """
         return json.loads(
             self._plan.to_spec([slot_of(e) for e in self._exprs], node_of)
+        )
+
+    def _to_node_dict(
+        self, slot_of: "SlotOf", node_of: "dict[str, str]", reads: "int | str"
+    ) -> dict:
+        """This pipeline as a graph node, ``{"input": ..., "ops": [...]}``.
+
+        Written by Rust (``Plan.to_node``), the one writer of a node's wire
+        form: ``reads`` is the plugin input a root decodes or the wire id of
+        the node a continuation reads, and a plan whose source contradicts it
+        is refused.
+
+        Args:
+            slot_of: The graph's slot resolver (see :meth:`_to_spec_dict`).
+            node_of: The wire id of each node, by build-time id.
+            reads: Plugin input position (a root) or wire node id.
+        """
+        return json.loads(
+            self._plan.to_node([slot_of(e) for e in self._exprs], node_of, reads)
         )
 
     # --- Serialization ---

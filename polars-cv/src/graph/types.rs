@@ -146,7 +146,7 @@ mod row_error_policy_tests {
 
     fn graph_with(field: &str, value: &str) -> String {
         UnifiedGraph::from_json(&format!(
-            r#"{{"nodes": {{}}, "outputs": {{}}, "{field}": "{value}"}}"#
+            r#"{{"version": 2, "nodes": {{}}, "outputs": {{}}, "{field}": "{value}"}}"#
         ))
         .map(|_| String::new())
         .unwrap_or_else(|e| e.to_string())
@@ -155,9 +155,8 @@ mod row_error_policy_tests {
     /// The one output of a single `image_bytes` node running `ops`, as planned.
     fn output(ops: &str) -> Result<OutputSpec, String> {
         let graph = UnifiedGraph::from_json(&format!(
-            r#"{{"nodes": {{"n0": {{"source": {{"format": "image_bytes"}}, "ops": {ops}}}}},
-                "outputs": {{"_output": {{"node": "n0", "sink": {{"format": "numpy"}}}}}},
-                "column_bindings": {{"n0": 0}}}}"#
+            r#"{{"version": 2, "nodes": {{"n0": {{"input": {{"decode": {{"column": 0, "source": {{"format": "image_bytes"}}}}}}, "ops": {ops}}}}},
+                "outputs": {{"_output": {{"node": "n0", "sink": {{"format": "numpy"}}}}}}}}"#
         ))
         .map_err(|e| e.to_string())?;
         crate::graph::resolved_output_specs(&graph, &[])
@@ -205,7 +204,7 @@ mod row_error_policy_tests {
             r#""expected_dtype": "u8""#,
         ] {
             let err = UnifiedGraph::from_json(&format!(
-                r#"{{"nodes": {{}}, "outputs": {{"_output": {{"node": "n0",
+                r#"{{"version": 2, "nodes": {{}}, "outputs": {{"_output": {{"node": "n0",
                     "sink": {{"format": "numpy"}}, {extra}}}}}}}"#
             ))
             .unwrap_err()
@@ -222,11 +221,10 @@ mod row_error_policy_tests {
     fn histogram_buckets_are_read_off_the_ops() {
         let graph = |ops: &str| {
             let g = UnifiedGraph::from_json(&format!(
-                r#"{{"nodes": {{"n0": {{"source": {{"format": "image_bytes"}}, "ops": {ops}}},
-                     "n1": {{"source": {{"format": "blob"}}, "ops": [], "upstream": ["n0"]}}}},
+                r#"{{"version": 2, "nodes": {{"n0": {{"input": {{"decode": {{"column": 0, "source": {{"format": "image_bytes"}}}}}}, "ops": {ops}}},
+                     "n1": {{"ops": [], "input": {{"node": "n0"}}}}}},
                     "outputs": {{"a": {{"node": "n0", "sink": {{"format": "native"}}}},
-                                 "b": {{"node": "n1", "sink": {{"format": "native"}}}}}},
-                    "column_bindings": {{"n0": 0}}}}"#
+                                 "b": {{"node": "n1", "sink": {{"format": "native"}}}}}}}}"#
             ))
             .unwrap();
             crate::graph::resolved_output_specs(&g, &[]).unwrap()
@@ -245,7 +243,7 @@ mod row_error_policy_tests {
     fn an_unknown_engine_toggle_is_refused() {
         let graph = |opt: &str| {
             UnifiedGraph::from_json(&format!(
-                r#"{{"nodes": {{}}, "outputs": {{}}, "opt": {opt}}}"#
+                r#"{{"version": 2, "nodes": {{}}, "outputs": {{}}, "opt": {opt}}}"#
             ))
             .map(|_| String::new())
             .unwrap_or_else(|e| e.to_string())
@@ -289,11 +287,12 @@ mod row_error_policy_tests {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UnifiedGraph {
-    /// Graph wire-format version. Version 0 (absent) and 1 are identical;
-    /// the field exists so future format changes can be detected instead of
-    /// misparsed (also relevant for any persisted graph JSON).
-    #[serde(default)]
-    pub version: u32,
+    /// Graph wire-format version, so a format change is refused by name
+    /// instead of misparsed (also relevant for any persisted graph JSON).
+    /// Required; checked by [`from_json`](Self::from_json) before the rest of
+    /// the graph is read.
+    #[serde(rename = "version")]
+    _version: u32,
     /// Per-row error policy for the whole graph.
     #[serde(default, deserialize_with = "crate::ops::param::literal_field")]
     pub on_error: RowErrorPolicy,
@@ -314,18 +313,15 @@ pub struct UnifiedGraph {
     /// The requested outputs (alias -> node and sink).
     /// Single output uses "_output" as key.
     pub outputs: HashMap<String, OutputRequest>,
-    /// Mapping from node IDs to input column indices.
-    /// Only root nodes (no upstream) have bindings.
-    #[serde(default)]
-    pub column_bindings: HashMap<String, usize>,
     /// Cached topological order (computed once during parsing).
     /// Not serialized - computed on load.
     #[serde(skip)]
     cached_order: Vec<String>,
 }
 
-/// The newest graph wire-format version this build understands.
-const SUPPORTED_GRAPH_VERSION: u32 = 1;
+/// The graph wire-format version this build reads. Version 2 gave each node
+/// one `input` (CR-117); a version-1 graph's node fields are not read.
+pub(crate) const GRAPH_VERSION: u32 = 2;
 
 impl UnifiedGraph {
     /// Parse a graph from JSON.
@@ -333,17 +329,61 @@ impl UnifiedGraph {
     /// This also computes and caches the topological order for efficient
     /// repeated execution.
     pub fn from_json(json: &str) -> PolarsResult<Self> {
+        // The version first, so an older graph is refused by its version
+        // rather than by whichever of its fields the parser meets first.
+        let version = serde_json::from_str::<serde_json::Value>(json)
+            .ok()
+            .and_then(|graph| graph.get("version")?.as_u64());
+        if let Some(v) = version {
+            if v != u64::from(GRAPH_VERSION) {
+                polars_bail!(ComputeError:
+                    "Pipeline graph format version {} is not the version this polars-cv \
+                     build reads ({}); rebuild the pipeline with this polars-cv",
+                    v, GRAPH_VERSION
+                );
+            }
+        }
         let mut graph: Self = serde_json::from_str(json)
             .map_err(|e| polars_err!(ComputeError : "Failed to parse pipeline graph: {}", e))?;
-        if graph.version > SUPPORTED_GRAPH_VERSION {
-            polars_bail!(ComputeError:
-                "Pipeline graph format version {} is newer than this polars-cv build supports ({}); \
-                 upgrade polars-cv",
-                graph.version, SUPPORTED_GRAPH_VERSION
-            );
-        }
+        graph.check_references()?;
         graph.cached_order = graph.compute_topological_order()?;
         Ok(graph)
+    }
+
+    /// Refuse a reference to a node the graph does not have: a node's input,
+    /// a node an op reads (whatever kind of operand it is), an output's node.
+    /// The one structural check, run on every parse, so execution and schema
+    /// inference alike can index nodes by the ids the graph names.
+    fn check_references(&self) -> PolarsResult<()> {
+        for (node_id, node) in &self.nodes {
+            if let Some(input) = node.input.node() {
+                if !self.nodes.contains_key(input) {
+                    polars_bail!(ComputeError:
+                        "node '{}' reads node '{}', which is not in the graph",
+                        node_id, input
+                    );
+                }
+            }
+            for op in &node.ops {
+                for operand in op.operands() {
+                    if !self.nodes.contains_key(&operand.0) {
+                        polars_bail!(ComputeError:
+                            "node '{}': {}() reads node '{}', which is not in the graph",
+                            node_id, op.name(), operand.0
+                        );
+                    }
+                }
+            }
+        }
+        for (alias, spec) in &self.outputs {
+            if !self.nodes.contains_key(&spec.node) {
+                polars_bail!(ComputeError:
+                    "Output '{}' references unknown node '{}'",
+                    alias, spec.node
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Whether `node_id`'s buffer is histogram buckets: its last step, or, for
@@ -359,8 +399,8 @@ impl UnifiedGraph {
                     if h.output.get() == view_buffer::ops::HistogramOutput::Buckets
             ),
             None => node
-                .upstream
-                .first()
+                .input
+                .node()
                 .is_some_and(|up| self.ends_in_histogram_buckets(up)),
         }
     }
@@ -371,16 +411,15 @@ impl UnifiedGraph {
         &self,
         node_id: &str,
     ) -> Option<crate::graph::decode::ColumnFacts> {
-        let node = self.nodes.get(node_id)?;
-        match node.upstream.first() {
-            Some(up) if !self.column_bindings.contains_key(node_id) => {
-                self.column_facts_pending(up)
+        match &self.nodes.get(node_id)?.input {
+            NodeInput::Node(up) => self.column_facts_pending(up),
+            NodeInput::Decode { source, .. } => {
+                source
+                    .resolves_from_column()
+                    .then(|| crate::graph::decode::ColumnFacts::Pending {
+                        sizes: source.column_may_fix_sizes(),
+                    })
             }
-            _ => node.source.resolves_from_column().then(|| {
-                crate::graph::decode::ColumnFacts::Pending {
-                    sizes: node.source.column_may_fix_sizes(),
-                }
-            }),
         }
     }
     /// Check if this is a single-output graph (returns Binary instead of Struct).
@@ -413,8 +452,8 @@ impl UnifiedGraph {
             }
             in_stack.insert(node_id.to_string());
             if let Some(node) = nodes.get(node_id) {
-                for upstream_id in &node.upstream {
-                    dfs(upstream_id, nodes, visited, in_stack, order)?;
+                for dependency in node.dependencies() {
+                    dfs(dependency, nodes, visited, in_stack, order)?;
                 }
             }
             in_stack.remove(node_id);
@@ -465,12 +504,167 @@ pub(crate) enum OutputValue {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GraphNode {
-    /// Source specification for this node's input.
-    pub source: Source,
+    /// What this node reads: one declaration, so a node cannot both decode a
+    /// column and read a node, or do neither.
+    pub input: NodeInput,
     /// Operations to apply.
     #[serde(default)]
     pub ops: Vec<crate::ops::TypedOp>,
-    /// Upstream node IDs this node depends on.
-    #[serde(default)]
-    pub upstream: Vec<String>,
+}
+
+/// A node's input.
+///
+/// The version-1 form spread this over three places — a `source` on every
+/// node (a dummy `{"format": "blob"}` on a node that read another), a
+/// top-level `column_bindings` map saying which nodes were roots, and a
+/// positional `upstream` list whose first entry was the input and whose rest
+/// restated the nodes the ops read — and needed three checks to reconcile
+/// them (CR-117). A node's dependencies are now its input and its ops'
+/// [`operands`](crate::graph::step::GraphStep::operands).
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum NodeInput {
+    /// A root: decodes plugin input `column` through `source`.
+    Decode {
+        column: usize,
+        /// Written as every plan value is ([`crate::plan::wire`]): an unset
+        /// setting is left out, so the graph JSON (the compiled-graph cache
+        /// key) carries only what was set.
+        #[serde(serialize_with = "wire_source")]
+        source: Source,
+    },
+    /// Reads another node's output.
+    Node(String),
+}
+
+fn wire_source<S: serde::Serializer>(source: &Source, s: S) -> Result<S::Ok, S::Error> {
+    serde::Serialize::serialize(&crate::plan::wire(source), s)
+}
+
+impl NodeInput {
+    /// The node this one reads, for a continuation.
+    pub fn node(&self) -> Option<&str> {
+        match self {
+            NodeInput::Decode { .. } => None,
+            NodeInput::Node(id) => Some(id),
+        }
+    }
+}
+
+impl GraphNode {
+    /// Every node this one depends on: its input, then each node its ops read.
+    pub fn dependencies(&self) -> impl Iterator<Item = &str> {
+        self.input.node().into_iter().chain(
+            self.ops
+                .iter()
+                .flat_map(|op| op.operands().into_iter().map(|n| n.0.as_str())),
+        )
+    }
+}
+
+#[cfg(test)]
+mod node_wire_tests {
+    //! The node wire form (version 2): a node's input is one declaration,
+    //! `{"decode": {"column", "source"}}` or `{"node": id}`, and a node's
+    //! dependencies are that input plus the nodes its ops read (CR-117).
+    use super::UnifiedGraph;
+    use crate::graph::compiled::CompiledGraph;
+    use polars::prelude::*;
+    use view_buffer::ViewBuffer;
+
+    fn parse_err(json: &str) -> String {
+        UnifiedGraph::from_json(json)
+            .expect_err("the graph must be refused")
+            .to_string()
+    }
+
+    const OUTPUT: &str = r#""outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}}"#;
+
+    /// The version-1 form (`column_bindings`, a positional `upstream`, a
+    /// `source` on every node) is refused, by its version and by each field
+    /// it carried, rather than read with any of them ignored.
+    #[test]
+    fn the_version_1_node_form_is_refused() {
+        let v1 = format!(
+            r#"{{"version": 1, "nodes": {{"n0": {{"source": {{"format": "blob"}}}}}},
+                {OUTPUT}, "column_bindings": {{"n0": 0}}}}"#
+        );
+        let err = parse_err(&v1);
+        assert!(err.contains("version 1"), "{err}");
+        assert!(err.contains("rebuild"), "{err}");
+
+        let node = |fields: &str| {
+            format!(
+                r#"{{"version": 2, "nodes": {{"n0": {{"input": {{"decode": {{"column": 0,
+                    "source": {{"format": "blob"}}}}}}, {fields}}}}}, {OUTPUT}}}"#
+            )
+        };
+        for (field, json) in [
+            ("upstream", node(r#""upstream": []"#)),
+            ("source", node(r#""source": {"format": "blob"}"#)),
+            (
+                "column_bindings",
+                format!(
+                    r#"{{"version": 2, "nodes": {{"n0": {{"input": {{"decode": {{"column": 0,
+                        "source": {{"format": "blob"}}}}}}}}}}, {OUTPUT},
+                        "column_bindings": {{"n0": 0}}}}"#
+                ),
+            ),
+        ] {
+            let err = parse_err(&json);
+            assert!(
+                err.contains(&format!("unknown field `{field}`")),
+                "{field}: {err}"
+            );
+        }
+    }
+
+    /// A node reads a column or a node: both at once, or neither, cannot be
+    /// written.
+    #[test]
+    fn a_node_reads_a_column_or_a_node_not_both_and_not_neither() {
+        let graph = |input: &str| {
+            format!(r#"{{"version": 2, "nodes": {{"n0": {{"input": {input}}}}}, {OUTPUT}}}"#)
+        };
+        let both = parse_err(&graph(
+            r#"{"decode": {"column": 0, "source": {"format": "blob"}}, "node": "n1"}"#,
+        ));
+        assert!(both.contains("Failed to parse pipeline graph"), "{both}");
+        let neither = parse_err(&graph("{}"));
+        assert!(
+            neither.contains("Failed to parse pipeline graph"),
+            "{neither}"
+        );
+        let missing = parse_err(&format!(
+            r#"{{"version": 2, "nodes": {{"n0": {{"ops": []}}}}, {OUTPUT}}}"#
+        ));
+        assert!(missing.contains("missing field `input`"), "{missing}");
+    }
+
+    /// A node's dependencies are its input and the nodes its ops read, and
+    /// nothing else: an operand named only in an op is executed first.
+    #[test]
+    fn an_operand_named_only_in_its_op_is_a_dependency() {
+        let graph = r#"{
+            "version": 2,
+            "nodes": {
+                "sum": {"input": {"node": "a"}, "ops": [{"op": "add", "other": "b"}]},
+                "a": {"input": {"decode": {"column": 0, "source": {"format": "blob"}}}},
+                "b": {"input": {"decode": {"column": 1, "source": {"format": "blob"}}}}
+            },
+            "outputs": {"_output": {"node": "sum", "sink": {"format": "blob"}}}
+        }"#;
+        let blob = |v: Vec<f32>| {
+            let n = v.len();
+            ViewBuffer::from_vec_with_shape(v, vec![n]).to_blob()
+        };
+        let a = Series::new("a".into(), &[blob(vec![1.0, 2.0])]);
+        let b = Series::new("b".into(), &[blob(vec![10.0, 20.0])]);
+        let out = CompiledGraph::compile(graph)
+            .unwrap()
+            .execute(&[a, b])
+            .unwrap();
+        let sum = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
+        assert_eq!(sum.as_slice::<f32>(), &[11.0, 22.0]);
+    }
 }

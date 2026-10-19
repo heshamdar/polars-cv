@@ -38,19 +38,31 @@ class GraphNode:
     """
     A node in the pipeline graph.
 
+    A node reads exactly one of ``column`` (a root) and ``input`` (a
+    continuation); the other nodes it depends on are the ones its pipeline's
+    ops read (:meth:`PipelineGraph._dependencies`).
+
     Attributes:
         node_id: Unique identifier for this node.
         pipeline: The Pipeline specification for this node.
-        column: The Polars column expression this node reads from (None for non-root nodes).
-        upstream: List of upstream node IDs this node depends on.
+        column: The Polars column expression a root reads.
+        input: The id of the node a continuation reads.
         alias: Optional user-defined alias for multi-output support.
     """
 
     node_id: str
     pipeline: "Pipeline"
-    column: pl.Expr | None  # None for non-root nodes that receive from upstream
-    upstream: list[str] = field(default_factory=list)
+    column: pl.Expr | None = None
+    input: str | None = None
     alias: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.column is None) == (self.input is None):
+            msg = (
+                f"node '{self.node_id}' must read a column or another node: "
+                "exactly one of the two"
+            )
+            raise ValueError(msg)
 
 
 @dataclass
@@ -98,7 +110,7 @@ class PipelineGraph:
     Example:
         >>> graph = PipelineGraph()
         >>> graph.add_node("img", img_pipeline, pl.col("image"), alias="original")
-        >>> graph.add_node("mask", mask_pipeline, pl.col("contour"), upstream=["img"])
+        >>> graph.add_node("blurred", blur_pipeline, input="img")
         >>> graph.set_output("mask", "numpy")  # Single output
         >>> from polars_cv import OptFlags
         >>> expr = graph.optimize(OptFlags.all()).to_expr()  # Returns fused pl.Expr
@@ -133,7 +145,8 @@ class PipelineGraph:
         node_id: str,
         pipeline: "Pipeline",
         column: pl.Expr | None = None,
-        upstream: list[str] | None = None,
+        *,
+        input: str | None = None,  # noqa: A002
         alias: str | None = None,
     ) -> None:
         """
@@ -142,16 +155,18 @@ class PipelineGraph:
         Args:
             node_id: Unique identifier for this node.
             pipeline: The Pipeline specification.
-            column: The Polars column expression this node reads from.
-                    None for non-root nodes that receive from upstream.
-            upstream: List of upstream node IDs this depends on.
+            column: The Polars column expression a root reads.
+            input: The id of the node a continuation reads.
             alias: Optional user-defined alias for multi-output.
+
+        Raises:
+            ValueError: If the node reads both a column and a node, or neither.
         """
         self._nodes[node_id] = GraphNode(
             node_id=node_id,
             pipeline=pipeline,
             column=column,
-            upstream=upstream or [],
+            input=input,
             alias=alias,
         )
         if alias is not None:
@@ -290,7 +305,6 @@ class PipelineGraph:
         """
         from polars_cv._optimize import OPTIMIZATION_PASSES
 
-        self._check_roots()
         self._drop_unread_nodes()
         for node in self._nodes.values():
             node.pipeline = node.pipeline._clone()
@@ -338,7 +352,7 @@ class PipelineGraph:
             [
                 [
                     wire[node_id],
-                    [wire[u] for u in node.upstream],
+                    [wire[d] for d in self._dependencies(node_id)],
                     node.pipeline._to_spec_dict(table.index, wire),
                 ]
                 for node_id, node in self._nodes.items()
@@ -346,15 +360,17 @@ class PipelineGraph:
             sort_keys=True,
         )
 
-    def _check_roots(self) -> None:
-        """Refuse a node that reads neither a column nor another node."""
-        for node in self._nodes.values():
-            if not node.upstream and node.column is None:
-                msg = (
-                    f"Root node '{node.node_id}' has no column set. "
-                    "Pass the column when adding the node."
-                )
-                raise ValueError(msg)
+    def _dependencies(self, node_id: str) -> list[str]:
+        """The nodes ``node_id`` depends on: its input, then each node its ops
+        read (``Plan.operands``, Rust's ``operands()``), by the id that now
+        computes it after CSE's renames."""
+        node = self._nodes[node_id]
+        found = [] if node.input is None else [node.input]
+        for read in node.pipeline._plan.operands():
+            dep = self._renamed.get(read, read)
+            if dep not in found:
+                found.append(dep)
+        return found
 
     def _graph_policy(self, attr: str) -> str:
         """A graph-level per-row policy (``_on_error``/``_on_null_param``):
@@ -398,7 +414,7 @@ class PipelineGraph:
             node_id = stack.pop()
             if node_id not in reached:
                 reached.add(node_id)
-                stack.extend(self._nodes[node_id].upstream)
+                stack.extend(self._dependencies(node_id))
         self._nodes = {k: v for k, v in self._nodes.items() if k in reached}
 
     # --- CSE Optimization ---
@@ -412,8 +428,8 @@ class PipelineGraph:
             if node_id in seen:
                 return
             seen.add(node_id)
-            for upstream_id in self._nodes[node_id].upstream:
-                visit(upstream_id)
+            for dependency in self._dependencies(node_id):
+                visit(dependency)
             order.append(node_id)
 
         for node_id in self._nodes:
@@ -425,13 +441,13 @@ class PipelineGraph:
 
         **Value numbering.** Every op of every node is an *atom*, named by
         what it computes: the atom before it (the node's source, or the atom
-        its upstream node ends on) and the op as the wire spells it, with its
+        its input node ends on) and the op as the wire spells it, with its
         expression parameters as graph inputs and the nodes it reads as their
         atoms. A source atom is its column and source spec. Two atoms with one
         name are one atom, so equal work is shared wherever it was written:
         two decodes of a column, a prefix two of five pipelines have, ops
         below a shared node, an op whose operands were built twice, and a node
-        with no ops (its upstream's atom).
+        with no ops (its input's atom).
 
         **Chain fusion.** The atoms the outputs need form a DAG. An atom ends a
         node where it must be addressable — an output, an operand some op
@@ -445,7 +461,6 @@ class PipelineGraph:
         by the node that now computes it.
         """
         from polars_cv._lib import Plan
-        from polars_cv.lazy import _BLOB_SOURCE
 
         table = self._slot_table()
         mark = "\x00atom:"  # an operand's atom on the wire; no field holds NUL
@@ -490,7 +505,8 @@ class PipelineGraph:
                 atom = intern(key, None, (node_id, -1), [])
                 source_atom[node_id] = atom
             else:
-                atom = final[node.upstream[0]]
+                assert node.input is not None  # a node without a column reads one
+                atom = final[node.input]
             for position, op in enumerate(spec["ops"]):
                 atom = intern([atom, op], atom, (node_id, position), operands(op))
             final[node_id] = atom
@@ -563,16 +579,16 @@ class PipelineGraph:
             template = old[first_node].pipeline
             before = prev[run[0]]
             source_json = template._plan.source_json()
+            input_node: str | None = None
             if before is None and source_json is not None:
                 source = _rewired(json.loads(source_json), template, pipeline)
                 pipeline._plan = Plan().with_source(json.dumps(source))
                 ops, column = run[1:], old[first_node].column
-                upstream = []
             elif before is not None:
                 entering = self._state_after(old, origin, before)
-                pipeline._plan = Plan().rebased(_BLOB_SOURCE, entering)
+                pipeline._plan = Plan.continuing(entering)
                 ops, column = run, None
-                upstream = [node_of[before]]
+                input_node = node_of[before]
             else:
                 msg = f"root node {first_node!r} has no source"
                 raise ValueError(msg)
@@ -583,9 +599,6 @@ class PipelineGraph:
                 pipeline._plan = pipeline._plan.push(json.dumps(op), src._refs())
                 for ref in src._node_refs:
                     pipeline._read_node(ref)
-                for r in reads[atom]:
-                    if node_of[r] not in upstream:
-                        upstream.append(node_of[r])
             # A node computing what one written node did keeps its id.
             same = [n for n in old_order if final[n] == run[-1]]
             node_id = same[0] if same else f"_cse_{i}"
@@ -594,14 +607,14 @@ class PipelineGraph:
                 node_id=node_id,
                 pipeline=pipeline,
                 column=column,
-                upstream=upstream,
+                input=input_node,
                 alias=aliases[0] if aliases else None,
             )
             node_of[run[-1]] = node_id
 
         # Root nodes first, in their columns' original order: the first column
         # is the plugin's first input, which names the output. (The wire is
-        # not read in order; Rust orders nodes by `upstream`.)
+        # not read in order; Rust orders nodes by their dependencies.)
         roots_in_order = [source_atom[n] for n in old_order if n in source_atom]
         root_rank = {a: i for i, a in enumerate(dict.fromkeys(roots_in_order))}
         first_atom = {node_of[run[-1]]: run[0] for run in runs}
@@ -673,8 +686,6 @@ class PipelineGraph:
                 "`graph.optimize(flags).to_expr()` for the low-level path."
             )
 
-        self._check_roots()
-
         # One positional table for the plugin's inputs: root columns first,
         # then every expression parameter. Serialization reads the same table,
         # so positions and arguments cannot disagree.
@@ -743,11 +754,14 @@ class PipelineGraph:
         table = self._slot_table()
         nodes_dict: dict[str, Any] = {}
         for node_id, node in self._nodes.items():
-            # Get the pipeline's JSON representation without sink
-            # We'll add sink info to the output specification
-            node_spec = node.pipeline._to_spec_dict(table.index, wire)
-            node_spec["upstream"] = [wire[u] for u in node.upstream]
-            nodes_dict[wire[node_id]] = node_spec
+            if node.column is not None:
+                reads: int | str = table.index(node.column)
+            else:
+                assert node.input is not None  # a node without a column reads one
+                reads = wire[node.input]
+            nodes_dict[wire[node_id]] = node.pipeline._to_node_dict(
+                table.index, wire, reads
+            )
 
         # Build unified outputs dict (always use "outputs" format)
         outputs_spec: dict[str, Any] = {}
@@ -764,16 +778,11 @@ class PipelineGraph:
             )
 
         graph_spec = {
-            # Wire-format version; the Rust side rejects versions newer than
-            # it understands instead of misparsing them.
-            "version": 1,
+            # Wire-format version; the Rust side refuses any other instead of
+            # misparsing it.
+            "version": 2,
             "nodes": nodes_dict,
             "outputs": outputs_spec,
-            "column_bindings": {
-                wire[node_id]: table.index(node.column)
-                for node_id, node in self._nodes.items()
-                if node.column is not None
-            },
             # Engine-tier optimization toggles → Rust `OptConfig`. Keys are the
             # `OptConfig` field names; missing keys default on. Distinct opt
             # settings key distinct compiled-graph cache entries, so a per-query
@@ -823,10 +832,9 @@ class PipelineGraph:
                 return
             visited.add(node_id)
 
-            node = self._nodes.get(node_id)
-            if node:
-                for upstream_id in node.upstream:
-                    dfs(upstream_id)
+            if node_id in self._nodes:
+                for dependency in self._dependencies(node_id):
+                    dfs(dependency)
                 order.append(node_id)
 
         # Get all output nodes

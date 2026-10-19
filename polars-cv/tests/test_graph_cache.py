@@ -268,7 +268,7 @@ class TestGraphVersionField:
         graph.add_node("n0", pipe, column=pl.col("img"))
         graph.set_output("n0", "numpy")
         spec = json.loads(graph._to_json())
-        assert spec["version"] == 1
+        assert spec["version"] == 2
 
     def test_future_version_is_rejected(self) -> None:
         # A graph claiming a newer format version must error clearly rather
@@ -310,8 +310,6 @@ class TestGraphStructureValidation:
         graph.add_node("n0", pipe, column=pl.col("img"))
         graph.set_output("n0", "numpy")
         spec = json.loads(graph._to_json())
-        # _to_json() alone doesn't run to_expr()'s column binding pass.
-        spec["column_bindings"] = {"n0": 0}
         mutate(spec)
         expr = _plugin.call(
             "vb_graph",
@@ -331,7 +329,7 @@ class TestGraphStructureValidation:
 
     def test_unknown_source_format_errors_at_compile(self) -> None:
         def mutate(spec):
-            spec["nodes"]["n0"]["source"]["format"] = "telegram"
+            spec["nodes"]["n0"]["input"]["decode"]["source"]["format"] = "telegram"
 
         with pytest.raises(pl.exceptions.ComputeError, match="unknown source format"):
             self._run_doctored(mutate)

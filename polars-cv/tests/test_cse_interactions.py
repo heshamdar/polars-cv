@@ -206,7 +206,7 @@ class TestAcrossColumns:
         a = pl.col("image").cv.pipe(U8.grayscale()).alias("a")
         b = pl.col("other").cv.pipe(U8.grayscale()).alias("b")
         graph = _physical(a.merge_pipe(b), {"a": "numpy", "b": "numpy"})
-        assert len([n for n in graph["nodes"].values() if not n["upstream"]]) == 2
+        assert len([n for n in graph["nodes"].values() if "decode" in n["input"]]) == 2
         assert _ops(graph).count("grayscale") == 2
 
     @plugin_required
@@ -289,7 +289,11 @@ class TestDagShapes:
         fmt = {"cut": "png", "rgba": "png", "area": "native"}
         assert (
             len(
-                [n for n in _physical(expr, fmt)["nodes"].values() if not n["upstream"]]
+                [
+                    n
+                    for n in _physical(expr, fmt)["nodes"].values()
+                    if "decode" in n["input"]
+                ]
             )
             == 1
         )
@@ -426,37 +430,47 @@ def _build(steps: list[tuple], at: int) -> LazyPipelineExpr:
     return expr
 
 
-def _assert_fully_shared(graph: dict) -> None:
-    """The optimised graph's invariants: no two nodes compute the same thing,
-    no node only passes its input on, and every node read as the input of
-    exactly one other node, and nothing else, has been fused into it."""
-    specs = [
-        json.dumps([n["upstream"], n["source"], n["ops"]], sort_keys=True)
-        for n in graph["nodes"].values()
-    ]
-    assert len(specs) == len(set(specs)), "two nodes compute one value"
-    for node in graph["nodes"].values():
-        assert node["ops"] or not node["upstream"], "a pass-through node survived"
-    outputs = {o["node"] for o in graph["outputs"].values()}
-    first_reads: dict[str, int] = {}
-    operands: set[str] = set()
+def _operands(graph: dict, node: dict) -> list[str]:
+    """The node ids a wire node's ops name (an operand: ``other``, ``mask``,
+    ``size``, ``others``)."""
 
     def named(value: Any) -> list[str]:
-        """The node ids an op field names (an operand: ``other``, ``mask``,
-        ``size``, ``others``)."""
         if isinstance(value, str) and value in graph["nodes"]:
             return [value]
         if isinstance(value, list):
             return [n for v in value for n in named(v)]
         return []
 
+    return [
+        n for op in node["ops"] for k, v in op.items() if k != "op" for n in named(v)
+    ]
+
+
+def _wire_dependencies(graph: dict, node: dict) -> list[str]:
+    """What a wire node depends on: the node it reads, then its operands."""
+    reads = [node["input"]["node"]] if "node" in node["input"] else []
+    return reads + _operands(graph, node)
+
+
+def _assert_fully_shared(graph: dict) -> None:
+    """The optimised graph's invariants: no two nodes compute the same thing,
+    no node only passes its input on, and every node read as the input of
+    exactly one other node, and nothing else, has been fused into it."""
+    specs = [
+        json.dumps([n["input"], n["ops"]], sort_keys=True)
+        for n in graph["nodes"].values()
+    ]
+    assert len(specs) == len(set(specs)), "two nodes compute one value"
     for node in graph["nodes"].values():
-        if node["upstream"]:
-            first_reads[node["upstream"][0]] = (
-                first_reads.get(node["upstream"][0], 0) + 1
-            )
-        for op in node["ops"]:
-            operands.update(n for k, v in op.items() if k != "op" for n in named(v))
+        assert node["ops"] or "decode" in node["input"], "a pass-through node survived"
+    outputs = {o["node"] for o in graph["outputs"].values()}
+    first_reads: dict[str, int] = {}
+    operands: set[str] = set()
+    for node in graph["nodes"].values():
+        if "node" in node["input"]:
+            read = node["input"]["node"]
+            first_reads[read] = first_reads.get(read, 0) + 1
+        operands.update(_operands(graph, node))
     for wire_id in graph["nodes"]:
         if first_reads.get(wire_id) == 1:
             assert wire_id in outputs or wire_id in operands, f"{wire_id} was not fused"
@@ -507,7 +521,6 @@ class TestTheSharingChecker:
     as green."""
 
     SRC = {"format": "image_bytes"}
-    BLOB = {"format": "blob"}
 
     def _graph(self, nodes: dict, outputs: list[str]) -> dict:
         return {
@@ -515,20 +528,18 @@ class TestTheSharingChecker:
             "outputs": {f"o{i}": {"node": n} for i, n in enumerate(outputs)},
         }
 
-    def _node(self, upstream: list[str], ops: list[dict], blob: bool = True) -> dict:
-        return {
-            "upstream": upstream,
-            "source": self.BLOB if blob else self.SRC,
-            "ops": ops,
-        }
+    def _node(self, reads: str | None, ops: list[dict]) -> dict:
+        """A root decoding column 0 (``reads=None``), or a node reading ``reads``."""
+        source = {"decode": {"column": 0, "source": self.SRC}}
+        return {"input": source if reads is None else {"node": reads}, "ops": ops}
 
     def test_rejects_two_nodes_computing_one_value(self) -> None:
         inv = [{"op": "invert"}]
         graph = self._graph(
             {
-                "n0": self._node([], [], blob=False),
-                "n1": self._node(["n0"], inv),
-                "n2": self._node(["n0"], inv),
+                "n0": self._node(None, []),
+                "n1": self._node("n0", inv),
+                "n2": self._node("n0", inv),
             },
             ["n1", "n2"],
         )
@@ -538,8 +549,8 @@ class TestTheSharingChecker:
     def test_rejects_a_pass_through_node(self) -> None:
         graph = self._graph(
             {
-                "n0": self._node([], [{"op": "invert"}], blob=False),
-                "n1": self._node(["n0"], []),
+                "n0": self._node(None, [{"op": "invert"}]),
+                "n1": self._node("n0", []),
             },
             ["n1"],
         )
@@ -549,8 +560,8 @@ class TestTheSharingChecker:
     def test_rejects_an_unfused_single_reader(self) -> None:
         graph = self._graph(
             {
-                "n0": self._node([], [{"op": "invert"}], blob=False),
-                "n1": self._node(["n0"], [{"op": "flip"}]),
+                "n0": self._node(None, [{"op": "invert"}]),
+                "n1": self._node("n0", [{"op": "flip"}]),
             },
             ["n1"],
         )
@@ -560,10 +571,10 @@ class TestTheSharingChecker:
     def test_accepts_an_operand_an_output_and_a_fork(self) -> None:
         graph = self._graph(
             {
-                "n0": self._node([], [], blob=False),
-                "n1": self._node(["n0"], [{"op": "invert"}]),  # operand of n2
-                "n2": self._node(["n0", "n1"], [{"op": "maximum", "other": "n1"}]),
-                "n3": self._node(["n2"], [{"op": "flip"}]),  # n2 is an output
+                "n0": self._node(None, []),
+                "n1": self._node("n0", [{"op": "invert"}]),  # operand of n2
+                "n2": self._node("n0", [{"op": "maximum", "other": "n1"}]),
+                "n3": self._node("n2", [{"op": "flip"}]),  # n2 is an output
             },
             ["n2", "n3"],
         )
@@ -572,8 +583,8 @@ class TestTheSharingChecker:
     def test_accepts_an_op_reading_its_own_input(self) -> None:
         graph = self._graph(
             {
-                "n0": self._node([], [], blob=False),
-                "n1": self._node(["n0"], [{"op": "maximum", "other": "n0"}]),
+                "n0": self._node(None, []),
+                "n1": self._node("n0", [{"op": "maximum", "other": "n0"}]),
             },
             ["n1"],
         )
@@ -726,7 +737,7 @@ class TestSomeIntermediatesCollected:
             n = stack.pop()
             if n not in needed:
                 needed.add(n)
-                stack.extend(nodes[n]["upstream"])
+                stack.extend(_wire_dependencies(graph, nodes[n]))
         assert needed == set(nodes)
 
     @plugin_required

@@ -802,6 +802,55 @@ impl Plan {
         slot_map: &[usize],
         nodes: &NodeMap,
     ) -> Result<serde_json::Value, String> {
+        let mut spec = serde_json::json!({
+            "source": self.source.as_ref().map(wire),
+            "ops": self.wire_ops(nodes)?,
+        });
+        remap_slots(&mut spec, slot_map)?;
+        Ok(spec)
+    }
+
+    /// The graph node this plan is (`{"input": ..., "ops": [...]}`), reading
+    /// `reads`, with slots and node references mapped as [`spec`](Self::spec)
+    /// maps them. The one writer of a node's wire form: a root decodes its
+    /// column through this plan's source, and a continuation reads a node and
+    /// has no source, so a plan whose source contradicts its input is refused
+    /// rather than written with a source nothing reads (CR-117).
+    pub(crate) fn node_spec(
+        &self,
+        slot_map: &[usize],
+        nodes: &NodeMap,
+        reads: Reads,
+    ) -> Result<serde_json::Value, String> {
+        let input = match (reads, &self.source) {
+            (Reads::Column(column), Some(source)) => crate::graph::types::NodeInput::Decode {
+                column,
+                source: source.clone(),
+            },
+            (Reads::Node(node), None) => crate::graph::types::NodeInput::Node(node),
+            (Reads::Column(column), None) => {
+                return Err(format!(
+                    "a node decoding input column {column} needs a source, and this plan \
+                     has no source"
+                ))
+            }
+            (Reads::Node(node), Some(_)) => {
+                return Err(format!(
+                    "a node reading node '{node}' has a source of its own, which nothing \
+                     would read; continue the node without a source"
+                ))
+            }
+        };
+        let mut spec = serde_json::json!({
+            "input": wire(&input),
+            "ops": self.wire_ops(nodes)?,
+        });
+        remap_slots(&mut spec, slot_map)?;
+        Ok(spec)
+    }
+
+    /// Each op on the wire, with every node it reads renamed by `nodes`.
+    fn wire_ops(&self, nodes: &NodeMap) -> Result<Vec<serde_json::Value>, String> {
         let mut ops = Vec::with_capacity(self.ops.len());
         for planned in &self.ops {
             let mut op = planned.op.clone();
@@ -817,13 +866,16 @@ impl Plan {
             }
             ops.push(wire(&op));
         }
-        let mut spec = serde_json::json!({
-            "source": self.source.as_ref().map(wire),
-            "ops": ops,
-        });
-        remap_slots(&mut spec, slot_map)?;
-        Ok(spec)
+        Ok(ops)
     }
+}
+
+/// What a graph node reads: plugin input `Column(i)`, or another node by its
+/// wire id.
+#[derive(Debug, FromPyObject)]
+pub(crate) enum Reads {
+    Column(usize),
+    Node(String),
 }
 
 /// `value` with every `{"$slot": i}` replaced by `{"$slot": map[i]}`.
@@ -860,7 +912,7 @@ fn remap_slots(value: &mut serde_json::Value, map: &[usize]) -> Result<(), Strin
 /// setting) is left out, so an unset setting and an omitted one serialize
 /// alike, and the graph JSON (the compiled-graph cache key) carries only what
 /// was set.
-fn wire<T: serde::Serialize>(value: &T) -> serde_json::Value {
+pub(crate) fn wire<T: serde::Serialize>(value: &T) -> serde_json::Value {
     let mut value = serde_json::to_value(value).expect("a plan value always serializes");
     if let serde_json::Value::Object(obj) = &mut value {
         obj.retain(|_, v| !v.is_null());
@@ -913,13 +965,10 @@ impl Plan {
     }
 
     /// This plan's ops planned again from `start`, the output state of the
-    /// node they now follow, with `source_json` (the graph's "receive from
-    /// upstream" source) as the source.
-    fn rebased(&self, source_json: &str, start: State) -> PyResult<Plan> {
-        let source =
-            serde_json::from_str(source_json).map_err(|e| py_value_error(e.to_string()))?;
+    /// node they now follow. A node that follows another has no source.
+    fn rebased(&self, start: State) -> PyResult<Plan> {
         let ops = self.ops.iter().map(|p| (p.op.clone(), p.refs.clone()));
-        Plan::replanned(Some(source), start, ops).map_err(py_value_error)
+        Plan::replanned(None, start, ops).map_err(py_value_error)
     }
 
     /// This plan with `op_json` appended. `refs` are the states of the nodes
@@ -993,6 +1042,22 @@ impl Plan {
         self.ops.len()
     }
 
+    /// The nodes this plan's ops read (each op's
+    /// [`operands`](crate::graph::step::GraphStep::operands)), by build-time
+    /// id, each once, in op order: the dependencies a node has beside its
+    /// input, read from the same authority the graph executor reads.
+    fn operands(&self) -> Vec<String> {
+        let mut ids: Vec<String> = Vec::new();
+        for planned in &self.ops {
+            for node in planned.op.operands() {
+                if !ids.contains(&node.0) {
+                    ids.push(node.0.clone());
+                }
+            }
+        }
+        ids
+    }
+
     /// Each op's wire JSON, with the pipeline's own slot numbers.
     fn ops_json(&self) -> Vec<String> {
         self.ops.iter().map(|p| wire(&p.op).to_string()).collect()
@@ -1008,6 +1073,15 @@ impl Plan {
     /// reads named by `node_map` (see [`Plan::spec`]).
     fn to_spec(&self, slot_map: Vec<usize>, node_map: NodeMap) -> PyResult<String> {
         self.spec(&slot_map, &node_map)
+            .map(|spec| spec.to_string())
+            .map_err(py_value_error)
+    }
+
+    /// The graph node this plan serializes as (`{"input": ..., "ops": [...]}`),
+    /// reading `reads` — a plugin input position for a root, the wire id of
+    /// the node it follows otherwise (see [`Plan::node_spec`]).
+    fn to_node(&self, slot_map: Vec<usize>, node_map: NodeMap, reads: Reads) -> PyResult<String> {
+        self.node_spec(&slot_map, &node_map, reads)
             .map(|spec| spec.to_string())
             .map_err(py_value_error)
     }
@@ -1087,6 +1161,44 @@ mod tests {
         // A reference the map does not name is refused, never emitted raw.
         let err = plan.spec(&[], &NodeMap::new()).unwrap_err();
         assert!(err.contains("node_3f2a"), "{err}");
+    }
+
+    /// A plan writes its own node wire form: a root decodes its column
+    /// through its source, a continuation reads a node and has no source.
+    /// Neither mismatch can be written, so no dummy source reaches the wire
+    /// (CR-117).
+    #[test]
+    fn a_plan_writes_its_node_and_refuses_an_input_its_source_contradicts() {
+        let source: crate::formats::source::Source =
+            serde_json::from_value(json!({"format": "image_bytes"})).unwrap();
+        let root = Plan::replanned(Some(source.clone()), source_state(&source), [])
+            .unwrap()
+            .pushed(op(json!({"op": "grayscale"})), Refs::new())
+            .unwrap();
+        let spec = root
+            .node_spec(&[], &NodeMap::new(), Reads::Column(3))
+            .unwrap();
+        assert_eq!(spec["input"]["decode"]["column"], 3);
+        assert_eq!(spec["input"]["decode"]["source"]["format"], "image_bytes");
+        assert_eq!(spec["ops"][0]["op"], "grayscale");
+        assert_eq!(spec.as_object().unwrap().len(), 2, "{spec}");
+
+        let follow = Plan::continuing(image())
+            .pushed(op(json!({"op": "grayscale"})), Refs::new())
+            .unwrap();
+        let spec = follow
+            .node_spec(&[], &NodeMap::new(), Reads::Node("n0".into()))
+            .unwrap();
+        assert_eq!(spec["input"], json!({"node": "n0"}));
+
+        let err = follow
+            .node_spec(&[], &NodeMap::new(), Reads::Column(0))
+            .unwrap_err();
+        assert!(err.contains("has no source"), "{err}");
+        let err = root
+            .node_spec(&[], &NodeMap::new(), Reads::Node("n0".into()))
+            .unwrap_err();
+        assert!(err.contains("has a source"), "{err}");
     }
 
     #[test]

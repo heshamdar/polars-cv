@@ -89,7 +89,7 @@ expr = img.alias("resized").sink({"resized": "numpy"})  # multi-output
 When `.sink()` is called, a `PipelineGraph` is built:
 
 1. All `LazyPipelineExpr` nodes are traversed
-2. Each becomes a `GraphNode` with its pipeline spec, upstream dependencies, and optional alias
+2. Each becomes a `GraphNode` with its pipeline spec, what it reads (`column` for a root, `input` for a continuation) and optional alias
 3. Output specs are attached to terminal nodes
 4. Nodes no output reads are dropped; then CSE (`_optimize_common_subexpressions`)
    numbers every op by what it computes (its input atom and its wire form, slots
@@ -97,27 +97,29 @@ When `.sink()` is called, a `PipelineGraph` is built:
    rebuilds one node per linear run of atoms (a run ends at an output, an operand
    read by id, or a fork). Build-time ids of replaced nodes resolve through
    `_renamed`; a node computing what one written node did keeps its id
-5. The graph is serialized to JSON. Nodes are named by position (`n0`, `n1`,
-   ...), never by their build-time `uuid4` ids: `Plan.to_spec` renames every
+5. The graph is serialized to JSON (wire version 2): each node is
+   `{"input": {"decode": {"column", "source"}} | {"node": id}, "ops": [...]}`,
+   written by Rust (`Plan.to_node`, through `Pipeline._to_node_dict`), which
+   refuses a source its input contradicts. Nodes are named by position (`n0`,
+   `n1`, ...), never by their build-time `uuid4` ids: the plan renames every
    node an op reads and refuses one the graph does not name. The same pipeline
    built twice therefore serializes identically, which is what polars' plugin
    CSE (it compares kwargs) and the compiled-graph cache key on
    (`tests/test_plugin_cse.py`)
 6. `_plugin.call("vb_graph", ...)` is called (the package's only route to `register_plugin_function`, which declares every call `is_deterministic=True`)
 
-**A node reference is not a dependency until it is an upstream edge.** An op
-that points at another `LazyPipelineExpr` by node id — `rasterize(shape=)`, a binary operand — is recorded in `Pipeline._node_refs`
-(by `_encode_field`, for every node-typed field), because `_node_refs` is both
-what plans the op (the node's state, by id) and what `cv.pipe` /
-`LazyPipelineExpr.pipe` turn into the
-`upstream` list, and only an upstream edge puts the referenced node into the
-graph at all. Record the id without the edge and the reference dangles at
-execution — invisibly, for as long as some other consumer happens to pull the
-same node in (masking with the same image, which every example does). The
-appended edge does not disturb the referenced node's own input:
-`PipelineGraph._to_dict`'s column bindings key on the node having a column, and the executor
-picks the decode path from `has_column_binding`, using upstream only for
-ordering.
+**A node reference is a dependency because it is recorded, nowhere else.** An
+op that points at another `LazyPipelineExpr` by node id — `rasterize(shape=)`,
+a binary operand, a mask — is recorded in `Pipeline._node_refs` (by
+`_encode_field`, for every node-typed field). That one record plans the op (the
+node's state, by id) and makes the node a dependency:
+`LazyPipelineExpr._dependencies()` is its `_input`, the nodes its ops read
+(`Plan.operands`, Rust's `operands()`) and `merge_pipe`'s `_merged` branches, and
+`PipelineGraph._dependencies()` the same over the graph (through CSE's
+`_renamed`); Rust derives the same set from `input` plus the ops' `operands()`.
+There used to be a separate `upstream` list, positional (its first entry was
+the input) and restating the operands, which a builder could forget to extend
+(CR-117).
 
 ### Operation Contracts (view-buffer is the authority)
 

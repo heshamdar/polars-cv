@@ -83,7 +83,7 @@ class TestCloudOptionsRoundTrip:
         graph.add_node("n0", pipe, column=pl.col("paths"))
         graph.set_output("n0", "numpy")
         spec = json.loads(graph._to_json())
-        assert spec["nodes"]["n0"]["source"]["cloud_options"] == {
+        assert spec["nodes"]["n0"]["input"]["decode"]["source"]["cloud_options"] == {
             "aws_region": "eu-west-1",
             "anonymous": "true",
         }
