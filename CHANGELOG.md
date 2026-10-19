@@ -17,6 +17,34 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   at width 2 (found by the slow parity lane's stroke law). Every union
   (`union_all`, the set operations, `offset`, `stroke`) now winds its rings
   by convention going in and coming out.
+- **Header metadata answers for float and gray + alpha TIFFs.**
+  `.cv.width()`, `height()`, `channels()`, `image_dtype()` and `image_info()`
+  returned null for a float32 TIFF and a two-sample (gray + alpha) TIFF,
+  although `source("image_bytes")` decodes both: the header was read by the
+  `image` crate's TIFF reader, which refuses those cells, while decoding goes
+  through view-buffer's own TIFF decoder. The header is now read by that
+  decoder (`ImageAdapter::tiff_layout`), and `decode_tiff` refuses a decode
+  that disagrees with it, so the two cannot drift apart (found by the new
+  metadata parity suite).
+- **`froc_auc(method="mann_whitney", level="image")` scores an image from its
+  own class's detections.** Image scores were grouped by image only, so with
+  several classes each (image, class) row took the best detection of *any*
+  class: `group_by="class_id"` gave class `a` an AUC that depended on class
+  `b`'s detections (0.0 instead of 0.5 in the minimal case). They are now
+  keyed on the metadata unit, `(image[, class])`, as `lroc_auc` already was
+  (found by the new metrics parity suite).
+
+### Added
+
+- **Parity coverage for metrics, geometry accessors, header metadata and
+  contour measures.** `invariance/test_parity_metrics.py` (AP / PR, FROC,
+  LROC, Mann-Whitney and bootstrap against references, and invariant under
+  row order, chunking, engine, grouping, monotone score transforms and
+  weight-as-duplication), `invariance/test_parity_geometry.py` (`.contour`,
+  `.point`, `.bbox` against NumPy, and their laws), `invariance/test_parity_metadata.py`
+  (header answers and `read_bytes` against independent decoders), and laws
+  for `area`, `perimeter`, `centroid`, `bounding_box`, `convex_hull`,
+  `densify`, `simplify`, `translate` and `scale_contour` on traced sets.
 
 ## [0.40.0] — 2026-10-19
 

@@ -2,9 +2,11 @@
 //!
 //! Provides Polars expression functions that extract width, height, channels,
 //! and dtype from image binary data without performing a full decode. Supports
-//! both standard image formats (PNG, JPEG, WebP, TIFF, BMP, GIF) via the
-//! `image` crate's header-only reader, and the VIEW binary protocol via
-//! direct header parsing.
+//! standard image formats (PNG, JPEG, WebP, BMP, GIF) via the `image` crate's
+//! header-only reader, TIFF via the decoder's own header reading
+//! (`ImageAdapter::tiff_layout`, which also reads float and gray + alpha
+//! TIFFs the `image` crate refuses), and the VIEW binary protocol via direct
+//! header parsing.
 
 use image::ImageDecoder;
 use polars::prelude::*;
@@ -12,6 +14,7 @@ use pyo3_polars::derive::polars_expr;
 use std::io::Cursor;
 use view_buffer::protocol::{u8_to_dtype, HEADER_SIZE, MAGIC_BYTES};
 use view_buffer::DType as VbDType;
+use view_buffer::ImageAdapter;
 
 /// Parsed metadata from an image or VIEW blob header.
 struct ImageMeta {
@@ -76,6 +79,19 @@ fn try_view_header(bytes: &[u8]) -> Option<ImageMeta> {
 /// Try to extract metadata from an encoded image (PNG, JPEG, etc.) using
 /// header-only decoding via the `image` crate.
 fn try_image_header(bytes: &[u8]) -> Option<ImageMeta> {
+    // TIFF is decoded by view-buffer's own TIFF decoder, not the `image`
+    // crate's, so its header is read the decoder's way: the two readers
+    // disagree on float and two-sample gray TIFFs, and the header must
+    // describe what decoding yields.
+    if ImageAdapter::is_tiff(bytes) {
+        let layout = ImageAdapter::tiff_layout(bytes).ok()?;
+        return Some(ImageMeta {
+            width: layout.width,
+            height: layout.height,
+            channels: Some(layout.channels as u32),
+            dtype: Some(layout.dtype.numpy_name()),
+        });
+    }
     let cursor = Cursor::new(bytes);
     let reader = image::ImageReader::new(cursor).with_guessed_format().ok()?;
 

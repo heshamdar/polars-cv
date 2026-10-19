@@ -330,6 +330,23 @@ impl AsImageView for ViewBuffer {
 
 // --- Image I/O Adapter ---
 
+/// What a TIFF decodes to: `[height, width, channels]` of `dtype`, read from
+/// its header by [`ImageAdapter::tiff_layout`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TiffLayout {
+    pub width: u32,
+    pub height: u32,
+    pub channels: usize,
+    pub dtype: DType,
+}
+
+fn tiff_error(message: String) -> image::ImageError {
+    image::ImageError::IoError(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        message,
+    ))
+}
+
 /// Adapter for image file I/O operations.
 pub struct ImageAdapter;
 
@@ -337,13 +354,7 @@ impl ImageAdapter {
     /// Decodes raw image bytes (PNG, JPEG, etc.) into a ViewBuffer [H, W, C].
     pub fn decode(encoded_bytes: &[u8]) -> Result<ViewBuffer, image::ImageError> {
         // Check if it's a TIFF file by magic bytes
-        if encoded_bytes.len() >= 4
-            && (
-                &encoded_bytes[0..4] == b"II*\x00" ||  // Little-endian TIFF
-            &encoded_bytes[0..4] == b"MM\x00*"
-                // Big-endian TIFF
-            )
-        {
+        if Self::is_tiff(encoded_bytes) {
             // Use our custom TIFF decoder for floating-point support
             Self::decode_tiff(encoded_bytes)
         } else {
@@ -632,94 +643,150 @@ impl ImageAdapter {
         Ok(bytes)
     }
 
+    /// Whether *encoded_bytes* open with a TIFF signature (either byte order).
+    ///
+    /// The one test that routes bytes to [`Self::decode_tiff`] and their
+    /// header to [`Self::tiff_layout`], so the two cannot disagree about
+    /// which bytes are TIFF.
+    pub fn is_tiff(encoded_bytes: &[u8]) -> bool {
+        encoded_bytes.len() >= 4
+            && (&encoded_bytes[0..4] == b"II*\x00" || &encoded_bytes[0..4] == b"MM\x00*")
+    }
+
+    /// The layout a TIFF decodes to, read from its header alone.
+    ///
+    /// This is [`Self::decode_tiff`]'s own reading of the header, not a second
+    /// one: the decoder computes its layout here and refuses a decode that
+    /// disagrees with it. Header-only metadata (`.cv.width()` and friends)
+    /// therefore answers for exactly the TIFFs the decoder reads — the
+    /// `image` crate's TIFF reader refuses float and two-sample gray cells
+    /// this decoder handles.
+    pub fn tiff_layout(encoded_bytes: &[u8]) -> Result<TiffLayout, image::ImageError> {
+        let mut decoder = tiff::decoder::Decoder::new(std::io::Cursor::new(encoded_bytes))
+            .map_err(|e| tiff_error(format!("TIFF decoder creation failed: {e}")))?;
+        Self::layout_of(&mut decoder)
+    }
+
+    fn layout_of<R: std::io::Read + std::io::Seek>(
+        decoder: &mut tiff::decoder::Decoder<R>,
+    ) -> Result<TiffLayout, image::ImageError> {
+        use tiff::tags::Tag;
+
+        let (width, height) = decoder
+            .dimensions()
+            .map_err(|e| tiff_error(format!("Failed to get TIFF dimensions: {e}")))?;
+        let colortype = decoder
+            .colortype()
+            .map_err(|e| tiff_error(format!("Failed to get TIFF color type: {e}")))?;
+
+        // The sample format as the tiff crate reads it: one value per sample,
+        // all equal, `Uint` (1) when absent.
+        let formats = decoder
+            .find_tag_unsigned_vec::<u16>(Tag::SampleFormat)
+            .map_err(|e| tiff_error(format!("Failed to read TIFF sample format: {e}")))?
+            .unwrap_or_else(|| vec![1]);
+        let format = match formats.as_slice() {
+            [first, rest @ ..] if rest.iter().all(|f| f == first) => *first,
+            _ => {
+                return Err(tiff_error(format!(
+                    "Unsupported TIFF sample formats: {formats:?}"
+                )))
+            }
+        };
+        let bits = match colortype {
+            tiff::ColorType::Gray(b)
+            | tiff::ColorType::RGB(b)
+            | tiff::ColorType::Palette(b)
+            | tiff::ColorType::GrayA(b)
+            | tiff::ColorType::RGBA(b)
+            | tiff::ColorType::CMYK(b)
+            | tiff::ColorType::CMYKA(b)
+            | tiff::ColorType::YCbCr(b) => b,
+            tiff::ColorType::Multiband { bit_depth, .. } => bit_depth,
+            other => {
+                return Err(tiff_error(format!(
+                    "Unsupported TIFF color type: {other:?}"
+                )))
+            }
+        };
+        // The decoding result the tiff crate picks for this (format, bits).
+        let dtype = match (format, bits) {
+            (1, 1..=8) => DType::U8,
+            (1, 9..=16) => DType::U16,
+            (3, 32) => DType::F32,
+            (3, 64) => DType::F64,
+            _ => {
+                return Err(tiff_error(format!(
+                    "Unsupported TIFF data type: sample format {format}, {bits} bits"
+                )))
+            }
+        };
+
+        // Float cells carry no alpha here.
+        let allow_alpha = matches!(dtype, DType::U8 | DType::U16);
+        let channels = match colortype {
+            tiff::ColorType::Gray(_) => 1,
+            tiff::ColorType::RGB(_) => 3,
+            tiff::ColorType::Palette(_) if allow_alpha => 3,
+            tiff::ColorType::GrayA(_) if allow_alpha => 2,
+            // A gray image with one extra sample is gray + alpha: the tiff
+            // crate reports a BlackIsZero image of two samples as `Multiband`
+            // (it never reports `GrayA`).
+            tiff::ColorType::Multiband { num_samples: 2, .. } if allow_alpha => 2,
+            tiff::ColorType::RGBA(_) if allow_alpha => 4,
+            ct => return Err(tiff_error(format!("Unsupported TIFF color type: {ct:?}"))),
+        };
+        Ok(TiffLayout {
+            width,
+            height,
+            channels,
+            dtype,
+        })
+    }
+
     /// Decodes TIFF bytes with native support for floating-point data.
     ///
     /// This method supports both integer and floating-point TIFF files,
     /// making it suitable for reading medical imaging and scientific data.
-    /// Uses the tiff crate directly for native floating-point support.
+    /// Uses the tiff crate directly for native floating-point support. The
+    /// shape and dtype are [`Self::tiff_layout`]'s; a decode that yields
+    /// anything else is refused rather than reshaped.
     pub fn decode_tiff(encoded_bytes: &[u8]) -> Result<ViewBuffer, image::ImageError> {
-        use std::io::Cursor;
         use tiff::decoder::{Decoder, DecodingResult};
 
-        let mut cursor = Cursor::new(encoded_bytes);
-        let mut decoder = Decoder::new(&mut cursor).map_err(|e| {
-            image::ImageError::IoError(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("TIFF decoder creation failed: {e}"),
-            ))
-        })?;
-
-        // Get image dimensions and format info
-        let (width, height) = decoder.dimensions().map_err(|e| {
-            image::ImageError::IoError(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Failed to get TIFF dimensions: {e}"),
-            ))
-        })?;
-
-        let colortype = decoder.colortype().map_err(|e| {
-            image::ImageError::IoError(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Failed to get TIFF color type: {e}"),
-            ))
-        })?;
-
-        // Decode the image data
-        let decoding_result = decoder.read_image().map_err(|e| {
-            image::ImageError::IoError(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("TIFF decoding failed: {e}"),
-            ))
-        })?;
-
-        // Helper: determine channel count from TIFF color type
-        let channels_for =
-            |ct: &tiff::ColorType, allow_alpha: bool| -> Result<usize, image::ImageError> {
-                match ct {
-                    tiff::ColorType::Gray(_) => Ok(1),
-                    tiff::ColorType::RGB(_) => Ok(3),
-                    tiff::ColorType::Palette(_) if allow_alpha => Ok(3),
-                    tiff::ColorType::GrayA(_) if allow_alpha => Ok(2),
-                    // A gray image with one extra sample is gray + alpha:
-                    // the tiff crate reports a BlackIsZero image of two
-                    // samples as `Multiband` (it never reports `GrayA`).
-                    tiff::ColorType::Multiband { num_samples: 2, .. } if allow_alpha => Ok(2),
-                    tiff::ColorType::RGBA(_) if allow_alpha => Ok(4),
-                    _ => Err(image::ImageError::IoError(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("Unsupported TIFF color type: {ct:?}"),
-                    ))),
-                }
-            };
-
-        // Helper: build shape from dimensions and channels.
-        // Always produces 3D [H, W, C] for consistency with PNG/JPEG decoding.
-        let make_shape =
-            |h: u32, w: u32, c: usize| -> Vec<usize> { vec![h as usize, w as usize, c] };
-
-        // Convert the decoded data to ViewBuffer based on the data type
-        match decoding_result {
-            DecodingResult::U8(data) => {
-                let channels = channels_for(&colortype, true)?;
-                Ok(ViewBuffer::from_vec(data).reshape(make_shape(height, width, channels)))
-            }
-            DecodingResult::U16(data) => {
-                let channels = channels_for(&colortype, true)?;
-                Ok(ViewBuffer::from_vec(data).reshape(make_shape(height, width, channels)))
-            }
-            DecodingResult::F32(data) => {
-                let channels = channels_for(&colortype, false)?;
-                Ok(ViewBuffer::from_vec(data).reshape(make_shape(height, width, channels)))
-            }
-            DecodingResult::F64(data) => {
-                let channels = channels_for(&colortype, false)?;
-                Ok(ViewBuffer::from_vec(data).reshape(make_shape(height, width, channels)))
-            }
-            _ => Err(image::ImageError::IoError(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Unsupported TIFF data type",
-            ))),
+        let mut decoder = Decoder::new(std::io::Cursor::new(encoded_bytes))
+            .map_err(|e| tiff_error(format!("TIFF decoder creation failed: {e}")))?;
+        let layout = Self::layout_of(&mut decoder)?;
+        let decoded = decoder
+            .read_image()
+            .map_err(|e| tiff_error(format!("TIFF decoding failed: {e}")))?;
+        let buffer = match decoded {
+            DecodingResult::U8(data) => ViewBuffer::from_vec(data),
+            DecodingResult::U16(data) => ViewBuffer::from_vec(data),
+            DecodingResult::F32(data) => ViewBuffer::from_vec(data),
+            DecodingResult::F64(data) => ViewBuffer::from_vec(data),
+            _ => return Err(tiff_error("Unsupported TIFF data type".to_string())),
+        };
+        if buffer.dtype() != layout.dtype {
+            return Err(tiff_error(format!(
+                "TIFF header reads as {:?} but decoded as {:?}",
+                layout.dtype,
+                buffer.dtype()
+            )));
         }
+        let shape = vec![
+            layout.height as usize,
+            layout.width as usize,
+            layout.channels,
+        ];
+        if buffer.shape().iter().product::<usize>() != shape.iter().product::<usize>() {
+            return Err(tiff_error(format!(
+                "TIFF decoded {} samples, its header describes {shape:?}",
+                buffer.shape().iter().product::<usize>()
+            )));
+        }
+        // Always 3D [H, W, C], consistent with PNG/JPEG decoding.
+        Ok(buffer.reshape(shape))
     }
 
     /// Saves a ViewBuffer to a file.
@@ -904,6 +971,54 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The header-only layout is what decoding yields, for every TIFF the
+    /// encoder writes — float and gray + alpha included, which the `image`
+    /// crate's TIFF reader refuses (so `.cv.width()` and friends were null).
+    #[test]
+    fn tiff_layout_is_what_decode_tiff_yields() {
+        let mut covered = Vec::new();
+        for dtype in [DType::U8, DType::U16, DType::F32, DType::F64] {
+            for channels in 1..=4usize {
+                let n = 3 * 5 * channels;
+                let image = match dtype {
+                    DType::U8 => ViewBuffer::from_vec((0..n).map(|i| i as u8).collect::<Vec<_>>()),
+                    DType::U16 => {
+                        ViewBuffer::from_vec((0..n).map(|i| i as u16).collect::<Vec<_>>())
+                    }
+                    DType::F32 => {
+                        ViewBuffer::from_vec((0..n).map(|i| i as f32).collect::<Vec<_>>())
+                    }
+                    _ => ViewBuffer::from_vec((0..n).map(|i| i as f64).collect::<Vec<_>>()),
+                }
+                .reshape(vec![3, 5, channels]);
+                let Ok(bytes) = ImageAdapter::encode_tiff(&image) else {
+                    continue;
+                };
+                assert!(ImageAdapter::is_tiff(&bytes));
+                let layout = ImageAdapter::tiff_layout(&bytes).unwrap();
+                let decoded = ImageAdapter::decode_tiff(&bytes).unwrap();
+                assert_eq!(
+                    decoded.shape(),
+                    &[
+                        layout.height as usize,
+                        layout.width as usize,
+                        layout.channels
+                    ],
+                    "{dtype:?} x {channels}"
+                );
+                assert_eq!(decoded.dtype(), layout.dtype, "{dtype:?} x {channels}");
+                assert_eq!(decoded.shape(), &[3, 5, channels], "{dtype:?} x {channels}");
+                covered.push((dtype, channels));
+            }
+        }
+        for cell in [(DType::F32, 1), (DType::U8, 2), (DType::U16, 2)] {
+            assert!(
+                covered.contains(&cell),
+                "{cell:?} was not encodable: {covered:?}"
+            );
+        }
+    }
 
     /// A gray + alpha image round-trips through TIFF as its two channels,
     /// stored as two samples per pixel (a BlackIsZero image with one extra,

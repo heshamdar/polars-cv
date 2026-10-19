@@ -803,3 +803,249 @@ def test_a_stroked_line_is_the_band_round_it(data) -> None:
     got = numpy_from_struct(out["out"][0]).reshape(side, side) != 0
     want = _to_polyline((side, side), points, metric) <= k
     _agree(f"stroke(width={2 * k}, cap={cap}, join={join}) of {points}", got, want)
+
+
+# ---------------------------------------------------------------------------
+# Measures and transforms of a traced set
+# ---------------------------------------------------------------------------
+
+# A traced ring runs along its pixels' unit-square edges on integer
+# coordinates, so each member's measures are those of its pixels exactly:
+# area the pixel count, perimeter the crack length, centroid the mean pixel
+# centre, bounding box the pixel extent. ``extract_contours`` traces
+# 8-connected foreground, so the members are ``ndimage.label``'s components
+# under the full 3x3 structure (holes are filled, so none nest).
+
+_EIGHT = np.ones((3, 3), dtype=bool)
+
+
+def _pixel_measures(mask: np.ndarray) -> np.ndarray:
+    """One row per 8-connected component of *mask*, sorted:
+    ``[area, perimeter, cx, cy, x, y, w, h]``."""
+    labels, n = ndimage.label(mask, structure=_EIGHT)
+    rows = []
+    for i in range(1, n + 1):
+        member = labels == i
+        ys, xs = np.nonzero(member)
+        p = np.pad(member, 1)
+        cracks = (p[1:] != p[:-1]).sum() + (p[:, 1:] != p[:, :-1]).sum()
+        rows.append(
+            [
+                len(xs),
+                cracks,
+                xs.mean() + 0.5,
+                ys.mean() + 0.5,
+                xs.min(),
+                ys.min(),
+                xs.max() - xs.min() + 1,
+                ys.max() - ys.min() + 1,
+            ]
+        )
+    return _sorted_rows(rows)
+
+
+def _engine_measures(image: np.ndarray, steps: list[Step]) -> np.ndarray:
+    """The same table from the engine: ``area``, ``perimeter``, ``centroid``
+    and ``bounding_box`` of the set *steps* leaves, member by member."""
+    area = _run(image, [*steps, Step("area")])
+    perimeter = _run(image, [*steps, Step("perimeter")])
+    centroid = np.asarray(_run(image, [*steps, Step("centroid")])).reshape(-1, 2)
+    bbox = np.asarray(_run(image, [*steps, Step("bounding_box")])).reshape(-1, 4)
+    return _sorted_rows(np.column_stack([area, perimeter, centroid, bbox]).tolist())
+
+
+def _sorted_rows(rows: list) -> np.ndarray:
+    """*rows* in a canonical order, keyed on values rounded well above float
+    error (so a last-bit difference cannot swap two tied members)."""
+    rows = sorted(rows, key=lambda r: tuple(round(float(v), 6) for v in r))
+    return np.array(rows, dtype=np.float64).reshape(-1, 8)
+
+
+def _close(label: str, got: np.ndarray, want: np.ndarray, tol: float = 1e-9) -> None:
+    """Equal shape and equal values to *tol* (sums of exact grid values
+    divided once: only the division rounds)."""
+    if got.shape != want.shape:
+        raise ParityFailure(f"{label}: shape {got.shape} != {want.shape}")
+    bad = ~np.isclose(got, want, rtol=tol, atol=tol)
+    if bad.any():
+        where = tuple(np.argwhere(bad)[0])
+        raise ParityFailure(
+            f"{label}: at {where} got {got[where]!r}, want {want[where]!r}"
+        )
+
+
+def _image(mask: np.ndarray) -> np.ndarray:
+    return (mask * np.uint8(255))[:, :, None]
+
+
+@property_lanes(mask=_traced_masks(0), data=st.data())
+def test_a_traced_sets_measures_are_its_pixels(mask, data) -> None:
+    """area, perimeter, centroid and bounding_box of each traced member are
+    its pixel count, crack length, mean pixel centre and pixel extent."""
+    assume(mask.any())
+    traced = _region_steps(mask, data)
+    _close("measures", _engine_measures(_image(mask), traced), _pixel_measures(mask))
+
+
+@property_lanes(mask=_traced_masks(0), data=st.data())
+def test_signed_area_is_area_up_to_sign(mask, data) -> None:
+    """``|area(signed=True)| == area()`` member by member."""
+    assume(mask.any())
+    traced = _region_steps(mask, data)
+    plain = np.asarray(_run(_image(mask), [*traced, Step("area")]))
+    signed = np.asarray(_run(_image(mask), [*traced, Step("area", {"signed": True})]))
+    _agree("|signed area|", np.abs(signed), plain)
+
+
+@property_lanes(mask=_traced_masks(0), data=st.data())
+def test_a_convex_hull_is_the_hull_of_the_pixel_squares(mask, data) -> None:
+    """Each member's hull has the area of SciPy's hull of its pixels' corners,
+    and holds the member (its area is no smaller)."""
+    from scipy.spatial import ConvexHull
+
+    assume(mask.any())
+    traced = _region_steps(mask, data)
+    labels, n = ndimage.label(mask, structure=_EIGHT)
+    want = []
+    for i in range(1, n + 1):
+        ys, xs = np.nonzero(labels == i)
+        corners = np.concatenate(
+            [np.column_stack([xs + dx, ys + dy]) for dx in (0, 1) for dy in (0, 1)]
+        )
+        want.append(ConvexHull(corners).volume)
+    got = np.sort(
+        np.asarray(_run(_image(mask), [*traced, Step("convex_hull"), Step("area")]))
+    )
+    _close("hull area", got, np.sort(np.asarray(want)))
+
+
+@property_lanes(mask=_traced_masks(0), data=st.data())
+def test_densify_keeps_every_measure_and_bounds_each_edge(mask, data) -> None:
+    """Splitting edges adds collinear points only: every measure is unchanged,
+    every original point is kept and no edge exceeds the limit."""
+    assume(mask.any())
+    traced = _region_steps(mask, data)
+    limit = data.draw(st.floats(0.25, 3.0), label="max_segment_length")
+    dense = [*traced, Step("densify", {"max_segment_length": limit})]
+    _close(
+        f"densify({limit}) measures",
+        _engine_measures(_image(mask), dense),
+        _engine_measures(_image(mask), traced),
+    )
+    before = _run(_image(mask), traced)
+    after = _run(_image(mask), dense)
+    if len(before) != len(after):
+        raise ParityFailure(f"densify: {len(before)} members became {len(after)}")
+    for b, a in zip(before, after):
+        ring = np.array([[p["x"], p["y"]] for p in a["exterior"]])
+        edges = np.linalg.norm(np.diff(np.vstack([ring, ring[:1]]), axis=0), axis=1)
+        if edges.max() > limit * (1 + 1e-9):
+            raise ParityFailure(f"densify({limit}): an edge of {edges.max()}")
+        kept = {(p["x"], p["y"]) for p in a["exterior"]}
+        lost = [(p["x"], p["y"]) for p in b["exterior"] if (p["x"], p["y"]) not in kept]
+        if lost:
+            raise ParityFailure(f"densify({limit}) dropped {lost[:3]}")
+
+
+def _distance_to_ring(points: np.ndarray, ring: np.ndarray) -> np.ndarray:
+    """Each of *points*' Euclidean distance to the closed polygon *ring*."""
+    a = ring
+    b = np.roll(ring, -1, axis=0)
+    ab = b - a
+    ap = points[:, None, :] - a[None, :, :]
+    length2 = np.maximum((ab**2).sum(axis=1), 1e-300)
+    t = np.clip((ap * ab[None]).sum(axis=2) / length2[None], 0.0, 1.0)
+    nearest = a[None] + t[..., None] * ab[None]
+    return np.linalg.norm(points[:, None, :] - nearest, axis=2).min(axis=1)
+
+
+@property_lanes(mask=_traced_masks(0), data=st.data())
+def test_simplify_keeps_points_and_stays_within_its_tolerance(mask, data) -> None:
+    """Douglas-Peucker's guarantee: the simplified ring keeps a subset of the
+    original points, and every original point lies within ``tolerance`` of
+    it."""
+    assume(mask.any())
+    traced = _region_steps(mask, data)
+    tolerance = data.draw(st.floats(0.0, 3.0), label="tolerance")
+    before = _run(_image(mask), traced)
+    after = _run(_image(mask), [*traced, Step("simplify", {"tolerance": tolerance})])
+    if len(before) != len(after):
+        raise ParityFailure(f"simplify: {len(before)} members became {len(after)}")
+    for b, a in zip(before, after):
+        original = np.array([[p["x"], p["y"]] for p in b["exterior"]])
+        simple = np.array([[p["x"], p["y"]] for p in a["exterior"]])
+        foreign = {tuple(p) for p in simple.tolist()} - {
+            tuple(p) for p in original.tolist()
+        }
+        if foreign:
+            raise ParityFailure(f"simplify({tolerance}) invented {sorted(foreign)[:3]}")
+        far = _distance_to_ring(original, simple)
+        if far.max() > tolerance + 1e-9:
+            worst = original[far.argmax()]
+            raise ParityFailure(
+                f"simplify({tolerance}): {worst.tolist()} is {far.max()} from the "
+                f"simplified ring {simple.tolist()}"
+            )
+
+
+_SHIFT = 3
+
+
+@property_lanes(mask=_traced_masks(_SHIFT), data=st.data())
+def test_an_integer_translate_shifts_the_raster(mask, data) -> None:
+    """``translate(dx, dy)`` by whole pixels paints the mask shifted."""
+    assume(mask.any())
+    dx = data.draw(st.integers(-_SHIFT, _SHIFT), label="dx")
+    dy = data.draw(st.integers(-_SHIFT, _SHIFT), label="dy")
+    steps = [
+        *_region_steps(mask, data),
+        Step("translate", {"dx": float(dx), "dy": float(dy)}),
+    ]
+    # The margin is background, so a roll moves nothing across the edge.
+    _agree(
+        f"translate({dx}, {dy})", _raster(mask, steps), np.roll(mask, (dy, dx), (0, 1))
+    )
+
+
+@property_lanes(mask=_traced_masks(0), data=st.data())
+def test_an_integer_scale_about_the_origin_is_a_pixel_repeat(mask, data) -> None:
+    """``scale_contour(sx, sy, origin="origin")`` by whole factors paints the
+    mask with each pixel repeated ``sy`` x ``sx`` (``np.kron``)."""
+    assume(mask.any())
+    sx = data.draw(st.integers(1, 3), label="sx")
+    sy = data.draw(st.integers(1, 3), label="sy")
+    h, w = mask.shape
+    scale = Step(
+        "scale_contour", {"sx": float(sx), "sy": float(sy), "origin": "origin"}
+    )
+    image = _image(mask)
+    raster = Step("rasterize", {"width": w * sx, "height": h * sy})
+    (out,) = execute([image], [*_region_steps(mask, data), scale, raster], Axes()).rows
+    got = out.reshape(h * sy, w * sx) != 0
+    _agree(f"scale({sx}, {sy})", got, np.kron(mask, np.ones((sy, sx), dtype=bool)))
+
+
+@property_lanes(mask=_traced_masks(0), data=st.data())
+def test_scaling_multiplies_area_and_fixes_its_origin(mask, data) -> None:
+    """Scaling by ``(sx, sy)`` multiplies each member's area by ``sx * sy``
+    about any origin; about ``"centroid"`` the centroid stays put, about
+    ``"bbox_center"`` the box centre does."""
+    assume(mask.any())
+    traced = _region_steps(mask, data)
+    sx = data.draw(st.floats(0.25, 4.0), label="sx")
+    sy = data.draw(st.floats(0.25, 4.0), label="sy")
+    origin = data.draw(
+        st.sampled_from(["origin", "centroid", "bbox_center"]), label="origin"
+    )
+    scaled = [*traced, Step("scale_contour", {"sx": sx, "sy": sy, "origin": origin})]
+    image = _image(mask)
+    before = _engine_measures(image, traced)
+    after = _engine_measures(image, scaled)
+    # Sorting is by area first, which scaling multiplies uniformly: the
+    # members stay paired.
+    _close(f"scale({sx}, {sy}) area", after[:, 0], before[:, 0] * sx * sy, 1e-9)
+    if origin == "centroid":
+        _close("centroid fixed", after[:, 2:4], before[:, 2:4], 1e-9)
+    if origin == "bbox_center":
+        centre = lambda t: t[:, 4:6] + t[:, 6:8] / 2  # noqa: E731
+        _close("box centre fixed", centre(after), centre(before), 1e-9)
