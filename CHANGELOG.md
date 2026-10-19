@@ -7,6 +7,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.40.0] — 2026-10-19
+
+One bit order for every hash, hash comparisons over stored hashes, a graph
+wire format where each node names its input once, and a parity report that
+says what every reference test compares. `average`, `difference` and
+`blockhash` hashes now pack their bits most significant first, as
+`perceptual` and imagehash do; `hamming_distance()` and `hash_similarity()`
+take stored hash columns, score out of the hashes' own length and count bits
+as `UInt32`. Graphs serialized by 0.39 are refused by their version. 115
+reference tests that never ran polars-cv now compare its output. Upgrading
+from 0.39: see the
+[migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration-0.40/).
+
 ### Breaking changes
 
 - **`perceptual_hash(algorithm="average" | "difference" | "blockhash")`
@@ -72,6 +85,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **`LazyPipelineExpr.pipe()` with a sourced pipeline on a continuation is
   refused where it is written.** A sourced pipeline decodes a column, and a
   continuation has none of its own; this failed later, at sink.
+
 ### Fixed
 
 - **115 reference tests compared nothing.** The reductions, histogram,
@@ -81,6 +95,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   polars-cv, yet were cited as evidence that outputs are checked. Each now
   compares polars-cv's output with that reference, and a reference test
   that never enters the `polars_cv` package fails, whatever it asserts.
+
+### Notes
+
+- **Known issue: histogram buckets ignore the sink format.**
+  `histogram(output="buckets")` returns its list of bucket structs whatever
+  the sink asks for, so `sink("numpy")` silently gives the structs rather
+  than an array. Read the buckets from the structs, or sink
+  `output="counts"` / `"edges"` for arrays. Recorded
+  as CR-116 and pinned by a strict xfail in `tests/test_known_gaps.py`.
 
 ## [0.39.0] — 2026-10-18
 
@@ -5625,7 +5648,8 @@ Each item is described in full under its section below.
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
-[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.39.0...HEAD
+[Unreleased]: https://github.com/heshamdar/polars-cv/compare/v0.40.0...HEAD
+[0.40.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.40.0
 [0.39.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.39.0
 [0.38.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.38.0
 [0.37.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.37.0

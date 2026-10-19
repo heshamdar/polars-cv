@@ -144,7 +144,8 @@ _METRICS_SURFACES = tuple(v for v in vars(metrics).values() if inspect.isclass(v
 #: every page — which is why the sweep once covered five hand-picked pages
 #: instead of all of them.
 #: The `.ext` namespaces are included for the extension-types page, whose
-#: `.ext.to(...)` / `.ext.storage()` are Polars methods reached through them.
+#: `.ext.to(...)` / `.ext.storage()` are Polars methods reached through them,
+#: and the `.list` namespace for `.list.eval(...)` over a stored hash column.
 _POLARS_SURFACES = (
     pl,
     pl.Expr,
@@ -153,6 +154,7 @@ _POLARS_SURFACES = (
     pl.Series,
     type(pl.col("_").ext),
     type(pl.Series([None]).ext),
+    type(pl.col("_").list),
 )
 
 

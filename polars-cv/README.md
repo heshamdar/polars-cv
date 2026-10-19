@@ -273,7 +273,7 @@ Thread counts, morsel sizing and memory budgets are covered in
 polars-cv is 0.x: a minor release may break the API. Breaking changes are
 listed in the [changelog](https://github.com/heshamdar/polars-cv/blob/main/CHANGELOG.md),
 each with a [migration guide](https://heshamdar.github.io/polars-cv/user-guide/migration/).
-Pin a minor version (`polars-cv~=0.39.0`) if you depend on it. Outputs are
+Pin a minor version (`polars-cv~=0.40.0`) if you depend on it. Outputs are
 checked against NumPy, SciPy, OpenCV and `imagehash` in CI.
 
 ## Contributing
