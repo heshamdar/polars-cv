@@ -6,7 +6,7 @@ build-backend = "maturin"
 
 [project]
 name = "polars-cv"
-version = "0.39.0"
+version = "0.40.0"
 description = "Image processing as Polars expressions: decode, transform and analyse images in a DataFrame column, in Rust, on every core."
 keywords = [
     "polars",
