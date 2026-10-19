@@ -224,22 +224,37 @@ class TestComparisonSpace:
     PARAMS: ClassVar[dict] = {"height": 1, "width": 1, "filter": "bilinear"}
 
     def test_a_translucent_resample_holds_in_premultiplied_space(self) -> None:
-        from tests.parity.framework.oracle import _resize_tol
+        from tests.parity.framework.oracle import OPS
 
-        tol = _resize_tol(self.COLUMN, self.PARAMS)
+        tol = OPS["resize"].tol(self.COLUMN, self.PARAMS)
         engine = np.array([[[86, 86, 86, 74]]], u8)
         pillow = np.array([[[82, 82, 82, 74]]], u8)
         assert compare(engine, pillow, tol) is None
 
     def test_a_wrong_kernel_is_still_caught(self) -> None:
-        from tests.parity.framework.oracle import _resize_tol
+        from tests.parity.framework.oracle import OPS
 
-        tol = _resize_tol(self.COLUMN, self.PARAMS)
+        tol = OPS["resize"].tol(self.COLUMN, self.PARAMS)
         opaque = np.full((1, 1, 4), 255, u8)
         off = opaque.copy()
         off[..., :3] -= 6
         mismatch = compare(off, opaque, tol)
         assert mismatch is not None and "exceed" in str(mismatch)
+
+    def test_a_second_pass_carries_the_first_passs_rounding(self) -> None:
+        """The slow lane's case (0.40.0): ``resize_to_height(40)`` of a 16x17
+        RGBA image also widens it to 43, so both sides resample twice and the
+        first pass's 8-bit rounding goes through the second filter. They
+        differed by 3.37255 premultiplied, past the one-pass bound (3.3544)."""
+        from tests.parity.framework.oracle import _FILTER_L1, OPS
+
+        rgba = np.zeros((16, 17, 4), u8)
+        two = OPS["resize_to_height"].tol(rgba, {"height": 40, "filter": "lanczos3"})
+        assert two.space == "premultiplied"
+        assert two.atol >= 3.37255
+        # One axis resampled is one pass: its bound is unchanged.
+        one = OPS["resize"].tol(rgba, {"height": 40, "width": 17, "filter": "lanczos3"})
+        assert one.atol == pytest.approx(_FILTER_L1["lanczos3"] + 2)
 
     def test_a_bound_in_another_space_does_not_propagate(self) -> None:
         spaced = Tol(atol=2, space="premultiplied")
@@ -271,15 +286,15 @@ class TestOpaqueResampleBound:
     PARAMS: ClassVar[dict] = {"min_size": 14, "filter": "bilinear"}
 
     def test_opposite_roundings_of_one_resample_agree(self) -> None:
-        from tests.parity.framework.oracle import _resize_tol
+        from tests.parity.framework.oracle import OPS
 
-        tol = _resize_tol(self.RGB, self.PARAMS)
+        tol = OPS["resize_min"].tol(self.RGB, self.PARAMS)
         assert compare(np.array([34], u8), np.array([36], u8), tol) is None
 
     def test_a_wrong_kernel_is_still_caught(self) -> None:
-        from tests.parity.framework.oracle import _resize_tol
+        from tests.parity.framework.oracle import OPS
 
-        tol = _resize_tol(self.RGB, self.PARAMS)
+        tol = OPS["resize_min"].tol(self.RGB, self.PARAMS)
         assert compare(np.array([33], u8), np.array([36], u8), tol) is not None
 
 

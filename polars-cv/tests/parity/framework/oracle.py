@@ -836,19 +836,39 @@ def _resize_ref_accepts(x: np.ndarray, p: Params) -> bool:
     return x.dtype == np.uint8 or (x.dtype == np.float32 and x.shape[2] in (1, 3))
 
 
-def _resize_tol(x: np.ndarray, p: Params) -> Tol:
+#: An op's output ``(height, width)`` for an input and its arguments: the one
+#: size rule its reference resamples to and its tolerance counts passes from.
+SizeRule = Callable[[np.ndarray, Params], tuple[int, int]]
+
+
+def _resize_tol_for(size: SizeRule) -> Callable[[np.ndarray, Params], Tol]:
+    """The tolerance of a resize to ``size(x, p)``."""
+
+    def tol(x: np.ndarray, p: Params) -> Tol:
+        return _resize_tol(x, p, size(x, p))
+
+    return tol
+
+
+def _resize_tol(x: np.ndarray, p: Params, size: tuple[int, int]) -> Tol:
     flt = p.get("filter")
     if flt == "nearest":
         return EXACT
     if x.dtype == np.uint8 and x.shape[2] in (2, 4):
-        # Both sides resample premultiplied, in 8 bits. Un-premultiplied, each
-        # side's rounding is scaled by 255 / alpha (3.4x at alpha 74), so no
-        # dense straight-colour bound holds on a translucent output. Compared
-        # premultiplied, each side is off by at most: its premultiply's
-        # rounding through the filter (1/2 * the kernel's L1 norm), the
-        # resample's own rounding (1/2) and the straight output's (1/2, no
-        # more once re-premultiplied): 2 * (L1 / 2 + 1) between them.
-        return Tol(atol=2 * (_FILTER_L1[flt] / 2 + 1), space="premultiplied")
+        # Both sides resample premultiplied, in 8 bits, one pass per axis that
+        # changes (height first). Un-premultiplied, each side's rounding is
+        # scaled by 255 / alpha (3.4x at alpha 74), so no dense straight-colour
+        # bound holds on a translucent output. Compared premultiplied, each
+        # side is off by at most: its premultiply's rounding through every
+        # pass (1/2 * L1 ** n, L1 the kernel's norm), each pass's own rounding
+        # through the passes after it (1/2 * L1 ** k), and the straight
+        # output's (1/2, no more once re-premultiplied). One pass: L1 + 2
+        # between them; two: L1 ** 2 + L1 + 2. A same-size resize is held to
+        # the one-pass bound.
+        l1 = _FILTER_L1[flt]
+        n = max(1, sum(a != b for a, b in zip(size, x.shape[:2], strict=True)))
+        side = l1**n / 2 + sum(l1**k / 2 for k in range(n)) + 1 / 2
+        return Tol(atol=2 * side, space="premultiplied")
     if x.dtype == np.float32:
         return close(atol=1e-4 * magnitude(x), rtol=1e-4)
     # Each fixed-point resampler rounds within 1 of the exact resample, and two
@@ -865,8 +885,8 @@ def _size_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     }
 
 
-def _resize_ref(x: np.ndarray, p: Params) -> np.ndarray:
-    return _resize_to(x, p["height"], p["width"], p["filter"])
+def _resize_size(x: np.ndarray, p: Params) -> tuple[int, int]:
+    return p["height"], p["width"]
 
 
 def _scaled(size: int, factor: Fraction | float) -> int:
@@ -879,33 +899,43 @@ def _scaled(size: int, factor: Fraction | float) -> int:
     return max(1, math.floor(size * exact + Fraction(1, 2)))
 
 
-def _resize_to_height_ref(x: np.ndarray, p: Params) -> np.ndarray:
+def _to_height_size(x: np.ndarray, p: Params) -> tuple[int, int]:
     h, w = x.shape[:2]
-    return _resize_to(x, p["height"], _scaled(w, Fraction(p["height"], h)), p["filter"])
+    return p["height"], _scaled(w, Fraction(p["height"], h))
 
 
-def _resize_to_width_ref(x: np.ndarray, p: Params) -> np.ndarray:
+def _to_width_size(x: np.ndarray, p: Params) -> tuple[int, int]:
     h, w = x.shape[:2]
-    return _resize_to(x, _scaled(h, Fraction(p["width"], w)), p["width"], p["filter"])
+    return _scaled(h, Fraction(p["width"], w)), p["width"]
 
 
-def _resize_max_ref(x: np.ndarray, p: Params) -> np.ndarray:
+def _max_size(x: np.ndarray, p: Params) -> tuple[int, int]:
     h, w = x.shape[:2]
     s = Fraction(p["max_size"], max(h, w))
-    return _resize_to(x, _scaled(h, s), _scaled(w, s), p["filter"])
+    return _scaled(h, s), _scaled(w, s)
 
 
-def _resize_min_ref(x: np.ndarray, p: Params) -> np.ndarray:
+def _min_size(x: np.ndarray, p: Params) -> tuple[int, int]:
     h, w = x.shape[:2]
     s = Fraction(p["min_size"], min(h, w))
-    return _resize_to(x, _scaled(h, s), _scaled(w, s), p["filter"])
+    return _scaled(h, s), _scaled(w, s)
 
 
-def _resize_scale_ref(x: np.ndarray, p: Params) -> np.ndarray:
+def _scale_size(x: np.ndarray, p: Params) -> tuple[int, int]:
     h, w = x.shape[:2]
-    return _resize_to(
-        x, _scaled(h, p["scale_y"]), _scaled(w, p["scale_x"]), p["filter"]
-    )
+    return _scaled(h, p["scale_y"]), _scaled(w, p["scale_x"])
+
+
+def _letterbox_size(x: np.ndarray, p: Params) -> tuple[int, int]:
+    """The fitted image's size, before padding."""
+    h, w = x.shape[:2]
+    s = min(Fraction(p["height"], h), Fraction(p["width"], w))
+    return min(p["height"], _scaled(h, s)), min(p["width"], _scaled(w, s))
+
+
+def _resize_ref_for(size: SizeRule) -> Callable[[np.ndarray, Params], np.ndarray]:
+    """The reference of a resize to ``size(x, p)``."""
+    return lambda x, p: _resize_to(x, *size(x, p), p["filter"])
 
 
 def _one_size_params(key: str, lo: int = 1, hi: int = 40) -> ParamStrategy:
@@ -937,10 +967,7 @@ def _letterbox_params(draw: st.DrawFn, x: np.ndarray) -> Params:
 
 
 def _letterbox_ref(x: np.ndarray, p: Params) -> np.ndarray:
-    h, w = x.shape[:2]
-    s = min(Fraction(p["height"], h), Fraction(p["width"], w))
-    nh, nw = min(p["height"], _scaled(h, s)), min(p["width"], _scaled(w, s))
-    inner = _resize_to(x, nh, nw, p["filter"])
+    inner = _resize_to(x, *_letterbox_size(x, p), p["filter"])
     return _pad_to_size_ref(
         inner,
         {
@@ -1912,10 +1939,10 @@ OPS: dict[str, OpSpec] = {
             "resize",
             _size_params,
             accepts=_resamplable,
-            ref=_resize_ref,
+            ref=_resize_ref_for(_resize_size),
             ref_accepts=_resize_ref_accepts,
             ref_dtypes=("u8", "f32"),
-            tol=_resize_tol,
+            tol=_resize_tol_for(_resize_size),
             kind="spatial",
             note="Pillow per plane, height pass first; 'gaussian' has no "
             "Pillow counterpart",
@@ -1924,10 +1951,10 @@ OPS: dict[str, OpSpec] = {
             "resize_to_height",
             _one_size_params("height"),
             accepts=_resamplable,
-            ref=_resize_to_height_ref,
+            ref=_resize_ref_for(_to_height_size),
             ref_accepts=_resize_ref_accepts,
             ref_dtypes=("u8", "f32"),
-            tol=_resize_tol,
+            tol=_resize_tol_for(_to_height_size),
             kind="spatial",
             note="derived width rounds half up",
         ),
@@ -1935,40 +1962,40 @@ OPS: dict[str, OpSpec] = {
             "resize_to_width",
             _one_size_params("width"),
             accepts=_resamplable,
-            ref=_resize_to_width_ref,
+            ref=_resize_ref_for(_to_width_size),
             ref_accepts=_resize_ref_accepts,
             ref_dtypes=("u8", "f32"),
-            tol=_resize_tol,
+            tol=_resize_tol_for(_to_width_size),
             kind="spatial",
         ),
         _spec(
             "resize_max",
             _one_size_params("max_size"),
             accepts=_resamplable,
-            ref=_resize_max_ref,
+            ref=_resize_ref_for(_max_size),
             ref_accepts=_resize_ref_accepts,
             ref_dtypes=("u8", "f32"),
-            tol=_resize_tol,
+            tol=_resize_tol_for(_max_size),
             kind="spatial",
         ),
         _spec(
             "resize_min",
             _one_size_params("min_size"),
             accepts=_resamplable,
-            ref=_resize_min_ref,
+            ref=_resize_ref_for(_min_size),
             ref_accepts=_resize_ref_accepts,
             ref_dtypes=("u8", "f32"),
-            tol=_resize_tol,
+            tol=_resize_tol_for(_min_size),
             kind="spatial",
         ),
         _spec(
             "resize_scale",
             _resize_scale_params,
             accepts=_resamplable,
-            ref=_resize_scale_ref,
+            ref=_resize_ref_for(_scale_size),
             ref_accepts=_resize_ref_accepts,
             ref_dtypes=("u8", "f32"),
-            tol=_resize_tol,
+            tol=_resize_tol_for(_scale_size),
             kind="spatial",
         ),
         _spec(
@@ -1978,7 +2005,7 @@ OPS: dict[str, OpSpec] = {
             ref=_letterbox_ref,
             ref_accepts=_resize_ref_accepts,
             ref_dtypes=("u8", "f32"),
-            tol=_resize_tol,
+            tol=_resize_tol_for(_letterbox_size),
             kind="spatial",
             note="fit (round half up), then pad centred",
         ),
