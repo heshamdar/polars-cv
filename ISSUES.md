@@ -43,7 +43,7 @@ against `main` at `e788d72` that day, and their full text is in git history).
 | CR-81 | Extension types | Decision | Whether any output becomes tagged by default (a major version) |
 | CR-82 | Extension types | Decision | Whether `polars_cv.ndarray` carries `dtype`/`ndim` metadata |
 | CR-102 | Performance | Low | A large list field (a 65536-row `apply_lut` table) costs about a second to build and sink on the debug build |
-| CR-116 | Domains | Design | The `vector` domain is an f64 list, not a rank-1 buffer: buffer ops refuse it and a u8 hash loses its dtype |
+| CR-116 | Domains | Design | The `vector` domain is a planner gate over an f64 list: buffer ops refuse a hash or a box, histogram buckets ignore the sink format |
 | CR-83 | Upstream | To file | Streaming `group_by` cannot build a list |
 | CR-84 | Upstream | To file | Feature: a plugin's preferred morsel size |
 | CR-85 | Upstream | To file | A zero-width `Array` cannot cross the Arrow C interface |
@@ -146,43 +146,99 @@ against `main` at `e788d72` that day, and their full text is in git history).
 
 ## Domains
 
-### CR-116 — The `vector` domain is an f64 list, not a rank-1 buffer
+### CR-116 — The `vector` domain is a planner gate over an f64 list, not a rank-1 buffer
 
 **design**
 
 - **Found:** making `hash_similarity()` read the hash length from the hashes
   (2026-10-18). The first attempt counted agreeing bits as
   `popcount(invert(a ^ b))`, which the planner refused: `invert` declares
-  `Buffer` input only.
-- **Evidence:** a vector at run time is `NodeOutput::Vector(Arc<Vec<f64>>)`
-  (`view-buffer/src/ops/mod.rs`), not `NodeOutput::Buffer`: no dtype, no
-  strides. So:
-  - only the steps that list `Domain::Vector` in `GraphStep::input_domains`
-    (`polars-cv/src/graph/step.rs`) take one: binary ops, `assert_shape` and
-    the reductions. Every engine op (`invert`, `scale`, `clamp`, the scalar
-    math) refuses a hash, a histogram or a bounding box, though each is a
-    1-D array;
-  - reductions get one only by copying it into a fresh buffer
-    (`vector_reads_as_buffer`, `graph/compiled.rs`), a second path beside the
-    buffer one;
-  - the dtype is lost: `perceptual_hash()` computes u8 bytes and emits f64,
-    so even an op that accepted a vector would read 176.0, not a u8 176.
-    `invert` would give `1 - x` (the float rule) instead of `255 - x`, and
-    `popcount(invert(x))` would be silently wrong rather than refused.
-- **Proposal:** make `vector` a rank-1 `Buffer` carrying its op's dtype (u8
-  for a hash, f64 for a measure), so every op whose `OpShape` accepts rank 1
-  applies with no special case, and `vector_reads_as_buffer` and the f64
-  widening go. What has to move with it: the planner's domain rules (rank,
-  not a separate domain, may be the fact), the vector sinks
-  (`graph/sink_kind.rs`: `VectorList`/`VectorArray`), every geometry op and
-  reduction that emits `NodeOutput::Vector`, and the `vector` row of the
-  domain table in the docs and `CLAUDE.md`. Whether `vector` survives as a
-  user-facing domain name (a rank-1 buffer) or disappears is the decision.
+  `Buffer` input only. Re-investigated 2026-10-19 against `6eedfaa`, with a
+  fresh debug build; the evidence below replaces the first write-up, which
+  said a hash is f64 inside the engine (it is not).
+- **Evidence:** "vector" is two different things, and they already disagree:
+
+  | layer | what it is | who produces it |
+  |-------|------------|-----------------|
+  | planner: `Domain::Vector` | pins the rank to 1 (`plan.rs`, `Domain::Vector => Some(1)`, whatever the op's `OpShape` says) and gates which ops are admitted | `perceptual_hash`, `histogram` (counts/buckets), `extract_shape`, `label_reduce`, `contour_area`/`perimeter`/`centroid`/`bounding_box` |
+  | runtime: `NodeOutput::Vector(Arc<Vec<f64>>)` (`view-buffer/src/ops/mod.rs`) | an f64 list: no dtype, no strides | only `ExtractShape`, `LabelReduce` and the geometry measures |
+
+  `perceptual_hash` and the histogram vector modes *plan* as `vector` but
+  *execute* as `NodeOutput::Buffer` (a u8 hash keeps u8 to the sink). Bridging
+  the two is why `vector_reads_as_buffer` and the `Vector` arms of
+  `step_buffer_operand` (`graph/compiled.rs`) exist. Consequences:
+  - **the domain gate is the real limit.** Only binary ops, `assert_shape`
+    and the reductions list `Domain::Vector` in their input domains
+    (`graph/step.rs`, `ops/graph.rs`). `invert`, `scale`, `cast`, `clamp`
+    and the scalar math refuse a hash, a histogram or a bounding box, though
+    each is a 1-D array;
+  - **dtype is lost only for the f64-list producers** (`extract_shape`,
+    `label_reduce`, the measures), which declare f64 anyway. A hash is u8 at
+    run time; an accepted `invert` would give `255 - x`;
+  - reductions get a runtime `Vector` only by copying it into a fresh buffer,
+    a second path beside the buffer one.
+- **Sink behaviour today** (probed on the debug build):
+
+  | output | `native` | `list` | `array` | `numpy` |
+  |--------|----------|--------|---------|---------|
+  | `perceptual_hash()` | `List(UInt8)` | `List(UInt8)` | error: needs `shape=` though the length is known | error: unsupported pair |
+  | `extract_shape()` | `List(Float64)` | `List(Float64)` | error: needs `shape=` | error: unsupported pair |
+  | `histogram(output="buckets")` | struct | **struct** | **struct** | **struct** |
+  | `reduce_popcount()` (scalar) | `Float64` | error | error | error |
+
+  The array sink cannot infer a vector's length because `OutputSpec::planned`
+  publishes no shape for any non-buffer domain.
+- **Related findings, same root cause:**
+  - *Histogram buckets ignore the sink format.* `SinkKind::resolve` returns
+    `HistogramBuckets` before it looks at the format, so `numpy`, `array` and
+    `list` all silently give the struct column: a bypass that degrades
+    instead of failing.
+  - *Scalar is the same disease one rank lower.* `NodeOutput::Scalar(f64)`
+    makes every global reduction Float64 (a popcount, a `reduce_max` of u8)
+    and only the `native` sink accepts it.
+- **Proposal:** a vector becomes a `Buffer` of rank 1 (or 2) carrying its
+  op's dtype; `Domain::Vector` and `NodeOutput::Vector` go.
+  1. *Truthful shapes first, no visible change.* Give every producer a real
+     `OpShape`: phash `[n_bytes]`, histogram counts `[bins]` and buckets
+     `[bins, 4]`, `extract_shape` `[input rank]`, `label_reduce`/area/
+     perimeter `[n]` (unknown n), centroid `[n, 2]`, bbox `[n, 4]`. Guard: a
+     registry-driven sweep planning every op on rank-1 and rank-2 buffers,
+     asserting it plans or refuses with a rank error and never fails at
+     execution (a rank-1 buffer already arrives from a `list` source, so
+     this hardens an existing path).
+  2. *Switch the representation.* Producers emit `NodeOutput::Buffer`;
+     delete `NodeOutput::Vector`/`from_vector`, `OutputValue::Vector`,
+     `RowResult::Vector`, `vector_row`, `vector_reads_as_buffer`, the
+     `Vector` arms in `step_buffer_operand` and `AssertShape`,
+     `SinkKind::VectorList`/`VectorArray` (folded into
+     `BufferList`/`BufferArray`, which infer a known length), the
+     `[Buffer, Vector]` input-domain cases, and `Domain::Vector` (which
+     regenerates the Python `Domain` enum and `OP_DOMAINS`). The
+     `.contour` accessors read the same contiguous values.
+  3. *Scalar as a rank-0 buffer* (separate decision, a major version: every
+     global reduction's Float64 output changes). Afterwards `Domain` is
+     `{Buffer, Contour}`.
+- **Decisions:** (a) what `native` means on a former vector: recommended,
+  `native` on a buffer means `list` at any rank, so every existing
+  `.sink("native")` on a hash or measure keeps working (the alternative is a
+  breaking move to `sink("list")`); (b) centroid/bbox as rank 2 (`[n, 2]`,
+  `[n, 4]`; `sink("list")` becomes nested) or flat rank 1, recommended rank
+  2; (c) histogram buckets: `native` keeps the struct, `numpy`/`list`/`array`
+  give the `[bins, 4]` buffer rather than the struct; (d) whether scalar
+  follows (step 3).
+- **User-visible:** `Pipeline.domain` reports `"buffer"` for a hash,
+  `Domain.VECTOR` disappears, and the docs and the `CLAUDE.md` domain table
+  lose their `vector` row. Blast radius: about 50 test files touch a vector
+  producer; about 125 `sink("native")` call sites, many of them scalar or
+  contour.
 - **Pinned by** `test_known_gaps.py::test_a_buffer_op_applies_to_a_hash_vector`
-  (strict xfail: `invert()` on a hash gives each byte's u8 NOT).
+  (strict xfail: `invert()` on a hash gives each byte's u8 NOT) and
+  `test_known_gaps.py::test_histogram_buckets_refuse_a_format_they_ignore`
+  (strict xfail: `sink("numpy")` on buckets must not give the struct).
 - **Payoff:** `hash_similarity()` could count agreeing bits in the plugin
   instead of sinking the XOR beside its popcount; hashes, histograms and
-  boxes take the scalar ops like any array.
+  boxes take the scalar ops like any array; after step 2, the executor's
+  remaining per-step arms reduce to buffer in, buffer out.
 
 ## Fetch
 

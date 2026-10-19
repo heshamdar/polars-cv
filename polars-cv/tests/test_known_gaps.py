@@ -103,14 +103,13 @@ def test_a_negative_size_box_is_refused() -> None:
 
 
 @plugin_required
-@_gap("CR-116: a vector is an f64 list, not a rank-1 buffer: buffer ops refuse it")
+@_gap("CR-116: the vector domain is a planner gate: buffer ops refuse a hash")
 def test_a_buffer_op_applies_to_a_hash_vector() -> None:
     """A perceptual hash is a 1-D array of u8 bytes, so a rank-1 buffer op
     such as ``invert`` should apply to it and give each byte's bitwise NOT
-    (``255 - x`` on u8). Today the planner refuses it (``invert`` declares
-    ``buffer`` input, the hash is ``vector``), and the hash is f64 inside the
-    engine, so even an accepted ``invert`` would compute ``1 - x``. Fixed when
-    ``vector`` is a rank-1 buffer that keeps its dtype."""
+    (``255 - x`` on u8). Today the planner refuses it: ``invert`` declares
+    ``buffer`` input and the hash plans as ``vector``, though it already
+    executes as a u8 buffer. Fixed when ``vector`` is a rank-1 buffer."""
     import io
 
     from PIL import Image
@@ -130,3 +129,33 @@ def test_a_buffer_op_applies_to_a_hash_vector() -> None:
     out = df.select(pl.col("i").cv.pipe(inverted).sink("list")).to_series()
     assert out.dtype == pl.List(pl.UInt8), out.dtype
     assert out.to_list() == [[255 - b for b in h.to_list()[0]]]
+
+
+@plugin_required
+@_gap("CR-116: histogram buckets give the struct whatever the sink format")
+def test_histogram_buckets_refuse_a_format_they_ignore() -> None:
+    """``histogram(output="buckets")`` encodes as ``List(Struct)`` for every
+    sink format: ``SinkKind::resolve`` returns ``HistogramBuckets`` before it
+    reads the format, so ``sink("numpy")`` quietly gives the struct column.
+    A format the output cannot honour must be refused (or honoured, as a
+    ``[bins, 4]`` buffer), never swapped for another. Fixed when ``numpy``
+    on buckets either raises or returns the numpy struct."""
+    import io
+
+    from PIL import Image
+
+    from polars_cv import Pipeline
+
+    buf = io.BytesIO()
+    Image.fromarray(np.arange(64, dtype=np.uint8).reshape(8, 8)).save(buf, "PNG")
+    df = pl.DataFrame({"i": [buf.getvalue()]})
+    pipe = Pipeline().source("image_bytes").histogram(bins=4, output="buckets")
+    try:
+        out = df.select(pl.col("i").cv.pipe(pipe).sink("numpy")).to_series()
+    except (ValueError, pl.exceptions.ComputeError):
+        return
+    bucket_fields = {"lower_edge", "upper_edge", "count", "normalized"}
+    inner = out.dtype.inner if isinstance(out.dtype, pl.List) else out.dtype
+    assert not (
+        isinstance(inner, pl.Struct) and {f.name for f in inner.fields} == bucket_fields
+    ), f"sink('numpy') silently gave the bucket struct: {out.dtype}"
