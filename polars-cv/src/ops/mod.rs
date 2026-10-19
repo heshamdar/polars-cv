@@ -28,7 +28,7 @@ use serde::Serialize;
 
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
-pub use param::{ColumnRef, FieldType, Literal, NodeRef, Param, ParamExt};
+pub use param::{ColumnRef, FieldType, Literal, Param, ParamExt};
 pub use view_buffer::mode::OpDesc;
 
 /// Register the typed op families.

@@ -1,11 +1,11 @@
-//! Typed op parameters. [`Param`], [`Literal`], [`ColumnRef`], [`NodeRef`]
+//! Typed op parameters. [`Param`], [`Literal`], [`ColumnRef`], `NodeRef`
 //! and the catalogue types live with the engine ops in `view_buffer::mode`;
 //! the per-row [`Values`] of one row of the plugin's parameter columns live
 //! here.
 
 use polars::prelude::*;
 pub use view_buffer::mode::{
-    literal_field, ColumnRef, FieldType, Literal, NodeRef, Param, Resolve, Values, SLOT_KEY,
+    literal_field, ColumnRef, FieldType, Literal, Param, Resolve, Values, SLOT_KEY,
 };
 use view_buffer::naming::{WireKind, WireScalar, WireValue};
 

@@ -28,23 +28,22 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-use view_buffer::geometry::label::score_contours_on_buffer;
 use view_buffer::ops::{Domain, NodeOutput};
-use view_buffer::{Op, PlannedDType, ViewBuffer, ViewDto, ViewExpr};
+use view_buffer::{PlannedDType, ViewBuffer, ViewDto, ViewExpr};
 
 use crate::formats::source::Source;
-use crate::ops::graph::Role;
-use crate::ops::{NodeRef, TypedOp};
+use crate::ops::TypedOp;
 use crate::params::ParamCtx;
-use view_buffer::geometry::ops::RasterSize;
 
+use super::row::{run_step, RowOutputs};
 use super::step::GraphStep;
+use smallvec::SmallVec;
 
 use super::decode::{
     build_series_from_spec, decode_source_row, dtype_from_polars_leaf, null_row_result_for_spec,
     RowFetch, RowParts,
 };
-use super::encode::{encode_node_output, execute_geometry_op};
+use super::encode::encode_node_output;
 use super::types::{OutputSpec, OutputValue, RowErrorPolicy, RowResult, UnifiedGraph};
 use crate::plan::State;
 
@@ -61,23 +60,17 @@ pub(crate) enum OpResolver {
     /// Has at least one dynamic (slot-bound) param: re-resolved per row with
     /// direct typed slot reads (no string-keyed lookups, no `AnyValue`).
     Dynamic(TypedOp),
-    /// `rasterize(shape=<node>)`: output dimensions come from another node's
-    /// buffer at execution time (the referenced node is an upstream
-    /// dependency, so it has already run); the remaining params resolve from
-    /// the spec like any dynamic op.
-    RasterizeShapeRef {
-        op: view_buffer::GeometryOp<view_buffer::mode::Wire>,
-        shape_node: String,
-    },
 }
 
-/// One op of a node's chain, resolved for the current row.
-enum ResolvedStep<'a> {
-    Step(Cow<'a, GraphStep>),
-    RasterizeShapeRef {
-        op: &'a view_buffer::GeometryOp<view_buffer::mode::Wire>,
-        shape_node: &'a str,
-    },
+/// One op of a node's chain, prepared at compile time.
+struct CompiledStep {
+    resolver: OpResolver,
+    /// The op's wire name, which prefixes the errors it raises per row.
+    name: &'static str,
+    /// Position in `plan` of each node the op reads, in
+    /// [`GraphStep::operands`] order: the one list a step's other-node reads
+    /// come from ([`RowOutputs::operands`]), so ids are never hashed per row.
+    operands: SmallVec<[usize; 2]>,
 }
 
 /// One executed node, prepared at compile time.
@@ -99,8 +92,8 @@ struct NodePlan {
     /// Path allowlist; the unrestricted default when the source declared no
     /// `allowed_roots`, which is every existing pipeline.
     path_policy: crate::fetch::PathPolicy,
-    /// Op resolvers, aligned with the node's `ops`.
-    resolvers: Vec<OpResolver>,
+    /// The node's ops, compiled.
+    steps: Vec<CompiledStep>,
     /// This node is its upstream's only reader ([`node_readers`]), so it
     /// moves the upstream output out of the row's outputs instead of sharing
     /// it.
@@ -198,36 +191,26 @@ impl CompiledGraph {
         let mut plan: Vec<NodePlan> = Vec::with_capacity(order.len());
         for node_id in &order {
             let node = &graph.nodes[node_id];
-            let mut resolvers: Vec<OpResolver> = Vec::with_capacity(node.ops.len());
+            let mut steps: Vec<CompiledStep> = Vec::with_capacity(node.ops.len());
             for spec in &node.ops {
-                // rasterize(shape=<node>) takes its canvas from another
-                // node's output, not a param, so it gets a dedicated resolver.
-                if let TypedOp::Geometry(
-                    op @ view_buffer::GeometryOp::Rasterize {
-                        size: RasterSize::FromNode(NodeRef(shape_node)),
-                        ..
-                    },
-                ) = spec
-                {
-                    {
-                        if !graph.nodes.contains_key(shape_node) {
-                            return Err(polars_err!(ComputeError:
-                                "Node '{}': rasterize shape reference '{}' is not a node in the graph",
-                                node_id, shape_node
-                            ));
-                        }
-                        resolvers.push(OpResolver::RasterizeShapeRef {
-                            op: op.clone(),
-                            shape_node: shape_node.clone(),
-                        });
-                        continue;
-                    }
-                }
-                if spec.is_static() {
-                    resolvers.push(OpResolver::Static(spec.resolve(0, &empty_ctx)?));
+                let resolver = if spec.is_static() {
+                    OpResolver::Static(spec.resolve(0, &empty_ctx)?)
                 } else {
-                    resolvers.push(OpResolver::Dynamic(spec.clone()));
-                }
+                    OpResolver::Dynamic(spec.clone())
+                };
+                // `validate_graph_structure` refused a reference to a node
+                // the graph does not have, and every node an executed node
+                // reads is executed before it.
+                let operands = spec
+                    .operands()
+                    .iter()
+                    .map(|node| node_index[&node.0])
+                    .collect();
+                steps.push(CompiledStep {
+                    resolver,
+                    name: spec.name(),
+                    operands,
+                });
             }
             let column = graph.column_bindings.get(node_id).copied();
             // A non-root node reads its first upstream; `validate_graph_structure`
@@ -254,7 +237,7 @@ impl CompiledGraph {
                     .1
                     .map(crate::fetch::PathPolicy::new)
                     .unwrap_or_default(),
-                resolvers,
+                steps,
                 source: node.source.clone(),
                 takes_upstream,
             });
@@ -431,14 +414,14 @@ impl CompiledGraph {
         // null-parameter flag in a `Cell`.
         let ctx = ParamCtx::with_null_policy(state.inputs, self.graph.on_null_param);
         // Allocated once and reused across rows/nodes to avoid per-row churn.
-        let mut node_outputs: Vec<Option<NodeOutput>> = vec![None; self.plan.len()];
-        let mut dto_scratch: Vec<ResolvedStep<'_>> = Vec::new();
+        let mut node_outputs = RowOutputs::new(self.plan.len());
+        let mut dto_scratch: Vec<Cow<'_, GraphStep>> = Vec::new();
         let start = rows.start;
         for row_idx in rows {
             if first_failure.load(Ordering::Relaxed) < range_idx {
                 break;
             }
-            node_outputs.iter_mut().for_each(|output| *output = None);
+            node_outputs.clear();
             // Panics are caught per row, so they reach the row policy like any
             // other row error. view-buffer reports some data-dependent failures
             // (e.g. operands that cannot broadcast) by panicking. Caught only
@@ -505,8 +488,8 @@ impl CompiledGraph {
         state: &ExecState<'_>,
         ctx: &ParamCtx<'_>,
         row_idx: usize,
-        node_outputs: &mut [Option<NodeOutput>],
-        dto_scratch: &mut Vec<ResolvedStep<'g>>,
+        node_outputs: &mut RowOutputs,
+        dto_scratch: &mut Vec<Cow<'g, GraphStep>>,
         plan_cache: &PlanCache,
         results: &mut [Vec<RowResult>],
     ) -> Result<(), String> {
@@ -532,7 +515,7 @@ impl CompiledGraph {
             .zip(&state.output_nodes)
             .zip(results.iter_mut())
         {
-            if let Some(output) = node.and_then(|i| node_outputs[i].as_ref()) {
+            if let Some(output) = node.and_then(|i| node_outputs.output(i)) {
                 validate_output_schema(alias, spec, output)?;
                 match encode_node_output(output, spec) {
                     Ok(encoded) => {
@@ -564,131 +547,6 @@ impl CompiledGraph {
         Ok(())
     }
 
-    /// A step that reads its input buffer and may fail on its data
-    /// (`Histogram`, `Lut`): validated against the row's concrete shape and
-    /// dtype, then run, each error prefixed with the op's name.
-    fn run_fallible_buffer_step(
-        input: NodeOutput,
-        step: &GraphStep,
-        name: &str,
-        execute: impl FnOnce(&ViewBuffer) -> Result<ViewBuffer, String>,
-    ) -> Result<NodeOutput, String> {
-        let buf = Self::step_buffer_operand(&input, step, name)?;
-        step.validate_concrete(&[buf.shape()], &[buf.dtype()])
-            .map_err(|e| format!("{name}: {e}"))?;
-        execute(&buf)
-            .map(NodeOutput::from_buffer)
-            .map_err(|e| format!("{name}: {e}"))
-    }
-
-    /// Look up another node's output for the current row.
-    ///
-    /// An absent entry means one of two different things, and conflating them
-    /// turns a legitimate null into a hard error. `Ok(None)` is the benign
-    /// case: the node belongs to the graph but produced nothing for this row,
-    /// because its input was null, its source failed under
-    /// `source(on_error="null")`, or a per-row parameter was null under
-    /// `on_null_param="null"`. The node reading it must then go null too.
-    /// A name that is not in the graph at all stays an error.
-    fn operand<'o>(
-        &self,
-        node_outputs: &'o [Option<NodeOutput>],
-        id: &str,
-        what: &str,
-    ) -> Result<Option<&'o NodeOutput>, String> {
-        match self.node_index.get(id) {
-            Some(&i) => Ok(node_outputs[i].as_ref()),
-            None if self.graph.nodes.contains_key(id) => Ok(None),
-            None => Err(format!("{what} references unknown node '{id}'")),
-        }
-    }
-
-    /// Whether a runtime `NodeOutput::Vector` may be read as a 1-D buffer here.
-    ///
-    /// The planner's `vector` *domain* and the runtime `Vector` *representation*
-    /// are not the same set, and conflating them is a live hazard.
-    /// `perceptual_hash` and the histogram vector modes plan as `vector` but
-    /// execute as `Buffer`, so the only steps that ever receive a runtime
-    /// `Vector` are those fed by `ExtractShape` or `LabelReduce`.
-    ///
-    /// Coercing one is sound only where the step's published output shape
-    /// derives from *this* operand alone.
-    ///
-    /// - `Reduction` qualifies: rank and domain fold from its single input, so
-    ///   `extract_shape().reduce_sum()` plans and executes the same scalar.
-    /// - `Binary` does **not**. Its output shape is both operands' one shape,
-    ///   so it does not derive from this operand alone. (Coercing once let a
-    ///   vector broadcast against a rank-3 image, executing at rank 3 after
-    ///   the plan promised rank 1. Binary ops now broadcast nothing and the
-    ///   planner refuses that pair where it is written; this keeps the
-    ///   runtime representation from being read as what the plan did not
-    ///   check.)
-    ///
-    /// Exhaustive, so a new variant has to answer this question rather than
-    /// inherit an answer.
-    fn vector_reads_as_buffer(step: &GraphStep) -> bool {
-        match step {
-            GraphStep::Reduction(_) => true,
-            GraphStep::Buffer(_)
-            | GraphStep::Geometry(_)
-            | GraphStep::Histogram(_)
-            | GraphStep::Lut(_)
-            | GraphStep::PerceptualHash(_) => false,
-            GraphStep::Graph(graph) => match graph.role() {
-                Role::Binary(..)
-                | Role::Regions(..)
-                | Role::ApplyMask { .. }
-                | Role::ChannelMerge { .. }
-                | Role::ExtractShape
-                | Role::AssertShape { .. }
-                | Role::LabelReduce { .. } => false,
-            },
-        }
-    }
-
-    /// The buffer a step consumes, honouring the step's *declared* input domains.
-    ///
-    /// **Read the contract; never restate it.** `GraphStep::input_domains` is the
-    /// single authority `CLAUDE.md` names for what a step accepts, and the Python
-    /// planner validates against it through `Plan::push`. Execution used to
-    /// re-derive the same fact by hand at ten sites — `current_output.as_buffer()`
-    /// with a hardcoded `"<Step> requires Buffer"` string each time — and the two
-    /// had already diverged: `Reduction` declares `[Buffer, Vector]`, so the
-    /// planner accepted `extract_shape().reduce_sum()` and execution then failed
-    /// the row with "Reduction requires Buffer, got Vector".
-    ///
-    /// Reading the declared domains is what decides *rejection*;
-    /// `vector_reads_as_buffer` decides the narrower question of whether a
-    /// runtime vector can stand in for a buffer, which the domain vocabulary
-    /// alone cannot answer.
-    fn step_buffer_operand(
-        output: &NodeOutput,
-        step: &GraphStep,
-        what: &str,
-    ) -> Result<Arc<ViewBuffer>, String> {
-        let domain = output.domain();
-        let accepted = step.input_domains();
-        match output {
-            NodeOutput::Buffer(buf) => Ok(Arc::clone(buf)),
-            NodeOutput::Vector(vals) if Self::vector_reads_as_buffer(step) => {
-                Ok(Arc::new(ViewBuffer::from_vec(vals.as_ref().clone())))
-            }
-            NodeOutput::Vector(_) if accepted.contains(&Domain::Vector) => Err(format!(
-                "{what} declares it accepts a vector, but cannot read one whose \
-                 rank the plan did not fix: its output shape depends on another \
-                 operand. Reduce or rasterize the vector first."
-            )),
-            _ => Err(format!(
-                "{what} accepts {} input but received {domain:?}",
-                accepted
-                    .iter()
-                    .map(|d| format!("{d:?}"))
-                    .collect::<Vec<_>>()
-                    .join(" or ")
-            )),
-        }
-    }
-
     /// Run every node of the graph for one row, leaving each node's output in
     /// `node_outputs` (no output encoding).
     fn run_row_nodes<'g>(
@@ -696,433 +554,110 @@ impl CompiledGraph {
         state: &ExecState<'_>,
         ctx: &ParamCtx<'_>,
         row_idx: usize,
-        node_outputs: &mut [Option<NodeOutput>],
-        dto_scratch: &mut Vec<ResolvedStep<'g>>,
+        node_outputs: &mut RowOutputs,
+        dto_scratch: &mut Vec<Cow<'g, GraphStep>>,
         plan_cache: &PlanCache,
     ) -> Result<(), String> {
         let inputs = state.inputs;
-        {
-            // Labelled so a null per-row parameter can skip straight to the
-            // next node: leaving this node out of `node_outputs` is exactly
-            // how a null *input* already propagates (see the `else` branch of
-            // `if let Some(input)` below, and `execute_one_row`).
-            'nodes: for (idx, np) in self.plan.iter().enumerate() {
-                let node_input: Option<NodeOutput> = if let Some(col_idx) = np.column {
-                    let on_error_null = np.source_null;
-                    // An `"auto"` source reads as the concrete source it was
-                    // routed to once per batch (`route_auto_sources`).
-                    let decode_result = match state.routed_sources[idx].as_ref() {
-                        Some(Ok(routed)) => Ok(routed),
-                        Some(Err(e)) => Err(e.clone()),
-                        None => Ok(&np.source),
-                    }
-                    .and_then(|source| {
-                        // Bounds are validated once per call in `execute()`.
-                        decode_source_row(
-                            &np.id,
-                            source,
-                            &inputs[col_idx],
-                            row_idx,
-                            RowFetch {
-                                fetcher: state.fetchers[idx].as_ref(),
-                            },
-                        )
-                    });
-                    match decode_result {
-                        Ok(output) => output,
-                        Err(_e) if on_error_null => None,
-                        Err(e) => return Err(e),
-                    }
-                } else {
-                    // A node that is its upstream's only reader moves the
-                    // output out (its buffer may then be written in place);
-                    // otherwise it shares it.
-                    np.upstream.and_then(|u| {
-                        if np.takes_upstream {
-                            node_outputs[u].take()
-                        } else {
-                            node_outputs[u].clone()
-                        }
-                    })
-                };
-                if let Some(input) = node_input {
-                    // Static ops are borrowed from the compiled graph; dynamic
-                    // ops are re-resolved for this row through typed slot
-                    // reads. The scratch Vec is reused so steady-state rows
-                    // allocate nothing here.
-                    dto_scratch.clear();
-                    {
-                        for resolver in &np.resolvers {
-                            match resolver {
-                                OpResolver::Static(step) => {
-                                    dto_scratch.push(ResolvedStep::Step(Cow::Borrowed(step)))
-                                }
-                                OpResolver::Dynamic(spec) => {
-                                    ctx.clear_null();
-                                    match spec.resolve(row_idx, ctx) {
-                                        Ok(step) => {
-                                            dto_scratch.push(ResolvedStep::Step(Cow::Owned(step)))
-                                        }
-                                        // Under `on_null_param="null"` a null
-                                        // parameter is not a failure — this
-                                        // node just has no output for this row.
-                                        Err(_) if ctx.took_null() => continue 'nodes,
-                                        Err(e) => return Err(format!("Op resolution error: {e}")),
-                                    }
-                                }
-                                OpResolver::RasterizeShapeRef { op, shape_node } => dto_scratch
-                                    .push(ResolvedStep::RasterizeShapeRef { op, shape_node }),
-                            }
+        // Labelled so a null per-row parameter or a null operand can skip
+        // straight to the next node: leaving this node without an output is
+        // exactly how a null *input* already propagates.
+        'nodes: for (idx, np) in self.plan.iter().enumerate() {
+            let node_input: Option<NodeOutput> = if let Some(col_idx) = np.column {
+                // An `"auto"` source reads as the concrete source it was
+                // routed to once per batch (`route_auto_sources`).
+                let decode_result = match state.routed_sources[idx].as_ref() {
+                    Some(Ok(routed)) => Ok(routed),
+                    Some(Err(e)) => Err(e.clone()),
+                    None => Ok(&np.source),
+                }
+                .and_then(|source| {
+                    // Bounds are validated once per call in `execute()`.
+                    decode_source_row(
+                        &np.id,
+                        source,
+                        &inputs[col_idx],
+                        row_idx,
+                        RowFetch {
+                            fetcher: state.fetchers[idx].as_ref(),
+                        },
+                    )
+                });
+                match decode_result {
+                    Ok(output) => output,
+                    Err(_e) if np.source_null => None,
+                    Err(e) => return Err(e),
+                }
+            } else {
+                np.upstream
+                    .and_then(|u| node_outputs.input(u, np.takes_upstream))
+            };
+            let Some(input) = node_input else {
+                continue;
+            };
+            // Static ops are borrowed from the compiled graph; dynamic ops are
+            // re-resolved for this row through typed slot reads. The scratch
+            // Vec is reused so steady-state rows allocate nothing here.
+            dto_scratch.clear();
+            for step in &np.steps {
+                match &step.resolver {
+                    OpResolver::Static(resolved) => dto_scratch.push(Cow::Borrowed(resolved)),
+                    OpResolver::Dynamic(spec) => {
+                        ctx.clear_null();
+                        match spec.resolve(row_idx, ctx) {
+                            Ok(resolved) => dto_scratch.push(Cow::Owned(resolved)),
+                            // Under `on_null_param="null"` a null parameter is
+                            // not a failure — this node just has no output for
+                            // this row.
+                            Err(_) if ctx.took_null() => continue 'nodes,
+                            Err(e) => return Err(format!("Op resolution error: {e}")),
                         }
                     }
-                    let mut current_output = input;
-                    // Engine-tier optimization toggles for this graph (Tier-2).
-                    // `OptConfig` is `Copy`, so the closure captures a value and
-                    // does not borrow `self`.
-                    let opt_cfg = self.graph.opt;
-                    let node_cache = &plan_cache.slots[idx];
-                    let flush_buffer_ops = |output: NodeOutput,
-                                            pending: &mut PendingSegment<'_>|
-                     -> Result<NodeOutput, String> {
-                        let slot = match pending.start {
-                            Some(start) if pending.cacheable => Some(&node_cache[start]),
-                            _ => None,
-                        };
-                        let result = run_segment(output, &pending.ops, slot, &opt_cfg);
-                        pending.clear();
-                        let (output, _planned) = result?;
-                        #[cfg(test)]
-                        if _planned {
-                            self.plan_builds.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Ok(output)
-                    };
-                    let mut pending_buffer_ops = PendingSegment::default();
-                    for (step_idx, step) in dto_scratch.iter().enumerate() {
-                        let graph_step = match step {
-                            ResolvedStep::RasterizeShapeRef { op, shape_node } => {
-                                // Dimensions come from the referenced node's
-                                // buffer (already executed: it is upstream).
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let Some(shape_output) = self.operand(
-                                    node_outputs,
-                                    shape_node,
-                                    "Rasterize shape reference",
-                                )?
-                                else {
-                                    continue 'nodes;
-                                };
-                                // Not a step input: this reads *another node's*
-                                // output purely for its dimensions, so it wants a
-                                // buffer regardless of what the current step accepts.
-                                let shape_buf = shape_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "Rasterize shape reference '{shape_node}' must be a Buffer, got {:?}",
-                                        shape_output.domain()
-                                    )
-                                })?;
-                                let dims = shape_buf.shape();
-                                if dims.len() < 2 {
-                                    return Err(format!(
-                                        "Rasterize shape reference '{shape_node}' must be at least 2D, got {}D",
-                                        dims.len()
-                                    ));
-                                }
-                                let height = dims[0] as u32;
-                                let width = dims[1] as u32;
-                                ctx.clear_null();
-                                let resolved = view_buffer::mode::Resolve::resolve(
-                                    *op,
-                                    &crate::ops::param::RowValues { row: row_idx, ctx },
-                                );
-                                let geo_op = match resolved {
-                                    Ok(geo_op) => geo_op.with_canvas(height, width),
-                                    Err(_) if ctx.took_null() => continue 'nodes,
-                                    Err(e) => return Err(e.to_string()),
-                                };
-                                // Resolved on its own path (the canvas is
-                                // another node's), so it meets the check
-                                // `TypedOp::resolve` gives every other step.
-                                geo_op.check()?;
-                                current_output = execute_geometry_op(current_output, &geo_op)?;
-                                continue;
-                            }
-                            ResolvedStep::Step(step) => step,
-                        };
-                        match graph_step.as_ref() {
-                            GraphStep::Geometry(geo_op) => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                current_output = execute_geometry_op(current_output, geo_op)?;
-                            }
-                            GraphStep::Reduction(reduction_op) => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = Self::step_buffer_operand(
-                                    &current_output,
-                                    graph_step.as_ref(),
-                                    "Reduction",
-                                )?;
-                                graph_step
-                                    .validate_concrete(
-                                        &[current_buf.shape()],
-                                        &[current_buf.dtype()],
-                                    )
-                                    .map_err(|e| format!("{}: {e}", reduction_op.name()))?;
-                                let result = reduction_op.execute(&current_buf);
-                                // The op's declared output domain (the same
-                                // authority the planner reads) decides scalar
-                                // vs buffer — not the result's shape, which is
-                                // also [1] for an axis reduction of a 1-D
-                                // buffer (a buffer-domain output).
-                                current_output = if reduction_op.output_domain() == Domain::Scalar {
-                                    let v = result.scalar_f64().ok_or_else(|| {
-                                        format!(
-                                            "Scalar reduction produced non-scalar shape {:?}",
-                                            result.shape()
-                                        )
-                                    })?;
-                                    NodeOutput::Scalar(v)
-                                } else {
-                                    NodeOutput::from_buffer(result)
-                                };
-                            }
-                            // The fallible buffer steps: a data error (a value
-                            // past a histogram's range, past a lookup table) is
-                            // the row's `Err`, which an engine op cannot report.
-                            GraphStep::Histogram(op) => {
-                                current_output = Self::run_fallible_buffer_step(
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?,
-                                    graph_step.as_ref(),
-                                    op.name(),
-                                    |buf| op.execute(buf),
-                                )?;
-                            }
-                            GraphStep::Lut(op) => {
-                                current_output = Self::run_fallible_buffer_step(
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?,
-                                    graph_step.as_ref(),
-                                    op.name(),
-                                    |buf| op.execute(buf),
-                                )?;
-                            }
-                            GraphStep::PerceptualHash(phash_op) => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = Self::step_buffer_operand(
-                                    &current_output,
-                                    graph_step.as_ref(),
-                                    "PerceptualHash",
-                                )?;
-                                // `apply_perceptual_hash` converts to u8 image
-                                // format before hashing and returns a 1-D u8
-                                // buffer. Like the histogram vector modes, the
-                                // result rides as a Buffer at runtime; the
-                                // planned `vector` domain (OutputSpec) selects
-                                // the List encoding at sink time.
-                                graph_step
-                                    .validate_concrete(
-                                        &[current_buf.shape()],
-                                        &[current_buf.dtype()],
-                                    )
-                                    .map_err(|e| format!("{}: {e}", phash_op.name()))?;
-                                let result = view_buffer::execution::runner::apply_perceptual_hash(
-                                    (*current_buf).clone(),
-                                    phash_op.clone(),
-                                );
-                                current_output = NodeOutput::from_buffer(result);
-                            }
-                            GraphStep::Graph(graph) => match graph.role() {
-                                Role::Binary(op, other) => {
-                                    current_output =
-                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                    let current_buf = Self::step_buffer_operand(
-                                        &current_output,
-                                        graph_step.as_ref(),
-                                        "Binary op",
-                                    )?;
-                                    let Some(other_output) =
-                                        self.operand(node_outputs, &other.0, "Binary op")?
-                                    else {
-                                        continue 'nodes;
-                                    };
-                                    let other_buf = Self::step_buffer_operand(
-                                        other_output,
-                                        graph_step.as_ref(),
-                                        "Binary op other operand",
-                                    )?;
-                                    graph_step
-                                        .validate_concrete(
-                                            &[current_buf.shape(), other_buf.shape()],
-                                            &[current_buf.dtype(), other_buf.dtype()],
-                                        )
-                                        .map_err(|e| format!("{}: {e}", op.name()))?;
-                                    let result = op.execute(&current_buf, &other_buf);
-                                    current_output = NodeOutput::from_buffer(result);
-                                }
-                                Role::Regions(region_op, other) => {
-                                    current_output =
-                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                    let Some(other_output) =
-                                        self.operand(node_outputs, &other.0, region_op.name())?
-                                    else {
-                                        continue 'nodes;
-                                    };
-                                    current_output = super::encode::execute_region_op(
-                                        region_op,
-                                        &current_output,
-                                        other_output,
-                                    )?;
-                                }
-                                Role::ApplyMask { mask, invert } => {
-                                    current_output =
-                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                    let current_buf = Self::step_buffer_operand(
-                                        &current_output,
-                                        graph_step.as_ref(),
-                                        "ApplyMask",
-                                    )?;
-                                    let Some(mask_output) =
-                                        self.operand(node_outputs, &mask.0, "ApplyMask")?
-                                    else {
-                                        continue 'nodes;
-                                    };
-                                    let mask_buf = Self::step_buffer_operand(
-                                        mask_output,
-                                        graph_step.as_ref(),
-                                        "ApplyMask mask",
-                                    )?;
-                                    graph_step
-                                        .validate_concrete(
-                                            &[current_buf.shape(), mask_buf.shape()],
-                                            &[current_buf.dtype(), mask_buf.dtype()],
-                                        )
-                                        .map_err(|e| format!("apply_mask: {e}"))?;
-                                    let result =
-                                        view_buffer::apply_mask(&current_buf, &mask_buf, *invert);
-                                    current_output = NodeOutput::from_buffer(result);
-                                }
-                                Role::AssertShape { dims, exact } => {
-                                    current_output =
-                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                    let shape: Vec<usize> = match &current_output {
-                                        NodeOutput::Buffer(buf) => buf.shape().to_vec(),
-                                        NodeOutput::Vector(vals) => vec![vals.len()],
-                                        other => {
-                                            return Err(format!(
-                                            "assert_shape() declares a shape, but the data here \
-                                                 is {}",
-                                            other.domain().name()
-                                        ))
-                                        }
-                                    };
-                                    check_declared_shape(&shape, dims, *exact)?;
-                                }
-                                Role::ExtractShape => {
-                                    // Extract shape from buffer and return as vector
-                                    current_output =
-                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                    let current_buf = Self::step_buffer_operand(
-                                        &current_output,
-                                        graph_step.as_ref(),
-                                        "ExtractShape",
-                                    )?;
-                                    let shape = current_buf.shape();
-                                    // Return shape as f64 vector [height, width, channels]
-                                    let shape_vec: Vec<f64> =
-                                        shape.iter().map(|&d| d as f64).collect();
-                                    current_output = NodeOutput::from_vector(shape_vec);
-                                }
-                                Role::LabelReduce {
-                                    contours,
-                                    reduction,
-                                    region_mode,
-                                } => {
-                                    current_output =
-                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                    let current_buf = Self::step_buffer_operand(
-                                        &current_output,
-                                        graph_step.as_ref(),
-                                        "LabelReduce",
-                                    )?;
-                                    let contour_col =
-                                        ctx.col(contours.0).map_err(|e| e.to_string())?;
-                                    let (contour_series, contour_row) = contour_col.at(row_idx);
-                                    let contours =
-                                        crate::geom_columns::ContourColumn::new(contour_series)
-                                            .row(contour_row)
-                                            .map_err(|e| {
-                                                format!("LabelReduce contour parsing failed: {e}")
-                                            })?;
-                                    let Some(contours) = contours else {
-                                        current_output = NodeOutput::from_vector(Vec::new());
-                                        continue;
-                                    };
-                                    let scores = score_contours_on_buffer(
-                                        &current_buf,
-                                        &contours,
-                                        *reduction,
-                                        *region_mode,
-                                    )?;
-                                    current_output = NodeOutput::from_vector(scores);
-                                }
-                                Role::ChannelMerge { others } => {
-                                    current_output =
-                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                    let current_buf = Self::step_buffer_operand(
-                                        &current_output,
-                                        graph_step.as_ref(),
-                                        "ChannelMerge",
-                                    )?;
-                                    // Owned first: `step_buffer_operand` hands back an
-                                    // `Arc`, which must outlive the borrow the merge
-                                    // call takes.
-                                    let mut owned: Vec<Arc<ViewBuffer>> = vec![current_buf];
-                                    for other_id in others {
-                                        let Some(other_output) = self.operand(
-                                            node_outputs,
-                                            &other_id.0,
-                                            "ChannelMerge",
-                                        )?
-                                        else {
-                                            continue 'nodes;
-                                        };
-                                        // Same contract read as the current operand
-                                        // above -- ChannelMerge declares `[Buffer]`, so
-                                        // this refuses a vector, but it refuses it by
-                                        // reading the contract rather than restating it.
-                                        owned.push(Self::step_buffer_operand(
-                                            other_output,
-                                            graph_step.as_ref(),
-                                            &format!("ChannelMerge operand '{}'", other_id.0),
-                                        )?);
-                                    }
-                                    let all_bufs: Vec<&ViewBuffer> =
-                                        owned.iter().map(|b| b.as_ref()).collect();
-                                    graph_step
-                                        .validate_concrete(
-                                            &all_bufs.iter().map(|b| b.shape()).collect::<Vec<_>>(),
-                                            &all_bufs.iter().map(|b| b.dtype()).collect::<Vec<_>>(),
-                                        )
-                                        .map_err(|e| format!("channel_merge: {e}"))?;
-                                    let result = view_buffer::apply_channel_merge(&all_bufs);
-                                    current_output = NodeOutput::from_buffer(result);
-                                }
-                            },
-                            // Fusable single-buffer engine ops accumulate and
-                            // run as one ViewExpr chain at the next flush.
-                            GraphStep::Buffer(dto) => {
-                                let is_static =
-                                    matches!(step, ResolvedStep::Step(Cow::Borrowed(_)));
-                                pending_buffer_ops.push(step_idx, dto, is_static);
-                            }
-                        }
-                    }
-                    current_output = flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                    node_outputs[idx] = Some(current_output);
                 }
             }
+            let mut current_output = input;
+            // Engine-tier optimization toggles for this graph (Tier-2).
+            // `OptConfig` is `Copy`, so the closure captures a value and does
+            // not borrow `self`.
+            let opt_cfg = self.graph.opt;
+            let node_cache = &plan_cache.slots[idx];
+            let flush_buffer_ops = |output: NodeOutput,
+                                    pending: &mut PendingSegment<'_>|
+             -> Result<NodeOutput, String> {
+                let slot = match pending.start {
+                    Some(start) if pending.cacheable => Some(&node_cache[start]),
+                    _ => None,
+                };
+                let result = run_segment(output, &pending.ops, slot, &opt_cfg);
+                pending.clear();
+                let (output, _planned) = result?;
+                #[cfg(test)]
+                if _planned {
+                    self.plan_builds.fetch_add(1, Ordering::Relaxed);
+                }
+                Ok(output)
+            };
+            let mut pending_buffer_ops = PendingSegment::default();
+            for (step_idx, (resolved, compiled)) in dto_scratch.iter().zip(&np.steps).enumerate() {
+                match resolved.as_ref() {
+                    // Fusable single-buffer engine ops accumulate and run as
+                    // one ViewExpr chain at the next flush.
+                    GraphStep::Buffer(dto) => {
+                        let is_static = matches!(resolved, Cow::Borrowed(_));
+                        pending_buffer_ops.push(step_idx, dto, is_static);
+                    }
+                    step => {
+                        current_output = flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                        let Some(operands) = node_outputs.operands(&compiled.operands) else {
+                            continue 'nodes;
+                        };
+                        current_output =
+                            run_step(step, compiled.name, current_output, &operands, ctx, row_idx)?;
+                    }
+                }
+            }
+            current_output = flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+            node_outputs.set(idx, current_output);
         }
         Ok(())
     }
@@ -1237,7 +772,7 @@ impl PlanCache {
         PlanCache {
             slots: plan
                 .iter()
-                .map(|np| np.resolvers.iter().map(|_| RwLock::default()).collect())
+                .map(|np| np.steps.iter().map(|_| RwLock::default()).collect())
                 .collect(),
         }
     }
@@ -1403,6 +938,20 @@ fn validate_graph_structure(graph: &UnifiedGraph) -> PolarsResult<()> {
                     "Node '{}' references unknown upstream node '{}'",
                     node_id, upstream_id
                 );
+            }
+        }
+    }
+    // Every node an op reads, whatever kind of operand it is, by the one list
+    // a step's other-node reads come from.
+    for (node_id, node) in &graph.nodes {
+        for op in &node.ops {
+            for operand in op.operands() {
+                if !graph.nodes.contains_key(&operand.0) {
+                    polars_bail!(ComputeError:
+                        "node '{}': {}() reads node '{}', which is not in the graph",
+                        node_id, op.name(), operand.0
+                    );
+                }
             }
         }
     }
@@ -1593,41 +1142,6 @@ pub(crate) fn get_or_compile(graph_json: &str) -> PolarsResult<Arc<CompiledGraph
     Ok(compiled)
 }
 
-/// Check one row's shape against an `assert_shape` declaration: the
-/// declaration applied to the row's shape ([`crate::plan::apply_declaration`],
-/// the reading the planner applies too).
-///
-/// The declaration is the user's statement about their data, so a mismatch is
-/// reported as theirs: it names what they wrote and what arrived.
-fn check_declared_shape(shape: &[usize], dims: &[Option<u32>], exact: bool) -> Result<(), String> {
-    let declared: Vec<Option<usize>> = dims.iter().map(|d| d.map(|d| d as usize)).collect();
-    let row = crate::plan::PlannedShape::Ranked(shape.iter().map(|&n| Some(n)).collect());
-    if crate::plan::apply_declaration(&row, &declared, exact).is_ok() {
-        return Ok(());
-    }
-    let size = |d: &Option<usize>| d.map_or("None".to_string(), |d| d.to_string());
-    let written = if exact {
-        format!(
-            "dims=[{}]",
-            declared.iter().map(size).collect::<Vec<_>>().join(", ")
-        )
-    } else {
-        declared
-            .iter()
-            .enumerate()
-            .filter_map(|(axis, d)| {
-                d.map(|d| format!("{}={d}", crate::plan::declared_name(axis, false)))
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    Err(format!(
-        "assert_shape({written}) does not hold: the data is {shape:?}. An assertion states \
-         what the data is; it does not change it. Correct the assertion, or drop it \
-         and let the planner infer the shape."
-    ))
-}
-
 /// Validate that a buffer output's produced schema matches the plan.
 ///
 /// This is the runtime `plan == data` guard: the schema the Python planner
@@ -1761,6 +1275,7 @@ mod tests {
         assert_eq!(decoded.as_slice::<f32>(), &[1.0, 2.0, 3.0]);
     }
 
+    use crate::ops::graph::Role;
     use std::cell::RefCell;
     use std::collections::BTreeSet;
 
@@ -1872,28 +1387,17 @@ mod tests {
         let compiled = CompiledGraph::compile(graph).expect("graph must compile");
         EXECUTED_STEPS.with(|seen| {
             let mut seen = seen.borrow_mut();
-            for resolver in compiled.plan.iter().flat_map(|np| &np.resolvers) {
+            for step in compiled.plan.iter().flat_map(|np| &np.steps) {
                 // A literal-param op holds its step already; a slot-bound one
                 // re-resolves per row, and resolving it against an empty
                 // context is enough to learn which variant it is. Failures are
                 // skipped rather than asserted: this is bookkeeping for the
                 // coverage assertion, and the execute() below is what proves
                 // the graph runs.
-                let step = match resolver {
+                let step = match &step.resolver {
                     OpResolver::Static(step) => Some(Cow::Borrowed(step)),
                     OpResolver::Dynamic(spec) => {
                         spec.resolve(0, &ParamCtx::empty()).ok().map(Cow::Owned)
-                    }
-                    OpResolver::RasterizeShapeRef { op, .. } => {
-                        view_buffer::mode::Resolve::resolve(
-                            op,
-                            &crate::ops::param::RowValues {
-                                row: 0,
-                                ctx: &ParamCtx::empty(),
-                            },
-                        )
-                        .ok()
-                        .map(|geo| Cow::Owned(GraphStep::Geometry(geo.with_canvas(1, 1))))
                     }
                 };
                 if let Some(step) = step {
@@ -2630,18 +2134,18 @@ mod tests {
     fn static_ops_are_precompiled_and_dynamic_are_not() {
         let compiled = CompiledGraph::compile(SIMPLE_GRAPH).unwrap();
         assert!(matches!(
-            compiled.node_plan("n0").resolvers[0],
+            compiled.node_plan("n0").steps[0].resolver,
             OpResolver::Static(_)
         ));
 
         let compiled = CompiledGraph::compile(DYNAMIC_GRAPH).unwrap();
         assert!(matches!(
-            compiled.node_plan("n0").resolvers[0],
+            compiled.node_plan("n0").steps[0].resolver,
             OpResolver::Dynamic(_)
         ));
         // The dynamic op's expr param must have been bound to a slot:
         // 1 source column + position 0 → absolute slot 1.
-        match &compiled.node_plan("n0").resolvers[0] {
+        match &compiled.node_plan("n0").steps[0].resolver {
             OpResolver::Dynamic(op) => {
                 let mut slots = Vec::new();
                 op.visit_slots(&mut |name, slot| slots.push((name, slot)));
@@ -2734,5 +2238,131 @@ mod tests {
             err.contains("unknown source format 'carrier_pigeon'"),
             "{err}"
         );
+    }
+
+    // --- One operand path (CR-117) ---
+
+    /// Every registered op that reads another node, with its operands renamed
+    /// to `to`, and the domain its own input and its operands are in.
+    fn operand_reading_samples(to: &str) -> Vec<(TypedOp, Domain, Domain)> {
+        let samples: Vec<_> = TypedOp::samples()
+            .into_iter()
+            .filter(|op| !op.operands().is_empty())
+            .map(|mut op| {
+                for node in op.operands_mut() {
+                    node.0 = to.to_string();
+                }
+                let input = op.input_domains()[0];
+                let operand = op.operand_domains()[0];
+                (op, input, operand)
+            })
+            .collect();
+        // Binary ops, apply_mask, channel_merge, the region ops, rasterize.
+        assert!(
+            samples.len() >= 10,
+            "only {} operand-reading samples: the filter matches nothing it should",
+            samples.len()
+        );
+        samples
+    }
+
+    /// A node reference that no node answers is refused when the graph
+    /// compiles, by one check with one message for every op that reads a
+    /// node, whatever kind of operand it is (another image, a mask, merged
+    /// channels, a canvas). Driven by the catalogue's samples, so a new
+    /// operand-reading op is covered by being registered.
+    #[test]
+    fn a_dangling_node_reference_is_one_compile_error_for_every_reading_op() {
+        for (op, _, _) in operand_reading_samples("ghost") {
+            let name = op.name();
+            let graph = format!(
+                r#"{{"nodes": {{"n0": {{"source": {{"format": "blob"}}}},
+                      "n1": {{"source": {{"format": "blob"}}, "upstream": ["n0"], "ops": [{op}]}}}},
+                    "outputs": {{"_output": {{"node": "n1", "sink": {{"format": "blob"}}}}}},
+                    "column_bindings": {{"n0": 0}}}}"#,
+                op = serde_json::to_string(&op).unwrap()
+            );
+            let err = compile_err(&graph);
+            let expected =
+                format!("node 'n1': {name}() reads node 'ghost', which is not in the graph");
+            assert!(err.contains(&expected), "{name}: {err}");
+        }
+    }
+
+    /// A null operand nulls the node reading it, for every op that reads a
+    /// node: the row's other outputs are untouched and nothing errors. The
+    /// executor reads operands at one place, so this holds for all of them or
+    /// for none; the sweep is what would show a step that reads its operand
+    /// another way.
+    #[test]
+    fn a_null_operand_nulls_the_node_for_every_reading_op() {
+        let contour = view_buffer::geometry::Contour::from_tuples(&[
+            (0.0, 0.0),
+            (3.0, 0.0),
+            (3.0, 3.0),
+            (0.0, 3.0),
+        ]);
+        let inner = Series::from_any_values(
+            "".into(),
+            &[crate::contour::contour_to_anyvalue(&contour)],
+            false,
+        )
+        .unwrap();
+        let contours =
+            Series::from_any_values("c".into(), &[AnyValue::List(inner)], false).unwrap();
+        let column = |domain: Domain, null: bool| -> (Series, &'static str) {
+            match (domain, null) {
+                (Domain::Buffer, false) => (Series::new("b".into(), &[mask_blob()]), "blob"),
+                (Domain::Buffer, true) => {
+                    (Series::full_null("b".into(), 1, &DataType::Binary), "blob")
+                }
+                (Domain::Contour, false) => (contours.clone(), "contour"),
+                (Domain::Contour, true) => (
+                    Series::full_null("c".into(), 1, contours.dtype()),
+                    "contour",
+                ),
+                (other, _) => panic!("no test column for the {other:?} domain"),
+            }
+        };
+        for (op, input, operand) in operand_reading_samples("n2") {
+            let name = op.name();
+            let (input_col, input_source) = column(input, false);
+            let (operand_col, operand_source) = column(operand, true);
+            let graph = format!(
+                r#"{{"nodes": {{"n0": {{"source": {{"format": "{input_source}"}}}},
+                      "n2": {{"source": {{"format": "{operand_source}"}}}},
+                      "n1": {{"source": {{"format": "blob"}}, "upstream": ["n0", "n2"], "ops": [{op}]}}}},
+                    "outputs": {{"read": {{"node": "n1", "sink": {{"format": "{sink}"}}}},
+                                 "input": {{"node": "n0", "sink": {{"format": "{input_sink}"}}}}}},
+                    "column_bindings": {{"n0": 0, "n2": 1}}}}"#,
+                op = serde_json::to_string(&op).unwrap(),
+                sink = if op.output_domain(input) == Domain::Contour {
+                    "native"
+                } else {
+                    "blob"
+                },
+                input_sink = if input == Domain::Contour {
+                    "native"
+                } else {
+                    "blob"
+                },
+            );
+            let out = CompiledGraph::compile(&graph)
+                .unwrap_or_else(|e| panic!("{name}: {e}"))
+                .execute(&[input_col, operand_col])
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let out = out.struct_().unwrap();
+            let field = |n: &str| out.field_by_name(n).unwrap().null_count();
+            assert_eq!(
+                field("read"),
+                1,
+                "{name}: a null operand must null the node"
+            );
+            assert_eq!(
+                field("input"),
+                0,
+                "{name}: the input's own output is not null"
+            );
+        }
     }
 }
