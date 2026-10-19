@@ -335,7 +335,9 @@ def froc_auc(
             # (0 if none), negative images their max detection score (0 if none);
             # label is the image's gt_label. P(pos-image score > neg-image score).
             det, meta = table.frames(group_keys)
-            image_keys = [COL_IMAGE_ID, *table._sweep_key()]
+            # One score per metadata unit, (image[, class]): an image is scored
+            # from its own class's detections, never another class's.
+            image_keys = [*image_weight_keys(meta), *table._sweep_key()]
             per_img = det.group_by(image_keys).agg(
                 _max_tp=pl.when(pl.col(COL_IS_TP))
                 .then(pl.col(COL_SCORE))
