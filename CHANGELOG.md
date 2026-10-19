@@ -7,6 +7,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+
+- **`stroke(join="miter")` no longer paints a pocket its ring pinches off.**
+  A traced ring with 8-connected pinches strokes to a region whose hole
+  touches the exterior at one vertex; `geo`'s boolean ops return such a hole
+  wound like the exterior, and `unary_union`, which picks its fill rule from
+  winding, then filled it, so the stroke painted pixels 1.5 px from the ring
+  at width 2 (found by the slow parity lane's stroke law). Every union
+  (`union_all`, the set operations, `offset`, `stroke`) now winds its rings
+  by convention going in and coming out.
+
 ## [0.40.0] — 2026-10-19
 
 One bit order for every hash, hash comparisons over stored hashes, a graph
