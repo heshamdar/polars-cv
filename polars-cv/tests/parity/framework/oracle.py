@@ -1221,7 +1221,7 @@ def _lut_params(draw: st.DrawFn, x: np.ndarray) -> Params:
     literal set. A palette (``K > 1``) needs one channel: ``[H, W, 1]``, or
     ``[H, W]`` (a ``channel_select`` output)."""
     dtype = draw(st.sampled_from(tuple(DTYPES)), label="dtype")
-    single = x.ndim == 2 or x.shape[2] == 1
+    single = x.ndim == 2 or _single_channel(x)
     k = _LUT_K[dtype] if single else 1
     n = 256
     rng = np.random.default_rng([n, k, list(DTYPES).index(dtype)])

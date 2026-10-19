@@ -8,7 +8,8 @@ use super::measures::{centroid, contour_winding};
 use super::ops::{LineCap, LineJoin, ScaleOrigin};
 use geo::algorithm::buffer::{BufferStyle, LineCap as GeoCap, LineJoin as GeoJoin};
 use geo::{
-    unary_union, BooleanOps, Buffer, ChaikinSmoothing, ConvexHull, Densify, Euclidean, Simplify,
+    orient::Direction, unary_union, BooleanOps, Buffer, ChaikinSmoothing, ConvexHull, Densify,
+    Euclidean, Orient, Simplify,
 };
 use std::borrow::Borrow;
 
@@ -741,9 +742,16 @@ fn line_from_geo(line: &geo::LineString<f64>) -> Vec<Point> {
     line.0.iter().map(|c| Point::new(c.x, c.y)).collect()
 }
 
+/// The union of `regions`, every ring wound by convention (exterior
+/// counter-clockwise, holes clockwise) before it is taken.
+/// `unary_union` picks its fill rule from winding, while `geo`'s boolean ops
+/// can return a hole touching its exterior at a vertex wound like the
+/// exterior: unioned as given, that hole was filled.
 fn union_polygons<C: Borrow<Contour>>(regions: &[C]) -> geo::MultiPolygon<f64> {
-    let parts: Vec<geo::MultiPolygon<f64>> =
-        regions.iter().map(|c| c.borrow().to_geo_region()).collect();
+    let parts: Vec<geo::MultiPolygon<f64>> = regions
+        .iter()
+        .map(|c| c.borrow().to_geo_region().orient(Direction::Default))
+        .collect();
     unary_union(parts.iter())
 }
 
@@ -1032,6 +1040,7 @@ pub fn stroke<O: Borrow<Outline>>(outlines: &[O], style: &Stroke) -> Result<Vec<
 mod shaping_tests {
     use super::*;
     use crate::geometry::measures::area;
+    use crate::geometry::predicates::contains_point;
 
     fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Contour {
         Contour::from_tuples(&[(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
@@ -1238,5 +1247,66 @@ mod shaping_tests {
         };
         let band = stroke(&[Outline::Closed(rect(5.0, 5.0, 6.0, 6.0))], &miter).unwrap();
         assert!((total_area(&band) - 25.0).abs() < 1e-6);
+    }
+
+    /// Points from a flat `x0, y0, x1, y1, ...` list.
+    fn points(xy: &[i32]) -> Vec<Point> {
+        xy.chunks(2)
+            .map(|p| Point::new(f64::from(p[0]), f64::from(p[1])))
+            .collect()
+    }
+
+    #[test]
+    fn a_hole_touching_the_exterior_survives_a_second_union() {
+        // The region `i_overlay` strokes the ring below into: its exterior
+        // dips in at (11, 12) round [11, 14] x [11, 12], a hole touching the
+        // exterior at that vertex. `geo`'s boolean ops hand that hole back
+        // wound like the exterior, and `unary_union` picks its fill rule
+        // from winding, so a union of it filled the hole.
+        let pinched = Contour::with_holes(
+            points(&[
+                4, 7, 9, 7, 9, 5, 15, 5, 15, 6, 16, 6, 16, 8, 17, 8, 17, 13, 19, 13, 19, 16, 18,
+                16, 18, 18, 17, 18, 17, 19, 13, 19, 13, 18, 11, 18, 11, 12, 14, 12, 14, 11, 11, 11,
+                11, 12, 5, 12, 5, 10, 4, 10,
+            ]),
+            vec![points(&[
+                11, 7, 11, 8, 12, 8, 12, 9, 14, 9, 14, 8, 13, 8, 13, 7,
+            ])],
+        );
+        let want = total_area(std::slice::from_ref(&pinched));
+        let once = union_all(&[pinched]);
+        let twice = union_all(&once);
+        for (label, set) in [("once", &once), ("twice", &twice)] {
+            assert!((total_area(set) - want).abs() < 1e-9, "{label}: {set:?}");
+            assert!(
+                !set.iter().any(|c| contains_point(c, 13.5, 11.5)),
+                "{label} fills the hole: {set:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_miter_stroke_leaves_a_pinched_pocket_open() {
+        // The parity law's counterexample (CI, 0.40.0): a traced ring with
+        // 8-connected pinches, stroked to width 2. `i_overlay`'s stroke and
+        // the offset band each leave [11, 14] x [11, 12] out, as a hole
+        // touching the exterior at (11, 12); their union filled it.
+        let ring = points(&[
+            10, 6, 14, 6, 14, 7, 15, 7, 15, 9, 16, 9, 16, 13, 15, 13, 15, 14, 18, 14, 18, 15, 15,
+            15, 15, 17, 16, 17, 16, 16, 17, 16, 17, 17, 16, 17, 16, 18, 14, 18, 14, 17, 12, 17, 12,
+            16, 14, 16, 14, 15, 12, 15, 12, 13, 13, 13, 13, 14, 14, 14, 14, 13, 15, 13, 15, 10, 11,
+            10, 11, 9, 9, 9, 9, 10, 10, 10, 10, 11, 8, 11, 8, 10, 7, 10, 7, 11, 6, 11, 6, 9, 5, 9,
+            5, 8, 6, 8, 6, 9, 7, 9, 7, 8, 8, 8, 8, 9, 9, 9, 9, 8, 10, 8,
+        ]);
+        let style = Stroke {
+            width: 2.0,
+            cap: LineCap::Round,
+            join: LineJoin::Miter,
+        };
+        let band = stroke(&[Outline::Closed(Contour::new(ring))], &style).unwrap();
+        assert!(
+            !band.iter().any(|c| contains_point(c, 13.5, 11.5)),
+            "{band:?}"
+        );
     }
 }
