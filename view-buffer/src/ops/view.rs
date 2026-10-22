@@ -314,12 +314,24 @@ impl<M: Mode> Op for ViewOp<M> {
                             Some(b) => b.to_string(),
                             None => "<per-row>".to_string(),
                         };
+                        // Unsigned arithmetic in polars (`UInt32` - n) wraps
+                        // below zero to ~2^32 before the value reaches here.
+                        let wrapped = [s, e]
+                            .into_iter()
+                            .flatten()
+                            .any(|b| b != usize::MAX && b >= 1 << 31);
+                        let hint = if wrapped {
+                            "; a bound near 2^32 is usually an unsigned subtraction that \
+                             wrapped below zero in polars: compute offsets as Int64"
+                        } else {
+                            ""
+                        };
                         let (s, end_text) = (text(s), text(e));
                         return Err(ValidationError::InvalidParameter {
                             param: "window".to_string(),
                             reason: format!(
                                 "crop window {s}..{end_text} on axis {axis} lies outside the \
-                                 input of shape {}",
+                                 input of shape {}{hint}",
                                 crate::ops::shape_rule::show_dims(shape)
                             ),
                         });

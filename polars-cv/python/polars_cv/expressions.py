@@ -191,7 +191,7 @@ class CvNamespace(_PluginNamespace):
                 as for ``.cv.read_bytes()``.
 
         Returns:
-            UInt32 expression with the width of each image.
+            Int64 expression with the width of each image.
         """
         return self._plugin(
             "image_width",
@@ -211,7 +211,7 @@ class CvNamespace(_PluginNamespace):
         Takes bytes or paths, as :meth:`width` does (see it for the options).
 
         Returns:
-            UInt32 expression with the height of each image.
+            Int64 expression with the height of each image.
         """
         return self._plugin(
             "image_height",
@@ -231,7 +231,7 @@ class CvNamespace(_PluginNamespace):
         Takes bytes or paths, as :meth:`width` does (see it for the options).
 
         Returns:
-            UInt32 expression with the channel count of each image.
+            Int64 expression with the channel count of each image.
         """
         return self._plugin(
             "image_channels",
@@ -272,7 +272,7 @@ class CvNamespace(_PluginNamespace):
         Takes bytes or paths, as :meth:`width` does (see it for the options).
 
         Returns:
-            ``Struct{width: UInt32, height: UInt32, channels: UInt32,
+            ``Struct{width: Int64, height: Int64, channels: Int64,
             dtype: String}``; null for a null input or an unrecognised format.
         """
         return self._plugin(

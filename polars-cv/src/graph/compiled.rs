@@ -484,7 +484,12 @@ impl CompiledGraph {
                 Err(msg) => match policy {
                     RowErrorPolicy::Raise => {
                         first_failure.fetch_min(range_idx, Ordering::Relaxed);
-                        return Err(msg);
+                        // The row, as a `.contour` accessor names it. A bad
+                        // per-row parameter already says `at row n`.
+                        if msg.contains(&format!(" at row {row_idx}:")) {
+                            return Err(msg);
+                        }
+                        return Err(format!("{msg} (row {row_idx})"));
                     }
                     RowErrorPolicy::Null | RowErrorPolicy::NullWithMessage => {
                         // All-or-nothing per row: drop anything this row may
@@ -640,7 +645,18 @@ impl CompiledGraph {
                             // not a failure — this node just has no output for
                             // this row.
                             Err(_) if ctx.took_null() => continue 'nodes,
-                            Err(e) => return Err(format!("Op resolution error: {e}")),
+                            // Named once: an op's `check()` already names it;
+                            // a field's per-row value (`left: Parameter column
+                            // ...`) does not.
+                            Err(e) => {
+                                let e = e.to_string();
+                                let name = step.name;
+                                return Err(if e.starts_with(&format!("{name}:")) {
+                                    format!("Op resolution error: {e}")
+                                } else {
+                                    format!("Op resolution error: {name}: {e}")
+                                });
+                            }
                         }
                     }
                 }

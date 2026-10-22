@@ -324,3 +324,56 @@ def test_an_empty_contour_has_no_bounding_box_on_either_surface() -> None:
     assert len(by_pipeline) == 4 and all(math.isnan(v) for v in by_pipeline)
     (box,) = by_accessor
     assert box is not None and all(math.isnan(v) for v in box.values()), box
+
+
+def _rgb_png(width: int, height: int) -> bytes:
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.fromarray(np.zeros((height, width, 3), np.uint8)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _first_line(err: pytest.ExceptionInfo) -> str:
+    return str(err.value).split("\n\nThis error occurred")[0]
+
+
+def test_a_failing_row_is_named_as_the_accessors_name_it(in_memory_engine) -> None:
+    """A row an op refuses ends ``(row n)``, as a ``.contour`` accessor's
+    refusal does: the second row here is narrower than the crop."""
+    frame = pl.DataFrame({"img": [_rgb_png(40, 12), _rgb_png(31, 12)]})
+    pipe = _image().crop(left=8, width=24)
+    with pytest.raises(pl.exceptions.ComputeError) as err:
+        frame.select(pl.col("img").cv.pipe(pipe).sink("numpy"))
+    first = _first_line(err)
+    assert "crop window 8..32 on axis 1" in first, first
+    assert first.endswith("(row 1)"), first
+
+
+def test_a_bad_per_row_value_names_its_op_and_parameter(in_memory_engine) -> None:
+    """A per-row value no op can take names the op, the parameter it was
+    bound to and the column it came from, once each."""
+    frame = pl.DataFrame({"img": [_rgb_png(31, 12)], "l": [-1]})
+    pipe = _image().crop(left=pl.col("l"), width=4)
+    with pytest.raises(pl.exceptions.ComputeError) as err:
+        frame.select(pl.col("img").cv.pipe(pipe).sink("numpy"))
+    first = _first_line(err)
+    assert "crop: left: Parameter column 'l' at row 0: -1 cannot be negative" in first
+    assert "(row 0)" not in first, first
+
+
+def test_a_window_bound_past_2_31_suggests_an_unsigned_wrap() -> None:
+    """``UInt32`` arithmetic in polars wraps below zero to ~2^32 before
+    polars-cv sees the value, so a window that far out says so."""
+    frame = pl.DataFrame(
+        {"img": [_rgb_png(31, 12)], "w": [31]}, schema_overrides={"w": pl.UInt32}
+    )
+    pipe = _image().crop(left=pl.col("w") - 32, width=4)
+    with pytest.raises(pl.exceptions.ComputeError) as err:
+        frame.select(pl.col("img").cv.pipe(pipe).sink("numpy"))
+    first = _first_line(err)
+    assert "4294967295" in first
+    assert "unsigned subtraction" in first, first

@@ -7,6 +7,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **`.cv.width()`, `.cv.height()`, `.cv.channels()` and `.cv.image_info()`'s
+  size fields are `Int64`, not `UInt32`.** Sizes are for arithmetic, and
+  unsigned arithmetic in polars wraps: `pl.col("img").cv.width() - 32` on a
+  31-wide image was 4294967295, so a crop offset computed that way failed as
+  `crop window 4294967295..4294967319 on axis 1 lies outside the input`
+  rather than as the -1 it was. It is now -1, refused as `crop: left:
+  Parameter column '...' at row n: -1 cannot be negative`. Code that cast
+  the result or compared schemas against `UInt32` needs `Int64`.
+
 ### Added
 
 - **`polars_cv.check_cloud_access(path, cloud_options=None)`** resolves the
@@ -14,6 +25,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   one-level listing of a prefix), before any row is read. It returns
   `{"backend", "credential_source", "status"}` and raises
   `polars_cv.CloudCredentialError` naming the credential when it fails.
+
+### Changed
+
+- **A row an op refuses ends `(row n)`,** as a `.contour` accessor's refusal
+  already did, and a bad per-row parameter names its op and the parameter
+  it was bound to as well as its column (`crop: left: Parameter column 'l'
+  at row 0: ...`; the field was unnamed and the op named only when its own
+  check raised). A crop window bound of 2^31 or more adds that it is
+  usually an unsigned subtraction that wrapped in polars.
 
 ### Fixed
 
