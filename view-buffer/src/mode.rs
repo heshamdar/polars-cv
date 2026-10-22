@@ -154,6 +154,11 @@ pub trait Values {
     type Error;
     /// The value slot `slot` holds for this row.
     fn value<T: WireScalar>(&self, slot: usize) -> Result<T, Self::Error>;
+    /// `error`, raised resolving the field `field`, saying which field it was:
+    /// `#[derive(Resolve)]` calls it for every named field, so a bad per-row
+    /// value names the parameter it was bound to (`left`), not only the
+    /// column it came from. Required, so an implementation decides.
+    fn in_field(&self, field: &'static str, error: Self::Error) -> Self::Error;
 }
 
 /// What `#[derive(Ops)]` gives a family's `Wire` form, for code generic
@@ -178,6 +183,9 @@ impl Values for Literals {
     type Error = String;
     fn value<T: WireScalar>(&self, slot: usize) -> Result<T, String> {
         Err(format!("slot {slot} read where only literals resolve"))
+    }
+    fn in_field(&self, field: &'static str, error: String) -> String {
+        format!("{field}: {error}")
     }
 }
 

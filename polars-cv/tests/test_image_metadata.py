@@ -262,3 +262,65 @@ class TestMixedFormats:
         df = pl.DataFrame({"img": [small, large, small]})
         big = df.filter(pl.col("img").cv.width() > 100)
         assert big.height == 1
+
+
+@plugin_required
+class TestSignedMetadata:
+    """Sizes are ``Int64``, so arithmetic on them can go below zero.
+
+    ``UInt32`` sizes made ``pl.col("img").cv.width() - 32`` wrap to
+    4294967295 in polars on a 31-wide image, before polars-cv saw the value,
+    so a crop offset computed that way failed as a window of ~2^32 rather
+    than as the negative offset it was.
+    """
+
+    def test_sizes_are_int64(self, create_test_png: Callable) -> None:
+        df = pl.DataFrame({"img": [create_test_png(width=31, height=12)]})
+        out = df.select(
+            w=pl.col("img").cv.width(),
+            h=pl.col("img").cv.height(),
+            c=pl.col("img").cv.channels(),
+            info=pl.col("img").cv.image_info(),
+        )
+        assert out.schema["w"] == pl.Int64
+        assert out.schema["h"] == pl.Int64
+        assert out.schema["c"] == pl.Int64
+        assert out.schema["info"] == pl.Struct(
+            {
+                "width": pl.Int64,
+                "height": pl.Int64,
+                "channels": pl.Int64,
+                "dtype": pl.String,
+            }
+        )
+        # The lazy schema agrees with what executes.
+        assert (
+            df.lazy().select(w=pl.col("img").cv.width()).collect_schema()["w"]
+            == pl.Int64
+        )
+
+    def test_a_size_minus_more_than_itself_is_negative(
+        self, create_test_png: Callable
+    ) -> None:
+        df = pl.DataFrame({"img": [create_test_png(width=31, height=12)]})
+        assert df.select(pl.col("img").cv.width() - 32).item() == -1
+
+    def test_a_crop_offset_computed_below_zero_is_named(
+        self, create_test_png: Callable
+    ) -> None:
+        import pytest
+
+        from polars_cv import Pipeline
+
+        df = pl.DataFrame({"img": [create_test_png(width=31, height=12)]})
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .crop(left=pl.col("img").cv.width() - 32, width=4)
+        )
+        with pytest.raises(pl.exceptions.ComputeError) as err:
+            df.select(pl.col("img").cv.pipe(pipe).sink("numpy"))
+        msg = str(err.value)
+        assert "-1 cannot be negative" in msg
+        assert "at row 0" in msg
+        assert "4294967295.." not in msg

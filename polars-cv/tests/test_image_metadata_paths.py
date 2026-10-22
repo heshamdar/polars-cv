@@ -59,9 +59,9 @@ class TestMetadataFromPaths:
         out = df.select(pl.col("p").cv.image_info())
         assert out.schema["p"] == pl.Struct(
             {
-                "width": pl.UInt32,
-                "height": pl.UInt32,
-                "channels": pl.UInt32,
+                "width": pl.Int64,
+                "height": pl.Int64,
+                "channels": pl.Int64,
                 "dtype": pl.String,
             }
         )

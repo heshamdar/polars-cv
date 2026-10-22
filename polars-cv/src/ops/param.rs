@@ -35,6 +35,10 @@ impl Values for RowValues<'_> {
                 "Parameter column '{}' at row {}: {}", col.name(), row, e)
         })
     }
+
+    fn in_field(&self, field: &'static str, error: PolarsError) -> PolarsError {
+        error.wrap_msg(|msg| format!("{field}: {msg}"))
+    }
 }
 
 /// `Param::resolve` for one row, for the typed fields read outside an op —

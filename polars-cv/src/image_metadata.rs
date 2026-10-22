@@ -200,35 +200,41 @@ fn metas(
     }
 }
 
-fn u32_column(
+/// A size column, as `Int64`.
+///
+/// Signed, not `UInt32`, because the first thing done with an image's size is
+/// arithmetic: `width() - 32` on a 31-wide image is -1, which an op parameter
+/// refuses as negative. In `UInt32` polars wrapped it to 4294967295 before
+/// polars-cv saw it, and the error named a window of ~2^32 instead.
+fn size_column(
     inputs: &[Series],
     kwargs: MetaKwargs,
     name: &'static str,
     field: impl Fn(&ImageMeta) -> Option<u32>,
 ) -> PolarsResult<Series> {
-    let out: UInt32Chunked = metas(inputs, &kwargs, name)?
+    let out: Int64Chunked = metas(inputs, &kwargs, name)?
         .iter()
-        .map(|m| m.as_ref().and_then(&field))
+        .map(|m| m.as_ref().and_then(&field).map(i64::from))
         .collect();
     Ok(out.with_name(inputs[0].name().clone()).into_series())
 }
 
 /// Image width (header-only, no full decode).
-#[polars_expr(output_type=UInt32)]
+#[polars_expr(output_type=Int64)]
 fn image_width(inputs: &[Series], kwargs: MetaKwargs) -> PolarsResult<Series> {
-    u32_column(inputs, kwargs, "width()", |m| Some(m.width))
+    size_column(inputs, kwargs, "width()", |m| Some(m.width))
 }
 
 /// Image height (header-only, no full decode).
-#[polars_expr(output_type=UInt32)]
+#[polars_expr(output_type=Int64)]
 fn image_height(inputs: &[Series], kwargs: MetaKwargs) -> PolarsResult<Series> {
-    u32_column(inputs, kwargs, "height()", |m| Some(m.height))
+    size_column(inputs, kwargs, "height()", |m| Some(m.height))
 }
 
 /// Image channel count (header-only, no full decode).
-#[polars_expr(output_type=UInt32)]
+#[polars_expr(output_type=Int64)]
 fn image_channels(inputs: &[Series], kwargs: MetaKwargs) -> PolarsResult<Series> {
-    u32_column(inputs, kwargs, "channels()", |m| m.channels)
+    size_column(inputs, kwargs, "channels()", |m| m.channels)
 }
 
 /// Image element dtype (header-only, no full decode).
@@ -244,9 +250,9 @@ fn image_dtype(inputs: &[Series], kwargs: MetaKwargs) -> PolarsResult<Series> {
 /// The fields of `image_info`, in order: the four metadata functions' values.
 fn image_info_fields() -> Vec<Field> {
     vec![
-        Field::new(PlSmallStr::from_static("width"), DataType::UInt32),
-        Field::new(PlSmallStr::from_static("height"), DataType::UInt32),
-        Field::new(PlSmallStr::from_static("channels"), DataType::UInt32),
+        Field::new(PlSmallStr::from_static("width"), DataType::Int64),
+        Field::new(PlSmallStr::from_static("height"), DataType::Int64),
+        Field::new(PlSmallStr::from_static("channels"), DataType::Int64),
         Field::new(PlSmallStr::from_static("dtype"), DataType::String),
     ]
 }
@@ -264,12 +270,15 @@ fn image_info_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
 fn image_info(inputs: &[Series], kwargs: MetaKwargs) -> PolarsResult<Series> {
     let metas = metas(inputs, &kwargs, "image_info()")?;
     let [w, h, c, d] = ["width", "height", "channels", "dtype"].map(PlSmallStr::from_static);
-    let width: UInt32Chunked = metas.iter().map(|m| m.as_ref().map(|m| m.width)).collect();
-    let height: UInt32Chunked = metas.iter().map(|m| m.as_ref().map(|m| m.height)).collect();
-    let channels: UInt32Chunked = metas
-        .iter()
-        .map(|m| m.as_ref().and_then(|m| m.channels))
-        .collect();
+    let size = |f: fn(&ImageMeta) -> Option<u32>| -> Int64Chunked {
+        metas
+            .iter()
+            .map(|m| m.as_ref().and_then(f).map(i64::from))
+            .collect()
+    };
+    let width = size(|m| Some(m.width));
+    let height = size(|m| Some(m.height));
+    let channels = size(|m| m.channels);
     let dtype: StringChunked = metas
         .iter()
         .map(|m| m.as_ref().and_then(|m| m.dtype))

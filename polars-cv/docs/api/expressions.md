@@ -15,9 +15,9 @@ import polars_cv  # registers .cv (and .point / .contour / .bbox)
 |--------|--------------|---------|---------|
 | [`pipe()`](#polars_cv.expressions.CvNamespace.pipe) | image bytes, paths, lists/arrays, contour structs | `LazyPipelineExpr` | Apply a [`Pipeline`](pipeline.md); finish with `.sink(...)` |
 | [`read_bytes()`](#polars_cv.expressions.CvNamespace.read_bytes) | `String` paths | `Binary` | Read the bytes a path names, **without** decoding |
-| [`width()`](#polars_cv.expressions.CvNamespace.width) | `Binary` encoded images | `UInt32` | Image width from the header only |
-| [`height()`](#polars_cv.expressions.CvNamespace.height) | `Binary` encoded images | `UInt32` | Image height from the header only |
-| [`channels()`](#polars_cv.expressions.CvNamespace.channels) | `Binary` encoded images | `UInt32` | Channel count from the header only |
+| [`width()`](#polars_cv.expressions.CvNamespace.width) | `Binary` encoded images | `Int64` | Image width from the header only |
+| [`height()`](#polars_cv.expressions.CvNamespace.height) | `Binary` encoded images | `Int64` | Image height from the header only |
+| [`channels()`](#polars_cv.expressions.CvNamespace.channels) | `Binary` encoded images | `Int64` | Channel count from the header only |
 | [`image_dtype()`](#polars_cv.expressions.CvNamespace.image_dtype) | `Binary` encoded images | `String` | Sample dtype from the header only |
 
 Only `pipe()` builds a graph and runs through the `vb_graph` expression. The
