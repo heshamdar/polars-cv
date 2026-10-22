@@ -185,6 +185,10 @@ def is_rank3(x: np.ndarray) -> bool:
     return x.ndim == 3
 
 
+def is_hw_or_hwc(x: np.ndarray) -> bool:
+    return x.ndim in (2, 3)
+
+
 def is_int(x: np.ndarray) -> bool:
     return x.dtype.kind in "iu"
 
@@ -2380,6 +2384,7 @@ OPS: dict[str, OpSpec] = {
             "rank_filter",
             _rank_params,
             ref=_rank_ref_of(lambda p: p["q"], lambda p: (p["height"], p["width"])),
+            accepts=is_hw_or_hwc,
             ref_accepts=lambda x, p: np.isfinite(x).all(),
             tol=_stat_tol,
             kind="global",
@@ -2388,6 +2393,7 @@ OPS: dict[str, OpSpec] = {
         _spec(
             "median_filter",
             ref=_rank_ref_of(lambda p: 50.0, lambda p: (3, 3)),
+            accepts=is_hw_or_hwc,
             ref_accepts=lambda x, p: np.isfinite(x).all(),
             tol=_stat_tol,
             kind="global",
