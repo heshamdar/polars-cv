@@ -1304,6 +1304,7 @@ mod tests {
                 Role::Binary(..) => "Binary",
                 Role::Regions(..) => "Regions",
                 Role::ApplyMask { .. } => "ApplyMask",
+                Role::ReduceMasked { .. } => "ReduceMasked",
                 Role::ChannelMerge { .. } => "ChannelMerge",
                 Role::ExtractShape => "ExtractShape",
                 Role::AssertShape { .. } => "AssertShape",
@@ -1471,6 +1472,21 @@ mod tests {
             &[Series::new("b".into(), &[mask_blob()])],
         );
         assert_eq!(out.null_count(), 0);
+
+        // ReduceMasked: a buffer's mean over the pixels it selects itself.
+        let out = exec(
+            r#"{
+                "version": 2,
+                "nodes": {
+                    "n0": {"input": {"decode": {"column": 0, "source": {"format": "blob"}}}},
+                    "n1": {"input": {"node": "n0"},
+                           "ops": [{"op": "reduce_masked", "mask": "n0", "reduction": "mean"}]}
+                },
+                "outputs": {"_output": {"node": "n1", "sink": {"format": "native"}}}
+            }"#,
+            &[Series::new("b".into(), &[mask_blob()])],
+        );
+        assert_eq!(out.f64().unwrap().get(0), Some(255.0));
 
         // ChannelMerge: [2,2] + [2,2] -> [2,2,2].
         let single = ViewBuffer::from_vec_with_shape(vec![1u8, 2, 3, 4], vec![2, 2]).to_blob();

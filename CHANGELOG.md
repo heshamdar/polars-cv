@@ -25,6 +25,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`img.reduce_masked(mask, reduction=, q=, axis=)`** reduces an image over
+  the pixels a mask selects (u8 or float, set where > 0): one value, or one
+  per column (`axis=0`) or row (`axis=1`), with every reduction `label_reduce`
+  takes. `apply_mask` zeroes outside the mask, which every reduction still
+  counted; a masked median, mean or percentile per row no longer needs nested
+  lists filtered in polars. A line with no masked pixel is NaN (0 for `sum`
+  and `count`).
 - **`reduce_sum(axis=)` and `reduce_percentile(q, axis=)`** reduce along one
   axis, as `reduce_mean`/`reduce_max`/... already did, and
   **`reduce_median(axis=None)`** is `reduce_percentile(50)`. A per-row

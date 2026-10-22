@@ -115,6 +115,122 @@ pub fn percentile_of(values: &mut [f64], q: f64) -> f64 {
     }
 }
 
+/// Refuse what `reduce_masked` cannot read, over what is known: a mask that
+/// is not u8 or float, an image that is not `[H, W]`/`[H, W, C]`, a mask
+/// that is not `[H, W]`/`[H, W, 1]` of the image's height and width.
+pub fn validate_masked_reduce(
+    buffer: &[crate::ops::Dim],
+    mask: &[crate::ops::Dim],
+    mask_dtype: crate::PlannedDType,
+) -> Result<(), ValidationError> {
+    if let crate::PlannedDType::Known(dtype) = mask_dtype {
+        if !matches!(dtype, DType::U8 | DType::F32 | DType::F64) {
+            return Err(ValidationError::Generic {
+                message: format!(
+                    "reduce_masked: a mask is u8 or float (a pixel counts where it is > 0), \
+                     got {}",
+                    dtype.short_name()
+                ),
+            });
+        }
+    }
+    if !matches!(buffer.len(), 2 | 3) {
+        return Err(ValidationError::ShapeRequirement {
+            requirement: "an [H, W] or [H, W, C] image to reduce under a mask",
+            got: buffer.to_vec(),
+        });
+    }
+    let plane = match mask {
+        [h, w] => [*h, *w],
+        [h, w, c] if c.known().is_none_or(|c| c == 1) => [*h, *w],
+        _ => {
+            return Err(ValidationError::ShapeRequirement {
+                requirement: "an [H, W] or [H, W, 1] mask",
+                got: mask.to_vec(),
+            })
+        }
+    };
+    for (axis, (m, b)) in plane.iter().zip(buffer).enumerate() {
+        if let (Some(m), Some(b)) = (m.known(), b.known()) {
+            if m != b {
+                return Err(ValidationError::Generic {
+                    message: format!(
+                        "reduce_masked: the mask's axis {axis} is {m}, the image's {b}: a mask \
+                         covers the image it selects from"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// What [`reduce_masked`] produces: one value, or a buffer along an axis.
+pub enum Masked {
+    Scalar(f64),
+    Along(ViewBuffer),
+}
+
+/// `buffer`'s values where `mask` is set (`> 0`) reduced by `reduction`:
+/// all of them (`axis: None`, every channel together), or along `axis` 0 or
+/// 1 — one value per column or row (per channel, for `[H, W, C]`), as an
+/// axis reduction's shape. A line with no masked pixel is NaN (0 for `sum`
+/// and `count`). Shapes and the mask's dtype are checked by
+/// [`validate_masked_reduce`] first.
+pub fn reduce_masked(
+    buffer: &ViewBuffer,
+    mask: &ViewBuffer,
+    reduction: Reduction,
+    q: Option<f64>,
+    axis: Option<usize>,
+) -> Masked {
+    let shape = buffer.shape();
+    let (h, w) = (shape[0], shape[1]);
+    let c = shape.get(2).copied().unwrap_or(1);
+    let values = buffer.cast_to(DType::F64).to_contiguous();
+    let values = values.as_slice::<f64>();
+    let mask = mask.cast_to(DType::F64).to_contiguous();
+    let keep = mask.as_slice::<f64>();
+    let at = |y: usize, x: usize, ch: usize| values[(y * w + x) * c + ch];
+    let set = |y: usize, x: usize| keep[y * w + x] > 0.0;
+    let mut selected = Vec::new();
+    match axis {
+        None => {
+            for y in 0..h {
+                for x in 0..w {
+                    if set(y, x) {
+                        selected.extend((0..c).map(|ch| at(y, x, ch)));
+                    }
+                }
+            }
+            Masked::Scalar(reduction.of(&mut selected, q))
+        }
+        Some(axis) => {
+            // Axis 0 runs down each column, axis 1 along each row.
+            let (lines, len) = if axis == 0 { (w, h) } else { (h, w) };
+            let mut out = Vec::with_capacity(lines * c);
+            for line in 0..lines {
+                for ch in 0..c {
+                    selected.clear();
+                    for i in 0..len {
+                        let (y, x) = if axis == 0 { (i, line) } else { (line, i) };
+                        if set(y, x) {
+                            selected.push(at(y, x, ch));
+                        }
+                    }
+                    out.push(reduction.of(&mut selected, q));
+                }
+            }
+            let out_shape = if shape.len() == 3 {
+                vec![lines, c]
+            } else {
+                vec![lines]
+            };
+            Masked::Along(ViewBuffer::from_vec_with_shape(out, out_shape))
+        }
+    }
+}
+
 /// The reductions: one variant per wire op (see `crate::mode`).
 #[derive(Debug, Clone, PartialEq, Ops, Resolve)]
 pub enum ReductionOp<M: Mode = Exec> {

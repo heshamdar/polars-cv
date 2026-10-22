@@ -1760,6 +1760,33 @@
     ""
    ]
   ],
+  "reduce_masked": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "mask",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "reduction",
+    "KEYWORD_ONLY",
+    "'mean'"
+   ],
+   [
+    "q",
+    "KEYWORD_ONLY",
+    "None"
+   ],
+   [
+    "axis",
+    "KEYWORD_ONLY",
+    "None"
+   ]
+  ],
   "reduce_max": [
    [
     "self",
