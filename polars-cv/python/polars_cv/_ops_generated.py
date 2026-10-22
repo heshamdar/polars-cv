@@ -179,13 +179,17 @@ class FetchErrorPolicy(str, Enum):
 
 
 class FilterType(str, Enum):
-    """Image resize filter types."""
+    """Image resize filter types.
+
+    - AREA: when shrinking, each output pixel is the overlap-weighted mean of the input pixels its footprint covers (OpenCV's ``INTER_AREA``), with no aliasing at large factors; when enlarging, bilinear.
+    """
 
     NEAREST = "nearest"
     BILINEAR = "bilinear"
     CATMULLROM = "catmullrom"
     GAUSSIAN = "gaussian"
     LANCZOS3 = "lanczos3"
+    AREA = "area"
 
 
 class Footprint(str, Enum):
@@ -459,6 +463,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "bitwise_or",
         "bitwise_xor",
         "blend",
+        "block_reduce",
         "blur",
         "canny",
         "cast",
@@ -664,6 +669,29 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "bitwise_or": {"other": {"kind": "node"}},
     "bitwise_xor": {"other": {"kind": "node"}},
     "blend": {"other": {"kind": "node"}},
+    "block_reduce": {
+        "height": {"kind": "scalar", "per_row": True, "py": "int"},
+        "width": {"kind": "scalar", "per_row": True, "py": "int"},
+        "reduction": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "Reduction",
+            "variants": [
+                "sum",
+                "mean",
+                "min",
+                "max",
+                "std",
+                "median",
+                "percentile",
+                "count",
+            ],
+        },
+        "q": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+        },
+    },
     "blur": {"sigma": {"kind": "scalar", "per_row": True, "py": "float"}},
     "canny": {
         "low_threshold": {"kind": "scalar", "per_row": True, "py": "float"},
@@ -939,7 +967,14 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "scalar",
             "per_row": True,
             "py": "FilterType",
-            "variants": ["nearest", "bilinear", "catmullrom", "gaussian", "lanczos3"],
+            "variants": [
+                "nearest",
+                "bilinear",
+                "catmullrom",
+                "gaussian",
+                "lanczos3",
+                "area",
+            ],
         },
     },
     "maximum": {"other": {"kind": "node"}},
@@ -1136,7 +1171,14 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "scalar",
             "per_row": True,
             "py": "FilterType",
-            "variants": ["nearest", "bilinear", "catmullrom", "gaussian", "lanczos3"],
+            "variants": [
+                "nearest",
+                "bilinear",
+                "catmullrom",
+                "gaussian",
+                "lanczos3",
+                "area",
+            ],
         },
     },
     "resize_max": {
@@ -1145,7 +1187,14 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "scalar",
             "per_row": True,
             "py": "FilterType",
-            "variants": ["nearest", "bilinear", "catmullrom", "gaussian", "lanczos3"],
+            "variants": [
+                "nearest",
+                "bilinear",
+                "catmullrom",
+                "gaussian",
+                "lanczos3",
+                "area",
+            ],
         },
     },
     "resize_min": {
@@ -1154,7 +1203,14 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "scalar",
             "per_row": True,
             "py": "FilterType",
-            "variants": ["nearest", "bilinear", "catmullrom", "gaussian", "lanczos3"],
+            "variants": [
+                "nearest",
+                "bilinear",
+                "catmullrom",
+                "gaussian",
+                "lanczos3",
+                "area",
+            ],
         },
     },
     "resize_scale": {
@@ -1164,7 +1220,14 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "scalar",
             "per_row": True,
             "py": "FilterType",
-            "variants": ["nearest", "bilinear", "catmullrom", "gaussian", "lanczos3"],
+            "variants": [
+                "nearest",
+                "bilinear",
+                "catmullrom",
+                "gaussian",
+                "lanczos3",
+                "area",
+            ],
         },
     },
     "resize_to_height": {
@@ -1173,7 +1236,14 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "scalar",
             "per_row": True,
             "py": "FilterType",
-            "variants": ["nearest", "bilinear", "catmullrom", "gaussian", "lanczos3"],
+            "variants": [
+                "nearest",
+                "bilinear",
+                "catmullrom",
+                "gaussian",
+                "lanczos3",
+                "area",
+            ],
         },
     },
     "resize_to_width": {
@@ -1182,7 +1252,14 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "scalar",
             "per_row": True,
             "py": "FilterType",
-            "variants": ["nearest", "bilinear", "catmullrom", "gaussian", "lanczos3"],
+            "variants": [
+                "nearest",
+                "bilinear",
+                "catmullrom",
+                "gaussian",
+                "lanczos3",
+                "area",
+            ],
         },
     },
     "rotate": {
@@ -1255,6 +1332,7 @@ OP_DEFAULTS: dict[str, dict[str, Any]] = {
     "apply_lut": {"out_dtype": "u8"},
     "apply_mask": {"invert": False},
     "assert_shape": {"exact": True},
+    "block_reduce": {"reduction": "mean"},
     "canny": {"low_threshold": 50.0, "high_threshold": 150.0},
     "channel_select": {"keepdims": True},
     "contour_area": {"signed": False},
@@ -1332,6 +1410,10 @@ OP_DOMAINS: dict[str, list[dict[str, Any]]] = {
     "blend": [
         {"input": "buffer", "output": "buffer"},
         {"input": "vector", "output": "vector"},
+    ],
+    "block_reduce": [
+        {"input": "buffer", "output": "buffer"},
+        {"input": "vector", "output": "buffer"},
     ],
     "blur": [{"input": "buffer", "output": "buffer"}],
     "canny": [{"input": "buffer", "output": "buffer"}],
@@ -1727,6 +1809,37 @@ class _OpsMixin:
                 (`assert_shape(height=, width=, channels=)`).
         """
         return self._append_typed("assert_shape", {"dims": dims, "exact": exact})
+
+    def block_reduce(
+        self,
+        *,
+        height: IntOrExpr,
+        width: IntOrExpr,
+        reduction: str | pl.Expr = "mean",
+        q: FloatOrExpr | None = None,
+    ) -> Pipeline:
+        """Pool fixed blocks: each ``height`` x ``width`` block reduced to one
+        value per channel, so ``[H, W, C]`` becomes
+        ``[ceil(H / height), ceil(W / width), C]``. The last row and column of
+        blocks are partial when the size does not divide, and reduce the
+        pixels they hold.
+
+        Domain: buffer → buffer, vector → buffer
+
+        Args:
+            height: Block height in pixels. Accepts a Polars expression.
+            width: Block width in pixels. Accepts a Polars expression.
+            reduction: The reduction: "sum", "mean" (default), "min", "max", "std",
+                "median", "percentile" (with ``q``) or "count".
+            q: The percentile, in [0, 100], for ``reduction="percentile"`` only.
+
+        Example:
+            >>> Pipeline().source("array").block_reduce(height=20, width=20, reduction="mean")
+        """
+        return self._append_typed(
+            "block_reduce",
+            {"height": height, "width": width, "reduction": reduction, "q": q},
+        )
 
     def blur(self, sigma: FloatOrExpr) -> Pipeline:
         """Apply Gaussian blur.

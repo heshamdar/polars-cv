@@ -39,6 +39,7 @@ pub(crate) fn resample(
         FilterType::CatmullRom => convolve(buf, target_w, target_h, catmull_rom, 2.0),
         FilterType::Gaussian => convolve(buf, target_w, target_h, gaussian, 3.0),
         FilterType::Lanczos3 => convolve(buf, target_w, target_h, lanczos3, 3.0),
+        FilterType::Area => resample_with(buf, target_w, target_h, area_coefficients),
     }
 }
 
@@ -247,6 +248,34 @@ fn pass(
     out
 }
 
+/// Area resampling taps (OpenCV's `INTER_AREA`): shrinking, output pixel
+/// `j` covers `[j·s, (j+1)·s)` of the input (`s = in / out`) and each input
+/// pixel weighs the length of its overlap with that footprint, so the result
+/// is the footprint's exact mean and no pixel sits on a tie; enlarging, the
+/// bilinear taps (as OpenCV).
+fn area_coefficients(in_size: usize, out_size: usize) -> Vec<Taps> {
+    if out_size >= in_size {
+        return coefficients(in_size, out_size, bilinear, 1.0);
+    }
+    let scale = in_size as f64 / out_size as f64;
+    (0..out_size)
+        .map(|j| {
+            let (lo, hi) = (j as f64 * scale, (j + 1) as f64 * scale);
+            let start = lo.floor() as usize;
+            let end = (hi.ceil() as usize).min(in_size);
+            let mut weights: Vec<f64> = (start..end)
+                .map(|k| ((hi.min(k as f64 + 1.0) - lo.max(k as f64)) / scale).max(0.0))
+                .collect();
+            while weights.last() == Some(&0.0) {
+                weights.pop();
+            }
+            let sum: f64 = weights.iter().sum();
+            weights.iter_mut().for_each(|w| *w /= sum);
+            Taps { start, weights }
+        })
+        .collect()
+}
+
 /// Convolution resampling in f64 (module docs).
 fn convolve(
     buf: &ViewBuffer,
@@ -254,6 +283,19 @@ fn convolve(
     target_h: usize,
     filter: fn(f64) -> f64,
     support: f64,
+) -> ViewBuffer {
+    resample_with(buf, target_w, target_h, |in_size, out_size| {
+        coefficients(in_size, out_size, filter, support)
+    })
+}
+
+/// Separable resampling in f64 by the taps `taps_for(in, out)` gives each
+/// axis.
+fn resample_with(
+    buf: &ViewBuffer,
+    target_w: usize,
+    target_h: usize,
+    taps_for: impl Fn(usize, usize) -> Vec<Taps>,
 ) -> ViewBuffer {
     let ((h, w, c), out_shape) = dims(buf, target_w, target_h);
     let dtype = buf.dtype();
@@ -275,21 +317,11 @@ fn convolve(
     }
     let (mut rows, mut cols) = (h, w);
     if target_w != w {
-        data = pass(
-            &data,
-            (rows, cols, c),
-            &coefficients(w, target_w, filter, support),
-            false,
-        );
+        data = pass(&data, (rows, cols, c), &taps_for(w, target_w), false);
         cols = target_w;
     }
     if target_h != h {
-        data = pass(
-            &data,
-            (rows, cols, c),
-            &coefficients(h, target_h, filter, support),
-            true,
-        );
+        data = pass(&data, (rows, cols, c), &taps_for(h, target_h), true);
         rows = target_h;
     }
     debug_assert_eq!((rows, cols), (target_h, target_w));

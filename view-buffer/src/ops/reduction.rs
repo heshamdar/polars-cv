@@ -11,7 +11,7 @@ use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
 use crate::ops::Domain;
 
-use crate::mode::{Exec, Mode};
+use crate::mode::{known, size, Exec, Mode};
 use polars_cv_macros::{Ops, Resolve};
 
 /// A reduction of a set of values to one: the one definition every reducer
@@ -298,6 +298,27 @@ pub enum ReductionOp<M: Mode = Exec> {
     /// Count set bits (1s) in the buffer.
     #[op(name = "reduce_popcount", sample = {})]
     PopCount,
+    /// Pool fixed blocks: each ``height`` x ``width`` block reduced to one
+    /// value per channel, so ``[H, W, C]`` becomes
+    /// ``[ceil(H / height), ceil(W / width), C]``. The last row and column of
+    /// blocks are partial when the size does not divide, and reduce the
+    /// pixels they hold.
+    ///
+    /// Example:
+    ///     >>> Pipeline().source("array").block_reduce(height=20, width=20, reduction="mean")
+    #[op(name = "block_reduce", sample = {"height": 2, "width": 3, "reduction": "max"})]
+    Blocks {
+        /// Block height in pixels. Accepts a Polars expression.
+        height: M::V<u32>,
+        /// Block width in pixels. Accepts a Polars expression.
+        width: M::V<u32>,
+        /// The reduction: "sum", "mean" (default), "min", "max", "std",
+        /// "median", "percentile" (with ``q``) or "count".
+        #[param(default = "mean")]
+        reduction: M::V<Reduction>,
+        /// The percentile, in [0, 100], for ``reduction="percentile"`` only.
+        q: Option<M::V<f64>>,
+    },
     /// Compute the q-th percentile of all values, or along one axis (linear
     /// interpolation, as numpy's default).
     #[op(name = "reduce_percentile", sample = {"q": 50.0, "axis": 0})]
@@ -312,9 +333,28 @@ pub enum ReductionOp<M: Mode = Exec> {
 }
 
 impl<M: Mode> ReductionOp<M> {
-    /// Every reduction's parameters are independent.
+    /// A block of no pixels, and a `q` outside a percentile, are refused.
     pub fn check(&self) -> Result<(), String> {
-        Ok(())
+        let ReductionOp::Blocks {
+            height,
+            width,
+            reduction,
+            q,
+        } = self
+        else {
+            return Ok(());
+        };
+        for (name, side) in [("height", height), ("width", width)] {
+            if known::<M, u32>(side) == Some(0) {
+                return Err(format!("block_reduce: a block {name} of 0 pixels"));
+            }
+        }
+        Reduction::check_q(
+            "block_reduce",
+            known::<M, Reduction>(reduction),
+            q.is_some(),
+            q.as_ref().and_then(known::<M, f64>),
+        )
     }
 
     /// The axis reduced, `None` for a global reduction.
@@ -329,20 +369,26 @@ impl<M: Mode> ReductionOp<M> {
             ReductionOp::ArgMax { axis } | ReductionOp::ArgMin { axis } => {
                 Some(M::lit(axis) as usize)
             }
-            ReductionOp::PopCount => None,
+            ReductionOp::PopCount | ReductionOp::Blocks { .. } => None,
         }
     }
 
     /// How this op's output shape follows from its input: the axis removed,
     /// or a single slot for a global reduction.
     pub fn shape(&self) -> OpShape {
-        OpShape::Reduce { axis: self.axis() }
+        match self {
+            ReductionOp::Blocks { height, width, .. } => OpShape::Blocks {
+                h: size::<M>(height),
+                w: size::<M>(width),
+            },
+            _ => OpShape::Reduce { axis: self.axis() },
+        }
     }
 
     /// The domain this reduction produces: a scalar for a global one, a
-    /// smaller buffer for an axis one.
+    /// smaller buffer for an axis one or a pooling.
     pub fn output_domain(&self) -> Domain {
-        if self.axis().is_some() {
+        if self.axis().is_some() || matches!(self, ReductionOp::Blocks { .. }) {
             Domain::Buffer
         } else {
             Domain::Scalar
@@ -354,6 +400,16 @@ impl ReductionOp {
     /// Execute the reduction on a buffer.
     pub fn execute(&self, buffer: &ViewBuffer) -> ViewBuffer {
         let contig = buffer.to_contiguous();
+
+        if let ReductionOp::Blocks {
+            height,
+            width,
+            reduction,
+            q,
+        } = self
+        {
+            return pool_blocks(&contig, *height as usize, *width as usize, *reduction, *q);
+        }
 
         // PopCount has special handling for each type
         if matches!(self, ReductionOp::PopCount) {
@@ -593,6 +649,7 @@ impl ReductionOp {
             }
             // PopCount and Percentile are handled specially in execute() before calling execute_typed()
             ReductionOp::PopCount => unreachable!("PopCount is handled in execute()"),
+            ReductionOp::Blocks { .. } => unreachable!("Blocks is handled in execute()"),
             ReductionOp::Percentile { axis: None, .. } => {
                 unreachable!("a global Percentile is handled in execute()")
             }
@@ -772,6 +829,7 @@ impl<M: Mode> Op for ReductionOp<M> {
             ReductionOp::ArgMax { .. } => "ArgMax",
             ReductionOp::ArgMin { .. } => "ArgMin",
             ReductionOp::PopCount => "PopCount",
+            ReductionOp::Blocks { .. } => "BlockReduce",
             ReductionOp::Percentile { .. } => "Percentile",
         }
     }
@@ -807,6 +865,7 @@ impl<M: Mode> Op for ReductionOp<M> {
             | ReductionOp::ArgMax { .. }
             | ReductionOp::ArgMin { .. }
             | ReductionOp::PopCount
+            | ReductionOp::Blocks { .. }
             | ReductionOp::Percentile { .. } => SpatialDependency::Global,
         }
     }
@@ -825,6 +884,10 @@ impl<M: Mode> Op for ReductionOp<M> {
         _input_dtypes: &[crate::PlannedDType],
     ) -> Result<(), ValidationError> {
         let shape = input_shapes[0];
+        // Blocks tile the image plane: `[H, W]` or `[H, W, C]` only.
+        if matches!(self, ReductionOp::Blocks { .. }) {
+            return crate::ops::validation::require_hw_or_hwc(shape);
+        }
         if let Some(ax) = self.axis() {
             if ax >= shape.len() {
                 return Err(ValidationError::InvalidAxis {
@@ -870,11 +933,47 @@ impl<M: Mode> Op for ReductionOp<M> {
             | ReductionOp::Std { .. }
             | ReductionOp::Sum { .. }
             | ReductionOp::PopCount
+            | ReductionOp::Blocks { .. }
             | ReductionOp::Percentile { .. } => OutputDTypeRule::ForceF64,
             ReductionOp::ArgMax { .. } | ReductionOp::ArgMin { .. } => OutputDTypeRule::ForceI64,
             _ => OutputDTypeRule::PreserveInput,
         }
     }
+}
+
+/// `[H, W(, C)]` pooled in `bh` x `bw` blocks (partial at the far edges),
+/// each block and channel reduced by `reduction`: `[ceil(H/bh), ceil(W/bw)(, C)]`.
+fn pool_blocks(
+    buf: &ViewBuffer,
+    bh: usize,
+    bw: usize,
+    reduction: Reduction,
+    q: Option<f64>,
+) -> ViewBuffer {
+    let shape = buf.shape();
+    let (h, w) = (shape[0], shape[1]);
+    let c = shape.get(2).copied().unwrap_or(1);
+    let (oh, ow) = (h.div_ceil(bh), w.div_ceil(bw));
+    let values = buf.cast_to(DType::F64).to_contiguous();
+    let values = values.as_slice::<f64>();
+    let mut out = Vec::with_capacity(oh * ow * c);
+    let mut block = Vec::with_capacity(bh * bw);
+    for by in 0..oh {
+        for bx in 0..ow {
+            for ch in 0..c {
+                block.clear();
+                for y in by * bh..((by + 1) * bh).min(h) {
+                    for x in bx * bw..((bx + 1) * bw).min(w) {
+                        block.push(values[(y * w + x) * c + ch]);
+                    }
+                }
+                out.push(reduction.of(&mut block, q));
+            }
+        }
+    }
+    let mut out_shape = vec![oh, ow];
+    out_shape.extend_from_slice(&shape[2..]);
+    ViewBuffer::from_vec_with_shape(out, out_shape)
 }
 
 fn compute_strides(shape: &[usize]) -> Vec<usize> {

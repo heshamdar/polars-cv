@@ -177,6 +177,9 @@ pub enum OpShape {
         start: Vec<Sym<usize>>,
         len: Vec<Option<Sym<usize>>>,
     },
+    /// H and W pooled in `h` x `w` blocks, partial at the far edges:
+    /// `ceil(H / h)` x `ceil(W / w)`; later axes kept.
+    Blocks { h: Sym<usize>, w: Sym<usize> },
     /// H and W windowed by `start` (which may be negative) and `len` (to the
     /// end when `None`), clipped to the input: the part of the window inside
     /// it. Later axes are kept whole.
@@ -369,6 +372,21 @@ impl OpShape {
             OpShape::Transpose(perm) => perm
                 .iter()
                 .map(|&axis| input.get(axis).copied().unwrap_or(Dim::Unknown))
+                .collect(),
+            OpShape::Blocks { h, w } => input
+                .iter()
+                .enumerate()
+                .map(|(axis, &d)| {
+                    let block = match axis {
+                        0 => *h,
+                        1 => *w,
+                        _ => return d,
+                    };
+                    match (d.known(), block.known()) {
+                        (Some(n), Some(b)) if b > 0 => Dim::Known(n.div_ceil(b)),
+                        _ => Dim::Unknown,
+                    }
+                })
                 .collect(),
             OpShape::ClipWindow { start, len } => input
                 .iter()
@@ -870,6 +888,7 @@ mod symbolic_tests {
                 start: [Sym::Known(-1), Sym::Known(2)],
                 len: [Some(k(3)), None],
             },
+            OpShape::Blocks { h: k(2), w: k(3) },
             OpShape::Reduce { axis: None },
             OpShape::Reduce { axis: Some(0) },
             OpShape::Reduce { axis: Some(3) },
@@ -906,6 +925,7 @@ mod symbolic_tests {
                 | OpShape::Transpose(_)
                 | OpShape::Crop { .. }
                 | OpShape::ClipWindow { .. }
+                | OpShape::Blocks { .. }
                 | OpShape::Reduce { .. }
                 | OpShape::Elementwise
                 | OpShape::RemoveAxis(_)

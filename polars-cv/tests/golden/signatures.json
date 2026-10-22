@@ -846,6 +846,33 @@
     ""
    ]
   ],
+  "block_reduce": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "height",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "width",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "reduction",
+    "KEYWORD_ONLY",
+    "'mean'"
+   ],
+   [
+    "q",
+    "KEYWORD_ONLY",
+    "None"
+   ]
+  ],
   "blur": [
    [
     "self",
@@ -2612,6 +2639,33 @@
    ],
    [
     "channels",
+    "KEYWORD_ONLY",
+    "None"
+   ]
+  ],
+  "block_reduce": [
+   [
+    "self",
+    "POSITIONAL_OR_KEYWORD",
+    ""
+   ],
+   [
+    "height",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "width",
+    "KEYWORD_ONLY",
+    ""
+   ],
+   [
+    "reduction",
+    "KEYWORD_ONLY",
+    "'mean'"
+   ],
+   [
+    "q",
     "KEYWORD_ONLY",
     "None"
    ]
