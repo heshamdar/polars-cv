@@ -9,6 +9,7 @@ lazy pipeline operations that are fused into a single plugin call when
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from typing import TYPE_CHECKING, Any, Literal, overload
 
@@ -47,7 +48,31 @@ _STAT_REDUCERS: "dict[str, str]" = {
     "min": "reduce_min",
     "max": "reduce_max",
     "sum": "reduce_sum",
+    "median": "reduce_median",
 }
+
+
+def _parse_statistic(stat: str) -> "tuple[str, float | None]":
+    """A statistic's name as the ``Reduction`` it is, and its ``q``.
+
+    The fixed names (:data:`_STAT_REDUCERS`'s keys, and ``"count"``) are the
+    reductions of the same spelling; ``"pNN"`` is the NN-th percentile
+    (``"p90"``, ``"p2.5"``). Read by ``statistics()`` and ``region_stats()``.
+
+    Raises:
+        ValueError: If the name is none of these.
+    """
+    if stat in _STAT_REDUCERS or stat == "count":
+        return stat, None
+    match = re.fullmatch(r"p(\d+(?:\.\d+)?)", stat)
+    if match and 0.0 <= float(match.group(1)) <= 100.0:
+        return "percentile", float(match.group(1))
+    msg = (
+        f"Unknown statistic '{stat}'. Valid options: "
+        f"{sorted([*_STAT_REDUCERS, 'count'])}, or 'pNN' for a percentile (0-100)"
+    )
+    raise ValueError(msg)
+
 
 #: What ``include=None`` means. ``sum`` is deliberately outside it: it scales
 #: with element count rather than describing a distribution, so it is opt-in.
@@ -563,6 +588,8 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
     def statistics(
         self,
         include: list[str] | None = None,
+        *,
+        mask: "LazyPipelineExpr | None" = None,
     ) -> pl.Expr:
         """
         Compute multiple statistics from the buffer in a single pass.
@@ -580,7 +607,13 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
                 - "min": Minimum value
                 - "max": Maximum value
                 - "sum": Sum of all values
+                - "median": The median
+                - "pNN": The NN-th percentile, e.g. "p10", "p97.5"
+                - "count": How many pixels the mask selects (needs ``mask``)
                 If None, defaults to ["mean", "std", "min", "max"].
+            mask: Reduce only the pixels this mask selects (u8 or float, set
+                where > 0), as ``reduce_masked`` does. Over no pixel a
+                statistic is NaN (0 for "sum" and "count").
 
         Returns:
             A Polars expression that returns a Struct column with the
@@ -599,13 +632,15 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             >>> stats_expr = img.statistics(include=["min", "max"])
             ```
         """
-        names, stat_nodes = self._stat_nodes(include)
+        names, stat_nodes = self._stat_nodes(include, mask=mask)
         merged = self._merge_stat_nodes(stat_nodes)
         return merged.sink({name: "native" for name in names})
 
     def statistics_lazy(
         self,
         include: list[str] | None = None,
+        *,
+        mask: "LazyPipelineExpr | None" = None,
     ) -> "LazyPipelineExpr":
         """
         Create a lazy pipeline for computing multiple statistics.
@@ -625,6 +660,8 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
                 - "max": Maximum value
                 - "sum": Sum of all values
                 If None, defaults to ["mean", "std", "min", "max"].
+
+        mask: Reduce only the pixels this mask selects, as ``statistics()``.
 
         Returns:
             A LazyPipelineExpr representing the merged statistics pipelines.
@@ -650,13 +687,16 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
             ... })
             ```
         """
-        _, stat_nodes = self._stat_nodes(include, prefix="stat_")
+        _, stat_nodes = self._stat_nodes(include, prefix="stat_", mask=mask)
         return self._merge_stat_nodes(stat_nodes)
 
     # --- Internal Helpers ---
 
     def _stat_nodes(
-        self, include: "list[str] | None", prefix: str = ""
+        self,
+        include: "list[str] | None",
+        prefix: str = "",
+        mask: "LazyPipelineExpr | None" = None,
     ) -> "tuple[list[str], list[LazyPipelineExpr]]":
         """Build one aliased reduction node per requested statistic.
 
@@ -670,6 +710,7 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         Args:
             include: Statistic names, or ``None`` for :data:`_DEFAULT_STATS`.
             prefix: Prepended to each output alias.
+            mask: Reduce only the pixels this mask selects (``reduce_masked``).
 
         Returns:
             The output aliases and their nodes, in ``include`` order.
@@ -687,22 +728,23 @@ class LazyPipelineExpr(_LazyOpsMixin, _LazyForwardersMixin):
         # `_merge_stat_nodes` rather than the "at least one statistic" message.
         include = list(_DEFAULT_STATS) if include is None else list(include)
 
-        for stat in include:
-            if stat not in _STAT_REDUCERS:
-                msg = (
-                    f"Unknown statistic '{stat}'. "
-                    f"Valid options: {sorted(_STAT_REDUCERS)}"
-                )
-                raise ValueError(msg)
-
+        parsed = [_parse_statistic(stat) for stat in include]
         if not include:
             raise ValueError("At least one statistic must be included")
+        if mask is None and any(reduction == "count" for reduction, _ in parsed):
+            msg = "statistic 'count' counts the pixels a mask selects: pass mask="
+            raise ValueError(msg)
 
         names = [f"{prefix}{stat}" for stat in include]
-        nodes = [
-            self.pipe(getattr(Pipeline(), _STAT_REDUCERS[stat])()).alias(name)
-            for stat, name in zip(include, names)
-        ]
+        nodes = []
+        for stat, (reduction, q), name in zip(include, parsed, names):
+            if mask is not None:
+                node = self.reduce_masked(mask, reduction=reduction, q=q)
+            elif q is not None:
+                node = self.pipe(Pipeline().reduce_percentile(q))
+            else:
+                node = self.pipe(getattr(Pipeline(), _STAT_REDUCERS[stat])())
+            nodes.append(node.alias(name))
         return names, nodes
 
     @staticmethod
@@ -870,3 +912,55 @@ def _chainable_pipeline_ops() -> list[str]:
         and name not in PIPELINE_ONLY_METHODS
         and callable(getattr(Pipeline, name))
     )
+
+
+def region_stats(
+    regions: pl.Expr,
+    maps: "dict[str, tuple[LazyPipelineExpr, str]]",
+    *,
+    region_mode: str = "interior",
+) -> pl.Expr:
+    """
+    Reduce several per-pixel maps over each contour region: regionprops for
+    any map.
+
+    Each entry is one ``label_reduce`` of its map over ``regions``, by a
+    statistic named as ``statistics()`` names them (``"max"``, ``"median"``,
+    ``"p90"``, ``"count"``, ...). The result is a struct of equal-length lists,
+    one value per region in ``regions``' order; ``.unnest()`` then
+    ``.explode(...)`` gives one row per region.
+
+    Args:
+        regions: A contour-set expression (``List[Contour]``), one set per row.
+        maps: Output name -> ``(map, statistic)``; each map a single-channel
+            ``LazyPipelineExpr`` aligned with ``regions``.
+        region_mode: Which pixels a region holds: "interior" (default),
+            "boundary" or "bbox", as ``label_reduce``.
+
+    Returns:
+        A ``Struct`` expression with one ``List(Float64)`` field per entry.
+
+    Example:
+        ```python
+        >>> stats = polars_cv.region_stats(pl.col("regions"), {
+        ...     "heat_max": (heat, "max"),
+        ...     "heat_p90": (heat, "p90"),
+        ...     "skin_min": (skin_distance, "min"),
+        ... })
+        >>> df.with_columns(stats=stats).unnest("stats").explode(
+        ...     ["heat_max", "heat_p90", "skin_min"])
+        ```
+    """
+    from polars_cv.pipeline import Pipeline
+
+    if not maps:
+        raise ValueError("region_stats needs at least one (map, statistic) entry")
+    nodes = []
+    for name, (image, stat) in maps.items():
+        reduction, q = _parse_statistic(stat)
+        step = Pipeline().label_reduce(
+            regions, reduction=reduction, q=q, region_mode=region_mode
+        )
+        nodes.append(image.pipe(step).alias(name))
+    merged = nodes[0] if len(nodes) == 1 else nodes[0].merge_pipe(*nodes[1:])
+    return merged.sink({name: "native" for name in maps})

@@ -25,6 +25,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **`statistics(include=[..., "median", "p90", "count"], mask=)`** and
+  **`polars_cv.region_stats(regions, {name: (map, statistic)})`.** Statistics
+  take the median, any percentile (`"pNN"`) and, under a mask (reduced as
+  `reduce_masked`), the pixel count. `region_stats` reduces several maps over
+  each contour region (one `label_reduce` per entry) into a struct of
+  equal-length lists, one value per region: regionprops for any per-pixel map.
 - **`img.reduce_masked(mask, reduction=, q=, axis=)`** reduces an image over
   the pixels a mask selects (u8 or float, set where > 0): one value, or one
   per column (`axis=0`) or row (`axis=1`), with every reduction `label_reduce`

@@ -57,7 +57,7 @@ from .geometry import (
 from .geometry.bbox import BBoxNamespace
 from .geometry.contours import ContourNamespace
 from .geometry.points import PointNamespace
-from .lazy import LazyPipelineExpr
+from .lazy import LazyPipelineExpr, region_stats
 from .metrics import (
     BBoxMatcher,
     ConfusionResult,
@@ -693,6 +693,7 @@ __all__ = [
     "Pipeline",
     "CvNamespace",
     "LazyPipelineExpr",
+    "region_stats",
     "OptFlags",
     # Types
     "CloudOptions",

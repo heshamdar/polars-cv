@@ -2269,6 +2269,11 @@
     "include",
     "POSITIONAL_OR_KEYWORD",
     "None"
+   ],
+   [
+    "mask",
+    "KEYWORD_ONLY",
+    "None"
    ]
   ],
   "statistics_lazy": [
@@ -2280,6 +2285,11 @@
    [
     "include",
     "POSITIONAL_OR_KEYWORD",
+    "None"
+   ],
+   [
+    "mask",
+    "KEYWORD_ONLY",
     "None"
    ]
   ],

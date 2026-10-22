@@ -226,3 +226,82 @@ class TestMasked:
     def test_an_axis_past_the_image_plane_is_refused(self) -> None:
         with pytest.raises(ValueError, match="axis"):
             _masked("mean", axis=2, img=RGB)
+
+
+class TestStatistics:
+    def _img(self):
+        return pl.col("a").cv.pipe(Pipeline().source("array"))
+
+    def _mask(self):
+        return pl.col("m").cv.pipe(Pipeline().source("array"))
+
+    def test_masked_statistics_match_numpy(self) -> None:
+        include = ["mean", "median", "p10", "p90", "count", "std"]
+        got = (
+            _masked_frame()
+            .select(self._img().statistics(include=include, mask=self._mask()))
+            .item()
+        )
+        sel = IMG[MASK > 0]
+        want = {
+            "mean": sel.mean(),
+            "median": np.median(sel),
+            "p10": np.percentile(sel, 10),
+            "p90": np.percentile(sel, 90),
+            "count": float(sel.size),
+            "std": sel.std(),
+        }
+        assert set(got) == set(include)
+        for name, value in want.items():
+            np.testing.assert_allclose(got[name], value, err_msg=name)
+
+    def test_unmasked_median_and_percentiles(self) -> None:
+        got = (
+            _masked_frame()
+            .select(self._img().statistics(include=["median", "p25", "p62.5"]))
+            .item()
+        )
+        np.testing.assert_allclose(got["median"], np.median(IMG))
+        np.testing.assert_allclose(got["p25"], np.percentile(IMG, 25))
+        np.testing.assert_allclose(got["p62.5"], np.percentile(IMG, 62.5))
+
+    def test_count_needs_a_mask(self) -> None:
+        with pytest.raises(ValueError, match="count"):
+            self._img().statistics(include=["count"])
+
+    @pytest.mark.parametrize("name", ["p101", "p", "px", "mode"])
+    def test_an_unknown_statistic_is_refused(self, name: str) -> None:
+        with pytest.raises(ValueError, match="statistic"):
+            self._img().statistics(include=[name])
+
+
+class TestRegionStats:
+    def test_several_maps_reduced_per_region(self) -> None:
+        from polars_cv import region_stats
+
+        heat = pl.col("a").cv.pipe(Pipeline().source("array"))
+        other = pl.col("b").cv.pipe(Pipeline().source("array"))
+        frame = _frame().with_columns(b=pl.Series("b", (IMG * 2)[np.newaxis]))
+        out = frame.select(
+            stats=region_stats(
+                pl.col("c"),
+                {
+                    "heat_max": (heat, "max"),
+                    "heat_p90": (heat, "p90"),
+                    "other_min": (other, "min"),
+                    "area": (heat, "count"),
+                },
+                region_mode="bbox",
+            )
+        )
+        got = out.item()
+        assert set(got) == {"heat_max", "heat_p90", "other_min", "area"}
+        np.testing.assert_allclose(got["heat_max"], [s.max() for s in SLICES])
+        np.testing.assert_allclose(
+            got["heat_p90"], [np.percentile(s, 90) for s in SLICES]
+        )
+        np.testing.assert_allclose(got["other_min"], [2 * s.min() for s in SLICES])
+        np.testing.assert_allclose(got["area"], [s.size for s in SLICES])
+        # One row per region, as the struct of equal-length lists explodes.
+        rows = out.unnest("stats").explode(pl.all())
+        assert rows.height == len(REGIONS)
